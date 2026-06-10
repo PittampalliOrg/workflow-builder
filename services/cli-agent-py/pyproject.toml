@@ -1,0 +1,31 @@
+# cli-agent-py — host for the `claude-code-cli` interactive-cli durable runtime.
+# Lock with `uv lock` after editing dependencies (Dockerfile.sandbox builds --frozen).
+[project]
+name = "cli-agent-py"
+version = "0.1.0"
+description = "Claude Code CLI (interactive-cli) Dapr workflow lifecycle host for workflow-builder durable agents"
+requires-python = ">=3.12"
+dependencies = [
+    # Same Dapr workflow contract as claude-agent-py; pinned to the platform's
+    # dapr-ext-workflow version (CLAUDE.md Tech Stack).
+    "dapr-ext-workflow==1.17.1",
+    "dapr>=1.15",
+    "fastapi>=0.104",
+    "uvicorn>=0.24",
+    # uvicorn needs a ws protocol implementation for the /terminal WS route.
+    "websockets>=12",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "ruff"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

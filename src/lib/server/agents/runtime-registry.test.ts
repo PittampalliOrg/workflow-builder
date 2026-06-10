@@ -33,12 +33,13 @@ describe("runtime registry — drift guard", () => {
 });
 
 describe("runtime registry — readers", () => {
-	it("exposes the 5 durable-agent runtimes", () => {
+	it("exposes the 6 durable-agent runtimes", () => {
 		expect(listRuntimeIds().sort()).toEqual(
 			[
 				"adk-agent-py",
 				"browser-use-agent",
 				"claude-agent-py",
+				"claude-code-cli",
 				"dapr-agent-py",
 				"dapr-agent-py-testing"
 			].sort()
@@ -60,12 +61,14 @@ describe("runtime registry — readers", () => {
 
 	it("shellable containers = every runtime main container + browser sidecars", () => {
 		const containers = shellableContainers();
-		// dapr-agent-py (+ testing share the container), claude, adk, browser-use.
+		// dapr-agent-py (+ testing share the container), claude, adk, browser-use,
+		// cli-agent-py (interactive-cli host).
 		for (const c of [
 			"dapr-agent-py",
 			"claude-agent-py",
 			"adk-agent-py",
 			"browser-use-agent",
+			"cli-agent-py",
 			"chromium",
 			"playwright-mcp"
 		]) {
@@ -94,6 +97,7 @@ describe("Phase 2b — image override + framework", () => {
 		// image and browser-use takes the warm-pool lane, so both are null.
 		expect(getRuntimeDescriptor("adk-agent-py")?.imageEnvKey).toBe("AGENT_RUNTIME_ADK_DEFAULT_IMAGE");
 		expect(getRuntimeDescriptor("claude-agent-py")?.imageEnvKey).toBe("AGENT_RUNTIME_CLAUDE_DEFAULT_IMAGE");
+		expect(getRuntimeDescriptor("claude-code-cli")?.imageEnvKey).toBe("AGENT_RUNTIME_CLAUDE_CLI_DEFAULT_IMAGE");
 		expect(getRuntimeDescriptor("dapr-agent-py")?.imageEnvKey).toBeNull();
 		expect(getRuntimeDescriptor("dapr-agent-py-testing")?.imageEnvKey).toBeNull();
 		expect(getRuntimeDescriptor("browser-use-agent")?.imageEnvKey).toBeNull();

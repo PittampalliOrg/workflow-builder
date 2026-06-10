@@ -97,6 +97,27 @@ function benchmarkStableAgentWorkflowAppId(): string | null {
 
 const hostProvisionTracer = trace.getTracer("workflow-builder.agent-workflow-host");
 
+/**
+ * Span-safe copy of the provision request body: `sessionSecretEnv` carries
+ * raw per-user CLI tokens, so its VALUES must never reach span attributes —
+ * keys are kept (useful for debugging which env vars were injected).
+ */
+function redactSessionSecretEnvForSpan(
+	requestBody: Record<string, unknown>,
+): Record<string, unknown> {
+	const secretEnv = requestBody.sessionSecretEnv;
+	if (!secretEnv || typeof secretEnv !== "object") return requestBody;
+	return {
+		...requestBody,
+		sessionSecretEnv: Object.fromEntries(
+			Object.keys(secretEnv as Record<string, unknown>).map((key) => [
+				key,
+				"[redacted]",
+			]),
+		),
+	};
+}
+
 async function postAgentWorkflowHost(
 	baseUrl: string,
 	headers: Record<string, string>,
@@ -111,7 +132,7 @@ async function postAgentWorkflowHost(
 			span.setAttribute("url.path", "/api/v1/agent-workflow-hosts");
 			span.setAttribute("http.route", "/api/v1/agent-workflow-hosts");
 			span.setAttribute("workflow_builder.backend", "sandbox-execution-api");
-			setSpanValue(span, "input", requestBody);
+			setSpanValue(span, "input", redactSessionSecretEnvForSpan(requestBody));
 			try {
 				const response = await fetch(url, {
 					method: "POST",
@@ -199,6 +220,9 @@ function agentWorkflowHostTimeoutSeconds(params: {
 function agentWorkflowHostExecutionClass(params: {
 	benchmarkRunId: string | null;
 	benchmarkExecutionClass?: string | null;
+	/** Registry-descriptor `executionClass` for the target runtime; overrides
+	 * the env default for non-benchmark sessions (e.g. `interactive-cli`). */
+	runtimeExecutionClass?: string | null;
 }): string {
 	if (params.benchmarkRunId) {
 		if (params.benchmarkExecutionClass?.trim()) {
@@ -211,6 +235,9 @@ function agentWorkflowHostExecutionClass(params: {
 			process.env.BENCHMARK_EXECUTION_CLASS ??
 			"benchmark-fast"
 		);
+	}
+	if (params.runtimeExecutionClass?.trim()) {
+		return params.runtimeExecutionClass.trim();
 	}
 	return (
 		env.AGENT_WORKFLOW_HOST_EXECUTION_CLASS ??
@@ -262,6 +289,13 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	timeoutMinutes: number | null;
 	priorityClass?: string | null;
 	traceContext?: TraceContext | null;
+	/**
+	 * Per-session secret env (e.g. the owner's CLI subscription token for
+	 * `interactive-cli` runtimes). sandbox-execution-api creates a per-session
+	 * Secret and injects the keys as env into the main container. Values are
+	 * redacted from span capture here.
+	 */
+	sessionSecretEnv?: Record<string, string> | null;
 }): Promise<AgentWorkflowHostResult | null> {
 	if (!agentConfigCanUseWorkflowHost(params.agentConfig)) return null;
 	if (params.benchmarkRunId) {
@@ -314,12 +348,18 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	// override the executionClass default with that env var's image; the rest
 	// (dapr-agent-py is the default image, browser-use takes the warm-pool lane)
 	// declare `imageEnvKey: null` and fall through to the executionClass default.
+	const runtimeDescriptor = getRuntimeDescriptor(
+		(params.agentConfig as { runtime?: string } | null)?.runtime,
+	);
 	const agentImage = ((): string | null => {
-		const runtime = (params.agentConfig as { runtime?: string } | null)?.runtime;
-		const key = getRuntimeDescriptor(runtime)?.imageEnvKey;
+		const key = runtimeDescriptor?.imageEnvKey;
 		if (!key) return null;
 		return env[key] ?? process.env[key] ?? null;
 	})();
+	const sessionSecretEnv =
+		params.sessionSecretEnv && Object.keys(params.sessionSecretEnv).length > 0
+			? params.sessionSecretEnv
+			: null;
 	const requestBody = {
 		sessionId: params.sessionId,
 		agentAppId,
@@ -329,11 +369,13 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 		executionClass: agentWorkflowHostExecutionClass({
 			benchmarkRunId: params.benchmarkRunId,
 			benchmarkExecutionClass: params.benchmarkExecutionClass,
+			runtimeExecutionClass: runtimeDescriptor?.executionClass ?? null,
 		}),
 		...(timeoutSeconds === null ? {} : { timeoutSeconds }),
 		waitReadySeconds,
 		priorityClass,
 		...(agentImage ? { agentImage } : {}),
+		...(sessionSecretEnv ? { sessionSecretEnv } : {}),
 	};
 	const { response, body } = await postAgentWorkflowHost(
 		baseUrl,

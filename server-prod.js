@@ -11,6 +11,8 @@ const TERMINAL_PATH_RE = /^\/api\/sandboxes\/([^/]+)\/terminal\/([^/]+)$/;
 const OPENSHELL_SESSION_TERMINAL_PATH_RE =
 	/^\/api\/openshell\/sessions\/([^/]+)\/terminal\/([^/]+)$/;
 const SHELL_PATH_RE = /^\/api\/v1\/sessions\/([^/]+)\/shell$/;
+const CLI_TERMINAL_PATH_RE = /^\/api\/v1\/sessions\/([^/]+)\/cli-terminal\/([^/]+)$/;
+const CLI_TERMINAL_KEEPALIVE_MS = 30000;
 
 // Preflight origin: the BFF hits itself for the resolver endpoint that
 // enforces auth + workspace scope. The `SHELL_RESOLVER_ORIGIN` env var
@@ -56,6 +58,18 @@ server.on('upgrade', (req, socket, head) => {
 	const shellMatch = url.pathname.match(SHELL_PATH_RE);
 	if (shellMatch) {
 		handleShellUpgrade(req, socket, head, shellMatch[1], url.searchParams.get('container') || 'chromium');
+		return;
+	}
+	const cliTerminalMatch = url.pathname.match(CLI_TERMINAL_PATH_RE);
+	if (cliTerminalMatch) {
+		handleCliTerminalUpgrade(
+			req,
+			socket,
+			head,
+			cliTerminalMatch[1],
+			cliTerminalMatch[2],
+			url.search
+		);
 		return;
 	}
 	const openshellSessionMatch = url.pathname.match(OPENSHELL_SESSION_TERMINAL_PATH_RE);
@@ -209,6 +223,127 @@ function proxyOpenShellTerminal(req, socket, head, sandboxName, sessionId) {
 		});
 
 		browserWs.on('error', () => {
+			if (upstream.readyState === WebSocket.OPEN) {
+				upstream.close();
+			}
+		});
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Interactive-CLI terminal proxy: browser WS <-> per-session pod PTY WS.
+// ---------------------------------------------------------------------------
+//
+// The Terminal tab opens /api/v1/sessions/<id>/cli-terminal/<terminalId>
+// ?target=main|shell. We preflight via the cookie/JWT-gated resolver
+// (/api/v1/sessions/<id>/cli-terminal/resolve -> { podIp, port }), then pipe
+// to ws://<podIp>:<port>/terminal/<terminalId>?<query> on the cli-agent-py
+// host, authenticating with X-Internal-Token. Framing passes through
+// verbatim (binary = raw PTY bytes; text "\x01{json}" = resize, same
+// convention as sandbox-terminal.svelte). 30s ping keepalive holds idle TUI
+// sessions open.
+
+async function resolveCliTerminal(req, sessionId) {
+	const resolverUrl =
+		`${SHELL_RESOLVER_ORIGIN}/api/v1/sessions/${encodeURIComponent(sessionId)}/cli-terminal/resolve`;
+	const res = await fetch(resolverUrl, {
+		method: 'POST',
+		headers: {
+			...(req.headers.cookie ? { cookie: req.headers.cookie } : {}),
+			...(req.headers.authorization ? { authorization: req.headers.authorization } : {})
+		}
+	});
+	if (!res.ok) return { error: res.status };
+	return res.json();
+}
+
+function handleCliTerminalUpgrade(req, socket, head, sessionIdRaw, terminalIdRaw, search) {
+	const sessionId = decodeURIComponent(sessionIdRaw);
+	const terminalId = decodeURIComponent(terminalIdRaw);
+	(async () => {
+		const res = await resolveCliTerminal(req, sessionId);
+		if (res.error) {
+			writeWsPreflightError(socket, res.error);
+			return;
+		}
+		proxyCliTerminal(req, socket, head, res.podIp, res.port || 8002, terminalId, search || '');
+	})().catch(() => {
+		try {
+			socket.destroy();
+		} catch {
+			/* noop */
+		}
+	});
+}
+
+function proxyCliTerminal(req, socket, head, podIp, port, terminalId, search) {
+	const upstreamUrl = `ws://${podIp}:${port}/terminal/${encodeURIComponent(terminalId)}${search}`;
+	const token = process.env.INTERNAL_API_TOKEN || '';
+
+	wss.handleUpgrade(req, socket, head, (browserWs) => {
+		const upstream = new WebSocket(upstreamUrl, {
+			headers: token ? { 'X-Internal-Token': token } : {}
+		});
+		const pendingMessages = [];
+		let keepalive = null;
+		const clearKeepalive = () => {
+			if (keepalive) {
+				clearInterval(keepalive);
+				keepalive = null;
+			}
+		};
+
+		browserWs.on('message', (data, isBinary) => {
+			if (upstream.readyState === WebSocket.OPEN) {
+				upstream.send(data, { binary: isBinary });
+			} else if (upstream.readyState === WebSocket.CONNECTING) {
+				pendingMessages.push({ data, isBinary });
+			}
+		});
+
+		upstream.on('open', () => {
+			for (const { data, isBinary } of pendingMessages.splice(0)) {
+				upstream.send(data, { binary: isBinary });
+			}
+			keepalive = setInterval(() => {
+				try {
+					if (browserWs.readyState === WebSocket.OPEN) browserWs.ping();
+					if (upstream.readyState === WebSocket.OPEN) upstream.ping();
+				} catch {
+					/* noop */
+				}
+			}, CLI_TERMINAL_KEEPALIVE_MS);
+		});
+
+		upstream.on('message', (data, isBinary) => {
+			if (browserWs.readyState === WebSocket.OPEN) {
+				browserWs.send(data, { binary: isBinary });
+			}
+		});
+
+		upstream.on('close', (code, reason) => {
+			clearKeepalive();
+			if (browserWs.readyState === WebSocket.OPEN) {
+				browserWs.close(forwardableCloseCode(code), closeReason(reason));
+			}
+		});
+
+		upstream.on('error', () => {
+			clearKeepalive();
+			if (browserWs.readyState === WebSocket.OPEN) {
+				browserWs.close(1011, 'upstream error');
+			}
+		});
+
+		browserWs.on('close', () => {
+			clearKeepalive();
+			if (upstream.readyState === WebSocket.OPEN) {
+				upstream.close();
+			}
+		});
+
+		browserWs.on('error', () => {
+			clearKeepalive();
 			if (upstream.readyState === WebSocket.OPEN) {
 				upstream.close();
 			}

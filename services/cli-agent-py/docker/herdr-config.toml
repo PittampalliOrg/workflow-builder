@@ -1,0 +1,6 @@
+# Baked herdr config for cli-agent-py sandbox pods.
+# TODO(herdr-smoke): key names written against herdr 0.6.8 docs
+# (https://herdr.dev/docs/configuration/); verify `onboarding` +
+# `default_shell` against `herdr --default-config` on a live pod.
+onboarding = false
+default_shell = "/bin/bash"

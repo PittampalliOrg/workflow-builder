@@ -14,7 +14,7 @@
  */
 import registryData from "./runtime-registry.data.json";
 
-export type DurabilityGranularity = "per-activity" | "per-turn";
+export type DurabilityGranularity = "per-activity" | "per-turn" | "per-session";
 
 export type RuntimeCapabilities = {
 	durabilityGranularity: DurabilityGranularity;
@@ -33,18 +33,40 @@ export type RuntimeCapabilities = {
 	requiresBrowserSidecars: boolean;
 	multiProvider: boolean;
 	supportedProviders: string[];
+	/**
+	 * The runtime exposes the agent as an interactive TUI in the session's
+	 * sandbox pod (web-terminal-first UX, lifecycle-wrapped workflow). Only
+	 * `interactive-cli`-family runtimes set this.
+	 */
+	interactiveTerminal?: boolean;
+};
+
+/**
+ * Per-user CLI credential contract for `interactive-cli` runtimes: which
+ * provider token the user must enroll (Settings → CLI tokens) and how the
+ * runtime consumes it. Consumed generically by the settings page and the
+ * spawn-time readiness gate.
+ */
+export type RuntimeCliAuth = {
+	provider: string;
+	tokenKind: "subscription_oauth";
+	envVar: string;
+	setupCommand: string;
 };
 
 export type RuntimeDescriptor = {
 	id: string;
 	appIdConfigKey: string;
 	instancePrefix: string;
-	family: "durable-session" | "browser";
+	family: "durable-session" | "browser" | "interactive-cli";
 	mainContainerName: string;
 	imageEnvKey: string | null;
 	agentMetadataFramework: string;
 	benchmarkEligible: boolean;
 	capabilitiesVerified: boolean;
+	/** sandbox-execution-api execution class override (else the BFF env default). */
+	executionClass?: string;
+	cliAuth?: RuntimeCliAuth;
 	capabilities: RuntimeCapabilities;
 };
 

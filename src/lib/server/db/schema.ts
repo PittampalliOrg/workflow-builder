@@ -2800,6 +2800,44 @@ export const vaultCredentialRefreshLog = pgTable(
 	}),
 );
 
+/**
+ * Per-user CLI subscription tokens for `interactive-cli` runtimes (e.g. the
+ * Claude Code OAuth token from `claude setup-token`). One row per
+ * (user, provider); `value` is AES-256-CBC encrypted (`EncryptedObject`) and
+ * never returned from the API — only presence/expiry metadata is. Consumed at
+ * spawn time by the interactive-terminal gate in sessions/spawn.ts and
+ * delivered to the per-session pod via sandbox-execution-api's
+ * `sessionSecretEnv` (per-session Secret, env-injected into the main
+ * container).
+ */
+export const userCliCredentials = pgTable(
+	"user_cli_credentials",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		provider: text("provider").notNull(),
+		value: jsonb("value")
+			.notNull()
+			.$type<{ iv: string; data: string }>(),
+		expiresAt: timestamp("expires_at"),
+		lastValidatedAt: timestamp("last_validated_at"),
+		status: text("status").notNull().default("active"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		userProviderUnique: unique("uq_user_cli_credentials_user_provider").on(
+			table.userId,
+			table.provider,
+		),
+		userIdx: index("idx_user_cli_credentials_user").on(table.userId),
+	}),
+);
+
 // ============================================================================
 // Sessions (one agent run, multi-turn, streamed events)
 // ============================================================================
@@ -4382,6 +4420,8 @@ export type VaultCredentialRefreshLog =
 	typeof vaultCredentialRefreshLog.$inferSelect;
 export type NewVaultCredentialRefreshLog =
 	typeof vaultCredentialRefreshLog.$inferInsert;
+export type UserCliCredential = typeof userCliCredentials.$inferSelect;
+export type NewUserCliCredential = typeof userCliCredentials.$inferInsert;
 export type Session = typeof sessions.$inferSelect;
 export type NewSession = typeof sessions.$inferInsert;
 export type SessionEvent = typeof sessionEvents.$inferSelect;

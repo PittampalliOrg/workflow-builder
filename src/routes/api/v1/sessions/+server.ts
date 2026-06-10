@@ -10,6 +10,7 @@ import {
 } from "$lib/server/sessions/registry";
 import { sendUserEvent } from "$lib/server/sessions/events";
 import { spawnSessionWorkflow } from "$lib/server/sessions/spawn";
+import { CliTokenError } from "$lib/server/users/cli-credentials";
 import {
 	mountSessionRepositories,
 	type RepositorySandboxTarget,
@@ -19,6 +20,7 @@ import {
 	sandboxProvisionFailureMessage,
 } from "$lib/server/sandboxes/provision";
 import { resolveAgentRef } from "$lib/server/agents/registry";
+import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { findOrCreateExperimentAgent } from "$lib/server/agents/ephemeral";
 import { isAgentConfigEquivalent } from "$lib/utils/agent-config-diff";
 import type { AgentConfig } from "$lib/types/agents";
@@ -261,7 +263,18 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		// Clone any github_repository resources into the sandbox BEFORE the
 		// agent's first turn. Best-effort: failures emit a session event and
 		// never block the spawn.
-		if (repoMountTarget) {
+		//
+		// Interactive-CLI runtimes branch: their working tree is the agent
+		// pod's own /sandbox, not the OpenShell workspace sandbox — leave the
+		// resource rows unmounted here so spawnSessionWorkflow clones them via
+		// the host's /internal/workspace/command once the pod is ready
+		// (mountSessionRepositoriesViaHost).
+		const interactiveCliRuntime =
+			getRuntimeDescriptor(
+				(resolvedAgent?.config as { runtime?: string } | undefined)?.runtime ??
+					resolvedAgent?.runtime,
+			)?.capabilities?.interactiveTerminal === true;
+		if (repoMountTarget && !interactiveCliRuntime) {
 			try {
 				await mountSessionRepositories(session.id, repoMountTarget);
 			} catch (mountErr) {
@@ -280,6 +293,22 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			console.error("[sessions] spawn failed:", spawnErr);
 			session.errorMessage =
 				spawnErr instanceof Error ? spawnErr.message : "Workflow spawn failed";
+			// Interactive-CLI precondition: the owner has no usable subscription
+			// token for the runtime's provider. Surface as 412 so the UI can
+			// deep-link the user to Settings → CLI tokens; the session row stays
+			// and POST /api/v1/sessions/[id]/spawn retries once a token exists.
+			if (spawnErr instanceof CliTokenError) {
+				return json(
+					{
+						code: spawnErr.code,
+						provider: spawnErr.provider,
+						settingsPath: "/settings/cli-tokens",
+						message: spawnErr.message,
+						session,
+					},
+					{ status: 412 },
+				);
+			}
 		}
 		return json({ session }, { status: 201 });
 	} catch (err) {

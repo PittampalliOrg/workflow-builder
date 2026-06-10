@@ -5,6 +5,7 @@ import {
 	updateSessionStatusUnlessTerminated,
 } from "$lib/server/sessions/registry";
 import { spawnSessionWorkflow } from "$lib/server/sessions/spawn";
+import { CliTokenError } from "$lib/server/users/cli-credentials";
 
 export const POST: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -34,6 +35,19 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 		await updateSessionStatusUnlessTerminated(params.id, "rescheduling", {
 			errorMessage: message,
 		});
+		// Interactive-CLI precondition failure → 412 with a settings deep-link
+		// (mirrors the POST /api/v1/sessions create path).
+		if (err instanceof CliTokenError) {
+			return json(
+				{
+					code: err.code,
+					provider: err.provider,
+					settingsPath: "/settings/cli-tokens",
+					message,
+				},
+				{ status: 412 },
+			);
+		}
 		return error(502, message);
 	}
 };

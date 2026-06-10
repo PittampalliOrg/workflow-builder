@@ -16,6 +16,7 @@
  *   2. session-event publisher (SSOT: services/shared/session_events/publisher.py)
  *        → services/dapr-agent-py/src/event_publisher.py              (Python agent runtime)
  *        → services/claude-agent-py/src/event_publisher.py            (Python agent runtime)
+ *        → services/cli-agent-py/src/event_publisher.py               (Python agent runtime)
  *
  * Usage:
  *   node scripts/sync-runtime-registry.mjs          # write the copies
@@ -49,7 +50,8 @@ const ASSETS = [
 		canonical: p('services/shared/session_events/publisher.py'),
 		copies: [
 			p('services/dapr-agent-py/src/event_publisher.py'),
-			p('services/claude-agent-py/src/event_publisher.py')
+			p('services/claude-agent-py/src/event_publisher.py'),
+			p('services/cli-agent-py/src/event_publisher.py')
 		],
 		validate(raw) {
 			// Cheap structural guard — the vendored copy must keep the symbols

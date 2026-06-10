@@ -18,11 +18,33 @@ import {
 import { resolveSessionRuntimeTarget } from "$lib/server/sessions/runtime-target";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { evaluateSwap } from "$lib/server/agents/swap-safety";
+import {
+	CliTokenError,
+	getUserCliCredential,
+} from "$lib/server/users/cli-credentials";
+import { mountSessionRepositoriesViaHost } from "$lib/server/sessions/repositories";
 
 function modelIdFromMlflowUri(value: string | null | undefined): string | null {
 	const text = value?.trim() ?? "";
 	const match = text.match(/^models:\/([^/]+)$/);
 	return match?.[1] ?? null;
+}
+
+/** Session owner (sessions.userId) — not part of the public SessionDetail
+ * shape, so read it directly for the CLI-token gate. */
+async function resolveSessionOwnerUserId(
+	sessionId: string,
+): Promise<string | null> {
+	const { db } = await import("$lib/server/db");
+	if (!db) return null;
+	const { sessions } = await import("$lib/server/db/schema");
+	const { eq } = await import("drizzle-orm");
+	const [row] = await db
+		.select({ userId: sessions.userId })
+		.from(sessions)
+		.where(eq(sessions.id, sessionId))
+		.limit(1);
+	return row?.userId ?? null;
 }
 
 /**
@@ -142,6 +164,10 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		const verdict = evaluateSwap(
 			resolvedAgentConfig as Record<string, unknown>,
 			swapTarget,
+			// The agent row's configured runtime is the swap SOURCE; crossing the
+			// interactive-cli family boundary is reject-class (interaction model
+			// changes, not just feature degradation).
+			{ sourceFamily: getRuntimeDescriptor(agent.runtime)?.family ?? null },
 		);
 		if (verdict.drops.length > 0) {
 			console.warn(
@@ -224,6 +250,37 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		],
 	};
 
+	// Interactive-CLI gate: the runtime hosts the real CLI TUI under the
+	// session owner's SUBSCRIPTION token. Resolve it now (fail fast with a
+	// typed 412-mappable error) and deliver it to the per-session pod via
+	// sandbox-execution-api's `sessionSecretEnv` — never via agentConfig or
+	// the Dapr payload.
+	let sessionSecretEnv: Record<string, string> | null = null;
+	if (swapTarget?.capabilities?.interactiveTerminal && swapTarget.cliAuth) {
+		const { provider, envVar } = swapTarget.cliAuth;
+		const ownerUserId = await resolveSessionOwnerUserId(sessionId);
+		const credential = ownerUserId
+			? await getUserCliCredential(ownerUserId, provider)
+			: null;
+		if (!credential) {
+			throw new CliTokenError(
+				"CLI_TOKEN_MISSING",
+				provider,
+				`No ${provider} CLI subscription token linked for this user. ` +
+					`Add one under Settings → CLI tokens (run \`${swapTarget.cliAuth.setupCommand}\` locally).`,
+			);
+		}
+		if (credential.expiresAt && credential.expiresAt.getTime() < Date.now()) {
+			throw new CliTokenError(
+				"CLI_TOKEN_EXPIRED",
+				provider,
+				`The linked ${provider} CLI subscription token has expired. ` +
+					`Re-run \`${swapTarget.cliAuth.setupCommand}\` locally and paste the new token under Settings → CLI tokens.`,
+			);
+		}
+		sessionSecretEnv = { [envVar]: credential.token };
+	}
+
 	// Resolve the dispatch app-id. Two paths share the same downstream shape
 	// (Dapr service-invoke into `/internal/sessions/spawn`); only the pod
 	// backing the app-id differs:
@@ -242,6 +299,7 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		benchmarkRunId: null,
 		benchmarkInstanceId: null,
 		timeoutMinutes: null,
+		sessionSecretEnv,
 	}).catch((err) => {
 		console.warn(
 			`[session-spawn] sandbox provision failed, falling back to warm-pool wake:`,
@@ -330,6 +388,20 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 			agentAppId: targetAppId,
 		});
 		directRuntimeBaseUrl = ready.baseUrl;
+	}
+	// Interactive-CLI runtimes work in the agent pod's own /sandbox (no
+	// OpenShell workspace sandbox), so attached repos are cloned via the host's
+	// `/internal/workspace/command` BEFORE the TUI starts. Best-effort —
+	// failures emit session events, never block the spawn.
+	if (directRuntimeBaseUrl && swapTarget?.capabilities?.interactiveTerminal) {
+		try {
+			await mountSessionRepositoriesViaHost(sessionId, directRuntimeBaseUrl);
+		} catch (err) {
+			console.warn(
+				`[session-spawn] host repository mount failed for ${sessionId}:`,
+				err instanceof Error ? err.message : err,
+			);
+		}
 	}
 	const res = await (directRuntimeBaseUrl
 		? daprFetch(`${directRuntimeBaseUrl}/internal/sessions/spawn`, {

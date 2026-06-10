@@ -14,12 +14,16 @@
 		CardHeader,
 		CardTitle
 	} from '$lib/components/ui/card';
-	import { ArrowLeft, PlayCircle } from '@lucide/svelte';
+	import { ArrowLeft, Check, KeyRound, Loader2, PlayCircle } from '@lucide/svelte';
 	import RepositoriesEditor from '$lib/components/sessions/repositories-editor.svelte';
 	import type { AgentSummary } from '$lib/types/agents';
 	import type { EnvironmentSummary } from '$lib/types/environments';
 	import type { VaultSummary } from '$lib/types/vaults';
 	import type { SessionRepositoryInput } from '$lib/types/sessions';
+
+	const { data }: {
+		data: { cliAuthByRuntime: Record<string, { provider: string; setupCommand: string }> };
+	} = $props();
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
@@ -43,6 +47,47 @@
 	let repoEditor = $state<{ commitPending?: () => boolean } | undefined>(undefined);
 
 	let selectedAgent = $derived(agents.find((a) => a.id === agentId) ?? null);
+
+	// CLI-token readiness for interactive-CLI runtimes: the spawn path hard-
+	// requires a linked subscription token (412 otherwise), so surface the
+	// state inline and block submit while it's missing.
+	const selectedCliAuth = $derived(
+		selectedAgent ? (data.cliAuthByRuntime[selectedAgent.runtime] ?? null) : null
+	);
+	let cliTokenState = $state<'idle' | 'loading' | 'linked' | 'missing'>('idle');
+	let cliTokenExpiresAt = $state<string | null>(null);
+	$effect(() => {
+		const auth = selectedCliAuth;
+		if (!auth) {
+			cliTokenState = 'idle';
+			cliTokenExpiresAt = null;
+			return;
+		}
+		cliTokenState = 'loading';
+		let cancelled = false;
+		fetch(`/api/v1/users/me/cli-tokens/${encodeURIComponent(auth.provider)}`)
+			.then((r) => (r.ok ? r.json() : null))
+			.then((body: { linked?: boolean; expiresAt?: string | null } | null) => {
+				if (cancelled) return;
+				cliTokenState = body?.linked === true ? 'linked' : 'missing';
+				cliTokenExpiresAt = body?.expiresAt ?? null;
+			})
+			.catch(() => {
+				if (!cancelled) cliTokenState = 'missing';
+			});
+		return () => {
+			cancelled = true;
+		};
+	});
+	function cliExpiryLabel(expiresAt: string | null): string | null {
+		if (!expiresAt) return null;
+		const days = Math.floor((new Date(expiresAt).getTime() - Date.now()) / 86_400_000);
+		if (Number.isNaN(days)) return null;
+		return days > 0 ? `expires in ${days}d` : 'expired';
+	}
+	const cliTokenBlocksSubmit = $derived(
+		selectedCliAuth !== null && cliTokenState !== 'linked'
+	);
 
 	async function load() {
 		loading = true;
@@ -155,6 +200,30 @@
 						</option>
 					{/each}
 				</select>
+				{#if selectedCliAuth}
+					<div class="mt-1.5 flex items-center gap-1.5 text-xs">
+						{#if cliTokenState === 'loading'}
+							<Loader2 class="size-3 animate-spin text-muted-foreground" />
+							<span class="text-muted-foreground">Checking CLI token…</span>
+						{:else if cliTokenState === 'linked'}
+							<Check class="size-3 text-green-600" />
+							<span class="text-green-700 dark:text-green-400">
+								CLI token linked
+								{#if cliExpiryLabel(cliTokenExpiresAt)}
+									· {cliExpiryLabel(cliTokenExpiresAt)}
+								{/if}
+							</span>
+						{:else}
+							<KeyRound class="size-3 text-amber-500" />
+							<span class="text-amber-700 dark:text-amber-400">
+								Not linked — this runtime needs your subscription token. Run
+								<code class="rounded bg-muted px-1 py-0.5">{selectedCliAuth.setupCommand}</code>
+								locally, then
+								<a href="/settings/cli-tokens" class="underline">paste it in Settings → CLI tokens</a>.
+							</span>
+						{/if}
+					</div>
+				{/if}
 			</div>
 
 			<div>
@@ -227,7 +296,13 @@
 
 	<div class="flex justify-end gap-2">
 		<Button variant="outline" onclick={() => goto(`/workspaces/${slug}/sessions`)}>Cancel</Button>
-		<Button onclick={submit} disabled={!agentId || submitting}>
+		<Button
+			onclick={submit}
+			disabled={!agentId || submitting || cliTokenBlocksSubmit}
+			title={cliTokenBlocksSubmit
+				? 'Link a CLI token under Settings → CLI tokens first'
+				: undefined}
+		>
 			<PlayCircle class="size-4" />
 			{submitting ? 'Starting…' : 'Start session'}
 		</Button>

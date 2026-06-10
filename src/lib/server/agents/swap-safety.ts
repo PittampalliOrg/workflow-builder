@@ -23,7 +23,14 @@ import type { RuntimeDescriptor } from "./runtime-registry";
 export type SwapSeverity = "reject" | "warn";
 
 export type SwapDrop = {
-	capability: "mcp" | "provider" | "hooks" | "plugins" | "permissionGating" | "durability";
+	capability:
+		| "mcp"
+		| "provider"
+		| "hooks"
+		| "plugins"
+		| "permissionGating"
+		| "durability"
+		| "interactionModel";
 	severity: SwapSeverity;
 	detail: string;
 };
@@ -85,10 +92,26 @@ export function rejectLossySwapEnabled(): boolean {
 export function assertSwapSafe(
 	requirements: AgentRequirements,
 	target: RuntimeDescriptor,
-	opts?: { rejectEnabled?: boolean }
+	opts?: { rejectEnabled?: boolean; sourceFamily?: RuntimeDescriptor["family"] | null }
 ): SwapVerdict {
 	const caps = target.capabilities;
 	const drops: SwapDrop[] = [];
+
+	// Interaction-model crossings involving an interactive TUI runtime are
+	// reject-class: a chat-driven agent run on a TUI runtime (or vice-versa)
+	// changes WHO drives the loop, not just which features degrade.
+	const sourceFamily = opts?.sourceFamily ?? null;
+	if (
+		sourceFamily &&
+		sourceFamily !== target.family &&
+		(sourceFamily === "interactive-cli" || target.family === "interactive-cli")
+	) {
+		drops.push({
+			capability: "interactionModel",
+			severity: "reject",
+			detail: `swapping between "${sourceFamily}" and "${target.family}" (runtime "${target.id}") changes the interaction model (interactive TUI vs message-driven)`
+		});
+	}
 
 	if (requirements.mcp && !caps.supportsMcp) {
 		drops.push({
@@ -125,11 +148,11 @@ export function assertSwapSafe(
 			detail: `agent uses a non-bypass permission mode but runtime "${target.id}" does not enforce permission gating`
 		});
 	}
-	if (requirements.durability === "per-activity" && caps.durabilityGranularity === "per-turn") {
+	if (requirements.durability === "per-activity" && caps.durabilityGranularity !== "per-activity") {
 		drops.push({
 			capability: "durability",
 			severity: "warn",
-			detail: `agent requires per-activity durability but runtime "${target.id}" is per-turn (coarser crash recovery)`
+			detail: `agent requires per-activity durability but runtime "${target.id}" is ${caps.durabilityGranularity} (coarser crash recovery)`
 		});
 	}
 
@@ -148,7 +171,7 @@ export function assertSwapSafe(
 export function evaluateSwap(
 	agentConfig: Record<string, unknown> | null | undefined,
 	target: RuntimeDescriptor,
-	opts?: { rejectEnabled?: boolean }
+	opts?: { rejectEnabled?: boolean; sourceFamily?: RuntimeDescriptor["family"] | null }
 ): SwapVerdict {
 	return assertSwapSafe(deriveAgentRequirements(agentConfig), target, opts);
 }

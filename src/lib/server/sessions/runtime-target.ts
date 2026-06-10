@@ -51,6 +51,9 @@ export async function resolveSessionRuntimeTarget(
 
 export type SessionRuntimeDebugTarget = SessionRuntimeTarget & {
 	agentSlug: string | null;
+	/** The agent's configured runtime id (`agents.runtime`), used to look up
+	 * the registry descriptor (e.g. for the interactive-terminal gate). */
+	agentRuntime: string | null;
 };
 
 export async function resolveSessionRuntimeDebugTarget(
@@ -65,6 +68,7 @@ export async function resolveSessionRuntimeDebugTarget(
 			runtimeAppId: sessions.runtimeAppId,
 			runtimeSandboxName: sessions.runtimeSandboxName,
 			agentSlug: agents.slug,
+			agentRuntime: agents.runtime,
 			agentRuntimeAppId: agents.runtimeAppId,
 		})
 		.from(sessions)
@@ -84,6 +88,7 @@ export async function resolveSessionRuntimeDebugTarget(
 			source: row.runtimeAppId?.trim() ? "persisted" : "agent",
 		}),
 		agentSlug: row.agentSlug,
+		agentRuntime: row.agentRuntime ?? null,
 	};
 }
 

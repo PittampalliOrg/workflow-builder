@@ -85,6 +85,19 @@ EXPECTED: dict[str, dict[str, object]] = {
         "supportsMcp": True,
         "capabilitiesVerified": False,
     },
+    "claude-code-cli": {
+        # interactive-cli: the real Claude Code TUI in a herdr pane; the
+        # workflow wraps the session LIFECYCLE (per-session durability) and
+        # durable/run dispatch is rejected for this family.
+        "family": "interactive-cli",
+        "durabilityGranularity": "per-session",
+        "multiProvider": False,
+        "ownsSandbox": True,
+        "requiresWarmPool": False,
+        "requiresBrowserSidecars": False,
+        "supportsMcp": True,
+        "capabilitiesVerified": False,
+    },
 }
 
 ALL_RUNTIME_IDS = sorted(EXPECTED)

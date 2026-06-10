@@ -21,6 +21,7 @@ DEFAULT_NODE_SELECTOR = {"stacks.io/swebench-pool": "dev-benchmark"}
 DEFAULT_JOB_TTL_SECONDS = 300
 DEFAULT_AGENT_HOST_SHUTDOWN_BUFFER_SECONDS = 1800
 DEFAULT_AGENT_HOST_IMAGE = "ghcr.io/pittampalliorg/dapr-agent-py-sandbox:latest"
+DEFAULT_AGENT_HOST_CONFIG_HOME = "/root/.config"
 WORKER_ENV_PASSTHROUGH = (
     "SANDBOX_EXECUTION_CALLBACK_ATTEMPTS",
     "SANDBOX_EXECUTION_CALLBACK_BACKOFF_SECONDS",
@@ -177,6 +178,21 @@ class ExecutionClassConfig(BaseModel):
     agentHostEnv: dict[str, str] = Field(default_factory=dict)
     agentHostNonterminalTimeoutAction: str | None = None
     ttlSecondsAfterFinished: int | None = Field(default=None, ge=0, le=86400)
+    # When not None, REPLACES the hardcoded envFrom list on the agent-host
+    # container verbatim. Used by classes whose pods must not see the
+    # dapr-agent-py config/secrets (e.g. interactive-cli, where a leaked
+    # ANTHROPIC_API_KEY would silently flip billing from subscription to API).
+    agentHostEnvFrom: list[dict[str, Any]] | None = None
+    # Skip the seed-openshell-config init container AND its
+    # openshell-client-tls / openshell-client-ca volumes/mounts (for runtimes
+    # that don't use OpenShell tools).
+    omitOpenshellSeedInit: bool = False
+    # Pod-level securityContext, set verbatim when provided.
+    podSecurityContext: dict[str, Any] | None = None
+    # Non-root home for the agent-host container. When set, HOME=<home> and
+    # XDG_CONFIG_HOME=<home>/.config (and the openshell-config emptyDir mounts
+    # there). Default keeps the historical /root/.config with no HOME env.
+    agentHostUserHome: str | None = None
 
 
 class AgentWorkflowHostRequest(BaseModel):
@@ -191,6 +207,11 @@ class AgentWorkflowHostRequest(BaseModel):
     # Maps to kueue.x-k8s.io/priority-class on the pod template. Recognized
     # values: interactive-agent (1000), swebench-cohort (100), background-warm (10).
     priorityClass: str | None = None
+    # Per-session credential env (e.g. CLAUDE_CODE_OAUTH_TOKEN). Delivered to
+    # the agent-host container via an Opaque Secret named
+    # agent-host-cred-<agent-app-id> + valueFrom.secretKeyRef — the plaintext
+    # values never appear in the Sandbox CR, logs, traces, or API responses.
+    sessionSecretEnv: dict[str, str] | None = None
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:
@@ -622,6 +643,142 @@ def _agent_host_sandbox_name(agent_app_id: str) -> str:
     return _safe_resource_name(f"agent-host-{agent_app_id}", max_length=63)
 
 
+def _agent_host_cred_secret_name(agent_app_id: str) -> str:
+    return _safe_resource_name(f"agent-host-cred-{agent_app_id}", max_length=63)
+
+
+def _redacted_host_request_dump(request: AgentWorkflowHostRequest) -> dict[str, Any]:
+    """model_dump with sessionSecretEnv values masked for tracing/logging."""
+    dump = request.model_dump()
+    if dump.get("sessionSecretEnv"):
+        dump["sessionSecretEnv"] = {key: "***" for key in dump["sessionSecretEnv"]}
+    return dump
+
+
+def _ensure_agent_host_cred_secret(
+    core: Any,
+    request: AgentWorkflowHostRequest,
+    *,
+    namespace: str,
+) -> str | None:
+    """Create (or refresh) the per-session credential Secret.
+
+    Called BEFORE the Sandbox CR is created so the pod never races a missing
+    secretKeyRef. On conflict the existing Secret's data is patched and any
+    stale ownerReferences are cleared (a lingering ref to a deleted Sandbox
+    uid would let the GC race-delete the Secret before the new owner is
+    bound).
+    """
+    if not request.sessionSecretEnv:
+        return None
+    secret_name = _agent_host_cred_secret_name(request.agentAppId)
+    labels = {
+        "app": "agent-workflow-host",
+        "agent-app-id": _safe_name(request.agentAppId, max_length=63),
+        "workflow-builder.cnoe.io/session-id": _safe_name(
+            request.sessionId, max_length=63
+        ),
+        "sandbox-execution-class": _safe_name(request.executionClass),
+    }
+    string_data = {
+        key: value for key, value in request.sessionSecretEnv.items() if key
+    }
+    body = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "type": "Opaque",
+        "metadata": {
+            "name": secret_name,
+            "namespace": namespace,
+            "labels": labels,
+        },
+        "stringData": string_data,
+    }
+    try:
+        core.create_namespaced_secret(namespace=namespace, body=body)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+        core.patch_namespaced_secret(
+            name=secret_name,
+            namespace=namespace,
+            body={
+                "metadata": {"labels": labels, "ownerReferences": None},
+                "stringData": string_data,
+            },
+        )
+    return secret_name
+
+
+def _bind_agent_host_cred_secret_owner(
+    core: Any,
+    custom: Any,
+    *,
+    namespace: str,
+    secret_name: str,
+    sandbox_name: str,
+    sandbox: dict[str, Any] | None,
+) -> None:
+    """Point the credential Secret's ownerReferences at the Sandbox CR.
+
+    The Secret is then garbage-collected with the sandbox. `sandbox` is the
+    create response when available; on the adopt-existing-CR path it is None
+    and the CR is fetched for its uid. Best-effort: a failed bind leaves an
+    unowned Secret that the next session for the same app-id overwrites.
+    """
+    uid = None
+    if isinstance(sandbox, dict):
+        uid = ((sandbox.get("metadata") or {}) or {}).get("uid")
+    if not uid:
+        try:
+            existing = custom.get_namespaced_custom_object(
+                group="agents.x-k8s.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="sandboxes",
+                name=sandbox_name,
+            )
+            uid = ((existing or {}).get("metadata", {}) or {}).get("uid")
+        except Exception as exc:
+            logger.warning(
+                "agent-host cred secret %s: sandbox %s read for ownerRef failed: %s",
+                secret_name,
+                sandbox_name,
+                exc,
+            )
+    if not uid:
+        logger.warning(
+            "agent-host cred secret %s: no sandbox uid for %s; secret left unowned",
+            secret_name,
+            sandbox_name,
+        )
+        return
+    owner_patch = {
+        "metadata": {
+            "ownerReferences": [
+                {
+                    "apiVersion": "agents.x-k8s.io/v1alpha1",
+                    "kind": "Sandbox",
+                    "name": sandbox_name,
+                    "uid": uid,
+                    "controller": False,
+                    "blockOwnerDeletion": False,
+                }
+            ]
+        }
+    }
+    try:
+        core.patch_namespaced_secret(
+            name=secret_name,
+            namespace=namespace,
+            body=owner_patch,
+        )
+    except Exception as exc:
+        logger.warning(
+            "agent-host cred secret %s: ownerRef patch failed: %s", secret_name, exc
+        )
+
+
 TRACEPARENT_ANNOTATION = "workflow-builder.cnoe.io/traceparent"
 TRACESTATE_ANNOTATION = "workflow-builder.cnoe.io/tracestate"
 BAGGAGE_ANNOTATION = "workflow-builder.cnoe.io/baggage"
@@ -722,22 +879,31 @@ def build_agent_workflow_host_sandbox_manifest(
         for key, value in sorted(class_config.agentHostEnv.items())
         if key and value is not None
     ]
-    env_from = [
-        {"configMapRef": {"name": "dapr-agent-py-config", "optional": True}},
-    ]
-    if "adk-agent-py" in image:
-        env_from.append(
-            {"configMapRef": {"name": "adk-agent-py-config", "optional": True}}
-        )
-    if "claude-agent-py" in image:
-        env_from.append(
-            {"configMapRef": {"name": "claude-agent-py-config", "optional": True}}
-        )
-    env_from.extend(
-        [
-            {"secretRef": {"name": "dapr-agent-py-secrets", "optional": True}},
-            {"secretRef": {"name": "workflow-checkpoint-gitea", "optional": True}},
+    if class_config.agentHostEnvFrom is not None:
+        # Class-declared envFrom REPLACES the default list verbatim (e.g.
+        # interactive-cli must not see dapr-agent-py-secrets).
+        env_from = [dict(entry) for entry in class_config.agentHostEnvFrom]
+    else:
+        env_from = [
+            {"configMapRef": {"name": "dapr-agent-py-config", "optional": True}},
         ]
+        if "adk-agent-py" in image:
+            env_from.append(
+                {"configMapRef": {"name": "adk-agent-py-config", "optional": True}}
+            )
+        if "claude-agent-py" in image:
+            env_from.append(
+                {"configMapRef": {"name": "claude-agent-py-config", "optional": True}}
+            )
+        env_from.extend(
+            [
+                {"secretRef": {"name": "dapr-agent-py-secrets", "optional": True}},
+                {"secretRef": {"name": "workflow-checkpoint-gitea", "optional": True}},
+            ]
+        )
+    user_home = (class_config.agentHostUserHome or "").rstrip("/") or None
+    config_home = (
+        f"{user_home}/.config" if user_home else DEFAULT_AGENT_HOST_CONFIG_HOME
     )
     pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
@@ -767,7 +933,7 @@ def build_agent_workflow_host_sandbox_manifest(
                 "env": [
                     {"name": "AGENT_SERVICE_NAME", "value": request.agentAppId},
                     {"name": "AGENT_SLUG", "value": request.agentAppId},
-                    {"name": "XDG_CONFIG_HOME", "value": "/root/.config"},
+                    {"name": "XDG_CONFIG_HOME", "value": config_home},
                     {
                         "name": "DAPR_LLM_COMPONENT_DEFAULT",
                         "value": "llm-anthropic-opus",
@@ -952,7 +1118,7 @@ def build_agent_workflow_host_sandbox_manifest(
                     "periodSeconds": 10,
                 },
                 "volumeMounts": [
-                    {"name": "openshell-config", "mountPath": "/root/.config"},
+                    {"name": "openshell-config", "mountPath": config_home},
                     {"name": "sandbox", "mountPath": "/sandbox"},
                 ],
             }
@@ -970,6 +1136,28 @@ def build_agent_workflow_host_sandbox_manifest(
             },
         ],
     }
+    if user_home:
+        # Insert HOME right after XDG_CONFIG_HOME so the agent process resolves
+        # its config under the non-root home.
+        env_list = pod_spec["containers"][0]["env"]
+        xdg_index = next(
+            (
+                index
+                for index, entry in enumerate(env_list)
+                if entry.get("name") == "XDG_CONFIG_HOME"
+            ),
+            len(env_list) - 1,
+        )
+        env_list.insert(xdg_index + 1, {"name": "HOME", "value": user_home})
+    if class_config.omitOpenshellSeedInit:
+        pod_spec.pop("initContainers", None)
+        pod_spec["volumes"] = [
+            volume
+            for volume in pod_spec["volumes"]
+            if volume.get("name") not in {"openshell-client-tls", "openshell-client-ca"}
+        ]
+    if class_config.podSecurityContext is not None:
+        pod_spec["securityContext"] = dict(class_config.podSecurityContext)
     if class_config.imagePullSecrets:
         pod_spec["imagePullSecrets"] = [
             {"name": name} for name in class_config.imagePullSecrets if name
@@ -988,6 +1176,25 @@ def build_agent_workflow_host_sandbox_manifest(
             if entry.get("name") not in overridden
         ]
         pod_spec["containers"][0]["env"] = [*base_env, *class_agent_host_env]
+    if request.sessionSecretEnv:
+        # Inject per-session credentials as secretKeyRef only — the plaintext
+        # value must never be embedded in the Sandbox CR manifest.
+        secret_name = _agent_host_cred_secret_name(request.agentAppId)
+        session_secret_env = [
+            {
+                "name": key,
+                "valueFrom": {"secretKeyRef": {"name": secret_name, "key": key}},
+            }
+            for key in sorted(request.sessionSecretEnv)
+            if key
+        ]
+        secret_overridden = {entry["name"] for entry in session_secret_env}
+        base_env = [
+            entry
+            for entry in pod_spec["containers"][0]["env"]
+            if entry.get("name") not in secret_overridden
+        ]
+        pod_spec["containers"][0]["env"] = [*base_env, *session_secret_env]
     pod_labels: dict[str, str] = {
         "app": "agent-workflow-host",
         KUEUE_QUEUE_LABEL: class_config.localQueue,
@@ -1248,6 +1455,48 @@ def _sandbox_failure_reason(
     return None
 
 
+def _agent_host_provisioning_phase(
+    core: Any,
+    *,
+    namespace: str,
+    agent_app_id: str,
+) -> str:
+    """Granular provisioning phase for the readiness response.
+
+    - ``queued``: no pod yet (Kueue Workload not Admitted / sandbox controller
+      hasn't created it), or the pod exists but is unscheduled
+      (PodScheduled != True, which covers SchedulingGated).
+    - ``starting``: pod is scheduled onto a node but not Ready yet.
+    - ``ready``: pod reports the Ready condition.
+    """
+    selector = (
+        f"app=agent-workflow-host,agent-app-id="
+        f"{_safe_name(agent_app_id, max_length=63)}"
+    )
+    try:
+        pods = core.list_namespaced_pod(
+            namespace=namespace,
+            label_selector=selector,
+        ).items
+    except Exception as exc:
+        logger.warning(
+            "agent workflow host %s phase probe failed: %s", agent_app_id, exc
+        )
+        return "queued"
+    phase = "queued"
+    for pod in pods:
+        if _pod_is_ready(pod):
+            return "ready"
+        conditions = getattr(getattr(pod, "status", None), "conditions", None) or []
+        for condition in conditions:
+            if (
+                getattr(condition, "type", None) == "PodScheduled"
+                and getattr(condition, "status", None) == "True"
+            ):
+                phase = "starting"
+    return phase
+
+
 def _wait_for_agent_host_ready(
     core: Any,
     *,
@@ -1406,7 +1655,8 @@ def submit_agent_workflow_host(
     body: AgentWorkflowHostRequest,
 ) -> dict[str, Any]:
     _require_internal(request)
-    set_current_span_io("input", body.model_dump())
+    # sessionSecretEnv carries plaintext credentials — never trace/log it raw.
+    set_current_span_io("input", _redacted_host_request_dump(body))
     classes = _load_execution_classes()
     class_config = classes.get(body.executionClass)
     if class_config is None:
@@ -1435,8 +1685,14 @@ def submit_agent_workflow_host(
         _, core = _load_k8s_clients()
         custom = _load_k8s_custom_objects_client()
         _ensure_agent_host_component_scopes(namespace, body.agentAppId)
+        # Per-session credential Secret must exist BEFORE the Sandbox CR so the
+        # pod's secretKeyRef env never races CreateContainerConfigError.
+        cred_secret_name = _ensure_agent_host_cred_secret(
+            core, body, namespace=namespace
+        )
+        created_sandbox: dict[str, Any] | None = None
         try:
-            custom.create_namespaced_custom_object(
+            created_sandbox = custom.create_namespaced_custom_object(
                 group="agents.x-k8s.io",
                 version="v1alpha1",
                 namespace=namespace,
@@ -1465,13 +1721,28 @@ def submit_agent_workflow_host(
                     want_owner,
                 )
                 _delete_agent_host_cr_and_wait(custom, namespace, sandbox_name)
-                custom.create_namespaced_custom_object(
+                if cred_secret_name:
+                    # The old CR's foreground delete may have GC'd the Secret
+                    # (it was owned by that CR) — re-ensure before recreating.
+                    cred_secret_name = _ensure_agent_host_cred_secret(
+                        core, body, namespace=namespace
+                    )
+                created_sandbox = custom.create_namespaced_custom_object(
                     group="agents.x-k8s.io",
                     version="v1alpha1",
                     namespace=namespace,
                     plural="sandboxes",
                     body=manifest,
                 )
+        if cred_secret_name:
+            _bind_agent_host_cred_secret_owner(
+                core,
+                custom,
+                namespace=namespace,
+                secret_name=cred_secret_name,
+                sandbox_name=sandbox_name,
+                sandbox=created_sandbox,
+            )
         readiness_status = _wait_for_agent_host_ready(
             core,
             namespace=namespace,
@@ -1481,8 +1752,16 @@ def submit_agent_workflow_host(
                 custom, namespace=namespace, sandbox_name=sandbox_name
             ),
         )
+        provisioning_phase = (
+            "ready"
+            if readiness_status == "ready"
+            else _agent_host_provisioning_phase(
+                core, namespace=namespace, agent_app_id=body.agentAppId
+            )
+        )
     else:
         readiness_status = "queued"
+        provisioning_phase = "queued"
     response = {
         "agentAppId": body.agentAppId,
         "sessionId": body.sessionId,
@@ -1491,6 +1770,9 @@ def submit_agent_workflow_host(
         # arc 1.5 lands the shared dispatcher rename. Keep both keys until then.
         "jobName": sandbox_name,
         "status": readiness_status,
+        # Additive: distinguishes Kueue-queued/unscheduled (`queued`) from
+        # scheduled-but-booting (`starting`) and Ready (`ready`).
+        "phase": provisioning_phase,
         "executionClass": body.executionClass,
         "localQueue": class_config.localQueue,
         "runtimeClassName": class_config.runtimeClassName,

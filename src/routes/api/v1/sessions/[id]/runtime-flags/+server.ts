@@ -7,7 +7,10 @@ import {
 	getSandboxWarmPool,
 } from '$lib/server/kube/client';
 import { resolveSessionRuntimeDebugTarget } from '$lib/server/sessions/runtime-target';
-import { shellableContainers } from '$lib/server/agents/runtime-registry';
+import {
+	getRuntimeDescriptor,
+	shellableContainers,
+} from '$lib/server/agents/runtime-registry';
 
 // Shell-able containers = every registered runtime's main container + the fixed
 // browser sidecars, derived from the runtime registry (single source of truth;
@@ -86,6 +89,13 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	}
 	const shellAvailable = phase === 'Active' && shellContainers.length > 0;
 
+	// Interactive-CLI runtimes (registry family interactive-cli) render a
+	// terminal-first session page; the Terminal tab proxies straight to the
+	// pod's PTY WebSocket on port 8002.
+	const interactiveTerminal =
+		getRuntimeDescriptor(target.agentRuntime)?.capabilities
+			?.interactiveTerminal === true;
+
 	return json({
 		agentSlug: target.agentSlug,
 		runtimeAppId: target.appId,
@@ -94,6 +104,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		browserMcpAvailable,
 		shellAvailable,
 		shellContainers,
+		interactiveTerminal,
 		phase,
 	});
 };
