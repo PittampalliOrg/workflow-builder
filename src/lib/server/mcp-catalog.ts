@@ -223,6 +223,43 @@ export function appendToolsQueryParam(url: string, allowlist: string[] | null): 
  * (the project ceiling set by `appendToolsQueryParam`). Returns `null` when the
  * param is absent (= all tools — the ceiling is unbounded).
  */
+export type PieceMetadataAction = {
+	name: string;
+	displayName: string;
+	description: string | null;
+};
+
+/**
+ * Flatten the `piece_metadata.actions` JSONB into a sorted action list
+ * (the per-tool surface). Shared by the piece-detail loader and the agent
+ * Tools & Integrations endpoint so both render the same tool list.
+ */
+export function pieceActionsFromMetadata(actions: unknown): PieceMetadataAction[] {
+	if (!isRecord(actions)) return [];
+	return Object.entries(actions)
+		.map(([key, raw]) => {
+			const def = isRecord(raw) ? raw : {};
+			const displayName =
+				typeof def.displayName === 'string' && def.displayName.trim() ? def.displayName : key;
+			const description =
+				typeof def.description === 'string' && def.description.trim() ? def.description : null;
+			return { name: key, displayName, description };
+		})
+		.sort((a, b) => a.displayName.localeCompare(b.displayName));
+}
+
+/** Read-vs-write heuristic shared by the piece detail page + agent tool cards. */
+export const READ_ONLY_ACTION_PREFIXES = ['get', 'list', 'search', 'find', 'read', 'download'];
+
+export function isReadOnlyPieceAction(action: { name: string; displayName?: string }): boolean {
+	const probes = [action.name, action.displayName ?? '']
+		.map((value) => String(value || '').trim().toLowerCase())
+		.filter(Boolean);
+	return probes.some((probe) =>
+		READ_ONLY_ACTION_PREFIXES.some((prefix) => probe.startsWith(prefix))
+	);
+}
+
 export function parseToolsQueryParam(url: string | undefined | null): string[] | null {
 	if (!url) return null;
 	try {

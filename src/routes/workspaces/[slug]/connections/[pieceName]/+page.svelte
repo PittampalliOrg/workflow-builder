@@ -36,6 +36,8 @@
 		updateMcpConnection,
 		type PieceMcpConnection
 	} from '$lib/connections/piece-mcp';
+	import ToolGroupList from '$lib/components/agents/tools-integrations/ToolGroupList.svelte';
+	import { isReadOnlyPieceAction } from '$lib/server/mcp-catalog';
 	import type { PageData } from './$types';
 
 	type CatalogAppConnection = {
@@ -100,16 +102,6 @@
 	let connectionName = $state('');
 	let secretValue = $state('');
 
-	/** Tool names a read-only heuristic classifies as non-mutating. */
-	const READ_PREFIXES = ['get', 'list', 'search', 'find', 'read', 'download'];
-
-	function isReadOnlyAction(action: { name: string; displayName: string }): boolean {
-		const probes = [action.name, action.displayName].map((value) =>
-			value.toLowerCase().replace(/[_-]+/g, ' ').trim()
-		);
-		return probes.some((probe) => READ_PREFIXES.some((prefix) => probe.startsWith(prefix)));
-	}
-
 	const allToolNames = $derived(actions.map((action) => action.name));
 
 	/** null toolSelection = all tools enabled (including future ones). */
@@ -130,8 +122,10 @@
 		);
 	});
 
-	const readOnlyActions = $derived(filteredActions.filter(isReadOnlyAction));
-	const writeActions = $derived(filteredActions.filter((action) => !isReadOnlyAction(action)));
+	const readOnlyActions = $derived(filteredActions.filter(isReadOnlyPieceAction));
+	const writeActions = $derived(
+		filteredActions.filter((action) => !isReadOnlyPieceAction(action))
+	);
 
 	const mcpEnabled = $derived(mcpConn?.status === 'ENABLED');
 	const provisioning = $derived(mcpEnabled && !(availability?.registered ?? false));
@@ -358,63 +352,6 @@
 	<title>{piece.displayName} · Integrations · Workflow Builder</title>
 </svelte:head>
 
-{#snippet toolGroup(title: string, group: Array<{ name: string; displayName: string; description: string | null }>)}
-	<div class="space-y-2">
-		<div class="flex items-center justify-between gap-2">
-			<div class="flex items-center gap-2">
-				<h3 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
-				<Badge variant="outline" class="text-[10px]">
-					{group.filter((action) => enabledTools.has(action.name)).length}/{group.length}
-				</Badge>
-			</div>
-			<div class="flex items-center gap-1">
-				<Button
-					variant="ghost"
-					size="sm"
-					class="h-6 px-2 text-[11px]"
-					disabled={!mcpConn || busy === 'tools' || group.length === 0}
-					onclick={() => setGroupEnabled(group, true)}
-				>
-					Enable all
-				</Button>
-				<Button
-					variant="ghost"
-					size="sm"
-					class="h-6 px-2 text-[11px]"
-					disabled={!mcpConn || busy === 'tools' || group.length === 0}
-					onclick={() => setGroupEnabled(group, false)}
-				>
-					Disable all
-				</Button>
-			</div>
-		</div>
-		<div class="rounded-md border divide-y">
-			{#if group.length === 0}
-				<div class="p-3 text-xs text-muted-foreground">No matching tools.</div>
-			{:else}
-				{#each group as action (action.name)}
-					<div class="p-2.5 flex items-center justify-between gap-3">
-						<div class="min-w-0">
-							<div class="flex items-center gap-2">
-								<span class="text-sm font-medium truncate">{action.displayName}</span>
-								<code class="text-[10px] text-muted-foreground">{action.name}</code>
-							</div>
-							{#if action.description}
-								<p class="text-xs text-muted-foreground truncate">{action.description}</p>
-							{/if}
-						</div>
-						<Switch
-							checked={enabledTools.has(action.name)}
-							disabled={!mcpConn || busy === 'tools'}
-							onCheckedChange={(checked) => setToolEnabled(action.name, checked)}
-						/>
-					</div>
-				{/each}
-			{/if}
-		</div>
-	</div>
-{/snippet}
-
 <div class="h-full overflow-auto">
 	<div class="mx-auto max-w-5xl p-6 space-y-5">
 		<div>
@@ -498,8 +435,26 @@
 						{/if}
 					</CardHeader>
 					<CardContent class="space-y-4">
-						{@render toolGroup('Read-only', readOnlyActions)}
-						{@render toolGroup('Write', writeActions)}
+						<ToolGroupList
+							title="Read-only"
+							actions={readOnlyActions}
+							enabled={enabledTools}
+							ceiling={null}
+							busy={busy === 'tools'}
+							disabled={!mcpConn}
+							onToolToggle={setToolEnabled}
+							onGroupToggle={setGroupEnabled}
+						/>
+						<ToolGroupList
+							title="Write"
+							actions={writeActions}
+							enabled={enabledTools}
+							ceiling={null}
+							busy={busy === 'tools'}
+							disabled={!mcpConn}
+							onToolToggle={setToolEnabled}
+							onGroupToggle={setGroupEnabled}
+						/>
 					</CardContent>
 				</Card>
 

@@ -5,17 +5,15 @@ import { db } from '$lib/server/db';
 import { pieceMetadata, workflowConnectionRefs, workflows } from '$lib/server/db/schema';
 import {
 	isOAuth2AuthType,
+	pieceActionsFromMetadata,
 	pieceAuthDisplayName,
 	pieceAuthType,
-	pieceRequiresAuth
+	pieceRequiresAuth,
+	type PieceMetadataAction
 } from '$lib/server/mcp-catalog';
 import { normalizePieceName, pieceCandidates } from '$lib/server/mcp-connections';
 
-export type PieceDetailAction = {
-	name: string;
-	displayName: string;
-	description: string | null;
-};
+export type PieceDetailAction = PieceMetadataAction;
 
 export type PieceConnectionUsage = {
 	/** workflow_connection_ref rows referencing this connection (per node). */
@@ -23,24 +21,6 @@ export type PieceConnectionUsage = {
 	/** Distinct workflows referencing this connection. */
 	workflowCount: number;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function actionsFromMetadata(actions: unknown): PieceDetailAction[] {
-	if (!isRecord(actions)) return [];
-	return Object.entries(actions)
-		.map(([key, raw]) => {
-			const def = isRecord(raw) ? raw : {};
-			const displayName =
-				typeof def.displayName === 'string' && def.displayName.trim() ? def.displayName : key;
-			const description =
-				typeof def.description === 'string' && def.description.trim() ? def.description : null;
-			return { name: key, displayName, description };
-		})
-		.sort((a, b) => a.displayName.localeCompare(b.displayName));
-}
 
 export const load: PageServerLoad = async ({ params, parent }) => {
 	const { workspaceProjectId } = await parent();
@@ -121,7 +101,7 @@ export const load: PageServerLoad = async ({ params, parent }) => {
 			catalogSyncedAt: piece.catalogSyncedAt?.toISOString() ?? null,
 			metadataUpdatedAt: piece.updatedAt?.toISOString() ?? null
 		},
-		actions: actionsFromMetadata(piece.actions),
+		actions: pieceActionsFromMetadata(piece.actions),
 		usageByConnection
 	};
 };

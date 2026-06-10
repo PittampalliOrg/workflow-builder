@@ -46,7 +46,7 @@
 	import AgentOverview from '$lib/components/agents/agent-overview.svelte';
 	import AgentRuntimeCard from '$lib/components/agents/agent-runtime-card.svelte';
 	import AgentTestPane from '$lib/components/agents/agent-test-pane.svelte';
-	import AgentMcpPicker from '$lib/components/agents/agent-mcp-picker.svelte';
+	import AgentToolsIntegrations from '$lib/components/agents/tools-integrations/AgentToolsIntegrations.svelte';
 	import AgentSkillsPicker from '$lib/components/agents/agent-skills-picker.svelte';
 	import AgentHooksEditor from '$lib/components/agents/agent-hooks-editor.svelte';
 	import AgentVaultsPicker from '$lib/components/agents/agent-vaults-picker.svelte';
@@ -791,10 +791,10 @@
 							<CollapsibleTrigger
 								class="flex items-center gap-2 w-full text-left font-semibold text-sm py-2"
 							>
-								<ChevronRight class="size-4" /> MCP servers ({config.mcpServers.length})
+								<ChevronRight class="size-4" /> Tools &amp; Integrations ({config.mcpServers.length})
 							</CollapsibleTrigger>
 							<CollapsibleContent class="pl-6">
-								<AgentMcpPicker
+								<AgentToolsIntegrations
 									value={config.mcpServers}
 									connectionMode={config.mcpConnectionMode}
 									vaultIds={agent.defaultVaultIds}
