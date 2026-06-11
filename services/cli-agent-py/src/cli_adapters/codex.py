@@ -173,6 +173,28 @@ def _otel_table(base_env: Mapping[str, str]) -> str | None:
     )
 
 
+def _sandbox_cwd(base_env: Mapping[str, str]) -> str:
+    """The directory codex is launched in (build_argv's --cd)."""
+    return clean_string(base_env.get("AGENT_LOCAL_SANDBOX_ROOT")) or "/sandbox"
+
+
+def _trusted_project_table(base_env: Mapping[str, str]) -> str:
+    """Pre-trust the sandbox cwd. codex 0.139.0 shows a BLOCKING onboarding
+    prompt ("Do you trust the contents of this directory?") for any cwd that
+    isn't already trusted; the readiness-gated seed REFUSES to type into that
+    blocked dialog, so the session start-stalls and terminates before codex ever
+    reaches its composer. Marking the cwd `trusted` in config.toml (the same
+    record the TUI writes when you pick "Yes, continue") makes codex boot
+    straight to the prompt. The pod is the real isolation boundary, so trusting
+    the sandbox dir is safe."""
+    return "\n".join(
+        [
+            f"[projects.{_toml_str(_sandbox_cwd(base_env))}]",
+            'trust_level = "trusted"',
+        ]
+    )
+
+
 def _render_config_toml(agent_config: Mapping[str, Any], base_env: Mapping[str, str]) -> str:
     blocks: list[str] = [
         "# Generated per-session by cli-agent-py CodexAdapter — do not edit.",
@@ -182,6 +204,7 @@ def _render_config_toml(agent_config: Mapping[str, Any], base_env: Mapping[str, 
     otel = _otel_table(base_env)
     if otel:
         blocks.append(otel)
+    blocks.append(_trusted_project_table(base_env))
     blocks.extend(_mcp_tables(agent_config))
     return "\n\n".join(blocks) + "\n"
 
