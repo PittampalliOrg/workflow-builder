@@ -58,6 +58,35 @@ def _session_id(input_data: Mapping[str, Any]) -> str | None:
     return _clean_string(input_data.get("sessionId"))
 
 
+def _extract_seed_user_message(input_data: Mapping[str, Any]) -> str | None:
+    """The kickoff prompt — the first ``user.message`` the BFF stamps into
+    ``childInput.initialEvents`` at session create (mirrors claude-agent-py).
+    Falls back to the ``x-workflow-builder.input`` block for canvas-launched
+    runs. Returned to start_cli, which arms the readiness-gated injection."""
+    initial_events = input_data.get("initialEvents")
+    if isinstance(initial_events, list):
+        for event in initial_events:
+            if not isinstance(event, Mapping) or event.get("type") != "user.message":
+                continue
+            content = event.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+            if isinstance(content, list):
+                parts: list[str] = []
+                for item in content:
+                    if isinstance(item, str) and item.strip():
+                        parts.append(item.strip())
+                    elif isinstance(item, Mapping):
+                        text = item.get("text")
+                        if isinstance(text, str) and text.strip():
+                            parts.append(text.strip())
+                if parts:
+                    return "\n".join(parts)
+    with_block = _record(input_data.get("with"))
+    wb = _record(with_block.get("x-workflow-builder"))
+    return _clean_string(wb.get("input"))
+
+
 def _event_batch(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, Mapping):
         events = payload.get("events")
@@ -121,6 +150,9 @@ def session_workflow(
                 "instanceId": ctx.instance_id,
                 "agentConfig": _record(input_data.get("agentConfig")),
                 "seed": _record(seed_result),
+                # Kickoff prompt: start_cli arms a readiness-gated injection so
+                # it is typed into the TUI only once it has booted to its prompt.
+                "seedUserMessage": _extract_seed_user_message(input_data),
                 "workspaceRef": input_data.get("workspaceRef"),
                 "sandboxName": input_data.get("sandboxName"),
             },
