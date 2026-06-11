@@ -184,6 +184,24 @@ def _extract_user_message_text(payload: Any) -> str | None:
     return None
 
 
+def _extract_injectable_messages(event_name: str, payload: Any) -> list[str]:
+    """Pull user-message text(s) to type into the TUI from either shape:
+    a direct `user.message` payload, or the BFF's `session.user_events`
+    `{events: [{type: 'user.message', content}, ...]}` batch."""
+    if event_name == "session.user_events" and isinstance(payload, Mapping):
+        events = payload.get("events")
+        texts: list[str] = []
+        if isinstance(events, list):
+            for event in events:
+                if isinstance(event, Mapping) and event.get("type") == "user.message":
+                    text = _extract_user_message_text(event)
+                    if text:
+                        texts.append(text)
+        return texts
+    text = _extract_user_message_text(payload)
+    return [text] if text else []
+
+
 @app.post("/internal/sessions/raise-event")
 async def raise_session_event_endpoint(request: dict[str, Any]) -> dict[str, Any]:
     instance_id = str(request.get("instanceId") or "").strip()
@@ -192,20 +210,28 @@ async def raise_session_event_endpoint(request: dict[str, Any]) -> dict[str, Any
     if not instance_id or not event_name:
         raise HTTPException(status_code=400, detail="instanceId + eventName required")
 
-    # user.message does NOT enter the workflow on this runtime — it is typed
-    # into the TUI (goal-loop continuations + future chat bridge). The
+    # User messages do NOT enter the workflow on this runtime — they are typed
+    # into the TUI (goal-loop continuations + chat bridge), readiness-gated so
+    # they land at the prompt rather than into a booting/working screen. The
     # INJECTION_MARKER prefix lets the UserPromptSubmit hook skip re-publishing.
-    if event_name == "user.message":
-        text = _extract_user_message_text(payload)
-        if not text:
-            raise HTTPException(status_code=400, detail="user.message requires content")
+    #
+    # The BFF's raiseSessionUserEvents sends the canonical `session.user_events`
+    # name with a `{events: [...]}` batch; a literal `user.message` is also
+    # accepted for direct callers.
+    if event_name in ("user.message", "session.user_events"):
+        texts = _extract_injectable_messages(event_name, payload)
+        if not texts:
+            raise HTTPException(status_code=400, detail="no user.message content to inject")
         supervisor = get_supervisor()
         if supervisor is None:
             raise HTTPException(status_code=503, detail="supervisor not started")
-        injected = await supervisor.inject_user_text(text, marker=INJECTION_MARKER)
-        if not injected:
+        injected_any = False
+        for text in texts:
+            if await supervisor.inject_user_text(text, marker=INJECTION_MARKER):
+                injected_any = True
+        if not injected_any:
             raise HTTPException(status_code=409, detail="no active CLI pane to inject into")
-        return {"ok": True, "injected": True}
+        return {"ok": True, "injected": injected_any, "count": len(texts)}
 
     # Terminal control events: persist the cooperative-cancel flag (claude-
     # agent-py cancellation parity) so the workflow halts on its probe path

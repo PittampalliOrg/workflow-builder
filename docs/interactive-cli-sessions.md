@@ -122,6 +122,33 @@ tabs give plain bash in the same pod. The kube-exec `/shell` route remains as
 break-glass. Chat composer is hidden (type in the TUI); `raise-event`
 `user.message` still injects text into the pane (goal-loop continuations).
 
+## Kickoff + TUI text injection (readiness-gated)
+
+The kickoff prompt (`initialMessage`) is stamped into `childInput.initialEvents`
+by the BFF; `session_workflow` extracts the first `user.message`
+(`_extract_seed_user_message`) and passes it to `start_cli`, which **arms** a
+readiness-gated injection (`SessionSupervisor.arm_seed`, scheduled onto the app
+loop from the activity worker thread). The supervisor types it into the TUI
+only once herdr reports the agent **`idle`** (the pane has booted to its
+prompt) — injecting during boot loses the keystrokes (the live failure that
+motivated the gate). Invariants enforced by the supervisor:
+- **idle = ready**, polled authoritatively via `agent.get` (committed
+  event-stream state is a fallback only when herdr is unreachable — closes the
+  ≈2s-debounce race where a just-sent message left a stale `idle`).
+- **never type into a `blocked` dialog** — on gate timeout the send is best-
+  effort ONLY when the TUI is not at a permission/auth prompt (Enter there
+  would mis-answer it).
+- **kickoff lands first** — mid-session injections (`session.user_events`
+  batches from `raiseSessionUserEvents`, goal-loop continuations) await seed
+  completion before sending.
+- **serialized pane writes** — one `asyncio.Lock` across each `send_text`+Enter
+  pair so concurrent senders never interleave keystrokes; the seed is
+  exactly-once.
+The raise-event handler accepts both `user.message` and the BFF's canonical
+`session.user_events` `{events:[…]}` batch name. The injection marker is a
+zero-width prefix the UserPromptSubmit hook strips, so the kickoff isn't
+re-published (the BFF already recorded it in `session_events`).
+
 ## Lifecycle
 
 `session_workflow` (lifecycle shape): `seed_session` (MCP `.mcp.json` from

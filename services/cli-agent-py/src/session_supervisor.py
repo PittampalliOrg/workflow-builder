@@ -65,6 +65,16 @@ CLI_IDLE_TTL_SECONDS = _env_float("CLI_IDLE_TTL_SECONDS", 3600.0)
 CLI_STATE_DEBOUNCE_SECONDS = _env_float("CLI_STATE_DEBOUNCE_SECONDS", 2.0)
 CLI_IDLE_REAP_POLL_SECONDS = _env_float("CLI_IDLE_REAP_POLL_SECONDS", 30.0)
 CLI_GRACEFUL_EXIT_WAIT_SECONDS = _env_float("CLI_GRACEFUL_EXIT_WAIT_SECONDS", 30.0)
+# Readiness gate for typing into the TUI. The pane must be registered AND the
+# Claude Code TUI must have finished booting to its prompt (herdr reports the
+# agent `idle`) before keystrokes land — injecting during boot loses them.
+# The seed (kickoff) waits longer because it fires right after pane launch;
+# mid-session injections (goal-loop continuations, chat) ride a shorter gate
+# since the TUI is already at its prompt. Both fall back to a best-effort send
+# on timeout rather than dropping the message.
+CLI_SEED_READY_TIMEOUT = _env_float("CLI_SEED_READY_TIMEOUT_SECONDS", 60.0)
+CLI_INJECT_READY_TIMEOUT = _env_float("CLI_INJECT_READY_TIMEOUT_SECONDS", 20.0)
+CLI_READY_POLL_SECONDS = _env_float("CLI_READY_POLL_SECONDS", 0.5)
 HERDR_SERVER_ARGV = ["herdr", "server"]
 
 
@@ -99,6 +109,9 @@ class SessionSupervisor:
         self._proc: asyncio.subprocess.Process | None = None
         self._tasks: list[asyncio.Task] = []
         self._stopping = False
+        # The FastAPI app loop, captured in start(); seed injection is scheduled
+        # onto it from the start_cli activity's throwaway worker-thread loop.
+        self._loop: asyncio.AbstractEventLoop | None = None
 
         # Single-session registry (one CLI session per sandbox pod).
         self._session_id: str | None = None
@@ -113,6 +126,20 @@ class SessionSupervisor:
         self._debounce_task: asyncio.Task | None = None
         self._exit_raised = False
 
+        # Kickoff (seed) injection — armed once by start_cli, injected once the
+        # readiness gate clears. `_seed_pending` is set synchronously by
+        # arm_seed (worker thread); `_seed_injected` is the exactly-once claim
+        # (set in _inject_seed's prologue); `_seed_complete` is set AFTER the
+        # send so mid-session injections can order themselves after the kickoff.
+        self._seed_task: Any = None  # concurrent.futures.Future
+        self._seed_pending = False
+        self._seed_injected = False
+        self._seed_complete = False
+        # Serializes every write to the TUI pane (send_text + Enter pair) so the
+        # seed and any concurrent injection never interleave their keystrokes.
+        # Created lazily on the app loop (Lock binds to the running loop).
+        self._pane_write_lock: asyncio.Lock | None = None
+
         # Terminal-attachment tracking (idle-reap "no clients" signal).
         # herdr does not document a queryable client count, so we track our own
         # WS attach/detach + last-activity timestamps in-process.
@@ -126,6 +153,9 @@ class SessionSupervisor:
         return self._disabled
 
     async def start(self) -> None:
+        # Capture the app loop unconditionally so arm_seed works even with herdr
+        # disabled in tests (it short-circuits there).
+        self._loop = asyncio.get_running_loop()
         if self._disabled:
             logger.info("[supervisor] HERDR_DISABLE set — skipping herdr server")
             return
@@ -139,6 +169,12 @@ class SessionSupervisor:
         for task in self._tasks:
             task.cancel()
         self._tasks = []
+        if self._seed_task is not None:
+            try:
+                self._seed_task.cancel()
+            except Exception:  # noqa: BLE001
+                pass
+            self._seed_task = None
         if self._proc is not None and self._proc.returncode is None:
             try:
                 self._proc.terminate()
@@ -451,25 +487,161 @@ class SessionSupervisor:
                     break
         self._raise_cli_exited(exit_code=None, reason=reason)
 
-    # -- TUI text injection (raise-event user.message path) ----------------------
+    # -- readiness gate ----------------------------------------------------------
 
-    async def inject_user_text(self, text: str, *, marker: str = "") -> bool:
-        """Type ``text`` into the claude pane + press Enter. Used by the
-        raise-event endpoint for user.message (goal-loop continuations / chat
-        bridge) — these do NOT enter the workflow."""
+    async def wait_until_ready(self, timeout: float) -> bool:
+        """Block until the TUI is ready to accept typed input: the pane is
+        registered AND Claude Code has booted to its prompt (herdr reports the
+        agent ``idle``). Returns True when ready, False on timeout. Injecting
+        before this gate clears loses the keystrokes into the boot screen.
+
+        The live ``agent.get`` poll is AUTHORITATIVE; the (≈2s-debounced)
+        committed state is only a fallback for when herdr is unreachable. This
+        ordering closes the window where a just-sent message left the agent
+        ``working`` but the committed state still reads a stale ``idle``."""
         if self._disabled:
-            return False
+            return True
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() < deadline:
+            pane = self._pane_ref
+            if pane:
+                try:
+                    info = await self._client.agent_get(pane)
+                    if agent_status_of(info) == AGENT_STATUS_IDLE:
+                        return True
+                except Exception:  # noqa: BLE001
+                    # herdr unreachable / pane not registered yet — fall back to
+                    # the event-stream's committed state.
+                    if self._committed_state == AGENT_STATUS_IDLE:
+                        return True
+            await asyncio.sleep(CLI_READY_POLL_SECONDS)
+        return False
+
+    async def _is_blocked_now(self) -> bool:
+        """True when the TUI is sitting at a permission/auth dialog — NEVER type
+        into it (Enter would mis-answer the prompt)."""
+        if self._committed_state == AGENT_STATUS_BLOCKED:
+            return True
+        pane = self._pane_ref
+        if pane:
+            try:
+                info = await self._client.agent_get(pane)
+                return agent_status_of(info) == AGENT_STATUS_BLOCKED
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+
+    async def _send_to_pane(self, text: str, marker: str) -> bool:
         pane = self._pane_ref
         if not pane:
-            logger.warning("[supervisor] inject_user_text: no registered pane")
+            logger.warning("[supervisor] no registered pane to inject into")
             return False
+        if self._pane_write_lock is None:
+            self._pane_write_lock = asyncio.Lock()
+        # Hold the lock across the text+Enter pair so two senders (seed vs a
+        # concurrent injection) never interleave keystrokes on the pane.
+        async with self._pane_write_lock:
+            try:
+                await self._client.pane_send_text(pane, f"{marker}{text}")
+                await self._client.pane_submit_enter(pane)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[supervisor] pane inject failed: %s", exc)
+                return False
+
+    async def _gated_send(self, text: str, marker: str, timeout: float, *, what: str) -> bool:
+        """Wait for the TUI to be ready, then send — but REFUSE to type into a
+        blocked (permission/auth) dialog even on gate timeout."""
+        ready = await self.wait_until_ready(timeout)
+        if not ready and await self._is_blocked_now():
+            logger.warning(
+                "[supervisor] %s refused — TUI is blocked (permission/auth "
+                "dialog); not typing into it",
+                what,
+            )
+            return False
+        if not ready:
+            logger.warning(
+                "[supervisor] %s readiness gate timed out after %.0fs — "
+                "injecting best-effort (TUI not blocked)",
+                what,
+                timeout,
+            )
+        return await self._send_to_pane(text, marker)
+
+    # -- kickoff (seed) injection ------------------------------------------------
+
+    def arm_seed(self, text: str, *, marker: str = "") -> None:
+        """Schedule the kickoff message to be typed into the TUI once the
+        readiness gate clears. Called from the start_cli activity's worker
+        thread, so the coroutine is handed to the captured app loop. One-shot:
+        re-arming (e.g. activity retry) is ignored, including while the first
+        injection is still in flight."""
+        clean = (text or "").strip()
+        if not clean or self._seed_injected:
+            return
+        if self._seed_task is not None and not self._seed_task.done():
+            return  # an injection coroutine is already scheduled/running
+        loop = self._loop
+        if loop is None:
+            logger.warning("[supervisor] arm_seed before start(); seed dropped")
+            return
+        self._seed_pending = True  # gate mid-session injections behind the seed
         try:
-            await self._client.pane_send_text(pane, f"{marker}{text}")
-            await self._client.pane_submit_enter(pane)
-            return True
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[supervisor] inject_user_text failed: %s", exc)
+            self._seed_task = asyncio.run_coroutine_threadsafe(
+                self._inject_seed(clean, marker), loop
+            )  # concurrent.futures.Future; fire-and-forget
+        except RuntimeError as exc:  # loop closed during shutdown
+            logger.debug("[supervisor] arm_seed could not schedule: %s", exc)
+            self._seed_complete = True  # don't strand injections waiting on it
+
+    async def _inject_seed(self, text: str, marker: str) -> None:
+        if self._seed_injected:
+            return
+        self._seed_injected = True  # claim before awaiting — exactly-once
+        try:
+            injected = await self._gated_send(
+                text, marker, CLI_SEED_READY_TIMEOUT, what="kickoff"
+            )
+            logger.info("[supervisor] kickoff injected=%s", injected)
+        finally:
+            # Unblock any mid-session injection waiting for the kickoff to land,
+            # whether it succeeded, was refused, or errored.
+            self._seed_complete = True
+
+    async def _await_seed_first(self) -> None:
+        """Block a mid-session injection until the kickoff has been typed (or
+        the seed gave up), so the agent never processes a continuation before
+        its kickoff. Bounded so a stuck seed can't wedge injections forever."""
+        if not self._seed_pending or self._seed_complete:
+            return
+        deadline = time.monotonic() + CLI_SEED_READY_TIMEOUT + 5.0
+        while not self._seed_complete and time.monotonic() < deadline:
+            await asyncio.sleep(CLI_READY_POLL_SECONDS)
+
+    # -- TUI text injection (raise-event user.message path) ----------------------
+
+    async def inject_user_text(
+        self, text: str, *, marker: str = "", await_ready: bool = True
+    ) -> bool:
+        """Type ``text`` into the claude pane + press Enter. Used by the
+        raise-event endpoint for user.message (goal-loop continuations / chat
+        bridge) — these do NOT enter the workflow.
+
+        Ordering + safety: waits for the kickoff to land first (so the agent
+        never processes a continuation before its seed), then gates on the TUI
+        being at its prompt, and REFUSES to type into a blocked dialog. With
+        ``await_ready`` False it still serializes behind the seed + pane-write
+        lock but skips the readiness wait (callers that already know it is
+        safe)."""
+        if self._disabled:
             return False
+        await self._await_seed_first()
+        if not await_ready:
+            return await self._send_to_pane(text, marker)
+        return await self._gated_send(
+            text, marker, CLI_INJECT_READY_TIMEOUT, what="injection"
+        )
 
 
 def pick_exit_code(event: Mapping[str, Any]) -> int | None:

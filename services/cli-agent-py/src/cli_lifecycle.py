@@ -38,6 +38,10 @@ def _record(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _clean(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 def _sandbox_root() -> str:
     return os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
 
@@ -104,6 +108,14 @@ async def _start_cli(input_data: dict[str, Any]) -> dict[str, Any]:
             supervisor.register_session(
                 session_id=session_id, instance_id=instance_id, pane_ref=pane_ref
             )
+            # Kickoff: type the seed prompt into the TUI once it reaches its
+            # prompt (readiness-gated, scheduled onto the app loop — this
+            # activity runs on a throwaway worker-thread loop).
+            seed_text = _clean(input_data.get("seedUserMessage"))
+            if seed_text:
+                from src.hooks_api import INJECTION_MARKER
+
+                supervisor.arm_seed(seed_text, marker=INJECTION_MARKER)
         return {"paneRef": pane_ref, "argv": argv, "agentDetected": agent_detected}
     finally:
         await client.close()

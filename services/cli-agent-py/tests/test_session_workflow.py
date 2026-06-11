@@ -247,3 +247,46 @@ def test_carried_input_skips_seed_and_start(monkeypatch):
         driver.gen.send({"ok": True})
     assert stop.value.value["turnCount"] == 5
     assert stop.value.value["output"] == "carried answer"
+
+
+def test_seed_user_message_extracted_from_initial_events():
+    """The kickoff prompt rides childInput.initialEvents (block-array content)
+    and must be passed to start_cli_activity as seedUserMessage."""
+    seed = sw._extract_seed_user_message(
+        {
+            "initialEvents": [
+                {"type": "session.status_starting", "content": "ignore"},
+                {
+                    "type": "user.message",
+                    "content": [{"type": "text", "text": "do the thing"}],
+                },
+            ]
+        }
+    )
+    assert seed == "do the thing"
+
+
+def test_seed_user_message_falls_back_to_workflow_builder_input():
+    seed = sw._extract_seed_user_message(
+        {"with": {"x-workflow-builder": {"input": "canvas prompt"}}}
+    )
+    assert seed == "canvas prompt"
+
+
+def test_start_cli_activity_receives_seed_user_message(monkeypatch):
+    ctx = FakeCtx()
+    driver = WorkflowDriver(
+        ctx,
+        {
+            **BASE_INPUT,
+            "initialEvents": [
+                {"type": "user.message", "content": [{"type": "text", "text": "kick"}]}
+            ],
+        },
+        monkeypatch,
+    )
+    _start_to_first_when_any(driver)
+    start_call = next(
+        c for name, c in ctx.activity_calls if name == "start_cli_activity"
+    )
+    assert start_call["seedUserMessage"] == "kick"
