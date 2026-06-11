@@ -207,7 +207,48 @@ def test_codex_model_normalization():
 def agy_home(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(tmp_path / "sandbox"))
     monkeypatch.delenv("CLI_AGENT_AGY_HOME", raising=False)
+    monkeypatch.delenv("AGY_AUTH_JSON", raising=False)
     return tmp_path / "sandbox"
+
+
+AGY_AUTH_BUNDLE = json.dumps(
+    {
+        "oauth_creds.json": '{"access_token":"a","refresh_token":"r"}',
+        "antigravity-cli/antigravity-oauth-token": '{"token":{},"auth_method":"google"}',
+        "google_accounts.json": '{"active":"x@gmail.com","old":[]}',
+    }
+)
+
+
+def test_agy_seed_materializes_auth_bundle(agy_home, monkeypatch):
+    """agy now boots from injected ~/.gemini OAuth files (the AGY_AUTH_JSON
+    file_bundle), NOT the in-pod device-code flow."""
+    monkeypatch.setenv("AGY_AUTH_JSON", AGY_AUTH_BUNDLE)
+    result = get_adapter("antigravity").seed(AGY_SESSION)
+    gem = agy_home / ".gemini"
+    assert (gem / "oauth_creds.json").read_text() == '{"access_token":"a","refresh_token":"r"}'
+    assert (gem / "antigravity-cli" / "antigravity-oauth-token").exists()
+    assert stat.S_IMODE((gem / "oauth_creds.json").stat().st_mode) == 0o600
+    assert not result.warnings
+
+
+def test_agy_seed_never_clobbers_refreshed_creds(agy_home, monkeypatch):
+    gem = agy_home / ".gemini"
+    gem.mkdir(parents=True)
+    (gem / "oauth_creds.json").write_text("FRESH")
+    monkeypatch.setenv("AGY_AUTH_JSON", AGY_AUTH_BUNDLE)
+    get_adapter("antigravity").seed(AGY_SESSION)
+    assert (gem / "oauth_creds.json").read_text() == "FRESH"  # agy's own refresh wins
+
+
+def test_agy_seed_warns_without_bundle(agy_home):
+    result = get_adapter("antigravity").seed(AGY_SESSION)
+    assert any("no AGY_AUTH_JSON" in w for w in result.warnings)
+
+
+def test_agy_no_longer_requires_interactive_login():
+    # Cred-injection replaced the device-code flow, so the kickoff may fire.
+    assert get_adapter("antigravity").requires_interactive_login is False
 
 
 AGY_SESSION = {
@@ -259,12 +300,19 @@ def test_agy_pane_env_strips_all_google_keys_and_pins_home(agy_home):
             "GEMINI_API_KEY": "b",
             "GOOGLE_API_KEY": "c",
             "GOOGLE_APPLICATION_CREDENTIALS": "/x",
+            "AGY_AUTH_JSON": '{"oauth_creds.json":"…"}',
             "PATH": "/usr/bin",
             "TERM": "xterm",
         },
         session_id="s2",
     )
-    for k in ("ANTIGRAVITY_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"):
+    for k in (
+        "ANTIGRAVITY_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "AGY_AUTH_JSON",  # the login bundle is consumed by seed(); never in the pane
+    ):
         assert k not in env
     assert env["HOME"] == str(agy_home)
 

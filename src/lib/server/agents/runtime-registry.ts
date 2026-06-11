@@ -56,11 +56,15 @@ export type RuntimeCliAuth = {
 	 *                     directly by the CLI (Claude Code: CLAUDE_CODE_OAUTH_TOKEN).
 	 *  - `file`         — a credential FILE blob delivered as `envVar`, written by
 	 *                     the adapter's seed() to `credentialPath` (Codex: auth.json).
+	 *  - `file_bundle`  — a JSON map `{ relPath: fileContents }` delivered as
+	 *                     `envVar`; the adapter writes EACH file into the CLI's
+	 *                     config dir. For multi-file logins (Antigravity: the
+	 *                     ~/.gemini oauth_creds.json + antigravity-oauth-token).
 	 *  - `device_login` — no pre-provisioned credential; the user completes an
-	 *                     in-terminal device-code OAuth flow on first launch
-	 *                     (Antigravity: Google device-code paste). No `envVar`.
+	 *                     in-terminal device-code OAuth flow on first launch. No
+	 *                     `envVar`. (No interactive-cli runtime uses this now.)
 	 */
-	credentialKind: "env_token" | "file" | "device_login";
+	credentialKind: "env_token" | "file" | "file_bundle" | "device_login";
 	/** Settings-UI rendering hint for the enrollment instructions. */
 	loginStyle?: "browser_token" | "auth_file" | "device_code";
 	/** Delivery env var (env_token + file). Absent for device_login. */

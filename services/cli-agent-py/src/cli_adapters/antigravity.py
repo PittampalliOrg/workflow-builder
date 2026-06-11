@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -40,6 +41,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = os.environ.get("CLI_AGENT_AGY_DEFAULT_MODEL", "")
 AGY_BIN = os.environ.get("CLI_AGENT_AGY_PATH", "agy")
+# The login bundle is delivered here (must match descriptor cliAuth.envVar).
+AGY_AUTH_ENV = "AGY_AUTH_JSON"
+# Files accepted from the bundle, relative to ~/.gemini. Keys outside this set
+# are ignored (defense against an over-broad export).
+AGY_AUTH_FILES = (
+    "oauth_creds.json",
+    "antigravity-cli/antigravity-oauth-token",
+    "google_accounts.json",
+)
 
 
 def clean_string(value: Any) -> str | None:
@@ -96,9 +106,12 @@ def _agy_mcp_servers(agent_config: Mapping[str, Any]) -> dict[str, dict[str, Any
 
 class AntigravityAdapter(CliAdapter):
     name = "antigravity"
-    # Device-code OAuth happens in the pane on first launch — skip the kickoff
-    # so the seed message is never typed into the authorization-code prompt.
-    requires_interactive_login = True
+    # agy authenticates from the user's injected ~/.gemini OAuth files (cliAuth
+    # credentialKind=file_bundle, delivered as AGY_AUTH_JSON). seed() materializes
+    # them so agy boots already signed in — NO in-pane device-code flow (its
+    # OAuth URL is unusable when the TUI hard-wraps it in the web terminal). The
+    # kickoff can therefore fire normally.
+    requires_interactive_login = False
     # agy mirrors events from herdr/native state (no UserPromptSubmit hook), so
     # the Claude-only INJECTION_MARKER has no dedup function here — don't send it.
     uses_injection_marker = False
@@ -114,6 +127,9 @@ class AntigravityAdapter(CliAdapter):
         cli_dir = gemini_dir / "antigravity-cli"
         for d in (config_dir, cli_dir):
             d.mkdir(parents=True, exist_ok=True)
+
+        # (0) OAuth login files from the delivered bundle — agy boots signed in.
+        self._materialize_auth(gemini_dir, result)
 
         # (a) MCP config (HOME-level — the one agy actually loads).
         servers = _agy_mcp_servers(agent_config)
@@ -149,6 +165,45 @@ class AntigravityAdapter(CliAdapter):
             result.paths["agySettingsPath"] = str(settings_path)
 
         return result
+
+    def _materialize_auth(self, gemini_dir: Path, result: SeedResult) -> None:
+        """Write the user's agy login files from the delivered AGY_AUTH_JSON
+        bundle (a JSON map ``{relPath: contents}``) into ``~/.gemini`` so agy
+        boots authenticated. Never clobbers a file agy already refreshed in-pod
+        (its own access-token refresh wins for the session lifetime)."""
+        blob = os.environ.get(AGY_AUTH_ENV)
+        if not blob or not blob.strip():
+            result.warnings.append(
+                "agy: no AGY_AUTH_JSON delivered — the TUI will prompt for login"
+            )
+            return
+        try:
+            bundle = json.loads(blob)
+        except ValueError:
+            result.warnings.append("agy: AGY_AUTH_JSON is not valid JSON")
+            return
+        if not isinstance(bundle, Mapping):
+            result.warnings.append("agy: AGY_AUTH_JSON is not a {file: contents} map")
+            return
+        written = 0
+        for rel in AGY_AUTH_FILES:
+            content = bundle.get(rel)
+            if not isinstance(content, str) or not content:
+                continue
+            dest = gemini_dir / rel
+            if dest.exists():
+                continue  # agy's own refreshed file — never clobber
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content, encoding="utf-8")
+            try:
+                dest.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+            except OSError:
+                pass
+            written += 1
+        if written:
+            result.paths["agyAuthDir"] = str(gemini_dir)
+        else:
+            result.warnings.append("agy: AGY_AUTH_JSON had no recognized login files")
 
     # -- argv -----------------------------------------------------------------
 
@@ -196,6 +251,7 @@ class AntigravityAdapter(CliAdapter):
             "GOOGLE_APPLICATION_CREDENTIALS",
             "ANTHROPIC_API_KEY",
             "CLAUDE_API_KEY",
+            AGY_AUTH_ENV,  # consumed by seed(); never expose the login bundle
         ):
             env.pop(forbidden, None)
         return env
