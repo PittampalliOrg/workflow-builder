@@ -56,8 +56,12 @@ class OrchestratorConfig:
     DAPR_AGENT_PY_TESTING_APP_ID: str = "dapr-agent-py-testing"
     ADK_AGENT_PY_APP_ID: str = "adk-agent-py"
     CLAUDE_AGENT_PY_APP_ID: str = "claude-agent-py"
-    # interactive-cli family (cli-agent-py host service; per-session sandbox pods)
+    # interactive-cli family (cli-agent-py host service; per-session sandbox pods).
+    # All three CLI runtimes share ONE host image/service — distinct config keys
+    # exist only because the runtime registry reader getattrs each appIdConfigKey.
     CLAUDE_CODE_CLI_APP_ID: str = "cli-agent-py"
+    CODEX_CLI_APP_ID: str = "cli-agent-py"
+    AGY_CLI_APP_ID: str = "cli-agent-py"
     BROWSER_USE_AGENT_APP_ID: str = "browser-use-agent"
     CLAUDE_CODE_AGENT_APP_ID: str = "claude-code-agent"
     OPENSHELL_AGENT_APP_ID: str = "openshell-agent-runtime.openshell"
@@ -107,6 +111,8 @@ class OrchestratorConfig:
                 "ADK_AGENT_PY_APP_ID",
                 "CLAUDE_AGENT_PY_APP_ID",
                 "CLAUDE_CODE_CLI_APP_ID",
+                "CODEX_CLI_APP_ID",
+                "AGY_CLI_APP_ID",
                 "CLAUDE_CODE_AGENT_APP_ID",
                 "OPENSHELL_AGENT_APP_ID",
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
@@ -179,6 +185,8 @@ class OrchestratorConfig:
                 "CLAUDE_CODE_CLI_APP_ID",
                 "cli-agent-py",
             ),
+            "CODEX_CLI_APP_ID": ("CODEX_CLI_APP_ID", "cli-agent-py"),
+            "AGY_CLI_APP_ID": ("AGY_CLI_APP_ID", "cli-agent-py"),
             "BROWSER_USE_AGENT_APP_ID": ("BROWSER_USE_AGENT_APP_ID", "browser-use-agent"),
             "CLAUDE_CODE_AGENT_APP_ID": (
                 "CLAUDE_CODE_AGENT_APP_ID",

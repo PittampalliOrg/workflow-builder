@@ -33,13 +33,15 @@ describe("runtime registry — drift guard", () => {
 });
 
 describe("runtime registry — readers", () => {
-	it("exposes the 6 durable-agent runtimes", () => {
+	it("exposes the registered agent runtimes (incl. 3 interactive-cli)", () => {
 		expect(listRuntimeIds().sort()).toEqual(
 			[
 				"adk-agent-py",
+				"agy-cli",
 				"browser-use-agent",
 				"claude-agent-py",
 				"claude-code-cli",
+				"codex-cli",
 				"dapr-agent-py",
 				"dapr-agent-py-testing"
 			].sort()

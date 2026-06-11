@@ -26,8 +26,11 @@
 		cliAuth: {
 			provider: string;
 			tokenKind: string;
-			envVar: string;
-			setupCommand: string;
+			credentialKind: 'env_token' | 'file' | 'device_login';
+			loginStyle?: 'browser_token' | 'auth_file' | 'device_code';
+			envVar?: string;
+			credentialPath?: string;
+			setupCommand?: string;
 		};
 	};
 
@@ -153,13 +156,18 @@
 	{#each data.cliRuntimes as runtime (runtime.id)}
 		{@const summary = summaryFor(runtime.cliAuth.provider)}
 		{@const countdown = expiryCountdown(summary.expiresAt)}
+		{@const kind = runtime.cliAuth.credentialKind}
 		<Card>
 			<CardHeader>
 				<CardTitle class="text-base flex items-center gap-2 flex-wrap">
 					<Terminal class="size-4" />
 					{runtime.displayName}
 					<code class="text-[11px] font-normal text-muted-foreground">{runtime.id}</code>
-					{#if summary.linked}
+					{#if kind === 'device_login'}
+						<Badge variant="outline" class="text-[10px] gap-1 border-sky-500/40 text-sky-600 dark:text-sky-400">
+							Terminal login
+						</Badge>
+					{:else if summary.linked}
 						<Badge
 							variant="outline"
 							class="text-[10px] gap-1 bg-green-600/15 text-green-700 dark:text-green-400 border-transparent"
@@ -182,87 +190,143 @@
 					{/if}
 				</CardTitle>
 				<CardDescription>
-					Subscription OAuth token ({runtime.cliAuth.tokenKind}) delivered to the session pod as
-					<code class="text-[11px]">{runtime.cliAuth.envVar}</code>.
+					{#if kind === 'device_login'}
+						Authenticates in the terminal via {runtime.cliAuth.provider} OAuth (device code) —
+						nothing is stored here.
+					{:else if kind === 'file'}
+						OAuth login file ({runtime.cliAuth.provider}) materialized in your session pod at
+						<code class="text-[11px]">{runtime.cliAuth.credentialPath}</code>.
+					{:else}
+						Subscription OAuth token ({runtime.cliAuth.provider}) delivered to the session pod as
+						<code class="text-[11px]">{runtime.cliAuth.envVar}</code>.
+					{/if}
 				</CardDescription>
 			</CardHeader>
 			<CardContent class="space-y-4">
-				{#if summary.linked}
-					<div class="text-xs text-muted-foreground space-y-0.5">
-						<div>
-							Token: <code class="font-mono">sk-ant-oat••••••••••••</code>
-						</div>
-						<div>
-							Last validated:
-							{summary.lastValidatedAt
-								? new Date(summary.lastValidatedAt).toLocaleString()
-								: 'never'}
-						</div>
+				{#if kind === 'device_login'}
+					<!-- device-code OAuth: no credential to store; the user logs in
+					     inside the web terminal on first launch. -->
+					<div class="rounded-md border bg-muted/30 p-3 text-xs space-y-1.5">
+						<div class="font-medium">How sign-in works</div>
+						<ol class="list-decimal list-inside space-y-1 text-muted-foreground">
+							<li>Start a session with this runtime — the CLI opens in the web terminal.</li>
+							<li>
+								It prints a Google authorization URL (and a code). Open the URL on your own
+								device, approve, then paste the returned code back into the terminal.
+							</li>
+							<li>
+								Usage stays on your own Google account. Nothing needs to be saved on this page.
+							</li>
+						</ol>
 					</div>
-				{/if}
+				{:else}
+					{#if summary.linked}
+						<div class="text-xs text-muted-foreground space-y-0.5">
+							<div>
+								Credential: <code class="font-mono"
+									>{kind === 'file' ? 'auth.json ••••••' : 'sk-ant-oat••••••••••••'}</code
+								>
+							</div>
+							<div>
+								Last validated:
+								{summary.lastValidatedAt
+									? new Date(summary.lastValidatedAt).toLocaleString()
+									: 'never'}
+							</div>
+						</div>
+					{/if}
 
-				<div class="rounded-md border bg-muted/30 p-3 text-xs space-y-1.5">
-					<div class="font-medium">How to get a token</div>
-					<ol class="list-decimal list-inside space-y-1 text-muted-foreground">
-						<li>
-							On your own machine, run
-							<code class="rounded bg-muted px-1 py-0.5">{runtime.cliAuth.setupCommand}</code>
-							and complete the browser login.
-						</li>
-						<li>
-							Copy the printed <code class="rounded bg-muted px-1 py-0.5">sk-ant-oat…</code> token
-							and paste it below. API keys (<code class="rounded bg-muted px-1 py-0.5">sk-ant-api…</code>)
-							are rejected — they would bill the metered API instead of your subscription.
-						</li>
-						<li>
-							Interactive TUI usage stays on your Claude subscription limits, not workspace API
-							spend.
-						</li>
-					</ol>
-				</div>
-
-				<div class="space-y-2">
-					<Label for={`cli-token-${runtime.id}`}>
-						{summary.linked ? 'Replace token' : 'Paste token'}
-					</Label>
-					<div class="flex gap-2">
-						<Input
-							id={`cli-token-${runtime.id}`}
-							type="password"
-							placeholder="sk-ant-oat…"
-							autocomplete="off"
-							bind:value={drafts[runtime.cliAuth.provider]}
-						/>
-						<Button
-							size="sm"
-							class="shrink-0 gap-1"
-							disabled={!(drafts[runtime.cliAuth.provider] ?? '').trim() ||
-								busy[runtime.cliAuth.provider]}
-							onclick={() => save(runtime.cliAuth.provider)}
-						>
-							{#if busy[runtime.cliAuth.provider]}
-								<Loader2 class="size-3.5 animate-spin" />
-							{:else}
-								<Save class="size-3.5" />
-							{/if}
-							Save
-						</Button>
-						{#if summary.linked}
-							<Button
-								size="sm"
-								variant="outline"
-								class="shrink-0 gap-1 text-destructive hover:text-destructive"
-								disabled={busy[runtime.cliAuth.provider]}
-								onclick={() => remove(runtime.cliAuth.provider)}
-							>
-								<Trash2 class="size-3.5" /> Delete
-							</Button>
+					<div class="rounded-md border bg-muted/30 p-3 text-xs space-y-1.5">
+						<div class="font-medium">How to enroll</div>
+						{#if kind === 'file'}
+							<ol class="list-decimal list-inside space-y-1 text-muted-foreground">
+								<li>
+									On your own machine, run
+									<code class="rounded bg-muted px-1 py-0.5">{runtime.cliAuth.setupCommand}</code>
+									and complete the browser ChatGPT login.
+								</li>
+								<li>
+									Paste the entire contents of
+									<code class="rounded bg-muted px-1 py-0.5">~/.codex/auth.json</code> below.
+									API-key logins are rejected — only the ChatGPT OAuth file keeps usage on your
+									subscription.
+								</li>
+								<li>Codex auto-refreshes the token inside the session; re-paste if it ever expires.</li>
+							</ol>
+						{:else}
+							<ol class="list-decimal list-inside space-y-1 text-muted-foreground">
+								<li>
+									On your own machine, run
+									<code class="rounded bg-muted px-1 py-0.5">{runtime.cliAuth.setupCommand}</code>
+									and complete the browser login.
+								</li>
+								<li>
+									Copy the printed <code class="rounded bg-muted px-1 py-0.5">sk-ant-oat…</code> token
+									and paste it below. API keys (<code class="rounded bg-muted px-1 py-0.5"
+										>sk-ant-api…</code
+									>) are rejected — they would bill the metered API instead of your subscription.
+								</li>
+								<li>Interactive TUI usage stays on your subscription limits, not workspace API spend.</li>
+							</ol>
 						{/if}
 					</div>
-					{#if errors[runtime.cliAuth.provider]}
-						<p class="text-xs text-destructive">{errors[runtime.cliAuth.provider]}</p>
-					{/if}
-				</div>
+
+					<div class="space-y-2">
+						<Label for={`cli-token-${runtime.id}`}>
+							{summary.linked ? 'Replace credential' : kind === 'file' ? 'Paste auth.json' : 'Paste token'}
+						</Label>
+						<div class="flex gap-2 {kind === 'file' ? 'flex-col' : ''}">
+							{#if kind === 'file'}
+								<textarea
+									id={`cli-token-${runtime.id}`}
+									class="flex min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+									placeholder={'{ "tokens": { "access_token": …, "refresh_token": … } }'}
+									autocomplete="off"
+									spellcheck="false"
+									bind:value={drafts[runtime.cliAuth.provider]}
+								></textarea>
+							{:else}
+								<Input
+									id={`cli-token-${runtime.id}`}
+									type="password"
+									placeholder="sk-ant-oat…"
+									autocomplete="off"
+									bind:value={drafts[runtime.cliAuth.provider]}
+								/>
+							{/if}
+							<div class="flex gap-2 {kind === 'file' ? 'justify-end' : ''}">
+								<Button
+									size="sm"
+									class="shrink-0 gap-1"
+									disabled={!(drafts[runtime.cliAuth.provider] ?? '').trim() ||
+										busy[runtime.cliAuth.provider]}
+									onclick={() => save(runtime.cliAuth.provider)}
+								>
+									{#if busy[runtime.cliAuth.provider]}
+										<Loader2 class="size-3.5 animate-spin" />
+									{:else}
+										<Save class="size-3.5" />
+									{/if}
+									Save
+								</Button>
+								{#if summary.linked}
+									<Button
+										size="sm"
+										variant="outline"
+										class="shrink-0 gap-1 text-destructive hover:text-destructive"
+										disabled={busy[runtime.cliAuth.provider]}
+										onclick={() => remove(runtime.cliAuth.provider)}
+									>
+										<Trash2 class="size-3.5" /> Delete
+									</Button>
+								{/if}
+							</div>
+						</div>
+						{#if errors[runtime.cliAuth.provider]}
+							<p class="text-xs text-destructive">{errors[runtime.cliAuth.provider]}</p>
+						{/if}
+					</div>
+				{/if}
 			</CardContent>
 		</Card>
 	{/each}

@@ -13,6 +13,7 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import { userCliCredentials } from "$lib/server/db/schema";
+import { cliAuthForProvider } from "$lib/server/agents/runtime-registry";
 import {
 	decryptString,
 	encryptString,
@@ -63,15 +64,61 @@ function requireDb() {
 }
 
 /**
- * Format guard. Rejects Anthropic API keys outright — `sk-ant-api…` is a
- * metered API key, not a subscription OAuth token, and feeding it to the
- * Claude Code TUI would silently bill the API instead of the user's
- * subscription. Accepts `sk-ant-oat…` and other plausible opaque token
- * shapes (deliberately loose — providers rotate prefixes).
+ * Format guard, generalized over the provider's `cliAuth.credentialKind`:
+ *   - env_token (Claude): an opaque OAuth token. Rejects Anthropic API keys
+ *     (`sk-ant-api…` would bill the metered API instead of the subscription)
+ *     and anything with whitespace / too short.
+ *   - file (Codex): the ChatGPT `auth.json` blob. Must parse as JSON and carry
+ *     a `tokens` object (the OAuth login) — an API-key-only file
+ *     (`auth_mode: "apikey"` / a bare `OPENAI_API_KEY`) is rejected because it
+ *     bypasses the user's ChatGPT subscription.
+ *   - device_login (Antigravity): nothing is stored — the user authenticates in
+ *     the terminal. A PUT is rejected.
  */
-export function assertPlausibleCliToken(token: string): void {
+export function assertPlausibleCliCredential(
+	provider: string,
+	token: string,
+): void {
 	const trimmed = token.trim();
-	if (!trimmed) throw new Error("Token is required");
+	if (!trimmed) throw new Error("A credential value is required");
+	const kind = cliAuthForProvider(provider)?.credentialKind ?? "env_token";
+
+	if (kind === "device_login") {
+		throw new Error(
+			"This runtime authenticates in the terminal (device-code OAuth). " +
+				"There is no token to store — just start a session and complete the login there.",
+		);
+	}
+
+	if (kind === "file") {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(trimmed);
+		} catch {
+			throw new Error(
+				"Expected the contents of your auth.json (valid JSON). Run the login command locally, " +
+					"then paste the whole ~/.codex/auth.json file.",
+			);
+		}
+		const obj = (parsed ?? {}) as Record<string, unknown>;
+		const authMode = typeof obj.auth_mode === "string" ? obj.auth_mode : null;
+		const hasTokens = obj.tokens && typeof obj.tokens === "object";
+		if (authMode === "apikey" || (!hasTokens && obj.OPENAI_API_KEY)) {
+			throw new Error(
+				"This auth.json is an API-key login, not a ChatGPT subscription login. " +
+					"Run `codex login` (browser ChatGPT OAuth) and paste the resulting auth.json so usage " +
+					"stays on your subscription.",
+			);
+		}
+		if (!hasTokens) {
+			throw new Error(
+				"auth.json is missing the OAuth `tokens` block — re-run `codex login` and paste the fresh file.",
+			);
+		}
+		return;
+	}
+
+	// env_token
 	if (trimmed.startsWith("sk-ant-api")) {
 		throw new Error(
 			"This looks like an Anthropic API key (sk-ant-api…). API keys are not accepted here — " +
@@ -125,7 +172,7 @@ export async function upsertUserCliCredential(
 	token: string,
 	expiresAt?: Date | null,
 ): Promise<CliCredentialSummary> {
-	assertPlausibleCliToken(token);
+	assertPlausibleCliCredential(provider, token);
 	const database = requireDb();
 	const now = new Date();
 	const effectiveExpiresAt =

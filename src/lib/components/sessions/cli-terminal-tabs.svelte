@@ -7,9 +7,12 @@
 
 	interface Props {
 		sessionId: string;
+		/** Human name for the pinned main TUI tab (e.g. "Codex CLI"). One image
+		 * hosts claude/codex/agy, so this comes from the runtime descriptor. */
+		cliLabel?: string;
 	}
 
-	let { sessionId }: Props = $props();
+	let { sessionId, cliLabel = 'Claude Code' }: Props = $props();
 
 	interface TerminalTab {
 		id: string;
@@ -25,7 +28,7 @@
 	const STORAGE_KEY = $derived(`cli-terminal-tabs-${sessionId}`);
 
 	function mainTab(): TerminalTab {
-		return { id: 'main', name: 'Claude Code', target: 'main', terminalId: 'main', nonce: 0 };
+		return { id: 'main', name: cliLabel, target: 'main', terminalId: 'main', nonce: 0 };
 	}
 
 	let tabs = $state<TerminalTab[]>([]);

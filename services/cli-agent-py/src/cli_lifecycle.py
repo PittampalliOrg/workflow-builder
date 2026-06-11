@@ -110,12 +110,20 @@ async def _start_cli(input_data: dict[str, Any]) -> dict[str, Any]:
             )
             # Kickoff: type the seed prompt into the TUI once it reaches its
             # prompt (readiness-gated, scheduled onto the app loop — this
-            # activity runs on a throwaway worker-thread loop).
+            # activity runs on a throwaway worker-thread loop). Skipped for
+            # adapters that require an interactive in-pane login first (agy
+            # device-code OAuth) — the seed must never land in the auth prompt.
             seed_text = _clean(input_data.get("seedUserMessage"))
-            if seed_text:
+            if seed_text and not adapter.requires_interactive_login:
                 from src.hooks_api import INJECTION_MARKER
 
                 supervisor.arm_seed(seed_text, marker=INJECTION_MARKER)
+            elif seed_text and adapter.requires_interactive_login:
+                logger.info(
+                    "[start-cli] adapter=%s requires interactive login — "
+                    "deferring kickoff to the user (post-auth)",
+                    adapter.name,
+                )
         return {"paneRef": pane_ref, "argv": argv, "agentDetected": agent_detected}
     finally:
         await client.close()

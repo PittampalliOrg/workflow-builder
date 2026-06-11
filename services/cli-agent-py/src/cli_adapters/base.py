@@ -28,6 +28,14 @@ class SeedResult:
 class CliAdapter(abc.ABC):
     name: str = "base"
 
+    # When True, the CLI requires an interactive login in the pane on first
+    # launch (device-code OAuth) before it reaches its real prompt. The
+    # lifecycle then SKIPS the readiness-gated kickoff injection: herdr may
+    # report the auth-code prompt as `idle`, and typing the seed message there
+    # would mis-submit it as the authorization code. The user authenticates and
+    # types their first message in the terminal. (Antigravity device-login.)
+    requires_interactive_login: bool = False
+
     @abc.abstractmethod
     def seed(self, session_input: Mapping[str, Any]) -> SeedResult:
         """Materialize per-session files (MCP config, system prompt, skills)."""

@@ -13,6 +13,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.map((d) => ({
 			id: d.id,
 			displayName: d.agentMetadataFramework,
+			// cliAuth carries credentialKind/loginStyle/envVar/credentialPath/
+			// setupCommand — the page renders the enrollment UX from it.
 			cliAuth: d.cliAuth!,
 		}));
 

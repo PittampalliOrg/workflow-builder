@@ -92,9 +92,14 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	// Interactive-CLI runtimes (registry family interactive-cli) render a
 	// terminal-first session page; the Terminal tab proxies straight to the
 	// pod's PTY WebSocket on port 8002.
+	const descriptor = getRuntimeDescriptor(target.agentRuntime);
 	const interactiveTerminal =
-		getRuntimeDescriptor(target.agentRuntime)?.capabilities
-			?.interactiveTerminal === true;
+		descriptor?.capabilities?.interactiveTerminal === true;
+	// Human label for the pinned terminal tab (e.g. "Codex CLI"). One image
+	// hosts claude/codex/agy, so the tab name must come from the runtime.
+	const cliLabel = interactiveTerminal
+		? descriptor?.agentMetadataFramework ?? 'Agent CLI'
+		: null;
 
 	return json({
 		agentSlug: target.agentSlug,
@@ -105,6 +110,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		shellAvailable,
 		shellContainers,
 		interactiveTerminal,
+		cliLabel,
 		phase,
 	});
 };

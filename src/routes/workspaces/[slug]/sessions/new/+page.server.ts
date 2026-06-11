@@ -16,9 +16,17 @@ export const load: PageServerLoad = async () => {
 					d.id,
 					{
 						provider: d.cliAuth!.provider,
-						setupCommand: d.cliAuth!.setupCommand,
+						credentialKind: d.cliAuth!.credentialKind,
+						setupCommand: d.cliAuth!.setupCommand ?? null,
 					},
 				]),
-		) as Record<string, { provider: string; setupCommand: string }>,
+		) as Record<
+			string,
+			{
+				provider: string;
+				credentialKind: "env_token" | "file" | "device_login";
+				setupCommand: string | null;
+			}
+		>,
 	};
 };

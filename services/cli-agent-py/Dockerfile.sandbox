@@ -1,14 +1,26 @@
-# cli-agent-py sandbox image — host for the `claude-code-cli` interactive-cli
-# runtime: headless herdr server + the real Claude Code TUI in a herdr pane,
-# Dapr workflow lifecycle host + hooks receiver + WS terminal on :8002.
+# cli-agent-py sandbox image — host for the `interactive-cli` runtime family
+# (claude-code-cli, codex-cli, agy-cli): headless herdr server + the real CLI
+# TUI in a herdr pane, Dapr workflow lifecycle host + hooks receiver + WS
+# terminal on :8002. ONE image hosts all three CLIs; the BFF stamps
+# agentConfig.cliAdapter so the host selects claude / codex / antigravity.
 # Modeled on services/claude-agent-py/Dockerfile.sandbox.
 ARG OPENSHELL_SANDBOX_IMAGE=ghcr.io/pittampalliorg/openshell-sandbox:git-c390487a6bbcdd1a69cc6d7eb331a4aadaa9692c
-# Exact pin (placeholder — bump deliberately at build time; 2.1.170 was the
-# current release when this file was written). DISABLE_AUTOUPDATER keeps the
-# pinned version authoritative at runtime.
 # Exact pin (reproducible TUI behavior; DISABLE_AUTOUPDATER below). Bump
 # deliberately — 2.1.172 verified on npm 2026-06-10.
 ARG CLAUDE_CODE_NPM_VERSION=2.1.172
+# OpenAI Codex CLI (npm). OAuth = ChatGPT auth.json (codex-cli adapter); pinned
+# binary lives root-owned in the global npm prefix (read-only to uid 10001 →
+# self-update can't rewrite it). 0.139.0 verified on npm 2026-06-11.
+ARG CODEX_NPM_VERSION=0.139.0
+# Antigravity CLI (`agy`). Pinned GCS release tarball, sha512-verified (the
+# install.sh manifest pattern). Binary at /usr/local/bin/agy is root-owned +
+# read-only to uid 10001, which defeats agy's background self-update. v1.0.7
+# manifest captured 2026-06-11; bump URL+SHA together per arch.
+ARG AGY_VERSION=1.0.7
+ARG AGY_URL_AMD64=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.0.7-5436940900761600/linux-x64/cli_linux_x64.tar.gz
+ARG AGY_SHA512_AMD64=5bda520ade610c50ab47a54c671962e0eb32fcce448bc2de14e553b7a15a7255462591b721d3a40d69950261bbfb76ff24b3f88dae8fa00af72774c385fc3522
+ARG AGY_URL_ARM64=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.0.7-5436940900761600/linux-arm/cli_linux_arm64.tar.gz
+ARG AGY_SHA512_ARM64=22018f4a033a2806d21e94b09f43c26d79c80cece0c158a1e9ecd432f71f91d73c42fb43b289810f62dc2a32966d5fdde99432616562026c5023a657a79f408f
 # herdr release binary (AGPL-3.0 — see /usr/share/doc/herdr/LICENSE-note.txt).
 # Asset naming verified against the GitHub API on 2026-06-10:
 #   https://github.com/ogulcancelik/herdr/releases/download/v<ver>/herdr-linux-x86_64
@@ -34,10 +46,34 @@ COPY --from=uv-bin /uv /uvx /usr/local/bin/
 COPY --from=node-bin /usr/local/bin/node /usr/local/bin/
 COPY --from=node-bin /usr/local/lib/node_modules /usr/local/lib/node_modules
 ARG CLAUDE_CODE_NPM_VERSION
+ARG CODEX_NPM_VERSION
 RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && npm install -g --force "@anthropic-ai/claude-code@${CLAUDE_CODE_NPM_VERSION}" \
-    && npm cache clean --force
+    && npm install -g --force "@openai/codex@${CODEX_NPM_VERSION}" \
+    && npm cache clean --force \
+    && /usr/local/bin/claude --version && /usr/local/bin/codex --version
+
+# agy (Antigravity CLI): pinned, sha512-verified GCS tarball → /usr/local/bin/agy
+# (root-owned, read-only to the non-root runtime user, which defeats its
+# background self-update). Arch-selected from TARGETARCH.
+ARG TARGETARCH
+ARG AGY_VERSION
+ARG AGY_URL_AMD64
+ARG AGY_SHA512_AMD64
+ARG AGY_URL_ARM64
+ARG AGY_SHA512_ARM64
+RUN set -eu; \
+    case "${TARGETARCH:-amd64}" in \
+      arm64) url="${AGY_URL_ARM64}"; sha="${AGY_SHA512_ARM64}" ;; \
+      *)     url="${AGY_URL_AMD64}"; sha="${AGY_SHA512_AMD64}" ;; \
+    esac; \
+    curl -fsSL -o /tmp/agy.tar.gz "$url"; \
+    echo "${sha}  /tmp/agy.tar.gz" | sha512sum -c -; \
+    tar -xzf /tmp/agy.tar.gz -C /tmp; \
+    install -m 0755 -o root -g root "$(find /tmp -maxdepth 2 -type f -name antigravity | head -1)" /usr/local/bin/agy; \
+    rm -rf /tmp/agy.tar.gz /tmp/antigravity; \
+    /usr/local/bin/agy --version
 
 # herdr: pinned release binary, sha256-verified, plus the AGPL-3.0 notice.
 ARG HERDR_VERSION
@@ -64,6 +100,7 @@ COPY docker/managed-settings.json /etc/claude-code/managed-settings.json
 RUN /usr/sbin/groupadd --gid 10001 cli-agent \
     && /usr/sbin/useradd --create-home --uid 10001 --gid 10001 --shell /bin/bash cli-agent \
     && mkdir -p /sandbox/run /sandbox/.claude /sandbox/.wfb \
+        /sandbox/.codex /sandbox/.gemini/config /sandbox/.gemini/antigravity-cli \
         /home/cli-agent/.config/herdr \
     && chown -R cli-agent:cli-agent /app /sandbox /home/cli-agent
 
@@ -78,6 +115,10 @@ ENV AGENT_SANDBOX_MODE=hybrid \
     AGENT_LOCAL_SANDBOX_ROOT=/sandbox \
     CLI_AGENT_PY_DEFAULT_MODEL=claude-opus-4-8 \
     CLI_AGENT_CLI_PATH=/usr/local/bin/claude \
+    CLI_AGENT_CODEX_PATH=/usr/local/bin/codex \
+    CLI_AGENT_AGY_PATH=/usr/local/bin/agy \
+    CLI_AGENT_AGY_HOME=/sandbox \
+    CODEX_HOME=/sandbox/.codex \
     DISABLE_AUTOUPDATER=1 \
     HERDR_SOCKET_PATH=/sandbox/run/herdr.sock \
     HERDR_CONFIG_PATH=/etc/herdr/config.toml \

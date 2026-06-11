@@ -1,11 +1,14 @@
 # Interactive CLI Sessions (`interactive-cli` runtime family) — SSOT
 
-> Status: **IMPLEMENTED 2026-06** (v1: `claude-code-cli`). This is the SSOT for
-> running agent CLIs (Claude Code now; Codex / Antigravity `agy` later) as
+> Status: **IMPLEMENTED 2026-06** — `claude-code-cli`, **`codex-cli`**, and
+> **`agy-cli`** (Antigravity). This is the SSOT for running agent CLIs as
 > first-class durable runtimes: the REAL TUI in a per-session Kueue-admitted
 > sandbox pod, accessed through a web terminal, with the Dapr workflow wrapping
 > the session LIFECYCLE and the transcript/status mirrored into
-> `session_events`. Companion docs: `durable-session-runtime-contract.md`
+> `session_events`. **ONE image (`cli-agent-py-sandbox`) hosts all three CLIs**;
+> the BFF stamps `agentConfig.cliAdapter` (claude-code | codex | antigravity) so
+> the host launches the right TUI, and they share the ONE `interactive-cli`
+> execution class. Companion docs: `durable-session-runtime-contract.md`
 > (registry contract), `workflow-lifecycle-termination.md` (stop SSOT),
 > `agent-runtime-comparison.md`.
 
@@ -87,27 +90,46 @@ NDJSON over Unix socket (`HERDR_SOCKET_PATH=/sandbox/run/herdr.sock`):
   + sha256) with the license notice at `/usr/share/doc/herdr/`. Never patch it
   without the commercial license.
 
-## Auth (personal subscription tokens — NOT cluster API keys)
+## Auth (personal OAuth — NOT cluster API keys)
 
-- User runs `claude setup-token` locally (1-year, inference-only) and pastes it
-  at **`/settings/cli-tokens`** → `user_cli_credentials` table (user-scoped —
-  vaults are project-scoped and would share a personal token with the
-  workspace; AES-256-CBC EncryptedObject, `expiresAt`).
-- Spawn resolves the session owner's token (missing/expired → HTTP 412
-  `CLI_TOKEN_MISSING|CLI_TOKEN_EXPIRED` + settings deep-link) and passes
-  `sessionSecretEnv` to sandbox-execution-api, which creates per-session Secret
-  `agent-host-cred-<appId>` (ownerRef → Sandbox CR, auto-GC) injected as a
-  `secretKeyRef` env. Never in Dapr `childInput`, the CR YAML, spans (redacted)
-  or logs.
-- **SYSTEM INVARIANT: `ANTHROPIC_API_KEY`/`CLAUDE_API_KEY` must NEVER reach
-  these pods** — env precedence silently outranks `CLAUDE_CODE_OAUTH_TOKEN` and
-  flips billing from subscription to API. Enforced structurally
-  (`agentHostEnvFrom` class override excludes the shared secret refs;
-  `ExternalSecret cli-agent-py-secrets` carries ONLY `INTERNAL_API_TOKEN`), at
-  startup (cli-agent-py crash-loops loudly if present), and by a
-  sandbox-execution-api manifest unit test.
-- Interactive TUI usage stays on subscription limits (the 2026-06-15 Agent SDK
-  credit split affects only `-p`/SDK usage).
+Each runtime's `cliAuth.credentialKind` picks ONE of three delivery models. All
+OAuth; all keep usage on the USER's personal subscription, never a cluster key.
+
+| Runtime | provider | `credentialKind` | What the user does | Delivery |
+|---|---|---|---|---|
+| `claude-code-cli` | anthropic | `env_token` | `claude setup-token` → paste `sk-ant-oat…` | secret env `CLAUDE_CODE_OAUTH_TOKEN`, read directly by claude |
+| `codex-cli` | openai | `file` | `codex login` (browser ChatGPT OAuth) → paste `~/.codex/auth.json` | secret env `CODEX_AUTH_JSON` (the blob); the adapter `seed()` writes `$CODEX_HOME/auth.json` (0600) and STRIPS the env from the pane |
+| `agy-cli` | google | `device_login` | NOTHING stored — authenticate in the terminal | none — agy prints a Google OAuth URL+code on first launch; the user pastes the code in the web terminal |
+
+- **Storage**: `env_token`/`file` credentials live in `user_cli_credentials`
+  (user-scoped — vaults are project-scoped and would share a personal credential
+  with the workspace; AES-256-CBC EncryptedObject, `expiresAt`). The `value`
+  column holds the opaque token (claude) OR the whole auth.json blob (codex).
+  Validation is per-`credentialKind` (`assertPlausibleCliCredential`): claude
+  rejects `sk-ant-api…`; codex must parse as JSON with a `tokens` block (an
+  api-key auth.json is rejected); `device_login` refuses a PUT.
+- **Spawn** (`spawn.ts`): for `env_token`/`file` it resolves the owner's
+  credential (missing/expired → HTTP 412 `CLI_TOKEN_MISSING|CLI_TOKEN_EXPIRED` +
+  settings deep-link) and passes `sessionSecretEnv: {[envVar]: value}` to
+  sandbox-execution-api → per-session Secret `agent-host-cred-<appId>`
+  (ownerRef → Sandbox CR, auto-GC) → `secretKeyRef` env. For `device_login`
+  there is NO gate and NO secret. Never in Dapr `childInput`, the CR YAML, spans
+  (redacted) or logs. `spawn.ts` also stamps `agentConfig.cliAdapter` from the
+  descriptor so the host selects claude/codex/antigravity.
+- **SYSTEM INVARIANT: provider API keys must NEVER reach these pods** — they
+  silently outrank OAuth and flip billing to the metered API. Each adapter's
+  `pane_env` strips them: claude (`ANTHROPIC_API_KEY`/`CLAUDE_API_KEY`), codex
+  (`OPENAI_API_KEY`/`CODEX_API_KEY` + the `CODEX_AUTH_JSON` blob, since codex
+  prefers an env credential over the file), agy
+  (`ANTIGRAVITY_API_KEY`/`GEMINI_API_KEY`/`GOOGLE_API_KEY`/`GOOGLE_APPLICATION_CREDENTIALS`).
+  Codex additionally sets `forced_login_method = "chatgpt"` in config.toml.
+  Enforced structurally (`agentHostEnvFrom` class override excludes the shared
+  agent secrets; `ExternalSecret cli-agent-py-secrets` carries ONLY
+  `INTERNAL_API_TOKEN`) + each adapter's pane_env strip + a startup guard.
+- **Credential paths in-pod** (writable sandbox emptyDir so auto-refresh
+  persists for the session): codex `$CODEX_HOME=/sandbox/.codex`; agy
+  `$HOME=/sandbox` → `~/.gemini` (device-login token is keyring-less/in-memory,
+  so agy re-prompts per new session — acceptable for ephemeral pods).
 
 ## Terminal access
 
@@ -184,17 +206,43 @@ CLI sessions at current quota; bump `KueueCapacityProfiles` shares if needed.
 The provisioning API reports a `queued` phase so the UI can show "Queued for
 capacity" instead of a dead terminal.
 
-## Adding the next CLI (codex / agy)
+## codex-cli + agy-cli (IMPLEMENTED 2026-06)
 
-1. New `CliAdapter` in `services/cli-agent-py/src/cli_adapters/` (argv, seeding
-   — e.g. codex `config.toml` `mcp_servers`, OTEL `[otel]`; agy
-   `mcp_config.json`) + CLI binary in the image (or a per-CLI image via
-   `imageEnvKey`).
-2. New registry descriptor (`codex-cli` / `agy-cli`, family `interactive-cli`,
-   own `cliAuth`) + `*_APP_ID` in orchestrator `core/config.py` + BFF env.
-3. Token card appears automatically on `/settings/cli-tokens`; terminal,
-   status mirroring (herdr detects Codex/Antigravity natively), spawn gating
-   and lifecycle are CLI-agnostic.
+Both ride the SAME image + execution class as claude-code-cli; only the adapter,
+descriptor, and credential model differ.
+
+**`codex-cli`** (`CodexAdapter`, `cliAdapter: "codex"`): launches
+`codex --cd /sandbox --model <m> --sandbox danger-full-access --ask-for-approval
+on-request` (the K8s pod is the real isolation boundary, so codex's own landlock
+sandbox is off; approvals surface to the live user; `permissionMode: bypass` →
+`--dangerously-bypass-approvals-and-sandbox`). `seed()` writes
+`$CODEX_HOME/config.toml` (`forced_login_method`, `[mcp_servers.<n>]` with
+stdio command/args/env OR streamable-http `url` + `http_headers` +
+`experimental_use_rmcp_client`), the system prompt → `AGENTS.md`, and the OAuth
+`auth.json` from the `CODEX_AUTH_JSON` blob (0600). Codex auto-refreshes the
+token in-session. herdr detects Codex state natively.
+
+**`agy-cli`** (`AntigravityAdapter`, `cliAdapter: "antigravity"`): launches bare
+`agy` (+ `--model` for a `gemini*` model; `--dangerously-skip-permissions` only
+for bypass). `seed()` writes `$HOME/.gemini/config/mcp_config.json`
+(`mcpServers` with remote `serverUrl` — NOT `url`), the system prompt →
+`GEMINI.md`, and a `settings.json` pre-trusting `/sandbox`. **`device_login`**:
+no credential is provisioned; agy prints a Google OAuth URL+code on first launch
+and the user pastes the code IN the web terminal. `requires_interactive_login =
+True` → the lifecycle SKIPS the readiness-gated kickoff (the seed must never be
+typed into the auth-code prompt); the user authenticates then types their first
+message. herdr detects agy by screen pattern (no native socket integration), so
+its mirror is herdr-state-based; per-tool/llm-usage events (claude's http hooks)
+do NOT fire for codex/agy in v1 — the web terminal renders the full TUI
+regardless. agy has no OTEL export. The pinned binary is a sha512-verified GCS
+release tarball at `/usr/local/bin/agy` (root-owned read-only → defeats its
+background self-update).
+
+To add a THIRD CLI: new `CliAdapter` + register in `cli_adapters/__init__.py`;
+new registry descriptor (family `interactive-cli`, `cliAdapter`, `cliAuth` with
+a `credentialKind`) + `*_APP_ID` in orchestrator `core/config.py` + BFF/orch
+Deployment env; add the binary to `Dockerfile.sandbox`. Settings/terminal/spawn
+are CLI-agnostic (driven off the descriptor).
 
 ## Deploy/activation checklist (first rollout)
 
