@@ -30,7 +30,7 @@ AUTH_BLOB = json.dumps(
 
 SESSION = {
     "agentConfig": {
-        "modelSpec": "openai/gpt-5-codex",
+        "modelSpec": "openai/gpt-5.5",
         "permissionMode": "default",
         "mcpServers": [
             {
@@ -115,7 +115,7 @@ def test_codex_build_argv_default_mode(codex_home):
     assert argv[0] == "codex"
     assert "--sandbox" in argv and "danger-full-access" in argv
     assert "--ask-for-approval" in argv and "on-request" in argv
-    assert "--model" in argv and "gpt-5-codex" in argv
+    assert "--model" in argv and "gpt-5.5" in argv
 
 
 def test_codex_build_argv_bypass_mode(codex_home):
@@ -170,9 +170,12 @@ def test_codex_pane_env_strips_apikey_and_blob():
 
 
 def test_codex_model_normalization():
-    assert normalize_codex_model("openai/o3") == "o3"
-    assert normalize_codex_model("gpt-5-codex") == "gpt-5-codex"
-    assert normalize_codex_model("anthropic/claude-opus-4-8") == "gpt-5-codex"  # default
+    assert normalize_codex_model("openai/o4") == "o4"
+    assert normalize_codex_model("gpt-5.5") == "gpt-5.5"
+    # `gpt-5-codex` was dropped from codex 0.139.0's catalog -> remap to default.
+    assert normalize_codex_model("gpt-5-codex") == "gpt-5.5"
+    assert normalize_codex_model("openai/gpt-5-codex") == "gpt-5.5"
+    assert normalize_codex_model("anthropic/claude-opus-4-8") == "gpt-5.5"  # default
 
 
 # --- antigravity -------------------------------------------------------------
