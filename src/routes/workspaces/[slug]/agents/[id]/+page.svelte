@@ -78,8 +78,18 @@
 		AgentConfig,
 		AgentVersionSummary
 	} from '$lib/types/agents';
+	import { createDefaultAgentConfig } from '$lib/types/agents';
 	import type { EnvironmentSummary } from '$lib/types/environments';
 	import { agentModelOptionFor } from '$lib/agents/model-options';
+
+	// Fill any missing top-level config fields with defaults so the editor never
+	// renders against an undefined (e.g. `config.builtinTools.length`,
+	// `Object.keys(config.runtimeOverridePolicy)`). Agents created with a minimal
+	// stored config (the interactive-cli agents: claude-code-cli / codex-cli /
+	// agy-cli) would otherwise crash the detail page on load.
+	function withConfigDefaults(stored: AgentConfig): AgentConfig {
+		return { ...createDefaultAgentConfig(), ...structuredClone(stored) };
+	}
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
@@ -168,7 +178,7 @@
 				return;
 			}
 			agent = a.agent;
-			config = structuredClone(a.agent.config);
+			config = withConfigDefaults(a.agent.config);
 			usages = u.usages ?? [];
 			environments = e.environments ?? [];
 			registryView = r;
@@ -213,7 +223,7 @@
 		}
 		const { agent: updated } = await res.json();
 		agent = updated;
-		config = structuredClone(updated.config);
+		config = withConfigDefaults(updated.config);
 		dirty = false;
 		return true;
 	}
