@@ -80,6 +80,38 @@ def test_seed_without_servers_or_prompt_writes_nothing(seeded_dirs):
     assert not (wfb_dir / "mcp.json").exists()
 
 
+def test_seed_writes_onboarding_state(seeded_dirs, monkeypatch):
+    """Fresh pods must boot the TUI straight into the REPL — no theme picker,
+    no login screen (the subscription login launches a browser OAuth flow that
+    kills the pane in a pod; observed live on ryzen 2026-06-10)."""
+    import json
+
+    _wfb_dir, config_dir = seeded_dirs
+    monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
+    adapter = get_adapter("claude-code")
+    result = adapter.seed({"agentConfig": {}})
+    state_path = config_dir / ".claude.json"
+    assert result.paths["claudeStatePath"] == str(state_path)
+    state = json.loads(state_path.read_text())
+    assert state["hasCompletedOnboarding"] is True
+    assert state["projects"]["/sandbox"]["hasTrustDialogAccepted"] is True
+    # bare-name twin for forward compatibility
+    assert json.loads((config_dir / "claude.json").read_text()) == state
+
+
+def test_seed_never_clobbers_existing_claude_state(seeded_dirs):
+    import json
+
+    _wfb_dir, config_dir = seeded_dirs
+    config_dir.mkdir(parents=True, exist_ok=True)
+    existing = {"hasCompletedOnboarding": True, "oauthAccount": {"id": "user-x"}}
+    (config_dir / ".claude.json").write_text(json.dumps(existing))
+    adapter = get_adapter("claude-code")
+    result = adapter.seed({"agentConfig": {}})
+    assert "claudeStatePath" not in result.paths
+    assert json.loads((config_dir / ".claude.json").read_text()) == existing
+
+
 def test_oversized_skill_file_skipped(seeded_dirs):
     _wfb_dir, config_dir = seeded_dirs
     adapter = get_adapter("claude-code")

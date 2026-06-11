@@ -182,7 +182,48 @@ class ClaudeCodeAdapter(CliAdapter):
         if skills_dir:
             result.paths["skillsDir"] = str(skills_dir)
 
+        # (h) First-run onboarding state. Without this, claude in a fresh pod
+        # opens the theme picker + login-method screen; choosing the
+        # subscription login launches a browser OAuth flow that cannot work in
+        # a pod — the pane exits and the lifecycle terminates the session
+        # (observed live on the first ryzen E2E run, 2026-06-10). Auth comes
+        # from the CLAUDE_CODE_OAUTH_TOKEN pane env (verified working via
+        # `claude -p` in the same pod); pre-completing onboarding + trust for
+        # the sandbox cwd boots the TUI straight into the REPL.
+        self._seed_onboarding_state(result)
+
         return result
+
+    def _seed_onboarding_state(self, result: SeedResult) -> None:
+        config_dir = _claude_config_dir()
+        config_dir.mkdir(parents=True, exist_ok=True)
+        # With CLAUDE_CONFIG_DIR set, claude keeps its state json inside the
+        # config dir. The dot-name is the canonical one (~/.claude.json moved
+        # into the dir); the bare name is written too in case a future CLI
+        # drops the dot — an extra unread file is harmless.
+        state_paths = [config_dir / ".claude.json", config_dir / "claude.json"]
+        if any(p.exists() for p in state_paths):
+            return  # pod restart / resumed state — never clobber claude's own file
+        cwd = os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
+        state = {
+            "hasCompletedOnboarding": True,
+            "theme": "dark",
+            # Only consulted when permissionMode=bypassPermissions is
+            # configured; pre-accepting avoids a second blocking dialog there.
+            "bypassPermissionsModeAccepted": True,
+            "projects": {
+                cwd: {
+                    "hasTrustDialogAccepted": True,
+                    "hasCompletedProjectOnboarding": True,
+                }
+            },
+        }
+        import json
+
+        payload = json.dumps(state, indent=2) + "\n"
+        for path in state_paths:
+            path.write_text(payload, encoding="utf-8")
+        result.paths["claudeStatePath"] = str(state_paths[0])
 
     def _materialize_skills(
         self, agent_config: Mapping[str, Any], warnings: list[str]
