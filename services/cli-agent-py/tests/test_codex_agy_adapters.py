@@ -215,9 +215,10 @@ AGY_AUTH_BUNDLE = json.dumps(
     {
         "oauth_creds.json": '{"access_token":"a","refresh_token":"r"}',
         "antigravity-cli/antigravity-oauth-token": '{"token":{},"auth_method":"google"}',
+        "antigravity-cli/installation_id": "64cbbdb1-bound-to-token",
         "google_accounts.json": '{"active":"x@gmail.com","old":[]}',
-        "state.json": '{"loggedIn":true}',
-        "installation_id": "install-abc123",
+        "state.json": '{"tipsShown":[]}',
+        "installation_id": "4f7ae2c3-top-level",
     }
 )
 
@@ -231,8 +232,10 @@ def test_agy_seed_materializes_auth_bundle(agy_home, monkeypatch):
     gem = agy_home / ".gemini"
     assert (gem / "oauth_creds.json").read_text() == '{"access_token":"a","refresh_token":"r"}'
     assert (gem / "antigravity-cli" / "antigravity-oauth-token").exists()
-    assert (gem / "state.json").read_text() == '{"loggedIn":true}'
-    assert (gem / "installation_id").read_text() == "install-abc123"
+    # the install the token is bound to — the file that stops the TUI re-auth.
+    assert (gem / "antigravity-cli" / "installation_id").read_text() == "64cbbdb1-bound-to-token"
+    assert (gem / "installation_id").read_text() == "4f7ae2c3-top-level"
+    assert (gem / "state.json").read_text() == '{"tipsShown":[]}'
     assert stat.S_IMODE((gem / "oauth_creds.json").stat().st_mode) == 0o600
     assert not result.warnings
 

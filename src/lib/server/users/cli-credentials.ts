@@ -132,13 +132,15 @@ export function assertPlausibleCliCredential(
 			throw new Error("The agy credential bundle must be a JSON object of { file: contents }.");
 		}
 		const bundle = parsed as Record<string, unknown>;
-		// state.json + installation_id are required too: without the install/
-		// session identity the agy TUI re-prompts for OAuth even with valid tokens.
+		// antigravity-cli/installation_id is the install the token is bound to;
+		// without it (and the session files) the agy TUI re-prompts for OAuth even
+		// with valid tokens.
 		const required = [
 			"oauth_creds.json",
 			"antigravity-cli/antigravity-oauth-token",
-			"state.json",
+			"antigravity-cli/installation_id",
 			"installation_id",
+			"state.json",
 		];
 		const missing = required.filter((k) => typeof bundle[k] !== "string" || !bundle[k]);
 		if (missing.length) {
