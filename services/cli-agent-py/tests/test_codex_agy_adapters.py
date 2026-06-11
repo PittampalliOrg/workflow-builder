@@ -107,6 +107,32 @@ def test_codex_build_argv_bypass_mode(codex_home):
     assert "--dangerously-bypass-approvals-and-sandbox" in argv
 
 
+def test_codex_seed_links_sessions_into_transcript_store(codex_home, monkeypatch, tmp_path):
+    """$CODEX_HOME/sessions is redirected into the per-session JuiceFS subtree so
+    rollouts persist + `codex resume --last` works across pods."""
+    mount = tmp_path / "tx"
+    mount.mkdir()
+    monkeypatch.setenv("CLI_TRANSCRIPT_MOUNT", str(mount))
+    monkeypatch.setenv("CODEX_AUTH_JSON", AUTH_BLOB)
+    result = get_adapter("codex").seed(SESSION)
+    sessions = codex_home / "sessions"
+    assert sessions.is_symlink()
+    assert result.paths["transcriptStore"] == str(mount / "codex")
+    (sessions / "2026" / "r.jsonl").parent.mkdir(parents=True)
+    (sessions / "2026" / "r.jsonl").write_text("{}\n")
+    assert (mount / "codex" / "2026" / "r.jsonl").read_text() == "{}\n"
+
+
+def test_codex_build_argv_resume_on_continue(codex_home):
+    cfg = {**SESSION["agentConfig"], "continueSession": True}
+    argv = get_adapter("codex").build_argv(cfg, {})
+    # `codex resume --last` precedes the TUI flags
+    assert argv[0] == "codex" and argv[1] == "resume" and argv[2] == "--last"
+    assert "--cd" in argv
+    # not present without the flag
+    assert "resume" not in get_adapter("codex").build_argv(SESSION["agentConfig"], {})
+
+
 def test_codex_pane_env_strips_apikey_and_blob():
     env = get_adapter("codex").pane_env(
         {
