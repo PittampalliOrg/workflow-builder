@@ -75,6 +75,33 @@ def _truncate_output(value: Any) -> Any:
     return encoded[:TOOL_OUTPUT_TRUNCATE_BYTES].decode("utf-8", errors="replace")
 
 
+def _flatten_tool_output(tool_response: Any) -> str:
+    """Flatten a hook ``tool_response`` to display text. Bash-style responses
+    are Mappings ``{stdout, stderr, interrupted, …}`` — prefer stdout (+stderr
+    when non-empty); other shapes fall back to str/JSON."""
+    if tool_response is None:
+        return ""
+    if isinstance(tool_response, str):
+        return tool_response
+    if isinstance(tool_response, Mapping):
+        stdout = tool_response.get("stdout")
+        stderr = tool_response.get("stderr")
+        if isinstance(stdout, str) or isinstance(stderr, str):
+            parts = []
+            if isinstance(stdout, str) and stdout.strip():
+                parts.append(stdout.rstrip("\n"))
+            if isinstance(stderr, str) and stderr.strip():
+                parts.append(f"[stderr]\n{stderr.rstrip(chr(10))}")
+            return "\n".join(parts)
+        content = tool_response.get("content")
+        if isinstance(content, str):
+            return content
+    try:
+        return json.dumps(tool_response)
+    except (TypeError, ValueError):
+        return str(tool_response)
+
+
 def map_hook_event(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Pure mapping of one Claude Code hook payload to publishable session
     events ``[{type, data}]``. Side-effect-only events (SessionStart/Stop/
@@ -90,7 +117,15 @@ def map_hook_event(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
             return []
         if prompt.startswith(INJECTION_MARKER):
             return []  # injected via raise-event; already recorded by the BFF
-        return [{"type": "user.message", "data": {"content": prompt}}]
+        # CMA shape: content is an ARRAY of typed blocks — the /sessions
+        # event-row renderer joins block .text and shows "(no content)" for a
+        # bare string (observed live on the first mirrored turn).
+        return [
+            {
+                "type": "user.message",
+                "data": {"content": [{"type": "text", "text": prompt}]},
+            }
+        ]
 
     if name == "PreToolUse":
         tool_input = payload.get("tool_input")
@@ -110,28 +145,37 @@ def map_hook_event(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
         ]
 
     if name == "PostToolUse":
+        output_text = _flatten_tool_output(payload.get("tool_response"))
         return [
             {
                 "type": "agent.tool_result",
                 "data": {
                     "tool_name": tool_name,
+                    "name": tool_name,
                     "ok": True,
                     "success": True,
-                    "output": _truncate_output(payload.get("tool_response")),
+                    # dapr-agent-py tool_call_end parity: `output` is a STRING
+                    # (the tool views render it verbatim; an object shows
+                    # "(no output)") + a 500-char `output_preview`.
+                    "output": _truncate_output(output_text),
+                    "output_preview": output_text[:500] if output_text else "",
                 },
             }
         ]
 
     if name == "PostToolUseFailure":
+        output_text = _flatten_tool_output(payload.get("tool_response"))
         return [
             {
                 "type": "agent.tool_result",
                 "data": {
                     "tool_name": tool_name,
+                    "name": tool_name,
                     "ok": False,
                     "success": False,
                     "is_error": True,
-                    "output": _truncate_output(payload.get("tool_response")),
+                    "output": _truncate_output(output_text),
+                    "output_preview": output_text[:500] if output_text else "",
                     "error": _clean(payload.get("error"))
                     or _clean(payload.get("reason"))
                     or "tool failed",
@@ -190,15 +234,15 @@ class HookProcessor:
         session_id = session.get("sessionId")
         instance_id = session.get("instanceId")
 
+        # EVERY hook payload carries transcript_path — register the tailer
+        # opportunistically from any event, never only from SessionStart
+        # (observed live: SessionStart did not fire under the early
+        # managed-settings matcher shape, so the tailer never started and no
+        # agent.message/llm_usage were mirrored).
+        self._register_transcript(payload, session_id)
+
         if name == "SessionStart":
-            transcript_path = _clean(payload.get("transcript_path"))
-            cli_session_id = _clean(payload.get("session_id"))
-            supervisor = self._supervisor_getter()
-            if supervisor is not None:
-                supervisor.register_transcript(transcript_path, cli_session_id)
-            if transcript_path:
-                self._tailer_manager.start(transcript_path, session_id)
-            return
+            return  # registration handled above; no published event
 
         if name == "Stop":
             await asyncio.to_thread(self._tailer_manager.flush_now)
@@ -231,6 +275,25 @@ class HookProcessor:
             events = map_hook_event(payload)
         for event in events:
             self._publish(session_id, event["type"], event.get("data") or {})
+
+    def _register_transcript(
+        self, payload: Mapping[str, Any], session_id: Any
+    ) -> None:
+        transcript_path = _clean(payload.get("transcript_path"))
+        if not transcript_path:
+            return
+        current = self._tailer_manager.current()
+        if current is not None and getattr(current, "path", None) == transcript_path:
+            return
+        cli_session_id = _clean(payload.get("session_id"))
+        supervisor = self._supervisor_getter()
+        if supervisor is not None:
+            try:
+                supervisor.register_transcript(transcript_path, cli_session_id)
+            except Exception:  # noqa: BLE001
+                pass
+        self._tailer_manager.start(transcript_path, session_id)
+        logger.info("[hooks] transcript tailer started for %s", transcript_path)
 
     def _safe_raise(self, instance_id: str, events: list[dict[str, Any]]) -> None:
         try:

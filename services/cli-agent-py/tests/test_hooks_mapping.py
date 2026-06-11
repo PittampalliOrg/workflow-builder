@@ -26,7 +26,12 @@ def _hook(name: str, **fields: Any) -> dict[str, Any]:
 
 def test_user_prompt_submit_maps_to_user_message():
     events = map_hook_event(_hook("UserPromptSubmit", prompt="hello there"))
-    assert events == [{"type": "user.message", "data": {"content": "hello there"}}]
+    assert events == [
+        {
+            "type": "user.message",
+            "data": {"content": [{"type": "text", "text": "hello there"}]},
+        }
+    ]
 
 
 def test_injected_prompt_is_skipped():
@@ -176,4 +181,71 @@ def test_session_end_raises_cli_session_end():
 def test_mapped_events_publish_under_wfb_session_id():
     processor, published, _raised, _supervisor, _manager = _processor()
     asyncio.run(processor.process(_hook("UserPromptSubmit", prompt="hi")))
-    assert published == [("sess-1", "user.message", {"content": "hi"})]
+    assert published == [
+        ("sess-1", "user.message", {"content": [{"type": "text", "text": "hi"}]})
+    ]
+
+
+def test_post_tool_use_flattens_bash_response_object():
+    """Bash tool_response is {stdout, stderr, ...} — `output` must be a STRING
+    (the tool views render it verbatim; objects show '(no output)' — observed
+    live on the first mirrored turn)."""
+    events = map_hook_event(
+        _hook(
+            "PostToolUse",
+            tool_name="Bash",
+            tool_response={
+                "stdout": "wfb-e2e-42",
+                "stderr": "",
+                "interrupted": False,
+                "isImage": False,
+            },
+        )
+    )
+    data = events[0]["data"]
+    assert data["output"] == "wfb-e2e-42"
+    assert data["output_preview"] == "wfb-e2e-42"
+    assert data["name"] == "Bash"
+
+
+def test_processor_registers_tailer_from_any_hook_payload():
+    """transcript_path rides EVERY hook payload; the tailer must start even if
+    SessionStart never fires (live failure mode: matcher-suppressed)."""
+    import asyncio
+
+    from src.hooks_api import HookProcessor
+
+    class FakeManager:
+        def __init__(self):
+            self.started = []
+
+        def current(self):
+            return None
+
+        def start(self, path, session_id, **kw):
+            self.started.append((path, session_id))
+
+        def flush_now(self):
+            pass
+
+    manager = FakeManager()
+    published = []
+    proc = HookProcessor(
+        publish=lambda sid, etype, data, **kw: published.append(etype),
+        raise_lifecycle=lambda *_a, **_k: None,
+        supervisor_getter=lambda: None,
+        tailer_manager=manager,
+    )
+    asyncio.run(
+        proc.process(
+            _hook(
+                "UserPromptSubmit",
+                prompt="hi",
+                transcript_path="/sandbox/.claude/projects/-sandbox/x.jsonl",
+            )
+        )
+    )
+    assert manager.started == [
+        ("/sandbox/.claude/projects/-sandbox/x.jsonl", None)
+    ]
+    assert "user.message" in published
