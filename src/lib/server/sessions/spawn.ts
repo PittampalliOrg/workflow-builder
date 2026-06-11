@@ -250,14 +250,34 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		],
 	};
 
-	// Interactive-CLI gate: the runtime hosts the real CLI TUI under the
-	// session owner's SUBSCRIPTION token. Resolve it now (fail fast with a
-	// typed 412-mappable error) and deliver it to the per-session pod via
-	// sandbox-execution-api's `sessionSecretEnv` — never via agentConfig or
-	// the Dapr payload.
+	// Interactive-CLI lane: the runtime hosts the real CLI TUI in the session
+	// pod. The host selects the adapter from `agentConfig.cliAdapter`, stamped
+	// here from the runtime descriptor (one image hosts claude/codex/agy).
+	if (swapTarget?.capabilities?.interactiveTerminal && swapTarget.cliAdapter) {
+		(agentConfigForDispatch as Record<string, unknown>).cliAdapter =
+			swapTarget.cliAdapter;
+	}
+
+	// OAuth credential delivery, generalized over cliAuth.credentialKind:
+	//   - env_token / file → resolve the session owner's stored credential and
+	//     deliver it as the secret env var (`sessionSecretEnv`); the in-pod
+	//     adapter consumes it (env_token: read directly; file: seed() writes the
+	//     credential file). Fail fast with a typed 412-mappable error if missing.
+	//   - device_login → no pre-provisioned credential; the user completes the
+	//     in-terminal device-code OAuth flow on first launch. No gate, no secret.
+	// Tokens are NEVER placed in agentConfig or the Dapr payload.
 	let sessionSecretEnv: Record<string, string> | null = null;
-	if (swapTarget?.capabilities?.interactiveTerminal && swapTarget.cliAuth) {
-		const { provider, envVar } = swapTarget.cliAuth;
+	const cliAuth = swapTarget?.capabilities?.interactiveTerminal
+		? swapTarget.cliAuth
+		: undefined;
+	if (cliAuth && cliAuth.credentialKind !== "device_login") {
+		const { provider, envVar, setupCommand } = cliAuth;
+		if (!envVar) {
+			throw new Error(
+				`Runtime "${swapTarget?.id}" cliAuth.credentialKind=${cliAuth.credentialKind} requires an envVar`,
+			);
+		}
+		const setupHint = setupCommand ? `run \`${setupCommand}\` locally` : "see the runtime docs";
 		const ownerUserId = await resolveSessionOwnerUserId(sessionId);
 		const credential = ownerUserId
 			? await getUserCliCredential(ownerUserId, provider)
@@ -266,16 +286,16 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 			throw new CliTokenError(
 				"CLI_TOKEN_MISSING",
 				provider,
-				`No ${provider} CLI subscription token linked for this user. ` +
-					`Add one under Settings → CLI tokens (run \`${swapTarget.cliAuth.setupCommand}\` locally).`,
+				`No ${provider} CLI credential linked for this user. ` +
+					`Add one under Settings → CLI tokens (${setupHint}).`,
 			);
 		}
 		if (credential.expiresAt && credential.expiresAt.getTime() < Date.now()) {
 			throw new CliTokenError(
 				"CLI_TOKEN_EXPIRED",
 				provider,
-				`The linked ${provider} CLI subscription token has expired. ` +
-					`Re-run \`${swapTarget.cliAuth.setupCommand}\` locally and paste the new token under Settings → CLI tokens.`,
+				`The linked ${provider} CLI credential has expired. ` +
+					`Re-enroll under Settings → CLI tokens (${setupHint}).`,
 			);
 		}
 		sessionSecretEnv = { [envVar]: credential.token };

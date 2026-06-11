@@ -50,8 +50,25 @@ export type RuntimeCapabilities = {
 export type RuntimeCliAuth = {
 	provider: string;
 	tokenKind: "subscription_oauth";
-	envVar: string;
-	setupCommand: string;
+	/**
+	 * How the OAuth credential reaches the pod + is consumed in-pod:
+	 *  - `env_token`    — a single opaque token delivered as `envVar`, read
+	 *                     directly by the CLI (Claude Code: CLAUDE_CODE_OAUTH_TOKEN).
+	 *  - `file`         — a credential FILE blob delivered as `envVar`, written by
+	 *                     the adapter's seed() to `credentialPath` (Codex: auth.json).
+	 *  - `device_login` — no pre-provisioned credential; the user completes an
+	 *                     in-terminal device-code OAuth flow on first launch
+	 *                     (Antigravity: Google device-code paste). No `envVar`.
+	 */
+	credentialKind: "env_token" | "file" | "device_login";
+	/** Settings-UI rendering hint for the enrollment instructions. */
+	loginStyle?: "browser_token" | "auth_file" | "device_code";
+	/** Delivery env var (env_token + file). Absent for device_login. */
+	envVar?: string;
+	/** In-pod path the file blob is materialized to (file kind only). */
+	credentialPath?: string;
+	/** Command the user runs locally to mint the credential (na for device_login). */
+	setupCommand?: string;
 };
 
 export type RuntimeDescriptor = {
@@ -66,6 +83,11 @@ export type RuntimeDescriptor = {
 	capabilitiesVerified: boolean;
 	/** sandbox-execution-api execution class override (else the BFF env default). */
 	executionClass?: string;
+	/**
+	 * Adapter id the cli-agent-py host selects (stamped into agentConfig.cliAdapter
+	 * at spawn). One image hosts all interactive-cli adapters; this picks which.
+	 */
+	cliAdapter?: string;
 	cliAuth?: RuntimeCliAuth;
 	capabilities: RuntimeCapabilities;
 };
@@ -93,6 +115,17 @@ export function getRuntimeDescriptor(
 
 export function listRuntimes(): readonly RuntimeDescriptor[] {
 	return RUNTIMES;
+}
+
+/**
+ * The cliAuth descriptor for a provider (anthropic | openai | google), used by
+ * the credential store + settings UI to validate/render per credentialKind.
+ * Returns the first interactive-cli runtime that declares this provider.
+ */
+export function cliAuthForProvider(
+	provider: string
+): RuntimeCliAuth | undefined {
+	return RUNTIMES.find((d) => d.cliAuth?.provider === provider)?.cliAuth;
 }
 
 export function listRuntimeIds(): string[] {

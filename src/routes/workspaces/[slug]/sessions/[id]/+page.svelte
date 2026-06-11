@@ -181,6 +181,7 @@
 		shellAvailable: boolean;
 		shellContainers: string[];
 		interactiveTerminal: boolean;
+		cliLabel?: string | null;
 		phase?: string;
 	} | null>(null);
 	let runtimeTimer: ReturnType<typeof setInterval> | null = null;
@@ -197,6 +198,7 @@
 				shellAvailable?: boolean;
 				shellContainers?: string[];
 				interactiveTerminal?: boolean;
+				cliLabel?: string | null;
 				phase?: string;
 			};
 			runtimeFlags = {
@@ -205,6 +207,7 @@
 				shellAvailable: body.shellAvailable === true,
 				shellContainers: body.shellContainers ?? [],
 				interactiveTerminal: body.interactiveTerminal === true,
+				cliLabel: body.cliLabel ?? null,
 				phase: body.phase,
 			};
 			if (
@@ -1734,7 +1737,10 @@
 
 			{#if viewMode === 'terminal' && isInteractiveCli}
 				<div class="flex-1 overflow-hidden">
-					<CliTerminalTabs sessionId={session?.id ?? sessionId} />
+					<CliTerminalTabs
+						sessionId={session?.id ?? sessionId}
+						cliLabel={runtimeFlags?.cliLabel ?? 'Claude Code'}
+					/>
 				</div>
 			{:else if viewMode === 'browser-state'}
 				<div class="flex-1 overflow-hidden p-3">

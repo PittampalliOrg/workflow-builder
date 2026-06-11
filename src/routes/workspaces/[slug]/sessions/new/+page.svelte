@@ -22,7 +22,16 @@
 	import type { SessionRepositoryInput } from '$lib/types/sessions';
 
 	const { data }: {
-		data: { cliAuthByRuntime: Record<string, { provider: string; setupCommand: string }> };
+		data: {
+			cliAuthByRuntime: Record<
+				string,
+				{
+					provider: string;
+					credentialKind: 'env_token' | 'file' | 'device_login';
+					setupCommand: string | null;
+				}
+			>;
+		};
 	} = $props();
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
@@ -54,12 +63,19 @@
 	const selectedCliAuth = $derived(
 		selectedAgent ? (data.cliAuthByRuntime[selectedAgent.runtime] ?? null) : null
 	);
-	let cliTokenState = $state<'idle' | 'loading' | 'linked' | 'missing'>('idle');
+	let cliTokenState = $state<'idle' | 'loading' | 'linked' | 'missing' | 'device_login'>('idle');
 	let cliTokenExpiresAt = $state<string | null>(null);
 	$effect(() => {
 		const auth = selectedCliAuth;
 		if (!auth) {
 			cliTokenState = 'idle';
+			cliTokenExpiresAt = null;
+			return;
+		}
+		// device-code OAuth runtimes have no pre-provisioned credential — the
+		// user logs in inside the terminal, so submit is never blocked.
+		if (auth.credentialKind === 'device_login') {
+			cliTokenState = 'device_login';
 			cliTokenExpiresAt = null;
 			return;
 		}
@@ -86,7 +102,9 @@
 		return days > 0 ? `expires in ${days}d` : 'expired';
 	}
 	const cliTokenBlocksSubmit = $derived(
-		selectedCliAuth !== null && cliTokenState !== 'linked'
+		selectedCliAuth !== null &&
+			selectedCliAuth.credentialKind !== 'device_login' &&
+			cliTokenState !== 'linked'
 	);
 
 	async function load() {
@@ -202,13 +220,19 @@
 				</select>
 				{#if selectedCliAuth}
 					<div class="mt-1.5 flex items-center gap-1.5 text-xs">
-						{#if cliTokenState === 'loading'}
+						{#if cliTokenState === 'device_login'}
+							<KeyRound class="size-3 text-sky-500" />
+							<span class="text-sky-700 dark:text-sky-400">
+								Signs in inside the terminal ({selectedCliAuth.provider} device-code OAuth) — no
+								setup needed; complete the login when the session opens.
+							</span>
+						{:else if cliTokenState === 'loading'}
 							<Loader2 class="size-3 animate-spin text-muted-foreground" />
-							<span class="text-muted-foreground">Checking CLI token…</span>
+							<span class="text-muted-foreground">Checking CLI credential…</span>
 						{:else if cliTokenState === 'linked'}
 							<Check class="size-3 text-green-600" />
 							<span class="text-green-700 dark:text-green-400">
-								CLI token linked
+								CLI credential linked
 								{#if cliExpiryLabel(cliTokenExpiresAt)}
 									· {cliExpiryLabel(cliTokenExpiresAt)}
 								{/if}
@@ -216,10 +240,13 @@
 						{:else}
 							<KeyRound class="size-3 text-amber-500" />
 							<span class="text-amber-700 dark:text-amber-400">
-								Not linked — this runtime needs your subscription token. Run
-								<code class="rounded bg-muted px-1 py-0.5">{selectedCliAuth.setupCommand}</code>
-								locally, then
-								<a href="/settings/cli-tokens" class="underline">paste it in Settings → CLI tokens</a>.
+								Not linked — this runtime needs your {selectedCliAuth.provider} credential.
+								{#if selectedCliAuth.setupCommand}
+									Run
+									<code class="rounded bg-muted px-1 py-0.5">{selectedCliAuth.setupCommand}</code>
+									locally, then
+								{/if}
+								<a href="/settings/cli-tokens" class="underline">link it in Settings → CLI tokens</a>.
 							</span>
 						{/if}
 					</div>
