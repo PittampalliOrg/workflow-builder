@@ -108,6 +108,17 @@ async def _start_cli(input_data: dict[str, Any]) -> dict[str, Any]:
             supervisor.register_session(
                 session_id=session_id, instance_id=instance_id, pane_ref=pane_ref
             )
+            # The zero-width INJECTION_MARKER is only meaningful for runtimes
+            # whose events come from a Claude-style UserPromptSubmit hook (it
+            # dedups self-injections). codex/agy mirror from native state and
+            # codex's ratatui composer eats the marker + the first word — so
+            # omit it for them. Set on the supervisor ONCE per session so BOTH
+            # the kickoff (below) and later raise-event injections agree.
+            from src.hooks_api import INJECTION_MARKER
+
+            supervisor.injection_marker = (
+                INJECTION_MARKER if adapter.uses_injection_marker else ""
+            )
             # Kickoff: type the seed prompt into the TUI once it reaches its
             # prompt (readiness-gated, scheduled onto the app loop — this
             # activity runs on a throwaway worker-thread loop). Skipped for
@@ -115,9 +126,7 @@ async def _start_cli(input_data: dict[str, Any]) -> dict[str, Any]:
             # device-code OAuth) — the seed must never land in the auth prompt.
             seed_text = _clean(input_data.get("seedUserMessage"))
             if seed_text and not adapter.requires_interactive_login:
-                from src.hooks_api import INJECTION_MARKER
-
-                supervisor.arm_seed(seed_text, marker=INJECTION_MARKER)
+                supervisor.arm_seed(seed_text, marker=supervisor.injection_marker)
             elif seed_text and adapter.requires_interactive_login:
                 logger.info(
                     "[start-cli] adapter=%s requires interactive login — "

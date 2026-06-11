@@ -65,7 +65,7 @@ from src.cli_lifecycle import (  # noqa: E402
     start_cli_activity,
     stop_cli_activity,
 )
-from src.hooks_api import INJECTION_MARKER, build_router as build_hooks_router  # noqa: E402
+from src.hooks_api import build_router as build_hooks_router  # noqa: E402
 from src.seed import seed_session_activity  # noqa: E402
 from src.session_supervisor import (  # noqa: E402
     SessionSupervisor,
@@ -227,7 +227,12 @@ async def raise_session_event_endpoint(request: dict[str, Any]) -> dict[str, Any
             raise HTTPException(status_code=503, detail="supervisor not started")
         injected_any = False
         for text in texts:
-            if await supervisor.inject_user_text(text, marker=INJECTION_MARKER):
+            # Use the marker the adapter selected at session start ("" for
+            # codex/agy, whose composers/mirrors don't use it — sending it would
+            # drop the first word). Defaults to INJECTION_MARKER for claude-code.
+            if await supervisor.inject_user_text(
+                text, marker=supervisor.injection_marker
+            ):
                 injected_any = True
         if not injected_any:
             raise HTTPException(status_code=409, detail="no active CLI pane to inject into")

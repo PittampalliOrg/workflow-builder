@@ -188,6 +188,10 @@ def _render_config_toml(agent_config: Mapping[str, Any], base_env: Mapping[str, 
 
 class CodexAdapter(CliAdapter):
     name = "codex"
+    # codex mirrors events from rollout files (no UserPromptSubmit hook), and its
+    # ratatui composer eats a leading zero-width run + the first token — so the
+    # INJECTION_MARKER must NOT be prefixed (it dropped the kickoff's first word).
+    uses_injection_marker = False
 
     # -- seeding ----------------------------------------------------------------
 

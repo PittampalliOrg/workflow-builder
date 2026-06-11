@@ -169,6 +169,16 @@ def test_codex_pane_env_strips_apikey_and_blob():
     assert "wfb.session.id=sess-1" in env["OTEL_RESOURCE_ATTRIBUTES"]
 
 
+def test_injection_marker_gating_per_adapter():
+    """The zero-width INJECTION_MARKER is Claude-hook-only. codex's ratatui
+    composer eats it + the first word, and neither codex nor agy has a
+    UserPromptSubmit hook — so they must NOT prefix it. claude-code keeps it
+    (its hook dedups self-injections)."""
+    assert get_adapter("claude-code").uses_injection_marker is True
+    assert get_adapter("codex").uses_injection_marker is False
+    assert get_adapter("antigravity").uses_injection_marker is False
+
+
 def test_codex_model_normalization():
     assert normalize_codex_model("openai/o4") == "o4"
     assert normalize_codex_model("gpt-5.5") == "gpt-5.5"
