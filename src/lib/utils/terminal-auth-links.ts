@@ -27,6 +27,15 @@ const ANSI_RE = new RegExp(
 	'g'
 );
 
+// Orphaned CSI fragments: a TUI colorizes a URL mid-string with `ESC[0;39;49m`,
+// and if the ESC (or ESC+`[`) is lost at a PTY chunk boundary the bare params +
+// final byte survive (e.g. `0;39;49m` left inside `accounts.0;39;49mgoogle.com`),
+// which ANSI_RE can't catch without the ESC anchor. Strip multi-parameter CSI
+// fragments (≥2 `;`-joined numeric params + a final letter) with the ESC and `[`
+// both OPTIONAL. The mandatory `;`-joined numeric run makes false positives on
+// real URLs (which never contain `\d+;\d+;…<letter>` runs) vanishingly unlikely.
+const ORPHAN_CSI_RE = new RegExp(`(?:${ESC}?\\[)?[0-9]{1,3}(?:;[0-9]{1,3})+[A-Za-z]`, 'g');
+
 // Heuristics for "this is a sign-in link the user must act on".
 const AUTH_HINTS = [
 	'accounts.google.com',
@@ -47,7 +56,7 @@ const AUTH_HINTS = [
 ];
 
 export function stripAnsi(s: string): string {
-	return s.replace(ANSI_RE, '');
+	return s.replace(ANSI_RE, '').replace(ORPHAN_CSI_RE, '');
 }
 
 export function isAuthUrl(url: string): boolean {
