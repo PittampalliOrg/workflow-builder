@@ -223,10 +223,8 @@
       "cliAuth": {
         "provider": "google",
         "tokenKind": "subscription_oauth",
-        "credentialKind": "file_bundle",
-        "loginStyle": "auth_file",
-        "envVar": "AGY_AUTH_JSON",
-        "setupCommand": "node -e 'const fs=require(\"fs\"),o={};for(const f of [\"oauth_creds.json\",\"antigravity-cli/antigravity-oauth-token\",\"antigravity-cli/installation_id\",\"google_accounts.json\",\"state.json\",\"installation_id\"])try{o[f]=fs.readFileSync(process.env.HOME+\"/.gemini/\"+f,\"utf8\")}catch{};process.stdout.write(JSON.stringify(o))'"
+        "credentialKind": "device_login",
+        "loginStyle": "device_code"
       },
       "capabilities": {
         "durabilityGranularity": "per-session",
