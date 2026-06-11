@@ -99,6 +99,9 @@ class AntigravityAdapter(CliAdapter):
     # Device-code OAuth happens in the pane on first launch — skip the kickoff
     # so the seed message is never typed into the authorization-code prompt.
     requires_interactive_login = True
+    # agy mirrors events from herdr/native state (no UserPromptSubmit hook), so
+    # the Claude-only INJECTION_MARKER has no dedup function here — don't send it.
+    uses_injection_marker = False
 
     # -- seeding ----------------------------------------------------------------
 

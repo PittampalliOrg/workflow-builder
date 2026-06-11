@@ -98,6 +98,16 @@ class CliAdapter(abc.ABC):
     # types their first message in the terminal. (Antigravity device-login.)
     requires_interactive_login: bool = False
 
+    # When True, injected prompts (kickoff seed + raise-event continuations) are
+    # prefixed with the zero-width INJECTION_MARKER so a Claude-style
+    # UserPromptSubmit hook can dedup self-injected prompts (hooks_api.py). This
+    # is ONLY meaningful for runtimes whose session events come from such hooks.
+    # codex/agy mirror their events from native rollout files (no hook), and
+    # codex's ratatui composer mangles a leading zero-width run — it swallows the
+    # whole leading token up to the first space, dropping the first word of every
+    # kickoff. Those adapters set this False so the marker is never sent.
+    uses_injection_marker: bool = True
+
     @abc.abstractmethod
     def seed(self, session_input: Mapping[str, Any]) -> SeedResult:
         """Materialize per-session files (MCP config, system prompt, skills)."""

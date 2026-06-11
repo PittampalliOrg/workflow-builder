@@ -128,6 +128,15 @@ class SessionSupervisor:
         self._instance_id: str | None = None
         self._pane_ref: str | None = None
         self._transcript_path: str | None = None
+
+        # Zero-width prefix stamped on injected prompts so a Claude-style
+        # UserPromptSubmit hook can dedup self-injections. Set per-session in
+        # _start_cli from the adapter (hooks_api.INJECTION_MARKER for claude-code;
+        # "" for codex/agy, whose composers/event-mirrors don't use it). The
+        # literal default matches hooks_api.INJECTION_MARKER (inlined to avoid the
+        # hooks_api -> session_supervisor import cycle); it is always overwritten
+        # at session start, so it is only a fallback.
+        self.injection_marker: str = "\u200b\u2060\u200b"  # = hooks_api.INJECTION_MARKER
         self._cli_session_id: str | None = None
 
         # Semantic-state tracking.
