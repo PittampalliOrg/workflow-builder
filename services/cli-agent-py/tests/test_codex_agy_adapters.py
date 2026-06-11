@@ -216,18 +216,23 @@ AGY_AUTH_BUNDLE = json.dumps(
         "oauth_creds.json": '{"access_token":"a","refresh_token":"r"}',
         "antigravity-cli/antigravity-oauth-token": '{"token":{},"auth_method":"google"}',
         "google_accounts.json": '{"active":"x@gmail.com","old":[]}',
+        "state.json": '{"loggedIn":true}',
+        "installation_id": "install-abc123",
     }
 )
 
 
 def test_agy_seed_materializes_auth_bundle(agy_home, monkeypatch):
     """agy now boots from injected ~/.gemini OAuth files (the AGY_AUTH_JSON
-    file_bundle), NOT the in-pod device-code flow."""
+    file_bundle), NOT the in-pod device-code flow. state.json + installation_id
+    are required so the TUI recognizes the install and skips re-auth."""
     monkeypatch.setenv("AGY_AUTH_JSON", AGY_AUTH_BUNDLE)
     result = get_adapter("antigravity").seed(AGY_SESSION)
     gem = agy_home / ".gemini"
     assert (gem / "oauth_creds.json").read_text() == '{"access_token":"a","refresh_token":"r"}'
     assert (gem / "antigravity-cli" / "antigravity-oauth-token").exists()
+    assert (gem / "state.json").read_text() == '{"loggedIn":true}'
+    assert (gem / "installation_id").read_text() == "install-abc123"
     assert stat.S_IMODE((gem / "oauth_creds.json").stat().st_mode) == 0o600
     assert not result.warnings
 
