@@ -205,6 +205,53 @@ def test_pane_env_passthrough_and_api_key_exclusion():
     assert "RANDOM_SECRET" not in env
 
 
+def test_seed_no_transcript_store_leaves_projects_local(seeded_dirs, monkeypatch):
+    """Without CLI_TRANSCRIPT_MOUNT the transcript stays a normal local dir."""
+    _wfb_dir, config_dir = seeded_dirs
+    monkeypatch.delenv("CLI_TRANSCRIPT_MOUNT", raising=False)
+    adapter = get_adapter("claude-code")
+    result = adapter.seed({"agentConfig": {}})
+    assert "transcriptStore" not in result.paths
+    projects = config_dir / "projects"
+    assert not projects.is_symlink()
+
+
+def test_seed_links_transcript_into_durable_store(seeded_dirs, monkeypatch, tmp_path):
+    """With CLI_TRANSCRIPT_MOUNT set, projects/ becomes a symlink into the
+    per-session store, so a transcript written by claude lands in the mount."""
+    _wfb_dir, config_dir = seeded_dirs
+    mount = tmp_path / "transcripts-mount"
+    mount.mkdir()
+    monkeypatch.setenv("CLI_TRANSCRIPT_MOUNT", str(mount))
+    adapter = get_adapter("claude-code")
+    result = adapter.seed({"agentConfig": {}})
+    target = mount / "claude"
+    assert result.paths["transcriptStore"] == str(target)
+    projects = config_dir / "projects"
+    assert projects.is_symlink()
+    assert projects.resolve() == target.resolve()
+    # A transcript written through the symlink lands in the durable store.
+    (projects / "-sandbox").mkdir(parents=True)
+    (projects / "-sandbox" / "abc.jsonl").write_text("{}\n")
+    assert (target / "-sandbox" / "abc.jsonl").read_text() == "{}\n"
+
+
+def test_seed_migrates_existing_transcript_into_store(seeded_dirs, monkeypatch, tmp_path):
+    """A pre-existing real projects/ dir is migrated into the store, not lost."""
+    _wfb_dir, config_dir = seeded_dirs
+    projects = config_dir / "projects" / "-sandbox"
+    projects.mkdir(parents=True)
+    (projects / "old.jsonl").write_text("prior\n")
+    mount = tmp_path / "m"
+    mount.mkdir()
+    monkeypatch.setenv("CLI_TRANSCRIPT_MOUNT", str(mount))
+    adapter = get_adapter("claude-code")
+    adapter.seed({"agentConfig": {}})
+    link = config_dir / "projects"
+    assert link.is_symlink()
+    assert (mount / "claude" / "-sandbox" / "old.jsonl").read_text() == "prior\n"
+
+
 def test_normalizers():
     assert normalize_claude_model("anthropic/claude-opus-4-8") == "claude-opus-4-8"
     assert normalize_claude_model("claude-sonnet-4-6") == "claude-sonnet-4-6"

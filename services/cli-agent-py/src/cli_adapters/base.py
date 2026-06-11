@@ -12,8 +12,70 @@ transcript tailer consult these before applying their defaults).
 from __future__ import annotations
 
 import abc
+import logging
+import os
+import shutil
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Mapping
+
+logger = logging.getLogger(__name__)
+
+
+def link_transcript_subtree(cli_transcript_dir: Path, store_subdir: str) -> str | None:
+    """Point a CLI's transcript dir at the durable per-session store.
+
+    The interactive-cli sandbox optionally mounts a per-session Postgres-backed
+    JuiceFS subtree at ``CLI_TRANSCRIPT_MOUNT`` (sandbox-execution-api
+    ``transcriptStore*``). Symlinking the CLI's own transcript directory into it
+    makes the conversation durable + native ``--resume``-able with zero CLI
+    changes, while credentials/onboarding state stay on the ephemeral emptyDir
+    (only the transcript bytes reach Postgres). No-op (returns ``None``) when the
+    store is not mounted, so it is safe on every cluster/runtime.
+
+    Idempotent across pod restarts and resumes: an existing symlink is left
+    as-is; a pre-existing real transcript dir is migrated into the store then
+    replaced by the symlink (never clobbered).
+    """
+    mount_raw = os.environ.get("CLI_TRANSCRIPT_MOUNT", "").strip()
+    if not mount_raw:
+        return None
+    mount = Path(mount_raw)
+    if not mount.is_dir():
+        logger.warning("CLI_TRANSCRIPT_MOUNT=%s is not a directory; skipping", mount_raw)
+        return None
+    target = mount / store_subdir
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        cli_transcript_dir.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("transcript store mkdir failed (%s); skipping", exc)
+        return None
+    if cli_transcript_dir.is_symlink():
+        return str(target)
+    if cli_transcript_dir.exists():
+        # A real dir already holds transcripts (CLI wrote before seed, or an
+        # image-baked dir). Migrate into the durable store, then replace with
+        # the symlink so future writes persist. Never lose data.
+        try:
+            for child in cli_transcript_dir.iterdir():
+                dest = target / child.name
+                if not dest.exists():
+                    shutil.move(str(child), str(dest))
+            cli_transcript_dir.rmdir()
+        except OSError as exc:
+            logger.warning(
+                "transcript store: could not migrate %s (%s); leaving local dir",
+                cli_transcript_dir,
+                exc,
+            )
+            return None
+    try:
+        cli_transcript_dir.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        logger.warning("transcript store symlink failed (%s); skipping", exc)
+        return None
+    return str(target)
 
 
 @dataclass

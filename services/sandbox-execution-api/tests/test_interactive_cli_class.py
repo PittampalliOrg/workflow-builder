@@ -180,6 +180,93 @@ def test_interactive_cli_class_env_and_resources_apply() -> None:
     }
 
 
+def _interactive_cli_transcript_class() -> ExecutionClassConfig:
+    """interactive-cli class WITH the durable transcript store enabled."""
+    cfg = _interactive_cli_class()
+    return cfg.model_copy(
+        update={
+            "transcriptStoreCsiDriver": "csi.juicefs.com",
+            "transcriptStoreSecretName": "juicefs-wfbcli",
+            "transcriptStoreMountPath": "/sandbox/.transcripts",
+            "transcriptStoreCapacity": "10Gi",
+        }
+    )
+
+
+def _cli_transcript_manifest(**request_overrides) -> dict:
+    return build_agent_workflow_host_sandbox_manifest(
+        _cli_request(**request_overrides),
+        namespace="workflow-builder",
+        class_config=_interactive_cli_transcript_class(),
+    )
+
+
+def test_transcript_store_disabled_by_default_adds_no_volume() -> None:
+    manifest = _cli_manifest()
+    pod_spec = manifest["spec"]["podTemplate"]["spec"]
+    volume_names = {v["name"] for v in pod_spec["volumes"]}
+    assert "cli-transcripts" not in volume_names
+    env_names = {e["name"] for e in pod_spec["containers"][0]["env"]}
+    assert "CLI_TRANSCRIPT_MOUNT" not in env_names
+
+
+def test_transcript_store_adds_pvc_volume_mount_and_env() -> None:
+    manifest = _cli_transcript_manifest()
+    pod_spec = manifest["spec"]["podTemplate"]["spec"]
+    container = pod_spec["containers"][0]
+    vol = next(v for v in pod_spec["volumes"] if v["name"] == "cli-transcripts")
+    # The per-session PVC name keys on the session id (unique per attempt).
+    assert vol["persistentVolumeClaim"]["claimName"] == "cli-tx-sw-session-cli-1"
+    mount = next(
+        m for m in container["volumeMounts"] if m["name"] == "cli-transcripts"
+    )
+    assert mount["mountPath"] == "/sandbox/.transcripts"
+    env = {e["name"]: e.get("value") for e in container["env"] if "value" in e}
+    assert env["CLI_TRANSCRIPT_MOUNT"] == "/sandbox/.transcripts"
+
+
+def test_transcript_conversation_key_prefers_resume_session() -> None:
+    fresh = app_module._cli_transcript_conversation_key(
+        _cli_request(sessionId="S2")
+    )
+    assert fresh == "S2"
+    resumed = app_module._cli_transcript_conversation_key(
+        _cli_request(sessionId="S2", resumeFromSessionId="S1")
+    )
+    assert resumed == "S1"
+
+
+def test_ensure_transcript_volume_static_pv_is_data_safe() -> None:
+    created: list = []
+
+    class _FakeCore:
+        def create_persistent_volume(self, body):
+            created.append(("pv", body))
+
+        def create_namespaced_persistent_volume_claim(self, namespace, body):
+            created.append(("pvc", namespace, body))
+
+    name = app_module._ensure_cli_transcript_volume(
+        _FakeCore(),
+        _cli_request(sessionId="S2", resumeFromSessionId="S1"),
+        _interactive_cli_transcript_class(),
+        namespace="workflow-builder",
+    )
+    assert name == "cli-tx-s2"
+    pv = next(b for kind, b in ((c[0], c[-1]) for c in created) if kind == "pv")
+    # Static (non `pvc-<uuid>`) volumeHandle -> DeleteVolume no-ops on data.
+    assert pv["spec"]["csi"]["volumeHandle"] == "cli-tx-s2"
+    assert not re.match(r"pvc-\w{8}(-\w{4}){3}-\w{12}", pv["spec"]["csi"]["volumeHandle"])
+    assert pv["spec"]["persistentVolumeReclaimPolicy"] == "Delete"
+    # Subtree (Postgres data) keyed on the conversation, not the pod attempt.
+    assert pv["spec"]["csi"]["volumeAttributes"]["subPath"] == "S1"
+    assert pv["spec"]["mountOptions"] == ["allow_other"]
+    assert pv["spec"]["csi"]["nodePublishSecretRef"] == {
+        "name": "juicefs-wfbcli",
+        "namespace": "workflow-builder",
+    }
+
+
 def test_default_class_manifest_is_unchanged_by_new_optional_fields() -> None:
     """Existing classes (no new fields) keep byte-identical behavior."""
     manifest = build_agent_workflow_host_sandbox_manifest(

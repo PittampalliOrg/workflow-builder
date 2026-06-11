@@ -193,6 +193,23 @@ class ExecutionClassConfig(BaseModel):
     # XDG_CONFIG_HOME=<home>/.config (and the openshell-config emptyDir mounts
     # there). Default keeps the historical /root/.config with no HOME env.
     agentHostUserHome: str | None = None
+    # Per-session durable transcript store (interactive-cli runtime family).
+    # When transcriptStoreCsiDriver is set, the create handler provisions a
+    # static per-session PV+PVC (CSI subPath = the conversation key) and the
+    # builder mounts it at transcriptStoreMountPath. cli-agent-py symlinks the
+    # CLI's transcript dir into the mount, so ONLY the conversation transcript
+    # persists (Postgres-backed JuiceFS); credentials/onboarding state stay on
+    # the ephemeral emptyDir. The PV uses a non-`pvc-<uuid>` volumeHandle so the
+    # driver treats it as static -> reclaim `Delete` is a no-op on the backing
+    # data (the subtree survives in Postgres for `--resume`).
+    transcriptStoreCsiDriver: str | None = None
+    transcriptStoreSecretName: str | None = None
+    transcriptStoreSecretNamespace: str | None = None
+    transcriptStoreMountPath: str = "/sandbox/.transcripts"
+    transcriptStoreCapacity: str = "10Gi"
+    transcriptStoreMountOptions: list[str] = Field(
+        default_factory=lambda: ["allow_other"]
+    )
 
 
 class AgentWorkflowHostRequest(BaseModel):
@@ -212,6 +229,10 @@ class AgentWorkflowHostRequest(BaseModel):
     # agent-host-cred-<agent-app-id> + valueFrom.secretKeyRef — the plaintext
     # values never appear in the Sandbox CR, logs, traces, or API responses.
     sessionSecretEnv: dict[str, str] | None = None
+    # Conversation key for the durable transcript store. When resuming, the BFF
+    # passes the ORIGINAL session id so the new pod mounts the same Postgres
+    # subtree (`--resume`); fresh sessions leave it unset (key = sessionId).
+    resumeFromSessionId: str | None = None
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:
@@ -779,6 +800,177 @@ def _bind_agent_host_cred_secret_owner(
         )
 
 
+def _cli_transcript_enabled(class_config: ExecutionClassConfig) -> bool:
+    return bool(class_config.transcriptStoreCsiDriver)
+
+
+def _cli_transcript_conversation_key(request: AgentWorkflowHostRequest) -> str:
+    """Subtree key that ties a pod to its Postgres-backed transcript.
+
+    A resume passes the original session id so the new pod re-mounts the same
+    subtree; a fresh session keys on its own id.
+    """
+    return (request.resumeFromSessionId or request.sessionId or "").strip()
+
+
+def _cli_transcript_resource_name(session_id: str) -> str:
+    # `cli-tx-` prefix guarantees the name never matches the driver's
+    # `pvc-<uuid>` dynamic-PV regex, so DeleteVolume stays a data-safe no-op.
+    return _safe_resource_name(f"cli-tx-{session_id}", max_length=63)
+
+
+def _ensure_cli_transcript_volume(
+    core: Any,
+    request: AgentWorkflowHostRequest,
+    class_config: ExecutionClassConfig,
+    *,
+    namespace: str,
+) -> str | None:
+    """Provision the per-session static PV + PVC for the durable transcript.
+
+    Called BEFORE the Sandbox CR so the pod never races a missing PVC. The PV
+    is static (custom volumeHandle) and reclaim `Delete` -> the controller's
+    DeleteVolume no-ops on the backing data; the subtree (keyed on the
+    conversation id via CSI `subPath`) survives in Postgres for `--resume`.
+    Idempotent: a 409 on either object is treated as already-provisioned.
+    """
+    if not _cli_transcript_enabled(class_config):
+        return None
+    conversation_key = _cli_transcript_conversation_key(request)
+    if not conversation_key:
+        return None
+    # PV/PVC are named per-session (unique per attempt) while the CSI subPath is
+    # the conversation key, so a resume gets a fresh PV bound to the SAME data.
+    name = _cli_transcript_resource_name(request.sessionId)
+    secret_namespace = class_config.transcriptStoreSecretNamespace or namespace
+    labels = {
+        "app": "cli-transcript",
+        "agent-app-id": _safe_name(request.agentAppId, max_length=63),
+        "workflow-builder.cnoe.io/session-id": _safe_name(
+            request.sessionId, max_length=63
+        ),
+        "workflow-builder.cnoe.io/conversation-key": _safe_name(
+            conversation_key, max_length=63
+        ),
+    }
+    pv_body = {
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {"name": name, "labels": labels},
+        "spec": {
+            "capacity": {"storage": class_config.transcriptStoreCapacity},
+            "accessModes": ["ReadWriteMany"],
+            "persistentVolumeReclaimPolicy": "Delete",
+            "storageClassName": "",
+            "mountOptions": list(class_config.transcriptStoreMountOptions or []),
+            "volumeMode": "Filesystem",
+            "csi": {
+                "driver": class_config.transcriptStoreCsiDriver,
+                "fsType": "juicefs",
+                "volumeHandle": name,
+                "nodePublishSecretRef": {
+                    "name": class_config.transcriptStoreSecretName,
+                    "namespace": secret_namespace,
+                },
+                "volumeAttributes": {"subPath": conversation_key},
+            },
+        },
+    }
+    pvc_body = {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": name, "namespace": namespace, "labels": labels},
+        "spec": {
+            "accessModes": ["ReadWriteMany"],
+            "storageClassName": "",
+            "volumeName": name,
+            "resources": {
+                "requests": {"storage": class_config.transcriptStoreCapacity}
+            },
+        },
+    }
+    try:
+        core.create_persistent_volume(body=pv_body)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+    try:
+        core.create_namespaced_persistent_volume_claim(
+            namespace=namespace, body=pvc_body
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+    return name
+
+
+def _bind_cli_transcript_pvc_owner(
+    core: Any,
+    custom: Any,
+    *,
+    namespace: str,
+    pvc_name: str,
+    sandbox_name: str,
+    sandbox: dict[str, Any] | None,
+) -> None:
+    """ownerRef the transcript PVC at the Sandbox CR so it GCs with the pod.
+
+    The PVC's `pvc-protection` finalizer holds it until the pod exits; reclaim
+    `Delete` then removes the (static, data-safe) PV. Best-effort.
+    """
+    uid = None
+    if isinstance(sandbox, dict):
+        uid = ((sandbox.get("metadata") or {}) or {}).get("uid")
+    if not uid:
+        try:
+            existing = custom.get_namespaced_custom_object(
+                group="agents.x-k8s.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="sandboxes",
+                name=sandbox_name,
+            )
+            uid = ((existing or {}).get("metadata", {}) or {}).get("uid")
+        except Exception as exc:
+            logger.warning(
+                "cli-transcript pvc %s: sandbox %s read for ownerRef failed: %s",
+                pvc_name,
+                sandbox_name,
+                exc,
+            )
+    if not uid:
+        logger.warning(
+            "cli-transcript pvc %s: no sandbox uid for %s; pvc left unowned",
+            pvc_name,
+            sandbox_name,
+        )
+        return
+    owner_patch = {
+        "metadata": {
+            "ownerReferences": [
+                {
+                    "apiVersion": "agents.x-k8s.io/v1alpha1",
+                    "kind": "Sandbox",
+                    "name": sandbox_name,
+                    "uid": uid,
+                    "controller": False,
+                    "blockOwnerDeletion": False,
+                }
+            ]
+        }
+    }
+    try:
+        core.patch_namespaced_persistent_volume_claim(
+            name=pvc_name,
+            namespace=namespace,
+            body=owner_patch,
+        )
+    except Exception as exc:
+        logger.warning(
+            "cli-transcript pvc %s: ownerRef patch failed: %s", pvc_name, exc
+        )
+
+
 TRACEPARENT_ANNOTATION = "workflow-builder.cnoe.io/traceparent"
 TRACESTATE_ANNOTATION = "workflow-builder.cnoe.io/tracestate"
 BAGGAGE_ANNOTATION = "workflow-builder.cnoe.io/baggage"
@@ -1156,6 +1348,26 @@ def build_agent_workflow_host_sandbox_manifest(
             for volume in pod_spec["volumes"]
             if volume.get("name") not in {"openshell-client-tls", "openshell-client-ca"}
         ]
+    if _cli_transcript_enabled(class_config):
+        # Per-session durable transcript subtree. The PVC is provisioned by the
+        # create handler (_ensure_cli_transcript_volume) and mounted at a path
+        # SIBLING to the CLI config dir; cli-agent-py symlinks the CLI's
+        # transcript dir into it (CLI_TRANSCRIPT_MOUNT) so only the transcript
+        # persists and all credential state stays on the ephemeral emptyDir.
+        transcript_pvc = _cli_transcript_resource_name(request.sessionId)
+        mount_path = class_config.transcriptStoreMountPath
+        pod_spec["volumes"].append(
+            {
+                "name": "cli-transcripts",
+                "persistentVolumeClaim": {"claimName": transcript_pvc},
+            }
+        )
+        pod_spec["containers"][0]["volumeMounts"].append(
+            {"name": "cli-transcripts", "mountPath": mount_path}
+        )
+        pod_spec["containers"][0]["env"].append(
+            {"name": "CLI_TRANSCRIPT_MOUNT", "value": mount_path}
+        )
     if class_config.podSecurityContext is not None:
         pod_spec["securityContext"] = dict(class_config.podSecurityContext)
     if class_config.imagePullSecrets:
@@ -1690,6 +1902,11 @@ def submit_agent_workflow_host(
         cred_secret_name = _ensure_agent_host_cred_secret(
             core, body, namespace=namespace
         )
+        # Per-session durable transcript PV+PVC, also before the Sandbox CR so
+        # the pod's PVC mount never races a missing claim.
+        transcript_pvc_name = _ensure_cli_transcript_volume(
+            core, body, class_config, namespace=namespace
+        )
         created_sandbox: dict[str, Any] | None = None
         try:
             created_sandbox = custom.create_namespaced_custom_object(
@@ -1727,6 +1944,11 @@ def submit_agent_workflow_host(
                     cred_secret_name = _ensure_agent_host_cred_secret(
                         core, body, namespace=namespace
                     )
+                if transcript_pvc_name:
+                    # Likewise the PVC was ownerRef'd to the old CR; re-ensure.
+                    transcript_pvc_name = _ensure_cli_transcript_volume(
+                        core, body, class_config, namespace=namespace
+                    )
                 created_sandbox = custom.create_namespaced_custom_object(
                     group="agents.x-k8s.io",
                     version="v1alpha1",
@@ -1740,6 +1962,15 @@ def submit_agent_workflow_host(
                 custom,
                 namespace=namespace,
                 secret_name=cred_secret_name,
+                sandbox_name=sandbox_name,
+                sandbox=created_sandbox,
+            )
+        if transcript_pvc_name:
+            _bind_cli_transcript_pvc_owner(
+                core,
+                custom,
+                namespace=namespace,
+                pvc_name=transcript_pvc_name,
                 sandbox_name=sandbox_name,
                 sandbox=created_sandbox,
             )
