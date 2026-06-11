@@ -48,7 +48,12 @@ A two-stage spike (fully isolated: throwaway docker + a local kind cluster; zero
 - Pod = a privileged **mounter sidecar** (`juicefs mount -o allow_other`, Bidirectional propagation) + an **unprivileged uid-10001 reader** (caps dropped, `allowPrivilegeEscalation:false`, `runAsNonRoot` — exactly our sandbox shape, HostToContainer propagation).
 - The unprivileged container **read** a Postgres-backed transcript byte-identical, and (on a 10001-owned subtree) **wrote** its own transcript. After **deleting the entire pod**, a **fresh pod** read the unprivileged-written file back **byte-identical** from Postgres.
 
-**Conclusion: GO.** The CLI can transparently read/write Postgres-backed files in an unprivileged sandbox pod, durable across pod death — without touching the agent loop.
+**Stage C — real dev cluster (Talos):**
+- The `juicefs` DB + `wfbcli` FS formatted against the **real dev Postgres** (`juicefs format --storage postgres`).
+- **FUSE works on Talos**: `/dev/fuse` is present on the dev node (the `fuse` module is loaded); an **inline privileged mount** of the PG-backed `wfbcli` FS succeeded and a write persisted (`MOUNTED-ON-TALOS`, `WRITE-OK`).
+- The juicefs-csi-driver's mount-pod template hostPath-mounts `/etc/updatedb.conf` (`FileOrCreate`), which Talos's **read-only `/etc`** initially rejected (`mkdir … read-only file system`); `mountPodPatch` only **appends**, so it can't remove the volume. **BUT the driver has a built-in `JUICEFS_IMMUTABLE=true` env** (`cmd/{node,controller}.go` → `config.Immutable`) that, in `pkg/.../builder/pod.go`, **skips the `updatedb` host mount entirely** — purpose-built for immutable OSes.
+
+**Conclusion: GO — (0b) the unprivileged juicefs-csi-driver works cleanly on Talos.** With `JUICEFS_IMMUTABLE=true` on the controller + node-driver, re-verified on the **real dev Talos cluster**: the mount pod runs with `updatedb` **skipped**, and an **unprivileged uid-10001** pod mounted `JuiceFS:wfbcli` at `/sandbox/.claude` and wrote a file that **persisted to Postgres** — **no Talos node change, no privileged container in the workload pod, transparent**. This is the ideal path.
 
 ### Integration details the spike surfaced (for the implementation)
 1. Mount with **`-o allow_other`** + `user_allow_other` in `/etc/fuse.conf` so the unprivileged CLI container (uid 10001) sees the root-mounted FUSE.
@@ -56,13 +61,15 @@ A two-stage spike (fully isolated: throwaway docker + a local kind cluster; zero
 3. The transcript subtree must be **owned/writable by the runtime uid** (10001): create + `chown` a **per-session subtree** at start (the CLI then owns the files it creates). Root-owned pre-existing files are read-only to uid 10001.
 4. Mount mechanism choice: **juicefs-csi-driver** (recommended — no privileged container in the workload pod; mount pods managed by the driver) vs an inline privileged mounter sidecar (simpler, but one privileged container per session pod) vs meta-fuse-csi-plugin (generic).
 
-## Recommended implementation (follow-up phase)
+## Implementation — (0b) unprivileged juicefs-csi-driver (chosen, proven on dev Talos)
 
-Adopt **(0)** for the `interactive-cli` family:
-- Deploy **juicefs-csi-driver** (dev → ryzen), backed by our PostgreSQL (`--storage postgres`, a dedicated `jfs_*` schema/DB).
-- Per-session: a PV/PVC (or a session-scoped subtree of one FS) mounted at `$CLAUDE_CONFIG_DIR` (or just `…/projects`) in the sandbox pod, `allow_other`, subtree chowned to uid 10001. The CLI's transcript + native `--resume`/`--continue` then "just work" durably with **minimal cli-agent-py code**.
-- Spawn passes a `resumeFromSessionId` → the new pod mounts the same FS subtree → `claude --resume <claudeSessionId>`. Generalizes to codex (`~/.codex/sessions`) and agy (brain transcript) since it's just the filesystem.
-- Scope/rollout: limit to the runc `interactive-cli` class (not `secure-gvisor`); per-session subtree lifecycle + GC; `jfs_blob` footprint monitoring.
+The `juicefs` DB + `wfbcli` FS are formatted on dev Postgres; the driver mounts it transparently into **unprivileged** session pods (`JUICEFS_IMMUTABLE=true` for Talos). Steps:
+- **Driver (GitOps):** an ArgoCD app for juicefs-csi-driver (pin v0.31.x) on dev → ryzen, with `JUICEFS_IMMUTABLE=true` on the controller + node-driver containers. Postgres backing: a dedicated `juicefs` DB + `wfbcli` FS (format Job) + a `juicefs-wfbcli` secret (`metaurl/storage/bucket/access-key/secret-key`); ryzen gets its own.
+- **Per-session mount (sandbox-execution-api):** the `interactive-cli` class mounts the `wfbcli` FS at `$CLAUDE_CONFIG_DIR` (or `…/projects`) with **`subPath: <sessionId>`** + `allow_other`, subtree chowned to uid 10001 (the CLI then owns its transcript). The CLI's transcript + native `--resume`/`--continue` "just work" durably with **minimal cli-agent-py code**.
+- **Resume:** spawn passes `resumeFromSessionId` → the new pod mounts the **same** `subPath` → `claude --resume <claudeSessionId>`. Generalizes to codex (`~/.codex/sessions`) / agy (brain transcript) since it's just the filesystem.
+- **Scope/GC:** runc `interactive-cli` class only (not `secure-gvisor`); per-session `subPath` GC on session end; `jfs_blob` footprint monitoring.
+
+Fallbacks kept in reserve (not built): **(0a)** an inline privileged mount sidecar (works on Talos but re-adds a privileged container), and **(1)** statestore snapshot/restore (no FUSE, cli-agent-py reuses its Dapr state client + Files-API offload).
 
 ### Lighter fallback (if the CSI rollout is deferred) — statestore snapshot/restore
 cli-agent-py already writes a non-actor statestore (`services/cli-agent-py/src/cancellation.py` does sidecar `save_state`/`get_state` against `dapr-agent-py-statestore`). A best-effort `persist_cli_transcript` activity (gzip + 8 MiB inline guard + Files-API offload via `session_outputs.py`'s `/outputs/ingest`) at turn-completed/stop/`continue_as_new`, a `restore_cli_transcript` activity + `claude --resume` on a resume spawn, key `cli-transcript:<sessionId>`. Not transparent, but the same durability + user-initiated resume with far less infra.

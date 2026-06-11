@@ -39,7 +39,7 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 
-from src.cli_adapters.base import CliAdapter, SeedResult
+from src.cli_adapters.base import CliAdapter, SeedResult, link_transcript_subtree
 from src.mcp_config import build_mcp_servers
 
 logger = logging.getLogger(__name__)
@@ -191,6 +191,14 @@ class ClaudeCodeAdapter(CliAdapter):
         # `claude -p` in the same pod); pre-completing onboarding + trust for
         # the sandbox cwd boots the TUI straight into the REPL.
         self._seed_onboarding_state(result)
+
+        # (i) Durable transcript store. When the sandbox mounts a per-session
+        # JuiceFS subtree (CLI_TRANSCRIPT_MOUNT), redirect claude's transcript
+        # dir ($CLAUDE_CONFIG_DIR/projects) into it so the conversation persists
+        # to Postgres and native `--resume` works across pods. No-op otherwise.
+        linked = link_transcript_subtree(_claude_config_dir() / "projects", "claude")
+        if linked:
+            result.paths["transcriptStore"] = linked
 
         return result
 
