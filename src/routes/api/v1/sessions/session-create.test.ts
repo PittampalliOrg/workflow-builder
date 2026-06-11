@@ -202,6 +202,7 @@ function sampleSession(): SessionDetail {
 		daprInstanceId: null,
 		natsSubject: null,
 		parentExecutionId: null,
+		resumedFromSessionId: null,
 		sandboxName: "dapr-agent-py",
 		workspaceSandboxName: null,
 		runtimeAppId: null,

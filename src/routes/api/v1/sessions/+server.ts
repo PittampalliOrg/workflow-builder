@@ -4,6 +4,7 @@ import {
 	addResource,
 	attachWorkspaceSandbox,
 	createSession,
+	getSession,
 	listSessions,
 	recordSessionSandboxProvisioningError,
 	type CreateSessionInput,
@@ -93,6 +94,46 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	let resolvedAgentVersion =
 		typeof body.agentVersion === "number" ? body.agentVersion : undefined;
 
+	// Interactive-cli conversation RESUME. When `resumeFromSessionId` is set, the
+	// new session re-mounts the original session's durable transcript subtree
+	// (the sandbox host request keys the CSI subPath on this id) and launches
+	// `claude --continue`. Pin the resumed session to the SAME agent as the
+	// source so the runtime + transcript path match; require the source to be a
+	// terminated interactive-cli session in the caller's scope.
+	const resumeFromSessionId =
+		typeof body.resumeFromSessionId === "string" && body.resumeFromSessionId
+			? body.resumeFromSessionId
+			: undefined;
+	if (resumeFromSessionId) {
+		const source = await getSession(resumeFromSessionId);
+		if (!source) return error(404, "resumeFromSessionId session not found");
+		if (
+			locals.session.projectId &&
+			source.projectId !== locals.session.projectId
+		) {
+			return error(404, "resumeFromSessionId session not found");
+		}
+		const sourceAgent = await resolveAgentRef({
+			id: source.agentId,
+			version: source.agentVersion ?? undefined,
+		});
+		const sourceRuntime = sourceAgent
+			? getRuntimeDescriptor(sourceAgent.runtime)
+			: null;
+		if (!sourceRuntime?.capabilities?.interactiveTerminal) {
+			return error(
+				400,
+				"resume is only supported for interactive-cli sessions",
+			);
+		}
+		if (source.status !== "terminated") {
+			return error(409, "can only resume a terminated session");
+		}
+		// Continue the SAME conversation with the SAME agent/version.
+		resolvedAgentId = source.agentId;
+		resolvedAgentVersion = source.agentVersion ?? undefined;
+	}
+
 	const tweakedConfig = isAgentConfigShape(body.agentConfig)
 		? (body.agentConfig as AgentConfig)
 		: null;
@@ -143,6 +184,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		title: typeof body.title === "string" ? body.title : undefined,
 		userId: locals.session.userId,
 		projectId: locals.session.projectId ?? null,
+		resumedFromSessionId: resumeFromSessionId ?? null,
 	};
 
 	try {

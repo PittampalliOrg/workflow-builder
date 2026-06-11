@@ -68,6 +68,9 @@ export type SessionDetail = SessionSummary & {
 	daprInstanceId: string | null;
 	natsSubject: string | null;
 	parentExecutionId: string | null;
+	// Interactive-cli resume lineage: the session this one resumes (re-mounts
+	// its durable transcript subtree + `claude --continue`).
+	resumedFromSessionId: string | null;
 	sandboxName: string | null;
 	workspaceSandboxName: string | null;
 	runtimeAppId: string | null;

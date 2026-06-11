@@ -296,6 +296,13 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	 * redacted from span capture here.
 	 */
 	sessionSecretEnv?: Record<string, string> | null;
+	/**
+	 * Interactive-cli resume: the original session id. sandbox-execution-api
+	 * keys the per-session durable-transcript CSI subPath on this (falling back
+	 * to sessionId), so a resumed pod re-mounts the original conversation's
+	 * Postgres-backed transcript subtree.
+	 */
+	resumeFromSessionId?: string | null;
 }): Promise<AgentWorkflowHostResult | null> {
 	if (!agentConfigCanUseWorkflowHost(params.agentConfig)) return null;
 	if (params.benchmarkRunId) {
@@ -376,6 +383,9 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 		priorityClass,
 		...(agentImage ? { agentImage } : {}),
 		...(sessionSecretEnv ? { sessionSecretEnv } : {}),
+		...(params.resumeFromSessionId
+			? { resumeFromSessionId: params.resumeFromSessionId }
+			: {}),
 	};
 	const { response, body } = await postAgentWorkflowHost(
 		baseUrl,

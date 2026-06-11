@@ -305,6 +305,12 @@ class ClaudeCodeAdapter(CliAdapter):
         self, agent_config: Mapping[str, Any], seed_paths: Mapping[str, str]
     ) -> list[str]:
         argv: list[str] = [CLI_BIN]
+        # Resume: the durable transcript subtree of the original conversation is
+        # re-mounted at $CLAUDE_CONFIG_DIR/projects (same path), so `--continue`
+        # picks up the most-recent conversation there (no session id needed). The
+        # BFF sets continueSession only when the session re-mounts that subtree.
+        if bool(agent_config.get("continueSession")):
+            argv += ["--continue"]
         model = normalize_claude_model(agent_config.get("modelSpec"))
         if model:
             argv += ["--model", model]

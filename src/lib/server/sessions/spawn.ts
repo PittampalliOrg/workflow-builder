@@ -256,6 +256,14 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	if (swapTarget?.capabilities?.interactiveTerminal && swapTarget.cliAdapter) {
 		(agentConfigForDispatch as Record<string, unknown>).cliAdapter =
 			swapTarget.cliAdapter;
+		// Resume: this session re-mounts the original's durable transcript subtree
+		// (via resumeFromSessionId on the host request below). Signal the in-pod
+		// adapter to launch the CLI in continue mode (`claude --continue`) so it
+		// picks up the prior conversation from the re-mounted projects dir.
+		if (session.resumedFromSessionId) {
+			(agentConfigForDispatch as Record<string, unknown>).continueSession =
+				true;
+		}
 	}
 
 	// OAuth credential delivery, generalized over cliAuth.credentialKind:
@@ -320,6 +328,10 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		benchmarkInstanceId: null,
 		timeoutMinutes: null,
 		sessionSecretEnv,
+		// Resume: the sandbox host keys the per-session transcript CSI subPath on
+		// this id, so the resumed pod re-mounts the original conversation's
+		// Postgres-backed subtree (paired with continueSession above).
+		resumeFromSessionId: session.resumedFromSessionId ?? null,
 	}).catch((err) => {
 		console.warn(
 			`[session-spawn] sandbox provision failed, falling back to warm-pool wake:`,

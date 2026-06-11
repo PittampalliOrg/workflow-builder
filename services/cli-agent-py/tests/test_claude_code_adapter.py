@@ -179,6 +179,17 @@ def test_build_argv_omits_optional_flags():
     argv = adapter.build_argv({}, {})
     assert "--mcp-config" not in argv
     assert "--append-system-prompt-file" not in argv
+    assert "--continue" not in argv
+
+
+def test_build_argv_continue_on_resume():
+    """continueSession (set by the BFF when re-mounting a prior transcript)
+    launches `claude --continue` to pick up the conversation."""
+    adapter = get_adapter("claude-code")
+    argv = adapter.build_argv({"continueSession": True}, {})
+    assert "--continue" in argv
+    # not added otherwise
+    assert "--continue" not in adapter.build_argv({"continueSession": False}, {})
 
 
 def test_pane_env_passthrough_and_api_key_exclusion():
