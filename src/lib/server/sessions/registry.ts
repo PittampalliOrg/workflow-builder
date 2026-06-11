@@ -86,6 +86,7 @@ function rowToDetail(row: Session, ctx: JoinContext = EMPTY_CTX): SessionDetail 
 		daprInstanceId: row.daprInstanceId ?? null,
 		natsSubject: row.natsSubject ?? null,
 		parentExecutionId: row.parentExecutionId ?? null,
+		resumedFromSessionId: row.resumedFromSessionId ?? null,
 		sandboxName: row.sandboxName ?? null,
 		workspaceSandboxName: row.workspaceSandboxName ?? null,
 		runtimeAppId: row.runtimeAppId ?? null,
@@ -268,6 +269,12 @@ export type CreateSessionInput = {
 	workflowExecutionId?: string | null;
 	parentExecutionId?: string | null;
 	sandboxName?: string | null;
+	/**
+	 * Interactive-cli resume: the original session whose durable transcript
+	 * subtree this new session re-mounts (the sandbox host request keys the CSI
+	 * subPath on it) before launching `claude --continue`. Lineage only.
+	 */
+	resumedFromSessionId?: string | null;
 };
 
 /**
@@ -321,6 +328,7 @@ export async function createSession(
 		sandboxName: input.sandboxName ?? DEFAULT_SANDBOX_NAME,
 		workflowExecutionId: input.workflowExecutionId ?? null,
 			parentExecutionId: input.parentExecutionId ?? null,
+			resumedFromSessionId: input.resumedFromSessionId ?? null,
 			mlflowSessionId: input.id ?? null,
 		};
 		const [row] = await database.insert(sessions).values(values).returning();

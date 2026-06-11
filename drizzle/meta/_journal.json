@@ -533,6 +533,13 @@
       "when": 1781269200000,
       "tag": "0081_user_cli_credentials",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1781355600000,
+      "tag": "0082_session_resume_lineage",
+      "breakpoints": true
     }
   ]
 }

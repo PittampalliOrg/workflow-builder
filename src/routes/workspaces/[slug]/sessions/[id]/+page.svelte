@@ -1057,6 +1057,32 @@
 		}
 	}
 
+	// Resume a terminated interactive-cli conversation: create a NEW session that
+	// re-mounts this session's durable transcript subtree and launches
+	// `claude --continue`. Navigates to the new session.
+	let resuming = $state(false);
+	async function resumeSession() {
+		if (!session || resuming || !isInteractiveCli) return;
+		if (session.status !== 'terminated') return;
+		resuming = true;
+		try {
+			const res = await fetch(`/api/v1/sessions`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ agentId: session.agentId, resumeFromSessionId: sessionId })
+			});
+			if (!res.ok) {
+				console.error('[resume] failed', await res.text());
+				return;
+			}
+			const body = (await res.json()) as { session?: { id?: string } };
+			const newId = body.session?.id;
+			if (newId) goto(`/workspaces/${slug}/sessions/${newId}`);
+		} finally {
+			resuming = false;
+		}
+	}
+
 	async function saveTitle() {
 		if (!session) return;
 		const res = await fetch(`/api/v1/sessions/${sessionId}`, {
@@ -1375,6 +1401,14 @@
 								: 'evaluation'} run →
 						</DropdownMenu.Item>
 					{:else}
+						{#if isInteractiveCli && session?.status === 'terminated'}
+							<DropdownMenu.Item onSelect={() => resumeSession()} disabled={resuming}>
+								{#if resuming}<Loader2 class="size-3.5 animate-spin" />{:else}<RotateCw
+										class="size-3.5"
+									/>{/if}
+								{resuming ? 'Resuming…' : 'Resume conversation'}
+							</DropdownMenu.Item>
+						{/if}
 						<DropdownMenu.Item
 							onSelect={() => stopRun('purge')}
 							disabled={session?.status === 'terminated' || stopBusy || stopConverging}

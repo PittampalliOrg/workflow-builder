@@ -2878,6 +2878,12 @@ export const sessions = pgTable(
 		runtimeSandboxName: text("runtime_sandbox_name"),
 		workflowExecutionId: text("workflow_execution_id"),
 		parentExecutionId: text("parent_execution_id"),
+		// Interactive-cli conversation resume: a resumed session is a NEW row
+		// that re-mounts the original session's durable transcript subtree (the
+		// CSI subPath keys on this id) and launches `claude --continue`. Lineage
+		// only — not on the resume critical path (the value is threaded to the
+		// sandbox host request, not read back to drive the mount).
+		resumedFromSessionId: text("resumed_from_session_id"),
 		mlflowExperimentId: text("mlflow_experiment_id"),
 		mlflowRunId: text("mlflow_run_id"),
 		mlflowParentRunId: text("mlflow_parent_run_id"),

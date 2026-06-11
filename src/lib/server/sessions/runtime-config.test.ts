@@ -239,6 +239,7 @@ function sampleSession(): SessionDetail {
 		daprInstanceId: "child-1",
 		natsSubject: "session.events.session-1",
 		parentExecutionId: null,
+		resumedFromSessionId: null,
 		sandboxName: "dapr-agent-py",
 		workspaceSandboxName: null,
 		runtimeAppId: "agent-runtime-coding-agent",
