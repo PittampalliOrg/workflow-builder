@@ -35,7 +35,7 @@ import stat
 from pathlib import Path
 from typing import Any, Mapping
 
-from src.cli_adapters.base import CliAdapter, SeedResult
+from src.cli_adapters.base import CliAdapter, SeedResult, link_transcript_subtree
 from src.mcp_config import build_mcp_servers
 
 logger = logging.getLogger(__name__)
@@ -195,6 +195,14 @@ class CodexAdapter(CliAdapter):
             agents_path.write_text(system_text + "\n", encoding="utf-8")
             result.paths["systemPromptPath"] = str(agents_path)
 
+        # (e) Durable transcript store. codex persists threads as rollout files
+        # under $CODEX_HOME/sessions; redirect that dir into the per-session
+        # JuiceFS subtree (CLI_TRANSCRIPT_MOUNT) so the conversation persists to
+        # Postgres and `codex resume --last` works across pods. No-op otherwise.
+        linked = link_transcript_subtree(home / "sessions", "codex")
+        if linked:
+            result.paths["transcriptStore"] = linked
+
         return result
 
     def _materialize_auth(self, result: SeedResult) -> None:
@@ -225,7 +233,13 @@ class CodexAdapter(CliAdapter):
     def build_argv(
         self, agent_config: Mapping[str, Any], seed_paths: Mapping[str, str]
     ) -> list[str]:
-        argv: list[str] = [CODEX_BIN, "--cd", os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")]
+        argv: list[str] = [CODEX_BIN]
+        # Resume: the re-mounted $CODEX_HOME/sessions subtree holds the prior
+        # rollouts, so `codex resume --last` continues the most-recent thread
+        # (no thread id needed; codex merges the TUI flags below into resume).
+        if bool(agent_config.get("continueSession")):
+            argv += ["resume", "--last"]
+        argv += ["--cd", os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")]
         model = normalize_codex_model(agent_config.get("modelSpec"))
         if model:
             argv += ["--model", model]
