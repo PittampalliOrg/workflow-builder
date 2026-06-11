@@ -18,7 +18,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "ruff"]
+# httpx: starlette TestClient backend for the FastAPI route regression tests
+# (tests/test_fastapi_routes.py — guards the future-annotations/lazy-import
+# param-degradation bug that 403'd every terminal handshake).
+dev = ["pytest", "pytest-asyncio", "ruff", "httpx"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
