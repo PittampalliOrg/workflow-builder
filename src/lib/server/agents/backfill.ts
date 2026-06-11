@@ -5,8 +5,9 @@ import {
 	agentVersions,
 	workflows,
 } from "$lib/server/db/schema";
-import type { AgentConfig } from "$lib/types/agents";
+import type { AgentConfig, AgentRuntime } from "$lib/types/agents";
 import { createDefaultAgentConfig } from "$lib/types/agents";
+import { listRuntimeIds } from "$lib/server/agents/runtime-registry";
 import { hashAgentConfig } from "./config-hash";
 
 type NodeRecord = Record<string, unknown>;
@@ -77,14 +78,10 @@ function normalizeInlineToAgentConfig(
 		inline.mcpConnectionMode === "auto"
 			? inline.mcpConnectionMode
 			: defaults.mcpConnectionMode;
-	const runtime =
-		inline.runtime === "dapr-agent-py-testing"
-			? "dapr-agent-py-testing"
-			: inline.runtime === "adk-agent-py"
-				? "adk-agent-py"
-				: inline.runtime === "browser-use-agent"
-					? "browser-use-agent"
-					: "dapr-agent-py";
+	const runtime: AgentRuntime =
+		typeof inline.runtime === "string" && listRuntimeIds().includes(inline.runtime)
+			? (inline.runtime as AgentRuntime)
+			: "dapr-agent-py";
 	const policySource = isRecord(inline.runtimeOverridePolicy)
 		? (inline.runtimeOverridePolicy as typeof defaults.runtimeOverridePolicy)
 		: defaults.runtimeOverridePolicy;
