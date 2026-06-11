@@ -3,21 +3,31 @@
 ``agy`` is Google's Antigravity CLI (a Go/Codeium-"jetski" rewrite that
 supersedes Gemini CLI). Auth is **in-pod device-code OAuth**: on first launch
 the bare TUI prints a Google authorization URL + waits for the user to paste the
-authorization code (verified working in a keyring-less container — no browser,
-no libsecret). So there is NO pre-provisioned credential (descriptor
-``cliAuth.credentialKind = "device_login"``) and no spawn-time token gate; the
-readiness gate's blocked-guard keeps the kickoff from being typed into the auth
-prompt, and the kickoff injects only once the user has authenticated and the
-TUI reaches its idle prompt.
+authorization code. This is VERIFIED working end-to-end in our keyring-less
+sandbox (full URL → Google consent → code → token exchange → onboarding → idle
+prompt, model responds).
 
-Seeds:
+Why not pre-provision the credential like codex? The interactive TUI reads its
+OAuth token **only from the OS keyring** (``codeassistclient.KeyringTokenStorage``
+over the freedesktop Secret Service) — it ignores ``~/.gemini`` token FILES (those
+back only the headless ``agy -p`` path) and, with no keyring in the pod, doesn't
+persist the obtained token to a file either. So there is nothing to inject: the
+descriptor declares ``cliAuth.credentialKind = "device_login"`` (nothing stored)
+and there is no spawn-time token gate. ``requires_interactive_login = True`` makes
+the lifecycle DEFER the kickoff to the user post-auth — herdr screen-detects the
+auth-code prompt as ``idle``, so an armed seed would otherwise be typed straight
+into the login field. The web terminal surfaces the (otherwise hard-wrapped)
+OAuth URL with Copy/Open; the user logs in, completes onboarding, then types.
+
+Seeds (these DO apply — they configure the CLI, not its auth):
   (a) MCP: agentConfig.mcpServers → ``$HOME/.gemini/config/mcp_config.json``
       (the confirmed HOME-level config agy actually loads). Remote servers use
       the ``serverUrl`` key (NOT ``url`` — renamed from Gemini CLI; miss it and
       the server fails silently).
   (b) system prompt: instructionBundle.rendered.system → ``$HOME/.gemini/GEMINI.md``.
-  (c) settings: a minimal ``settings.json`` pre-trusts the sandbox workspace and
-      pins the model (best-effort; agy replaces invalid settings with defaults).
+  (c) settings: a minimal ``settings.json`` pre-trusts the sandbox workspace,
+      pins the model, and disables telemetry (best-effort; agy replaces invalid
+      settings with defaults).
 
 agy has no OTEL export and no native herdr session integration (herdr
 screen-detects its state). $HOME is pinned to the sandbox root so ``~/.gemini``
@@ -30,7 +40,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import stat
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -41,25 +50,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = os.environ.get("CLI_AGENT_AGY_DEFAULT_MODEL", "")
 AGY_BIN = os.environ.get("CLI_AGENT_AGY_PATH", "agy")
-# The login bundle is delivered here (must match descriptor cliAuth.envVar).
-AGY_AUTH_ENV = "AGY_AUTH_JSON"
-# Files accepted from the bundle, relative to ~/.gemini. Keys outside this set
-# are ignored (defense against an over-broad export).
-AGY_AUTH_FILES = (
-    "oauth_creds.json",
-    "antigravity-cli/antigravity-oauth-token",
-    "google_accounts.json",
-    # The TUI re-runs the (web-terminal-unusable) device-code OAuth flow unless it
-    # recognizes the install — even with valid tokens. `antigravity-cli/
-    # installation_id` is THE binding the antigravity-oauth-token is issued
-    # against (distinct from the top-level installation_id); without it agy treats
-    # the pod as a new install and re-auths. `agy -p` tolerates its absence; the
-    # interactive TUI does not. state.json + the top-level installation_id round
-    # out the session identity.
-    "antigravity-cli/installation_id",
-    "installation_id",
-    "state.json",
-)
 
 
 def clean_string(value: Any) -> str | None:
@@ -116,12 +106,11 @@ def _agy_mcp_servers(agent_config: Mapping[str, Any]) -> dict[str, dict[str, Any
 
 class AntigravityAdapter(CliAdapter):
     name = "antigravity"
-    # agy authenticates from the user's injected ~/.gemini OAuth files (cliAuth
-    # credentialKind=file_bundle, delivered as AGY_AUTH_JSON). seed() materializes
-    # them so agy boots already signed in — NO in-pane device-code flow (its
-    # OAuth URL is unusable when the TUI hard-wraps it in the web terminal). The
-    # kickoff can therefore fire normally.
-    requires_interactive_login = False
+    # agy authenticates via in-pane device-code OAuth (keyring-only TUI; no
+    # injectable credential). The lifecycle DEFERS the kickoff to the user until
+    # after they complete the in-terminal login — herdr reports the auth-code
+    # prompt as `idle`, so an armed seed would land in the login field.
+    requires_interactive_login = True
     # agy mirrors events from herdr/native state (no UserPromptSubmit hook), so
     # the Claude-only INJECTION_MARKER has no dedup function here — don't send it.
     uses_injection_marker = False
@@ -137,9 +126,6 @@ class AntigravityAdapter(CliAdapter):
         cli_dir = gemini_dir / "antigravity-cli"
         for d in (config_dir, cli_dir):
             d.mkdir(parents=True, exist_ok=True)
-
-        # (0) OAuth login files from the delivered bundle — agy boots signed in.
-        self._materialize_auth(gemini_dir, result)
 
         # (a) MCP config (HOME-level — the one agy actually loads).
         servers = _agy_mcp_servers(agent_config)
@@ -159,13 +145,17 @@ class AntigravityAdapter(CliAdapter):
             gemini_md.write_text(system_text + "\n", encoding="utf-8")
             result.paths["systemPromptPath"] = str(gemini_md)
 
-        # (c) settings.json — pre-trust the sandbox workspace + pin the model so
-        # the TUI doesn't surface a trust dialog. Best-effort (agy replaces an
-        # invalid settings file with defaults); never clobber an existing one.
+        # (c) settings.json — pre-trust the sandbox workspace, pin the model, and
+        # disable telemetry so the TUI surfaces less onboarding friction.
+        # Best-effort (agy replaces an invalid settings file with defaults);
+        # never clobber an existing one.
         settings_path = cli_dir / "settings.json"
         if not settings_path.exists():
             sandbox_root = os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
-            settings: dict[str, Any] = {"trustedWorkspaces": [sandbox_root]}
+            settings: dict[str, Any] = {
+                "trustedWorkspaces": [sandbox_root],
+                "enableTelemetry": False,
+            }
             model = normalize_agy_model(agent_config.get("modelSpec"))
             if model:
                 settings["model"] = model
@@ -175,45 +165,6 @@ class AntigravityAdapter(CliAdapter):
             result.paths["agySettingsPath"] = str(settings_path)
 
         return result
-
-    def _materialize_auth(self, gemini_dir: Path, result: SeedResult) -> None:
-        """Write the user's agy login files from the delivered AGY_AUTH_JSON
-        bundle (a JSON map ``{relPath: contents}``) into ``~/.gemini`` so agy
-        boots authenticated. Never clobbers a file agy already refreshed in-pod
-        (its own access-token refresh wins for the session lifetime)."""
-        blob = os.environ.get(AGY_AUTH_ENV)
-        if not blob or not blob.strip():
-            result.warnings.append(
-                "agy: no AGY_AUTH_JSON delivered — the TUI will prompt for login"
-            )
-            return
-        try:
-            bundle = json.loads(blob)
-        except ValueError:
-            result.warnings.append("agy: AGY_AUTH_JSON is not valid JSON")
-            return
-        if not isinstance(bundle, Mapping):
-            result.warnings.append("agy: AGY_AUTH_JSON is not a {file: contents} map")
-            return
-        written = 0
-        for rel in AGY_AUTH_FILES:
-            content = bundle.get(rel)
-            if not isinstance(content, str) or not content:
-                continue
-            dest = gemini_dir / rel
-            if dest.exists():
-                continue  # agy's own refreshed file — never clobber
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(content, encoding="utf-8")
-            try:
-                dest.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
-            except OSError:
-                pass
-            written += 1
-        if written:
-            result.paths["agyAuthDir"] = str(gemini_dir)
-        else:
-            result.warnings.append("agy: AGY_AUTH_JSON had no recognized login files")
 
     # -- argv -----------------------------------------------------------------
 
@@ -261,7 +212,6 @@ class AntigravityAdapter(CliAdapter):
             "GOOGLE_APPLICATION_CREDENTIALS",
             "ANTHROPIC_API_KEY",
             "CLAUDE_API_KEY",
-            AGY_AUTH_ENV,  # consumed by seed(); never expose the login bundle
         ):
             env.pop(forbidden, None)
         return env

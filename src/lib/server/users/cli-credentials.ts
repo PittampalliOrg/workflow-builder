@@ -118,40 +118,6 @@ export function assertPlausibleCliCredential(
 		return;
 	}
 
-	if (kind === "file_bundle") {
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(trimmed);
-		} catch {
-			throw new Error(
-				"Expected a JSON bundle of your agy login files. Log in locally with `agy`, then run the " +
-					"export command shown above and paste its whole output.",
-			);
-		}
-		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-			throw new Error("The agy credential bundle must be a JSON object of { file: contents }.");
-		}
-		const bundle = parsed as Record<string, unknown>;
-		// antigravity-cli/installation_id is the install the token is bound to;
-		// without it (and the session files) the agy TUI re-prompts for OAuth even
-		// with valid tokens.
-		const required = [
-			"oauth_creds.json",
-			"antigravity-cli/antigravity-oauth-token",
-			"antigravity-cli/installation_id",
-			"installation_id",
-			"state.json",
-		];
-		const missing = required.filter((k) => typeof bundle[k] !== "string" || !bundle[k]);
-		if (missing.length) {
-			throw new Error(
-				`The agy bundle is missing ${missing.join(" + ")}. Sign in locally with \`agy\` first, ` +
-					"then re-run the export so the bundle includes your ~/.gemini login files.",
-			);
-		}
-		return;
-	}
-
 	// env_token
 	if (trimmed.startsWith("sk-ant-api")) {
 		throw new Error(

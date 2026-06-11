@@ -26,7 +26,7 @@
 		cliAuth: {
 			provider: string;
 			tokenKind: string;
-			credentialKind: 'env_token' | 'file' | 'file_bundle' | 'device_login';
+			credentialKind: 'env_token' | 'file' | 'device_login';
 			loginStyle?: 'browser_token' | 'auth_file' | 'device_code';
 			envVar?: string;
 			credentialPath?: string;
@@ -157,7 +157,7 @@
 		{@const summary = summaryFor(runtime.cliAuth.provider)}
 		{@const countdown = expiryCountdown(summary.expiresAt)}
 		{@const kind = runtime.cliAuth.credentialKind}
-		{@const isFile = kind === 'file' || kind === 'file_bundle'}
+		{@const isFile = kind === 'file'}
 		<Card>
 			<CardHeader>
 				<CardTitle class="text-base flex items-center gap-2 flex-wrap">
@@ -197,9 +197,6 @@
 					{:else if kind === 'file'}
 						OAuth login file ({runtime.cliAuth.provider}) materialized in your session pod at
 						<code class="text-[11px]">{runtime.cliAuth.credentialPath}</code>.
-					{:else if kind === 'file_bundle'}
-						OAuth login files ({runtime.cliAuth.provider}) materialized into your session pod's
-						<code class="text-[11px]">~/.gemini</code> so agy boots already signed in.
 					{:else}
 						Subscription OAuth token ({runtime.cliAuth.provider}) delivered to the session pod as
 						<code class="text-[11px]">{runtime.cliAuth.envVar}</code>.
@@ -228,11 +225,7 @@
 						<div class="text-xs text-muted-foreground space-y-0.5">
 							<div>
 								Credential: <code class="font-mono"
-									>{kind === 'file'
-										? 'auth.json ••••••'
-										: kind === 'file_bundle'
-											? '~/.gemini bundle ••••••'
-											: 'sk-ant-oat••••••••••••'}</code
+									>{kind === 'file' ? 'auth.json ••••••' : 'sk-ant-oat••••••••••••'}</code
 								>
 							</div>
 							<div>
@@ -261,22 +254,6 @@
 								</li>
 								<li>Codex auto-refreshes the token inside the session; re-paste if it ever expires.</li>
 							</ol>
-						{:else if kind === 'file_bundle'}
-							<ol class="list-decimal list-inside space-y-1 text-muted-foreground">
-								<li>
-									On your own machine, sign in with
-									<code class="rounded bg-muted px-1 py-0.5">agy</code> (completes the Google login
-									in your browser; do this once).
-								</li>
-								<li>
-									Export your <code class="rounded bg-muted px-1 py-0.5">~/.gemini</code> login files —
-									run this and paste the JSON it prints below:
-									<code class="mt-1 block break-all whitespace-pre-wrap rounded bg-muted px-1 py-0.5"
-										>{runtime.cliAuth.setupCommand}</code
-									>
-								</li>
-								<li>agy refreshes the token inside the session; re-paste if sign-in ever expires.</li>
-							</ol>
 						{:else}
 							<ol class="list-decimal list-inside space-y-1 text-muted-foreground">
 								<li>
@@ -301,18 +278,14 @@
 								? 'Replace credential'
 								: kind === 'file'
 									? 'Paste auth.json'
-									: kind === 'file_bundle'
-										? 'Paste login bundle'
-										: 'Paste token'}
+									: 'Paste token'}
 						</Label>
 						<div class="flex gap-2 {isFile ? 'flex-col' : ''}">
 							{#if isFile}
 								<textarea
 									id={`cli-token-${runtime.id}`}
 									class="flex min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-									placeholder={kind === 'file_bundle'
-										? '{ "oauth_creds.json": "…", "antigravity-cli/antigravity-oauth-token": "…" }'
-										: '{ "tokens": { "access_token": …, "refresh_token": … } }'}
+									placeholder={'{ "tokens": { "access_token": …, "refresh_token": … } }'}
 									autocomplete="off"
 									spellcheck="false"
 									bind:value={drafts[runtime.cliAuth.provider]}
