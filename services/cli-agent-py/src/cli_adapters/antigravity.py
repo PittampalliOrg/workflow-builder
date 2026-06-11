@@ -49,12 +49,16 @@ AGY_AUTH_FILES = (
     "oauth_creds.json",
     "antigravity-cli/antigravity-oauth-token",
     "google_accounts.json",
-    # state.json + installation_id carry the install/session identity. WITHOUT
-    # them the TUI treats the pod as a brand-new install and re-runs the (broken,
-    # unusable-in-web-terminal) device-code OAuth flow even though the tokens are
-    # valid. `agy -p` tolerates their absence; the interactive TUI does not.
-    "state.json",
+    # The TUI re-runs the (web-terminal-unusable) device-code OAuth flow unless it
+    # recognizes the install — even with valid tokens. `antigravity-cli/
+    # installation_id` is THE binding the antigravity-oauth-token is issued
+    # against (distinct from the top-level installation_id); without it agy treats
+    # the pod as a new install and re-auths. `agy -p` tolerates its absence; the
+    # interactive TUI does not. state.json + the top-level installation_id round
+    # out the session identity.
+    "antigravity-cli/installation_id",
     "installation_id",
+    "state.json",
 )
 
 
