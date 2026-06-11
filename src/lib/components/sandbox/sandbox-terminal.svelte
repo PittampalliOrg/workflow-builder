@@ -63,9 +63,13 @@
 		const emit = (text: string) => {
 			for (const url of detector.push(text)) showAuthLinkToast(url);
 		};
+		// Streaming decode so a multi-byte char split across frames isn't mangled.
+		// binaryType is forced to 'arraybuffer' (see connect), so the ordered
+		// synchronous path is taken; the Blob branch remains only as a fallback.
 		if (typeof data === 'string') emit(data);
-		else if (data instanceof ArrayBuffer) emit(decoder.decode(new Uint8Array(data)));
-		else if (data instanceof Blob) data.text().then(emit).catch(() => {});
+		else if (data instanceof ArrayBuffer)
+			emit(decoder.decode(new Uint8Array(data), { stream: true }));
+		else if (data instanceof Blob) data.arrayBuffer().then((b) => emit(decoder.decode(new Uint8Array(b), { stream: true }))).catch(() => {});
 	}
 
 	let terminal = $state<Terminal>();
@@ -191,6 +195,10 @@
 		term.writeln('\x1b[90mConnecting to sandbox...\x1b[0m');
 
 		const socket = new WebSocket(getWsUrl());
+		// Deliver binary frames as ArrayBuffers (synchronous + ORDERED) rather than
+		// Blobs (whose async .text() can resolve out of order and scramble the auth
+		// link detector's chunk-rejoin, orphaning ANSI fragments inside a URL).
+		socket.binaryType = 'arraybuffer';
 		ws = socket;
 
 		const { AttachAddon } = await XtermAddon.AttachAddon();
