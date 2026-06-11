@@ -44,6 +44,16 @@ class FakeHerdr:
         pass
 
 
+@pytest.fixture(autouse=True)
+def _fast_submit(monkeypatch):
+    # Neutralize the submit settle-delay + verify-retry by default so the
+    # existing tests assert one Enter per send; the dedicated retry test
+    # re-enables it.
+    monkeypatch.setattr(ss, "CLI_SUBMIT_DELAY_SECONDS", 0.0)
+    monkeypatch.setattr(ss, "CLI_SUBMIT_VERIFY_SECONDS", 0.0)
+    monkeypatch.setattr(ss, "CLI_SUBMIT_RETRIES", 0)
+
+
 def _supervisor(client, **kw):
     sup = SessionSupervisor(
         client=client,
@@ -239,3 +249,31 @@ async def test_pane_writes_are_serialized(monkeypatch):
         ["text:A", "enter", "text:B", "enter"],
         ["text:B", "enter", "text:A", "enter"],
     )
+
+
+async def test_submit_retries_enter_when_agent_stays_idle(monkeypatch):
+    """The Ink TUI can drop an Enter that races the paste — if the agent is
+    still idle after the verify window, _send_to_pane re-presses Enter until it
+    leaves idle (bounded). A real turn never finishes that fast."""
+    monkeypatch.setattr(ss, "CLI_SUBMIT_DELAY_SECONDS", 0.0)
+    monkeypatch.setattr(ss, "CLI_SUBMIT_VERIFY_SECONDS", 0.0)
+    monkeypatch.setattr(ss, "CLI_SUBMIT_RETRIES", 3)
+    # idle, idle (Enter dropped twice) → working (third Enter landed)
+    client = FakeHerdr(statuses=["idle", "idle", "working"])
+    sup = _supervisor(client)
+    sup._pane_ref = "p1"
+    ok = await sup._send_to_pane("hi", "")
+    assert ok is True
+    # initial Enter + 2 re-presses (stops once agent_get reports working)
+    assert client.enters == 3
+
+
+async def test_submit_no_retry_once_agent_is_working(monkeypatch):
+    monkeypatch.setattr(ss, "CLI_SUBMIT_DELAY_SECONDS", 0.0)
+    monkeypatch.setattr(ss, "CLI_SUBMIT_VERIFY_SECONDS", 0.0)
+    monkeypatch.setattr(ss, "CLI_SUBMIT_RETRIES", 3)
+    client = FakeHerdr(statuses=["working"])  # submit landed immediately
+    sup = _supervisor(client)
+    sup._pane_ref = "p1"
+    await sup._send_to_pane("hi", "")
+    assert client.enters == 1  # no re-press

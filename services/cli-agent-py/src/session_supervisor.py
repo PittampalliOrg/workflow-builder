@@ -75,6 +75,16 @@ CLI_GRACEFUL_EXIT_WAIT_SECONDS = _env_float("CLI_GRACEFUL_EXIT_WAIT_SECONDS", 30
 CLI_SEED_READY_TIMEOUT = _env_float("CLI_SEED_READY_TIMEOUT_SECONDS", 60.0)
 CLI_INJECT_READY_TIMEOUT = _env_float("CLI_INJECT_READY_TIMEOUT_SECONDS", 20.0)
 CLI_READY_POLL_SECONDS = _env_float("CLI_READY_POLL_SECONDS", 0.5)
+# Submit reliability: the Claude Code Ink TUI ingests typed text via bracketed
+# paste, so an Enter sent immediately after `pane.send_text` races the paste and
+# is dropped — the prompt sits unsubmitted (verified live on dev 2026-06-10).
+# Settle before pressing Enter, then VERIFY the agent left `idle`; if it didn't,
+# the Enter never registered — re-press it. A real turn never completes within
+# the verify window, so "still idle" reliably means not-submitted (no risk of
+# submitting an empty prompt).
+CLI_SUBMIT_DELAY_SECONDS = _env_float("CLI_SUBMIT_DELAY_SECONDS", 0.6)
+CLI_SUBMIT_VERIFY_SECONDS = _env_float("CLI_SUBMIT_VERIFY_SECONDS", 1.5)
+CLI_SUBMIT_RETRIES = int(_env_float("CLI_SUBMIT_RETRIES", 2))
 HERDR_SERVER_ARGV = ["herdr", "server"]
 
 
@@ -543,11 +553,35 @@ class SessionSupervisor:
         async with self._pane_write_lock:
             try:
                 await self._client.pane_send_text(pane, f"{marker}{text}")
+                # Let the TUI ingest the pasted text before pressing Enter, then
+                # confirm the submit registered (re-press if the agent is still
+                # idle — the Enter raced the paste and was dropped).
+                await asyncio.sleep(CLI_SUBMIT_DELAY_SECONDS)
                 await self._client.pane_submit_enter(pane)
+                await self._confirm_submitted(pane)
                 return True
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[supervisor] pane inject failed: %s", exc)
                 return False
+
+    async def _confirm_submitted(self, pane: str) -> None:
+        """After Enter, the agent should leave ``idle`` (it starts the turn). If
+        it is still idle after the verify window the keystroke was dropped — re-
+        press Enter (bounded). A genuine turn never finishes this fast, so a
+        persistent ``idle`` reliably means not-yet-submitted."""
+        for _ in range(max(0, CLI_SUBMIT_RETRIES)):
+            await asyncio.sleep(CLI_SUBMIT_VERIFY_SECONDS)
+            try:
+                info = await self._client.agent_get(pane)
+            except Exception:  # noqa: BLE001
+                return  # pane gone / unreachable — nothing more to do
+            if agent_status_of(info) != AGENT_STATUS_IDLE:
+                return  # working / blocked / done → the submit landed
+            logger.info("[supervisor] submit not registered — re-pressing Enter")
+            try:
+                await self._client.pane_submit_enter(pane)
+            except Exception:  # noqa: BLE001
+                return
 
     async def _gated_send(self, text: str, marker: str, timeout: float, *, what: str) -> bool:
         """Wait for the TUI to be ready, then send — but REFUSE to type into a
