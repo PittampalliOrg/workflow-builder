@@ -64,6 +64,45 @@
 			]
 		},
 		{
+			slug: 'claude-code-cli-agent',
+			name: 'Claude Code CLI',
+			description: 'The real Claude Code TUI in a web terminal. Uses your subscription token.',
+			avatar: '◇',
+			tags: ['cli', 'interactive', 'code'],
+			runtime: 'claude-code-cli',
+			highlights: [
+				'Interactive TUI over a web terminal',
+				'OAuth: claude setup-token (Settings → CLI tokens)',
+				'herdr-backed session, MCP + skills'
+			]
+		},
+		{
+			slug: 'codex-cli-agent',
+			name: 'Codex CLI',
+			description: "OpenAI's Codex TUI in a web terminal. ChatGPT OAuth — paste ~/.codex/auth.json.",
+			avatar: '⌬',
+			tags: ['cli', 'interactive', 'code'],
+			runtime: 'codex-cli',
+			highlights: [
+				'Interactive Codex TUI over a web terminal',
+				'OAuth: codex login → auth.json (Settings → CLI tokens)',
+				'config.toml MCP, stays on your ChatGPT subscription'
+			]
+		},
+		{
+			slug: 'agy-cli-agent',
+			name: 'Antigravity CLI',
+			description: "Google's Antigravity (agy) TUI in a web terminal. Google OAuth in the terminal.",
+			avatar: '△',
+			tags: ['cli', 'interactive', 'code'],
+			runtime: 'agy-cli',
+			highlights: [
+				'Interactive agy TUI over a web terminal',
+				'OAuth: Google device-code, completed in the terminal',
+				'No token to pre-store — sign in on first launch'
+			]
+		},
+		{
 			slug: 'github-mcp-agent',
 			name: 'GitHub / Code Agent',
 			description: 'GitHub MCP access for repository discovery and code navigation.',

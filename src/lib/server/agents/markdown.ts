@@ -1,6 +1,7 @@
 import yaml from "js-yaml";
 import type { AgentConfig, AgentRuntime } from "$lib/types/agents";
 import { createDefaultAgentConfig } from "$lib/types/agents";
+import { listRuntimeIds } from "$lib/server/agents/runtime-registry";
 
 /**
  * Agent Markdown format (compatible with claude-code-src/.claude/agents/*.md
@@ -82,16 +83,12 @@ export function parseAgentMarkdown(source: string): ParsedAgentMarkdown {
 			? `${systemFromFrontmatter}\n\n${bodyTrimmed}`
 			: systemFromFrontmatter ?? (bodyTrimmed || undefined);
 
+	// Registry-driven: accept any registered runtime id (incl. the
+	// interactive-cli family), else fall back to the default.
 	const runtime: AgentRuntime =
-		parsed.runtime === "dapr-agent-py-testing"
-			? "dapr-agent-py-testing"
-			: parsed.runtime === "adk-agent-py"
-				? "adk-agent-py"
-				: parsed.runtime === "claude-agent-py"
-					? "claude-agent-py"
-					: parsed.runtime === "browser-use-agent"
-						? "browser-use-agent"
-						: "dapr-agent-py";
+		typeof parsed.runtime === "string" && listRuntimeIds().includes(parsed.runtime)
+			? (parsed.runtime as AgentRuntime)
+			: "dapr-agent-py";
 
 	const toolChoice =
 		parsed.tool_choice === "auto" ||

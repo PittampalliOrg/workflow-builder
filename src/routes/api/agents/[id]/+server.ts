@@ -7,6 +7,7 @@ import {
 	updateAgent,
 } from "$lib/server/agents/registry";
 import type { AgentConfig, AgentRuntime } from "$lib/types/agents";
+import { listRuntimeIds } from "$lib/server/agents/runtime-registry";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -73,15 +74,11 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 	return json({ archived: true });
 };
 
+// Registry-driven (parity with the create path): any registered runtime id is
+// a valid agent runtime, incl. the interactive-cli family.
 function pickRuntime(value: unknown): AgentRuntime | undefined {
-	if (
-		value === "dapr-agent-py" ||
-		value === "dapr-agent-py-testing" ||
-		value === "adk-agent-py" ||
-		value === "claude-agent-py" ||
-		value === "browser-use-agent"
-	) {
-		return value;
+	if (typeof value === "string" && listRuntimeIds().includes(value)) {
+		return value as AgentRuntime;
 	}
 	return undefined;
 }

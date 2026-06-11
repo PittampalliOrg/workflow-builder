@@ -13,6 +13,7 @@ import {
 	type AgentRuntime,
 } from "$lib/types/agents";
 import { findTemplate } from "$lib/server/agent-templates/catalog";
+import { listRuntimeIds } from "$lib/server/agents/runtime-registry";
 
 export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -92,15 +93,13 @@ export const POST: RequestHandler = async ({ request, url, locals }) => {
 	return json({ agent }, { status: 201 });
 };
 
+// Registry-driven: any runtime declared in the runtime registry is a valid
+// agent runtime (incl. the interactive-cli family claude-code-cli / codex-cli /
+// agy-cli). Keeps this in lock-step with the registry SSOT — no hand-maintained
+// allowlist to drift when a runtime is added.
 function pickRuntime(value: unknown): AgentRuntime | undefined {
-	if (
-		value === "dapr-agent-py" ||
-		value === "dapr-agent-py-testing" ||
-		value === "adk-agent-py" ||
-		value === "claude-agent-py" ||
-		value === "browser-use-agent"
-	) {
-		return value;
+	if (typeof value === "string" && listRuntimeIds().includes(value)) {
+		return value as AgentRuntime;
 	}
 	return undefined;
 }
