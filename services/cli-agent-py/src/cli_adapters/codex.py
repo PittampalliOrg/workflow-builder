@@ -42,7 +42,15 @@ from src.mcp_config import build_mcp_servers
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = os.environ.get("CLI_AGENT_CODEX_DEFAULT_MODEL", "gpt-5-codex")
+DEFAULT_MODEL = os.environ.get("CLI_AGENT_CODEX_DEFAULT_MODEL", "gpt-5.5")
+# Model ids dropped from codex 0.139.0's account catalog. Selecting one fails the
+# turn with HTTP 400 "The '<model>' model is not supported when using Codex with a
+# ChatGPT account" (and codex warns "model metadata not found"). `gpt-5-codex` was
+# this adapter's previous hardcoded default, so existing codex-cli agents are still
+# pinned to it — remap any retired id to the current default so they recover
+# without a DB migration. (Catalog as of 2026-06: gpt-5.5 / gpt-5.4 / gpt-5.4-mini
+# / gpt-5.3-codex-spark.)
+RETIRED_CODEX_MODELS = frozenset({"gpt-5-codex"})
 DEFAULT_PERMISSION_MODE = os.environ.get("CLI_AGENT_CODEX_PERMISSION_MODE", "default")
 CODEX_BIN = os.environ.get("CLI_AGENT_CODEX_PATH", "codex")
 # Where the credential blob is delivered (must match descriptor cliAuth.envVar).
@@ -62,13 +70,16 @@ def _codex_home() -> Path:
 
 
 def normalize_codex_model(model_spec: Any) -> str | None:
-    """OpenAI Codex models only. A non-OpenAI modelSpec (e.g. anthropic/…) is
-    ignored so codex falls back to its configured default."""
+    """OpenAI Codex models only. A non-OpenAI modelSpec (e.g. anthropic/…) or a
+    RETIRED id is ignored so codex falls back to the configured default."""
     raw = clean_string(model_spec)
+    candidate: str | None = None
     if raw and raw.startswith("openai/"):
-        return raw.split("/", 1)[1]
-    if raw and ("/" not in raw) and not raw.startswith("claude"):
-        return raw  # bare model id like "gpt-5-codex" / "o3"
+        candidate = raw.split("/", 1)[1]
+    elif raw and ("/" not in raw) and not raw.startswith("claude"):
+        candidate = raw  # bare model id like "gpt-5.5" / "o4"
+    if candidate and candidate not in RETIRED_CODEX_MODELS:
+        return candidate
     return clean_string(DEFAULT_MODEL)
 
 
