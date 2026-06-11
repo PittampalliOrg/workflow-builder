@@ -10,7 +10,9 @@
 > the host launches the right TUI, and they share the ONE `interactive-cli`
 > execution class. Companion docs: `durable-session-runtime-contract.md`
 > (registry contract), `workflow-lifecycle-termination.md` (stop SSOT),
-> `agent-runtime-comparison.md`.
+> `agent-runtime-comparison.md`, `cli-conversation-durability.md` (making the
+> CLI transcript durable + resumable — DB-backed FUSE vs statestore snapshot;
+> prototype GO).
 
 ## What it is (one paragraph)
 
