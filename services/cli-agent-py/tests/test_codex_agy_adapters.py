@@ -93,6 +93,23 @@ def test_codex_config_toml_is_valid_and_has_mcp(codex_home, monkeypatch):
     assert cfg["mcp_servers"]["fs"]["command"] == "npx"
 
 
+def test_codex_config_toml_otel_is_struct_variant(codex_home, monkeypatch):
+    """codex 0.139.0 rejects the old flat `exporter = "otlp-http"` + top-level
+    `endpoint`. The [otel] table must use the externally-tagged struct variant
+    with a REQUIRED `protocol`, and must not carry an `endpoint` at its own level
+    (the table is deny_unknown_fields)."""
+    monkeypatch.setenv("CODEX_AUTH_JSON", AUTH_BLOB)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318")
+    get_adapter("codex").seed(SESSION)
+    cfg = tomllib.loads((codex_home / "config.toml").read_text())
+    otel = cfg["otel"]
+    assert "endpoint" not in otel  # endpoint must live inside the exporter variant
+    http = otel["exporter"]["otlp-http"]
+    assert http["endpoint"] == "http://otel-collector:4318/v1/logs"
+    assert http["protocol"] == "binary"  # required field
+    assert otel["metrics_exporter"] == "none"  # no default Statsig export
+
+
 def test_codex_build_argv_default_mode(codex_home):
     argv = get_adapter("codex").build_argv(SESSION["agentConfig"], {})
     assert argv[0] == "codex"

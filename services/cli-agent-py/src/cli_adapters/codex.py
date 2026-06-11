@@ -18,8 +18,10 @@ Seeds per-session artifacts and builds the pane argv/env for the real
       with ``experimental_use_rmcp_client`` enabling the HTTP MCP client).
   (c) system prompt: instructionBundle.rendered.system → ``$CODEX_HOME/AGENTS.md``
       (codex's global instruction file, appended to its base prompt).
-  (d) OTEL: when an OTLP endpoint is configured, an ``[otel]`` table points codex
-      at the collector (otlp-http).
+  (d) OTEL: when an OTLP endpoint is configured, an ``[otel]`` table points codex's
+      log exporter at the collector via the otlp-http struct variant
+      (``exporter = { otlp-http = { endpoint, protocol = "binary" } }``); metrics
+      are pinned to ``none`` to avoid codex's default external Statsig exporter.
 
 pane_env NEVER forwards OPENAI_API_KEY / CODEX_API_KEY / CODEX_AUTH_JSON (the
 blob is consumed by seed() and written to the file — it must not leak into the
@@ -141,13 +143,21 @@ def _otel_table(base_env: Mapping[str, str]) -> str | None:
     endpoint = clean_string(base_env.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
     if not endpoint:
         return None
-    # codex OTEL is opt-in via [otel]; otlp-http to the collector.
+    # codex 0.139.0: the [otel] table is `deny_unknown_fields`, and `exporter` is
+    # an externally-tagged enum — a unit string ("none"/"statsig") OR a struct
+    # variant `{ otlp-http = { endpoint, protocol, headers?, tls? } }` where
+    # `protocol` (binary|json) is REQUIRED and `endpoint` lives INSIDE the variant
+    # (never at the [otel] level). The log `exporter` endpoint is signal-specific,
+    # so append /v1/logs. The metrics default is Statsig (an external OpenAI
+    # endpoint) — pin it to "none" so codex only talks to our collector.
+    logs_endpoint = _toml_str(endpoint.rstrip("/") + "/v1/logs")
+    exporter = f"{{ otlp-http = {{ endpoint = {logs_endpoint}, protocol = \"binary\" }} }}"
     return "\n".join(
         [
             "[otel]",
             'environment = "production"',
-            'exporter = "otlp-http"',
-            f"endpoint = {_toml_str(endpoint.rstrip('/') + '/v1/logs')}",
+            f"exporter = {exporter}",
+            'metrics_exporter = "none"',
         ]
     )
 
