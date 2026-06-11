@@ -236,7 +236,7 @@ def test_transcript_conversation_key_prefers_resume_session() -> None:
     assert resumed == "S1"
 
 
-def test_ensure_transcript_volume_static_pv_is_data_safe() -> None:
+def test_ensure_transcript_volume_retain_preserves_data() -> None:
     created: list = []
 
     class _FakeCore:
@@ -254,10 +254,10 @@ def test_ensure_transcript_volume_static_pv_is_data_safe() -> None:
     )
     assert name == "cli-tx-s2"
     pv = next(b for kind, b in ((c[0], c[-1]) for c in created) if kind == "pv")
-    # Static (non `pvc-<uuid>`) volumeHandle -> DeleteVolume no-ops on data.
     assert pv["spec"]["csi"]["volumeHandle"] == "cli-tx-s2"
-    assert not re.match(r"pvc-\w{8}(-\w{4}){3}-\w{12}", pv["spec"]["csi"]["volumeHandle"])
-    assert pv["spec"]["persistentVolumeReclaimPolicy"] == "Delete"
+    # Retain (NOT Delete): the driver rmr's the subPath on a Delete-reclaim PV
+    # removal, which would wipe the durable conversation when the PVC is GC'd.
+    assert pv["spec"]["persistentVolumeReclaimPolicy"] == "Retain"
     # Subtree (Postgres data) keyed on the conversation, not the pod attempt.
     assert pv["spec"]["csi"]["volumeAttributes"]["subPath"] == "S1"
     assert pv["spec"]["mountOptions"] == ["allow_other"]
@@ -265,6 +265,38 @@ def test_ensure_transcript_volume_static_pv_is_data_safe() -> None:
         "name": "juicefs-wfbcli",
         "namespace": "workflow-builder",
     }
+
+
+def test_ensure_transcript_volume_rebinds_released_pv_on_conflict() -> None:
+    """A re-spawn of the same session hits a 409 on the Retain PV; if it's
+    Released, clear its claimRef so the fresh PVC rebinds (data-safe)."""
+
+    class _Conflict(Exception):
+        status = 409
+
+    patched: list = []
+
+    class _FakeCore:
+        def create_persistent_volume(self, body):
+            raise _Conflict()
+
+        def read_persistent_volume(self, name):
+            return SimpleNamespace(status=SimpleNamespace(phase="Released"))
+
+        def patch_persistent_volume(self, name, body):
+            patched.append((name, body))
+
+        def create_namespaced_persistent_volume_claim(self, namespace, body):
+            pass
+
+    name = app_module._ensure_cli_transcript_volume(
+        _FakeCore(),
+        _cli_request(sessionId="S9"),
+        _interactive_cli_transcript_class(),
+        namespace="workflow-builder",
+    )
+    assert name == "cli-tx-s9"
+    assert patched == [("cli-tx-s9", {"spec": {"claimRef": None}})]
 
 
 def test_default_class_manifest_is_unchanged_by_new_optional_fields() -> None:
