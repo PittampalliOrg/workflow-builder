@@ -828,11 +828,16 @@ def _ensure_cli_transcript_volume(
 ) -> str | None:
     """Provision the per-session static PV + PVC for the durable transcript.
 
-    Called BEFORE the Sandbox CR so the pod never races a missing PVC. The PV
-    is static (custom volumeHandle) and reclaim `Delete` -> the controller's
-    DeleteVolume no-ops on the backing data; the subtree (keyed on the
-    conversation id via CSI `subPath`) survives in Postgres for `--resume`.
-    Idempotent: a 409 on either object is treated as already-provisioned.
+    Called BEFORE the Sandbox CR so the pod never races a missing PVC. The PV is
+    static (custom volumeHandle) with reclaim **Retain**: deleting the PVC (on
+    session purge / GC / the Sandbox ownerRef cascade) must NOT delete the
+    backing conversation — verified empirically that the juicefs-csi driver
+    (v0.31.x) DOES `rmr` the subPath on a `Delete`-reclaim PV removal, which
+    would silently break `--resume`. With Retain the PV goes `Released` (swept by
+    the cli-transcript-released-pv GC) while the subtree (keyed on the
+    conversation id via CSI `subPath`) persists in Postgres indefinitely for
+    `--resume`/resume-anytime. Idempotent: a 409 on either object is
+    already-provisioned.
     """
     if not _cli_transcript_enabled(class_config):
         return None
@@ -860,7 +865,11 @@ def _ensure_cli_transcript_volume(
         "spec": {
             "capacity": {"storage": class_config.transcriptStoreCapacity},
             "accessModes": ["ReadWriteMany"],
-            "persistentVolumeReclaimPolicy": "Delete",
+            # Retain (NOT Delete): the v0.31.x juicefs-csi driver rmr's the
+            # subPath on a Delete-reclaim PV removal, which would wipe the
+            # durable conversation when the session's PVC is GC'd. Retain keeps
+            # the data; the Released PV object is swept separately.
+            "persistentVolumeReclaimPolicy": "Retain",
             "storageClassName": "",
             "mountOptions": list(class_config.transcriptStoreMountOptions or []),
             "volumeMode": "Filesystem",
@@ -894,6 +903,20 @@ def _ensure_cli_transcript_volume(
     except Exception as exc:
         if getattr(exc, "status", None) != 409:
             raise
+        # A Retain PV with this name already exists. If it's Released (a prior
+        # attempt of the SAME session id; resume uses a fresh id so it never
+        # hits this), clear its claimRef so the fresh PVC below can re-bind it —
+        # else the PVC stays Pending against a Released volume. Data-safe: this
+        # touches only the binding, and the subPath data persists in Postgres.
+        try:
+            existing = core.read_persistent_volume(name=name)
+            phase = getattr(getattr(existing, "status", None), "phase", None)
+            if phase in ("Released", "Available"):
+                core.patch_persistent_volume(name=name, body={"spec": {"claimRef": None}})
+        except Exception as patch_exc:  # best-effort; bind may still succeed
+            logger.warning(
+                "cli-transcript pv %s: claimRef clear failed: %s", name, patch_exc
+            )
     try:
         core.create_namespaced_persistent_volume_claim(
             namespace=namespace, body=pvc_body
