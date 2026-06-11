@@ -19,8 +19,11 @@ Mapping (defaults; the CLI adapter's ``map_hook_event`` can override):
   Stop               → (side effect) flush tailer; raise {type: "turn.completed"}
   SessionEnd         → (side effect) raise {type: "cli.session_end", reason}
 
-NOTE: fastapi is imported lazily inside ``build_router`` so the pure mapping
-stays importable in lightweight test environments.
+NOTE: fastapi MUST be imported at module level — this module uses
+``from __future__ import annotations`` and FastAPI resolves handler
+annotations against module globals; a function-local ``Request`` import
+degrades the parameter to a required query field and 422s every hook POST
+(same bug class as terminal_ws.py, found live on ryzen 2026-06-10).
 """
 
 from __future__ import annotations
@@ -29,6 +32,8 @@ import asyncio
 import json
 import logging
 from typing import Any, Callable, Mapping
+
+from fastapi import APIRouter, Request
 
 from src.event_publisher import publish_session_event
 from src.session_supervisor import get_supervisor
@@ -245,9 +250,7 @@ def get_processor() -> HookProcessor:
 
 
 def build_router():
-    """Build the FastAPI router (fastapi imported lazily — see module docstring)."""
-    from fastapi import APIRouter, Request
-
+    """Build the FastAPI router for the Claude Code http-hook receiver."""
     router = APIRouter()
 
     @router.post("/internal/hooks/claude")

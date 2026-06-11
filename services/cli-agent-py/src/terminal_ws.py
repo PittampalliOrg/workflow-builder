@@ -16,8 +16,13 @@ TUI keeps running when the attach client dies — herdr just detaches);
 target=shell spawns a plain ``bash -l`` PTY directly in the pod (v1: no herdr
 coupling for shell tabs).
 
-NOTE: fastapi is imported lazily inside ``register_terminal_ws`` so the PTY
-helpers stay importable in lightweight test environments.
+NOTE: fastapi MUST be imported at module level here. This module uses
+``from __future__ import annotations`` (string annotations), and FastAPI
+resolves a handler's annotations against the function's MODULE globals — a
+function-local ``from fastapi import WebSocket`` leaves the string
+``"WebSocket"`` unresolvable, so FastAPI silently degrades the parameter to a
+required QUERY field and every handshake is rejected 403 with a 1008
+validation close (found live on ryzen, 2026-06-10).
 """
 
 from __future__ import annotations
@@ -33,6 +38,8 @@ import struct
 import subprocess
 import termios
 from typing import Any
+
+from fastapi import WebSocket, WebSocketDisconnect
 
 from src.session_supervisor import get_supervisor
 
@@ -131,7 +138,6 @@ def kill_attach_client(proc: subprocess.Popen) -> None:
 
 def register_terminal_ws(app: Any) -> None:
     """Mount the /terminal/{terminal_id} WebSocket route on the FastAPI app."""
-    from fastapi import WebSocket, WebSocketDisconnect
 
     @app.websocket("/terminal/{terminal_id}")
     async def terminal_ws(websocket: WebSocket, terminal_id: str) -> None:
