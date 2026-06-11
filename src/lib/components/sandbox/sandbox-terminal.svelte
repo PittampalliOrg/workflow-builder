@@ -2,12 +2,19 @@
 	import { onMount, tick } from 'svelte';
 	import { Xterm, XtermAddon } from '@battlefieldduck/xterm-svelte';
 	import type { Terminal, ITerminalOptions } from '@battlefieldduck/xterm-svelte';
+	import { toast } from 'svelte-sonner';
+	import { AuthLinkDetector } from '$lib/utils/terminal-auth-links';
 
 	interface Props {
 		sandboxName: string;
 		sessionId: string;
 		active?: boolean;
 		wsPath?: string;
+		/**
+		 * Watch terminal output for sign-in / OAuth URLs (e.g. the agy
+		 * device-login link) and surface them as a toast with Copy / Open.
+		 */
+		surfaceAuthLinks?: boolean;
 	}
 
 	interface TerminalFitAddon {
@@ -16,7 +23,50 @@
 		dispose: () => void;
 	}
 
-	let { sandboxName, sessionId, active = true, wsPath }: Props = $props();
+	let {
+		sandboxName,
+		sessionId,
+		active = true,
+		wsPath,
+		surfaceAuthLinks = false
+	}: Props = $props();
+
+	let authLinkDetector: AuthLinkDetector | null = null;
+	let authLinkDecoder: TextDecoder | null = null;
+
+	function showAuthLinkToast(url: string) {
+		toast.info('Sign-in link detected', {
+			description: url,
+			duration: Number.POSITIVE_INFINITY,
+			action: {
+				label: 'Open',
+				onClick: () => window.open(url, '_blank', 'noopener,noreferrer')
+			},
+			cancel: {
+				label: 'Copy',
+				onClick: async () => {
+					try {
+						await navigator.clipboard.writeText(url);
+						toast.success('Sign-in link copied');
+					} catch {
+						toast.error('Could not copy link');
+					}
+				}
+			}
+		});
+	}
+
+	function feedAuthLinkDetector(data: unknown) {
+		if (!surfaceAuthLinks) return;
+		const detector = (authLinkDetector ??= new AuthLinkDetector());
+		const decoder = (authLinkDecoder ??= new TextDecoder('utf-8', { fatal: false }));
+		const emit = (text: string) => {
+			for (const url of detector.push(text)) showAuthLinkToast(url);
+		};
+		if (typeof data === 'string') emit(data);
+		else if (data instanceof ArrayBuffer) emit(decoder.decode(new Uint8Array(data)));
+		else if (data instanceof Blob) data.text().then(emit).catch(() => {});
+	}
 
 	let terminal = $state<Terminal>();
 	let terminalFrame: HTMLDivElement | null = null;
@@ -150,11 +200,12 @@
 			let sawFirstMessage = false;
 			attachAddon = new AttachAddon(socket, { bidirectional: true });
 			term.loadAddon(attachAddon);
-			socket.addEventListener('message', () => {
+			socket.addEventListener('message', (evt) => {
 				if (!sawFirstMessage) {
 					sawFirstMessage = true;
 					clearFirstMessageTimer();
 				}
+				feedAuthLinkDetector(evt.data);
 			});
 			firstMessageTimer = setTimeout(() => {
 				if (!sawFirstMessage && socket.readyState === WebSocket.OPEN) {

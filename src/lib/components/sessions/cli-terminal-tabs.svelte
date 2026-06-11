@@ -183,6 +183,7 @@
 						sandboxName={tab.target === 'main' ? 'claude-code' : 'shell'}
 						sessionId={tab.terminalId}
 						active={activeTabId === tab.id}
+						surfaceAuthLinks={true}
 						wsPath={`/api/v1/sessions/${encodeURIComponent(sessionId)}/cli-terminal/${encodeURIComponent(tab.terminalId)}?target=${tab.target}`}
 					/>
 				{/key}
