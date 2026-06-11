@@ -110,6 +110,18 @@ def test_codex_config_toml_otel_is_struct_variant(codex_home, monkeypatch):
     assert otel["metrics_exporter"] == "none"  # no default Statsig export
 
 
+def test_codex_config_pretrusts_sandbox_cwd(codex_home, monkeypatch, tmp_path):
+    """codex 0.139.0 blocks on a "Do you trust this directory?" onboarding prompt
+    for an untrusted cwd, start-stalling the session. The generated config must
+    pre-trust the sandbox cwd (the --cd target) so codex boots to its prompt."""
+    sandbox = str(tmp_path / "sandbox")
+    monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", sandbox)
+    monkeypatch.setenv("CODEX_AUTH_JSON", AUTH_BLOB)
+    get_adapter("codex").seed(SESSION)
+    cfg = tomllib.loads((codex_home / "config.toml").read_text())
+    assert cfg["projects"][sandbox]["trust_level"] == "trusted"
+
+
 def test_codex_build_argv_default_mode(codex_home):
     argv = get_adapter("codex").build_argv(SESSION["agentConfig"], {})
     assert argv[0] == "codex"
