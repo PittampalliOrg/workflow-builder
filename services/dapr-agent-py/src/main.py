@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 def _configure_durabletask_grpc_defaults() -> None:
     """Raise durabletask's worker channel limit before any workflow runtime starts."""
     try:
-        import durabletask.internal.shared as durabletask_shared
+        import dapr.ext.workflow._durabletask.internal.shared as durabletask_shared
     except Exception:
         return
     try:
@@ -6611,7 +6611,7 @@ def _run_session_host_monitor(instance_id: str) -> None:
 
 def _taskhub_call(method: str, request: Any) -> Any:
     import grpc
-    import durabletask.internal.orchestrator_service_pb2_grpc as pb_grpc
+    import dapr.ext.workflow._durabletask.internal.orchestrator_service_pb2_grpc as pb_grpc
 
     target = (
         f"{os.environ.get('DAPR_HOST', '127.0.0.1')}:"
@@ -6825,7 +6825,7 @@ def _agent_run_status_state_timeout_seconds() -> float:
 
 
 def _list_instance_ids(page_size: int) -> list[str]:
-    import durabletask.internal.orchestrator_service_pb2 as pb
+    import dapr.ext.workflow._durabletask.internal.protos as pb
 
     ids: list[str] = []
     continuation_token = ""
@@ -6842,7 +6842,7 @@ def _list_instance_ids(page_size: int) -> list[str]:
 
 
 def _runtime_status_name(value: Any) -> str:
-    import durabletask.internal.orchestrator_service_pb2 as pb
+    import dapr.ext.workflow._durabletask.internal.protos as pb
 
     try:
         return pb.OrchestrationStatus.Name(value).replace("ORCHESTRATION_STATUS_", "")
@@ -6928,7 +6928,7 @@ def _read_agent_state_key(key: str, timeout_seconds: float = 5) -> Any:
 
 
 def _build_instance_payload(instance_id: str) -> dict[str, Any] | None:
-    import durabletask.internal.orchestrator_service_pb2 as pb
+    import dapr.ext.workflow._durabletask.internal.protos as pb
 
     response = _taskhub_call(
         "GetInstance",
@@ -7064,7 +7064,7 @@ def _normalize_history_event(event: Any) -> dict[str, Any]:
 
 
 def _get_instance_history(instance_id: str) -> list[dict[str, Any]]:
-    import durabletask.internal.orchestrator_service_pb2 as pb
+    import dapr.ext.workflow._durabletask.internal.protos as pb
 
     response = _taskhub_call(
         "GetInstanceHistory",
@@ -7216,7 +7216,7 @@ def get_agent_run_status(instance_id: str, summary: bool = False) -> dict[str, A
 
 @app.get("/api/v2/agent-runs/{instance_id}/history", response_model=AgentRunHistoryResponse)
 def get_agent_run_history(instance_id: str) -> AgentRunHistoryResponse:
-    import durabletask.internal.orchestrator_service_pb2 as pb
+    import dapr.ext.workflow._durabletask.internal.protos as pb
 
     try:
         response = _taskhub_call(
@@ -7243,7 +7243,7 @@ def rerun_agent_run(
     instance_id: str,
     request: RerunAgentRunRequest = RerunAgentRunRequest(),
 ) -> dict[str, Any]:
-    import durabletask.internal.orchestrator_service_pb2 as pb
+    import dapr.ext.workflow._durabletask.internal.protos as pb
 
     try:
         response = _taskhub_call(
@@ -7471,7 +7471,7 @@ def spawn_session_endpoint(request: dict) -> dict:
 
     Body: { instanceId: str, payload: dict }
     """
-    import durabletask.internal.orchestrator_service_pb2 as pb
+    import dapr.ext.workflow._durabletask.internal.protos as pb
 
     instance_id = str(request.get("instanceId") or "").strip()
     if not instance_id:
@@ -7503,7 +7503,7 @@ def raise_session_event_endpoint(request: dict) -> dict:
 
     Body: { instanceId: str, eventName: str, payload: dict }
     """
-    import durabletask.internal.orchestrator_service_pb2 as pb
+    import dapr.ext.workflow._durabletask.internal.protos as pb
 
     instance_id = str(request.get("instanceId") or "").strip()
     event_name = str(request.get("eventName") or "").strip()

@@ -34,11 +34,19 @@ if "requests" not in sys.modules:
     requests_module.exceptions = types.SimpleNamespace(RequestException=Exception)
     sys.modules["requests"] = requests_module
 
-if "durabletask.internal.orchestrator_service_pb2" not in sys.modules:
-    durabletask_module = types.ModuleType("durabletask")
-    internal_module = types.ModuleType("durabletask.internal")
-    pb_module = types.ModuleType("durabletask.internal.orchestrator_service_pb2")
-    pb_grpc_module = types.ModuleType("durabletask.internal.orchestrator_service_pb2_grpc")
+if "dapr.ext.workflow._durabletask.internal.protos" not in sys.modules:
+    # Dapr 1.18 vendored durabletask into the SDK + split the proto: app.py now
+    # imports `dapr.ext.workflow._durabletask.internal.protos as pb` (the
+    # backwards-compat re-export aggregator) + `...orchestrator_service_pb2_grpc as
+    # pb_grpc` (the stub). Stub them so app.py imports without the real SDK. The
+    # `dapr` / `dapr.ext.workflow` parents are created by the block below; we only
+    # add the `_durabletask.internal.*` chain here.
+    durabletask_module = types.ModuleType("dapr.ext.workflow._durabletask")
+    internal_module = types.ModuleType("dapr.ext.workflow._durabletask.internal")
+    pb_module = types.ModuleType("dapr.ext.workflow._durabletask.internal.protos")
+    pb_grpc_module = types.ModuleType(
+        "dapr.ext.workflow._durabletask.internal.orchestrator_service_pb2_grpc"
+    )
 
     class _FakeCreateInstanceRequest:
         def __init__(self, **kwargs):
@@ -46,6 +54,9 @@ if "durabletask.internal.orchestrator_service_pb2" not in sys.modules:
             self.name = kwargs.get("name")
             self.input = kwargs.get("input")
             self.version = types.SimpleNamespace(CopyFrom=lambda *_args, **_kwargs: None)
+            self.parentTraceContext = types.SimpleNamespace(
+                CopyFrom=lambda *_args, **_kwargs: None
+            )
 
     class _FakeGetInstanceRequest:
         def __init__(self, **kwargs):
@@ -72,10 +83,12 @@ if "durabletask.internal.orchestrator_service_pb2" not in sys.modules:
     pb_module.RerunWorkflowFromEventRequest = _FakeRerunWorkflowFromEventRequest
     pb_grpc_module.TaskHubSidecarServiceStub = _FakeTaskHubSidecarServiceStub
 
-    sys.modules["durabletask"] = durabletask_module
-    sys.modules["durabletask.internal"] = internal_module
-    sys.modules["durabletask.internal.orchestrator_service_pb2"] = pb_module
-    sys.modules["durabletask.internal.orchestrator_service_pb2_grpc"] = pb_grpc_module
+    sys.modules["dapr.ext.workflow._durabletask"] = durabletask_module
+    sys.modules["dapr.ext.workflow._durabletask.internal"] = internal_module
+    sys.modules["dapr.ext.workflow._durabletask.internal.protos"] = pb_module
+    sys.modules[
+        "dapr.ext.workflow._durabletask.internal.orchestrator_service_pb2_grpc"
+    ] = pb_grpc_module
 
 if "dapr" not in sys.modules:
     dapr_module = types.ModuleType("dapr")

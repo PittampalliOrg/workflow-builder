@@ -60,7 +60,7 @@ def readyz() -> dict[str, object]:
 
 def _taskhub_call(method: str, request: Any) -> Any:
     import grpc
-    import durabletask.internal.orchestrator_service_pb2_grpc as pb_grpc
+    import dapr.ext.workflow._durabletask.internal.orchestrator_service_pb2_grpc as pb_grpc
 
     target = (
         f"{os.environ.get('DAPR_HOST', '127.0.0.1')}:"
@@ -73,7 +73,7 @@ def _taskhub_call(method: str, request: Any) -> Any:
 
 @app.post("/internal/sessions/spawn")
 def spawn_session_endpoint(request: dict[str, Any]) -> dict[str, Any]:
-    import durabletask.internal.orchestrator_service_pb2 as pb
+    import dapr.ext.workflow._durabletask.internal.protos as pb
 
     instance_id = str(request.get("instanceId") or "").strip()
     if not instance_id:
@@ -100,7 +100,7 @@ def spawn_session_endpoint(request: dict[str, Any]) -> dict[str, Any]:
 
 @app.post("/internal/sessions/raise-event")
 def raise_session_event_endpoint(request: dict[str, Any]) -> dict[str, Any]:
-    import durabletask.internal.orchestrator_service_pb2 as pb
+    import dapr.ext.workflow._durabletask.internal.protos as pb
 
     instance_id = str(request.get("instanceId") or "").strip()
     event_name = str(request.get("eventName") or "").strip()

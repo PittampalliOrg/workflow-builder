@@ -156,15 +156,6 @@ wheels = [
 ]
 
 [[package]]
-name = "asyncio"
-version = "4.0.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/71/ea/26c489a11f7ca862d5705db67683a7361ce11c23a7b98fc6c2deaeccede2/asyncio-4.0.0.tar.gz", hash = "sha256:570cd9e50db83bc1629152d4d0b7558d6451bb1bfd5dfc2e935d96fc2f40329b", size = 5371, upload-time = "2025-08-05T02:51:46.605Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/57/64/eff2564783bd650ca25e15938d1c5b459cda997574a510f7de69688cb0b4/asyncio-4.0.0-py3-none-any.whl", hash = "sha256:c1eddb0659231837046809e68103969b2bef8b0400d59cfa6363f6b5ed8cc88b", size = 5555, upload-time = "2025-08-05T02:51:45.767Z" },
-]
-
-[[package]]
 name = "attrs"
 version = "26.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -263,8 +254,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "claude-agent-sdk", specifier = ">=0.2.93,<0.3" },
-    { name = "dapr", specifier = ">=1.14" },
-    { name = "dapr-ext-workflow", specifier = ">=1.14" },
+    { name = "dapr", specifier = ">=1.18,<1.19" },
+    { name = "dapr-ext-workflow", specifier = ">=1.18,<1.19" },
     { name = "diagrid", specifier = ">=0.1" },
     { name = "fastapi", specifier = ">=0.104" },
     { name = "pydantic", specifier = ">=2.0" },
@@ -369,7 +360,7 @@ wheels = [
 
 [[package]]
 name = "dapr"
-version = "1.17.5"
+version = "1.18.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -379,22 +370,19 @@ dependencies = [
     { name = "python-dateutil" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/27/d9/9eeb7049b81afe7f597bfbed1c63e01eab6c8246336aea0dc856de05fea3/dapr-1.17.5.tar.gz", hash = "sha256:9729492bf523edda18de3c46c2278979b0871b731a4043d42e8185d48d174213", size = 172365, upload-time = "2026-06-02T09:18:17.391Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/27/58/18aeb954375aa0b221bb626a9031c20ba99733b22f827e8818edbf812e13/dapr-1.17.5-py3-none-any.whl", hash = "sha256:1c6af18b5ef9d3ad222e87b05ab3edf13c3739293f622c6b48f420819b6b7ec0", size = 243134, upload-time = "2026-06-02T09:18:16.023Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/94/d981426db04d49b1b3d186e51e4f6744911520fd9ce62f6bfa3d195945be/dapr-1.18.0-py3-none-any.whl", hash = "sha256:933502f853589904ffa20805523a9679934d3d30cde289d25da61e529de70e00", size = 252058, upload-time = "2026-06-10T21:43:19.639Z" },
 ]
 
 [[package]]
 name = "dapr-ext-workflow"
-version = "1.17.5"
+version = "1.18.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dapr" },
-    { name = "durabletask-dapr" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b1/44/876210e66050bd73b1df2f232cfd08b9bfeba4cafdc5952c9132c19cf627/dapr_ext_workflow-1.17.5.tar.gz", hash = "sha256:70b33658174fe9ce1cf1641192d088b0fcf51a3bd0ea47ff5a5f91c3998570fa", size = 24432, upload-time = "2026-06-02T09:18:11.914Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6f/ec/4b378770671be3390ea5c9b096833fdd82a4acbea4fcd38f6cf63f7de906/dapr_ext_workflow-1.17.5-py3-none-any.whl", hash = "sha256:7c9950857f0b6632146d9c5f64a986af5b260933922db3bd7e68a7d11c06dd6e", size = 29230, upload-time = "2026-06-02T09:18:10.985Z" },
+    { url = "https://files.pythonhosted.org/packages/80/bc/85c8f1931f7c6c3136514116821607eaece2fcc4e1c358710b3db45f35e5/dapr_ext_workflow-1.18.0-py3-none-any.whl", hash = "sha256:25ed8c97522888ee10fa029cf328cf21f2a026922cfd1e3658d13bff6fe388fb", size = 152242, upload-time = "2026-06-10T21:43:22.576Z" },
 ]
 
 [[package]]
@@ -437,20 +425,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b5/ca/3e7cf224562d7183fd88142ecfc1234841269deedbbf366709ee744d46ad/diagrid_core-0.4.1.tar.gz", hash = "sha256:6725bf8af2dc016218d90af3b31627a5728b020ce60a2f4bad7e91eb858aeef2", size = 12467, upload-time = "2026-05-28T10:48:19.893Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f5/68/f80f1a71f7a86545848621caadd8de98a309b793a5e08731ac62c1727193/diagrid_core-0.4.1-py3-none-any.whl", hash = "sha256:6623120b55d5c2bedfe1e0675272f05e142b360adcb389a49574e9b1c07e8d2c", size = 17426, upload-time = "2026-05-28T10:48:18.861Z" },
-]
-
-[[package]]
-name = "durabletask-dapr"
-version = "0.17.4"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "asyncio" },
-    { name = "grpcio" },
-    { name = "protobuf" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ab/7e/2dffbaad08f4a2f6cae8817b88e58761dcffeb3e3f568fbc66e0e0b36ea6/durabletask_dapr-0.17.4.tar.gz", hash = "sha256:6418d763447054ca6fd39a5914de035c48f120fc3a2867e6c08833f8f4f798a1", size = 103203, upload-time = "2026-03-12T14:18:06.296Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ae/fb/f360bf5581c81abe99b61322a3792506eb96d11d866231cfe205f033d0b1/durabletask_dapr-0.17.4-py3-none-any.whl", hash = "sha256:e1fed8dcdf35c8408b29355c5fb85ed619f878bdfa1ee5c88df6ac3cce4598a0", size = 69202, upload-time = "2026-03-12T14:18:05.169Z" },
 ]
 
 [[package]]

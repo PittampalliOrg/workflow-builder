@@ -34,8 +34,8 @@ from collections.abc import Callable
 
 import grpc
 import requests
-import durabletask.internal.orchestrator_service_pb2 as pb
-import durabletask.internal.orchestrator_service_pb2_grpc as pb_grpc
+import dapr.ext.workflow._durabletask.internal.protos as pb
+import dapr.ext.workflow._durabletask.internal.orchestrator_service_pb2_grpc as pb_grpc
 from dapr.ext.workflow import DaprWorkflowClient
 from fastapi.encoders import jsonable_encoder
 from fastapi import FastAPI, HTTPException, Request
@@ -836,7 +836,6 @@ def _schedule_new_workflow_instance(
     workflow_input: dict[str, Any],
     *,
     workflow_version: str | None = None,
-    idempotent: bool = False,
     parent_trace_context: dict[str, str] | None = None,
 ) -> str:
     request = pb.CreateInstanceRequest(
@@ -857,19 +856,12 @@ def _schedule_new_workflow_instance(
         request.parentTraceContext.CopyFrom(trace_ctx)
     if workflow_version:
         request.version.CopyFrom(wrappers_pb2.StringValue(value=workflow_version))
-    if idempotent:
-        # Use IGNORE policy: if instance already exists and is RUNNING/PENDING,
-        # the scheduler returns it without error (atomic dedup, no TOCTOU race).
-        request.orchestrationIdReusePolicy.CopyFrom(
-            pb.OrchestrationIdReusePolicy(
-                operationStatus=[
-                    pb.ORCHESTRATION_STATUS_RUNNING,
-                    pb.ORCHESTRATION_STATUS_PENDING,
-                    pb.ORCHESTRATION_STATUS_SUSPENDED,
-                ],
-                action=pb.IGNORE,
-            )
-        )
+    # Dapr 1.18 REMOVED orchestrationIdReusePolicy from CreateInstanceRequest (the
+    # `dapr.ext.workflow._durabletask` vendored proto reserves field 6; there is no
+    # IGNORE policy any more). Idempotent dedup is now handled entirely by
+    # _idempotent_schedule's get_workflow_state precheck + state-based
+    # purge-before-reuse — StartInstance over an active instance returns the
+    # existing instance (verified against live daprd 1.18). (wfb Dapr-1.18 Stage 2.)
     response = _taskhub_call("StartInstance", request)
     result_id = str(getattr(response, "instanceId", "") or "").strip()
     if not result_id:
@@ -897,13 +889,12 @@ def _idempotent_schedule(
 ) -> str:
     """Schedule a workflow instance idempotently.
 
-    Uses the Dapr/durabletask ``OrchestrationIdReusePolicy`` with ``IGNORE``
-    action for atomic dedup: if the instance already exists and is
-    RUNNING/PENDING/SUSPENDED, the scheduler returns the existing ID
-    without error (no TOCTOU race condition).
-
-    If the instance is in a terminal state (COMPLETED/FAILED/TERMINATED),
-    purge it first, then schedule fresh.
+    Dapr 1.18 removed ``OrchestrationIdReusePolicy``/``IGNORE`` from the SDK, so
+    dedup is done explicitly here: a ``get_workflow_state`` precheck returns the
+    existing ID for a live RUNNING/PENDING/SUSPENDED instance, purges + reschedules
+    on the DB-terminal-but-Dapr-non-terminal zombie divergence, and purges a
+    terminal instance before scheduling fresh. A residual schedule-failure path
+    re-fetches state and resolves the same way (by state, not exception type).
     """
     client = get_workflow_client()
     try:
@@ -954,11 +945,12 @@ def _idempotent_schedule(
             instance_id=instance_id,
             workflow_input=workflow_input,
             workflow_version=workflow_version,
-            idempotent=True,
             parent_trace_context=parent_trace_context,
         )
     except Exception as schedule_err:
-        # Atomic IGNORE didn't help -- instance may be in terminal state.
+        # Schedule raised (e.g. an un-purged terminal instance, or the empty-ID
+        # RuntimeError) -- re-fetch state and resolve by state (NOT by exception
+        # type: the broad except must also catch the empty-instance-ID error).
         # Try purging and retrying.
         try:
             existing = client.get_workflow_state(

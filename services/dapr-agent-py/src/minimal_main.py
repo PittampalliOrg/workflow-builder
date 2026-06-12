@@ -28,7 +28,7 @@ from fastapi import FastAPI, HTTPException
 def _configure_durabletask_grpc_defaults() -> None:
     """Raise durabletask's worker channel limit before any workflow runtime starts."""
     try:
-        import durabletask.internal.shared as durabletask_shared
+        import dapr.ext.workflow._durabletask.internal.shared as durabletask_shared
     except Exception:
         return
     try:
