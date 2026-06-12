@@ -309,7 +309,24 @@
 					body: JSON.stringify({ reason: 'benchmark instance terminated by user' })
 				}
 			);
-			if (!res.ok) throw new Error(`Terminate failed (${res.status})`);
+			if (!res.ok) {
+				// The terminate endpoint returns 409 { cleanupConfirmed:false, message }
+				// while the durable cascade is still converging — the same "requested,
+				// converging, retry later" semantic the durable-run Stop surfaces render
+				// as 202 "Stopping…". Surface the server's explanatory message as an
+				// in-progress notice (retryable) instead of a misleading bare failure.
+				const body = (await res
+					.json()
+					.catch(() => null)) as { message?: string; cleanupConfirmed?: boolean } | null;
+				if (res.status === 409 && body?.cleanupConfirmed === false) {
+					errorMessage =
+						body.message ||
+						'Stopping… durable cleanup not yet confirmed; resources left active. Try again shortly.';
+					await load(runId, instanceId);
+					return;
+				}
+				throw new Error(body?.message || `Terminate failed (${res.status})`);
+			}
 			await load(runId, instanceId);
 			onTerminated?.();
 		} catch (err) {

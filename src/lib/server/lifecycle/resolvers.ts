@@ -101,9 +101,19 @@ function compact(values: Array<string | null | undefined>): string[] {
 	return out;
 }
 
-/** Extract the SW node id from a workflow-driven child session id (`<exec>__durable__<node>__run__<idx>`). */
-function nodeIdFromChildSessionId(sessionId: string): string | null {
-	const m = sessionId.match(/__durable__(.+?)__run__\d+/);
+/**
+ * Extract the SW node id from a workflow-driven child session id
+ * (`<exec>__<instancePrefix>__<node>__run__<idx>`). The instance prefix is the
+ * PER-RUNTIME registry value (runtime-registry.json): `durable` (dapr-agent-py)
+ * OR `durable-<suffix>` for every other runtime — `durable-claude`,
+ * `durable-adk`, `durable-browser-use`, `durable-claude-cli`, `durable-codex-cli`,
+ * `durable-agy-cli`, `durable-testing`. The optional `-<suffix>` is REQUIRED in the
+ * pattern: hardcoding bare `durable` left `terminatedChildNodes` empty for the 7
+ * non-default runtimes, so the cross-app wedge force-finalize never fired for them
+ * (a Stopped claude/adk/browser/CLI durable run polled "stopping" forever).
+ */
+export function nodeIdFromChildSessionId(sessionId: string): string | null {
+	const m = sessionId.match(/__durable(?:-[a-z0-9-]+)?__(.+?)__run__\d+/);
 	return m ? m[1] : null;
 }
 
@@ -160,12 +170,27 @@ async function resolveWorkflowExecution(id: string): Promise<ResolvedDurableTarg
 		.from(sessions)
 		.where(eq(sessions.workflowExecutionId, id));
 
-	// Node ids of child durable/run sessions that are DB-terminated (the
-	// authoritative "the agent child is really gone" signal for the wedge gate).
+	// Node ids of child durable/run sessions whose agent child is really gone — the
+	// authoritative wedge-gate signal. A node qualifies ONLY when EVERY run-index
+	// child of it is DB-`terminated`: in a same-node durable/run loop, `run__0`'s
+	// child can be terminated while the parent legitimately advances to `run__1` of
+	// the SAME node, so keying on "any terminated child of the node" could
+	// false-finalize a parent parked at a still-LIVE later run. Requiring all
+	// run-index children terminated closes that edge (and is a no-op for the common
+	// single-run case).
+	const nodeChildCounts = new Map<string, { total: number; terminated: number }>();
+	for (const s of childSessions) {
+		const node = nodeIdFromChildSessionId(s.id);
+		if (!node) continue;
+		const entry = nodeChildCounts.get(node) ?? { total: 0, terminated: 0 };
+		entry.total += 1;
+		if (s.status === "terminated") entry.terminated += 1;
+		nodeChildCounts.set(node, entry);
+	}
 	const terminatedChildNodes = compact(
-		childSessions
-			.filter((s) => s.status === "terminated")
-			.map((s) => nodeIdFromChildSessionId(s.id)),
+		[...nodeChildCounts.entries()]
+			.filter(([, c]) => c.total > 0 && c.terminated === c.total)
+			.map(([node]) => node),
 	);
 
 	const agentRuns = await database

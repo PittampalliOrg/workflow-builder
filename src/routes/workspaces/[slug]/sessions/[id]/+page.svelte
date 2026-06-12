@@ -744,9 +744,15 @@
 				errorMessage = `Failed to load session (${res.status})`;
 				return;
 			}
-			const data = (await res.json()) as { session: SessionDetail };
+			const data = (await res.json()) as {
+				session: SessionDetail;
+				owner?: { kind: 'benchmarkRun' | 'evalRun'; runId: string } | null;
+			};
 			session = data.session;
 			titleDraft = session.title ?? '';
+			// Proactively hide the generic Stop for a coordinator-owned session (parity
+			// with the workflow-run page) instead of only discovering it on a Stop 409.
+			if (data.owner) coordinatorOwner = data.owner;
 		} catch (err) {
 			errorMessage = err instanceof Error ? err.message : String(err);
 		} finally {

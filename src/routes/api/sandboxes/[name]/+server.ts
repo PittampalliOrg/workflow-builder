@@ -10,6 +10,8 @@ import {
 	getKubernetesSandbox,
 	type AgentSandboxResource
 } from '$lib/server/kube/client';
+import { activeSessionForSandboxName } from '$lib/server/sandboxes/active-session-guard';
+import { isResourceInScope } from '$lib/server/workflows/project-scope';
 import type { Sandbox, SandboxPhase } from '$lib/types/sandbox';
 
 function kubeSandboxPhase(resource: AgentSandboxResource): SandboxPhase {
@@ -63,7 +65,28 @@ export const GET: RequestHandler = async ({ params }) => {
 	return json(await response.json());
 };
 
-export const DELETE: RequestHandler = async ({ params }) => {
+export const DELETE: RequestHandler = async ({ params, locals }) => {
+	// Authenticated only — this reaps a Kubernetes Sandbox CR (a real, irreversible
+	// pod teardown). authHandle only POPULATES locals.session; it never rejects, so
+	// without this check the route was reachable unauthenticated.
+	if (!locals.session?.userId) return error(401, 'Authentication required');
+
+	// Refuse while the named sandbox backs a LIVE session: deleting its CR out-of-band
+	// yanks the pod from under the running session_workflow (the DB↔Dapr divergence the
+	// lifecycle SSOT prevents). Stop the run first (POST /api/v1/sessions/[id]/stop
+	// {mode:'purge'}), which reaps the CR as its final step. Mirrors the per-session
+	// route /api/v1/sessions/[id]/sandbox.
+	const guard = await activeSessionForSandboxName(params.name);
+	if (guard.active) {
+		if (guard.scope && !isResourceInScope(guard.scope, locals.session)) {
+			return error(404, 'Sandbox not found');
+		}
+		return error(
+			409,
+			"Stop the run before destroying its sandbox (POST /api/v1/sessions/[id]/stop {mode:'purge'})"
+		);
+	}
+
 	if (isAgentRuntimeSandboxName(params.name)) {
 		return json(
 			{
