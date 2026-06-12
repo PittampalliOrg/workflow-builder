@@ -269,6 +269,32 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 			(agentConfigForDispatch as Record<string, unknown>).continueSession =
 				true;
 		}
+
+		// Belt-and-suspenders cold-start warm-up. The Claude Code CLI connects
+		// every MCP server ONCE at startup; a scale-to-zero ap-<piece>-service
+		// (Knative) that is cold at that moment fails the connect and the TUI
+		// mis-surfaces it as "not authenticated". The in-pod host also warms these
+		// just before launch (cli_lifecycle._warm_ap_mcp_servers); firing the
+		// scale-from-zero GETs HERE — in parallel with Kueue pod admission — means
+		// the services are likely already warm by launch. Fire-and-forget: never
+		// awaited, never throws into spawn; no X-Connection-External-Id (warm-up
+		// only triggers the Knative activator).
+		const warmUrls = ((agentConfigForDispatch.mcpServers as unknown[]) ?? [])
+			.filter((s): s is Record<string, unknown> => !!s && typeof s === "object")
+			.filter((s) => {
+				const sourceType = String(s.sourceType ?? s.source_type ?? "");
+				const registryRef = String(s.registryRef ?? s.registry_ref ?? "");
+				return sourceType === "nimble_piece" || registryRef.startsWith("ap-");
+			})
+			.map((s) => String(s.url ?? s.serverUrl ?? ""))
+			.filter((u) => u.startsWith("http"));
+		if (warmUrls.length > 0) {
+			void Promise.allSettled(
+				warmUrls.map((u) =>
+					daprFetch(u, { method: "GET", maxRetries: 2 }).catch(() => undefined),
+				),
+			);
+		}
 	}
 
 	// OAuth credential delivery, generalized over cliAuth.credentialKind:

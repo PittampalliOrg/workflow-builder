@@ -83,6 +83,14 @@ export type StartOAuthConnectOptions = {
 	 * connections page always used) without creating any rows.
 	 */
 	oauthAppConfigured?: boolean;
+	/**
+	 * RECONNECT: reuse an EXISTING app_connection row (by its id) instead of
+	 * creating a new one. `/oauth2/complete` updates that row's token IN PLACE, so
+	 * the external_id is preserved and every `mcp_connection` / agent binding keeps
+	 * pointing at the now-refreshed connection. When set, the create-row POST is
+	 * skipped and `StartedOAuthConnect.connectionExternalId` resolves to `null`.
+	 */
+	existingConnectionId?: string;
 	/** Override the OAuth callback URL (default: `${origin}/api/app-connections/oauth2/callback`). */
 	redirectUrl?: string;
 	/** Override navigation (default: `window.location.href = authorizationUrl`). Useful for tests/popups. */
@@ -93,7 +101,8 @@ export type StartOAuthConnectOptions = {
 
 export type StartedOAuthConnect = {
 	connectionId: string;
-	connectionExternalId: string;
+	/** `null` on the reconnect path (no new row is created). */
+	connectionExternalId: string | null;
 	state: string;
 	authorizationUrl: string;
 	pending: PendingOAuthConnection;
@@ -162,21 +171,33 @@ export function startOAuthConnect(options: StartOAuthConnectOptions): OAuthConne
 		const redirectUrl =
 			options.redirectUrl ?? `${window.location.origin}/api/app-connections/oauth2/callback`;
 
-		const createRes = await fetchImpl('/api/app-connections', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				pieceName: options.pieceName,
-				displayName: options.displayName,
-				type: 'PLATFORM_OAUTH2',
-				value: {
-					redirect_url: redirectUrl
-				}
-			}),
-			signal: controller.signal
-		});
-		if (!createRes.ok) throw new Error(await createRes.text());
-		const connection = (await createRes.json()) as OAuthAppConnectionSummary;
+		// Reconnect path: reuse the existing row so /oauth2/complete refreshes its
+		// token in place (external_id preserved). New-connect path: create a fresh
+		// PLATFORM_OAUTH2 row first.
+		let connectionId: string;
+		let connectionExternalId: string | null;
+		if (options.existingConnectionId) {
+			connectionId = options.existingConnectionId;
+			connectionExternalId = null;
+		} else {
+			const createRes = await fetchImpl('/api/app-connections', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					pieceName: options.pieceName,
+					displayName: options.displayName,
+					type: 'PLATFORM_OAUTH2',
+					value: {
+						redirect_url: redirectUrl
+					}
+				}),
+				signal: controller.signal
+			});
+			if (!createRes.ok) throw new Error(await createRes.text());
+			const connection = (await createRes.json()) as OAuthAppConnectionSummary;
+			connectionId = connection.id;
+			connectionExternalId = connection.externalId;
+		}
 
 		const startRes = await fetchImpl('/api/app-connections/oauth2/start', {
 			method: 'POST',
@@ -197,7 +218,7 @@ export function startOAuthConnect(options: StartOAuthConnectOptions): OAuthConne
 
 		const pending: PendingOAuthConnection = {
 			state: start.state,
-			connectionId: connection.id,
+			connectionId,
 			pieceName: options.pieceName,
 			codeVerifier: start.codeVerifier,
 			redirectUrl: start.redirectUrl,
@@ -218,8 +239,8 @@ export function startOAuthConnect(options: StartOAuthConnectOptions): OAuthConne
 		navigate(start.authorizationUrl);
 
 		return {
-			connectionId: connection.id,
-			connectionExternalId: connection.externalId,
+			connectionId,
+			connectionExternalId,
 			state: start.state,
 			authorizationUrl: start.authorizationUrl,
 			pending

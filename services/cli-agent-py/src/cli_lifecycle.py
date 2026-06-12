@@ -12,8 +12,15 @@ import asyncio
 import logging
 import os
 import time
+import urllib.error
+import urllib.request
 from typing import Any, Mapping
 
+from src.capability_compiler.normalize import (
+    normalize_transport,
+    runtime_reachable_mcp_url,
+    should_qualify_mcp_url,
+)
 from src.cli_adapters import get_adapter
 from src.herdr_client import (
     AGENT_STATUS_DONE,
@@ -33,6 +40,20 @@ AGENT_DETECT_TIMEOUT_SECONDS = float(
 )
 STOP_WAIT_SECONDS = float(os.environ.get("CLI_STOP_WAIT_SECONDS", "10"))
 
+# MCP warm-up bounds: scale-to-zero Activepieces piece MCP servers (Knative
+# ap-<piece>-service) are warmed BEFORE the Claude Code TUI connects them once at
+# launch (see _warm_ap_mcp_servers). Generous total deadline — a first-ever
+# scale-up may pull the image — but always best-effort (never blocks launch).
+CLI_MCP_WARM_TIMEOUT_SECONDS = float(
+    os.environ.get("CLI_MCP_WARM_TIMEOUT_SECONDS", "40")
+)
+CLI_MCP_WARM_PER_REQUEST_TIMEOUT_SECONDS = float(
+    os.environ.get("CLI_MCP_WARM_PER_REQUEST_TIMEOUT_SECONDS", "8")
+)
+CLI_MCP_WARM_RETRY_INTERVAL_SECONDS = float(
+    os.environ.get("CLI_MCP_WARM_RETRY_INTERVAL_SECONDS", "2")
+)
+
 
 def _record(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
@@ -44,6 +65,101 @@ def _clean(value: Any) -> str | None:
 
 def _sandbox_root() -> str:
     return os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
+
+
+# ---------------------------------------------------------------------------
+# MCP warm-up (pre-launch)
+# ---------------------------------------------------------------------------
+
+
+def _warmable_mcp_urls(agent_config: Mapping[str, Any]) -> list[str]:
+    """Reachable URLs of scale-to-zero Activepieces piece MCP servers in the
+    agent config — the same FQDNs ``emit_claude_code_cli_servers`` wrote into
+    ``mcp.json``. Skips stdio/websocket entries (no warmable URL) and the
+    always-on shared Deployments (mcp-gateway / workflow-mcp-server), which never
+    scale to zero."""
+    servers = agent_config.get("mcpServers")
+    if not isinstance(servers, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in servers:
+        if not isinstance(item, Mapping):
+            continue
+        if not should_qualify_mcp_url(item):
+            continue
+        if normalize_transport(item) in {"stdio", "websocket"}:
+            continue
+        raw = item.get("url") or item.get("serverUrl")
+        if not raw:
+            continue
+        url = runtime_reachable_mcp_url(item, str(raw))
+        # Only per-piece scale-to-zero Knative services (ap-<piece>-service) need
+        # warming; the always-on Deployments resolve to other hosts.
+        if "ap-" not in url or "-service" not in url:
+            continue
+        if url not in seen:
+            seen.add(url)
+            out.append(url)
+    return out
+
+
+def _probe_mcp_url(url: str) -> bool:
+    """GET ``url``; ANY HTTP response (incl. 4xx/405/406 from a StreamableHTTP
+    endpoint rejecting a bare GET) means the pod is UP. A Knative activator 503,
+    connection refused, or a timeout means still cold."""
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(
+            req, timeout=CLI_MCP_WARM_PER_REQUEST_TIMEOUT_SECONDS
+        ) as resp:
+            return 200 <= int(resp.status) < 600
+    except urllib.error.HTTPError as exc:
+        return int(exc.code) != 503
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def _warm_one_mcp_url(url: str, deadline: float) -> bool:
+    loop = asyncio.get_event_loop()
+    while time.monotonic() < deadline:
+        if await loop.run_in_executor(None, _probe_mcp_url, url):
+            return True
+        await asyncio.sleep(CLI_MCP_WARM_RETRY_INTERVAL_SECONDS)
+    return False
+
+
+async def _warm_ap_mcp_servers(agent_config: Mapping[str, Any]) -> None:
+    """Best-effort: warm (scale-from-zero) each Activepieces piece MCP server
+    BEFORE the TUI launches and connects it ONCE at startup. A cold/scaling
+    server otherwise fails that connect and the CLI mis-surfaces it as "not
+    authenticated" with a dead-end browser Authenticate flow. Never raises — on
+    timeout we log and proceed to launch (the per-connection Reconnect UI is the
+    user-facing recovery for the residual race)."""
+    urls = _warmable_mcp_urls(agent_config)
+    if not urls:
+        return
+    logger.info(
+        "[start-cli] warming %d Activepieces MCP server(s) before launch: %s",
+        len(urls),
+        ", ".join(urls),
+    )
+    deadline = time.monotonic() + CLI_MCP_WARM_TIMEOUT_SECONDS
+    try:
+        results = await asyncio.gather(
+            *(_warm_one_mcp_url(u, deadline) for u in urls),
+            return_exceptions=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[start-cli] MCP warm-up errored (continuing): %s", exc)
+        return
+    for url, ready in zip(urls, results):
+        if ready is not True:
+            logger.warning(
+                "[start-cli] MCP server still cold after %.0fs (continuing): %s",
+                CLI_MCP_WARM_TIMEOUT_SECONDS,
+                url,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +195,10 @@ async def _start_cli(input_data: dict[str, Any]) -> dict[str, Any]:
             "agentDetected": False,
             "herdrDisabled": True,
         }
+
+    # Warm scale-to-zero Activepieces piece MCP servers before the TUI launches
+    # and connects them once — see _warm_ap_mcp_servers.
+    await _warm_ap_mcp_servers(agent_config)
 
     client = HerdrClient()
     try:
