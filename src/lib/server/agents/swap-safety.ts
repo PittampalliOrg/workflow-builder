@@ -25,6 +25,7 @@ export type SwapSeverity = "reject" | "warn";
 export type SwapDrop = {
 	capability:
 		| "mcp"
+		| "skills"
 		| "provider"
 		| "hooks"
 		| "plugins"
