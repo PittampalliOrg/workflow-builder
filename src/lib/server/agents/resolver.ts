@@ -13,6 +13,7 @@ import {
 	resolveCallableAgents,
 	type ResolvedAgent,
 } from "./registry";
+import { flattenBundles } from "$lib/server/capabilities/flatten";
 import {
 	agentRegistryKey,
 	teamRegistryPrefix,
@@ -195,7 +196,10 @@ export async function resolveSpecAgentRefs(
 		}
 
 		const overrides = pickOverrides(withBlock, bodyRecord);
-		const config = applyOverrides(resolved.config, overrides);
+		// Flatten the agent's capability bundles (Pillar 2) into the base config,
+		// then layer node/session overrides on top.
+		const flattened = await flattenBundles(resolved.config, resolved.projectId);
+		const config = applyOverrides(flattened, overrides);
 		// Hydrate attached skills from agent_skill_registry. The agent's stored
 		// config only carries the `registryId` pointer — the Python runtime
 		// needs `prompt`, `allowed_tools`, and `packageManifest.files` inline

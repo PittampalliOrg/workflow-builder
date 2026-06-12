@@ -2604,6 +2604,69 @@ export const agentVersions = pgTable(
 	}),
 );
 
+// Reusable capability bundles (Pillar 2): a named, versioned, workspace-scoped
+// SUBSET of AgentConfig (mcpServers / skills / tools / hooks / plugins / prompt
+// presets) that agents, sessions, and workflow nodes reference via
+// `AgentConfig.bundleRefs`. `flattenBundles()` merges a referenced bundle's
+// version config into the effective config before MCP resolution. Mirrors the
+// agents/agent_versions shape (sans runtime/environment/mlflow).
+export const capabilityBundles = pgTable(
+	"capability_bundles",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		slug: text("slug").notNull(),
+		name: text("name").notNull(),
+		description: text("description"),
+		tags: jsonb("tags").$type<string[]>().notNull().default([]),
+		currentVersionId: text("current_version_id"),
+		createdBy: text("created_by").references(() => users.id, {
+			onDelete: "set null",
+		}),
+		projectId: text("project_id").references(() => projects.id, {
+			onDelete: "cascade",
+		}),
+		isArchived: boolean("is_archived").notNull().default(false),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		slugUnique: unique("uq_capability_bundles_slug").on(table.slug),
+		projectIdx: index("idx_capability_bundles_project").on(table.projectId),
+		archivedIdx: index("idx_capability_bundles_archived").on(table.isArchived),
+	}),
+);
+
+export const capabilityBundleVersions = pgTable(
+	"capability_bundle_versions",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		bundleId: text("bundle_id")
+			.notNull()
+			.references(() => capabilityBundles.id, { onDelete: "cascade" }),
+		version: integer("version").notNull(),
+		config: jsonb("config").notNull().$type<Record<string, unknown>>(),
+		configHash: text("config_hash").notNull(),
+		changelog: text("changelog"),
+		publishedAt: timestamp("published_at"),
+		publishedBy: text("published_by").references(() => users.id, {
+			onDelete: "set null",
+		}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		versionUnique: unique("uq_capability_bundle_version").on(
+			table.bundleId,
+			table.version,
+		),
+		bundleIdx: index("idx_capability_bundle_versions_bundle").on(table.bundleId),
+		hashIdx: index("idx_capability_bundle_versions_hash").on(table.configHash),
+	}),
+);
+
 export type MlflowLineageEntityType =
 	| "agent_version"
 	| "workflow"

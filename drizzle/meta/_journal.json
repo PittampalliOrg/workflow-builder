@@ -540,6 +540,13 @@
       "when": 1781355600000,
       "tag": "0082_session_resume_lineage",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1781355600001,
+      "tag": "0083_capability_bundles",
+      "breakpoints": true
     }
   ]
 }
