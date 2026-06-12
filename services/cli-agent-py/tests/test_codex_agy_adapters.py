@@ -191,6 +191,20 @@ def test_injection_marker_gating_per_adapter():
     assert get_adapter("antigravity").uses_injection_marker is False
 
 
+def test_prompt_ready_marker_per_adapter():
+    """Every interactive-cli adapter content-gates the kickoff on its rendered
+    idle composer (herdr can report `idle` during the pre-composer boot screen,
+    stranding an agent_status-gated seed above the banner). Each marker must be a
+    substring present in the idle composer but ABSENT on the boot screen."""
+    # claude/agy idle composers render a `? for shortcuts` hint footer.
+    assert get_adapter("claude-code").prompt_ready_marker == "? for shortcuts"
+    assert get_adapter("antigravity").prompt_ready_marker == "? for shortcuts"
+    # codex has no hint bar; its composer status footer is `<model> <profile> ·
+    # <cwd>` and the `· <cwd>` segment is composer-only (the boot banner writes
+    # `directory: /sandbox`, no middle dot) + mode/model-independent.
+    assert get_adapter("codex").prompt_ready_marker == "· /sandbox"
+
+
 def test_codex_model_normalization():
     assert normalize_codex_model("openai/o4") == "o4"
     assert normalize_codex_model("gpt-5.5") == "gpt-5.5"

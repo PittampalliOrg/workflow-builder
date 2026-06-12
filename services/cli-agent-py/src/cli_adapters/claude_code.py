@@ -148,6 +148,14 @@ def _decode_file_content(raw_file: Mapping[str, Any]) -> bytes | None:
 
 class ClaudeCodeAdapter(CliAdapter):
     name = "claude-code"
+    # Content-gate the kickoff on the rendered REPL composer. Even though claude
+    # mirrors state from its hooks, herdr can briefly report `idle` during the
+    # boot/onboarding screen before the composer exists, stranding an
+    # agent_status-gated seed (the same intermittent premature-idle race that
+    # affects codex/agy). Claude Code's idle composer always renders the
+    # `? for shortcuts` hint footer (absent on the boot screen), so gate on it.
+    # On gate timeout the lifecycle still injects best-effort (never worse).
+    prompt_ready_marker = "? for shortcuts"
 
     # -- seeding ----------------------------------------------------------------
 
