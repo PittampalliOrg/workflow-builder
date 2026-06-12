@@ -389,6 +389,15 @@ class SessionSupervisor:
 
     def commit_state(self, status: str, detail: str | None = None) -> None:
         """Publish the debounced semantic state transition."""
+        # herdr SCREEN-DETECTS some TUIs (agy, prompt_ready_marker set), and a
+        # screen-detected "done" is a FALSE positive after a turn — the TUI is
+        # back at its idle prompt, NOT exited. (A real exit arrives as a
+        # pane_exit event, handled in handle_event.) Treating it as exit reaped
+        # the session right after the LLM finished; coerce it to idle so an agy
+        # session stays alive between turns like the durable agents. Natively-
+        # stated runtimes (claude/codex) keep "done" = exit.
+        if status == AGENT_STATUS_DONE and self.prompt_ready_marker:
+            status = AGENT_STATUS_IDLE
         if status == self._committed_state and status != AGENT_STATUS_BLOCKED:
             return
         self._committed_state = status
