@@ -108,6 +108,16 @@ class CliAdapter(abc.ABC):
     # kickoff. Those adapters set this False so the marker is never sent.
     uses_injection_marker: bool = True
 
+    # When set, the kickoff/injection readiness gate waits until this substring
+    # appears in the pane's VISIBLE screen (the composer is actually rendered),
+    # instead of trusting herdr's `agent_status`. Needed for TUIs herdr only
+    # SCREEN-DETECTS (agy), where herdr reports `idle` during the pre-composer
+    # boot screen — typing then strands the seed above the banner with an empty
+    # composer. None → use the agent_status gate (claude/codex have native herdr
+    # state). The substring should be a stable element of the idle prompt (e.g.
+    # agy's "? for shortcuts" footer).
+    prompt_ready_marker: str | None = None
+
     @abc.abstractmethod
     def seed(self, session_input: Mapping[str, Any]) -> SeedResult:
         """Materialize per-session files (MCP config, system prompt, skills)."""

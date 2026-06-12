@@ -126,6 +126,10 @@ class AntigravityAdapter(CliAdapter):
     # agy mirrors events from herdr/native state (no UserPromptSubmit hook), so
     # the Claude-only INJECTION_MARKER has no dedup function here — don't send it.
     uses_injection_marker = False
+    # herdr only SCREEN-DETECTS agy (no native state) and reports `idle` during the
+    # pre-composer boot screen, so the kickoff must wait until agy's composer is
+    # actually rendered — gate on its idle-prompt footer.
+    prompt_ready_marker = "? for shortcuts"
 
     @property
     def requires_interactive_login(self) -> bool:

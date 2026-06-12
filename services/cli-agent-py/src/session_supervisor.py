@@ -137,6 +137,10 @@ class SessionSupervisor:
         # hooks_api -> session_supervisor import cycle); it is always overwritten
         # at session start, so it is only a fallback.
         self.injection_marker: str = "\u200b\u2060\u200b"  # = hooks_api.INJECTION_MARKER
+        # When set (adapter.prompt_ready_marker, e.g. agy's "? for shortcuts"), the
+        # readiness gate waits for this substring on the VISIBLE screen instead of
+        # herdr's (screen-detected, unreliable) agent_status.
+        self.prompt_ready_marker: str | None = None
         self._cli_session_id: str | None = None
 
         # Semantic-state tracking.
@@ -524,17 +528,41 @@ class SessionSupervisor:
         while time.monotonic() < deadline:
             pane = self._pane_ref
             if pane:
-                try:
-                    info = await self._client.agent_get(pane)
-                    if agent_status_of(info) == AGENT_STATUS_IDLE:
+                if self.prompt_ready_marker:
+                    # Content-gated: herdr screen-detects this TUI and reports
+                    # `idle` before the composer exists, so trust the rendered
+                    # prompt instead (the marker is absent on the boot screen AND
+                    # while a turn is in flight → also correct for mid-session).
+                    if await self._prompt_rendered(pane):
                         return True
-                except Exception:  # noqa: BLE001
-                    # herdr unreachable / pane not registered yet — fall back to
-                    # the event-stream's committed state.
-                    if self._committed_state == AGENT_STATUS_IDLE:
-                        return True
+                else:
+                    try:
+                        info = await self._client.agent_get(pane)
+                        if agent_status_of(info) == AGENT_STATUS_IDLE:
+                            return True
+                    except Exception:  # noqa: BLE001
+                        # herdr unreachable / pane not registered yet — fall back
+                        # to the event-stream's committed state.
+                        if self._committed_state == AGENT_STATUS_IDLE:
+                            return True
             await asyncio.sleep(CLI_READY_POLL_SECONDS)
         return False
+
+    async def _prompt_rendered(self, pane: str) -> bool:
+        """True when ``prompt_ready_marker`` is on the pane's VISIBLE screen — i.e.
+        the TUI's idle composer is actually drawn. Conservative: any read error
+        returns False so the gate keeps waiting (then injects best-effort on
+        timeout)."""
+        marker = self.prompt_ready_marker
+        if not marker:
+            return True
+        try:
+            res = await self._client.pane_read(pane, source="visible")
+        except Exception:  # noqa: BLE001
+            return False
+        read = res.get("read") if isinstance(res, Mapping) else None
+        text = read.get("text", "") if isinstance(read, Mapping) else ""
+        return marker in text
 
     async def _is_blocked_now(self) -> bool:
         """True when the TUI is sitting at a permission/auth dialog — NEVER type
