@@ -7,13 +7,19 @@ import {
 	updateSessionTitle,
 } from "$lib/server/sessions/registry";
 import { inspectDurableRun } from "$lib/server/lifecycle";
+import { ownsBenchmarkOrEvalRunForSession } from "$lib/server/lifecycle/ownership";
 import { isResourceInScope } from "$lib/server/workflows/project-scope";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	const session = await getSession(params.id);
 	if (!session) return error(404, "Session not found");
-	return json({ session });
+	// Surface coordinator ownership so the session-detail page can PROACTIVELY hide
+	// the generic Stop and link to the owning run's Cancel — parity with the
+	// workflow-run page (which reads execution.owner), instead of only discovering it
+	// reactively when a Stop click returns 409 coordinator_owned.
+	const owner = await ownsBenchmarkOrEvalRunForSession(params.id).catch(() => null);
+	return json({ session, owner });
 };
 
 export const PUT: RequestHandler = async ({ params, request, locals }) => {

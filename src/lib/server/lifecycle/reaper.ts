@@ -176,6 +176,16 @@ export async function reapTerminalRuns(
 		.limit(limit);
 	for (const exec of stopReqExecs) {
 		try {
+			// Defense-in-depth (symmetry with the aged stuckExecs pass below): never
+			// purge a benchmark/eval instance whose coordinator run is still ACTIVE —
+			// the coordinator re-drives a non-terminal instance, so reaping it races the
+			// re-dispatch. Unreachable today (user stop routes 409 coordinator-owned
+			// instances before markStopRequested ever sets stop_requested_at), but this
+			// guards any future writer of stop_requested_at on a coordinator instance.
+			if (await ownedByActiveCoordinatorRun(exec.id)) {
+				result.executionsSkippedActive += 1;
+				continue;
+			}
 			if (await isDurableTerminalOrGone(exec.daprInstanceId ?? exec.id)) {
 				const r = await stopDurableRun(
 					{ kind: "workflowExecution", id: exec.id },

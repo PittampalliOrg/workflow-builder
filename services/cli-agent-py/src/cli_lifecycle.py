@@ -125,6 +125,9 @@ async def _start_cli(input_data: dict[str, Any]) -> dict[str, Any]:
             supervisor.injection_marker = (
                 INJECTION_MARKER if adapter.uses_injection_marker else ""
             )
+            # Adapters herdr only screen-detects (agy) gate readiness on their
+            # rendered idle-prompt instead of herdr's premature `idle`.
+            supervisor.prompt_ready_marker = adapter.prompt_ready_marker
             # Kickoff: type the seed prompt into the TUI once it reaches its
             # prompt (readiness-gated, scheduled onto the app loop — this
             # activity runs on a throwaway worker-thread loop). Skipped for

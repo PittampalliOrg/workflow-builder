@@ -19,13 +19,16 @@ from src.session_supervisor import SessionSupervisor
 class FakeHerdr:
     """Minimal async herdr client: scriptable agent_get + recorded sends."""
 
-    def __init__(self, statuses=None, *, raise_until=0):
+    def __init__(self, statuses=None, *, raise_until=0, pane_texts=None):
         # successive agent_get results (last value repeats)
         self._statuses = list(statuses or ["idle"])
         self._raise_until = raise_until
         self._calls = 0
         self.sent: list[str] = []
         self.enters = 0
+        # successive pane_read VISIBLE texts (last repeats) for content-gating
+        self._pane_texts = list(pane_texts) if pane_texts is not None else None
+        self._pane_calls = 0
 
     async def agent_get(self, target=None, **_kw):
         self._calls += 1
@@ -33,6 +36,14 @@ class FakeHerdr:
             raise RuntimeError("pane not registered yet")
         idx = min(self._calls - 1, len(self._statuses) - 1)
         return {"agent_status": self._statuses[idx]}
+
+    async def pane_read(self, pane, source="visible", lines=None):
+        text = ""
+        if self._pane_texts is not None:
+            idx = min(self._pane_calls, len(self._pane_texts) - 1)
+            text = self._pane_texts[idx]
+        self._pane_calls += 1
+        return {"type": "pane_read", "read": {"text": text}}
 
     async def pane_send_text(self, pane, text):
         self.sent.append(text)
@@ -104,6 +115,32 @@ async def test_wait_until_ready_waits_for_pane_registration(monkeypatch):
     monkeypatch.setattr(ss, "CLI_READY_POLL_SECONDS", 0.01)
     sup = _supervisor(FakeHerdr(statuses=["idle"]))
     # no pane registered yet → never ready within the window
+    assert await sup.wait_until_ready(0.05) is False
+
+
+async def test_content_gated_readiness_waits_for_rendered_prompt(monkeypatch):
+    # agy: herdr screen-detects it and reports `idle` during boot, so readiness
+    # is gated on the composer footer appearing on the VISIBLE screen.
+    monkeypatch.setattr(ss, "CLI_READY_POLL_SECONDS", 0.01)
+    client = FakeHerdr(
+        statuses=["idle"],  # would pass the agent_status gate prematurely
+        pane_texts=["booting…", "  ▄▀▀ banner", "> \n? for shortcuts  Gemini"],
+    )
+    sup = _supervisor(client)
+    sup._pane_ref = "p1"
+    sup.prompt_ready_marker = "? for shortcuts"
+    assert await sup.wait_until_ready(5.0) is True
+    assert client._pane_calls >= 3  # waited past the boot screens, ignoring `idle`
+
+
+async def test_content_gated_times_out_when_prompt_never_renders(monkeypatch):
+    # Composer footer never appears (stuck on boot/login) → never ready; the
+    # premature agent_status `idle` must NOT satisfy a content-gated adapter.
+    monkeypatch.setattr(ss, "CLI_READY_POLL_SECONDS", 0.01)
+    client = FakeHerdr(statuses=["idle"], pane_texts=["Open this link to sign in"])
+    sup = _supervisor(client)
+    sup._pane_ref = "p1"
+    sup.prompt_ready_marker = "? for shortcuts"
     assert await sup.wait_until_ready(0.05) is False
 
 
