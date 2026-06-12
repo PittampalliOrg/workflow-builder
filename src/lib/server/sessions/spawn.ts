@@ -5,6 +5,7 @@ import { resolveEnvironmentRef } from "$lib/server/environments/registry";
 import { appendEvent, listEvents } from "$lib/server/sessions/events";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution";
+import { flattenBundles } from "$lib/server/capabilities/flatten";
 import { compilePromptStack } from "$lib/server/prompt-presets";
 import {
 	agentRuntimeDedicatedAppId,
@@ -131,8 +132,12 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	// (no binary). The per-turn config wins at runtime over the bootstrap
 	// env var (see dapr-agent-py _ensure_mcp_client_async), so this
 	// rewrite must happen here — registry-sync only covers the bootstrap.
+	// Flatten reusable capability bundles (Pillar 2) into the effective config
+	// BEFORE MCP resolution, so bundle-contributed MCP servers participate in
+	// project-connection resolution exactly like inline ones.
+	const flattenedAgentConfig = await flattenBundles(agent.config, agent.projectId);
 	const resolvedAgentConfig = await resolveAgentConfigMcpForProject(
-		agent.config,
+		flattenedAgentConfig,
 		agent.projectId,
 	);
 	const { mcpServers: rewrittenMcp, useBrowserSidecar } =

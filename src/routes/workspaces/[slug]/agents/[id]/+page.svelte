@@ -48,6 +48,7 @@
 	import AgentTestPane from '$lib/components/agents/agent-test-pane.svelte';
 	import AgentToolsIntegrations from '$lib/components/agents/tools-integrations/AgentToolsIntegrations.svelte';
 	import AgentSkillsPicker from '$lib/components/agents/agent-skills-picker.svelte';
+	import BundleRefsPicker from '$lib/components/capabilities/bundle-refs-picker.svelte';
 	import AgentHooksEditor from '$lib/components/agents/agent-hooks-editor.svelte';
 	import AgentVaultsPicker from '$lib/components/agents/agent-vaults-picker.svelte';
 	import AgentModelSelector from '$lib/components/agents/agent-model-selector.svelte';
@@ -878,6 +879,20 @@
 								<AgentSkillsPicker
 									value={config.skills}
 									onChange={(next) => updateConfig('skills', next)}
+								/>
+							</CollapsibleContent>
+						</Collapsible>
+
+						<Collapsible>
+							<CollapsibleTrigger
+								class="flex items-center gap-2 w-full text-left font-semibold text-sm py-2"
+							>
+								<ChevronRight class="size-4" /> Capability bundles ({(config.bundleRefs ?? []).length})
+							</CollapsibleTrigger>
+							<CollapsibleContent class="pl-6">
+								<BundleRefsPicker
+									value={config.bundleRefs ?? []}
+									onChange={(next) => updateConfig('bundleRefs', next)}
 								/>
 							</CollapsibleContent>
 						</Collapsible>

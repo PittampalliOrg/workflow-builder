@@ -170,6 +170,16 @@ export type AgentConfig = {
 	hooks?: AgentHooksConfig;
 	plugins?: string[];
 
+	/**
+	 * Reusable capability-bundle references (Pillar 2). Each ref pins a
+	 * `capability_bundles` row, optionally to a specific version (latest when
+	 * `version` is omitted). `flattenBundles()` merges each referenced bundle's
+	 * mcpServers / skills / tools / hooks / plugins / prompt presets into THIS
+	 * config before MCP resolution, with this config's own entries winning on
+	 * key collision. Empty / unset = no bundles applied.
+	 */
+	bundleRefs?: BundleRef[];
+
 	memory?: AgentMemoryConfig;
 	browserArtifacts?: AgentBrowserArtifactsConfig;
 	sandboxPolicy?: SandboxPolicyOverride;
@@ -213,6 +223,30 @@ export type AgentConfig = {
 	runtimeOverridePolicy: AgentRuntimeOverridePolicy;
 
 	configuration?: AgentHotReloadConfig;
+};
+
+/** A pinned reference to a reusable capability bundle (see `AgentConfig.bundleRefs`). */
+export type BundleRef = {
+	id: string;
+	/** Bundle version to pin; resolves to the latest published version when omitted. */
+	version?: number;
+};
+
+/**
+ * The capability subset a capability bundle carries — a partial `AgentConfig`
+ * limited to the reusable, mergeable surfaces. `flattenBundles()` unions each
+ * field into the effective config (bundle entries form the base; the agent /
+ * session / node config wins on key collision).
+ */
+export type CapabilityBundleConfig = {
+	mcpServers?: McpServerProfileConfig[];
+	skills?: AgentSkillConfig[];
+	tools?: string[];
+	builtinTools?: string[];
+	hooks?: AgentHooksConfig;
+	plugins?: string[];
+	staticPromptPresetRefs?: PromptPresetRef[];
+	dynamicPromptPresetRefs?: PromptPresetRef[];
 };
 
 /**
