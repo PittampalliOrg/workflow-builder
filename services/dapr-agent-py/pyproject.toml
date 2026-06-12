@@ -4,9 +4,9 @@ version = "0.1.0"
 description = "Minimal Python durable agent with hot-reload configuration"
 requires-python = ">=3.12"
 dependencies = [
-    "dapr-agents==1.0.3",
-    "dapr-ext-workflow>=1.14",
-    "dapr>=1.14",
+    "dapr-agents==1.0.4",
+    "dapr-ext-workflow>=1.18,<1.19",
+    "dapr>=1.18,<1.19",
     "fastapi>=0.104",
     "uvicorn>=0.24",
     "pydantic>=2.0",

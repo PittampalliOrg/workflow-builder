@@ -24,7 +24,7 @@ LIFECYCLE_EVENT_NAME = "session.lifecycle_events"
 
 def taskhub_call(method: str, request: Any) -> Any:
     import grpc
-    import durabletask.internal.orchestrator_service_pb2_grpc as pb_grpc
+    import dapr.ext.workflow._durabletask.internal.orchestrator_service_pb2_grpc as pb_grpc
 
     target = (
         f"{os.environ.get('DAPR_HOST', '127.0.0.1')}:"
@@ -38,7 +38,7 @@ def taskhub_call(method: str, request: Any) -> Any:
 def start_instance(
     instance_id: str, payload: Any, *, workflow_name: str = "session_workflow"
 ) -> None:
-    import durabletask.internal.orchestrator_service_pb2 as pb
+    import dapr.ext.workflow._durabletask.internal.protos as pb
     from google.protobuf import wrappers_pb2
 
     create_request = pb.CreateInstanceRequest(
@@ -50,7 +50,7 @@ def start_instance(
 
 
 def raise_event(instance_id: str, event_name: str, payload: Any) -> None:
-    import durabletask.internal.orchestrator_service_pb2 as pb
+    import dapr.ext.workflow._durabletask.internal.protos as pb
     from google.protobuf import wrappers_pb2
 
     raise_request = pb.RaiseEventRequest(

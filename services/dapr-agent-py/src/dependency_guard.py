@@ -7,7 +7,7 @@ from importlib import metadata
 
 logger = logging.getLogger(__name__)
 
-EXPECTED_DAPR_AGENTS_VERSION = "1.0.3"
+EXPECTED_DAPR_AGENTS_VERSION = "1.0.4"
 
 
 def installed_dapr_agents_version() -> str:

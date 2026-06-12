@@ -8,8 +8,8 @@ requires-python = ">=3.12"
 dependencies = [
     # Same Dapr workflow contract as claude-agent-py; pinned to the platform's
     # dapr-ext-workflow version (CLAUDE.md Tech Stack).
-    "dapr-ext-workflow==1.17.1",
-    "dapr>=1.15",
+    "dapr-ext-workflow==1.18.0",
+    "dapr>=1.18,<1.19",
     "fastapi>=0.104",
     "uvicorn>=0.24",
     # uvicorn needs a ws protocol implementation for the /terminal WS route.

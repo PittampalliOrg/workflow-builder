@@ -11,11 +11,11 @@ dependencies = [
     # to handle session.status_* events, control events, autoTerminate, and
     # the session-turn `when_any` timer.
     "diagrid>=0.1",
-    "dapr-agents>=1.0.2",
+    "dapr-agents>=1.0.4,<1.1",
     "google-adk>=1.0",
     "google-genai>=1.0",
-    "dapr-ext-workflow>=1.14",
-    "dapr>=1.14",
+    "dapr-ext-workflow>=1.18,<1.19",
+    "dapr>=1.18,<1.19",
     "fastapi>=0.104",
     "uvicorn>=0.24",
     "pydantic>=2.0",
