@@ -56,8 +56,13 @@ involving `interactive-cli` are reject-class (`interactionModel` drop, needs
    `session.status_running`; `idle` → `session.status_idle{stop_reason:
    end_turn}`; `blocked` → `session.status_idle{blocked: true, reason:
    permission_prompt|auth|awaiting_input}` (drives the amber "Needs input"
-   badge + toast); pane exit / `done` → external event `{type: "cli.exited"}`
-   raised onto the workflow, which durably emits `session.status_terminated`.
+   badge + toast); `done` → coerced to `session.status_idle` (herdr's `done` is
+   a false positive after every turn — the TUI is back at its idle prompt, not
+   exited — so the session stays alive between turns like the durable agents,
+   wfb #133). A **real** exit arrives as a `pane_exited` event → external event
+   `{type: "cli.exited"}` raised onto the workflow, which durably emits
+   `session.status_terminated`. Other terminal paths: `cli.session_end` (claude
+   SessionEnd hook), explicit stop, idle-TTL reaper.
 2. **Claude Code http hooks** (baked into the image at
    `/etc/claude-code/managed-settings.json`, POSTing to
    `127.0.0.1:8002/internal/hooks/claude`): UserPromptSubmit→`user.message`,
