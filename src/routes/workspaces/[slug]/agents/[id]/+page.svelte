@@ -46,20 +46,14 @@
 	import AgentOverview from '$lib/components/agents/agent-overview.svelte';
 	import AgentRuntimeCard from '$lib/components/agents/agent-runtime-card.svelte';
 	import AgentTestPane from '$lib/components/agents/agent-test-pane.svelte';
-	import AgentToolsIntegrations from '$lib/components/agents/tools-integrations/AgentToolsIntegrations.svelte';
-	import AgentSkillsPicker from '$lib/components/agents/agent-skills-picker.svelte';
-	import BundleRefsPicker from '$lib/components/capabilities/bundle-refs-picker.svelte';
-	import AgentHooksEditor from '$lib/components/agents/agent-hooks-editor.svelte';
+	import CapabilitiesSurface from '$lib/components/capabilities/capabilities-surface.svelte';
 	import AgentVaultsPicker from '$lib/components/agents/agent-vaults-picker.svelte';
 	import AgentModelSelector from '$lib/components/agents/agent-model-selector.svelte';
 	import PromptStackEditor from '$lib/components/agents/prompt-stack-editor.svelte';
 	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';
-	import CallableAgentsPicker from '$lib/components/agents/callable-agents-picker.svelte';
-	import RepositoriesEditor from '$lib/components/sessions/repositories-editor.svelte';
 	import SessionConfigDrawer from '$lib/components/sessions/session-config-drawer.svelte';
 	import {
 		ArrowLeft,
-		ChevronDown,
 		ChevronRight,
 		Clock,
 		Code2,
@@ -313,23 +307,6 @@
 		if (!trimmed) return null;
 		return agentModelOptionFor(trimmed) ? null : trimmed;
 	}
-
-	function toggleBuiltinTool(tool: string) {
-		if (!config) return;
-		const next = config.builtinTools.includes(tool)
-			? config.builtinTools.filter((t) => t !== tool)
-			: [...config.builtinTools, tool];
-		updateConfig('builtinTools', next);
-	}
-
-	const BUILTIN_TOOLS = [
-		'execute_command',
-		'read_file',
-		'write_file',
-		'edit_file',
-		'list_files',
-		'grep_search'
-	];
 
 	onMount(load);
 </script>
@@ -775,45 +752,15 @@
 					</TabsContent>
 
 					<TabsContent value="capabilities" class="space-y-4">
-						<Collapsible open={true}>
-							<CollapsibleTrigger
-								class="flex items-center gap-2 w-full text-left font-semibold text-sm py-2"
-							>
-								<ChevronDown class="size-4" /> Built-in tools ({config.builtinTools.length})
-							</CollapsibleTrigger>
-							<CollapsibleContent class="space-y-2 pl-6">
-								<div class="flex flex-wrap gap-2">
-									{#each BUILTIN_TOOLS as tool}
-										<button
-											type="button"
-											class="px-2 py-1 rounded border text-xs {config.builtinTools.includes(tool)
-												? 'bg-primary text-primary-foreground border-primary'
-												: 'bg-muted hover:bg-muted/70'}"
-											onclick={() => toggleBuiltinTool(tool)}
-										>
-											{tool}
-										</button>
-									{/each}
-								</div>
-							</CollapsibleContent>
-						</Collapsible>
-
-						<Collapsible>
-							<CollapsibleTrigger
-								class="flex items-center gap-2 w-full text-left font-semibold text-sm py-2"
-							>
-								<ChevronRight class="size-4" /> Tools &amp; Integrations ({config.mcpServers.length})
-							</CollapsibleTrigger>
-							<CollapsibleContent class="pl-6">
-								<AgentToolsIntegrations
-									value={config.mcpServers}
-									connectionMode={config.mcpConnectionMode}
-									vaultIds={agent.defaultVaultIds}
-									onModeChange={(mode) => updateConfig('mcpConnectionMode', mode)}
-									onChange={(next) => updateConfig('mcpServers', next)}
-								/>
-							</CollapsibleContent>
-						</Collapsible>
+						<CapabilitiesSurface
+							config={config}
+							onPatch={patchConfig}
+							sections={['builtinTools', 'toolsIntegrations']}
+							vaultIds={agent.defaultVaultIds}
+							selfSlug={agent.slug}
+							projectId={registryView?.team}
+							workspaceSlug={slug}
+						/>
 
 						<Collapsible>
 							<CollapsibleTrigger
@@ -833,104 +780,16 @@
 							</CollapsibleContent>
 						</Collapsible>
 
-						<Collapsible>
-							<CollapsibleTrigger
-								class="flex items-center gap-2 w-full text-left font-semibold text-sm py-2"
-							>
-								<ChevronRight class="size-4" /> Callable agents ({(config.callableAgents ?? []).length})
-							</CollapsibleTrigger>
-							<CollapsibleContent class="pl-6">
-								<CallableAgentsPicker
-									value={config.callableAgents ?? []}
-									selfSlug={agent.slug}
-									projectId={registryView?.team}
-									onChange={(next) => updateConfig('callableAgents', next)}
-								/>
-							</CollapsibleContent>
-						</Collapsible>
-
-						<Collapsible>
-							<CollapsibleTrigger
-								class="flex items-center gap-2 w-full text-left font-semibold text-sm py-2"
-							>
-								<ChevronRight class="size-4" /> Repositories ({(config.repositories ?? []).length})
-							</CollapsibleTrigger>
-							<CollapsibleContent class="pl-6">
-								<p class="text-xs text-muted-foreground mb-2">
-									GitHub repos cloned into this agent's sandbox before its first turn —
-									for direct sessions and any workflow step that runs this agent. Private
-									repos need an auth credential from your vaults.
-								</p>
-								<RepositoriesEditor
-									workspaceSlug={slug}
-									value={config.repositories ?? []}
-									onChange={(next) => updateConfig('repositories', next)}
-								/>
-							</CollapsibleContent>
-						</Collapsible>
-
-						<Collapsible>
-							<CollapsibleTrigger
-								class="flex items-center gap-2 w-full text-left font-semibold text-sm py-2"
-							>
-								<ChevronRight class="size-4" /> Skills ({config.skills.length})
-							</CollapsibleTrigger>
-							<CollapsibleContent class="pl-6">
-								<AgentSkillsPicker
-									value={config.skills}
-									onChange={(next) => updateConfig('skills', next)}
-								/>
-							</CollapsibleContent>
-						</Collapsible>
-
-						<Collapsible>
-							<CollapsibleTrigger
-								class="flex items-center gap-2 w-full text-left font-semibold text-sm py-2"
-							>
-								<ChevronRight class="size-4" /> Capability bundles ({(config.bundleRefs ?? []).length})
-							</CollapsibleTrigger>
-							<CollapsibleContent class="pl-6">
-								<BundleRefsPicker
-									value={config.bundleRefs ?? []}
-									onChange={(next) => updateConfig('bundleRefs', next)}
-								/>
-							</CollapsibleContent>
-						</Collapsible>
-
-						<Collapsible>
-							<CollapsibleTrigger
-								class="flex items-center gap-2 w-full text-left font-semibold text-sm py-2"
-							>
-								<ChevronRight class="size-4" /> Hooks
-							</CollapsibleTrigger>
-							<CollapsibleContent class="pl-6">
-								<AgentHooksEditor
-									value={config.hooks}
-									onChange={(next) => updateConfig('hooks', next)}
-								/>
-							</CollapsibleContent>
-						</Collapsible>
-
-						<Collapsible>
-							<CollapsibleTrigger
-								class="flex items-center gap-2 w-full text-left font-semibold text-sm py-2"
-							>
-								<ChevronRight class="size-4" /> Plugins ({(config.plugins ?? []).length})
-							</CollapsibleTrigger>
-							<CollapsibleContent class="pl-6">
-								<Input
-									value={(config.plugins ?? []).join(', ')}
-									placeholder="comma-separated plugin IDs"
-									oninput={(e) => {
-										const ids = (e.target as HTMLInputElement).value
-											.split(',')
-											.map((s) => s.trim())
-											.filter(Boolean);
-										updateConfig('plugins', ids);
-									}}
-								/>
-							</CollapsibleContent>
-						</Collapsible>
+						<CapabilitiesSurface
+							config={config}
+							onPatch={patchConfig}
+							sections={['callableAgents', 'repositories', 'skills', 'bundles', 'hooks', 'plugins']}
+							openFirst={false}
+							vaultIds={agent.defaultVaultIds}
+							selfSlug={agent.slug}
+							projectId={registryView?.team}
+							workspaceSlug={slug}
+						/>
 					</TabsContent>
 
 					<TabsContent value="sandbox" class="space-y-4">

@@ -6,6 +6,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
+	import AgentPicker from '$lib/components/agents/agent-picker.svelte';
 	import { Textarea } from '$lib/components/ui/textarea';
 	import {
 		Card,
@@ -206,18 +207,15 @@
 		<CardContent class="space-y-4">
 			<div>
 				<Label>Agent</Label>
-				<select
-					class="w-full mt-1 rounded-md border bg-background px-3 py-2 text-sm"
-					bind:value={agentId}
-					disabled={loading}
-				>
-					<option value="" disabled>Choose an agent…</option>
-					{#each agents as a}
-						<option value={a.id}>
-							{a.avatar ?? '🤖'} {a.name} — v{a.currentVersion ?? '—'}
-						</option>
-					{/each}
-				</select>
+				<div class="mt-1">
+					<AgentPicker
+						value={agentId || null}
+						{agents}
+						disabled={loading}
+						placeholder="Choose an agent…"
+						onChange={(id) => (agentId = id)}
+					/>
+				</div>
 				{#if selectedCliAuth}
 					<div class="mt-1.5 flex items-center gap-1.5 text-xs">
 						{#if cliTokenState === 'device_login'}

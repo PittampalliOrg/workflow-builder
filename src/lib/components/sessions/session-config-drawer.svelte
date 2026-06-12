@@ -30,11 +30,7 @@
 		Sparkles
 	} from '@lucide/svelte';
 	import AgentModelSelector from '$lib/components/agents/agent-model-selector.svelte';
-	import AgentSkillsPicker from '$lib/components/agents/agent-skills-picker.svelte';
-	import AgentToolsIntegrations from '$lib/components/agents/tools-integrations/AgentToolsIntegrations.svelte';
-	import AgentHooksEditor from '$lib/components/agents/agent-hooks-editor.svelte';
-	import CallableAgentsPicker from '$lib/components/agents/callable-agents-picker.svelte';
-	import BundleRefsPicker from '$lib/components/capabilities/bundle-refs-picker.svelte';
+	import CapabilitiesSurface from '$lib/components/capabilities/capabilities-surface.svelte';
 	import PromptContentEditor from '$lib/components/agents/prompt-content-editor.svelte';
 	import RepositoriesEditor from '$lib/components/sessions/repositories-editor.svelte';
 	import type { AgentDetail, AgentConfig } from '$lib/types/agents';
@@ -407,51 +403,15 @@
 				/>
 			</section>
 
-			<section>
-				{@render sectionHeader('Skills')}
-				<AgentSkillsPicker
-					value={draftConfig.skills ?? []}
-					onChange={(v) => patchConfig('skills', v)}
-				/>
-			</section>
-
-			<section>
-				{@render sectionHeader('Tools & Integrations')}
-				<AgentToolsIntegrations
-					value={draftConfig.mcpServers ?? []}
-					connectionMode={draftConfig.mcpConnectionMode ?? 'auto'}
-					vaultIds={baseAgent.defaultVaultIds ?? []}
-					onModeChange={(m) => patchConfig('mcpConnectionMode', m)}
-					onChange={(v) => patchConfig('mcpServers', v)}
-				/>
-			</section>
-
-			<section>
-				{@render sectionHeader('Hooks')}
-				<AgentHooksEditor
-					value={draftConfig.hooks}
-					onChange={(v) => patchConfig('hooks', v)}
-				/>
-			</section>
-
-			<section>
-				{@render sectionHeader('Callable agents')}
-				<CallableAgentsPicker
-					value={draftConfig.callableAgents ?? []}
-					selfSlug={baseAgent.slug}
-					{projectId}
-					onChange={(v) => patchConfig('callableAgents', v)}
-				/>
-			</section>
-
-			<section>
-				{@render sectionHeader('Capability bundles')}
-				<BundleRefsPicker
-					value={draftConfig.bundleRefs ?? []}
-					{projectId}
-					onChange={(v) => patchConfig('bundleRefs', v)}
-				/>
-			</section>
+			<CapabilitiesSurface
+				variant="flat"
+				config={draftConfig}
+				onPatch={(p) => (draftConfig = { ...draftConfig, ...p })}
+				sections={['skills', 'toolsIntegrations', 'hooks', 'callableAgents', 'bundles']}
+				vaultIds={baseAgent.defaultVaultIds ?? []}
+				selfSlug={baseAgent.slug}
+				{projectId}
+			/>
 		</div>
 
 		<Sheet.Footer class="border-t px-5 py-3 flex flex-row items-center justify-between gap-2">
