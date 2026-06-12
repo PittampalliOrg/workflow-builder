@@ -216,8 +216,11 @@ async def _probe_cli(input_data: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001
             return {"terminal": False, "status": None, "reason": f"probe_error: {exc}"}
         status = agent_status_of(agent)
-        if status == AGENT_STATUS_DONE:
-            return {"terminal": True, "status": "completed", "reason": "agent_done"}
+        # `done` is the TUI idling at its prompt after a turn — NOT an exit. A
+        # real exit makes agent.get raise (→ pane_gone, terminal above); don't
+        # reap a live idle session on the out-of-band liveness probe. Genuine
+        # termination flows through pane_exit / cli.session_end / explicit stop /
+        # the idle-TTL reaper. (wfb #133 — matches commit_state's done→idle.)
         return {"terminal": False, "status": status, "reason": None}
     finally:
         await client.close()
