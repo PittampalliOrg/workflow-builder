@@ -54,6 +54,7 @@ describe("deriveAgentRequirements", () => {
 		});
 		expect(r).toEqual({
 			mcp: false,
+			skills: false,
 			hooks: true,
 			plugins: true,
 			permissionGating: true,
@@ -122,6 +123,21 @@ describe("assertSwapSafe", () => {
 		expect(caps).toContain("permissionGating");
 		expect(caps).toContain("durability");
 		expect(v.drops.every((d) => d.severity === "warn")).toBe(true);
+	});
+
+	it("WARNS when a skilled agent swaps to a runtime that ignores skills", () => {
+		const req = deriveAgentRequirements({
+			skills: [{ slug: "pdf", prompt: "x" }],
+			modelSpec: "anthropic/claude-opus-4-8"
+		});
+		// claude-agent-py supportsSkills:false (claude_sdk_runner ignores agentConfig.skills).
+		const v = assertSwapSafe(req, runtime("claude-agent-py"), { rejectEnabled: true });
+		expect(v.decision).toBe("warn");
+		expect(v.drops.find((d) => d.capability === "skills")?.severity).toBe("warn");
+		// claude-code-cli DOES materialize skills -> no skills drop.
+		expect(
+			assertSwapSafe(req, runtime("claude-code-cli")).drops.some((d) => d.capability === "skills")
+		).toBe(false);
 	});
 
 	it("a plain agent on its own runtime is always allowed", () => {

@@ -119,7 +119,11 @@ from src.code_checkpoint import (
     restore_code_checkpoint,
     should_checkpoint_tool,
 )
-from src.capability_compiler import emit_dapr_agent_py
+from src.capability_compiler import (
+    emit_dapr_agent_py,
+    safe_skill_segment as _safe_skill_segment,
+    skill_package_entries,
+)
 from src.event_publisher import (
     get_scoped_session,
     publish_session_event,
@@ -1417,56 +1421,12 @@ def _install_runtime_skill_refs(runtime, instance_id: str, refs: list[dict[str, 
     return loaded
 
 
-def _safe_skill_segment(value: str) -> str:
-    normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip()).strip(".-")
-    return normalized[:96] or "skill"
-
-
-def _safe_package_relative_path(value: Any) -> str | None:
-    raw = str(value or "").replace("\\", "/").strip()
-    if not raw:
-        return None
-    normalized = posixpath.normpath(raw).lstrip("/")
-    if normalized in {"", "."} or normalized.startswith("../"):
-        return None
-    return normalized
-
-
 def _extract_skill_package_entries(item: dict[str, Any]) -> list[dict[str, str]]:
-    manifest = item.get("packageManifest")
-    if not isinstance(manifest, dict):
-        return []
-    raw_files = manifest.get("files")
-    if not isinstance(raw_files, list):
-        return []
-    # Caps are kept in lock-step with the BFF ingester (see
-    # src/lib/server/skill-ingest.ts `PACKAGE_MAX_*`). The BFF rejects
-    # bundles that exceed these at ingestion; the runtime silently skips
-    # individual oversize files as belt-and-braces for older rows.
-    max_file_bytes = 128 * 1024
-    max_total_bytes = 2 * 1024 * 1024
-    max_files = 80
-    entries: list[dict[str, str]] = []
-    total_bytes = 0
-    for raw_file in raw_files:
-        if not isinstance(raw_file, dict):
-            continue
-        rel_path = _safe_package_relative_path(raw_file.get("path"))
-        content = raw_file.get("content")
-        if not rel_path or not isinstance(content, str):
-            continue
-        encoded_size = len(content.encode("utf-8"))
-        if encoded_size > max_file_bytes:
-            logger.warning("[skills] Skipping oversized package file %s", rel_path)
-            continue
-        if total_bytes + encoded_size > max_total_bytes:
-            logger.warning("[skills] Skipping package file %s because package limit was reached", rel_path)
-            continue
-        total_bytes += encoded_size
-        entries.append({"path": rel_path, "content": content})
-        if len(entries) >= max_files:
-            break
-    return entries
+    # Skill caps + path sanitization moved to the shared capability compiler
+    # (services/shared/capability_compiler/skills.py). Delegates byte-identical
+    # (str-only entries); the runtime.write_text loop + SkillDefinition coupling
+    # stay below in _materialize_instance_skill_packages.
+    return skill_package_entries(item)
 
 
 def _extract_skill_package_file_paths(item: dict[str, Any]) -> tuple[str, ...]:

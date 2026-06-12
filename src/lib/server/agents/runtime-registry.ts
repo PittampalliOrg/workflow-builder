@@ -21,6 +21,7 @@ export type RuntimeCapabilities = {
 	retryMaxAttempts: number;
 	durableTurnTimer: boolean;
 	supportsMcp: boolean;
+	supportsSkills: boolean;
 	supportsBuiltinOpenShellTools: boolean;
 	supportsHooks: boolean;
 	hookTiming: "live" | "batch";
