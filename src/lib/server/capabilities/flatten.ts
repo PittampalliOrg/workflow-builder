@@ -122,11 +122,19 @@ export function mergeBundleConfig(
 	return next;
 }
 
-/** Resolve each ref to its bundle-version config (pinned version or latest), project-scoped. */
-async function loadBundleConfigs(
+/** Resolve each ref to its bundle row + version row (pinned version or latest),
+ * project-scoped. Shared by {@link flattenBundles} (configs) and
+ * {@link resolveBundleProvenance} (identity + per-bundle capability summary) so
+ * both observe the exact same version-selection precedence. */
+async function loadResolvedBundleVersions(
 	refs: BundleRef[],
 	projectId: string | null,
-): Promise<CapabilityBundleConfig[]> {
+): Promise<
+	Array<{
+		bundle: typeof capabilityBundles.$inferSelect;
+		versionRow: typeof capabilityBundleVersions.$inferSelect;
+	}>
+> {
 	const database = requireDb();
 	const ids = [...new Set(refs.map((r) => r.id).filter((id): id is string => !!id))];
 	if (ids.length === 0) return [];
@@ -137,7 +145,10 @@ async function loadBundleConfigs(
 		.where(inArray(capabilityBundles.id, ids));
 	const byId = new Map(bundleRows.map((b) => [b.id, b]));
 
-	const out: CapabilityBundleConfig[] = [];
+	const out: Array<{
+		bundle: typeof capabilityBundles.$inferSelect;
+		versionRow: typeof capabilityBundleVersions.$inferSelect;
+	}> = [];
 	for (const ref of refs) {
 		const bundle = byId.get(ref.id);
 		if (!bundle || bundle.isArchived) continue;
@@ -173,9 +184,59 @@ async function loadBundleConfigs(
 				.orderBy(desc(capabilityBundleVersions.version))
 				.limit(1);
 		}
-		if (versionRow) out.push(versionRow.config as CapabilityBundleConfig);
+		if (versionRow) out.push({ bundle, versionRow });
 	}
 	return out;
+}
+
+/** Resolve each ref to its bundle-version config (pinned version or latest), project-scoped. */
+async function loadBundleConfigs(
+	refs: BundleRef[],
+	projectId: string | null,
+): Promise<CapabilityBundleConfig[]> {
+	const rows = await loadResolvedBundleVersions(refs, projectId);
+	return rows.map((r) => r.versionRow.config as CapabilityBundleConfig);
+}
+
+export type BundleProvenanceEntry = {
+	id: string;
+	name: string;
+	version: number;
+	mcpServers: string[];
+	skills: string[];
+	tools: string[];
+	builtinTools: string[];
+};
+
+/**
+ * Per-bundle summary of what each `bundleRefs[]` entry contributes (resolved
+ * names of mcpServers / skills / tools / builtinTools) for the
+ * compiled-capabilities debug view. Same version precedence as
+ * {@link flattenBundles}; returns `[]` when there are no resolvable refs.
+ */
+export async function resolveBundleProvenance(
+	refs: BundleRef[] | null | undefined,
+	projectId: string | null | undefined,
+): Promise<BundleProvenanceEntry[]> {
+	const valid = Array.isArray(refs)
+		? refs.filter(
+				(r): r is BundleRef => !!r && typeof r.id === "string" && r.id.length > 0,
+			)
+		: [];
+	if (valid.length === 0) return [];
+	const rows = await loadResolvedBundleVersions(valid, projectId ?? null);
+	return rows.map(({ bundle, versionRow }) => {
+		const cfg = (versionRow.config ?? {}) as CapabilityBundleConfig;
+		return {
+			id: bundle.id,
+			name: bundle.name,
+			version: versionRow.version,
+			mcpServers: (cfg.mcpServers ?? []).map((s) => mcpKey(s)),
+			skills: (cfg.skills ?? []).map((s) => skillKey(s)),
+			tools: (cfg.tools ?? []).map((t) => String(t)),
+			builtinTools: (cfg.builtinTools ?? []).map((t) => String(t)),
+		};
+	});
 }
 
 /**

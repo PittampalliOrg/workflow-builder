@@ -389,13 +389,19 @@ function slugify(value: string): string {
 export async function createAgent(
 	input: CreateAgentInput,
 ): Promise<AgentDetail> {
+	const runtime = input.runtime ?? "dapr-agent-py";
 	const normalizedConfig = normalizeAgentConfig(input.config);
+	// Keep config.runtime in lock-step with the agent-row runtime. Spawn-time
+	// resolution reads config.runtime (resolveAgentRuntimeRoute + the swap-safety
+	// gate), so a divergence here makes e.g. a claude-code-cli agent dispatch to
+	// the dapr-agent-py runtime and trip the interaction-model reject. Stamp it
+	// before hashing so the version hash covers the reconciled config.
+	normalizedConfig.runtime = runtime;
 	validateAgentConfig(normalizedConfig);
 	const database = requireDb();
 	const desiredSlug = input.slug?.trim() || slugify(input.name) || "agent";
 	const slug = await ensureUniqueSlug(desiredSlug);
 	const configHash = hashAgentConfig(normalizedConfig);
-	const runtime = input.runtime ?? "dapr-agent-py";
 
 	const result = await database.transaction(async (tx) => {
 		const [agent] = await tx
@@ -477,9 +483,6 @@ export async function updateAgent(
 	id: string,
 	input: UpdateAgentInput,
 ): Promise<AgentDetail | null> {
-	const normalizedInputConfig =
-		input.config !== undefined ? normalizeAgentConfig(input.config) : undefined;
-	if (normalizedInputConfig !== undefined) validateAgentConfig(normalizedInputConfig);
 	const database = requireDb();
 	const [existing] = await database
 		.select()
@@ -488,7 +491,36 @@ export async function updateAgent(
 		.limit(1);
 	if (!existing) return null;
 
-	const shouldBumpVersion = input.config !== undefined;
+	// Effective row runtime after this update; config.runtime is kept in
+	// lock-step with it (see createAgent for why divergence breaks spawn).
+	const effectiveRuntime = (input.runtime ?? existing.runtime) as AgentRuntime;
+	let normalizedInputConfig =
+		input.config !== undefined ? normalizeAgentConfig(input.config) : undefined;
+	// A runtime change WITHOUT a config patch would otherwise leave the current
+	// version's config.runtime stale. Re-publish the current config with the new
+	// runtime stamped so resolution can't diverge.
+	if (
+		normalizedInputConfig === undefined &&
+		input.runtime !== undefined &&
+		input.runtime !== existing.runtime &&
+		existing.currentVersionId
+	) {
+		const [curVer] = await database
+			.select()
+			.from(agentVersions)
+			.where(eq(agentVersions.id, existing.currentVersionId))
+			.limit(1);
+		if (curVer)
+			normalizedInputConfig = normalizeAgentConfig(
+				curVer.config as unknown as AgentConfig,
+			);
+	}
+	if (normalizedInputConfig !== undefined) {
+		normalizedInputConfig.runtime = effectiveRuntime;
+		validateAgentConfig(normalizedInputConfig);
+	}
+
+	const shouldBumpVersion = normalizedInputConfig !== undefined;
 	const result = await database.transaction(async (tx) => {
 		let newVersion: AgentVersion | null = null;
 		if (shouldBumpVersion && normalizedInputConfig) {
