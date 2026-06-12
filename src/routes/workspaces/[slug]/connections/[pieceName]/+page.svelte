@@ -26,6 +26,7 @@
 		Loader2,
 		Pencil,
 		Plug,
+		RefreshCw,
 		Search,
 		Workflow
 	} from '@lucide/svelte';
@@ -212,6 +213,32 @@
 			await promise;
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : 'Failed to start OAuth');
+			busy = null;
+		}
+	}
+
+	async function reconnectAccount(conn: CatalogAppConnection) {
+		if (!piece.isOAuth2) return;
+		const oauthAppConfigured = entry?.oauthAppConfigured ?? false;
+		if (!oauthAppConfigured) {
+			toast.error('Configure the platform OAuth app before reconnecting this provider');
+			return;
+		}
+		busy = `reconnect:${conn.id}`;
+		try {
+			// In-place re-auth: reuse the SAME connection row so /oauth2/complete
+			// refreshes its token without changing external_id. Every
+			// mcp_connection binding + agent reference keeps pointing at it.
+			const { promise } = startOAuthConnect({
+				pieceName: piece.canonicalPieceName,
+				displayName: conn.displayName,
+				existingConnectionId: conn.id,
+				addMcp: false,
+				oauthAppConfigured
+			});
+			await promise;
+		} catch (err) {
+			toast.error(err instanceof Error ? err.message : 'Failed to start reconnect');
 			busy = null;
 		}
 	}
@@ -494,6 +521,18 @@
 												<Workflow class="size-3" />
 												{usage?.workflowCount ?? 0} workflows · {usage?.refCount ?? 0} steps
 											</Badge>
+											{#if piece.isOAuth2}
+												<Button
+													variant="ghost"
+													size="sm"
+													disabled={busy === `reconnect:${conn.id}`}
+													onclick={() => reconnectAccount(conn)}
+													title="Re-run OAuth for this connection — refreshes the token in place (same external_id), so MCP + agent bindings keep working"
+												>
+													{#if busy === `reconnect:${conn.id}`}<Loader2 class="size-4 animate-spin" />{:else}<RefreshCw class="size-4" />{/if}
+													Reconnect
+												</Button>
+											{/if}
 											{#if !bound}
 												<Button
 													variant="ghost"
