@@ -14,6 +14,7 @@
 import {
 	GitBranch,
 	Bot,
+	Boxes,
 	Activity,
 	MessageSquare,
 	Server,
@@ -157,6 +158,15 @@ export const NAV_GROUPS: NavGroup[] = [
 				icon: Bot,
 				href: ({ slug }) => `/workspaces/${slug}/agents`,
 				match: /^\/workspaces\/[^/]+\/agents(\/|$)/,
+				visibility: { workspaceScoped: true },
+			},
+			{
+				id: "capability-bundles",
+				label: "Capability bundles",
+				icon: Boxes,
+				href: ({ slug }) => `/workspaces/${slug}/capability-bundles`,
+				match: /^\/workspaces\/[^/]+\/capability-bundles(\/|$)/,
+				badge: "new",
 				visibility: { workspaceScoped: true },
 			},
 			{
