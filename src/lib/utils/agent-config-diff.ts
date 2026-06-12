@@ -1,6 +1,7 @@
 import type {
 	AgentConfig,
 	AgentHooksConfig,
+	BundleRef,
 	PromptPresetRef,
 } from "$lib/types/agents";
 import type {
@@ -33,6 +34,7 @@ export type ConfigDiffGroup =
 	| "vaults"
 	| "hooks"
 	| "callableAgents"
+	| "bundles"
 	| "runtime"
 	| "memory"
 	| "browserArtifacts"
@@ -320,6 +322,37 @@ function diffMemoryAndArtifacts(
 	}
 }
 
+function diffBundleRefs(
+	before: AgentConfig,
+	after: AgentConfig,
+	out: ConfigDiffEntry[],
+): void {
+	const b = Array.isArray(before.bundleRefs) ? before.bundleRefs : [];
+	const a = Array.isArray(after.bundleRefs) ? after.bundleRefs : [];
+	const beforeById = new Map<string, BundleRef>(b.map((r) => [r.id, r]));
+	const afterById = new Map<string, BundleRef>(a.map((r) => [r.id, r]));
+	for (const r of a) {
+		const prev = beforeById.get(r.id);
+		if (!prev) {
+			out.push({ path: `bundleRefs[${r.id}]`, label: r.id, group: "bundles", kind: "added", after: r });
+		} else if (prev.version !== r.version) {
+			out.push({
+				path: `bundleRefs[${r.id}]`,
+				label: r.id,
+				group: "bundles",
+				kind: "changed",
+				before: prev,
+				after: r,
+			});
+		}
+	}
+	for (const r of b) {
+		if (!afterById.has(r.id)) {
+			out.push({ path: `bundleRefs[${r.id}]`, label: r.id, group: "bundles", kind: "removed", before: r });
+		}
+	}
+}
+
 /**
  * Compute a per-field diff between two AgentConfig snapshots.
  * Order: model → prompt → tools/builtinTools → skills → mcpServers →
@@ -343,6 +376,7 @@ export function diffAgentConfig(
 	diffSkills(before, after, out);
 	diffMcpServers(before, after, out);
 	diffStringArray("callableAgents", "callableAgents", before, after, out);
+	diffBundleRefs(before, after, out);
 	diffHooks(before, after, out);
 	diffMemoryAndArtifacts(before, after, out);
 	return out;
@@ -377,6 +411,7 @@ export function summarizeDiff(diff: readonly ConfigDiffEntry[]): string {
 		"skills",
 		"mcpServers",
 		"callableAgents",
+		"bundles",
 		"hooks",
 		"runtime",
 		"memory",

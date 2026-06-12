@@ -332,6 +332,13 @@ export type AgentOverrides = {
 	maxTurns?: number;
 	timeoutMinutes?: number;
 	cwd?: string;
+	/**
+	 * Additional capability bundles attached at the node/session level, layered
+	 * ON TOP of the agent's own `bundleRefs` (flattened by the resolver after the
+	 * agent's bundles). Node entries add capabilities the agent doesn't already
+	 * carry; the agent's own config still wins on key collision.
+	 */
+	bundleRefs?: BundleRef[];
 };
 
 export type AgentTaskRef = {
