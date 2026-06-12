@@ -31,6 +31,20 @@ function redact(value: unknown, depth = 0): unknown {
 	return value;
 }
 
+/**
+ * Recursively redact secret-looking values from an arbitrary object/array,
+ * masking any key matching {@link SECRET_KEY_PATTERN} (token / secret /
+ * authorization / bearer / api-key / cookie / …). Safe-by-design for surfacing
+ * resolved config in a UI (e.g. the compiled-capabilities debug panel).
+ *
+ * NOTE: `x-connection-external-id` is intentionally NOT matched — it is an
+ * audit-only opaque reference (the piece-runtime self-resolves the plaintext
+ * credential via the BFF `/decrypt` at point of use), so it stays visible.
+ */
+export function redactSecrets<T>(value: T): T {
+	return redact(value) as T;
+}
+
 function serialize(value: unknown): string {
 	if (typeof value === 'string') return value;
 	try {

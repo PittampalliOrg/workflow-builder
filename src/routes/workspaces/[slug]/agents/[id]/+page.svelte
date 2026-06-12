@@ -47,6 +47,7 @@
 	import AgentRuntimeCard from '$lib/components/agents/agent-runtime-card.svelte';
 	import AgentTestPane from '$lib/components/agents/agent-test-pane.svelte';
 	import CapabilitiesSurface from '$lib/components/capabilities/capabilities-surface.svelte';
+	import CompiledCapabilitiesPanel from '$lib/components/capabilities/compiled-capabilities-panel.svelte';
 	import AgentVaultsPicker from '$lib/components/agents/agent-vaults-picker.svelte';
 	import AgentModelSelector from '$lib/components/agents/agent-model-selector.svelte';
 	import PromptStackEditor from '$lib/components/agents/prompt-stack-editor.svelte';
@@ -105,7 +106,14 @@
 	let forkDescription = $state('');
 	let forking = $state(false);
 	let tab = $state<
-		'overview' | 'basics' | 'prompt' | 'capabilities' | 'sandbox' | 'advanced' | 'sessions'
+		| 'overview'
+		| 'basics'
+		| 'prompt'
+		| 'capabilities'
+		| 'compiled'
+		| 'sandbox'
+		| 'advanced'
+		| 'sessions'
 	>('overview');
 	let usages = $state<Array<{ workflowId: string; workflowName: string; nodeIds: string[] }>>([]);
 	let registryView = $state<{
@@ -556,6 +564,7 @@
 						<TabsTrigger value="basics">Basics</TabsTrigger>
 						<TabsTrigger value="prompt">Prompt Workbench</TabsTrigger>
 						<TabsTrigger value="capabilities">Capabilities</TabsTrigger>
+						<TabsTrigger value="compiled">Compiled</TabsTrigger>
 						<TabsTrigger value="sandbox">Sandbox</TabsTrigger>
 						<TabsTrigger value="advanced">Advanced</TabsTrigger>
 						<TabsTrigger value="sessions">Sessions</TabsTrigger>
@@ -790,6 +799,13 @@
 							projectId={registryView?.team}
 							workspaceSlug={slug}
 						/>
+					</TabsContent>
+
+					<TabsContent value="compiled" class="space-y-4">
+						<!-- Lazy: only compile (DB hits) when the tab is actually opened. -->
+						{#if tab === 'compiled'}
+							<CompiledCapabilitiesPanel agentId={agent.id} />
+						{/if}
 					</TabsContent>
 
 					<TabsContent value="sandbox" class="space-y-4">
