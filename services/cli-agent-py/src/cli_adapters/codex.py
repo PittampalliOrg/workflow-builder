@@ -215,6 +215,19 @@ class CodexAdapter(CliAdapter):
     # ratatui composer eats a leading zero-width run + the first token — so the
     # INJECTION_MARKER must NOT be prefixed (it dropped the kickoff's first word).
     uses_injection_marker = False
+    # Content-gate the kickoff on the rendered composer: herdr's native codex
+    # detector races and can report `idle` while codex is still on its
+    # pre-composer welcome/banner screen, so an agent_status-gated seed strands
+    # ABOVE the banner (observed intermittently — e.g. on the dapr-1.18 ryzen
+    # canary). The idle composer's status footer is `<model> <profile> · <cwd>`
+    # (e.g. `gpt-5.5 default · /sandbox`); the `· <cwd>` segment is rendered ONLY
+    # with the composer (the boot banner writes `directory: /sandbox`, no middle
+    # dot) and is independent of model/permission-mode (unlike `default`, which
+    # becomes `untrusted` in plan mode). cwd is always AGENT_LOCAL_SANDBOX_ROOT
+    # (/sandbox), so `· /sandbox` is a stable "composer is drawn" marker. On gate
+    # timeout the lifecycle still injects best-effort (degrades to the old
+    # behavior, never worse).
+    prompt_ready_marker = "· /sandbox"
 
     # -- seeding ----------------------------------------------------------------
 
