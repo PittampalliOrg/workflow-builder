@@ -108,6 +108,12 @@ async def _start_cli(input_data: dict[str, Any]) -> dict[str, Any]:
             supervisor.register_session(
                 session_id=session_id, instance_id=instance_id, pane_ref=pane_ref
             )
+            # Adapter background work (e.g. agy's ~/.gemini login-bundle capture
+            # watcher). Best-effort; must not break session start.
+            try:
+                adapter.on_session_started(session_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[start-cli] on_session_started failed: %s", exc)
             # The zero-width INJECTION_MARKER is only meaningful for runtimes
             # whose events come from a Claude-style UserPromptSubmit hook (it
             # dedups self-injections). codex/agy mirror from native state and

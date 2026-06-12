@@ -223,8 +223,9 @@
       "cliAuth": {
         "provider": "google",
         "tokenKind": "subscription_oauth",
-        "credentialKind": "device_login",
-        "loginStyle": "device_code"
+        "credentialKind": "file_bundle",
+        "loginStyle": "device_code",
+        "envVar": "AGY_AUTH_JSON"
       },
       "capabilities": {
         "durabilityGranularity": "per-session",
