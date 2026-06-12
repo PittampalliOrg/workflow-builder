@@ -119,6 +119,7 @@ from src.code_checkpoint import (
     restore_code_checkpoint,
     should_checkpoint_tool,
 )
+from src.capability_compiler import emit_dapr_agent_py
 from src.event_publisher import (
     get_scoped_session,
     publish_session_event,
@@ -1126,18 +1127,6 @@ def _sandbox_name_from_workspace_ref(workspace_ref: str | None) -> str | None:
     return "ws-" + normalized[3:].replace("_", "-").lower()
 
 
-def _normalize_mcp_server_name(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    text = re.sub(r"^@activepieces/piece-", "", text)
-    text = re.sub(r"[^a-z0-9_-]+", "_", text)
-    text = re.sub(r"_+", "_", text).strip("_")
-    if not text:
-        text = "mcp_server"
-    if not re.match(r"^[a-z_]", text):
-        text = f"mcp_{text}"
-    return text[:48]
-
-
 def _normalize_tool_lookup_name(name: str) -> str:
     return str(name or "").lower().replace(" ", "").replace("_", "")
 
@@ -1193,171 +1182,25 @@ def _allowed_tools_from_agent_config(agent_config: dict[str, Any]) -> set[str]:
     return _normalize_allowed_tool_set(raw_tools)
 
 
-def _is_short_k8s_host(hostname: str) -> bool:
-    if not hostname or "." in hostname:
-        return False
-    if hostname in {"localhost", "127.0.0.1", "::1"}:
-        return False
-    return (
-        all(char.islower() or char.isdigit() or char == "-" for char in hostname)
-        and hostname[0].isalnum()
-        and hostname[-1].isalnum()
-    )
-
-
-def _should_qualify_mcp_url(server: dict[str, Any]) -> bool:
-    source_type = str(server.get("sourceType") or server.get("source_type") or "")
-    if source_type in {"nimble_piece", "nimble_shared", "hosted_workflow"}:
-        return True
-    registry_ref = str(server.get("registryRef") or server.get("registry_ref") or "")
-    return registry_ref.startswith(("ap-", "nimble-", "shared-")) or registry_ref in {
-        "mcp-gateway",
-        "shared-workflow-mcp-server",
-    }
-
-
-def _runtime_reachable_mcp_url(server: dict[str, Any], url: str) -> str:
-    text = str(url or "").strip()
-    if not text or not _should_qualify_mcp_url(server):
-        return text
-    parsed = urllib.parse.urlparse(text)
-    if parsed.scheme not in {"http", "https", "ws", "wss"} or not parsed.hostname:
-        return text
-    if not _is_short_k8s_host(parsed.hostname):
-        return text
-
-    namespace = str(
-        server.get("namespace")
-        or os.environ.get("MCP_CONNECTION_NAMESPACE")
-        or os.environ.get("WORKFLOW_BUILDER_NAMESPACE")
-        or "workflow-builder"
-    ).strip()
-    host = f"{parsed.hostname}.{namespace}.svc.cluster.local"
-    if parsed.port:
-        host = f"{host}:{parsed.port}"
-    qualified = urllib.parse.urlunparse(parsed._replace(netloc=host))
-    logger.info("Qualified MCP server URL for sandbox runtime: %s -> %s", text, qualified)
-    return qualified
+# MCP server-name normalization + in-cluster URL qualification moved to the
+# shared capability compiler (services/shared/capability_compiler/normalize.py,
+# vendored to src/capability_compiler/); _extract_mcp_server_configs delegates
+# to capability_compiler.mcp.emit_dapr_agent_py.
 
 
 def _extract_mcp_server_configs(
     message: dict[str, Any],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, set[str]]]:
+    """Delegate to the shared capability compiler (byte-identical emit).
+
+    The ``agentConfig`` coerce + invalid-JSON warning stay here (the call-site
+    contract); the MCP translation itself lives in the vendored
+    :func:`capability_compiler.mcp.emit_dapr_agent_py`.
+    """
     agent_config = _coerce_agent_config(message.get("agentConfig"))
     if message.get("agentConfig") and not isinstance(agent_config, dict):
         logger.warning("[mcp] Skipping invalid JSON agentConfig")
-    if not isinstance(agent_config, dict):
-        return {}, {}
-    raw_servers = agent_config.get("mcpServers")
-    if not isinstance(raw_servers, list):
-        return {}, {}
-
-    configs: dict[str, dict[str, Any]] = {}
-    allowed_tools_by_server: dict[str, set[str]] = {}
-    allowed_transports = {"streamable_http", "sse", "stdio", "websocket"}
-    for item in raw_servers:
-        if not isinstance(item, dict):
-            continue
-        raw_transport = str(
-            item.get("transport") or item.get("type") or "streamable_http"
-        ).strip().lower()
-        transport = raw_transport.replace("-", "_")
-        if transport in {"http", "streamablehttp"}:
-            transport = "streamable_http"
-        elif transport in {"ws", "web_socket"}:
-            transport = "websocket"
-        if transport not in allowed_transports:
-            logger.warning("[mcp] Skipping unsupported MCP transport: %s", raw_transport)
-            continue
-
-        name_source = (
-            item.get("server_name")
-            or item.get("serverName")
-            or item.get("name")
-            or item.get("pieceName")
-            or item.get("displayName")
-            or item.get("url")
-            or item.get("serverUrl")
-            or item.get("command")
-        )
-        base_name = _normalize_mcp_server_name(name_source)
-        server_name = base_name
-        suffix = 2
-        while server_name in configs:
-            server_name = f"{base_name}_{suffix}"
-            suffix += 1
-
-        config: dict[str, Any] = {"transport": transport}
-        if transport == "stdio":
-            command = str(item.get("command") or "").strip()
-            if not command:
-                logger.warning(
-                    "[mcp] Skipping stdio MCP server without command: %s",
-                    item,
-                )
-                continue
-            config["command"] = command
-            if isinstance(item.get("args"), list):
-                config["args"] = [str(arg) for arg in item["args"]]
-            if isinstance(item.get("env"), dict):
-                config["env"] = {
-                    str(key): str(value)
-                    for key, value in item["env"].items()
-                    if str(key).strip() and value is not None
-                }
-            if isinstance(item.get("cwd"), str) and item["cwd"].strip():
-                config["cwd"] = item["cwd"].strip()
-        else:
-            url = str(item.get("url") or item.get("serverUrl") or "").strip()
-            allowed_url_prefixes = (
-                ("ws://", "wss://")
-                if transport == "websocket"
-                else ("http://", "https://")
-            )
-            if not url.startswith(allowed_url_prefixes):
-                logger.warning(
-                    "[mcp] Skipping MCP server with invalid %s URL: %s",
-                    transport,
-                    item,
-                )
-                continue
-            config["url"] = _runtime_reachable_mcp_url(item, url)
-        headers = item.get("headers")
-        if isinstance(headers, dict):
-            safe_headers = {
-                str(key): str(value)
-                for key, value in headers.items()
-                if str(key).strip() and value is not None
-            }
-            if safe_headers:
-                config["headers"] = safe_headers
-        connection_external_id = str(
-            item.get("connectionExternalId") or item.get("connection_external_id") or ""
-        ).strip()
-        if connection_external_id:
-            config_headers = config.setdefault("headers", {})
-            if not any(
-                str(key).lower() == "x-connection-external-id"
-                for key in config_headers
-            ):
-                config_headers["X-Connection-External-Id"] = connection_external_id
-        for numeric_key in ("timeout", "sse_read_timeout"):
-            value = item.get(numeric_key)
-            if isinstance(value, (int, float)) and value > 0:
-                config[numeric_key] = value
-        if "terminate_on_close" in item and isinstance(item["terminate_on_close"], bool):
-            config["terminate_on_close"] = item["terminate_on_close"]
-        configs[server_name] = config
-        raw_allowed_tools = item.get("allowedTools") or item.get("allowed_tools")
-        if isinstance(raw_allowed_tools, list):
-            allowed_tools = {
-                str(tool).strip()
-                for tool in raw_allowed_tools
-                if str(tool).strip()
-            }
-            if allowed_tools:
-                allowed_tools_by_server[server_name] = allowed_tools
-    return configs, allowed_tools_by_server
+    return emit_dapr_agent_py(agent_config)
 
 
 def _extract_skill_configs(
