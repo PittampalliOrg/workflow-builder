@@ -2,19 +2,12 @@
 	import { onMount, tick } from 'svelte';
 	import { Xterm, XtermAddon } from '@battlefieldduck/xterm-svelte';
 	import type { Terminal, ITerminalOptions } from '@battlefieldduck/xterm-svelte';
-	import { toast } from 'svelte-sonner';
-	import { AuthLinkDetector } from '$lib/utils/terminal-auth-links';
 
 	interface Props {
 		sandboxName: string;
 		sessionId: string;
 		active?: boolean;
 		wsPath?: string;
-		/**
-		 * Watch terminal output for sign-in / OAuth URLs (e.g. the agy
-		 * device-login link) and surface them as a toast with Copy / Open.
-		 */
-		surfaceAuthLinks?: boolean;
 	}
 
 	interface TerminalFitAddon {
@@ -23,54 +16,7 @@
 		dispose: () => void;
 	}
 
-	let {
-		sandboxName,
-		sessionId,
-		active = true,
-		wsPath,
-		surfaceAuthLinks = false
-	}: Props = $props();
-
-	let authLinkDetector: AuthLinkDetector | null = null;
-	let authLinkDecoder: TextDecoder | null = null;
-
-	function showAuthLinkToast(url: string) {
-		toast.info('Sign-in link detected', {
-			description: url,
-			duration: Number.POSITIVE_INFINITY,
-			action: {
-				label: 'Open',
-				onClick: () => window.open(url, '_blank', 'noopener,noreferrer')
-			},
-			cancel: {
-				label: 'Copy',
-				onClick: async () => {
-					try {
-						await navigator.clipboard.writeText(url);
-						toast.success('Sign-in link copied');
-					} catch {
-						toast.error('Could not copy link');
-					}
-				}
-			}
-		});
-	}
-
-	function feedAuthLinkDetector(data: unknown) {
-		if (!surfaceAuthLinks) return;
-		const detector = (authLinkDetector ??= new AuthLinkDetector());
-		const decoder = (authLinkDecoder ??= new TextDecoder('utf-8', { fatal: false }));
-		const emit = (text: string) => {
-			for (const url of detector.push(text)) showAuthLinkToast(url);
-		};
-		// Streaming decode so a multi-byte char split across frames isn't mangled.
-		// binaryType is forced to 'arraybuffer' (see connect), so the ordered
-		// synchronous path is taken; the Blob branch remains only as a fallback.
-		if (typeof data === 'string') emit(data);
-		else if (data instanceof ArrayBuffer)
-			emit(decoder.decode(new Uint8Array(data), { stream: true }));
-		else if (data instanceof Blob) data.arrayBuffer().then((b) => emit(decoder.decode(new Uint8Array(b), { stream: true }))).catch(() => {});
-	}
+	let { sandboxName, sessionId, active = true, wsPath }: Props = $props();
 
 	let terminal = $state<Terminal>();
 	let terminalFrame: HTMLDivElement | null = null;
@@ -195,10 +141,6 @@
 		term.writeln('\x1b[90mConnecting to sandbox...\x1b[0m');
 
 		const socket = new WebSocket(getWsUrl());
-		// Deliver binary frames as ArrayBuffers (synchronous + ORDERED) rather than
-		// Blobs (whose async .text() can resolve out of order and scramble the auth
-		// link detector's chunk-rejoin, orphaning ANSI fragments inside a URL).
-		socket.binaryType = 'arraybuffer';
 		ws = socket;
 
 		const { AttachAddon } = await XtermAddon.AttachAddon();
@@ -208,12 +150,11 @@
 			let sawFirstMessage = false;
 			attachAddon = new AttachAddon(socket, { bidirectional: true });
 			term.loadAddon(attachAddon);
-			socket.addEventListener('message', (evt) => {
+			socket.addEventListener('message', () => {
 				if (!sawFirstMessage) {
 					sawFirstMessage = true;
 					clearFirstMessageTimer();
 				}
-				feedAuthLinkDetector(evt.data);
 			});
 			firstMessageTimer = setTimeout(() => {
 				if (!sawFirstMessage && socket.readyState === WebSocket.OPEN) {
@@ -274,6 +215,32 @@
 		} catch {
 			// optional
 		}
+
+		// Make the web terminal selectable/copyable. The interactive CLIs (agy /
+		// claude / codex) enable application MOUSE REPORTING, which makes xterm
+		// forward mouse drags to the program instead of selecting text — so you
+		// can't drag to highlight (e.g. the agy sign-in URL). These TUIs are fully
+		// keyboard-drivable, so we swallow the mouse-tracking private modes
+		// (1000/1002/1003 + the SGR/ext encodings) and leave every other DECSET/
+		// DECRST (alt-screen 1049, bracketed paste 2004, cursor 25, …) untouched.
+		const MOUSE_MODES = new Set([1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016]);
+		const swallowMouseMode = (params: (number | number[])[]): boolean => {
+			const first = params[0];
+			const mode = Array.isArray(first) ? first[0] : first;
+			// true → fully handled (do NOT enable mouse mode); false → let xterm run.
+			return typeof mode === 'number' && MOUSE_MODES.has(mode);
+		};
+		term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, swallowMouseMode);
+		term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, swallowMouseMode);
+
+		// xterm's selection lives on its canvas, not the DOM, so the browser's
+		// native Copy can't see it. Mirror the selection into the clipboard as it's
+		// made (copy-on-select) so the highlighted text — e.g. the OAuth URL — can
+		// be pasted anywhere. Best-effort; silently ignored if clipboard is blocked.
+		term.onSelectionChange(() => {
+			const sel = term.getSelection();
+			if (sel && sel.trim()) navigator.clipboard?.writeText(sel).catch(() => {});
+		});
 
 		await tick();
 		queueFit();
