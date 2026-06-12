@@ -193,6 +193,45 @@ async def test_arm_seed_is_one_shot(monkeypatch):
     assert sup._seed_task is None  # not scheduled
 
 
+def test_screen_detected_done_is_coerced_to_idle_for_agy():
+    # agy (prompt_ready_marker set): herdr's screen-detected "done" is a FALSE
+    # positive after a turn → must NOT raise cli.exited (which reaped the session
+    # right after the LLM finished). Committed as idle so the session persists.
+    published: list = []
+    raised: list = []
+    sup = SessionSupervisor(
+        client=FakeHerdr(),
+        publish=lambda sid, t, d=None: published.append(t),
+        raise_lifecycle=lambda iid, evs: raised.append(evs),
+        disabled=False,
+    )
+    sup._session_id = "s1"
+    sup._instance_id = "i1"
+    sup.prompt_ready_marker = "? for shortcuts"
+    sup.commit_state(ss.AGENT_STATUS_DONE)
+    assert sup._exit_raised is False
+    assert raised == []  # no cli.exited — session stays alive
+    assert "session.status_idle" in published
+    assert sup._committed_state == ss.AGENT_STATUS_IDLE
+
+
+def test_native_done_still_exits_for_claude_codex():
+    # No prompt_ready_marker (claude/codex have native herdr state): "done"
+    # reliably means the process exited → still raise cli.exited.
+    raised: list = []
+    sup = SessionSupervisor(
+        client=FakeHerdr(),
+        publish=lambda *a, **k: None,
+        raise_lifecycle=lambda iid, evs: raised.append(evs),
+        disabled=False,
+    )
+    sup._session_id = "s1"
+    sup._instance_id = "i1"
+    sup.prompt_ready_marker = None
+    sup.commit_state(ss.AGENT_STATUS_DONE)
+    assert sup._exit_raised is True
+
+
 def test_extract_injectable_messages_handles_session_user_events_batch():
     from src.main import _extract_injectable_messages
 
