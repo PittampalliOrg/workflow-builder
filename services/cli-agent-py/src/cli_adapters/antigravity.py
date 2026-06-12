@@ -65,12 +65,25 @@ def _record(value: Any) -> dict[str, Any]:
 
 
 def _agy_home() -> Path:
-    """agy reads ``$HOME/.gemini``; we pin HOME to the sandbox root so its state
-    lands on the writable emptyDir. seed() and pane_env MUST agree on this."""
-    return Path(
-        os.environ.get("CLI_AGENT_AGY_HOME")
-        or os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
-    )
+    """Where agy actually reads/writes ``$HOME/.gemini``.
+
+    agy is launched by herdr with the pod USER's passwd ``HOME`` — the pane_env
+    HOME override does NOT stick for agy (unlike claude/codex, which use their
+    own ``*_CONFIG_DIR`` env vars independent of HOME). Empirically agy writes
+    ``/home/<user>/.gemini`` even when pane_env sets HOME=/sandbox. So target the
+    runtime user's real home; seed(), the capture watcher, and restore MUST all
+    agree on this. (The legacy ``CLI_AGENT_AGY_HOME=/sandbox`` deployment env is
+    deliberately NOT honored — it pointed at the wrong dir.) ``CLI_AGENT_AGY_HOME_OVERRIDE``
+    forces a value for tests."""
+    override = os.environ.get("CLI_AGENT_AGY_HOME_OVERRIDE")
+    if override:
+        return Path(override)
+    try:
+        import pwd
+
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)  # passwd HOME — what herdr gives agy
+    except Exception:  # noqa: BLE001
+        return Path(os.environ.get("HOME") or os.path.expanduser("~"))
 
 
 def normalize_agy_model(model_spec: Any) -> str | None:

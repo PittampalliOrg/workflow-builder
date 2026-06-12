@@ -205,10 +205,11 @@ def test_codex_model_normalization():
 
 @pytest.fixture
 def agy_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(tmp_path / "sandbox"))
-    monkeypatch.delenv("CLI_AGENT_AGY_HOME", raising=False)
+    home = tmp_path / "sandbox"
+    monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(home))
+    monkeypatch.setenv("CLI_AGENT_AGY_HOME_OVERRIDE", str(home))
     monkeypatch.delenv("AGY_AUTH_JSON", raising=False)
-    return tmp_path / "sandbox"
+    return home
 
 
 def test_agy_requires_interactive_login_is_dynamic(monkeypatch):
