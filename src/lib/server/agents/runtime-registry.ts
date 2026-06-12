@@ -56,13 +56,18 @@ export type RuntimeCliAuth = {
 	 *                     directly by the CLI (Claude Code: CLAUDE_CODE_OAUTH_TOKEN).
 	 *  - `file`         — a credential FILE blob delivered as `envVar`, written by
 	 *                     the adapter's seed() to `credentialPath` (Codex: auth.json).
+	 *  - `file_bundle`  — a base64 tar.gz of the CLI's whole login dir, delivered as
+	 *                     `envVar`; the adapter's seed() restores it. OPTIONAL: if the
+	 *                     user has none yet, the runtime falls back to in-terminal
+	 *                     device-code login and AUTO-CAPTURES the dir afterward.
+	 *                     (Antigravity: the ~/.gemini login files — agy is file-based,
+	 *                     the OS-keyring path is vestigial. One login, then every
+	 *                     future pod boots signed-in.)
 	 *  - `device_login` — no pre-provisioned credential; the user completes an
 	 *                     in-terminal device-code OAuth flow on first launch (no
-	 *                     `envVar`). Antigravity: its TUI reads the token only from
-	 *                     the OS keyring, so there is nothing injectable — the user
-	 *                     logs in inside the web terminal (URL surfaced Copy/Open).
+	 *                     `envVar`), and nothing is captured/stored.
 	 */
-	credentialKind: "env_token" | "file" | "device_login";
+	credentialKind: "env_token" | "file" | "file_bundle" | "device_login";
 	/** Settings-UI rendering hint for the enrollment instructions. */
 	loginStyle?: "browser_token" | "auth_file" | "device_code";
 	/** Delivery env var (env_token + file). Absent for device_login. */

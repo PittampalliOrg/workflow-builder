@@ -127,7 +127,12 @@ class CliAdapter(abc.ABC):
     ) -> dict[str, str]:
         """Build the pane environment (allow-list based; never API keys)."""
 
-    # -- optional mapping hooks ------------------------------------------------
+    # -- optional lifecycle / mapping hooks ------------------------------------
+
+    def on_session_started(self, session_id: str | None) -> None:
+        """Called once after the pane launches + the supervisor registers the
+        session. Override to start adapter-specific background work (e.g. agy's
+        ~/.gemini login-bundle capture watcher). Default: no-op."""
 
     def map_hook_event(self, payload: Mapping[str, Any]) -> list[dict[str, Any]] | None:
         """Override CLI-hook → session-event mapping. Return None to use the

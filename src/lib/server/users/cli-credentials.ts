@@ -118,6 +118,27 @@ export function assertPlausibleCliCredential(
 		return;
 	}
 
+	if (kind === "file_bundle") {
+		// A base64 tar.gz of the CLI's login dir (agy ~/.gemini), auto-captured by
+		// the runtime. Validate it decodes to a gzip stream and isn't oversized.
+		let buf: Buffer;
+		try {
+			buf = Buffer.from(trimmed, "base64");
+		} catch {
+			throw new Error("Credential bundle must be base64-encoded.");
+		}
+		if (buf.length < 32) {
+			throw new Error("Credential bundle is too small to be a valid login archive.");
+		}
+		if (buf[0] !== 0x1f || buf[1] !== 0x8b) {
+			throw new Error("Credential bundle must be a gzip (tar.gz) archive.");
+		}
+		if (buf.length > 8 * 1024 * 1024) {
+			throw new Error("Credential bundle is too large (>8 MiB).");
+		}
+		return;
+	}
+
 	// env_token
 	if (trimmed.startsWith("sk-ant-api")) {
 		throw new Error(

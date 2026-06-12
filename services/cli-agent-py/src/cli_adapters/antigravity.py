@@ -43,6 +43,7 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
+from src.agy_capture import restore_bundle, start_capture_watcher
 from src.cli_adapters.base import CliAdapter, SeedResult
 from src.mcp_config import build_mcp_servers
 
@@ -50,6 +51,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = os.environ.get("CLI_AGENT_AGY_DEFAULT_MODEL", "")
 AGY_BIN = os.environ.get("CLI_AGENT_AGY_PATH", "agy")
+# The stored ~/.gemini login bundle (base64 tar.gz), delivered when the user has
+# a captured agy login. Present → agy boots signed in (no device-code login).
+AGY_AUTH_ENV = "AGY_AUTH_JSON"
 
 
 def clean_string(value: Any) -> str | None:
@@ -106,14 +110,27 @@ def _agy_mcp_servers(agent_config: Mapping[str, Any]) -> dict[str, dict[str, Any
 
 class AntigravityAdapter(CliAdapter):
     name = "antigravity"
-    # agy authenticates via in-pane device-code OAuth (keyring-only TUI; no
-    # injectable credential). The lifecycle DEFERS the kickoff to the user until
-    # after they complete the in-terminal login — herdr reports the auth-code
-    # prompt as `idle`, so an armed seed would land in the login field.
-    requires_interactive_login = True
     # agy mirrors events from herdr/native state (no UserPromptSubmit hook), so
     # the Claude-only INJECTION_MARKER has no dedup function here — don't send it.
     uses_injection_marker = False
+
+    @property
+    def requires_interactive_login(self) -> bool:
+        # agy is FILE-based (the OS-keyring path is vestigial). When a captured
+        # ~/.gemini bundle is delivered (AGY_AUTH_JSON), seed() restores it and
+        # agy boots already signed in → the kickoff can fire immediately. With NO
+        # bundle, the user completes in-pane device-code OAuth first, so the
+        # lifecycle must DEFER the kickoff (herdr reports the auth-code prompt as
+        # `idle`, and an armed seed would land in the login field).
+        return not bool(os.environ.get(AGY_AUTH_ENV))
+
+    def on_session_started(self, session_id: str | None) -> None:
+        # Auto-capture: watch ~/.gemini and POST the curated login bundle to the
+        # BFF whenever agy writes/refreshes its token, so a one-time login seeds
+        # every future pod. Runs whether or not a bundle was injected (captures
+        # refreshed tokens too).
+        if session_id:
+            start_capture_watcher(session_id, _agy_home() / ".gemini")
 
     # -- seeding ----------------------------------------------------------------
 
@@ -126,6 +143,17 @@ class AntigravityAdapter(CliAdapter):
         cli_dir = gemini_dir / "antigravity-cli"
         for d in (config_dir, cli_dir):
             d.mkdir(parents=True, exist_ok=True)
+
+        # (0) Restore the captured ~/.gemini login bundle (if delivered) so agy
+        # boots already signed in. Never clobbers an existing file; the managed
+        # files below (MCP / GEMINI.md) are then (re)written so ours win.
+        blob = os.environ.get(AGY_AUTH_ENV)
+        if blob and blob.strip():
+            try:
+                written = restore_bundle(gemini_dir, blob.strip())
+                result.paths["agyAuthRestored"] = str(written)
+            except Exception as exc:  # noqa: BLE001
+                result.warnings.append(f"agy: failed to restore login bundle: {exc}")
 
         # (a) MCP config (HOME-level — the one agy actually loads).
         servers = _agy_mcp_servers(agent_config)
@@ -212,6 +240,7 @@ class AntigravityAdapter(CliAdapter):
             "GOOGLE_APPLICATION_CREDENTIALS",
             "ANTHROPIC_API_KEY",
             "CLAUDE_API_KEY",
+            AGY_AUTH_ENV,  # consumed by seed(); never expose the login bundle
         ):
             env.pop(forbidden, None)
         return env

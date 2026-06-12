@@ -270,7 +270,11 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	//   - env_token / file → resolve the session owner's stored credential and
 	//     deliver it as the secret env var (`sessionSecretEnv`); the in-pod
 	//     adapter consumes it (env_token: read directly; file: seed() writes the
-	//     credential file). Fail fast with a typed 412-mappable error if missing.
+	//     credential file). REQUIRED — fail fast with a typed 412 if missing.
+	//   - file_bundle → OPTIONAL: deliver the captured login bundle if the user
+	//     has one (agy ~/.gemini); if not, fall through to in-terminal device-code
+	//     login (the runtime auto-captures the bundle afterward). Expiry is NOT
+	//     enforced — agy refreshes the token on boot.
 	//   - device_login → no pre-provisioned credential; the user completes the
 	//     in-terminal device-code OAuth flow on first launch. No gate, no secret.
 	// Tokens are NEVER placed in agentConfig or the Dapr payload.
@@ -279,34 +283,45 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		? swapTarget.cliAuth
 		: undefined;
 	if (cliAuth && cliAuth.credentialKind !== "device_login") {
-		const { provider, envVar, setupCommand } = cliAuth;
+		const { provider, envVar, setupCommand, credentialKind } = cliAuth;
 		if (!envVar) {
 			throw new Error(
-				`Runtime "${swapTarget?.id}" cliAuth.credentialKind=${cliAuth.credentialKind} requires an envVar`,
+				`Runtime "${swapTarget?.id}" cliAuth.credentialKind=${credentialKind} requires an envVar`,
 			);
 		}
+		// file_bundle is captured automatically post-login, so its absence is not
+		// an error — the user just logs in once in the terminal.
+		const optional = credentialKind === "file_bundle";
 		const setupHint = setupCommand ? `run \`${setupCommand}\` locally` : "see the runtime docs";
 		const ownerUserId = await resolveSessionOwnerUserId(sessionId);
 		const credential = ownerUserId
 			? await getUserCliCredential(ownerUserId, provider)
 			: null;
 		if (!credential) {
-			throw new CliTokenError(
-				"CLI_TOKEN_MISSING",
-				provider,
-				`No ${provider} CLI credential linked for this user. ` +
-					`Add one under Settings → CLI tokens (${setupHint}).`,
-			);
+			if (!optional) {
+				throw new CliTokenError(
+					"CLI_TOKEN_MISSING",
+					provider,
+					`No ${provider} CLI credential linked for this user. ` +
+						`Add one under Settings → CLI tokens (${setupHint}).`,
+				);
+			}
+			// optional + none yet → device-code login this session, capture after.
+		} else {
+			if (
+				!optional &&
+				credential.expiresAt &&
+				credential.expiresAt.getTime() < Date.now()
+			) {
+				throw new CliTokenError(
+					"CLI_TOKEN_EXPIRED",
+					provider,
+					`The linked ${provider} CLI credential has expired. ` +
+						`Re-enroll under Settings → CLI tokens (${setupHint}).`,
+				);
+			}
+			sessionSecretEnv = { [envVar]: credential.token };
 		}
-		if (credential.expiresAt && credential.expiresAt.getTime() < Date.now()) {
-			throw new CliTokenError(
-				"CLI_TOKEN_EXPIRED",
-				provider,
-				`The linked ${provider} CLI credential has expired. ` +
-					`Re-enroll under Settings → CLI tokens (${setupHint}).`,
-			);
-		}
-		sessionSecretEnv = { [envVar]: credential.token };
 	}
 
 	// Resolve the dispatch app-id. Two paths share the same downstream shape

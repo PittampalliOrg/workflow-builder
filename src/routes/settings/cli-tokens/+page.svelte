@@ -26,7 +26,7 @@
 		cliAuth: {
 			provider: string;
 			tokenKind: string;
-			credentialKind: 'env_token' | 'file' | 'device_login';
+			credentialKind: 'env_token' | 'file' | 'file_bundle' | 'device_login';
 			loginStyle?: 'browser_token' | 'auth_file' | 'device_code';
 			envVar?: string;
 			credentialPath?: string;
@@ -158,6 +158,8 @@
 		{@const countdown = expiryCountdown(summary.expiresAt)}
 		{@const kind = runtime.cliAuth.credentialKind}
 		{@const isFile = kind === 'file'}
+		{@const isAutoCapture = kind === 'file_bundle'}
+		{@const isTerminalLogin = kind === 'device_login' || kind === 'file_bundle'}
 		<Card>
 			<CardHeader>
 				<CardTitle class="text-base flex items-center gap-2 flex-wrap">
@@ -174,9 +176,9 @@
 							class="text-[10px] gap-1 bg-green-600/15 text-green-700 dark:text-green-400 border-transparent"
 						>
 							<span class="size-1.5 rounded-full bg-green-500"></span>
-							Linked
+							{isAutoCapture ? 'Captured' : 'Linked'}
 						</Badge>
-						{#if countdown}
+						{#if countdown && !isAutoCapture}
 							<Badge
 								variant="outline"
 								class="text-[10px] {countdown.expired
@@ -186,6 +188,10 @@
 								{countdown.label}
 							</Badge>
 						{/if}
+					{:else if isAutoCapture}
+						<Badge variant="outline" class="text-[10px] gap-1 border-sky-500/40 text-sky-600 dark:text-sky-400">
+							Terminal login
+						</Badge>
 					{:else}
 						<Badge variant="outline" class="text-[10px]">Not linked</Badge>
 					{/if}
@@ -194,6 +200,9 @@
 					{#if kind === 'device_login'}
 						Authenticates in the terminal via {runtime.cliAuth.provider} OAuth (device code) —
 						nothing is stored here.
+					{:else if kind === 'file_bundle'}
+						Log in once in a session terminal ({runtime.cliAuth.provider} device code); your login
+						is captured automatically so future sessions boot already signed in.
 					{:else if kind === 'file'}
 						OAuth login file ({runtime.cliAuth.provider}) materialized in your session pod at
 						<code class="text-[11px]">{runtime.cliAuth.credentialPath}</code>.
@@ -204,21 +213,33 @@
 				</CardDescription>
 			</CardHeader>
 			<CardContent class="space-y-4">
-				{#if kind === 'device_login'}
-					<!-- device-code OAuth: no credential to store; the user logs in
-					     inside the web terminal on first launch. -->
+				{#if isTerminalLogin}
+					<!-- Terminal login: the user authenticates inside the web terminal.
+					     file_bundle additionally auto-captures the login for reuse. -->
 					<div class="rounded-md border bg-muted/30 p-3 text-xs space-y-1.5">
 						<div class="font-medium">How sign-in works</div>
 						<ol class="list-decimal list-inside space-y-1 text-muted-foreground">
 							<li>Start a session with this runtime — the CLI opens in the web terminal.</li>
 							<li>
-								It prints a Google authorization URL (and a code). Open the URL on your own
-								device, approve, then paste the returned code back into the terminal.
+								It prints a {runtime.cliAuth.provider} authorization URL (and a code). Open the URL
+								on your own device, approve, then paste the returned code back into the terminal.
 							</li>
-							<li>
-								Usage stays on your own Google account. Nothing needs to be saved on this page.
-							</li>
+							{#if isAutoCapture}
+								<li>
+									Your login is then <strong>captured automatically</strong> — future sessions boot
+									already signed in, no repeat login.
+								</li>
+							{:else}
+								<li>
+									Usage stays on your own account. Nothing needs to be saved on this page.
+								</li>
+							{/if}
 						</ol>
+						{#if isAutoCapture && summary.linked}
+							<div class="text-green-600 dark:text-green-400">
+								✓ Login captured — your sessions boot signed in.
+							</div>
+						{/if}
 					</div>
 				{:else}
 					{#if summary.linked}

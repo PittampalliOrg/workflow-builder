@@ -207,15 +207,42 @@ def test_codex_model_normalization():
 def agy_home(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(tmp_path / "sandbox"))
     monkeypatch.delenv("CLI_AGENT_AGY_HOME", raising=False)
+    monkeypatch.delenv("AGY_AUTH_JSON", raising=False)
     return tmp_path / "sandbox"
 
 
-def test_agy_requires_interactive_login():
-    # agy's TUI reads its OAuth token only from the OS keyring (no injectable
-    # credential), so the user logs in via in-pane device-code OAuth. The
-    # lifecycle MUST defer the kickoff until after that login — herdr reports the
-    # auth-code prompt as `idle`, so an armed seed would land in the login field.
+def test_agy_requires_interactive_login_is_dynamic(monkeypatch):
+    # No captured bundle → device-code login first, so the kickoff is DEFERRED
+    # (herdr reports the auth-code prompt as `idle`; an armed seed would land in
+    # the login field).
+    monkeypatch.delenv("AGY_AUTH_JSON", raising=False)
     assert get_adapter("antigravity").requires_interactive_login is True
+    # Bundle delivered → seed() restores ~/.gemini and agy boots signed in, so the
+    # kickoff can fire immediately.
+    monkeypatch.setenv("AGY_AUTH_JSON", "x")
+    assert get_adapter("antigravity").requires_interactive_login is False
+
+
+def test_agy_seed_restores_login_bundle(agy_home, monkeypatch):
+    import base64
+    import io
+    import tarfile
+
+    # build a base64 tar.gz with a token + init markers
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, data in (
+            ("antigravity-cli/antigravity-oauth-token", b'{"token":{}}'),
+            ("config/.migrated", b""),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    monkeypatch.setenv("AGY_AUTH_JSON", base64.b64encode(buf.getvalue()).decode())
+    get_adapter("antigravity").seed(AGY_SESSION)
+    gem = agy_home / ".gemini"
+    assert (gem / "antigravity-cli" / "antigravity-oauth-token").read_bytes() == b'{"token":{}}'
+    assert (gem / "config" / ".migrated").exists()
 
 
 AGY_SESSION = {
