@@ -34,6 +34,7 @@
 	import AgentToolsIntegrations from '$lib/components/agents/tools-integrations/AgentToolsIntegrations.svelte';
 	import AgentHooksEditor from '$lib/components/agents/agent-hooks-editor.svelte';
 	import CallableAgentsPicker from '$lib/components/agents/callable-agents-picker.svelte';
+	import BundleRefsPicker from '$lib/components/capabilities/bundle-refs-picker.svelte';
 	import PromptContentEditor from '$lib/components/agents/prompt-content-editor.svelte';
 	import RepositoriesEditor from '$lib/components/sessions/repositories-editor.svelte';
 	import type { AgentDetail, AgentConfig } from '$lib/types/agents';
@@ -440,6 +441,15 @@
 					selfSlug={baseAgent.slug}
 					{projectId}
 					onChange={(v) => patchConfig('callableAgents', v)}
+				/>
+			</section>
+
+			<section>
+				{@render sectionHeader('Capability bundles')}
+				<BundleRefsPicker
+					value={draftConfig.bundleRefs ?? []}
+					{projectId}
+					onChange={(v) => patchConfig('bundleRefs', v)}
 				/>
 			</section>
 		</div>

@@ -199,7 +199,7 @@ export async function resolveSpecAgentRefs(
 		// Flatten the agent's capability bundles (Pillar 2) into the base config,
 		// then layer node/session overrides on top.
 		const flattened = await flattenBundles(resolved.config, resolved.projectId);
-		const config = applyOverrides(flattened, overrides);
+		const config = await applyOverrides(flattened, overrides, resolved.projectId);
 		// Hydrate attached skills from agent_skill_registry. The agent's stored
 		// config only carries the `registryId` pointer — the Python runtime
 		// needs `prompt`, `allowed_tools`, and `packageManifest.files` inline
@@ -442,12 +442,13 @@ function pickPrompt(
 	return "";
 }
 
-function applyOverrides(
+async function applyOverrides(
 	config: AgentConfig,
 	overrides: AgentOverrides | undefined,
-): AgentConfig {
+	projectId: string | null | undefined,
+): Promise<AgentConfig> {
 	if (!overrides) return config;
-	const next: AgentConfig = { ...config };
+	let next: AgentConfig = { ...config };
 	if (overrides.tools !== undefined) {
 		next.tools = overrides.tools;
 	}
@@ -464,6 +465,13 @@ function applyOverrides(
 	} else if (overrides.sandboxPolicy && !config.sandboxPolicy) {
 		// Keep as partial — the orchestrator normalizes before dispatch.
 		next.sandboxPolicy = overrides.sandboxPolicy as AgentConfig["sandboxPolicy"];
+	}
+	// Node/session-level capability bundles (Pillar 3) layer ON TOP of the
+	// agent's own already-flattened config — flatten them in turn so their MCP
+	// servers / skills / tools merge before MCP resolution (the agent's inline
+	// config still wins on key collision via flattenBundles' config-wins union).
+	if (Array.isArray(overrides.bundleRefs) && overrides.bundleRefs.length > 0) {
+		next = await flattenBundles({ ...next, bundleRefs: overrides.bundleRefs }, projectId);
 	}
 	return next;
 }

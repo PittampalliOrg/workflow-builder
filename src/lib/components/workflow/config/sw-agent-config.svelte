@@ -17,8 +17,9 @@
 	import { buildOpenShellSystemPrompt } from '$lib/agents/instruction-bundle-renderer';
 	import { buildPromptWorkbenchPreview } from '$lib/agents/prompt-workbench-renderer';
 	import { normalizeAgentTaskConfig } from '$lib/types/agent-graph';
-	import type { AgentDetail, AgentSummary } from '$lib/types/agents';
+	import type { AgentDetail, AgentSummary, BundleRef } from '$lib/types/agents';
 	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';
+	import BundleRefsPicker from '$lib/components/capabilities/bundle-refs-picker.svelte';
 	import PromptPreview from '$lib/components/agents/prompt-preview.svelte';
 
 	interface Props {
@@ -416,6 +417,13 @@
 							}}
 						/>
 					</div>
+				</div>
+				<div class="mt-3">
+					<Label class="text-xs">Capability bundles (layered on top of the agent's own)</Label>
+					<BundleRefsPicker
+						value={(overrides.bundleRefs as BundleRef[] | undefined) ?? []}
+						onChange={(v) => setOverride('bundleRefs', v.length > 0 ? v : undefined)}
+					/>
 				</div>
 			</CollapsibleContent>
 		</Collapsible>

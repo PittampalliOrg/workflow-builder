@@ -374,7 +374,8 @@ function isAgentConfigShape(value: unknown): boolean {
 		typeof v.systemPrompt === "string" ||
 		Array.isArray(v.skills) ||
 		Array.isArray(v.mcpServers) ||
-		Array.isArray(v.builtinTools)
+		Array.isArray(v.builtinTools) ||
+		Array.isArray(v.bundleRefs)
 	);
 }
 
