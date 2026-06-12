@@ -45,7 +45,12 @@ from typing import Any, Mapping
 
 from src.agy_capture import restore_bundle, start_capture_watcher
 from src.cli_adapters.base import CliAdapter, SeedResult
-from src.capability_compiler import emit_claude_code_cli_servers
+from src.capability_compiler import (
+    compose_instruction_file,
+    emit_claude_code_cli_servers,
+    materialize_skills_local,
+    render_skills_index,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,13 +186,20 @@ class AntigravityAdapter(CliAdapter):
             )
             result.paths["mcpConfigPath"] = str(mcp_path)
 
-        # (b) system prompt → GEMINI.md.
+        # (b) skills → _agy_home()/.gemini/skills/<slug>/ ; system prompt + a
+        # skills index → GEMINI.md. agy has no native skills auto-discovery, so
+        # the index (a delimited block, REWRITTEN each seed for restart
+        # idempotency) surfaces the skills + where their SKILL.md lives. With no
+        # skills this reduces to the prior system-prompt-only write.
+        materialize_skills_local(agent_config, gemini_dir / "skills", result.warnings)
         bundle = _record(session_input.get("instructionBundle"))
         rendered = _record(bundle.get("rendered"))
-        system_text = clean_string(rendered.get("system"))
-        if system_text:
+        instructions = compose_instruction_file(
+            rendered.get("system"), render_skills_index(agent_config)
+        )
+        if instructions:
             gemini_md = gemini_dir / "GEMINI.md"
-            gemini_md.write_text(system_text + "\n", encoding="utf-8")
+            gemini_md.write_text(instructions, encoding="utf-8")
             result.paths["systemPromptPath"] = str(gemini_md)
 
         # (c) settings.json — pre-trust the sandbox workspace, pin the model, and

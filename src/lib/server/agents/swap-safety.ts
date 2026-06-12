@@ -42,6 +42,7 @@ export type SwapVerdict = {
 
 export type AgentRequirements = {
 	mcp: boolean;
+	skills: boolean;
 	hooks: boolean;
 	plugins: boolean;
 	permissionGating: boolean;
@@ -72,6 +73,7 @@ export function deriveAgentRequirements(
 	const permissionMode = typeof c.permissionMode === "string" ? c.permissionMode : null;
 	return {
 		mcp: Array.isArray(mcpServers) && mcpServers.length > 0,
+		skills: Array.isArray(c.skills) && (c.skills as unknown[]).length > 0,
 		hooks: !!hooks && typeof hooks === "object" && Object.keys(hooks as object).length > 0,
 		plugins: Array.isArray(plugins) && plugins.length > 0,
 		permissionGating:
@@ -139,6 +141,13 @@ export function assertSwapSafe(
 			capability: "plugins",
 			severity: "warn",
 			detail: `agent declares plugins but runtime "${target.id}" does not support plugins`
+		});
+	}
+	if (requirements.skills && !caps.supportsSkills) {
+		drops.push({
+			capability: "skills",
+			severity: "warn",
+			detail: `agent declares skills but runtime "${target.id}" does not materialize agentConfig.skills`
 		});
 	}
 	if (requirements.permissionGating && !caps.supportsPermissionGating) {

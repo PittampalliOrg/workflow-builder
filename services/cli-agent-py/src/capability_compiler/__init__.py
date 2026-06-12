@@ -23,9 +23,31 @@ from .mcp import (
     emit_claude_code_cli_servers,
     emit_dapr_agent_py,
 )
+from .skills import (
+    SKILL_MAX_FILE_BYTES,
+    SKILL_MAX_FILES,
+    SKILL_MAX_TOTAL_BYTES,
+    compose_instruction_file,
+    decode_file_content,
+    materialize_skills_local,
+    render_skills_index,
+    safe_package_relative_path,
+    safe_skill_segment,
+    skill_package_entries,
+)
 
 __all__ = [
     "emit_claude_agent_sdk_servers",
     "emit_claude_code_cli_servers",
     "emit_dapr_agent_py",
+    "SKILL_MAX_FILE_BYTES",
+    "SKILL_MAX_FILES",
+    "SKILL_MAX_TOTAL_BYTES",
+    "compose_instruction_file",
+    "decode_file_content",
+    "materialize_skills_local",
+    "render_skills_index",
+    "safe_package_relative_path",
+    "safe_skill_segment",
+    "skill_package_entries",
 ]

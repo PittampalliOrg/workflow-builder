@@ -38,7 +38,12 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from src.cli_adapters.base import CliAdapter, SeedResult, link_transcript_subtree
-from src.capability_compiler import emit_claude_code_cli_servers
+from src.capability_compiler import (
+    compose_instruction_file,
+    emit_claude_code_cli_servers,
+    materialize_skills_local,
+    render_skills_index,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -247,13 +252,21 @@ class CodexAdapter(CliAdapter):
         )
         result.paths["codexConfigPath"] = str(config_path)
 
-        # (c) system prompt → AGENTS.md (codex's global instruction file).
+        # (c) skills → $CODEX_HOME/skills/<slug>/ ; system prompt + a skills
+        # index → AGENTS.md. codex has no native skills auto-discovery, so the
+        # index (a delimited block, REWRITTEN each seed so a pod restart can't
+        # double-append) tells the model which skills exist + where their
+        # SKILL.md lives. With no skills this reduces to the prior
+        # system-prompt-only write (byte-identical).
+        materialize_skills_local(agent_config, home / "skills", result.warnings)
         bundle = _record(session_input.get("instructionBundle"))
         rendered = _record(bundle.get("rendered"))
-        system_text = clean_string(rendered.get("system"))
-        if system_text:
+        instructions = compose_instruction_file(
+            rendered.get("system"), render_skills_index(agent_config)
+        )
+        if instructions:
             agents_path = home / "AGENTS.md"
-            agents_path.write_text(system_text + "\n", encoding="utf-8")
+            agents_path.write_text(instructions, encoding="utf-8")
             result.paths["systemPromptPath"] = str(agents_path)
 
         # (e) Durable transcript store. codex persists threads as rollout files

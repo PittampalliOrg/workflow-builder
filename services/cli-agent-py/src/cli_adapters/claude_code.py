@@ -30,17 +30,14 @@ per-session settings.json is written (per-session knobs all travel via argv).
 
 from __future__ import annotations
 
-import base64
-import binascii
 import logging
 import os
-import posixpath
 import re
 from pathlib import Path
 from typing import Any, Mapping
 
 from src.cli_adapters.base import CliAdapter, SeedResult, link_transcript_subtree
-from src.capability_compiler import emit_claude_code_cli_servers
+from src.capability_compiler import emit_claude_code_cli_servers, materialize_skills_local
 
 logger = logging.getLogger(__name__)
 
@@ -105,45 +102,6 @@ def _wfb_dir() -> Path:
 
 def _claude_config_dir() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_DIR", "/sandbox/.claude"))
-
-
-def _safe_skill_segment(value: str) -> str:
-    """Mirror of dapr-agent-py _safe_skill_segment (main.py)."""
-    normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip()).strip(".-")
-    return normalized[:96] or "skill"
-
-
-def _safe_package_relative_path(value: Any) -> str | None:
-    """Mirror of dapr-agent-py _safe_package_relative_path (main.py)."""
-    raw = str(value or "").replace("\\", "/").strip()
-    if not raw:
-        return None
-    normalized = posixpath.normpath(raw).lstrip("/")
-    if normalized in {"", "."} or normalized.startswith("../"):
-        return None
-    return normalized
-
-
-def _decode_file_content(raw_file: Mapping[str, Any]) -> bytes | None:
-    """Tolerate both encodings: the plan describes base64 ``content``; the BFF
-    ingester (skill-ingest.ts) actually stores plain UTF-8 ``content``. An
-    explicit ``encoding: "base64"`` or ``contentBase64`` field wins; otherwise
-    the content is treated as plain text."""
-    b64 = raw_file.get("contentBase64")
-    if isinstance(b64, str) and b64.strip():
-        try:
-            return base64.b64decode(b64, validate=True)
-        except (binascii.Error, ValueError):
-            return None
-    content = raw_file.get("content")
-    if not isinstance(content, str):
-        return None
-    if str(raw_file.get("encoding") or "").strip().lower() == "base64":
-        try:
-            return base64.b64decode(content, validate=True)
-        except (binascii.Error, ValueError):
-            return None
-    return content.encode("utf-8")
 
 
 class ClaudeCodeAdapter(CliAdapter):
@@ -244,68 +202,11 @@ class ClaudeCodeAdapter(CliAdapter):
     def _materialize_skills(
         self, agent_config: Mapping[str, Any], warnings: list[str]
     ) -> Path | None:
-        raw_skills = agent_config.get("skills")
-        if not isinstance(raw_skills, list) or not raw_skills:
-            return None
-        skills_root = _claude_config_dir() / "skills"
-        skills_root.mkdir(parents=True, exist_ok=True)
-        root_guard = skills_root.resolve()
-        materialized_any = False
-        for item in raw_skills:
-            if not isinstance(item, Mapping):
-                continue
-            slug_source = clean_string(item.get("slug")) or clean_string(item.get("name"))
-            manifest = item.get("packageManifest")
-            raw_files = manifest.get("files") if isinstance(manifest, Mapping) else None
-            prompt = clean_string(item.get("prompt"))
-            if not isinstance(raw_files, list) and not prompt:
-                # id/slug-only entry — the BFF resolves manifests into
-                # agentConfig; skip silently per the runtime contract.
-                continue
-            if not slug_source:
-                continue
-            skill_dir = skills_root / _safe_skill_segment(slug_source)
-            total_bytes = 0
-            file_count = 0
-            wrote_skill_md = False
-            for raw_file in raw_files if isinstance(raw_files, list) else []:
-                if not isinstance(raw_file, Mapping):
-                    continue
-                rel_path = _safe_package_relative_path(raw_file.get("path"))
-                if not rel_path:
-                    warnings.append(f"skill {slug_source}: skipped unsafe path")
-                    continue
-                data = _decode_file_content(raw_file)
-                if data is None:
-                    continue
-                if len(data) > SKILL_MAX_FILE_BYTES:
-                    warnings.append(f"skill {slug_source}: skipped oversized file {rel_path}")
-                    continue
-                if total_bytes + len(data) > SKILL_MAX_TOTAL_BYTES:
-                    warnings.append(f"skill {slug_source}: total byte cap reached")
-                    break
-                if file_count >= SKILL_MAX_FILES:
-                    warnings.append(f"skill {slug_source}: file count cap reached")
-                    break
-                target = (skill_dir / rel_path).resolve()
-                # Belt-and-braces traversal guard on the resolved path.
-                if root_guard not in target.parents and target != root_guard:
-                    warnings.append(f"skill {slug_source}: path escaped skills root: {rel_path}")
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(data)
-                total_bytes += len(data)
-                file_count += 1
-                materialized_any = True
-                if posixpath.basename(rel_path).upper() == "SKILL.MD":
-                    wrote_skill_md = True
-            # Custom skills carry SKILL.md content as `prompt` (skill-ingest);
-            # write it when the manifest didn't already include SKILL.md.
-            if prompt and not wrote_skill_md and total_bytes + len(prompt.encode()) <= SKILL_MAX_TOTAL_BYTES:
-                skill_dir.mkdir(parents=True, exist_ok=True)
-                (skill_dir / "SKILL.md").write_text(prompt + "\n", encoding="utf-8")
-                materialized_any = True
-        return skills_root if materialized_any else None
+        # Delegates to the shared capability compiler (byte-identical) — only the
+        # skills root differs per CLI runtime; codex/agy pass their own.
+        return materialize_skills_local(
+            agent_config, _claude_config_dir() / "skills", warnings
+        )
 
     # -- argv -----------------------------------------------------------------
 
