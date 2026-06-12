@@ -215,9 +215,33 @@ def test_screen_detected_done_is_coerced_to_idle_for_agy():
     assert sup._committed_state == ss.AGENT_STATUS_IDLE
 
 
-def test_native_done_still_exits_for_claude_codex():
-    # No prompt_ready_marker (claude/codex have native herdr state): "done"
-    # reliably means the process exited → still raise cli.exited.
+def test_screen_detected_done_is_coerced_to_idle_for_codex_and_claude():
+    # wfb #133: herdr's `done` is ambiguous — codex/claude (no prompt_ready_marker)
+    # screen-detect as "done" the instant a turn finishes and the TUI returns to
+    # its idle prompt, NOT only on exit. Treating that as exit reaped the session
+    # right after the first response (reason=agent_done). `done` must coerce to
+    # idle for EVERY runtime; a REAL exit arrives as a pane_exit event instead.
+    published: list = []
+    raised: list = []
+    sup = SessionSupervisor(
+        client=FakeHerdr(),
+        publish=lambda sid, t, d=None: published.append(t),
+        raise_lifecycle=lambda iid, evs: raised.append(evs),
+        disabled=False,
+    )
+    sup._session_id = "s1"
+    sup._instance_id = "i1"
+    sup.prompt_ready_marker = None  # codex/claude have no content gate
+    sup.commit_state(ss.AGENT_STATUS_DONE)
+    assert sup._exit_raised is False
+    assert raised == []  # no cli.exited — session stays alive between turns
+    assert "session.status_idle" in published
+    assert sup._committed_state == ss.AGENT_STATUS_IDLE
+
+
+def test_real_pane_exit_still_terminates():
+    # The reliable exit signal: a pane_exit event from the REGISTERED pane still
+    # raises cli.exited (this is the path the done→idle coercion relies on).
     raised: list = []
     sup = SessionSupervisor(
         client=FakeHerdr(),
@@ -227,9 +251,11 @@ def test_native_done_still_exits_for_claude_codex():
     )
     sup._session_id = "s1"
     sup._instance_id = "i1"
-    sup.prompt_ready_marker = None
-    sup.commit_state(ss.AGENT_STATUS_DONE)
+    sup._pane_ref = "pane-1"
+    sup.handle_event({"type": "pane_exited", "paneId": "pane-1", "exitCode": 0})
     assert sup._exit_raised is True
+    assert raised and raised[0][0]["type"] == "cli.exited"
+    assert raised[0][0].get("reason") == "pane_exit"
 
 
 def test_extract_injectable_messages_handles_session_user_events_batch():

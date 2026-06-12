@@ -389,14 +389,18 @@ class SessionSupervisor:
 
     def commit_state(self, status: str, detail: str | None = None) -> None:
         """Publish the debounced semantic state transition."""
-        # herdr SCREEN-DETECTS some TUIs (agy, prompt_ready_marker set), and a
-        # screen-detected "done" is a FALSE positive after a turn — the TUI is
-        # back at its idle prompt, NOT exited. (A real exit arrives as a
-        # pane_exit event, handled in handle_event.) Treating it as exit reaped
-        # the session right after the LLM finished; coerce it to idle so an agy
-        # session stays alive between turns like the durable agents. Natively-
-        # stated runtimes (claude/codex) keep "done" = exit.
-        if status == AGENT_STATUS_DONE and self.prompt_ready_marker:
+        # herdr's `done` is AMBIGUOUS: an interactive TUI returning to its idle
+        # prompt after a turn screen-detects as "done" JUST as much as a real
+        # exit does. A REAL exit ALWAYS arrives as a pane_exit event
+        # (handle_event) — verified: herdr emits `pane.exit` the instant the
+        # child dies. So `done` is redundant for termination and a false positive
+        # after EVERY turn; map it to idle for EVERY runtime so the session stays
+        # alive between turns like the durable agents. Genuine termination flows
+        # through pane_exit / cli.session_end (claude SessionEnd hook) / explicit
+        # stop / the idle-TTL reaper. (Previously only agy — prompt_ready_marker
+        # set — was coerced; codex & claude reaped themselves the instant a turn
+        # finished, reason=agent_done. wfb #133.)
+        if status == AGENT_STATUS_DONE:
             status = AGENT_STATUS_IDLE
         if status == self._committed_state and status != AGENT_STATUS_BLOCKED:
             return
@@ -421,9 +425,6 @@ class SessionSupervisor:
                     "session.status_idle",
                     {"blocked": True, "reason": classify_blocked_reason(detail)},
                 )
-        elif status == AGENT_STATUS_DONE:
-            self._idle_since = None
-            self._raise_cli_exited(exit_code=0, reason="agent_done")
 
     def _raise_cli_exited(
         self, *, exit_code: int | None, reason: str | None = None
