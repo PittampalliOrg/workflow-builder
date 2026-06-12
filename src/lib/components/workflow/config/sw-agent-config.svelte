@@ -20,6 +20,7 @@
 	import type { AgentDetail, AgentSummary, BundleRef } from '$lib/types/agents';
 	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';
 	import BundleRefsPicker from '$lib/components/capabilities/bundle-refs-picker.svelte';
+	import AgentPicker from '$lib/components/agents/agent-picker.svelte';
 	import PromptPreview from '$lib/components/agents/prompt-preview.svelte';
 
 	interface Props {
@@ -263,18 +264,13 @@
 			</Alert>
 		{:else}
 			<div class="flex items-center gap-2 mt-1">
-				<select
-					class="flex-1 rounded-md border bg-background px-3 py-2 text-sm"
-					value={agentRef?.id ?? ''}
-					onchange={(e) => setAgent((e.target as HTMLSelectElement).value)}
-				>
-					<option value="" disabled>Select an agent…</option>
-					{#each agents as a}
-						<option value={a.id}>
-							{a.avatar ?? '🤖'} {a.name} — v{a.currentVersion ?? '—'}
-						</option>
-					{/each}
-				</select>
+				<div class="flex-1">
+					<AgentPicker
+						value={agentRef?.id ?? null}
+						{agents}
+						onChange={(id) => setAgent(id)}
+					/>
+				</div>
 				{#if agentRef?.id}
 					<a
 						href="/workspaces/{slug}/agents/{agentRef.id}"
