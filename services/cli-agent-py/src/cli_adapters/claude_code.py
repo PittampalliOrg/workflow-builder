@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from src.cli_adapters.base import CliAdapter, SeedResult, link_transcript_subtree
-from src.mcp_config import build_mcp_servers
+from src.capability_compiler import emit_claude_code_cli_servers
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +166,7 @@ class ClaudeCodeAdapter(CliAdapter):
         wfb_dir.mkdir(parents=True, exist_ok=True)
 
         # (a) MCP config in Claude Code .mcp.json shape.
-        servers = build_mcp_servers(agent_config)
+        servers = emit_claude_code_cli_servers(agent_config)
         if servers:
             import json
 

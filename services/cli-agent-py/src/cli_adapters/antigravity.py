@@ -45,7 +45,7 @@ from typing import Any, Mapping
 
 from src.agy_capture import restore_bundle, start_capture_watcher
 from src.cli_adapters.base import CliAdapter, SeedResult
-from src.mcp_config import build_mcp_servers
+from src.capability_compiler import emit_claude_code_cli_servers
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ def normalize_agy_model(model_spec: Any) -> str | None:
 def _agy_mcp_servers(agent_config: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """Claude Code .mcp.json shape (from build_mcp_servers) → agy mcp_config.json
     server map. Remote servers use ``serverUrl`` (agy's required key)."""
-    servers = build_mcp_servers(agent_config)
+    servers = emit_claude_code_cli_servers(agent_config)
     out: dict[str, dict[str, Any]] = {}
     for name, cfg in servers.items():
         if cfg.get("type") == "stdio":

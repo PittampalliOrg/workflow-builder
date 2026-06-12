@@ -17,7 +17,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from claude_agent_sdk import ClaudeAgentOptions, query
 
-from src.mcp_config import build_mcp_servers
+from src.capability_compiler import emit_claude_agent_sdk_servers
 
 logger = logging.getLogger(__name__)
 
@@ -504,7 +504,7 @@ def build_claude_options(input_data: Mapping[str, Any]) -> ClaudeAgentOptions:
     # (ignoring any on-disk .mcp.json) when any are present, matching dapr-agent-py's
     # "only the declared servers" semantics. allowed_tools permits the MCP tools so
     # they remain callable even under non-bypass permission modes.
-    mcp_servers, mcp_allowed_tools = build_mcp_servers(agent_config)
+    mcp_servers, mcp_allowed_tools = emit_claude_agent_sdk_servers(agent_config)
 
     return ClaudeAgentOptions(
         tools=dict(TOOLS_PRESET),

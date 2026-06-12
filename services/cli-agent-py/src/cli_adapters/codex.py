@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from src.cli_adapters.base import CliAdapter, SeedResult, link_transcript_subtree
-from src.mcp_config import build_mcp_servers
+from src.capability_compiler import emit_claude_code_cli_servers
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ def _toml_array(values: list[str]) -> str:
 def _mcp_tables(agent_config: Mapping[str, Any]) -> list[str]:
     """Claude Code .mcp.json shape (from build_mcp_servers) → codex
     [mcp_servers.<name>] tables."""
-    servers = build_mcp_servers(agent_config)
+    servers = emit_claude_code_cli_servers(agent_config)
     tables: list[str] = []
     for name, cfg in servers.items():
         lines = [f"[mcp_servers.{_toml_key(name)}]"]

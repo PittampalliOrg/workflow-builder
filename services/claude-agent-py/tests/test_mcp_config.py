@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from src.claude_sdk_runner import build_claude_options
-from src.mcp_config import build_mcp_servers
+
+# mcp_config.py was consolidated into the shared capability compiler (Pillar 1);
+# emit_claude_agent_sdk_servers is its byte-identical successor.
+from src.capability_compiler import emit_claude_agent_sdk_servers as build_mcp_servers
 
 
 def test_no_mcp_servers_returns_empty() -> None:
