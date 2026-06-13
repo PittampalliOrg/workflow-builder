@@ -114,3 +114,60 @@ def test_assistant_line_without_text_still_emits_usage(tmp_path):
     assert tailer.poll() == 1
     assert published[0][1] == "agent.llm_usage"
     assert tailer.last_assistant_text is None
+
+
+def test_adapter_transcript_mapping_can_raise_turn_completed(tmp_path):
+    path = tmp_path / "agy.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "step_index": 21,
+                "content": "final agy answer",
+            }
+        )
+        + "\n"
+    )
+    published: list[tuple[str | None, str, dict, str | None]] = []
+    raised: list[list[dict]] = []
+
+    class FakeAdapter:
+        def map_transcript_entry(self, entry):
+            return [
+                {
+                    "type": "agent.message",
+                    "data": {
+                        "content": [{"type": "text", "text": entry["content"]}],
+                    },
+                    "sourceEventId": f"fake:{entry['step_index']}",
+                }
+            ]
+
+        def transcript_turn_completion(self, entry):
+            return {"type": "turn.completed", "lastAssistantText": entry["content"]}
+
+    def publish(session_id, event_type, data, *, source_event_id=None, **_kw):
+        published.append((session_id, event_type, data, source_event_id))
+
+    tailer = TranscriptTailer(
+        str(path),
+        "sess-1",
+        publish=publish,
+        adapter=FakeAdapter(),
+        raise_lifecycle=lambda events: raised.append(events),
+    )
+
+    assert tailer.poll() == 1
+    assert published == [
+        (
+            "sess-1",
+            "agent.message",
+            {"content": [{"type": "text", "text": "final agy answer"}]},
+            "fake:21",
+        )
+    ]
+    assert raised == [[{"type": "turn.completed", "lastAssistantText": "final agy answer"}]]
+    assert tailer.last_assistant_text == "final agy answer"
+    assert tailer.turn_completion_raised is True

@@ -173,6 +173,16 @@ class CliAdapter(abc.ABC):
         the default mapping in src.transcript_tailer."""
         return None
 
+    def transcript_turn_completion(self, entry: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Return a lifecycle ``turn.completed`` event when this transcript entry
+        is the adapter's authoritative completed-turn record.
+
+        The return value is raised onto the Dapr workflow instance, not persisted
+        to ``session_events``. Adapters should only return an event for final
+        assistant output, not interim thinking/tool-request transcript rows.
+        """
+        return None
+
 
 def write_hook_relay_script(path: Path) -> Path:
     """Materialize the command-hook relay used by Codex and Antigravity.

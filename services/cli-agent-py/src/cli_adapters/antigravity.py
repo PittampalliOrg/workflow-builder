@@ -1,23 +1,10 @@
 """Antigravity CLI (``agy``) TUI adapter (the ``agy-cli`` runtime).
 
 ``agy`` is Google's Antigravity CLI (a Go/Codeium-"jetski" rewrite that
-supersedes Gemini CLI). Auth is **in-pod device-code OAuth**: on first launch
-the bare TUI prints a Google authorization URL + waits for the user to paste the
-authorization code. This is VERIFIED working end-to-end in our keyring-less
-sandbox (full URL → Google consent → code → token exchange → onboarding → idle
-prompt, model responds).
-
-Why not pre-provision the credential like codex? The interactive TUI reads its
-OAuth token **only from the OS keyring** (``codeassistclient.KeyringTokenStorage``
-over the freedesktop Secret Service) — it ignores ``~/.gemini`` token FILES (those
-back only the headless ``agy -p`` path) and, with no keyring in the pod, doesn't
-persist the obtained token to a file either. So there is nothing to inject: the
-descriptor declares ``cliAuth.credentialKind = "device_login"`` (nothing stored)
-and there is no spawn-time token gate. ``requires_interactive_login = True`` makes
-the lifecycle DEFER the kickoff to the user post-auth — herdr screen-detects the
-auth-code prompt as ``idle``, so an armed seed would otherwise be typed straight
-into the login field. The web terminal surfaces the (otherwise hard-wrapped)
-OAuth URL with Copy/Open; the user logs in, completes onboarding, then types.
+supersedes Gemini CLI). Auth is file-bundle OAuth: a first launch can still use
+in-pane device-code login, but once the user signs in, ``agy_capture`` persists
+the curated ``~/.gemini`` login files and future pods restore them through
+``AGY_AUTH_JSON`` before the TUI starts.
 
 Seeds (these DO apply — they configure the CLI, not its auth):
   (a) MCP: agentConfig.mcpServers → ``$HOME/.gemini/config/mcp_config.json``
@@ -170,6 +157,7 @@ def _render_hooks_json() -> str:
             "PreToolUse": _agy_hook_group("PreToolUse", matcher="*"),
             "PostToolUse": _agy_hook_group("PostToolUse", matcher="*"),
             "Stop": _agy_hook_group("Stop"),
+            "SessionEnd": _agy_hook_group("SessionEnd"),
         }
     }
     return json.dumps(payload, indent=2) + "\n"
@@ -200,6 +188,248 @@ def _text_from_payload(value: Any) -> str | None:
             if text:
                 return text
     return None
+
+
+_HOOK_EVENT_NAMES = {
+    "Notification",
+    "PermissionDenied",
+    "PermissionRequest",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "PreCompact",
+    "PreToolUse",
+    "SessionEnd",
+    "SessionStart",
+    "Stop",
+    "UserPromptSubmit",
+}
+
+
+def _hook_name(payload: Mapping[str, Any]) -> str | None:
+    for key in ("hook_event_name", "eventName", "event", "hookName", "name"):
+        picked = clean_string(payload.get(key))
+        if picked:
+            return picked
+    return None
+
+
+def _tool_record(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    for key in (
+        "tool_call",
+        "toolCall",
+        "toolUse",
+        "tool_use",
+        "functionCall",
+        "function_call",
+        "call",
+        "request",
+    ):
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            return value
+    tool = payload.get("tool")
+    if isinstance(tool, Mapping):
+        return tool
+    return None
+
+
+def _result_record(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    for key in (
+        "tool_result",
+        "toolResult",
+        "tool_response",
+        "toolResponse",
+        "functionResponse",
+        "function_response",
+        "response",
+        "result",
+        "observation",
+    ):
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            return value
+    return None
+
+
+def _tool_name_from(payload: Mapping[str, Any]) -> str | None:
+    for record in (payload, _tool_record(payload), _result_record(payload)):
+        if not isinstance(record, Mapping):
+            continue
+        for key in (
+            "tool_name",
+            "toolName",
+            "name",
+            "displayName",
+            "function_name",
+            "functionName",
+            "command",
+        ):
+            name = clean_string(record.get(key))
+            if name and name not in _HOOK_EVENT_NAMES:
+                return name
+    return None
+
+
+def _jsonish_mapping(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, str) and value.strip().startswith("{"):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return None
+        if isinstance(parsed, Mapping):
+            return dict(parsed)
+    return None
+
+
+def _tool_input_from(payload: Mapping[str, Any]) -> dict[str, Any]:
+    for record in (payload, _tool_record(payload)):
+        if not isinstance(record, Mapping):
+            continue
+        for key in (
+            "tool_input",
+            "toolInput",
+            "input",
+            "args",
+            "arguments",
+            "params",
+            "parameters",
+        ):
+            if key not in record:
+                continue
+            mapped = _jsonish_mapping(record.get(key))
+            if mapped is not None:
+                return mapped
+            value = record.get(key)
+            if value is None:
+                return {}
+            return {"value": value}
+    return {}
+
+
+def _tool_output_from(payload: Mapping[str, Any]) -> str:
+    for record in (payload, _result_record(payload)):
+        if not isinstance(record, Mapping):
+            continue
+        for key in (
+            "tool_response",
+            "toolResponse",
+            "output",
+            "result",
+            "response",
+            "content",
+            "observation",
+            "text",
+        ):
+            if key not in record:
+                continue
+            text = _text_from_payload(record.get(key))
+            if text:
+                return text
+            value = record.get(key)
+            if value is not None:
+                try:
+                    return json.dumps(value)
+                except (TypeError, ValueError):
+                    return str(value)
+    return ""
+
+
+def _entry_identity(entry: Mapping[str, Any]) -> str | None:
+    parts: list[str] = []
+    for key in ("conversation_id", "conversationId", "session_id", "sessionId"):
+        value = clean_string(entry.get(key))
+        if value:
+            parts.append(value)
+            break
+    for key in (
+        "uuid",
+        "id",
+        "event_id",
+        "eventId",
+        "step_id",
+        "stepId",
+        "step_index",
+        "stepIndex",
+        "index",
+        "timestamp",
+        "created_at",
+    ):
+        value = entry.get(key)
+        if value is not None:
+            text = str(value).strip()
+            if text:
+                parts.append(text)
+                break
+    return ":".join(parts) if parts else None
+
+
+def _is_agy_assistant_entry(entry: Mapping[str, Any]) -> bool:
+    role = clean_string(entry.get("role"))
+    if role and role.lower() == "assistant":
+        return True
+    source = clean_string(entry.get("source"))
+    if source and source.upper() in {"MODEL", "ASSISTANT", "AGENT"}:
+        return True
+    entry_type = clean_string(entry.get("type"))
+    if entry_type and entry_type.upper() in {
+        "ASSISTANT_MESSAGE",
+        "MODEL_RESPONSE",
+        "PLANNER_RESPONSE",
+    }:
+        return True
+    return False
+
+
+def _has_tool_calls(entry: Mapping[str, Any]) -> bool:
+    for key in ("tool_calls", "toolCalls", "function_calls", "functionCalls"):
+        value = entry.get(key)
+        if isinstance(value, list) and value:
+            return True
+        if isinstance(value, Mapping) and value:
+            return True
+    return False
+
+
+def _agy_final_response_text(entry: Mapping[str, Any]) -> str | None:
+    if not _is_agy_assistant_entry(entry) or _has_tool_calls(entry):
+        return None
+    status = clean_string(entry.get("status") or entry.get("state"))
+    if status and status.upper() not in {"DONE", "COMPLETE", "COMPLETED", "SUCCESS"}:
+        return None
+    for key in ("content", "response", "message", "text", "finalResponse"):
+        text = _text_from_payload(entry.get(key))
+        if text:
+            return text
+    return None
+
+
+def _agy_usage(entry: Mapping[str, Any]) -> dict[str, Any] | None:
+    usage = None
+    for key in ("usage", "tokenUsage", "usageMetadata"):
+        value = entry.get(key)
+        if isinstance(value, Mapping):
+            usage = value
+            break
+    if not isinstance(usage, Mapping):
+        return None
+    data = {
+        "input_tokens": usage.get("input_tokens")
+        or usage.get("prompt_tokens")
+        or usage.get("promptTokenCount"),
+        "output_tokens": usage.get("output_tokens")
+        or usage.get("completion_tokens")
+        or usage.get("candidatesTokenCount"),
+        "cache_read_input_tokens": usage.get("cache_read_input_tokens"),
+        "cache_creation_input_tokens": usage.get("cache_creation_input_tokens"),
+    }
+    if not any(value is not None for value in data.values()):
+        return None
+    model = clean_string(entry.get("model") or entry.get("model_name") or entry.get("modelName"))
+    if model:
+        data["model"] = model
+    return data
 
 
 class AntigravityAdapter(CliAdapter):
@@ -320,6 +550,71 @@ class AntigravityAdapter(CliAdapter):
 
     def extract_completion_text(self, payload: Mapping[str, Any]) -> str | None:
         return _text_from_payload(payload)
+
+    def map_hook_event(self, payload: Mapping[str, Any]) -> list[dict[str, Any]] | None:
+        name = _hook_name(payload)
+        if name == "PreToolUse":
+            tool_name = _tool_name_from(payload) or "agy_tool"
+            tool_input = _tool_input_from(payload)
+            return [
+                {
+                    "type": "agent.tool_use",
+                    "data": {
+                        "tool_name": tool_name,
+                        "name": tool_name,
+                        "tool_input": tool_input,
+                        "input": tool_input,
+                    },
+                }
+            ]
+        if name in ("PostToolUse", "PostToolUseFailure"):
+            tool_name = _tool_name_from(payload) or "agy_tool"
+            output = _tool_output_from(payload)
+            ok = name == "PostToolUse"
+            data: dict[str, Any] = {
+                "tool_name": tool_name,
+                "name": tool_name,
+                "ok": ok,
+                "success": ok,
+                "output": output,
+                "output_preview": output[:500] if output else "",
+            }
+            if not ok:
+                data["is_error"] = True
+                data["error"] = clean_string(payload.get("error")) or "tool failed"
+            return [{"type": "agent.tool_result", "data": data}]
+        return None
+
+    def map_transcript_entry(
+        self, entry: Mapping[str, Any]
+    ) -> list[dict[str, Any]] | None:
+        events: list[dict[str, Any]] = []
+        identity = _entry_identity(entry)
+        text = _agy_final_response_text(entry)
+        if text:
+            data: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
+            model = clean_string(
+                entry.get("model") or entry.get("model_name") or entry.get("modelName")
+            )
+            if model:
+                data["model"] = model
+            event: dict[str, Any] = {"type": "agent.message", "data": data}
+            if identity:
+                event["sourceEventId"] = f"agy-transcript:{identity}:message"
+            events.append(event)
+        usage = _agy_usage(entry)
+        if usage:
+            event = {"type": "agent.llm_usage", "data": usage}
+            if identity:
+                event["sourceEventId"] = f"agy-transcript:{identity}:usage"
+            events.append(event)
+        return events
+
+    def transcript_turn_completion(self, entry: Mapping[str, Any]) -> dict[str, Any] | None:
+        text = _agy_final_response_text(entry)
+        if not text:
+            return None
+        return {"type": "turn.completed", "lastAssistantText": text}
 
     # -- env -------------------------------------------------------------------
 

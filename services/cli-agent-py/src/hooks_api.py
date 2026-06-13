@@ -297,7 +297,7 @@ class HookProcessor:
         # (observed live: SessionStart did not fire under the early
         # managed-settings matcher shape, so the tailer never started and no
         # agent.message/llm_usage were mirrored).
-        self._register_transcript(payload, session_id)
+        self._register_transcript(payload, session_id, instance_id)
 
         if name == "SessionStart":
             return  # registration handled above; no published event
@@ -323,7 +323,10 @@ class HookProcessor:
                     {"content": [{"type": "text", "text": last_text}]},
                     source_event_id=f"hook-completion:{instance_id or session_id}:{name}",
                 )
-            if instance_id:
+            already_completed = bool(
+                tailer is not None and getattr(tailer, "turn_completion_raised", False)
+            )
+            if instance_id and not already_completed:
                 event: dict[str, Any] = {"type": "turn.completed"}
                 if last_text:
                     event["lastAssistantText"] = last_text
@@ -352,7 +355,7 @@ class HookProcessor:
             self._publish(session_id, event["type"], event.get("data") or {})
 
     def _register_transcript(
-        self, payload: Mapping[str, Any], session_id: Any
+        self, payload: Mapping[str, Any], session_id: Any, instance_id: Any
     ) -> None:
         transcript_path = _clean(payload.get("transcript_path")) or _clean(
             payload.get("transcriptPath")
@@ -369,7 +372,17 @@ class HookProcessor:
                 supervisor.register_transcript(transcript_path, cli_session_id)
             except Exception:  # noqa: BLE001
                 pass
-        self._tailer_manager.start(transcript_path, session_id)
+        def _raise_from_tailer(events: list[dict[str, Any]]) -> None:
+            if instance_id:
+                self._safe_raise(str(instance_id), events)
+
+        self._tailer_manager.start(
+            transcript_path,
+            session_id,
+            publish=self._publish,
+            adapter=self._adapter,
+            raise_lifecycle=_raise_from_tailer if instance_id else None,
+        )
         logger.info("[hooks] transcript tailer started for %s", transcript_path)
 
     def _safe_raise(self, instance_id: str, events: list[dict[str, Any]]) -> None:

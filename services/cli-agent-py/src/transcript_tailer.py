@@ -1,4 +1,4 @@
-"""Incremental Claude Code transcript (JSONL) tailer.
+"""Incremental CLI transcript (JSONL) tailer.
 
 Claude Code writes its conversation transcript as JSONL; lines with
 ``.type == "assistant"`` carry ``.message.content`` blocks (text),
@@ -13,6 +13,9 @@ line types) and mirrors:
     ``usage.input_tokens`` is already net — passed through AS-IS per the
     platform's llm_usage SYSTEM INVARIANT), sourceEventId
     ``transcript-usage:{entry uuid}``.
+
+Adapters may override transcript-row mapping for runtimes whose native JSONL
+schema is not Claude-shaped (for example Antigravity/agy).
 """
 
 from __future__ import annotations
@@ -50,13 +53,18 @@ class TranscriptTailer:
         session_id: str | None,
         *,
         publish: Callable[..., None] = publish_session_event,
+        adapter=None,
+        raise_lifecycle: Callable[[list[dict[str, Any]]], None] | None = None,
     ):
         self.path = path
         self.session_id = session_id
         self._publish = publish
+        self._adapter = adapter
+        self._raise_lifecycle = raise_lifecycle
         self._offset = 0
         self._partial = b""
         self.last_assistant_text: str | None = None
+        self.turn_completion_raised = False
 
     def poll(self) -> int:
         """Read newly-appended bytes and emit events for complete new lines.
@@ -93,6 +101,16 @@ class TranscriptTailer:
         except (TypeError, ValueError):
             logger.debug("[tailer] skipping unparseable transcript line")
             return 0
+        if not isinstance(entry, Mapping):
+            return 0
+
+        adapter_events = self._adapter_events(entry)
+        if adapter_events is not None:
+            return adapter_events
+
+        return self._handle_claude_entry(entry)
+
+    def _handle_claude_entry(self, entry: Mapping[str, Any]) -> int:
         if not isinstance(entry, Mapping) or entry.get("type") != "assistant":
             return 0  # tolerate unknown line types
         message = entry.get("message")
@@ -140,6 +158,60 @@ class TranscriptTailer:
             emitted += 1
         return emitted
 
+    def _adapter_events(self, entry: Mapping[str, Any]) -> int | None:
+        adapter = self._adapter
+        if adapter is None:
+            return None
+        try:
+            events = adapter.map_transcript_entry(entry)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[tailer] adapter transcript mapping failed: %s", exc)
+            events = None
+        if events is None:
+            return None
+
+        emitted = 0
+        for event in events:
+            if not isinstance(event, Mapping):
+                continue
+            event_type = event.get("type")
+            if not isinstance(event_type, str) or not event_type:
+                continue
+            data = event.get("data")
+            payload = dict(data) if isinstance(data, Mapping) else {}
+            if event_type == "agent.message":
+                text = _text_of_content_blocks(payload.get("content"))
+                if text:
+                    self.last_assistant_text = text
+            source_event_id = event.get("sourceEventId") or event.get("source_event_id")
+            self._publish(
+                self.session_id,
+                event_type,
+                payload,
+                source_event_id=str(source_event_id) if source_event_id else None,
+            )
+            emitted += 1
+
+        self._raise_adapter_completion(entry)
+        return emitted
+
+    def _raise_adapter_completion(self, entry: Mapping[str, Any]) -> None:
+        if self._adapter is None or self._raise_lifecycle is None:
+            return
+        try:
+            event = self._adapter.transcript_turn_completion(entry)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[tailer] adapter transcript completion failed: %s", exc)
+            return
+        if not isinstance(event, Mapping) or event.get("type") != "turn.completed":
+            return
+        payload = dict(event)
+        text = payload.get("lastAssistantText") or payload.get("content")
+        if isinstance(text, str) and text.strip():
+            self.last_assistant_text = text.strip()
+        self.turn_completion_raised = True
+        self._raise_lifecycle([payload])
+
 
 class TailerManager:
     """Owns the active tailer + its polling task (one CLI session per pod)."""
@@ -154,13 +226,25 @@ class TailerManager:
         session_id: str | None,
         *,
         publish: Callable[..., None] = publish_session_event,
+        adapter=None,
+        raise_lifecycle: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> TranscriptTailer | None:
         if not path:
             return None
         if self._tailer is not None and self._tailer.path == path:
+            if adapter is not None:
+                self._tailer._adapter = adapter
+            if raise_lifecycle is not None:
+                self._tailer._raise_lifecycle = raise_lifecycle
             return self._tailer
         self.stop()
-        self._tailer = TranscriptTailer(path, session_id, publish=publish)
+        self._tailer = TranscriptTailer(
+            path,
+            session_id,
+            publish=publish,
+            adapter=adapter,
+            raise_lifecycle=raise_lifecycle,
+        )
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:

@@ -308,6 +308,8 @@ def test_agy_seed_writes_hooks_json_for_completion_signal(agy_home):
     stop_hook = hooks["workflow-builder"]["Stop"][0]["hooks"][0]
     assert stop_hook["type"] == "command"
     assert "--adapter antigravity --event Stop" in stop_hook["command"]
+    end_hook = hooks["workflow-builder"]["SessionEnd"][0]["hooks"][0]
+    assert "--adapter antigravity --event SessionEnd" in end_hook["command"]
     assert result.paths["hooksPath"].endswith("hooks.json")
 
 
@@ -353,3 +355,104 @@ def test_agy_model_normalization():
     assert normalize_agy_model("gemini/gemini-2.5-pro") == "gemini-2.5-pro"
     assert normalize_agy_model("gemini-2.0-flash") == "gemini-2.0-flash"
     assert normalize_agy_model("anthropic/claude-opus-4-8") is None  # default empty
+
+
+def test_agy_hook_mapping_extracts_nested_tool_payloads():
+    adapter = get_adapter("antigravity")
+    events = adapter.map_hook_event(
+        {
+            "hook_event_name": "PreToolUse",
+            "toolCall": {
+                "name": "write_file",
+                "input": {"path": "index.html", "content": "<canvas></canvas>"},
+            },
+        }
+    )
+    assert events == [
+        {
+            "type": "agent.tool_use",
+            "data": {
+                "tool_name": "write_file",
+                "name": "write_file",
+                "tool_input": {"path": "index.html", "content": "<canvas></canvas>"},
+                "input": {"path": "index.html", "content": "<canvas></canvas>"},
+            },
+        }
+    ]
+
+    result = adapter.map_hook_event(
+        {
+            "hook_event_name": "PostToolUse",
+            "toolCall": {"name": "write_file"},
+            "toolResult": {"content": [{"type": "text", "text": "created"}]},
+        }
+    )
+    assert result is not None
+    assert result[0]["type"] == "agent.tool_result"
+    assert result[0]["data"]["tool_name"] == "write_file"
+    assert result[0]["data"]["output"] == "created"
+
+
+def test_agy_hook_mapping_uses_non_null_fallback_tool_name():
+    event = get_adapter("antigravity").map_hook_event({"hook_event_name": "PreToolUse"})
+    assert event is not None
+    assert event[0]["data"]["tool_name"] == "agy_tool"
+    assert event[0]["data"]["name"] == "agy_tool"
+
+
+def test_agy_transcript_final_response_maps_message_usage_and_completion():
+    adapter = get_adapter("antigravity")
+    entry = {
+        "source": "MODEL",
+        "type": "PLANNER_RESPONSE",
+        "status": "DONE",
+        "step_index": 21,
+        "model": "gemini-2.5-pro",
+        "content": "Created index.html, styles.css, script.js, and README.md.",
+        "usageMetadata": {"promptTokenCount": 12, "candidatesTokenCount": 7},
+    }
+
+    events = adapter.map_transcript_entry(entry)
+    assert events == [
+        {
+            "type": "agent.message",
+            "data": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Created index.html, styles.css, script.js, and README.md.",
+                    }
+                ],
+                "model": "gemini-2.5-pro",
+            },
+            "sourceEventId": "agy-transcript:21:message",
+        },
+        {
+            "type": "agent.llm_usage",
+            "data": {
+                "input_tokens": 12,
+                "output_tokens": 7,
+                "cache_read_input_tokens": None,
+                "cache_creation_input_tokens": None,
+                "model": "gemini-2.5-pro",
+            },
+            "sourceEventId": "agy-transcript:21:usage",
+        },
+    ]
+    assert adapter.transcript_turn_completion(entry) == {
+        "type": "turn.completed",
+        "lastAssistantText": "Created index.html, styles.css, script.js, and README.md.",
+    }
+
+
+def test_agy_transcript_tool_request_is_not_completion():
+    adapter = get_adapter("antigravity")
+    entry = {
+        "source": "MODEL",
+        "type": "PLANNER_RESPONSE",
+        "status": "DONE",
+        "content": "I will write the files.",
+        "tool_calls": [{"name": "write_file"}],
+    }
+    assert adapter.map_transcript_entry(entry) == []
+    assert adapter.transcript_turn_completion(entry) is None
