@@ -40,6 +40,7 @@ type PieceMetadataSummary = {
 	categories: string[];
 	auth: unknown;
 	actions: unknown;
+	availableOnly: boolean;
 };
 
 function catalogPath(): string | null {
@@ -95,7 +96,8 @@ function fallbackPieceSummary(
 		logoUrl: null,
 		categories: registered?.categories ?? [],
 		auth: { type: 'NONE' },
-		actions: { registered_mcp_server: {} }
+		actions: { registered_mcp_server: {} },
+		availableOnly: false
 	};
 }
 
@@ -119,6 +121,7 @@ export async function getMcpAvailability(
 				categories: pieceMetadata.categories,
 				auth: pieceMetadata.auth,
 				actions: pieceMetadata.actions,
+				availableOnly: pieceMetadata.availableOnly,
 				updatedAt: pieceMetadata.updatedAt
 			})
 			.from(pieceMetadata)
@@ -165,6 +168,10 @@ export async function getMcpAvailability(
 		const pieceName = normalizePieceName(row.pieceName);
 		if (pieceName) wantedPieces.add(pieceName);
 	}
+	// NOTE: available-only pieces are intentionally NOT added here. The MCP
+	// availability list is about registered/connectable servers; discovery of the
+	// (hundreds of) catalog-only pieces lives in the connections HUB browse
+	// (/api/mcp-connections/catalog), which already has search + category filters.
 
 	const oauthPieceNames = Array.from(
 		new Set(Array.from(wantedPieces).flatMap((piece) => pieceSearchNames(piece)))
@@ -226,7 +233,8 @@ export async function getMcpAvailability(
 				oauthAppConfigured: oauthConfigured.has(pieceName),
 				appConnections: appConnectionsByPiece.get(pieceName) ?? [],
 				mcpConnection: mcpByPiece.get(pieceName) ?? null,
-				registered
+				registered,
+				availableOnly: piece.availableOnly === true
 			});
 		})
 		.filter((entry): entry is McpServerAvailabilityEntry => entry !== null)

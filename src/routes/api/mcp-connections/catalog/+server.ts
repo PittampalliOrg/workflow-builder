@@ -69,6 +69,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 				categories: pieceMetadata.categories,
 				auth: pieceMetadata.auth,
 				actions: pieceMetadata.actions,
+				availableOnly: pieceMetadata.availableOnly,
 				updatedAt: pieceMetadata.updatedAt
 			})
 			.from(pieceMetadata)
@@ -156,7 +157,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	const entries = pieces
 		.map((piece) => {
 			const normalized = normalizePieceName(piece.name);
-			return buildAvailablePieceMcpCatalogEntry({
+			const entry = buildAvailablePieceMcpCatalogEntry({
 				pieceName: normalized,
 				displayName: piece.displayName,
 				description: piece.description,
@@ -168,6 +169,10 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 				appConnections: appConnectionsByPiece.get(normalized) ?? [],
 				mcpConnection: mcpByPiece.get(normalized) ?? null
 			});
+			// Available-only = AP-catalog metadata, not bundled/runnable. Surfaced for
+			// discovery in the hub browse (behind the "Available to enable" filter);
+			// not connectable until bundled (the "Adding piece" image-rebuild flow).
+			return entry ? { ...entry, availableOnly: piece.availableOnly === true } : null;
 		})
 		.filter((entry) => entry !== null)
 		.filter((entry) => !authOnly || entry.requiresAuth)

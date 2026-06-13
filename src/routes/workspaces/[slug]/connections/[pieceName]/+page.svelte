@@ -400,7 +400,11 @@
 					<div class="flex items-center gap-2 flex-wrap">
 						<h1 class="text-2xl font-semibold">{piece.displayName}</h1>
 						<Badge variant="outline">v{piece.version}</Badge>
-						{#if availability?.ready}
+						{#if piece.availableOnly}
+							<Badge variant="outline" class="border-amber-500/40 text-amber-600 dark:text-amber-400">
+								Available — not enabled
+							</Badge>
+						{:else if availability?.ready}
 							<Badge variant="secondary"><CheckCircle2 class="size-3" /> Ready</Badge>
 						{/if}
 					</div>
@@ -409,13 +413,24 @@
 					</p>
 				</div>
 			</div>
-			{#if piece.requiresAuth}
+			{#if piece.requiresAuth && !piece.availableOnly}
 				<Button onclick={connectAccount} disabled={busy === 'oauth' || busy === 'secret'}>
 					{#if busy === 'oauth'}<Loader2 class="size-4 animate-spin" />{:else}<KeyRound class="size-4" />{/if}
 					Connect account
 				</Button>
 			{/if}
 		</header>
+
+		{#if piece.availableOnly}
+			<Alert>
+				<AlertDescription class="text-xs">
+					<strong>{piece.displayName}</strong> is in the Activepieces catalog but not bundled
+					in this deployment, so it can't be connected yet. A platform admin enables it by
+					adding it to the piece bundle (an image rebuild); once enabled it becomes connectable
+					here. The {actions.length} actions below are a preview of what it offers.
+				</AlertDescription>
+			</Alert>
+		{/if}
 
 		{#if errorMessage}
 			<Alert variant="destructive">

@@ -6,6 +6,21 @@
 
 ---
 
+## Status — SHIPPED (Option B, 2026‑06)
+
+Both phases are implemented. Final shape:
+
+**Phase 1 — admin enablement gate (BLOCKLIST, not allowlist).** `platform_disabled_piece` table (migration `0085`) + reconciler `catalog`‑branch `DISABLED_PIECES` gate + `/admin/pieces` UI. An **empty table = every bundled piece stays provisioned** (deploy is a no‑op; an admin opts pieces OUT). Verified end‑to‑end on ryzen (disable `bitly` → reconcile → catalog drops 47→46; re‑enable restores).
+
+**Phase 2 — 200+ available, code‑free.** Final count: **666 available‑only pieces** (the full AP catalog minus the 47 bundled, minus 23 CORE platform‑primitives, minus ~13 unpublishable packages).
+- **Generator** `services/piece-mcp-server/src/gen-catalog-snapshot.ts` (`pnpm gen:catalog-snapshot`, CI‑only): per‑piece **isolated `pnpm` install in a child process** (bounded memory, true parallelism) → bundle‑free `buildPieceCatalogRow` → slim row. `--discover` lists the catalog from the AP cloud API; an `axios@1.15.0` pnpm‑override works around an upstream broken transitive pin; CORE‑primitive pieces (no auth) are excluded. Output committed at `services/piece-mcp-server/src/piece-catalog-snapshot.json` (~2 MB), baked into the image by `build.mjs`.
+- **Decoupling refactor** so the generator runs without the bundle: `normalizePieceName` → bundle‑free `piece-name.ts`; the pure row‑builder → `metadata-row.ts` (extensions are now an INJECTED param). `metadata-catalog.ts` injects the real `extensionsFor` so bundled digests stay **byte‑identical** (verified against the live microsoft‑onedrive row).
+- **Seed**: `sync-metadata.ts` two‑pass — bundle rows (`available_only=false`) then snapshot rows (`available_only=true`, skipping any bundled piece) + a prune of stale available‑only rows. New `piece_metadata.available_only` column (migration `0086`).
+- **Reconciler exclusion**: the `catalog` branch now also skips `available_only=true` pieces (column‑tolerant `2>/dev/null || true` query — a pre‑migration DB degrades to "no exclusions", never wipes the catalog). **INVARIANT preserved: enabled‑and‑runnable ⊆ bundled.**
+- **UI**: every list surface that reads `piece_metadata` excludes available‑only (canvas action catalog, `/api/pieces` combobox, settings OAuth list, admin disable list, `getMcpAvailability`). Discovery lives in ONE place — the connections **Catalog** filter pill (count badge) on `/workspaces/[slug]/connections`, where available‑only pieces render with an amber "Available — request enablement" state; the piece detail page shows a notice + suppresses Connect. Enabling a not‑yet‑bundled piece remains the "Adding piece" image‑rebuild flow.
+
+---
+
 ## 1. Current system — how a piece is filtered, listed, and run
 
 Today **available == enabled == bundled**: one source (the pieces compiled into the `piece-mcp-server` image) drives both what you can *see* and what you can *run*. There is no decoupling yet.

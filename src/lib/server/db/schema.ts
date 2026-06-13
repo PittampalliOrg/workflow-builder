@@ -338,6 +338,12 @@ export const pieceMetadata = pgTable(
 		catalogDigest: text("catalog_digest"),
 		catalogSourceImage: text("catalog_source_image"),
 		catalogSyncedAt: timestamp("catalog_synced_at"),
+		// Phase 2 (docs/activepieces-catalog-expansion.md): a row is metadata-only
+		// (the piece is in the AP catalog but NOT bundled in piece-mcp-server) — it
+		// shows as an "Available — request enablement" option but is NEVER provisioned
+		// (no code → would CrashLoop). Bundle-synced rows are always false; the
+		// reconciler name-excludes available_only=true pieces. enabled-and-runnable ⊆ bundled.
+		availableOnly: boolean("available_only").notNull().default(false),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 		updatedAt: timestamp("updated_at").notNull().defaultNow(),
 	},

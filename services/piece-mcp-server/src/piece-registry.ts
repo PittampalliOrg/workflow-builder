@@ -52,6 +52,7 @@ import { trello } from "@activepieces/piece-trello";
 import { youtube } from "@activepieces/piece-youtube";
 import { zendesk } from "@activepieces/piece-zendesk";
 import type { Piece } from "@activepieces/pieces-framework";
+import { normalizePieceName } from "./piece-name.js";
 import { mcp } from "./custom-pieces/mcp.js";
 
 /**
@@ -108,14 +109,10 @@ export const PIECES: Record<string, Piece> = {
 	mcp: mcp as unknown as Piece,
 };
 
-export function normalizePieceName(name: string): string {
-	return name
-		.trim()
-		.toLowerCase()
-		.replace(/^@activepieces\/piece-/, "")
-		.replace(/[_\s]+/g, "-")
-		.replace(/-+/g, "-");
-}
+// normalizePieceName lives in the bundle-free piece-name.ts so the metadata
+// row-builder + snapshot generator can use it without loading PIECES. Re-export
+// keeps every existing `from "./piece-registry.js"` importer working.
+export { normalizePieceName };
 
 /**
  * Get a piece by normalized name.

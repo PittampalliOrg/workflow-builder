@@ -14,7 +14,7 @@
  *   slug/call      `<pieceName>/<actionName>`   (the function-router slug)
  */
 
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { pieceMetadata } from '$lib/server/db/schema';
 import type {
@@ -228,9 +228,15 @@ function buildActionDetail(input: {
 		categories: string[];
 		catalogDigest: string | null;
 		catalogSourceImage: string | null;
+		availableOnly: boolean;
 	};
 }): ActionCatalogDetail {
 	const { pieceName, actionName, action, row } = input;
+	// Available-only pieces are AP-catalog metadata for pieces NOT bundled in the
+	// image — discoverable, but with no runnable code (no ap-<piece>-service). They
+	// must NOT be insertable on the canvas or appear runtime-ready, else a user
+	// could add an action that can never execute. docs/activepieces-catalog-expansion.md.
+	const availableOnly = row.availableOnly === true;
 	const fnName = `${pieceName}-${actionName}`;
 	const call = `${pieceName}/${actionName}`;
 	const displayName = stringOr(action.displayName) || actionName;
@@ -295,7 +301,7 @@ function buildActionDetail(input: {
 		language: 'typescript',
 		entrypoint: actionName,
 		sourceKind: 'integration',
-		insertable: true,
+		insertable: !availableOnly,
 		auth,
 		fields,
 		tags: ['activepieces'],
@@ -312,17 +318,20 @@ function buildActionDetail(input: {
 			warnings: [],
 		},
 		runtime: {
-			registered: true,
-			ready: true,
+			registered: !availableOnly,
+			ready: !availableOnly,
 			lastSeenAt: new Date().toISOString(),
 			errors: [],
-			features: ['piece-metadata-db', 'per-piece-knative'],
+			features: availableOnly
+				? ['piece-metadata-db', 'available-only']
+				: ['piece-metadata-db', 'per-piece-knative'],
 		},
 		rendered: null,
 		raw: {
 			pieceName,
 			actionName,
 			requireAuth,
+			availableOnly,
 			pieceDescription: row.description,
 			actionDigest: stringOr(action.digest) || null,
 			catalogDigest: row.catalogDigest,
@@ -357,9 +366,19 @@ export async function loadPieceMetadataActionSource(): Promise<PieceCatalogSourc
 			catalogDigest: pieceMetadata.catalogDigest,
 			catalogSourceImage: pieceMetadata.catalogSourceImage,
 			catalogSyncedAt: pieceMetadata.catalogSyncedAt,
+			availableOnly: pieceMetadata.availableOnly,
 		})
 		.from(pieceMetadata)
-		.where(eq(pieceMetadata.catalogSchemaVersion, PIECE_CATALOG_SCHEMA_VERSION))
+		// Exclude available-only rows: their pieces have no runnable code (no
+		// ap-<piece>-service), so their actions must NOT appear in the canvas action
+		// catalog (they'd render as un-insertable clutter). Discovery of available-only
+		// pieces lives in the connections surface (mcp-availability), not here.
+		.where(
+			and(
+				eq(pieceMetadata.catalogSchemaVersion, PIECE_CATALOG_SCHEMA_VERSION),
+				eq(pieceMetadata.availableOnly, false)
+			)
+		)
 		.orderBy(pieceMetadata.name, desc(pieceMetadata.catalogSyncedAt));
 
 	const actions: ActionCatalogDetail[] = [];
@@ -381,6 +400,7 @@ export async function loadPieceMetadataActionSource(): Promise<PieceCatalogSourc
 						categories: row.categories ?? [],
 						catalogDigest: row.catalogDigest,
 						catalogSourceImage: row.catalogSourceImage,
+						availableOnly: row.availableOnly === true,
 					},
 				}),
 			);

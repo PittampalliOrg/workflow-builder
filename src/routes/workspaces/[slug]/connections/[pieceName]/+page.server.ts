@@ -39,6 +39,7 @@ export const load: PageServerLoad = async ({ params, parent }) => {
 			version: pieceMetadata.version,
 			auth: pieceMetadata.auth,
 			actions: pieceMetadata.actions,
+			availableOnly: pieceMetadata.availableOnly,
 			catalogSourceImage: pieceMetadata.catalogSourceImage,
 			catalogSyncedAt: pieceMetadata.catalogSyncedAt,
 			updatedAt: pieceMetadata.updatedAt
@@ -97,6 +98,7 @@ export const load: PageServerLoad = async ({ params, parent }) => {
 			authDisplayName: pieceAuthDisplayName(piece.auth),
 			requiresAuth: pieceRequiresAuth(authType),
 			isOAuth2: isOAuth2AuthType(authType),
+			availableOnly: piece.availableOnly === true,
 			catalogSourceImage: piece.catalogSourceImage,
 			catalogSyncedAt: piece.catalogSyncedAt?.toISOString() ?? null,
 			metadataUpdatedAt: piece.updatedAt?.toISOString() ?? null

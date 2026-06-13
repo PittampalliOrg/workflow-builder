@@ -5,6 +5,7 @@
  * (AP pieces have deep dep trees).
  */
 
+import { copyFileSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
@@ -30,6 +31,17 @@ async function build() {
       external: ["node:*"],
       logLevel: "info",
     });
+
+    // Bake the code-free available-only catalog snapshot next to the bundled
+    // sync-metadata.js so the deploy-time seed reads it (resolve(__dirname,
+    // "piece-catalog-snapshot.json")). Optional — bundle-only builds still work.
+    const snapshotSrc = resolve(__dirname, "src/piece-catalog-snapshot.json");
+    if (existsSync(snapshotSrc)) {
+      copyFileSync(snapshotSrc, resolve(__dirname, "dist/piece-catalog-snapshot.json"));
+      console.log("Copied piece-catalog-snapshot.json → dist/");
+    } else {
+      console.log("No src/piece-catalog-snapshot.json (bundle-only build)");
+    }
 
     console.log("Build completed successfully!");
   } catch (error) {

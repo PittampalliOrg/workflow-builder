@@ -13,6 +13,12 @@ export const GET: RequestHandler = async ({ url }) => {
 
 	const authOnly = url.searchParams.get('auth') === 'true';
 
+	// Only bundled/runnable pieces are connectable — exclude available-only catalog
+	// rows so they never appear in the connection-creation combobox.
+	const whereClause = authOnly
+		? sql`${pieceMetadata.availableOnly} = false AND ${pieceMetadata.auth} IS NOT NULL AND ${pieceMetadata.auth}->>'type' != 'NONE'`
+		: sql`${pieceMetadata.availableOnly} = false`;
+
 	const pieces = await db
 		.selectDistinctOn([pieceMetadata.name], {
 			name: pieceMetadata.name,
@@ -21,7 +27,7 @@ export const GET: RequestHandler = async ({ url }) => {
 			authType: sql<string>`${pieceMetadata.auth}->>'type'`
 		})
 		.from(pieceMetadata)
-		.where(authOnly ? sql`${pieceMetadata.auth} IS NOT NULL AND ${pieceMetadata.auth}->>'type' != 'NONE'` : undefined)
+		.where(whereClause)
 		.orderBy(pieceMetadata.name, pieceMetadata.displayName);
 
 	return json(
