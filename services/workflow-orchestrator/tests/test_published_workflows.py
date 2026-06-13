@@ -144,9 +144,19 @@ if "dapr" not in sys.modules:
         def publish_event(self, **_kwargs):
             return None
 
+    class _FakeRetryPolicy:
+        def __init__(self, **kwargs):
+            self.kwargs = dict(kwargs)
+
     workflow_module.WorkflowRuntime = _FakeWorkflowRuntime
     workflow_module.DaprWorkflowContext = object
     workflow_module.DaprWorkflowClient = _FakeDaprWorkflowClient
+    workflow_module.RetryPolicy = _FakeRetryPolicy
+    workflow_module.PropagationScope = types.SimpleNamespace(
+        NONE="NONE",
+        OWN_HISTORY="OWN_HISTORY",
+        LINEAGE="LINEAGE",
+    )
     workflow_module.when_any = lambda tasks: {"kind": "when_any", "tasks": tasks}
     clients_module.DaprClient = _FakeDaprClient
 
@@ -1462,6 +1472,7 @@ def test_durable_run_routes_through_session_bridge():
     assert child_task.kind == "call_child_workflow"
     assert child_task.name == "session_workflow"
     assert child_task.app_id == "agent-runtime-test"
+    assert not hasattr(child_task, "propagation")
     assert child_task.input["workflowId"] == "test-workflow"
     assert child_task.input["workflowExecutionId"] == "exec_456"
     assert child_task.input["nodeId"] == "durable_validation_run"
@@ -1483,6 +1494,224 @@ def test_durable_run_routes_through_session_bridge():
     assert result["success"] is True
     assert result["childAppId"] == "agent-runtime-test"
     assert result["runtimeSandboxName"] == "agent-host-child-session"
+
+
+def test_durable_run_session_bridge_passes_own_history_propagation():
+    workflow = types.SimpleNamespace(
+        use=None,
+        document=types.SimpleNamespace(name="test-workflow"),
+        model_dump=lambda **_kwargs: {
+            "document": {
+                "dsl": "1.0.0",
+                "namespace": "test",
+                "name": "test-workflow",
+                "version": "0.1.0",
+            }
+        },
+    )
+    tc = SW_WORKFLOW.TaskContext(
+        workflow=workflow,
+        workflow_id="test-workflow",
+        trigger_data={"prompt": "Create a validation marker"},
+        execution_id="exec_own_history",
+        db_execution_id=None,
+        integrations=None,
+    )
+
+    class _FakeCtx:
+        instance_id = "parent-wf-propagation"
+
+        def call_activity(self, activity, input=None):
+            return {
+                "kind": "call_activity",
+                "activity": getattr(activity, "__name__", str(activity)),
+                "input": input,
+            }
+
+        def call_child_workflow(
+            self,
+            name,
+            input=None,
+            instance_id=None,
+            app_id=None,
+            propagation=None,
+        ):
+            return _FakeWorkflowTask(
+                "call_child_workflow",
+                result={"success": True, "content": "done"},
+                name=name,
+                input=input,
+                instance_id=instance_id,
+                app_id=app_id,
+                propagation=propagation,
+            )
+
+        def create_timer(self, timeout):
+            return _FakeWorkflowTask("timer", timeout=timeout)
+
+    workflow_gen = SW_WORKFLOW._handle_call_task(
+        _FakeCtx(),
+        "durable_validation_run",
+        {
+            "call": "durable/run",
+            "with": {
+                "prompt": "Create a validation marker",
+                "workspaceRef": "ws_test_123",
+                "sandboxName": "ws-test-123",
+                "cwd": "/sandbox/repo",
+                "agentRuntime": "dapr-agent-py",
+                "historyPropagation": "ownHistory",
+                "agentConfig": {"name": "durable-validation"},
+            },
+        },
+        tc,
+    )
+
+    yielded = next(workflow_gen)
+    assert yielded["activity"] == "spawn_session_for_workflow"
+    assert yielded["input"]["workflowHistoryPropagation"] == {
+        "requestedScope": "ownHistory"
+    }
+    wait_yield = workflow_gen.send(
+        {
+            "childInput": {"sessionId": "child-session"},
+            "agentAppId": "agent-runtime-test",
+        }
+    )
+    child_task, _timer_task = wait_yield["tasks"]
+    assert child_task.propagation == SW_WORKFLOW.wf.PropagationScope.OWN_HISTORY
+    assert child_task.input["workflowHistoryPropagation"] == {
+        "requestedScope": "ownHistory"
+    }
+
+
+def test_durable_run_non_bridge_passes_lineage_propagation(monkeypatch):
+    monkeypatch.setattr(
+        SW_WORKFLOW,
+        "_resolve_native_agent_runtime",
+        lambda *_args, **_kwargs: (
+            "custom-runtime",
+            {
+                "workflow_name": "custom_agent_workflow",
+                "app_id": "custom-agent-app",
+                "instance_prefix": "custom",
+                "bridge_gate_token": "agent_workflow",
+            },
+        ),
+    )
+    workflow = types.SimpleNamespace(
+        use=None,
+        document=types.SimpleNamespace(name="test-workflow"),
+        model_dump=lambda **_kwargs: {
+            "document": {
+                "dsl": "1.0.0",
+                "namespace": "test",
+                "name": "test-workflow",
+                "version": "0.1.0",
+            }
+        },
+    )
+    tc = SW_WORKFLOW.TaskContext(
+        workflow=workflow,
+        workflow_id="test-workflow",
+        trigger_data={"prompt": "Create a validation marker"},
+        execution_id="exec_lineage",
+        db_execution_id=None,
+        integrations=None,
+    )
+
+    class _FakeCtx:
+        instance_id = "parent-wf-lineage"
+
+        def call_child_workflow(
+            self,
+            name,
+            input=None,
+            instance_id=None,
+            app_id=None,
+            propagation=None,
+        ):
+            return _FakeWorkflowTask(
+                "call_child_workflow",
+                result={"success": True, "content": "done"},
+                name=name,
+                input=input,
+                instance_id=instance_id,
+                app_id=app_id,
+                propagation=propagation,
+            )
+
+        def create_timer(self, timeout):
+            return _FakeWorkflowTask("timer", timeout=timeout)
+
+    workflow_gen = SW_WORKFLOW._handle_call_task(
+        _FakeCtx(),
+        "durable_validation_run",
+        {
+            "call": "durable/run",
+            "with": {
+                "prompt": "Create a validation marker",
+                "workspaceRef": "ws_test_123",
+                "sandboxName": "ws-test-123",
+                "cwd": "/sandbox/repo",
+                "historyPropagation": "lineage",
+                "agentConfig": {"name": "durable-validation"},
+            },
+        },
+        tc,
+    )
+
+    wait_yield = next(workflow_gen)
+    child_task, _timer_task = wait_yield["tasks"]
+    assert child_task.name == "custom_agent_workflow"
+    assert child_task.app_id == "custom-agent-app"
+    assert child_task.propagation == SW_WORKFLOW.wf.PropagationScope.LINEAGE
+    assert child_task.input["workflowHistoryPropagation"] == {
+        "requestedScope": "lineage"
+    }
+
+
+def test_durable_run_rejects_invalid_history_propagation():
+    workflow = types.SimpleNamespace(
+        use=None,
+        document=types.SimpleNamespace(name="test-workflow"),
+        model_dump=lambda **_kwargs: {
+            "document": {
+                "dsl": "1.0.0",
+                "namespace": "test",
+                "name": "test-workflow",
+                "version": "0.1.0",
+            }
+        },
+    )
+    tc = SW_WORKFLOW.TaskContext(
+        workflow=workflow,
+        workflow_id="test-workflow",
+        trigger_data={"prompt": "Create a validation marker"},
+        execution_id="exec_invalid_history",
+        db_execution_id=None,
+        integrations=None,
+    )
+
+    class _FakeCtx:
+        instance_id = "parent-wf-invalid-history"
+
+    workflow_gen = SW_WORKFLOW._handle_call_task(
+        _FakeCtx(),
+        "durable_validation_run",
+        {
+            "call": "durable/run",
+            "with": {
+                "prompt": "Create a validation marker",
+                "workspaceRef": "ws_test_123",
+                "historyPropagation": "everything",
+            },
+        },
+        tc,
+    )
+
+    with pytest.raises(RuntimeError, match="historyPropagation.*none, ownHistory, lineage"):
+        next(workflow_gen)
 
 
 def test_durable_run_session_bridge_times_out_when_child_does_not_finish():

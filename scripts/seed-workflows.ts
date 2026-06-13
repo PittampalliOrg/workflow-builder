@@ -5,6 +5,7 @@
  * - Upsert workflow lazxidq045szbb9ke4dny (Opencode Agent Plan Then Execute PR)
  * - Upsert workflow aicodingagent001 (AI Coding Agent)
  * - Upsert workflow three-b-one-b-skill-animation (3Blue1Brown-style Animation)
+ * - Upsert workflow three-b-one-b-skill-animation-cli (3Blue1Brown CLI agents)
  * - Upsert GitHub sandbox clone proof workflow
  * - Reconcile workflow_resource_refs for canonical OpenShell plan/execute nodes
  *
@@ -66,6 +67,15 @@ const THREE_B_ONE_B_WORKFLOW_ID = "three-b-one-b-skill-animation";
 const THREE_B_ONE_B_WORKFLOW_NAME = "3Blue1Brown-style Animation";
 const THREE_B_ONE_B_WORKFLOW_DESCRIPTION =
 	"Generate a self-contained browser animation in the 3Blue1Brown style (Canvas/SVG, no Manim) inside a retained per-run sandbox, then capture screenshots of the play/restart interaction via browser/validate.";
+const THREE_B_ONE_B_CLI_WORKFLOW_ID =
+	process.env.SEED_3B1B_CLI_WORKFLOW_ID?.trim() ||
+	"three-b-one-b-skill-animation-cli";
+const THREE_B_ONE_B_CLI_WORKFLOW_NAME =
+	process.env.SEED_3B1B_CLI_WORKFLOW_NAME?.trim() ||
+	"3Blue1Brown-style Animation (CLI agents)";
+const THREE_B_ONE_B_CLI_WORKFLOW_DESCRIPTION =
+	process.env.SEED_3B1B_CLI_WORKFLOW_DESCRIPTION?.trim() ||
+	"Generate a self-contained browser animation in the 3Blue1Brown style using a runtime-selected CLI agent, then verify, capture, and preview the copied app files from the retained workspace.";
 const THREE_B_ONE_B_APP_DIR = "/sandbox/3b1b-style-animation-example";
 const THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME =
 	'${ .workspace_profile.sandboxName // "" }';
@@ -1799,6 +1809,114 @@ function buildAgentSystemDemoEdges() {
 }
 
 type JsonRecord = Record<string, unknown>;
+type CliRuntime = "codex-cli" | "claude-code-cli" | "agy-cli";
+
+interface CliRuntimeDescriptor {
+	runtime: CliRuntime;
+	taskName: string;
+	nodeId: string;
+	canonicalSlug: string;
+	envPrefix: string;
+	label: string;
+	shortLabel: string;
+	description: string;
+}
+
+const THREE_B_ONE_B_CLI_RUNTIMES: readonly CliRuntimeDescriptor[] = [
+	{
+		runtime: "codex-cli",
+		taskName: "build_3b1b_animation_codex",
+		nodeId: "build_3b1b_animation_codex",
+		canonicalSlug: "codex-cli",
+		envPrefix: "SEED_3B1B_CODEX",
+		label: "Codex CLI",
+		shortLabel: "Codex",
+		description: "Runs only when cliRuntime is codex-cli.",
+	},
+	{
+		runtime: "claude-code-cli",
+		taskName: "build_3b1b_animation_claude",
+		nodeId: "build_3b1b_animation_claude",
+		canonicalSlug: "claude-code-cli",
+		envPrefix: "SEED_3B1B_CLAUDE",
+		label: "Claude Code CLI",
+		shortLabel: "Claude Code",
+		description: "Runs only when cliRuntime is claude-code-cli.",
+	},
+	{
+		runtime: "agy-cli",
+		taskName: "build_3b1b_animation_agy",
+		nodeId: "build_3b1b_animation_agy",
+		canonicalSlug: "agy-cli",
+		envPrefix: "SEED_3B1B_AGY",
+		label: "Antigravity CLI",
+		shortLabel: "Antigravity",
+		description: "Runs only when cliRuntime is agy-cli.",
+	},
+];
+
+const THREE_B_ONE_B_CLI_RUNTIME_OPTIONS = THREE_B_ONE_B_CLI_RUNTIMES.map(
+	(item) => ({
+		label: item.label,
+		value: item.runtime,
+	}),
+);
+
+const THREE_B_ONE_B_CLI_DEFAULT_RUNTIME = parseCliRuntime(
+	process.env.SEED_3B1B_CLI_DEFAULT_RUNTIME?.trim() || "codex-cli",
+);
+
+const THREE_B_ONE_B_CLI_SELECTED_BUILD_JQ =
+	"if ((.build_3b1b_animation_codex.skipped // false) | not) then .build_3b1b_animation_codex elif ((.build_3b1b_animation_claude.skipped // false) | not) then .build_3b1b_animation_claude elif ((.build_3b1b_animation_agy.skipped // false) | not) then .build_3b1b_animation_agy else null end";
+const THREE_B_ONE_B_CLI_SELECTED_BUILD_OUTPUT = `\${ ${THREE_B_ONE_B_CLI_SELECTED_BUILD_JQ} }`;
+const THREE_B_ONE_B_CLI_SELECTED_BUILD_RUNTIME_SANDBOX_NAME = `\${ (${THREE_B_ONE_B_CLI_SELECTED_BUILD_JQ}).runtimeSandboxName // null }`;
+
+function isRecord(value: unknown): value is JsonRecord {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function cloneJson<T>(value: T): T {
+	return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function parseCliRuntime(value: string): CliRuntime {
+	if (value === "codex-cli" || value === "claude-code-cli" || value === "agy-cli") {
+		return value;
+	}
+	throw new Error(
+		`Invalid SEED_3B1B_CLI_DEFAULT_RUNTIME "${value}". Expected codex-cli, claude-code-cli, or agy-cli.`,
+	);
+}
+
+function parseOptionalPositiveInteger(
+	value: string | undefined,
+	envName: string,
+): number | undefined {
+	if (!value?.trim()) return undefined;
+	const parsed = Number(value.trim());
+	if (!Number.isInteger(parsed) || parsed <= 0) {
+		throw new Error(`${envName} must be a positive integer; got ${value}`);
+	}
+	return parsed;
+}
+
+function cliAgentRef(descriptor: CliRuntimeDescriptor): JsonRecord {
+	const id = process.env[`${descriptor.envPrefix}_AGENT_ID`]?.trim();
+	const slug =
+		process.env[`${descriptor.envPrefix}_AGENT_SLUG`]?.trim() ||
+		descriptor.canonicalSlug;
+	const version = parseOptionalPositiveInteger(
+		process.env[`${descriptor.envPrefix}_AGENT_VERSION`],
+		`${descriptor.envPrefix}_AGENT_VERSION`,
+	);
+	const ref: JsonRecord = id ? { id } : { slug };
+	if (version !== undefined) ref.version = version;
+	return ref;
+}
+
+function selectedCliRuntimeExpression(): string {
+	return `\${ .trigger.cliRuntime // "${THREE_B_ONE_B_CLI_DEFAULT_RUNTIME}" }`;
+}
 
 const THREE_B_ONE_B_BUILD_PROMPT = [
 	'${ .trigger.animationDescription + " - Build a self-contained browser animation in ',
@@ -2148,6 +2266,365 @@ function buildThreeBOneBWorkflowEdges(): JsonRecord[] {
 	];
 }
 
+function makeThreeBOneBCliWorkspaceProfileTask(): JsonRecord {
+	const task = cloneJson(makeThreeBOneBWorkspaceProfileTask());
+	const withBlock = isRecord(task.with) ? task.with : {};
+	task.with = withBlock;
+	withBlock.sandboxTemplate = "dapr-agent";
+	const sandboxPolicy = isRecord(withBlock.sandboxPolicy)
+		? withBlock.sandboxPolicy
+		: {};
+	withBlock.sandboxPolicy = sandboxPolicy;
+	sandboxPolicy.template = "dapr-agent";
+	return task;
+}
+
+function makeThreeBOneBCliBuildTask(
+	descriptor: CliRuntimeDescriptor,
+): JsonRecord {
+	return {
+		call: "durable/run",
+		if:
+			'${ (.trigger.cliRuntime // "' +
+			THREE_B_ONE_B_CLI_DEFAULT_RUNTIME +
+			'") == "' +
+			descriptor.runtime +
+			'" }',
+		with: {
+			mode: "execute_direct",
+			cwd: "/sandbox",
+			sandboxName: "${ .workspace_profile.sandboxName }",
+			workspaceRef: "${ .workspace_profile.workspaceRef }",
+			outputSync: {
+				workspaceRef: "${ .workspace_profile.workspaceRef }",
+				paths: [
+					{
+						source: THREE_B_ONE_B_APP_DIR,
+						target: THREE_B_ONE_B_APP_DIR,
+					},
+				],
+				timeoutSeconds: 120,
+			},
+			sandboxPolicy: {
+				mode: "per-run",
+				template: "dapr-agent",
+				ttlSeconds: 7200,
+				keepAfterRun: true,
+			},
+			body: {
+				agentRef: cliAgentRef(descriptor),
+				prompt: THREE_B_ONE_B_BUILD_PROMPT,
+				overrides: {
+					cwd: "/sandbox",
+					maxTurns: 60,
+					timeoutMinutes: 60,
+				},
+			},
+		},
+	};
+}
+
+function makeThreeBOneBCliVerifyTask(): JsonRecord {
+	return {
+		call: "workspace/command",
+		with: {
+			workspaceRef: THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF,
+			cwd: "/sandbox",
+			timeoutMs: 120000,
+			command: [
+				"set -eu",
+				`app=${JSON.stringify(THREE_B_ONE_B_APP_DIR)}`,
+				'test -f "$app/index.html"',
+				'test -f "$app/styles.css"',
+				'test -f "$app/script.js"',
+				'test -f "$app/README.md"',
+				'node --check "$app/script.js"',
+				'grep -q "id=\\"canvas\\"" "$app/index.html"',
+				'grep -q "id=\\"btn-play\\"" "$app/index.html"',
+				'grep -q "id=\\"btn-restart\\"" "$app/index.html"',
+				'find "$app" -maxdepth 1 -type f -printf "%f %s bytes\\n" | sort',
+			].join("\n"),
+		},
+	};
+}
+
+function makeThreeBOneBCliBrowserValidateTask(): JsonRecord {
+	return {
+		call: "browser/validate",
+		with: {
+			workspaceRef: THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF,
+			sandboxName: THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME,
+			repoPath: THREE_B_ONE_B_APP_DIR,
+			rootPath: "/sandbox",
+			workingDir: "/sandbox",
+			installCommand: "",
+			baseUrl: "http://127.0.0.1:0",
+			steps: [
+				{
+					id: "initial",
+					label: "Animation loaded",
+					action: "visit",
+					path: "/",
+					goal: "Initial render of the canvas before any interaction.",
+					waitForSelector: "canvas#canvas",
+					pauseMs: 1500,
+					fullPage: true,
+				},
+				{
+					id: "after-play",
+					label: "After play",
+					action: "click",
+					selector: "button#btn-play",
+					goal: "Trigger the play control once.",
+					waitForSelector: "canvas#canvas",
+					pauseMs: 2000,
+					fullPage: true,
+				},
+				{
+					id: "after-second-play",
+					label: "After second play",
+					action: "click",
+					selector: "button#btn-play",
+					goal: "Trigger the play control again to capture mid-animation state.",
+					waitForSelector: "canvas#canvas",
+					pauseMs: 1500,
+					fullPage: true,
+				},
+				{
+					id: "after-restart",
+					label: "After restart",
+					action: "click",
+					selector: "button#btn-restart",
+					goal: "Restart the animation and capture the reset state.",
+					waitForSelector: "canvas#canvas",
+					pauseMs: 1500,
+					fullPage: true,
+				},
+			],
+			captureVideo: true,
+			captureTrace: true,
+			viewportPreset: "desktop",
+			captureMode: "demo",
+			demoTitle:
+				'${ "3Blue1Brown-style animation: " + .trigger.animationDescription }',
+			demoSummary:
+				"Generated 3Blue1Brown-style browser animation from a CLI-agent run; browser/validate captured initial / play / second play / restart states from the retained workspace.",
+			metadata: {
+				appPath: THREE_B_ONE_B_APP_DIR,
+				workflowStage: "post-cli-3b1b-animation",
+				runtimeSandboxName:
+					THREE_B_ONE_B_CLI_SELECTED_BUILD_RUNTIME_SANDBOX_NAME,
+				selectedCliRuntime: selectedCliRuntimeExpression(),
+			},
+			timeoutMs: 900000,
+		},
+	};
+}
+
+function makeThreeBOneBCliStartPreviewTask(): JsonRecord {
+	return {
+		call: "browser/start-preview",
+		with: {
+			body: {
+				input: {
+					previewId:
+						'${ "3b1b-cli-animation-preview-" + (.runtime.dbExecutionId // .workspace_profile.workspaceRef) }',
+					repoPath: THREE_B_ONE_B_APP_DIR,
+					rootPath: "/sandbox",
+					workingDir: "/sandbox",
+					baseUrl: "http://127.0.0.1:0",
+					keepAlive: true,
+					timeoutSeconds: 7200,
+					timeoutMs: 7200000,
+					sandboxName: THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME,
+					workspaceRef: THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF,
+					installCommand: "",
+					devServerCommand: "",
+				},
+			},
+		},
+	};
+}
+
+function buildThreeBOneBCliWorkflowSpec(): JsonRecord {
+	return {
+		document: {
+			dsl: "1.0.0",
+			namespace: "workflow-builder.demos",
+			name: THREE_B_ONE_B_CLI_WORKFLOW_ID,
+			version: "1.0.0",
+			title: THREE_B_ONE_B_CLI_WORKFLOW_NAME,
+			summary: THREE_B_ONE_B_CLI_WORKFLOW_DESCRIPTION,
+			"x-workflow-builder": {
+				architecture:
+					"per-agent-runtime+cli-runtime-selector+session-workflow-bridge+browser-validate-capture+live-preview",
+				notes:
+					"CLI variant of the canonical 3Blue1Brown workflow. The cliRuntime trigger input selects exactly one static durable/run branch so agentRef resolution can happen before jq input evaluation. Each CLI runtime writes into its own session host, then outputSync copies the app into the retained OpenShell workspace for verification, browser capture, and live preview.",
+				triggerInputs: {
+					animationDescription:
+						"Required. Plain-language description of the 3Blue1Brown-style animation to build.",
+					cliRuntime:
+						"Optional. Selects the CLI agent runtime: codex-cli, claude-code-cli, or agy-cli.",
+				},
+				input: {
+					fields: {
+						cliRuntime: {
+							type: "select",
+							label: "CLI agent",
+							description: "Choose which CLI agent builds the animation.",
+							defaultValue: THREE_B_ONE_B_CLI_DEFAULT_RUNTIME,
+							options: THREE_B_ONE_B_CLI_RUNTIME_OPTIONS,
+						},
+						animationDescription: {
+							type: "textarea",
+							label: "Animation description",
+							description:
+								"Describe the 3Blue1Brown-style animation the agent should build.",
+							defaultValue:
+								"Create a concise 3Blue1Brown-style derivative animation for x^2",
+						},
+					},
+				},
+			},
+		},
+		do: [
+			{ workspace_profile: makeThreeBOneBCliWorkspaceProfileTask() },
+			...THREE_B_ONE_B_CLI_RUNTIMES.map((descriptor) => ({
+				[descriptor.taskName]: makeThreeBOneBCliBuildTask(descriptor),
+			})),
+			{ verify_copied_animation: makeThreeBOneBCliVerifyTask() },
+			{ browser_validate_capture: makeThreeBOneBCliBrowserValidateTask() },
+			{ start_preview: makeThreeBOneBCliStartPreviewTask() },
+		],
+		output: {
+			as: {
+				appPath: THREE_B_ONE_B_APP_DIR,
+				workspaceRef: THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF,
+				sandboxName: THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME,
+				runtimeSandboxName:
+					THREE_B_ONE_B_CLI_SELECTED_BUILD_RUNTIME_SANDBOX_NAME,
+				selectedCliRuntime: selectedCliRuntimeExpression(),
+				animation: THREE_B_ONE_B_CLI_SELECTED_BUILD_OUTPUT,
+				verification: "${ .verify_copied_animation }",
+				screenshots: "${ .browser_validate_capture }",
+				preview: "${ .start_preview }",
+			},
+		},
+		input: {
+			schema: {
+				document: {
+					type: "object",
+					required: ["animationDescription"],
+					properties: {
+						cliRuntime: {
+							type: "string",
+							title: "CLI agent",
+							description: "Selects the CLI agent runtime for the build step.",
+							enum: THREE_B_ONE_B_CLI_RUNTIMES.map((item) => item.runtime),
+							default: THREE_B_ONE_B_CLI_DEFAULT_RUNTIME,
+						},
+						animationDescription: {
+							type: "string",
+							title: "Animation description",
+							description:
+								"Describe the 3Blue1Brown-style animation the agent should build.",
+							default:
+								"Create a concise 3Blue1Brown-style derivative animation for x^2",
+						},
+					},
+				},
+				format: "json",
+			},
+		},
+	};
+}
+
+function buildThreeBOneBCliWorkflowNodes(): JsonRecord[] {
+	return [
+		{
+			id: "trigger",
+			type: "trigger",
+			position: { x: 80, y: 60 },
+			data: {
+				label: "Animation request trigger",
+				description:
+					"Receives animationDescription and cliRuntime for the 3Blue1Brown-style animation.",
+			},
+		},
+		{
+			id: "workspace_profile",
+			type: "action",
+			position: { x: 80, y: 200 },
+			data: {
+				label: "Provision retained sandbox",
+				actionType: "workspace/profile",
+				description:
+					"Stand up a per-run sandbox with file/exec tools; keepAfterRun=true so the live preview can attach after the run.",
+			},
+		},
+		...THREE_B_ONE_B_CLI_RUNTIMES.map((descriptor, index) => ({
+			id: descriptor.nodeId,
+			type: "action",
+			position: { x: 80, y: 340 + index * 140 },
+			data: {
+				label: `Build with ${descriptor.shortLabel}`,
+				actionType: "durable/run",
+				description: descriptor.description,
+			},
+		})),
+		{
+			id: "verify_copied_animation",
+			type: "action",
+			position: { x: 80, y: 760 },
+			data: {
+				label: "Verify copied animation",
+				actionType: "workspace/command",
+				description:
+					"Run file and syntax checks against the retained workspace after CLI output sync.",
+			},
+		},
+		{
+			id: "browser_validate_capture",
+			type: "action",
+			position: { x: 80, y: 900 },
+			data: {
+				label: "Capture animation walkthrough",
+				actionType: "browser/validate",
+				description:
+					"Boot a static server against the copied files and capture initial / play / second play / restart screenshots.",
+			},
+		},
+		{
+			id: "start_preview",
+			type: "action",
+			position: { x: 80, y: 1040 },
+			data: {
+				label: "Start live preview",
+				actionType: "browser/start-preview",
+				description:
+					"Start a keep-alive preview proxy for the retained workspace so the run page can open the generated animation.",
+			},
+		},
+	];
+}
+
+function buildThreeBOneBCliWorkflowEdges(): JsonRecord[] {
+	const ordered = [
+		"trigger",
+		"workspace_profile",
+		...THREE_B_ONE_B_CLI_RUNTIMES.map((item) => item.nodeId),
+		"verify_copied_animation",
+		"browser_validate_capture",
+		"start_preview",
+	];
+	return ordered.slice(0, -1).map((source, index) => ({
+		id: `e_cli_3b1b_${index + 1}`,
+		source,
+		target: ordered[index + 1],
+		type: "default",
+	}));
+}
+
 async function upsertRawWorkflow(params: {
 	db: ReturnType<typeof drizzle>;
 	workflowId: string;
@@ -2382,6 +2859,19 @@ async function seedWorkflow() {
 			spec: buildThreeBOneBWorkflowSpec(),
 			nodes: buildThreeBOneBWorkflowNodes(),
 			edges: buildThreeBOneBWorkflowEdges(),
+			visibility: "public",
+		});
+
+		await upsertRawWorkflow({
+			db,
+			workflowId: THREE_B_ONE_B_CLI_WORKFLOW_ID,
+			name: THREE_B_ONE_B_CLI_WORKFLOW_NAME,
+			description: THREE_B_ONE_B_CLI_WORKFLOW_DESCRIPTION,
+			userId,
+			projectId,
+			spec: buildThreeBOneBCliWorkflowSpec(),
+			nodes: buildThreeBOneBCliWorkflowNodes(),
+			edges: buildThreeBOneBCliWorkflowEdges(),
 			visibility: "public",
 		});
 

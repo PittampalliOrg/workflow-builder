@@ -4,6 +4,8 @@ monkeypatching ``wf_when_any`` to hand back the chosen winner task."""
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import src.session_workflow as sw
@@ -162,6 +164,137 @@ def test_result_contract_reports_selected_cli_runtime(monkeypatch):
     assert stop.value.value["agentRuntime"] == "codex-cli"
 
 
+def test_completed_run_syncs_declared_outputs(monkeypatch):
+    ctx = FakeCtx()
+    driver = WorkflowDriver(
+        ctx,
+        {
+            **BASE_INPUT,
+            "autoTerminateAfterEndTurn": True,
+            "sandboxName": "workspace-1",
+            "workspaceRef": "workspace-1",
+            "outputSync": {
+                "workspaceRef": "workspace-1",
+                "paths": [{"source": "/sandbox/app", "target": "/sandbox/app"}],
+            },
+        },
+        monkeypatch,
+    )
+    _start_to_first_when_any(driver)
+    event_task = driver.event_task()
+    event_task.result = {"events": [{"type": "turn.completed", "content": "done"}]}
+    yielded = driver.gen.send(event_task)
+    assert yielded.kind == "activity:stop_cli_activity"
+    yielded = driver.gen.send({"ok": True})
+    assert yielded.kind == "activity:sync_output_activity"
+    assert yielded.detail["sandboxName"] == "workspace-1"
+    assert yielded.detail["outputSync"]["paths"][0]["source"] == "/sandbox/app"
+    with pytest.raises(StopIteration) as stop:
+        driver.gen.send({"ok": True, "copied": []})
+    result = stop.value.value
+    assert result["success"] is True
+    assert result["outputSync"]["ok"] is True
+
+
+def test_propagated_history_is_reduced_to_bounded_provenance(monkeypatch):
+    class FakeScope:
+        name = "OWN_HISTORY"
+
+    class FakeHistoryEvent:
+        def __init__(self, field_name: str):
+            self.field_name = field_name
+
+        def HasField(self, name: str):
+            return name == self.field_name
+
+    class FakeHistory:
+        scope = FakeScope()
+        events = [
+            {"eventType": "ExecutionStarted", "payload": "DO_NOT_STORE"},
+            FakeHistoryEvent("taskScheduled"),
+            FakeHistoryEvent("childWorkflowInstanceCompleted"),
+        ]
+
+    ctx = FakeCtx()
+    ctx.get_propagated_history = lambda: FakeHistory()
+    driver = WorkflowDriver(
+        ctx,
+        {
+            **BASE_INPUT,
+            "autoTerminateAfterEndTurn": True,
+            "workflowHistoryPropagation": {"requestedScope": "ownHistory"},
+            "workflowId": "wf_123",
+            "workflowExecutionId": "exec_123",
+            "nodeId": "agent_step",
+        },
+        monkeypatch,
+    )
+    _start_to_first_when_any(driver)
+    event_task = driver.event_task()
+    event_task.result = {"events": [{"type": "turn.completed", "content": "done"}]}
+    yielded = driver.gen.send(event_task)
+    assert yielded.kind == "activity:stop_cli_activity"
+    with pytest.raises(StopIteration) as stop:
+        driver.gen.send({"ok": True})
+
+    result = stop.value.value
+    propagation = result["provenance"]["workflowHistoryPropagation"]
+    assert propagation["scope"] == "ownHistory"
+    assert propagation["available"] is True
+    assert propagation["eventCount"] == 3
+    assert propagation["eventTypeCounts"] == {
+        "ExecutionStarted": 1,
+        "childWorkflowInstanceCompleted": 1,
+        "taskScheduled": 1,
+    }
+    assert result["provenance"]["workflowContext"] == {
+        "workflowId": "wf_123",
+        "workflowExecutionId": "exec_123",
+        "nodeId": "agent_step",
+        "agentRuntime": "claude-code-cli",
+    }
+    serialized = json.dumps(result)
+    assert "DO_NOT_STORE" not in serialized
+    assert "payload" not in serialized
+
+
+def test_missing_or_empty_propagated_history_is_not_an_error():
+    missing = sw._workflow_history_provenance(
+        FakeCtx(),
+        {
+            "workflowHistoryPropagation": {"requestedScope": "lineage"},
+            "_message_metadata": {
+                "workflowId": "wf_from_metadata",
+                "workflowExecutionId": "exec_from_metadata",
+                "nodeId": "node_from_metadata",
+            },
+        },
+        "codex-cli",
+    )
+    assert missing["workflowHistoryPropagation"] == {
+        "scope": "lineage",
+        "available": False,
+        "eventCount": 0,
+        "eventTypeCounts": {},
+    }
+    assert missing["workflowContext"] == {
+        "workflowId": "wf_from_metadata",
+        "workflowExecutionId": "exec_from_metadata",
+        "nodeId": "node_from_metadata",
+        "agentRuntime": "codex-cli",
+    }
+
+    ctx = FakeCtx()
+    ctx.get_propagated_history = lambda: type(
+        "EmptyHistory",
+        (),
+        {"scope": None, "events": []},
+    )()
+    empty = sw._workflow_history_provenance(ctx, {}, "agy-cli")
+    assert empty["workflowHistoryPropagation"]["scope"] == "none"
+    assert empty["workflowHistoryPropagation"]["available"] is False
+
+
 def test_seed_rejects_codex_runtime_without_cli_adapter():
     with pytest.raises(
         ValueError,
@@ -270,12 +403,11 @@ def test_continue_as_new_carries_state(monkeypatch):
             break
     assert ctx.continued_with is not None, "continue_as_new not reached"
     carried = ctx.continued_with["_carried"]
-    assert carried == {
-        "seeded": True,
-        "turnCount": 2,
-        "lastAssistantText": "two",
-        "paneRef": "p1",
-    }
+    assert carried["seeded"] is True
+    assert carried["turnCount"] == 2
+    assert carried["lastAssistantText"] == "two"
+    assert carried["paneRef"] == "p1"
+    assert carried["provenance"]["workflowHistoryPropagation"]["available"] is False
 
 
 def test_carried_input_skips_seed_and_start(monkeypatch):

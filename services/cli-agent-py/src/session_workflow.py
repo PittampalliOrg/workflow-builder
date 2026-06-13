@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import Counter
 from datetime import timedelta
 from typing import Any, Generator, Mapping
 
@@ -23,6 +24,7 @@ from dapr.ext.workflow import DaprWorkflowContext, RetryPolicy, when_any as wf_w
 from src.cancellation import TERMINAL_CONTROL_EVENT_TYPES, check_cancellation_activity
 from src.cli_lifecycle import probe_cli_activity, start_cli_activity, stop_cli_activity
 from src.event_publisher import publish_session_event
+from src.output_sync import sync_output_activity
 from src.seed import seed_session_activity
 from src.taskhub import LIFECYCLE_EVENT_NAME
 
@@ -105,6 +107,146 @@ def _agent_runtime(input_data: Mapping[str, Any]) -> str:
     return "claude-code-cli"
 
 
+def _scope_label(value: Any) -> str | None:
+    if value is None:
+        return None
+    enum_name = getattr(value, "name", None)
+    if isinstance(enum_name, str) and enum_name.strip():
+        return _scope_label(enum_name)
+    text = str(value).strip()
+    if not text:
+        return None
+    compact = text.replace("_", "").replace("-", "").replace(" ", "").lower()
+    if compact == "none":
+        return "none"
+    if compact == "ownhistory":
+        return "ownHistory"
+    if compact == "lineage":
+        return "lineage"
+    return text
+
+
+def _requested_history_scope(input_data: Mapping[str, Any]) -> str:
+    propagation = _record(input_data.get("workflowHistoryPropagation"))
+    return (
+        _scope_label(
+            propagation.get("requestedScope")
+            or propagation.get("scope")
+            or input_data.get("historyPropagation")
+        )
+        or "none"
+    )
+
+
+_HISTORY_EVENT_FIELDS = (
+    "executionStarted",
+    "executionCompleted",
+    "executionTerminated",
+    "executionSuspended",
+    "executionResumed",
+    "executionStalled",
+    "orchestratorStarted",
+    "orchestratorCompleted",
+    "taskScheduled",
+    "taskCompleted",
+    "taskFailed",
+    "timerCreated",
+    "timerFired",
+    "eventSent",
+    "eventRaised",
+    "childWorkflowInstanceCreated",
+    "childWorkflowInstanceCompleted",
+    "childWorkflowInstanceFailed",
+    "subOrchestrationInstanceCreated",
+    "subOrchestrationInstanceCompleted",
+    "subOrchestrationInstanceFailed",
+    "continueAsNew",
+)
+
+
+def _propagated_history_events(history: Any) -> list[Any]:
+    events = getattr(history, "events", None)
+    if events is None:
+        return []
+    if isinstance(events, list):
+        return events
+    try:
+        return list(events)
+    except TypeError:
+        return []
+
+
+def _history_event_type(event: Any) -> str:
+    if isinstance(event, Mapping):
+        for key in ("eventType", "type", "kind"):
+            value = _clean_string(event.get(key))
+            if value:
+                return value
+
+    which_oneof = getattr(event, "WhichOneof", None)
+    if callable(which_oneof):
+        for group_name in ("eventType", "event_type"):
+            try:
+                selected = _clean_string(which_oneof(group_name))
+            except Exception:
+                selected = None
+            if selected:
+                return selected
+
+    has_field = getattr(event, "HasField", None)
+    if callable(has_field):
+        for field_name in _HISTORY_EVENT_FIELDS:
+            try:
+                if has_field(field_name):
+                    return field_name
+            except Exception:
+                continue
+
+    for field_name in _HISTORY_EVENT_FIELDS:
+        value = getattr(event, field_name, None)
+        if value:
+            return field_name
+
+    return event.__class__.__name__
+
+
+def _workflow_history_provenance(
+    ctx: DaprWorkflowContext,
+    input_data: Mapping[str, Any],
+    agent_runtime: str,
+) -> dict[str, Any]:
+    requested_scope = _requested_history_scope(input_data)
+    history = None
+    get_history = getattr(ctx, "get_propagated_history", None)
+    if callable(get_history):
+        try:
+            history = get_history()
+        except Exception:
+            history = None
+
+    events = _propagated_history_events(history)
+    event_type_counts = Counter(_history_event_type(event) for event in events)
+    metadata = _record(input_data.get("_message_metadata"))
+    return {
+        "workflowHistoryPropagation": {
+            "scope": _scope_label(getattr(history, "scope", None)) or requested_scope,
+            "available": bool(events),
+            "eventCount": len(events),
+            "eventTypeCounts": dict(sorted(event_type_counts.items())),
+        },
+        "workflowContext": {
+            "workflowId": input_data.get("workflowId") or metadata.get("workflowId"),
+            "workflowExecutionId": input_data.get("workflowExecutionId")
+            or input_data.get("dbExecutionId")
+            or input_data.get("executionId")
+            or metadata.get("workflowExecutionId")
+            or metadata.get("executionId"),
+            "nodeId": input_data.get("nodeId") or metadata.get("nodeId"),
+            "agentRuntime": agent_runtime,
+        },
+    }
+
+
 def _event_batch(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, Mapping):
         events = payload.get("events")
@@ -122,8 +264,10 @@ def _result_contract(
     last_assistant_text: str,
     turn_count: int,
     agent_runtime: str,
+    provenance: Mapping[str, Any],
+    output_sync: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    result = {
         "success": status not in ("failed",),
         "status": status,
         "output": last_assistant_text or "",
@@ -133,7 +277,11 @@ def _result_contract(
         "childWorkflowName": "session_workflow",
         "daprInstanceId": ctx.instance_id,
         "turnCount": turn_count,
+        "provenance": dict(provenance),
     }
+    if output_sync is not None:
+        result["outputSync"] = dict(output_sync)
+    return result
 
 
 def session_workflow(
@@ -142,7 +290,14 @@ def session_workflow(
     session_id = _session_id(input_data)
     auto_terminate = bool(input_data.get("autoTerminateAfterEndTurn"))
     agent_runtime = _agent_runtime(input_data)
+    provenance = _workflow_history_provenance(ctx, input_data, agent_runtime)
     carried = _record(input_data.get("_carried"))
+    carried_provenance = carried.get("provenance")
+    if (
+        isinstance(carried_provenance, Mapping)
+        and not provenance["workflowHistoryPropagation"]["available"]
+    ):
+        provenance = dict(carried_provenance)
     seeded = bool(carried.get("seeded"))
     turn_count = int(carried.get("turnCount") or 0)
     last_assistant_text = str(carried.get("lastAssistantText") or "")
@@ -187,6 +342,7 @@ def session_workflow(
                         "turnCount": turn_count,
                         "lastAssistantText": last_assistant_text,
                         "paneRef": pane_ref,
+                        "provenance": provenance,
                     },
                 }
             )
@@ -258,6 +414,27 @@ def session_workflow(
         publish_session_event(
             session_id, "session.status_terminated", {"reason": reason or status}
         )
+    output_sync_result = None
+    if status == "completed" and isinstance(input_data.get("outputSync"), Mapping):
+        output_sync_result = yield ctx.call_activity(
+            sync_output_activity,
+            input={
+                "outputSync": input_data.get("outputSync"),
+                "sandboxName": input_data.get("sandboxName"),
+                "workspaceSandboxName": input_data.get("workspaceSandboxName"),
+                "workspaceRef": input_data.get("workspaceRef"),
+                "sessionId": session_id,
+                "instanceId": ctx.instance_id,
+            },
+        )
+        if isinstance(output_sync_result, Mapping) and not output_sync_result.get("ok"):
+            status = "failed"
+            error = _clean_string(output_sync_result.get("error")) or "outputSync failed"
+            last_assistant_text = (
+                f"{last_assistant_text}\n\nOutput sync failed: {error}"
+                if last_assistant_text
+                else f"Output sync failed: {error}"
+            )
     return _result_contract(
         ctx=ctx,
         session_id=session_id,
@@ -265,4 +442,6 @@ def session_workflow(
         last_assistant_text=last_assistant_text,
         turn_count=turn_count,
         agent_runtime=agent_runtime,
+        provenance=provenance,
+        output_sync=output_sync_result if isinstance(output_sync_result, Mapping) else None,
     )

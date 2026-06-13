@@ -154,15 +154,6 @@ wheels = [
 ]
 
 [[package]]
-name = "asyncio"
-version = "4.0.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/71/ea/26c489a11f7ca862d5705db67683a7361ce11c23a7b98fc6c2deaeccede2/asyncio-4.0.0.tar.gz", hash = "sha256:570cd9e50db83bc1629152d4d0b7558d6451bb1bfd5dfc2e935d96fc2f40329b", size = 5371, upload-time = "2025-08-05T02:51:46.605Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/57/64/eff2564783bd650ca25e15938d1c5b459cda997574a510f7de69688cb0b4/asyncio-4.0.0-py3-none-any.whl", hash = "sha256:c1eddb0659231837046809e68103969b2bef8b0400d59cfa6363f6b5ed8cc88b", size = 5555, upload-time = "2025-08-05T02:51:45.767Z" },
-]
-
-[[package]]
 name = "attrs"
 version = "25.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -404,7 +395,7 @@ wheels = [
 
 [[package]]
 name = "dapr"
-version = "1.17.1"
+version = "1.18.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -414,22 +405,19 @@ dependencies = [
     { name = "python-dateutil" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/21/1b/70f65270a0fd8ad06b1d112a3b4523d38b3f8dd7c37e07c9206b2a2b19c6/dapr-1.17.1.tar.gz", hash = "sha256:3e555a3466dfa3e275bbe1972f4855668ad1b207874ea4c9e3634ea792cca5b1", size = 171618, upload-time = "2026-03-09T22:08:16.788Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c4/10/89187a6bf5b8c7fd68601a6db77538d2a3f16e0d7eefea1ad49b8caa34b9/dapr-1.17.1-py3-none-any.whl", hash = "sha256:5be72b474bec81c713aaa8dfbe9940d6b80f9270527ee354e0c94f03353399b0", size = 241869, upload-time = "2026-03-09T22:08:15.41Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/94/d981426db04d49b1b3d186e51e4f6744911520fd9ce62f6bfa3d195945be/dapr-1.18.0-py3-none-any.whl", hash = "sha256:933502f853589904ffa20805523a9679934d3d30cde289d25da61e529de70e00", size = 252058, upload-time = "2026-06-10T21:43:19.639Z" },
 ]
 
 [[package]]
 name = "dapr-ext-workflow"
-version = "1.17.1"
+version = "1.18.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dapr" },
-    { name = "durabletask-dapr" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b5/05/a0270dd2f56cdd7c9cab7a7e625de118cc4af3a836e71a0207ef6e23c2fd/dapr_ext_workflow-1.17.1.tar.gz", hash = "sha256:c0768a6aae080665f208bc4d63977d47ca42ec62b7e210b478983c5999256987", size = 22962, upload-time = "2026-03-09T22:09:43.375Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/24/81/b3e0e66ac946e4779bdb0752f28fcabed4655439b92e35773361c10a4b9c/dapr_ext_workflow-1.17.1-py3-none-any.whl", hash = "sha256:8c82c0101f6a95879fb1481f8459ae1af91d3aa3a3ad513dbe36ddc40ad6ce3d", size = 29220, upload-time = "2026-03-09T22:09:42.181Z" },
+    { url = "https://files.pythonhosted.org/packages/80/bc/85c8f1931f7c6c3136514116821607eaece2fcc4e1c358710b3db45f35e5/dapr_ext_workflow-1.18.0-py3-none-any.whl", hash = "sha256:25ed8c97522888ee10fa029cf328cf21f2a026922cfd1e3658d13bff6fe388fb", size = 152242, upload-time = "2026-06-10T21:43:22.576Z" },
 ]
 
 [[package]]
@@ -444,20 +432,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f9/38/958ea63f11cfa3a4d8c26f8672c0cb35b68055428d831f09b7b66efd8a54/databricks_sdk-0.107.0.tar.gz", hash = "sha256:b23de1f4f97417c57b3fa3e8a17a2b48361c715a05f98644d23fafe0f3d53560", size = 940151, upload-time = "2026-05-11T12:44:05.579Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2c/fe/df2365e7ed0ccf08901bbaba48f882d876e16ee79c455e7c736a13d7b42b/databricks_sdk-0.107.0-py3-none-any.whl", hash = "sha256:77678ef08c05c276ad0827ad8feb36df240ed621dd544d3747aec91bd614bac0", size = 887698, upload-time = "2026-05-11T12:44:03.914Z" },
-]
-
-[[package]]
-name = "durabletask-dapr"
-version = "0.2.0a19"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "asyncio" },
-    { name = "grpcio" },
-    { name = "protobuf" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/4a/bc/949889b23cfb3e670047d52d21828f4f72325924ef4253a91b23ca66b1d6/durabletask_dapr-0.2.0a19.tar.gz", hash = "sha256:554de66d239c23598aa6f7bee7d1fad3838b0c353c5b532d2b511c843ab16cdd", size = 100490, upload-time = "2026-02-10T14:44:42.707Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7d/a4/a57834388649378c9a48f65e18c3383d7067dd549fa86813d3fa8bde1eb9/durabletask_dapr-0.2.0a19-py3-none-any.whl", hash = "sha256:9f3ba3c4a903c9c1acdc3452e87f15b66884b42324214f6eec0706b96eb2021c", size = 67998, upload-time = "2026-02-10T14:44:41.829Z" },
 ]
 
 [[package]]
@@ -1692,8 +1666,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cel-python", specifier = ">=0.3.0" },
-    { name = "dapr", specifier = "==1.17.1" },
-    { name = "dapr-ext-workflow", specifier = "==1.17.1" },
+    { name = "dapr", specifier = "==1.18.0" },
+    { name = "dapr-ext-workflow", specifier = "==1.18.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "jq", specifier = ">=1.8.0" },

@@ -78,6 +78,7 @@ from src.cli_lifecycle import (  # noqa: E402
     stop_cli_activity,
 )
 from src.hooks_api import build_router as build_hooks_router  # noqa: E402
+from src.output_sync import sync_output_activity  # noqa: E402
 from src.seed import seed_session_activity  # noqa: E402
 from src.session_supervisor import (  # noqa: E402
     SessionSupervisor,
@@ -98,6 +99,7 @@ _runtime.register_activity(seed_session_activity)
 _runtime.register_activity(start_cli_activity)
 _runtime.register_activity(probe_cli_activity)
 _runtime.register_activity(stop_cli_activity)
+_runtime.register_activity(sync_output_activity)
 _runtime.register_activity(check_cancellation_activity)
 _runtime_running = False
 

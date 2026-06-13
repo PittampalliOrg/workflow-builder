@@ -1076,6 +1076,83 @@ def _parse_optional_int(value: Any) -> int | None:
     return None
 
 
+_HISTORY_PROPAGATION_LABELS = {
+    "none": "none",
+    "ownhistory": "ownHistory",
+    "lineage": "lineage",
+}
+_HISTORY_PROPAGATION_SCOPE_NAMES = {
+    "ownHistory": "OWN_HISTORY",
+    "lineage": "LINEAGE",
+}
+
+
+def _history_propagation_setting(flattened_args: dict[str, Any]) -> Any:
+    if "historyPropagation" in flattened_args:
+        return flattened_args.get("historyPropagation")
+    if "history_propagation" in flattened_args:
+        return flattened_args.get("history_propagation")
+    return None
+
+
+def _normalize_history_propagation(value: Any, task_name: str) -> str:
+    if value is None:
+        return "none"
+    if isinstance(value, str):
+        compact = re.sub(r"[\s_-]+", "", value.strip()).lower()
+        if not compact:
+            return "none"
+        label = _HISTORY_PROPAGATION_LABELS.get(compact)
+        if label is not None:
+            return label
+    raise RuntimeError(
+        "durable/run historyPropagation for task "
+        f"'{task_name}' must be one of: none, ownHistory, lineage."
+    )
+
+
+def _dapr_history_propagation_scope(
+    flattened_args: dict[str, Any], task_name: str
+) -> tuple[str, Any | None]:
+    label = _normalize_history_propagation(
+        _history_propagation_setting(flattened_args), task_name
+    )
+    if label == "none":
+        return label, None
+
+    propagation_enum = getattr(wf, "PropagationScope", None)
+    scope = getattr(
+        propagation_enum,
+        _HISTORY_PROPAGATION_SCOPE_NAMES[label],
+        None,
+    )
+    if scope is None:
+        raise RuntimeError(
+            "durable/run historyPropagation requires dapr-ext-workflow 1.18+ "
+            f"for task '{task_name}'."
+        )
+    return label, scope
+
+
+def _call_child_workflow_with_history_propagation(
+    ctx: wf.DaprWorkflowContext,
+    workflow_name: str,
+    *,
+    input: Any,
+    instance_id: str | None = None,
+    app_id: str | None = None,
+    propagation: Any | None = None,
+) -> Any:
+    kwargs: dict[str, Any] = {"input": input}
+    if instance_id is not None:
+        kwargs["instance_id"] = instance_id
+    if app_id is not None:
+        kwargs["app_id"] = app_id
+    if propagation is not None:
+        kwargs["propagation"] = propagation
+    return ctx.call_child_workflow(workflow_name, **kwargs)
+
+
 def _tool_set(value: Any) -> set[str]:
     if not isinstance(value, list):
         return set()
@@ -1311,6 +1388,9 @@ def _run_native_durable_agent_child_workflow(
             **body_args,
             **{k: v for k, v in flattened_args.items() if k != "body"},
         }
+    history_propagation_label, history_propagation_scope = (
+        _dapr_history_propagation_scope(flattened_args, task_name)
+    )
 
     prompt = ""
     for key in ("prompt", "task"):
@@ -1608,6 +1688,9 @@ def _run_native_durable_agent_child_workflow(
         "workspaceRef": canonical_context["workspaceRef"],
         "sandboxName": canonical_context["sandboxName"],
         "agentRuntime": canonical_context["agentRuntime"],
+        "workflowHistoryPropagation": {
+            "requestedScope": history_propagation_label,
+        },
         "stopCondition": stop_condition or None,
         "cwd": cwd,
         "requireFileChanges": require_file_changes,
@@ -1645,6 +1728,9 @@ def _run_native_durable_agent_child_workflow(
             "mlflowTraceExperimentId": (tc.mlflow_context or {}).get("traceExperimentId")
             or (tc.mlflow_context or {}).get("experimentId"),
             "agentRuntime": canonical_context["agentRuntime"],
+            "workflowHistoryPropagation": {
+                "requestedScope": history_propagation_label,
+            },
             "sandboxName": canonical_context["sandboxName"],
             "workspaceRef": canonical_context["workspaceRef"],
             "cwd": cwd,
@@ -1769,6 +1855,9 @@ def _run_native_durable_agent_child_workflow(
             "instructionBundle": child_input.get("instructionBundle"),
             "environmentConfig": child_input.get("environmentConfig"),
             "outputSync": child_input.get("outputSync"),
+            "workflowHistoryPropagation": child_input.get(
+                "workflowHistoryPropagation"
+            ),
             "vaultIds": child_input.get("vaultIds") or [],
             "initialMessage": run_prompt or prompt,
             "title": f"Workflow {tc.workflow_id} · {task_name}",
@@ -1855,6 +1944,10 @@ def _run_native_durable_agent_child_workflow(
             "runtimeSandboxName": bridge_child_input.get("runtimeSandboxName")
             or bridge_runtime_sandbox_name,
             "outputSync": bridge_child_input.get("outputSync") or output_sync,
+            "workflowHistoryPropagation": bridge_child_input.get(
+                "workflowHistoryPropagation"
+            )
+            or child_input.get("workflowHistoryPropagation"),
             "sandboxName": bridge_child_input.get("sandboxName")
             or canonical_context["sandboxName"],
             "workspaceRef": bridge_child_input.get("workspaceRef")
@@ -1884,7 +1977,8 @@ def _run_native_durable_agent_child_workflow(
             if isinstance(returned_app_id, str) and returned_app_id.strip():
                 bridge_app_id = returned_app_id.strip()
 
-        child_task = ctx.call_child_workflow(
+        child_task = _call_child_workflow_with_history_propagation(
+            ctx,
             # Two-name dispatch: every durable-session runtime registers the
             # outer workflow under descriptor.dispatch_workflow_name
             # ("session_workflow"); this is distinct from the bridge gate token
@@ -1897,6 +1991,7 @@ def _run_native_durable_agent_child_workflow(
             # Dapr app id, which may be a dedicated agent runtime, a shared
             # runtime pool, or a legacy shared app id.
             app_id=bridge_app_id,
+            propagation=history_propagation_scope,
         )
         if is_benchmark_run:
             # Benchmark runs already have a stronger timeout owner: the
@@ -1921,11 +2016,13 @@ def _run_native_durable_agent_child_workflow(
                 workflow_name="session_workflow",
             )
     else:
-        child_task = ctx.call_child_workflow(
+        child_task = _call_child_workflow_with_history_propagation(
+            ctx,
             target["workflow_name"],
             input=_freeze(child_input),
             instance_id=child_instance_id,
             app_id=target["app_id"],
+            propagation=history_propagation_scope,
         )
         child_result = yield from _child_workflow_result_with_timeout(
             ctx,
