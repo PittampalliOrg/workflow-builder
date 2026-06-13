@@ -83,6 +83,13 @@
 		return options?.find((option) => option.value === value)?.label ?? value;
 	}
 
+	function setFormValue(key: string, value: string | undefined) {
+		formValues = {
+			...formValues,
+			[key]: value ?? ''
+		};
+	}
+
 	interface Props {
 		open: boolean;
 		onClose: () => void;
@@ -403,7 +410,7 @@
 														} else {
 															current.add(option.value);
 														}
-														formValues[key] = [...current].join(',');
+														setFormValue(key, [...current].join(','));
 													}}
 												>
 													<span class="h-3 w-3 rounded-sm border {isSelected ? 'border-primary bg-primary' : 'border-muted-foreground/40'}">
@@ -418,7 +425,8 @@
 									{:else if options.length}
 										<Select.Root
 											type="single"
-											bind:value={formValues[key]}
+											value={formValues[key] || ''}
+											onValueChange={(value) => setFormValue(key, value)}
 										>
 											<Select.Trigger class="w-full">
 												{selectedOptionLabel(

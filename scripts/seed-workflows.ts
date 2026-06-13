@@ -1813,45 +1813,21 @@ type CliRuntime = "codex-cli" | "claude-code-cli" | "agy-cli";
 
 interface CliRuntimeDescriptor {
 	runtime: CliRuntime;
-	taskName: string;
-	nodeId: string;
-	canonicalSlug: string;
-	envPrefix: string;
 	label: string;
-	shortLabel: string;
-	description: string;
 }
 
 const THREE_B_ONE_B_CLI_RUNTIMES: readonly CliRuntimeDescriptor[] = [
 	{
 		runtime: "codex-cli",
-		taskName: "build_3b1b_animation_codex",
-		nodeId: "build_3b1b_animation_codex",
-		canonicalSlug: "codex-cli",
-		envPrefix: "SEED_3B1B_CODEX",
 		label: "Codex CLI",
-		shortLabel: "Codex",
-		description: "Runs only when cliRuntime is codex-cli.",
 	},
 	{
 		runtime: "claude-code-cli",
-		taskName: "build_3b1b_animation_claude",
-		nodeId: "build_3b1b_animation_claude",
-		canonicalSlug: "claude-code-cli",
-		envPrefix: "SEED_3B1B_CLAUDE",
 		label: "Claude Code CLI",
-		shortLabel: "Claude Code",
-		description: "Runs only when cliRuntime is claude-code-cli.",
 	},
 	{
 		runtime: "agy-cli",
-		taskName: "build_3b1b_animation_agy",
-		nodeId: "build_3b1b_animation_agy",
-		canonicalSlug: "agy-cli",
-		envPrefix: "SEED_3B1B_AGY",
 		label: "Antigravity CLI",
-		shortLabel: "Antigravity",
-		description: "Runs only when cliRuntime is agy-cli.",
 	},
 ];
 
@@ -1866,10 +1842,9 @@ const THREE_B_ONE_B_CLI_DEFAULT_RUNTIME = parseCliRuntime(
 	process.env.SEED_3B1B_CLI_DEFAULT_RUNTIME?.trim() || "codex-cli",
 );
 
-const THREE_B_ONE_B_CLI_SELECTED_BUILD_JQ =
-	"if ((.build_3b1b_animation_codex.skipped // false) | not) then .build_3b1b_animation_codex elif ((.build_3b1b_animation_claude.skipped // false) | not) then .build_3b1b_animation_claude elif ((.build_3b1b_animation_agy.skipped // false) | not) then .build_3b1b_animation_agy else null end";
-const THREE_B_ONE_B_CLI_SELECTED_BUILD_OUTPUT = `\${ ${THREE_B_ONE_B_CLI_SELECTED_BUILD_JQ} }`;
-const THREE_B_ONE_B_CLI_SELECTED_BUILD_RUNTIME_SANDBOX_NAME = `\${ (${THREE_B_ONE_B_CLI_SELECTED_BUILD_JQ}).runtimeSandboxName // null }`;
+const THREE_B_ONE_B_CLI_SELECTED_BUILD_OUTPUT = "${ .build_3b1b_animation }";
+const THREE_B_ONE_B_CLI_SELECTED_BUILD_RUNTIME_SANDBOX_NAME =
+	"${ .build_3b1b_animation.runtimeSandboxName // null }";
 
 function isRecord(value: unknown): value is JsonRecord {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1886,32 +1861,6 @@ function parseCliRuntime(value: string): CliRuntime {
 	throw new Error(
 		`Invalid SEED_3B1B_CLI_DEFAULT_RUNTIME "${value}". Expected codex-cli, claude-code-cli, or agy-cli.`,
 	);
-}
-
-function parseOptionalPositiveInteger(
-	value: string | undefined,
-	envName: string,
-): number | undefined {
-	if (!value?.trim()) return undefined;
-	const parsed = Number(value.trim());
-	if (!Number.isInteger(parsed) || parsed <= 0) {
-		throw new Error(`${envName} must be a positive integer; got ${value}`);
-	}
-	return parsed;
-}
-
-function cliAgentRef(descriptor: CliRuntimeDescriptor): JsonRecord {
-	const id = process.env[`${descriptor.envPrefix}_AGENT_ID`]?.trim();
-	const slug =
-		process.env[`${descriptor.envPrefix}_AGENT_SLUG`]?.trim() ||
-		descriptor.canonicalSlug;
-	const version = parseOptionalPositiveInteger(
-		process.env[`${descriptor.envPrefix}_AGENT_VERSION`],
-		`${descriptor.envPrefix}_AGENT_VERSION`,
-	);
-	const ref: JsonRecord = id ? { id } : { slug };
-	if (version !== undefined) ref.version = version;
-	return ref;
 }
 
 function selectedCliRuntimeExpression(): string {
@@ -2279,17 +2228,9 @@ function makeThreeBOneBCliWorkspaceProfileTask(): JsonRecord {
 	return task;
 }
 
-function makeThreeBOneBCliBuildTask(
-	descriptor: CliRuntimeDescriptor,
-): JsonRecord {
+function makeThreeBOneBCliBuildTask(): JsonRecord {
 	return {
 		call: "durable/run",
-		if:
-			'${ (.trigger.cliRuntime // "' +
-			THREE_B_ONE_B_CLI_DEFAULT_RUNTIME +
-			'") == "' +
-			descriptor.runtime +
-			'" }',
 		with: {
 			mode: "execute_direct",
 			cwd: "/sandbox",
@@ -2312,7 +2253,9 @@ function makeThreeBOneBCliBuildTask(
 				keepAfterRun: true,
 			},
 			body: {
-				agentRef: cliAgentRef(descriptor),
+				agentRef: {
+					slug: "${ .trigger.cliRuntime }",
+				},
 				prompt: THREE_B_ONE_B_BUILD_PROMPT,
 				overrides: {
 					cwd: "/sandbox",
@@ -2459,7 +2402,7 @@ function buildThreeBOneBCliWorkflowSpec(): JsonRecord {
 				architecture:
 					"per-agent-runtime+cli-runtime-selector+session-workflow-bridge+browser-validate-capture+live-preview",
 				notes:
-					"CLI variant of the canonical 3Blue1Brown workflow. The cliRuntime trigger input selects exactly one static durable/run branch so agentRef resolution can happen before jq input evaluation. Each CLI runtime writes into its own session host, then outputSync copies the app into the retained OpenShell workspace for verification, browser capture, and live preview.",
+					"CLI variant of the canonical 3Blue1Brown workflow. The cliRuntime trigger input resolves one durable/run agentRef.slug before dispatch; outputSync copies the app into the retained OpenShell workspace for verification, browser capture, and live preview.",
 				triggerInputs: {
 					animationDescription:
 						"Required. Plain-language description of the 3Blue1Brown-style animation to build.",
@@ -2489,9 +2432,7 @@ function buildThreeBOneBCliWorkflowSpec(): JsonRecord {
 		},
 		do: [
 			{ workspace_profile: makeThreeBOneBCliWorkspaceProfileTask() },
-			...THREE_B_ONE_B_CLI_RUNTIMES.map((descriptor) => ({
-				[descriptor.taskName]: makeThreeBOneBCliBuildTask(descriptor),
-			})),
+			{ build_3b1b_animation: makeThreeBOneBCliBuildTask() },
 			{ verify_copied_animation: makeThreeBOneBCliVerifyTask() },
 			{ browser_validate_capture: makeThreeBOneBCliBrowserValidateTask() },
 			{ start_preview: makeThreeBOneBCliStartPreviewTask() },
@@ -2562,20 +2503,21 @@ function buildThreeBOneBCliWorkflowNodes(): JsonRecord[] {
 					"Stand up a per-run sandbox with file/exec tools; keepAfterRun=true so the live preview can attach after the run.",
 			},
 		},
-		...THREE_B_ONE_B_CLI_RUNTIMES.map((descriptor, index) => ({
-			id: descriptor.nodeId,
+		{
+			id: "build_3b1b_animation",
 			type: "action",
-			position: { x: 80, y: 340 + index * 140 },
+			position: { x: 80, y: 340 },
 			data: {
-				label: `Build with ${descriptor.shortLabel}`,
+				label: "Build with selected CLI",
 				actionType: "durable/run",
-				description: descriptor.description,
+				description:
+					"Resolve cliRuntime to a managed CLI agent and generate the browser animation.",
 			},
-		})),
+		},
 		{
 			id: "verify_copied_animation",
 			type: "action",
-			position: { x: 80, y: 760 },
+			position: { x: 80, y: 480 },
 			data: {
 				label: "Verify copied animation",
 				actionType: "workspace/command",
@@ -2586,7 +2528,7 @@ function buildThreeBOneBCliWorkflowNodes(): JsonRecord[] {
 		{
 			id: "browser_validate_capture",
 			type: "action",
-			position: { x: 80, y: 900 },
+			position: { x: 80, y: 620 },
 			data: {
 				label: "Capture animation walkthrough",
 				actionType: "browser/validate",
@@ -2597,7 +2539,7 @@ function buildThreeBOneBCliWorkflowNodes(): JsonRecord[] {
 		{
 			id: "start_preview",
 			type: "action",
-			position: { x: 80, y: 1040 },
+			position: { x: 80, y: 760 },
 			data: {
 				label: "Start live preview",
 				actionType: "browser/start-preview",
@@ -2612,7 +2554,7 @@ function buildThreeBOneBCliWorkflowEdges(): JsonRecord[] {
 	const ordered = [
 		"trigger",
 		"workspace_profile",
-		...THREE_B_ONE_B_CLI_RUNTIMES.map((item) => item.nodeId),
+		"build_3b1b_animation",
 		"verify_copied_animation",
 		"browser_validate_capture",
 		"start_preview",

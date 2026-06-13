@@ -105,24 +105,6 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     return error(400, removedAgentCallsError);
   }
 
-  // Resolve named-agent references. Fail-closed: any durable/run node without
-  // an agentRef means the workflow predates the cutover and never got its
-  // inline config backfilled. Run the admin backfill endpoint to migrate.
-  try {
-    spec = (await resolveSpecAgentRefs(spec)) as typeof spec;
-  } catch (resolveErr) {
-    if (resolveErr instanceof AgentRefResolutionError) {
-      return error(400, resolveErr.message);
-    }
-    console.error("[Execute] agent ref resolution failed:", resolveErr);
-    return error(
-      500,
-      resolveErr instanceof Error
-        ? resolveErr.message
-        : "Agent ref resolution failed",
-    );
-  }
-
   try {
     triggerData = applyWorkflowInputDefaults(spec, triggerData);
     triggerData = await expandGreenfieldPromptInput(spec, triggerData);
@@ -150,6 +132,24 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   const modelError = await validateTriggerModel(spec, triggerData);
   if (modelError) {
     return error(400, modelError);
+  }
+
+  // Resolve named-agent references after defaults/derived inputs so a workflow
+  // may safely bind agentRef.slug to a validated trigger field such as
+  // `${ .trigger.cliRuntime }`.
+  try {
+    spec = (await resolveSpecAgentRefs(spec, { triggerData })) as typeof spec;
+  } catch (resolveErr) {
+    if (resolveErr instanceof AgentRefResolutionError) {
+      return error(400, resolveErr.message);
+    }
+    console.error("[Execute] agent ref resolution failed:", resolveErr);
+    return error(
+      500,
+      resolveErr instanceof Error
+        ? resolveErr.message
+        : "Agent ref resolution failed",
+    );
   }
 
   // Create execution record

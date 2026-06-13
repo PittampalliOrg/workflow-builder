@@ -255,6 +255,93 @@ describe("resolveSpecAgentRefs", () => {
 		);
 	});
 
+	it("resolves an agentRef slug from validated trigger input", async () => {
+		const config = minimalConfig({
+			runtime: "claude-code-cli",
+			modelSpec: "anthropic/claude-opus-4-8",
+		});
+		resolveAgentRefMock.mockResolvedValueOnce(
+			resolvedAgent({ slug: "claude-code-cli", config }),
+		);
+		const spec = specWithTasks([
+			{
+				Run: {
+					call: "durable/run",
+					with: {
+						body: {
+							prompt: "hello",
+							agentRef: { slug: "${ .trigger.cliRuntime }" },
+						},
+					},
+				},
+			},
+		]);
+
+		const resolved = await resolveSpecAgentRefs(spec, {
+			triggerData: { cliRuntime: "claude-code-cli" },
+		});
+
+		expect(resolveAgentRefMock).toHaveBeenCalledWith({
+			slug: "claude-code-cli",
+		});
+		const task = (resolved.document as Record<string, unknown>).do as Array<
+			Record<string, unknown>
+		>;
+		const body = ((task[0].Run as Record<string, unknown>).with as Record<string, unknown>)
+			.body as Record<string, unknown>;
+		expect(body.agentSlug).toBe("claude-code-cli");
+		expect((body.agentConfig as Record<string, unknown>).runtime).toBe(
+			"claude-code-cli",
+		);
+	});
+
+	it("resolves a whole agentRef from trigger input with fallback", async () => {
+		resolveAgentRefMock.mockResolvedValueOnce(
+			resolvedAgent({ slug: "codex-cli", config: minimalConfig({ runtime: "codex-cli" }) }),
+		);
+		const spec = specWithTasks([
+			{
+				Run: {
+					call: "durable/run",
+					with: {
+						body: {
+							prompt: "hello",
+							agentRef: "${ .trigger.agentRef // .trigger.cliRuntime }",
+						},
+					},
+				},
+			},
+		]);
+
+		await resolveSpecAgentRefs(spec, {
+			triggerData: { cliRuntime: "codex-cli" },
+		});
+
+		expect(resolveAgentRefMock).toHaveBeenCalledWith({
+			slug: "codex-cli",
+		});
+	});
+
+	it("fails closed on unsupported dynamic agentRef expressions", async () => {
+		const spec = specWithTasks([
+			{
+				Run: {
+					call: "durable/run",
+					with: {
+						body: {
+							prompt: "hello",
+							agentRef: { slug: "${ .trigger.cliRuntime | ascii_downcase }" },
+						},
+					},
+				},
+			},
+		]);
+
+		await expect(
+			resolveSpecAgentRefs(spec, { triggerData: { cliRuntime: "codex-cli" } }),
+		).rejects.toThrow(/unsupported agentRef expression/);
+	});
+
 	it("throws AgentRefResolutionError when agentRef is missing on a durable/run task", async () => {
 		const spec = specWithTasks([
 			{ Run: { call: "durable/run", with: { body: { prompt: "hi" } } } },

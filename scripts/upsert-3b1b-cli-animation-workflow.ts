@@ -1,10 +1,9 @@
 /**
  * Upsert a CLI-agent variant of the "3Blue1Brown-style Animation" workflow.
  *
- * The regular workflow has a single static durable/run agentRef. Regular UI/API
- * launches resolve agent refs before jq/template evaluation, so this variant
- * exposes runtime selection by keeping three static durable/run steps and
- * guarding each with an SW 1.0 `if` condition.
+ * The regular workflow has a single static durable/run agentRef. This variant
+ * exposes runtime selection with one durable/run node whose agentRef.slug is
+ * resolved from the validated `cliRuntime` trigger input before dispatch.
  *
  * Usage:
  *   DATABASE_URL=postgres://... pnpm exec tsx scripts/upsert-3b1b-cli-animation-workflow.ts
@@ -22,12 +21,8 @@ type CliRuntime = "codex-cli" | "claude-code-cli" | "agy-cli";
 
 interface CliRuntimeDescriptor {
 	runtime: CliRuntime;
-	taskName: string;
-	nodeId: string;
 	canonicalSlug: string;
 	label: string;
-	shortLabel: string;
-	description: string;
 }
 
 interface AgentRef {
@@ -58,30 +53,18 @@ const APP_DIR = "/sandbox/3b1b-style-animation-example";
 const CLI_RUNTIMES: readonly CliRuntimeDescriptor[] = [
 	{
 		runtime: "codex-cli",
-		taskName: "build_3b1b_animation_codex",
-		nodeId: "build_3b1b_animation_codex",
 		canonicalSlug: "codex-cli",
 		label: "Codex CLI",
-		shortLabel: "Codex",
-		description: "Runs only when cliRuntime is codex-cli.",
 	},
 	{
 		runtime: "claude-code-cli",
-		taskName: "build_3b1b_animation_claude",
-		nodeId: "build_3b1b_animation_claude",
 		canonicalSlug: "claude-code-cli",
 		label: "Claude Code CLI",
-		shortLabel: "Claude Code",
-		description: "Runs only when cliRuntime is claude-code-cli.",
 	},
 	{
 		runtime: "agy-cli",
-		taskName: "build_3b1b_animation_agy",
-		nodeId: "build_3b1b_animation_agy",
 		canonicalSlug: "agy-cli",
 		label: "Antigravity CLI",
-		shortLabel: "Antigravity",
-		description: "Runs only when cliRuntime is agy-cli.",
 	},
 ];
 
@@ -90,14 +73,11 @@ const CLI_RUNTIME_OPTIONS = CLI_RUNTIMES.map((item) => ({
 	value: item.runtime,
 }));
 
-const SELECTED_BUILD_OUTPUT =
-	'${ if ((.build_3b1b_animation_codex.skipped // false) | not) then .build_3b1b_animation_codex elif ((.build_3b1b_animation_claude.skipped // false) | not) then .build_3b1b_animation_claude elif ((.build_3b1b_animation_agy.skipped // false) | not) then .build_3b1b_animation_agy else null end }';
-
+const SELECTED_BUILD_OUTPUT = "${ .build_3b1b_animation }";
 const SELECTED_BUILD_RUNTIME_SANDBOX_NAME =
-	'${ (if ((.build_3b1b_animation_codex.skipped // false) | not) then .build_3b1b_animation_codex elif ((.build_3b1b_animation_claude.skipped // false) | not) then .build_3b1b_animation_claude elif ((.build_3b1b_animation_agy.skipped // false) | not) then .build_3b1b_animation_agy else null end).runtimeSandboxName // null }';
-
+	"${ .build_3b1b_animation.runtimeSandboxName // null }";
 const SELECTED_BUILD_WORKSPACE_REF =
-	'${ (if ((.build_3b1b_animation_codex.skipped // false) | not) then .build_3b1b_animation_codex elif ((.build_3b1b_animation_claude.skipped // false) | not) then .build_3b1b_animation_claude elif ((.build_3b1b_animation_agy.skipped // false) | not) then .build_3b1b_animation_agy else null end).workspaceRef // .workspace_profile.workspaceRef // null }';
+	"${ .build_3b1b_animation.workspaceRef // .workspace_profile.workspaceRef // null }";
 
 const WORKSPACE_SANDBOX_NAME = '${ .workspace_profile.sandboxName // "" }';
 const WORKSPACE_REF = "${ .workspace_profile.workspaceRef }";
@@ -362,23 +342,11 @@ async function resolveCliAgent(
 	};
 }
 
-function findTask(doArray: unknown[], taskName: string): JsonRecord | null {
-	for (const entry of doArray) {
-		if (!isRecord(entry)) continue;
-		const task = entry[taskName];
-		if (isRecord(task)) return task;
-	}
-	return null;
-}
-
-function makeGuardedBuildTask(
+function makeParameterizedBuildTask(
 	baseTask: JsonRecord,
-	descriptor: CliRuntimeDescriptor,
-	agent: AgentRef,
-	defaultRuntime: CliRuntime,
 ): JsonRecord {
 	const task = cloneJson(baseTask);
-	task.if = '${ (.trigger.cliRuntime // "' + defaultRuntime + '") == "' + descriptor.runtime + '" }';
+	delete task.if;
 
 	const withBlock = ensureRecord(task, "with");
 	withBlock.outputSync = {
@@ -393,8 +361,7 @@ function makeGuardedBuildTask(
 	};
 	const body = ensureRecord(withBlock, "body");
 	body.agentRef = {
-		id: agent.id,
-		version: agent.version,
+		slug: "${ .trigger.cliRuntime }",
 	};
 
 	return task;
@@ -424,7 +391,7 @@ function makeWorkspaceVerifyTask(): JsonRecord {
 	};
 }
 
-function makeBrowserValidateTask(defaultRuntime: CliRuntime): JsonRecord {
+function makeBrowserValidateTask(): JsonRecord {
 	return {
 		call: "browser/validate",
 		with: {
@@ -489,7 +456,7 @@ function makeBrowserValidateTask(defaultRuntime: CliRuntime): JsonRecord {
 				appPath: APP_DIR,
 				workflowStage: "post-cli-3b1b-animation",
 				runtimeSandboxName: SELECTED_BUILD_RUNTIME_SANDBOX_NAME,
-				selectedCliRuntime: '${ .trigger.cliRuntime // "' + defaultRuntime + '" }',
+				selectedCliRuntime: "${ .trigger.cliRuntime }",
 			},
 			timeoutMs: 900000,
 		},
@@ -533,7 +500,7 @@ function addRuntimeInput(spec: JsonRecord, defaultRuntime: CliRuntime): void {
 	const previousNotes = typeof wb.notes === "string" ? wb.notes : "";
 	wb.notes = [
 		previousNotes,
-		"CLI variant: exposes cliRuntime at launch time while keeping static durable/run agentRefs. This is required because regular UI/API execution resolves agent refs before jq input evaluation.",
+		"CLI variant: exposes cliRuntime at launch time and resolves one durable/run agentRef.slug from the validated trigger input before dispatch.",
 	]
 		.filter(Boolean)
 		.join(" ");
@@ -585,8 +552,6 @@ function addRuntimeInput(spec: JsonRecord, defaultRuntime: CliRuntime): void {
 
 function replaceBuildTasks(
 	spec: JsonRecord,
-	agents: Record<CliRuntime, AgentRef>,
-	defaultRuntime: CliRuntime,
 ): void {
 	if (!Array.isArray(spec.do)) {
 		throw new Error("Source workflow spec.do must be an array");
@@ -600,15 +565,8 @@ function replaceBuildTasks(
 	}
 	const baseTask = (doArray[buildIndex] as JsonRecord)
 		.build_3b1b_animation as JsonRecord;
-	const buildTasks = CLI_RUNTIMES.map((descriptor) => ({
-		[descriptor.taskName]: makeGuardedBuildTask(
-			baseTask,
-			descriptor,
-			agents[descriptor.runtime],
-			defaultRuntime,
-		),
-	}));
-	doArray.splice(buildIndex, 1, ...buildTasks);
+	const buildTask = makeParameterizedBuildTask(baseTask);
+	doArray.splice(buildIndex, 1, { build_3b1b_animation: buildTask });
 
 	for (let index = doArray.length - 1; index >= 0; index -= 1) {
 		const entry = doArray[index];
@@ -620,10 +578,10 @@ function replaceBuildTasks(
 		}
 	}
 	doArray.splice(
-		buildIndex + buildTasks.length,
+		buildIndex + 1,
 		0,
 		{ verify_copied_animation: makeWorkspaceVerifyTask() },
-		{ browser_validate_capture: makeBrowserValidateTask(defaultRuntime) },
+		{ browser_validate_capture: makeBrowserValidateTask() },
 		{ start_preview: makeStartPreviewTask() },
 	);
 
@@ -632,7 +590,7 @@ function replaceBuildTasks(
 	outputAs.workspaceRef = WORKSPACE_REF;
 	outputAs.sandboxName = WORKSPACE_SANDBOX_NAME;
 	outputAs.runtimeSandboxName = SELECTED_BUILD_RUNTIME_SANDBOX_NAME;
-	outputAs.selectedCliRuntime = '${ .trigger.cliRuntime // "' + defaultRuntime + '" }';
+	outputAs.selectedCliRuntime = "${ .trigger.cliRuntime }";
 	outputAs.animation = SELECTED_BUILD_OUTPUT;
 	outputAs.verification = "${ .verify_copied_animation }";
 	outputAs.screenshots = "${ .browser_validate_capture }";
@@ -662,20 +620,21 @@ function buildNodes(): JsonRecord[] {
 					"Stand up a per-run sandbox with file/exec tools; keepAfterRun=true so the live preview can attach after the run.",
 			},
 		},
-		...CLI_RUNTIMES.map((descriptor, index) => ({
-			id: descriptor.nodeId,
+		{
+			id: "build_3b1b_animation",
 			type: "action",
-			position: { x: 80, y: 340 + index * 140 },
+			position: { x: 80, y: 340 },
 			data: {
-				label: `Build with ${descriptor.shortLabel}`,
+				label: "Build with selected CLI",
 				actionType: "durable/run",
-				description: descriptor.description,
+				description:
+					"Resolve cliRuntime to a managed CLI agent and generate the browser animation.",
 			},
-		})),
+		},
 		{
 			id: "verify_copied_animation",
 			type: "action",
-			position: { x: 80, y: 760 },
+			position: { x: 80, y: 480 },
 			data: {
 				label: "Verify copied animation",
 				actionType: "workspace/command",
@@ -686,7 +645,7 @@ function buildNodes(): JsonRecord[] {
 		{
 			id: "browser_validate_capture",
 			type: "action",
-			position: { x: 80, y: 900 },
+			position: { x: 80, y: 620 },
 			data: {
 				label: "Capture animation walkthrough",
 				actionType: "browser/validate",
@@ -697,7 +656,7 @@ function buildNodes(): JsonRecord[] {
 		{
 			id: "start_preview",
 			type: "action",
-			position: { x: 80, y: 1040 },
+			position: { x: 80, y: 760 },
 			data: {
 				label: "Start live preview",
 				actionType: "browser/start-preview",
@@ -712,7 +671,7 @@ function buildEdges(): JsonRecord[] {
 	const ordered = [
 		"trigger",
 		"workspace_profile",
-		...CLI_RUNTIMES.map((item) => item.nodeId),
+		"build_3b1b_animation",
 		"verify_copied_animation",
 		"browser_validate_capture",
 		"start_preview",
@@ -727,7 +686,6 @@ function buildEdges(): JsonRecord[] {
 
 function buildCliWorkflowSpec(
 	sourceSpec: unknown,
-	agents: Record<CliRuntime, AgentRef>,
 	args: ParsedArgs,
 ): JsonRecord {
 	if (!isRecord(sourceSpec)) {
@@ -736,7 +694,7 @@ function buildCliWorkflowSpec(
 	const spec = cloneJson(sourceSpec);
 	normalizeSandboxTemplateDefaults(spec);
 	addRuntimeInput(spec, args.defaultRuntime);
-	replaceBuildTasks(spec, agents, args.defaultRuntime);
+	replaceBuildTasks(spec);
 
 	const document = ensureRecord(spec, "document");
 	document.name = args.workflowId;
@@ -790,7 +748,7 @@ async function main() {
 			),
 		) as Record<CliRuntime, AgentRef>;
 
-		const spec = buildCliWorkflowSpec(sourceWorkflow.spec, resolvedAgents, args);
+		const spec = buildCliWorkflowSpec(sourceWorkflow.spec, args);
 		const nodes = buildNodes();
 		const edges = buildEdges();
 		const now = new Date().toISOString();

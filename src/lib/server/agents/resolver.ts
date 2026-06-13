@@ -46,6 +46,10 @@ export class AgentRefResolutionError extends Error {
 	}
 }
 
+type ResolveSpecAgentRefsOptions = {
+	triggerData?: Record<string, unknown>;
+};
+
 /**
  * Hydrate each entry of `config.skills[]` from `agent_skill_registry` so
  * the Python runtime's `_extract_skill_configs` (main.py:602-662) sees a
@@ -134,6 +138,109 @@ function isAgentRef(value: unknown): value is AgentRef {
 	return true;
 }
 
+function hasSwExpression(value: unknown): value is string {
+	return typeof value === "string" && /^\s*\$\{[\s\S]*\}\s*$/.test(value);
+}
+
+function splitFallbackExpression(value: string): string[] | null {
+	const match = value.match(/^\s*\$\{\s*([\s\S]*?)\s*\}\s*$/);
+	if (!match) return null;
+	return match[1]
+		.split(/\s*\/\/\s*/)
+		.map((part) => part.trim())
+		.filter(Boolean);
+}
+
+function readTriggerPath(triggerData: Record<string, unknown>, path: string): unknown {
+	const parts = path.split(".");
+	let current: unknown = triggerData;
+	for (const part of parts) {
+		if (!isRecord(current)) return undefined;
+		current = current[part];
+	}
+	return current;
+}
+
+function hasExpressionValue(value: unknown): boolean {
+	if (typeof value === "string") return value.trim().length > 0;
+	return value !== null && value !== undefined;
+}
+
+function resolveTriggerExpression(
+	value: string,
+	triggerData: Record<string, unknown> | undefined,
+	taskName: string,
+): unknown {
+	const fallbackParts = splitFallbackExpression(value);
+	if (!fallbackParts) return value;
+	if (!triggerData) {
+		throw new AgentRefResolutionError(
+			`Task "${taskName}" uses an agentRef expression but no trigger data was available for agent resolution.`,
+			taskName,
+		);
+	}
+
+	for (const part of fallbackParts) {
+		const triggerPath = part.match(/^\.trigger\.([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)$/);
+		if (triggerPath) {
+			const resolved = readTriggerPath(triggerData, triggerPath[1]);
+			if (hasExpressionValue(resolved)) return resolved;
+			continue;
+		}
+
+		const stringLiteral = part.match(/^"([^"]*)"$/);
+		if (stringLiteral) {
+			if (stringLiteral[1].trim()) return stringLiteral[1];
+			continue;
+		}
+
+		throw new AgentRefResolutionError(
+			`Task "${taskName}" uses unsupported agentRef expression "${value}". Only .trigger.<field> lookups and // fallbacks are supported before agent resolution.`,
+			taskName,
+		);
+	}
+
+	return undefined;
+}
+
+function resolveAgentRefValue(
+	value: unknown,
+	triggerData: Record<string, unknown> | undefined,
+	taskName: string,
+): AgentRef | null {
+	if (typeof value === "string") {
+		const resolved = hasSwExpression(value)
+			? resolveTriggerExpression(value, triggerData, taskName)
+			: value;
+		if (isAgentRef(resolved)) return resolved;
+		if (typeof resolved === "string" && resolved.trim()) {
+			return { slug: resolved.trim() } as unknown as AgentRef;
+		}
+		return null;
+	}
+
+	if (!isRecord(value)) return null;
+	const candidate: Record<string, unknown> = { ...value };
+	for (const key of ["id", "slug"] as const) {
+		const raw = candidate[key];
+		if (typeof raw === "string" && hasSwExpression(raw)) {
+			const resolved = resolveTriggerExpression(raw, triggerData, taskName);
+			if (typeof resolved === "string") {
+				candidate[key] = resolved.trim();
+			} else if (isAgentRef(resolved)) {
+				return resolved;
+			} else if (resolved !== undefined) {
+				throw new AgentRefResolutionError(
+					`Task "${taskName}" agentRef.${key} expression did not resolve to an agent id or slug.`,
+					taskName,
+				);
+			}
+		}
+	}
+
+	return isAgentRef(candidate) ? (candidate as AgentRef) : null;
+}
+
 /**
  * Walk an SW 1.0 spec, find every `durable/run` task, read its `with.body.agentRef`,
  * resolve the canonical AgentConfig from the registry, and inline it back into
@@ -144,6 +251,7 @@ function isAgentRef(value: unknown): value is AgentRef {
  */
 export async function resolveSpecAgentRefs(
 	spec: Record<string, unknown>,
+	options: ResolveSpecAgentRefsOptions = {},
 ): Promise<Record<string, unknown>> {
 	const cloned = JSON.parse(JSON.stringify(spec)) as Record<string, unknown>;
 	const tasks = collectDurableRunTasks(cloned);
@@ -155,7 +263,7 @@ export async function resolveSpecAgentRefs(
 		const withBlock = (task.with ??= {} as Record<string, unknown>);
 		const body = (withBlock as Record<string, unknown>).body;
 		const bodyRecord = isRecord(body) ? body : null;
-		const ref = pickAgentRef(withBlock, bodyRecord);
+		const ref = pickAgentRef(withBlock, bodyRecord, options.triggerData, taskName);
 		if (!ref) {
 			throw new AgentRefResolutionError(
 				`Task "${taskName}" (durable/run) is missing agentRef. All workflows must be backfilled to named agents before executing.`,
@@ -425,12 +533,14 @@ function isEnvironmentRef(value: unknown): value is EnvironmentRef {
 function pickAgentRef(
 	withBlock: unknown,
 	body: Record<string, unknown> | null,
+	triggerData: Record<string, unknown> | undefined,
+	taskName: string,
 ): AgentRef | null {
 	const fromBody = body?.agentRef;
-	if (isAgentRef(fromBody)) return fromBody;
+	const bodyRef = resolveAgentRefValue(fromBody, triggerData, taskName);
+	if (bodyRef) return bodyRef;
 	const fromWith = isRecord(withBlock) ? withBlock.agentRef : undefined;
-	if (isAgentRef(fromWith)) return fromWith;
-	return null;
+	return resolveAgentRefValue(fromWith, triggerData, taskName);
 }
 
 function pickOverrides(

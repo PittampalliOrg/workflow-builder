@@ -145,21 +145,6 @@ export const POST: RequestHandler = async ({ request }) => {
 		if (removedAgentCallsError) {
 			return json({ error: removedAgentCallsError }, { status: 400 });
 		}
-		try {
-			spec = await resolveSpecAgentRefs(spec);
-		} catch (resolveErr) {
-			if (resolveErr instanceof AgentRefResolutionError) {
-				return json({ error: resolveErr.message }, { status: 400 });
-			}
-			console.error('[internal/agent/workflows/execute] agent ref resolution failed:', resolveErr);
-			return json(
-				{
-					error:
-						resolveErr instanceof Error ? resolveErr.message : 'Agent ref resolution failed'
-				},
-				{ status: 500 }
-			);
-		}
 		triggerData = applyWorkflowInputDefaults(spec, triggerData);
 		if (getPromptExpansionConfig(spec)?.requiresExpansion) {
 			triggerData = await expandGreenfieldPromptInput(spec, triggerData);
@@ -171,6 +156,21 @@ export const POST: RequestHandler = async ({ request }) => {
 					error: `Missing required workflow input fields: ${missingTriggerFields.join(', ')}`
 				},
 				{ status: 400 }
+			);
+		}
+		try {
+			spec = await resolveSpecAgentRefs(spec, { triggerData });
+		} catch (resolveErr) {
+			if (resolveErr instanceof AgentRefResolutionError) {
+				return json({ error: resolveErr.message }, { status: 400 });
+			}
+			console.error('[internal/agent/workflows/execute] agent ref resolution failed:', resolveErr);
+			return json(
+				{
+					error:
+						resolveErr instanceof Error ? resolveErr.message : 'Agent ref resolution failed'
+				},
+				{ status: 500 }
 			);
 		}
 	}
