@@ -213,6 +213,12 @@ export type AgentConfig = {
 
 	runtime: AgentRuntime;
 	/**
+	 * Runtime-only selector for interactive-cli hosts. The BFF stamps this from
+	 * the runtime registry descriptor before dispatch; stored agent rows remain
+	 * valid when this is absent.
+	 */
+	cliAdapter?: "claude-code" | "codex" | "antigravity";
+	/**
 	 * Runtime-class placement metadata. The default class is derived from
 	 * `runtime`; non-browser `dapr-agent-py` agents can share a class pool
 	 * because per-session childInput carries the agent-specific config.

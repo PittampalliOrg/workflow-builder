@@ -215,6 +215,46 @@ describe("resolveSpecAgentRefs", () => {
 		expect(withBlock.agentAppId).toBe("agent-runtime-pool-coding");
 	});
 
+	it("stamps the CLI adapter for interactive workflow runtimes", async () => {
+		const config = minimalConfig({
+			runtime: "codex-cli",
+			modelSpec: "openai/gpt-5.5",
+			// Stale stored value should be corrected from the runtime registry.
+			cliAdapter: "claude-code",
+		});
+		resolveAgentRefMock.mockResolvedValueOnce(
+			resolvedAgent({ slug: "codex-agent", config }),
+		);
+		const spec = specWithTasks([
+			{
+				Run: {
+					call: "durable/run",
+					with: {
+						body: {
+							prompt: "hello",
+							agentRef: { id: "a1" },
+						},
+					},
+				},
+			},
+		]);
+
+		const resolved = await resolveSpecAgentRefs(spec);
+		const task = (resolved.document as Record<string, unknown>).do as Array<
+			Record<string, unknown>
+		>;
+		const withBlock = (task[0].Run as Record<string, unknown>).with as Record<
+			string,
+			unknown
+		>;
+		const body = withBlock.body as Record<string, unknown>;
+		expect((body.agentConfig as Record<string, unknown>).runtime).toBe("codex-cli");
+		expect((body.agentConfig as Record<string, unknown>).cliAdapter).toBe("codex");
+		expect((withBlock.agentConfig as Record<string, unknown>).cliAdapter).toBe(
+			"codex",
+		);
+	});
+
 	it("throws AgentRefResolutionError when agentRef is missing on a durable/run task", async () => {
 		const spec = specWithTasks([
 			{ Run: { call: "durable/run", with: { body: { prompt: "hi" } } } },
