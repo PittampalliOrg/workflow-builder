@@ -93,11 +93,16 @@ export type McpAvailabilityAuthStatus =
 	| 'NO_AUTH_REQUIRED'
 	| 'CONNECT_REQUIRED'
 	| 'OAUTH_APP_MISSING'
-	| 'SERVER_NOT_REGISTERED';
+	| 'SERVER_NOT_REGISTERED'
+	// Piece is in the AP catalog but NOT bundled in the image — discoverable, but
+	// enabling it needs an image rebuild (the "Adding piece" flow). Not connectable.
+	| 'AVAILABLE_NOT_ENABLED';
 
 export type McpServerAvailabilityEntry = AvailableMcpCatalogEntry & {
 	registered: boolean;
 	enabled: boolean;
+	/** True when the piece is AP-catalog metadata only (not bundled/runnable). */
+	availableOnly: boolean;
 	ready: boolean;
 	authStatus: McpAvailabilityAuthStatus;
 	authStatusLabel: string;
@@ -375,11 +380,13 @@ export function buildMcpServerAvailabilityEntry(input: {
 	appConnections?: AppConnectionCatalogSummary[];
 	mcpConnection?: ConfiguredMcpConnectionSummary | null;
 	registered?: RegisteredPieceMcpCatalogEntry | null;
+	availableOnly?: boolean;
 }): McpServerAvailabilityEntry | null {
 	const base = buildAvailablePieceMcpCatalogEntry(input);
 	if (!base) return null;
 
 	const registered = input.registered ?? null;
+	const availableOnly = input.availableOnly === true;
 	const mcpConnection = input.mcpConnection ?? null;
 	const enabled = mcpConnection?.status === 'ENABLED';
 	const selectedAppConnection =
@@ -391,7 +398,11 @@ export function buildMcpServerAvailabilityEntry(input: {
 
 	let authStatus: McpAvailabilityAuthStatus;
 	let authStatusLabel: string;
-	if (!registered) {
+	if (availableOnly) {
+		// Catalog-only: surfaced for discovery, but not connectable until bundled.
+		authStatus = 'AVAILABLE_NOT_ENABLED';
+		authStatusLabel = 'Available — request enablement';
+	} else if (!registered) {
 		authStatus = 'SERVER_NOT_REGISTERED';
 		authStatusLabel = 'Server not registered';
 	} else if (!base.requiresAuth) {
@@ -419,7 +430,8 @@ export function buildMcpServerAvailabilityEntry(input: {
 		mcpConnection,
 		registered: Boolean(registered),
 		enabled,
-		ready: Boolean(registered && enabled && authReady),
+		availableOnly,
+		ready: Boolean(registered && enabled && authReady && !availableOnly),
 		authStatus,
 		authStatusLabel,
 		selectedAppConnection,

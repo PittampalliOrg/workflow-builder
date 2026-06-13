@@ -101,18 +101,22 @@
 		serverUrl: string;
 		appConnections: CatalogAppConnection[];
 		mcpConnection: McpConnection | null;
+		/** AP-catalog metadata for a piece NOT bundled in the image (not connectable). */
+		availableOnly?: boolean;
 	};
 
 	type McpAvailabilityEntry = CatalogEntry & {
 		registered: boolean;
 		enabled: boolean;
+		availableOnly: boolean;
 		ready: boolean;
 		authStatus:
 			| 'READY'
 			| 'NO_AUTH_REQUIRED'
 			| 'CONNECT_REQUIRED'
 			| 'OAUTH_APP_MISSING'
-			| 'SERVER_NOT_REGISTERED';
+			| 'SERVER_NOT_REGISTERED'
+			| 'AVAILABLE_NOT_ENABLED';
 		authStatusLabel: string;
 		selectedAppConnection: CatalogAppConnection | null;
 		mcpConnectionExternalId: string | null;
@@ -143,7 +147,7 @@
 	let errorMessage = $state<string | null>(null);
 
 	let hubSearch = $state('');
-	let hubFilter = $state<'all' | 'connected' | 'available'>('all');
+	let hubFilter = $state<'all' | 'connected' | 'available' | 'catalog'>('all');
 	let hubCategory = $state('ALL');
 
 	let appSearch = $state('');
@@ -201,12 +205,24 @@
 	const hubFilteredEntries = $derived.by(() => {
 		const q = hubSearch.trim().toLowerCase();
 		return catalogEntries.filter((entry) => {
+			// 'catalog' = the hundreds of available-only pieces (not bundled). Every
+			// other filter shows ONLY connectable (bundled) pieces — available-only
+			// are excluded so they never crowd the connect flows.
+			if (hubFilter === 'catalog') {
+				if (!entry.availableOnly) return false;
+			} else if (entry.availableOnly) {
+				return false;
+			}
 			if (hubFilter === 'connected' && !isConnectedEntry(entry)) return false;
 			if (hubFilter === 'available' && isConnectedEntry(entry)) return false;
 			if (hubCategory !== 'ALL' && !entry.categories.includes(hubCategory)) return false;
 			return matchesHubSearch(entry, q);
 		});
 	});
+
+	const availableOnlyCount = $derived(
+		catalogEntries.filter((entry) => entry.availableOnly).length
+	);
 
 	const connectedEntries = $derived.by(() => catalogEntries.filter(isConnectedEntry));
 
@@ -607,15 +623,16 @@
 {#snippet pieceCard(entry: CatalogEntry)}
 	{@const availability = availabilityByPiece.get(entry.pieceName) ?? null}
 	{@const bound = boundConnection(entry)}
+	{@const availableOnly = entry.availableOnly === true}
 	<button
 		type="button"
-		class="text-left rounded-md border bg-card p-3 hover:border-primary/50 hover:shadow-sm transition-colors flex flex-col gap-2 min-w-0"
+		class={`text-left rounded-md border bg-card p-3 hover:border-primary/50 hover:shadow-sm transition-colors flex flex-col gap-2 min-w-0 ${availableOnly ? 'opacity-80' : ''}`}
 		onclick={() => openPiece(entry)}
 	>
 		<div class="flex items-start justify-between gap-2">
 			<div class="flex items-center gap-2 min-w-0">
 				{#if entry.logoUrl}
-					<img src={entry.logoUrl} alt="" class="size-8 rounded shrink-0" />
+					<img src={entry.logoUrl} alt="" class={`size-8 rounded shrink-0 ${availableOnly ? 'grayscale' : ''}`} />
 				{:else}
 					<div class="size-8 rounded bg-muted flex items-center justify-center shrink-0">
 						<Plug class="size-4 text-muted-foreground" />
@@ -627,25 +644,34 @@
 				</div>
 			</div>
 			<span
-				class={`size-2 rounded-full mt-1 shrink-0 ${statusDotClass(availability)}`}
-				title={availability?.authStatusLabel ?? 'Server not registered'}
+				class={`size-2 rounded-full mt-1 shrink-0 ${availableOnly ? 'bg-amber-500' : statusDotClass(availability)}`}
+				title={availableOnly ? 'Available — request enablement' : (availability?.authStatusLabel ?? 'Server not registered')}
 			></span>
 		</div>
 		<p class="text-xs text-muted-foreground line-clamp-2 min-h-[2rem]">
 			{entry.description ?? 'Activepieces integration'}
 		</p>
 		<div class="flex items-center gap-1 flex-wrap">
-			<Badge variant="outline" class="text-[10px]">
-				Actions ✓ <span class="text-muted-foreground">{entry.actionCount}</span>
-			</Badge>
-			{#if availability?.registered}
-				<Badge variant="outline" class="text-[10px]">MCP ✓</Badge>
-			{/if}
-			{#if bound}
-				<Badge variant="secondary" class="text-[10px] max-w-[160px]">
-					<CheckCircle2 class="size-3" />
-					<span class="truncate">{bound.displayName}</span>
+			{#if availableOnly}
+				<Badge variant="outline" class="text-[10px] border-amber-500/40 text-amber-600 dark:text-amber-400">
+					Available — request enablement
 				</Badge>
+				<Badge variant="outline" class="text-[10px] text-muted-foreground">
+					{entry.actionCount} actions
+				</Badge>
+			{:else}
+				<Badge variant="outline" class="text-[10px]">
+					Actions ✓ <span class="text-muted-foreground">{entry.actionCount}</span>
+				</Badge>
+				{#if availability?.registered}
+					<Badge variant="outline" class="text-[10px]">MCP ✓</Badge>
+				{/if}
+				{#if bound}
+					<Badge variant="secondary" class="text-[10px] max-w-[160px]">
+						<CheckCircle2 class="size-3" />
+						<span class="truncate">{bound.displayName}</span>
+					</Badge>
+				{/if}
 			{/if}
 		</div>
 	</button>
@@ -700,6 +726,18 @@
 								{label}
 							</Button>
 						{/each}
+						{#if availableOnlyCount > 0}
+							<Button
+								variant={hubFilter === 'catalog' ? 'secondary' : 'ghost'}
+								size="sm"
+								class="h-7 px-3 text-xs gap-1.5"
+								onclick={() => (hubFilter = 'catalog')}
+								title="Browse the full Activepieces catalog — pieces an admin can enable"
+							>
+								Catalog
+								<Badge variant="outline" class="px-1 text-[10px] leading-none">{availableOnlyCount}</Badge>
+							</Button>
+						{/if}
 					</div>
 					<NativeSelect bind:value={hubCategory} class="w-[180px]">
 						<option value="ALL">All categories</option>
@@ -708,6 +746,17 @@
 						{/each}
 					</NativeSelect>
 				</div>
+
+				{#if hubFilter === 'catalog'}
+					<Alert>
+						<AlertDescription class="text-xs">
+							These {availableOnlyCount} pieces are in the Activepieces catalog but not yet
+							bundled in this deployment, so they can't be connected directly. A platform
+							admin enables a piece by adding it to the bundle (Admin → Pieces); once
+							enabled it becomes connectable here.
+						</AlertDescription>
+					</Alert>
+				{/if}
 
 				{#if loading}
 					<div class="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">

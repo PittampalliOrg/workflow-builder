@@ -50,7 +50,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 					logoUrl: pieceMetadata.logoUrl
 				})
 				.from(pieceMetadata)
-				.where(sql`${pieceMetadata.auth}->>'type' = 'OAUTH2'`)
+				// Only bundled pieces are usable, so only they can have a platform OAuth
+				// app configured — exclude available-only catalog rows.
+				.where(sql`${pieceMetadata.auth}->>'type' = 'OAUTH2' AND ${pieceMetadata.availableOnly} = false`)
 				.orderBy(pieceMetadata.name, pieceMetadata.displayName)
 		: [];
 

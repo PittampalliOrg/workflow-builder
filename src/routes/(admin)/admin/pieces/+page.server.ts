@@ -39,7 +39,11 @@ export const load: PageServerLoad = async () => {
 				logoUrl: pieceMetadata.logoUrl,
 			})
 			.from(pieceMetadata)
-			.where(eq(pieceMetadata.catalogSchemaVersion, 1)),
+			// Only bundled/runnable pieces are disable-able here. Available-only rows
+			// (the AP catalog not bundled in the image) are surfaced for discovery on
+			// the connections page, not in this disable list — enabling one needs a
+			// bundle + image rebuild, not a DB toggle. See docs/activepieces-catalog-expansion.md.
+			.where(and(eq(pieceMetadata.catalogSchemaVersion, 1), eq(pieceMetadata.availableOnly, false))),
 		db.select({ pieceName: platformDisabledPieces.pieceName }).from(platformDisabledPieces),
 		db.selectDistinct({ pieceName: workflowConnectionRefs.pieceName }).from(workflowConnectionRefs),
 		db
