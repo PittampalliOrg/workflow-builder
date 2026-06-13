@@ -109,24 +109,31 @@ export const load: PageServerLoad = async () => {
 			perPiece: true,
 		}));
 
-	const pieces = [...bundledPieces, ...perPieceEnabled].sort((a, b) =>
+	// Dedupe by name. piece_metadata can hold duplicate rows for one name (e.g. github
+	// has two available_only=false rows), and Svelte's keyed `{#each ... (piece.name)}`
+	// throws each_key_duplicate — which blanks the whole page — on a repeated key.
+	const uniqueByName = <T extends { name: string }>(rows: T[]): T[] =>
+		[...new Map(rows.map((r) => [r.name, r])).values()];
+
+	const pieces = uniqueByName([...bundledPieces, ...perPieceEnabled]).sort((a, b) =>
 		a.displayName.localeCompare(b.displayName),
 	);
 
-	const available = availableRows
-		.filter((p): p is { name: string; displayName: string; logoUrl: string } => !!p.name && !enabledByImage(p.name))
-		.map((p) => {
-			const img = imageStatuses.get(p.name);
-			return {
-				name: p.name,
-				displayName: p.displayName ?? p.name,
-				logoUrl: p.logoUrl,
-				// build lifecycle: null (never built) | building | ready | failed
-				buildStatus: img?.status ?? null,
-				errorMessage: img?.errorMessage ?? null,
-			};
-		})
-		.sort((a, b) => a.displayName.localeCompare(b.displayName));
+	const available = uniqueByName(
+		availableRows
+			.filter((p): p is { name: string; displayName: string; logoUrl: string } => !!p.name && !enabledByImage(p.name))
+			.map((p) => {
+				const img = imageStatuses.get(p.name);
+				return {
+					name: p.name,
+					displayName: p.displayName ?? p.name,
+					logoUrl: p.logoUrl,
+					// build lifecycle: null (never built) | building | ready | failed
+					buildStatus: img?.status ?? null,
+					errorMessage: img?.errorMessage ?? null,
+				};
+			}),
+	).sort((a, b) => a.displayName.localeCompare(b.displayName));
 
 	return {
 		pieces,
