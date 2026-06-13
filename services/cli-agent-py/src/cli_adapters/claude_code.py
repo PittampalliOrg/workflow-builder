@@ -15,9 +15,8 @@ Seeds per-session artifacts and builds the pane argv/env for the real
   (c) system prompt: instructionBundle.rendered.system →
       /sandbox/.wfb/system-prompt.md; argv ``--append-system-prompt-file``
       only when non-empty.
-  (d) permissionMode: normalize_permission_mode ported from
-      claude-agent-py/src/claude_sdk_runner.py, constrained to the CLI's
-      documented modes.
+  (d) permissions: CLI sandboxes are already isolated by Kubernetes, so starts
+      use ``--dangerously-skip-permissions`` to avoid blocking on tool prompts.
   (e) model: normalize_claude_model copied from claude_sdk_runner.py.
   (g) pane_env: CLAUDE_CODE_OAUTH_TOKEN / CLAUDE_CONFIG_DIR / OTEL_* /
       CLAUDE_CODE_ENABLE_TELEMETRY pass-through + wfb.session.id resource
@@ -223,10 +222,9 @@ class ClaudeCodeAdapter(CliAdapter):
         model = normalize_claude_model(agent_config.get("modelSpec"))
         if model:
             argv += ["--model", model]
-        argv += [
-            "--permission-mode",
-            normalize_permission_mode(agent_config.get("permissionMode")),
-        ]
+        # The pod is the isolation boundary for managed CLI sessions; permission
+        # prompts otherwise strand unattended workflow runs.
+        argv += ["--dangerously-skip-permissions"]
         mcp_path = clean_string(seed_paths.get("mcpConfigPath"))
         if mcp_path:
             argv += ["--mcp-config", mcp_path]

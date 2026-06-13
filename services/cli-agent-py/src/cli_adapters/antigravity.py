@@ -312,13 +312,10 @@ class AntigravityAdapter(CliAdapter):
     def build_argv(
         self, agent_config: Mapping[str, Any], seed_paths: Mapping[str, str]
     ) -> list[str]:
-        argv: list[str] = [AGY_BIN]
+        argv: list[str] = [AGY_BIN, "--dangerously-skip-permissions"]
         model = normalize_agy_model(agent_config.get("modelSpec"))
         if model:
             argv += ["--model", model]
-        mode = clean_string(agent_config.get("permissionMode"))
-        if mode in {"bypass", "bypassPermissions", "dontAsk", "auto"}:
-            argv += ["--dangerously-skip-permissions"]
         return argv
 
     def extract_completion_text(self, payload: Mapping[str, Any]) -> str | None:

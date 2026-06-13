@@ -442,7 +442,7 @@ class CodexAdapter(CliAdapter):
     def build_argv(
         self, agent_config: Mapping[str, Any], seed_paths: Mapping[str, str]
     ) -> list[str]:
-        argv: list[str] = [CODEX_BIN, "--dangerously-bypass-hook-trust"]
+        argv: list[str] = [CODEX_BIN, "--dangerously-bypass-hook-trust", "--yolo"]
         # Resume: the re-mounted $CODEX_HOME/sessions subtree holds the prior
         # rollouts, so `codex resume --last` continues the most-recent thread
         # (no thread id needed; codex merges the TUI flags below into resume).
@@ -452,16 +452,6 @@ class CodexAdapter(CliAdapter):
         model = normalize_codex_model(agent_config.get("modelSpec"))
         if model:
             argv += ["--model", model]
-        # Sandbox/approval mapping. The K8s pod is the real isolation boundary,
-        # so codex's own landlock sandbox is disabled (danger-full-access);
-        # approvals still surface to the live user in the TUI (on-request).
-        mode = clean_string(agent_config.get("permissionMode")) or DEFAULT_PERMISSION_MODE
-        if mode in {"bypass", "bypassPermissions", "dontAsk", "auto"}:
-            argv += ["--dangerously-bypass-approvals-and-sandbox"]
-        elif mode == "plan":
-            argv += ["--sandbox", "read-only", "--ask-for-approval", "untrusted"]
-        else:
-            argv += ["--sandbox", "danger-full-access", "--ask-for-approval", "on-request"]
         return argv
 
     def extract_completion_text(self, payload: Mapping[str, Any]) -> str | None:

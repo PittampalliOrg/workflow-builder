@@ -169,7 +169,8 @@ def test_build_argv(seeded_dirs):
     )
     assert argv[0] == "claude"
     assert argv[argv.index("--model") + 1] == "claude-opus-4-8"
-    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
+    assert "--dangerously-skip-permissions" in argv
+    assert "--permission-mode" not in argv
     assert argv[argv.index("--mcp-config") + 1] == "/sandbox/.wfb/mcp.json"
     assert argv[argv.index("--append-system-prompt-file") + 1] == "/sandbox/.wfb/system-prompt.md"
 

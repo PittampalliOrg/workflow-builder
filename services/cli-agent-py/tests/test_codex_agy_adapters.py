@@ -138,15 +138,16 @@ def test_codex_build_argv_default_mode(codex_home):
     argv = get_adapter("codex").build_argv(SESSION["agentConfig"], {})
     assert argv[0] == "codex"
     assert "--dangerously-bypass-hook-trust" in argv
-    assert "--sandbox" in argv and "danger-full-access" in argv
-    assert "--ask-for-approval" in argv and "on-request" in argv
+    assert "--yolo" in argv
+    assert "--sandbox" not in argv
+    assert "--ask-for-approval" not in argv
     assert "--model" in argv and "gpt-5.5" in argv
 
 
 def test_codex_build_argv_bypass_mode(codex_home):
     cfg = {**SESSION["agentConfig"], "permissionMode": "bypass"}
     argv = get_adapter("codex").build_argv(cfg, {})
-    assert "--dangerously-bypass-approvals-and-sandbox" in argv
+    assert "--yolo" in argv
 
 
 def test_codex_seed_links_sessions_into_transcript_store(codex_home, monkeypatch, tmp_path):
@@ -323,8 +324,7 @@ def test_agy_build_argv():
     argv = get_adapter("antigravity").build_argv(AGY_SESSION["agentConfig"], {})
     assert argv[0] == "agy"
     assert "--model" in argv and "gemini-2.5-pro" in argv
-    # default mode: no skip-permissions
-    assert "--dangerously-skip-permissions" not in argv
+    assert "--dangerously-skip-permissions" in argv
 
 
 def test_agy_pane_env_strips_all_google_keys_and_pins_home(agy_home):
