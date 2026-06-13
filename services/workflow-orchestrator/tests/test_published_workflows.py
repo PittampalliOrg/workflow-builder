@@ -736,6 +736,64 @@ def test_health_is_process_local(monkeypatch):
     assert "runtimeStatus" not in response
 
 
+def test_database_url_secret_fetch_retries_until_sidecar_ready(monkeypatch):
+    APP._database_url = None
+    calls = []
+
+    class Response:
+        content = b"{}"
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"DATABASE_URL": "postgres://workflow-builder"}
+
+    def fake_get(url, **_kwargs):
+        calls.append(url)
+        if len(calls) == 1:
+            raise RuntimeError("connection refused")
+        return Response()
+
+    def fake_env_float(name, default):
+        values = {
+            "DATABASE_URL_SECRET_FETCH_TIMEOUT_SECONDS": 5.0,
+            "DATABASE_URL_SECRET_FETCH_RETRY_INTERVAL_SECONDS": 0.1,
+        }
+        return values.get(name, default)
+
+    monkeypatch.setattr(APP.requests, "get", fake_get)
+    monkeypatch.setattr(APP, "_env_float", fake_env_float)
+    monkeypatch.setattr(APP.time, "sleep", lambda _seconds: None)
+
+    try:
+        assert APP._get_database_url() == "postgres://workflow-builder"
+        assert len(calls) == 2
+    finally:
+        APP._database_url = None
+
+
+def test_database_url_secret_fetch_fails_after_bounded_retry_window(monkeypatch):
+    APP._database_url = None
+
+    def fake_get(*_args, **_kwargs):
+        raise RuntimeError("connection refused")
+
+    def fake_env_float(name, default):
+        if name == "DATABASE_URL_SECRET_FETCH_TIMEOUT_SECONDS":
+            return 0.0
+        return default
+
+    monkeypatch.setattr(APP.requests, "get", fake_get)
+    monkeypatch.setattr(APP, "_env_float", fake_env_float)
+
+    try:
+        with pytest.raises(RuntimeError, match="Failed to fetch DATABASE_URL"):
+            APP._get_database_url()
+    finally:
+        APP._database_url = None
+
+
 def test_sw_workflow_trace_context_is_isolated_per_execution():
     parent_trace_id = "0" * 31 + "1"
     parent_span_id = "0" * 15 + "2"

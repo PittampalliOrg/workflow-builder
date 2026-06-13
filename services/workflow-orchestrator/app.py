@@ -1639,29 +1639,77 @@ def _registered_workflow_descriptors() -> list[dict[str, Any]]:
 _database_url: str | None = None
 
 
+def _database_secret_fetch_timeout_seconds() -> float:
+    return max(
+        0.0,
+        _env_float("DATABASE_URL_SECRET_FETCH_TIMEOUT_SECONDS", 90.0),
+    )
+
+
+def _database_secret_fetch_retry_interval_seconds() -> float:
+    return max(
+        0.1,
+        _env_float("DATABASE_URL_SECRET_FETCH_RETRY_INTERVAL_SECONDS", 1.0),
+    )
+
+
+def _fetch_database_url_from_dapr_secret(url: str) -> str:
+    response = requests.get(
+        url,
+        headers=_dapr_api_token_headers(),
+        timeout=10,
+    )
+    response.raise_for_status()
+    secrets = response.json() if response.content else {}
+    db_url = secrets.get("DATABASE_URL") if isinstance(secrets, dict) else None
+    if not db_url:
+        raise RuntimeError("DATABASE_URL not found in Dapr secrets")
+    return str(db_url)
+
+
 def _get_database_url() -> str:
     """Fetch DATABASE_URL from the Dapr kubernetes-secrets store (cached)."""
     global _database_url
     if _database_url is not None:
         return _database_url
 
-    import requests as req
     dapr_host = config.DAPR_HOST
     dapr_port = config.DAPR_HTTP_PORT
     url = f"http://{dapr_host}:{dapr_port}/v1.0/secrets/kubernetes-secrets/workflow-builder-secrets"
+    retry_deadline = time.monotonic() + _database_secret_fetch_timeout_seconds()
+    retry_interval = _database_secret_fetch_retry_interval_seconds()
+    attempts = 0
+    last_error: Exception | None = None
 
-    try:
-        response = req.get(url, timeout=10)
-        response.raise_for_status()
-        secrets = response.json()
-        db_url = secrets.get("DATABASE_URL")
-        if not db_url:
-            raise RuntimeError("DATABASE_URL not found in Dapr secrets")
-        _database_url = db_url
-        logger.info("[Execute-By-Id] Fetched DATABASE_URL from Dapr secrets")
-        return db_url
-    except Exception as e:
-        raise RuntimeError(f"Failed to fetch DATABASE_URL: {e}")
+    while True:
+        attempts += 1
+        try:
+            db_url = _fetch_database_url_from_dapr_secret(url)
+            _database_url = db_url
+            logger.info(
+                "[Execute-By-Id] Fetched DATABASE_URL from Dapr secrets after %d attempt(s)",
+                attempts,
+            )
+            return db_url
+        except Exception as e:
+            last_error = e
+            remaining_seconds = retry_deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                break
+            sleep_seconds = min(retry_interval, remaining_seconds)
+            logger.warning(
+                "[Execute-By-Id] DATABASE_URL secret fetch failed on attempt %d; "
+                "retrying in %.1fs: %s",
+                attempts,
+                sleep_seconds,
+                e,
+            )
+            time.sleep(sleep_seconds)
+
+    raise RuntimeError(
+        "Failed to fetch DATABASE_URL from Dapr secrets after "
+        f"{attempts} attempt(s): {last_error}"
+    ) from last_error
 
 
 def _assert_execution_read_model_columns() -> None:
