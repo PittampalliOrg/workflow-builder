@@ -624,54 +624,51 @@
 	{@const availability = availabilityByPiece.get(entry.pieceName) ?? null}
 	{@const bound = boundConnection(entry)}
 	{@const availableOnly = entry.availableOnly === true}
+	{@const connected = isConnectedEntry(entry)}
 	<button
 		type="button"
-		class={`text-left rounded-md border bg-card p-3 hover:border-primary/50 hover:shadow-sm transition-colors flex flex-col gap-2 min-w-0 ${availableOnly ? 'opacity-80' : ''}`}
+		class="group relative flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card/50 p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 hover:bg-card hover:shadow-lg hover:shadow-primary/5"
 		onclick={() => openPiece(entry)}
 	>
-		<div class="flex items-start justify-between gap-2">
-			<div class="flex items-center gap-2 min-w-0">
+		<div class="flex items-start gap-3">
+			<div class="flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border/60 bg-gradient-to-b from-muted/30 to-muted/60">
 				{#if entry.logoUrl}
-					<img src={entry.logoUrl} alt="" class={`size-8 rounded shrink-0 ${availableOnly ? 'grayscale' : ''}`} />
+					<img
+						src={entry.logoUrl}
+						alt=""
+						class={`size-7 object-contain transition duration-300 ${availableOnly ? 'opacity-70 grayscale group-hover:opacity-100 group-hover:grayscale-0' : ''}`}
+					/>
 				{:else}
-					<div class="size-8 rounded bg-muted flex items-center justify-center shrink-0">
-						<Plug class="size-4 text-muted-foreground" />
-					</div>
+					<Plug class="size-5 text-muted-foreground" />
 				{/if}
-				<div class="min-w-0">
-					<div class="text-sm font-medium truncate">{entry.displayName}</div>
-					<div class="text-[10px] text-muted-foreground truncate">{entry.pieceName}</div>
+			</div>
+			<div class="min-w-0 flex-1 pt-0.5">
+				<div class="truncate text-sm font-semibold leading-tight text-foreground">{entry.displayName}</div>
+				<div class="mt-1 truncate text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+					{entry.categories[0]?.replace(/_/g, ' ') ?? 'Integration'}
 				</div>
 			</div>
 			<span
-				class={`size-2 rounded-full mt-1 shrink-0 ${availableOnly ? 'bg-amber-500' : statusDotClass(availability)}`}
-				title={availableOnly ? 'Available — request enablement' : (availability?.authStatusLabel ?? 'Server not registered')}
+				class={`mt-1.5 size-2 shrink-0 rounded-full ring-4 ${connected ? 'bg-emerald-400 ring-emerald-400/10' : availableOnly ? 'bg-amber-400 ring-amber-400/10' : availability?.registered ? 'bg-sky-400 ring-sky-400/10' : 'bg-muted-foreground/30 ring-transparent'}`}
+				title={connected ? 'Connected' : availableOnly ? 'Available — enable to use' : availability?.registered ? 'Ready to connect' : 'Not connected'}
 			></span>
 		</div>
-		<p class="text-xs text-muted-foreground line-clamp-2 min-h-[2rem]">
+		<p class="line-clamp-2 min-h-[2.5rem] text-xs leading-relaxed text-muted-foreground">
 			{entry.description ?? 'Activepieces integration'}
 		</p>
-		<div class="flex items-center gap-1 flex-wrap">
+		<div class="mt-auto flex items-center justify-between border-t border-border/40 pt-2.5 text-[11px] text-muted-foreground">
+			<span class="tabular-nums">{entry.actionCount} action{entry.actionCount === 1 ? '' : 's'}</span>
 			{#if availableOnly}
-				<Badge variant="outline" class="text-[10px] border-amber-500/40 text-amber-600 dark:text-amber-400">
-					Available — request enablement
-				</Badge>
-				<Badge variant="outline" class="text-[10px] text-muted-foreground">
-					{entry.actionCount} actions
-				</Badge>
+				<span class="font-medium text-amber-500/80">Enable to use</span>
+			{:else if connected}
+				<span class="inline-flex max-w-[150px] items-center gap-1 truncate font-medium text-emerald-500">
+					<CheckCircle2 class="size-3 shrink-0" />
+					<span class="truncate">{bound ? bound.displayName : 'Connected'}</span>
+				</span>
 			{:else}
-				<Badge variant="outline" class="text-[10px]">
-					Actions ✓ <span class="text-muted-foreground">{entry.actionCount}</span>
-				</Badge>
-				{#if availability?.registered}
-					<Badge variant="outline" class="text-[10px]">MCP ✓</Badge>
-				{/if}
-				{#if bound}
-					<Badge variant="secondary" class="text-[10px] max-w-[160px]">
-						<CheckCircle2 class="size-3" />
-						<span class="truncate">{bound.displayName}</span>
-					</Badge>
-				{/if}
+				<span class="inline-flex items-center gap-0.5 font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
+					Connect <ChevronRight class="size-3" />
+				</span>
 			{/if}
 		</div>
 	</button>
@@ -680,13 +677,18 @@
 <div class="h-full overflow-auto">
 	<div class="mx-auto max-w-7xl p-6 space-y-5">
 		<header class="flex items-start justify-between gap-4 flex-wrap">
-			<div>
-				<h1 class="text-2xl font-semibold">Integrations</h1>
-				<p class="text-sm text-muted-foreground mt-1">
-					Connect apps, browse the piece catalog, and expose approved MCP servers to workflows and managed agents.
-				</p>
+			<div class="flex items-center gap-3">
+				<div class="flex size-11 items-center justify-center rounded-xl bg-gradient-to-br from-primary/25 to-primary/5 ring-1 ring-inset ring-primary/20">
+					<LayoutGrid class="size-5 text-primary" />
+				</div>
+				<div>
+					<h1 class="text-2xl font-semibold tracking-tight">Integrations</h1>
+					<p class="mt-0.5 text-sm text-muted-foreground">
+						Connect apps and expose approved MCP servers to your workflows and agents.
+					</p>
+				</div>
 			</div>
-			<Button onclick={() => void loadAll()} variant="outline" disabled={loading}>
+			<Button onclick={() => void loadAll()} variant="outline" size="sm" disabled={loading}>
 				{#if loading}
 					<Loader2 class="size-4 animate-spin" />
 				{:else}
@@ -711,11 +713,11 @@
 
 			<TabsContent value="catalog" class="space-y-5 pt-4">
 				<div class="flex items-center gap-2 flex-wrap">
-					<div class="relative min-w-[260px] flex-1">
+					<div class="relative min-w-[240px] flex-1">
 						<Search class="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-						<Input class="pl-9" placeholder="Search integrations" bind:value={hubSearch} />
+						<Input class="h-9 border-border/60 bg-card/50 pl-9" placeholder="Search integrations…" bind:value={hubSearch} />
 					</div>
-					<div class="flex items-center rounded-md border p-0.5">
+					<div class="flex items-center gap-0.5 rounded-lg border border-border/60 bg-card/50 p-1">
 						{#each [['all', 'All'], ['connected', 'Connected'], ['available', 'Available']] as [value, label] (value)}
 							<Button
 								variant={hubFilter === value ? 'secondary' : 'ghost'}
@@ -739,10 +741,10 @@
 							</Button>
 						{/if}
 					</div>
-					<NativeSelect bind:value={hubCategory} class="w-[180px]">
+					<NativeSelect bind:value={hubCategory} class="h-9 w-[170px] border-border/60 bg-card/50">
 						<option value="ALL">All categories</option>
 						{#each hubCategories as category (category)}
-							<option value={category}>{category}</option>
+							<option value={category}>{category.replace(/_/g, ' ')}</option>
 						{/each}
 					</NativeSelect>
 				</div>
@@ -816,7 +818,7 @@
 								<Sparkles class="size-4 text-muted-foreground" />
 								<h2 class="text-sm font-semibold">Popular</h2>
 							</div>
-							<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+							<div class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
 								{#each popularEntries as entry (entry.pieceName)}
 									{@render pieceCard(entry)}
 								{/each}
@@ -830,11 +832,11 @@
 							<Badge variant="outline">{hubFilteredEntries.length}</Badge>
 						</div>
 						{#if hubFilteredEntries.length === 0}
-							<div class="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+							<div class="rounded-xl border border-dashed border-border/60 p-12 text-center text-sm text-muted-foreground">
 								No integrations match this filter.
 							</div>
 						{:else}
-							<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+							<div class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
 								{#each hubFilteredEntries as entry (entry.pieceName)}
 									{@render pieceCard(entry)}
 								{/each}
