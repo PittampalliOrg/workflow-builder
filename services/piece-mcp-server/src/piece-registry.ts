@@ -39,6 +39,7 @@ import { microsoftTodo } from "@activepieces/piece-microsoft-todo";
 import { monday } from "@activepieces/piece-monday";
 import { nocodb } from "@activepieces/piece-nocodb";
 import { notion } from "@activepieces/piece-notion";
+import { ntfy } from "@activepieces/piece-ntfy";
 import { openai } from "@activepieces/piece-openai";
 import { perplexityAi } from "@activepieces/piece-perplexity-ai";
 import { postgres } from "@activepieces/piece-postgres";
@@ -65,6 +66,7 @@ export const PIECES: Record<string, Piece> = {
 	gmail: gmail as unknown as Piece,
 	"google-drive": googleDrive as unknown as Piece,
 	notion: notion as unknown as Piece,
+	ntfy: ntfy as unknown as Piece,
 	airtable: airtable as unknown as Piece,
 	discord: discord as unknown as Piece,
 	"microsoft-teams": microsoftTeams as unknown as Piece,

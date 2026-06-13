@@ -3,7 +3,7 @@
   "catalogSchemaVersion": 1,
   "generatedAt": "2026-06-13T02:06:03.560Z",
   "generator": "gen-catalog-snapshot",
-  "count": 666,
+  "count": 665,
   "failures": [
     {
       "pkg": "@activepieces/piece-ai",
@@ -30242,48 +30242,6 @@
         }
       },
       "sourcePackage": "@activepieces/piece-ninox"
-    },
-    {
-      "name": "ntfy",
-      "authors": [
-        "MyWay",
-        "facferreira",
-        "la3rence",
-        "kishanprmr",
-        "MoShizzle",
-        "khaledmashaly",
-        "abuaboud"
-      ],
-      "displayName": "ntfy",
-      "logoUrl": "https://cdn.activepieces.com/pieces/ntfy.png",
-      "description": "Notification management made easy",
-      "version": "0.2.5",
-      "minimumSupportedRelease": "0.82.0",
-      "maximumSupportedRelease": "9999.9999.9999",
-      "authType": "CUSTOM_AUTH",
-      "categories": [
-        "COMMUNICATION"
-      ],
-      "pieceType": "OFFICIAL",
-      "packageType": "REGISTRY",
-      "catalogSchemaVersion": 1,
-      "catalogDigest": "sha256:617118343ce37afede8c5957332c0c17a256d24e99cbf2afaf8eeb65b117de78",
-      "actions": {
-        "send_notification": {
-          "name": "send_notification",
-          "displayName": "Send Notification",
-          "description": "Send a notification to ntfy",
-          "requireAuth": true
-        },
-        "custom_api_call": {
-          "name": "custom_api_call",
-          "displayName": "Custom API Call",
-          "description": "Make a custom API call to a specific endpoint",
-          "requireAuth": true
-        }
-      },
-      "triggers": {},
-      "sourcePackage": "@activepieces/piece-ntfy"
     },
     {
       "name": "nuelink",

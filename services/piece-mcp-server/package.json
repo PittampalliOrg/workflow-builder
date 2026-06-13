@@ -47,6 +47,7 @@
 		"@activepieces/piece-monday": "0.3.2",
 		"@activepieces/piece-nocodb": "0.4.3",
 		"@activepieces/piece-notion": "0.5.3",
+		"@activepieces/piece-ntfy": "0.2.5",
 		"@activepieces/piece-openai": "0.7.4",
 		"@activepieces/piece-perplexity-ai": "0.3.2",
 		"@activepieces/piece-postgres": "0.2.2",
