@@ -1,0 +1,236 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentConfig } from "$lib/types/agents";
+
+const mocks = vi.hoisted(() => {
+	const state = {
+		selectRows: [] as unknown[][],
+		inserted: [] as unknown[],
+		updates: [] as unknown[],
+		hostCalls: [] as unknown[],
+		credentials: {} as Record<string, { token: string; expiresAt: Date | null }>,
+	};
+
+	function selectChain(rows: unknown[]) {
+		const chain = {
+			from: vi.fn(() => chain),
+			leftJoin: vi.fn(() => chain),
+			where: vi.fn(() => chain),
+			limit: vi.fn(async () => rows),
+		};
+		return chain;
+	}
+
+	const db = {
+		select: vi.fn(() => selectChain(state.selectRows.shift() ?? [])),
+		insert: vi.fn(() => ({
+			values: vi.fn(async (value: unknown) => {
+				state.inserted.push(value);
+				return [];
+			}),
+		})),
+		update: vi.fn(() => ({
+			set: vi.fn((value: unknown) => {
+				state.updates.push(value);
+				return { where: vi.fn(async () => []) };
+			}),
+		})),
+	};
+
+	return {
+		state,
+		db,
+		validateInternalToken: vi.fn(() => true),
+		findOrCreateEphemeralAgent: vi.fn(async () => ({
+			agentId: "agent-test",
+			agentVersion: 4,
+		})),
+		syncAgentRuntimeCR: vi.fn(async () => undefined),
+		compilePromptStack: vi.fn(async () => ({
+			static: [],
+			dynamic: [],
+			staticManifest: [],
+			dynamicManifest: [],
+		})),
+		getUserCliCredential: vi.fn(async (_userId: string, provider: string) => {
+			return state.credentials[provider] ?? null;
+		}),
+		maybeProvisionAgentWorkflowHost: vi.fn(async (params: unknown) => {
+			state.hostCalls.push(params);
+			return {
+				agentAppId: "agent-session-test",
+				sandboxName: "sandbox-test",
+				status: "ready",
+			};
+		}),
+	};
+});
+
+vi.mock("$lib/server/internal-auth", () => ({
+	validateInternalToken: mocks.validateInternalToken,
+}));
+
+vi.mock("$lib/server/db", () => ({
+	db: mocks.db,
+}));
+
+vi.mock("$lib/server/agents/ephemeral", () => ({
+	findOrCreateEphemeralAgent: mocks.findOrCreateEphemeralAgent,
+}));
+
+vi.mock("$lib/server/agents/registry-sync", () => ({
+	syncAgentRuntimeCR: mocks.syncAgentRuntimeCR,
+}));
+
+vi.mock("$lib/server/prompt-presets", () => ({
+	compilePromptStack: mocks.compilePromptStack,
+}));
+
+vi.mock("$lib/server/users/cli-credentials", () => ({
+	getUserCliCredential: mocks.getUserCliCredential,
+}));
+
+vi.mock("$lib/server/sessions/agent-workflow-host", () => ({
+	extractTraceContext: () => ({
+		traceparent: null,
+		tracestate: null,
+		baggage: null,
+	}),
+	maybeProvisionAgentWorkflowHost: mocks.maybeProvisionAgentWorkflowHost,
+}));
+
+vi.mock("$lib/server/sessions/registry", () => ({
+	addResource: vi.fn(async () => undefined),
+	createSession: vi.fn(),
+	listResources: vi.fn(async () => []),
+}));
+
+vi.mock("$lib/server/sessions/repositories", () => ({
+	mountSessionRepositories: vi.fn(async () => undefined),
+}));
+
+vi.mock("$lib/server/sessions/events", () => ({
+	appendEvent: vi.fn(async () => undefined),
+	sendUserEvent: vi.fn(async () => undefined),
+}));
+
+vi.mock("$lib/server/observability/mlflow-lifecycle", () => ({
+	registerAgentVersionInMlflow: vi.fn(async () => null),
+	safeCreateWorkflowAgentMlflowRun: vi.fn(async () => null),
+}));
+
+import { POST } from "./+server";
+
+const RUNTIME_POLICY = {
+	allowToolNarrowing: true,
+	allowServerAdditions: false,
+	allowCredentialBinding: true,
+	allowSkillAdditions: false,
+	allowSkillNarrowing: true,
+};
+
+function agentConfig(runtime: AgentConfig["runtime"], modelSpec: string): AgentConfig {
+	return {
+		runtime,
+		// Deliberately wrong. The bridge must stamp from the runtime descriptor,
+		// not trust user input or stored stale config.
+		cliAdapter: "claude-code",
+		modelSpec,
+		builtinTools: [],
+		mcpConnectionMode: "explicit",
+		mcpServers: [],
+		skills: [],
+		runtimeOverridePolicy: RUNTIME_POLICY,
+	};
+}
+
+async function callEnsureForWorkflow(params: {
+	runtime: AgentConfig["runtime"];
+	modelSpec: string;
+	provider: string;
+	token: string;
+}) {
+	mocks.state.selectRows = [
+		[],
+		[{ slug: "test-agent", runtimeAppId: "agent-runtime-test-agent" }],
+	];
+	mocks.state.credentials = {
+		[params.provider]: { token: params.token, expiresAt: null },
+	};
+	const body = {
+		sessionId: `sess-${params.runtime}`,
+		workflowId: "wf-1",
+		nodeId: "run-agent",
+		nodeName: "Run agent",
+		userId: "user-1",
+		projectId: "project-1",
+		agentSlug: "test-agent",
+		agentConfig: agentConfig(params.runtime, params.modelSpec),
+	};
+	const request = new Request("http://workflow-builder/internal", {
+		method: "POST",
+		headers: { Authorization: "Bearer internal" },
+		body: JSON.stringify(body),
+	});
+	const response = await POST({ request } as never);
+	return (await response.json()) as Record<string, unknown>;
+}
+
+describe("ensure-for-workflow interactive CLI dispatch", () => {
+	beforeEach(() => {
+		mocks.state.selectRows = [];
+		mocks.state.inserted = [];
+		mocks.state.updates = [];
+		mocks.state.hostCalls = [];
+		mocks.state.credentials = {};
+		vi.clearAllMocks();
+	});
+
+	it.each([
+		{
+			runtime: "codex-cli" as const,
+			modelSpec: "openai/gpt-5.5",
+			provider: "openai",
+			adapter: "codex",
+			envVar: "CODEX_AUTH_JSON",
+			token: '{"tokens":{"refresh_token":"codex"}}',
+		},
+		{
+			runtime: "claude-code-cli" as const,
+			modelSpec: "anthropic/claude-opus-4-8",
+			provider: "anthropic",
+			adapter: "claude-code",
+			envVar: "CLAUDE_CODE_OAUTH_TOKEN",
+			token: "claude-token",
+		},
+		{
+			runtime: "agy-cli" as const,
+			modelSpec: "gemini/gemini-2.5-pro",
+			provider: "google",
+			adapter: "antigravity",
+			envVar: "AGY_AUTH_JSON",
+			token: "agy-bundle",
+		},
+	])(
+		"stamps $adapter and projects only $envVar for $runtime",
+		async ({ runtime, modelSpec, provider, adapter, envVar, token }) => {
+			const payload = await callEnsureForWorkflow({
+				runtime,
+				modelSpec,
+				provider,
+				token,
+			});
+			const childInput = payload.childInput as Record<string, unknown>;
+			const childAgentConfig = childInput.agentConfig as Record<string, unknown>;
+			expect(childAgentConfig.runtime).toBe(runtime);
+			expect(childAgentConfig.cliAdapter).toBe(adapter);
+
+			const hostCall = mocks.state.hostCalls[0] as {
+				agentConfig: Record<string, unknown>;
+				sessionSecretEnv: Record<string, string>;
+			};
+			expect(hostCall.agentConfig.cliAdapter).toBe(adapter);
+			expect(Object.keys(hostCall.sessionSecretEnv)).toEqual([envVar]);
+			expect(hostCall.sessionSecretEnv[envVar]).toBe(token);
+		},
+	);
+});

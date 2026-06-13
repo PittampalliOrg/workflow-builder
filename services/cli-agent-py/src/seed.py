@@ -11,17 +11,13 @@ import logging
 from typing import Any, Mapping
 
 from src.cli_adapters import get_adapter
+from src.cli_adapters.base import adapter_name_for_session_input
 
 logger = logging.getLogger(__name__)
 
 
 def adapter_name_for(input_data: Mapping[str, Any]) -> str | None:
-    agent_config = input_data.get("agentConfig")
-    if isinstance(agent_config, Mapping):
-        name = agent_config.get("cliAdapter")
-        if isinstance(name, str) and name.strip():
-            return name.strip()
-    return None
+    return adapter_name_for_session_input(input_data)
 
 
 def seed_session_activity(

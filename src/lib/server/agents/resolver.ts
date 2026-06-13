@@ -34,6 +34,7 @@ import {
 	agentRuntimeDedicatedAppId,
 	resolveAgentRuntimeRoute,
 } from "./runtime-routing";
+import { getRuntimeDescriptor } from "./runtime-registry";
 
 export class AgentRefResolutionError extends Error {
 	constructor(
@@ -199,7 +200,7 @@ export async function resolveSpecAgentRefs(
 		// Flatten the agent's capability bundles (Pillar 2) into the base config,
 		// then layer node/session overrides on top.
 		const flattened = await flattenBundles(resolved.config, resolved.projectId);
-		const config = await applyOverrides(flattened, overrides, resolved.projectId);
+		let config = await applyOverrides(flattened, overrides, resolved.projectId);
 		// Hydrate attached skills from agent_skill_registry. The agent's stored
 		// config only carries the `registryId` pointer — the Python runtime
 		// needs `prompt`, `allowed_tools`, and `packageManifest.files` inline
@@ -207,6 +208,7 @@ export async function resolveSpecAgentRefs(
 		// this hydration, `_extract_skill_configs` in dapr-agent-py skips the
 		// skill because `prompt` is empty.
 		await hydrateSkillsFromRegistry(config);
+		config = stampCliAdapterForRuntime(config);
 		const prompt = pickPrompt(withBlock, bodyRecord);
 		const sandboxPolicy = environment
 			? deriveSandboxPolicy(environment, overrides?.sandboxPolicy)
@@ -340,6 +342,17 @@ export async function resolveSpecAgentRefs(
 	}
 
 	return cloned;
+}
+
+function stampCliAdapterForRuntime(config: AgentConfig): AgentConfig {
+	const descriptor = getRuntimeDescriptor(config.runtime);
+	if (!descriptor?.capabilities?.interactiveTerminal || !descriptor.cliAdapter) {
+		return config;
+	}
+	return {
+		...config,
+		cliAdapter: descriptor.cliAdapter as AgentConfig["cliAdapter"],
+	};
 }
 
 const PERSONA_OVERRIDE_FIELDS = [

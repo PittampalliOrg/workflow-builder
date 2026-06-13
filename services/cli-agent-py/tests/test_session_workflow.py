@@ -162,6 +162,24 @@ def test_result_contract_reports_selected_cli_runtime(monkeypatch):
     assert stop.value.value["agentRuntime"] == "codex-cli"
 
 
+def test_seed_rejects_codex_runtime_without_cli_adapter():
+    with pytest.raises(
+        ValueError,
+        match='agentConfig.runtime "codex-cli" requires agentConfig.cliAdapter "codex"',
+    ):
+        sw.seed_session_activity({"agentConfig": {"runtime": "codex-cli"}})
+
+
+def test_seed_rejects_mismatched_cli_adapter():
+    with pytest.raises(
+        ValueError,
+        match='agentConfig.runtime "agy-cli" requires agentConfig.cliAdapter "antigravity"',
+    ):
+        sw.seed_session_activity(
+            {"agentConfig": {"runtime": "agy-cli", "cliAdapter": "claude-code"}}
+        )
+
+
 def test_nonzero_exit_code_fails_run(monkeypatch):
     ctx = FakeCtx()
     driver = WorkflowDriver(ctx, dict(BASE_INPUT), monkeypatch)
@@ -227,7 +245,9 @@ def test_persisted_cancel_flag_terminates_on_probe_path(monkeypatch):
     timer = driver.timer_task()
     yielded = driver.gen.send(timer)
     assert yielded.kind == "activity:check_cancellation_activity"
-    yielded = driver.gen.send({"cancelled": True, "request": {"type": "session.terminate"}})
+    yielded = driver.gen.send(
+        {"cancelled": True, "request": {"type": "session.terminate"}}
+    )
     assert yielded.kind == "activity:stop_cli_activity"
     with pytest.raises(StopIteration) as stop:
         driver.gen.send({"ok": True})

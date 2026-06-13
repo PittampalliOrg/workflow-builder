@@ -358,13 +358,17 @@ export const POST: RequestHandler = async ({ request }) => {
 	const swapTarget = getRuntimeDescriptor(
 		(agentConfig as { runtime?: string }).runtime,
 	);
+	const dispatchAgentConfig: AgentConfig = stampCliAdapterForDispatch(
+		agentConfig,
+		swapTarget,
+	);
 	const swapVerdict = swapTarget
-		? evaluateSwap(agentConfig as Record<string, unknown>, swapTarget)
+		? evaluateSwap(dispatchAgentConfig as Record<string, unknown>, swapTarget)
 		: null;
-		if (swapTarget && swapVerdict && swapVerdict.drops.length > 0) {
-			console.warn(
-				`[swap-safety] workflow session ${sessionId} -> runtime "${swapTarget.id}" ${swapVerdict.decision}: ` +
-					swapVerdict.drops.map((d) => `${d.capability}(${d.severity})`).join(", "),
+	if (swapTarget && swapVerdict && swapVerdict.drops.length > 0) {
+		console.warn(
+			`[swap-safety] workflow session ${sessionId} -> runtime "${swapTarget.id}" ${swapVerdict.decision}: ` +
+				swapVerdict.drops.map((d) => `${d.capability}(${d.severity})`).join(", "),
 		);
 		for (const d of swapVerdict.drops) console.warn(`[swap-safety]   ${d.detail}`);
 		if (swapVerdict.decision === "reject") {
@@ -375,17 +379,17 @@ export const POST: RequestHandler = async ({ request }) => {
 						.filter((d) => d.severity === "reject")
 						.map((d) => d.detail)
 						.join("; "),
-				);
-			}
+			);
 		}
-		const workflowSessionSecretEnv = await resolveWorkflowSessionSecretEnv({
-			userId,
-			runtimeDescriptor: swapTarget,
-		});
+	}
+	const workflowSessionSecretEnv = await resolveWorkflowSessionSecretEnv({
+		userId,
+		runtimeDescriptor: swapTarget,
+	});
 
-		// Idempotent: if a session with this deterministic id already exists, return it.
-		const [existing] = await db
-			.select()
+	// Idempotent: if a session with this deterministic id already exists, return it.
+	const [existing] = await db
+		.select()
 		.from(sessions)
 		.where(eq(sessions.id, sessionId))
 		.limit(1);
@@ -411,20 +415,20 @@ export const POST: RequestHandler = async ({ request }) => {
 		const reuseWakeSlug = await resolveWakeSlug({
 			bodyAgentSlug,
 			bodyAgentAppId: reuseAgentAppId,
-			agentConfig,
+			agentConfig: dispatchAgentConfig,
 			agentId: existing.agentId,
 		});
 		const reuseHost = await maybeProvisionAgentWorkflowHost({
 			sessionId: existing.id,
-			agentConfig,
+			agentConfig: dispatchAgentConfig,
 			workflowExecutionId,
 			benchmarkRunId,
-				benchmarkInstanceId,
-				benchmarkExecutionClass,
-				timeoutMinutes: bridgeTimeoutMinutes,
-				traceContext,
-				sessionSecretEnv: workflowSessionSecretEnv,
-			});
+			benchmarkInstanceId,
+			benchmarkExecutionClass,
+			timeoutMinutes: bridgeTimeoutMinutes,
+			traceContext,
+			sessionSecretEnv: workflowSessionSecretEnv,
+		});
 		const reuseChildAppId = reuseHost?.agentAppId ?? reuseAgentAppId;
 		const reuseRuntimeSandboxName =
 			reuseHost?.sandboxName ?? existing.runtimeSandboxName ?? null;
@@ -480,7 +484,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			agentHostStatus: reuseHost?.status ?? null,
 			childInput: buildChildInput({
 				sessionId: existing.id,
-				agentConfig,
+				agentConfig: dispatchAgentConfig,
 				instructionBundle,
 				environmentConfig,
 				workflowId,
@@ -517,7 +521,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		(await findOrCreateEphemeralAgent({
 			workflowId,
 			nodeId,
-			agentConfig,
+			agentConfig: dispatchAgentConfig,
 			userId,
 		}));
 	const { agentId, agentVersion } = sessionAgent;
@@ -534,7 +538,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	// defaults via a follow-up lookup. To keep a single code path, we do a
 	// direct insert here since createSession doesn't accept a pre-computed id.
 	const incomingSandboxName =
-		bridgeSandboxName ?? agentConfig.runtime ?? "dapr-agent-py";
+		bridgeSandboxName ?? dispatchAgentConfig.runtime ?? "dapr-agent-py";
 	await db.insert(sessions).values({
 		id: sessionId,
 		title,
@@ -594,7 +598,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		(bodyAgentSlug ? agentRuntimeDedicatedAppId(bodyAgentSlug) : null);
 	const sessionHost = await maybeProvisionAgentWorkflowHost({
 		sessionId,
-		agentConfig,
+		agentConfig: dispatchAgentConfig,
 		workflowExecutionId,
 		benchmarkRunId,
 		benchmarkInstanceId,
@@ -635,7 +639,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	const wakeSlug = await resolveWakeSlug({
 		bodyAgentSlug,
 		bodyAgentAppId: childAgentAppId,
-		agentConfig,
+		agentConfig: dispatchAgentConfig,
 		agentId,
 	});
 	if (sessionHost) {
@@ -673,8 +677,8 @@ export const POST: RequestHandler = async ({ request }) => {
 	// clones its repos. Idempotent: skip if repo rows already exist (re-invoke /
 	// reused session). The agentConfig is forwarded by the orchestrator bridge,
 	// so no orchestrator change is needed.
-	const configRepositories = Array.isArray(agentConfig.repositories)
-		? agentConfig.repositories
+	const configRepositories = Array.isArray(dispatchAgentConfig.repositories)
+		? dispatchAgentConfig.repositories
 		: [];
 	if (configRepositories.length > 0) {
 		const existing = await listResources(sessionId);
@@ -741,7 +745,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		agentHostStatus: sessionHost?.status ?? null,
 		childInput: buildChildInput({
 			sessionId,
-			agentConfig,
+			agentConfig: dispatchAgentConfig,
 			instructionBundle,
 			environmentConfig,
 			workflowId,
@@ -768,6 +772,25 @@ export const POST: RequestHandler = async ({ request }) => {
 		reused: false,
 	});
 };
+
+function stampCliAdapterForDispatch(
+	agentConfig: AgentConfig,
+	runtimeDescriptor: RuntimeDescriptor | undefined,
+): AgentConfig {
+	if (!runtimeDescriptor?.capabilities?.interactiveTerminal) {
+		return agentConfig;
+	}
+	if (!runtimeDescriptor.cliAdapter) {
+		throw error(
+			500,
+			`Runtime "${runtimeDescriptor.id}" supports interactive terminals but has no cliAdapter in the runtime registry`,
+		);
+	}
+	return {
+		...agentConfig,
+		cliAdapter: runtimeDescriptor.cliAdapter as AgentConfig["cliAdapter"],
+	};
+}
 
 async function resolveWorkflowSessionSecretEnv(params: {
 	userId: string;

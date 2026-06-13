@@ -44,7 +44,9 @@ def link_transcript_subtree(cli_transcript_dir: Path, store_subdir: str) -> str 
         return None
     mount = Path(mount_raw)
     if not mount.is_dir():
-        logger.warning("CLI_TRANSCRIPT_MOUNT=%s is not a directory; skipping", mount_raw)
+        logger.warning(
+            "CLI_TRANSCRIPT_MOUNT=%s is not a directory; skipping", mount_raw
+        )
         return None
     target = mount / store_subdir
     try:
@@ -248,6 +250,11 @@ def hook_relay_command(path: Path, *, adapter: str, event: str) -> str:
 
 _REGISTRY: dict[str, CliAdapter] = {}
 DEFAULT_ADAPTER_NAME = "claude-code"
+RUNTIME_ADAPTERS = {
+    "claude-code-cli": "claude-code",
+    "codex-cli": "codex",
+    "agy-cli": "antigravity",
+}
 
 
 def register_adapter(adapter: CliAdapter) -> None:
@@ -261,4 +268,40 @@ def get_adapter(name: str | None = None) -> CliAdapter:
         adapter = _REGISTRY.get(DEFAULT_ADAPTER_NAME)
     if adapter is None:
         raise KeyError(f"No CLI adapter registered for '{key}'")
+    return adapter
+
+
+def adapter_name_for_session_input(input_data: Mapping[str, Any]) -> str | None:
+    """Resolve the adapter from lifecycle workflow input.
+
+    Legacy/direct callers that provide neither runtime nor cliAdapter retain the
+    historical get_adapter(None) default. Once a runtime descriptor is stamped,
+    the adapter must be present and must match that runtime; otherwise a Codex
+    or Antigravity workflow would silently launch Claude Code.
+    """
+
+    agent_config = input_data.get("agentConfig")
+    if not isinstance(agent_config, Mapping):
+        return None
+    raw_adapter = agent_config.get("cliAdapter")
+    adapter = (
+        raw_adapter.strip()
+        if isinstance(raw_adapter, str) and raw_adapter.strip()
+        else None
+    )
+    raw_runtime = agent_config.get("runtime")
+    runtime = (
+        raw_runtime.strip()
+        if isinstance(raw_runtime, str) and raw_runtime.strip()
+        else None
+    )
+    expected = RUNTIME_ADAPTERS.get(runtime or "")
+    if not expected:
+        return adapter
+    if adapter != expected:
+        got = adapter or "<missing>"
+        raise ValueError(
+            f'agentConfig.runtime "{runtime}" requires agentConfig.cliAdapter '
+            f'"{expected}", got "{got}"'
+        )
     return adapter
