@@ -21,7 +21,11 @@ USER mcpserver
 
 # This image serves exactly this piece. SINGLE_PIECE_MODE=true is inherited from the base.
 ENV PIECE_NAME=${PIECE_PKG}
-# One piece fits comfortably in a small heap (vs the bundle's 640MB).
-ENV NODE_OPTIONS="--max-old-space-size=192"
+# Per-piece envelope: 384MB heap inside a 512Mi container (still far below the 48-piece
+# bundle's 640MB heap). 192MB was too tight — the framework + piece load + self-contained
+# metadata build is ~150-190MB at startup, so heavier pieces (e.g. gotify, rss) OOM'd at
+# 192. The reconciler sets the matching container limit (MCP_MEMORY_LIMIT_PERPIECE=512Mi)
+# and re-applies this heap via node_heap; the smoke test runs the image under --memory=512m.
+ENV NODE_OPTIONS="--max-old-space-size=384"
 
 CMD ["node", "dist/index.js"]
