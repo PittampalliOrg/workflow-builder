@@ -9,6 +9,12 @@ import {
 } from "$lib/server/db/schema";
 import { and, eq } from "drizzle-orm";
 import { error, fail } from "@sveltejs/kit";
+import { getAppUrl } from "$lib/server/app-url";
+import {
+	enablePiece,
+	getPieceImageStatuses,
+	isValidPieceSlug,
+} from "$lib/server/pieces/piece-images";
 
 // Mirrors PINNED_PIECES in the activepieces-mcp reconciler — always-on regardless
 // of the disable list (shown so an admin knows disabling won't reap them).
@@ -30,8 +36,9 @@ async function requireAdmin(userId: string | undefined | null): Promise<void> {
 }
 
 export const load: PageServerLoad = async () => {
-	if (!db) return { pieces: [], total: 0, enabledCount: 0 };
-	const [pieces, disabled, wfRefs, mcpEnabled] = await Promise.all([
+	if (!db)
+		return { pieces: [], available: [], total: 0, enabledCount: 0, availableCount: 0 };
+	const [bundled, availableRows, disabled, wfRefs, mcpEnabled] = await Promise.all([
 		db
 			.select({
 				name: pieceMetadata.name,
@@ -39,11 +46,19 @@ export const load: PageServerLoad = async () => {
 				logoUrl: pieceMetadata.logoUrl,
 			})
 			.from(pieceMetadata)
-			// Only bundled/runnable pieces are disable-able here. Available-only rows
-			// (the AP catalog not bundled in the image) are surfaced for discovery on
-			// the connections page, not in this disable list — enabling one needs a
-			// bundle + image rebuild, not a DB toggle. See docs/activepieces-catalog-expansion.md.
+			// Bundled/runnable pieces (in the shared image OR with a ready per-piece image).
 			.where(and(eq(pieceMetadata.catalogSchemaVersion, 1), eq(pieceMetadata.availableOnly, false))),
+		db
+			.select({
+				name: pieceMetadata.name,
+				displayName: pieceMetadata.displayName,
+				logoUrl: pieceMetadata.logoUrl,
+			})
+			.from(pieceMetadata)
+			// Available-only catalog pieces (NOT yet provisioned). With per-piece runtime
+			// images these are now enable-able here: enabling builds/pins a dedicated
+			// ap-piece-<name> image (docs/per-piece-runtime-images.md) — no bundle rebuild.
+			.where(and(eq(pieceMetadata.catalogSchemaVersion, 1), eq(pieceMetadata.availableOnly, true))),
 		db.select({ pieceName: platformDisabledPieces.pieceName }).from(platformDisabledPieces),
 		db.selectDistinct({ pieceName: workflowConnectionRefs.pieceName }).from(workflowConnectionRefs),
 		db
@@ -51,11 +66,25 @@ export const load: PageServerLoad = async () => {
 			.from(mcpConnections)
 			.where(and(eq(mcpConnections.sourceType, "nimble_piece"), eq(mcpConnections.status, "ENABLED"))),
 	]);
+
 	const disabledSet = new Set(disabled.map((d) => d.pieceName));
 	const inUse = new Set<string>();
 	for (const r of wfRefs) if (r.pieceName) inUse.add(r.pieceName);
 	for (const r of mcpEnabled) if (r.pieceName) inUse.add(r.pieceName);
-	const rows = pieces
+
+	const bundledNames = bundled.map((p) => p.name).filter((n): n is string => !!n);
+	const availableNames = availableRows.map((p) => p.name).filter((n): n is string => !!n);
+	const imageStatuses = await getPieceImageStatuses([...bundledNames, ...availableNames]);
+
+	// A piece is enabled-via-per-piece-image when it has a ready+enabled image row. Such
+	// a piece stays available_only=true (metadata-sync owns that as bundle membership),
+	// but it IS provisioned — so reclassify it into the "provisioned" list, not "available".
+	const enabledByImage = (name: string) => {
+		const img = imageStatuses.get(name);
+		return img?.status === "ready" && img.enabled === true;
+	};
+
+	const bundledPieces = bundled
 		.filter((p): p is { name: string; displayName: string; logoUrl: string } => !!p.name)
 		.map((p) => ({
 			name: p.name,
@@ -64,12 +93,47 @@ export const load: PageServerLoad = async () => {
 			enabled: !disabledSet.has(p.name),
 			inUse: inUse.has(p.name),
 			pinned: PINNED.has(p.name),
-		}))
+			perPiece: imageStatuses.get(p.name)?.status === "ready",
+		}));
+
+	// Available-only pieces that have been enabled onto their own per-piece image.
+	const perPieceEnabled = availableRows
+		.filter((p): p is { name: string; displayName: string; logoUrl: string } => !!p.name && enabledByImage(p.name))
+		.map((p) => ({
+			name: p.name,
+			displayName: p.displayName ?? p.name,
+			logoUrl: p.logoUrl,
+			enabled: !disabledSet.has(p.name),
+			inUse: inUse.has(p.name),
+			pinned: PINNED.has(p.name),
+			perPiece: true,
+		}));
+
+	const pieces = [...bundledPieces, ...perPieceEnabled].sort((a, b) =>
+		a.displayName.localeCompare(b.displayName),
+	);
+
+	const available = availableRows
+		.filter((p): p is { name: string; displayName: string; logoUrl: string } => !!p.name && !enabledByImage(p.name))
+		.map((p) => {
+			const img = imageStatuses.get(p.name);
+			return {
+				name: p.name,
+				displayName: p.displayName ?? p.name,
+				logoUrl: p.logoUrl,
+				// build lifecycle: null (never built) | building | ready | failed
+				buildStatus: img?.status ?? null,
+				errorMessage: img?.errorMessage ?? null,
+			};
+		})
 		.sort((a, b) => a.displayName.localeCompare(b.displayName));
+
 	return {
-		pieces: rows,
-		total: rows.length,
-		enabledCount: rows.filter((r) => r.enabled).length,
+		pieces,
+		available,
+		total: pieces.length,
+		enabledCount: pieces.filter((r) => r.enabled).length,
+		availableCount: available.length,
 	};
 };
 
@@ -97,5 +161,24 @@ export const actions: Actions = {
 				.onConflictDoNothing();
 		}
 		return { success: true, pieceName, enabled: enable };
+	},
+
+	// Enable an available-only catalog piece via its per-piece runtime image. Instant
+	// when the GHCR image already exists; otherwise records `building` + triggers a
+	// hub build (docs/per-piece-runtime-images.md).
+	enable: async ({ request, locals, url }) => {
+		await requireAdmin(locals.session?.userId);
+		const form = await request.formData();
+		const pieceName = String(form.get("pieceName") ?? "").trim();
+		if (!pieceName || !isValidPieceSlug(pieceName)) return fail(400, { error: "valid pieceName required" });
+		if (!db) return fail(503, { error: "Database not configured" });
+		try {
+			const callbackUrl = await getAppUrl(url, request);
+			const result = await enablePiece(pieceName, { callbackUrl });
+			return { success: true, ...result };
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : "enable failed";
+			return fail(/not in the catalog/.test(msg) ? 404 : 500, { error: msg, pieceName });
+		}
 	},
 };

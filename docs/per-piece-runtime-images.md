@@ -78,4 +78,47 @@ A **base runtime image** + **per-piece images** (base + one `npm install`), a **
 ## 5. Recommendation
 For the catalog-expansion goal (enable any of 665), **per-piece images are the right target** — they delete the memory-scaling, dep-conflict, and full-rebuild costs in one move and make "enable" a clean, isolated, build-on-demand operation. It's a real but bounded refactor (runtime single-piece load + registry + reconciler ref + build job). The single bundle stays simpler for a *small fixed* set; it does not scale to the catalog. Suggested sequencing: keep the bundle for the current ~48, build the per-piece path behind a flag, migrate piece-by-piece (a piece can run from either an entry in `piece_images` or the bundle fallback during transition).
 
+## 6. Implementation status (SHIPPED)
+
+**Phase A — functional core (2026-06-10/13).** `piece_images` table (drizzle 0087); the
+`piece-mcp-server` single-piece seam (`SINGLE_PIECE_MODE`, `loadPieceDynamic`,
+`Dockerfile.base` + `Dockerfile.piece`); the reconciler dual-path (per-piece image when a
+ready row exists, else bundle). Proven on dev/ryzen: `ap-ntfy-service` + `ap-json-service`
+run on their own `ap-piece-<name>` images (~145 MB RSS / 256 Mi, no OOM).
+
+**Self-contained metadata (2026-06-13).** A single-piece image now derives its catalog
+metadata **directly from the installed piece package** (`buildPieceCatalogRow`) instead of
+the DB, gated on `SINGLE_PIECE_MODE`. This (a) removes the `DATABASE_URL` startup
+dependency, (b) lets the build pipeline smoke the image with no database, and (c) fixes
+**incomplete available-only snapshots** — e.g. the `json` piece's `convert_json_to_text`
+action was missing `inputSchema` in the DB snapshot but is complete from the package. The
+shared bundle image still reads the DB (one catalog, many pieces).
+
+**Phase B — build-on-enable automation (2026-06-13).**
+- **Enable is per-cluster + instant when the image exists.** The `ap-piece-<name>:<ver>`
+  image is GLOBAL (GHCR), so enabling splits from building: `enablePiece()`
+  (`src/lib/server/pieces/piece-images.ts`) resolves the catalog version, HEAD-checks GHCR
+  (authed via `GITHUB_TOKEN`), and either writes a `ready` `piece_images` row instantly or
+  writes `building` + triggers a hub build. Surfaces: admin REST
+  `POST /api/admin/pieces/[piece]/enable` + the admin pieces page "Available to enable"
+  section; the build callback is `POST /api/internal/pieces/[piece]/image-registration`.
+- **Enable signal = the `piece_images` row, NOT an `available_only` flip.** `available_only`
+  is owned by the metadata-sync as "bundle membership" and is reverted on its next run, so
+  the reconciler instead provisions any available-only piece that has a **ready + enabled**
+  `piece_images` row (relaxed `AO_FILTER`). "Runnable" is no longer ⊆ "bundled".
+- **Hub Tekton build pipeline** (`stacks .../outer-loop-builds/`): `perpiece-image-build`
+  (validate → buildkit `FROM piece-runtime-base` + `npm install` one piece → dind `/health`
+  smoke under 256 Mi → register callback), an isolated `perpiece-build` EventListener
+  (github-HMAC interceptor; BFF signs `X-Hub-Signature-256`), and a `piece-runtime-base`
+  build wired into the existing outer-loop.
+
+**Remaining follow-ups.**
+- Create secret `perpiece-build-secrets` (`internal-api-token` + `webhook-secret`) in
+  `tekton-pipelines` (ExternalSecret), and wire `PIECE_BUILD_TRIGGER_URL` +
+  `PIECE_BUILD_TRIGGER_SECRET` into the BFF env — this activates the live build-trigger
+  path for not-yet-built pieces. (The GHCR-exists fast path needs none of this.)
+- `piece-runtime-base:latest` must stay current + self-contained — the outer-loop builds
+  `:git-<sha>`; the per-piece pipeline defaults to `:latest`. (Published manually for now.)
+- Image GC for long-disabled `ap-piece-*` images.
+
 > Companion to `docs/activepieces-catalog-expansion.md` (metadata side) — this is the **runtime/packaging** side of the same "available-vs-enabled" split.

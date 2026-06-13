@@ -26,6 +26,9 @@ import {
 	type ToolAllowlist,
 } from "./piece-to-mcp.js";
 import { validateCatalogMetadata } from "./metadata-catalog.js";
+// Pure, bundle-free row builder — used by single-piece images to derive their own
+// catalog metadata from the installed piece package (no DB).
+import { buildPieceCatalogRow } from "./metadata-row.js";
 import { handleExecute } from "./routes/execute.js";
 import { handleOptions } from "./routes/options.js";
 import {
@@ -470,9 +473,29 @@ async function main(): Promise<void> {
 	}
 	piece = loadedPiece;
 
-	// Fetch metadata from DB
+	// Resolve metadata. Single-piece images are SELF-CONTAINED: the actual
+	// @activepieces/piece-<name> package is installed, so we derive the catalog
+	// metadata (incl. complete action inputSchemas) directly from the loaded piece
+	// rather than the DB. This removes the DATABASE_URL startup dependency, lets the
+	// build pipeline smoke the image without a database, and avoids failing on
+	// incomplete available-only catalog snapshots — the package is the source of
+	// truth. The shared bundle image keeps reading the DB (one catalog, many pieces).
 	console.log(`[piece-mcp] Loading metadata for piece "${pieceName}"...`);
-	metadata = await fetchPieceMetadata(pieceName);
+	if (process.env.SINGLE_PIECE_MODE === "true") {
+		const row = buildPieceCatalogRow({ pieceName, piece });
+		metadata = {
+			actions: row.actions as unknown as PieceMetadataRow["actions"],
+			auth: row.auth,
+			displayName: row.displayName,
+			version: row.version,
+			catalogSchemaVersion: row.catalogSchemaVersion,
+			catalogDigest: row.catalogDigest,
+			catalogSourceImage: row.catalogSourceImage,
+			catalogSyncedAt: null,
+		};
+	} else {
+		metadata = await fetchPieceMetadata(pieceName);
+	}
 	console.log(
 		`[piece-mcp] Loaded metadata: ${metadata.displayName ?? pieceName} digest=${metadata.catalogDigest} source=${metadata.catalogSourceImage ?? "unknown"}`,
 	);
