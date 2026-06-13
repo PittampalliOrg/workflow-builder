@@ -2,8 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import pg from "pg";
 import type { CatalogSnapshot, SnapshotPiece } from "./catalog-snapshot-types.js";
 import {
@@ -12,7 +11,10 @@ import {
 	type PieceCatalogRow,
 } from "./metadata-catalog.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+// Use the native __dirname: present in the esbuild CJS bundle (prod runs
+// `node dist/sync-metadata.js` → /app/dist) and injected by tsx in dev (→ src/).
+// `import.meta.url` would be undefined in the CJS bundle and crash at load.
+declare const __dirname: string;
 
 /**
  * A DB-insertable piece_metadata row. The BUNDLE pass derives these from the
