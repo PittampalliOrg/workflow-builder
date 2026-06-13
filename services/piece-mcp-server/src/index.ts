@@ -460,8 +460,8 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
-	// Load piece from registry
-	const loadedPiece = getPiece(pieceName);
+	// Load piece from registry (async: single-piece mode dynamically imports the one piece)
+	const loadedPiece = await getPiece(pieceName);
 	if (!loadedPiece) {
 		console.error(
 			`Piece "${pieceName}" not found in registry. Available: ${(await import("./piece-registry.js")).listPieceNames().join(", ")}`,

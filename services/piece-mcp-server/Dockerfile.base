@@ -1,0 +1,44 @@
+# piece-runtime-base — the per-piece AP runtime shell with NO bundled pieces.
+# Per-piece images (Dockerfile.piece) are FROM this + one `npm install @activepieces/piece-<name>`.
+# Built with BUILD_VARIANT=single so dist carries ZERO static piece requires; the runtime
+# loads its one installed piece dynamically (SINGLE_PIECE_MODE). See
+# docs/per-piece-runtime-images.md.
+
+# Stage 1: base deps (framework/common/shared/MCP/OTEL/pg/zod — NO @activepieces/piece-*)
+FROM node:22-alpine AS deps
+RUN apk add --no-cache libc6-compat python3 make g++
+WORKDIR /app
+COPY services/piece-mcp-server/package.base.json ./package.json
+RUN npm install --omit=dev
+
+# Stage 2: builder (single-variant esbuild → no static pieces in dist)
+FROM node:22-alpine AS builder
+WORKDIR /app
+COPY services/piece-mcp-server/package.base.json ./package.json
+RUN npm install
+COPY services/piece-mcp-server/build.mjs ./
+COPY services/piece-mcp-server/tsconfig.json ./
+COPY services/piece-mcp-server/src ./src
+ENV NODE_ENV=production
+RUN BUILD_VARIANT=single npm run build
+
+# Stage 3: runner
+FROM node:22-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=3100
+ENV HOST="0.0.0.0"
+# This image's dist has no bundled pieces → it MUST load its single piece dynamically.
+ENV SINGLE_PIECE_MODE=true
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 mcpserver
+COPY --from=builder --chown=mcpserver:nodejs /app/dist ./dist
+COPY --from=deps --chown=mcpserver:nodejs /app/node_modules ./node_modules
+# Keep the base manifest so the per-piece `npm install` (Dockerfile.piece) ADDS the one
+# piece without pruning the base runtime deps (otel/mcp/pg/framework).
+COPY services/piece-mcp-server/package.base.json ./package.json
+USER mcpserver
+EXPOSE 3100
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3100/health || exit 1
+CMD ["node", "dist/index.js"]

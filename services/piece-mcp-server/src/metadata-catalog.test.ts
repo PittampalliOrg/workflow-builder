@@ -52,8 +52,8 @@ describe("metadata catalog generation", () => {
 		}
 	});
 
-	it("rejects legacy metadata without canonical input schemas", () => {
-		const piece = getPiece("microsoft-todo");
+	it("rejects legacy metadata without canonical input schemas", async () => {
+		const piece = await getPiece("microsoft-todo");
 		if (!piece) throw new Error("microsoft-todo piece is not registered");
 		const [row] = buildPieceCatalogRows({ pieceNames: ["microsoft-todo"] });
 		const actions = { ...row.actions };

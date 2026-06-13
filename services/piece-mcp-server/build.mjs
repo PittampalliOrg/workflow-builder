@@ -12,6 +12,26 @@ import * as esbuild from "esbuild";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// BUILD_VARIANT=single → per-piece / base image: stub the static 48-piece registry so
+// esbuild never emits the eager require("@activepieces/piece-*") calls. getPiece then
+// loads the one installed piece dynamically (SINGLE_PIECE_MODE at runtime). The default
+// (bundle) build is unchanged. See docs/per-piece-runtime-images.md.
+const SINGLE_VARIANT = process.env.BUILD_VARIANT === "single";
+const stubStaticRegistryPlugin = {
+  name: "stub-static-piece-registry",
+  setup(build) {
+    // The static 48-piece map.
+    build.onResolve({ filter: /piece-registry\.static(\.js)?$/ }, () => ({
+      path: resolve(__dirname, "src/piece-registry.empty.ts"),
+    }));
+    // Bespoke extensions statically import specific bundled pieces (onedrive) — drop
+    // them in single-piece images (a per-piece image only carries its own piece).
+    build.onResolve({ filter: /extensions\/index(\.js)?$/ }, () => ({
+      path: resolve(__dirname, "src/extensions/empty.ts"),
+    }));
+  },
+};
+
 async function build() {
   try {
     await esbuild.build({
@@ -29,8 +49,10 @@ async function build() {
       keepNames: true,
       packages: "external",
       external: ["node:*"],
+      plugins: SINGLE_VARIANT ? [stubStaticRegistryPlugin] : [],
       logLevel: "info",
     });
+    if (SINGLE_VARIANT) console.log("BUILD_VARIANT=single — static piece registry stubbed (no bundled pieces)");
 
     // Bake the code-free available-only catalog snapshot next to the bundled
     // sync-metadata.js so the deploy-time seed reads it (resolve(__dirname,
