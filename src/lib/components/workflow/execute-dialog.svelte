@@ -65,6 +65,24 @@
 		return true;
 	}
 
+	function fieldDefaultValue(key: string, prop: SchemaProperty): string {
+		const configured = workflowInputFieldConfigs[key]?.defaultValue;
+		if (configured !== undefined) return configured;
+		const raw = prop.default;
+		if (typeof raw === 'string') return raw;
+		if (typeof raw === 'number' || typeof raw === 'boolean') return String(raw);
+		return '';
+	}
+
+	function selectedOptionLabel(
+		options: { label: string; value: string }[] | undefined,
+		value: string,
+		fallback: string
+	): string {
+		if (!value) return fallback;
+		return options?.find((option) => option.value === value)?.label ?? value;
+	}
+
 	interface Props {
 		open: boolean;
 		onClose: () => void;
@@ -75,6 +93,8 @@
 		type: string;
 		description?: string;
 		default?: unknown;
+		enum?: unknown[];
+		title?: string;
 	}
 
 	let { open = $bindable(), onClose, onExecute }: Props = $props();
@@ -198,7 +218,7 @@
 				for (const key of Object.keys(effectiveInputSchema.properties)) {
 					if (!shouldRenderWorkflowField(key, hasScmFields, hiddenDerivedFields.has(key))) continue;
 					const existingValue = formValues[key] || '';
-					const defaultValue = workflowInputFieldConfigs[key]?.defaultValue || '';
+					const defaultValue = fieldDefaultValue(key, effectiveInputSchema.properties[key]);
 					nextValues[key] = existingValue || defaultValue;
 				}
 				formValues = nextValues;
@@ -360,6 +380,7 @@
 
 							{#each visibleSchemaEntries as [key, prop]}
 								{@const fieldConfig = workflowInputFieldConfigs[key]}
+								{@const options = fieldConfig?.options ?? []}
 								<div class="space-y-1.5">
 									<Label for="input-{key}">
 										{fieldConfig?.label || toFieldLabel(key)}
@@ -394,17 +415,20 @@
 												</button>
 											{/each}
 										</div>
-									{:else if fieldConfig?.options?.length}
+									{:else if options.length}
 										<Select.Root
 											type="single"
-											value={formValues[key] || fieldConfig.defaultValue || ''}
-											onValueChange={(value) => (formValues[key] = value)}
+											bind:value={formValues[key]}
 										>
 											<Select.Trigger class="w-full">
-												{formValues[key] || fieldConfig.defaultValue || fieldConfig.description || toFieldLabel(key)}
+												{selectedOptionLabel(
+													options,
+													formValues[key],
+													fieldConfig?.description || prop.description || toFieldLabel(key)
+												)}
 											</Select.Trigger>
 											<Select.Content>
-												{#each fieldConfig.options as option}
+												{#each options as option}
 													<Select.Item value={option.value}>{option.label}</Select.Item>
 												{/each}
 											</Select.Content>
