@@ -44,7 +44,12 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from src.agy_capture import restore_bundle, start_capture_watcher
-from src.cli_adapters.base import CliAdapter, SeedResult
+from src.cli_adapters.base import (
+    CliAdapter,
+    SeedResult,
+    hook_relay_command,
+    write_hook_relay_script,
+)
 from src.capability_compiler import (
     compose_instruction_file,
     emit_claude_code_cli_servers,
@@ -91,6 +96,17 @@ def _agy_home() -> Path:
         return Path(os.environ.get("HOME") or os.path.expanduser("~"))
 
 
+def _hook_relay_path() -> Path:
+    root = os.environ.get("CLI_AGENT_WFB_DIR")
+    if root:
+        return Path(root) / "wfb_hook_relay.py"
+    return (
+        Path(os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox"))
+        / ".wfb"
+        / "wfb_hook_relay.py"
+    )
+
+
 def normalize_agy_model(model_spec: Any) -> str | None:
     """Gemini/agy models only. A non-Gemini modelSpec is ignored so agy picks
     its own default (the model list is provider-internal)."""
@@ -124,6 +140,66 @@ def _agy_mcp_servers(agent_config: Mapping[str, Any]) -> dict[str, dict[str, Any
                 entry["headers"] = {str(k): str(v) for k, v in cfg["headers"].items()}
             out[name] = entry
     return out
+
+
+def _agy_hook_group(event: str, *, matcher: str | None = None) -> list[dict[str, Any]]:
+    relay = _hook_relay_path()
+    group: dict[str, Any] = {
+        "hooks": [
+            {
+                "type": "command",
+                "command": hook_relay_command(
+                    relay, adapter="antigravity", event=event
+                ),
+            }
+        ]
+    }
+    if matcher is not None:
+        group["matcher"] = matcher
+    return [group]
+
+
+def _render_hooks_json() -> str:
+    # Antigravity docs describe hooks.json as a map of hook names to event
+    # configurations, located in the customization directory. agy currently
+    # triggers from ~/.gemini/config/hooks.json, the same directory as MCP.
+    payload = {
+        "workflow-builder": {
+            "enabled": True,
+            "SessionStart": _agy_hook_group("SessionStart"),
+            "PreToolUse": _agy_hook_group("PreToolUse", matcher="*"),
+            "PostToolUse": _agy_hook_group("PostToolUse", matcher="*"),
+            "Stop": _agy_hook_group("Stop"),
+        }
+    }
+    return json.dumps(payload, indent=2) + "\n"
+
+
+def _text_from_payload(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            text = _text_from_payload(item)
+            if text:
+                parts.append(text)
+        if parts:
+            return "\n\n".join(parts)
+    if isinstance(value, Mapping):
+        for key in (
+            "finalResponse",
+            "response",
+            "message",
+            "content",
+            "text",
+            "output",
+            "result",
+        ):
+            text = _text_from_payload(value.get(key))
+            if text:
+                return text
+    return None
 
 
 class AntigravityAdapter(CliAdapter):
@@ -186,6 +262,14 @@ class AntigravityAdapter(CliAdapter):
             )
             result.paths["mcpConfigPath"] = str(mcp_path)
 
+        # (a2) Hook relay config. The CLI currently triggers hooks from
+        # ~/.gemini/config/hooks.json, not antigravity-cli/settings.json.
+        relay = write_hook_relay_script(_hook_relay_path())
+        hooks_path = config_dir / "hooks.json"
+        hooks_path.write_text(_render_hooks_json(), encoding="utf-8")
+        result.paths["hookRelayPath"] = str(relay)
+        result.paths["hooksPath"] = str(hooks_path)
+
         # (b) skills → _agy_home()/.gemini/skills/<slug>/ ; system prompt + a
         # skills index → GEMINI.md. agy has no native skills auto-discovery, so
         # the index (a delimited block, REWRITTEN each seed for restart
@@ -236,6 +320,9 @@ class AntigravityAdapter(CliAdapter):
         if mode in {"bypass", "bypassPermissions", "dontAsk", "auto"}:
             argv += ["--dangerously-skip-permissions"]
         return argv
+
+    def extract_completion_text(self, payload: Mapping[str, Any]) -> str | None:
+        return _text_from_payload(payload)
 
     # -- env -------------------------------------------------------------------
 

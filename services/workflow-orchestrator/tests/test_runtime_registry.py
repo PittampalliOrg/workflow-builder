@@ -57,6 +57,16 @@ def _reference_targets() -> dict[str, dict[str, str]]:
             "app_id": config.CLAUDE_CODE_CLI_APP_ID,
             "instance_prefix": "durable-claude-cli",
         },
+        "codex-cli": {
+            "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
+            "app_id": config.CODEX_CLI_APP_ID,
+            "instance_prefix": "durable-codex-cli",
+        },
+        "agy-cli": {
+            "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
+            "app_id": config.AGY_CLI_APP_ID,
+            "instance_prefix": "durable-agy-cli",
+        },
     }
 
 
@@ -137,6 +147,9 @@ _MATRIX = [
     ({"agentRuntime": "browser-use-agent"}, None),
     ({"agentRuntime": "adk-agent-py"}, None),
     ({"agentRuntime": "claude-agent-py"}, None),
+    ({"agentRuntime": "claude-code-cli"}, None),
+    ({"agentRuntime": "codex-cli"}, None),
+    ({"agentRuntime": "agy-cli"}, None),
     ({"runtime": "claude-agent-py"}, None),
     ({}, {"runtime": "adk-agent-py"}),
     ({}, {"agentRuntime": "browser-use-agent"}),
@@ -178,8 +191,8 @@ def test_unknown_runtime_no_slug_raises_same_message():
         runtime_registry.resolve(flattened_args, agent_config)
     assert str(new_exc.value) == str(ref_exc.value)
     assert (
-        "adk-agent-py, browser-use-agent, claude-agent-py, claude-code-cli, "
-        "dapr-agent-py, dapr-agent-py-testing"
+        "adk-agent-py, agy-cli, browser-use-agent, claude-agent-py, "
+        "claude-code-cli, codex-cli, dapr-agent-py, dapr-agent-py-testing"
     ) in str(new_exc.value)
 
 

@@ -122,9 +122,22 @@ def test_codex_config_pretrusts_sandbox_cwd(codex_home, monkeypatch, tmp_path):
     assert cfg["projects"][sandbox]["trust_level"] == "trusted"
 
 
+def test_codex_seed_writes_hooks_json_for_completion_signal(codex_home, monkeypatch):
+    monkeypatch.setenv("CODEX_AUTH_JSON", AUTH_BLOB)
+    result = get_adapter("codex").seed(SESSION)
+    hooks = json.loads((codex_home / "hooks.json").read_text())
+    assert "Stop" in hooks["hooks"]
+    stop_hook = hooks["hooks"]["Stop"][0]["hooks"][0]
+    assert stop_hook["type"] == "command"
+    assert "--adapter codex --event Stop" in stop_hook["command"]
+    assert result.paths["hooksPath"].endswith("hooks.json")
+    assert result.paths["hookRelayPath"].endswith("wfb_hook_relay.py")
+
+
 def test_codex_build_argv_default_mode(codex_home):
     argv = get_adapter("codex").build_argv(SESSION["agentConfig"], {})
     assert argv[0] == "codex"
+    assert "--dangerously-bypass-hook-trust" in argv
     assert "--sandbox" in argv and "danger-full-access" in argv
     assert "--ask-for-approval" in argv and "on-request" in argv
     assert "--model" in argv and "gpt-5.5" in argv
@@ -155,8 +168,10 @@ def test_codex_seed_links_sessions_into_transcript_store(codex_home, monkeypatch
 def test_codex_build_argv_resume_on_continue(codex_home):
     cfg = {**SESSION["agentConfig"], "continueSession": True}
     argv = get_adapter("codex").build_argv(cfg, {})
-    # `codex resume --last` precedes the TUI flags
-    assert argv[0] == "codex" and argv[1] == "resume" and argv[2] == "--last"
+    # `codex resume --last` precedes the TUI flags, after global flags.
+    resume_idx = argv.index("resume")
+    assert argv[0] == "codex"
+    assert argv[resume_idx : resume_idx + 3] == ["resume", "--last", "--cd"]
     assert "--cd" in argv
     # not present without the flag
     assert "resume" not in get_adapter("codex").build_argv(SESSION["agentConfig"], {})
@@ -284,6 +299,15 @@ def test_agy_seed_writes_mcp_with_serverUrl_key(agy_home):
     assert mcp["mcpServers"]["goal"]["serverUrl"].endswith("/mcp")
     assert "url" not in mcp["mcpServers"]["goal"]
     assert result.paths["mcpConfigPath"].endswith("mcp_config.json")
+
+
+def test_agy_seed_writes_hooks_json_for_completion_signal(agy_home):
+    result = get_adapter("antigravity").seed(AGY_SESSION)
+    hooks = json.loads((agy_home / ".gemini/config/hooks.json").read_text())
+    stop_hook = hooks["workflow-builder"]["Stop"][0]["hooks"][0]
+    assert stop_hook["type"] == "command"
+    assert "--adapter antigravity --event Stop" in stop_hook["command"]
+    assert result.paths["hooksPath"].endswith("hooks.json")
 
 
 def test_agy_seed_writes_gemini_md_and_settings(agy_home):

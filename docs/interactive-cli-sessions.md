@@ -19,38 +19,42 @@
 `services/cli-agent-py` is a host service (FastAPI :8002, image
 `cli-agent-py-sandbox`, container `cli-agent-py`) that runs inside a
 per-session agent-sandbox pod (workflow-builder ns, execution class
-`interactive-cli` → LocalQueue `interactive-agent`). It supervises a headless
+`interactive-cli` -> LocalQueue `interactive-agent`). It supervises a headless
 **herdr** server (terminal multiplexer with an agent-state socket API; replaces
-tmux), launches the **real `claude` TUI** in a herdr pane (cwd `/sandbox`),
-registers Dapr workflow `session_workflow` as a LIFECYCLE wrapper, and serves a
-WS→PTY endpoint (`/terminal/{id}?target=main|shell`) that the BFF proxies to
-the session page's xterm.js. The user types in the genuine TUI; the platform
+tmux), launches the real CLI TUI selected by `agentConfig.cliAdapter` in a herdr
+pane (cwd `/sandbox`), registers Dapr workflow `session_workflow` as a lifecycle
+wrapper, and serves a WS->PTY endpoint (`/terminal/{id}?target=main|shell`) that
+the BFF proxies to the session page's xterm.js. In direct sessions, the user
+types in the genuine TUI; in SW 1.0 `durable/run`, the workflow injects one
+kickoff prompt and the hook completion signal ends the CLI turn. The platform
 still gets `session.status_*` + `user.message`/`agent.message`/
-`agent.tool_use`/`agent.tool_result`/`agent.llm_usage` in the timeline, OTEL
-metrics/logs, Kueue capacity mediation, and Lifecycle-Controller stop.
+`agent.tool_use`/`agent.tool_result`/`agent.llm_usage` when the adapter can emit
+them, OTEL metrics/logs, Kueue capacity mediation, and Lifecycle-Controller stop.
 
 ## The runtime (registry descriptor)
 
-`services/shared/runtime-registry.json` id **`claude-code-cli`**: family
-`interactive-cli`, `durabilityGranularity: "per-session"` (new enum value),
-`mainContainerName: cli-agent-py`, `appIdConfigKey: CLAUDE_CODE_CLI_APP_ID`,
-`imageEnvKey: AGENT_RUNTIME_CLAUDE_CLI_DEFAULT_IMAGE`, `instancePrefix:
-durable-claude-cli`, plus two NEW descriptor fields:
+`services/shared/runtime-registry.json` has one descriptor per CLI runtime
+(`claude-code-cli`, `codex-cli`, `agy-cli`): family `interactive-cli`,
+`durabilityGranularity: "per-session"` (new enum value), `mainContainerName:
+cli-agent-py`, runtime-specific `appIdConfigKey` / `imageEnvKey` /
+`instancePrefix`, plus two descriptor fields:
 - `executionClass: "interactive-cli"` — consulted by
   `agentWorkflowHostExecutionClass` before the env default.
 - `cliAuth: {provider, tokenKind: subscription_oauth, envVar:
-  CLAUDE_CODE_OAUTH_TOKEN, setupCommand: "claude setup-token"}` — drives the
-  Settings page + spawn readiness gate generically.
+  <RUNTIME_SECRET>, credentialKind: ...}` — drives the Settings page, spawn
+  readiness gate, and workflow bridge credential injection generically.
 - capability `interactiveTerminal: true` — gates the terminal-first session UI
-  + the cli-terminal proxy.
+  and the cli-terminal proxy.
+- capability `workflowDispatch: "auto-turn"` — allows SW 1.0 `durable/run` to
+  dispatch the runtime for a single prompt/turn and terminate on the hook signal.
 
-**Dispatch invariants**: `durable/run` REJECTS family `interactive-cli`
-(orchestrator `_resolve_native_agent_runtime` guard) — these sessions are
-UI-initiated only. `benchmarkEligible: false`. Swap-safety: family crossings
-involving `interactive-cli` are reject-class (`interactionModel` drop, needs
-`opts.sourceFamily`).
+**Dispatch invariants**: `durable/run` accepts only runtimes whose descriptor
+declares `capabilities.workflowDispatch == "auto-turn"`; `browser-use-agent`
+stays excluded. `benchmarkEligible: false` for the CLI runtimes. Swap-safety:
+family crossings involving `interactive-cli` are reject-class for long-lived UI
+sessions unless the caller explicitly requests the workflow auto-turn path.
 
-## Event mirroring (three sources → CMA events)
+## Event mirroring (adapter sources -> CMA events)
 
 1. **herdr semantic state** (`events.subscribe`): `working` →
    `session.status_running`; `idle` → `session.status_idle{stop_reason:
@@ -63,12 +67,17 @@ involving `interactive-cli` are reject-class (`interactionModel` drop, needs
    `{type: "cli.exited"}` raised onto the workflow, which durably emits
    `session.status_terminated`. Other terminal paths: `cli.session_end` (claude
    SessionEnd hook), explicit stop, idle-TTL reaper.
-2. **Claude Code http hooks** (baked into the image at
+2. **CLI hooks**: Claude Code uses the baked managed settings at
    `/etc/claude-code/managed-settings.json`, POSTing to
-   `127.0.0.1:8002/internal/hooks/claude`): UserPromptSubmit→`user.message`,
-   PreToolUse→`agent.tool_use`, PostToolUse(Failure)→`agent.tool_result`,
-   Permission*→`hook.decision`, Stop→transcript flush + workflow
-   `turn.completed`, SessionEnd→`cli.session_end`.
+   `127.0.0.1:8002/internal/hooks/claude`. Codex and Antigravity write a
+   per-session hook config during `seed()` and execute a small relay script that
+   posts stdin JSON to `127.0.0.1:8002/internal/hooks/cli/{adapter}`. Claude
+   maps UserPromptSubmit->`user.message`, PreToolUse->`agent.tool_use`,
+   PostToolUse(Failure)->`agent.tool_result`, Permission*->`hook.decision`,
+   Stop->transcript flush + workflow `turn.completed`, and
+   SessionEnd->`cli.session_end`. Codex/Antigravity use their stop/end hook as
+   the durable workflow completion signal; richer tool/usage events are emitted
+   when the hook payload exposes enough structure.
 3. **Transcript JSONL tailing** (`transcript_path` from the SessionStart hook;
    `CLAUDE_CONFIG_DIR=/sandbox/.claude`): assistant text → `agent.message`
    (block-array content), usage → `agent.llm_usage` (Session Pulse works
@@ -106,7 +115,7 @@ OAuth; all keep usage on the USER's personal subscription, never a cluster key.
 |---|---|---|---|---|
 | `claude-code-cli` | anthropic | `env_token` | `claude setup-token` → paste `sk-ant-oat…` | secret env `CLAUDE_CODE_OAUTH_TOKEN`, read directly by claude |
 | `codex-cli` | openai | `file` | `codex login` (browser ChatGPT OAuth) → paste `~/.codex/auth.json` | secret env `CODEX_AUTH_JSON` (the blob); the adapter `seed()` writes `$CODEX_HOME/auth.json` (0600) and STRIPS the env from the pane |
-| `agy-cli` | google | `device_login` | NOTHING stored — authenticate in the terminal | none — agy prints a Google OAuth URL+code on first launch; the user pastes the code in the web terminal |
+| `agy-cli` | google | `file_bundle` | direct session: authenticate in terminal once; workflow: use captured `~/.gemini` bundle | secret env `AGY_AUTH_JSON` when available/required; adapter restores the login bundle |
 
 - **Storage**: `env_token`/`file` credentials live in `user_cli_credentials`
   (user-scoped — vaults are project-scoped and would share a personal credential
@@ -114,13 +123,16 @@ OAuth; all keep usage on the USER's personal subscription, never a cluster key.
   column holds the opaque token (claude) OR the whole auth.json blob (codex).
   Validation is per-`credentialKind` (`assertPlausibleCliCredential`): claude
   rejects `sk-ant-api…`; codex must parse as JSON with a `tokens` block (an
-  api-key auth.json is rejected); `device_login` refuses a PUT.
+  api-key auth.json is rejected); file bundles must be base64 gzip archives.
 - **Spawn** (`spawn.ts`): for `env_token`/`file` it resolves the owner's
   credential (missing/expired → HTTP 412 `CLI_TOKEN_MISSING|CLI_TOKEN_EXPIRED` +
   settings deep-link) and passes `sessionSecretEnv: {[envVar]: value}` to
   sandbox-execution-api → per-session Secret `agent-host-cred-<appId>`
-  (ownerRef → Sandbox CR, auto-GC) → `secretKeyRef` env. For `device_login`
-  there is NO gate and NO secret. Never in Dapr `childInput`, the CR YAML, spans
+  (ownerRef → Sandbox CR, auto-GC) → `secretKeyRef` env. For direct UI sessions,
+  `file_bundle` is optional so agy can still fall back to terminal device-code
+  login and capture the bundle afterward; for SW 1.0 workflow dispatch the
+  bridge requires the bundle up front because there is no operator to complete
+  an interactive login. Never in Dapr `childInput`, the CR YAML, spans
   (redacted) or logs. `spawn.ts` also stamps `agentConfig.cliAdapter` from the
   descriptor so the host selects claude/codex/antigravity.
 - **SYSTEM INVARIANT: provider API keys must NEVER reach these pods** — they
@@ -135,8 +147,7 @@ OAuth; all keep usage on the USER's personal subscription, never a cluster key.
   `INTERNAL_API_TOKEN`) + each adapter's pane_env strip + a startup guard.
 - **Credential paths in-pod** (writable sandbox emptyDir so auto-refresh
   persists for the session): codex `$CODEX_HOME=/sandbox/.codex`; agy
-  `$HOME=/sandbox` → `~/.gemini` (device-login token is keyring-less/in-memory,
-  so agy re-prompts per new session — acceptable for ephemeral pods).
+  `$HOME=/sandbox` -> `~/.gemini`.
 
 ## Terminal access
 
@@ -180,9 +191,8 @@ re-published (the BFF already recorded it in `session_events`).
 
 ## Lifecycle
 
-`session_workflow` (lifecycle shape): `seed_session` (MCP `.mcp.json` from
-`agentConfig.mcpServers` incl. goal-MCP auto-wire; skills materialized into
-`~/.claude/skills`; system prompt via `--append-system-prompt-file`) →
+`session_workflow` (lifecycle shape): `seed_session` (adapter-owned MCP config,
+skills/system-prompt files, auth files, and hook config) →
 `start_cli` (herdr `agent.start`) → durable loop (`session.lifecycle_events`
 external events + idle-probe timer + `continue_as_new` every ~50 iterations) →
 `stop_cli` (cooperative `/exit`, bounded wait, `pane.close`) →
@@ -194,6 +204,17 @@ Hard backstops: Sandbox `shutdownTime` (spawn sets `timeoutSeconds`) + the
 fixed `workflow-builder-sandbox-gc` (now skips CRs with a future
 `spec.shutdownTime` — the fix MUST be deployed before activation) +
 `lifecycle-terminal-reaper`.
+
+### SW 1.0 workflow auto-turn mode
+
+When a Serverless Workflow v1.0 `durable/run` step selects a CLI runtime, the
+BFF workflow bridge resolves the runtime descriptor, provisions the same
+interactive sandbox host, injects the user's CLI credential as a session Secret,
+and passes `autoTerminateAfterEndTurn: true` into `session_workflow`. The host
+then starts the real CLI, injects the kickoff prompt, waits for a hook-derived
+`turn.completed` event, captures the last assistant text it can recover from
+the adapter/transcript, stops the CLI, and returns the normal durable/run result
+contract with `agentRuntime` set to the selected CLI runtime.
 
 ## Observability
 
@@ -219,33 +240,35 @@ Both ride the SAME image + execution class as claude-code-cli; only the adapter,
 descriptor, and credential model differ.
 
 **`codex-cli`** (`CodexAdapter`, `cliAdapter: "codex"`): launches
-`codex --cd /sandbox --model <m> --sandbox danger-full-access --ask-for-approval
-on-request` (the K8s pod is the real isolation boundary, so codex's own landlock
-sandbox is off; approvals surface to the live user; `permissionMode: bypass` →
+`codex --dangerously-bypass-hook-trust --cd /sandbox --model <m> --sandbox
+danger-full-access --ask-for-approval on-request` (the K8s pod is the real
+isolation boundary, so codex's own landlock sandbox is off; approvals surface to
+the live user; `permissionMode: bypass` →
 `--dangerously-bypass-approvals-and-sandbox`). `seed()` writes
 `$CODEX_HOME/config.toml` (`forced_login_method`, `[mcp_servers.<n>]` with
 stdio command/args/env OR streamable-http `url` + `http_headers` +
-`experimental_use_rmcp_client`), the system prompt → `AGENTS.md`, and the OAuth
-`auth.json` from the `CODEX_AUTH_JSON` blob (0600). Codex auto-refreshes the
-token in-session. herdr detects Codex state natively.
+`experimental_use_rmcp_client`), `$CODEX_HOME/hooks.json` with a Stop hook relay,
+the system prompt → `AGENTS.md`, and the OAuth `auth.json` from the
+`CODEX_AUTH_JSON` blob (0600). Codex auto-refreshes the token in-session. herdr
+detects Codex state natively.
 
 **`agy-cli`** (`AntigravityAdapter`, `cliAdapter: "antigravity"`): launches bare
 `agy` (+ `--model` for a `gemini*` model; `--dangerously-skip-permissions` only
 for bypass). `seed()` writes `$HOME/.gemini/config/mcp_config.json`
-(`mcpServers` with remote `serverUrl` — NOT `url`), the system prompt →
-`GEMINI.md`, and a `settings.json` pre-trusting `/sandbox`. **`device_login`**:
-no credential is provisioned; agy prints a Google OAuth URL+code on first launch
-and the user pastes the code IN the web terminal. `requires_interactive_login =
-True` → the lifecycle SKIPS the readiness-gated kickoff (the seed must never be
-typed into the auth-code prompt); the user authenticates then types their first
-message. herdr detects agy by screen pattern (no native socket integration), so
-its mirror is herdr-state-based; per-tool/llm-usage events (claude's http hooks)
-do NOT fire for codex/agy in v1 — the web terminal renders the full TUI
-regardless. agy has no OTEL export. The pinned binary is a sha512-verified GCS
-release tarball at `/usr/local/bin/agy` (root-owned read-only → defeats its
-background self-update).
+(`mcpServers` with remote `serverUrl` — NOT `url`), `$HOME/.gemini/config/hooks.json`
+with a Stop hook relay, the system prompt → `GEMINI.md`, and a `settings.json`
+pre-trusting `/sandbox`. Direct sessions may start without a credential bundle:
+agy prints a Google OAuth URL+code on first launch and the user pastes the code
+in the web terminal; the bundle can then be captured for future launches.
+Workflow dispatch requires the captured `AGY_AUTH_JSON` bundle up front. herdr
+detects agy by screen pattern (no native socket integration), so its mirror is
+herdr-state-based; agy has no OTEL export. The pinned binary is a sha512-verified
+GCS release tarball at `/usr/local/bin/agy` (root-owned read-only → defeats its
+background self-update). The hook config is implemented from Antigravity's
+Gemini-compatible hook layout and still needs an in-pod smoke against the pinned
+binary before broad rollout.
 
-To add a THIRD CLI: new `CliAdapter` + register in `cli_adapters/__init__.py`;
+To add another CLI: new `CliAdapter` + register in `cli_adapters/__init__.py`;
 new registry descriptor (family `interactive-cli`, `cliAdapter`, `cliAuth` with
 a `credentialKind`) + `*_APP_ID` in orchestrator `core/config.py` + BFF/orch
 Deployment env; add the binary to `Dockerfile.sandbox`. Settings/terminal/spawn
@@ -255,12 +278,15 @@ are CLI-agnostic (driven off the descriptor).
 
 1. stacks: sandbox-gc fix FIRST; then class JSON + ConfigMap + ExternalSecret +
    Role secrets verbs + Tekton trigger (all inert).
-2. Merge `cli-agent-py` → outer-loop builds `cli-agent-py-sandbox` → pin
-   `AGENT_RUNTIME_CLAUDE_CLI_DEFAULT_IMAGE` + the class `agentHostImage` to the
-   `git-<sha>` tag.
-3. Activation: BFF + orchestrator env `CLAUDE_CODE_CLI_APP_ID` (already in
-   manifests) — registry descriptor ships with the wfb image.
-4. Smoke (in-pod, one-time): herdr `agent.start` param echo, managed-settings
-   `http` hook fields against the pinned CLI, `--append-system-prompt-file`
-   flag presence, `pane.send_keys` Enter shape (CR fallback exists), xterm
-   re-attach repaint after browser refresh.
+2. Merge `cli-agent-py` → outer-loop builds `cli-agent-py-sandbox` → pin the
+   CLI runtime image env vars + the class `agentHostImage` to the `git-<sha>`
+   tag.
+3. Activation: BFF + orchestrator env for each CLI app-id
+   (`CLAUDE_CODE_CLI_APP_ID`, `CODEX_CLI_APP_ID`, `AGY_CLI_APP_ID`) — registry
+   descriptor ships with the wfb image.
+4. Smoke (in-pod, one-time): herdr `agent.start` param echo, hook fields against
+   each pinned CLI, `--append-system-prompt-file` flag presence for Claude,
+   Codex Stop hook relay with `--dangerously-bypass-hook-trust`, Antigravity Stop
+   hook relay against the pinned `agy`, `pane.send_keys` Enter shape (CR fallback
+   exists), xterm re-attach repaint after browser refresh, and one SW 1.0
+   `durable/run` auto-turn for each CLI runtime.

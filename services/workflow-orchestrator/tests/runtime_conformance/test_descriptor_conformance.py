@@ -39,6 +39,7 @@ EXPECTED: dict[str, dict[str, object]] = {
     "dapr-agent-py": {
         "family": "durable-session",
         "durabilityGranularity": "per-activity",
+        "workflowDispatch": "auto-turn",
         "multiProvider": True,
         "ownsSandbox": False,
         "requiresWarmPool": False,
@@ -49,6 +50,7 @@ EXPECTED: dict[str, dict[str, object]] = {
     "dapr-agent-py-testing": {
         "family": "durable-session",
         "durabilityGranularity": "per-activity",
+        "workflowDispatch": "auto-turn",
         "multiProvider": True,
         "ownsSandbox": False,
         "requiresWarmPool": False,
@@ -68,6 +70,7 @@ EXPECTED: dict[str, dict[str, object]] = {
     "adk-agent-py": {
         "family": "durable-session",
         "durabilityGranularity": "per-turn",
+        "workflowDispatch": "auto-turn",
         "multiProvider": False,
         "ownsSandbox": True,
         "requiresWarmPool": False,
@@ -78,6 +81,7 @@ EXPECTED: dict[str, dict[str, object]] = {
     "claude-agent-py": {
         "family": "durable-session",
         "durabilityGranularity": "per-turn",
+        "workflowDispatch": "auto-turn",
         "multiProvider": False,
         "ownsSandbox": True,
         "requiresWarmPool": False,
@@ -87,15 +91,40 @@ EXPECTED: dict[str, dict[str, object]] = {
     },
     "claude-code-cli": {
         # interactive-cli: the real Claude Code TUI in a herdr pane; the
-        # workflow wraps the session LIFECYCLE (per-session durability) and
-        # durable/run dispatch is rejected for this family.
+        # workflow wraps the session LIFECYCLE (per-session durability). SW 1.0
+        # durable/run uses hook-derived turn.completed as the auto-turn edge.
         "family": "interactive-cli",
         "durabilityGranularity": "per-session",
+        "workflowDispatch": "auto-turn",
         "multiProvider": False,
         "ownsSandbox": True,
         "requiresWarmPool": False,
         "requiresBrowserSidecars": False,
         "supportsMcp": True,
+        "capabilitiesVerified": False,
+    },
+    "codex-cli": {
+        "family": "interactive-cli",
+        "durabilityGranularity": "per-session",
+        "workflowDispatch": "auto-turn",
+        "multiProvider": False,
+        "ownsSandbox": True,
+        "requiresWarmPool": False,
+        "requiresBrowserSidecars": False,
+        "supportsMcp": True,
+        "supportsHooks": True,
+        "capabilitiesVerified": False,
+    },
+    "agy-cli": {
+        "family": "interactive-cli",
+        "durabilityGranularity": "per-session",
+        "workflowDispatch": "auto-turn",
+        "multiProvider": False,
+        "ownsSandbox": True,
+        "requiresWarmPool": False,
+        "requiresBrowserSidecars": False,
+        "supportsMcp": True,
+        "supportsHooks": True,
         "capabilitiesVerified": False,
     },
 }

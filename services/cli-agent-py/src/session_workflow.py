@@ -1,12 +1,11 @@
-"""Deterministic LIFECYCLE workflow for the `claude-code-cli` runtime.
+"""Deterministic LIFECYCLE workflow for the `interactive-cli` runtime family.
 
-Unlike claude-agent-py's per-turn loop, the user drives the Claude Code TUI
-through the web terminal — the workflow does NOT drive turns. It is a durable
-lifecycle wrapper: seed → start the TUI in a herdr pane → wait for lifecycle
-events (turn.completed bookkeeping, cli.exited / cli.session_end /
-session.terminate termination) with a periodic out-of-band liveness probe →
-cooperative stop → emit session.status_terminated + return the runtime
-contract dict.
+For direct UI sessions, the user drives the CLI TUI through the web terminal and
+the workflow wraps the session lifecycle. For SW 1.0 ``durable/run`` sessions,
+the BFF sets ``autoTerminateAfterEndTurn=true`` and provides the kickoff prompt;
+this workflow starts the same CLI, waits for the adapter hook that emits
+``turn.completed``, then cooperatively closes the pane and returns the standard
+durable/run result contract.
 
 History is bounded via ``ctx.continue_as_new`` every ~CLI_LIFECYCLE_MAX_ITERATIONS
 when_any cycles, carrying {turnCount, lastAssistantText, paneRef, seeded: true}.
@@ -87,6 +86,25 @@ def _extract_seed_user_message(input_data: Mapping[str, Any]) -> str | None:
     return _clean_string(wb.get("input"))
 
 
+def _agent_runtime(input_data: Mapping[str, Any]) -> str:
+    agent_config = _record(input_data.get("agentConfig"))
+    for value in (
+        input_data.get("agentRuntime"),
+        input_data.get("runtime"),
+        agent_config.get("runtime"),
+        agent_config.get("agentRuntime"),
+    ):
+        picked = _clean_string(value)
+        if picked:
+            return picked
+    adapter = _clean_string(agent_config.get("cliAdapter"))
+    if adapter == "codex":
+        return "codex-cli"
+    if adapter == "antigravity":
+        return "agy-cli"
+    return "claude-code-cli"
+
+
 def _event_batch(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, Mapping):
         events = payload.get("events")
@@ -103,6 +121,7 @@ def _result_contract(
     status: str,
     last_assistant_text: str,
     turn_count: int,
+    agent_runtime: str,
 ) -> dict[str, Any]:
     return {
         "success": status not in ("failed",),
@@ -110,7 +129,7 @@ def _result_contract(
         "output": last_assistant_text or "",
         "content": last_assistant_text or "",
         "sessionId": session_id,
-        "agentRuntime": "claude-code-cli",
+        "agentRuntime": agent_runtime,
         "childWorkflowName": "session_workflow",
         "daprInstanceId": ctx.instance_id,
         "turnCount": turn_count,
@@ -120,15 +139,9 @@ def _result_contract(
 def session_workflow(
     ctx: DaprWorkflowContext, input_data: dict[str, Any]
 ) -> Generator[Any, Any, dict[str, Any] | None]:
-    # Defense-in-depth: the orchestrator already refuses to dispatch
-    # autoTerminateAfterEndTurn runs to interactive-cli runtimes.
-    if input_data.get("autoTerminateAfterEndTurn"):
-        raise ValueError(
-            "claude-code-cli is an interactive runtime: autoTerminateAfterEndTurn "
-            "(workflow-driven single-turn) dispatch is not supported"
-        )
-
     session_id = _session_id(input_data)
+    auto_terminate = bool(input_data.get("autoTerminateAfterEndTurn"))
+    agent_runtime = _agent_runtime(input_data)
     carried = _record(input_data.get("_carried"))
     seeded = bool(carried.get("seeded"))
     turn_count = int(carried.get("turnCount") or 0)
@@ -217,6 +230,9 @@ def session_workflow(
                 )
                 if text:
                     last_assistant_text = text
+                if auto_terminate:
+                    status, reason = "completed", "turn_completed"
+                    break
                 continue
             if event_type in ("cli.session_end", "cli.exited"):
                 exit_code = event.get("exitCode")
@@ -248,4 +264,5 @@ def session_workflow(
         status=status,
         last_assistant_text=last_assistant_text,
         turn_count=turn_count,
+        agent_runtime=agent_runtime,
     )

@@ -1,9 +1,9 @@
-# cli-agent-py — host for the `claude-code-cli` interactive-cli durable runtime.
+# cli-agent-py — host for interactive-cli durable runtimes.
 # Lock with `uv lock` after editing dependencies (Dockerfile.sandbox builds --frozen).
 [project]
 name = "cli-agent-py"
 version = "0.1.0"
-description = "Claude Code CLI (interactive-cli) Dapr workflow lifecycle host for workflow-builder durable agents"
+description = "Interactive CLI Dapr workflow lifecycle host for workflow-builder durable agents"
 requires-python = ">=3.12"
 dependencies = [
     # Same Dapr workflow contract as claude-agent-py; pinned to the platform's

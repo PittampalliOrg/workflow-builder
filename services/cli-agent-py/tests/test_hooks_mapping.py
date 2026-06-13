@@ -178,6 +178,42 @@ def test_session_end_raises_cli_session_end():
     assert raised == [("inst-1", [{"type": "cli.session_end", "reason": "logout"}])]
 
 
+def test_adapter_specific_completion_hook_raises_turn_completed():
+    class FakeAdapter:
+        def is_turn_completion_hook(self, event_name):
+            return event_name == "PostTurn"
+
+        def extract_completion_text(self, payload):
+            return payload.get("response")
+
+        def map_hook_event(self, payload):
+            return []
+
+    published: list[tuple[str | None, str, dict]] = []
+    raised: list[tuple[str, list[dict]]] = []
+    class NoTailerManager:
+        def current(self):
+            return None
+
+        def flush_now(self):
+            return None
+
+        def start(self, path, session_id, **kwargs):
+            return None
+
+    processor = HookProcessor(
+        publish=lambda sid, etype, data, **kw: published.append((sid, etype, data)),
+        raise_lifecycle=lambda iid, events: raised.append((iid, events)),
+        supervisor_getter=lambda: FakeSupervisor(),
+        tailer_manager=NoTailerManager(),
+        adapter=FakeAdapter(),
+    )
+    asyncio.run(processor.process(_hook("PostTurn", response="adapter final")))
+    assert raised == [
+        ("inst-1", [{"type": "turn.completed", "lastAssistantText": "adapter final"}])
+    ]
+
+
 def test_mapped_events_publish_under_wfb_session_id():
     processor, published, _raised, _supervisor, _manager = _processor()
     asyncio.run(processor.process(_hook("UserPromptSubmit", prompt="hi")))

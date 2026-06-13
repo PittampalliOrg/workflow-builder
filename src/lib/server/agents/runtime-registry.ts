@@ -18,6 +18,7 @@ export type DurabilityGranularity = "per-activity" | "per-turn" | "per-session";
 
 export type RuntimeCapabilities = {
 	durabilityGranularity: DurabilityGranularity;
+	workflowDispatch?: "auto-turn" | "none";
 	retryMaxAttempts: number;
 	durableTurnTimer: boolean;
 	supportsMcp: boolean;
@@ -143,6 +144,13 @@ export function listRuntimeIds(): string[] {
 /** Runtimes eligible for the SWE-bench benchmark runtime picker. */
 export function listBenchmarkRuntimeIds(): string[] {
 	return RUNTIMES.filter((d) => d.benchmarkEligible).map((d) => d.id);
+}
+
+/** Runtimes that can satisfy a SW 1.0 durable/run one-turn dispatch. */
+export function listWorkflowDispatchRuntimeIds(): string[] {
+	return RUNTIMES.filter((d) => d.capabilities.workflowDispatch === "auto-turn").map(
+		(d) => d.id
+	);
 }
 
 /**

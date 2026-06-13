@@ -53,4 +53,39 @@ describe('getRemovedSw10AgentCallsError', () => {
 
 		expect(error).toBeNull();
 	});
+
+	it('allows hook-backed CLI agent runtimes', () => {
+		for (const agentRuntime of ['claude-code-cli', 'codex-cli', 'agy-cli']) {
+			const error = getRemovedSw10AgentCallsError({
+				do: [
+					{
+						run_cli_agent: {
+							call: 'durable/run',
+							with: { agentRuntime }
+						}
+					}
+				]
+			});
+
+			expect(error).toBeNull();
+		}
+	});
+
+	it('rejects runtimes without workflowDispatch capability', () => {
+		const error = getRemovedSw10AgentCallsError({
+			do: [
+				{
+					run_browser_agent: {
+						call: 'durable/run',
+						with: {
+							agentRuntime: 'browser-use-agent',
+							workspaceRef: '${ .workspaceProfile.workspaceRef }'
+						}
+					}
+				}
+			]
+		});
+
+		expect(error).toContain('browser-use-agent');
+	});
 });

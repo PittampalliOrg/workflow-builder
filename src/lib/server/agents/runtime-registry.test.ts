@@ -5,6 +5,7 @@ import {
 	getRuntimeDescriptor,
 	listRuntimeIds,
 	listBenchmarkRuntimeIds,
+	listWorkflowDispatchRuntimeIds,
 	shellableContainers,
 	DEFAULT_RUNTIME_ID,
 	DISPATCH_WORKFLOW_NAME
@@ -61,6 +62,21 @@ describe("runtime registry — readers", () => {
 		);
 	});
 
+	it("workflow dispatch runtimes include durable runtimes and hook-backed CLI agents", () => {
+		expect(listWorkflowDispatchRuntimeIds().sort()).toEqual(
+			[
+				"adk-agent-py",
+				"agy-cli",
+				"claude-agent-py",
+				"claude-code-cli",
+				"codex-cli",
+				"dapr-agent-py",
+				"dapr-agent-py-testing"
+			].sort()
+		);
+		expect(listWorkflowDispatchRuntimeIds()).not.toContain("browser-use-agent");
+	});
+
 	it("shellable containers = every runtime main container + browser sidecars", () => {
 		const containers = shellableContainers();
 		// dapr-agent-py (+ testing share the container), claude, adk, browser-use,
@@ -88,6 +104,8 @@ describe("runtime registry — readers", () => {
 		const dapr = getRuntimeDescriptor("dapr-agent-py");
 		expect(dapr?.capabilities.durabilityGranularity).toBe("per-activity");
 		expect(dapr?.capabilities.multiProvider).toBe(true);
+		expect(getRuntimeDescriptor("codex-cli")?.capabilities.supportsHooks).toBe(true);
+		expect(getRuntimeDescriptor("agy-cli")?.capabilities.supportsHooks).toBe(true);
 	});
 });
 

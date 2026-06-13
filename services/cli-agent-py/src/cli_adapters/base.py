@@ -14,7 +14,9 @@ from __future__ import annotations
 import abc
 import logging
 import os
+import shlex
 import shutil
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -149,12 +151,99 @@ class CliAdapter(abc.ABC):
         default mapping in src.hooks_api."""
         return None
 
+    def is_turn_completion_hook(self, event_name: str) -> bool:
+        """True when this hook event is the adapter's authoritative end-turn
+        signal. The lifecycle workflow uses this as the completion edge for
+        workflow-mode ``autoTerminateAfterEndTurn`` runs."""
+        return event_name == "Stop"
+
+    def extract_completion_text(self, payload: Mapping[str, Any]) -> str | None:
+        """Best-effort final assistant text from a completion-hook payload or
+        CLI-owned transcript files. Claude gets this from its transcript tailer;
+        other adapters can override when the hook payload or native state carries
+        the completed turn's response."""
+        return None
+
     def map_transcript_entry(
         self, entry: Mapping[str, Any]
     ) -> list[dict[str, Any]] | None:
         """Override transcript-entry → session-event mapping. Return None to use
         the default mapping in src.transcript_tailer."""
         return None
+
+
+def write_hook_relay_script(path: Path) -> Path:
+    """Materialize the command-hook relay used by Codex and Antigravity.
+
+    Their documented hook systems execute command hooks and pass JSON on stdin;
+    cli-agent-py wants one local HTTP surface. The relay copies stdin JSON,
+    stamps the adapter/event when the CLI omitted them, posts to the in-pod
+    receiver, and always exits zero so a transient telemetry failure does not
+    block the user's CLI turn.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        """#!/usr/bin/env python3
+import argparse
+import json
+import sys
+import urllib.request
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--adapter", required=True)
+    parser.add_argument("--event", required=True)
+    args = parser.parse_args()
+    raw = sys.stdin.read()
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except Exception:
+        payload = {"raw": raw}
+    if not isinstance(payload, dict):
+        payload = {"value": payload}
+    payload.setdefault("hook_event_name", args.event)
+    payload.setdefault("eventName", args.event)
+    payload.setdefault("hook_adapter", args.adapter)
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://127.0.0.1:8002/internal/hooks/cli/{args.adapter}",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req, timeout=5).read()
+    except Exception:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""",
+        encoding="utf-8",
+    )
+    try:
+        path.chmod(
+            stat.S_IRUSR
+            | stat.S_IWUSR
+            | stat.S_IXUSR
+            | stat.S_IRGRP
+            | stat.S_IXGRP
+            | stat.S_IROTH
+            | stat.S_IXOTH
+        )
+    except OSError:
+        pass
+    return path
+
+
+def hook_relay_command(path: Path, *, adapter: str, event: str) -> str:
+    return (
+        f"python3 {shlex.quote(str(path))} "
+        f"--adapter {shlex.quote(adapter)} --event {shlex.quote(event)}"
+    )
 
 
 _REGISTRY: dict[str, CliAdapter] = {}

@@ -1,3 +1,5 @@
+import { listWorkflowDispatchRuntimeIds } from "$lib/server/agents/runtime-registry";
+
 const REMOVED_SW10_AGENT_CALLS = new Set([
   "claude/run",
   "openshell/run",
@@ -9,12 +11,7 @@ const REMOVED_SW10_AGENT_CALLS = new Set([
   "durable/plan",
 ]);
 
-const APPROVED_DURABLE_AGENT_RUNTIMES = new Set([
-  "dapr-agent-py",
-  "dapr-agent-py-testing",
-  "adk-agent-py",
-  "claude-agent-py",
-]);
+const APPROVED_DURABLE_AGENT_RUNTIMES = new Set(listWorkflowDispatchRuntimeIds());
 
 type ValidationIssue = {
   code: "removed_call" | "missing_workspace_ref" | "invalid_agent_runtime";

@@ -1,5 +1,4 @@
-"""Claude Code http-hook receiver (POST /internal/hooks/claude) + the pure
-hook-payload → session-event mapping.
+"""CLI hook receivers + pure hook-payload → session-event mapping.
 
 The image's /etc/claude-code/managed-settings.json wires every hook event to
 ``http://127.0.0.1:8002/internal/hooks/claude``. Claude Code http-hook input
@@ -19,6 +18,12 @@ Mapping (defaults; the CLI adapter's ``map_hook_event`` can override):
   Stop               → (side effect) flush tailer; raise {type: "turn.completed"}
   SessionEnd         → (side effect) raise {type: "cli.session_end", reason}
 
+Codex and Antigravity command hooks use the generic
+``/internal/hooks/cli/{adapter}`` endpoint through the per-session relay script
+their adapters materialize. They share the same normalized event stream and use
+their adapter's ``is_turn_completion_hook`` method to decide which hook ends a
+workflow turn.
+
 NOTE: fastapi MUST be imported at module level — this module uses
 ``from __future__ import annotations`` and FastAPI resolves handler
 annotations against module globals; a function-local ``Request`` import
@@ -35,6 +40,7 @@ from typing import Any, Callable, Mapping
 
 from fastapi import APIRouter, Request
 
+from src.cli_adapters import get_adapter
 from src.event_publisher import publish_session_event
 from src.session_supervisor import get_supervisor
 from src.taskhub import raise_lifecycle_events
@@ -54,6 +60,58 @@ TOOL_OUTPUT_TRUNCATE_BYTES = 16 * 1024
 
 def _clean(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _hook_name(payload: Mapping[str, Any]) -> str | None:
+    for key in ("hook_event_name", "eventName", "event", "hookName", "name"):
+        picked = _clean(payload.get(key))
+        if picked:
+            return picked
+    return None
+
+
+def _text_from_blocks(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                parts.append(item.strip())
+            elif isinstance(item, Mapping):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+        if parts:
+            return "\n\n".join(parts)
+    return None
+
+
+def _generic_completion_text(payload: Mapping[str, Any]) -> str | None:
+    """Extract common "final response" shapes from hook payloads.
+
+    Provider CLIs do not use one schema. Keep this deliberately conservative and
+    only inspect keys that plausibly carry assistant output.
+    """
+    for key in (
+        "lastAssistantText",
+        "assistantText",
+        "finalResponse",
+        "response",
+        "output",
+        "content",
+        "message",
+        "text",
+    ):
+        value = payload.get(key)
+        text = _text_from_blocks(value)
+        if text:
+            return text
+        if isinstance(value, Mapping):
+            nested = _generic_completion_text(value)
+            if nested:
+                return nested
+    return None
 
 
 def _truncate_output(value: Any) -> Any:
@@ -106,7 +164,7 @@ def map_hook_event(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Pure mapping of one Claude Code hook payload to publishable session
     events ``[{type, data}]``. Side-effect-only events (SessionStart/Stop/
     SessionEnd) return [] — HookProcessor handles them."""
-    name = _clean(payload.get("hook_event_name"))
+    name = _hook_name(payload)
     if not name:
         return []
     tool_name = _clean(payload.get("tool_name"))
@@ -229,7 +287,7 @@ class HookProcessor:
     async def process(self, payload: Mapping[str, Any]) -> None:
         if not isinstance(payload, Mapping):
             return
-        name = _clean(payload.get("hook_event_name"))
+        name = _hook_name(payload)
         session = self._session()
         session_id = session.get("sessionId")
         instance_id = session.get("instanceId")
@@ -244,10 +302,27 @@ class HookProcessor:
         if name == "SessionStart":
             return  # registration handled above; no published event
 
-        if name == "Stop":
+        adapter_turn_done = bool(
+            self._adapter is not None and name and self._adapter.is_turn_completion_hook(name)
+        )
+        if name == "Stop" or adapter_turn_done:
             await asyncio.to_thread(self._tailer_manager.flush_now)
             tailer = self._tailer_manager.current()
             last_text = tailer.last_assistant_text if tailer is not None else None
+            if not last_text and self._adapter is not None:
+                try:
+                    last_text = self._adapter.extract_completion_text(payload)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[hooks] adapter completion extraction failed: %s", exc)
+            if not last_text:
+                last_text = _generic_completion_text(payload)
+            if session_id and last_text and tailer is None:
+                self._publish(
+                    session_id,
+                    "agent.message",
+                    {"content": [{"type": "text", "text": last_text}]},
+                    source_event_id=f"hook-completion:{instance_id or session_id}:{name}",
+                )
             if instance_id:
                 event: dict[str, Any] = {"type": "turn.completed"}
                 if last_text:
@@ -279,7 +354,9 @@ class HookProcessor:
     def _register_transcript(
         self, payload: Mapping[str, Any], session_id: Any
     ) -> None:
-        transcript_path = _clean(payload.get("transcript_path"))
+        transcript_path = _clean(payload.get("transcript_path")) or _clean(
+            payload.get("transcriptPath")
+        )
         if not transcript_path:
             return
         current = self._tailer_manager.current()
@@ -302,18 +379,26 @@ class HookProcessor:
             logger.warning("[hooks] raise lifecycle failed for %s: %s", instance_id, exc)
 
 
-_processor: HookProcessor | None = None
+_processors: dict[str, HookProcessor] = {}
 
 
-def get_processor() -> HookProcessor:
-    global _processor
-    if _processor is None:
-        _processor = HookProcessor()
-    return _processor
+def get_processor(adapter_name: str | None = None) -> HookProcessor:
+    key = (adapter_name or "claude-code").strip() or "claude-code"
+    processor = _processors.get(key)
+    if processor is None:
+        adapter = None
+        if adapter_name:
+            try:
+                adapter = get_adapter(adapter_name)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[hooks] unknown adapter %s: %s", adapter_name, exc)
+        processor = HookProcessor(adapter=adapter)
+        _processors[key] = processor
+    return processor
 
 
 def build_router():
-    """Build the FastAPI router for the Claude Code http-hook receiver."""
+    """Build the FastAPI router for CLI hook receivers."""
     router = APIRouter()
 
     @router.post("/internal/hooks/claude")
@@ -324,7 +409,22 @@ def build_router():
             payload = {}
         if isinstance(payload, dict):
             # Respond {} immediately; process out-of-band.
-            asyncio.get_running_loop().create_task(get_processor().process(payload))
+            asyncio.get_running_loop().create_task(
+                get_processor("claude-code").process(payload)
+            )
+        return {}
+
+    @router.post("/internal/hooks/cli/{adapter_name}")
+    async def cli_hook(adapter_name: str, request: Request) -> dict[str, Any]:
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001
+            payload = {}
+        if isinstance(payload, dict):
+            payload.setdefault("hook_adapter", adapter_name)
+            asyncio.get_running_loop().create_task(
+                get_processor(adapter_name).process(payload)
+            )
         return {}
 
     return router
