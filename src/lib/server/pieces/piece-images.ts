@@ -254,6 +254,76 @@ export async function recordImageResult(
 }
 
 /**
+ * SPOKE-SIDE POLLING reconcile (docs/per-piece-runtime-images.md). The per-piece build
+ * runs on the hub, but the cross-cluster register callback can't resolve a spoke's
+ * Tailscale MagicDNS — so each spoke instead asks its OWN BFF to reconcile its `building`
+ * rows against GHCR (in-cluster, no MagicDNS, no egress, no TLS to the spoke).
+ *
+ * For each `building` row: if the image now exists in GHCR, record it `ready` (preserving
+ * enable intent) and — when the row was admin-enabled (enabledAt set) — flip it runnable so
+ * the reconciler provisions it. If the image is still missing past `buildTimeoutMs` (since
+ * the row's last update), record `failed`; otherwise leave it `building` (still in progress).
+ */
+export async function reconcileBuildingImages(opts?: {
+	buildTimeoutMs?: number;
+}): Promise<{ checked: number; readied: number; failed: number }> {
+	const buildTimeoutMs =
+		opts?.buildTimeoutMs ?? (parseInt(env.PIECE_BUILD_TIMEOUT_MS ?? '', 10) || 30 * 60 * 1000);
+	if (!db) return { checked: 0, readied: 0, failed: 0 };
+
+	const rows = await db
+		.select({
+			pieceName: pieceImages.pieceName,
+			version: pieceImages.version,
+			updatedAt: pieceImages.updatedAt,
+			enabledAt: pieceImages.enabledAt
+		})
+		.from(pieceImages)
+		.where(eq(pieceImages.status, 'building'));
+
+	let checked = 0;
+	let readied = 0;
+	let failed = 0;
+	for (const row of rows) {
+		checked++;
+		try {
+			const { exists, digest } = await ghcrImageExists(row.pieceName, row.version);
+			if (exists) {
+				// Image landed — record ready (enabledAt preserved) and, when the row was
+				// admin-enabled, flip it runnable so the reconciler provisions it.
+				const result = await recordImageResult(row.pieceName, row.version, {
+					status: 'ready',
+					image: pieceImageRef(row.pieceName, row.version),
+					digest
+				});
+				if (result?.enabledAt != null) {
+					await markPieceRunnable(row.pieceName);
+				}
+				readied++;
+			} else {
+				// Still no image — fail only once the build has had its full timeout budget.
+				const age = Date.now() - row.updatedAt.getTime();
+				if (age > buildTimeoutMs) {
+					await recordImageResult(row.pieceName, row.version, {
+						status: 'failed',
+						errorMessage: 'build did not produce a GHCR image within the timeout'
+					});
+					failed++;
+				}
+				// else: still in progress — leave it `building` (no-op this cycle).
+			}
+		} catch (err) {
+			// One bad row must not abort the whole sweep — log and move on.
+			console.warn(
+				`[reconcileBuildingImages] ${row.pieceName}:${row.version} reconcile failed:`,
+				err
+			);
+		}
+	}
+	return { checked, readied, failed };
+}
+
+/**
  * Enable a piece on THIS cluster. Resolves the catalog version, checks GHCR, and either
  * marks it ready+runnable instantly (image exists) or records `building` + triggers a
  * hub build (the registration callback later flips it runnable).
