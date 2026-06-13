@@ -1,0 +1,27 @@
+# Per-piece image — piece-runtime-base + exactly ONE Activepieces piece.
+# Built on enable (docs/per-piece-runtime-images.md):
+#   docker build -f Dockerfile.piece \
+#     --build-arg BASE_IMAGE=ghcr.io/.../piece-runtime-base:<tag> \
+#     --build-arg PIECE_PKG=ntfy --build-arg PIECE_VERSION=0.2.5 \
+#     -t ghcr.io/.../ap-piece-ntfy:0.2.5 .
+# The single added layer = the one piece + its (nested) framework, so memory + deps are
+# bounded to this piece — no 48-piece bundle, no cross-piece conflicts.
+ARG BASE_IMAGE=piece-runtime-base:latest
+FROM ${BASE_IMAGE}
+ARG PIECE_PKG
+ARG PIECE_VERSION
+
+# Install the one piece as root (precompiled JS → --ignore-scripts, no build tools needed),
+# then hand node_modules back to the non-root runtime user.
+USER root
+RUN npm install --no-save --omit=dev --ignore-scripts \
+      "@activepieces/piece-${PIECE_PKG}@${PIECE_VERSION}" \
+  && chown -R mcpserver:nodejs /app/node_modules
+USER mcpserver
+
+# This image serves exactly this piece. SINGLE_PIECE_MODE=true is inherited from the base.
+ENV PIECE_NAME=${PIECE_PKG}
+# One piece fits comfortably in a small heap (vs the bundle's 640MB).
+ENV NODE_OPTIONS="--max-old-space-size=192"
+
+CMD ["node", "dist/index.js"]

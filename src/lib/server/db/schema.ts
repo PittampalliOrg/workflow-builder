@@ -1291,6 +1291,43 @@ export const platformDisabledPieces = pgTable(
 	}),
 );
 
+// Per-piece runtime images (docs/per-piece-runtime-images.md). A row records that piece
+// <piece_name>@<version> has a dedicated ghcr image (ap-piece-<name>) — the reconciler
+// provisions that piece's ap-<piece>-service from `image` instead of the shared 48-piece
+// bundle, bounding memory to one piece. `status` tracks the build-on-enable lifecycle;
+// a `ready` row with disabled_at IS NULL means "use this per-piece image". Pieces with no
+// ready row fall back to the bundle during migration.
+export const pieceImages = pgTable(
+	"piece_images",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		pieceName: text("piece_name").notNull(),
+		version: text("version").notNull(),
+		image: text("image"),
+		digest: text("digest"),
+		// building | ready | failed
+		status: text("status").notNull().default("building"),
+		errorMessage: text("error_message"),
+		builtAt: timestamp("built_at"),
+		enabledAt: timestamp("enabled_at"),
+		disabledAt: timestamp("disabled_at"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		pieceVersionUnique: unique("uq_piece_images_piece_version").on(
+			table.pieceName,
+			table.version,
+		),
+		pieceStatusIdx: index("idx_piece_images_piece_status").on(
+			table.pieceName,
+			table.status,
+		),
+	}),
+);
+
 // API Keys table for webhook authentication
 export const apiKeys = pgTable("api_keys", {
 	id: text("id")
