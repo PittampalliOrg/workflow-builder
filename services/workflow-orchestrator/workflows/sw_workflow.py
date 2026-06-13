@@ -1047,13 +1047,11 @@ def _resolve_native_agent_runtime(
     from core import runtime_registry
 
     name, descriptor = runtime_registry.resolve(flattened_args, agent_config)
-    if descriptor.family == "interactive-cli":
-        # interactive-cli runtimes (claude-code-cli, …) are TUI-driven sessions
-        # whose session_workflow wraps the lifecycle, not a single auto-terminating
-        # turn — durable/run's autoTerminateAfterEndTurn contract does not apply.
+    if descriptor.capabilities.get("workflowDispatch") != "auto-turn":
         raise RuntimeError(
-            f"durable/run cannot dispatch interactive CLI runtime '{name}' "
-            "(family interactive-cli). Start these sessions from the sessions UI."
+            f"durable/run cannot dispatch runtime '{name}' "
+            f"(family {descriptor.family}, workflowDispatch="
+            f"{descriptor.capabilities.get('workflowDispatch')!r})."
         )
     return name, descriptor.to_target_dict()
 

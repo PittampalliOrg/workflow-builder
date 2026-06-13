@@ -91,6 +91,15 @@ def test_hook_post_returns_200_empty_object(client):
     assert res.json() == {}
 
 
+def test_generic_cli_hook_post_returns_200_empty_object(client):
+    res = client.post(
+        "/internal/hooks/cli/codex",
+        json={"hook_event_name": "Stop", "session_id": "s1"},
+    )
+    assert res.status_code == 200
+    assert res.json() == {}
+
+
 def test_hook_post_tolerates_garbage_body(client):
     res = client.post(
         "/internal/hooks/claude",

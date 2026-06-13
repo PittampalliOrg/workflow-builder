@@ -37,7 +37,13 @@ import stat
 from pathlib import Path
 from typing import Any, Mapping
 
-from src.cli_adapters.base import CliAdapter, SeedResult, link_transcript_subtree
+from src.cli_adapters.base import (
+    CliAdapter,
+    SeedResult,
+    hook_relay_command,
+    link_transcript_subtree,
+    write_hook_relay_script,
+)
 from src.capability_compiler import (
     compose_instruction_file,
     emit_claude_code_cli_servers,
@@ -72,6 +78,17 @@ def _record(value: Any) -> dict[str, Any]:
 
 def _codex_home() -> Path:
     return Path(os.environ.get("CODEX_HOME", "/sandbox/.codex"))
+
+
+def _hook_relay_path() -> Path:
+    root = os.environ.get("CLI_AGENT_WFB_DIR")
+    if root:
+        return Path(root) / "wfb_hook_relay.py"
+    return (
+        Path(os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox"))
+        / ".wfb"
+        / "wfb_hook_relay.py"
+    )
 
 
 def normalize_codex_model(model_spec: Any) -> str | None:
@@ -214,6 +231,117 @@ def _render_config_toml(agent_config: Mapping[str, Any], base_env: Mapping[str, 
     return "\n\n".join(blocks) + "\n"
 
 
+def _codex_hook_group(event: str, *, matcher: str | None = None) -> list[dict[str, Any]]:
+    relay = _hook_relay_path()
+    group: dict[str, Any] = {
+        "hooks": [
+            {
+                "type": "command",
+                "command": hook_relay_command(relay, adapter="codex", event=event),
+                "timeout": 30,
+                "statusMessage": f"Recording {event}",
+            }
+        ]
+    }
+    if matcher is not None:
+        group["matcher"] = matcher
+    return [group]
+
+
+def _render_hooks_json() -> str:
+    # Codex hook schema is {hooks: {Event: [{matcher?, hooks: [...]}]}}.
+    # Stop/UserPromptSubmit ignore matchers per the docs; tool/permission events
+    # use "*" to cover every built-in/MCP tool.
+    payload = {
+        "hooks": {
+            "SessionStart": _codex_hook_group(
+                "SessionStart", matcher="startup|resume|clear|compact"
+            ),
+            "UserPromptSubmit": _codex_hook_group("UserPromptSubmit"),
+            "PreToolUse": _codex_hook_group("PreToolUse", matcher="*"),
+            "PermissionRequest": _codex_hook_group("PermissionRequest", matcher="*"),
+            "PostToolUse": _codex_hook_group("PostToolUse", matcher="*"),
+            "Stop": _codex_hook_group("Stop"),
+        }
+    }
+    return json.dumps(payload, indent=2) + "\n"
+
+
+def _text_from_content(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                parts.append(item.strip())
+            elif isinstance(item, Mapping):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+        if parts:
+            return "\n\n".join(parts)
+    if isinstance(value, Mapping):
+        for key in ("text", "content", "message", "output"):
+            text = _text_from_content(value.get(key))
+            if text:
+                return text
+    return None
+
+
+def _assistant_text_from_record(record: Mapping[str, Any]) -> str | None:
+    role = record.get("role")
+    if role == "assistant":
+        text = _text_from_content(record.get("content") or record.get("message"))
+        if text:
+            return text
+    if record.get("type") == "assistant":
+        text = _text_from_content(record.get("message") or record.get("content"))
+        if text:
+            return text
+    payload = record.get("payload")
+    if isinstance(payload, Mapping):
+        text = _assistant_text_from_record(payload)
+        if text:
+            return text
+    if record.get("type") == "message" and record.get("role") == "assistant":
+        text = _text_from_content(record.get("content"))
+        if text:
+            return text
+    if record.get("type") in {"turn.completed", "turn_completed"}:
+        for key in ("final_message", "message", "content", "output"):
+            text = _text_from_content(record.get(key))
+            if text:
+                return text
+    return None
+
+
+def _latest_codex_assistant_text() -> str | None:
+    sessions = _codex_home() / "sessions"
+    if not sessions.exists():
+        return None
+    files = sorted(
+        (p for p in sessions.rglob("*.jsonl") if p.is_file()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for path in files[:5]:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines[-400:]):
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, Mapping):
+                text = _assistant_text_from_record(record)
+                if text:
+                    return text
+    return None
+
+
 class CodexAdapter(CliAdapter):
     name = "codex"
     # codex mirrors events from rollout files (no UserPromptSubmit hook), and its
@@ -251,6 +379,13 @@ class CodexAdapter(CliAdapter):
             _render_config_toml(agent_config, os.environ), encoding="utf-8"
         )
         result.paths["codexConfigPath"] = str(config_path)
+
+        # (b2) Hook relay: Codex discovers hooks.json next to config.toml.
+        relay = write_hook_relay_script(_hook_relay_path())
+        hooks_path = home / "hooks.json"
+        hooks_path.write_text(_render_hooks_json(), encoding="utf-8")
+        result.paths["hookRelayPath"] = str(relay)
+        result.paths["hooksPath"] = str(hooks_path)
 
         # (c) skills → $CODEX_HOME/skills/<slug>/ ; system prompt + a skills
         # index → AGENTS.md. codex has no native skills auto-discovery, so the
@@ -307,7 +442,7 @@ class CodexAdapter(CliAdapter):
     def build_argv(
         self, agent_config: Mapping[str, Any], seed_paths: Mapping[str, str]
     ) -> list[str]:
-        argv: list[str] = [CODEX_BIN]
+        argv: list[str] = [CODEX_BIN, "--dangerously-bypass-hook-trust"]
         # Resume: the re-mounted $CODEX_HOME/sessions subtree holds the prior
         # rollouts, so `codex resume --last` continues the most-recent thread
         # (no thread id needed; codex merges the TUI flags below into resume).
@@ -328,6 +463,15 @@ class CodexAdapter(CliAdapter):
         else:
             argv += ["--sandbox", "danger-full-access", "--ask-for-approval", "on-request"]
         return argv
+
+    def extract_completion_text(self, payload: Mapping[str, Any]) -> str | None:
+        text = _text_from_content(
+            payload.get("lastAssistantText")
+            or payload.get("finalResponse")
+            or payload.get("response")
+            or payload.get("content")
+        )
+        return text or _latest_codex_assistant_text()
 
     # -- env -------------------------------------------------------------------
 

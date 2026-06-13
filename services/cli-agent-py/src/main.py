@@ -1,9 +1,9 @@
-"""cli-agent-py — FastAPI host for the `claude-code-cli` interactive-cli runtime.
+"""cli-agent-py — FastAPI host for interactive-cli runtimes.
 
 Registers Dapr workflow ``session_workflow`` (lifecycle wrapper) + activities,
-supervises the headless herdr server + the Claude Code TUI pane, receives
-Claude Code http hooks, and serves the WS→PTY terminal bridge. Everything is on
-port 8002 (uvicorn src.main:app).
+supervises the headless herdr server + selected CLI TUI pane, receives CLI hook
+events, and serves the WS→PTY terminal bridge. Everything is on port 8002
+(uvicorn src.main:app).
 
 Endpoint surface (parity with claude-agent-py where applicable):
   GET  /healthz, GET /readyz (readyz also pings the herdr socket)
@@ -11,6 +11,7 @@ Endpoint surface (parity with claude-agent-py where applicable):
   POST /internal/sessions/raise-event    {instanceId, eventName, payload}
   POST /internal/workspace/command       {command, env?, cwd?}  (X-Internal-Token)
   POST /internal/hooks/claude            (Claude Code http hooks)
+  POST /internal/hooks/cli/{adapter}     (adapter command-hook relay)
   WS   /terminal/{terminal_id}?target=main|shell&cols=&rows=  (X-Internal-Token)
   POST /api/v2/agent-runs/{id}/terminate|pause|resume, DELETE /api/v2/agent-runs/{id}
 """
@@ -30,11 +31,22 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Startup guard: API-key auth env vars silently OUTRANK CLAUDE_CODE_OAUTH_TOKEN
-# and flip billing from subscription to API. Refuse to boot with them present.
-# CLAUDE_CODE_OAUTH_TOKEN (pod secretKeyRef) is ALLOWED and passed to the pane.
+# Startup guard: provider API-key auth env vars can silently outrank personal
+# CLI OAuth credentials and flip billing from subscription to metered API. Refuse
+# to boot with them present. Per-user CLI OAuth env vars delivered through
+# sessionSecretEnv (CLAUDE_CODE_OAUTH_TOKEN / CODEX_AUTH_JSON / AGY_AUTH_JSON)
+# are allowed and consumed by the adapters.
 # ---------------------------------------------------------------------------
-_FORBIDDEN_AUTH_ENV_VARS = ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY")
+_FORBIDDEN_AUTH_ENV_VARS = (
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_API_KEY",
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "ANTIGRAVITY_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+)
 
 
 def _assert_subscription_auth_only() -> None:
@@ -42,9 +54,9 @@ def _assert_subscription_auth_only() -> None:
     if present:
         logger.critical(
             "FATAL: %s set in the cli-agent-py environment. These silently "
-            "outrank CLAUDE_CODE_OAUTH_TOKEN and flip Claude Code billing from "
-            "subscription to API. Remove them from the pod spec / secret refs "
-            "and redeploy. Refusing to start.",
+            "outrank personal CLI OAuth credentials and flip billing from "
+            "subscription to API/metered auth. Remove them from the pod spec / "
+            "secret refs and redeploy. Refusing to start.",
             ", ".join(present),
         )
         sys.exit(1)

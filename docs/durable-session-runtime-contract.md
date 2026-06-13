@@ -13,13 +13,14 @@
 ## Why
 
 `durable/run` can target several agent runtimes (`dapr-agent-py`,
-`claude-agent-py`, `adk-agent-py`, `browser-use-agent`, per-agent
-`agent-runtime-<slug>` pods). Historically the orchestrator selected one through
-a hand-coded precedence ladder + an inline `_NATIVE_DURABLE_AGENT_TARGETS` dict in
-`workflows/sw_workflow.py`, and the BFF repeated the runtime list across ~8
-scattered enumerations. There was **no interface** — adding or swapping a runtime
-meant editing every site, and a runtime swap could silently drop features (MCP
-tools, hooks, multi-provider) because nothing declared what a runtime can do.
+`claude-agent-py`, `adk-agent-py`, `claude-code-cli`, `codex-cli`, `agy-cli`,
+per-agent `agent-runtime-<slug>` pods). Historically the orchestrator selected
+one through a hand-coded precedence ladder + an inline
+`_NATIVE_DURABLE_AGENT_TARGETS` dict in `workflows/sw_workflow.py`, and the BFF
+repeated the runtime list across ~8 scattered enumerations. There was **no
+interface** — adding or swapping a runtime meant editing every site, and a
+runtime swap could silently drop features (MCP tools, hooks, multi-provider)
+because nothing declared what a runtime can do.
 
 The contract draws the abstraction line at the seams that **already carry every
 runtime today** and adds an explicit capability declaration so the platform knows
@@ -34,6 +35,10 @@ A runtime is registry-eligible iff it satisfies all of:
   `session_workflow`).
 - The orchestrator gates the workflow↔session bridge on **`bridgeGateToken`**
   (canonical `agent_workflow`, == `config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME`).
+- Declares `capabilities.workflowDispatch: "auto-turn"` if it is allowed to run
+  as an SW 1.0 `durable/run` step. Runtimes without that capability may still be
+  valid for other surfaces, but the orchestrator rejects them for workflow
+  dispatch.
 
 > **Two-name dispatch (load-bearing).** `session_workflow` is the *dispatched*
 > workflow; `agent_workflow` is the *bridge-eligibility sentinel* — they are
@@ -66,19 +71,13 @@ when `capabilities.incrementalEvents` is `true`.
 
 ## The registry
 
-Canonical (Phase 1): **`services/workflow-orchestrator/core/runtime_registry.json`**,
-read by `core/runtime_registry.py`. App-ids are **not** frozen in the JSON — each
-descriptor names an `appIdConfigKey` resolved at load from `core.config` (Dapr
-Configuration / env), so the existing override flow is unchanged; only the static
-`capabilities` blob is new.
-
-> **Phase 2** promotes this file to `services/shared/runtime-registry.json` (the
-> single source of truth read by **both** the Python orchestrator reader and a new
-> TS BFF reader) and collapses the BFF's scattered enumerations (image if-chain,
-> the three container allowlists, `BENCHMARK_AGENT_RUNTIMES`, the framework blob).
-> It lives in the orchestrator build context for Phase 1 because that build
-> context is `services/workflow-orchestrator` (`COPY . .`) and cannot reach
-> `services/shared/` without the cross-context plumbing Phase 2 adds.
+Canonical: **`services/shared/runtime-registry.json`**. The generated copies
+`services/workflow-orchestrator/core/runtime_registry.json` and
+`src/lib/server/agents/runtime-registry.data.json` are refreshed by
+`node scripts/sync-runtime-registry.mjs`. App-ids are **not** frozen in the JSON
+— each descriptor names an `appIdConfigKey` resolved at load from
+`core.config` / env, so the existing override flow is unchanged; only the static
+descriptor and `capabilities` blob are shared.
 
 ### Descriptor shape
 
@@ -87,29 +86,34 @@ Configuration / env), so the existing override flow is unchanged; only the stati
 | `id` | runtime name (e.g. `claude-agent-py`) |
 | `appIdConfigKey` | `core.config` attribute resolving the Dapr app-id (override-safe) |
 | `instancePrefix` | child-instance-id prefix (`durable`, `durable-claude`, …) |
-| `family` | `durable-session` \| `browser` (browser ⇒ Arc 2 warm-pool, not the ephemeral Sandbox lane) |
+| `family` | `durable-session` \| `interactive-cli` \| `browser` (browser ⇒ Arc 2 warm-pool, not the ephemeral Sandbox lane) |
 | `mainContainerName` | pod container name (feeds the BFF container allowlists in Phase 2) |
 | `imageEnvKey` | BFF env var carrying the per-session Sandbox image (Phase 2) |
 | `agentMetadataFramework` | replaces the hard-coded `'Dapr Agents'` registry blob (Phase 2) |
 | `benchmarkEligible` | appears in the SWE-bench runtime picker |
+| `executionClass` | Sandbox execution class override, required for `interactive-cli` |
+| `cliAdapter` | CLI host adapter name for `interactive-cli` runtimes |
+| `cliAuth` | user-scoped OAuth credential delivery model for `interactive-cli` runtimes |
 | `capabilitiesVerified` | `true` once the Phase 5 conformance harness proves the flags |
 | `capabilities` | the guarantee/feature descriptor (below) |
 
 ### Capability descriptor
 
-`durabilityGranularity` (`per-activity` \| `per-turn`), `retryMaxAttempts`,
+`durabilityGranularity` (`per-activity` \| `per-turn` \| `per-session`),
+`workflowDispatch` (`auto-turn` \| `none`/absent), `retryMaxAttempts`,
 `durableTurnTimer`, `supportsMcp`, `supportsBuiltinOpenShellTools`,
 `supportsHooks`, `hookTiming` (`live` \| `batch`), `supportsPermissionGating`,
 `supportsPlugins`, `supportsCompaction`, `incrementalEvents`, `ownsSandbox`,
 `requiresWarmPool`, `requiresBrowserSidecars`, `multiProvider`,
-`supportedProviders`.
+`supportedProviders`, `interactiveTerminal`.
 
-> Capabilities are **advisory in Phase 1** — nothing consumes them yet. The
-> **Phase 3** swap-safety gate reads them to WARN/REJECT lossy swaps; the
-> **Phase 5** conformance harness flips `capabilitiesVerified` once each declared
-> flag is proven. The durability difference (`per-activity` vs `per-turn`) is a
-> first-class declared property, never erased: a swap that downgrades it is a
-> warned event, not a silent change.
+> `workflowDispatch` is enforced by the orchestrator for SW 1.0 `durable/run`.
+> Other capabilities remain the swap-safety contract: the gate reads them to
+> WARN/REJECT lossy swaps, and the conformance harness flips
+> `capabilitiesVerified` once each declared flag is proven. The durability
+> difference (`per-activity` vs `per-turn` vs `per-session`) is a first-class
+> declared property, never erased: a swap that downgrades it is a warned event,
+> not a silent change.
 
 ### Resolution precedence (`resolve`)
 
@@ -132,17 +136,21 @@ Reproduces the historical `_resolve_native_agent_runtime` ladder **exactly**
 | `dapr-agent-py-testing` | durable-session | per-activity | ✅ | 9 | ✅ |
 | `claude-agent-py` | durable-session | per-turn (3 retries) | ✅ *(Phase 0)* | anthropic | ⏳ Phase 5 |
 | `adk-agent-py` | durable-session | per-turn | ❌ | gemini | ⏳ |
-| `browser-use-agent` | browser | per-activity | ✅ | anthropic | ⏳ |
+| `claude-code-cli` | interactive-cli | per-session | ✅ | anthropic | ⏳ |
+| `codex-cli` | interactive-cli | per-session | ✅ | openai | ⏳ |
+| `agy-cli` | interactive-cli | per-session | ✅ | google | ⏳ |
+| `browser-use-agent` | browser | per-activity | ✅ | anthropic | ⏳ *(not workflow-dispatch eligible)* |
 
 ## Roadmap
 
 - **Phase 0 (done):** `claude-agent-py` honors `agentConfig.mcpServers` + emits
   `hook.decision` via the SDK (`mcp_config.py`, `claude_sdk_runner.py`).
-- **Phase 1 (this doc):** registry + contract + two-name dispatch de-hard-coding.
-- **Phase 2:** promote the registry to `services/shared/`; collapse the BFF
-  enumerations + extract the shared event publisher.
+- **Phase 1 (done):** registry + contract + two-name dispatch de-hard-coding.
+- **Phase 2 (done):** promote the registry to `services/shared/`; collapse the
+  BFF runtime enumerations that need runtime-dispatch eligibility.
 - **Phase 3:** swap-safety gate (WARN/REJECT lossy swaps) + lifted model/provider
   resolver.
-- **Phase 4:** SWE-bench de-branch (`isClaudeAgentRuntime` → `capabilities.ownsSandbox`).
+- **Phase 4:** SWE-bench de-branch (`isClaudeAgentRuntime` →
+  `capabilities.ownsSandbox`).
 - **Phase 5:** runtime conformance harness; flip `capabilitiesVerified`.
 - **Phase 6:** delete audited dead lanes.

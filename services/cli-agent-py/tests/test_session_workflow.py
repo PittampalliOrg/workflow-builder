@@ -77,11 +77,25 @@ def _start_to_first_when_any(driver, *, seed_result=None, start_result=None):
     return driver.gen.send(start_result or {"paneRef": "p1", "agentDetected": True})
 
 
-def test_auto_terminate_dispatch_is_rejected(monkeypatch):
+def test_auto_terminate_stops_after_first_turn_completed(monkeypatch):
     ctx = FakeCtx()
-    gen = sw.session_workflow(ctx, {**BASE_INPUT, "autoTerminateAfterEndTurn": True})
-    with pytest.raises(ValueError):
-        gen.send(None)
+    driver = WorkflowDriver(
+        ctx, {**BASE_INPUT, "autoTerminateAfterEndTurn": True}, monkeypatch
+    )
+    _start_to_first_when_any(driver)
+    event_task = driver.event_task()
+    event_task.result = {
+        "events": [{"type": "turn.completed", "lastAssistantText": "workflow answer"}]
+    }
+    yielded = driver.gen.send(event_task)
+    assert yielded.kind == "activity:stop_cli_activity"
+    with pytest.raises(StopIteration) as stop:
+        driver.gen.send({"ok": True})
+    result = stop.value.value
+    assert result["success"] is True
+    assert result["status"] == "completed"
+    assert result["output"] == "workflow answer"
+    assert result["turnCount"] == 1
 
 
 def test_happy_path_turn_then_clean_exit(monkeypatch):
@@ -125,6 +139,27 @@ def test_happy_path_turn_then_clean_exit(monkeypatch):
     # status_starting at the top, status_terminated at the bottom.
     assert ("sess-wf-1", "session.status_starting", {}) == published[0]
     assert published[-1][1] == "session.status_terminated"
+
+
+def test_result_contract_reports_selected_cli_runtime(monkeypatch):
+    ctx = FakeCtx()
+    driver = WorkflowDriver(
+        ctx,
+        {
+            **BASE_INPUT,
+            "agentConfig": {"runtime": "codex-cli", "cliAdapter": "codex"},
+            "autoTerminateAfterEndTurn": True,
+        },
+        monkeypatch,
+    )
+    _start_to_first_when_any(driver)
+    event_task = driver.event_task()
+    event_task.result = {"events": [{"type": "turn.completed", "content": "done"}]}
+    yielded = driver.gen.send(event_task)
+    assert yielded.kind == "activity:stop_cli_activity"
+    with pytest.raises(StopIteration) as stop:
+        driver.gen.send({"ok": True})
+    assert stop.value.value["agentRuntime"] == "codex-cli"
 
 
 def test_nonzero_exit_code_fails_run(monkeypatch):

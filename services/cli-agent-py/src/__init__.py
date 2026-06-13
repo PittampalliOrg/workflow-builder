@@ -1,1 +1,1 @@
-"""Claude Code CLI (interactive-cli) Dapr runtime host."""
+"""Interactive CLI Dapr runtime host."""

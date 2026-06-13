@@ -22,7 +22,10 @@ import { mountSessionRepositories } from "$lib/server/sessions/repositories";
 import { appendEvent, sendUserEvent } from "$lib/server/sessions/events";
 import { findOrCreateEphemeralAgent } from "$lib/server/agents/ephemeral";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
-import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
+import {
+	getRuntimeDescriptor,
+	type RuntimeDescriptor,
+} from "$lib/server/agents/runtime-registry";
 import { evaluateSwap } from "$lib/server/agents/swap-safety";
 import { compilePromptStack } from "$lib/server/prompt-presets";
 import type { AgentConfig } from "$lib/types/agents";
@@ -39,6 +42,7 @@ import {
 	registerAgentVersionInMlflow,
 	safeCreateWorkflowAgentMlflowRun,
 } from "$lib/server/observability/mlflow-lifecycle";
+import { getUserCliCredential } from "$lib/server/users/cli-credentials";
 
 type PublishedWorkflowAgent = {
 	agentId: string;
@@ -357,10 +361,10 @@ export const POST: RequestHandler = async ({ request }) => {
 	const swapVerdict = swapTarget
 		? evaluateSwap(agentConfig as Record<string, unknown>, swapTarget)
 		: null;
-	if (swapTarget && swapVerdict && swapVerdict.drops.length > 0) {
-		console.warn(
-			`[swap-safety] workflow session ${sessionId} -> runtime "${swapTarget.id}" ${swapVerdict.decision}: ` +
-				swapVerdict.drops.map((d) => `${d.capability}(${d.severity})`).join(", "),
+		if (swapTarget && swapVerdict && swapVerdict.drops.length > 0) {
+			console.warn(
+				`[swap-safety] workflow session ${sessionId} -> runtime "${swapTarget.id}" ${swapVerdict.decision}: ` +
+					swapVerdict.drops.map((d) => `${d.capability}(${d.severity})`).join(", "),
 		);
 		for (const d of swapVerdict.drops) console.warn(`[swap-safety]   ${d.detail}`);
 		if (swapVerdict.decision === "reject") {
@@ -371,13 +375,17 @@ export const POST: RequestHandler = async ({ request }) => {
 						.filter((d) => d.severity === "reject")
 						.map((d) => d.detail)
 						.join("; "),
-			);
+				);
+			}
 		}
-	}
+		const workflowSessionSecretEnv = await resolveWorkflowSessionSecretEnv({
+			userId,
+			runtimeDescriptor: swapTarget,
+		});
 
-	// Idempotent: if a session with this deterministic id already exists, return it.
-	const [existing] = await db
-		.select()
+		// Idempotent: if a session with this deterministic id already exists, return it.
+		const [existing] = await db
+			.select()
 		.from(sessions)
 		.where(eq(sessions.id, sessionId))
 		.limit(1);
@@ -411,11 +419,12 @@ export const POST: RequestHandler = async ({ request }) => {
 			agentConfig,
 			workflowExecutionId,
 			benchmarkRunId,
-			benchmarkInstanceId,
-			benchmarkExecutionClass,
-			timeoutMinutes: bridgeTimeoutMinutes,
-			traceContext,
-		});
+				benchmarkInstanceId,
+				benchmarkExecutionClass,
+				timeoutMinutes: bridgeTimeoutMinutes,
+				traceContext,
+				sessionSecretEnv: workflowSessionSecretEnv,
+			});
 		const reuseChildAppId = reuseHost?.agentAppId ?? reuseAgentAppId;
 		const reuseRuntimeSandboxName =
 			reuseHost?.sandboxName ?? existing.runtimeSandboxName ?? null;
@@ -592,6 +601,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		benchmarkExecutionClass,
 		timeoutMinutes: bridgeTimeoutMinutes,
 		traceContext,
+		sessionSecretEnv: workflowSessionSecretEnv,
 	});
 	const childAgentAppId = sessionHost?.agentAppId ?? targetAgentAppId;
 	const childRuntimeSandboxName = sessionHost?.sandboxName ?? null;
@@ -758,6 +768,52 @@ export const POST: RequestHandler = async ({ request }) => {
 		reused: false,
 	});
 };
+
+async function resolveWorkflowSessionSecretEnv(params: {
+	userId: string;
+	runtimeDescriptor: RuntimeDescriptor | undefined | null;
+}): Promise<Record<string, string> | null> {
+	const descriptor = params.runtimeDescriptor;
+	const cliAuth = descriptor?.capabilities?.interactiveTerminal
+		? descriptor.cliAuth
+		: undefined;
+	if (!cliAuth) return null;
+	const runtimeId = descriptor?.id ?? "unknown-runtime";
+	const { provider, envVar, setupCommand, credentialKind } = cliAuth;
+	if (!envVar) {
+		throw error(
+			500,
+			`Runtime "${runtimeId}" cliAuth.credentialKind=${credentialKind} requires an envVar`,
+		);
+	}
+	const setupHint = setupCommand
+		? `run \`${setupCommand}\` locally`
+		: "see the runtime docs";
+	if (credentialKind === "device_login") {
+		throw error(
+			412,
+			`Runtime "${runtimeId}" requires an interactive device-code login and cannot run as an automated workflow step. Link a reusable CLI credential first (${setupHint}).`,
+		);
+	}
+	const credential = await getUserCliCredential(params.userId, provider);
+	if (!credential) {
+		throw error(
+			412,
+			`No ${provider} CLI credential linked for this user. Add one under Settings -> CLI tokens (${setupHint}) before using "${runtimeId}" in a workflow.`,
+		);
+	}
+	if (
+		credentialKind !== "file_bundle" &&
+		credential.expiresAt &&
+		credential.expiresAt.getTime() < Date.now()
+	) {
+		throw error(
+			412,
+			`The linked ${provider} CLI credential has expired. Re-enroll under Settings -> CLI tokens (${setupHint}) before using "${runtimeId}" in a workflow.`,
+		);
+	}
+	return { [envVar]: credential.token };
+}
 
 function buildChildInput(params: {
 	sessionId: string;
