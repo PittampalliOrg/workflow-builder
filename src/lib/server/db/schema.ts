@@ -1258,6 +1258,33 @@ export const platformOauthApps = pgTable(
 	}),
 );
 
+// Platform-admin piece-enablement gate (Phase 1 of docs/activepieces-catalog-expansion.md).
+// BLOCKLIST semantics: a row = a piece DISABLED at the platform level, so the
+// activepieces-mcps reconciler's `catalog` branch skips provisioning its
+// ap-<piece>-service. An EMPTY table means every bundled piece stays provisioned
+// (deploy is a genuine no-op — no seed needed). The reconciler keeps
+// pinned/workflow-referenced/mcp-enabled as safety nets, so disabling a piece used
+// by a deployed workflow does NOT strand it. `pieceName` is the short catalog slug
+// (matches piece_metadata.name, e.g. "microsoft-outlook").
+export const platformDisabledPieces = pgTable(
+	"platform_disabled_piece",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		platformId: text("platform_id").notNull().default("default-platform"),
+		pieceName: text("piece_name").notNull(),
+		disabledBy: text("disabled_by"),
+		disabledAt: timestamp("disabled_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		platformPieceUnique: unique("uq_platform_disabled_piece_platform_piece").on(
+			table.platformId,
+			table.pieceName,
+		),
+	}),
+);
+
 // API Keys table for webhook authentication
 export const apiKeys = pgTable("api_keys", {
 	id: text("id")

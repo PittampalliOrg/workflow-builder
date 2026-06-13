@@ -338,6 +338,13 @@ export const NAV_GROUPS: NavGroup[] = [
 				match: prefix("/admin/metrics"),
 			},
 			{
+				id: "admin-pieces",
+				label: "Piece enablement",
+				icon: Plug,
+				href: () => "/admin/pieces",
+				match: prefix("/admin/pieces"),
+			},
+			{
 				id: "admin-runtimes",
 				label: "Agent runtimes",
 				icon: Cpu,
