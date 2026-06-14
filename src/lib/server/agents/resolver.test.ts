@@ -311,6 +311,38 @@ describe("resolveSpecAgentRefs", () => {
 		);
 	});
 
+	it("resolves an agentRef slug expression fallback when trigger input is omitted", async () => {
+		resolveAgentRefMock.mockResolvedValueOnce(
+			resolvedAgent({ slug: "codex-cli", config: minimalConfig({ runtime: "codex-cli" }) }),
+		);
+		const spec = specWithTasks([
+			{
+				Run: {
+					call: "durable/run",
+					with: {
+						body: {
+							prompt: "hello",
+							agentRef: { slug: '${ .trigger.cliRuntime // "codex-cli" }' },
+						},
+					},
+				},
+			},
+		]);
+
+		const resolved = await resolveSpecAgentRefs(spec, {
+			triggerData: {},
+		});
+
+		expect(resolveAgentRefMock).toHaveBeenCalledWith({ slug: "codex-cli" });
+		const task = (resolved.document as Record<string, unknown>).do as Array<
+			Record<string, unknown>
+		>;
+		const body = ((task[0].Run as Record<string, unknown>).with as Record<string, unknown>)
+			.body as Record<string, unknown>;
+		expect(body.agentSlug).toBe("codex-cli");
+		expect((body.agentConfig as Record<string, unknown>).runtime).toBe("codex-cli");
+	});
+
 	it("resolves a whole agentRef from trigger input with fallback", async () => {
 		resolveAgentRefMock.mockResolvedValueOnce(
 			resolvedAgent({ slug: "codex-cli", config: minimalConfig({ runtime: "codex-cli" }) }),

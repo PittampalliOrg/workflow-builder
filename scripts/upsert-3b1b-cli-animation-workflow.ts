@@ -82,6 +82,10 @@ const SELECTED_BUILD_WORKSPACE_REF =
 const WORKSPACE_SANDBOX_NAME = '${ .workspace_profile.sandboxName // "" }';
 const WORKSPACE_REF = "${ .workspace_profile.workspaceRef }";
 
+function selectedCliRuntimeExpression(defaultRuntime: CliRuntime): string {
+	return `\${ .trigger.cliRuntime // "${defaultRuntime}" }`;
+}
+
 function isRecord(value: unknown): value is JsonRecord {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -344,6 +348,7 @@ async function resolveCliAgent(
 
 function makeParameterizedBuildTask(
 	baseTask: JsonRecord,
+	defaultRuntime: CliRuntime,
 ): JsonRecord {
 	const task = cloneJson(baseTask);
 	delete task.if;
@@ -361,7 +366,7 @@ function makeParameterizedBuildTask(
 	};
 	const body = ensureRecord(withBlock, "body");
 	body.agentRef = {
-		slug: "${ .trigger.cliRuntime }",
+		slug: selectedCliRuntimeExpression(defaultRuntime),
 	};
 
 	return task;
@@ -565,7 +570,7 @@ function replaceBuildTasks(
 	}
 	const baseTask = (doArray[buildIndex] as JsonRecord)
 		.build_3b1b_animation as JsonRecord;
-	const buildTask = makeParameterizedBuildTask(baseTask);
+	const buildTask = makeParameterizedBuildTask(baseTask, args.defaultRuntime);
 	doArray.splice(buildIndex, 1, { build_3b1b_animation: buildTask });
 
 	for (let index = doArray.length - 1; index >= 0; index -= 1) {
