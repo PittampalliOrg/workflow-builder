@@ -37,6 +37,7 @@ from typing import Any, Mapping
 from src.agy_capture import restore_bundle, start_capture_watcher
 from src.agy_stop_guard import (
     evaluate_stop_guard,
+    has_stop_guard_config,
     write_stop_guard_config,
 )
 from src.cli_adapters.base import (
@@ -1038,13 +1039,17 @@ class AntigravityAdapter(CliAdapter):
         return events
 
     def transcript_turn_completion(self, entry: Mapping[str, Any]) -> dict[str, Any] | None:
-        # Agy writes one transcript entry for each tool result, file view, and
-        # final answer. Treating every text-bearing entry as a public turn
-        # completion over-counts turns and can end durable/run workflows before
-        # the Stop hook fires. The Stop hook is the adapter's authoritative
-        # end-turn signal; it flushes the tailer and raises one turn.completed
-        # with the latest assistant text after the output guard passes.
-        return None
+        # When output-sync / stop-condition guardrails are active, keep the Stop
+        # hook authoritative so durable/run cannot complete before required
+        # files exist. Plain chat turns have no guard, and AGY can skip Stop for
+        # fast text-only replies; use the final transcript row as the fallback
+        # completion edge for those turns.
+        if has_stop_guard_config():
+            return None
+        text = _agy_final_response_text(entry)
+        if not text:
+            return None
+        return {"type": "turn.completed", "lastAssistantText": text}
 
     # -- env -------------------------------------------------------------------
 

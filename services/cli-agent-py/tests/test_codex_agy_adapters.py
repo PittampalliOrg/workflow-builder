@@ -805,7 +805,7 @@ def test_agy_run_command_hook_shim_rejects_cwd_outside_sandbox(tmp_path, monkeyp
     assert "outside the managed sandbox" in result["data"]["stderr"]
 
 
-def test_agy_transcript_final_response_maps_message_usage_without_completion():
+def test_agy_transcript_final_response_maps_message_usage_and_completion():
     adapter = get_adapter("antigravity")
     entry = {
         "source": "MODEL",
@@ -844,7 +844,10 @@ def test_agy_transcript_final_response_maps_message_usage_without_completion():
             "sourceEventId": "agy-transcript:21:usage",
         },
     ]
-    assert adapter.transcript_turn_completion(entry) is None
+    assert adapter.transcript_turn_completion(entry) == {
+        "type": "turn.completed",
+        "lastAssistantText": "Created index.html, styles.css, script.js, and README.md.",
+    }
 
 
 def test_agy_transcript_completion_waits_for_stop_guard_outputs(agy_home):

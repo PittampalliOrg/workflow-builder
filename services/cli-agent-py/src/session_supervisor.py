@@ -727,6 +727,7 @@ class SessionSupervisor:
             )
             self._injected_prompt_hashes.update(prompt_digests)
             submitted = False
+            turn_started = False
             try:
                 await self._client.pane_send_text(pane, f"{marker}{send_text}")
                 # Let the TUI ingest the pasted text before pressing Enter, then
@@ -735,6 +736,9 @@ class SessionSupervisor:
                 await asyncio.sleep(CLI_SUBMIT_DELAY_SECONDS)
                 if not await self._submit_enter_reliably(pane):
                     return False
+                if self.idle_after_submit_is_success and not self.hook_reports_prompt_submit:
+                    self.note_turn_started(source)
+                    turn_started = True
                 if not await self._confirm_submitted(pane):
                     logger.warning(
                         "[supervisor] submit did not register after %s retry "
@@ -742,7 +746,7 @@ class SessionSupervisor:
                         CLI_SUBMIT_RETRIES,
                     )
                     return False
-                if not self.hook_reports_prompt_submit:
+                if not self.hook_reports_prompt_submit and not turn_started:
                     self.note_turn_started(source)
                 submitted = True
                 return True

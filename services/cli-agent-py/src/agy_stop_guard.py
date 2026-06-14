@@ -41,6 +41,10 @@ def _config_path() -> Path:
     return _wfb_dir() / "agy_stop_guard.json"
 
 
+def has_stop_guard_config() -> bool:
+    return _config_path().exists()
+
+
 def _state_path() -> Path:
     return _wfb_dir() / "agy_stop_guard_state.json"
 
