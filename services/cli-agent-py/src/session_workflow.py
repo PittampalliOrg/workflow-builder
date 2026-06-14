@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 from collections import Counter
 from datetime import timedelta
+from pathlib import Path
 from typing import Any, Generator, Mapping
 
 from dapr.ext.workflow import DaprWorkflowContext, RetryPolicy, when_any as wf_when_any
@@ -32,6 +34,16 @@ logger = logging.getLogger(__name__)
 
 CLI_IDLE_PROBE_SECONDS = int(os.environ.get("CLI_IDLE_PROBE_SECONDS", "600"))
 CLI_LIFECYCLE_MAX_ITERATIONS = int(os.environ.get("CLI_LIFECYCLE_MAX_ITERATIONS", "50"))
+_SWEBENCH_PATCH_EXCLUDE_PATHS = (
+    ":(exclude)**/tests/**",
+    ":(exclude)tests/**",
+    ":(exclude)test/**",
+    ":(exclude)testing/**",
+    ":(exclude)**/test_*.py",
+    ":(exclude)**/*_test.py",
+    ":(exclude)**/conftest.py",
+    ":(exclude)**/fixtures/**",
+)
 
 _SEED_RETRY_POLICY = RetryPolicy(
     max_number_of_attempts=3,
@@ -256,6 +268,119 @@ def _event_batch(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _swebench_environment(input_data: Mapping[str, Any]) -> dict[str, Any]:
+    environment_config = _record(input_data.get("environmentConfig"))
+    swebench = _record(environment_config.get("swebenchInferenceEnvironment"))
+    if swebench:
+        return swebench
+    return _record(input_data.get("swebenchInferenceEnvironment"))
+
+
+def _swebench_patch_request(input_data: Mapping[str, Any]) -> dict[str, Any] | None:
+    environment = _swebench_environment(input_data)
+    base_commit = _clean_string(environment.get("baseCommit"))
+    if not base_commit:
+        return None
+    workspace_root = (
+        _clean_string(environment.get("workspaceRoot"))
+        or _clean_string(input_data.get("cwd"))
+        or "/sandbox/repo"
+    )
+    return {
+        "baseCommit": base_commit,
+        "workspaceRoot": workspace_root,
+        "excludePaths": list(_SWEBENCH_PATCH_EXCLUDE_PATHS),
+    }
+
+
+def extract_model_patch_activity(
+    _ctx_or_input: Any, input_data: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Return the authoritative patch from the CLI-owned git workspace.
+
+    This runs as an activity because filesystem and subprocess access are
+    nondeterministic and must not happen in the workflow replay function.
+    """
+    payload = input_data if input_data is not None else _ctx_or_input
+    request = _record(payload)
+    base_commit = _clean_string(request.get("baseCommit"))
+    workspace_root = _clean_string(request.get("workspaceRoot")) or "/sandbox/repo"
+    if not base_commit:
+        return {"ok": True, "modelPatch": "", "reason": "missing_base_commit"}
+
+    repo = Path(workspace_root).resolve()
+    local_root = Path(os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")).resolve()
+    try:
+        repo.relative_to(local_root)
+    except ValueError:
+        return {
+            "ok": False,
+            "modelPatch": "",
+            "error": f"workspaceRoot must be under {local_root}: {workspace_root}",
+        }
+    if not repo.exists():
+        return {
+            "ok": True,
+            "modelPatch": "",
+            "reason": "workspace_missing",
+            "workspaceRoot": str(repo),
+        }
+
+    exclude_paths = request.get("excludePaths")
+    if not isinstance(exclude_paths, list):
+        exclude_paths = list(_SWEBENCH_PATCH_EXCLUDE_PATHS)
+    pathspecs = [
+        str(path)
+        for path in exclude_paths
+        if isinstance(path, str) and path.strip()
+    ]
+    diff_cmd = ["git", "diff", "--binary", base_commit, "--", ".", *pathspecs]
+    name_cmd = ["git", "diff", "--name-only", base_commit, "--", ".", *pathspecs]
+    try:
+        diff = subprocess.run(
+            diff_cmd,
+            cwd=repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+            check=False,
+        )
+        names = subprocess.run(
+            name_cmd,
+            cwd=repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+            check=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "modelPatch": "", "error": str(exc)}
+
+    if diff.returncode != 0:
+        return {
+            "ok": False,
+            "modelPatch": "",
+            "exitCode": diff.returncode,
+            "stderr": diff.stderr[-2000:],
+            "workspaceRoot": str(repo),
+        }
+    model_patch = diff.stdout or ""
+    files_touched = [
+        line.strip()
+        for line in (names.stdout or "").splitlines()
+        if line.strip()
+    ]
+    return {
+        "ok": True,
+        "modelPatch": model_patch,
+        "patchBytes": len(model_patch.encode("utf-8")),
+        "patchFilesTouched": files_touched,
+        "workspaceRoot": str(repo),
+    }
+
+
 def _result_contract(
     *,
     ctx: DaprWorkflowContext,
@@ -266,6 +391,7 @@ def _result_contract(
     agent_runtime: str,
     provenance: Mapping[str, Any],
     output_sync: Mapping[str, Any] | None = None,
+    patch_result: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     result = {
         "success": status not in ("failed",),
@@ -281,6 +407,20 @@ def _result_contract(
     }
     if output_sync is not None:
         result["outputSync"] = dict(output_sync)
+    if patch_result is not None:
+        patch = _record(patch_result)
+        result["modelPatch"] = patch.get("modelPatch") or ""
+        result["patchBytes"] = patch.get("patchBytes") or 0
+        result["patchFilesTouched"] = (
+            patch.get("patchFilesTouched")
+            if isinstance(patch.get("patchFilesTouched"), list)
+            else []
+        )
+        result["patchExtraction"] = {
+            key: value
+            for key, value in patch.items()
+            if key not in {"modelPatch"}
+        }
     return result
 
 
@@ -452,6 +592,13 @@ def session_workflow(
             },
         )
     output_sync_result = None
+    patch_result = None
+    patch_request = _swebench_patch_request(input_data)
+    if patch_request is not None and status == "completed":
+        patch_result = yield ctx.call_activity(
+            extract_model_patch_activity,
+            input=patch_request,
+        )
     if status == "completed" and isinstance(input_data.get("outputSync"), Mapping):
         output_sync_result = yield ctx.call_activity(
             sync_output_activity,
@@ -481,4 +628,5 @@ def session_workflow(
         agent_runtime=agent_runtime,
         provenance=provenance,
         output_sync=output_sync_result if isinstance(output_sync_result, Mapping) else None,
+        patch_result=patch_result if isinstance(patch_result, Mapping) else None,
     )

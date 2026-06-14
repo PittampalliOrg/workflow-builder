@@ -666,7 +666,7 @@ describe("SWE-bench workflow spec", () => {
 		);
 	});
 
-	it("keeps interactive CLI SWE-bench patch capture on the extracted workspace diff until conformance is verified", () => {
+	it("lets interactive CLI SWE-bench runs return patches from the runtime sandbox", () => {
 		const spec = buildSwebenchInstanceWorkflowSpec({
 			runId: "run_1",
 			suiteSlug: "SWE-bench_Lite",
@@ -688,10 +688,10 @@ describe("SWE-bench workflow spec", () => {
 		const solve = steps[2].solve;
 		expect(solve.with.agentRuntime).toBe("codex-cli");
 		expect((spec.output as { as: Record<string, unknown> }).as.modelPatch).toBe(
-			"${ .extract_patch.modelPatch }",
+			"${ .solve.modelPatch // .extract_patch.modelPatch }",
 		);
 		expect((spec.output as { as: Record<string, unknown> }).as.sandboxName).toBe(
-			"${ .workspace_profile.sandboxName }",
+			"${ .solve.runtimeSandboxName // .workspace_profile.sandboxName }",
 		);
 	});
 

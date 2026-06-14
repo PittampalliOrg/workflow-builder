@@ -70,6 +70,15 @@ describe("SWE-bench solve-sandbox routing (ownsSandbox de-branch)", () => {
 		expect(as.sandboxName).toBe(EXTRACT_SANDBOX_NAME);
 	});
 
+	it("interactive CLI runtimes (ownsSandbox, live-smoked reference) → .solve.* path", () => {
+		for (const runtime of ["claude-code-cli", "codex-cli", "agy-cli"]) {
+			const as = outputAsFor(runtime);
+			expect(as.modelPatch).toBe(SOLVE_MODEL_PATCH);
+			expect(as.workspaceRef).toBe(SOLVE_WORKSPACE_REF);
+			expect(as.sandboxName).toBe(SOLVE_SANDBOX_NAME);
+		}
+	});
+
 	it("dapr-agent-py-testing (ownsSandbox:false, verified) → .extract_patch.* path", () => {
 		// Verified does NOT imply solve-sandbox — ownsSandbox is the primary gate.
 		const as = outputAsFor("dapr-agent-py-testing");

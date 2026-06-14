@@ -85,7 +85,7 @@ from src.session_supervisor import (  # noqa: E402
     get_supervisor,
     set_supervisor,
 )
-from src.session_workflow import session_workflow  # noqa: E402
+from src.session_workflow import extract_model_patch_activity, session_workflow  # noqa: E402
 from src.taskhub import (  # noqa: E402
     LIFECYCLE_EVENT_NAME,
     raise_event as taskhub_raise_event,
@@ -101,6 +101,7 @@ _runtime.register_activity(probe_cli_activity)
 _runtime.register_activity(stop_cli_activity)
 _runtime.register_activity(sync_output_activity)
 _runtime.register_activity(check_cancellation_activity)
+_runtime.register_activity(extract_model_patch_activity)
 _runtime_running = False
 
 

@@ -5,6 +5,7 @@ monkeypatching ``wf_when_any`` to hand back the chosen winner task."""
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 
@@ -203,6 +204,77 @@ def test_completed_run_syncs_declared_outputs(monkeypatch):
     result = stop.value.value
     assert result["success"] is True
     assert result["outputSync"]["ok"] is True
+
+
+def test_completed_swebench_run_extracts_model_patch(monkeypatch):
+    ctx = FakeCtx()
+    driver = WorkflowDriver(
+        ctx,
+        {
+            **BASE_INPUT,
+            "autoTerminateAfterEndTurn": True,
+            "cwd": "/sandbox/repo",
+            "environmentConfig": {
+                "swebenchInferenceEnvironment": {
+                    "baseCommit": "abc123",
+                    "workspaceRoot": "/sandbox/repo",
+                }
+            },
+        },
+        monkeypatch,
+    )
+    _start_to_first_when_any(driver)
+    event_task = driver.event_task()
+    event_task.result = {"events": [{"type": "turn.completed", "content": "done"}]}
+    yielded = driver.gen.send(event_task)
+    assert yielded.kind == "activity:stop_cli_activity"
+    yielded = driver.gen.send({"ok": True})
+    assert yielded.kind == "activity:extract_model_patch_activity"
+    assert yielded.detail["baseCommit"] == "abc123"
+    assert yielded.detail["workspaceRoot"] == "/sandbox/repo"
+    with pytest.raises(StopIteration) as stop:
+        driver.gen.send(
+            {
+                "ok": True,
+                "modelPatch": "diff --git a/pkg.py b/pkg.py\n",
+                "patchBytes": 28,
+                "patchFilesTouched": ["pkg.py"],
+            }
+        )
+    result = stop.value.value
+    assert result["modelPatch"] == "diff --git a/pkg.py b/pkg.py\n"
+    assert result["patchBytes"] == 28
+    assert result["patchFilesTouched"] == ["pkg.py"]
+    assert result["patchExtraction"]["ok"] is True
+    assert "modelPatch" not in result["patchExtraction"]
+
+
+def test_extract_model_patch_activity_uses_base_commit_and_excludes_tests(
+    tmp_path, monkeypatch
+):
+    repo = tmp_path / "sandbox" / "repo"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    (repo / "pkg.py").write_text("old\n", encoding="utf-8")
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_pkg.py").write_text("old\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=repo, check=True)
+    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    (repo / "pkg.py").write_text("new\n", encoding="utf-8")
+    (repo / "tests" / "test_pkg.py").write_text("new\n", encoding="utf-8")
+    monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(tmp_path / "sandbox"))
+
+    result = sw.extract_model_patch_activity(
+        {"baseCommit": base, "workspaceRoot": str(repo)}
+    )
+
+    assert result["ok"] is True
+    assert "diff --git a/pkg.py b/pkg.py" in result["modelPatch"]
+    assert "tests/test_pkg.py" not in result["modelPatch"]
+    assert result["patchFilesTouched"] == ["pkg.py"]
 
 
 def test_propagated_history_is_reduced_to_bounded_provenance(monkeypatch):

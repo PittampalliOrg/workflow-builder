@@ -6127,6 +6127,9 @@ export function buildSwebenchInstanceWorkflowGraph(): {
 // this set and the routing gate reads `capabilitiesVerified` alone.
 const SWEBENCH_SOLVE_SANDBOX_REFERENCE_RUNTIMES: ReadonlySet<string> = new Set([
 	"claude-agent-py",
+	"claude-code-cli",
+	"codex-cli",
+	"agy-cli",
 ]);
 
 export function buildSwebenchInstanceWorkflowSpec(params: {
