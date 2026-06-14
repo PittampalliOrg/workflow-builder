@@ -104,16 +104,23 @@ class FakeSupervisor:
     def __init__(self):
         self.transcripts: list[tuple[str | None, str | None]] = []
         self.turn_sources: list[str] = []
+        self.turn_started_count = 1
 
     def get_session(self):
-        return {"sessionId": "sess-1", "instanceId": "inst-1", "paneRef": "p1"}
+        return {
+            "sessionId": "sess-1",
+            "instanceId": "inst-1",
+            "paneRef": "p1",
+            "turnStartedCount": self.turn_started_count,
+        }
 
     def register_transcript(self, path, cli_session_id):
         self.transcripts.append((path, cli_session_id))
 
     def note_turn_started(self, source):
         self.turn_sources.append(source)
-        return len(self.turn_sources)
+        self.turn_started_count += 1
+        return self.turn_started_count
 
 
 class FakeTailer:
@@ -175,6 +182,26 @@ def test_stop_flushes_tailer_then_raises_turn_completed():
     assert manager.tailer.flushes == 1
     assert raised == [
         ("inst-1", [{"type": "turn.completed", "lastAssistantText": "final answer"}])
+    ]
+
+
+def test_duplicate_stop_hook_does_not_raise_second_completion_for_same_turn():
+    processor, _published, raised, supervisor, manager = _processor()
+
+    asyncio.run(processor.process(_hook("Stop")))
+    asyncio.run(processor.process(_hook("Stop")))
+
+    assert manager.tailer.flushes == 2
+    assert raised == [
+        ("inst-1", [{"type": "turn.completed", "lastAssistantText": "final answer"}])
+    ]
+
+    supervisor.note_turn_started("next")
+    asyncio.run(processor.process(_hook("Stop")))
+
+    assert raised == [
+        ("inst-1", [{"type": "turn.completed", "lastAssistantText": "final answer"}]),
+        ("inst-1", [{"type": "turn.completed", "lastAssistantText": "final answer"}]),
     ]
 
 

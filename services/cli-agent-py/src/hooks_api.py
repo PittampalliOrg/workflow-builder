@@ -62,6 +62,21 @@ def _clean(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def _turn_started_count(session: Mapping[str, Any]) -> int:
+    value = session.get("turnStartedCount")
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = int(value)
+        except ValueError:
+            return 0
+        return parsed if parsed >= 0 else 0
+    return 0
+
+
 def _hook_name(payload: Mapping[str, Any]) -> str | None:
     for key in ("hook_event_name", "eventName", "event", "hookName", "name"):
         picked = _clean(payload.get(key))
@@ -274,6 +289,7 @@ class HookProcessor:
         self._supervisor_getter = supervisor_getter
         self._tailer_manager = tailer_manager or get_tailer_manager()
         self._adapter = adapter
+        self._completion_keys_raised: set[tuple[str, int]] = set()
 
     def _session(self) -> dict[str, Any]:
         supervisor = self._supervisor_getter()
@@ -301,6 +317,10 @@ class HookProcessor:
         self._register_transcript(payload, session_id, instance_id)
 
         if name == "SessionStart":
+            if isinstance(instance_id, str) and instance_id:
+                self._completion_keys_raised = {
+                    key for key in self._completion_keys_raised if key[0] != instance_id
+                }
             return {}  # registration handled above; no published event
 
         adapter_turn_done = bool(
@@ -340,11 +360,21 @@ class HookProcessor:
             already_completed = bool(
                 tailer is not None and getattr(tailer, "turn_completion_raised", False)
             )
+            turn_count = _turn_started_count(session)
+            completion_key = (
+                (instance_id, turn_count)
+                if isinstance(instance_id, str) and instance_id
+                else None
+            )
+            if completion_key is not None and completion_key in self._completion_keys_raised:
+                already_completed = True
             if instance_id and not already_completed:
                 event: dict[str, Any] = {"type": "turn.completed"}
                 if last_text:
                     event["lastAssistantText"] = last_text
                 await asyncio.to_thread(self._safe_raise, instance_id, [event])
+                if completion_key is not None:
+                    self._completion_keys_raised.add(completion_key)
             return response
 
         if name == "SessionEnd":

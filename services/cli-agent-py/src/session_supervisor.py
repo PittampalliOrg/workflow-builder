@@ -282,6 +282,7 @@ class SessionSupervisor:
             "paneRef": self._pane_ref,
             "transcriptPath": self._transcript_path,
             "cliSessionId": self._cli_session_id,
+            "turnStartedCount": self._turn_started_count,
         }
 
     def get_pane_ref(self) -> str | None:
