@@ -343,14 +343,11 @@ def _terminal_workflow_input(tasks=None):
     }
 
 
-def test_taskhub_list_accepts_snake_case_orchestration_state(monkeypatch):
-    """Dapr 1.18 Python proto exposes GetInstance.orchestration_state."""
-
-    class _RuntimeStatus:
-        name = "RUNNING"
+def test_taskhub_list_accepts_dapr_118_workflow_state(monkeypatch):
+    """Dapr 1.18 Python proto exposes GetInstance.workflowState."""
 
     class _State:
-        runtime_status = _RuntimeStatus()
+        workflowStatus = "ORCHESTRATION_STATUS_RUNNING"
         customStatus = types.SimpleNamespace(
             value=json.dumps({"phase": "running", "currentNodeId": "solve"})
         )
@@ -369,7 +366,7 @@ def test_taskhub_list_accepts_snake_case_orchestration_state(monkeypatch):
 
     class _Response:
         exists = True
-        orchestration_state = _State()
+        workflowState = _State()
 
     monkeypatch.setattr(
         APP,

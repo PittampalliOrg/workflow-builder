@@ -2579,6 +2579,10 @@ def _orchestration_state_status_name(orchestration_state: Any) -> str:
     """
     status_attr = getattr(orchestration_state, "orchestrationStatus", None)
     if status_attr is None:
+        status_attr = getattr(orchestration_state, "workflowStatus", None)
+    if status_attr is None:
+        status_attr = getattr(orchestration_state, "workflow_status", None)
+    if status_attr is None:
         runtime_status = getattr(orchestration_state, "runtime_status", None)
         if runtime_status is not None:
             return (
@@ -2986,6 +2990,14 @@ def _list_workflows_from_taskhub_instance_ids(
         if orchestration_state is orchestration_state_missing:
             orchestration_state = getattr(
                 response, "orchestration_state", orchestration_state_missing
+            )
+        if orchestration_state is orchestration_state_missing:
+            orchestration_state = getattr(
+                response, "workflowState", orchestration_state_missing
+            )
+        if orchestration_state is orchestration_state_missing:
+            orchestration_state = getattr(
+                response, "workflow_state", orchestration_state_missing
             )
         if orchestration_state is orchestration_state_missing:
             raise AttributeError(
