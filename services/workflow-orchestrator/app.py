@@ -2979,7 +2979,14 @@ def _list_workflows_from_taskhub_instance_ids(
         if not getattr(response, "exists", False):
             continue
 
-        payload = _build_workflow_status_payload(instance_id, response.orchestrationState)
+        orchestration_state = getattr(response, "orchestrationState", None) or getattr(
+            response, "orchestration_state", None
+        )
+        if orchestration_state is None:
+            raise AttributeError(
+                "GetInstance response did not include orchestration state"
+            )
+        payload = _build_workflow_status_payload(instance_id, orchestration_state)
         if _workflow_payload_matches_filters(
             payload,
             status_filter=status_filter,

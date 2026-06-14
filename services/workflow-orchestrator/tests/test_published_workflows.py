@@ -343,6 +343,54 @@ def _terminal_workflow_input(tasks=None):
     }
 
 
+def test_taskhub_list_accepts_snake_case_orchestration_state(monkeypatch):
+    """Dapr 1.18 Python proto exposes GetInstance.orchestration_state."""
+
+    class _RuntimeStatus:
+        name = "RUNNING"
+
+    class _State:
+        runtime_status = _RuntimeStatus()
+        customStatus = types.SimpleNamespace(
+            value=json.dumps({"phase": "running", "currentNodeId": "solve"})
+        )
+        version = types.SimpleNamespace(value="v1")
+        parentInstanceId = None
+        input = None
+        output = None
+        failureDetails = None
+        createdTimestamp = None
+        completedTimestamp = None
+        lastUpdatedTimestamp = None
+        name = "swebench-instance"
+
+    class _Response:
+        exists = True
+        orchestration_state = _State()
+
+    monkeypatch.setattr(
+        APP,
+        "_list_instance_ids",
+        lambda *, continuation_token=None, page_size=200: (
+            ["sw-swebench-instance-test-1"],
+            None,
+        ),
+    )
+    monkeypatch.setattr(APP, "_taskhub_call", lambda *_args, **_kwargs: _Response())
+
+    result = APP._list_workflows_from_taskhub_instance_ids(
+        status_filter={"RUNNING"},
+        search_filter="sw-swebench-instance",
+        limit=10,
+        offset=0,
+    )
+
+    assert result.total == 1
+    assert result.workflows[0].instanceId == "sw-swebench-instance-test-1"
+    assert result.workflows[0].runtimeStatus == "RUNNING"
+    assert result.workflows[0].currentNodeId == "solve"
+
+
 def _install_terminal_workflow_model_fakes(monkeypatch):
     class _FakeDocument:
         def __init__(self, data):
