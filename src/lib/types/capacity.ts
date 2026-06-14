@@ -247,6 +247,10 @@ export type CapacityBusinessWorkItem = {
   durationSeconds?: number | null;
   model?: string | null;
   provider?: string | null;
+  /** Workflow-run only: the node currently executing (for inline "what stage" display). */
+  currentNodeName?: string | null;
+  /** Workflow-run only: 0–100 progress. */
+  progress?: number | null;
   owners: CapacityOwnerRef[];
   requestedResources: Record<string, number>;
   observedResources: Record<string, number>;

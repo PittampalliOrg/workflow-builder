@@ -58,6 +58,8 @@ type WorkflowDetail = {
 	duration: string | null;
 	workflowId: string;
 	workflowName: string;
+	currentNodeName: string | null;
+	progress: number | null;
 };
 
 type BenchmarkRunDetail = {
@@ -311,7 +313,9 @@ async function selectWorkflowExecutions(projectId: string, ids: string[]): Promi
 			completedAt: workflowExecutions.completedAt,
 			duration: workflowExecutions.duration,
 			workflowId: workflows.id,
-			workflowName: workflows.name
+			workflowName: workflows.name,
+			currentNodeName: workflowExecutions.currentNodeName,
+			progress: workflowExecutions.progress
 		})
 		.from(workflowExecutions)
 		.innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
@@ -401,7 +405,9 @@ async function loadRecentWork(
 				completedAt: workflowExecutions.completedAt,
 				duration: workflowExecutions.duration,
 				workflowId: workflows.id,
-				workflowName: workflows.name
+				workflowName: workflows.name,
+				currentNodeName: workflowExecutions.currentNodeName,
+				progress: workflowExecutions.progress
 			})
 			.from(workflowExecutions)
 			.innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
@@ -498,6 +504,8 @@ function applyWorkflowDetail(item: CapacityBusinessWorkItem, row: WorkflowDetail
 	item.completedAt = row.completedAt?.toISOString() ?? null;
 	item.ageSeconds = secondsSince(row.startedAt);
 	item.durationSeconds = row.duration ? Number(row.duration) / 1000 : secondsBetween(row.startedAt, row.completedAt ?? new Date());
+	item.currentNodeName = row.currentNodeName;
+	item.progress = row.progress;
 	item.href = `/workspaces/${workspaceSlug}/workflows/${row.workflowId}/runs/${row.id}`;
 }
 

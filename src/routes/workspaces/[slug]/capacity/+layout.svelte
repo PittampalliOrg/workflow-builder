@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import { page } from '$app/state';
-	import { Gauge, ListChecks } from '@lucide/svelte';
+	import { Boxes, Gauge, ListChecks } from '@lucide/svelte';
 
 	type Props = {
 		children: Snippet;
@@ -14,8 +14,14 @@
 
 	const tabs = $derived([
 		{
+			id: 'active',
+			label: 'Active',
+			icon: Boxes,
+			href: `/workspaces/${slug}/capacity/active`
+		},
+		{
 			id: 'overview',
-			label: 'Overview',
+			label: 'Capacity',
 			icon: Gauge,
 			href: `/workspaces/${slug}/capacity/overview`
 		},
@@ -31,10 +37,10 @@
 <div class="h-full min-w-0 space-y-4 overflow-y-auto p-4 md:p-6">
 	<header class="space-y-1">
 		<h1 class="text-xl font-semibold flex items-center gap-2">
-			<Gauge class="size-5" /> Capacity
+			<Boxes class="size-5" /> Fleet
 		</h1>
 		<p class="text-xs text-muted-foreground">
-			Live queue admission state and worker headroom.
+			Every session, workflow, and run consuming cluster capacity — with live headroom and bulk controls.
 		</p>
 	</header>
 
