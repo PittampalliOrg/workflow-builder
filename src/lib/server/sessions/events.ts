@@ -12,12 +12,13 @@ function requireDb() {
 	return db;
 }
 
-function rowToEnvelope(
+export function rowToEnvelope(
 	row: SessionEventRow,
 	opts: { preview?: boolean } = {},
 ): SessionEventEnvelope {
 	const rawData = (row.data as Record<string, unknown>) ?? {};
 	const data = opts.preview ? stripFullPayload(rawData) : rawData;
+	const createdAt = row.createdAt.toISOString();
 	return {
 		id: row.id,
 		sessionId: row.sessionId,
@@ -28,7 +29,8 @@ function rowToEnvelope(
 		sourceEventId: row.sourceEventId ?? null,
 		producerId: row.producerId ?? null,
 		producerEpoch: row.producerEpoch ?? null,
-		createdAt: row.createdAt.toISOString(),
+		createdAt,
+		timestamp: createdAt,
 	};
 }
 

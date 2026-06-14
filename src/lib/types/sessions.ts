@@ -161,4 +161,7 @@ export type SessionEventEnvelope = {
 	producerId?: string | null;
 	producerEpoch?: string | null;
 	createdAt: string;
+	/** Compatibility alias for clients and workflow timelines that use the
+	 * CMA-style `timestamp` field. Mirrors `createdAt`. */
+	timestamp: string;
 };
