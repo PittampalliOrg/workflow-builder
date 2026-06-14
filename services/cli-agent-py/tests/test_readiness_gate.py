@@ -433,3 +433,28 @@ async def test_submit_no_retry_once_agent_is_working(monkeypatch):
     sup._pane_ref = "p1"
     await sup._send_to_pane("hi", "")
     assert client.enters == 1  # no re-press
+
+
+async def test_submit_failure_does_not_publish_turn_started(monkeypatch):
+    """If the TUI stays idle through the retry budget, keep the prompt in the
+    composer and do not emit a false turn_started event."""
+    monkeypatch.setattr(ss, "CLI_SUBMIT_DELAY_SECONDS", 0.0)
+    monkeypatch.setattr(ss, "CLI_SUBMIT_VERIFY_SECONDS", 0.0)
+    monkeypatch.setattr(ss, "CLI_SUBMIT_RETRIES", 2)
+    published = []
+    client = FakeHerdr(statuses=["idle"])
+    sup = SessionSupervisor(
+        client=client,
+        publish=lambda sid, t, d=None, **kw: published.append((sid, t, d, kw)),
+        raise_lifecycle=lambda *a, **k: None,
+        disabled=False,
+    )
+    sup._session_id = "s1"
+    sup._instance_id = "i1"
+    sup._pane_ref = "p1"
+
+    ok = await sup._send_to_pane("hi", "")
+
+    assert ok is False
+    assert client.enters == 3  # initial Enter + 2 retries
+    assert published == []

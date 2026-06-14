@@ -289,7 +289,91 @@ def _text_from_content(value: Any) -> str | None:
     return None
 
 
+def _codex_payload(record: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    if record.get("type") != "event_msg":
+        return None
+    payload = record.get("payload")
+    return payload if isinstance(payload, Mapping) else None
+
+
+def _codex_event_identity(record: Mapping[str, Any], payload: Mapping[str, Any]) -> str | None:
+    for key in ("turn_id", "call_id", "submission_id", "id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    timestamp = record.get("timestamp")
+    event_type = payload.get("type")
+    if isinstance(timestamp, str) and timestamp.strip() and isinstance(event_type, str):
+        return f"{event_type}:{timestamp.strip()}"
+    return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _codex_usage(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    if payload.get("type") != "token_count":
+        return None
+    info = payload.get("info")
+    if not isinstance(info, Mapping):
+        return None
+    usage = info.get("last_token_usage") or info.get("total_token_usage")
+    if not isinstance(usage, Mapping):
+        return None
+    gross_input = _int_or_none(usage.get("input_tokens"))
+    cache_read = _int_or_none(
+        usage.get("cached_input_tokens") or usage.get("cache_read_input_tokens")
+    )
+    output_tokens = _int_or_none(usage.get("output_tokens"))
+    reasoning_tokens = _int_or_none(usage.get("reasoning_output_tokens"))
+    data: dict[str, Any] = {
+        # Codex's rollout usage reports gross input + cached input separately.
+        # Mirror the platform invariant used by the other runtimes: input_tokens
+        # is NET of cache reads, while cache_read_input_tokens carries the cache.
+        "input_tokens": (
+            max(0, gross_input - (cache_read or 0)) if gross_input is not None else None
+        ),
+        "output_tokens": output_tokens,
+        "cache_read_input_tokens": cache_read,
+        "cache_creation_input_tokens": 0,
+        "reasoning_output_tokens": reasoning_tokens,
+    }
+    context_window = _int_or_none(info.get("model_context_window"))
+    if context_window is not None:
+        data["model_context_window"] = context_window
+    rate_limits = payload.get("rate_limits")
+    if isinstance(rate_limits, Mapping):
+        plan_type = clean_string(rate_limits.get("plan_type"))
+        if plan_type:
+            data["plan_type"] = plan_type
+    if not any(value is not None for value in data.values()):
+        return None
+    return data
+
+
 def _assistant_text_from_record(record: Mapping[str, Any]) -> str | None:
+    codex_payload = _codex_payload(record)
+    if codex_payload is not None:
+        if codex_payload.get("type") == "task_complete":
+            text = _text_from_content(codex_payload.get("last_agent_message"))
+            if text:
+                return text
+        if codex_payload.get("type") == "agent_message":
+            text = _text_from_content(codex_payload.get("message"))
+            if text:
+                return text
     role = record.get("role")
     if role == "assistant":
         text = _text_from_content(record.get("content") or record.get("message"))
@@ -462,6 +546,50 @@ class CodexAdapter(CliAdapter):
             or payload.get("content")
         )
         return text or _latest_codex_assistant_text()
+
+    def map_transcript_entry(
+        self, entry: Mapping[str, Any]
+    ) -> list[dict[str, Any]] | None:
+        payload = _codex_payload(entry)
+        if payload is None:
+            return None
+        events: list[dict[str, Any]] = []
+        identity = _codex_event_identity(entry, payload)
+        event_type = payload.get("type")
+        if event_type == "agent_message":
+            text = _text_from_content(payload.get("message"))
+            if text:
+                data: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
+                phase = clean_string(payload.get("phase"))
+                if phase:
+                    data["phase"] = phase
+                event: dict[str, Any] = {"type": "agent.message", "data": data}
+                if identity:
+                    event["sourceEventId"] = f"codex-transcript:{identity}:message"
+                events.append(event)
+        usage = _codex_usage(payload)
+        if usage:
+            event = {"type": "agent.llm_usage", "data": usage}
+            if identity:
+                event["sourceEventId"] = f"codex-transcript:{identity}:usage"
+            events.append(event)
+        return events
+
+    def transcript_turn_completion(self, entry: Mapping[str, Any]) -> dict[str, Any] | None:
+        payload = _codex_payload(entry)
+        if payload is None or payload.get("type") != "task_complete":
+            return None
+        event: dict[str, Any] = {
+            "type": "turn.completed",
+            "completionSource": "codex_task_complete",
+        }
+        turn_id = clean_string(payload.get("turn_id"))
+        if turn_id:
+            event["turnId"] = turn_id
+        text = _text_from_content(payload.get("last_agent_message"))
+        if text:
+            event["lastAssistantText"] = text
+        return event
 
     # -- env -------------------------------------------------------------------
 

@@ -87,9 +87,9 @@ CLI_READY_POLL_SECONDS = _env_float("CLI_READY_POLL_SECONDS", 0.5)
 # the Enter never registered — re-press it. A real turn never completes within
 # the verify window, so "still idle" reliably means not-submitted (no risk of
 # submitting an empty prompt).
-CLI_SUBMIT_DELAY_SECONDS = _env_float("CLI_SUBMIT_DELAY_SECONDS", 0.6)
-CLI_SUBMIT_VERIFY_SECONDS = _env_float("CLI_SUBMIT_VERIFY_SECONDS", 1.5)
-CLI_SUBMIT_RETRIES = int(_env_float("CLI_SUBMIT_RETRIES", 2))
+CLI_SUBMIT_DELAY_SECONDS = _env_float("CLI_SUBMIT_DELAY_SECONDS", 2.0)
+CLI_SUBMIT_VERIFY_SECONDS = _env_float("CLI_SUBMIT_VERIFY_SECONDS", 2.0)
+CLI_SUBMIT_RETRIES = int(_env_float("CLI_SUBMIT_RETRIES", 5))
 CLI_SUBMIT_RETRY_DELAY_SECONDS = _env_float("CLI_SUBMIT_RETRY_DELAY_SECONDS", 0.5)
 CLI_SEED_SEND_RETRIES = int(_env_float("CLI_SEED_SEND_RETRIES", 3))
 CLI_SEED_SEND_RETRY_DELAY_SECONDS = _env_float(
@@ -652,7 +652,13 @@ class SessionSupervisor:
                 await asyncio.sleep(CLI_SUBMIT_DELAY_SECONDS)
                 if not await self._submit_enter_reliably(pane):
                     return False
-                await self._confirm_submitted(pane)
+                if not await self._confirm_submitted(pane):
+                    logger.warning(
+                        "[supervisor] submit did not register after %s retry "
+                        "attempt(s); leaving prompt in composer",
+                        CLI_SUBMIT_RETRIES,
+                    )
+                    return False
                 self.note_turn_started(source)
                 submitted = True
                 return True
@@ -686,24 +692,31 @@ class SessionSupervisor:
                 await asyncio.sleep(max(0.0, CLI_SUBMIT_RETRY_DELAY_SECONDS))
         return False
 
-    async def _confirm_submitted(self, pane: str) -> None:
+    async def _confirm_submitted(self, pane: str) -> bool:
         """After Enter, the agent should leave ``idle`` (it starts the turn). If
         it is still idle after the verify window the keystroke was dropped — re-
-        press Enter (bounded). A genuine turn never finishes this fast, so a
-        persistent ``idle`` reliably means not-yet-submitted."""
-        for _ in range(max(0, CLI_SUBMIT_RETRIES)):
+        press Enter (bounded). Only publish ``session.turn_started`` after this
+        returns True; otherwise the durable workflow would see a false turn with
+        the prompt still sitting in the composer."""
+        if CLI_SUBMIT_RETRIES <= 0 and CLI_SUBMIT_VERIFY_SECONDS <= 0:
+            return True
+        checks = max(1, CLI_SUBMIT_RETRIES + 1)
+        for attempt in range(checks):
             await asyncio.sleep(CLI_SUBMIT_VERIFY_SECONDS)
             try:
                 info = await self._client.agent_get(pane)
             except Exception:  # noqa: BLE001
-                return  # pane gone / unreachable — nothing more to do
+                return True  # pane gone / unreachable — assume the submit landed
             if agent_status_of(info) != AGENT_STATUS_IDLE:
-                return  # working / blocked / done → the submit landed
+                return True  # working / blocked / done → the submit landed
+            if attempt >= checks - 1:
+                return False
             logger.info("[supervisor] submit not registered — re-pressing Enter")
             try:
                 await self._client.pane_submit_enter(pane)
             except Exception:  # noqa: BLE001
-                return
+                return False
+        return False
 
     async def _gated_send(self, text: str, marker: str, timeout: float, *, what: str) -> bool:
         """Wait for the TUI to be ready, then send — but REFUSE to type into a

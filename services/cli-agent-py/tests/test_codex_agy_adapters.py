@@ -230,6 +230,86 @@ def test_codex_model_normalization():
     assert normalize_codex_model("anthropic/claude-opus-4-8") == "gpt-5.5"  # default
 
 
+def test_codex_transcript_maps_agent_message_and_usage():
+    adapter = get_adapter("codex")
+    message = {
+        "timestamp": "2026-06-14T09:09:11.111Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "agent_message",
+            "message": "final answer",
+            "phase": "final_answer",
+        },
+    }
+    usage = {
+        "timestamp": "2026-06-14T09:09:11.135Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "token_count",
+            "info": {
+                "last_token_usage": {
+                    "input_tokens": 120,
+                    "cached_input_tokens": 100,
+                    "output_tokens": 7,
+                    "reasoning_output_tokens": 3,
+                    "total_tokens": 127,
+                },
+                "model_context_window": 258400,
+            },
+            "rate_limits": {"plan_type": "pro"},
+        },
+    }
+
+    msg_events = adapter.map_transcript_entry(message)
+    usage_events = adapter.map_transcript_entry(usage)
+
+    assert msg_events == [
+        {
+            "type": "agent.message",
+            "data": {
+                "content": [{"type": "text", "text": "final answer"}],
+                "phase": "final_answer",
+            },
+            "sourceEventId": "codex-transcript:agent_message:2026-06-14T09:09:11.111Z:message",
+        }
+    ]
+    assert usage_events is not None
+    usage_data = usage_events[0]["data"]
+    assert usage_events[0]["type"] == "agent.llm_usage"
+    assert usage_data["input_tokens"] == 20
+    assert usage_data["cache_read_input_tokens"] == 100
+    assert usage_data["output_tokens"] == 7
+    assert usage_data["reasoning_output_tokens"] == 3
+    assert usage_data["model_context_window"] == 258400
+    assert usage_data["plan_type"] == "pro"
+
+
+def test_codex_task_complete_raises_turn_completed(codex_home):
+    adapter = get_adapter("codex")
+    entry = {
+        "timestamp": "2026-06-14T09:09:11.747Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "task_complete",
+            "turn_id": "turn-1",
+            "last_agent_message": "done",
+        },
+    }
+
+    event = adapter.transcript_turn_completion(entry)
+
+    assert event == {
+        "type": "turn.completed",
+        "completionSource": "codex_task_complete",
+        "turnId": "turn-1",
+        "lastAssistantText": "done",
+    }
+    sessions = codex_home / "sessions" / "2026"
+    sessions.mkdir(parents=True)
+    (sessions / "rollout.jsonl").write_text(json.dumps(entry) + "\n")
+    assert adapter.extract_completion_text({}) == "done"
+
+
 # --- antigravity -------------------------------------------------------------
 
 
