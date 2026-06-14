@@ -365,6 +365,12 @@ class HookProcessor:
                 logger.debug("[hooks] adapter mapping failed: %s", exc)
         if events is None:
             events = map_hook_event(payload)
+        if name == "UserPromptSubmit" and any(
+            event.get("type") == "user.message"
+            for event in events
+            if isinstance(event, Mapping)
+        ):
+            self._record_turn_started("hook:UserPromptSubmit")
         for event in events:
             self._publish(session_id, event["type"], event.get("data") or {})
         return {}
@@ -393,6 +399,16 @@ class HookProcessor:
             record_hook_event(payload)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[hooks] adapter hook recording failed: %s", exc)
+
+    def _record_turn_started(self, source: str) -> None:
+        supervisor = self._supervisor_getter()
+        note_turn_started = getattr(supervisor, "note_turn_started", None)
+        if not callable(note_turn_started):
+            return
+        try:
+            note_turn_started(source)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[hooks] turn-start publish failed: %s", exc)
 
     def _register_transcript(
         self, payload: Mapping[str, Any], session_id: Any, instance_id: Any

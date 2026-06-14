@@ -140,7 +140,16 @@ def test_happy_path_turn_then_clean_exit(monkeypatch):
     assert result["daprInstanceId"] == "inst-test-1"
     # status_starting at the top, status_terminated at the bottom.
     assert ("sess-wf-1", "session.status_starting", {}) == published[0]
+    turn_completed = next(
+        event for event in published if event[1] == "session.turn_completed"
+    )
+    assert turn_completed[2]["turn"] == 1
+    assert turn_completed[2]["agentRuntime"] == "claude-code-cli"
+    assert turn_completed[2]["output_preview"] == "the answer"
     assert published[-1][1] == "session.status_terminated"
+    assert published[-1][2]["status"] == "completed"
+    assert published[-1][2]["stop_reason"] == {"type": "end_turn"}
+    assert published[-1][2]["turnCount"] == 1
 
 
 def test_result_contract_reports_selected_cli_runtime(monkeypatch):

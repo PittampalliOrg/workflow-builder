@@ -103,12 +103,17 @@ def test_unknown_and_side_effect_events_map_to_nothing():
 class FakeSupervisor:
     def __init__(self):
         self.transcripts: list[tuple[str | None, str | None]] = []
+        self.turn_sources: list[str] = []
 
     def get_session(self):
         return {"sessionId": "sess-1", "instanceId": "inst-1", "paneRef": "p1"}
 
     def register_transcript(self, path, cli_session_id):
         self.transcripts.append((path, cli_session_id))
+
+    def note_turn_started(self, source):
+        self.turn_sources.append(source)
+        return len(self.turn_sources)
 
 
 class FakeTailer:
@@ -262,11 +267,12 @@ def test_adapter_specific_completion_hook_raises_turn_completed():
 
 
 def test_mapped_events_publish_under_wfb_session_id():
-    processor, published, _raised, _supervisor, _manager = _processor()
+    processor, published, _raised, supervisor, _manager = _processor()
     asyncio.run(processor.process(_hook("UserPromptSubmit", prompt="hi")))
     assert published == [
         ("sess-1", "user.message", {"content": [{"type": "text", "text": "hi"}]})
     ]
+    assert supervisor.turn_sources == ["hook:UserPromptSubmit"]
 
 
 def test_post_tool_use_flattens_bash_response_object():

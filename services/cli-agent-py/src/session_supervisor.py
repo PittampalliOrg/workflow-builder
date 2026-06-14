@@ -133,6 +133,7 @@ class SessionSupervisor:
         self._instance_id: str | None = None
         self._pane_ref: str | None = None
         self._transcript_path: str | None = None
+        self._turn_started_count = 0
 
         # Zero-width prefix stamped on injected prompts so a Claude-style
         # UserPromptSubmit hook can dedup self-injections. Set per-session in
@@ -258,6 +259,7 @@ class SessionSupervisor:
         self._pane_ref = pane_ref
         self._exit_raised = False
         self._idle_since = None
+        self._turn_started_count = 0
         logger.info(
             "[supervisor] registered session=%s instance=%s pane=%s",
             session_id,
@@ -420,7 +422,9 @@ class SessionSupervisor:
                 self._idle_since = time.monotonic()
             if session_id:
                 self._publish(
-                    session_id, "session.status_idle", {"stop_reason": "end_turn"}
+                    session_id,
+                    "session.status_idle",
+                    {"stop_reason": {"type": "end_turn"}},
                 )
         elif status == AGENT_STATUS_BLOCKED:
             self._idle_since = None
@@ -430,6 +434,24 @@ class SessionSupervisor:
                     "session.status_idle",
                     {"blocked": True, "reason": classify_blocked_reason(detail)},
                 )
+
+    def note_turn_started(self, source: str = "pane_submit") -> int:
+        """Publish the canonical public turn-start event at the submit edge."""
+        self._turn_started_count += 1
+        turn = self._turn_started_count
+        session_id = self._session_id
+        if session_id:
+            data: dict[str, Any] = {"turn": turn, "source": source}
+            if self._instance_id:
+                data["workflowInstanceId"] = self._instance_id
+                data["turnId"] = f"{self._instance_id}:turn:{turn}"
+            self._publish(
+                session_id,
+                "session.turn_started",
+                data,
+                source_event_id=f"{self._instance_id or session_id}:turn:{turn}:started",
+            )
+        return turn
 
     def _raise_cli_exited(
         self, *, exit_code: int | None, reason: str | None = None
@@ -593,7 +615,9 @@ class SessionSupervisor:
                 pass
         return False
 
-    async def _send_to_pane(self, text: str, marker: str) -> bool:
+    async def _send_to_pane(
+        self, text: str, marker: str, *, source: str = "pane_submit"
+    ) -> bool:
         pane = self._pane_ref
         if not pane:
             logger.warning("[supervisor] no registered pane to inject into")
@@ -612,6 +636,7 @@ class SessionSupervisor:
                 if not await self._submit_enter_reliably(pane):
                     return False
                 await self._confirm_submitted(pane)
+                self.note_turn_started(source)
                 return True
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[supervisor] pane inject failed: %s", exc)
@@ -677,7 +702,7 @@ class SessionSupervisor:
                 what,
                 timeout,
             )
-        return await self._send_to_pane(text, marker)
+        return await self._send_to_pane(text, marker, source=what)
 
     # -- kickoff (seed) injection ------------------------------------------------
 
@@ -759,7 +784,7 @@ class SessionSupervisor:
             return False
         await self._await_seed_first()
         if not await_ready:
-            return await self._send_to_pane(text, marker)
+            return await self._send_to_pane(text, marker, source="injection")
         return await self._gated_send(
             text, marker, CLI_INJECT_READY_TIMEOUT, what="injection"
         )

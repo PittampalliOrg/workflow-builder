@@ -284,6 +284,16 @@ def _result_contract(
     return result
 
 
+def _terminal_stop_reason(status: str | None, reason: str | None) -> dict[str, str]:
+    if status == "terminated":
+        return {"type": "terminated"}
+    if status == "failed":
+        return {"type": "interrupted"}
+    if reason in {"cancel_requested", "session.terminate", "terminate"}:
+        return {"type": "terminated"}
+    return {"type": "end_turn"}
+
+
 def session_workflow(
     ctx: DaprWorkflowContext, input_data: dict[str, Any]
 ) -> Generator[Any, Any, dict[str, Any] | None]:
@@ -386,6 +396,23 @@ def session_workflow(
                 )
                 if text:
                     last_assistant_text = text
+                if session_id and not ctx.is_replaying:
+                    publish_session_event(
+                        session_id,
+                        "session.turn_completed",
+                        {
+                            "turn": turn_count,
+                            "turnId": f"{ctx.instance_id}:turn:{turn_count}",
+                            "workflowInstanceId": ctx.instance_id,
+                            "agentRuntime": agent_runtime,
+                            "reason": "turn_completed",
+                            "hasOutput": bool(last_assistant_text),
+                            "output_preview": last_assistant_text[:500],
+                        },
+                        source_event_id=(
+                            f"{ctx.instance_id}:turn:{turn_count}:completed"
+                        ),
+                    )
                 if auto_terminate:
                     status, reason = "completed", "turn_completed"
                     break
@@ -412,7 +439,17 @@ def session_workflow(
 
     if session_id and not ctx.is_replaying:
         publish_session_event(
-            session_id, "session.status_terminated", {"reason": reason or status}
+            session_id,
+            "session.status_terminated",
+            {
+                "reason": reason or status,
+                "stop_reason": _terminal_stop_reason(status, reason),
+                "status": status,
+                "success": status not in ("failed",),
+                "turnCount": turn_count,
+                "agentRuntime": agent_runtime,
+                "workflowInstanceId": ctx.instance_id,
+            },
         )
     output_sync_result = None
     if status == "completed" and isinstance(input_data.get("outputSync"), Mapping):
