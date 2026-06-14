@@ -307,6 +307,7 @@ class HookProcessor:
         self._tailer_manager = tailer_manager or get_tailer_manager()
         self._adapter = adapter
         self._completion_keys_raised: set[tuple[str, int]] = set()
+        self._completion_fallback_started_turn = False
 
     def _session(self) -> dict[str, Any]:
         supervisor = self._supervisor_getter()
@@ -338,6 +339,7 @@ class HookProcessor:
                 self._completion_keys_raised = {
                     key for key in self._completion_keys_raised if key[0] != instance_id
                 }
+                self._completion_fallback_started_turn = False
             return {}  # registration handled above; no published event
 
         adapter_turn_done = bool(
@@ -385,7 +387,7 @@ class HookProcessor:
             already_completed = bool(
                 tailer is not None and getattr(tailer, "turn_completion_raised", False)
             )
-            turn_count = _turn_started_count(session)
+            turn_count = self._ensure_turn_started_before_completion(session)
             completion_key = (
                 (instance_id, turn_count)
                 if isinstance(instance_id, str) and instance_id
@@ -414,7 +416,10 @@ class HookProcessor:
 
         if name == "UserPromptSubmit" and self._consume_injected_prompt(payload):
             if self._adapter_reports_prompt_submit():
-                self._record_turn_started("hook:UserPromptSubmit")
+                if self._completion_fallback_started_turn:
+                    self._completion_fallback_started_turn = False
+                else:
+                    self._record_turn_started("hook:UserPromptSubmit")
             return {}
 
         events = None
@@ -430,7 +435,10 @@ class HookProcessor:
             for event in events
             if isinstance(event, Mapping)
         ):
-            self._record_turn_started("hook:UserPromptSubmit")
+            if self._completion_fallback_started_turn:
+                self._completion_fallback_started_turn = False
+            else:
+                self._record_turn_started("hook:UserPromptSubmit")
         for event in events:
             self._publish(session_id, event["type"], event.get("data") or {})
         response = self._hook_response(name, payload, session)
@@ -491,15 +499,27 @@ class HookProcessor:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[hooks] adapter hook recording failed: %s", exc)
 
-    def _record_turn_started(self, source: str) -> None:
+    def _record_turn_started(self, source: str) -> int | None:
         supervisor = self._supervisor_getter()
         note_turn_started = getattr(supervisor, "note_turn_started", None)
         if not callable(note_turn_started):
-            return
+            return None
         try:
-            note_turn_started(source)
+            value = note_turn_started(source)
+            return value if isinstance(value, int) else None
         except Exception as exc:  # noqa: BLE001
             logger.debug("[hooks] turn-start publish failed: %s", exc)
+            return None
+
+    def _ensure_turn_started_before_completion(self, session: Mapping[str, Any]) -> int:
+        turn_count = _turn_started_count(session)
+        if turn_count > 0:
+            return turn_count
+        started = self._record_turn_started("hook:completion-fallback")
+        if isinstance(started, int) and started > 0:
+            self._completion_fallback_started_turn = True
+            return started
+        return _turn_started_count(self._session())
 
     def _adapter_reports_prompt_submit(self) -> bool:
         if self._adapter is not None and bool(

@@ -227,6 +227,45 @@ def test_stop_flushes_tailer_then_raises_turn_completed():
     ]
 
 
+def test_stop_records_missing_turn_start_before_completion():
+    published: list[tuple[str | None, str, dict]] = []
+    raised: list[tuple[str, list[dict]]] = []
+    supervisor = FakeSupervisor()
+    supervisor.turn_started_count = 0
+    processor = HookProcessor(
+        publish=lambda sid, etype, data, **kw: published.append((sid, etype, data)),
+        raise_lifecycle=lambda iid, events: raised.append((iid, events)),
+        supervisor_getter=lambda: supervisor,
+        tailer_manager=FakeTailerManager(),
+    )
+
+    asyncio.run(processor.process(_hook("Stop")))
+
+    assert supervisor.turn_sources == ["hook:completion-fallback"]
+    assert raised == [
+        ("inst-1", [{"type": "turn.completed", "lastAssistantText": "final answer"}])
+    ]
+
+
+def test_late_injected_submit_does_not_duplicate_fallback_turn_start():
+    _published: list[tuple[str | None, str, dict]] = []
+    raised: list[tuple[str, list[dict]]] = []
+    supervisor = FakeSupervisor()
+    supervisor.turn_started_count = 0
+    supervisor.injected_prompts.add("seed prompt")
+    processor = HookProcessor(
+        publish=lambda sid, etype, data, **kw: _published.append((sid, etype, data)),
+        raise_lifecycle=lambda iid, events: raised.append((iid, events)),
+        supervisor_getter=lambda: supervisor,
+        tailer_manager=FakeTailerManager(),
+    )
+
+    asyncio.run(processor.process(_hook("Stop")))
+    asyncio.run(processor.process(_hook("UserPromptSubmit", prompt="seed prompt")))
+
+    assert supervisor.turn_sources == ["hook:completion-fallback"]
+
+
 def test_stop_hook_can_be_transcript_only_without_duplicate_completion():
     class TranscriptOnlyAdapter:
         def stop_hook_completes_turn(self):

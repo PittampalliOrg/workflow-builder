@@ -599,6 +599,9 @@ class CodexAdapter(CliAdapter):
         # turns and can leave direct sessions stuck in running.
         return False
 
+    def is_turn_completion_hook(self, event_name: str) -> bool:
+        return False
+
     # -- env -------------------------------------------------------------------
 
     def pane_env(

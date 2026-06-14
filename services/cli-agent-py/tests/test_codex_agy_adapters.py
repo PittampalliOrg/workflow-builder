@@ -317,7 +317,9 @@ def test_codex_task_complete_raises_turn_completed(codex_home):
 
 
 def test_codex_stop_hook_does_not_complete_turn():
-    assert get_adapter("codex").stop_hook_completes_turn() is False
+    adapter = get_adapter("codex")
+    assert adapter.stop_hook_completes_turn() is False
+    assert adapter.is_turn_completion_hook("Stop") is False
 
 
 # --- antigravity -------------------------------------------------------------
