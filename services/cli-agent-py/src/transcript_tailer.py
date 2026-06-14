@@ -64,6 +64,7 @@ class TranscriptTailer:
         self._offset = 0
         self._partial = b""
         self.last_assistant_text: str | None = None
+        self.assistant_message_published = False
         self.turn_completion_raised = False
 
     def poll(self) -> int:
@@ -123,6 +124,11 @@ class TranscriptTailer:
 
         content_text = _text_of_content_blocks(message.get("content"))
         if content_text:
+            if (
+                self.assistant_message_published
+                and self.last_assistant_text == content_text
+            ):
+                return emitted
             self.last_assistant_text = content_text
             self._publish(
                 self.session_id,
@@ -135,6 +141,7 @@ class TranscriptTailer:
                 },
                 source_event_id=f"transcript:{uuid_text}" if uuid_text else None,
             )
+            self.assistant_message_published = True
             emitted += 1
 
         usage = message.get("usage")
@@ -182,7 +189,13 @@ class TranscriptTailer:
             if event_type == "agent.message":
                 text = _text_of_content_blocks(payload.get("content"))
                 if text:
+                    if (
+                        self.assistant_message_published
+                        and self.last_assistant_text == text
+                    ):
+                        continue
                     self.last_assistant_text = text
+                    self.assistant_message_published = True
             source_event_id = event.get("sourceEventId") or event.get("source_event_id")
             self._publish(
                 self.session_id,

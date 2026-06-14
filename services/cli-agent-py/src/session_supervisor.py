@@ -188,6 +188,7 @@ class SessionSupervisor:
         self._committed_state: str | None = None
         self._idle_since: float | None = None
         self._suppress_next_idle_status = False
+        self._turn_completion_pending = False
         self._debounce_task: asyncio.Task | None = None
         self._exit_raised = False
 
@@ -475,6 +476,8 @@ class SessionSupervisor:
         elif status == AGENT_STATUS_IDLE:
             if self._idle_since is None:
                 self._idle_since = time.monotonic()
+            if self._turn_completion_pending:
+                return
             if self._suppress_next_idle_status:
                 self._suppress_next_idle_status = False
                 return
@@ -496,6 +499,7 @@ class SessionSupervisor:
     def note_turn_started(self, source: str = "pane_submit") -> int:
         """Publish the canonical public turn-start event at the submit edge."""
         self._turn_started_count += 1
+        self._turn_completion_pending = True
         turn = self._turn_started_count
         session_id = self._session_id
         if session_id:
@@ -520,6 +524,7 @@ class SessionSupervisor:
         idle transition moments later; keeping both makes the session timeline
         look like two turns.
         """
+        self._turn_completion_pending = False
         self._suppress_next_idle_status = True
 
     def _raise_cli_exited(

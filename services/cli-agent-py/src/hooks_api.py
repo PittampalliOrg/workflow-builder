@@ -382,13 +382,24 @@ class HookProcessor:
                     logger.debug("[hooks] adapter completion extraction failed: %s", exc)
             if not last_text:
                 last_text = _generic_completion_text(payload)
-            if session_id and last_text and tailer is None:
+            tailer_published_message = bool(
+                tailer is not None
+                and getattr(tailer, "assistant_message_published", False)
+            )
+            if session_id and last_text and not tailer_published_message:
                 self._publish(
                     session_id,
                     "agent.message",
                     {"content": [{"type": "text", "text": last_text}]},
                     source_event_id=f"hook-completion:{instance_id or session_id}:{name}",
+                    blocking=True,
                 )
+                if tailer is not None:
+                    try:
+                        tailer.last_assistant_text = last_text
+                        tailer.assistant_message_published = True
+                    except Exception:  # noqa: BLE001
+                        pass
             already_completed = bool(
                 tailer is not None and getattr(tailer, "turn_completion_raised", False)
             )

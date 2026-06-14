@@ -227,6 +227,13 @@ def test_stop_flushes_tailer_then_raises_turn_completed():
     assert response == {}
     assert manager.tailer.flushes == 1
     assert supervisor.suppress_idle_calls == 1
+    assert published == [
+        (
+            "sess-1",
+            "agent.message",
+            {"content": [{"type": "text", "text": "final answer"}]},
+        )
+    ]
     assert raised == [
         ("inst-1", [{"type": "turn.completed", "lastAssistantText": "final answer"}])
     ]
