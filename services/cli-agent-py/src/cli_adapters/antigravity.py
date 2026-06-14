@@ -27,6 +27,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
+import subprocess
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -55,6 +58,9 @@ AGY_BIN = os.environ.get("CLI_AGENT_AGY_PATH", "agy")
 # The stored ~/.gemini login bundle (base64 tar.gz), delivered when the user has
 # a captured agy login. Present → agy boots signed in (no device-code login).
 AGY_AUTH_ENV = "AGY_AUTH_JSON"
+RUN_COMMAND_SHIM_MAX_OUTPUT = 16_000
+RUN_COMMAND_SHIM_REASON_LIMIT = 9_000
+RUN_COMMAND_SHIM_DEFAULT_TIMEOUT_SECONDS = 300
 
 
 def clean_string(value: Any) -> str | None:
@@ -443,6 +449,222 @@ def _tool_output_from(payload: Mapping[str, Any]) -> str:
     return ""
 
 
+def _env_bool(name: str, default: bool | None = None) -> bool | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _user_namespaces_available() -> bool:
+    try:
+        raw = Path("/proc/sys/user/max_user_namespaces").read_text(encoding="utf-8")
+        return int(raw.strip()) > 0
+    except (OSError, TypeError, ValueError):
+        # If the probe is unavailable, avoid changing native AGY behavior unless
+        # the operator explicitly enables the shim.
+        return True
+
+
+def _should_shim_run_command() -> bool:
+    explicit = _env_bool("CLI_AGENT_AGY_RUN_COMMAND_SHIM")
+    if explicit is not None:
+        return explicit
+    return not _user_namespaces_available()
+
+
+def _run_command_value(tool_input: Mapping[str, Any]) -> str | None:
+    for key in ("CommandLine", "commandLine", "command", "Command", "cmd"):
+        value = clean_string(tool_input.get(key))
+        if value:
+            return value
+    return None
+
+
+def _bash_argv(command: str) -> list[str]:
+    return [shutil.which("bash") or "/bin/bash", "-lc", command]
+
+
+def _safe_command_cwd(tool_input: Mapping[str, Any]) -> Path | None:
+    sandbox_root = Path(os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")).resolve()
+    raw = (
+        clean_string(tool_input.get("Cwd"))
+        or clean_string(tool_input.get("cwd"))
+        or clean_string(tool_input.get("workingDirectory"))
+        or str(sandbox_root)
+    )
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = sandbox_root / candidate
+    try:
+        resolved = candidate.resolve()
+        resolved.relative_to(sandbox_root)
+    except (OSError, ValueError):
+        return None
+    return resolved
+
+
+def _truncate_text(value: str, limit: int = RUN_COMMAND_SHIM_MAX_OUTPUT) -> str:
+    if len(value) <= limit:
+        return value
+    omitted = len(value) - limit
+    return value[:limit] + f"\n...[truncated {omitted} chars]"
+
+
+def _format_run_command_reason(result: Mapping[str, Any]) -> str:
+    stdout = str(result.get("stdout") or "")
+    stderr = str(result.get("stderr") or "")
+    reason = (
+        "Workflow-builder executed this run_command in the managed sandbox and "
+        "blocked AGY's native terminal executor for this call. Treat the "
+        "captured result below as the Bash tool result; do not retry the same "
+        "command unless the user asks.\n"
+        f"Exit code: {result.get('exit_code')}\n"
+        f"stdout:\n{stdout}\n"
+        f"stderr:\n{stderr}"
+    )
+    return _truncate_text(reason, RUN_COMMAND_SHIM_REASON_LIMIT)
+
+
+def _run_command_shim_event(
+    tool_input: Mapping[str, Any], result: Mapping[str, Any], output: str
+) -> dict[str, Any]:
+    ok = result.get("exit_code") == 0 and not result.get("timed_out")
+    return {
+        "type": "agent.tool_result",
+        "data": {
+            "tool_name": "run_command",
+            "name": "run_command",
+            "ok": ok,
+            "success": ok,
+            "is_error": not ok,
+            "exit_code": result.get("exit_code"),
+            "timed_out": bool(result.get("timed_out")),
+            "duration_ms": result.get("duration_ms"),
+            "output": output,
+            "output_preview": output[:500],
+            "stdout": result.get("stdout") or "",
+            "stderr": result.get("stderr") or "",
+            "tool_input": dict(tool_input),
+            "input": dict(tool_input),
+            "shim": "agy-run-command-hook",
+        },
+    }
+
+
+def _execute_run_command_shim(
+    payload: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    if _hook_name(payload) != "PreToolUse":
+        return None
+    tool_input = _tool_input_from(payload)
+    raw_tool_name = _tool_name_from(payload)
+    tool_name = _canonical_tool_name(raw_tool_name or "agy_tool", tool_input)
+    if tool_name != "run_command":
+        return None
+    if not _should_shim_run_command():
+        return None
+
+    command = _run_command_value(tool_input)
+    cwd = _safe_command_cwd(tool_input)
+    timeout = max(
+        1,
+        _env_int(
+            "CLI_AGENT_AGY_RUN_COMMAND_TIMEOUT_SECONDS",
+            RUN_COMMAND_SHIM_DEFAULT_TIMEOUT_SECONDS,
+        ),
+    )
+    started = time.monotonic()
+    if not command:
+        result: dict[str, Any] = {
+            "exit_code": 2,
+            "timed_out": False,
+            "duration_ms": 0,
+            "stdout": "",
+            "stderr": "AGY run_command payload did not include CommandLine.",
+        }
+    elif cwd is None:
+        result = {
+            "exit_code": 2,
+            "timed_out": False,
+            "duration_ms": 0,
+            "stdout": "",
+            "stderr": "AGY run_command cwd is outside the managed sandbox.",
+        }
+    else:
+        try:
+            completed = subprocess.run(
+                _bash_argv(command),
+                cwd=str(cwd),
+                env=os.environ.copy(),
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+            )
+            result = {
+                "exit_code": completed.returncode,
+                "timed_out": False,
+                "duration_ms": int((time.monotonic() - started) * 1000),
+                "stdout": _truncate_text(completed.stdout or ""),
+                "stderr": _truncate_text(completed.stderr or ""),
+            }
+        except subprocess.TimeoutExpired as exc:
+            result = {
+                "exit_code": 124,
+                "timed_out": True,
+                "duration_ms": int((time.monotonic() - started) * 1000),
+                "stdout": _truncate_text(exc.stdout or ""),
+                "stderr": _truncate_text(
+                    (exc.stderr or "")
+                    + f"\nCommand timed out after {timeout} seconds."
+                ),
+            }
+        except Exception as exc:  # noqa: BLE001
+            result = {
+                "exit_code": 126,
+                "timed_out": False,
+                "duration_ms": int((time.monotonic() - started) * 1000),
+                "stdout": "",
+                "stderr": f"Workflow-builder failed to execute command: {exc}",
+            }
+
+    stdout = str(result.get("stdout") or "")
+    stderr = str(result.get("stderr") or "")
+    output = stdout if stdout else stderr
+    if stdout and stderr:
+        output = f"{stdout}\n{stderr}"
+    response = {
+        "decision": "deny",
+        "reason": _format_run_command_reason(result),
+        "_workflowBuilderEvents": [
+            _run_command_shim_event(tool_input, result, output),
+            {
+                "type": "hook.decision",
+                "data": {
+                    "hook_event": "PreToolUse",
+                    "decision": "deny",
+                    "reason": "agy-run-command-hook",
+                    "tool_name": "run_command",
+                },
+            },
+        ],
+    }
+    return response
+
+
 def _entry_identity(entry: Mapping[str, Any]) -> str | None:
     parts: list[str] = []
     for key in ("conversation_id", "conversationId", "session_id", "sessionId"):
@@ -666,6 +888,8 @@ class AntigravityAdapter(CliAdapter):
     def hook_response(
         self, event_name: str, payload: Mapping[str, Any], session: Mapping[str, Any]
     ) -> dict[str, Any] | None:
+        if event_name == "PreToolUse":
+            return _execute_run_command_shim(payload)
         if event_name == "Stop":
             return evaluate_stop_guard(increment_continue=True)
         return None

@@ -693,6 +693,70 @@ def test_agy_hook_mapping_uses_non_null_fallback_tool_name_for_payloads():
     assert event[0]["data"]["name"] == "agy_tool"
 
 
+def test_agy_run_command_hook_shim_executes_and_denies_native_tool(
+    tmp_path, monkeypatch
+):
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(sandbox))
+    monkeypatch.setenv("CLI_AGENT_AGY_RUN_COMMAND_SHIM", "true")
+    adapter = get_adapter("antigravity")
+
+    response = adapter.hook_response(
+        "PreToolUse",
+        {
+            "hook_event_name": "PreToolUse",
+            "toolName": "run_command",
+            "toolInput": {
+                "CommandLine": 'printf "agy-shim-ok\\n"',
+                "Cwd": str(sandbox),
+            },
+        },
+        {},
+    )
+
+    assert response is not None
+    assert response["decision"] == "deny"
+    assert "agy-shim-ok" in response["reason"]
+    events = response["_workflowBuilderEvents"]
+    result = next(event for event in events if event["type"] == "agent.tool_result")
+    assert result["data"]["tool_name"] == "run_command"
+    assert result["data"]["ok"] is True
+    assert result["data"]["exit_code"] == 0
+    assert result["data"]["output"] == "agy-shim-ok\n"
+    assert result["data"]["shim"] == "agy-run-command-hook"
+
+
+def test_agy_run_command_hook_shim_rejects_cwd_outside_sandbox(tmp_path, monkeypatch):
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(sandbox))
+    monkeypatch.setenv("CLI_AGENT_AGY_RUN_COMMAND_SHIM", "true")
+
+    response = get_adapter("antigravity").hook_response(
+        "PreToolUse",
+        {
+            "hook_event_name": "PreToolUse",
+            "toolName": "run_command",
+            "toolInput": {"CommandLine": "pwd", "Cwd": str(outside)},
+        },
+        {},
+    )
+
+    assert response is not None
+    result = next(
+        event
+        for event in response["_workflowBuilderEvents"]
+        if event["type"] == "agent.tool_result"
+    )
+    assert response["decision"] == "deny"
+    assert result["data"]["ok"] is False
+    assert result["data"]["exit_code"] == 2
+    assert "outside the managed sandbox" in result["data"]["stderr"]
+
+
 def test_agy_transcript_final_response_maps_message_usage_without_completion():
     adapter = get_adapter("antigravity")
     entry = {

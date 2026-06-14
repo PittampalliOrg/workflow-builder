@@ -226,6 +226,7 @@ def write_hook_relay_script(path: Path) -> Path:
         """#!/usr/bin/env python3
 import argparse
 import json
+import os
 import sys
 import urllib.request
 
@@ -253,7 +254,8 @@ def main() -> int:
         method="POST",
     )
     try:
-        raw_response = urllib.request.urlopen(req, timeout=5).read()
+        timeout = int(os.environ.get("CLI_AGENT_HOOK_RELAY_TIMEOUT_SECONDS", "660"))
+        raw_response = urllib.request.urlopen(req, timeout=max(1, timeout)).read()
         if raw_response:
             response = json.loads(raw_response.decode("utf-8"))
             if isinstance(response, dict) and response:

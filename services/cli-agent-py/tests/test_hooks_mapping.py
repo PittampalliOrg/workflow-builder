@@ -269,6 +269,51 @@ def test_duplicate_stop_hook_does_not_raise_second_completion_for_same_turn():
     ]
 
 
+def test_processor_publishes_adapter_internal_events_and_strips_response():
+    class AdapterWithResponse:
+        name = "antigravity"
+
+        def is_turn_completion_hook(self, event_name):
+            return False
+
+        def map_hook_event(self, payload):
+            return [
+                {
+                    "type": "agent.tool_use",
+                    "data": {"tool_name": "run_command"},
+                }
+            ]
+
+        def hook_response(self, event_name, payload, session):
+            return {
+                "decision": "deny",
+                "reason": "captured output",
+                "_workflowBuilderEvents": [
+                    {
+                        "type": "agent.tool_result",
+                        "data": {"tool_name": "run_command", "ok": True},
+                    }
+                ],
+            }
+
+    published: list[tuple[str | None, str, dict]] = []
+    processor = HookProcessor(
+        publish=lambda sid, etype, data, **kw: published.append((sid, etype, data)),
+        raise_lifecycle=lambda *_a, **_k: None,
+        supervisor_getter=lambda: FakeSupervisor(),
+        tailer_manager=FakeTailerManager(),
+        adapter=AdapterWithResponse(),
+    )
+
+    response = asyncio.run(processor.process(_hook("PreToolUse")))
+
+    assert response == {"decision": "deny", "reason": "captured output"}
+    assert published == [
+        ("sess-1", "agent.tool_use", {"tool_name": "run_command"}),
+        ("sess-1", "agent.tool_result", {"tool_name": "run_command", "ok": True}),
+    ]
+
+
 def test_agy_stop_hook_continues_when_output_contract_missing(tmp_path, monkeypatch):
     from src.cli_adapters import get_adapter
 

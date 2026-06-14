@@ -427,7 +427,10 @@ class HookProcessor:
             self._record_turn_started("hook:UserPromptSubmit")
         for event in events:
             self._publish(session_id, event["type"], event.get("data") or {})
-        return {}
+        response = self._hook_response(name, payload, session)
+        for event in self._pop_internal_events(response):
+            self._publish(session_id, event["type"], event.get("data") or {})
+        return response
 
     def _hook_response(
         self, name: str | None, payload: Mapping[str, Any], session: Mapping[str, Any]
@@ -443,6 +446,20 @@ class HookProcessor:
             logger.debug("[hooks] adapter hook response failed: %s", exc)
             return {}
         return dict(value) if isinstance(value, Mapping) else {}
+
+    def _pop_internal_events(self, response: dict[str, Any]) -> list[dict[str, Any]]:
+        raw = response.pop("_workflowBuilderEvents", None)
+        if not isinstance(raw, list):
+            return []
+        events: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, Mapping):
+                continue
+            event_type = item.get("type")
+            if not isinstance(event_type, str) or not event_type:
+                continue
+            events.append({"type": event_type, "data": item.get("data") or {}})
+        return events
 
     async def _wait_for_tailer_completion_text(self) -> str | None:
         wait = getattr(self._tailer_manager, "wait_for_assistant_text", None)
