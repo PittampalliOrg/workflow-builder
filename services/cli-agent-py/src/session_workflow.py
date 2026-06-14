@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 from collections import Counter
 from datetime import timedelta
@@ -293,6 +294,168 @@ def _swebench_patch_request(input_data: Mapping[str, Any]) -> dict[str, Any] | N
     }
 
 
+def _swebench_workspace_request(input_data: Mapping[str, Any]) -> dict[str, Any] | None:
+    environment = _swebench_environment(input_data)
+    repo = _clean_string(environment.get("repo"))
+    base_commit = _clean_string(environment.get("baseCommit"))
+    if not repo or not base_commit:
+        return None
+    workspace_root = (
+        _clean_string(environment.get("workspaceRoot"))
+        or _clean_string(input_data.get("cwd"))
+        or "/sandbox/repo"
+    )
+    return {
+        "repo": repo,
+        "baseCommit": base_commit,
+        "workspaceRoot": workspace_root,
+    }
+
+
+def _workspace_under_local_root(workspace_root: str) -> tuple[Path, Path] | dict[str, Any]:
+    repo = Path(workspace_root).resolve()
+    local_root = Path(os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")).resolve()
+    try:
+        repo.relative_to(local_root)
+    except ValueError:
+        return {
+            "ok": False,
+            "error": f"workspaceRoot must be under {local_root}: {workspace_root}",
+        }
+    return repo, local_root
+
+
+def _swebench_repo_url(repo_slug: str) -> str:
+    template = os.environ.get(
+        "CLI_SWEBENCH_REPO_URL_TEMPLATE", "https://github.com/{repo}.git"
+    )
+    return template.format(repo=repo_slug)
+
+
+def _run_command(
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+    timeout: int = 300,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        args,
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+    if check and result.returncode != 0:
+        raise RuntimeError(
+            f"{' '.join(args)} failed with exit {result.returncode}: "
+            f"{(result.stderr or result.stdout)[-2000:]}"
+        )
+    return result
+
+
+def prepare_swebench_workspace_activity(
+    _ctx_or_input: Any, input_data: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Clone the SWE-bench repo into the CLI-owned sandbox before the TUI starts.
+
+    The parent workflow's OpenShell workspace is a separate pod/volume from the
+    CLI agent-host pod. This activity makes the CLI-owned `/sandbox/repo` match
+    the prompt contract without doing filesystem or network work in workflow
+    replay code.
+    """
+    payload = input_data if input_data is not None else _ctx_or_input
+    request = _record(payload)
+    repo_slug = _clean_string(request.get("repo"))
+    base_commit = _clean_string(request.get("baseCommit"))
+    workspace_root = _clean_string(request.get("workspaceRoot")) or "/sandbox/repo"
+    if not repo_slug or not base_commit:
+        return {"ok": True, "prepared": False, "reason": "missing_repo_or_base_commit"}
+    if repo_slug.startswith("-") or ".." in repo_slug.split("/"):
+        return {"ok": False, "prepared": False, "error": f"invalid repo: {repo_slug}"}
+
+    resolved = _workspace_under_local_root(workspace_root)
+    if isinstance(resolved, dict):
+        return {"prepared": False, **resolved}
+    repo_path, _local_root = resolved
+    repo_url = _swebench_repo_url(repo_slug)
+    repo_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if (repo_path / ".git").exists():
+            head = _run_command(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_path,
+                timeout=30,
+                check=False,
+            )
+            if head.returncode == 0 and head.stdout.strip() == base_commit:
+                _run_command(["git", "reset", "--hard", base_commit], cwd=repo_path)
+                _run_command(["git", "clean", "-fdx"], cwd=repo_path)
+                return {
+                    "ok": True,
+                    "prepared": True,
+                    "alreadyPresent": True,
+                    "workspaceRoot": str(repo_path),
+                    "baseCommit": base_commit,
+                    "repo": repo_slug,
+                }
+
+        tmp_path = repo_path.parent / f".{repo_path.name}.checkout.{os.getpid()}"
+        if tmp_path.exists():
+            shutil.rmtree(tmp_path)
+        if repo_path.exists():
+            shutil.rmtree(repo_path)
+
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        _run_command(["git", "init", "-q"], cwd=tmp_path)
+        _run_command(["git", "remote", "add", "origin", repo_url], cwd=tmp_path)
+        fetch = _run_command(
+            ["git", "-c", "protocol.version=2", "fetch", "--depth=1", "origin", base_commit],
+            cwd=tmp_path,
+            timeout=300,
+            check=False,
+        )
+        if fetch.returncode != 0:
+            fetch = _run_command(
+                ["git", "fetch", "origin", base_commit],
+                cwd=tmp_path,
+                timeout=600,
+                check=False,
+            )
+        if fetch.returncode != 0:
+            raise RuntimeError(
+                f"git fetch {base_commit} failed: {(fetch.stderr or fetch.stdout)[-2000:]}"
+            )
+        _run_command(["git", "checkout", "--force", "FETCH_HEAD"], cwd=tmp_path)
+        tmp_path.rename(repo_path)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            if "tmp_path" in locals() and tmp_path.exists():
+                shutil.rmtree(tmp_path)
+        except Exception:
+            pass
+        return {
+            "ok": False,
+            "prepared": False,
+            "error": str(exc),
+            "workspaceRoot": str(repo_path),
+            "baseCommit": base_commit,
+            "repo": repo_slug,
+        }
+
+    return {
+        "ok": True,
+        "prepared": True,
+        "alreadyPresent": False,
+        "workspaceRoot": str(repo_path),
+        "baseCommit": base_commit,
+        "repo": repo_slug,
+    }
+
+
 def extract_model_patch_activity(
     _ctx_or_input: Any, input_data: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -308,16 +471,10 @@ def extract_model_patch_activity(
     if not base_commit:
         return {"ok": True, "modelPatch": "", "reason": "missing_base_commit"}
 
-    repo = Path(workspace_root).resolve()
-    local_root = Path(os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")).resolve()
-    try:
-        repo.relative_to(local_root)
-    except ValueError:
-        return {
-            "ok": False,
-            "modelPatch": "",
-            "error": f"workspaceRoot must be under {local_root}: {workspace_root}",
-        }
+    resolved = _workspace_under_local_root(workspace_root)
+    if isinstance(resolved, dict):
+        return {"modelPatch": "", **resolved}
+    repo, _local_root = resolved
     if not repo.exists():
         return {
             "ok": True,
@@ -461,6 +618,45 @@ def session_workflow(
             input=dict(input_data),
             retry_policy=_SEED_RETRY_POLICY,
         )
+        workspace_request = _swebench_workspace_request(input_data)
+        if workspace_request is not None:
+            workspace_prepare = yield ctx.call_activity(
+                prepare_swebench_workspace_activity,
+                input=workspace_request,
+                retry_policy=_SEED_RETRY_POLICY,
+            )
+            if not isinstance(workspace_prepare, Mapping) or not workspace_prepare.get("ok"):
+                status = "failed"
+                reason = "swebench_workspace_prepare_failed"
+                error_text = _clean_string(
+                    _record(workspace_prepare).get("error")
+                    if isinstance(workspace_prepare, Mapping)
+                    else None
+                ) or "SWE-bench workspace preparation failed"
+                if session_id and not ctx.is_replaying:
+                    publish_session_event(
+                        session_id,
+                        "session.status_terminated",
+                        {
+                            "reason": reason,
+                            "stop_reason": {"type": "interrupted"},
+                            "status": status,
+                            "success": False,
+                            "turnCount": turn_count,
+                            "agentRuntime": agent_runtime,
+                            "workflowInstanceId": ctx.instance_id,
+                            "error": error_text,
+                        },
+                    )
+                return _result_contract(
+                    ctx=ctx,
+                    session_id=session_id,
+                    status=status,
+                    last_assistant_text=error_text,
+                    turn_count=turn_count,
+                    agent_runtime=agent_runtime,
+                    provenance=provenance,
+                )
         start_result = yield ctx.call_activity(
             start_cli_activity,
             input={

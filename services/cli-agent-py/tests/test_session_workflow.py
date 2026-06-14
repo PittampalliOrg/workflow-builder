@@ -71,11 +71,17 @@ BASE_INPUT = {
 }
 
 
-def _start_to_first_when_any(driver, *, seed_result=None, start_result=None):
+def _start_to_first_when_any(
+    driver, *, seed_result=None, prepare_result=None, start_result=None
+):
     """Pump seed + start activities; returns the first when_any yield."""
     yielded = driver.gen.send(None)
     assert yielded.kind == "activity:seed_session_activity"
     yielded = driver.gen.send(seed_result or {"paths": {}, "warnings": []})
+    if yielded.kind == "activity:prepare_swebench_workspace_activity":
+        yielded = driver.gen.send(
+            prepare_result or {"ok": True, "prepared": True, "workspaceRoot": "/sandbox/repo"}
+        )
     assert yielded.kind == "activity:start_cli_activity"
     return driver.gen.send(start_result or {"paneRef": "p1", "agentDetected": True})
 
@@ -216,6 +222,7 @@ def test_completed_swebench_run_extracts_model_patch(monkeypatch):
             "cwd": "/sandbox/repo",
             "environmentConfig": {
                 "swebenchInferenceEnvironment": {
+                    "repo": "astropy/astropy",
                     "baseCommit": "abc123",
                     "workspaceRoot": "/sandbox/repo",
                 }
@@ -249,6 +256,40 @@ def test_completed_swebench_run_extracts_model_patch(monkeypatch):
     assert "modelPatch" not in result["patchExtraction"]
 
 
+def test_swebench_workspace_is_prepared_before_cli_start(monkeypatch):
+    ctx = FakeCtx()
+    driver = WorkflowDriver(
+        ctx,
+        {
+            **BASE_INPUT,
+            "autoTerminateAfterEndTurn": True,
+            "cwd": "/sandbox/repo",
+            "environmentConfig": {
+                "swebenchInferenceEnvironment": {
+                    "repo": "astropy/astropy",
+                    "baseCommit": "abc123",
+                    "workspaceRoot": "/sandbox/repo",
+                }
+            },
+        },
+        monkeypatch,
+    )
+
+    _start_to_first_when_any(driver)
+
+    assert [name for name, _ in ctx.activity_calls[:3]] == [
+        "seed_session_activity",
+        "prepare_swebench_workspace_activity",
+        "start_cli_activity",
+    ]
+    prepare_call = ctx.activity_calls[1][1]
+    assert prepare_call == {
+        "repo": "astropy/astropy",
+        "baseCommit": "abc123",
+        "workspaceRoot": "/sandbox/repo",
+    }
+
+
 def test_extract_model_patch_activity_uses_base_commit_and_excludes_tests(
     tmp_path, monkeypatch
 ):
@@ -275,6 +316,67 @@ def test_extract_model_patch_activity_uses_base_commit_and_excludes_tests(
     assert "diff --git a/pkg.py b/pkg.py" in result["modelPatch"]
     assert "tests/test_pkg.py" not in result["modelPatch"]
     assert result["patchFilesTouched"] == ["pkg.py"]
+
+
+def test_prepare_swebench_workspace_activity_clones_base_commit(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=source, check=True)
+    (source / "pkg.py").write_text("old\n", encoding="utf-8")
+    subprocess.run(["git", "add", "pkg.py"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=source, check=True)
+    base = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=source, text=True
+    ).strip()
+    (source / "pkg.py").write_text("new\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-am", "new", "-q"], cwd=source, check=True)
+    remote_root = tmp_path / "remotes" / "local"
+    remote_root.mkdir(parents=True)
+    subprocess.run(
+        ["git", "clone", "--bare", str(source), str(remote_root / "repo.git")],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    sandbox = tmp_path / "sandbox"
+    monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(sandbox))
+    monkeypatch.setenv(
+        "CLI_SWEBENCH_REPO_URL_TEMPLATE", f"file://{tmp_path}/remotes/{{repo}}.git"
+    )
+
+    result = sw.prepare_swebench_workspace_activity(
+        {
+            "repo": "local/repo",
+            "baseCommit": base,
+            "workspaceRoot": str(sandbox / "repo"),
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["prepared"] is True
+    assert (sandbox / "repo" / "pkg.py").read_text(encoding="utf-8") == "old\n"
+    head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=sandbox / "repo", text=True
+    ).strip()
+    assert head == base
+
+
+def test_prepare_swebench_workspace_rejects_paths_outside_sandbox(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(tmp_path / "sandbox"))
+
+    result = sw.prepare_swebench_workspace_activity(
+        {
+            "repo": "astropy/astropy",
+            "baseCommit": "abc123",
+            "workspaceRoot": str(tmp_path / "other" / "repo"),
+        }
+    )
+
+    assert result["ok"] is False
+    assert "workspaceRoot must be under" in result["error"]
 
 
 def test_propagated_history_is_reduced_to_bounded_provenance(monkeypatch):
