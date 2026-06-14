@@ -229,7 +229,7 @@
       "agentMetadataFramework": "Antigravity CLI",
       "benchmarkEligible": true,
       "capabilitiesVerified": false,
-      "executionClass": "interactive-cli",
+      "executionClass": "interactive-cli-agy",
       "cliAdapter": "antigravity",
       "cliAuth": {
         "provider": "google",

@@ -496,6 +496,9 @@ def test_agy_seed_writes_gemini_md_and_settings(agy_home):
     assert settings["toolPermission"] == "always-proceed"
     assert settings["artifactReviewPolicy"] == "always-proceed"
     assert settings["allowNonWorkspaceAccess"] is True
+    assert settings["terminal.integrated.shellIntegration.enabled"] is False
+    assert settings["terminal.integrated.defaultProfile.linux"] == "bash"
+    assert settings["terminal.integrated.profiles.linux"]["bash"]["path"] == "/bin/bash"
     assert settings["enableTerminalSandbox"] is False
     assert settings["permissions"]["allow"] == [
         "command(*)",

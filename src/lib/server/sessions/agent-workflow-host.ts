@@ -232,8 +232,9 @@ function agentWorkflowHostExecutionClass(params: {
 	runtimeExecutionClass?: string | null;
 }): string {
 	if (params.benchmarkRunId) {
-		if (params.runtimeExecutionClass === "interactive-cli") {
-			return params.runtimeExecutionClass;
+		const runtimeExecutionClass = params.runtimeExecutionClass?.trim();
+		if (runtimeExecutionClass?.startsWith("interactive-cli")) {
+			return runtimeExecutionClass;
 		}
 		if (params.benchmarkExecutionClass?.trim()) {
 			return params.benchmarkExecutionClass.trim();

@@ -178,6 +178,15 @@ def _managed_agy_settings(
             "toolPermission": "always-proceed",
             "artifactReviewPolicy": "always-proceed",
             "allowNonWorkspaceAccess": True,
+            # Antigravity shares VS Code's terminal settings surface. After some
+            # updates a null default profile or shell-integration PTY state can
+            # strand Bash tool calls in RUNNING, so pin the managed Linux shell
+            # shape for headless pods.
+            "terminal.integrated.shellIntegration.enabled": False,
+            "terminal.integrated.defaultProfile.linux": "bash",
+            "terminal.integrated.profiles.linux": {
+                "bash": {"path": "/bin/bash"},
+            },
             # The Kubernetes Sandbox pod is the containment boundary here.
             # AGY's nested nsjail/sandbox mode can require host privileges that
             # are unavailable in our agent-host pod and is redundant for this

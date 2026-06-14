@@ -260,6 +260,39 @@ describe("agent workflow host provisioning", () => {
 		);
 	});
 
+	it("preserves AGY's dedicated interactive-cli class for benchmark sessions", async () => {
+		vi.stubEnv("BENCHMARK_AGENT_WORKFLOW_STABLE_APP_ID", "dapr-agent-py");
+		vi.stubEnv(
+			"AGENT_RUNTIME_AGY_CLI_DEFAULT_IMAGE",
+			"ghcr.io/example/cli-agent-py-sandbox:git-agy",
+		);
+
+		await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-benchmark-agy",
+			agentConfig: {
+				runtime: "agy-cli",
+				mcpServers: [],
+				builtinTools: [],
+				skills: [],
+				mcpConnectionMode: "explicit",
+			} as never,
+			workflowExecutionId: "exec-1",
+			benchmarkRunId: "run-1",
+			benchmarkInstanceId: "sympy__sympy-20590",
+			timeoutMinutes: null,
+		});
+
+		const call = vi.mocked(fetch).mock.calls[0];
+		const body = JSON.parse(String(call?.[1]?.body ?? "{}")) as Record<
+			string,
+			unknown
+		>;
+		expect(body.executionClass).toBe("interactive-cli-agy");
+		expect(body.agentImage).toBe(
+			"ghcr.io/example/cli-agent-py-sandbox:git-agy",
+		);
+	});
+
 	it("lets env override benchmark host queue class", async () => {
 		vi.stubEnv("BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS", "secure-gvisor");
 		vi.stubEnv("BENCHMARK_AGENT_WORKFLOW_HOST_PRIORITY_CLASS", "interactive-agent");
