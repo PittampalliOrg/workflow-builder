@@ -53,6 +53,20 @@ describe("Dapr workflow capacity diagnostics", () => {
 		});
 	});
 
+	it("does not count Dapr actor-store hot-reload refusals as runtime pressure", () => {
+		const counts = __daprWorkflowCapacityForTest.countLogMatches(
+			[
+				'time="2026-06-14T06:41:10Z" level=error msg="Aborting to hot-reload a state store component that is used as an actor state store: statestore (state.postgresql/v2)" app_id=workflow-orchestrator scope=dapr.runtime.hotreload.reconciler ver=1.18.0',
+			].join("\n"),
+		);
+
+		expect(counts).toEqual({
+			actorErrors: 0,
+			reminderErrors: 0,
+			staleWorkflowEvents: 0,
+		});
+	});
+
 	it("does not count recoverable actor churn while newly-created session hosts join placement", () => {
 		const counts = __daprWorkflowCapacityForTest.countLogMatches(
 			[

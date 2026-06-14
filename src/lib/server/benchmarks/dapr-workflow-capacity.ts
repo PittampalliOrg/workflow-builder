@@ -388,6 +388,13 @@ function countLogMatches(
 	let staleWorkflowEvents = 0;
 	for (const line of logs.split(/\r?\n/)) {
 		if (
+			/Aborting to hot-reload a state store component that is used as an actor state store/i.test(
+				line,
+			)
+		) {
+			continue;
+		}
+		if (
 			/Scheduler stream disconnected/i.test(line) &&
 			/(server is closing|client connection is closing|context canceled|transport is closing)/i.test(
 				line,
