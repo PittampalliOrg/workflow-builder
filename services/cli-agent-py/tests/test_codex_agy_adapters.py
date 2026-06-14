@@ -254,6 +254,15 @@ def test_agy_requires_interactive_login_is_dynamic(monkeypatch):
     assert get_adapter("antigravity").requires_interactive_login is False
 
 
+def test_agy_seed_prompt_uses_goal_command():
+    adapter = get_adapter("antigravity")
+    assert adapter.format_seed_user_message("write the files") == "/goal write the files"
+    assert (
+        adapter.format_seed_user_message("/goal write the files")
+        == "/goal write the files"
+    )
+
+
 def test_agy_seed_restores_login_bundle(agy_home, monkeypatch):
     import base64
     import io

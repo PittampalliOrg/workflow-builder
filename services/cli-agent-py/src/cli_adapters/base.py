@@ -122,6 +122,14 @@ class CliAdapter(abc.ABC):
     # agy's "? for shortcuts" footer).
     prompt_ready_marker: str | None = None
 
+    def format_seed_user_message(self, text: str) -> str:
+        """Return the first prompt typed into the CLI TUI.
+
+        Adapters can wrap the kickoff in CLI-native control commands while
+        leaving later user continuations unchanged.
+        """
+        return text
+
     @abc.abstractmethod
     def seed(self, session_input: Mapping[str, Any]) -> SeedResult:
         """Materialize per-session files (MCP config, system prompt, skills)."""

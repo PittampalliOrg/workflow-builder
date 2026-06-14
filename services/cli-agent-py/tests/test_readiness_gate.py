@@ -370,6 +370,29 @@ async def test_submit_retries_enter_when_agent_stays_idle(monkeypatch):
     assert client.enters == 3
 
 
+async def test_submit_retries_enter_when_send_keys_disconnects(monkeypatch):
+    monkeypatch.setattr(ss, "CLI_SUBMIT_DELAY_SECONDS", 0.0)
+    monkeypatch.setattr(ss, "CLI_SUBMIT_RETRY_DELAY_SECONDS", 0.0)
+    monkeypatch.setattr(ss, "CLI_SUBMIT_VERIFY_SECONDS", 0.0)
+    monkeypatch.setattr(ss, "CLI_SUBMIT_RETRIES", 2)
+
+    class FlakyEnterHerdr(FakeHerdr):
+        async def pane_submit_enter(self, pane):
+            self.enters += 1
+            if self.enters == 1:
+                raise ConnectionError("herdr socket connection reset")
+
+    client = FlakyEnterHerdr(statuses=["working"])
+    sup = _supervisor(client)
+    sup._pane_ref = "p1"
+
+    ok = await sup._send_to_pane("hi", "")
+
+    assert ok is True
+    assert client.sent == ["hi"]
+    assert client.enters == 2
+
+
 async def test_submit_no_retry_once_agent_is_working(monkeypatch):
     monkeypatch.setattr(ss, "CLI_SUBMIT_DELAY_SECONDS", 0.0)
     monkeypatch.setattr(ss, "CLI_SUBMIT_VERIFY_SECONDS", 0.0)

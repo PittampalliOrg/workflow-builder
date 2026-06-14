@@ -255,7 +255,10 @@ async def _start_cli(input_data: dict[str, Any]) -> dict[str, Any]:
             # device-code OAuth) — the seed must never land in the auth prompt.
             seed_text = _clean(input_data.get("seedUserMessage"))
             if seed_text and not adapter.requires_interactive_login:
-                supervisor.arm_seed(seed_text, marker=supervisor.injection_marker)
+                supervisor.arm_seed(
+                    adapter.format_seed_user_message(seed_text),
+                    marker=supervisor.injection_marker,
+                )
             elif seed_text and adapter.requires_interactive_login:
                 logger.info(
                     "[start-cli] adapter=%s requires interactive login — "

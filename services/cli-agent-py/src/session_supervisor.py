@@ -85,6 +85,11 @@ CLI_READY_POLL_SECONDS = _env_float("CLI_READY_POLL_SECONDS", 0.5)
 CLI_SUBMIT_DELAY_SECONDS = _env_float("CLI_SUBMIT_DELAY_SECONDS", 0.6)
 CLI_SUBMIT_VERIFY_SECONDS = _env_float("CLI_SUBMIT_VERIFY_SECONDS", 1.5)
 CLI_SUBMIT_RETRIES = int(_env_float("CLI_SUBMIT_RETRIES", 2))
+CLI_SUBMIT_RETRY_DELAY_SECONDS = _env_float("CLI_SUBMIT_RETRY_DELAY_SECONDS", 0.5)
+CLI_SEED_SEND_RETRIES = int(_env_float("CLI_SEED_SEND_RETRIES", 3))
+CLI_SEED_SEND_RETRY_DELAY_SECONDS = _env_float(
+    "CLI_SEED_SEND_RETRY_DELAY_SECONDS", 1.0
+)
 HERDR_SERVER_ARGV = ["herdr", "server"]
 
 
@@ -604,12 +609,36 @@ class SessionSupervisor:
                 # confirm the submit registered (re-press if the agent is still
                 # idle — the Enter raced the paste and was dropped).
                 await asyncio.sleep(CLI_SUBMIT_DELAY_SECONDS)
-                await self._client.pane_submit_enter(pane)
+                if not await self._submit_enter_reliably(pane):
+                    return False
                 await self._confirm_submitted(pane)
                 return True
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[supervisor] pane inject failed: %s", exc)
                 return False
+
+    async def _submit_enter_reliably(self, pane: str) -> bool:
+        attempts = max(1, CLI_SUBMIT_RETRIES + 1)
+        for attempt in range(1, attempts + 1):
+            try:
+                await self._client.pane_submit_enter(pane)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                if attempt >= attempts:
+                    logger.warning(
+                        "[supervisor] submit Enter failed after %s attempt(s): %s",
+                        attempts,
+                        exc,
+                    )
+                    return False
+                logger.warning(
+                    "[supervisor] submit Enter failed: %s; retrying (%s/%s)",
+                    exc,
+                    attempt + 1,
+                    attempts,
+                )
+                await asyncio.sleep(max(0.0, CLI_SUBMIT_RETRY_DELAY_SECONDS))
+        return False
 
     async def _confirm_submitted(self, pane: str) -> None:
         """After Enter, the agent should leave ``idle`` (it starts the turn). If
@@ -681,9 +710,20 @@ class SessionSupervisor:
             return
         self._seed_injected = True  # claim before awaiting — exactly-once
         try:
-            injected = await self._gated_send(
-                text, marker, CLI_SEED_READY_TIMEOUT, what="kickoff"
-            )
+            injected = False
+            attempts = max(1, CLI_SEED_SEND_RETRIES)
+            for attempt in range(1, attempts + 1):
+                injected = await self._gated_send(
+                    text, marker, CLI_SEED_READY_TIMEOUT, what="kickoff"
+                )
+                if injected or attempt >= attempts:
+                    break
+                logger.warning(
+                    "[supervisor] kickoff inject failed; retrying (%s/%s)",
+                    attempt + 1,
+                    attempts,
+                )
+                await asyncio.sleep(max(0.0, CLI_SEED_SEND_RETRY_DELAY_SECONDS))
             logger.info("[supervisor] kickoff injected=%s", injected)
         finally:
             # Unblock any mid-session injection waiting for the kickoff to land,

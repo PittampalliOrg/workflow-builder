@@ -442,6 +442,12 @@ class AntigravityAdapter(CliAdapter):
     # actually rendered — gate on its idle-prompt footer.
     prompt_ready_marker = "? for shortcuts"
 
+    def format_seed_user_message(self, text: str) -> str:
+        clean = text.strip()
+        if not clean or clean.startswith("/goal"):
+            return clean
+        return f"/goal {clean}"
+
     @property
     def requires_interactive_login(self) -> bool:
         # agy is FILE-based (the OS-keyring path is vestigial). When a captured
