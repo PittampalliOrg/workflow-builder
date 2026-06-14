@@ -267,6 +267,22 @@ def _render_hooks_json() -> str:
     return json.dumps(payload, indent=2) + "\n"
 
 
+def _hook_name(payload: Mapping[str, Any]) -> str | None:
+    for key in ("hook_event_name", "eventName", "event", "hookName", "name"):
+        picked = clean_string(payload.get(key))
+        if picked:
+            return picked
+    return None
+
+
+def _hook_tool_name(payload: Mapping[str, Any]) -> str | None:
+    return clean_string(payload.get("tool_name") or payload.get("toolName"))
+
+
+def _is_mcp_hook_tool_name(value: str | None) -> bool:
+    return bool(value and value.startswith("mcp__"))
+
+
 def _text_from_content(value: Any) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
@@ -668,6 +684,18 @@ class CodexAdapter(CliAdapter):
                 event["sourceEventId"] = f"codex-transcript:{identity}:tool_result"
             events.append(event)
         return events
+
+    def map_hook_event(self, payload: Mapping[str, Any]) -> list[dict[str, Any]] | None:
+        name = _hook_name(payload)
+        tool_name = _hook_tool_name(payload)
+        if name in {"PostToolUse", "PostToolUseFailure"} and _is_mcp_hook_tool_name(
+            tool_name
+        ):
+            # Codex records MCP completion with richer call_id/server/duration data
+            # in the transcript as mcp_tool_call_end. Let the transcript be
+            # authoritative and keep the hook path for tool starts only.
+            return []
+        return None
 
     def transcript_turn_completion(self, entry: Mapping[str, Any]) -> dict[str, Any] | None:
         payload = _codex_payload(entry)

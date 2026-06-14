@@ -344,6 +344,46 @@ def test_codex_transcript_maps_mcp_tool_result():
     ]
 
 
+def test_codex_hook_suppresses_mcp_post_tool_result():
+    adapter = get_adapter("codex")
+
+    assert (
+        adapter.map_hook_event(
+            {
+                "hook_event_name": "PostToolUse",
+                "tool_name": "mcp__piece_microsoft_outlook__findEmail",
+                "tool_response": {"content": [{"type": "text", "text": "ok"}]},
+            }
+        )
+        == []
+    )
+    assert (
+        adapter.map_hook_event(
+            {
+                "hook_event_name": "PostToolUseFailure",
+                "tool_name": "mcp__piece_microsoft_outlook__findEmail",
+                "tool_response": "boom",
+            }
+        )
+        == []
+    )
+
+
+def test_codex_hook_uses_generic_mapping_for_non_mcp_tools():
+    adapter = get_adapter("codex")
+
+    assert (
+        adapter.map_hook_event(
+            {
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Read",
+                "tool_response": {"content": "file text"},
+            }
+        )
+        is None
+    )
+
+
 def test_codex_task_complete_raises_turn_completed(codex_home):
     adapter = get_adapter("codex")
     entry = {
