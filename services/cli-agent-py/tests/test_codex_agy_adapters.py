@@ -850,6 +850,33 @@ def test_agy_transcript_final_response_maps_message_usage_and_completion():
     }
 
 
+def test_agy_transcript_ignores_managed_run_command_denial_artifact():
+    adapter = get_adapter("antigravity")
+    entry = {
+        "source": "MODEL",
+        "type": "PLANNER_RESPONSE",
+        "status": "DONE",
+        "step_index": 22,
+        "content": (
+            "Created At: 2026-06-14T16:39:25Z\n"
+            "Completed At: 2026-06-14T16:39:25Z\n"
+            "Error invalid tool call: model output error: invalid tool call error "
+            "(invalid_args) Tool call denied with reason: Workflow-builder "
+            "executed this run_command in the managed sandbox and blocked AGY's "
+            "native terminal executor for this call. Treat the captured result "
+            "below as the Bash tool result; do not retry the same command unless "
+            "the user asks.\n"
+            "Exit code: 0\n"
+            "stdout:\n"
+            "wfb-agy-final-ok\n"
+            "\nstderr:"
+        ),
+    }
+
+    assert adapter.map_transcript_entry(entry) == []
+    assert adapter.transcript_turn_completion(entry) is None
+
+
 def test_agy_transcript_completion_waits_for_stop_guard_outputs(agy_home):
     adapter = get_adapter("antigravity")
     session = {

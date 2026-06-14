@@ -775,6 +775,19 @@ def _has_tool_calls(entry: Mapping[str, Any]) -> bool:
     return False
 
 
+def _is_managed_run_command_denial_text(text: str) -> bool:
+    # AGY records the denial reason from our PreToolUse shim as an assistant
+    # transcript row. It is internal tool plumbing, not a user-visible final
+    # answer, and treating it as final output produces duplicate turn.completed
+    # events.
+    return (
+        "invalid tool call" in text
+        and "Tool call denied with reason" in text
+        and "Workflow-builder executed this run_command in the managed sandbox" in text
+        and "agy-run-command-hook" not in text
+    )
+
+
 def _agy_final_response_text(entry: Mapping[str, Any]) -> str | None:
     if not _is_agy_assistant_entry(entry) or _has_tool_calls(entry):
         return None
@@ -784,6 +797,8 @@ def _agy_final_response_text(entry: Mapping[str, Any]) -> str | None:
     for key in ("content", "response", "message", "text", "finalResponse"):
         text = _text_from_payload(entry.get(key))
         if text:
+            if _is_managed_run_command_denial_text(text):
+                return None
             return text
     return None
 
