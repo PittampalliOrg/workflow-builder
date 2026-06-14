@@ -56,10 +56,14 @@ export function resolveModelProvider(modelSpec: string | null | undefined): stri
 	const raw = (modelSpec ?? "").trim().toLowerCase();
 	if (!raw) return null;
 	const slash = raw.indexOf("/");
-	if (slash > 0) return raw.slice(0, slash);
+	if (slash > 0) {
+		const provider = raw.slice(0, slash);
+		if (provider === "gemini" || provider === "google") return "googleai";
+		return provider;
+	}
 	if (raw.startsWith("claude-")) return "anthropic";
 	if (raw.startsWith("gpt") || raw.startsWith("o1") || raw.startsWith("o3")) return "openai";
-	if (raw.startsWith("gemini")) return "gemini";
+	if (raw.startsWith("gemini")) return "googleai";
 	return null;
 }
 

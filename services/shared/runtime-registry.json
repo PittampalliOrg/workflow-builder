@@ -35,7 +35,7 @@
         "multiProvider": true,
         "supportedProviders": [
           "anthropic", "openai", "deepseek", "nvidia", "kimi",
-          "alibaba", "together", "gemini", "foundry"
+          "alibaba", "together", "googleai", "foundry"
         ]
       }
     },
@@ -69,7 +69,7 @@
         "multiProvider": true,
         "supportedProviders": [
           "anthropic", "openai", "deepseek", "nvidia", "kimi",
-          "alibaba", "together", "gemini", "foundry"
+          "alibaba", "together", "googleai", "foundry"
         ]
       }
     },
@@ -131,7 +131,7 @@
         "requiresWarmPool": false,
         "requiresBrowserSidecars": false,
         "multiProvider": false,
-        "supportedProviders": ["gemini"]
+        "supportedProviders": ["googleai"]
       }
     },
     {
@@ -142,7 +142,7 @@
       "mainContainerName": "cli-agent-py",
       "imageEnvKey": "AGENT_RUNTIME_CLAUDE_CLI_DEFAULT_IMAGE",
       "agentMetadataFramework": "Claude Code CLI",
-      "benchmarkEligible": false,
+      "benchmarkEligible": true,
       "capabilitiesVerified": false,
       "executionClass": "interactive-cli",
       "cliAdapter": "claude-code",
@@ -184,7 +184,7 @@
       "mainContainerName": "cli-agent-py",
       "imageEnvKey": "AGENT_RUNTIME_CODEX_CLI_DEFAULT_IMAGE",
       "agentMetadataFramework": "Codex CLI",
-      "benchmarkEligible": false,
+      "benchmarkEligible": true,
       "capabilitiesVerified": false,
       "executionClass": "interactive-cli",
       "cliAdapter": "codex",
@@ -227,7 +227,7 @@
       "mainContainerName": "cli-agent-py",
       "imageEnvKey": "AGENT_RUNTIME_AGY_CLI_DEFAULT_IMAGE",
       "agentMetadataFramework": "Antigravity CLI",
-      "benchmarkEligible": false,
+      "benchmarkEligible": true,
       "capabilitiesVerified": false,
       "executionClass": "interactive-cli",
       "cliAdapter": "antigravity",
@@ -256,7 +256,7 @@
         "requiresWarmPool": false,
         "requiresBrowserSidecars": false,
         "multiProvider": false,
-        "supportedProviders": ["google"],
+        "supportedProviders": ["googleai"],
         "interactiveTerminal": true
       }
     },

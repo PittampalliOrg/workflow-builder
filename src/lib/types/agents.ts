@@ -160,6 +160,14 @@ export type AgentConfig = {
 	maxTurns?: number;
 	timeoutMinutes?: number;
 	cwd?: string;
+	permissionMode?:
+		| "default"
+		| "acceptEdits"
+		| "plan"
+		| "bypassPermissions"
+		| "bypass"
+		| "dontAsk"
+		| "auto";
 
 	builtinTools: string[];
 	tools?: string[];

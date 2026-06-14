@@ -202,7 +202,14 @@ def test_registry_ids_match_legacy_target_set():
 
 def test_benchmark_runtimes():
     ids = {d.id for d in runtime_registry.registry.list_benchmark_runtimes()}
-    assert ids == {"dapr-agent-py", "adk-agent-py", "claude-agent-py"}
+    assert ids == {
+        "dapr-agent-py",
+        "adk-agent-py",
+        "claude-agent-py",
+        "claude-code-cli",
+        "codex-cli",
+        "agy-cli",
+    }
 
 
 def test_descriptor_capabilities_present_and_typed():

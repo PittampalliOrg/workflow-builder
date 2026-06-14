@@ -666,6 +666,35 @@ describe("SWE-bench workflow spec", () => {
 		);
 	});
 
+	it("keeps interactive CLI SWE-bench patch capture on the extracted workspace diff until conformance is verified", () => {
+		const spec = buildSwebenchInstanceWorkflowSpec({
+			runId: "run_1",
+			suiteSlug: "SWE-bench_Lite",
+			datasetName: "princeton-nlp/SWE-bench_Lite",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "abc123",
+			problemStatement: "Fix it",
+			hintsText: null,
+			agentId: "agent_cli",
+			agentVersion: 1,
+			timeoutSeconds: 7200,
+			maxTurns: null,
+			inferenceEnvironment: validatedInferenceEnvironment(),
+			agentRuntime: "codex-cli",
+		});
+
+		const steps = spec.do as Array<Record<string, { with: Record<string, unknown> }>>;
+		const solve = steps[2].solve;
+		expect(solve.with.agentRuntime).toBe("codex-cli");
+		expect((spec.output as { as: Record<string, unknown> }).as.modelPatch).toBe(
+			"${ .extract_patch.modelPatch }",
+		);
+		expect((spec.output as { as: Record<string, unknown> }).as.sandboxName).toBe(
+			"${ .workspace_profile.sandboxName }",
+		);
+	});
+
 	it("only extracts authoritative SWE-bench model patches", () => {
 		const patch = "diff --git a/sympy/core/add.py b/sympy/core/add.py\n";
 		expect(extractModelPatch({ modelPatch: patch })).toBe(patch);

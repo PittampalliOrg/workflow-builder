@@ -444,6 +444,14 @@ def test_agy_pane_env_strips_all_google_keys_and_pins_home(agy_home):
 
 def test_agy_model_normalization():
     assert normalize_agy_model("gemini/gemini-2.5-pro") == "gemini-2.5-pro"
+    assert (
+        normalize_agy_model("googleai/gemini-3.1-pro-preview")
+        == "gemini-3.1-pro-preview"
+    )
+    assert (
+        normalize_agy_model("google/gemini-3.1-pro-preview")
+        == "gemini-3.1-pro-preview"
+    )
     assert normalize_agy_model("gemini-2.0-flash") == "gemini-2.0-flash"
     assert normalize_agy_model("anthropic/claude-opus-4-8") is None  # default empty
 

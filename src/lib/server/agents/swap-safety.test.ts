@@ -25,11 +25,13 @@ describe("resolveModelProvider", () => {
 		expect(resolveModelProvider("kimi/kimi-k2.6")).toBe("kimi");
 		expect(resolveModelProvider("deepseek/deepseek-v4-pro")).toBe("deepseek");
 		expect(resolveModelProvider("foundry/DeepSeek-V4-Flash")).toBe("foundry");
+		expect(resolveModelProvider("gemini/gemini-2.5-pro")).toBe("googleai");
+		expect(resolveModelProvider("google/gemini-3.1-pro-preview")).toBe("googleai");
 	});
 	it("handles bare model names", () => {
 		expect(resolveModelProvider("claude-sonnet-4-6")).toBe("anthropic");
 		expect(resolveModelProvider("gpt5")).toBe("openai");
-		expect(resolveModelProvider("gemini-2.5-pro")).toBe("gemini");
+		expect(resolveModelProvider("gemini-2.5-pro")).toBe("googleai");
 	});
 	it("returns null for empty/unknown", () => {
 		expect(resolveModelProvider(null)).toBeNull();

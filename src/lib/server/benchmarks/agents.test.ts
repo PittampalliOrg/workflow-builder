@@ -23,8 +23,12 @@ describe("benchmark agent validation", () => {
 			"dapr-agent-py",
 			"adk-agent-py",
 			"claude-agent-py",
+			"claude-code-cli",
+			"codex-cli",
+			"agy-cli",
 		]);
 		expect(isBenchmarkAgentRuntime("claude-agent-py")).toBe(true);
+		expect(isBenchmarkAgentRuntime("codex-cli")).toBe(true);
 		expect(isBenchmarkAgentRuntime("browser-use-agent")).toBe(false);
 	});
 
@@ -57,6 +61,32 @@ describe("benchmark agent validation", () => {
 		expect(valid.runtimeAppId).toBe("agent-runtime-solver");
 		expect(valid.effectiveProvider).toBe("anthropic");
 		expect(valid.effectiveLlmComponent).toBe("llm-anthropic-sonnet");
+	});
+
+	it("accepts provider-matched interactive CLI runtimes for SWE-bench", () => {
+		const claude = assertDaprAgentPyBenchmarkAgent({
+			...baseAgent,
+			runtime: "claude-code-cli",
+			modelSpec: "anthropic/claude-opus-4-8",
+		});
+		expect(claude.runtime).toBe("claude-code-cli");
+		expect(claude.effectiveProvider).toBe("anthropic");
+
+		const codex = assertDaprAgentPyBenchmarkAgent({
+			...baseAgent,
+			runtime: "codex-cli",
+			modelSpec: "openai/gpt-5.5",
+		});
+		expect(codex.runtime).toBe("codex-cli");
+		expect(codex.effectiveProvider).toBe("openai");
+
+		const agy = assertDaprAgentPyBenchmarkAgent({
+			...baseAgent,
+			runtime: "agy-cli",
+			modelSpec: "googleai/gemini-3.1-pro-preview",
+		});
+		expect(agy.runtime).toBe("agy-cli");
+		expect(agy.effectiveProvider).toBe("googleai");
 	});
 
 	it("accepts the tool-capable Foundry DeepSeek deployment", () => {
@@ -141,6 +171,23 @@ describe("benchmark agent validation", () => {
 				modelSpec: "deepseek/default",
 			}),
 		).toThrow(/tool-capable/);
+	});
+
+	it("rejects model providers that do not match single-provider runtimes", () => {
+		expect(() =>
+			assertDaprAgentPyBenchmarkAgent({
+				...baseAgent,
+				runtime: "codex-cli",
+				modelSpec: "anthropic/claude-opus-4-8",
+			}),
+		).toThrow(/not supported by runtime codex-cli/);
+		expect(() =>
+			assertDaprAgentPyBenchmarkAgent({
+				...baseAgent,
+				runtime: "agy-cli",
+				modelSpec: "openai/gpt-5.5",
+			}),
+		).toThrow(/not supported by runtime agy-cli/);
 	});
 
 	it("derives the per-agent runtime app id for legacy registered rows", () => {

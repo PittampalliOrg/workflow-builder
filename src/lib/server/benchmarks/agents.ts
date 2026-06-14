@@ -6,6 +6,7 @@ import {
 	isBenchmarkAgentRuntime,
 	type BenchmarkAgentRuntime,
 } from "$lib/benchmarks/agent-runtimes";
+import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 
 export type BenchmarkAgentCandidate = {
 	id: string;
@@ -63,6 +64,16 @@ const TOOL_CAPABLE_BENCHMARK_PROVIDERS = new Set([
 	"googleai",
 ]);
 
+export function benchmarkRuntimeSupportsProvider(
+	runtime: string | null | undefined,
+	provider: string | null | undefined,
+): boolean {
+	if (!runtime || !provider) return false;
+	const descriptor = getRuntimeDescriptor(runtime);
+	if (!descriptor) return false;
+	return descriptor.capabilities.supportedProviders.includes(provider);
+}
+
 export function assertBenchmarkModelMatchesRuntime(params: {
 	agentModelSpec?: string | null;
 	requestedModelNameOrPath?: string | null;
@@ -101,13 +112,14 @@ export function assertBenchmarkModelMatchesRuntime(params: {
 }
 
 /**
- * SWE-bench V1 intentionally runs inference only through published durable
- * coding agents using durable/run and an agent-runtime Dapr app id
- * (either a dedicated agent-runtime-<slug> pod or a shared runtime pool).
+ * SWE-bench V1 intentionally runs inference only through published durable/run
+ * coding agents. Static/pool runtimes dispatch to an agent-runtime Dapr app id;
+ * interactive-cli runtimes use the same published agent metadata but are
+ * replaced by per-session agent workflow hosts during ensure-for-workflow.
  * This guard is pure so the API and unit tests can share exactly the same
  * rejection behavior.
  */
-export function assertDaprAgentPyBenchmarkAgent(
+export function assertBenchmarkAgent(
 	agent: BenchmarkAgentCandidate | null | undefined,
 	options: { requestedModelNameOrPath?: string | null } = {},
 ): ValidBenchmarkAgent {
@@ -137,6 +149,11 @@ export function assertDaprAgentPyBenchmarkAgent(
 		agentModelSpec: agent.modelSpec,
 		requestedModelNameOrPath: options.requestedModelNameOrPath,
 	});
+	if (!benchmarkRuntimeSupportsProvider(agent.runtime, model.provider)) {
+		validationError(
+			`SWE-bench model provider ${model.provider} is not supported by runtime ${agent.runtime}`,
+		);
+	}
 	return {
 		...agent,
 		runtimeAppId,
@@ -145,3 +162,5 @@ export function assertDaprAgentPyBenchmarkAgent(
 		effectiveProvider: model.provider,
 	} as ValidBenchmarkAgent;
 }
+
+export const assertDaprAgentPyBenchmarkAgent = assertBenchmarkAgent;

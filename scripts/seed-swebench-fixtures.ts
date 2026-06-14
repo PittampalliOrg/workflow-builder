@@ -217,6 +217,9 @@ const REQUIRED_AGENT_MODEL_SPECS = {
   "alibaba-qwen3-coder-swebench": "alibaba/qwen3-coder-plus",
   "claude-code-agent-sdk-smoke": "anthropic/claude-opus-4-8",
   "claude-code-swebench-smoke": "anthropic/claude-opus-4-8",
+  "claude-code-cli-swebench-smoke": "anthropic/claude-opus-4-8",
+  "codex-cli-swebench-smoke": "openai/gpt-5.5",
+  "agy-cli-swebench-smoke": "googleai/gemini-3.1-pro-preview",
   "deepseek-v4-pro-swebench": "deepseek/deepseek-v4-pro",
   "kimi-k26-swebench-canary": "kimi/kimi-k2.6",
 } as const;
@@ -226,6 +229,9 @@ const CLAUDE_AGENT_RUNTIME = "claude-agent-py";
 const CLAUDE_AGENT_RUNTIME_APP_ID = "agent-runtime-pool-coding";
 const CLAUDE_AGENT_ENVIRONMENT_ID = "env_builtin_dapr_agent";
 const CLAUDE_AGENT_MODEL_SPEC = "anthropic/claude-opus-4-8";
+const CLI_AGENT_SEED_TIMESTAMP = "2026-06-14T03:12:00.000000";
+const CLI_AGENT_RUNTIME_APP_ID = "agent-runtime-pool-coding";
+const CLI_AGENT_ENVIRONMENT_ID = "env_builtin_dapr_agent";
 
 function claudeAgentConfig(overrides: {
   systemPrompt: string;
@@ -245,6 +251,35 @@ function claudeAgentConfig(overrides: {
     runtimeClass: "coding",
     systemPrompt: overrides.systemPrompt,
     timeoutMinutes: 60,
+    runtimeIsolation: "shared",
+    mcpConnectionMode: "explicit",
+    runtimeOverridePolicy: {
+      allowToolNarrowing: true,
+      allowSkillAdditions: false,
+      allowSkillNarrowing: true,
+      allowServerAdditions: false,
+      allowCredentialBinding: true,
+    },
+  };
+}
+
+function cliSwebenchAgentConfig(params: {
+  runtime: "claude-code-cli" | "codex-cli" | "agy-cli";
+  modelSpec: string;
+}): AgentConfig {
+  return {
+    memory: { backend: "dapr_state" },
+    skills: [],
+    runtime: params.runtime,
+    maxTurns: 50,
+    modelSpec: params.modelSpec,
+    mcpServers: [],
+    runtimePool: undefined,
+    builtinTools: [],
+    runtimeClass: "coding",
+    systemPrompt: SWE_BENCH_SOLVER_SYSTEM_PROMPT,
+    timeoutMinutes: 60,
+    permissionMode: "bypassPermissions",
     runtimeIsolation: "shared",
     mcpConnectionMode: "explicit",
     runtimeOverridePolicy: {
@@ -315,6 +350,62 @@ function claudeAgentVersionRow(params: {
   };
 }
 
+function cliSwebenchAgentRow(params: {
+  id: string;
+  name: string;
+  slug: string;
+  runtime: "claude-code-cli" | "codex-cli" | "agy-cli";
+  tags: string[];
+  description: string;
+  currentVersionId: string;
+}): Row {
+  return {
+    id: params.id,
+    name: params.name,
+    slug: params.slug,
+    tags: params.tags,
+    avatar: null,
+    runtime: params.runtime,
+    created_at: CLI_AGENT_SEED_TIMESTAMP,
+    created_by: "dev-admin-user",
+    project_id: "dev-default-project",
+    updated_at: CLI_AGENT_SEED_TIMESTAMP,
+    description: params.description,
+    is_archived: false,
+    environment_id: CLI_AGENT_ENVIRONMENT_ID,
+    registry_error: null,
+    runtime_app_id: CLI_AGENT_RUNTIME_APP_ID,
+    runtime_status: "ready",
+    registry_status: "registered",
+    default_vault_ids: [],
+    current_version_id: params.currentVersionId,
+    registry_synced_at: `${CLI_AGENT_SEED_TIMESTAMP}+00:00`,
+    environment_version: 1,
+    source_template_slug: params.slug,
+    source_template_version: 1,
+    runtime_status_synced_at: `${CLI_AGENT_SEED_TIMESTAMP}+00:00`,
+  };
+}
+
+function cliSwebenchAgentVersionRow(params: {
+  id: string;
+  agentId: string;
+  config: AgentConfig;
+  changelog: string;
+}): Row {
+  return {
+    id: params.id,
+    config: params.config,
+    version: 1,
+    agent_id: params.agentId,
+    changelog: params.changelog,
+    created_at: CLI_AGENT_SEED_TIMESTAMP,
+    config_hash: hashAgentConfig(params.config),
+    published_at: CLI_AGENT_SEED_TIMESTAMP,
+    published_by: "dev-admin-user",
+  };
+}
+
 function appendMissingRows(rows: Row[], additions: Row[]): Row[] {
   const existing = new Set(rows.map((row) => String(row.id)));
   const missing = additions.filter((row) => !existing.has(String(row.id)));
@@ -373,6 +464,73 @@ function withClaudeAgentFixtures(fixtures: Fixtures): Fixtures {
   };
 }
 
+function withCliSwebenchAgentFixtures(fixtures: Fixtures): Fixtures {
+  const claudeCliConfig = cliSwebenchAgentConfig({
+    runtime: "claude-code-cli",
+    modelSpec: "anthropic/claude-opus-4-8",
+  });
+  const codexCliConfig = cliSwebenchAgentConfig({
+    runtime: "codex-cli",
+    modelSpec: "openai/gpt-5.5",
+  });
+  const agyCliConfig = cliSwebenchAgentConfig({
+    runtime: "agy-cli",
+    modelSpec: "googleai/gemini-3.1-pro-preview",
+  });
+  return {
+    ...fixtures,
+    agents: appendMissingRows(fixtures.agents, [
+      cliSwebenchAgentRow({
+        id: "agnt_claude_code_cli_swebench_smoke",
+        name: "Claude Code CLI SWE-bench smoke",
+        slug: "claude-code-cli-swebench-smoke",
+        runtime: "claude-code-cli",
+        tags: ["claude-code-cli", "interactive-cli", "swebench", "smoke"],
+        description: "Claude Code CLI runtime smoke agent for SWE-bench canaries.",
+        currentVersionId: "av_claude_code_cli_swebench_smoke_v1",
+      }),
+      cliSwebenchAgentRow({
+        id: "agnt_codex_cli_swebench_smoke",
+        name: "Codex CLI SWE-bench smoke",
+        slug: "codex-cli-swebench-smoke",
+        runtime: "codex-cli",
+        tags: ["codex-cli", "interactive-cli", "swebench", "smoke"],
+        description: "Codex CLI runtime smoke agent for SWE-bench canaries.",
+        currentVersionId: "av_codex_cli_swebench_smoke_v1",
+      }),
+      cliSwebenchAgentRow({
+        id: "agnt_agy_cli_swebench_smoke",
+        name: "AGY CLI SWE-bench smoke",
+        slug: "agy-cli-swebench-smoke",
+        runtime: "agy-cli",
+        tags: ["agy-cli", "interactive-cli", "swebench", "smoke"],
+        description: "Antigravity CLI runtime smoke agent for SWE-bench canaries.",
+        currentVersionId: "av_agy_cli_swebench_smoke_v1",
+      }),
+    ]),
+    agent_versions: appendMissingRows(fixtures.agent_versions, [
+      cliSwebenchAgentVersionRow({
+        id: "av_claude_code_cli_swebench_smoke_v1",
+        agentId: "agnt_claude_code_cli_swebench_smoke",
+        config: claudeCliConfig,
+        changelog: "Claude Code CLI SWE-bench smoke runtime setup",
+      }),
+      cliSwebenchAgentVersionRow({
+        id: "av_codex_cli_swebench_smoke_v1",
+        agentId: "agnt_codex_cli_swebench_smoke",
+        config: codexCliConfig,
+        changelog: "Codex CLI SWE-bench smoke runtime setup",
+      }),
+      cliSwebenchAgentVersionRow({
+        id: "av_agy_cli_swebench_smoke_v1",
+        agentId: "agnt_agy_cli_swebench_smoke",
+        config: agyCliConfig,
+        changelog: "AGY CLI SWE-bench smoke runtime setup",
+      }),
+    ]),
+  };
+}
+
 function loadFixtures(): Fixtures {
   const raw = JSON.parse(
     readFileSync(FIXTURE_PATH, "utf-8"),
@@ -392,7 +550,7 @@ function loadFixtures(): Fixtures {
       throw new Error(`SWE-bench fixture is missing array "${key}"`);
     }
   }
-  return withClaudeAgentFixtures(raw as Fixtures);
+  return withCliSwebenchAgentFixtures(withClaudeAgentFixtures(raw as Fixtures));
 }
 
 async function resolveTargetUser(

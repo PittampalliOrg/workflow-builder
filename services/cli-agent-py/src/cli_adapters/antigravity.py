@@ -103,8 +103,10 @@ def normalize_agy_model(model_spec: Any) -> str | None:
     """Gemini/agy models only. A non-Gemini modelSpec is ignored so agy picks
     its own default (the model list is provider-internal)."""
     raw = clean_string(model_spec)
-    if raw and raw.startswith("gemini/"):
-        return raw.split("/", 1)[1]
+    if raw and "/" in raw:
+        provider, model = raw.split("/", 1)
+        if provider in {"gemini", "google", "googleai"} and model.startswith("gemini"):
+            return model
     if raw and raw.lower().startswith("gemini"):
         return raw
     return clean_string(DEFAULT_MODEL)

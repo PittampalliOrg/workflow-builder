@@ -21,6 +21,7 @@ import { benchmarkExecutionBackend } from "$lib/server/benchmarks/execution-plan
 import { estimateBenchmarkRuntimeCapacity } from "$lib/server/benchmarks/runtime-capacity";
 import { agentModelOptionFor } from "$lib/agents/model-options";
 import { BENCHMARK_AGENT_RUNTIMES } from "$lib/benchmarks/agent-runtimes";
+import { benchmarkRuntimeSupportsProvider } from "$lib/server/benchmarks/agents";
 import type { AgentConfig } from "$lib/types/agents";
 import type {
 	BenchmarkInstanceRow,
@@ -346,7 +347,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 			return Boolean(
 				option &&
 					option.sweBenchCapable !== false &&
-					TOOL_CAPABLE_BENCHMARK_PROVIDERS.has(option.provider),
+					TOOL_CAPABLE_BENCHMARK_PROVIDERS.has(option.provider) &&
+					benchmarkRuntimeSupportsProvider(row.runtime, option.provider),
 			);
 		})
 		.map((row) => {
