@@ -1329,20 +1329,34 @@ def _build_native_run_prompt(
     require_file_changes: bool,
     cwd: str | None = None,
     agent_graph: Any = None,
+    agent_runtime: str | None = None,
 ) -> str:
     normalized_cwd = cwd.strip() if isinstance(cwd, str) and cwd.strip() else None
+    normalized_agent_runtime = (
+        agent_runtime.strip()
+        if isinstance(agent_runtime, str) and agent_runtime.strip()
+        else None
+    )
     normalized_stop_condition = (
         stop_condition.strip()
         if isinstance(stop_condition, str) and stop_condition.strip()
         else None
     )
     graph_context = _build_agent_graph_prompt_context(agent_graph)
-    cwd_context = (
-        f"Repository root: {normalized_cwd}\n"
-        "Always operate relative to this repository root for file and directory paths.\n\n"
-        if normalized_cwd
-        else ""
-    )
+    if normalized_cwd and normalized_agent_runtime == "agy-cli":
+        cwd_context = (
+            f"Repository root: {normalized_cwd}\n"
+            "Antigravity file and directory tools require absolute paths. "
+            f"Use absolute paths under {normalized_cwd} for every file or directory tool call; "
+            "do not pass '.' or other relative paths to file tools.\n\n"
+        )
+    elif normalized_cwd:
+        cwd_context = (
+            f"Repository root: {normalized_cwd}\n"
+            "Always operate relative to this repository root for file and directory paths.\n\n"
+        )
+    else:
+        cwd_context = ""
     if not normalized_stop_condition:
         return f"{cwd_context}{graph_context}{base_prompt}"
 
@@ -1468,6 +1482,7 @@ def _run_native_durable_agent_child_workflow(
         require_file_changes,
         cwd,
         agent_graph,
+        agent_runtime,
     )
     workspace_ref = (
         flattened_args.get("workspaceRef").strip()

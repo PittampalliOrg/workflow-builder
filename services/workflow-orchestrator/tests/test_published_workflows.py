@@ -1419,6 +1419,38 @@ def test_resolve_native_agent_args_renders_trigger_templates_before_child_workfl
     assert resolved["body"]["input"]["repo"] == "repo-test-1"
 
 
+def test_native_run_prompt_keeps_relative_root_guidance_by_default():
+    prompt = SW_WORKFLOW._build_native_run_prompt(
+        "Create a validation marker",
+        None,
+        False,
+        "/sandbox/repo",
+        None,
+        "codex-cli",
+    )
+
+    assert "Repository root: /sandbox/repo" in prompt
+    assert "Always operate relative to this repository root" in prompt
+    assert "Antigravity file and directory tools require absolute paths" not in prompt
+
+
+def test_native_run_prompt_uses_absolute_path_guidance_for_agy():
+    prompt = SW_WORKFLOW._build_native_run_prompt(
+        "Create a validation marker",
+        None,
+        False,
+        "/sandbox/repo",
+        None,
+        "agy-cli",
+    )
+
+    assert "Repository root: /sandbox/repo" in prompt
+    assert "Antigravity file and directory tools require absolute paths" in prompt
+    assert "Use absolute paths under /sandbox/repo" in prompt
+    assert "do not pass '.' or other relative paths to file tools" in prompt
+    assert "Always operate relative to this repository root" not in prompt
+
+
 def test_durable_run_routes_through_session_bridge():
     workflow = types.SimpleNamespace(
         use=None,
