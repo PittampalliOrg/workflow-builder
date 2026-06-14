@@ -749,6 +749,21 @@ def session_workflow(
                             f"{ctx.instance_id}:turn:{turn_count}:completed"
                         ),
                     )
+                    if not auto_terminate:
+                        publish_session_event(
+                            session_id,
+                            "session.status_idle",
+                            {
+                                "stop_reason": {"type": "end_turn"},
+                                "turn": turn_count,
+                                "turnId": f"{ctx.instance_id}:turn:{turn_count}",
+                                "workflowInstanceId": ctx.instance_id,
+                                "agentRuntime": agent_runtime,
+                            },
+                            source_event_id=(
+                                f"{ctx.instance_id}:turn:{turn_count}:idle"
+                            ),
+                        )
                 if auto_terminate:
                     status, reason = "completed", "turn_completed"
                     break

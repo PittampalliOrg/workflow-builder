@@ -186,6 +186,15 @@ class CliAdapter(abc.ABC):
         workflow-mode ``autoTerminateAfterEndTurn`` runs."""
         return event_name == "Stop"
 
+    def stop_hook_completes_turn(self) -> bool:
+        """Whether a generic Stop hook should synthesize ``turn.completed``.
+
+        Some CLIs publish an authoritative native transcript completion before
+        their Stop hook runs. For those adapters, letting Stop synthesize a
+        second lifecycle event duplicates the platform turn.
+        """
+        return True
+
     def extract_completion_text(self, payload: Mapping[str, Any]) -> str | None:
         """Best-effort final assistant text from a completion-hook payload or
         CLI-owned transcript files. Claude gets this from its transcript tailer;

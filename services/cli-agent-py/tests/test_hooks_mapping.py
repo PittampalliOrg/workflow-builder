@@ -227,6 +227,39 @@ def test_stop_flushes_tailer_then_raises_turn_completed():
     ]
 
 
+def test_stop_hook_can_be_transcript_only_without_duplicate_completion():
+    class TranscriptOnlyAdapter:
+        def stop_hook_completes_turn(self):
+            return False
+
+        def is_turn_completion_hook(self, event_name):
+            return False
+
+        def extract_completion_text(self, payload):
+            return "should not raise"
+
+        def map_hook_event(self, payload):
+            return []
+
+    published: list[tuple[str | None, str, dict]] = []
+    raised: list[tuple[str, list[dict]]] = []
+    manager = FakeTailerManager()
+    manager.tailer.turn_completion_raised = True
+    processor = HookProcessor(
+        publish=lambda sid, etype, data, **kw: published.append((sid, etype, data)),
+        raise_lifecycle=lambda iid, events: raised.append((iid, events)),
+        supervisor_getter=lambda: FakeSupervisor(),
+        tailer_manager=manager,
+        adapter=TranscriptOnlyAdapter(),
+    )
+
+    response = asyncio.run(processor.process(_hook("Stop")))
+
+    assert response == {}
+    assert manager.tailer.flushes == 1
+    assert raised == []
+
+
 def test_stop_waits_for_delayed_transcript_before_turn_completed():
     published: list[tuple[str | None, str, dict]] = []
     raised: list[tuple[str, list[dict]]] = []

@@ -153,6 +153,12 @@ def test_happy_path_turn_then_clean_exit(monkeypatch):
     assert turn_completed[2]["turn"] == 1
     assert turn_completed[2]["agentRuntime"] == "claude-code-cli"
     assert turn_completed[2]["output_preview"] == "the answer"
+    status_idle = next(
+        event for event in published if event[1] == "session.status_idle"
+    )
+    assert status_idle[2]["turn"] == 1
+    assert status_idle[2]["agentRuntime"] == "claude-code-cli"
+    assert status_idle[2]["stop_reason"] == {"type": "end_turn"}
     assert published[-1][1] == "session.status_terminated"
     assert published[-1][2]["status"] == "completed"
     assert published[-1][2]["stop_reason"] == {"type": "end_turn"}

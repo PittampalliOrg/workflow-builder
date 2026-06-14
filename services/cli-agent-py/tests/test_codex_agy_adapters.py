@@ -316,6 +316,10 @@ def test_codex_task_complete_raises_turn_completed(codex_home):
     assert adapter.extract_completion_text({}) == "done"
 
 
+def test_codex_stop_hook_does_not_complete_turn():
+    assert get_adapter("codex").stop_hook_completes_turn() is False
+
+
 # --- antigravity -------------------------------------------------------------
 
 

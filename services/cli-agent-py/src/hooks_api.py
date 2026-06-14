@@ -343,6 +343,12 @@ class HookProcessor:
         adapter_turn_done = bool(
             self._adapter is not None and name and self._adapter.is_turn_completion_hook(name)
         )
+        stop_hook_completes = True
+        if self._adapter is not None and name == "Stop":
+            stop_hook_completes = bool(self._adapter.stop_hook_completes_turn())
+        should_complete_from_hook = adapter_turn_done or (
+            name == "Stop" and stop_hook_completes
+        )
         if name == "Stop" or adapter_turn_done:
             response = self._hook_response(name, payload, session)
             if response.get("decision") == "continue":
@@ -387,7 +393,7 @@ class HookProcessor:
             )
             if completion_key is not None and completion_key in self._completion_keys_raised:
                 already_completed = True
-            if instance_id and not already_completed:
+            if instance_id and should_complete_from_hook and not already_completed:
                 event: dict[str, Any] = {"type": "turn.completed"}
                 if last_text:
                     event["lastAssistantText"] = last_text

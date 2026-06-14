@@ -593,6 +593,12 @@ class CodexAdapter(CliAdapter):
             event["lastAssistantText"] = text
         return event
 
+    def stop_hook_completes_turn(self) -> bool:
+        # Codex emits an authoritative `task_complete` rollout entry before the
+        # Stop hook. Completing from both sources creates duplicate platform
+        # turns and can leave direct sessions stuck in running.
+        return False
+
     # -- env -------------------------------------------------------------------
 
     def pane_env(
