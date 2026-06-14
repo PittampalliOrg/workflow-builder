@@ -428,10 +428,12 @@ def _latest_codex_assistant_text() -> str | None:
 
 class CodexAdapter(CliAdapter):
     name = "codex"
-    # codex mirrors events from rollout files (no UserPromptSubmit hook), and its
-    # ratatui composer eats a leading zero-width run + the first token — so the
-    # INJECTION_MARKER must NOT be prefixed (it dropped the kickoff's first word).
+    # Codex command hooks report UserPromptSubmit, but its ratatui composer eats
+    # a leading zero-width run + the first token, so INJECTION_MARKER must NOT be
+    # prefixed. The hook confirms turn-start for injected prompts while skipping
+    # duplicate user.message rows by digest.
     uses_injection_marker = False
+    hook_reports_prompt_submit = True
     # Content-gate the kickoff on the rendered composer: herdr's native codex
     # detector races and can report `idle` while codex is still on its
     # pre-composer welcome/banner screen, so an agent_status-gated seed strands

@@ -112,6 +112,14 @@ class CliAdapter(abc.ABC):
     # kickoff. Those adapters set this False so the marker is never sent.
     uses_injection_marker: bool = True
 
+    # When True, the CLI's UserPromptSubmit hook is the authoritative submit
+    # edge for injected prompts. The supervisor still verifies that Enter left
+    # the composer, but it does not publish session.turn_started itself; the hook
+    # records the turn once it confirms the CLI accepted the prompt. This is
+    # needed for CLIs whose composers cannot safely receive INJECTION_MARKER but
+    # whose hook payloads still report prompt submission (Codex).
+    hook_reports_prompt_submit: bool = False
+
     # When set, the kickoff/injection readiness gate waits until this substring
     # appears in the pane's VISIBLE screen (the composer is actually rendered),
     # instead of trusting herdr's `agent_status`. Needed for TUIs herdr only

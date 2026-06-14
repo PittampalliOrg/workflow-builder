@@ -65,6 +65,11 @@ def _prompt_digest(prompt: str) -> str:
     return hashlib.sha256(prompt.encode("utf-8", errors="replace")).hexdigest()
 
 
+def _prompt_digest_variants(prompt: str) -> set[str]:
+    variants = {prompt, prompt.strip(), prompt.replace("\r\n", "\n").strip()}
+    return {_prompt_digest(value) for value in variants if value}
+
+
 HERDR_DISABLED = _env_bool("HERDR_DISABLE", False)
 CLI_IDLE_TTL_SECONDS = _env_float("CLI_IDLE_TTL_SECONDS", 3600.0)
 CLI_STATE_DEBOUNCE_SECONDS = _env_float("CLI_STATE_DEBOUNCE_SECONDS", 2.0)
@@ -153,6 +158,7 @@ class SessionSupervisor:
         # readiness gate waits for this substring on the VISIBLE screen instead of
         # herdr's (screen-detected, unreliable) agent_status.
         self.prompt_ready_marker: str | None = None
+        self.hook_reports_prompt_submit = False
         self._cli_session_id: str | None = None
 
         # Semantic-state tracking.
@@ -292,10 +298,10 @@ class SessionSupervisor:
         }
 
     def consume_injected_prompt(self, prompt: str) -> bool:
-        digest = _prompt_digest(prompt)
-        if digest not in self._injected_prompt_hashes:
+        digests = _prompt_digest_variants(prompt)
+        if not digests.intersection(self._injected_prompt_hashes):
             return False
-        self._injected_prompt_hashes.discard(digest)
+        self._injected_prompt_hashes.difference_update(digests)
         return True
 
     def get_pane_ref(self) -> str | None:
@@ -641,8 +647,8 @@ class SessionSupervisor:
         # Hold the lock across the text+Enter pair so two senders (seed vs a
         # concurrent injection) never interleave keystrokes on the pane.
         async with self._pane_write_lock:
-            prompt_digest = _prompt_digest(text)
-            self._injected_prompt_hashes.add(prompt_digest)
+            prompt_digests = _prompt_digest_variants(text)
+            self._injected_prompt_hashes.update(prompt_digests)
             submitted = False
             try:
                 await self._client.pane_send_text(pane, f"{marker}{text}")
@@ -659,7 +665,8 @@ class SessionSupervisor:
                         CLI_SUBMIT_RETRIES,
                     )
                     return False
-                self.note_turn_started(source)
+                if not self.hook_reports_prompt_submit:
+                    self.note_turn_started(source)
                 submitted = True
                 return True
             except Exception as exc:  # noqa: BLE001
@@ -667,7 +674,7 @@ class SessionSupervisor:
                 return False
             finally:
                 if not submitted:
-                    self._injected_prompt_hashes.discard(prompt_digest)
+                    self._injected_prompt_hashes.difference_update(prompt_digests)
 
     async def _submit_enter_reliably(self, pane: str) -> bool:
         attempts = max(1, CLI_SUBMIT_RETRIES + 1)

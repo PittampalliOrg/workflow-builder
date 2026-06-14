@@ -321,6 +321,36 @@ def test_injected_user_prompt_submit_is_not_double_published():
     assert supervisor.injected_prompts == set()
 
 
+def test_hook_owned_injected_user_prompt_submit_records_turn_without_duplicate_message():
+    class HookOwnedAdapter:
+        hook_reports_prompt_submit = True
+
+        def is_turn_completion_hook(self, event_name):
+            return False
+
+        def map_hook_event(self, payload):
+            return []
+
+    published: list[tuple[str | None, str, dict]] = []
+    raised: list[tuple[str, list[dict]]] = []
+    supervisor = FakeSupervisor()
+    supervisor.injected_prompts.add("seed prompt")
+    processor = HookProcessor(
+        publish=lambda sid, etype, data, **kw: published.append((sid, etype, data)),
+        raise_lifecycle=lambda iid, events: raised.append((iid, events)),
+        supervisor_getter=lambda: supervisor,
+        tailer_manager=FakeTailerManager(),
+        adapter=HookOwnedAdapter(),
+    )
+
+    asyncio.run(processor.process(_hook("UserPromptSubmit", prompt=" seed prompt\n")))
+
+    assert published == []
+    assert raised == []
+    assert supervisor.turn_sources == ["hook:UserPromptSubmit"]
+    assert supervisor.injected_prompts == set()
+
+
 def test_post_tool_use_flattens_bash_response_object():
     """Bash tool_response is {stdout, stderr, ...} — `output` must be a STRING
     (the tool views render it verbatim; objects show '(no output)' — observed

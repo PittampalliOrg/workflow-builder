@@ -205,6 +205,9 @@ def test_injection_marker_gating_per_adapter():
     assert get_adapter("claude-code").uses_injection_marker is True
     assert get_adapter("codex").uses_injection_marker is False
     assert get_adapter("antigravity").uses_injection_marker is False
+    assert get_adapter("claude-code").hook_reports_prompt_submit is False
+    assert get_adapter("codex").hook_reports_prompt_submit is True
+    assert get_adapter("antigravity").hook_reports_prompt_submit is False
 
 
 def test_prompt_ready_marker_per_adapter():

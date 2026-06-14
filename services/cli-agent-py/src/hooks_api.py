@@ -8,7 +8,8 @@ reason)}``. The endpoint responds ``{}`` 200 immediately and processes
 asynchronously.
 
 Mapping (defaults; the CLI adapter's ``map_hook_event`` can override):
-  UserPromptSubmit   → user.message {content}      (skipped for injected prompts)
+  UserPromptSubmit   → user.message {content}      (skipped for injected prompts;
+                       hook-owned adapters still record turn_started)
   PreToolUse         → agent.tool_use {tool_name, tool_input (+ name/input aliases)}
   PostToolUse        → agent.tool_result {tool_name, ok: true, output ≤16KB}
   PostToolUseFailure → agent.tool_result {tool_name, ok: false, ...}
@@ -51,7 +52,9 @@ logger = logging.getLogger(__name__)
 # Invisible prefix stamped on prompts injected into the TUI by the raise-event
 # endpoint (user.message → pane.send_text). The UserPromptSubmit hook skips
 # prompts carrying it so goal-loop continuations (already recorded as
-# user.message rows by the BFF driver) are not double-published.
+# user.message rows by the BFF driver) are not double-published. Adapters that
+# cannot safely receive this marker use the supervisor's prompt digest ledger
+# instead.
 # ZWSP + WORD JOINER + ZWSP: invisible in the TUI, never typed by a human.
 INJECTION_MARKER = "\u200b\u2060\u200b"
 
@@ -388,6 +391,8 @@ class HookProcessor:
             return {}
 
         if name == "UserPromptSubmit" and self._consume_injected_prompt(payload):
+            if self._adapter_reports_prompt_submit():
+                self._record_turn_started("hook:UserPromptSubmit")
             return {}
 
         events = None
@@ -442,6 +447,14 @@ class HookProcessor:
             note_turn_started(source)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[hooks] turn-start publish failed: %s", exc)
+
+    def _adapter_reports_prompt_submit(self) -> bool:
+        if self._adapter is not None and bool(
+            getattr(self._adapter, "hook_reports_prompt_submit", False)
+        ):
+            return True
+        supervisor = self._supervisor_getter()
+        return bool(getattr(supervisor, "hook_reports_prompt_submit", False))
 
     def _consume_injected_prompt(self, payload: Mapping[str, Any]) -> bool:
         prompt = payload.get("prompt")
