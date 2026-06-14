@@ -254,6 +254,7 @@ describe("agent workflow host provisioning", () => {
 			unknown
 		>;
 		expect(body.agentAppId).toMatch(/^agent-session-/);
+		expect(body.executionClass).toBe("interactive-cli");
 		expect(body.agentImage).toBe(
 			"ghcr.io/example/cli-agent-py-sandbox:git-1",
 		);
