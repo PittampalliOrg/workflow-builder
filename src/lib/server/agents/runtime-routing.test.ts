@@ -67,6 +67,34 @@ describe("resolveAgentRuntimeRoute", () => {
 		});
 	});
 
+	it("keeps interactive CLI runtimes off shared pools even when the agent row points at one", () => {
+		process.env.AGENT_RUNTIME_SHARED_POOLS_ENABLED = "true";
+		process.env.AGENT_RUNTIME_POOL_APP_IDS_JSON = JSON.stringify({
+			coding: {
+				appId: "agent-runtime-pool-coding",
+				maxReplicas: 4,
+			},
+		});
+
+		const route = resolveAgentRuntimeRoute({
+			agentSlug: "codex-swebench",
+			runtimeAppId: "agent-runtime-pool-coding",
+			config: config({
+				runtime: "codex-cli",
+				runtimeIsolation: "shared",
+			}),
+		});
+
+		expect(route).toMatchObject({
+			appId: "agent-runtime-codex-swebench",
+			slug: "codex-swebench",
+			runtimeClass: "coding",
+			isolation: "dedicated",
+		});
+		expect(route.reason).toContain("per-session interactive CLI workflow host");
+		expect(route.pool).toBeUndefined();
+	});
+
 	it("honors an explicit shared runtimePool binding without the global feature gate", () => {
 		const route = resolveAgentRuntimeRoute({
 			agentSlug: "office-agent",

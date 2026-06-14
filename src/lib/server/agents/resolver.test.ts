@@ -88,6 +88,7 @@ function resolvedAgent(
 		environmentId: string | null;
 		environmentVersion: number | null;
 		defaultVaultIds: string[];
+		runtimeAppId: string | null;
 	}> = {},
 ) {
 	return {
@@ -98,6 +99,7 @@ function resolvedAgent(
 		environmentId: null,
 		environmentVersion: null,
 		defaultVaultIds: [],
+		runtimeAppId: null,
 		...overrides,
 	};
 }
@@ -216,14 +218,23 @@ describe("resolveSpecAgentRefs", () => {
 	});
 
 	it("stamps the CLI adapter for interactive workflow runtimes", async () => {
+		process.env.AGENT_RUNTIME_SHARED_POOLS_ENABLED = "true";
+		process.env.AGENT_RUNTIME_POOL_APP_IDS_JSON = JSON.stringify({
+			coding: "agent-runtime-pool-coding",
+		});
 		const config = minimalConfig({
 			runtime: "codex-cli",
+			runtimeIsolation: "shared",
 			modelSpec: "openai/gpt-5.5",
 			// Stale stored value should be corrected from the runtime registry.
 			cliAdapter: "claude-code",
 		});
 		resolveAgentRefMock.mockResolvedValueOnce(
-			resolvedAgent({ slug: "codex-agent", config }),
+			resolvedAgent({
+				slug: "codex-agent",
+				config,
+				runtimeAppId: "agent-runtime-pool-coding",
+			}),
 		);
 		const spec = specWithTasks([
 			{
@@ -252,6 +263,11 @@ describe("resolveSpecAgentRefs", () => {
 		expect((body.agentConfig as Record<string, unknown>).cliAdapter).toBe("codex");
 		expect((withBlock.agentConfig as Record<string, unknown>).cliAdapter).toBe(
 			"codex",
+		);
+		expect(body.agentAppId).toBe("agent-runtime-codex-agent");
+		expect(body.agentRuntimeIsolation).toBe("dedicated");
+		expect(String(body.agentRuntimeRouteReason)).toContain(
+			"per-session interactive CLI workflow host",
 		);
 	});
 

@@ -211,9 +211,13 @@ function dedicatedRuntimeReason(
 ): string | null {
 	const isolation = runtimeIsolation(config);
 	if (isolation === "dedicated") return "agent requested dedicated runtime isolation";
+	const descriptor = getRuntimeDescriptor(config?.runtime);
+	if (descriptor?.capabilities.interactiveTerminal === true) {
+		return `${descriptor.id} uses a per-session interactive CLI workflow host`;
+	}
 	// Warm-pool runtimes (registry `capabilities.requiresWarmPool`, e.g.
 	// browser-use-agent) own long-lived state and need a dedicated runtime.
-	if (getRuntimeDescriptor(config?.runtime)?.capabilities.requiresWarmPool === true) {
+	if (descriptor?.capabilities.requiresWarmPool === true) {
 		return `${config?.runtime ?? "runtime"} requires a dedicated warm-pool runtime`;
 	}
 	if (config?.runtime === "dapr-agent-py-testing" && isolation !== "shared") {
@@ -237,8 +241,14 @@ export function resolveAgentRuntimeRoute(params: {
 	const isolation = runtimeIsolation(params.config);
 	const defaultDedicatedAppId = agentRuntimeDedicatedAppId(params.agentSlug);
 	const explicitRuntimeAppId = cleanString(params.runtimeAppId);
+	const runtimeDescriptor = getRuntimeDescriptor(params.config?.runtime);
+	const ignoreExplicitRuntimeAppId =
+		runtimeDescriptor?.capabilities.interactiveTerminal === true &&
+		explicitRuntimeAppId?.startsWith(DEFAULT_POOL_PREFIX) === true;
 	const dedicatedAppId =
-		explicitRuntimeAppId && explicitRuntimeAppId !== defaultDedicatedAppId
+		explicitRuntimeAppId &&
+		!ignoreExplicitRuntimeAppId &&
+		explicitRuntimeAppId !== defaultDedicatedAppId
 			? explicitRuntimeAppId
 			: defaultDedicatedAppId;
 	const dedicatedSlug = agentRuntimeSlugFromAppId(dedicatedAppId) ?? params.agentSlug;

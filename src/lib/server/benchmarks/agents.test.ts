@@ -89,6 +89,18 @@ describe("benchmark agent validation", () => {
 		expect(agy.effectiveProvider).toBe("googleai");
 	});
 
+	it("derives a per-agent runtime app id for interactive CLI rows that were registered against a shared pool", () => {
+		const valid = assertDaprAgentPyBenchmarkAgent({
+			...baseAgent,
+			slug: "codex-swebench",
+			runtime: "codex-cli",
+			runtimeAppId: "agent-runtime-pool-coding",
+			modelSpec: "openai/gpt-5.5",
+		});
+
+		expect(valid.runtimeAppId).toBe("agent-runtime-codex-swebench");
+	});
+
 	it("accepts the tool-capable Foundry DeepSeek deployment", () => {
 		const valid = assertDaprAgentPyBenchmarkAgent({
 			...baseAgent,

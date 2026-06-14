@@ -220,6 +220,45 @@ describe("agent workflow host provisioning", () => {
 		expect(fetch).not.toHaveBeenCalled();
 	});
 
+	it("does not route interactive CLI benchmark sessions through the stable dapr-agent app id", async () => {
+		vi.stubEnv("BENCHMARK_AGENT_WORKFLOW_STABLE_APP_ID", "dapr-agent-py");
+		vi.stubEnv(
+			"AGENT_RUNTIME_CODEX_CLI_DEFAULT_IMAGE",
+			"ghcr.io/example/cli-agent-py-sandbox:git-1",
+		);
+
+		const result = await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-benchmark-codex",
+			agentConfig: {
+				runtime: "codex-cli",
+				mcpServers: [],
+				builtinTools: [],
+				skills: [],
+				mcpConnectionMode: "explicit",
+			} as never,
+			workflowExecutionId: "exec-1",
+			benchmarkRunId: "run-1",
+			benchmarkInstanceId: "sympy__sympy-20590",
+			timeoutMinutes: null,
+		});
+
+		expect(result).toEqual({
+			agentAppId: "agent-session-returned",
+			sandboxName: "agent-host-agent-session-returned",
+			status: "ready",
+		});
+		expect(fetch).toHaveBeenCalledTimes(1);
+		const call = vi.mocked(fetch).mock.calls[0];
+		const body = JSON.parse(String(call?.[1]?.body ?? "{}")) as Record<
+			string,
+			unknown
+		>;
+		expect(body.agentAppId).toMatch(/^agent-session-/);
+		expect(body.agentImage).toBe(
+			"ghcr.io/example/cli-agent-py-sandbox:git-1",
+		);
+	});
+
 	it("lets env override benchmark host queue class", async () => {
 		vi.stubEnv("BENCHMARK_AGENT_WORKFLOW_HOST_EXECUTION_CLASS", "secure-gvisor");
 		vi.stubEnv("BENCHMARK_AGENT_WORKFLOW_HOST_PRIORITY_CLASS", "interactive-agent");

@@ -45,6 +45,14 @@ function validationError(message: string): never {
 }
 
 function resolveRuntimeAppId(agent: BenchmarkAgentCandidate): string | null {
+	const descriptor = getRuntimeDescriptor(agent.runtime ?? undefined);
+	if (
+		agent.slug &&
+		descriptor?.capabilities.interactiveTerminal === true &&
+		agent.runtimeAppId?.startsWith("agent-runtime-pool-")
+	) {
+		return `agent-runtime-${agent.slug}`;
+	}
 	if (agent.runtimeAppId?.startsWith("agent-runtime-")) return agent.runtimeAppId;
 	if (agent.slug && isBenchmarkAgentRuntime(agent.runtime)) {
 		return `agent-runtime-${agent.slug}`;

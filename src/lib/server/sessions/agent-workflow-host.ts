@@ -95,6 +95,13 @@ function benchmarkStableAgentWorkflowAppId(): string | null {
 	);
 }
 
+function canUseBenchmarkStableAppId(agentConfig: AgentConfig | null): boolean {
+	const runtimeDescriptor = getRuntimeDescriptor(
+		(agentConfig as { runtime?: string } | null)?.runtime,
+	);
+	return runtimeDescriptor?.capabilities.interactiveTerminal !== true;
+}
+
 const hostProvisionTracer = trace.getTracer("workflow-builder.agent-workflow-host");
 
 /**
@@ -305,7 +312,7 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	resumeFromSessionId?: string | null;
 }): Promise<AgentWorkflowHostResult | null> {
 	if (!agentConfigCanUseWorkflowHost(params.agentConfig)) return null;
-	if (params.benchmarkRunId) {
+	if (params.benchmarkRunId && canUseBenchmarkStableAppId(params.agentConfig)) {
 		const stableAppId = benchmarkStableAgentWorkflowAppId();
 		if (stableAppId) {
 			return {
