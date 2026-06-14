@@ -310,17 +310,29 @@ class HerdrClient:
         effective_timeout = timeout if timeout is not None else self._call_timeout
         last_exc: Exception | None = None
         for attempt in (0, 1):
+            rid: str | None = None
+            future: asyncio.Future | None = None
             try:
                 await self._ensure_connected()
                 rid = f"req_{next(self._req_counter)}"
-                future: asyncio.Future = asyncio.get_running_loop().create_future()
+                future = asyncio.get_running_loop().create_future()
                 self._pending[rid] = future
                 request = {"id": rid, "method": method, "params": dict(params or {})}
                 assert self._writer is not None
                 self._writer.write(json.dumps(request).encode("utf-8") + b"\n")
                 await self._writer.drain()
                 response = await asyncio.wait_for(future, timeout=effective_timeout)
+            except asyncio.TimeoutError:
+                if rid is not None:
+                    self._pending.pop(rid, None)
+                if future is not None and not future.done():
+                    future.cancel()
+                raise
             except (ConnectionError, BrokenPipeError, OSError) as exc:
+                if rid is not None:
+                    self._pending.pop(rid, None)
+                if future is not None and not future.done():
+                    future.cancel()
                 last_exc = exc
                 await self._reset_connection()
                 if attempt == 1:

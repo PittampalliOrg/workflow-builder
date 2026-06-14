@@ -266,6 +266,29 @@ class TailerManager:
         if self._tailer is not None:
             self._tailer.flush()
 
+    async def wait_for_assistant_text(
+        self, *, timeout: float, poll_seconds: float = 0.2
+    ) -> str | None:
+        """Poll until the active transcript has assistant text or timeout.
+
+        Some CLIs fire their Stop hook before the final transcript line is
+        fully flushed. The durable workflow should see turn.completed only after
+        the tailer has had a short chance to publish the final agent.message.
+        """
+        tailer = self._tailer
+        if tailer is None:
+            return None
+        if tailer.last_assistant_text:
+            return tailer.last_assistant_text
+        deadline = asyncio.get_running_loop().time() + max(0.0, timeout)
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.to_thread(tailer.flush)
+            if tailer.last_assistant_text:
+                return tailer.last_assistant_text
+            await asyncio.sleep(max(0.01, poll_seconds))
+        await asyncio.to_thread(tailer.flush)
+        return tailer.last_assistant_text
+
     async def _poll_loop(self, tailer: TranscriptTailer) -> None:
         while True:
             await asyncio.sleep(TAIL_POLL_SECONDS)

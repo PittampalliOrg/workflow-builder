@@ -53,6 +53,18 @@ def test_pre_tool_use_maps_to_tool_use():
     assert events[0]["data"]["input"] == {"command": "ls"}
 
 
+def test_anonymous_empty_tool_hook_is_skipped():
+    assert map_hook_event(_hook("PreToolUse")) == []
+    assert map_hook_event(_hook("PostToolUse")) == []
+
+
+def test_anonymous_tool_hook_with_payload_gets_stable_name():
+    events = map_hook_event(_hook("PreToolUse", tool_input={"path": "file.txt"}))
+    assert events[0]["data"]["tool_name"] == "unknown_tool"
+    assert events[0]["data"]["name"] == "unknown_tool"
+    assert events[0]["data"]["input"] == {"path": "file.txt"}
+
+
 def test_post_tool_use_truncates_output():
     big = "x" * (TOOL_OUTPUT_TRUNCATE_BYTES + 500)
     events = map_hook_event(
@@ -155,6 +167,29 @@ class FakeTailerManager:
         self.tailer.flush()
 
 
+class DelayedTailer(FakeTailer):
+    def __init__(self):
+        super().__init__()
+        self.last_assistant_text = None
+
+    def flush(self):
+        self.flushes += 1
+        if self.flushes >= 2:
+            self.last_assistant_text = "delayed final answer"
+
+
+class DelayedTailerManager(FakeTailerManager):
+    def __init__(self):
+        super().__init__()
+        self.tailer = DelayedTailer()
+
+    async def wait_for_assistant_text(self, *, timeout, poll_seconds):
+        while self.tailer.flushes < 2:
+            self.tailer.flush()
+            await asyncio.sleep(0)
+        return self.tailer.last_assistant_text
+
+
 def _processor():
     published: list[tuple[str | None, str, dict]] = []
     raised: list[tuple[str, list[dict]]] = []
@@ -189,6 +224,28 @@ def test_stop_flushes_tailer_then_raises_turn_completed():
     assert manager.tailer.flushes == 1
     assert raised == [
         ("inst-1", [{"type": "turn.completed", "lastAssistantText": "final answer"}])
+    ]
+
+
+def test_stop_waits_for_delayed_transcript_before_turn_completed():
+    published: list[tuple[str | None, str, dict]] = []
+    raised: list[tuple[str, list[dict]]] = []
+    manager = DelayedTailerManager()
+    processor = HookProcessor(
+        publish=lambda sid, etype, data, **kw: published.append((sid, etype, data)),
+        raise_lifecycle=lambda iid, events: raised.append((iid, events)),
+        supervisor_getter=lambda: FakeSupervisor(),
+        tailer_manager=manager,
+    )
+
+    asyncio.run(processor.process(_hook("Stop")))
+
+    assert manager.tailer.flushes >= 2
+    assert raised == [
+        (
+            "inst-1",
+            [{"type": "turn.completed", "lastAssistantText": "delayed final answer"}],
+        )
     ]
 
 

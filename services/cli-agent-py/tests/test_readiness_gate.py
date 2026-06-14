@@ -144,6 +144,20 @@ async def test_content_gated_times_out_when_prompt_never_renders(monkeypatch):
     assert await sup.wait_until_ready(0.05) is False
 
 
+async def test_content_gated_falls_back_to_idle_after_marker_grace(monkeypatch):
+    # Claude can report live idle while the exact footer string is absent in a
+    # newer TUI build. Keep the marker as the primary gate, then accept stable
+    # idle after a short grace instead of timing out the whole seed window.
+    monkeypatch.setattr(ss, "CLI_READY_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(ss, "CLI_READY_MARKER_STATUS_FALLBACK_SECONDS", 0.02)
+    client = FakeHerdr(statuses=["idle"], pane_texts=["Claude ready"])
+    sup = _supervisor(client)
+    sup._pane_ref = "p1"
+    sup.prompt_ready_marker = "? for shortcuts"
+    assert await sup.wait_until_ready(0.2) is True
+    assert client._calls >= 1
+
+
 async def test_disabled_supervisor_is_always_ready():
     sup = SessionSupervisor(
         client=FakeHerdr(), publish=lambda *a, **k: None, disabled=True

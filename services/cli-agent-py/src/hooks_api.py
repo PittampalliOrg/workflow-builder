@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Callable, Mapping
 
 from fastapi import APIRouter, Request
@@ -59,6 +60,12 @@ logger = logging.getLogger(__name__)
 INJECTION_MARKER = "\u200b\u2060\u200b"
 
 TOOL_OUTPUT_TRUNCATE_BYTES = 16 * 1024
+COMPLETION_TEXT_WAIT_SECONDS = float(
+    os.environ.get("CLI_COMPLETION_TEXT_WAIT_SECONDS", "3")
+)
+COMPLETION_TEXT_POLL_SECONDS = float(
+    os.environ.get("CLI_COMPLETION_TEXT_POLL_SECONDS", "0.2")
+)
 
 
 def _clean(value: Any) -> str | None:
@@ -205,16 +212,19 @@ def map_hook_event(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
 
     if name == "PreToolUse":
         tool_input = payload.get("tool_input")
+        if not tool_name and tool_input is None:
+            return []
+        normalized_tool_name = tool_name or "unknown_tool"
         return [
             {
                 "type": "agent.tool_use",
                 "data": {
-                    "tool_name": tool_name,
+                    "tool_name": normalized_tool_name,
                     "tool_input": tool_input,
                     # CMA aliases the /sessions UI reads (publisher emits
                     # name/input for tool_call_start; we publish agent.tool_use
                     # directly so we stamp both spellings).
-                    "name": tool_name,
+                    "name": normalized_tool_name,
                     "input": tool_input if isinstance(tool_input, Mapping) else {},
                 },
             }
@@ -222,12 +232,15 @@ def map_hook_event(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
 
     if name == "PostToolUse":
         output_text = _flatten_tool_output(payload.get("tool_response"))
+        if not tool_name and not output_text:
+            return []
+        normalized_tool_name = tool_name or "unknown_tool"
         return [
             {
                 "type": "agent.tool_result",
                 "data": {
-                    "tool_name": tool_name,
-                    "name": tool_name,
+                    "tool_name": normalized_tool_name,
+                    "name": normalized_tool_name,
                     "ok": True,
                     "success": True,
                     # dapr-agent-py tool_call_end parity: `output` is a STRING
@@ -241,12 +254,13 @@ def map_hook_event(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
 
     if name == "PostToolUseFailure":
         output_text = _flatten_tool_output(payload.get("tool_response"))
+        normalized_tool_name = tool_name or "unknown_tool"
         return [
             {
                 "type": "agent.tool_result",
                 "data": {
-                    "tool_name": tool_name,
-                    "name": tool_name,
+                    "tool_name": normalized_tool_name,
+                    "name": normalized_tool_name,
                     "ok": False,
                     "success": False,
                     "is_error": True,
@@ -264,7 +278,7 @@ def map_hook_event(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
         return [
             {
                 "type": "hook.decision",
-                "data": {"decision": decision, "tool_name": tool_name},
+                "data": {"decision": decision, "tool_name": tool_name or "unknown_tool"},
             },
             {
                 "type": "session.status_idle",
@@ -346,6 +360,8 @@ class HookProcessor:
             await asyncio.to_thread(self._tailer_manager.flush_now)
             tailer = self._tailer_manager.current()
             last_text = tailer.last_assistant_text if tailer is not None else None
+            if not last_text:
+                last_text = await self._wait_for_tailer_completion_text()
             if not last_text and self._adapter is not None:
                 try:
                     last_text = self._adapter.extract_completion_text(payload)
@@ -427,6 +443,20 @@ class HookProcessor:
             logger.debug("[hooks] adapter hook response failed: %s", exc)
             return {}
         return dict(value) if isinstance(value, Mapping) else {}
+
+    async def _wait_for_tailer_completion_text(self) -> str | None:
+        wait = getattr(self._tailer_manager, "wait_for_assistant_text", None)
+        if not callable(wait) or COMPLETION_TEXT_WAIT_SECONDS <= 0:
+            return None
+        try:
+            value = await wait(
+                timeout=COMPLETION_TEXT_WAIT_SECONDS,
+                poll_seconds=COMPLETION_TEXT_POLL_SECONDS,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[hooks] completion text wait failed: %s", exc)
+            return None
+        return value if isinstance(value, str) and value.strip() else None
 
     def _record_adapter_hook(self, payload: Mapping[str, Any]) -> None:
         if getattr(self._adapter, "name", None) != "antigravity":

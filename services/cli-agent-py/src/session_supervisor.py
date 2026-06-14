@@ -103,6 +103,9 @@ CLI_GRACEFUL_EXIT_WAIT_SECONDS = _env_float("CLI_GRACEFUL_EXIT_WAIT_SECONDS", 30
 CLI_SEED_READY_TIMEOUT = _env_float("CLI_SEED_READY_TIMEOUT_SECONDS", 60.0)
 CLI_INJECT_READY_TIMEOUT = _env_float("CLI_INJECT_READY_TIMEOUT_SECONDS", 20.0)
 CLI_READY_POLL_SECONDS = _env_float("CLI_READY_POLL_SECONDS", 0.5)
+CLI_READY_MARKER_STATUS_FALLBACK_SECONDS = _env_float(
+    "CLI_READY_MARKER_STATUS_FALLBACK_SECONDS", 10.0
+)
 # Submit reliability: the Claude Code Ink TUI ingests typed text via bracketed
 # paste, so an Enter sent immediately after `pane.send_text` races the paste and
 # is dropped — the prompt sits unsubmitted (verified live on dev 2026-06-10).
@@ -356,17 +359,22 @@ class SessionSupervisor:
                 subscriptions.append(agent_status_subscription(pane_for_stream))
             stream = self._client.subscribe_events(subscriptions)
             iterator = stream.__aiter__()
+            next_event_task: asyncio.Task | None = None
             try:
                 while True:
                     # Per-event timeout so a quiet stream still notices that
                     # register_session() changed the pane (registration happens
                     # on an activity thread, not via a herdr event).
+                    if next_event_task is None or next_event_task.done():
+                        next_event_task = asyncio.create_task(iterator.__anext__())
                     try:
                         event = await asyncio.wait_for(
-                            iterator.__anext__(), timeout=15.0
+                            asyncio.shield(next_event_task), timeout=15.0
                         )
+                        next_event_task = None
                     except asyncio.TimeoutError:
                         if self._pane_ref != pane_for_stream:
+                            next_event_task.cancel()
                             break
                         continue
                     except StopAsyncIteration:
@@ -374,12 +382,18 @@ class SessionSupervisor:
                     backoff = 1.0
                     self.handle_event(event)
                     if self._pane_ref != pane_for_stream:
+                        if next_event_task is not None:
+                            next_event_task.cancel()
                         break  # resubscribe with the newly registered pane
             except asyncio.CancelledError:
+                if next_event_task is not None:
+                    next_event_task.cancel()
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[supervisor] event stream error: %s", exc)
             finally:
+                if next_event_task is not None and not next_event_task.done():
+                    next_event_task.cancel()
                 try:
                     await stream.aclose()
                 except Exception:  # noqa: BLE001
@@ -600,6 +614,9 @@ class SessionSupervisor:
         if self._disabled:
             return True
         deadline = time.monotonic() + max(0.0, timeout)
+        fallback_deadline = (
+            time.monotonic() + max(0.0, CLI_READY_MARKER_STATUS_FALLBACK_SECONDS)
+        )
         while time.monotonic() < deadline:
             pane = self._pane_ref
             if pane:
@@ -610,6 +627,22 @@ class SessionSupervisor:
                     # while a turn is in flight → also correct for mid-session).
                     if await self._prompt_rendered(pane):
                         return True
+                    try:
+                        info = await self._client.agent_get(pane)
+                        if (
+                            time.monotonic() >= fallback_deadline
+                            and agent_status_of(info) == AGENT_STATUS_IDLE
+                        ):
+                            logger.info(
+                                "[supervisor] readiness marker %r not visible "
+                                "after %.0fs; accepting herdr idle status",
+                                self.prompt_ready_marker,
+                                CLI_READY_MARKER_STATUS_FALLBACK_SECONDS,
+                            )
+                            return True
+                    except Exception:  # noqa: BLE001
+                        if self._committed_state == AGENT_STATUS_IDLE:
+                            return True
                 else:
                     try:
                         info = await self._client.agent_get(pane)
