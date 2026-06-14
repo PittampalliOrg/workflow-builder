@@ -26,6 +26,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import time
 from typing import Any, Callable, Mapping
 
@@ -66,7 +67,13 @@ def _prompt_digest(prompt: str) -> str:
 
 
 def _prompt_digest_variants(prompt: str) -> set[str]:
-    variants = {prompt, prompt.strip(), prompt.replace("\r\n", "\n").strip()}
+    normalized_newlines = prompt.replace("\r\n", "\n").replace("\r", "\n").strip()
+    variants = {
+        prompt,
+        prompt.strip(),
+        normalized_newlines,
+        re.sub(r"\s+", " ", normalized_newlines).strip(),
+    }
     return {_prompt_digest(value) for value in variants if value}
 
 
