@@ -118,6 +118,7 @@ class FakeSupervisor:
         self.turn_sources: list[str] = []
         self.turn_started_count = 1
         self.injected_prompts: set[str] = set()
+        self.suppress_idle_calls = 0
 
     def get_session(self):
         return {
@@ -140,6 +141,9 @@ class FakeSupervisor:
             return False
         self.injected_prompts.discard(prompt)
         return True
+
+    def suppress_next_idle_status(self):
+        self.suppress_idle_calls += 1
 
 
 class FakeTailer:
@@ -218,10 +222,11 @@ def test_session_start_registers_transcript_and_starts_tailer():
 
 
 def test_stop_flushes_tailer_then_raises_turn_completed():
-    processor, published, raised, _supervisor, manager = _processor()
+    processor, published, raised, supervisor, manager = _processor()
     response = asyncio.run(processor.process(_hook("Stop")))
     assert response == {}
     assert manager.tailer.flushes == 1
+    assert supervisor.suppress_idle_calls == 1
     assert raised == [
         ("inst-1", [{"type": "turn.completed", "lastAssistantText": "final answer"}])
     ]

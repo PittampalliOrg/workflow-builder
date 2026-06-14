@@ -748,6 +748,7 @@ def session_workflow(
                         source_event_id=(
                             f"{ctx.instance_id}:turn:{turn_count}:completed"
                         ),
+                        blocking=True,
                     )
                     if not auto_terminate:
                         publish_session_event(
@@ -763,6 +764,7 @@ def session_workflow(
                             source_event_id=(
                                 f"{ctx.instance_id}:turn:{turn_count}:idle"
                             ),
+                            blocking=True,
                         )
                 if auto_terminate:
                     status, reason = "completed", "turn_completed"

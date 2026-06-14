@@ -308,6 +308,7 @@ class HookProcessor:
         self._adapter = adapter
         self._completion_keys_raised: set[tuple[str, int]] = set()
         self._completion_fallback_started_turn = False
+        self._process_lock = asyncio.Lock()
 
     def _session(self) -> dict[str, Any]:
         supervisor = self._supervisor_getter()
@@ -321,6 +322,10 @@ class HookProcessor:
     async def process(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, Mapping):
             return {}
+        async with self._process_lock:
+            return await self._process_locked(payload)
+
+    async def _process_locked(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         name = _hook_name(payload)
         session = self._session()
         session_id = session.get("sessionId")
@@ -399,6 +404,7 @@ class HookProcessor:
                 event: dict[str, Any] = {"type": "turn.completed"}
                 if last_text:
                     event["lastAssistantText"] = last_text
+                self._suppress_supervisor_idle_echo()
                 await asyncio.to_thread(self._safe_raise, instance_id, [event])
                 if completion_key is not None:
                     self._completion_keys_raised.add(completion_key)
@@ -521,6 +527,16 @@ class HookProcessor:
             return started
         return _turn_started_count(self._session())
 
+    def _suppress_supervisor_idle_echo(self) -> None:
+        supervisor = self._supervisor_getter()
+        suppress = getattr(supervisor, "suppress_next_idle_status", None)
+        if not callable(suppress):
+            return
+        try:
+            suppress()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[hooks] idle suppression failed: %s", exc)
+
     def _adapter_reports_prompt_submit(self) -> bool:
         if self._adapter is not None and bool(
             getattr(self._adapter, "hook_reports_prompt_submit", False)
@@ -566,6 +582,12 @@ class HookProcessor:
                 pass
         def _raise_from_tailer(events: list[dict[str, Any]]) -> None:
             if instance_id:
+                if any(
+                    isinstance(event, Mapping)
+                    and event.get("type") == "turn.completed"
+                    for event in events
+                ):
+                    self._suppress_supervisor_idle_echo()
                 self._safe_raise(str(instance_id), events)
 
         self._tailer_manager.start(

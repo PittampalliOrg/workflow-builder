@@ -187,6 +187,7 @@ class SessionSupervisor:
         # Semantic-state tracking.
         self._committed_state: str | None = None
         self._idle_since: float | None = None
+        self._suppress_next_idle_status = False
         self._debounce_task: asyncio.Task | None = None
         self._exit_raised = False
 
@@ -474,6 +475,9 @@ class SessionSupervisor:
         elif status == AGENT_STATUS_IDLE:
             if self._idle_since is None:
                 self._idle_since = time.monotonic()
+            if self._suppress_next_idle_status:
+                self._suppress_next_idle_status = False
+                return
             if session_id:
                 self._publish(
                     session_id,
@@ -504,8 +508,19 @@ class SessionSupervisor:
                 "session.turn_started",
                 data,
                 source_event_id=f"{self._instance_id or session_id}:turn:{turn}:started",
+                blocking=True,
             )
         return turn
+
+    def suppress_next_idle_status(self) -> None:
+        """Drop the next ordinary idle echo after workflow turn completion.
+
+        The workflow publishes the canonical idle-after-turn row after it
+        consumes ``turn.completed``. Herdr/screen polling can report the same
+        idle transition moments later; keeping both makes the session timeline
+        look like two turns.
+        """
+        self._suppress_next_idle_status = True
 
     def _raise_cli_exited(
         self, *, exit_code: int | None, reason: str | None = None

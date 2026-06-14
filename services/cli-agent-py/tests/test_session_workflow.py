@@ -108,11 +108,11 @@ def test_auto_terminate_stops_after_first_turn_completed(monkeypatch):
 
 
 def test_happy_path_turn_then_clean_exit(monkeypatch):
-    published: list[tuple[str, str, dict]] = []
+    published: list[tuple[str, str, dict, dict]] = []
     monkeypatch.setattr(
         sw,
         "publish_session_event",
-        lambda sid, etype, data, **kw: published.append((sid, etype, data)),
+        lambda sid, etype, data, **kw: published.append((sid, etype, data, kw)),
     )
     ctx = FakeCtx()
     driver = WorkflowDriver(ctx, dict(BASE_INPUT), monkeypatch)
@@ -146,19 +146,22 @@ def test_happy_path_turn_then_clean_exit(monkeypatch):
     assert result["childWorkflowName"] == "session_workflow"
     assert result["daprInstanceId"] == "inst-test-1"
     # status_starting at the top, status_terminated at the bottom.
-    assert ("sess-wf-1", "session.status_starting", {}) == published[0]
+    assert ("sess-wf-1", "session.status_starting", {}, {}) == published[0]
     turn_completed = next(
         event for event in published if event[1] == "session.turn_completed"
     )
     assert turn_completed[2]["turn"] == 1
     assert turn_completed[2]["agentRuntime"] == "claude-code-cli"
     assert turn_completed[2]["output_preview"] == "the answer"
+    assert turn_completed[3]["blocking"] is True
     status_idle = next(
         event for event in published if event[1] == "session.status_idle"
     )
     assert status_idle[2]["turn"] == 1
     assert status_idle[2]["agentRuntime"] == "claude-code-cli"
     assert status_idle[2]["stop_reason"] == {"type": "end_turn"}
+    assert status_idle[3]["blocking"] is True
+    assert published.index(turn_completed) < published.index(status_idle)
     assert published[-1][1] == "session.status_terminated"
     assert published[-1][2]["status"] == "completed"
     assert published[-1][2]["stop_reason"] == {"type": "end_turn"}

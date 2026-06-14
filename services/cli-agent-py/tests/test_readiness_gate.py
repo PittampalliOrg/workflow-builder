@@ -269,7 +269,7 @@ async def test_send_to_pane_publishes_turn_started_after_submit():
                 "workflowInstanceId": "i1",
                 "turnId": "i1:turn:1",
             },
-            {"source_event_id": "i1:turn:1:started"},
+            {"source_event_id": "i1:turn:1:started", "blocking": True},
         )
     ]
 
@@ -552,7 +552,7 @@ async def test_submit_accepts_idle_for_fast_idle_runtime(monkeypatch):
                 "workflowInstanceId": "i1",
                 "turnId": "i1:turn:1",
             },
-            {"source_event_id": "i1:turn:1:started"},
+            {"source_event_id": "i1:turn:1:started", "blocking": True},
         )
     ]
 

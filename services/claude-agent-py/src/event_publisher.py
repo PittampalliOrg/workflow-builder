@@ -364,6 +364,7 @@ def publish_session_event(
     *,
     source_event_id: str | None = None,
     instance_id: str | None = None,
+    blocking: bool = False,
 ) -> None:
     """Emit a session event. CMA-shape translation is applied for legacy
     internal types; notification hooks fire for a small set of user-visible
@@ -376,7 +377,8 @@ def publish_session_event(
 
     The notification-hook dispatch + audit/usage/trace enrichment are part of
     the incremental tier (gated on INCREMENTAL_EVENTS_ENABLED); the base path
-    (CMA shape + producer-identity envelope + fire-and-forget POST) always runs.
+    (CMA shape + producer-identity envelope + POST) always runs. Lifecycle
+    callers can set blocking=True when database sequence ordering matters.
     """
     if not PUBLISH_ENABLED:
         return
@@ -465,6 +467,9 @@ def publish_session_event(
         "producerId": _PRODUCER_ID,
         "producerEpoch": _PRODUCER_EPOCH,
     }
+    if blocking:
+        _post_ingest(session_id, envelope)
+        return
     threading.Thread(
         target=_post_ingest, args=(session_id, envelope), daemon=True
     ).start()
