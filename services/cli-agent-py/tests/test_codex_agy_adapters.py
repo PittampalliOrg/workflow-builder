@@ -493,7 +493,50 @@ def test_agy_seed_writes_gemini_md_and_settings(agy_home):
     settings = json.loads((agy_home / ".gemini/antigravity-cli/settings.json").read_text())
     assert settings["model"] == "gemini-2.5-pro"
     assert settings["enableTelemetry"] is False
+    assert settings["toolPermission"] == "always-proceed"
+    assert settings["artifactReviewPolicy"] == "always-proceed"
+    assert settings["allowNonWorkspaceAccess"] is True
+    assert settings["enableTerminalSandbox"] is False
+    assert settings["permissions"]["allow"] == [
+        "command(*)",
+        f"read_file({agy_home})",
+        f"write_file({agy_home})",
+        "read_url(*)",
+        "execute_url(*)",
+        "mcp(*)",
+    ]
+    assert settings["permissions"]["deny"] == []
+    assert settings["permissions"]["ask"] == []
     assert str(agy_home).endswith("sandbox") or settings["trustedWorkspaces"]
+
+
+def test_agy_seed_overrides_restored_prompting_settings(agy_home):
+    settings_path = agy_home / ".gemini/antigravity-cli/settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "toolPermission": "request-review",
+                "enableTerminalSandbox": True,
+                "trustedWorkspaces": ["/old"],
+                "permissions": {
+                    "allow": [],
+                    "deny": ["command(*)"],
+                    "ask": ["command(*)", "mcp(*)"],
+                },
+            }
+        )
+    )
+
+    get_adapter("antigravity").seed(AGY_SESSION)
+    settings = json.loads(settings_path.read_text())
+
+    assert settings["toolPermission"] == "always-proceed"
+    assert settings["enableTerminalSandbox"] is False
+    assert settings["permissions"]["deny"] == []
+    assert settings["permissions"]["ask"] == []
+    assert "/old" in settings["trustedWorkspaces"]
+    assert str(agy_home) in settings["trustedWorkspaces"]
 
 
 def test_agy_build_argv():
@@ -501,6 +544,8 @@ def test_agy_build_argv():
     assert argv[0] == "agy"
     assert "--model" in argv and "gemini-2.5-pro" in argv
     assert "--dangerously-skip-permissions" in argv
+    assert "--sandbox=false" in argv
+    assert argv[argv.index("--add-dir") + 1].endswith("sandbox")
 
 
 def test_agy_pane_env_strips_all_google_keys_and_pins_home(agy_home):

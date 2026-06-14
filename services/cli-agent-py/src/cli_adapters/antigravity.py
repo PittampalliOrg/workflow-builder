@@ -135,6 +135,77 @@ def _agy_mcp_servers(agent_config: Mapping[str, Any]) -> dict[str, dict[str, Any
     return out
 
 
+def _merge_unique_strings(existing: Any, additions: list[str]) -> list[str]:
+    values: list[str] = []
+    if isinstance(existing, list):
+        values.extend(str(item) for item in existing if str(item).strip())
+    values.extend(additions)
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        clean = str(value).strip()
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        out.append(clean)
+    return out
+
+
+def _read_settings(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return dict(parsed) if isinstance(parsed, Mapping) else {}
+
+
+def _managed_agy_settings(
+    existing: Mapping[str, Any], agent_config: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Merge unattended workflow-builder settings into a restored AGY profile.
+
+    The auth bundle can include the user's local settings.json. In managed
+    sandbox pods, permission prompts strand durable workflows, so these runtime
+    keys are intentionally owned by workflow-builder on every seed.
+    """
+    sandbox_root = os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
+    settings = dict(existing)
+    settings.update(
+        {
+            "enableTelemetry": False,
+            "toolPermission": "always-proceed",
+            "artifactReviewPolicy": "always-proceed",
+            "allowNonWorkspaceAccess": True,
+            # The Kubernetes Sandbox pod is the containment boundary here.
+            # AGY's nested nsjail/sandbox mode can require host privileges that
+            # are unavailable in our agent-host pod and is redundant for this
+            # managed runtime.
+            "enableTerminalSandbox": False,
+        }
+    )
+    settings["trustedWorkspaces"] = _merge_unique_strings(
+        settings.get("trustedWorkspaces"), [sandbox_root]
+    )
+    settings["permissions"] = {
+        "allow": [
+            "command(*)",
+            f"read_file({sandbox_root})",
+            f"write_file({sandbox_root})",
+            "read_url(*)",
+            "execute_url(*)",
+            "mcp(*)",
+        ],
+        "deny": [],
+        "ask": [],
+    }
+    model = normalize_agy_model(agent_config.get("modelSpec"))
+    if model:
+        settings["model"] = model
+    return settings
+
+
 def _agy_hook_group(event: str, *, matcher: str | None = None) -> list[dict[str, Any]]:
     group: dict[str, Any] = {
         "hooks": [_agy_hook_handler(event)]
@@ -552,24 +623,16 @@ class AntigravityAdapter(CliAdapter):
             gemini_md.write_text(instructions, encoding="utf-8")
             result.paths["systemPromptPath"] = str(gemini_md)
 
-        # (c) settings.json — pre-trust the sandbox workspace, pin the model, and
-        # disable telemetry so the TUI surfaces less onboarding friction.
-        # Best-effort (agy replaces an invalid settings file with defaults);
-        # never clobber an existing one.
+        # (c) settings.json — merge our managed unattended keys into the
+        # restored profile every run. The login bundle may carry a local
+        # request-review permission mode; keeping that value blocks workflow
+        # sessions on invisible approval prompts.
         settings_path = cli_dir / "settings.json"
-        if not settings_path.exists():
-            sandbox_root = os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
-            settings: dict[str, Any] = {
-                "trustedWorkspaces": [sandbox_root],
-                "enableTelemetry": False,
-            }
-            model = normalize_agy_model(agent_config.get("modelSpec"))
-            if model:
-                settings["model"] = model
-            settings_path.write_text(
-                json.dumps(settings, indent=2) + "\n", encoding="utf-8"
-            )
-            result.paths["agySettingsPath"] = str(settings_path)
+        settings = _managed_agy_settings(_read_settings(settings_path), agent_config)
+        settings_path.write_text(
+            json.dumps(settings, indent=2) + "\n", encoding="utf-8"
+        )
+        result.paths["agySettingsPath"] = str(settings_path)
 
         return result
 
@@ -578,7 +641,14 @@ class AntigravityAdapter(CliAdapter):
     def build_argv(
         self, agent_config: Mapping[str, Any], seed_paths: Mapping[str, str]
     ) -> list[str]:
-        argv: list[str] = [AGY_BIN, "--dangerously-skip-permissions"]
+        sandbox_root = os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
+        argv: list[str] = [
+            AGY_BIN,
+            "--dangerously-skip-permissions",
+            "--sandbox=false",
+            "--add-dir",
+            sandbox_root,
+        ]
         model = normalize_agy_model(agent_config.get("modelSpec"))
         if model:
             argv += ["--model", model]
