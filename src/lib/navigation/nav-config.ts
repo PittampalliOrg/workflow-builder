@@ -273,8 +273,8 @@ export const NAV_GROUPS: NavGroup[] = [
 		items: [
 			{
 				id: "capacity",
-				label: "Capacity",
-				icon: Gauge,
+				label: "Fleet",
+				icon: Boxes,
 				href: ({ slug }) => `/workspaces/${slug}/capacity`,
 				match: /^\/workspaces\/[^/]+\/capacity(\/|$)/,
 				visibility: { workspaceScoped: true },
