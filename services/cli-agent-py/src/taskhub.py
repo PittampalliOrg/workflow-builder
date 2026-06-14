@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -65,4 +66,40 @@ def raise_lifecycle_events(instance_id: str, events: list[dict[str, Any]]) -> No
     """Raise a batch of lifecycle events onto the session workflow instance."""
     if not instance_id or not events:
         return
-    raise_event(instance_id, LIFECYCLE_EVENT_NAME, {"events": events})
+    payload = {"events": events}
+    attempts = max(1, int(os.environ.get("TASKHUB_LIFECYCLE_RAISE_ATTEMPTS", "8")))
+    delay = max(
+        0.0,
+        float(os.environ.get("TASKHUB_LIFECYCLE_RAISE_INITIAL_BACKOFF_SECONDS", "0.25")),
+    )
+    max_delay = max(
+        delay,
+        float(os.environ.get("TASKHUB_LIFECYCLE_RAISE_MAX_BACKOFF_SECONDS", "5")),
+    )
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            raise_event(instance_id, LIFECYCLE_EVENT_NAME, payload)
+            if attempt > 1:
+                logger.info(
+                    "[taskhub] lifecycle raise succeeded for %s after %d attempts",
+                    instance_id,
+                    attempt,
+                )
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt >= attempts:
+                break
+            logger.warning(
+                "[taskhub] lifecycle raise attempt %d/%d failed for %s: %s",
+                attempt,
+                attempts,
+                instance_id,
+                exc,
+            )
+            if delay > 0:
+                time.sleep(delay)
+                delay = min(delay * 2, max_delay)
+    if last_exc is not None:
+        raise last_exc
