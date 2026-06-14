@@ -23,6 +23,7 @@ State flapping is debounced (CLI_STATE_DEBOUNCE_SECONDS, default 2s).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import time
@@ -58,6 +59,10 @@ def _env_float(name: str, default: float) -> float:
         return float(os.environ.get(name, default))
     except (TypeError, ValueError):
         return default
+
+
+def _prompt_digest(prompt: str) -> str:
+    return hashlib.sha256(prompt.encode("utf-8", errors="replace")).hexdigest()
 
 
 HERDR_DISABLED = _env_bool("HERDR_DISABLE", False)
@@ -134,6 +139,7 @@ class SessionSupervisor:
         self._pane_ref: str | None = None
         self._transcript_path: str | None = None
         self._turn_started_count = 0
+        self._injected_prompt_hashes: set[str] = set()
 
         # Zero-width prefix stamped on injected prompts so a Claude-style
         # UserPromptSubmit hook can dedup self-injections. Set per-session in
@@ -284,6 +290,13 @@ class SessionSupervisor:
             "cliSessionId": self._cli_session_id,
             "turnStartedCount": self._turn_started_count,
         }
+
+    def consume_injected_prompt(self, prompt: str) -> bool:
+        digest = _prompt_digest(prompt)
+        if digest not in self._injected_prompt_hashes:
+            return False
+        self._injected_prompt_hashes.discard(digest)
+        return True
 
     def get_pane_ref(self) -> str | None:
         return self._pane_ref
@@ -628,6 +641,9 @@ class SessionSupervisor:
         # Hold the lock across the text+Enter pair so two senders (seed vs a
         # concurrent injection) never interleave keystrokes on the pane.
         async with self._pane_write_lock:
+            prompt_digest = _prompt_digest(text)
+            self._injected_prompt_hashes.add(prompt_digest)
+            submitted = False
             try:
                 await self._client.pane_send_text(pane, f"{marker}{text}")
                 # Let the TUI ingest the pasted text before pressing Enter, then
@@ -638,10 +654,14 @@ class SessionSupervisor:
                     return False
                 await self._confirm_submitted(pane)
                 self.note_turn_started(source)
+                submitted = True
                 return True
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[supervisor] pane inject failed: %s", exc)
                 return False
+            finally:
+                if not submitted:
+                    self._injected_prompt_hashes.discard(prompt_digest)
 
     async def _submit_enter_reliably(self, pane: str) -> bool:
         attempts = max(1, CLI_SUBMIT_RETRIES + 1)

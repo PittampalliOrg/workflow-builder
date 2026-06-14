@@ -387,6 +387,9 @@ class HookProcessor:
                 await asyncio.to_thread(self._safe_raise, instance_id, [event])
             return {}
 
+        if name == "UserPromptSubmit" and self._consume_injected_prompt(payload):
+            return {}
+
         events = None
         if self._adapter is not None:
             try:
@@ -439,6 +442,23 @@ class HookProcessor:
             note_turn_started(source)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[hooks] turn-start publish failed: %s", exc)
+
+    def _consume_injected_prompt(self, payload: Mapping[str, Any]) -> bool:
+        prompt = payload.get("prompt")
+        if not isinstance(prompt, str) or not prompt:
+            return False
+        supervisor = self._supervisor_getter()
+        consume = getattr(supervisor, "consume_injected_prompt", None)
+        if not callable(consume):
+            return False
+        try:
+            if consume(prompt):
+                return True
+            stripped = prompt.strip()
+            return stripped != prompt and bool(stripped) and bool(consume(stripped))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[hooks] injected prompt consume failed: %s", exc)
+            return False
 
     def _register_transcript(
         self, payload: Mapping[str, Any], session_id: Any, instance_id: Any

@@ -105,6 +105,7 @@ class FakeSupervisor:
         self.transcripts: list[tuple[str | None, str | None]] = []
         self.turn_sources: list[str] = []
         self.turn_started_count = 1
+        self.injected_prompts: set[str] = set()
 
     def get_session(self):
         return {
@@ -121,6 +122,12 @@ class FakeSupervisor:
         self.turn_sources.append(source)
         self.turn_started_count += 1
         return self.turn_started_count
+
+    def consume_injected_prompt(self, prompt):
+        if prompt not in self.injected_prompts:
+            return False
+        self.injected_prompts.discard(prompt)
+        return True
 
 
 class FakeTailer:
@@ -300,6 +307,18 @@ def test_mapped_events_publish_under_wfb_session_id():
         ("sess-1", "user.message", {"content": [{"type": "text", "text": "hi"}]})
     ]
     assert supervisor.turn_sources == ["hook:UserPromptSubmit"]
+
+
+def test_injected_user_prompt_submit_is_not_double_published():
+    processor, published, raised, supervisor, _manager = _processor()
+    supervisor.injected_prompts.add("seed prompt")
+
+    asyncio.run(processor.process(_hook("UserPromptSubmit", prompt="seed prompt")))
+
+    assert published == []
+    assert raised == []
+    assert supervisor.turn_sources == []
+    assert supervisor.injected_prompts == set()
 
 
 def test_post_tool_use_flattens_bash_response_object():
