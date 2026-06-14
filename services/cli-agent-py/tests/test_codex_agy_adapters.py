@@ -492,6 +492,60 @@ def test_agy_hook_mapping_extracts_nested_tool_payloads():
     assert result[0]["data"]["output"] == "created"
 
 
+def test_agy_hook_mapping_canonicalizes_mcp_call_tool_names():
+    adapter = get_adapter("antigravity")
+    events = adapter.map_hook_event(
+        {
+            "hook_event_name": "PreToolUse",
+            "toolName": "call_mcp_tool",
+            "toolInput": {
+                "ServerName": "wfb_goal",
+                "ToolName": "get_goal",
+                "Arguments": {},
+            },
+        }
+    )
+    assert events == [
+        {
+            "type": "agent.tool_use",
+            "data": {
+                "tool_name": "mcp__wfb_goal__get_goal",
+                "name": "mcp__wfb_goal__get_goal",
+                "tool_input": {
+                    "ServerName": "wfb_goal",
+                    "ToolName": "get_goal",
+                    "Arguments": {},
+                },
+                "input": {
+                    "ServerName": "wfb_goal",
+                    "ToolName": "get_goal",
+                    "Arguments": {},
+                },
+                "raw_tool_name": "call_mcp_tool",
+            },
+        }
+    ]
+
+    result = adapter.map_hook_event(
+        {
+            "hook_event_name": "PostToolUse",
+            "toolName": "call_mcp_tool",
+            "toolInput": {
+                "ServerName": "wfb_goal",
+                "ToolName": "update_goal",
+                "Arguments": {"status": "complete"},
+            },
+            "toolResponse": {"content": [{"type": "text", "text": "ok"}]},
+        }
+    )
+    assert result is not None
+    assert result[0]["data"]["tool_name"] == "mcp__wfb_goal__update_goal"
+    assert result[0]["data"]["name"] == "mcp__wfb_goal__update_goal"
+    assert result[0]["data"]["raw_tool_name"] == "call_mcp_tool"
+    assert result[0]["data"]["input"]["ToolName"] == "update_goal"
+    assert result[0]["data"]["output"] == "ok"
+
+
 def test_agy_hook_mapping_uses_non_null_fallback_tool_name():
     event = get_adapter("antigravity").map_hook_event({"hook_event_name": "PreToolUse"})
     assert event is not None
@@ -499,7 +553,7 @@ def test_agy_hook_mapping_uses_non_null_fallback_tool_name():
     assert event[0]["data"]["name"] == "agy_tool"
 
 
-def test_agy_transcript_final_response_maps_message_usage_and_completion():
+def test_agy_transcript_final_response_maps_message_usage_without_completion():
     adapter = get_adapter("antigravity")
     entry = {
         "source": "MODEL",
@@ -538,10 +592,7 @@ def test_agy_transcript_final_response_maps_message_usage_and_completion():
             "sourceEventId": "agy-transcript:21:usage",
         },
     ]
-    assert adapter.transcript_turn_completion(entry) == {
-        "type": "turn.completed",
-        "lastAssistantText": "Created index.html, styles.css, script.js, and README.md.",
-    }
+    assert adapter.transcript_turn_completion(entry) is None
 
 
 def test_agy_transcript_completion_waits_for_stop_guard_outputs(agy_home):
@@ -569,10 +620,7 @@ def test_agy_transcript_completion_waits_for_stop_guard_outputs(agy_home):
     app.mkdir()
     (app / "index.html").write_text("<canvas></canvas>")
     (app / "styles.css").write_text("body{}")
-    assert adapter.transcript_turn_completion(entry) == {
-        "type": "turn.completed",
-        "lastAssistantText": "I am done.",
-    }
+    assert adapter.transcript_turn_completion(entry) is None
 
 
 def test_agy_transcript_tool_request_is_not_completion():

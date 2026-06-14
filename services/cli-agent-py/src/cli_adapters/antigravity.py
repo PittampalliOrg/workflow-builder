@@ -32,7 +32,6 @@ from typing import Any, Mapping
 
 from src.agy_capture import restore_bundle, start_capture_watcher
 from src.agy_stop_guard import (
-    completion_guard_allows_turn_completion,
     evaluate_stop_guard,
     write_stop_guard_config,
 )
@@ -276,6 +275,26 @@ def _tool_name_from(payload: Mapping[str, Any]) -> str | None:
             if name and name not in _HOOK_EVENT_NAMES:
                 return name
     return None
+
+
+def _canonical_tool_name(tool_name: str, tool_input: Mapping[str, Any]) -> str:
+    if tool_name != "call_mcp_tool":
+        return tool_name
+    server = clean_string(
+        tool_input.get("ServerName")
+        or tool_input.get("serverName")
+        or tool_input.get("server_name")
+        or tool_input.get("server")
+    )
+    tool = clean_string(
+        tool_input.get("ToolName")
+        or tool_input.get("toolName")
+        or tool_input.get("tool_name")
+        or tool_input.get("name")
+    )
+    if server and tool:
+        return f"mcp__{server}__{tool}"
+    return tool_name
 
 
 def _jsonish_mapping(value: Any) -> dict[str, Any] | None:
@@ -578,21 +597,27 @@ class AntigravityAdapter(CliAdapter):
     def map_hook_event(self, payload: Mapping[str, Any]) -> list[dict[str, Any]] | None:
         name = _hook_name(payload)
         if name == "PreToolUse":
-            tool_name = _tool_name_from(payload) or "agy_tool"
+            raw_tool_name = _tool_name_from(payload) or "agy_tool"
             tool_input = _tool_input_from(payload)
+            tool_name = _canonical_tool_name(raw_tool_name, tool_input)
+            data: dict[str, Any] = {
+                "tool_name": tool_name,
+                "name": tool_name,
+                "tool_input": tool_input,
+                "input": tool_input,
+            }
+            if tool_name != raw_tool_name:
+                data["raw_tool_name"] = raw_tool_name
             return [
                 {
                     "type": "agent.tool_use",
-                    "data": {
-                        "tool_name": tool_name,
-                        "name": tool_name,
-                        "tool_input": tool_input,
-                        "input": tool_input,
-                    },
+                    "data": data,
                 }
             ]
         if name in ("PostToolUse", "PostToolUseFailure"):
-            tool_name = _tool_name_from(payload) or "agy_tool"
+            raw_tool_name = _tool_name_from(payload) or "agy_tool"
+            tool_input = _tool_input_from(payload)
+            tool_name = _canonical_tool_name(raw_tool_name, tool_input)
             output = _tool_output_from(payload)
             ok = name == "PostToolUse"
             data: dict[str, Any] = {
@@ -603,6 +628,11 @@ class AntigravityAdapter(CliAdapter):
                 "output": output,
                 "output_preview": output[:500] if output else "",
             }
+            if tool_input:
+                data["tool_input"] = tool_input
+                data["input"] = tool_input
+            if tool_name != raw_tool_name:
+                data["raw_tool_name"] = raw_tool_name
             if not ok:
                 data["is_error"] = True
                 data["error"] = clean_string(payload.get("error")) or "tool failed"
@@ -635,12 +665,13 @@ class AntigravityAdapter(CliAdapter):
         return events
 
     def transcript_turn_completion(self, entry: Mapping[str, Any]) -> dict[str, Any] | None:
-        if not completion_guard_allows_turn_completion():
-            return None
-        text = _agy_final_response_text(entry)
-        if not text:
-            return None
-        return {"type": "turn.completed", "lastAssistantText": text}
+        # Agy writes one transcript entry for each tool result, file view, and
+        # final answer. Treating every text-bearing entry as a public turn
+        # completion over-counts turns and can end durable/run workflows before
+        # the Stop hook fires. The Stop hook is the adapter's authoritative
+        # end-turn signal; it flushes the tailer and raises one turn.completed
+        # with the latest assistant text after the output guard passes.
+        return None
 
     # -- env -------------------------------------------------------------------
 

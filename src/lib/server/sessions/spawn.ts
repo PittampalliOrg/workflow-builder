@@ -545,7 +545,11 @@ function ensureGoalMcpServer<T>(servers: T, runtimeSupportsMcp: boolean): T {
 	if (hasGoal) return servers;
 	return [
 		...servers,
-		{ name: "goal", transport: "streamable_http", url: GOAL_MCP_SERVER_URL },
+		{
+			name: "wfb_goal",
+			transport: "streamable_http",
+			url: GOAL_MCP_SERVER_URL,
+		},
 	] as T;
 }
 
