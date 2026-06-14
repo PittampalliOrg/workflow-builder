@@ -1053,6 +1053,26 @@ def test_agy_transcript_ignores_native_tool_display_artifacts():
     assert adapter.transcript_turn_completion(entry) is None
 
 
+def test_agy_transcript_ignores_mcp_tool_display_artifacts():
+    adapter = get_adapter("antigravity")
+    entry = {
+        "source": "MODEL",
+        "type": "PLANNER_RESPONSE",
+        "status": "DONE",
+        "step_index": 24,
+        "content": (
+            "Created At: 2026-06-14T21:11:28Z\n"
+            "Completed At: 2026-06-14T21:11:29Z\n"
+            "{\n"
+            '  "goal": null\n'
+            "}"
+        ),
+    }
+
+    assert adapter.map_transcript_entry(entry) == []
+    assert adapter.transcript_turn_completion(entry) is None
+
+
 def test_agy_transcript_completion_waits_for_stop_guard_outputs(agy_home):
     adapter = get_adapter("antigravity")
     session = {

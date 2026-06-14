@@ -819,11 +819,10 @@ def _is_agy_tool_display_text(text: str) -> bool:
         return False
     if "\nCompleted At:" not in normalized:
         return False
-    return (
-        "\nFile Path: `file://" in normalized
-        or "\nThe output was large and was saved to: file://" in normalized
-        or "\nThe above content shows the entire, complete file contents" in normalized
-    )
+    # AGY records tool-result display blocks as assistant-looking transcript rows.
+    # Some are file/output banners, while MCP results are just timestamp headers
+    # followed by JSON. They are not final assistant responses.
+    return True
 
 
 def _agy_final_response_text(entry: Mapping[str, Any]) -> str | None:
