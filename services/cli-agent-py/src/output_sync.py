@@ -18,6 +18,7 @@ DEFAULT_CWD = "/sandbox"
 DEFAULT_OPENSHELL_RUNTIME_URL = (
     "http://openshell-agent-runtime.openshell.svc.cluster.local:8083"
 )
+INLINE_CONTENT_B64_LIMIT = 12_000
 
 
 def _record(value: Any) -> dict[str, Any]:
@@ -156,6 +157,67 @@ def _workspace_write_command(*, target: str, content_b64: str, mode: int) -> str
     )
 
 
+def _workspace_chunked_write_commands(
+    *, target: str, content_b64: str, mode: int
+) -> list[str]:
+    target_q = shlex.quote(target)
+    init = "\n".join(
+        [
+            "set -eu",
+            f"target={target_q}",
+            'parent="$(dirname "$target")"',
+            '[ ! -e "$parent" ] || [ -d "$parent" ] || rm -f "$parent"',
+            'mkdir -p "$parent"',
+            '[ ! -d "$target" ] || rm -rf "$target"',
+            'rm -f -- "${target}.b64.wfbtmp" "${target}.tmp.wfb-output-sync"',
+            ': > "${target}.b64.wfbtmp"',
+        ]
+    )
+    commands = [init]
+    for idx in range(0, len(content_b64), INLINE_CONTENT_B64_LIMIT):
+        chunk = content_b64[idx : idx + INLINE_CONTENT_B64_LIMIT]
+        commands.append(
+            "\n".join(
+                [
+                    "set -eu",
+                    f"target={target_q}",
+                    'cat >> "${target}.b64.wfbtmp" <<\'__WFB_OUTPUT_SYNC_B64_CHUNK__\'',
+                    chunk,
+                    "__WFB_OUTPUT_SYNC_B64_CHUNK__",
+                ]
+            )
+        )
+    commands.append(
+        "\n".join(
+            [
+                "set -eu",
+                f"target={target_q}",
+                'base64 -d "${target}.b64.wfbtmp" > "${target}.tmp.wfb-output-sync"',
+                'rm -f -- "${target}.b64.wfbtmp"',
+                f"chmod {mode & 0o777:03o} \"${{target}}.tmp.wfb-output-sync\"",
+                'mv "${target}.tmp.wfb-output-sync" "$target"',
+            ]
+        )
+    )
+    return commands
+
+
+def _workspace_write_commands(*, target: str, content_b64: str, mode: int) -> list[str]:
+    if len(content_b64) <= INLINE_CONTENT_B64_LIMIT:
+        return [
+            _workspace_write_command(
+                target=target,
+                content_b64=content_b64,
+                mode=mode,
+            )
+        ]
+    return _workspace_chunked_write_commands(
+        target=target,
+        content_b64=content_b64,
+        mode=mode,
+    )
+
+
 def _workspace_prepare_command(*, target: str, source_is_dir: bool) -> str:
     target_parent = posixpath.dirname(target.rstrip("/")) or "/sandbox"
     commands = [
@@ -232,15 +294,19 @@ def _copy_path(
 
     copied: list[dict[str, Any]] = []
     for file_entry in _collect_files(source, target, max_bytes):
-        result = _post_workspace_command(
-            workspace_ref=workspace_ref,
-            command=_workspace_write_command(
-                target=str(file_entry["target"]),
-                content_b64=str(file_entry["contentB64"]),
-                mode=int(file_entry["mode"]),
-            ),
-            timeout_seconds=timeout_seconds,
-        )
+        result: dict[str, Any] = {"ok": True, "exitCode": 0}
+        for command in _workspace_write_commands(
+            target=str(file_entry["target"]),
+            content_b64=str(file_entry["contentB64"]),
+            mode=int(file_entry["mode"]),
+        ):
+            result = _post_workspace_command(
+                workspace_ref=workspace_ref,
+                command=command,
+                timeout_seconds=timeout_seconds,
+            )
+            if not result.get("ok"):
+                break
         copied.append(
             {
                 "source": file_entry["source"],
