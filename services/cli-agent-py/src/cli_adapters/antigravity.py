@@ -386,6 +386,15 @@ def _canonical_tool_name(tool_name: str, tool_input: Mapping[str, Any]) -> str:
     return tool_name
 
 
+def _mcp_tool_metadata(tool_name: str) -> dict[str, str]:
+    if not tool_name.startswith("mcp__"):
+        return {}
+    parts = tool_name.split("__", 2)
+    if len(parts) != 3 or not parts[1] or not parts[2]:
+        return {}
+    return {"server": parts[1], "mcp_tool": parts[2]}
+
+
 def _jsonish_mapping(value: Any) -> dict[str, Any] | None:
     if isinstance(value, Mapping):
         return dict(value)
@@ -997,6 +1006,7 @@ class AntigravityAdapter(CliAdapter):
                 "name": tool_name,
                 "tool_input": tool_input,
                 "input": tool_input,
+                **_mcp_tool_metadata(tool_name),
             }
             if tool_name != raw_tool_name:
                 data["raw_tool_name"] = raw_tool_name
@@ -1029,6 +1039,7 @@ class AntigravityAdapter(CliAdapter):
                 "success": ok,
                 "output": output,
                 "output_preview": output[:500] if output else "",
+                **_mcp_tool_metadata(tool_name),
             }
             if tool_input:
                 data["tool_input"] = tool_input

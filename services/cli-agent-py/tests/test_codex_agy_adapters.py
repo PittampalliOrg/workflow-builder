@@ -755,6 +755,8 @@ def test_agy_hook_mapping_canonicalizes_mcp_call_tool_names():
                     "ToolName": "get_goal",
                     "Arguments": {},
                 },
+                "server": "wfb_goal",
+                "mcp_tool": "get_goal",
                 "raw_tool_name": "call_mcp_tool",
             },
         }
@@ -776,6 +778,8 @@ def test_agy_hook_mapping_canonicalizes_mcp_call_tool_names():
     assert result[0]["data"]["tool_name"] == "mcp__wfb_goal__update_goal"
     assert result[0]["data"]["name"] == "mcp__wfb_goal__update_goal"
     assert result[0]["data"]["raw_tool_name"] == "call_mcp_tool"
+    assert result[0]["data"]["server"] == "wfb_goal"
+    assert result[0]["data"]["mcp_tool"] == "update_goal"
     assert result[0]["data"]["input"]["ToolName"] == "update_goal"
     assert result[0]["data"]["output"] == "ok"
 

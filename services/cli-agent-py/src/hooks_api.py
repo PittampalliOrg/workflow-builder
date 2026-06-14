@@ -158,6 +158,15 @@ def _truncate_output(value: Any) -> Any:
     return encoded[:TOOL_OUTPUT_TRUNCATE_BYTES].decode("utf-8", errors="replace")
 
 
+def _mcp_tool_metadata(tool_name: str) -> dict[str, str]:
+    if not tool_name.startswith("mcp__"):
+        return {}
+    parts = tool_name.split("__", 2)
+    if len(parts) != 3 or not parts[1] or not parts[2]:
+        return {}
+    return {"server": parts[1], "mcp_tool": parts[2]}
+
+
 def _flatten_tool_output(tool_response: Any) -> str:
     """Flatten a hook ``tool_response`` to display text. Bash-style responses
     are Mappings ``{stdout, stderr, interrupted, …}`` — prefer stdout (+stderr
@@ -226,6 +235,7 @@ def map_hook_event(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                     # directly so we stamp both spellings).
                     "name": normalized_tool_name,
                     "input": tool_input if isinstance(tool_input, Mapping) else {},
+                    **_mcp_tool_metadata(normalized_tool_name),
                 },
             }
         ]
@@ -248,6 +258,7 @@ def map_hook_event(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                     # "(no output)") + a 500-char `output_preview`.
                     "output": _truncate_output(output_text),
                     "output_preview": output_text[:500] if output_text else "",
+                    **_mcp_tool_metadata(normalized_tool_name),
                 },
             }
         ]
@@ -269,6 +280,7 @@ def map_hook_event(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                     "error": _clean(payload.get("error"))
                     or _clean(payload.get("reason"))
                     or "tool failed",
+                    **_mcp_tool_metadata(normalized_tool_name),
                 },
             }
         ]

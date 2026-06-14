@@ -53,6 +53,30 @@ def test_pre_tool_use_maps_to_tool_use():
     assert events[0]["data"]["input"] == {"command": "ls"}
 
 
+def test_mcp_tool_hooks_include_server_metadata():
+    use_events = map_hook_event(
+        _hook(
+            "PreToolUse",
+            tool_name="mcp__piece_github__find_user",
+            tool_input={"username": "vpittamp"},
+        )
+    )
+    use_data = use_events[0]["data"]
+    assert use_data["server"] == "piece_github"
+    assert use_data["mcp_tool"] == "find_user"
+
+    result_events = map_hook_event(
+        _hook(
+            "PostToolUse",
+            tool_name="mcp__piece_github__find_user",
+            tool_response="ok",
+        )
+    )
+    result_data = result_events[0]["data"]
+    assert result_data["server"] == "piece_github"
+    assert result_data["mcp_tool"] == "find_user"
+
+
 def test_anonymous_empty_tool_hook_is_skipped():
     assert map_hook_event(_hook("PreToolUse")) == []
     assert map_hook_event(_hook("PostToolUse")) == []
