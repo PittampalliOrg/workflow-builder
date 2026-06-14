@@ -1025,6 +1025,42 @@ def test_agy_transcript_maps_gemini_usage_metadata_cache_usage():
     ]
 
 
+def test_agy_transcript_estimates_usage_when_native_usage_absent():
+    adapter = get_adapter("antigravity")
+    adapter.map_transcript_entry(
+        {
+            "step_index": 0,
+            "source": "USER_EXPLICIT",
+            "type": "USER_INPUT",
+            "status": "DONE",
+            "content": "Reply exactly: agy-token-cache-smoke-ok. Do not use Bash.",
+        }
+    )
+    entry = {
+        "step_index": 2,
+        "source": "MODEL",
+        "type": "PLANNER_RESPONSE",
+        "status": "DONE",
+        "content": "agy-token-cache-smoke-ok",
+    }
+
+    events = adapter.map_transcript_entry(entry)
+
+    assert events is not None
+    assert [event["type"] for event in events] == ["agent.message", "agent.llm_usage"]
+    usage = events[1]["data"]
+    assert usage["input_tokens"] > 0
+    assert usage["output_tokens"] > 0
+    assert usage["cache_read_input_tokens"] == 0
+    assert usage["cache_creation_input_tokens"] == 0
+    assert usage["context_source"] == "transcript_estimate"
+    assert usage["context_count_method"] == "estimated"
+    assert usage["context_count_scope"] == "last_agy_turn"
+    assert usage["usage_estimated"] is True
+    assert usage["usage_source"] == "agy_transcript_estimate"
+    assert events[1]["sourceEventId"] == "agy-transcript:2:usage"
+
+
 def test_agy_transcript_ignores_managed_run_command_denial_artifact():
     adapter = get_adapter("antigravity")
     entry = {

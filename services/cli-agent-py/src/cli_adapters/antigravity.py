@@ -825,6 +825,32 @@ def _agy_final_response_text(entry: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _agy_user_input_text(entry: Mapping[str, Any]) -> str | None:
+    source = clean_string(entry.get("source"))
+    entry_type = clean_string(entry.get("type"))
+    role = clean_string(entry.get("role"))
+    if role and role.lower() == "user":
+        pass
+    elif source and source.upper() == "USER_EXPLICIT":
+        pass
+    elif entry_type and entry_type.upper() in {"USER_INPUT", "USER_MESSAGE"}:
+        pass
+    else:
+        return None
+    return _text_from_payload(entry.get("content") or entry.get("message") or entry.get("text"))
+
+
+def _estimate_tokens(text: str | None) -> int:
+    if not text:
+        return 0
+    stripped = text.strip()
+    if not stripped:
+        return 0
+    # Conservative cross-model estimate: roughly four chars/token, never less
+    # than the whitespace-token count. Used only when AGY omits native usage.
+    return max(1, max(len(stripped) // 4, len(stripped.split())))
+
+
 def _int_or_none(value: Any) -> int | None:
     if value is None or isinstance(value, bool):
         return None
@@ -957,6 +983,9 @@ class AntigravityAdapter(CliAdapter):
         "executor has not processed the previous input yet",
     )
 
+    def __init__(self) -> None:
+        self._last_user_input_text: str | None = None
+
     def format_seed_user_message(self, text: str) -> str:
         return text.strip()
 
@@ -981,6 +1010,7 @@ class AntigravityAdapter(CliAdapter):
     # -- seeding ----------------------------------------------------------------
 
     def seed(self, session_input: Mapping[str, Any]) -> SeedResult:
+        self._last_user_input_text = None
         agent_config = _record(session_input.get("agentConfig"))
         result = SeedResult()
         home = _agy_home()
@@ -1144,8 +1174,12 @@ class AntigravityAdapter(CliAdapter):
         self, entry: Mapping[str, Any]
     ) -> list[dict[str, Any]] | None:
         events: list[dict[str, Any]] = []
+        user_text = _agy_user_input_text(entry)
+        if user_text:
+            self._last_user_input_text = user_text
         identity = _entry_identity(entry)
         text = _agy_final_response_text(entry)
+        usage = _agy_usage(entry)
         if text:
             data: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
             model = clean_string(
@@ -1157,7 +1191,23 @@ class AntigravityAdapter(CliAdapter):
             if identity:
                 event["sourceEventId"] = f"agy-transcript:{identity}:message"
             events.append(event)
-        usage = _agy_usage(entry)
+        if usage is None and text:
+            usage = {
+                "input_tokens": _estimate_tokens(self._last_user_input_text),
+                "output_tokens": _estimate_tokens(text),
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "context_source": "transcript_estimate",
+                "context_count_method": "estimated",
+                "context_count_scope": "last_agy_turn",
+                "usage_estimated": True,
+                "usage_source": "agy_transcript_estimate",
+            }
+            model = clean_string(
+                entry.get("model") or entry.get("model_name") or entry.get("modelName")
+            )
+            if model:
+                usage["model"] = model
         if usage:
             event = {"type": "agent.llm_usage", "data": usage}
             if identity:
