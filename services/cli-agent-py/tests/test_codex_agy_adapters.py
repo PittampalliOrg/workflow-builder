@@ -339,6 +339,30 @@ def test_agy_seed_writes_stop_guard_for_output_sync(agy_home):
     assert guard["requireFileChanges"] is True
 
 
+def test_agy_seed_writes_stop_guard_from_durable_run_body(agy_home):
+    session = {
+        **AGY_SESSION,
+        "outputSync": {
+            "paths": [{"source": str(agy_home / "app"), "target": "/sandbox/app"}]
+        },
+        "body": {
+            "stopCondition": "Stop only after index.html, styles.css, script.js, and README.md exist.",
+            "requireFileChanges": True,
+        },
+    }
+    result = get_adapter("antigravity").seed(session)
+    guard = json.loads((agy_home / ".wfb/agy_stop_guard.json").read_text())
+    assert result.paths["agyStopGuardPath"].endswith("agy_stop_guard.json")
+    assert guard["requiredFileNames"] == [
+        "index.html",
+        "styles.css",
+        "script.js",
+        "README.md",
+    ]
+    assert guard["requireFileChanges"] is True
+    assert guard["stopCondition"].startswith("Stop only after index.html")
+
+
 def test_agy_seed_writes_gemini_md_and_settings(agy_home):
     get_adapter("antigravity").seed(AGY_SESSION)
     assert (agy_home / ".gemini/GEMINI.md").read_text().startswith("Be terse.")
@@ -478,7 +502,9 @@ def test_agy_transcript_completion_waits_for_stop_guard_outputs(agy_home):
         "outputSync": {
             "paths": [{"source": str(agy_home / "app"), "target": "/sandbox/app"}]
         },
-        "stopCondition": "Stop only after index.html and styles.css exist.",
+        "body": {
+            "stopCondition": "Stop only after index.html and styles.css exist.",
+        },
     }
     adapter.seed(session)
     entry = {

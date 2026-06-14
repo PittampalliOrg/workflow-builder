@@ -93,6 +93,16 @@ def _source_specs(output_sync: Mapping[str, Any]) -> list[dict[str, Any]]:
     return specs
 
 
+def _body_contract(session_input: Mapping[str, Any]) -> dict[str, Any]:
+    body = _record(session_input.get("body"))
+    return {
+        "stopCondition": session_input.get("stopCondition", body.get("stopCondition")),
+        "requireFileChanges": session_input.get(
+            "requireFileChanges", body.get("requireFileChanges")
+        ),
+    }
+
+
 def _required_file_names(stop_condition: Any) -> list[str]:
     if not isinstance(stop_condition, str):
         return []
@@ -120,13 +130,15 @@ def write_stop_guard_config(session_input: Mapping[str, Any]) -> str | None:
     path = _config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     max_continues = _env_int("CLI_AGY_STOP_GUARD_MAX_CONTINUES", DEFAULT_MAX_CONTINUES)
+    contract = _body_contract(session_input)
+    stop_condition = contract["stopCondition"]
     config = {
         "enabled": True,
         "maxContinues": max(0, max_continues),
         "requiredSources": sources,
-        "requiredFileNames": _required_file_names(session_input.get("stopCondition")),
-        "requireFileChanges": bool(session_input.get("requireFileChanges")),
-        "stopCondition": _clean(session_input.get("stopCondition")),
+        "requiredFileNames": _required_file_names(stop_condition),
+        "requireFileChanges": bool(contract["requireFileChanges"]),
+        "stopCondition": _clean(stop_condition),
     }
     path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     return str(path)

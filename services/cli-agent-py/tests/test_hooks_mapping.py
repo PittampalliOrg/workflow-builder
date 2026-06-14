@@ -185,8 +185,10 @@ def test_agy_stop_hook_continues_when_output_contract_missing(tmp_path, monkeypa
             "outputSync": {
                 "paths": [{"source": str(tmp_path / "app"), "target": "/sandbox/app"}]
             },
-            "stopCondition": "Stop only after index.html exists.",
-            "requireFileChanges": True,
+            "body": {
+                "stopCondition": "Stop only after index.html exists.",
+                "requireFileChanges": True,
+            },
         }
     )
     published: list[tuple[str | None, str, dict]] = []
