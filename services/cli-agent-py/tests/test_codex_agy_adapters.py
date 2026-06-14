@@ -834,6 +834,56 @@ def test_agy_run_command_hook_shim_executes_and_denies_native_tool(
     assert result["data"]["shim"] == "agy-run-command-hook"
 
 
+def test_agy_run_command_hook_shim_defaults_on_in_kubernetes(tmp_path, monkeypatch):
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(sandbox))
+    monkeypatch.delenv("CLI_AGENT_AGY_RUN_COMMAND_SHIM", raising=False)
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+
+    response = get_adapter("antigravity").hook_response(
+        "PreToolUse",
+        {
+            "hook_event_name": "PreToolUse",
+            "toolName": "run_command",
+            "toolInput": {
+                "CommandLine": 'printf "managed-default\\n"',
+                "Cwd": str(sandbox),
+            },
+        },
+        {},
+    )
+
+    assert response is not None
+    assert response["decision"] == "deny"
+    assert "managed-default" in response["reason"]
+
+
+def test_agy_run_command_hook_shim_can_be_disabled_in_kubernetes(
+    tmp_path, monkeypatch
+):
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(sandbox))
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    monkeypatch.setenv("CLI_AGENT_AGY_RUN_COMMAND_SHIM", "false")
+
+    response = get_adapter("antigravity").hook_response(
+        "PreToolUse",
+        {
+            "hook_event_name": "PreToolUse",
+            "toolName": "run_command",
+            "toolInput": {
+                "CommandLine": 'printf "native\\n"',
+                "Cwd": str(sandbox),
+            },
+        },
+        {},
+    )
+
+    assert response is None
+
+
 def test_agy_run_command_hook_shim_suppresses_native_post_tool_result(monkeypatch):
     monkeypatch.setenv("CLI_AGENT_AGY_RUN_COMMAND_SHIM", "true")
 

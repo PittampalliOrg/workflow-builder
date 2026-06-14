@@ -490,11 +490,27 @@ def _user_namespaces_available() -> bool:
         return True
 
 
+def _running_in_managed_sandbox() -> bool:
+    """True inside workflow-builder's Kubernetes/OpenShell agent pods.
+
+    AGY's native terminal executor can try to enter its own sandbox/pty path even
+    after we disable AGY sandbox mode. In OpenShell-managed Kubernetes pods that
+    path can fail or hang on fork/exec under Landlock/seccomp, while an ordinary
+    subprocess from cli-agent-py works. Local developer AGY should keep native
+    behavior unless explicitly overridden.
+    """
+    if os.environ.get("KUBERNETES_SERVICE_HOST"):
+        return True
+    if os.environ.get("OPENSHELL_SANDBOX_ID") or os.environ.get("OPENSHELL_SANDBOX_NAME"):
+        return True
+    return Path("/run/openshell").exists()
+
+
 def _should_shim_run_command() -> bool:
     explicit = _env_bool("CLI_AGENT_AGY_RUN_COMMAND_SHIM")
     if explicit is not None:
         return explicit
-    return not _user_namespaces_available()
+    return _running_in_managed_sandbox() or not _user_namespaces_available()
 
 
 def _run_command_value(tool_input: Mapping[str, Any]) -> str | None:
