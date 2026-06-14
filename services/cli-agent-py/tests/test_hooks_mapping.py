@@ -283,6 +283,32 @@ def test_stop_records_missing_turn_start_before_completion():
     ]
 
 
+def test_stop_uses_live_supervisor_turn_count_when_session_snapshot_is_stale():
+    class StaleSessionSupervisor(FakeSupervisor):
+        def get_session(self):
+            session = super().get_session()
+            session["turnStartedCount"] = 0
+            return session
+
+    published: list[tuple[str | None, str, dict]] = []
+    raised: list[tuple[str, list[dict]]] = []
+    supervisor = StaleSessionSupervisor()
+    supervisor.turn_started_count = 1
+    processor = HookProcessor(
+        publish=lambda sid, etype, data, **kw: published.append((sid, etype, data)),
+        raise_lifecycle=lambda iid, events: raised.append((iid, events)),
+        supervisor_getter=lambda: supervisor,
+        tailer_manager=FakeTailerManager(),
+    )
+
+    asyncio.run(processor.process(_hook("Stop")))
+
+    assert supervisor.turn_sources == []
+    assert raised == [
+        ("inst-1", [{"type": "turn.completed", "lastAssistantText": "final answer"}])
+    ]
+
+
 def test_late_injected_submit_does_not_duplicate_fallback_turn_start():
     _published: list[tuple[str | None, str, dict]] = []
     raised: list[tuple[str, list[dict]]] = []
@@ -419,6 +445,62 @@ def test_processor_publishes_adapter_internal_events_and_strips_response():
     assert published == [
         ("sess-1", "agent.tool_use", {"tool_name": "run_command"}),
         ("sess-1", "agent.tool_result", {"tool_name": "run_command", "ok": True}),
+    ]
+
+
+def test_antigravity_duplicate_tool_use_is_suppressed_until_result():
+    class AgyToolAdapter:
+        name = "antigravity"
+
+        def is_turn_completion_hook(self, event_name):
+            return False
+
+        def map_hook_event(self, payload):
+            if payload.get("hook_event_name") == "PreToolUse":
+                return [
+                    {
+                        "type": "agent.tool_use",
+                        "data": {
+                            "tool_name": "write_to_file",
+                            "name": "write_to_file",
+                            "tool_input": {"TargetFile": "/sandbox/index.html"},
+                            "input": {"TargetFile": "/sandbox/index.html"},
+                        },
+                    }
+                ]
+            if payload.get("hook_event_name") == "PostToolUse":
+                return [
+                    {
+                        "type": "agent.tool_result",
+                        "data": {
+                            "tool_name": "write_to_file",
+                            "name": "write_to_file",
+                            "ok": True,
+                            "tool_input": {"TargetFile": "/sandbox/index.html"},
+                            "input": {"TargetFile": "/sandbox/index.html"},
+                        },
+                    }
+                ]
+            return []
+
+    published: list[tuple[str | None, str, dict]] = []
+    processor = HookProcessor(
+        publish=lambda sid, etype, data, **kw: published.append((sid, etype, data)),
+        raise_lifecycle=lambda *_a, **_k: None,
+        supervisor_getter=lambda: FakeSupervisor(),
+        tailer_manager=FakeTailerManager(),
+        adapter=AgyToolAdapter(),
+    )
+
+    asyncio.run(processor.process(_hook("PreToolUse")))
+    asyncio.run(processor.process(_hook("PreToolUse")))
+    asyncio.run(processor.process(_hook("PostToolUse")))
+    asyncio.run(processor.process(_hook("PreToolUse")))
+
+    assert [event_type for _sid, event_type, _data in published] == [
+        "agent.tool_use",
+        "agent.tool_result",
+        "agent.tool_use",
     ]
 
 

@@ -322,6 +322,10 @@ class SessionSupervisor:
             "turnStartedCount": self._turn_started_count,
         }
 
+    @property
+    def turn_started_count(self) -> int:
+        return self._turn_started_count
+
     def consume_injected_prompt(self, prompt: str) -> bool:
         digests = _prompt_digest_variants(prompt)
         if not digests.intersection(self._injected_prompt_hashes):

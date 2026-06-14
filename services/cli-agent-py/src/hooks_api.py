@@ -320,6 +320,7 @@ class HookProcessor:
         self._adapter = adapter
         self._completion_keys_raised: set[tuple[str, int]] = set()
         self._completion_fallback_started_turn = False
+        self._pending_agy_tool_uses: dict[str, set[str]] = {}
         self._process_lock = asyncio.Lock()
 
     def _session(self) -> dict[str, Any]:
@@ -357,6 +358,7 @@ class HookProcessor:
                     key for key in self._completion_keys_raised if key[0] != instance_id
                 }
                 self._completion_fallback_started_turn = False
+                self._pending_agy_tool_uses.pop(instance_id, None)
             return {}  # registration handled above; no published event
 
         adapter_turn_done = bool(
@@ -468,10 +470,10 @@ class HookProcessor:
                 self._completion_fallback_started_turn = False
             else:
                 self._record_turn_started("hook:UserPromptSubmit")
-        for event in events:
+        for event in self._filter_events(session_id, events):
             self._publish(session_id, event["type"], event.get("data") or {})
         response = self._hook_response(name, payload, session)
-        for event in self._pop_internal_events(response):
+        for event in self._filter_events(session_id, self._pop_internal_events(response)):
             self._publish(session_id, event["type"], event.get("data") or {})
         return response
 
@@ -503,6 +505,65 @@ class HookProcessor:
                 continue
             events.append({"type": event_type, "data": item.get("data") or {}})
         return events
+
+    def _filter_events(
+        self, session_id: Any, events: list[dict[str, Any]] | None
+    ) -> list[dict[str, Any]]:
+        if not events:
+            return []
+        if getattr(self._adapter, "name", None) != "antigravity":
+            return events
+        session_key = str(session_id or "_global")
+        filtered: list[dict[str, Any]] = []
+        for event in events:
+            if not isinstance(event, Mapping):
+                continue
+            event_type = event.get("type")
+            data = event.get("data") or {}
+            if not isinstance(data, Mapping):
+                data = {}
+            if event_type == "agent.tool_use":
+                key = self._tool_event_key(data)
+                if key:
+                    pending = self._pending_agy_tool_uses.setdefault(session_key, set())
+                    if key in pending:
+                        logger.debug("[hooks] suppressed duplicate agy tool_use %s", key)
+                        continue
+                    pending.add(key)
+            elif event_type == "agent.tool_result":
+                self._clear_pending_tool_use(session_key, data)
+            filtered.append(dict(event))
+        return filtered
+
+    def _tool_event_key(self, data: Mapping[str, Any]) -> str | None:
+        tool_name = _clean(data.get("tool_name")) or _clean(data.get("name"))
+        if not tool_name:
+            return None
+        tool_input = data.get("tool_input")
+        if not isinstance(tool_input, Mapping):
+            tool_input = data.get("input")
+        try:
+            input_key = json.dumps(tool_input or {}, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            input_key = str(tool_input or {})
+        return f"{tool_name}:{input_key}"
+
+    def _clear_pending_tool_use(self, session_key: str, data: Mapping[str, Any]) -> None:
+        pending = self._pending_agy_tool_uses.get(session_key)
+        if not pending:
+            return
+        key = self._tool_event_key(data)
+        if key in pending:
+            pending.discard(key)
+        else:
+            tool_name = _clean(data.get("tool_name")) or _clean(data.get("name"))
+            if tool_name:
+                prefix = f"{tool_name}:"
+                pending.difference_update(
+                    candidate for candidate in list(pending) if candidate.startswith(prefix)
+                )
+        if not pending:
+            self._pending_agy_tool_uses.pop(session_key, None)
 
     async def _wait_for_tailer_completion_text(self) -> str | None:
         wait = getattr(self._tailer_manager, "wait_for_assistant_text", None)
@@ -542,6 +603,9 @@ class HookProcessor:
 
     def _ensure_turn_started_before_completion(self, session: Mapping[str, Any]) -> int:
         turn_count = _turn_started_count(session)
+        live_turn_count = self._supervisor_turn_started_count()
+        if live_turn_count > turn_count:
+            return live_turn_count
         if turn_count > 0:
             return turn_count
         started = self._record_turn_started("hook:completion-fallback")
@@ -549,6 +613,16 @@ class HookProcessor:
             self._completion_fallback_started_turn = True
             return started
         return _turn_started_count(self._session())
+
+    def _supervisor_turn_started_count(self) -> int:
+        supervisor = self._supervisor_getter()
+        for attr in ("turn_started_count", "_turn_started_count"):
+            value = getattr(supervisor, attr, None)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, int) and value >= 0:
+                return value
+        return 0
 
     def _suppress_supervisor_idle_echo(self) -> None:
         supervisor = self._supervisor_getter()
