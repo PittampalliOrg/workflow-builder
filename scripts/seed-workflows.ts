@@ -1886,7 +1886,7 @@ const THREE_B_ONE_B_BUILD_PROMPT = [
 ].join("");
 
 const THREE_B_ONE_B_CLI_BUILD_STOP_CONDITION = [
-	`Stop only when /sandbox/${THREE_B_ONE_B_APP_DIR} exists with index.html, styles.css, script.js, and README.md `,
+	`Stop only when ${THREE_B_ONE_B_APP_DIR} exists with index.html, styles.css, script.js, and README.md `,
 	"created or updated through file-writing tools. ",
 	"index.html must include canvas#canvas, button#btn-play, and button#btn-restart. ",
 	"The final answer must list the files created and outline the animation logic.",
