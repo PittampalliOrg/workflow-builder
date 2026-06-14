@@ -2979,10 +2979,15 @@ def _list_workflows_from_taskhub_instance_ids(
         if not getattr(response, "exists", False):
             continue
 
-        orchestration_state = getattr(response, "orchestrationState", None) or getattr(
-            response, "orchestration_state", None
+        orchestration_state_missing = object()
+        orchestration_state = getattr(
+            response, "orchestrationState", orchestration_state_missing
         )
-        if orchestration_state is None:
+        if orchestration_state is orchestration_state_missing:
+            orchestration_state = getattr(
+                response, "orchestration_state", orchestration_state_missing
+            )
+        if orchestration_state is orchestration_state_missing:
             raise AttributeError(
                 "GetInstance response did not include orchestration state"
             )

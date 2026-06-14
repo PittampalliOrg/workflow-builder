@@ -364,6 +364,9 @@ def test_taskhub_list_accepts_snake_case_orchestration_state(monkeypatch):
         lastUpdatedTimestamp = None
         name = "swebench-instance"
 
+        def __bool__(self):
+            return False
+
     class _Response:
         exists = True
         orchestration_state = _State()
