@@ -541,10 +541,7 @@ class AntigravityAdapter(CliAdapter):
     prompt_ready_marker = "? for shortcuts"
 
     def format_seed_user_message(self, text: str) -> str:
-        clean = text.strip()
-        if not clean or clean.startswith("/goal"):
-            return clean
-        return f"/goal {clean}"
+        return text.strip()
 
     @property
     def requires_interactive_login(self) -> bool:
