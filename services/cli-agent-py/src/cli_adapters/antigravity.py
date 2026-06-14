@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 import shutil
 import subprocess
 import time
@@ -61,6 +62,7 @@ AGY_AUTH_ENV = "AGY_AUTH_JSON"
 RUN_COMMAND_SHIM_MAX_OUTPUT = 16_000
 RUN_COMMAND_SHIM_REASON_LIMIT = 9_000
 RUN_COMMAND_SHIM_DEFAULT_TIMEOUT_SECONDS = 300
+RUN_COMMAND_SHIM_KILL_GRACE_SECONDS = 2.0
 
 
 def clean_string(value: Any) -> str | None:
@@ -523,6 +525,84 @@ def _truncate_text(value: str, limit: int = RUN_COMMAND_SHIM_MAX_OUTPUT) -> str:
     return value[:limit] + f"\n...[truncated {omitted} chars]"
 
 
+def _terminate_process_group(proc: subprocess.Popen[str]) -> None:
+    try:
+        pgid = os.getpgid(proc.pid)
+    except Exception:  # noqa: BLE001
+        pgid = None
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+            return
+        except ProcessLookupError:
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        proc.terminate()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _kill_process_group(proc: subprocess.Popen[str]) -> None:
+    try:
+        pgid = os.getpgid(proc.pid)
+    except Exception:  # noqa: BLE001
+        pgid = None
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            return
+        except ProcessLookupError:
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        proc.kill()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _run_bash_command(command: str, cwd: Path, timeout: int) -> dict[str, Any]:
+    started = time.monotonic()
+    proc = subprocess.Popen(
+        _bash_argv(command),
+        cwd=str(cwd),
+        env=os.environ.copy(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return {
+            "exit_code": proc.returncode,
+            "timed_out": False,
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "stdout": _truncate_text(stdout or ""),
+            "stderr": _truncate_text(stderr or ""),
+        }
+    except subprocess.TimeoutExpired as exc:
+        _terminate_process_group(proc)
+        try:
+            stdout, stderr = proc.communicate(timeout=RUN_COMMAND_SHIM_KILL_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc)
+            stdout, stderr = proc.communicate()
+        stdout_text = stdout if stdout is not None else exc.stdout or ""
+        stderr_text = stderr if stderr is not None else exc.stderr or ""
+        return {
+            "exit_code": 124,
+            "timed_out": True,
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "stdout": _truncate_text(stdout_text),
+            "stderr": _truncate_text(
+                stderr_text + f"\nCommand timed out after {timeout} seconds."
+            ),
+        }
+
+
 def _format_run_command_reason(result: Mapping[str, Any]) -> str:
     stdout = str(result.get("stdout") or "")
     stderr = str(result.get("stderr") or "")
@@ -586,7 +666,6 @@ def _execute_run_command_shim(
             RUN_COMMAND_SHIM_DEFAULT_TIMEOUT_SECONDS,
         ),
     )
-    started = time.monotonic()
     if not command:
         result: dict[str, Any] = {
             "exit_code": 2,
@@ -605,38 +684,12 @@ def _execute_run_command_shim(
         }
     else:
         try:
-            completed = subprocess.run(
-                _bash_argv(command),
-                cwd=str(cwd),
-                env=os.environ.copy(),
-                text=True,
-                capture_output=True,
-                timeout=timeout,
-                check=False,
-            )
-            result = {
-                "exit_code": completed.returncode,
-                "timed_out": False,
-                "duration_ms": int((time.monotonic() - started) * 1000),
-                "stdout": _truncate_text(completed.stdout or ""),
-                "stderr": _truncate_text(completed.stderr or ""),
-            }
-        except subprocess.TimeoutExpired as exc:
-            result = {
-                "exit_code": 124,
-                "timed_out": True,
-                "duration_ms": int((time.monotonic() - started) * 1000),
-                "stdout": _truncate_text(exc.stdout or ""),
-                "stderr": _truncate_text(
-                    (exc.stderr or "")
-                    + f"\nCommand timed out after {timeout} seconds."
-                ),
-            }
+            result = _run_bash_command(command, cwd, timeout)
         except Exception as exc:  # noqa: BLE001
             result = {
                 "exit_code": 126,
                 "timed_out": False,
-                "duration_ms": int((time.monotonic() - started) * 1000),
+                "duration_ms": 0,
                 "stdout": "",
                 "stderr": f"Workflow-builder failed to execute command: {exc}",
             }
@@ -774,6 +827,9 @@ class AntigravityAdapter(CliAdapter):
     # supervisor's post-Enter verification sample. Treat that idle sample as a
     # successful submit rather than repeatedly pressing Enter into the composer.
     idle_after_submit_is_success = True
+    prompt_not_ready_markers = (
+        "executor has not processed the previous input yet",
+    )
 
     def format_seed_user_message(self, text: str) -> str:
         return text.strip()

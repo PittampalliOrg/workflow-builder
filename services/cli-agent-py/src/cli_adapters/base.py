@@ -136,6 +136,11 @@ class CliAdapter(abc.ABC):
     # is not proof that Enter was dropped.
     idle_after_submit_is_success: bool = False
 
+    # Screen strings that mean the prompt is visible but unsafe to type into.
+    # This is for CLIs herdr screen-detects as idle even while their internal
+    # executor/input queue is still busy after a cancelled tool call.
+    prompt_not_ready_markers: tuple[str, ...] = ()
+
     def format_seed_user_message(self, text: str) -> str:
         """Return the first prompt typed into the CLI TUI.
 

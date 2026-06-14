@@ -179,6 +179,7 @@ class SessionSupervisor:
         # readiness gate waits for this substring on the VISIBLE screen instead of
         # herdr's (screen-detected, unreliable) agent_status.
         self.prompt_ready_marker: str | None = None
+        self.prompt_not_ready_markers: tuple[str, ...] = ()
         self.hook_reports_prompt_submit = False
         self.idle_after_submit_is_success = False
         self._cli_session_id: str | None = None
@@ -665,13 +666,34 @@ class SessionSupervisor:
         marker = self.prompt_ready_marker
         if not marker:
             return True
+        text = await self._visible_pane_text(pane)
+        if text is None:
+            return False
+        if self._pane_text_has_not_ready_marker(text):
+            return False
+        return marker in text
+
+    async def _visible_pane_text(self, pane: str) -> str | None:
         try:
             res = await self._client.pane_read(pane, source="visible")
         except Exception:  # noqa: BLE001
-            return False
+            return None
         read = res.get("read") if isinstance(res, Mapping) else None
-        text = read.get("text", "") if isinstance(read, Mapping) else ""
-        return marker in text
+        return read.get("text", "") if isinstance(read, Mapping) else ""
+
+    def _pane_text_has_not_ready_marker(self, text: str) -> bool:
+        lowered = text.lower()
+        return any(
+            marker.strip().lower() in lowered
+            for marker in self.prompt_not_ready_markers
+            if marker and marker.strip()
+        )
+
+    async def _prompt_blocked_by_not_ready_marker(self, pane: str) -> bool:
+        if not self.prompt_not_ready_markers:
+            return False
+        text = await self._visible_pane_text(pane)
+        return bool(text is not None and self._pane_text_has_not_ready_marker(text))
 
     async def _is_blocked_now(self) -> bool:
         """True when the TUI is sitting at a permission/auth dialog — NEVER type
@@ -787,6 +809,14 @@ class SessionSupervisor:
         """Wait for the TUI to be ready, then send — but REFUSE to type into a
         blocked (permission/auth) dialog even on gate timeout."""
         ready = await self.wait_until_ready(timeout)
+        pane = self._pane_ref
+        if not ready and pane and await self._prompt_blocked_by_not_ready_marker(pane):
+            logger.warning(
+                "[supervisor] %s refused — TUI reports an executor/input queue "
+                "is still busy; not typing into it",
+                what,
+            )
+            return False
         if not ready and await self._is_blocked_now():
             logger.warning(
                 "[supervisor] %s refused — TUI is blocked (permission/auth "

@@ -745,6 +745,36 @@ def test_agy_run_command_hook_shim_suppresses_native_post_tool_result(monkeypatc
     assert events == []
 
 
+def test_agy_run_command_hook_shim_times_out(tmp_path, monkeypatch):
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(sandbox))
+    monkeypatch.setenv("CLI_AGENT_AGY_RUN_COMMAND_SHIM", "true")
+    monkeypatch.setenv("CLI_AGENT_AGY_RUN_COMMAND_TIMEOUT_SECONDS", "1")
+
+    response = get_adapter("antigravity").hook_response(
+        "PreToolUse",
+        {
+            "hook_event_name": "PreToolUse",
+            "toolName": "run_command",
+            "toolInput": {"CommandLine": "sleep 10", "Cwd": str(sandbox)},
+        },
+        {},
+    )
+
+    assert response is not None
+    result = next(
+        event
+        for event in response["_workflowBuilderEvents"]
+        if event["type"] == "agent.tool_result"
+    )
+    assert response["decision"] == "deny"
+    assert result["data"]["ok"] is False
+    assert result["data"]["timed_out"] is True
+    assert result["data"]["exit_code"] == 124
+    assert "Command timed out after 1 seconds." in result["data"]["stderr"]
+
+
 def test_agy_run_command_hook_shim_rejects_cwd_outside_sandbox(tmp_path, monkeypatch):
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()

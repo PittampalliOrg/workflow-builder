@@ -248,6 +248,7 @@ async def _start_cli(input_data: dict[str, Any]) -> dict[str, Any]:
             # Adapters herdr only screen-detects (agy) gate readiness on their
             # rendered idle-prompt instead of herdr's premature `idle`.
             supervisor.prompt_ready_marker = adapter.prompt_ready_marker
+            supervisor.prompt_not_ready_markers = adapter.prompt_not_ready_markers
             supervisor.hook_reports_prompt_submit = adapter.hook_reports_prompt_submit
             supervisor.idle_after_submit_is_success = (
                 adapter.idle_after_submit_is_success

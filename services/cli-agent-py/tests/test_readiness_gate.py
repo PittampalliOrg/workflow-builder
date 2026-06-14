@@ -144,6 +144,49 @@ async def test_content_gated_times_out_when_prompt_never_renders(monkeypatch):
     assert await sup.wait_until_ready(0.05) is False
 
 
+async def test_content_gated_not_ready_marker_blocks_visible_prompt(monkeypatch):
+    monkeypatch.setattr(ss, "CLI_READY_POLL_SECONDS", 0.01)
+    client = FakeHerdr(
+        statuses=["idle"],
+        pane_texts=[
+            "Failed to send message: executor has not processed the previous "
+            "input yet\n? for shortcuts"
+        ],
+    )
+    sup = _supervisor(client)
+    sup._pane_ref = "p1"
+    sup.prompt_ready_marker = "? for shortcuts"
+    sup.prompt_not_ready_markers = (
+        "executor has not processed the previous input yet",
+    )
+
+    assert await sup.wait_until_ready(0.05) is False
+
+
+async def test_inject_refuses_visible_not_ready_marker_after_timeout(monkeypatch):
+    monkeypatch.setattr(ss, "CLI_READY_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(ss, "CLI_INJECT_READY_TIMEOUT", 0.05)
+    client = FakeHerdr(
+        statuses=["idle"],
+        pane_texts=[
+            "Failed to send message: executor has not processed the previous "
+            "input yet\n? for shortcuts"
+        ],
+    )
+    sup = _supervisor(client)
+    sup._pane_ref = "p1"
+    sup.prompt_ready_marker = "? for shortcuts"
+    sup.prompt_not_ready_markers = (
+        "executor has not processed the previous input yet",
+    )
+
+    ok = await sup.inject_user_text("next message", marker="", await_ready=True)
+
+    assert ok is False
+    assert client.sent == []
+    assert client.enters == 0
+
+
 async def test_content_gated_falls_back_to_idle_after_marker_grace(monkeypatch):
     # Claude can report live idle while the exact footer string is absent in a
     # newer TUI build. Keep the marker as the primary gate, then accept stable
