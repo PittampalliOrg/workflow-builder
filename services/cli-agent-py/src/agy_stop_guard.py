@@ -93,14 +93,58 @@ def _source_specs(output_sync: Mapping[str, Any]) -> list[dict[str, Any]]:
     return specs
 
 
+def _text_from_content(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, list):
+        parts = [_text_from_content(item) for item in value]
+        joined = "\n".join(part for part in parts if part)
+        return joined or None
+    if isinstance(value, Mapping):
+        for key in ("text", "content", "message", "prompt"):
+            text = _text_from_content(value.get(key))
+            if text:
+                return text
+    return None
+
+
+def _initial_user_text(session_input: Mapping[str, Any]) -> str | None:
+    initial_events = session_input.get("initialEvents")
+    if not isinstance(initial_events, list):
+        return None
+    for event in initial_events:
+        if not isinstance(event, Mapping) or event.get("type") != "user.message":
+            continue
+        text = _text_from_content(event.get("content"))
+        if text:
+            return text
+    return None
+
+
 def _body_contract(session_input: Mapping[str, Any]) -> dict[str, Any]:
     body = _record(session_input.get("body"))
+    stop_condition = (
+        session_input.get("stopCondition")
+        or body.get("stopCondition")
+        or session_input.get("prompt")
+        or body.get("prompt")
+        or _initial_user_text(session_input)
+    )
     return {
-        "stopCondition": session_input.get("stopCondition", body.get("stopCondition")),
+        "stopCondition": stop_condition,
         "requireFileChanges": session_input.get(
             "requireFileChanges", body.get("requireFileChanges")
         ),
     }
+
+
+def _is_negated_or_optional_reference(text: str, start: int, end: int) -> bool:
+    before = text[max(0, start - 64) : start].lower()
+    after = text[end : min(len(text), end + 32)].lower()
+    negative_markers = ("do not", "don't", "never", "not create", "without")
+    if any(marker in before for marker in negative_markers):
+        return True
+    return "optional" in before or "optional" in after
 
 
 def _required_file_names(stop_condition: Any) -> list[str]:
@@ -109,6 +153,8 @@ def _required_file_names(stop_condition: Any) -> list[str]:
     names = []
     seen: set[str] = set()
     for match in _FILENAME_RE.finditer(stop_condition):
+        if _is_negated_or_optional_reference(stop_condition, match.start(), match.end()):
+            continue
         name = match.group(1)
         if name not in seen:
             seen.add(name)
@@ -132,12 +178,18 @@ def write_stop_guard_config(session_input: Mapping[str, Any]) -> str | None:
     max_continues = _env_int("CLI_AGY_STOP_GUARD_MAX_CONTINUES", DEFAULT_MAX_CONTINUES)
     contract = _body_contract(session_input)
     stop_condition = contract["stopCondition"]
+    required_file_names = _required_file_names(stop_condition)
+    explicit_require_changes = contract["requireFileChanges"]
     config = {
         "enabled": True,
         "maxContinues": max(0, max_continues),
         "requiredSources": sources,
-        "requiredFileNames": _required_file_names(stop_condition),
-        "requireFileChanges": bool(contract["requireFileChanges"]),
+        "requiredFileNames": required_file_names,
+        "requireFileChanges": (
+            bool(explicit_require_changes)
+            if explicit_require_changes is not None
+            else bool(required_file_names)
+        ),
         "stopCondition": _clean(stop_condition),
     }
     path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")

@@ -363,6 +363,47 @@ def test_agy_seed_writes_stop_guard_from_durable_run_body(agy_home):
     assert guard["stopCondition"].startswith("Stop only after index.html")
 
 
+def test_agy_seed_infers_stop_guard_from_initial_user_message(agy_home):
+    session = {
+        **AGY_SESSION,
+        "outputSync": {
+            "paths": [
+                {
+                    "source": str(agy_home / "3b1b-style-animation-example"),
+                    "target": "/sandbox/3b1b-style-animation-example",
+                }
+            ]
+        },
+        "initialEvents": [
+            {
+                "type": "user.message",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Build a browser animation in /sandbox/3b1b-style-animation-example "
+                            "with index.html, styles.css, script.js, and README.md. "
+                            "If a scene is useful, include scene.py as optional source only. "
+                            "Do NOT create a package.json."
+                        ),
+                    }
+                ],
+            }
+        ],
+    }
+    get_adapter("antigravity").seed(session)
+    guard = json.loads((agy_home / ".wfb/agy_stop_guard.json").read_text())
+    assert guard["requiredFileNames"] == [
+        "index.html",
+        "styles.css",
+        "script.js",
+        "README.md",
+    ]
+    assert guard["requireFileChanges"] is True
+    assert "scene.py" not in guard["requiredFileNames"]
+    assert "package.json" not in guard["requiredFileNames"]
+
+
 def test_agy_seed_writes_gemini_md_and_settings(agy_home):
     get_adapter("antigravity").seed(AGY_SESSION)
     assert (agy_home / ".gemini/GEMINI.md").read_text().startswith("Be terse.")
