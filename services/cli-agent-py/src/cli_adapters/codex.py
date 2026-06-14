@@ -363,6 +363,92 @@ def _codex_usage(payload: Mapping[str, Any]) -> dict[str, Any] | None:
     return data
 
 
+def _codex_mcp_tool_name(payload: Mapping[str, Any]) -> str:
+    invocation = payload.get("invocation")
+    invocation = invocation if isinstance(invocation, Mapping) else {}
+    server = clean_string(invocation.get("server")) or "mcp_server"
+    tool = clean_string(invocation.get("tool")) or "tool"
+    server = "".join(ch if ch.isalnum() else "_" for ch in server).strip("_") or "mcp_server"
+    tool = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in tool).strip("_") or "tool"
+    return f"mcp__{server}__{tool}"
+
+
+def _text_from_mcp_content(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, Mapping):
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+            elif isinstance(item, str) and item.strip():
+                parts.append(item.strip())
+        if parts:
+            return "\n".join(parts)
+    return None
+
+
+def _codex_mcp_result_payload(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    if payload.get("type") != "mcp_tool_call_end":
+        return None
+    invocation = payload.get("invocation")
+    invocation = invocation if isinstance(invocation, Mapping) else {}
+    result = payload.get("result")
+    result = result if isinstance(result, Mapping) else {}
+
+    ok_payload = result.get("Ok")
+    err_payload = result.get("Err")
+    success = err_payload is None
+    raw: Any = ok_payload if success else err_payload
+    if isinstance(ok_payload, Mapping) and ok_payload.get("isError") is True:
+        success = False
+
+    output = None
+    if isinstance(raw, Mapping):
+        output = _text_from_mcp_content(raw.get("content"))
+        if output is None:
+            output = _text_from_content(raw.get("message") or raw.get("error"))
+    else:
+        output = _text_from_content(raw)
+    if output is None and raw is not None:
+        try:
+            output = json.dumps(raw, ensure_ascii=False)
+        except TypeError:
+            output = str(raw)
+
+    tool_name = _codex_mcp_tool_name(payload)
+    data: dict[str, Any] = {
+        "tool_name": tool_name,
+        "name": tool_name,
+        "ok": success,
+        "success": success,
+        "output": output or "",
+        "output_preview": (output or "")[:500],
+    }
+    call_id = clean_string(payload.get("call_id"))
+    if call_id:
+        data["call_id"] = call_id
+    arguments = invocation.get("arguments")
+    if isinstance(arguments, Mapping):
+        data["tool_input"] = dict(arguments)
+        data["input"] = dict(arguments)
+    server = clean_string(invocation.get("server"))
+    tool = clean_string(invocation.get("tool"))
+    if server:
+        data["server"] = server
+    if tool:
+        data["mcp_tool"] = tool
+    duration = payload.get("duration")
+    if isinstance(duration, Mapping):
+        data["duration"] = dict(duration)
+    if not success:
+        data["is_error"] = True
+        data["error"] = output or "MCP tool failed"
+    return data
+
+
 def _assistant_text_from_record(record: Mapping[str, Any]) -> str | None:
     codex_payload = _codex_payload(record)
     if codex_payload is not None:
@@ -574,6 +660,12 @@ class CodexAdapter(CliAdapter):
             event = {"type": "agent.llm_usage", "data": usage}
             if identity:
                 event["sourceEventId"] = f"codex-transcript:{identity}:usage"
+            events.append(event)
+        tool_result = _codex_mcp_result_payload(payload)
+        if tool_result:
+            event = {"type": "agent.tool_result", "data": tool_result}
+            if identity:
+                event["sourceEventId"] = f"codex-transcript:{identity}:tool_result"
             events.append(event)
         return events
 

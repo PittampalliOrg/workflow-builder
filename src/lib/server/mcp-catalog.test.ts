@@ -24,7 +24,7 @@ describe('project MCP catalog helpers', () => {
 		).toEqual({
 			name: 'ap-microsoft-onedrive',
 			displayName: 'Microsoft OneDrive',
-			url: 'http://ap-microsoft-onedrive-service/mcp',
+			url: 'http://ap-microsoft-onedrive-service.workflow-builder.svc.cluster.local/mcp',
 			sourceType: 'nimble_piece',
 			pieceName: '@activepieces/piece-microsoft-onedrive',
 			connectionExternalId: 'external-1',

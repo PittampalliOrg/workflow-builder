@@ -37,8 +37,13 @@ export function normalizePieceMcpServerUrl(value: string): string {
 	if (!text) return text;
 	try {
 		const url = new URL(text);
-		if (isActivepiecesPieceServiceHost(url.hostname) && url.port === '3100') {
-			url.port = '';
+		if (isActivepiecesPieceServiceHost(url.hostname)) {
+			if (url.port === '3100') {
+				url.port = '';
+			}
+			if (!url.hostname.includes('.')) {
+				url.hostname = `${url.hostname}.workflow-builder.svc.cluster.local`;
+			}
 		}
 		return url.toString();
 	} catch {

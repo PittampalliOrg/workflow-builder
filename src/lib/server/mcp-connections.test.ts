@@ -22,7 +22,10 @@ describe('mcp connection helpers', () => {
 			'http://ap-microsoft-excel-365-service/mcp'
 		);
 		expect(normalizePieceMcpServerUrl('http://ap-microsoft-excel-365-service:3100/mcp')).toBe(
-			'http://ap-microsoft-excel-365-service/mcp'
+			'http://ap-microsoft-excel-365-service.workflow-builder.svc.cluster.local/mcp'
+		);
+		expect(normalizePieceMcpServerUrl('http://ap-github-service/mcp')).toBe(
+			'http://ap-github-service.workflow-builder.svc.cluster.local/mcp'
 		);
 	});
 

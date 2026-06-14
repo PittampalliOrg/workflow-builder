@@ -290,6 +290,60 @@ def test_codex_transcript_maps_agent_message_and_usage():
     assert usage_data["plan_type"] == "pro"
 
 
+def test_codex_transcript_maps_mcp_tool_result():
+    adapter = get_adapter("codex")
+    entry = {
+        "timestamp": "2026-06-14T18:16:28.193Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "mcp_tool_call_end",
+            "call_id": "call_123",
+            "invocation": {
+                "server": "piece_microsoft-outlook",
+                "tool": "findEmail",
+                "arguments": {"searchQuery": "mcp-smoke-no-results", "top": 1},
+            },
+            "duration": {"secs": 1, "nanos": 627706550},
+            "result": {
+                "Ok": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": 'Action "findEmail" failed: example',
+                        }
+                    ],
+                    "isError": True,
+                }
+            },
+        },
+    }
+
+    events = adapter.map_transcript_entry(entry)
+
+    assert events == [
+        {
+            "type": "agent.tool_result",
+            "data": {
+                "tool_name": "mcp__piece_microsoft_outlook__findEmail",
+                "name": "mcp__piece_microsoft_outlook__findEmail",
+                "ok": False,
+                "success": False,
+                "output": 'Action "findEmail" failed: example',
+                "output_preview": 'Action "findEmail" failed: example',
+                "call_id": "call_123",
+                "tool_input": {"searchQuery": "mcp-smoke-no-results", "top": 1},
+                "input": {"searchQuery": "mcp-smoke-no-results", "top": 1},
+                "server": "piece_microsoft-outlook",
+                "mcp_tool": "findEmail",
+                "duration": {"secs": 1, "nanos": 627706550},
+                "is_error": True,
+                "error": 'Action "findEmail" failed: example',
+            },
+            "sourceEventId": "codex-transcript:call_123:tool_result",
+        }
+    ]
+
+
 def test_codex_task_complete_raises_turn_completed(codex_home):
     adapter = get_adapter("codex")
     entry = {
@@ -876,6 +930,28 @@ def test_agy_transcript_ignores_managed_run_command_denial_artifact():
             "stdout:\n"
             "wfb-agy-final-ok\n"
             "\nstderr:"
+        ),
+    }
+
+    assert adapter.map_transcript_entry(entry) == []
+    assert adapter.transcript_turn_completion(entry) is None
+
+
+def test_agy_transcript_ignores_native_tool_display_artifacts():
+    adapter = get_adapter("antigravity")
+    entry = {
+        "source": "MODEL",
+        "type": "PLANNER_RESPONSE",
+        "status": "DONE",
+        "step_index": 23,
+        "content": (
+            "Created At: 2026-06-14T18:20:27Z\n"
+            "Completed At: 2026-06-14T18:20:27Z\n"
+            "File Path: `file:///home/cli-agent/.gemini/antigravity-cli/brain/output.txt`\n"
+            "Total Lines: 8835\n"
+            "Total Bytes: 529002\n"
+            "Showing lines 1 to 800\n"
+            "1: [{\"name\":\"private-file.txt\"}]"
         ),
     }
 

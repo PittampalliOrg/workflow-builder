@@ -788,6 +788,19 @@ def _is_managed_run_command_denial_text(text: str) -> bool:
     )
 
 
+def _is_agy_tool_display_text(text: str) -> bool:
+    normalized = text.strip()
+    if not normalized.startswith("Created At:"):
+        return False
+    if "\nCompleted At:" not in normalized:
+        return False
+    return (
+        "\nFile Path: `file://" in normalized
+        or "\nThe output was large and was saved to: file://" in normalized
+        or "\nThe above content shows the entire, complete file contents" in normalized
+    )
+
+
 def _agy_final_response_text(entry: Mapping[str, Any]) -> str | None:
     if not _is_agy_assistant_entry(entry) or _has_tool_calls(entry):
         return None
@@ -797,7 +810,7 @@ def _agy_final_response_text(entry: Mapping[str, Any]) -> str | None:
     for key in ("content", "response", "message", "text", "finalResponse"):
         text = _text_from_payload(entry.get(key))
         if text:
-            if _is_managed_run_command_denial_text(text):
+            if _is_managed_run_command_denial_text(text) or _is_agy_tool_display_text(text):
                 return None
             return text
     return None
