@@ -1451,6 +1451,16 @@ def test_native_run_prompt_uses_absolute_path_guidance_for_agy():
     assert "Always operate relative to this repository root" not in prompt
 
 
+def test_prompt_runtime_label_prefers_selected_cli_over_pool_app_id():
+    assert (
+        SW_WORKFLOW._prompt_runtime_label(
+            "agent-runtime-pool-coding",
+            {"runtime": "agy-cli", "slug": "agy-cli"},
+        )
+        == "agy-cli"
+    )
+
+
 def test_durable_run_routes_through_session_bridge():
     workflow = types.SimpleNamespace(
         use=None,

@@ -1375,6 +1375,29 @@ def _build_native_run_prompt(
     )
 
 
+def _prompt_runtime_label(
+    agent_runtime: str | None,
+    agent_config: dict[str, Any] | None,
+) -> str | None:
+    config_record = agent_config if isinstance(agent_config, dict) else {}
+    for value in (
+        config_record.get("runtime"),
+        config_record.get("agentRuntime"),
+        config_record.get("cliAdapter"),
+        config_record.get("slug"),
+        config_record.get("id"),
+        agent_runtime,
+    ):
+        if not isinstance(value, str):
+            continue
+        normalized = value.strip().lower()
+        if normalized in {"agy-cli", "antigravity"}:
+            return "agy-cli"
+        if normalized:
+            return normalized
+    return None
+
+
 def _next_task_execution_count(tc: "TaskContext", task_name: str) -> int:
     current = tc.task_execution_counts.get(task_name, 0)
     tc.task_execution_counts[task_name] = current + 1
@@ -1482,7 +1505,7 @@ def _run_native_durable_agent_child_workflow(
         require_file_changes,
         cwd,
         agent_graph,
-        agent_runtime,
+        _prompt_runtime_label(agent_runtime, agent_config),
     )
     workspace_ref = (
         flattened_args.get("workspaceRef").strip()
