@@ -941,8 +941,8 @@ def test_agy_transcript_final_response_maps_message_usage_and_completion():
             "data": {
                 "input_tokens": 12,
                 "output_tokens": 7,
-                "cache_read_input_tokens": None,
-                "cache_creation_input_tokens": None,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
                 "model": "gemini-2.5-pro",
             },
             "sourceEventId": "agy-transcript:21:usage",
@@ -952,6 +952,77 @@ def test_agy_transcript_final_response_maps_message_usage_and_completion():
         "type": "turn.completed",
         "lastAssistantText": "Created index.html, styles.css, script.js, and README.md.",
     }
+
+
+def test_agy_transcript_maps_native_tokens_cache_usage():
+    adapter = get_adapter("antigravity")
+    entry = {
+        "id": "agy-turn-1",
+        "type": "gemini",
+        "model": "gemini-3.1-pro-preview",
+        "content": "Done.",
+        "tokens": {
+            "input": 17313,
+            "output": 31,
+            "cached": 15871,
+            "thoughts": 56,
+            "total": 17400,
+        },
+    }
+
+    events = adapter.map_transcript_entry(entry)
+
+    assert events == [
+        {
+            "type": "agent.llm_usage",
+            "data": {
+                "input_tokens": 1442,
+                "output_tokens": 31,
+                "cache_read_input_tokens": 15871,
+                "cache_creation_input_tokens": 0,
+                "reasoning_output_tokens": 56,
+                "total_tokens": 17400,
+                "model": "gemini-3.1-pro-preview",
+            },
+            "sourceEventId": "agy-transcript:agy-turn-1:usage",
+        }
+    ]
+
+
+def test_agy_transcript_maps_gemini_usage_metadata_cache_usage():
+    adapter = get_adapter("antigravity")
+    entry = {
+        "source": "MODEL",
+        "type": "PLANNER_RESPONSE",
+        "status": "DONE",
+        "step_index": 22,
+        "modelName": "gemini-3.1-pro",
+        "usageMetadata": {
+            "promptTokenCount": 2000,
+            "candidatesTokenCount": 40,
+            "cachedContentTokenCount": 1500,
+            "thoughtsTokenCount": 30,
+            "totalTokenCount": 2070,
+        },
+    }
+
+    events = adapter.map_transcript_entry(entry)
+
+    assert events == [
+        {
+            "type": "agent.llm_usage",
+            "data": {
+                "input_tokens": 500,
+                "output_tokens": 40,
+                "cache_read_input_tokens": 1500,
+                "cache_creation_input_tokens": 0,
+                "reasoning_output_tokens": 30,
+                "total_tokens": 2070,
+                "model": "gemini-3.1-pro",
+            },
+            "sourceEventId": "agy-transcript:22:usage",
+        }
+    ]
 
 
 def test_agy_transcript_ignores_managed_run_command_denial_artifact():

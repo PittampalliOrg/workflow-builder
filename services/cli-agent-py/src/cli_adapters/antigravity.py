@@ -825,27 +825,115 @@ def _agy_final_response_text(entry: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _agy_usage(entry: Mapping[str, Any]) -> dict[str, Any] | None:
-    usage = None
-    for key in ("usage", "tokenUsage", "usageMetadata"):
+def _int_or_none(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _first_int(mapping: Mapping[str, Any], keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        value = _int_or_none(mapping.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _agy_usage_record(entry: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    for key in ("usage", "tokenUsage", "usageMetadata", "tokens"):
         value = entry.get(key)
         if isinstance(value, Mapping):
-            usage = value
-            break
-    if not isinstance(usage, Mapping):
+            return value
+    for parent_key in ("metadata", "message", "response"):
+        parent = entry.get(parent_key)
+        if not isinstance(parent, Mapping):
+            continue
+        for key in ("usage", "tokenUsage", "usageMetadata", "tokens"):
+            value = parent.get(key)
+            if isinstance(value, Mapping):
+                return value
+    return None
+
+
+def _agy_usage(entry: Mapping[str, Any]) -> dict[str, Any] | None:
+    usage = _agy_usage_record(entry)
+    if usage is None:
         return None
-    data = {
-        "input_tokens": usage.get("input_tokens")
-        or usage.get("prompt_tokens")
-        or usage.get("promptTokenCount"),
-        "output_tokens": usage.get("output_tokens")
-        or usage.get("completion_tokens")
-        or usage.get("candidatesTokenCount"),
-        "cache_read_input_tokens": usage.get("cache_read_input_tokens"),
-        "cache_creation_input_tokens": usage.get("cache_creation_input_tokens"),
-    }
-    if not any(value is not None for value in data.values()):
+    gross_input = _first_int(
+        usage,
+        (
+            "input_tokens",
+            "prompt_tokens",
+            "promptTokenCount",
+            "input",
+            "prompt",
+        ),
+    )
+    output_tokens = _first_int(
+        usage,
+        (
+            "output_tokens",
+            "completion_tokens",
+            "candidatesTokenCount",
+            "output",
+            "completion",
+            "candidates",
+        ),
+    )
+    cache_read = _first_int(
+        usage,
+        (
+            "cache_read_input_tokens",
+            "cached_input_tokens",
+            "cachedContentTokenCount",
+            "cached_tokens",
+            "cached",
+        ),
+    )
+    cache_creation = _first_int(
+        usage,
+        (
+            "cache_creation_input_tokens",
+            "cache_write_input_tokens",
+            "cacheCreationInputTokens",
+            "cacheWriteInputTokens",
+        ),
+    )
+    reasoning = _first_int(
+        usage,
+        ("reasoning_output_tokens", "thoughtsTokenCount", "thoughts"),
+    )
+    total = _first_int(usage, ("total_tokens", "totalTokenCount", "total"))
+    if not any(
+        value is not None
+        for value in (gross_input, output_tokens, cache_read, cache_creation, reasoning, total)
+    ):
         return None
+
+    data: dict[str, Any] = {}
+    if gross_input is not None:
+        data["input_tokens"] = (
+            max(0, gross_input - cache_read)
+            if cache_read is not None
+            else gross_input
+        )
+    if output_tokens is not None:
+        data["output_tokens"] = output_tokens
+    data["cache_read_input_tokens"] = cache_read or 0
+    data["cache_creation_input_tokens"] = cache_creation or 0
+    if reasoning is not None:
+        data["reasoning_output_tokens"] = reasoning
+    if total is not None:
+        data["total_tokens"] = total
     model = clean_string(entry.get("model") or entry.get("model_name") or entry.get("modelName"))
     if model:
         data["model"] = model
