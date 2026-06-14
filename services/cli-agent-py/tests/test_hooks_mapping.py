@@ -165,10 +165,55 @@ def test_session_start_registers_transcript_and_starts_tailer():
 
 def test_stop_flushes_tailer_then_raises_turn_completed():
     processor, published, raised, _supervisor, manager = _processor()
-    asyncio.run(processor.process(_hook("Stop")))
+    response = asyncio.run(processor.process(_hook("Stop")))
+    assert response == {}
     assert manager.tailer.flushes == 1
     assert raised == [
         ("inst-1", [{"type": "turn.completed", "lastAssistantText": "final answer"}])
+    ]
+
+
+def test_agy_stop_hook_continues_when_output_contract_missing(tmp_path, monkeypatch):
+    from src.cli_adapters import get_adapter
+
+    monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(tmp_path))
+    monkeypatch.setenv("CLI_AGENT_AGY_HOME_OVERRIDE", str(tmp_path))
+    adapter = get_adapter("antigravity")
+    adapter.seed(
+        {
+            "agentConfig": {"runtime": "agy-cli", "cliAdapter": "antigravity"},
+            "outputSync": {
+                "paths": [{"source": str(tmp_path / "app"), "target": "/sandbox/app"}]
+            },
+            "stopCondition": "Stop only after index.html exists.",
+            "requireFileChanges": True,
+        }
+    )
+    published: list[tuple[str | None, str, dict]] = []
+    raised: list[tuple[str, list[dict]]] = []
+    processor = HookProcessor(
+        publish=lambda sid, etype, data, **kw: published.append((sid, etype, data)),
+        raise_lifecycle=lambda iid, events: raised.append((iid, events)),
+        supervisor_getter=lambda: FakeSupervisor(),
+        tailer_manager=FakeTailerManager(),
+        adapter=adapter,
+    )
+
+    response = asyncio.run(processor.process(_hook("Stop")))
+
+    assert response["decision"] == "continue"
+    assert "Missing required path" in response["reason"]
+    assert raised == []
+    assert published == [
+        (
+            "sess-1",
+            "hook.decision",
+            {
+                "hook_event": "Stop",
+                "decision": "continue",
+                "reason": response["reason"],
+            },
+        )
     ]
 
 

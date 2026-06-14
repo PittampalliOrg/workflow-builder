@@ -100,6 +100,22 @@ def test_generic_cli_hook_post_returns_200_empty_object(client):
     assert res.json() == {}
 
 
+def test_generic_cli_hook_post_can_return_hook_response(client, monkeypatch):
+    import src.hooks_api as hooks_api
+
+    class FakeProcessor:
+        async def process(self, payload):
+            return {"decision": "continue", "reason": payload["hook_event_name"]}
+
+    monkeypatch.setattr(hooks_api, "get_processor", lambda _adapter: FakeProcessor())
+    res = client.post(
+        "/internal/hooks/cli/antigravity",
+        json={"hook_event_name": "Stop", "session_id": "s1"},
+    )
+    assert res.status_code == 200
+    assert res.json() == {"decision": "continue", "reason": "Stop"}
+
+
 def test_hook_post_tolerates_garbage_body(client):
     res = client.post(
         "/internal/hooks/claude",

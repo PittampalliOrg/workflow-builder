@@ -314,12 +314,29 @@ def test_agy_seed_writes_mcp_with_serverUrl_key(agy_home):
 def test_agy_seed_writes_hooks_json_for_completion_signal(agy_home):
     result = get_adapter("antigravity").seed(AGY_SESSION)
     hooks = json.loads((agy_home / ".gemini/config/hooks.json").read_text())
-    stop_hook = hooks["workflow-builder"]["Stop"][0]["hooks"][0]
+    stop_hook = hooks["workflow-builder"]["Stop"][0]
     assert stop_hook["type"] == "command"
     assert "--adapter antigravity --event Stop" in stop_hook["command"]
     end_hook = hooks["workflow-builder"]["SessionEnd"][0]["hooks"][0]
     assert "--adapter antigravity --event SessionEnd" in end_hook["command"]
     assert result.paths["hooksPath"].endswith("hooks.json")
+
+
+def test_agy_seed_writes_stop_guard_for_output_sync(agy_home):
+    session = {
+        **AGY_SESSION,
+        "outputSync": {
+            "paths": [{"source": str(agy_home / "app"), "target": "/sandbox/app"}]
+        },
+        "stopCondition": "Stop only after index.html, styles.css, and README.md exist.",
+        "requireFileChanges": True,
+    }
+    result = get_adapter("antigravity").seed(session)
+    guard = json.loads((agy_home / ".wfb/agy_stop_guard.json").read_text())
+    assert result.paths["agyStopGuardPath"].endswith("agy_stop_guard.json")
+    assert guard["requiredSources"] == [{"source": str((agy_home / "app").resolve())}]
+    assert guard["requiredFileNames"] == ["index.html", "styles.css", "README.md"]
+    assert guard["requireFileChanges"] is True
 
 
 def test_agy_seed_writes_gemini_md_and_settings(agy_home):
@@ -451,6 +468,35 @@ def test_agy_transcript_final_response_maps_message_usage_and_completion():
     assert adapter.transcript_turn_completion(entry) == {
         "type": "turn.completed",
         "lastAssistantText": "Created index.html, styles.css, script.js, and README.md.",
+    }
+
+
+def test_agy_transcript_completion_waits_for_stop_guard_outputs(agy_home):
+    adapter = get_adapter("antigravity")
+    session = {
+        **AGY_SESSION,
+        "outputSync": {
+            "paths": [{"source": str(agy_home / "app"), "target": "/sandbox/app"}]
+        },
+        "stopCondition": "Stop only after index.html and styles.css exist.",
+    }
+    adapter.seed(session)
+    entry = {
+        "source": "MODEL",
+        "type": "PLANNER_RESPONSE",
+        "status": "DONE",
+        "step_index": 7,
+        "content": "I am done.",
+    }
+    assert adapter.transcript_turn_completion(entry) is None
+
+    app = agy_home / "app"
+    app.mkdir()
+    (app / "index.html").write_text("<canvas></canvas>")
+    (app / "styles.css").write_text("body{}")
+    assert adapter.transcript_turn_completion(entry) == {
+        "type": "turn.completed",
+        "lastAssistantText": "I am done.",
     }
 
 

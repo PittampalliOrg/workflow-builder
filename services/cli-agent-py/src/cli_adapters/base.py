@@ -174,6 +174,17 @@ class CliAdapter(abc.ABC):
         the completed turn's response."""
         return None
 
+    def hook_response(
+        self, event_name: str, payload: Mapping[str, Any], session: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        """Optional synchronous command-hook response.
+
+        Most hook events are telemetry-only and return no stdout. Some CLIs,
+        notably Antigravity's Stop hook, support a JSON response that can alter
+        loop control.
+        """
+        return None
+
     def map_transcript_entry(
         self, entry: Mapping[str, Any]
     ) -> list[dict[str, Any]] | None:
@@ -198,8 +209,9 @@ def write_hook_relay_script(path: Path) -> Path:
     Their documented hook systems execute command hooks and pass JSON on stdin;
     cli-agent-py wants one local HTTP surface. The relay copies stdin JSON,
     stamps the adapter/event when the CLI omitted them, posts to the in-pod
-    receiver, and always exits zero so a transient telemetry failure does not
-    block the user's CLI turn.
+    receiver, prints a non-empty JSON hook response when the receiver returns
+    one, and always exits zero so a transient telemetry failure does not block
+    the user's CLI turn.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -233,7 +245,12 @@ def main() -> int:
         method="POST",
     )
     try:
-        urllib.request.urlopen(req, timeout=5).read()
+        raw_response = urllib.request.urlopen(req, timeout=5).read()
+        if raw_response:
+            response = json.loads(raw_response.decode("utf-8"))
+            if isinstance(response, dict) and response:
+                sys.stdout.write(json.dumps(response))
+                sys.stdout.write("\\n")
     except Exception:
         pass
     return 0

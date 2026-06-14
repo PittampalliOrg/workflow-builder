@@ -284,13 +284,14 @@ class HookProcessor:
         except Exception:  # noqa: BLE001
             return {}
 
-    async def process(self, payload: Mapping[str, Any]) -> None:
+    async def process(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, Mapping):
-            return
+            return {}
         name = _hook_name(payload)
         session = self._session()
         session_id = session.get("sessionId")
         instance_id = session.get("instanceId")
+        self._record_adapter_hook(payload)
 
         # EVERY hook payload carries transcript_path — register the tailer
         # opportunistically from any event, never only from SessionStart
@@ -300,12 +301,25 @@ class HookProcessor:
         self._register_transcript(payload, session_id, instance_id)
 
         if name == "SessionStart":
-            return  # registration handled above; no published event
+            return {}  # registration handled above; no published event
 
         adapter_turn_done = bool(
             self._adapter is not None and name and self._adapter.is_turn_completion_hook(name)
         )
         if name == "Stop" or adapter_turn_done:
+            response = self._hook_response(name, payload, session)
+            if response.get("decision") == "continue":
+                if session_id:
+                    self._publish(
+                        session_id,
+                        "hook.decision",
+                        {
+                            "hook_event": name,
+                            "decision": "continue",
+                            "reason": response.get("reason"),
+                        },
+                    )
+                return response
             await asyncio.to_thread(self._tailer_manager.flush_now)
             tailer = self._tailer_manager.current()
             last_text = tailer.last_assistant_text if tailer is not None else None
@@ -331,7 +345,7 @@ class HookProcessor:
                 if last_text:
                     event["lastAssistantText"] = last_text
                 await asyncio.to_thread(self._safe_raise, instance_id, [event])
-            return
+            return response
 
         if name == "SessionEnd":
             await asyncio.to_thread(self._tailer_manager.flush_now)
@@ -341,7 +355,7 @@ class HookProcessor:
                     "reason": _clean(payload.get("reason")) or "session_end",
                 }
                 await asyncio.to_thread(self._safe_raise, instance_id, [event])
-            return
+            return {}
 
         events = None
         if self._adapter is not None:
@@ -353,6 +367,32 @@ class HookProcessor:
             events = map_hook_event(payload)
         for event in events:
             self._publish(session_id, event["type"], event.get("data") or {})
+        return {}
+
+    def _hook_response(
+        self, name: str | None, payload: Mapping[str, Any], session: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        if self._adapter is None or not name:
+            return {}
+        hook_response = getattr(self._adapter, "hook_response", None)
+        if not callable(hook_response):
+            return {}
+        try:
+            value = hook_response(name, payload, session)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[hooks] adapter hook response failed: %s", exc)
+            return {}
+        return dict(value) if isinstance(value, Mapping) else {}
+
+    def _record_adapter_hook(self, payload: Mapping[str, Any]) -> None:
+        if getattr(self._adapter, "name", None) != "antigravity":
+            return
+        try:
+            from src.agy_stop_guard import record_hook_event
+
+            record_hook_event(payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[hooks] adapter hook recording failed: %s", exc)
 
     def _register_transcript(
         self, payload: Mapping[str, Any], session_id: Any, instance_id: Any
@@ -435,9 +475,7 @@ def build_router():
             payload = {}
         if isinstance(payload, dict):
             payload.setdefault("hook_adapter", adapter_name)
-            asyncio.get_running_loop().create_task(
-                get_processor(adapter_name).process(payload)
-            )
+            return await get_processor(adapter_name).process(payload)
         return {}
 
     return router

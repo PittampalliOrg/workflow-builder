@@ -31,6 +31,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from src.agy_capture import restore_bundle, start_capture_watcher
+from src.agy_stop_guard import (
+    completion_guard_allows_turn_completion,
+    evaluate_stop_guard,
+    write_stop_guard_config,
+)
 from src.cli_adapters.base import (
     CliAdapter,
     SeedResult,
@@ -130,20 +135,21 @@ def _agy_mcp_servers(agent_config: Mapping[str, Any]) -> dict[str, dict[str, Any
 
 
 def _agy_hook_group(event: str, *, matcher: str | None = None) -> list[dict[str, Any]]:
-    relay = _hook_relay_path()
     group: dict[str, Any] = {
-        "hooks": [
-            {
-                "type": "command",
-                "command": hook_relay_command(
-                    relay, adapter="antigravity", event=event
-                ),
-            }
-        ]
+        "hooks": [_agy_hook_handler(event)]
     }
     if matcher is not None:
         group["matcher"] = matcher
     return [group]
+
+
+def _agy_hook_handler(event: str) -> dict[str, Any]:
+    return {
+        "type": "command",
+        "command": hook_relay_command(
+            _hook_relay_path(), adapter="antigravity", event=event
+        ),
+    }
 
 
 def _render_hooks_json() -> str:
@@ -156,7 +162,7 @@ def _render_hooks_json() -> str:
             "SessionStart": _agy_hook_group("SessionStart"),
             "PreToolUse": _agy_hook_group("PreToolUse", matcher="*"),
             "PostToolUse": _agy_hook_group("PostToolUse", matcher="*"),
-            "Stop": _agy_hook_group("Stop"),
+            "Stop": [_agy_hook_handler("Stop")],
             "SessionEnd": _agy_hook_group("SessionEnd"),
         }
     }
@@ -505,6 +511,9 @@ class AntigravityAdapter(CliAdapter):
         hooks_path.write_text(_render_hooks_json(), encoding="utf-8")
         result.paths["hookRelayPath"] = str(relay)
         result.paths["hooksPath"] = str(hooks_path)
+        guard_path = write_stop_guard_config(session_input)
+        if guard_path:
+            result.paths["agyStopGuardPath"] = guard_path
 
         # (b) skills → _agy_home()/.gemini/skills/<slug>/ ; system prompt + a
         # skills index → GEMINI.md. agy has no native skills auto-discovery, so
@@ -556,6 +565,13 @@ class AntigravityAdapter(CliAdapter):
 
     def extract_completion_text(self, payload: Mapping[str, Any]) -> str | None:
         return _text_from_payload(payload)
+
+    def hook_response(
+        self, event_name: str, payload: Mapping[str, Any], session: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        if event_name == "Stop":
+            return evaluate_stop_guard(increment_continue=True)
+        return None
 
     def map_hook_event(self, payload: Mapping[str, Any]) -> list[dict[str, Any]] | None:
         name = _hook_name(payload)
@@ -617,6 +633,8 @@ class AntigravityAdapter(CliAdapter):
         return events
 
     def transcript_turn_completion(self, entry: Mapping[str, Any]) -> dict[str, Any] | None:
+        if not completion_guard_allows_turn_completion():
+            return None
         text = _agy_final_response_text(entry)
         if not text:
             return None
