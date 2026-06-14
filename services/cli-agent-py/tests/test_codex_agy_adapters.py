@@ -1003,6 +1003,25 @@ def test_agy_transcript_ignores_native_tool_display_artifacts():
     assert adapter.transcript_turn_completion(entry) is None
 
 
+def test_agy_transcript_ignores_grep_search_display_artifacts():
+    adapter = get_adapter("antigravity")
+    entry = {
+        "source": "MODEL",
+        "type": "PLANNER_RESPONSE",
+        "status": "DONE",
+        "step_index": 24,
+        "content": (
+            "Created At: 2026-06-14T20:20:46Z\n"
+            "Completed At: 2026-06-14T20:20:46Z\n"
+            '{"File":"/sandbox/repo/astropy/utils/misc.py",'
+            '"LineNumber":497,"LineContent":"class InheritDocstrings(type):"}'
+        ),
+    }
+
+    assert adapter.map_transcript_entry(entry) == []
+    assert adapter.transcript_turn_completion(entry) is None
+
+
 def test_agy_transcript_completion_waits_for_stop_guard_outputs(agy_home):
     adapter = get_adapter("antigravity")
     session = {

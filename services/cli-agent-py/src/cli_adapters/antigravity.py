@@ -803,11 +803,11 @@ def _is_agy_tool_display_text(text: str) -> bool:
         return False
     if "\nCompleted At:" not in normalized:
         return False
-    return (
-        "\nFile Path: `file://" in normalized
-        or "\nThe output was large and was saved to: file://" in normalized
-        or "\nThe above content shows the entire, complete file contents" in normalized
-    )
+    # AGY stores native tool display panes as assistant transcript rows. They
+    # all use this timestamp header, but their body shape varies by tool
+    # (grep_search can be plain JSONL, read_file has a file path, large outputs
+    # point at a saved file). None of these rows are a final assistant answer.
+    return True
 
 
 def _agy_final_response_text(entry: Mapping[str, Any]) -> str | None:
