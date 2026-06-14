@@ -2261,7 +2261,7 @@ function makeThreeBOneBCliBuildTask(): JsonRecord {
 			},
 			body: {
 				agentRef: {
-					slug: "${ .trigger.cliRuntime }",
+					slug: selectedCliRuntimeExpression(),
 				},
 				prompt: THREE_B_ONE_B_BUILD_PROMPT,
 				stopCondition: THREE_B_ONE_B_CLI_BUILD_STOP_CONDITION,
