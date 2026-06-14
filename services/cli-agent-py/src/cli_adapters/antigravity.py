@@ -770,6 +770,10 @@ class AntigravityAdapter(CliAdapter):
     # pre-composer boot screen, so the kickoff must wait until agy's composer is
     # actually rendered — gate on its idle-prompt footer.
     prompt_ready_marker = "? for shortcuts"
+    # AGY can answer a short prompt and return to its idle composer before the
+    # supervisor's post-Enter verification sample. Treat that idle sample as a
+    # successful submit rather than repeatedly pressing Enter into the composer.
+    idle_after_submit_is_success = True
 
     def format_seed_user_message(self, text: str) -> str:
         return text.strip()
@@ -930,6 +934,8 @@ class AntigravityAdapter(CliAdapter):
                 return []
             raw_tool_name = raw_tool_name or "agy_tool"
             tool_name = _canonical_tool_name(raw_tool_name, tool_input)
+            if tool_name == "run_command" and _should_shim_run_command():
+                return []
             ok = name == "PostToolUse"
             data: dict[str, Any] = {
                 "tool_name": tool_name,

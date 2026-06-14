@@ -208,6 +208,9 @@ def test_injection_marker_gating_per_adapter():
     assert get_adapter("claude-code").hook_reports_prompt_submit is False
     assert get_adapter("codex").hook_reports_prompt_submit is True
     assert get_adapter("antigravity").hook_reports_prompt_submit is False
+    assert get_adapter("claude-code").idle_after_submit_is_success is False
+    assert get_adapter("codex").idle_after_submit_is_success is False
+    assert get_adapter("antigravity").idle_after_submit_is_success is True
 
 
 def test_prompt_ready_marker_per_adapter():
@@ -725,6 +728,21 @@ def test_agy_run_command_hook_shim_executes_and_denies_native_tool(
     assert result["data"]["exit_code"] == 0
     assert result["data"]["output"] == "agy-shim-ok\n"
     assert result["data"]["shim"] == "agy-run-command-hook"
+
+
+def test_agy_run_command_hook_shim_suppresses_native_post_tool_result(monkeypatch):
+    monkeypatch.setenv("CLI_AGENT_AGY_RUN_COMMAND_SHIM", "true")
+
+    events = get_adapter("antigravity").map_hook_event(
+        {
+            "hook_event_name": "PostToolUse",
+            "toolName": "run_command",
+            "toolInput": {"CommandLine": 'printf "ok\\n"', "Cwd": "/sandbox"},
+            "toolResponse": {},
+        }
+    )
+
+    assert events == []
 
 
 def test_agy_run_command_hook_shim_rejects_cwd_outside_sandbox(tmp_path, monkeypatch):

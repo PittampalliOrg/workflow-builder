@@ -475,6 +475,45 @@ async def test_submit_retries_enter_when_agent_stays_idle(monkeypatch):
     assert client.enters == 3
 
 
+async def test_submit_accepts_idle_for_fast_idle_runtime(monkeypatch):
+    """AGY can answer a short prompt and return to idle before the verification
+    sample. When the adapter opts in, post-submit idle should not trigger
+    repeated Enter presses or a false injection failure."""
+    monkeypatch.setattr(ss, "CLI_SUBMIT_DELAY_SECONDS", 0.0)
+    monkeypatch.setattr(ss, "CLI_SUBMIT_VERIFY_SECONDS", 0.0)
+    monkeypatch.setattr(ss, "CLI_SUBMIT_RETRIES", 3)
+    published = []
+    client = FakeHerdr(statuses=["idle"])
+    sup = SessionSupervisor(
+        client=client,
+        publish=lambda sid, t, d=None, **kw: published.append((sid, t, d, kw)),
+        raise_lifecycle=lambda *a, **k: None,
+        disabled=False,
+    )
+    sup._session_id = "s1"
+    sup._instance_id = "i1"
+    sup._pane_ref = "p1"
+    sup.idle_after_submit_is_success = True
+
+    ok = await sup._send_to_pane("hi", "")
+
+    assert ok is True
+    assert client.enters == 1
+    assert published == [
+        (
+            "s1",
+            "session.turn_started",
+            {
+                "turn": 1,
+                "source": "pane_submit",
+                "workflowInstanceId": "i1",
+                "turnId": "i1:turn:1",
+            },
+            {"source_event_id": "i1:turn:1:started"},
+        )
+    ]
+
+
 async def test_submit_retries_enter_when_send_keys_disconnects(monkeypatch):
     monkeypatch.setattr(ss, "CLI_SUBMIT_DELAY_SECONDS", 0.0)
     monkeypatch.setattr(ss, "CLI_SUBMIT_RETRY_DELAY_SECONDS", 0.0)

@@ -249,6 +249,9 @@ async def _start_cli(input_data: dict[str, Any]) -> dict[str, Any]:
             # rendered idle-prompt instead of herdr's premature `idle`.
             supervisor.prompt_ready_marker = adapter.prompt_ready_marker
             supervisor.hook_reports_prompt_submit = adapter.hook_reports_prompt_submit
+            supervisor.idle_after_submit_is_success = (
+                adapter.idle_after_submit_is_success
+            )
             # Kickoff: type the seed prompt into the TUI once it reaches its
             # prompt (readiness-gated, scheduled onto the app loop — this
             # activity runs on a throwaway worker-thread loop). Skipped for

@@ -110,9 +110,9 @@ CLI_READY_MARKER_STATUS_FALLBACK_SECONDS = _env_float(
 # paste, so an Enter sent immediately after `pane.send_text` races the paste and
 # is dropped — the prompt sits unsubmitted (verified live on dev 2026-06-10).
 # Settle before pressing Enter, then VERIFY the agent left `idle`; if it didn't,
-# the Enter never registered — re-press it. A real turn never completes within
-# the verify window, so "still idle" reliably means not-submitted (no risk of
-# submitting an empty prompt).
+# the Enter likely never registered, so re-press it. Some CLIs can complete a
+# short turn and return to idle before the sample; adapters opt into treating
+# that post-submit idle as success.
 CLI_SUBMIT_DELAY_SECONDS = _env_float("CLI_SUBMIT_DELAY_SECONDS", 2.0)
 CLI_SUBMIT_VERIFY_SECONDS = _env_float("CLI_SUBMIT_VERIFY_SECONDS", 2.0)
 CLI_SUBMIT_RETRIES = int(_env_float("CLI_SUBMIT_RETRIES", 5))
@@ -180,6 +180,7 @@ class SessionSupervisor:
         # herdr's (screen-detected, unreliable) agent_status.
         self.prompt_ready_marker: str | None = None
         self.hook_reports_prompt_submit = False
+        self.idle_after_submit_is_success = False
         self._cli_session_id: str | None = None
 
         # Semantic-state tracking.
@@ -768,8 +769,11 @@ class SessionSupervisor:
                 info = await self._client.agent_get(pane)
             except Exception:  # noqa: BLE001
                 return True  # pane gone / unreachable — assume the submit landed
-            if agent_status_of(info) != AGENT_STATUS_IDLE:
+            status = agent_status_of(info)
+            if status != AGENT_STATUS_IDLE:
                 return True  # working / blocked / done → the submit landed
+            if self.idle_after_submit_is_success:
+                return True  # fast turn may already have returned to idle
             if attempt >= checks - 1:
                 return False
             logger.info("[supervisor] submit not registered — re-pressing Enter")

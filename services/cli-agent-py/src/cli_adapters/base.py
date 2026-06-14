@@ -130,6 +130,12 @@ class CliAdapter(abc.ABC):
     # agy's "? for shortcuts" footer).
     prompt_ready_marker: str | None = None
 
+    # Some CLIs can accept a submitted prompt, produce a short answer, and return
+    # to their idle composer before the supervisor's post-Enter verification
+    # sample. For those runtimes, an idle sample after a delayed successful Enter
+    # is not proof that Enter was dropped.
+    idle_after_submit_is_success: bool = False
+
     def format_seed_user_message(self, text: str) -> str:
         """Return the first prompt typed into the CLI TUI.
 
