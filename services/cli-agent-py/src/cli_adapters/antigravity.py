@@ -597,8 +597,11 @@ class AntigravityAdapter(CliAdapter):
     def map_hook_event(self, payload: Mapping[str, Any]) -> list[dict[str, Any]] | None:
         name = _hook_name(payload)
         if name == "PreToolUse":
-            raw_tool_name = _tool_name_from(payload) or "agy_tool"
             tool_input = _tool_input_from(payload)
+            raw_tool_name = _tool_name_from(payload)
+            if not raw_tool_name and not tool_input:
+                return []
+            raw_tool_name = raw_tool_name or "agy_tool"
             tool_name = _canonical_tool_name(raw_tool_name, tool_input)
             data: dict[str, Any] = {
                 "tool_name": tool_name,
@@ -615,10 +618,18 @@ class AntigravityAdapter(CliAdapter):
                 }
             ]
         if name in ("PostToolUse", "PostToolUseFailure"):
-            raw_tool_name = _tool_name_from(payload) or "agy_tool"
             tool_input = _tool_input_from(payload)
-            tool_name = _canonical_tool_name(raw_tool_name, tool_input)
             output = _tool_output_from(payload)
+            raw_tool_name = _tool_name_from(payload)
+            if (
+                not raw_tool_name
+                and not tool_input
+                and not output
+                and name == "PostToolUse"
+            ):
+                return []
+            raw_tool_name = raw_tool_name or "agy_tool"
+            tool_name = _canonical_tool_name(raw_tool_name, tool_input)
             ok = name == "PostToolUse"
             data: dict[str, Any] = {
                 "tool_name": tool_name,

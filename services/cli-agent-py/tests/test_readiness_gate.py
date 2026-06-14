@@ -257,6 +257,26 @@ async def test_injected_prompt_digest_tolerates_codex_whitespace_normalization()
     assert sup.consume_injected_prompt("line one\nline two\n\nAnd three") is True
 
 
+async def test_send_to_pane_normalizes_crlf_before_tui_injection():
+    client = FakeHerdr(statuses=["working"])
+    sup = SessionSupervisor(
+        client=client,
+        publish=lambda *a, **k: None,
+        raise_lifecycle=lambda *a, **k: None,
+        disabled=False,
+    )
+    sup._session_id = "s1"
+    sup._instance_id = "i1"
+    sup._pane_ref = "p1"
+
+    ok = await sup._send_to_pane("/goal line one\r\nline two\rline three", "")
+
+    assert ok is True
+    assert client.sent == ["/goal line one\nline two\nline three"]
+    assert "\r" not in client.sent[0]
+    assert sup.consume_injected_prompt("/goal line one\nline two\nline three") is True
+
+
 async def test_arm_seed_is_one_shot(monkeypatch):
     sup = _supervisor(FakeHerdr())
     sup._seed_injected = True  # already done

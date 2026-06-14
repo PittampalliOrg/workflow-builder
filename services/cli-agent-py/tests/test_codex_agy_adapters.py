@@ -629,8 +629,17 @@ def test_agy_hook_mapping_canonicalizes_mcp_call_tool_names():
     assert result[0]["data"]["output"] == "ok"
 
 
-def test_agy_hook_mapping_uses_non_null_fallback_tool_name():
+def test_agy_hook_mapping_skips_empty_anonymous_tool_hooks():
     event = get_adapter("antigravity").map_hook_event({"hook_event_name": "PreToolUse"})
+    assert event == []
+    result = get_adapter("antigravity").map_hook_event({"hook_event_name": "PostToolUse"})
+    assert result == []
+
+
+def test_agy_hook_mapping_uses_non_null_fallback_tool_name_for_payloads():
+    event = get_adapter("antigravity").map_hook_event(
+        {"hook_event_name": "PreToolUse", "input": {"path": "/sandbox/repo"}}
+    )
     assert event is not None
     assert event[0]["data"]["tool_name"] == "agy_tool"
     assert event[0]["data"]["name"] == "agy_tool"

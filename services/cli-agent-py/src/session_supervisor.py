@@ -77,6 +77,17 @@ def _prompt_digest_variants(prompt: str) -> set[str]:
     return {_prompt_digest(value) for value in variants if value}
 
 
+def _normalize_pane_text(text: str) -> str:
+    """Keep CR bytes out of TUI injection.
+
+    Some CLIs treat carriage return as submit even when Herdr is sending a
+    paste-like text block. SWE-bench issue text can contain CRLF from upstream
+    markdown, so normalize before pane.send_text and let submit be owned only by
+    pane_submit_enter().
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 HERDR_DISABLED = _env_bool("HERDR_DISABLE", False)
 CLI_IDLE_TTL_SECONDS = _env_float("CLI_IDLE_TTL_SECONDS", 3600.0)
 CLI_STATE_DEBOUNCE_SECONDS = _env_float("CLI_STATE_DEBOUNCE_SECONDS", 2.0)
@@ -654,11 +665,14 @@ class SessionSupervisor:
         # Hold the lock across the text+Enter pair so two senders (seed vs a
         # concurrent injection) never interleave keystrokes on the pane.
         async with self._pane_write_lock:
-            prompt_digests = _prompt_digest_variants(text)
+            send_text = _normalize_pane_text(text)
+            prompt_digests = _prompt_digest_variants(text) | _prompt_digest_variants(
+                send_text
+            )
             self._injected_prompt_hashes.update(prompt_digests)
             submitted = False
             try:
-                await self._client.pane_send_text(pane, f"{marker}{text}")
+                await self._client.pane_send_text(pane, f"{marker}{send_text}")
                 # Let the TUI ingest the pasted text before pressing Enter, then
                 # confirm the submit registered (re-press if the agent is still
                 # idle — the Enter raced the paste and was dropped).
