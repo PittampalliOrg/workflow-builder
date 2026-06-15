@@ -7252,7 +7252,9 @@ def pause_agent_run(instance_id: str) -> dict[str, Any]:
     try:
         from dapr.ext.workflow import DaprWorkflowClient
 
-        DaprWorkflowClient().suspend_workflow(instance_id=instance_id)
+        # NB: the SDK method is pause_workflow (dapr-ext-workflow 1.17.x);
+        # there is no suspend_workflow — calling it 500s at runtime.
+        DaprWorkflowClient().pause_workflow(instance_id=instance_id)
         return {"success": True, "instanceId": instance_id}
     except Exception as exc:
         logger.error("[agent-runs] Failed to pause %s: %s", instance_id, exc)

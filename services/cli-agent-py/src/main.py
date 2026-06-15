@@ -400,7 +400,9 @@ def terminate_agent_run(
 @app.post("/api/v2/agent-runs/{instance_id}/pause")
 def pause_agent_run(instance_id: str) -> dict[str, Any]:
     try:
-        DaprWorkflowClient().suspend_workflow(instance_id=instance_id)
+        # SDK method is pause_workflow (dapr-ext-workflow 1.17.x); there is no
+        # suspend_workflow — calling it 500s at runtime.
+        DaprWorkflowClient().pause_workflow(instance_id=instance_id)
         return {"success": True, "instanceId": instance_id}
     except Exception as exc:  # noqa: BLE001
         logger.error("[agent-runs] pause failed for %s: %s", instance_id, exc)
