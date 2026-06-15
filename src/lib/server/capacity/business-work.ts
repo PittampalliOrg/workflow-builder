@@ -19,7 +19,10 @@ import type {
 } from '$lib/types/capacity';
 
 const RESOURCE_KEYS = ['cpu', 'memory', 'ephemeral-storage', 'pods'] as const;
-const ACTIVE_SESSION_STATUSES = new Set(['queued', 'running', 'rescheduling', 'active', 'starting']);
+// 'idle' included: a goal-loop / interactive session sits in `idle` between turns
+// while its pod stays alive (it IS active work). Matches the activity-cell "live"
+// set so panel inclusion and the live heartbeat dot agree.
+const ACTIVE_SESSION_STATUSES = new Set(['queued', 'running', 'rescheduling', 'active', 'starting', 'idle']);
 const ACTIVE_BENCHMARK_STATUSES = new Set(['queued', 'running', 'inferencing', 'evaluating']);
 const ACTIVE_WORKFLOW_STATUSES = new Set(['pending', 'running']);
 
