@@ -13,7 +13,8 @@
  * `resumeDurableRun` wire the real Dapr-invoke + DB-write deps. Symmetric with
  * `stopDurableRun` (lifecycle/index.ts): routes stay thin, the DB write lives here.
  */
-import { daprFetch, getDaprSidecarUrl } from "$lib/server/dapr-client";
+import { env } from "$env/dynamic/private";
+import { getAgentWorkflowHostPod } from "$lib/server/kube/client";
 import { updateSessionStatus } from "$lib/server/sessions/registry";
 import type { SessionStatus } from "$lib/types/sessions";
 import type { AgentRuntimeTarget } from "./cascade";
@@ -47,23 +48,40 @@ export type PauseResumeDeps = {
 	) => Promise<void>;
 };
 
-const CONTROL_TIMEOUT_MS = 20_000;
+// A cold pause_workflow() can take ~15-20s: the gRPC SuspendInstance only
+// acknowledges once the in-flight activity (e.g. an LLM call) reaches a yield
+// point, and the per-pod Dapr channel warms on first use. Keep the budget well
+// above that so the first pause of a busy run doesn't false-fail.
+const CONTROL_TIMEOUT_MS = 30_000;
+const RUNTIME_HTTP_PORT = 8002;
 
 /**
- * Invoke a per-session runtime's pause|resume endpoint via Dapr service-invoke
- * (mirrors cascade.terminateAgentRuntime). Returns true on a 2xx.
+ * Invoke a per-session runtime's pause|resume endpoint by addressing the agent
+ * pod DIRECTLY (pod IP : 8002), the same transport the CLI terminal proxy uses
+ * (`ws-cli-terminal-proxy.ts`). Per-session Kueue sandbox pods are NOT
+ * Dapr-service-invokable (no `<app-id>-dapr` Service → `ERR_DIRECT_INVOKE`) and
+ * the run's workflow is owned by the pod's own daprd (the BFF sidecar can't
+ * pause/resume an instance it doesn't own). Only the pod itself can drive
+ * `DaprWorkflowClient().pause_workflow()`, so we reach its in-pod HTTP handler.
+ * Returns true on a 2xx.
  */
 async function invokeAgentRuntimeControl(
 	t: AgentRuntimeTarget,
 	verb: PauseResumeVerb,
 ): Promise<boolean> {
 	try {
-		const res = await daprFetch(
-			`${getDaprSidecarUrl()}/v1.0/invoke/${encodeURIComponent(t.runtimeAppId)}/method/api/v2/agent-runs/${encodeURIComponent(t.instanceId)}/${verb}`,
+		const pod = await getAgentWorkflowHostPod(t.runtimeAppId);
+		if (!pod?.podIP) return false;
+		const token = (env.INTERNAL_API_TOKEN ?? "").trim();
+		const res = await fetch(
+			`http://${pod.podIP}:${RUNTIME_HTTP_PORT}/api/v2/agent-runs/${encodeURIComponent(t.instanceId)}/${verb}`,
 			{
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				maxRetries: 0,
+				headers: {
+					"Content-Type": "application/json",
+					...(token ? { "X-Internal-Token": token } : {}),
+				},
+				body: "{}",
 				signal: AbortSignal.timeout(CONTROL_TIMEOUT_MS),
 			},
 		);
