@@ -2,6 +2,9 @@ export type SessionStatus =
 	| "rescheduling"
 	| "running"
 	| "idle"
+	// Paused via Dapr suspend_workflow — the run is held (non-terminal) and
+	// resumable on demand. Set/cleared by the lifecycle pause/resume controls.
+	| "paused"
 	| "terminated";
 
 export type SessionStopReasonType =
@@ -75,6 +78,8 @@ export type SessionDetail = SessionSummary & {
 	workspaceSandboxName: string | null;
 	runtimeAppId: string | null;
 	runtimeSandboxName: string | null;
+	/** Set while the run is paused (Dapr suspend_workflow); null when active. */
+	pausedAt: string | null;
 };
 
 export type SessionResourceType = "file" | "github_repository";

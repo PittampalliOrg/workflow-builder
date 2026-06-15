@@ -91,6 +91,7 @@ function rowToDetail(row: Session, ctx: JoinContext = EMPTY_CTX): SessionDetail 
 		workspaceSandboxName: row.workspaceSandboxName ?? null,
 		runtimeAppId: row.runtimeAppId ?? null,
 		runtimeSandboxName: row.runtimeSandboxName ?? null,
+		pausedAt: row.pauseRequestedAt ? row.pauseRequestedAt.toISOString() : null,
 	};
 }
 
@@ -405,6 +406,8 @@ export async function updateSessionStatus(
 		usage?: SessionUsage;
 		errorMessage?: string | null;
 		markCompleted?: boolean;
+		/** Lifecycle pause-intent: a Date stamps pause, null clears it on resume. */
+		pauseRequestedAt?: Date | null;
 	} = {},
 ): Promise<void> {
 	const database = requireDb();
@@ -418,6 +421,8 @@ export async function updateSessionStatus(
 		patch.usage = extras.usage as Record<string, unknown>;
 	if (extras.errorMessage !== undefined)
 		patch.errorMessage = extras.errorMessage ?? null;
+	if (extras.pauseRequestedAt !== undefined)
+		patch.pauseRequestedAt = extras.pauseRequestedAt;
 	if (extras.markCompleted) patch.completedAt = new Date();
 	await database.update(sessions).set(patch).where(eq(sessions.id, id));
 	if (extras.markCompleted) {

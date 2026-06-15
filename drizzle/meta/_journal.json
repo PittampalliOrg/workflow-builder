@@ -575,6 +575,13 @@
       "when": 1781701200000,
       "tag": "0087_piece_images",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1781787600000,
+      "tag": "0088_session_pause_requested_at",
+      "breakpoints": true
     }
   ]
 }

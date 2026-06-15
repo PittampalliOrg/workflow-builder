@@ -356,12 +356,15 @@ export async function reapTerminalRuns(
 		})
 		.from(sessions)
 		// A user-requested stop (stopRequestedAt) is handled by the priority pass
-		// above and must NEVER be auto-resumed; exclude those here.
+		// above and must NEVER be auto-resumed; exclude those here. A PAUSED run
+		// (pauseRequestedAt) is a deliberate, resumable hold — never reap it, even
+		// if its pod died while the workflow is suspended.
 		.where(
 			and(
 				ne(sessions.status, "terminated"),
 				lte(sessions.updatedAt, cutoff),
 				isNull(sessions.stopRequestedAt),
+				isNull(sessions.pauseRequestedAt),
 			),
 		)
 		.limit(limit);
