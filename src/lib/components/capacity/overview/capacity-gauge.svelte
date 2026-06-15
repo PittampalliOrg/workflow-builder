@@ -1,17 +1,16 @@
 <script lang="ts">
 	/**
-	 * 270° radial gauge for the Capacity Overview hero. The arc opens at the
-	 * bottom: starts at 8-o'clock, sweeps clockwise to 4-o'clock.
+	 * 270° radial capacity gauge. The arc opens at the bottom (8 o'clock → 4
+	 * o'clock, clockwise). Used at ~78px in the Fleet header and ~140px on the
+	 * Capacity Overview.
 	 *
-	 * Tone thresholds match `usage-bar.svelte`:
-	 *   <70%  emerald
-	 *   70-89% amber
-	 *   ≥90%  rose
+	 * Design: the circle interior shows ONLY the scaled % (so it never crowds at
+	 * small sizes); the resource label, used/nominal, and any borrow badge live in
+	 * the footer below the arc. The used arc is a tone-graded gradient with a soft
+	 * glow.
 	 *
-	 * When `over > 0` (Kueue borrowing past nominal), the entire used arc
-	 * renders rose and a small `+N%` borrow badge is shown.
-	 *
-	 * Nominal of 0 is rendered with an em-dash center and a neutral arc.
+	 * Tone thresholds match `usage-bar.svelte`: <70% emerald · 70–89% amber · ≥90%
+	 * rose. `over > 0` (Kueue borrowing past nominal) forces rose + a borrow badge.
 	 */
 	type Props = {
 		used: number;
@@ -22,14 +21,9 @@
 		tertiaryLabel?: string;
 		size?: number;
 		strokeWidth?: number;
-		/**
-		 * Optional threshold marker drawn as a small radial tick on the arc.
-		 * Use this to surface a secondary cap (e.g. Kueue admission ceiling)
-		 * inside the primary capacity gauge. Same units as `nominal`; ignored
-		 * unless 0 < capMark < nominal.
-		 */
+		/** Optional secondary cap tick (e.g. Kueue admission ceiling). Same units
+		 * as `nominal`; ignored unless 0 < capMark < nominal. */
 		capMark?: number;
-		/** Short label shown next to the tick (e.g. "Kueue"). */
 		capMarkLabel?: string;
 	};
 
@@ -52,18 +46,18 @@
 	const RADIUS = 40;
 	const STROKE = $derived((strokeWidth / size) * VIEWBOX);
 
-	// Gauge geometry: 270° arc starting at 8-o'clock (angle 135 from top, clockwise = -135 normalized),
-	// ending at 4-o'clock (angle 225 from top, clockwise = +135 normalized).
+	// SSR-stable unique id so multiple gauges (different tones) on one page don't
+	// collide on the gradient ref.
+	const uid = $props.id();
+
 	const START_ANGLE = -135;
 	const END_ANGLE = 135;
 	const SWEEP_DEGREES = END_ANGLE - START_ANGLE; // 270°
 
 	function polar(angleDeg: number): [number, number] {
-		// 0 = top, clockwise. Convert to standard math by subtracting 90.
 		const rad = ((angleDeg - 90) * Math.PI) / 180;
 		return [CX + RADIUS * Math.cos(rad), CY + RADIUS * Math.sin(rad)];
 	}
-
 	function arcPath(startAngle: number, endAngle: number): string {
 		const [sx, sy] = polar(startAngle);
 		const [ex, ey] = polar(endAngle);
@@ -86,34 +80,40 @@
 		return 'emerald';
 	});
 
-	const toneClass = $derived(
+	// Gradient stops + glow color per tone (Tailwind 400 → 600).
+	const grad = $derived.by(() => {
+		switch (tone) {
+			case 'rose':
+				return { from: 'rgb(251 113 133)', to: 'rgb(225 29 72)', glow: 'rgba(244 63 94 / 0.45)' };
+			case 'amber':
+				return { from: 'rgb(251 191 36)', to: 'rgb(217 119 6)', glow: 'rgba(245 158 11 / 0.40)' };
+			case 'emerald':
+				return { from: 'rgb(52 211 153)', to: 'rgb(5 150 105)', glow: 'rgba(16 185 129 / 0.40)' };
+			default:
+				return { from: 'rgb(148 163 184)', to: 'rgb(100 116 139)', glow: 'rgba(148 163 184 / 0.25)' };
+		}
+	});
+
+	const textToneClass = $derived(
 		tone === 'rose'
-			? 'stroke-rose-500'
+			? 'text-rose-600 dark:text-rose-400'
 			: tone === 'amber'
-				? 'stroke-amber-500'
+				? 'text-amber-600 dark:text-amber-400'
 				: tone === 'emerald'
-					? 'stroke-emerald-500'
-					: 'stroke-muted-foreground/40'
+					? 'text-emerald-600 dark:text-emerald-400'
+					: 'text-muted-foreground'
 	);
 
 	const backgroundPath = $derived(arcPath(START_ANGLE, END_ANGLE));
 	const usedEndAngle = $derived(START_ANGLE + ratio * SWEEP_DEGREES);
-	const usedPath = $derived(
-		ratio > 0 ? arcPath(START_ANGLE, usedEndAngle) : null
-	);
+	const usedPath = $derived(ratio > 0 ? arcPath(START_ANGLE, usedEndAngle) : null);
 
-	// Optional cap-marker tick. Only render when capMark is meaningfully
-	// between 0 and the gauge's nominal — otherwise it lands at the start
-	// or end of the arc where it adds no value.
+	// Cap-marker tick (only when meaningfully between 0 and nominal).
 	const capRatio = $derived(
-		safeNominal > 0 && capMark > 0 && capMark < safeNominal
-			? capMark / safeNominal
-			: 0
+		safeNominal > 0 && capMark > 0 && capMark < safeNominal ? capMark / safeNominal : 0
 	);
 	const capAngle = $derived(START_ANGLE + capRatio * SWEEP_DEGREES);
 	const capPercent = $derived(Math.round(capRatio * 100));
-	// Tick extends slightly past the arc on both sides so it reads against
-	// either the background or the used portion.
 	const capTickInner = $derived.by(() => {
 		if (capRatio <= 0) return null;
 		const rad = ((capAngle - 90) * Math.PI) / 180;
@@ -126,18 +126,29 @@
 		const outer = RADIUS + STROKE * 0.9;
 		return [CX + outer * Math.cos(rad), CY + outer * Math.sin(rad)];
 	});
+
+	// Scale the center % with the gauge size so it never overflows the arc.
+	const percentFont = $derived(Math.round(size * 0.27));
+	const glowRadius = $derived(Math.max(2, Math.round(size * 0.045)));
 </script>
 
 <div class="flex flex-col items-center gap-2" style="width: {size}px;">
 	<div class="relative" style="width: {size}px; height: {size}px;">
 		<svg
 			viewBox="0 0 {VIEWBOX} {VIEWBOX}"
-			class="block"
+			class="block overflow-visible"
 			width={size}
 			height={size}
 			role="img"
-			aria-label={`${primaryLabel} ${secondaryLabel ?? ''}`}
+			aria-label={`${primaryLabel} ${percent}%`}
 		>
+			<defs>
+				<linearGradient id="cg-{uid}" x1="0" y1="0" x2="0" y2="1">
+					<stop offset="0%" stop-color={grad.from} />
+					<stop offset="100%" stop-color={grad.to} />
+				</linearGradient>
+			</defs>
+
 			<!-- background track -->
 			<path
 				d={backgroundPath}
@@ -147,17 +158,20 @@
 				stroke-linecap="round"
 				class="text-muted/40"
 			/>
-			<!-- used arc -->
+
+			<!-- used arc: tone gradient + soft glow -->
 			{#if usedPath}
 				<path
 					d={usedPath}
 					fill="none"
-					stroke="currentColor"
+					stroke="url(#cg-{uid})"
 					stroke-width={STROKE}
 					stroke-linecap="round"
-					class="{toneClass} transition-[d] duration-500 ease-out"
+					class="transition-[d] duration-500 ease-out"
+					style="filter: drop-shadow(0 0 {glowRadius}px {grad.glow});"
 				/>
 			{/if}
+
 			<!-- cap marker (optional secondary threshold tick) -->
 			{#if capTickInner && capTickOuter}
 				<line
@@ -175,42 +189,34 @@
 			{/if}
 		</svg>
 
-		<!-- center labels -->
-		<div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+		<!-- center: only the scaled % -->
+		<div class="pointer-events-none absolute inset-0 flex items-center justify-center">
 			{#if safeNominal <= 0}
-				<span class="text-3xl font-semibold tabular-nums text-muted-foreground">—</span>
+				<span class="font-semibold tabular-nums text-muted-foreground" style="font-size: {percentFont}px; line-height: 1;">—</span>
 			{:else}
-				<span
-					class="text-4xl font-semibold tabular-nums leading-none {tone === 'rose'
-						? 'text-rose-600 dark:text-rose-400'
-						: tone === 'amber'
-							? 'text-amber-600 dark:text-amber-400'
-							: 'text-foreground'}"
-				>
-					{percent}%
-				</span>
-			{/if}
-			{#if secondaryLabel}
-				<span class="mt-1.5 text-xs font-mono text-muted-foreground tabular-nums">
-					{secondaryLabel}
-				</span>
-			{/if}
-			{#if tertiaryLabel}
-				<span class="mt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground/80">
-					{tertiaryLabel}
-				</span>
-			{/if}
-			{#if overPercent > 0}
-				<span
-					class="mt-1.5 inline-flex items-center rounded-full border border-rose-500/40 bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-mono text-rose-700 dark:text-rose-400"
-					title="Kueue borrowing over nominal quota"
-				>
-					+{overPercent}% borrow
+				<span class="font-semibold tabular-nums {textToneClass}" style="font-size: {percentFont}px; line-height: 1;">
+					{percent}<span style="font-size: {Math.round(percentFont * 0.5)}px;" class="font-medium opacity-70">%</span>
 				</span>
 			{/if}
 		</div>
 	</div>
-	<span class="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-		{primaryLabel}
-	</span>
+
+	<!-- footer: label · used/nominal · tertiary · borrow badge -->
+	<div class="flex max-w-full flex-col items-center gap-0.5 text-center leading-tight">
+		<span class="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{primaryLabel}</span>
+		{#if secondaryLabel}
+			<span class="max-w-full truncate font-mono text-[11px] tabular-nums text-foreground/80">{secondaryLabel}</span>
+		{/if}
+		{#if tertiaryLabel}
+			<span class="text-[10px] uppercase tracking-wide text-muted-foreground/70">{tertiaryLabel}</span>
+		{/if}
+		{#if overPercent > 0}
+			<span
+				class="mt-0.5 inline-flex items-center rounded-full border border-rose-500/40 bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-mono text-rose-700 dark:text-rose-400"
+				title="Kueue borrowing over nominal quota"
+			>
+				+{overPercent}% borrow
+			</span>
+		{/if}
+	</div>
 </div>
