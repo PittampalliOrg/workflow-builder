@@ -103,13 +103,31 @@ export async function buildCapacityBusinessWork(
 ): Promise<CapacityBusinessWorkSummary> {
 	const active = aggregateActiveWork(snapshot);
 	const details = context.projectId ? await loadDetails(active, context.projectId) : emptyDetails();
-	const recent = context.projectId ? await loadRecentWork(context.projectId, context.workspaceSlug) : [];
+	const dbWork = context.projectId
+		? await loadDbWork(context.projectId, context.workspaceSlug)
+		: { active: [] as CapacityBusinessWorkItem[], recent: [] as CapacityBusinessWorkItem[] };
+	const recent = dbWork.recent;
 
 	for (const item of active) applyDetails(item, details, context.workspaceSlug);
 	active.sort(compareActiveWork);
 
 	const infrastructure = active.filter((item) => item.kind === 'infrastructure');
 	const businessActive = active.filter((item) => item.kind !== 'infrastructure');
+
+	// DB-authoritative backfill: the external capacity observer can report
+	// contributors with NO owner attribution, so every pod collapses to
+	// 'infrastructure' and genuinely-active sessions/runs never reach this panel.
+	// Union in active DB rows (scoped to the project) keyed by `${kind}:${id}`.
+	// Observer-derived items win on key (they carry real resource/pressure data);
+	// DB-only items appear with zero observed resources but correct status/title.
+	const businessActiveKeys = new Set(businessActive.map((item) => item.key));
+	for (const item of dbWork.active) {
+		if (!businessActiveKeys.has(item.key)) {
+			businessActiveKeys.add(item.key);
+			businessActive.push(item);
+		}
+	}
+	businessActive.sort(compareActiveWork);
 	const totals = emptyResources();
 	const observedTotals = emptyResources();
 	for (const item of businessActive) {
@@ -367,11 +385,11 @@ async function selectBenchmarkInstances(
 		.where(and(eq(benchmarkRuns.projectId, projectId), inArray(benchmarkRunInstances.id, ids)))) as BenchmarkInstanceDetail[];
 }
 
-async function loadRecentWork(
+async function loadDbWork(
 	projectId: string,
 	workspaceSlug: string
-): Promise<CapacityBusinessWorkItem[]> {
-	if (!db) return [];
+): Promise<{ active: CapacityBusinessWorkItem[]; recent: CapacityBusinessWorkItem[] }> {
+	if (!db) return { active: [], recent: [] };
 	const [sessionRows, workflowRows, runRows, instanceRows] = await Promise.all([
 		(await db
 			.select({
@@ -459,7 +477,32 @@ async function loadRecentWork(
 		...runRows.filter((row) => row.completedAt || !ACTIVE_BENCHMARK_STATUSES.has(row.status)).map((row) => recentBenchmarkRun(row, workspaceSlug)),
 		...instanceRows.filter((row) => row.completedAt || !ACTIVE_BENCHMARK_STATUSES.has(row.status)).map((row) => recentBenchmarkInstance(row, workspaceSlug))
 	];
-	return recent.sort((a, b) => itemEndMs(b) - itemEndMs(a)).slice(0, 12);
+	// DB-authoritative ACTIVE work — the inverse of the recent filter (non-terminal
+	// rows in an active status). The recent* builders set `active=false`; flip it.
+	// buildCapacityBusinessWork unions these in so the panel reflects DB truth even
+	// when the capacity observer reports contributors with no owner attribution.
+	const markActive = (item: CapacityBusinessWorkItem) => {
+		item.active = true;
+		return item;
+	};
+	const active = [
+		...sessionRows
+			.filter((row) => !row.completedAt && ACTIVE_SESSION_STATUSES.has(row.status))
+			.map((row) => markActive(recentSession(row, workspaceSlug))),
+		...workflowRows
+			.filter((row) => !row.completedAt && ACTIVE_WORKFLOW_STATUSES.has(row.status))
+			.map((row) => markActive(recentWorkflow(row, workspaceSlug))),
+		...runRows
+			.filter((row) => !row.completedAt && ACTIVE_BENCHMARK_STATUSES.has(row.status))
+			.map((row) => markActive(recentBenchmarkRun(row, workspaceSlug))),
+		...instanceRows
+			.filter((row) => !row.completedAt && ACTIVE_BENCHMARK_STATUSES.has(row.status))
+			.map((row) => markActive(recentBenchmarkInstance(row, workspaceSlug)))
+	];
+	return {
+		active,
+		recent: recent.sort((a, b) => itemEndMs(b) - itemEndMs(a)).slice(0, 12)
+	};
 }
 
 function applyDetails(item: CapacityBusinessWorkItem, details: DetailMaps, workspaceSlug: string) {

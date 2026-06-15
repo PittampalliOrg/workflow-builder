@@ -56,11 +56,29 @@ export function agentConfigCanUseWorkflowHost(
 	agentConfig: AgentConfig | null,
 ): boolean {
 	if (!agentConfig) return false;
-	if ((agentConfig as { runtime?: unknown }).runtime === "browser-use-agent") {
+	const runtime = (agentConfig as { runtime?: string }).runtime;
+	if (runtime === "browser-use-agent") {
 		return false;
 	}
-	const servers = Array.isArray(agentConfig.mcpServers) ? agentConfig.mcpServers : [];
-	return !servers.some((server) => isPlaywrightMcpEntry(server));
+	// Playwright MCP needs chromium + playwright sidecars, which come from a
+	// long-lived SandboxWarmPool — and ONLY browser-backed runtimes
+	// (`requiresWarmPool`/`requiresBrowserSidecars`, e.g. browser-use-agent) have
+	// one. A stray Playwright entry on any OTHER runtime must NOT exclude it from
+	// the Kueue Sandbox host: there is no warm pool for it, so spawn would fall
+	// through to direct-invoking a non-existent `agent-runtime-<slug>` app-id and
+	// the session wedges forever at status=rescheduling (ERR_DIRECT_INVOKE — wfb
+	// 2026-06-15). Non-browser runtimes provision Playwright sidecars on the Kueue
+	// Sandbox host itself when actually needed, so gate the exclusion on the
+	// runtime genuinely requiring a warm pool.
+	const descriptor = getRuntimeDescriptor(runtime);
+	const needsWarmPool =
+		descriptor?.capabilities?.requiresWarmPool === true ||
+		descriptor?.capabilities?.requiresBrowserSidecars === true;
+	if (needsWarmPool) {
+		const servers = Array.isArray(agentConfig.mcpServers) ? agentConfig.mcpServers : [];
+		return !servers.some((server) => isPlaywrightMcpEntry(server));
+	}
+	return true;
 }
 
 export function sessionHostAppId(sessionId: string): string {
