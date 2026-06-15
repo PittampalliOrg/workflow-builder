@@ -207,5 +207,6 @@ function sampleSession(): SessionDetail {
 		workspaceSandboxName: null,
 		runtimeAppId: null,
 		runtimeSandboxName: null,
+		pausedAt: null,
 	};
 }

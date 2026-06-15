@@ -116,8 +116,14 @@ from src.openshell_runtime import (
 )
 from src.code_checkpoint import (
     capture_code_checkpoint,
+    log_checkpoint_remote_status,
     restore_code_checkpoint,
     should_checkpoint_tool,
+)
+from src.tool_idempotency import (
+    ToolResultCache,
+    find_recorded_tool_result,
+    tool_idempotency_enabled,
 )
 from src.capability_compiler import (
     emit_dapr_agent_py,
@@ -1569,6 +1575,11 @@ class OpenShellDurableAgent(DurableAgent):
         self._first_tool_at_by_instance: dict[str, float] = {}
         self._workflow_started_at_by_instance: dict[str, float] = {}
         self._max_iterations_by_instance: dict[str, int] = {}
+        # run_tool idempotency: (instance_id, tool_call_id) -> successful result.
+        # Short-circuits a replayed/retried tool so its side effect runs at most
+        # once (the activity is retried under self._retry_policy). See
+        # src/tool_idempotency.py.
+        self._tool_result_cache = ToolResultCache()
 
     def _custom_hooks_enabled_for_instance(
         self,
@@ -2706,6 +2717,40 @@ class OpenShellDurableAgent(DurableAgent):
         except Exception as exc:  # noqa: BLE001
             logger.warning("[compaction] inline pass failed (continuing): %s", exc, exc_info=True)
 
+        # ---- Pre-save state byte-budget guard (16 MiB durabletask cliff) ----
+        # Compaction above is TOKEN-triggered; this is a separate BYTE safety
+        # net that runs in the same activity boundary BEFORE save_state. When
+        # the serialized entry.messages exceeds the configured budget it
+        # deterministically offloads the oldest oversized (pairing-safe) bodies
+        # so the persisted document never approaches the 16 MiB gRPC channel
+        # limit, and emits a `state_size` telemetry field. Best-effort.
+        try:
+            from src.compaction.state_budget import (
+                enforce_state_byte_budget,
+                resolve_state_budget_config,
+            )
+
+            _state_budget_cfg = resolve_state_budget_config()
+            if _state_budget_cfg.enabled:
+                _budget_result = enforce_state_byte_budget(
+                    self,
+                    instance_id=inst_id,
+                    session_id=self._session_id_by_instance.get(inst_id),
+                    config=_state_budget_cfg,
+                )
+                if _budget_result.over_budget:
+                    logger.warning(
+                        "[state-budget] instance=%s over budget pre=%dB post=%dB "
+                        "offloaded=%d budget=%dB",
+                        inst_id,
+                        _budget_result.pre_bytes,
+                        _budget_result.post_bytes,
+                        _budget_result.offloaded_count,
+                        _state_budget_cfg.budget_bytes,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[state-budget] guard failed (continuing): %s", exc, exc_info=True)
+
         sess_id = self._session_id_by_instance.get(inst_id)
         # Phase B — turn count + first-token timestamp. We're in a durable
         # activity; counter increments are idempotent across replays because
@@ -3015,6 +3060,48 @@ class OpenShellDurableAgent(DurableAgent):
             tool_name,
             tool_call_id,
         )
+        # ---- run_tool idempotency (at-least-once -> effectively once) -------
+        # A replayed/retried activity (transient failure, pod death mid-tool)
+        # must not double-execute a side effect. Short-circuit-return a recorded
+        # result keyed on (instance_id, tool_call_id): in-memory first (same-pod
+        # retry), then a durable scan of entry.messages (cross-pod replay,
+        # mirrors the compaction durable-sentinel pattern). See
+        # src/tool_idempotency.py. Best-effort; never blocks a fresh tool.
+        if tool_call_id and tool_idempotency_enabled():
+            try:
+                _cached_result = self._tool_result_cache.get(inst_id, tool_call_id)
+                if _cached_result is None and _env_bool(
+                    "DAPR_AGENT_PY_TOOL_IDEMPOTENCY_DURABLE_SCAN"
+                ):
+                    _entry = self._infra.get_state(inst_id)
+                    _cached_result = find_recorded_tool_result(
+                        list(getattr(_entry, "messages", []) or []), tool_call_id
+                    )
+                if _cached_result is not None:
+                    logger.info(
+                        "[tool-idempotency] replay hit instance=%s call_id=%s "
+                        "tool=%s — returning cached result (no re-execution)",
+                        inst_id,
+                        tool_call_id,
+                        tool_name,
+                    )
+                    try:
+                        publish_session_event(
+                            sess_id,
+                            "tool_activity.replayed",
+                            {
+                                "toolName": tool_name,
+                                "toolCallId": tool_call_id,
+                                "workflowInstanceId": inst_id,
+                            },
+                            source_event_id=f"{tool_call_id}:replayed",
+                            instance_id=inst_id,
+                        )
+                    except Exception:
+                        pass
+                    return _cached_result
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[tool-idempotency] entry check failed (continuing): %s", exc)
         try:
             publish_session_event(
                 sess_id,
@@ -3581,6 +3668,20 @@ class OpenShellDurableAgent(DurableAgent):
               )
           except Exception:
               pass
+          # Record the SUCCESSFUL result for run_tool idempotency so a later
+          # retry/replay of this same (instance_id, tool_call_id) short-circuits
+          # without re-executing the side effect. Failed results are NOT cached
+          # (they must stay retryable).
+          if (
+              tool_call_id
+              and tool_idempotency_enabled()
+              and _exec_error is None
+              and isinstance(result, dict)
+          ):
+              try:
+                  self._tool_result_cache.put(inst_id, tool_call_id, result)
+              except Exception as exc:  # noqa: BLE001
+                  logger.warning("[tool-idempotency] cache put failed: %s", exc)
           return result
         finally:
             try:
@@ -4332,6 +4433,10 @@ class OpenShellDurableAgent(DurableAgent):
                 self._first_tool_at_by_instance.pop(instance_id, None)
                 self._workflow_started_at_by_instance.pop(instance_id, None)
                 self._max_iterations_by_instance.pop(instance_id, None)
+                try:
+                    self._tool_result_cache.clear_instance(instance_id)
+                except Exception:
+                    pass
 
         agent_workflow_result = None
         try:
@@ -5928,6 +6033,14 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         logger.warning("[mcp-bootstrap] startup hook failed: %s", exc)
     _start_session_host_monitor()
+    # Surface whether the workspace git-checkpoint remote is active for
+    # long-running coding sessions (plan 1e). Mid-run workspace recovery is
+    # silently unavailable when WORKFLOW_CHECKPOINT_GIT_REMOTE_URL (+ creds)
+    # is unset; this makes that observable at boot. Best-effort.
+    try:
+        log_checkpoint_remote_status()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[checkpoint] startup status log failed: %s", exc)
     yield
     logger.info("%s shutting down", AGENT_SERVICE_NAME)
     runner.shutdown(agent)
@@ -7139,7 +7252,9 @@ def pause_agent_run(instance_id: str) -> dict[str, Any]:
     try:
         from dapr.ext.workflow import DaprWorkflowClient
 
-        DaprWorkflowClient().suspend_workflow(instance_id=instance_id)
+        # NB: the SDK method is pause_workflow (dapr-ext-workflow 1.17.x);
+        # there is no suspend_workflow — calling it 500s at runtime.
+        DaprWorkflowClient().pause_workflow(instance_id=instance_id)
         return {"success": True, "instanceId": instance_id}
     except Exception as exc:
         logger.error("[agent-runs] Failed to pause %s: %s", instance_id, exc)

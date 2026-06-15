@@ -12,8 +12,12 @@
  * (stop_requested_at), finalizing them the moment Dapr goes terminal.
  */
 import { createHash } from "node:crypto";
-import { and, count, eq, inArray, isNotNull, lte, ne, notInArray } from "drizzle-orm";
+import { and, count, eq, inArray, isNotNull, isNull, lte, ne, notInArray } from "drizzle-orm";
 import { db } from "$lib/server/db";
+import {
+	type MaybeAutoResumeResult,
+	maybeAutoResumeSession,
+} from "./auto-resume";
 import {
 	benchmarkResourceLeases,
 	benchmarkRuns,
@@ -68,6 +72,8 @@ export type ReapTerminalResult = {
 	executionsPurged: number;
 	executionsSkippedActive: number;
 	sessionsPurged: number;
+	/** Phase 2a: crashed interactive-cli sessions auto-continued before purge. */
+	sessionsAutoResumed: number;
 	workspaceSessionsCleaned: number;
 	errors: string[];
 };
@@ -133,6 +139,55 @@ async function isSessionTerminalOrGone(s: {
 	}
 }
 
+/**
+ * Phase 2a reaper-side auto-resume. Deps are lazy-imported so reaper.ts keeps a
+ * light top-level import graph and we avoid a cycle through spawn.ts. Gating
+ * (interactive-cli family, per-agent flag, restart budget) lives entirely in
+ * maybeAutoResumeSession — this only supplies the I/O.
+ */
+async function tryAutoResumeSession(s: {
+	id: string;
+	agentId: string;
+	agentVersion: number | null;
+	userId: string;
+	projectId: string | null;
+	title: string | null;
+	resumedFromSessionId: string | null;
+}): Promise<MaybeAutoResumeResult> {
+	if (!db) return { resumed: false, reason: "database not configured" };
+	const database = db;
+	const [agentsRegistry, runtimeRegistry, sessionsRegistry, sessionsSpawn] =
+		await Promise.all([
+			import("$lib/server/agents/registry"),
+			import("$lib/server/agents/runtime-registry"),
+			import("$lib/server/sessions/registry"),
+			import("$lib/server/sessions/spawn"),
+		]);
+	return maybeAutoResumeSession(s, {
+		resolveAgent: async (ref) => {
+			const a = await agentsRegistry.resolveAgentRef(ref);
+			return a
+				? { runtime: a.runtime, config: a.config as Record<string, unknown> }
+				: null;
+		},
+		getRuntimeDescriptor: (runtime) =>
+			runtimeRegistry.getRuntimeDescriptor(runtime),
+		getResumedFrom: async (id) => {
+			const [row] = await database
+				.select({ p: sessions.resumedFromSessionId })
+				.from(sessions)
+				.where(eq(sessions.id, id))
+				.limit(1);
+			return row?.p ?? null;
+		},
+		createSession: async (input) => {
+			const created = await sessionsRegistry.createSession(input);
+			return { id: created.id };
+		},
+		spawnSessionWorkflow: (id) => sessionsSpawn.spawnSessionWorkflow(id),
+	});
+}
+
 export async function reapTerminalRuns(
 	opts: ReapTerminalOptions = {},
 ): Promise<ReapTerminalResult> {
@@ -142,6 +197,7 @@ export async function reapTerminalRuns(
 		executionsPurged: 0,
 		executionsSkippedActive: 0,
 		sessionsPurged: 0,
+		sessionsAutoResumed: 0,
 		workspaceSessionsCleaned: 0,
 		errors: [],
 	};
@@ -291,13 +347,46 @@ export async function reapTerminalRuns(
 			id: sessions.id,
 			daprInstanceId: sessions.daprInstanceId,
 			runtimeAppId: sessions.runtimeAppId,
+			agentId: sessions.agentId,
+			agentVersion: sessions.agentVersion,
+			userId: sessions.userId,
+			projectId: sessions.projectId,
+			title: sessions.title,
+			resumedFromSessionId: sessions.resumedFromSessionId,
 		})
 		.from(sessions)
-		.where(and(ne(sessions.status, "terminated"), lte(sessions.updatedAt, cutoff)))
+		// A user-requested stop (stopRequestedAt) is handled by the priority pass
+		// above and must NEVER be auto-resumed; exclude those here. A PAUSED run
+		// (pauseRequestedAt) is a deliberate, resumable hold — never reap it, even
+		// if its pod died while the workflow is suspended.
+		.where(
+			and(
+				ne(sessions.status, "terminated"),
+				lte(sessions.updatedAt, cutoff),
+				isNull(sessions.stopRequestedAt),
+				isNull(sessions.pauseRequestedAt),
+			),
+		)
 		.limit(limit);
 	for (const s of stuckSessions) {
 		try {
 			if (!(await isSessionTerminalOrGone(s))) continue; // still live
+			// Phase 2a: a non-graceful CLI exit (sandbox gone; the conversation
+			// transcript is durable on JuiceFS) can be auto-continued before we
+			// purge the dead row — behind the per-agent `autoResume` flag + a
+			// max-restart budget. The exit is non-graceful by construction (a clean
+			// end-of-turn session would already be `terminated` and excluded above).
+			// Best-effort: a failure here never blocks the purge below.
+			try {
+				const ar = await tryAutoResumeSession(s);
+				if (ar.resumed) {
+					result.sessionsAutoResumed += 1;
+				}
+			} catch (err) {
+				result.errors.push(
+					`auto-resume session ${s.id}: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
 			const r = await stopDurableRun({ kind: "session", id: s.id }, { mode: "purge", reason: "terminal-status reaper" });
 			if (r.confirmed) result.sessionsPurged += 1;
 		} catch (err) {

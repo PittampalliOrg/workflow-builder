@@ -74,6 +74,8 @@
 		MessagesSquare,
 		MoreVertical,
 		PanelRight,
+		Pause,
+		Play,
 		Save,
 		Search,
 		Send,
@@ -1162,6 +1164,44 @@
 		}
 	}
 
+	// Pause / Resume — reversible Dapr suspend/resume of a non-CLI durable run
+	// (distinct from Stop, which terminates). One busy flag for both (they're
+	// mutually exclusive by status). Optimistic status update; the DB write in
+	// pauseDurableRun makes a reload authoritative.
+	let pausing = $state(false);
+	async function pauseSession() {
+		if (!session || pausing || isInteractiveCli) return;
+		if (session.status !== 'running' && session.status !== 'idle') return;
+		pausing = true;
+		try {
+			const res = await fetch(`/api/v1/sessions/${sessionId}/control/pause`, { method: 'POST' });
+			if (res.ok) {
+				if (session) session = { ...session, status: 'paused', pausedAt: new Date().toISOString() };
+			} else {
+				const b = (await res.json().catch(() => ({}))) as { message?: string };
+				errorMessage = b?.message ?? `Pause failed (${res.status})`;
+			}
+		} finally {
+			pausing = false;
+		}
+	}
+	async function resumeFromPause() {
+		if (!session || pausing || isInteractiveCli) return;
+		if (session.status !== 'paused') return;
+		pausing = true;
+		try {
+			const res = await fetch(`/api/v1/sessions/${sessionId}/control/resume`, { method: 'POST' });
+			if (res.ok) {
+				if (session) session = { ...session, status: 'running', pausedAt: null };
+			} else {
+				const b = (await res.json().catch(() => ({}))) as { message?: string };
+				errorMessage = b?.message ?? `Resume failed (${res.status})`;
+			}
+		} finally {
+			pausing = false;
+		}
+	}
+
 	async function archive() {
 		if (!session) return;
 		const res = await fetch(`/api/v1/sessions/${sessionId}`, { method: 'PATCH' });
@@ -1413,6 +1453,22 @@
 										class="size-3.5"
 									/>{/if}
 								{resuming ? 'Resuming…' : 'Resume conversation'}
+							</DropdownMenu.Item>
+						{/if}
+						{#if !isInteractiveCli && (session?.status === 'running' || session?.status === 'idle')}
+							<DropdownMenu.Item onSelect={() => pauseSession()} disabled={pausing}>
+								{#if pausing}<Loader2 class="size-3.5 animate-spin" />{:else}<Pause
+										class="size-3.5"
+									/>{/if}
+								{pausing ? 'Pausing…' : 'Pause run'}
+							</DropdownMenu.Item>
+						{/if}
+						{#if !isInteractiveCli && session?.status === 'paused'}
+							<DropdownMenu.Item onSelect={() => resumeFromPause()} disabled={pausing}>
+								{#if pausing}<Loader2 class="size-3.5 animate-spin" />{:else}<Play
+										class="size-3.5"
+									/>{/if}
+								{pausing ? 'Resuming…' : 'Resume run'}
 							</DropdownMenu.Item>
 						{/if}
 						<DropdownMenu.Item

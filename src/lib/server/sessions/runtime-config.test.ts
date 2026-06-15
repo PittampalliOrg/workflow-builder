@@ -244,5 +244,6 @@ function sampleSession(): SessionDetail {
 		workspaceSandboxName: null,
 		runtimeAppId: "agent-runtime-coding-agent",
 		runtimeSandboxName: null,
+		pausedAt: null,
 	};
 }

@@ -11,6 +11,10 @@ import {
 } from "$lib/server/sessions/registry";
 import { sendUserEvent } from "$lib/server/sessions/events";
 import { spawnSessionWorkflow } from "$lib/server/sessions/spawn";
+import {
+	canResumeCliSession,
+	isInteractiveCliRuntime,
+} from "$lib/server/sessions/resume";
 import { CliTokenError } from "$lib/server/users/cli-credentials";
 import {
 	mountSessionRepositories,
@@ -120,14 +124,20 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		const sourceRuntime = sourceAgent
 			? getRuntimeDescriptor(sourceAgent.runtime)
 			: null;
-		if (!sourceRuntime?.capabilities?.interactiveTerminal) {
-			return error(
-				400,
-				"resume is only supported for interactive-cli sessions",
-			);
-		}
-		if (source.status !== "terminated") {
-			return error(409, "can only resume a terminated session");
+		// Resume precondition (Phase 2a): relaxed from "graceful `terminated`
+		// only" to also allow a crashed/failed (non-graceful) interactive-cli
+		// session — its JuiceFS transcript is durable regardless of WHY it ended.
+		const resumeDecision = canResumeCliSession({
+			runtime: sourceRuntime,
+			status: source.status,
+			stopReason: source.stopReason,
+			errorMessage: source.errorMessage,
+		});
+		if (!resumeDecision.allowed) {
+			// 400 for a wrong-runtime request; 409 for a wrong-state one (preserve
+			// the original status codes the UI/clients expect).
+			const code = isInteractiveCliRuntime(sourceRuntime) ? 409 : 400;
+			return error(code, resumeDecision.reason ?? "session is not resumable");
 		}
 		// Continue the SAME conversation with the SAME agent/version.
 		resolvedAgentId = source.agentId;
