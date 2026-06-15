@@ -30,10 +30,10 @@
 	} from '$lib/components/capacity/overview/gauge-resource-toggle.svelte';
 	import AdmissionHealthBanner from '$lib/components/capacity/overview/admission-health-banner.svelte';
 	import CapacityOwnerLinks from '$lib/components/capacity/overview/capacity-owner-links.svelte';
-	import CapacityOwnerStack from '$lib/components/capacity/overview/capacity-owner-stack.svelte';
+	import CapacityDemandChart from '$lib/components/capacity/overview/capacity-demand-chart.svelte';
 	import ActivityCell from '$lib/components/capacity/fleet/activity-cell.svelte';
 	import FleetDetailSheet from '$lib/components/capacity/fleet/fleet-detail-sheet.svelte';
-	import { getCapacityOverview, getCapacityOwnerTimeline } from '../overview/data.remote';
+	import { getCapacityOverview, getCapacityTrends } from '../overview/data.remote';
 	import { getFleetActivity } from './data.remote';
 	import type {
 		CapacityBusinessWorkItem,
@@ -129,32 +129,10 @@
 		return `${n}`;
 	}
 
-	// --- Capacity-over-time query + owner resolution (F3) ---------------------
-	const ownerTimelineQuery = $derived(
-		metricsCluster ? getCapacityOwnerTimeline({ cluster: metricsCluster, resource: primaryResource }) : undefined
-	);
-	const OWNER_KIND_MAP: Record<string, string> = {
-		benchmark_instance: 'benchmarkInstance',
-		benchmark_run: 'benchmarkRun',
-		workflow_run: 'workflowRun',
-		session: 'session',
-		agent: 'agent'
-	};
-	const normId = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-	function resolveOwner(kind: string, id: string): { label: string; href?: string; kind: string } {
-		const mapped = OWNER_KIND_MAP[kind] ?? kind;
-		const target = normId(id);
-		const items = [
-			...(businessWork?.active ?? []),
-			...(businessWork?.recent ?? []),
-			...(businessWork?.infrastructure ?? [])
-		];
-		const item =
-			items.find((w) => w.kind === mapped && w.id === id) ??
-			items.find((w) => w.kind === mapped && normId(w.id) === target);
-		if (item) return { label: item.title, href: item.href, kind: item.kind };
-		return { label: id, kind: mapped };
-	}
+	// --- Capacity-over-time query (F3): demand-vs-capacity utilization timeline
+	// from cluster_capacity_requested ÷ allocatable (+ cAdvisor actual usage). One
+	// query covers every resource; the toggle just re-reads the record client-side.
+	const trendsQuery = $derived(metricsCluster ? getCapacityTrends(metricsCluster) : undefined);
 
 	// --- Filters --------------------------------------------------------------
 	type KindFilter = 'all' | 'session' | 'workflow' | 'benchmark';
@@ -319,7 +297,7 @@
 			await Promise.all([
 				capacityQuery.refresh(),
 				activityQuery?.refresh(),
-				ownerTimelineQuery?.refresh()
+				trendsQuery?.refresh()
 			]);
 			lastRefreshAt = Date.now();
 		} finally {
@@ -586,16 +564,20 @@
 		<summary class="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs text-muted-foreground hover:text-foreground">
 			<ChartSpline class="size-3.5" />
 			<span class="font-medium text-foreground">Capacity over time</span>
-			<span class="text-[10px]">last 60m · stacked by session / run · {RESOURCE_LABELS[primaryResource]}</span>
+			<span class="text-[10px]">last 60m · requested vs capacity · {RESOURCE_LABELS[primaryResource]}</span>
 			<ChevronDown class="ml-auto size-3.5 transition-transform {timelineOpen ? 'rotate-180' : ''}" />
 		</summary>
 		<div class="border-t px-3 py-3">
-			{#if ownerTimelineQuery?.current?.hasData}
-				<CapacityOwnerStack timeline={ownerTimelineQuery.current} {resolveOwner} height={120} />
+			{#if trendsQuery?.current?.hasData}
+				<CapacityDemandChart
+					requested={trendsQuery.current.utilizationPctByResource[primaryResource] ?? []}
+					actual={trendsQuery.current.actualUsagePctByResource[primaryResource] ?? []}
+					height={130}
+				/>
 			{:else}
 				<p class="py-6 text-center text-xs text-muted-foreground">
-					{ownerTimelineQuery?.current
-						? 'No capacity history yet — sessions and runs appear here as bands that rise and fall over time.'
+					{trendsQuery?.current
+						? 'No capacity history yet for this cluster.'
 						: 'Loading capacity history…'}
 				</p>
 			{/if}
