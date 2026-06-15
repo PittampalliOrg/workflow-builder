@@ -15,6 +15,9 @@ if str(SERVICE_ROOT) not in sys.path:
 
 # Unit tests never talk to a live herdr server.
 os.environ.setdefault("HERDR_DISABLE", "1")
+# Unit tests run without a JuiceFS CSI transcript mount; opt out of the Phase 2c
+# durability startup guard so importing src.main does not SystemExit at collection.
+os.environ.setdefault("CLI_ALLOW_EPHEMERAL_TRANSCRIPT", "1")
 
 
 def _install_dapr_stub() -> None:

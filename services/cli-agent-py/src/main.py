@@ -64,6 +64,15 @@ def _assert_subscription_auth_only() -> None:
 
 _assert_subscription_auth_only()
 
+# Phase 2c: refuse to boot an interactive-cli pod without a durable transcript
+# store (JuiceFS CSI mount). Without it the CLI silently falls back to ephemeral
+# emptyDir and resume/--continue is impossible — fail loud rather than lose
+# durability. Opt out with CLI_ALLOW_EPHEMERAL_TRANSCRIPT=true on non-CSI dev
+# clusters.
+from src.transcript_store import assert_transcript_store  # noqa: E402
+
+assert_transcript_store()
+
 from dapr.ext.workflow import DaprWorkflowClient, WorkflowRuntime  # noqa: E402
 from fastapi import FastAPI, HTTPException, Request  # noqa: E402
 
