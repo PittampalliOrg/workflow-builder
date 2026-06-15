@@ -208,6 +208,73 @@ def _checkpoint_remote_config() -> dict[str, Any]:
     }
 
 
+def summarize_checkpoint_remote(config: dict[str, Any]) -> dict[str, Any]:
+    """Redacted, secret-free summary of the checkpoint remote config.
+
+    Pure: takes the dict returned by ``_checkpoint_remote_config`` and surfaces
+    whether the workspace git-checkpoint remote is active for long-running
+    coding sessions WITHOUT exposing the token/credentials. Used for the
+    startup visibility log/telemetry (plan 1e).
+    """
+    config = config if isinstance(config, dict) else {}
+    remote_url = str(config.get("remoteUrl") or "").strip()
+    has_token = bool(str(config.get("token") or "").strip())
+    has_username = bool(str(config.get("username") or "").strip())
+    return {
+        # `active` == checkpoints will actually push to a remote this session.
+        "active": bool(config.get("enabled")),
+        "remoteConfigured": bool(remote_url),
+        "credentialsConfigured": has_token and has_username,
+        "reason": str(config.get("reason") or "").strip(),
+        "owner": str(config.get("owner") or "").strip() or None,
+        "repo": str(config.get("repo") or "").strip() or None,
+        "apiUrlConfigured": bool(str(config.get("apiUrl") or "").strip()),
+    }
+
+
+def checkpoint_remote_status() -> dict[str, Any]:
+    """Resolve + summarize the checkpoint remote config (secret-free)."""
+    try:
+        return summarize_checkpoint_remote(_checkpoint_remote_config())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[checkpoint] remote status resolution failed: %s", exc)
+        return {
+            "active": False,
+            "remoteConfigured": False,
+            "credentialsConfigured": False,
+            "reason": f"status resolution failed: {exc}",
+            "owner": None,
+            "repo": None,
+            "apiUrlConfigured": False,
+        }
+
+
+def log_checkpoint_remote_status() -> dict[str, Any]:
+    """Emit a one-line startup log surfacing checkpoint-remote active/inactive.
+
+    Mid-run workspace recovery (``WORKFLOW_CHECKPOINT_GIT_REMOTE_URL`` + creds)
+    is silently unavailable when unset; this makes that observable at boot for
+    long-running coding sessions (plan 1e). Returns the status dict so callers
+    can also surface it as telemetry.
+    """
+    status = checkpoint_remote_status()
+    if status.get("active"):
+        logger.info(
+            "[checkpoint] workspace checkpoint remote ACTIVE: owner=%s repo=%s "
+            "(WORKFLOW_CHECKPOINT_GIT_REMOTE_URL configured + credentials present)",
+            status.get("owner"),
+            status.get("repo"),
+        )
+    else:
+        logger.warning(
+            "[checkpoint] workspace checkpoint remote INACTIVE: %s — mid-run "
+            "workspace recovery is unavailable until WORKFLOW_CHECKPOINT_GIT_REMOTE_URL "
+            "(+ credentials) is configured",
+            status.get("reason") or "not configured",
+        )
+    return status
+
+
 CHECKPOINT_SCRIPT = dedent(
     r"""
     import json

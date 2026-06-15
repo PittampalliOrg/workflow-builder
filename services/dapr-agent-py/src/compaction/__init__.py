@@ -14,10 +14,24 @@ from __future__ import annotations
 
 from .config import CompactionConfig, resolve_config
 from .engine import CompactionResult, maybe_compact
+from .state_budget import (
+    StateBudgetConfig,
+    StateBudgetResult,
+    enforce_state_budget,
+    enforce_state_byte_budget,
+    resolve_state_budget_config,
+    serialized_state_bytes,
+)
 
 __all__ = [
     "CompactionConfig",
     "CompactionResult",
     "maybe_compact",
     "resolve_config",
+    "StateBudgetConfig",
+    "StateBudgetResult",
+    "enforce_state_budget",
+    "enforce_state_byte_budget",
+    "resolve_state_budget_config",
+    "serialized_state_bytes",
 ]
