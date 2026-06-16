@@ -66,6 +66,7 @@ class TranscriptTailer:
         self.last_assistant_text: str | None = None
         self.assistant_message_published = False
         self.turn_completion_raised = False
+        self.goal_completion_published = False
 
     def poll(self) -> int:
         """Read newly-appended bytes and emit events for complete new lines.
@@ -105,11 +106,34 @@ class TranscriptTailer:
         if not isinstance(entry, Mapping):
             return 0
 
+        # Native goal-loop completion (once per goal). Telemetry-only: the
+        # session stays idle (no auto-stop). Runs for every adapter incl. the
+        # default claude path below.
+        self._maybe_emit_goal_completion(entry)
+
         adapter_events = self._adapter_events(entry)
         if adapter_events is not None:
             return adapter_events
 
         return self._handle_claude_entry(entry)
+
+    def _maybe_emit_goal_completion(self, entry: Mapping[str, Any]) -> None:
+        if self.goal_completion_published or self._adapter is None:
+            return
+        try:
+            data = self._adapter.detect_goal_completion(entry)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[tailer] goal-completion detect failed: %s", exc)
+            return
+        if not data:
+            return
+        self.goal_completion_published = True
+        self._publish(
+            self.session_id,
+            "session.goal_completed",
+            {"goalStatus": "complete", **data},
+            source_event_id=f"goal-completed:{self.session_id}",
+        )
 
     def _handle_claude_entry(self, entry: Mapping[str, Any]) -> int:
         if not isinstance(entry, Mapping) or entry.get("type") != "assistant":

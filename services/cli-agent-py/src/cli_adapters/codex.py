@@ -273,8 +273,17 @@ def _render_hooks_json() -> str:
             "UserPromptSubmit": _codex_hook_group("UserPromptSubmit"),
             "PreToolUse": _codex_hook_group("PreToolUse", matcher="*"),
             "PermissionRequest": _codex_hook_group("PermissionRequest", matcher="*"),
+            # dapr-agent-py parity: surface denials as hook.decision too.
+            "PermissionDenied": _codex_hook_group("PermissionDenied", matcher="*"),
             "PostToolUse": _codex_hook_group("PostToolUse", matcher="*"),
             "Stop": _codex_hook_group("Stop"),
+            # Terminal signal on graceful exit (codex previously lacked this →
+            # only pane_exit/idle-TTL drove termination). Routes to cli.session_end.
+            "SessionEnd": _codex_hook_group("SessionEnd"),
+            # dapr-agent-py parity: notification + context-compaction telemetry.
+            "Notification": _codex_hook_group("Notification"),
+            "PreCompact": _codex_hook_group("PreCompact", matcher="auto|manual"),
+            "PostCompact": _codex_hook_group("PostCompact", matcher="auto|manual"),
         }
     }
     return json.dumps(payload, indent=2) + "\n"
@@ -701,6 +710,30 @@ class CodexAdapter(CliAdapter):
     def map_hook_event(self, payload: Mapping[str, Any]) -> list[dict[str, Any]] | None:
         name = _hook_name(payload)
         tool_name = _hook_tool_name(payload)
+        # Native goal completion: codex's `/goal` harness calls its own
+        # `update_goal(status="complete")` tool when its evaluator decides the
+        # goal is done. That arrives here as a PostToolUse hook. Emit a single
+        # session.goal_completed (telemetry-only — session stays idle) instead of
+        # a plain tool_result row. Other update_goal statuses (e.g. blocked) fall
+        # through to the default tool_result mapping.
+        if name == "PostToolUse" and tool_name == "update_goal":
+            tool_input = payload.get("tool_input")
+            status = (
+                clean_string(tool_input.get("status"))
+                if isinstance(tool_input, Mapping)
+                else None
+            )
+            if (status or "").lower() == "complete":
+                return [
+                    {
+                        "type": "session.goal_completed",
+                        "data": {
+                            "completionSource": "codex_update_goal",
+                            "goalStatus": "complete",
+                        },
+                    }
+                ]
+            return None
         if name in {"PostToolUse", "PostToolUseFailure"} and _is_mcp_hook_tool_name(
             tool_name
         ):

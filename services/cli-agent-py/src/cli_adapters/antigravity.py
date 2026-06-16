@@ -254,6 +254,12 @@ def _render_hooks_json() -> str:
             "PostToolUse": _agy_hook_group("PostToolUse", matcher="*"),
             "Stop": [_agy_hook_handler("Stop")],
             "SessionEnd": _agy_hook_group("SessionEnd"),
+            # dapr-agent-py parity: notification, permission-denied, and
+            # context-compaction telemetry.
+            "Notification": _agy_hook_group("Notification"),
+            "PermissionDenied": _agy_hook_group("PermissionDenied", matcher="*"),
+            "PreCompact": _agy_hook_group("PreCompact"),
+            "PostCompact": _agy_hook_group("PostCompact"),
         }
     }
     return json.dumps(payload, indent=2) + "\n"
@@ -290,6 +296,7 @@ _HOOK_EVENT_NAMES = {
     "Notification",
     "PermissionDenied",
     "PermissionRequest",
+    "PostCompact",
     "PostToolUse",
     "PostToolUseFailure",
     "PreCompact",
