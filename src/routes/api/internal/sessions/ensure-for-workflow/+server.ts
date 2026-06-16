@@ -605,6 +605,13 @@ export const POST: RequestHandler = async ({ request }) => {
 		workflowExecutionId,
 		parentExecutionId,
 		mlflowSessionId: sessionId,
+		// The session_workflow is dispatched by the orchestrator under a
+		// DETERMINISTIC Dapr instance id == this sessionId (child_instance_id).
+		// Persist it so the BFF can raise events INTO the running session —
+		// goal-loop continuations + the goal-complete terminate both go through
+		// raiseSessionUserEvents/raiseSessionEvent, which require daprInstanceId
+		// (without it they 409 / no-op and goal-mode runs can't advance or end).
+		daprInstanceId: sessionId,
 	});
 	// Now that the session row exists, surface a degraded swap (computed above)
 	// as a runtime.swap_degraded event — the durable/run half of the WARN-phase
