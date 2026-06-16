@@ -2,6 +2,7 @@
 	import { onMount, tick } from 'svelte';
 	import { Xterm, XtermAddon } from '@battlefieldduck/xterm-svelte';
 	import type { Terminal, ITerminalOptions } from '@battlefieldduck/xterm-svelte';
+	import { Mouse, TextSelect } from '@lucide/svelte';
 
 	interface Props {
 		sandboxName: string;
@@ -32,6 +33,40 @@
 	let sendTerminalResize: ((cols: number, rows: number) => void) | null = null;
 	let reconnectDelay = 1000;
 	let intentionalClose = false;
+
+	// Mouse mode toggle (scroll vs select). The interactive CLIs enable
+	// application MOUSE REPORTING; with it ON, xterm forwards the wheel to the
+	// TUI so scrolling moves the TUI's content (and clicks work) — but you can't
+	// drag-select text. With it OFF, xterm does local drag-to-select/copy. xterm
+	// can't do both at once, so we expose a toggle. Scroll mode is the DEFAULT
+	// (the common case); flip to Select mode to copy text (e.g. a sign-in URL).
+	let mouseSelectMode = $state(false); // false = scroll (mouse→TUI), true = select
+	// DEC private modes the TUI has asked to enable (recorded so the toggle can
+	// replay them into xterm when switching modes).
+	const appMouseModes = new Set<number>();
+	let replayingMouseMode = false;
+	// Mouse-tracking DEC private modes (button/any-event tracking + SGR/ext
+	// encodings). NOT alt-screen/paste/cursor — those are always honored.
+	const MOUSE_MODES = new Set([1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016]);
+
+	/** Re-assert the TUI's requested mouse modes into xterm to match the toggle:
+	 *  Scroll mode replays the enables (wheel→TUI); Select mode replays disables
+	 *  (xterm reclaims the mouse for local selection). */
+	function syncMouseMode() {
+		if (!terminal || appMouseModes.size === 0) return;
+		const suffix = mouseSelectMode ? 'l' : 'h';
+		const seq = [...appMouseModes].map((m) => `\x1b[?${m}${suffix}`).join('');
+		replayingMouseMode = true;
+		terminal.write(seq, () => {
+			replayingMouseMode = false;
+		});
+	}
+
+	function toggleMouseMode() {
+		mouseSelectMode = !mouseSelectMode;
+		syncMouseMode();
+		terminal?.focus();
+	}
 
 	const MAX_RECONNECT_DELAY = 30000;
 	const FIRST_MESSAGE_TIMEOUT_MS = 4000;
@@ -216,22 +251,48 @@
 			// optional
 		}
 
-		// Make the web terminal selectable/copyable. The interactive CLIs (agy /
-		// claude / codex) enable application MOUSE REPORTING, which makes xterm
-		// forward mouse drags to the program instead of selecting text — so you
-		// can't drag to highlight (e.g. the agy sign-in URL). These TUIs are fully
-		// keyboard-drivable, so we swallow the mouse-tracking private modes
-		// (1000/1002/1003 + the SGR/ext encodings) and leave every other DECSET/
-		// DECRST (alt-screen 1049, bracketed paste 2004, cursor 25, …) untouched.
-		const MOUSE_MODES = new Set([1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016]);
-		const swallowMouseMode = (params: (number | number[])[]): boolean => {
-			const first = params[0];
-			const mode = Array.isArray(first) ? first[0] : first;
-			// true → fully handled (do NOT enable mouse mode); false → let xterm run.
-			return typeof mode === 'number' && MOUSE_MODES.has(mode);
-		};
-		term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, swallowMouseMode);
-		term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, swallowMouseMode);
+		// GPU renderer: the DOM renderer glitches on the heavy full-screen redraws
+		// the CLIs do (agy's box-drawing + context grid, claude/codex spinners) —
+		// torn rows, leftover cells. WebGL renders the whole grid to a canvas each
+		// frame, which is far more stable. Fall back to the DOM renderer if the GL
+		// context is unavailable or lost (headless/GPU-less clients).
+		try {
+			const { WebglAddon } = await XtermAddon.WebglAddon();
+			const webgl = new WebglAddon();
+			webgl.onContextLoss(() => {
+				try {
+					webgl.dispose();
+				} catch {
+					// already disposed
+				}
+			});
+			term.loadAddon(webgl);
+		} catch {
+			// WebGL unavailable → DOM renderer (correct, just less crisp on redraws)
+		}
+
+		// Mouse-mode handling, gated by the scroll/select toggle. The interactive
+		// CLIs enable application MOUSE REPORTING (private modes 1000–1016). In
+		// SCROLL mode (default) we let xterm honor them so the wheel scrolls the
+		// TUI's content and clicks register; in SELECT mode we swallow them so
+		// drag-to-select/copy works (e.g. the agy sign-in URL). Every other
+		// DECSET/DECRST (alt-screen 1049, bracketed paste 2004, cursor 25, …) is
+		// left untouched. We record the TUI's requested modes so the toggle can
+		// replay them into xterm when the user flips modes mid-session.
+		const handleMouseDecMode =
+			(enable: boolean) =>
+			(params: (number | number[])[]): boolean => {
+				const first = params[0];
+				const mode = Array.isArray(first) ? first[0] : first;
+				if (typeof mode !== 'number' || !MOUSE_MODES.has(mode)) return false; // not mouse → let xterm run
+				if (replayingMouseMode) return false; // our own replay → let xterm apply it
+				if (enable) appMouseModes.add(mode);
+				else appMouseModes.delete(mode);
+				// true → swallow (Select mode); false → let xterm enable (Scroll mode).
+				return mouseSelectMode;
+			};
+		term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, handleMouseDecMode(true));
+		term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, handleMouseDecMode(false));
 
 		// xterm's selection lives on its canvas, not the DOM, so the browser's
 		// native Copy can't see it. Mirror the selection into the clipboard as it's
@@ -280,7 +341,22 @@
 	});
 </script>
 
-<div class="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-[#09090b]">
+<div class="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-[#09090b]">
+	<button
+		type="button"
+		onclick={toggleMouseMode}
+		class="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-zinc-300 opacity-60 backdrop-blur transition hover:bg-white/10 hover:opacity-100"
+		title={mouseSelectMode
+			? 'Select mode: drag to select/copy text. Click to switch to Scroll mode (mouse wheel scrolls the terminal).'
+			: 'Scroll mode: mouse wheel scrolls the terminal & clicks work. Click to switch to Select mode (drag to copy text).'}
+		aria-label="Toggle terminal mouse mode"
+	>
+		{#if mouseSelectMode}
+			<TextSelect class="size-3" /> Select
+		{:else}
+			<Mouse class="size-3" /> Scroll
+		{/if}
+	</button>
 	<div
 		bind:this={terminalFrame}
 		class="sandbox-terminal-frame min-h-0 flex-1 overflow-hidden p-1"
