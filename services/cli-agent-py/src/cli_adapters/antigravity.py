@@ -1170,6 +1170,35 @@ class AntigravityAdapter(CliAdapter):
             return [{"type": "agent.tool_result", "data": data}]
         return None
 
+    def discover_transcript_path(self) -> str | None:
+        """Antigravity writes its transcript to
+        ``~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript_full.jsonl``
+        with a runtime-generated conversation id, and its command hooks don't
+        reliably carry ``transcript_path``. Glob for the newest one so the hooks
+        receiver can register the tailer from any hook (it backfills from offset 0,
+        so a late register is lossless). Prevents the transient 'no agent.message/
+        llm_usage mirrored' miss seen on fresh agy sessions."""
+        import glob
+        import os
+
+        pattern = os.path.join(
+            os.path.expanduser("~"),
+            ".gemini",
+            "antigravity-cli",
+            "brain",
+            "*",
+            ".system_generated",
+            "logs",
+            "transcript_full.jsonl",
+        )
+        try:
+            matches = glob.glob(pattern)
+            if not matches:
+                return None
+            return max(matches, key=os.path.getmtime)
+        except OSError:
+            return None
+
     def map_transcript_entry(
         self, entry: Mapping[str, Any]
     ) -> list[dict[str, Any]] | None:

@@ -711,9 +711,26 @@ def patch_for_deepseek(llm_client: Any) -> None:
             )
 
             if response_format is not None:
+                structured_content = result.get("content", "") or ""
+                # DeepSeek intermittently returns EMPTY content (its documented
+                # intermittent-empty-response behavior). Feeding "" to
+                # parse_structured_response makes pydantic-v2 mis-construct a
+                # ValidationError ("ValidationError.__new__() missing 1 required
+                # positional argument: 'line_errors'"), which surfaces as a FATAL
+                # "Activity task #N failed" and terminates the durable session —
+                # bypassing the empty-response circuit breaker. Raise a clean
+                # AgentError instead so the breaker counts it as an empty response
+                # and degrades gracefully (matches the non-structured empty path).
+                if not structured_content.strip():
+                    from dapr_agents.types import AgentError
+
+                    raise AgentError(
+                        "DeepSeek returned empty content for a structured-output "
+                        "call (response_format set); treating as an empty response."
+                    )
                 return parse_structured_response(
                     response_format,
-                    result.get("content", "") or "",
+                    structured_content,
                 )
 
             return build_llm_chat_response(

@@ -213,6 +213,19 @@ class CliAdapter(abc.ABC):
         """
         return None
 
+    def discover_transcript_path(self) -> str | None:
+        """Fallback transcript-file discovery for the tailer.
+
+        The tailer normally registers from each hook payload's ``transcript_path``.
+        Some CLIs (notably Antigravity) don't reliably carry that field in their
+        command-hook payloads, so a transient early-hook miss can leave the tailer
+        unregistered and no ``agent.message``/``agent.llm_usage`` mirrored. Adapters
+        that know where their CLI writes the transcript override this so the hooks
+        receiver can register the tailer from ANY hook. The tailer reads from
+        offset 0, so a late registration backfills the whole file losslessly.
+        Default: no fallback (payload ``transcript_path`` is authoritative)."""
+        return None
+
     def map_transcript_entry(
         self, entry: Mapping[str, Any]
     ) -> list[dict[str, Any]] | None:
