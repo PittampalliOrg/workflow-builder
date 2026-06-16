@@ -112,9 +112,11 @@
 	const overrideCount = $derived(Object.keys(overrides).length);
 	// Optional Goal section: presence of goal.objective makes this a goal-driven
 	// (multi-turn) run that loops until session.goal_completed / budget / maxIter.
+	// Stored as `goalSpec` (NOT `goal`): the spec-resolver treats `goal` as an
+	// agent-persona override field and strips it at execute time.
 	const goal = $derived(
-		typeof body.goal === 'object' && body.goal !== null
-			? (body.goal as Record<string, unknown>)
+		typeof body.goalSpec === 'object' && body.goalSpec !== null
+			? (body.goalSpec as Record<string, unknown>)
 			: {}
 	);
 	const goalObjective = $derived(
@@ -314,11 +316,11 @@
 		const nextBody = { ...body };
 		if (key === 'objective' && (value === undefined || value === '')) {
 			// Objective cleared → drop goal mode entirely.
-			delete nextBody.goal;
+			delete nextBody.goalSpec;
 		} else if (Object.keys(next).length === 0) {
-			delete nextBody.goal;
+			delete nextBody.goalSpec;
 		} else {
-			nextBody.goal = next;
+			nextBody.goalSpec = next;
 		}
 		writeBody(nextBody);
 	}

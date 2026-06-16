@@ -1487,11 +1487,13 @@ def _run_native_durable_agent_child_workflow(
         and flattened_args.get("cwd").strip()
         else None
     )
-    # Optional goal-driven mode: a goal block ({objective, tokenBudget?,
+    # Optional goal-driven mode: a goalSpec block ({objective, tokenBudget?,
     # maxIterations?}) on the durable/run task makes the bridged session run
     # multi-turn toward the objective until session.goal_completed (the BFF
     # bridge sets up the goal + flips off auto-terminate). Forwarded as-is.
-    _goal_raw = flattened_args.get("goal")
+    # NOTE: the spec key is `goalSpec`, NOT `goal` — the BFF spec-resolver
+    # strips `goal` (it's an agent-persona override field).
+    _goal_raw = flattened_args.get("goalSpec")
     goal_spec = (
         _goal_raw
         if isinstance(_goal_raw, dict)
