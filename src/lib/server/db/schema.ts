@@ -3032,6 +3032,12 @@ export const sessions = pgTable(
 		projectId: text("project_id").references(() => projects.id, {
 			onDelete: "cascade",
 		}),
+		// Per-session ACTUAL sandbox-pod resource consumption is accumulated by
+		// the session-resource-sample CronJob under usage.resource (no dedicated
+		// columns — see SessionResourceUsage in metrics/session-usage.ts):
+		// { peakCpuMillicores, peakMemoryMiB, cpuMillicoreSum, memoryMiBSum,
+		//   sampleCount, sampledAt }. peak = max observed; *Sum/sampleCount → avg.
+		// Feeds request right-sizing. docs/session-resource-metrics-and-kueue-admission.md.
 		usage: jsonb("usage").$type<Record<string, unknown>>().notNull().default({}),
 		errorMessage: text("error_message"),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
