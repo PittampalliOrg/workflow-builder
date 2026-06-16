@@ -46,7 +46,7 @@
 		{ type: 'start', label: 'Start', icon: Play, color: 'bg-blue-100 text-blue-600 dark:bg-blue-900 dark:text-blue-400' },
 		{ type: 'end', label: 'End', icon: Square, color: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400' },
 		{ type: 'call', label: 'Call', icon: Globe, color: 'bg-amber-100 text-amber-600 dark:bg-amber-900 dark:text-amber-400' },
-		{ type: 'agent', label: 'dapr-agent-py', icon: Bot, color: 'bg-cyan-100 text-cyan-600 dark:bg-cyan-900 dark:text-cyan-400' },
+		{ type: 'agent', label: 'Agent', icon: Bot, color: 'bg-cyan-100 text-cyan-600 dark:bg-cyan-900 dark:text-cyan-400' },
 		{ type: 'set', label: 'Set', icon: Variable, color: 'bg-purple-100 text-purple-600 dark:bg-purple-900 dark:text-purple-400' },
 		{ type: 'switch', label: 'Switch', icon: GitBranch, color: 'bg-pink-100 text-pink-600 dark:bg-pink-900 dark:text-pink-400' },
 		{ type: 'wait', label: 'Wait', icon: Clock, color: 'bg-sky-100 text-sky-600 dark:bg-sky-900 dark:text-sky-400' },
