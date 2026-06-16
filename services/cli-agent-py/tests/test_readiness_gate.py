@@ -334,6 +334,48 @@ async def test_send_to_pane_normalizes_crlf_before_tui_injection():
     assert sup.consume_injected_prompt("/goal line one\nline two\nline three") is True
 
 
+async def test_slash_command_injection_drops_marker_so_slash_is_column_zero():
+    # Native `/goal` (and any slash command) MUST start at column 0. A leading
+    # INJECTION_MARKER (zero-width run) pushes the `/` off position 0 so the CLI
+    # parses it as a plain prompt — the live claude `/goal` bug. The marker must
+    # be dropped for slash-command sends.
+    client = FakeHerdr(statuses=["working"])
+    sup = SessionSupervisor(
+        client=client,
+        publish=lambda *a, **k: None,
+        raise_lifecycle=lambda *a, **k: None,
+        disabled=False,
+    )
+    sup._session_id = "s1"
+    sup._instance_id = "i1"
+    sup._pane_ref = "p1"
+
+    ok = await sup._send_to_pane("/goal do the thing", "​⁠​", source="injection")
+
+    assert ok is True
+    assert client.sent == ["/goal do the thing"]  # marker dropped
+    assert client.sent[0].startswith("/")  # slash is column 0
+
+
+async def test_non_slash_injection_keeps_marker():
+    # Normal continuations keep the marker (drives claude turn-detection / dedup).
+    client = FakeHerdr(statuses=["working"])
+    sup = SessionSupervisor(
+        client=client,
+        publish=lambda *a, **k: None,
+        raise_lifecycle=lambda *a, **k: None,
+        disabled=False,
+    )
+    sup._session_id = "s1"
+    sup._instance_id = "i1"
+    sup._pane_ref = "p1"
+
+    ok = await sup._send_to_pane("continue the work", "MK:", source="injection")
+
+    assert ok is True
+    assert client.sent == ["MK:continue the work"]  # marker preserved
+
+
 async def test_arm_seed_is_one_shot(monkeypatch):
     sup = _supervisor(FakeHerdr())
     sup._seed_injected = True  # already done
