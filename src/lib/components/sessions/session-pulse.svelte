@@ -9,7 +9,8 @@
 		Target,
 		ArrowDownToLine,
 		ArrowUpFromLine,
-		CircleDollarSign
+		CircleDollarSign,
+		Cpu
 	} from '@lucide/svelte';
 	import type { SessionEventEnvelope } from '$lib/types/sessions';
 
@@ -42,6 +43,23 @@
 		}
 	}
 
+	// Live ACTUAL compute (CPU/mem) of the session's sandbox pod vs its requests.
+	type Compute = {
+		podName: string | null;
+		usage: { cpuMillicores: number; memoryMiB: number } | null;
+		requests: { cpuMillicores: number; memoryMiB: number } | null;
+	};
+	let compute = $state<Compute | null>(null);
+	async function loadCompute() {
+		try {
+			const res = await fetch(`/api/v1/sessions/${sessionId}/compute`);
+			if (!res.ok) return;
+			compute = (await res.json()) as Compute;
+		} catch {
+			/* keep last known */
+		}
+	}
+
 	// Live clock for the elapsed tile + goal refresh. Ticks only while the
 	// session is alive; terminal sessions freeze at the last event.
 	let nowMs = $state(Date.now());
@@ -51,9 +69,16 @@
 		loadGoal();
 		const goalTimer = setInterval(loadGoal, 5000);
 		const clock = setInterval(() => (nowMs = Date.now()), 1000);
+		// Compute (CPU/mem) only matters while the pod is alive; poll while live.
+		let computeTimer: ReturnType<typeof setInterval> | null = null;
+		if (live) {
+			loadCompute();
+			computeTimer = setInterval(loadCompute, 5000);
+		}
 		return () => {
 			clearInterval(goalTimer);
 			clearInterval(clock);
+			if (computeTimer) clearInterval(computeTimer);
 		};
 	});
 
@@ -203,6 +228,24 @@
 		if (m < 60) return `${m}m ${(s % 60).toString().padStart(2, '0')}s`;
 		return `${Math.floor(m / 60)}h ${(m % 60).toString().padStart(2, '0')}m`;
 	}
+	function fmtCpu(millicores: number): string {
+		return millicores >= 1000 ? `${(millicores / 1000).toFixed(1)}c` : `${millicores}m`;
+	}
+	function fmtMem(miB: number): string {
+		return miB >= 1024 ? `${(miB / 1024).toFixed(1)}Gi` : `${miB}Mi`;
+	}
+	// Tone the compute readout when actual usage nears its requested reservation.
+	const computeTone = $derived.by(() => {
+		const u = compute?.usage;
+		const r = compute?.requests;
+		if (!u || !r) return 'text-foreground';
+		const cpuPct = r.cpuMillicores ? (u.cpuMillicores / r.cpuMillicores) * 100 : 0;
+		const memPct = r.memoryMiB ? (u.memoryMiB / r.memoryMiB) * 100 : 0;
+		const p = Math.max(cpuPct, memPct);
+		if (p >= 100) return 'text-red-600 dark:text-red-400';
+		if (p >= 80) return 'text-amber-600 dark:text-amber-400';
+		return 'text-foreground';
+	});
 
 	// Health color for the context bar: calm → warm → hot.
 	const contextTone = $derived.by(() => {
@@ -399,6 +442,43 @@
 			<div class="mt-0.5 text-lg font-semibold leading-tight tabular-nums">{turns}</div>
 			<div class="mt-1 text-[10px] text-muted-foreground tabular-nums">{usage.llmCalls} LLM calls</div>
 		</div>
+
+		<!-- Compute (actual CPU/memory of the session's sandbox pod) -->
+		<Tooltip.Provider delayDuration={150}>
+			<Tooltip.Root>
+				<Tooltip.Trigger class="cursor-default text-left">
+					<div class="h-full bg-background px-4 py-2.5">
+						<div class="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+							<Cpu class="size-3" /> Compute
+						</div>
+						{#if compute?.usage}
+							<div class="mt-0.5 text-lg font-semibold leading-tight tabular-nums {computeTone}">
+								{fmtCpu(compute.usage.cpuMillicores)}{#if compute.requests}<span
+										class="text-sm font-normal text-muted-foreground">/{fmtCpu(compute.requests.cpuMillicores)}</span
+									>{/if}
+							</div>
+							<div class="mt-1 text-[10px] text-muted-foreground tabular-nums">
+								{fmtMem(compute.usage.memoryMiB)}{#if compute.requests} / {fmtMem(
+										compute.requests.memoryMiB
+									)}{/if} mem
+							</div>
+						{:else}
+							<div class="mt-0.5 text-lg font-semibold leading-tight text-muted-foreground">—</div>
+							<div class="mt-1 text-[10px] text-muted-foreground">{live ? 'awaiting sample' : 'no pod'}</div>
+						{/if}
+					</div>
+				</Tooltip.Trigger>
+				<Tooltip.Content side="bottom" class="text-xs tabular-nums">
+					{#if compute?.usage}
+						<div>CPU {fmtCpu(compute.usage.cpuMillicores)}{#if compute.requests} of {fmtCpu(compute.requests.cpuMillicores)} requested{/if}</div>
+						<div>Memory {fmtMem(compute.usage.memoryMiB)}{#if compute.requests} of {fmtMem(compute.requests.memoryMiB)} requested{/if}</div>
+						<div class="text-muted-foreground">actual sandbox-pod usage · 15s metrics-server sample</div>
+					{:else}
+						Live CPU/memory of the session's sandbox pod (metrics-server).
+					{/if}
+				</Tooltip.Content>
+			</Tooltip.Root>
+		</Tooltip.Provider>
 
 		<!-- Goal loop -->
 		<Tooltip.Provider delayDuration={150}>

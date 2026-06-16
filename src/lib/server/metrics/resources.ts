@@ -172,5 +172,32 @@ export async function getResourceUsage(namespace?: string): Promise<ResourceUsag
 	};
 }
 
+/**
+ * Single-pod actual usage from the Metrics API — cheap targeted read for the
+ * per-session "Compute" tile (avoids listing every pod in the namespace).
+ * Returns null when metrics-server has no sample yet (pod just started) or the
+ * pod is gone.
+ */
+export async function getPodResourceUsage(
+	podName: string,
+	namespace?: string,
+): Promise<{ name: string; cpuMillicores: number; memoryMiB: number } | null> {
+	const ns = namespace ?? (await getOwnNamespace());
+	const res = await kubeApiFetch(
+		`/apis/metrics.k8s.io/v1beta1/namespaces/${encodeURIComponent(ns)}/pods/${encodeURIComponent(podName)}`,
+	);
+	if (!res.ok) return null; // 404 = no sample yet / pod gone
+	const p = (await res.json()) as MetricsApiPod;
+	const cpu = (p.containers ?? []).reduce(
+		(acc, c) => acc + parseCpuToMillicores(c.usage?.cpu),
+		0,
+	);
+	const mem = (p.containers ?? []).reduce(
+		(acc, c) => acc + parseMemoryToMiB(c.usage?.memory),
+		0,
+	);
+	return { name: podName, cpuMillicores: Math.round(cpu), memoryMiB: Math.round(mem) };
+}
+
 // Re-export for tests / future per-execution wiring
 export { parseCpuToMillicores, parseMemoryToMiB, classifyPod };
