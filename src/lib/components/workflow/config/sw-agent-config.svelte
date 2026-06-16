@@ -110,6 +110,17 @@
 			: null
 	);
 	const overrideCount = $derived(Object.keys(overrides).length);
+	// Optional Goal section: presence of goal.objective makes this a goal-driven
+	// (multi-turn) run that loops until session.goal_completed / budget / maxIter.
+	const goal = $derived(
+		typeof body.goal === 'object' && body.goal !== null
+			? (body.goal as Record<string, unknown>)
+			: {}
+	);
+	const goalObjective = $derived(
+		typeof goal.objective === 'string' ? goal.objective : ''
+	);
+	let goalOpen = $state(false);
 	const selectedAgent = $derived(
 		agentRef ? agents.find((a) => a.id === agentRef.id) ?? null : null
 	);
@@ -292,6 +303,24 @@
 
 	function setPrompt(v: string) {
 		writeBody({ ...body, prompt: v });
+	}
+
+	/** Write a Goal field. Clearing the objective removes the whole goal block
+	 *  (reverts the node to a single-shot run). */
+	function setGoalField(key: 'objective' | 'tokenBudget' | 'maxIterations', value: unknown) {
+		const next: Record<string, unknown> = { ...goal };
+		if (value === undefined || value === null || value === '') delete next[key];
+		else next[key] = value;
+		const nextBody = { ...body };
+		if (key === 'objective' && (value === undefined || value === '')) {
+			// Objective cleared → drop goal mode entirely.
+			delete nextBody.goal;
+		} else if (Object.keys(next).length === 0) {
+			delete nextBody.goal;
+		} else {
+			nextBody.goal = next;
+		}
+		writeBody(nextBody);
 	}
 
 	function setOverride<T>(key: string, value: T | undefined) {
@@ -482,6 +511,82 @@
 	</div>
 
 	{#if selectedAgent}
+		<!-- Goal mode: an optional objective turns this into a multi-turn run that
+		     loops until the agent completes the goal (or hits a budget/iteration
+		     cap). Same node — empty objective = single-shot run. -->
+		<Collapsible bind:open={goalOpen}>
+			<CollapsibleTrigger
+				class="flex items-center gap-2 w-full text-left text-sm font-medium py-2"
+			>
+				{#if goalOpen}
+					<ChevronDown class="size-4" />
+				{:else}
+					<ChevronRight class="size-4" />
+				{/if}
+				Goal (autonomous, multi-turn)
+				{#if goalObjective.trim()}
+					<Badge variant="secondary">on</Badge>
+				{/if}
+			</CollapsibleTrigger>
+			<CollapsibleContent class="space-y-3 pl-6 pt-2">
+				<p class="text-xs text-muted-foreground">
+					Set an objective and the agent works toward it across turns until a
+					completion signal fires (or a budget/iteration cap). Leave blank for a
+					single-shot run.
+					{#if goalObjective.trim()}
+						{#if usesNativeGoal}
+							<span class="block mt-1">
+								This runtime uses its <strong>native <code>/goal</code></strong> — the
+								objective is injected into the CLI, which drives its own loop.
+							</span>
+						{:else}
+							<span class="block mt-1">
+								This runtime uses the <strong>goal loop</strong> + goal MCP — the agent
+								calls <code>update_goal</code> to mark completion.
+							</span>
+						{/if}
+					{/if}
+				</p>
+				<div>
+					<Label class="text-xs" for="agent-goal-objective">Objective</Label>
+					<Textarea
+						id="agent-goal-objective"
+						rows={3}
+						placeholder="e.g. Add tests for the auth module until all pass."
+						value={goalObjective}
+						oninput={(e) =>
+							setGoalField('objective', (e.target as HTMLTextAreaElement).value)}
+					/>
+				</div>
+				<div class="grid grid-cols-2 gap-3">
+					<div>
+						<Label class="text-xs">Token budget</Label>
+						<Input
+							type="number"
+							value={(goal.tokenBudget as number | undefined) ?? ''}
+							placeholder="none"
+							oninput={(e) => {
+								const v = (e.target as HTMLInputElement).value;
+								setGoalField('tokenBudget', v ? Number(v) : undefined);
+							}}
+						/>
+					</div>
+					<div>
+						<Label class="text-xs">Max iterations</Label>
+						<Input
+							type="number"
+							value={(goal.maxIterations as number | undefined) ?? ''}
+							placeholder="50"
+							oninput={(e) => {
+								const v = (e.target as HTMLInputElement).value;
+								setGoalField('maxIterations', v ? Number(v) : undefined);
+							}}
+						/>
+					</div>
+				</div>
+			</CollapsibleContent>
+		</Collapsible>
+
 		<Collapsible bind:open={overridesOpen}>
 			<CollapsibleTrigger
 				class="flex items-center gap-2 w-full text-left text-sm font-medium py-2"

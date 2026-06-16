@@ -352,3 +352,17 @@ export async function sessionStopState(
 	if (!row) return null;
 	return { status: row.status, stopRequested: row.stopRequestedAt !== null };
 }
+
+/** The session's parent workflow_execution_id (set only for workflow-driven
+ *  durable/run sessions). Used by the goal loop to decide whether a completed
+ *  goal should auto-terminate the session so the parent durable/run resumes. */
+export async function getSessionWorkflowExecutionId(
+	sessionId: string,
+): Promise<string | null> {
+	const rows = await requireDb()
+		.select({ workflowExecutionId: sessions.workflowExecutionId })
+		.from(sessions)
+		.where(eq(sessions.id, sessionId))
+		.limit(1);
+	return rows[0]?.workflowExecutionId ?? null;
+}

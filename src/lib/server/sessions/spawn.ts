@@ -1,4 +1,8 @@
 import { daprFetch } from "$lib/server/dapr-client";
+import {
+	ensureGoalMcpServer,
+	stampGoalMcpSessionHeader,
+} from "$lib/server/goals/mcp-wiring";
 import { attachRuntime, getSession } from "$lib/server/sessions/registry";
 import { resolveAgentRef } from "$lib/server/agents/registry";
 import { resolveEnvironmentRef } from "$lib/server/environments/registry";
@@ -530,71 +534,6 @@ function getDaprSidecarUrl(): string {
 	return `http://${host}:${port}`;
 }
 
-const GOAL_MCP_SERVER_URL =
-	process.env.GOAL_MCP_SERVER_URL ??
-	"http://workflow-mcp-server.workflow-builder.svc.cluster.local:3200/mcp";
-
-/**
- * Auto-wire the goal MCP server (create_goal/update_goal/get_goal) into every
- * MCP-capable session so goals set from the UI can always self-complete —
- * without the tools, a goal loop can only end via budget/iteration caps or a
- * manual pause. Skipped when the runtime doesn't support MCP, when an entry
- * already matches the goal server, or when GOAL_MCP_AUTO_WIRE=false.
- *
- * Also skipped for interactive-cli runtimes: they drive their OWN native
- * `/goal` loop inside the vendor CLI (which has its own completion harness),
- * so our goal MCP completion contract doesn't apply — see the CLI cutover in
- * the session goal API + goal-loop driver.
- */
-function ensureGoalMcpServer<T>(
-	servers: T,
-	runtimeSupportsMcp: boolean,
-	isInteractiveCli: boolean,
-): T {
-	if (!runtimeSupportsMcp || isInteractiveCli) return servers;
-	if (process.env.GOAL_MCP_AUTO_WIRE === "false") return servers;
-	if (!Array.isArray(servers)) return servers;
-	const hasGoal = servers.some((entry) => {
-		if (!entry || typeof entry !== "object") return false;
-		const e = entry as Record<string, unknown>;
-		const name = typeof e.name === "string" ? e.name.toLowerCase() : "";
-		const url = typeof e.url === "string" ? e.url : "";
-		return /goal/.test(name) || url.includes("workflow-mcp-server");
-	});
-	if (hasGoal) return servers;
-	return [
-		...servers,
-		{
-			name: "wfb_goal",
-			transport: "streamable_http",
-			url: GOAL_MCP_SERVER_URL,
-		},
-	] as T;
-}
-
-/**
- * Stamp the workflow-builder session id (== codex thread id) into the goal MCP
- * server entry's headers so the goal tools (create_goal/update_goal/get_goal)
- * resolve which session they act on. Scoped to the goal MCP entry — matched by
- * name (~goal) or URL (workflow-mcp-server) — so we don't leak the session id
- * to third-party MCP servers. Other servers ignore the extra header.
- */
-function stampGoalMcpSessionHeader<T>(servers: T, sessionId: string): T {
-	if (!Array.isArray(servers)) return servers;
-	return servers.map((entry) => {
-		if (!entry || typeof entry !== "object") return entry;
-		const e = entry as Record<string, unknown>;
-		const name = typeof e.name === "string" ? e.name.toLowerCase() : "";
-		const url = typeof e.url === "string" ? e.url : "";
-		const isGoalServer = /goal/.test(name) || url.includes("workflow-mcp-server");
-		if (!isGoalServer) return entry;
-		const headers = {
-			...((e.headers as Record<string, unknown> | undefined) ?? {}),
-			"X-Wfb-Session-Id": sessionId,
-		};
-		return { ...e, headers };
-	}) as T;
-}
 
 /**
  * Raise a user-side event batch into the session's workflow. Used by
