@@ -51,8 +51,8 @@ export const LAYOUT_PRESETS: Array<{
 			preset: 'flow',
 			algorithm: 'elk',
 			direction: 'TB',
-			nodeSpacing: 48,
-			layerSpacing: 96,
+			nodeSpacing: 64,
+			layerSpacing: 128,
 			fitMode: 'smart'
 		}
 	},
@@ -64,8 +64,8 @@ export const LAYOUT_PRESETS: Array<{
 			preset: 'compact',
 			algorithm: 'dagre',
 			direction: 'TB',
-			nodeSpacing: 28,
-			layerSpacing: 72,
+			nodeSpacing: 40,
+			layerSpacing: 100,
 			fitMode: 'smart'
 		}
 	},
