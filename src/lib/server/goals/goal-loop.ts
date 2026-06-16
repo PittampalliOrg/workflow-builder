@@ -125,7 +125,7 @@ export async function onSessionEvent(
  */
 export async function kickGoalLoop(
 	sessionId: string,
-	opts: { allowStaleIdleProbe?: boolean } = {},
+	opts: { allowStaleIdleProbe?: boolean; kickoff?: boolean } = {},
 ): Promise<void> {
 	try {
 		await driveContinuationIfIdle(sessionId, opts);
@@ -158,7 +158,7 @@ async function emitGoalCompletedIfDone(sessionId: string): Promise<void> {
 
 async function driveContinuationIfIdle(
 	sessionId: string,
-	opts: { allowStaleIdleProbe?: boolean } = {},
+	opts: { allowStaleIdleProbe?: boolean; kickoff?: boolean } = {},
 ): Promise<void> {
 	// Emit the completion signal before the drivable-goal gate (a completed goal
 	// is no longer "drivable", so this must run first). Idempotent.
@@ -194,7 +194,14 @@ async function driveContinuationIfIdle(
 	const staleProbe =
 		opts.allowStaleIdleProbe === true &&
 		latest.ageSeconds >= LOST_IDLE_GRACE_SECONDS;
-	if (!idle && !staleProbe) return;
+	// Kickoff bypass: when a goal is freshly set (iteration 0, no continuation yet)
+	// there is no turn in flight, so post continuation #1 immediately instead of
+	// waiting for a status_idle. This removes the slow first-turn start for CLIs
+	// that don't emit an idle before their first turn (agy) — the raise is
+	// Dapr-buffered until the composer is ready, exactly like native /goal.
+	const kickoff =
+		opts.kickoff === true && goal.iterations === 0 && !goal.lastContinuationAt;
+	if (!idle && !staleProbe && !kickoff) return;
 	if (!idle && staleProbe) {
 		console.warn(
 			`[goal-loop] ${sessionId}: lost-idle probe (latest=${latest.type}, age=${Math.round(latest.ageSeconds)}s) — posting continuation; Dapr buffers it if a turn is still running`,

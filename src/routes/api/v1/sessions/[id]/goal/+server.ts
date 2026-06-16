@@ -101,10 +101,12 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		workflowExecutionId: session?.workflowExecutionId ?? null,
 	});
 
-	// Kick the loop now: if the session is already idle, the inline status_idle
-	// hook won't fire again, so post the first continuation directly. (No-op if
-	// the session is mid-turn — the turn-end idle drives it.)
-	await kickGoalLoop(params.id);
+	// Kick the loop now with kickoff=true: post continuation #1 immediately
+	// without waiting for a status_idle. A freshly-set goal has no turn in flight,
+	// so this avoids the slow first-turn start for runtimes that don't emit an
+	// idle before their first turn (agy). Dapr buffers the raise until the agent
+	// is ready; subsequent turns are driven by the turn-end idle as usual.
+	await kickGoalLoop(params.id, { kickoff: true });
 
 	return json({ goal });
 };
