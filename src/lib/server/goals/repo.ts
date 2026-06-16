@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, notInArray, sql } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
 	sessions,
@@ -297,6 +297,24 @@ export async function claimBudgetSteer(
  * published while the BFF is down is gone for good and the latest stored
  * event stays frozen at mid-turn chatter.
  */
+/**
+ * Intra-turn telemetry events that can land AFTER a turn-boundary
+ * `session.status_idle` (esp. for workflow-driven CLI sessions, where the agy
+ * adapter emits `agent.llm_usage` last). They are NOT a new turn or user input,
+ * so the goal-loop idle gate must ignore them — otherwise a trailing llm_usage
+ * makes "latest event is status_idle" false and the loop only advances via the
+ * slow lost-idle probe (~4 min/turn instead of event-driven).
+ */
+const GOAL_IDLE_IGNORED_EVENT_TYPES = [
+	"agent.llm_usage",
+	"agent.message",
+	"agent.tool_use",
+	"agent.tool_result",
+	"agent.thinking",
+	"agent.reasoning",
+	"hook.decision",
+];
+
 export async function latestEventMeta(
 	sessionId: string,
 ): Promise<{ type: string; ageSeconds: number } | null> {
@@ -306,7 +324,12 @@ export async function latestEventMeta(
 			ageSeconds: sql<number>`extract(epoch from (now() - ${sessionEvents.createdAt}))`,
 		})
 		.from(sessionEvents)
-		.where(eq(sessionEvents.sessionId, sessionId))
+		.where(
+			and(
+				eq(sessionEvents.sessionId, sessionId),
+				notInArray(sessionEvents.type, GOAL_IDLE_IGNORED_EVENT_TYPES),
+			),
+		)
 		.orderBy(desc(sessionEvents.sequence))
 		.limit(1);
 	const row = rows[0];
