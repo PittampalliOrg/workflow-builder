@@ -748,8 +748,16 @@ class SessionSupervisor:
             self._injected_prompt_hashes.update(prompt_digests)
             submitted = False
             turn_started = False
+            # Slash commands (native `/goal`, `/clear`, …) MUST start at column 0:
+            # a leading INJECTION_MARKER (a zero-width ​⁠​ run) pushes
+            # the `/` off position 0, so the CLI parses the line as a plain prompt
+            # instead of a command. Observed: claude received `​⁠​/goal …`
+            # and ran it as text — native goal mode never activated. Drop the marker
+            # for slash-command sends; turn detection still flows from the command's
+            # own UserPromptSubmit/Stop hooks + the prompt-digest dedup (marker-free).
+            effective_marker = "" if send_text.lstrip().startswith("/") else marker
             try:
-                await self._client.pane_send_text(pane, f"{marker}{send_text}")
+                await self._client.pane_send_text(pane, f"{effective_marker}{send_text}")
                 # Let the TUI ingest the pasted text before pressing Enter, then
                 # confirm the submit registered (re-press if the agent is still
                 # idle — the Enter raced the paste and was dropped).
