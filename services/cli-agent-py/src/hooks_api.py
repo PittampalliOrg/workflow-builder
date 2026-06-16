@@ -591,6 +591,16 @@ class HookProcessor:
         transcript_path = _clean(payload.get("transcript_path")) or _clean(
             payload.get("transcriptPath")
         )
+        # Fallback: some CLIs (Antigravity) don't carry transcript_path in their
+        # command-hook payloads, so a transient early-hook miss would leave the
+        # tailer unregistered and nothing mirrored (no agent.message/llm_usage).
+        # Let the adapter discover its own transcript file from ANY hook; the
+        # tailer reads from offset 0 so a late registration backfills losslessly.
+        if not transcript_path and self._adapter is not None:
+            try:
+                transcript_path = _clean(self._adapter.discover_transcript_path())
+            except Exception:  # noqa: BLE001
+                transcript_path = None
         if not transcript_path:
             return
         current = self._tailer_manager.current()
