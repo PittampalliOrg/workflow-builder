@@ -69,7 +69,11 @@
 	}
 
 	const MAX_RECONNECT_DELAY = 30000;
-	const FIRST_MESSAGE_TIMEOUT_MS = 4000;
+	// Cold-start tolerant: the interactive-CLI pods (esp. agy) can take a while to
+	// boot and attach the TUI pane before any bytes flow. A short timeout here turns
+	// a slow boot into a reconnect storm (repeated "Connecting…" + screen clears =
+	// the glitchy/dark flashing). Keep a watchdog, but a generous one.
+	const FIRST_MESSAGE_TIMEOUT_MS = 20000;
 
 	const options: ITerminalOptions = {
 		fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
@@ -162,18 +166,21 @@
 		term.writeln('');
 	}
 
-	async function connect(term: Terminal, options: { resetDisplay?: boolean } = {}) {
+	async function connect(term: Terminal, options: { announce?: boolean } = {}) {
 		if (ws) {
 			ws.close();
 			ws = null;
 		}
 		clearFirstMessageTimer();
 		disposeTerminalBindings();
-		if (options.resetDisplay) {
-			renderTerminalBanner(term);
-		}
 
-		term.writeln('\x1b[90mConnecting to sandbox...\x1b[0m');
+		// Only announce on the first connect. Reconnects keep the existing screen
+		// (no clear, no banner, no duplicate "Connecting…") — the "Reconnecting…"
+		// line already informs the user, and clearing on every retry is what made a
+		// slow backend boot flash the terminal dark with stacked loading messages.
+		if (options.announce !== false) {
+			term.writeln('\x1b[90mConnecting to sandbox...\x1b[0m');
+		}
 
 		const socket = new WebSocket(getWsUrl());
 		ws = socket;
@@ -233,7 +240,7 @@
 		term.writeln(`\x1b[90mReconnecting in ${reconnectDelay / 1000}s...\x1b[0m`);
 		reconnectTimer = setTimeout(() => {
 			reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
-			connect(term, { resetDisplay: true });
+			connect(term, { announce: false });
 		}, reconnectDelay);
 	}
 
@@ -264,6 +271,14 @@
 					webgl.dispose();
 				} catch {
 					// already disposed
+				}
+				// Disposing reverts xterm to the DOM renderer, but the canvas can stay
+				// blank ("goes dark") until something repaints — force a full refresh so
+				// the terminal keeps rendering after a lost GL context.
+				try {
+					term.refresh(0, Math.max(0, term.rows - 1));
+				} catch {
+					// terminal gone
 				}
 			});
 			term.loadAddon(webgl);
@@ -337,6 +352,17 @@
 				ws.close();
 				ws = null;
 			}
+			// The xterm-svelte wrapper creates the Terminal but never disposes it, so
+			// without this every remount ({#key} reconnect, tab switch, navigation)
+			// leaks a Terminal AND its WebGL context. Browsers cap live GL contexts
+			// (~16) and silently kill the oldest, which is what makes terminals "go
+			// dark." Disposing the terminal frees its addons (incl. WebGL) too.
+			try {
+				terminal?.dispose();
+			} catch {
+				// already disposed
+			}
+			terminal = undefined;
 		};
 	});
 </script>
