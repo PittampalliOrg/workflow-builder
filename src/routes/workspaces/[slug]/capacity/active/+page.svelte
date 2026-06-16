@@ -120,7 +120,7 @@
 	// Shared column template so the sticky header and every row align exactly.
 	// ☐ · Type · Work · Status · Activity · Tokens · Resource(req+pressure) · Pods · Owners · Age · ⋯
 	const GRID_COLS =
-		'grid-cols-[24px_56px_minmax(0,1.4fr)_72px_104px_62px_minmax(84px,0.5fr)_32px_minmax(0,0.72fr)_46px_26px]';
+		'grid-cols-[24px_56px_minmax(0,1.4fr)_72px_104px_62px_minmax(84px,0.5fr)_32px_minmax(0,0.72fr)_64px_26px]';
 
 	function fmtTokens(n: number | null | undefined): string {
 		if (!n) return '—';
@@ -139,19 +139,29 @@
 	let kindFilter = $state<KindFilter>('all');
 	let search = $state('');
 
+	function startedMs(item: CapacityBusinessWorkItem): number {
+		if (item.startedAt) return new Date(item.startedAt).getTime();
+		// Fall back to age so items without an explicit start still order sanely.
+		if (typeof item.ageSeconds === 'number') return Date.now() - item.ageSeconds * 1000;
+		return 0;
+	}
+
 	const filteredWork = $derived.by(() => {
 		const q = search.trim().toLowerCase();
-		return scopedWork.filter((item) => {
-			if (kindFilter === 'session' && item.kind !== 'session') return false;
-			if (kindFilter === 'workflow' && item.kind !== 'workflowRun') return false;
-			if (kindFilter === 'benchmark' && item.kind !== 'benchmarkRun' && item.kind !== 'benchmarkInstance')
-				return false;
-			if (q) {
-				const hay = `${item.title} ${item.status} ${item.model ?? ''} ${item.id}`.toLowerCase();
-				if (!hay.includes(q)) return false;
-			}
-			return true;
-		});
+		return scopedWork
+			.filter((item) => {
+				if (kindFilter === 'session' && item.kind !== 'session') return false;
+				if (kindFilter === 'workflow' && item.kind !== 'workflowRun') return false;
+				if (kindFilter === 'benchmark' && item.kind !== 'benchmarkRun' && item.kind !== 'benchmarkInstance')
+					return false;
+				if (q) {
+					const hay = `${item.title} ${item.status} ${item.model ?? ''} ${item.id}`.toLowerCase();
+					if (!hay.includes(q)) return false;
+				}
+				return true;
+			})
+			// Most-recently-started first, matching the sessions table's ordering.
+			.sort((a, b) => startedMs(b) - startedMs(a));
 	});
 
 	// --- Selection + stoppability --------------------------------------------
@@ -683,7 +693,7 @@
 				<span class="text-right">{RESOURCE_LABELS[primaryResource]}</span>
 				<span class="text-right">Pods</span>
 				<span>Owners</span>
-				<span class="text-right">Age</span>
+				<span class="text-right">Time</span>
 				<span></span>
 			</div>
 
@@ -781,9 +791,15 @@
 							class="flex items-center justify-end gap-1.5"
 							title={pressure === null
 								? 'Live usage telemetry pending'
-								: `${pressure.toFixed(0)}% of request · ${resourceLabel(item.observedResources, primaryResource)} observed`}
+								: `actual ${resourceLabel(item.observedResources, primaryResource)} / requested ${resourceLabel(item.requestedResources, primaryResource)} (${pressure.toFixed(0)}% of request used by the cluster)`}
 						>
-							<span class="font-mono text-[11px] tabular-nums">{resourceLabel(item.requestedResources, primaryResource)}</span>
+							<span class="font-mono text-[11px] tabular-nums"
+								>{resourceLabel(item.observedResources, primaryResource)}<span
+									class="text-muted-foreground/60"
+								>
+									/ {resourceLabel(item.requestedResources, primaryResource)}</span
+								></span
+							>
 							<div class="relative h-1.5 w-9 shrink-0 overflow-hidden rounded-full bg-muted">
 								<div
 									class="h-full rounded-full {pressureTone(pressure)}"
@@ -796,7 +812,17 @@
 
 						<CapacityOwnerLinks owners={item.owners} max={2} compact />
 
-						<span class="text-right font-mono text-[11px] text-muted-foreground">{durationLabel(item.durationSeconds ?? item.ageSeconds)}</span>
+						<div class="text-right font-mono leading-tight tabular-nums">
+							<div class="text-[11px] text-muted-foreground">{durationLabel(item.durationSeconds ?? item.ageSeconds)}</div>
+							{#if item.startedAt}
+								<div
+									class="text-[10px] text-muted-foreground/60"
+									title={`Started ${new Date(item.startedAt).toLocaleString()}`}
+								>
+									{new Date(item.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+								</div>
+							{/if}
+						</div>
 
 						<div class="flex justify-end">
 							{#if stoppable}
