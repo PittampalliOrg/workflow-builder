@@ -1,16 +1,20 @@
 <script lang="ts">
 	import { Panel, useSvelteFlow } from '@xyflow/svelte';
 	import { getContext } from 'svelte';
+	import { toast } from 'svelte-sonner';
 	import {
 		AlignHorizontalSpaceAround,
 		ArrowDownUp,
 		ArrowRightLeft,
 		Loader2,
+		Maximize,
 		Minus,
-		Plus
+		Plus,
+		Sparkles
 	} from '@lucide/svelte';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 	import {
+		DEFAULT_LAYOUT_CONFIG,
 		LAYOUT_PRESETS,
 		createLayoutConfig,
 		getWorkflowNodeBounds,
@@ -93,6 +97,54 @@
 		}
 	}
 
+	/**
+	 * "Reset layout" — the one-click escape hatch when the canvas looks wrong.
+	 * Unlike Arrange (which re-runs the CURRENT settings), Reset re-picks the best
+	 * preset for the graph's shape, re-arranges, and fits everything in view. It's
+	 * fully undoable (history + an Undo toast action) so it's safe to try.
+	 */
+	async function resetLayout() {
+		if (store.nodes.length === 0 || isLayouting) return;
+
+		store.pushHistory();
+		isLayouting = true;
+		try {
+			const suggested = suggestLayoutConfig(store.nodes, store.edges, DEFAULT_LAYOUT_CONFIG);
+			store.setLayoutConfig(suggested, { touched: false });
+
+			const layoutedNodes = await layoutWorkflowGraph(store.nodes, store.edges, suggested);
+			store.nodes = layoutedNodes as typeof store.nodes;
+			store.isDirty = true;
+
+			requestAnimationFrame(() => {
+				fitView({ padding: 0.22, maxZoom: 1, duration: 320 });
+			});
+
+			const presetLabel =
+				LAYOUT_PRESETS.find((p) => p.id === suggested.preset)?.label ?? suggested.preset;
+			toast.success('Layout reset', {
+				description: `Auto-arranged with the ${presetLabel} preset.`,
+				action: {
+					label: 'Undo',
+					onClick: () => {
+						store.undo();
+						requestAnimationFrame(() => fitView({ padding: 0.22, maxZoom: 1, duration: 240 }));
+					}
+				}
+			});
+		} catch (err) {
+			console.error('Reset layout failed:', err);
+			toast.error('Could not reset the layout');
+		} finally {
+			isLayouting = false;
+		}
+	}
+
+	function fitToView() {
+		if (store.nodes.length === 0) return;
+		fitView({ padding: 0.2, maxZoom: 1.1, duration: 280 });
+	}
+
 	function applyPreset(preset: LayoutPreset) {
 		const presetConfig = LAYOUT_PRESETS.find((candidate) => candidate.id === preset)?.config;
 		if (!presetConfig) return;
@@ -159,6 +211,17 @@
 
 		<button
 			type="button"
+			onclick={resetLayout}
+			disabled={isLayouting}
+			class="inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
+			title="Reset to the best auto layout for this workflow and fit it in view (undoable)"
+		>
+			<Sparkles size={14} />
+			Reset
+		</button>
+
+		<button
+			type="button"
 			onclick={toggleDirection}
 			class="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
 			title="Toggle layout direction"
@@ -215,5 +278,17 @@
 				<Plus size={12} />
 			</button>
 		</div>
+
+		<div class="h-5 w-px bg-border"></div>
+
+		<button
+			type="button"
+			onclick={fitToView}
+			class="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+			title="Fit all nodes in view"
+		>
+			<Maximize size={14} />
+			Fit
+		</button>
 	</div>
 </Panel>

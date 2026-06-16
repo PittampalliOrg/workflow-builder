@@ -272,6 +272,16 @@ export function shouldAutoLayoutGraph(nodes: Node[], edges: Edge[]): boolean {
 		return true;
 	}
 
+	// Spec-derived graphs arrive as a single vertical column — every node shares
+	// one x (the spec→graph adapter's X_CENTER) with evenly stacked y. That is
+	// never a real layout: fan-out / fan-in siblings overlap and the column
+	// ignores the chosen direction. Treat a uniform-x stack as needs-layout so
+	// loading (or rebuilding) a workflow auto-arranges instead of showing a raw
+	// column. (A genuinely laid-out pure chain re-layouts to an equivalent
+	// result, so this is safe.)
+	const uniqueX = new Set(positions.map((position) => position.x));
+	if (uniqueX.size === 1) return true;
+
 	const nodeIds = new Set(nodes.map((node) => node.id));
 	const connectedEdgeCount = edges.filter(
 		(edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target) && edge.source !== edge.target
