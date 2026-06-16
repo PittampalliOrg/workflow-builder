@@ -1487,6 +1487,18 @@ def _run_native_durable_agent_child_workflow(
         and flattened_args.get("cwd").strip()
         else None
     )
+    # Optional goal-driven mode: a goal block ({objective, tokenBudget?,
+    # maxIterations?}) on the durable/run task makes the bridged session run
+    # multi-turn toward the objective until session.goal_completed (the BFF
+    # bridge sets up the goal + flips off auto-terminate). Forwarded as-is.
+    _goal_raw = flattened_args.get("goal")
+    goal_spec = (
+        _goal_raw
+        if isinstance(_goal_raw, dict)
+        and isinstance(_goal_raw.get("objective"), str)
+        and _goal_raw.get("objective").strip()
+        else None
+    )
     agent_graph = flattened_args.get("agentGraph")
     loop_config = agent_config.get("loop") if isinstance(agent_config, dict) else None
     loop_strategy_name = (
@@ -1923,6 +1935,9 @@ def _run_native_durable_agent_child_workflow(
             # per-turn timer above the runtime default for long benchmark tasks.
             "timeoutMinutes": timeout_minutes,
             "maxIterations": max_iterations,
+            # Goal-driven mode (optional). The BFF bridge creates the goal +
+            # runs the session multi-turn when this is present.
+            "goal": goal_spec,
             "mlflowContext": child_input.get("mlflowContext"),
             "_otel": tc.otel_ctx,
         }

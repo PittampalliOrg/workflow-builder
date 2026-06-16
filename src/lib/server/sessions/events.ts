@@ -214,7 +214,8 @@ export async function appendEvent(
 			// for sessions without a goal.
 			if (
 				event.type === "agent.llm_usage" ||
-				event.type === "session.status_idle"
+				event.type === "session.status_idle" ||
+				event.type === "session.goal_completed"
 			) {
 				void import("$lib/server/goals/goal-loop")
 					.then((m) =>

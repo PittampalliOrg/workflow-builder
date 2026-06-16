@@ -43,6 +43,12 @@ import {
 	safeCreateWorkflowAgentMlflowRun,
 } from "$lib/server/observability/mlflow-lifecycle";
 import { getUserCliCredential } from "$lib/server/users/cli-credentials";
+import { createOrReplaceGoal, getCurrentGoal } from "$lib/server/goals/repo";
+import { runtimeUsesNativeGoal } from "$lib/server/sessions/runtime-target";
+import {
+	ensureGoalMcpServer,
+	stampGoalMcpSessionHeader,
+} from "$lib/server/goals/mcp-wiring";
 
 type PublishedWorkflowAgent = {
 	agentId: string;
@@ -316,6 +322,14 @@ export const POST: RequestHandler = async ({ request }) => {
 		parsePositiveInteger(body.maxTurns) ??
 		parsePositiveInteger(agentConfig?.maxTurns);
 
+	// Optional goal-driven mode: a {objective, tokenBudget?, maxIterations?} block
+	// turns this into a multi-turn run that loops toward the objective until
+	// session.goal_completed (custom-loop runtimes drive the BFF goal loop + goal
+	// MCP; native-goal CLIs inject `/goal`). Presence of a non-empty objective ⇒
+	// goal mode.
+	const bridgeGoal = parseGoalSpec(body.goal);
+	const goalMode = bridgeGoal !== null;
+
 	// Per-agent runtime target identity — used to wake the target pod
 	// before responding. The orchestrator's resolver stamps these at
 	// workflow execute time (see src/lib/server/agents/resolver.ts);
@@ -358,10 +372,37 @@ export const POST: RequestHandler = async ({ request }) => {
 	const swapTarget = getRuntimeDescriptor(
 		(agentConfig as { runtime?: string }).runtime,
 	);
-	const dispatchAgentConfig: AgentConfig = stampCliAdapterForDispatch(
+	// Goal-mode dispatch split: native-goal CLIs (claude/codex) inject `/goal`;
+	// every other runtime (agy + dapr) uses the BFF goal loop + goal MCP.
+	const nativeGoal = goalMode && runtimeUsesNativeGoal(swapTarget ?? null);
+	const customGoal = goalMode && !nativeGoal;
+	const baseDispatchAgentConfig: AgentConfig = stampCliAdapterForDispatch(
 		agentConfig,
 		swapTarget,
 	);
+	// For custom-loop goal sessions, auto-wire the goal MCP server (+ session
+	// header) so the agent can call update_goal to self-complete — same helper the
+	// direct-spawn path uses. (Single-shot + native-goal runs are untouched.)
+	const dispatchAgentConfig: AgentConfig = customGoal
+		? ({
+				...baseDispatchAgentConfig,
+				mcpServers: stampGoalMcpSessionHeader(
+					ensureGoalMcpServer(
+						(baseDispatchAgentConfig as { mcpServers?: unknown[] }).mcpServers ?? [],
+						swapTarget?.capabilities?.supportsMcp ?? false,
+						false,
+					),
+					sessionId,
+				),
+			} as AgentConfig)
+		: baseDispatchAgentConfig;
+	// Goal-mode sessions run multi-turn (no auto-terminate) capped by the goal's
+	// maxIterations; native-goal CLIs get the objective as a `/goal` kickoff.
+	const effectiveMaxIterations = goalMode
+		? bridgeGoal?.maxIterations ?? bridgeMaxIterations
+		: bridgeMaxIterations;
+	const effectiveInitialMessage =
+		nativeGoal && bridgeGoal ? `/goal ${bridgeGoal.objective}` : initialMessage;
 	const swapVerdict = swapTarget
 		? evaluateSwap(dispatchAgentConfig as Record<string, unknown>, swapTarget)
 		: null;
@@ -474,6 +515,15 @@ export const POST: RequestHandler = async ({ request }) => {
 				projectId,
 				userId,
 			}));
+		// Goal-driven custom-loop run: ensure the goal row exists (idempotent
+		// across Dapr activity replays — skips if an active goal is already set).
+		if (customGoal && bridgeGoal) {
+			await ensureWorkflowGoal(
+				existing.id,
+				bridgeGoal,
+				existing.workflowExecutionId ?? workflowExecutionId,
+			);
+		}
 		return json({
 			sessionId: existing.id,
 			agentId: existing.agentId,
@@ -492,13 +542,14 @@ export const POST: RequestHandler = async ({ request }) => {
 				nodeName,
 				vaultIds: Array.isArray(existing.vaultIds) ? existing.vaultIds : vaultIds,
 				workflowExecutionId: existing.workflowExecutionId ?? workflowExecutionId,
-				initialMessage,
+				initialMessage: effectiveInitialMessage,
 				workspaceRef: bridgeWorkspaceRef,
 				sandboxName: bridgeSandboxName ?? existing.sandboxName,
 				runtimeSandboxName: reuseRuntimeSandboxName,
 				cwd: bridgeCwd,
 				timeoutMinutes: bridgeTimeoutMinutes,
-				maxIterations: bridgeMaxIterations,
+				maxIterations: effectiveMaxIterations,
+				goalMode,
 				agentSlug: reuseRuntime?.slug ?? bodyAgentSlug,
 				agentAppId: reuseChildAppId,
 				mlflowContext: reuseMlflowContext,
@@ -575,10 +626,17 @@ export const POST: RequestHandler = async ({ request }) => {
 			),
 		);
 	}
-	if (initialMessage && initialMessage.trim()) {
+	// Goal-driven custom-loop run: create the goal row now that the session row
+	// exists. The goal loop then drives continuations off each status_idle, and
+	// the agent self-completes via the auto-wired goal MCP. (Native-goal CLIs
+	// instead get the `/goal` kickoff as effectiveInitialMessage below.)
+	if (customGoal && bridgeGoal) {
+		await ensureWorkflowGoal(sessionId, bridgeGoal, workflowExecutionId);
+	}
+	if (effectiveInitialMessage && effectiveInitialMessage.trim()) {
 		await sendUserEvent(sessionId, {
 			type: "user.message",
-			content: [{ type: "text", text: initialMessage }],
+			content: [{ type: "text", text: effectiveInitialMessage }],
 		});
 	}
 
@@ -753,13 +811,14 @@ export const POST: RequestHandler = async ({ request }) => {
 			nodeName,
 			vaultIds,
 			workflowExecutionId,
-			initialMessage,
+			initialMessage: effectiveInitialMessage,
 			workspaceRef: bridgeWorkspaceRef,
 			sandboxName: incomingSandboxName,
 			runtimeSandboxName: childRuntimeSandboxName,
 			cwd: bridgeCwd,
 			timeoutMinutes: bridgeTimeoutMinutes,
-			maxIterations: bridgeMaxIterations,
+			maxIterations: effectiveMaxIterations,
+			goalMode,
 			agentId,
 			agentVersion,
 			agentSlug: runtimeIdentity?.slug ?? bodyAgentSlug,
@@ -855,6 +914,9 @@ function buildChildInput(params: {
 	cwd?: string | null;
 	timeoutMinutes?: number | null;
 	maxIterations?: number | null;
+	/** Goal-driven run: keep the session alive across turns (no auto-terminate)
+	 * so the goal loop can drive continuations until session.goal_completed. */
+	goalMode?: boolean;
 	agentId?: string | null;
 	agentVersion?: number | null;
 	agentSlug?: string | null;
@@ -904,7 +966,10 @@ function buildChildInput(params: {
 		workflowExecutionId: params.workflowExecutionId,
 		vaultIds: params.vaultIds,
 		dbExecutionId: params.workflowExecutionId,
-		autoTerminateAfterEndTurn: true,
+		// Single-shot runs auto-terminate after the first end-turn; goal-driven
+		// runs stay alive multi-turn until the goal completes (then the
+		// goal_completed side-effect terminates them so the parent resumes).
+		autoTerminateAfterEndTurn: !params.goalMode,
 		// Sandbox plumbing — consumed by dapr-agent-py's
 		// _freeze_session_child_input so agent_workflow can set
 		// runtime.sandbox_name / workspace_ref / cwd. Without these,
@@ -960,6 +1025,54 @@ function parsePositiveInteger(value: unknown): number | null {
 				: Number.NaN;
 	if (!Number.isFinite(numeric) || numeric <= 0) return null;
 	return Math.trunc(numeric);
+}
+
+type GoalSpec = {
+	objective: string;
+	tokenBudget: number | null;
+	maxIterations: number | null;
+};
+
+/** Validate the optional goal block from the durable/run task. Returns null
+ *  (single-shot run) unless a non-empty objective is present. */
+function parseGoalSpec(value: unknown): GoalSpec | null {
+	if (!value || typeof value !== "object") return null;
+	const g = value as Record<string, unknown>;
+	const objective = typeof g.objective === "string" ? g.objective.trim() : "";
+	if (!objective) return null;
+	return {
+		objective,
+		tokenBudget: parsePositiveInteger(g.tokenBudget),
+		maxIterations: parsePositiveInteger(g.maxIterations),
+	};
+}
+
+/** Create the thread_goals row for a workflow-driven goal session, idempotent
+ *  across Dapr activity replays: skip if an active (non-complete) goal already
+ *  exists so a re-ensure never resets accounting mid-run. The goal loop drives
+ *  continuations off status_idle (no kick needed — turn 1 runs on the node
+ *  prompt; the loop takes over once the session idles). */
+async function ensureWorkflowGoal(
+	sessionId: string,
+	goal: GoalSpec,
+	workflowExecutionId: string | null,
+): Promise<void> {
+	try {
+		const existing = await getCurrentGoal(sessionId);
+		if (existing && existing.status !== "complete") return;
+		await createOrReplaceGoal({
+			sessionId,
+			objective: goal.objective,
+			tokenBudget: goal.tokenBudget,
+			maxIterations: goal.maxIterations ?? undefined,
+			workflowExecutionId,
+		});
+	} catch (err) {
+		console.warn(
+			`[ensure-for-workflow] ensureWorkflowGoal failed for ${sessionId}:`,
+			err instanceof Error ? err.message : err,
+		);
+	}
 }
 
 function parseMlflowContext(value: unknown): MlflowRunContext | null {

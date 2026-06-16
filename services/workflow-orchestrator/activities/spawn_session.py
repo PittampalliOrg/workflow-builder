@@ -268,6 +268,8 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
             "cwd": input_data.get("cwd"),
             "timeoutMinutes": input_data.get("timeoutMinutes"),
             "maxIterations": input_data.get("maxIterations"),
+            # Goal-driven mode (optional): {objective, tokenBudget?, maxIterations?}.
+            "goal": input_data.get("goal"),
             "mlflowContext": input_data.get("mlflowContext")
             if isinstance(input_data.get("mlflowContext"), dict)
             else None,
