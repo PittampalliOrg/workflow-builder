@@ -36,6 +36,34 @@
 	let loading = $state(true);
 	let loadError = $state<string | null>(null);
 	let overridesOpen = $state(false);
+
+	/** Runtime descriptor projection from GET /api/runtimes (capability-driven UI). */
+	interface RuntimeInfo {
+		id: string;
+		family: 'durable-session' | 'browser' | 'interactive-cli';
+		cliAdapter: string | null;
+		capabilities: {
+			multiProvider: boolean;
+			supportedProviders: string[];
+			interactiveTerminal?: boolean;
+			supportsMcp: boolean;
+			[key: string]: unknown;
+		};
+		cliAuth: { provider: string; credentialKind: string; loginStyle: string | null } | null;
+	}
+	let runtimes = $state<Record<string, RuntimeInfo>>({});
+	// Native-goal CLI adapters (claude/codex inject /goal); agy + non-CLI use the
+	// custom BFF goal loop. Mirrors runtimeUsesNativeGoal() on the server.
+	const NATIVE_GOAL_ADAPTERS = new Set(['claude-code', 'codex']);
+	// Live CLI-credential status for the selected runtime's provider (interactive
+	// CLI agents 400 at dispatch without a linked credential).
+	let cliCredStatus = $state<{
+		provider: string;
+		linked: boolean;
+		status: string | null;
+		expiresAt: string | null;
+	} | null>(null);
+	let cliCredLoading = $state(false);
 	const slug = $derived(
 		(page.params.slug as string | undefined) ?? DEFAULT_WORKSPACE_SLUG,
 	);
@@ -85,6 +113,19 @@
 	const selectedAgent = $derived(
 		agentRef ? agents.find((a) => a.id === agentRef.id) ?? null : null
 	);
+	// Resolve the selected agent's runtime descriptor → drive capability-gated UI.
+	const selectedRuntime = $derived(
+		selectedAgent ? runtimes[selectedAgent.runtime] ?? null : null
+	);
+	const isCliRuntime = $derived(selectedRuntime?.family === 'interactive-cli');
+	const isMultiProvider = $derived(selectedRuntime?.capabilities.multiProvider === true);
+	const runtimeProviders = $derived(selectedRuntime?.capabilities.supportedProviders ?? []);
+	const usesNativeGoal = $derived(
+		isCliRuntime &&
+			!!selectedRuntime?.cliAdapter &&
+			NATIVE_GOAL_ADAPTERS.has(selectedRuntime.cliAdapter)
+	);
+	const cliProvider = $derived(selectedRuntime?.cliAuth?.provider ?? null);
 	const selectedAgentVersion = $derived(
 		agentRef?.version ?? selectedAgent?.currentVersion ?? null
 	);
@@ -134,19 +175,53 @@
 
 	onMount(async () => {
 		try {
-			const res = await fetch('/api/agents');
-			if (!res.ok) {
-				loadError = `Failed to load agents (${res.status})`;
+			const [agentsRes, runtimesRes] = await Promise.all([
+				fetch('/api/agents'),
+				fetch('/api/runtimes')
+			]);
+			if (!agentsRes.ok) {
+				loadError = `Failed to load agents (${agentsRes.status})`;
 				return;
 			}
-			const d = (await res.json()) as { agents: AgentSummary[] };
+			const d = (await agentsRes.json()) as { agents: AgentSummary[] };
 			agents = d.agents ?? [];
+			if (runtimesRes.ok) {
+				const rd = (await runtimesRes.json()) as { runtimes: RuntimeInfo[] };
+				runtimes = Object.fromEntries((rd.runtimes ?? []).map((r) => [r.id, r]));
+			}
 			if (agentRef?.id) void loadAgentDetail(agentRef.id);
 		} catch (err) {
 			loadError = err instanceof Error ? err.message : String(err);
 		} finally {
 			loading = false;
 		}
+	});
+
+	// Live-check the user's CLI credential for the selected interactive-CLI
+	// runtime's provider so we can warn that workflow dispatch needs one linked
+	// (Settings → CLI tokens) before the run 400s at the bridge.
+	$effect(() => {
+		const provider = cliProvider;
+		if (!provider) {
+			cliCredStatus = null;
+			return;
+		}
+		let cancelled = false;
+		cliCredLoading = true;
+		fetch(`/api/v1/users/me/cli-tokens/${encodeURIComponent(provider)}`)
+			.then((r) => (r.ok ? r.json() : null))
+			.then((s) => {
+				if (!cancelled) cliCredStatus = s;
+			})
+			.catch(() => {
+				if (!cancelled) cliCredStatus = null;
+			})
+			.finally(() => {
+				if (!cancelled) cliCredLoading = false;
+			});
+		return () => {
+			cancelled = true;
+		};
 	});
 
 	function writeBody(nextBody: Record<string, unknown>) {
@@ -305,6 +380,73 @@
 						Not in the Dapr registry. Native <code>call_agent</code> lookups won't find this agent
 						by name until it's resynced.
 					</p>
+				{/if}
+
+				<!-- Runtime capability summary: the node abstracts CLI vs dapr; these
+				     chips + notices surface what's runtime-specific for the picked agent. -->
+				{#if selectedRuntime}
+					<div class="mt-2 flex items-center gap-1 flex-wrap">
+						<Badge variant="secondary" class="font-mono text-[10px]">
+							{selectedRuntime.id}
+						</Badge>
+						{#if isCliRuntime}
+							<Badge variant="outline" class="text-[10px]">interactive CLI</Badge>
+						{/if}
+						{#if isMultiProvider}
+							<Badge variant="outline" class="text-[10px]">
+								multi-provider ({runtimeProviders.length})
+							</Badge>
+						{:else if runtimeProviders.length === 1}
+							<Badge variant="outline" class="text-[10px]">
+								{runtimeProviders[0]} (vendor-locked)
+							</Badge>
+						{/if}
+						<Badge variant="outline" class="text-[10px]">
+							{usesNativeGoal ? 'native /goal' : 'goal loop'}
+						</Badge>
+					</div>
+					{#if isMultiProvider}
+						<p class="text-[11px] text-muted-foreground mt-1">
+							Model is configured on the agent (multi-provider runtime) — edit it in the
+							agent library.
+						</p>
+					{:else if isCliRuntime && cliProvider}
+						<p class="text-[11px] text-muted-foreground mt-1">
+							Vendor-locked to <code>{cliProvider}</code>; the model is the CLI's own.
+						</p>
+					{/if}
+
+					{#if isCliRuntime && cliProvider && !cliCredLoading}
+						{#if !cliCredStatus?.linked}
+							<Alert variant="destructive" class="mt-2">
+								<AlertDescription class="text-xs">
+									This runtime needs a linked <strong>{cliProvider}</strong> CLI credential
+									to run in a workflow. Add one under
+									<a
+										href="/settings/cli-tokens"
+										target="_blank"
+										class="underline">Settings → CLI tokens</a
+									>, or the run will fail at dispatch.
+								</AlertDescription>
+							</Alert>
+						{:else if cliCredStatus.status === 'expired'}
+							<Alert variant="destructive" class="mt-2">
+								<AlertDescription class="text-xs">
+									The linked <strong>{cliProvider}</strong> CLI credential has expired —
+									re-enroll under
+									<a
+										href="/settings/cli-tokens"
+										target="_blank"
+										class="underline">Settings → CLI tokens</a
+									>.
+								</AlertDescription>
+							</Alert>
+						{:else}
+							<p class="text-[11px] text-emerald-600 dark:text-emerald-300 mt-1">
+								{cliProvider} CLI credential linked ✓
+							</p>
+						{/if}
+					{/if}
 				{/if}
 				<div class="mt-3">
 					{#if detailLoading}

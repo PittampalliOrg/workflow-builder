@@ -30,18 +30,22 @@
 		const taskConfig = (data.taskConfig as Record<string, unknown>) || {};
 		const body = getAgentTaskBody(taskConfig);
 		let agentRefLabel: string;
+		let runtimeLabel = '';
 		if (!body.agentRef) {
 			agentRefLabel = 'unbound';
 		} else {
 			const hit = agents.map.get(body.agentRef.id);
 			agentRefLabel = hit ? `agent: ${hit.name}` : `agent:${body.agentRef.id.slice(0, 8)}`;
+			// Surface the runtime so the canvas shows which agent (CLI vs dapr) this
+			// runtime-agnostic node will dispatch.
+			if (hit?.runtime) runtimeLabel = hit.runtime;
 		}
 		const turnBudget =
 			typeof body.maxTurns === 'number' && Number.isFinite(body.maxTurns) && body.maxTurns > 0
 				? `max ${body.maxTurns} turns`
 				: '';
 		const graphSummary = summarizeAgentGraph(body.agentGraph);
-		return [agentRefLabel, graphSummary, turnBudget].filter(Boolean).join(' • ');
+		return [agentRefLabel, runtimeLabel, graphSummary, turnBudget].filter(Boolean).join(' • ');
 	});
 
 	let nodeData = $derived(subtitle ? { ...data, description: subtitle } : data);

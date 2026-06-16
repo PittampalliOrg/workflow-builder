@@ -12,6 +12,9 @@ export interface AgentSummary {
 	slug: string;
 	name: string;
 	avatar?: string | null;
+	/** Runtime id (e.g. dapr-agent-py, claude-code-cli) — used by the canvas
+	 * agent node to show which runtime a runtime-agnostic node will dispatch. */
+	runtime?: string | null;
 }
 
 type State = {
@@ -58,6 +61,7 @@ export async function ensureAgentSummaries(): Promise<void> {
 					slug: a.slug,
 					name: a.name,
 					avatar: a.avatar ?? null,
+					runtime: a.runtime ?? null,
 				});
 			}
 			state.map = next;
