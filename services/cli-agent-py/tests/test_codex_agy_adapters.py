@@ -134,6 +134,31 @@ def test_codex_seed_writes_hooks_json_for_completion_signal(codex_home, monkeypa
     assert result.paths["hookRelayPath"].endswith("wfb_hook_relay.py")
 
 
+def test_codex_hooks_json_includes_parity_events(codex_home, monkeypatch):
+    monkeypatch.setenv("CODEX_AUTH_JSON", AUTH_BLOB)
+    get_adapter("codex").seed(SESSION)
+    hooks = json.loads((codex_home / "hooks.json").read_text())["hooks"]
+    for event in ("SessionEnd", "Notification", "PreCompact", "PostCompact", "PermissionDenied"):
+        assert event in hooks, f"codex hooks.json missing {event}"
+
+
+def test_codex_update_goal_complete_maps_to_goal_completed():
+    adapter = get_adapter("codex")
+    events = adapter.map_hook_event(
+        {"hook_event_name": "PostToolUse", "tool_name": "update_goal",
+         "tool_input": {"status": "complete"}}
+    )
+    assert events == [
+        {"type": "session.goal_completed",
+         "data": {"completionSource": "codex_update_goal", "goalStatus": "complete"}}
+    ]
+    # Non-complete statuses fall through to the default tool_result mapping.
+    assert adapter.map_hook_event(
+        {"hook_event_name": "PostToolUse", "tool_name": "update_goal",
+         "tool_input": {"status": "active"}}
+    ) is None
+
+
 def test_codex_build_argv_default_mode(codex_home):
     argv = get_adapter("codex").build_argv(SESSION["agentConfig"], {})
     assert argv[0] == "codex"

@@ -112,6 +112,26 @@ def test_seed_never_clobbers_existing_claude_state(seeded_dirs):
     assert json.loads((config_dir / ".claude.json").read_text()) == existing
 
 
+def test_detect_goal_completion_on_goal_achieved_attachment():
+    adapter = get_adapter("claude-code")
+    # met:true is the native "goal achieved" signal → emit once.
+    achieved = {
+        "type": "user",
+        "attachment": {"type": "goal_status", "met": True, "condition": "do X",
+                       "reason": "The assistant did X."},
+    }
+    assert adapter.detect_goal_completion(achieved) == {
+        "completionSource": "claude_transcript_goal",
+        "summary": "The assistant did X.",
+    }
+    # met:false (intermediate evaluator check) → no completion.
+    assert adapter.detect_goal_completion(
+        {"attachment": {"type": "goal_status", "met": False, "condition": "do X"}}
+    ) is None
+    # non-goal rows → no completion.
+    assert adapter.detect_goal_completion({"type": "assistant", "message": {}}) is None
+
+
 def test_oversized_skill_file_skipped(seeded_dirs):
     _wfb_dir, config_dir = seeded_dirs
     adapter = get_adapter("claude-code")

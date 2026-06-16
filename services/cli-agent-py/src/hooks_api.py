@@ -60,6 +60,14 @@ logger = logging.getLogger(__name__)
 INJECTION_MARKER = "\u200b\u2060\u200b"
 
 TOOL_OUTPUT_TRUNCATE_BYTES = 16 * 1024
+
+# New session-event type strings emitted by the CLI hook layer. Kept as
+# constants so the adapters reuse them without string drift. These pass through
+# the shared event_publisher unchanged (it only remaps a fixed CMA set), so they
+# land verbatim in session_events.
+SESSION_GOAL_COMPLETED = "session.goal_completed"
+SESSION_NOTIFICATION = "session.notification"
+SESSION_CONTEXT_COMPACTED = "session.context_compacted"
 COMPLETION_TEXT_WAIT_SECONDS = float(
     os.environ.get("CLI_COMPLETION_TEXT_WAIT_SECONDS", "3")
 )
@@ -298,8 +306,40 @@ def map_hook_event(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
             },
         ]
 
-    # SessionStart / Stop / SessionEnd / Notification / PreCompact etc. are
-    # side-effect-only or intentionally unmapped.
+    # Notification → session.notification (dapr-agent-py parity). Surfaces
+    # "agent needs attention / waiting" signals. NOT added to the publisher's
+    # notification-hook trigger set, so this can't loop back into a hook.
+    if name == "Notification":
+        return [
+            {
+                "type": SESSION_NOTIFICATION,
+                "data": {
+                    "message": clean_string(payload.get("message")),
+                    "level": clean_string(payload.get("level")),
+                    "notificationType": clean_string(
+                        payload.get("notificationType")
+                        or payload.get("notification_type")
+                    ),
+                },
+            }
+        ]
+
+    # PreCompact / PostCompact → session.context_compacted{phase} (dapr-agent-py
+    # parity for context-window management).
+    if name in ("PreCompact", "PostCompact"):
+        return [
+            {
+                "type": SESSION_CONTEXT_COMPACTED,
+                "data": {
+                    "phase": "pre" if name == "PreCompact" else "post",
+                    "trigger": clean_string(payload.get("trigger")),
+                    "reason": clean_string(payload.get("reason")),
+                },
+            }
+        ]
+
+    # SessionStart / Stop / SessionEnd are side-effect-only (handled in
+    # _process_locked); anything else is intentionally unmapped.
     return []
 
 

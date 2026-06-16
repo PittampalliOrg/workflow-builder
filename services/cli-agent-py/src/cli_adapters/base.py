@@ -243,6 +243,21 @@ class CliAdapter(abc.ABC):
         """
         return None
 
+    def detect_goal_completion(
+        self, entry: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        """Recognize the CLI's NATIVE goal-loop completion from a transcript row.
+
+        The interactive CLIs run their own multi-turn ``/goal`` loop (their own
+        evaluator decides done), so the per-turn Stop hook is NOT a reliable
+        "goal done" signal. Adapters whose native completion is observable in the
+        transcript (e.g. claude's evaluator "goal achieved" row) override this to
+        return the ``session.goal_completed`` event ``data`` (without ``type``;
+        the tailer stamps it and publishes ONCE per goal). Telemetry-only — the
+        session intentionally stays idle (no auto-stop). Default: no detection.
+        """
+        return None
+
 
 def write_hook_relay_script(path: Path) -> Path:
     """Materialize the command-hook relay used by Codex and Antigravity.

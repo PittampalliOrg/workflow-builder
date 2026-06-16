@@ -270,3 +270,21 @@ class ClaudeCodeAdapter(CliAdapter):
         env.pop("ANTHROPIC_API_KEY", None)
         env.pop("CLAUDE_API_KEY", None)
         return env
+
+    def detect_goal_completion(
+        self, entry: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        """Claude's native `/goal` evaluator writes a transcript ``attachment`` of
+        ``{type:"goal_status", met:<bool>, condition, reason?}`` after each turn.
+        ``met:true`` is the authoritative "goal achieved" signal (the loop stops
+        and the session idles). Emit ``session.goal_completed`` once on that row."""
+        attachment = entry.get("attachment")
+        if not isinstance(attachment, Mapping):
+            return None
+        if attachment.get("type") != "goal_status" or attachment.get("met") is not True:
+            return None
+        data: dict[str, Any] = {"completionSource": "claude_transcript_goal"}
+        reason = clean_string(attachment.get("reason"))
+        if reason:
+            data["summary"] = reason
+        return data
