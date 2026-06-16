@@ -183,13 +183,20 @@ def _otel_table(base_env: Mapping[str, str]) -> str | None:
     # (never at the [otel] level). The log `exporter` endpoint is signal-specific,
     # so append /v1/logs. The metrics default is Statsig (an external OpenAI
     # endpoint) — pin it to "none" so codex only talks to our collector.
-    logs_endpoint = _toml_str(endpoint.rstrip("/") + "/v1/logs")
+    base = endpoint.rstrip("/")
+    logs_endpoint = _toml_str(base + "/v1/logs")
+    traces_endpoint = _toml_str(base + "/v1/traces")
     exporter = f"{{ otlp-http = {{ endpoint = {logs_endpoint}, protocol = \"binary\" }} }}"
+    # Traces are signal-specific too: point the trace_exporter at /v1/traces so
+    # codex's distributed spans (turn/tool/LLM) reach our collector — without this
+    # codex only emitted OTEL log-events, never traces (wfb 2026-06-16).
+    trace_exporter = f"{{ otlp-http = {{ endpoint = {traces_endpoint}, protocol = \"binary\" }} }}"
     return "\n".join(
         [
             "[otel]",
             'environment = "production"',
             f"exporter = {exporter}",
+            f"trace_exporter = {trace_exporter}",
             'metrics_exporter = "none"',
         ]
     )
