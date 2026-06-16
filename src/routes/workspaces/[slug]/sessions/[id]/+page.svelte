@@ -2067,7 +2067,7 @@
 					</Card>
 				{/if}
 
-				<SessionGoalBadge {sessionId} />
+				<SessionGoalBadge {sessionId} isCli={isInteractiveCli} />
 
 				<Card>
 					<CardHeader class="pb-2">
