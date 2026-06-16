@@ -241,7 +241,11 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	const agentConfigForDispatch = {
 		...resolvedAgentConfig,
 		mcpServers: stampGoalMcpSessionHeader(
-			ensureGoalMcpServer(rewrittenMcp, swapTarget?.capabilities?.supportsMcp ?? false),
+			ensureGoalMcpServer(
+				rewrittenMcp,
+				swapTarget?.capabilities?.supportsMcp ?? false,
+				swapTarget?.family === "interactive-cli",
+			),
 			sessionId,
 		),
 		compiledStaticPresetSections: compiledPresetStack.static,
@@ -530,9 +534,18 @@ const GOAL_MCP_SERVER_URL =
  * without the tools, a goal loop can only end via budget/iteration caps or a
  * manual pause. Skipped when the runtime doesn't support MCP, when an entry
  * already matches the goal server, or when GOAL_MCP_AUTO_WIRE=false.
+ *
+ * Also skipped for interactive-cli runtimes: they drive their OWN native
+ * `/goal` loop inside the vendor CLI (which has its own completion harness),
+ * so our goal MCP completion contract doesn't apply — see the CLI cutover in
+ * the session goal API + goal-loop driver.
  */
-function ensureGoalMcpServer<T>(servers: T, runtimeSupportsMcp: boolean): T {
-	if (!runtimeSupportsMcp) return servers;
+function ensureGoalMcpServer<T>(
+	servers: T,
+	runtimeSupportsMcp: boolean,
+	isInteractiveCli: boolean,
+): T {
+	if (!runtimeSupportsMcp || isInteractiveCli) return servers;
 	if (process.env.GOAL_MCP_AUTO_WIRE === "false") return servers;
 	if (!Array.isArray(servers)) return servers;
 	const hasGoal = servers.some((entry) => {

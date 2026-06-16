@@ -7,7 +7,10 @@ import {
 	agentRuntimeInvokeTarget,
 } from "$lib/server/agents/runtime-routing";
 import { getSession } from "$lib/server/sessions/registry";
-import { DEFAULT_RUNTIME_ID } from "$lib/server/agents/runtime-registry";
+import {
+	DEFAULT_RUNTIME_ID,
+	getRuntimeDescriptor,
+} from "$lib/server/agents/runtime-registry";
 
 export type SessionRuntimeTarget = {
 	appId: string;
@@ -103,4 +106,23 @@ function buildTarget(params: {
 		runtimeSandboxName: params.runtimeSandboxName,
 		source: params.source,
 	};
+}
+
+/**
+ * True when a session's agent runs on an interactive-cli family runtime
+ * (claude-code-cli / codex-cli / agy-cli). These runtimes drive their OWN
+ * native `/goal` loop inside the vendor CLI, so the BFF custom goal-loop
+ * driver + goal MCP auto-wire are bypassed for them — see
+ * `src/lib/server/goals/goal-loop.ts` and the session goal API. Non-CLI
+ * runtimes (dapr-agent-py, etc.) keep the custom goal loop.
+ *
+ * Resolves through the same descriptor the runtime-flags endpoint uses, so the
+ * server-side decision matches the UI's `interactiveTerminal` gate exactly.
+ */
+export async function isInteractiveCliSession(
+	sessionId: string,
+): Promise<boolean> {
+	const target = await resolveSessionRuntimeDebugTarget(sessionId);
+	if (!target) return false;
+	return getRuntimeDescriptor(target.agentRuntime)?.family === "interactive-cli";
 }

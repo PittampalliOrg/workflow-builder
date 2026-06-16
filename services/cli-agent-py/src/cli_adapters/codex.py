@@ -229,6 +229,12 @@ def _render_config_toml(agent_config: Mapping[str, Any], base_env: Mapping[str, 
         "# Generated per-session by cli-agent-py CodexAdapter — do not edit.",
         # Keep ChatGPT OAuth authoritative even if an API key leaks into env.
         'forced_login_method = "chatgpt"',
+        # Enable codex's native `/goal` slash command (Feature::Goals is
+        # under-development / default-off). workflow-builder drives CLI goals
+        # through the vendor CLI's OWN goal harness (the BFF custom goal-loop is
+        # bypassed for interactive-cli runtimes), so /goal must be available in
+        # the composer. Requires codex >= 0.128.0.
+        "[features]\ngoals = true",
     ]
     otel = _otel_table(base_env)
     if otel:

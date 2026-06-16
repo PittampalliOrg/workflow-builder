@@ -1,5 +1,6 @@
 import { appendEvent } from "$lib/server/sessions/events";
 import { raiseSessionUserEvents } from "$lib/server/sessions/spawn";
+import { isInteractiveCliSession } from "$lib/server/sessions/runtime-target";
 import type { ThreadGoalRow } from "$lib/server/db/schema";
 import {
 	accrueUsage,
@@ -138,6 +139,13 @@ async function driveContinuationIfIdle(
 ): Promise<void> {
 	const goal = await getDrivableGoal(sessionId);
 	if (!goal) return;
+
+	// CLI cutover: interactive-cli runtimes drive their OWN native `/goal` loop
+	// inside the vendor CLI — the BFF custom continuation driver must never
+	// post into them (it would fight the native loop). The goal API + spawn
+	// already avoid creating thread_goals / auto-wiring the goal MCP for CLI, so
+	// this is normally moot; the guard hardens against stale pre-cutover rows.
+	if (await isInteractiveCliSession(sessionId)) return;
 
 	// Never drive a stopping/terminal session. If a stop was requested while a
 	// goal is active, pause the goal so the loop stops re-posting.
