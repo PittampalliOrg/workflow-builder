@@ -67,7 +67,7 @@ export function registerGoalTools(server: McpServer): RegisteredTool[] {
 		{
 			title: "Create Goal",
 			description:
-				"Set a persistent objective for this session. The system then autonomously continues working toward it across turns (re-injecting the objective whenever you finish a turn) until you call update_goal with status \"complete\" after a completion audit, or an optional token budget is exhausted. State the objective as concrete deliverables / success criteria. Setting a new objective replaces any existing goal.",
+				"Set a persistent objective for this session. The system then autonomously continues working toward it across turns (re-injecting the objective whenever you finish a turn) until you call update_goal with status \"complete\" after a completion audit, or an optional token budget is exhausted. State the objective as concrete deliverables / success criteria. Create a goal ONLY when no goal exists yet and it's explicitly requested by the user or system — do not infer a goal from an ordinary task. If a goal already exists, this fails: use update_goal (when it's genuinely complete) or get_goal; replacing an existing goal is controlled by the user or system, not by you.",
 			inputSchema: {
 				objective: z
 					.string()
@@ -102,6 +102,21 @@ export function registerGoalTools(server: McpServer): RegisteredTool[] {
 				);
 			}
 			try {
+				// Codex parity: the model cannot create (and thereby REPLACE) a goal
+				// when a drivable one already exists — otherwise it can clobber a
+				// user-set or workflow-preset goal's objective/budget/iterations and
+				// reset usage accounting. Replacing a goal is a user/system action
+				// (the Goal card / `/goal` command / workflow bridge). A completed or
+				// paused goal is not drivable, so creating a fresh one (re-arm) is OK.
+				const existing = await getGoalForSession(sessionId);
+				if (
+					existing &&
+					(existing.status === "active" || existing.status === "budget_limited")
+				) {
+					return errorResult(
+						"cannot create a new goal because this session already has an active goal; use update_goal only when the existing goal is genuinely complete (use get_goal to inspect it). Replacing a goal is controlled by the user or system.",
+					);
+				}
 				const goal = await createOrReplaceGoalForSession({
 					sessionId,
 					objective: args.objective,
