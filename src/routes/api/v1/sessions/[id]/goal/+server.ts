@@ -3,7 +3,7 @@ import type { RequestHandler } from "./$types";
 import { inspectDurableRun } from "$lib/server/lifecycle";
 import { isResourceInScope } from "$lib/server/workflows/project-scope";
 import { getSession } from "$lib/server/sessions/registry";
-import { isInteractiveCliSession } from "$lib/server/sessions/runtime-target";
+import { sessionUsesNativeGoal } from "$lib/server/sessions/runtime-target";
 import { appendEvent } from "$lib/server/sessions/events";
 import { raiseSessionUserEvents } from "$lib/server/sessions/spawn";
 import {
@@ -52,7 +52,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!session) return error(404, "Session not found");
 	// Interactive-cli runtimes own goal state inside the vendor CLI's native
 	// `/goal` harness — there is no BFF-tracked goal row to return.
-	if (await isInteractiveCliSession(params.id)) {
+	if (await sessionUsesNativeGoal(params.id)) {
 		return json({ goal: null, native: true });
 	}
 	const goal = await getCurrentGoal(params.id);
@@ -87,7 +87,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	// CLI cutover: type `/goal <objective>` into the vendor CLI and let its
 	// native goal harness drive the loop. No thread_goals row, no BFF
 	// continuation driver, no goal-MCP completion contract for CLI sessions.
-	if (await isInteractiveCliSession(params.id)) {
+	if (await sessionUsesNativeGoal(params.id)) {
 		await injectCliCommand(params.id, `/goal ${objective}`);
 		return json({ native: true, objective });
 	}
@@ -132,7 +132,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	// CLI cutover: clearing/completing a goal means stopping the CLI's native
 	// `/goal` loop — type `/goal clear` into the terminal (aliases: stop/off/
 	// reset/cancel). No BFF goal row to mutate.
-	if (await isInteractiveCliSession(params.id)) {
+	if (await sessionUsesNativeGoal(params.id)) {
 		await injectCliCommand(params.id, "/goal clear");
 		return json({ native: true });
 	}

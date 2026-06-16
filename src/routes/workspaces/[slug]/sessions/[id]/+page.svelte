@@ -183,6 +183,7 @@
 		shellAvailable: boolean;
 		shellContainers: string[];
 		interactiveTerminal: boolean;
+		usesNativeGoal: boolean;
 		cliLabel?: string | null;
 		phase?: string;
 	} | null>(null);
@@ -200,6 +201,7 @@
 				shellAvailable?: boolean;
 				shellContainers?: string[];
 				interactiveTerminal?: boolean;
+				usesNativeGoal?: boolean;
 				cliLabel?: string | null;
 				phase?: string;
 			};
@@ -209,6 +211,7 @@
 				shellAvailable: body.shellAvailable === true,
 				shellContainers: body.shellContainers ?? [],
 				interactiveTerminal: body.interactiveTerminal === true,
+				usesNativeGoal: body.usesNativeGoal === true,
 				cliLabel: body.cliLabel ?? null,
 				phase: body.phase,
 			};
@@ -238,6 +241,9 @@
 		}
 	}
 	const isInteractiveCli = $derived(runtimeFlags?.interactiveTerminal === true);
+	// Only claude/codex drive a native /goal (→ the "Native /goal" launcher card).
+	// agy + non-CLI use the custom codex-parity goal loop (→ full goal card).
+	const usesNativeGoal = $derived(runtimeFlags?.usesNativeGoal === true);
 	// Blocked state: the host mirrors session.status_idle with data.blocked
 	// when the TUI is waiting for user input (permission prompt, question, …).
 	// Latest status event wins — a newer status_running clears it.
@@ -2067,7 +2073,7 @@
 					</Card>
 				{/if}
 
-				<SessionGoalBadge {sessionId} isCli={isInteractiveCli} />
+				<SessionGoalBadge {sessionId} isCli={usesNativeGoal} />
 
 				<Card>
 					<CardHeader class="pb-2">

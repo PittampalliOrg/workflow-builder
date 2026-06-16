@@ -126,3 +126,30 @@ export async function isInteractiveCliSession(
 	if (!target) return false;
 	return getRuntimeDescriptor(target.agentRuntime)?.family === "interactive-cli";
 }
+
+// CLI adapters whose vendor CLI has a REAL native `/goal` harness (multi-turn
+// loop + completion evaluator/marker we can detect). Antigravity's `/goal` is a
+// thin command with no detectable completion, so agy is driven by OUR
+// codex-parity custom goal loop + goal MCP instead (like dapr-agent-py).
+const NATIVE_GOAL_CLI_ADAPTERS = new Set(["claude-code", "codex"]);
+
+/** Pure descriptor check: does this runtime drive its OWN native `/goal`?
+ *  interactive-cli AND a native-goal adapter (claude-code/codex) — NOT agy. */
+export function runtimeUsesNativeGoal(
+	descriptor: { family?: string; cliAdapter?: string } | null | undefined,
+): boolean {
+	return (
+		descriptor?.family === "interactive-cli" &&
+		!!descriptor.cliAdapter &&
+		NATIVE_GOAL_CLI_ADAPTERS.has(descriptor.cliAdapter)
+	);
+}
+
+/** True when the session's goal should be driven by the vendor CLI's native
+ *  `/goal` (claude/codex). False for agy + all non-CLI runtimes, which use the
+ *  custom codex-parity BFF goal loop + goal MCP completion contract. */
+export async function sessionUsesNativeGoal(sessionId: string): Promise<boolean> {
+	const target = await resolveSessionRuntimeDebugTarget(sessionId);
+	if (!target) return false;
+	return runtimeUsesNativeGoal(getRuntimeDescriptor(target.agentRuntime));
+}

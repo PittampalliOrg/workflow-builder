@@ -6,7 +6,10 @@ import {
 	getSessionRuntimePod,
 	getSandboxWarmPool,
 } from '$lib/server/kube/client';
-import { resolveSessionRuntimeDebugTarget } from '$lib/server/sessions/runtime-target';
+import {
+	resolveSessionRuntimeDebugTarget,
+	runtimeUsesNativeGoal,
+} from '$lib/server/sessions/runtime-target';
 import {
 	getRuntimeDescriptor,
 	shellableContainers,
@@ -95,6 +98,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const descriptor = getRuntimeDescriptor(target.agentRuntime);
 	const interactiveTerminal =
 		descriptor?.capabilities?.interactiveTerminal === true;
+	// Does this runtime drive its OWN native /goal (claude/codex)? agy is an
+	// interactive-cli but uses the custom codex-parity loop, so its goal card is
+	// the full custom card, not the "Native /goal" launcher.
+	const usesNativeGoal = runtimeUsesNativeGoal(descriptor);
 	// Human label for the pinned terminal tab (e.g. "Codex CLI"). One image
 	// hosts claude/codex/agy, so the tab name must come from the runtime.
 	const cliLabel = interactiveTerminal
@@ -110,6 +117,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		shellAvailable,
 		shellContainers,
 		interactiveTerminal,
+		usesNativeGoal,
 		cliLabel,
 		phase,
 	});
