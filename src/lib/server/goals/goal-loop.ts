@@ -1,12 +1,13 @@
 import { appendEvent } from "$lib/server/sessions/events";
 import { raiseSessionUserEvents } from "$lib/server/sessions/spawn";
-import { isInteractiveCliSession } from "$lib/server/sessions/runtime-target";
+import { sessionUsesNativeGoal } from "$lib/server/sessions/runtime-target";
 import type { ThreadGoalRow } from "$lib/server/db/schema";
 import {
 	accrueUsage,
 	claimBudgetSteer,
 	claimIterationCap,
 	claimNextContinuation,
+	getCurrentGoal,
 	getDrivableGoal,
 	latestEventMeta,
 	pauseGoal,
@@ -133,19 +134,43 @@ export async function kickGoalLoop(
 	}
 }
 
+/**
+ * Uniform completion signal for CUSTOM-loop runtimes (agy + dapr-agent-py):
+ * when the agent has marked the goal complete via the goal MCP `update_goal`,
+ * emit `session.goal_completed` (idempotent via sourceEventId) so it matches the
+ * native CLIs' signal. No-op for native-goal CLIs (claude/codex) — they have no
+ * thread_goals row and emit their own signal from the adapter/transcript.
+ */
+async function emitGoalCompletedIfDone(sessionId: string): Promise<void> {
+	const goal = await getCurrentGoal(sessionId);
+	if (!goal || goal.status !== "complete") return;
+	await appendEvent(sessionId, {
+		type: "session.goal_completed",
+		data: {
+			completionSource: "custom_goal_loop",
+			goalStatus: "complete",
+			objective: goal.objective,
+		},
+		processedAt: null,
+		sourceEventId: `goal-completed:${sessionId}:${goal.goalId}`,
+	});
+}
+
 async function driveContinuationIfIdle(
 	sessionId: string,
 	opts: { allowStaleIdleProbe?: boolean } = {},
 ): Promise<void> {
+	// Emit the completion signal before the drivable-goal gate (a completed goal
+	// is no longer "drivable", so this must run first). Idempotent.
+	await emitGoalCompletedIfDone(sessionId);
+
 	const goal = await getDrivableGoal(sessionId);
 	if (!goal) return;
 
-	// CLI cutover: interactive-cli runtimes drive their OWN native `/goal` loop
-	// inside the vendor CLI — the BFF custom continuation driver must never
-	// post into them (it would fight the native loop). The goal API + spawn
-	// already avoid creating thread_goals / auto-wiring the goal MCP for CLI, so
-	// this is normally moot; the guard hardens against stale pre-cutover rows.
-	if (await isInteractiveCliSession(sessionId)) return;
+	// agy + non-CLI use the custom loop; only claude/codex drive their OWN native
+	// `/goal` (and have no thread_goals row), so skip the BFF continuation driver
+	// for them — it would fight the native loop.
+	if (await sessionUsesNativeGoal(sessionId)) return;
 
 	// Never drive a stopping/terminal session. If a stop was requested while a
 	// goal is active, pause the goal so the loop stops re-posting.

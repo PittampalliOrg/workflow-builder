@@ -11,7 +11,19 @@ vi.mock("$lib/server/agents/registry", () => ({
 	resolveAgentRef: (...args: unknown[]) => resolveAgentRefMock(...args),
 }));
 
-import { resolveSessionRuntimeTarget } from "./runtime-target";
+import { resolveSessionRuntimeTarget, runtimeUsesNativeGoal } from "./runtime-target";
+
+describe("runtimeUsesNativeGoal", () => {
+	it("is true only for claude/codex CLI adapters, false for agy + non-CLI", () => {
+		expect(runtimeUsesNativeGoal({ family: "interactive-cli", cliAdapter: "claude-code" })).toBe(true);
+		expect(runtimeUsesNativeGoal({ family: "interactive-cli", cliAdapter: "codex" })).toBe(true);
+		// agy: interactive-cli but no native goal harness → custom loop
+		expect(runtimeUsesNativeGoal({ family: "interactive-cli", cliAdapter: "antigravity" })).toBe(false);
+		// non-CLI runtimes always use the custom loop
+		expect(runtimeUsesNativeGoal({ family: "durable-session", cliAdapter: undefined })).toBe(false);
+		expect(runtimeUsesNativeGoal(null)).toBe(false);
+	});
+});
 
 describe("resolveSessionRuntimeTarget", () => {
 	beforeEach(() => {
