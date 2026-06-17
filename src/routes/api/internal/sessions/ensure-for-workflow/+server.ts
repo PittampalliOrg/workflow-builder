@@ -594,7 +594,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				cwd: bridgeCwd,
 				timeoutMinutes: bridgeTimeoutMinutes,
 				maxIterations: effectiveMaxIterations,
-				goalMode,
+				customGoal,
 				agentSlug: reuseRuntime?.slug ?? bodyAgentSlug,
 				agentAppId: reuseChildAppId,
 				mlflowContext: reuseMlflowContext,
@@ -870,7 +870,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			cwd: bridgeCwd,
 			timeoutMinutes: bridgeTimeoutMinutes,
 			maxIterations: effectiveMaxIterations,
-			goalMode,
+			customGoal,
 			agentId,
 			agentVersion,
 			agentSlug: runtimeIdentity?.slug ?? bodyAgentSlug,
@@ -966,9 +966,14 @@ function buildChildInput(params: {
 	cwd?: string | null;
 	timeoutMinutes?: number | null;
 	maxIterations?: number | null;
-	/** Goal-driven run: keep the session alive across turns (no auto-terminate)
-	 * so the goal loop can drive continuations until session.goal_completed. */
-	goalMode?: boolean;
+	/** Custom-loop goal run (dapr-agent-py / agy-cli): keep the session alive
+	 * across turns (no auto-terminate) so the BFF goal loop can drive
+	 * continuations until session.goal_completed. Native-goal CLIs (codex/claude)
+	 * run the whole goal internally and idle (end_turn) only when done, so they
+	 * KEEP auto-terminate — the proven end-turn path returns the session_workflow
+	 * cleanly (the cooperative goal_completed terminate can't preempt a CLI
+	 * session_workflow that's stuck awaiting a finished TUI's dead tasks). */
+	customGoal?: boolean;
 	agentId?: string | null;
 	agentVersion?: number | null;
 	agentSlug?: string | null;
@@ -1018,10 +1023,12 @@ function buildChildInput(params: {
 		workflowExecutionId: params.workflowExecutionId,
 		vaultIds: params.vaultIds,
 		dbExecutionId: params.workflowExecutionId,
-		// Single-shot runs auto-terminate after the first end-turn; goal-driven
-		// runs stay alive multi-turn until the goal completes (then the
-		// goal_completed side-effect terminates them so the parent resumes).
-		autoTerminateAfterEndTurn: !params.goalMode,
+		// Single-shot runs AND native-goal CLI runs auto-terminate after the first
+		// end-turn (for native-goal CLIs the goal runs to completion inside one
+		// continuous turn, so end_turn == goal done). Only CUSTOM-loop goal runs
+		// (dapr-agent-py / agy-cli) stay alive multi-turn while the BFF goal loop
+		// drives continuations until session.goal_completed.
+		autoTerminateAfterEndTurn: !params.customGoal,
 		// Sandbox plumbing — consumed by dapr-agent-py's
 		// _freeze_session_child_input so agent_workflow can set
 		// runtime.sandbox_name / workspace_ref / cwd. Without these,
