@@ -28,8 +28,12 @@ import {
 // commands in the session workspace; the MCP server cannot). update_goal asks
 // it to verify before completing. Same env the server already uses for SW
 // workflow execution (see workflow-tools.ts).
+// Same default as workflow-tools.ts — the in-cluster BFF service (the MCP
+// server is NOT co-located with the BFF, so localhost is wrong). The deployment
+// does not set WORKFLOW_BUILDER_URL, so this default is what's actually used.
 const WORKFLOW_BUILDER_URL =
-	process.env.WORKFLOW_BUILDER_URL ?? "http://localhost:3000";
+	process.env.WORKFLOW_BUILDER_URL ??
+	"http://workflow-builder.workflow-builder.svc.cluster.local:3000";
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
 
 function textResult(data: unknown) {
