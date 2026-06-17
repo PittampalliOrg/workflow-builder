@@ -33,7 +33,12 @@ from src.taskhub import LIFECYCLE_EVENT_NAME
 
 logger = logging.getLogger(__name__)
 
-CLI_IDLE_PROBE_SECONDS = int(os.environ.get("CLI_IDLE_PROBE_SECONDS", "600"))
+# Idle-probe interval. Doubles as the cooperative-cancel backstop: each tick
+# checks the session-cancel flag (persisted by the raise-event endpoint on a
+# terminal control event) and the live CLI state, so a terminate that was missed
+# or buffered mid-turn still ends the session within this window. Kept modest
+# (was 600s) so goal-complete termination is responsive even on the backstop path.
+CLI_IDLE_PROBE_SECONDS = int(os.environ.get("CLI_IDLE_PROBE_SECONDS", "120"))
 CLI_LIFECYCLE_MAX_ITERATIONS = int(os.environ.get("CLI_LIFECYCLE_MAX_ITERATIONS", "50"))
 # Durable-timer ceilings for the post-loop cleanup activities. Every blocking
 # await in the cleanup phase is bounded by a timer (Dapr best practice) so a
