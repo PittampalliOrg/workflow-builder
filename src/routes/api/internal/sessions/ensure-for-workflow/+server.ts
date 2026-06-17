@@ -43,6 +43,10 @@ import {
 	safeCreateWorkflowAgentMlflowRun,
 } from "$lib/server/observability/mlflow-lifecycle";
 import { getUserCliCredential } from "$lib/server/users/cli-credentials";
+import {
+	provisionSessionSandboxWithRetry,
+	sandboxProvisionFailureMessage,
+} from "$lib/server/sandboxes/provision";
 import { createOrReplaceGoal, getCurrentGoal } from "$lib/server/goals/repo";
 import { runtimeUsesNativeGoal } from "$lib/server/sessions/runtime-target";
 import {
@@ -304,11 +308,14 @@ export const POST: RequestHandler = async ({ request }) => {
 	// session_workflow → agent_workflow can set up runtime.sandbox_name /
 	// workspace_ref / cwd. Without this, dapr-agent-py's runtime check fails
 	// with "OpenShell sandboxName is required" the first time a tool runs.
-	const bridgeWorkspaceRef =
+	// `let`, not `const`: an OpenShell-needing runtime (dapr-agent-py) with no
+	// wired sandbox gets one auto-provisioned below, reassigned into these so all
+	// downstream childInput/insert sites pick it up.
+	let bridgeWorkspaceRef =
 		typeof body.workspaceRef === "string" && body.workspaceRef.trim()
 			? body.workspaceRef.trim()
 			: null;
-	const bridgeSandboxName =
+	let bridgeSandboxName =
 		typeof body.sandboxName === "string" && body.sandboxName.trim()
 			? body.sandboxName.trim()
 			: null;
@@ -403,6 +410,44 @@ export const POST: RequestHandler = async ({ request }) => {
 		: bridgeMaxIterations;
 	const effectiveInitialMessage =
 		nativeGoal && bridgeGoal ? `/goal ${bridgeGoal.objective}` : initialMessage;
+
+	// Auto-provision a per-session OpenShell sandbox for runtimes that USE the
+	// external OpenShell tools but don't own a sandbox (dapr-agent-py) when the
+	// workflow didn't wire one (no sandboxName, no ws_ workspaceRef). Mirrors the
+	// direct-UI-session path so a bare agent node "just works" instead of failing
+	// every tool with "sandbox not found". Explicit workspace/profile steps (e.g.
+	// the 3Blue1Brown demo, which SHARE a sandbox across agent + browser/validate
+	// + preview) still take precedence. Idempotent by executionId=sessionId, and
+	// cleaned up on session-end via cleanupSessionSandbox.
+	const needsOpenShellSandbox =
+		swapTarget?.capabilities?.supportsBuiltinOpenShellTools === true &&
+		swapTarget?.capabilities?.ownsSandbox === false &&
+		swapTarget?.family === "durable-session";
+	const hasWiredSandbox =
+		!!bridgeSandboxName ||
+		(!!bridgeWorkspaceRef && bridgeWorkspaceRef.startsWith("ws_"));
+	if (needsOpenShellSandbox && !hasWiredSandbox) {
+		try {
+			const autoSandbox = await provisionSessionSandboxWithRetry({
+				executionId: sessionId,
+				name: title,
+				sandboxTemplate:
+					typeof (agentConfig as { sandboxTemplate?: unknown }).sandboxTemplate ===
+					"string"
+						? ((agentConfig as { sandboxTemplate?: string })
+								.sandboxTemplate as string)
+						: "base",
+				keepAfterRun: true,
+			});
+			bridgeSandboxName = autoSandbox.sandboxName;
+			bridgeWorkspaceRef = autoSandbox.workspaceRef ?? bridgeWorkspaceRef;
+			console.log(
+				`[ensure-for-workflow] auto-provisioned OpenShell sandbox ${autoSandbox.sandboxName} for ${swapTarget?.id} session ${sessionId}`,
+			);
+		} catch (err) {
+			return error(503, sandboxProvisionFailureMessage(err));
+		}
+	}
 	const swapVerdict = swapTarget
 		? evaluateSwap(dispatchAgentConfig as Record<string, unknown>, swapTarget)
 		: null;

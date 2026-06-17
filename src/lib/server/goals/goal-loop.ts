@@ -265,7 +265,17 @@ async function driveContinuationIfIdle(
 
 	if (goal.status === "budget_limited") {
 		const steered = await claimBudgetSteer(sessionId);
-		if (steered) await postGoalMessage(sessionId, steered, "wrapup");
+		if (steered) {
+			await postGoalMessage(sessionId, steered, "wrapup");
+			return;
+		}
+		// Already wrapped up and still budget_limited (token budget exhausted OR
+		// iteration cap hit — the cap path flips status to budget_limited). The
+		// goal won't reach `complete` on its own, so a WORKFLOW-driven session
+		// would idle forever and wedge its parent durable/run. Terminate it (the
+		// helper no-ops for direct UI sessions) so the parent resumes with the
+		// agent's wrap-up output instead of hanging until the reaper.
+		await terminateWorkflowGoalSessionIfNeeded(sessionId);
 		return;
 	}
 }
