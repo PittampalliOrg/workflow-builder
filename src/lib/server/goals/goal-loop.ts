@@ -209,6 +209,13 @@ async function terminateWorkflowGoalSessionIfNeeded(
 	if (process.env.WORKFLOW_GOAL_AUTO_TERMINATE === "false") return;
 	const workflowExecutionId = await getSessionWorkflowExecutionId(sessionId);
 	if (!workflowExecutionId) return; // direct UI goal session → emit-only
+	// Native-goal CLIs (claude/codex) run the whole goal in one continuous turn
+	// and end via end-turn AUTO-terminate (status="completed" → outputSync runs).
+	// Don't also raise a cooperative terminate: it races auto-terminate and, if it
+	// wins, ends the session "terminated" — which historically skipped outputSync.
+	// Custom-loop runtimes (agy-cli, dapr-agent-py) have no auto-terminate and DO
+	// need the cooperative raise to end.
+	if (await sessionUsesNativeGoal(sessionId)) return;
 	const isCli = await isInteractiveCliSession(sessionId);
 	const res = isCli
 		? await raiseSessionEvent(sessionId, SESSION_LIFECYCLE_EVENT_NAME, {

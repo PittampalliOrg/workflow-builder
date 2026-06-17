@@ -89,11 +89,17 @@ const THREE_B_ONE_B_DEFAULT_AGENT_VERSION = Number(
 
 // --- Impressive SvelteKit Game (goal-loop showcase) -------------------------
 // A goal-driven workflow that has a CLI agent (default codex-cli) iteratively
-// build a polished, fully-playable SvelteKit game until it installs, builds,
-// runs, and is verifiably playable — then captures a walkthrough and serves a
-// live preview. This is the first SEEDED workflow that exercises goal mode
-// (with.body.goalSpec). The game is configurable via the gameDescription
-// trigger input; the default is Tetris.
+// build a polished, fully-playable SvelteKit game, built to a SELF-CONTAINED
+// STATIC SITE (@sveltejs/adapter-static) — then captures a walkthrough and
+// serves a live preview of the static build (the 3b1b static-serving pattern).
+// This is the first SEEDED workflow that exercises goal mode (goalSpec). The
+// game is configurable via the gameDescription trigger input (default: Tetris).
+//
+// Static build (not a live dev server) is deliberate: the agent builds in its
+// own sandbox, and only the small static `build/` output is outputSync'd into
+// the retained workspace (the whole project incl. node_modules would blow the
+// 64 MiB outputSync ceiling). The preview then serves those static files
+// directly — no npm install, no dev server, no node_modules.
 const SVELTEKIT_GAME_WORKFLOW_ID =
 	process.env.SEED_SVELTEKIT_GAME_WORKFLOW_ID?.trim() ||
 	"sveltekit-game-goal-showcase";
@@ -102,16 +108,18 @@ const SVELTEKIT_GAME_WORKFLOW_NAME =
 	"Impressive SvelteKit Game (Goal Loop)";
 const SVELTEKIT_GAME_WORKFLOW_DESCRIPTION =
 	process.env.SEED_SVELTEKIT_GAME_WORKFLOW_DESCRIPTION?.trim() ||
-	"Goal-driven workflow: a CLI agent (default codex-cli) iteratively builds a polished, fully-playable SvelteKit game (default: Tetris) until it installs, builds, runs, and is verifiably playable, then captures a walkthrough and serves a live preview. Exercises goal mode (goalSpec) end-to-end.";
+	"Goal-driven workflow: a CLI agent (default codex-cli) iteratively builds a polished, fully-playable SvelteKit game (default: Tetris) as a static site, until it installs, builds, and is verifiably playable; then captures a walkthrough and serves a live static preview. Exercises goal mode (goalSpec) end-to-end.";
 const SVELTEKIT_GAME_APP_DIR = "/sandbox/sveltekit-game";
+// adapter-static build output inside the project, and the copy served by the
+// preview (outputSync target in the retained workspace).
+const SVELTEKIT_GAME_BUILD_DIR = "/sandbox/sveltekit-game/build";
+const SVELTEKIT_GAME_SITE_DIR = "/sandbox/sveltekit-game-site";
 const SVELTEKIT_GAME_DEFAULT_RUNTIME = parseCliRuntime(
 	process.env.SEED_SVELTEKIT_GAME_DEFAULT_RUNTIME?.trim() || "codex-cli",
 );
-const SVELTEKIT_GAME_DEV_PORT = 3009;
-const SVELTEKIT_GAME_BASE_URL = `http://127.0.0.1:${SVELTEKIT_GAME_DEV_PORT}`;
-const SVELTEKIT_GAME_INSTALL_COMMAND =
-	"npm install --no-audit --no-fund --loglevel=warn";
-const SVELTEKIT_GAME_DEV_SERVER_COMMAND = `npm run dev -- --host 0.0.0.0 --port ${SVELTEKIT_GAME_DEV_PORT}`;
+// Dynamic port (0) → the runtime allocates one and serves the static files
+// (matches the 3b1b static-serve preview). No install / dev-server commands.
+const SVELTEKIT_GAME_BASE_URL = "http://127.0.0.1:0";
 const SVELTEKIT_GAME_OUTPUT_SANDBOX_NAME =
 	'${ .workspace_profile.sandboxName // "" }';
 const SVELTEKIT_GAME_OUTPUT_WORKSPACE_REF = "${ .workspace_profile.workspaceRef }";
@@ -119,38 +127,38 @@ const SVELTEKIT_GAME_DEFAULT_DESCRIPTION =
 	"a polished, juicy Tetris game with all 7 tetrominoes, a hold slot and next-piece queue, increasing levels, line-clear scoring, and a neon arcade aesthetic";
 const SVELTEKIT_GAME_DEFAULT_MAX_ITERATIONS = 30;
 
-// The goal codex evaluates against — the acceptance criteria ("done when …").
+// The goal the agent evaluates against — the acceptance criteria ("done when …").
 const SVELTEKIT_GAME_GOAL_OBJECTIVE = [
 	'${ "Deliver a complete, genuinely playable SvelteKit browser game (Svelte 5 runes + TypeScript) in ',
 	SVELTEKIT_GAME_APP_DIR,
-	' implementing: " + (.trigger.gameDescription // "',
+	', built to a SELF-CONTAINED STATIC SITE, implementing: " + (.trigger.gameDescription // "',
 	SVELTEKIT_GAME_DEFAULT_DESCRIPTION,
-	'") + ". DONE means ALL of: ',
+	'") + ". Configure @sveltejs/adapter-static and prerender the page so npm run build emits a fully static, client-side-playable ',
+	SVELTEKIT_GAME_BUILD_DIR,
+	'/index.html (plus assets) that needs NO server to run. DONE means ALL of: ',
 	"(1) npm install succeeds; ",
-	"(2) npm run build passes with no errors; ",
-	"(3) npm run dev serves the app on its port; ",
-	"(4) the game is actually playable end-to-end — starting a game shows the board, the on-screen control buttons AND the keyboard both change game state, the score updates during play, and game-over followed by restart works; ",
-	"(5) there are no console, build, or type errors. ",
-	"Keep iterating until every criterion is verified by actually running the commands; do not declare the goal complete early.\" }",
+	'(2) npm run build passes with no errors and produces ',
+	SVELTEKIT_GAME_BUILD_DIR,
+	'/index.html; ',
+	"(3) the game is actually playable end-to-end from the STATIC build — the board renders, the on-screen control buttons AND the keyboard both change game state, the score updates during play, and game-over followed by restart works; ",
+	"(4) there are no console, build, or type errors. ",
+	"Keep iterating until every criterion is verified by actually building and exercising the static output; do not declare the goal complete early.\" }",
 ].join("");
 
 // The working instructions handed to the agent (how to build it).
 const SVELTEKIT_GAME_BUILD_PROMPT = [
 	'${ "Build a polished, impressive SvelteKit game in ',
 	SVELTEKIT_GAME_APP_DIR,
-	'. Game: " + (.trigger.gameDescription // "',
+	', shipped as a STATIC site. Game: " + (.trigger.gameDescription // "',
 	SVELTEKIT_GAME_DEFAULT_DESCRIPTION,
 	'") + ". ',
-	"Scaffold a REAL SvelteKit project (package.json with @sveltejs/kit + svelte + vite, plus a valid svelte.config.js and vite.config.ts). ",
+	"Scaffold a REAL SvelteKit project (svelte + vite + @sveltejs/kit), add @sveltejs/adapter-static, and configure it for a fully static client-side build: set adapter-static (with fallback 'index.html') and mark the game page prerenderable (export const prerender = true). ",
 	"Implement full game states (start screen, playing, paused, game over), a scoring system, increasing difficulty, win/lose handling, and restart. ",
 	"Controls MUST work with BOTH the keyboard AND on-screen buttons so the game is playable on touch and automatable. ",
 	'Expose these STABLE test hooks as data-test attributes on clickable elements: data-test=\\"game-root\\" (top-level container), data-test=\\"start\\" (start / new game), data-test=\\"score\\" (live score readout), data-test=\\"board\\" (play area), and on-screen control buttons data-test=\\"move-left\\", data-test=\\"move-right\\", data-test=\\"rotate\\", and data-test=\\"drop\\" (map each to the equivalent move for the chosen game). ',
-	"In vite.config set server.allowedHosts to true so a reverse-proxied live preview can reach the dev server. ",
-	"Verify your work by running npm install, npm run build, and npm run dev, and fix every error before finishing. ",
-	"When everything passes, delete node_modules, .svelte-kit, build, and dist from ",
-	SVELTEKIT_GAME_APP_DIR,
-	" (keep package.json and package-lock.json) so only source remains — the downstream preview reinstalls dependencies. ",
-	'Do NOT start a long-lived preview server yourself; the workflow handles preview." }',
+	"Verify by running npm install and npm run build, confirm ",
+	SVELTEKIT_GAME_BUILD_DIR,
+	"/index.html exists, and that the static build is genuinely playable (you MAY serve the build directory with a transient static file server to test, but do NOT leave any long-lived server running — the workflow serves the preview). Fix every error before finishing.\" }",
 ].join("");
 
 const AGENT_PROFILE_TEMPLATE_ID = "tpl_coding_agent";
@@ -2476,7 +2484,7 @@ function buildThreeBOneBCliWorkflowSpec(): JsonRecord {
 			summary: THREE_B_ONE_B_CLI_WORKFLOW_DESCRIPTION,
 			"x-workflow-builder": {
 				architecture:
-					"per-agent-runtime+cli-runtime-selector+session-workflow-bridge+browser-validate-capture+live-preview",
+					"per-agent-runtime+cli-runtime-selector+session-workflow-bridge+browser-validate-capture+static-preview",
 				notes:
 					"CLI variant of the canonical 3Blue1Brown workflow. The cliRuntime trigger input resolves one durable/run agentRef.slug before dispatch; outputSync copies the app into the retained OpenShell workspace for verification, browser capture, and live preview.",
 				triggerInputs: {
@@ -2686,20 +2694,20 @@ function makeSvelteKitGameBuildTask(): JsonRecord {
 			cwd: "/sandbox",
 			sandboxName: "${ .workspace_profile.sandboxName }",
 			workspaceRef: "${ .workspace_profile.workspaceRef }",
-			// The CLI agent builds in its own per-session sandbox, so the source
-			// is synced back into the retained workspace for verify + preview.
-			// The agent removes node_modules / build output before finishing
-			// (see SVELTEKIT_GAME_BUILD_PROMPT) so this stays under the 64 MiB
-			// outputSync ceiling and only source is copied.
+			// The CLI agent builds in its own per-session sandbox. Sync ONLY the
+			// small static adapter-static `build/` output into the retained
+			// workspace (the whole project incl. node_modules would exceed the
+			// 64 MiB outputSync ceiling). The preview serves these static files
+			// directly — no npm install, no dev server, no node_modules.
 			outputSync: {
 				workspaceRef: "${ .workspace_profile.workspaceRef }",
 				paths: [
 					{
-						source: SVELTEKIT_GAME_APP_DIR,
-						target: SVELTEKIT_GAME_APP_DIR,
+						source: SVELTEKIT_GAME_BUILD_DIR,
+						target: SVELTEKIT_GAME_SITE_DIR,
 					},
 				],
-				timeoutSeconds: 600,
+				timeoutSeconds: 300,
 			},
 			sandboxPolicy: {
 				mode: "per-run",
@@ -2743,13 +2751,10 @@ function makeSvelteKitGameVerifyTask(): JsonRecord {
 			timeoutMs: 120000,
 			command: [
 				"set -eu",
-				`app=${JSON.stringify(SVELTEKIT_GAME_APP_DIR)}`,
-				'test -f "$app/package.json"',
-				'test -d "$app/src"',
-				'grep -q "@sveltejs/kit" "$app/package.json"',
-				'echo "sveltekit source present"',
-				'if [ -d "$app/node_modules" ]; then echo "note: node_modules present in synced source (preview install will be a no-op-ish refresh)"; fi',
-				'find "$app" -maxdepth 2 -type f -not -path "*/node_modules/*" -printf "%P %s bytes\\n" | sort | head -60',
+				`site=${JSON.stringify(SVELTEKIT_GAME_SITE_DIR)}`,
+				'test -f "$site/index.html"',
+				'echo "static site present:"',
+				'find "$site" -maxdepth 2 -type f -printf "%P %s bytes\\n" | sort | head -60',
 			].join("\n"),
 		},
 	};
@@ -2761,11 +2766,10 @@ function makeSvelteKitGameBrowserValidateTask(): JsonRecord {
 		with: {
 			workspaceRef: SVELTEKIT_GAME_OUTPUT_WORKSPACE_REF,
 			sandboxName: SVELTEKIT_GAME_OUTPUT_SANDBOX_NAME,
-			repoPath: SVELTEKIT_GAME_APP_DIR,
+			repoPath: SVELTEKIT_GAME_SITE_DIR,
 			rootPath: "/sandbox",
-			workingDir: SVELTEKIT_GAME_APP_DIR,
-			installCommand: SVELTEKIT_GAME_INSTALL_COMMAND,
-			devServerCommand: SVELTEKIT_GAME_DEV_SERVER_COMMAND,
+			workingDir: SVELTEKIT_GAME_SITE_DIR,
+			installCommand: "",
 			baseUrl: SVELTEKIT_GAME_BASE_URL,
 			steps: [
 				{
@@ -2825,7 +2829,7 @@ function makeSvelteKitGameBrowserValidateTask(): JsonRecord {
 			captureMode: "demo",
 			demoTitle: '${ "SvelteKit game: " + (.trigger.gameDescription // "Tetris") }',
 			demoSummary:
-				"Goal-driven CLI agent built a SvelteKit game; browser/validate installed dependencies, started the Vite dev server, and captured load / start / rotate / move / drop states from the retained workspace.",
+				"Goal-driven agent built a SvelteKit game as a static site; browser/validate served the static build and captured load / start / rotate / move / drop states from the retained workspace.",
 			metadata: {
 				appPath: SVELTEKIT_GAME_APP_DIR,
 				workflowStage: "post-sveltekit-game-build",
@@ -2845,17 +2849,17 @@ function makeSvelteKitGameStartPreviewTask(): JsonRecord {
 				input: {
 					previewId:
 						'${ "sveltekit-game-preview-" + (.runtime.dbExecutionId // .workspace_profile.workspaceRef) }',
-					repoPath: SVELTEKIT_GAME_APP_DIR,
+					repoPath: SVELTEKIT_GAME_SITE_DIR,
 					rootPath: "/sandbox",
-					workingDir: SVELTEKIT_GAME_APP_DIR,
+					workingDir: SVELTEKIT_GAME_SITE_DIR,
 					baseUrl: SVELTEKIT_GAME_BASE_URL,
 					keepAlive: true,
 					timeoutSeconds: 7200,
 					timeoutMs: 7200000,
 					sandboxName: SVELTEKIT_GAME_OUTPUT_SANDBOX_NAME,
 					workspaceRef: SVELTEKIT_GAME_OUTPUT_WORKSPACE_REF,
-					installCommand: SVELTEKIT_GAME_INSTALL_COMMAND,
-					devServerCommand: SVELTEKIT_GAME_DEV_SERVER_COMMAND,
+					installCommand: "",
+					devServerCommand: "",
 				},
 			},
 		},
@@ -2875,7 +2879,7 @@ function buildSvelteKitGameWorkflowSpec(): JsonRecord {
 				architecture:
 					"per-agent-runtime+cli-runtime-selector+goal-mode+session-workflow-bridge+browser-validate-capture+live-preview",
 				notes:
-					"Goal-mode showcase: a CLI agent (default codex-cli) builds a real SvelteKit game under a goalSpec objective whose completion criteria require the app to install, build, run, and be playable. The CLI agent builds in its own sandbox, removes node_modules/build output, and outputSync copies only source into the retained workspace; browser/validate reinstalls deps + boots the Vite dev server to capture a walkthrough, and browser/start-preview keeps a live dev-server preview attached. First seeded workflow that exercises with.body.goalSpec.",
+					"Goal-mode showcase: an agent (default codex-cli) builds a real SvelteKit game as a STATIC site (@sveltejs/adapter-static) under a goalSpec objective whose completion criteria require the app to install, build, and be playable from the static output. The agent builds in its own sandbox; outputSync copies ONLY the small static build/ into the retained workspace (the whole project incl. node_modules would exceed the 64 MiB outputSync ceiling). browser/validate serves the static build to capture a walkthrough, and browser/start-preview keeps a static-file preview attached (the 3b1b static-serve pattern). First seeded workflow that exercises with.body.goalSpec.",
 				triggerInputs: {
 					gameDescription:
 						"Optional. Plain-language description of the game to build (default: Tetris).",
@@ -2996,7 +3000,7 @@ function buildSvelteKitGameWorkflowNodes(): JsonRecord[] {
 				label: "Provision retained sandbox",
 				actionType: "workspace/profile",
 				description:
-					"Stand up a per-run dapr-agent sandbox (node/npm) with file/exec tools; keepAfterRun=true so the live preview can attach.",
+					"Stand up a per-run dapr-agent sandbox (node/npm) with file/exec tools; keepAfterRun=true so the static preview can attach.",
 			},
 		},
 		{
@@ -3007,7 +3011,7 @@ function buildSvelteKitGameWorkflowNodes(): JsonRecord[] {
 				label: "Build game (goal mode)",
 				actionType: "durable/run",
 				description:
-					"CLI agent iterates under a goalSpec objective until the SvelteKit game installs, builds, runs, and is playable.",
+					"Agent iterates under a goalSpec objective until the SvelteKit game installs, builds to a static site, and is playable; outputSync copies build/ to the workspace.",
 			},
 		},
 		{
@@ -3015,10 +3019,10 @@ function buildSvelteKitGameWorkflowNodes(): JsonRecord[] {
 			type: "action",
 			position: { x: 80, y: 480 },
 			data: {
-				label: "Verify synced source",
+				label: "Verify static build",
 				actionType: "workspace/command",
 				description:
-					"Sanity-check package.json + src exist in the retained workspace after outputSync.",
+					"Sanity-check the static build (index.html) landed in the retained workspace after outputSync.",
 			},
 		},
 		{
@@ -3029,7 +3033,7 @@ function buildSvelteKitGameWorkflowNodes(): JsonRecord[] {
 				label: "Capture game walkthrough",
 				actionType: "browser/validate",
 				description:
-					"Install deps, boot the Vite dev server, and capture load / start / rotate / move / drop screenshots.",
+					"Serve the static build and capture load / start / rotate / move / drop screenshots.",
 			},
 		},
 		{
@@ -3040,7 +3044,7 @@ function buildSvelteKitGameWorkflowNodes(): JsonRecord[] {
 				label: "Start live preview",
 				actionType: "browser/start-preview",
 				description:
-					"Keep a live Vite dev-server preview proxy attached to the retained workspace so the run page can open the game.",
+					"Keep a static-file preview proxy attached to the retained workspace so the run page can open the built game.",
 			},
 		},
 	];

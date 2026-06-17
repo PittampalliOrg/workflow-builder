@@ -35,6 +35,15 @@ logger = logging.getLogger(__name__)
 
 CLI_IDLE_PROBE_SECONDS = int(os.environ.get("CLI_IDLE_PROBE_SECONDS", "600"))
 CLI_LIFECYCLE_MAX_ITERATIONS = int(os.environ.get("CLI_LIFECYCLE_MAX_ITERATIONS", "50"))
+# Durable-timer ceilings for the post-loop cleanup activities. Every blocking
+# await in the cleanup phase is bounded by a timer (Dapr best practice) so a
+# hung activity (e.g. a finished TUI's dead herdr socket) can never wedge the
+# parent durable/run — the workflow abandons the activity and returns.
+CLI_STOP_TIMEOUT_SECONDS = int(os.environ.get("CLI_STOP_TIMEOUT_SECONDS", "120"))
+CLI_OUTPUT_SYNC_TIMEOUT_SECONDS = int(
+    os.environ.get("CLI_OUTPUT_SYNC_TIMEOUT_SECONDS", "900")
+)
+CLI_PATCH_TIMEOUT_SECONDS = int(os.environ.get("CLI_PATCH_TIMEOUT_SECONDS", "300"))
 _SWEBENCH_PATCH_EXCLUDE_PATHS = (
     ":(exclude)**/tests/**",
     ":(exclude)tests/**",
@@ -58,6 +67,26 @@ _START_RETRY_POLICY = RetryPolicy(
     backoff_coefficient=2,
     max_retry_interval=timedelta(seconds=30),
 )
+
+# Stable module-level sentinel (deterministic across replays) returned by
+# _yield_bounded when the durable timer wins (the activity is abandoned).
+_ACTIVITY_TIMED_OUT = object()
+
+
+def _yield_bounded(ctx, activity, *, input, timeout_seconds, retry_policy=None):
+    """Run an activity bounded by a durable timer so a hung activity can't block
+    the orchestration forever. Returns the activity result, or _ACTIVITY_TIMED_OUT
+    if the timer fired first. Use via ``r = yield from _yield_bounded(...)``."""
+    act = (
+        ctx.call_activity(activity, input=input, retry_policy=retry_policy)
+        if retry_policy is not None
+        else ctx.call_activity(activity, input=input)
+    )
+    timer = ctx.create_timer(timedelta(seconds=timeout_seconds))
+    winner = yield wf_when_any([act, timer])
+    if winner is act:
+        return act.get_result()
+    return _ACTIVITY_TIMED_OUT
 
 
 def _clean_string(value: Any) -> str | None:
@@ -780,7 +809,10 @@ def session_workflow(
                 break
 
     # Cooperative close — idempotent; tolerates the pane already being gone.
-    yield ctx.call_activity(
+    # Bounded by a durable timer: if stop hangs on a dead herdr socket, abandon
+    # it and proceed (best-effort) rather than wedge the parent.
+    yield from _yield_bounded(
+        ctx,
         stop_cli_activity,
         input={
             "paneRef": pane_ref,
@@ -788,6 +820,7 @@ def session_workflow(
             "instanceId": ctx.instance_id,
             "reason": reason,
         },
+        timeout_seconds=CLI_STOP_TIMEOUT_SECONDS,
     )
 
     if session_id and not ctx.is_replaying:
@@ -808,12 +841,25 @@ def session_workflow(
     patch_result = None
     patch_request = _swebench_patch_request(input_data)
     if patch_request is not None and status == "completed":
-        patch_result = yield ctx.call_activity(
+        patch_result = yield from _yield_bounded(
+            ctx,
             extract_model_patch_activity,
             input=patch_request,
+            timeout_seconds=CLI_PATCH_TIMEOUT_SECONDS,
         )
-    if status == "completed" and isinstance(input_data.get("outputSync"), Mapping):
-        output_sync_result = yield ctx.call_activity(
+        if patch_result is _ACTIVITY_TIMED_OUT:
+            patch_result = None
+    # Sync workspace output on ANY non-failed end — completed OR a goal-driven
+    # terminate. Gating on "completed" alone silently dropped the build whenever
+    # the session ended via a terminate event (the goal-complete cooperative
+    # terminate winning the race vs auto-terminate, or a custom-loop CLI which
+    # always ends "terminated") → empty workspace → downstream verify/preview
+    # failed. Bounded by a durable timer so a hung sync can't wedge the parent.
+    if status in ("completed", "terminated") and isinstance(
+        input_data.get("outputSync"), Mapping
+    ):
+        output_sync_result = yield from _yield_bounded(
+            ctx,
             sync_output_activity,
             input={
                 "outputSync": input_data.get("outputSync"),
@@ -823,8 +869,17 @@ def session_workflow(
                 "sessionId": session_id,
                 "instanceId": ctx.instance_id,
             },
+            timeout_seconds=CLI_OUTPUT_SYNC_TIMEOUT_SECONDS,
         )
-        if isinstance(output_sync_result, Mapping) and not output_sync_result.get("ok"):
+        if output_sync_result is _ACTIVITY_TIMED_OUT:
+            status = "failed"
+            output_sync_result = None
+            last_assistant_text = (
+                f"{last_assistant_text}\n\nOutput sync timed out"
+                if last_assistant_text
+                else "Output sync timed out"
+            )
+        elif isinstance(output_sync_result, Mapping) and not output_sync_result.get("ok"):
             status = "failed"
             error = _clean_string(output_sync_result.get("error")) or "outputSync failed"
             last_assistant_text = (
