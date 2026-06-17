@@ -48,7 +48,10 @@ import {
 	sandboxProvisionFailureMessage,
 } from "$lib/server/sandboxes/provision";
 import { createOrReplaceGoal, getCurrentGoal } from "$lib/server/goals/repo";
-import { runtimeUsesNativeGoal } from "$lib/server/sessions/runtime-target";
+import {
+	decideGoalHarness,
+	runtimeHasNativeGoalHarness,
+} from "$lib/server/sessions/runtime-target";
 import {
 	ensureGoalMcpServer,
 	stampGoalMcpSessionHeader,
@@ -379,28 +382,35 @@ export const POST: RequestHandler = async ({ request }) => {
 	const swapTarget = getRuntimeDescriptor(
 		(agentConfig as { runtime?: string }).runtime,
 	);
-	// Goal-mode dispatch split: native-goal CLIs (claude/codex) inject `/goal`;
-	// every other runtime (agy + dapr) uses the BFF goal loop + goal MCP.
-	const nativeGoal = goalMode && runtimeUsesNativeGoal(swapTarget ?? null);
-	const customGoal = goalMode && !nativeGoal;
-	// Native-CLI goal sessions that ALSO declare deterministic evidence are gated
-	// by the BFF evaluator (the completion authority), not just the CLI's own
-	// transcript-reading /goal evaluator. They still kick off the native `/goal`
-	// loop, but we (a) persist a thread_goals row so the evaluator has the
-	// evidence_plan + an iteration cap, and (b) keep the session ALIVE past the
-	// native-completion idle so the evaluator can verify and, on failure, inject
-	// the failing evidence back into the TUI. Native-goal CLIs WITHOUT evidence
-	// keep their original auto-terminate-on-end-turn behavior.
-	const nativeEvidenceGoal =
-		nativeGoal && !!bridgeGoal?.evidencePlan?.commands?.length;
+	// Goal-harness decision (evaluator is the DEFAULT for every runtime; native
+	// `/goal` is opt-in via a `/goal ` prefix on the objective, honored only on
+	// runtimes that have a native harness — claude/codex). decideGoalHarness also
+	// strips the prefix so the cleaned objective is reused in either mode.
+	const rawGoalObjective = bridgeGoal?.objective ?? "";
+	const harness =
+		goalMode && bridgeGoal
+			? decideGoalHarness(
+					rawGoalObjective,
+					runtimeHasNativeGoalHarness(swapTarget ?? null),
+				)
+			: { native: false, objective: rawGoalObjective };
+	const nativeGoal = goalMode && harness.native;
+	// Evaluator mode = the BFF custom loop (thread_goals row + continuation driver
+	// + goal MCP + evaluator-gated completion). The new default for ALL runtimes.
+	const evaluatorGoal = goalMode && !nativeGoal;
+	// Cleaned goal used downstream (prefix stripped) for the row + the native kickoff.
+	const effectiveBridgeGoal =
+		bridgeGoal && goalMode
+			? { ...bridgeGoal, objective: harness.objective }
+			: bridgeGoal;
 	const baseDispatchAgentConfig: AgentConfig = stampCliAdapterForDispatch(
 		agentConfig,
 		swapTarget,
 	);
-	// For custom-loop goal sessions, auto-wire the goal MCP server (+ session
+	// Evaluator-mode goal sessions auto-wire the goal MCP server (+ session
 	// header) so the agent can call update_goal to self-complete — same helper the
-	// direct-spawn path uses. (Single-shot + native-goal runs are untouched.)
-	const dispatchAgentConfig: AgentConfig = customGoal
+	// direct-spawn path uses. (Single-shot + native-`/goal` runs are untouched.)
+	const dispatchAgentConfig: AgentConfig = evaluatorGoal
 		? ({
 				...baseDispatchAgentConfig,
 				mcpServers: stampGoalMcpSessionHeader(
@@ -414,12 +424,14 @@ export const POST: RequestHandler = async ({ request }) => {
 			} as AgentConfig)
 		: baseDispatchAgentConfig;
 	// Goal-mode sessions run multi-turn (no auto-terminate) capped by the goal's
-	// maxIterations; native-goal CLIs get the objective as a `/goal` kickoff.
+	// maxIterations; native-`/goal` runs get the objective as a `/goal` kickoff.
 	const effectiveMaxIterations = goalMode
 		? bridgeGoal?.maxIterations ?? bridgeMaxIterations
 		: bridgeMaxIterations;
 	const effectiveInitialMessage =
-		nativeGoal && bridgeGoal ? `/goal ${bridgeGoal.objective}` : initialMessage;
+		nativeGoal && effectiveBridgeGoal
+			? `/goal ${effectiveBridgeGoal.objective}`
+			: initialMessage;
 
 	// Auto-provision a per-session OpenShell sandbox for runtimes that USE the
 	// external OpenShell tools but don't own a sandbox (dapr-agent-py) when the
@@ -571,13 +583,13 @@ export const POST: RequestHandler = async ({ request }) => {
 				userId,
 			}));
 		// Goal-driven run: ensure the goal row exists (idempotent across Dapr
-		// activity replays — skips if an active goal is already set). Custom-loop
-		// runs always; native-CLI runs only when they declare evidence (so the
-		// evaluator can gate them) — plain native /goal stays row-less.
-		if ((customGoal || nativeEvidenceGoal) && bridgeGoal) {
+		// activity replays — skips if an active goal is already set). Evaluator
+		// mode (the default for every runtime) gets a row; native `/goal` (opt-in)
+		// stays row-less and is driven by the vendor CLI.
+		if (evaluatorGoal && effectiveBridgeGoal) {
 			await ensureWorkflowGoal(
 				existing.id,
-				bridgeGoal,
+				effectiveBridgeGoal,
 				existing.workflowExecutionId ?? workflowExecutionId,
 			);
 		}
@@ -606,8 +618,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				cwd: bridgeCwd,
 				timeoutMinutes: bridgeTimeoutMinutes,
 				maxIterations: effectiveMaxIterations,
-				customGoal,
-				nativeEvidenceGoal,
+				customGoal: evaluatorGoal,
 				agentSlug: reuseRuntime?.slug ?? bodyAgentSlug,
 				agentAppId: reuseChildAppId,
 				mlflowContext: reuseMlflowContext,
@@ -695,8 +706,8 @@ export const POST: RequestHandler = async ({ request }) => {
 	// exists. The goal loop then drives continuations off each status_idle, and
 	// the agent self-completes via the auto-wired goal MCP. (Native-goal CLIs
 	// instead get the `/goal` kickoff as effectiveInitialMessage below.)
-	if ((customGoal || nativeEvidenceGoal) && bridgeGoal) {
-		await ensureWorkflowGoal(sessionId, bridgeGoal, workflowExecutionId);
+	if (evaluatorGoal && effectiveBridgeGoal) {
+		await ensureWorkflowGoal(sessionId, effectiveBridgeGoal, workflowExecutionId);
 	}
 	if (effectiveInitialMessage && effectiveInitialMessage.trim()) {
 		await sendUserEvent(sessionId, {
@@ -883,8 +894,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			cwd: bridgeCwd,
 			timeoutMinutes: bridgeTimeoutMinutes,
 			maxIterations: effectiveMaxIterations,
-			customGoal,
-				nativeEvidenceGoal,
+				customGoal: evaluatorGoal,
 			agentId,
 			agentVersion,
 			agentSlug: runtimeIdentity?.slug ?? bodyAgentSlug,
@@ -980,20 +990,13 @@ function buildChildInput(params: {
 	cwd?: string | null;
 	timeoutMinutes?: number | null;
 	maxIterations?: number | null;
-	/** Custom-loop goal run (dapr-agent-py / agy-cli): keep the session alive
-	 * across turns (no auto-terminate) so the BFF goal loop can drive
-	 * continuations until session.goal_completed. Native-goal CLIs (codex/claude)
-	 * run the whole goal internally and idle (end_turn) only when done, so they
-	 * KEEP auto-terminate — the proven end-turn path returns the session_workflow
-	 * cleanly (the cooperative goal_completed terminate can't preempt a CLI
-	 * session_workflow that's stuck awaiting a finished TUI's dead tasks). */
+	/** Evaluator-mode goal run (the DEFAULT for every runtime — dapr/agy/codex/
+	 * claude): keep the session alive across turns (no auto-terminate) so the BFF
+	 * goal loop drives continuations + the evaluator gates completion until
+	 * session.goal_completed, then the cooperative `session.terminate` ends it
+	 * (works for native CLIs post-#187). Only native `/goal` (opt-in) and
+	 * single-shot runs keep auto-terminate-on-end-turn. */
 	customGoal?: boolean;
-	/** Native-CLI goal run that ALSO declares evidence: keep the session alive
-	 * (like customGoal) so the BFF evaluator can verify on the native-completion
-	 * idle and, on failure, inject the failing evidence back to keep it working.
-	 * Termination is then the cooperative `session.terminate` raise (post-#187,
-	 * native-CLI cooperative terminate works). */
-	nativeEvidenceGoal?: boolean;
 	agentId?: string | null;
 	agentVersion?: number | null;
 	agentSlug?: string | null;
@@ -1043,12 +1046,12 @@ function buildChildInput(params: {
 		workflowExecutionId: params.workflowExecutionId,
 		vaultIds: params.vaultIds,
 		dbExecutionId: params.workflowExecutionId,
-		// Single-shot runs AND native-goal CLI runs auto-terminate after the first
-		// end-turn (for native-goal CLIs the goal runs to completion inside one
-		// continuous turn, so end_turn == goal done). Only CUSTOM-loop goal runs
-		// (dapr-agent-py / agy-cli) stay alive multi-turn while the BFF goal loop
-		// drives continuations until session.goal_completed.
-		autoTerminateAfterEndTurn: !(params.customGoal || params.nativeEvidenceGoal),
+		// Single-shot runs AND opt-in native `/goal` runs auto-terminate after the
+		// first end-turn (native `/goal` runs to completion inside one continuous
+		// turn, so end_turn == goal done). Evaluator-mode goal runs (the default
+		// for every runtime) stay alive multi-turn while the BFF goal loop drives
+		// continuations + the evaluator gates completion until session.goal_completed.
+		autoTerminateAfterEndTurn: !params.customGoal,
 		// Sandbox plumbing — consumed by dapr-agent-py's
 		// _freeze_session_child_input so agent_workflow can set
 		// runtime.sandbox_name / workspace_ref / cwd. Without these,

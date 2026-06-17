@@ -1,7 +1,6 @@
 import { appendEvent } from "$lib/server/sessions/events";
 import { raiseSessionUserEvents } from "$lib/server/sessions/spawn";
 import { raiseSessionEvent } from "$lib/server/sessions/control";
-import { sessionUsesNativeGoal } from "$lib/server/sessions/runtime-target";
 import type { ThreadGoalRow } from "$lib/server/db/schema";
 import {
 	accrueUsage,
@@ -115,21 +114,11 @@ export async function onSessionEvent(
 			// Only an end_turn idle (the agent finished its turn) drives a
 			// continuation. Terminal idles (max_iters, etc.) are ignored.
 			if (reason && reason !== "end_turn") return;
-			// Native-CLI evidence gate: for a native-goal CLI that ALSO declared
-			// evidence, the BFF evaluator is the completion authority — not the CLI's
-			// own transcript-reading /goal evaluator. On each end-turn idle (a native
-			// /goal returns control only when ITS evaluator says done) verify the
-			// ground-truth evidence: pass → complete + terminate; fail → inject the
-			// failing checks back into the TUI and keep working (capped by
-			// maxIterations). Handles its own termination, so return when it fires.
-			if (await gateNativeEvidenceOnIdle(sessionId)) return;
-			// Idle-rescue: if the goal already completed (native-goal CLIs emit
-			// session.goal_completed and may then run a post-completion turn that
-			// races the cooperative terminate raised on goal_completed), re-fire the
-			// terminate on this clean idle boundary so the parent durable/run isn't
-			// wedged. Idempotent + gated on a recorded goal_completed so it never
-			// fires mid-goal. Custom-loop runtimes reach completion via the
-			// emit→goal_completed path, so this only matters for native CLIs.
+			// Idle-rescue: a session with a recorded goal_completed but no thread_goals
+			// row is an opt-in native `/goal` run (the vendor CLI emitted completion);
+			// re-fire the cooperative terminate on this clean idle boundary so the
+			// parent durable/run isn't wedged. Evaluator-mode sessions (the default,
+			// which HAVE a row) are driven by driveContinuationIfIdle below instead.
 			if (await hasGoalCompletedEvent(sessionId)) {
 				await terminateWorkflowGoalSessionIfNeeded(sessionId);
 				return;
@@ -138,16 +127,11 @@ export async function onSessionEvent(
 			return;
 		}
 		if (event.type === "session.goal_completed") {
-			// Native-CLI-with-evidence defers to the idle gate: the CLI's self-declared
-			// completion is only a REQUEST — the evaluator (gateNativeEvidenceOnIdle,
-			// run on the accompanying end-turn idle) is the authority and decides
-			// terminate-vs-keep-working. Terminating here would accept completion
-			// without verifying the ground-truth evidence.
-			if (await isNativeEvidenceGoal(sessionId)) return;
-			// Workflow-driven goal sessions must end so the parent durable/run
-			// resumes; direct (UI) goal sessions stay idle (emit-only). Covers BOTH
-			// completion sources (BFF custom loop + native-CLI adapter without
-			// evidence) since both land here as session.goal_completed.
+			// A goal_completed event is authoritative: evaluator-mode completion only
+			// emits it AFTER the evaluator passed (via the update_goal MCP fast path or
+			// the idle evidence backstop), and native `/goal` emits it from the vendor
+			// CLI. Workflow-driven sessions must end so the parent durable/run resumes;
+			// direct (UI) sessions stay idle (the helper no-ops without a workflow).
 			await terminateWorkflowGoalSessionIfNeeded(sessionId);
 			return;
 		}
@@ -257,90 +241,13 @@ async function terminateWorkflowGoalSessionIfNeeded(
 /** True iff this session is a native-goal CLI (codex/claude) that ALSO has a
  *  goal row with declared evidence — i.e. its completion is evaluator-gated by
  *  the BFF rather than the CLI's own /goal evaluator. */
-async function isNativeEvidenceGoal(sessionId: string): Promise<boolean> {
-	if (!(await sessionUsesNativeGoal(sessionId))) return false;
-	const goal = await getCurrentGoal(sessionId);
-	return !!goal?.evidencePlan?.commands?.length;
-}
-
 /**
- * Evaluator gate for native-CLI-with-evidence sessions, run on each end-turn
- * idle (when a native /goal returns control). Returns true iff it handled the
- * idle (so the caller stops): for a native session WITHOUT evidence it returns
- * false and the existing native idle-rescue/continuation paths run unchanged.
- *
- * Pass  → mark complete, emit goal_completed, cooperatively terminate (parent
- *         durable/run resumes).
- * Fail  → claim the next iteration (atomic increment + spacing + cap guard) and
- *         inject the failing evidence back into the TUI so the CLI keeps working.
- * Cap   → claimNextContinuation returns null at the cap → flip to budget_limited
- *         + terminate so the parent isn't wedged on a perpetually-failing goal.
+ * Inject an evaluator rejection into a goal session: record it (so the UI +
+ * transcript show it, and a CLI's injected-prompt hook skips re-recording) and
+ * raise it as a user turn so the agent keeps working. Runtime-agnostic — used by
+ * the idle evidence backstop for dapr/agy/codex/claude alike.
  */
-async function gateNativeEvidenceOnIdle(sessionId: string): Promise<boolean> {
-	if (!(await sessionUsesNativeGoal(sessionId))) return false;
-	const goal = await getCurrentGoal(sessionId);
-	const commands = goal?.evidencePlan?.commands ?? [];
-	if (!goal || commands.length === 0) return false; // native w/o evidence → unchanged
-
-	// Already complete (e.g. a duplicate idle after we accepted) → just ensure the
-	// session ends.
-	if (goal.status === "complete") {
-		await terminateWorkflowGoalSessionIfNeeded(sessionId);
-		return true;
-	}
-
-	const verdict = await evaluateGoalCompletion(sessionId);
-	if (verdict.met) {
-		await markGoalComplete(sessionId);
-		await appendEvent(sessionId, {
-			type: "session.goal_completed",
-			data: {
-				completionSource: "native_cli_evidence_verified",
-				goalStatus: "complete",
-				objective: goal.objective,
-			},
-			processedAt: null,
-			sourceEventId: `goal-completed:${sessionId}:${goal.goalId}`,
-		});
-		await terminateWorkflowGoalSessionIfNeeded(sessionId);
-		return true;
-	}
-
-	// Rejected — push back. claimNextContinuation atomically bumps the iteration
-	// (with a spacing guard against double-fire and the maxIterations cap).
-	const claimed = await claimNextContinuation(sessionId);
-	if (!claimed) {
-		// Either the iteration cap is hit, or a recent rejection already posted
-		// (spacing). Only the cap is terminal: flip to budget_limited + end so the
-		// parent durable/run resumes with whatever the agent produced.
-		const capped = await claimIterationCap(sessionId);
-		if (capped) {
-			await appendEvent(sessionId, {
-				type: "session.goal_rejected",
-				data: {
-					reason: "iteration_cap",
-					feedback: verdict.feedback,
-					iterations: capped.iterations,
-					results: verdict.results,
-				},
-				processedAt: null,
-				sourceEventId: `goal-cap:${sessionId}:${capped.goalId}`,
-			});
-			await terminateWorkflowGoalSessionIfNeeded(sessionId);
-		}
-		return true;
-	}
-
-	await postNativeEvidenceRejection(sessionId, claimed, verdict);
-	return true;
-}
-
-/**
- * Inject an evaluator rejection into a native-CLI session: record it (so the UI
- * + transcript show it, and the CLI's injected-prompt hook skips re-recording)
- * and raise it onto the live TUI as a user turn so the native loop keeps working.
- */
-async function postNativeEvidenceRejection(
+async function postEvidenceRejection(
 	sessionId: string,
 	goal: ThreadGoalRow,
 	verdict: { feedback: string; results?: unknown[] },
@@ -385,11 +292,9 @@ async function driveContinuationIfIdle(
 
 	const goal = await getDrivableGoal(sessionId);
 	if (!goal) return;
-
-	// agy + non-CLI use the custom loop; only claude/codex drive their OWN native
-	// `/goal` (and have no thread_goals row), so skip the BFF continuation driver
-	// for them — it would fight the native loop.
-	if (await sessionUsesNativeGoal(sessionId)) return;
+	// A drivable thread_goals row == evaluator mode (the default for EVERY runtime,
+	// incl. codex/claude). Native `/goal` runs have no row, so they never reach
+	// here (getDrivableGoal returned null) — the vendor CLI drives those itself.
 
 	// Never drive a stopping/terminal session. If a stop was requested while a
 	// goal is active, pause the goal so the loop stops re-posting.
@@ -441,6 +346,27 @@ async function driveContinuationIfIdle(
 		if (goal.iterations >= goal.maxIterations) {
 			const capped = await claimIterationCap(sessionId);
 			if (capped) await postGoalMessage(sessionId, capped, "wrapup");
+			return;
+		}
+		// Evidence backstop: when the goal declares deterministic evidence the BFF
+		// evaluator is the completion AUTHORITY — verify ground-truth workspace
+		// state on each idle rather than depending on the agent calling update_goal
+		// (the MCP update_goal → /evaluate path is the fast path; this is the
+		// backstop, and the only completion path for agents that finish silently).
+		// Skip the kickoff turn (no work done yet). Met → complete; not met →
+		// continue with the exact failing checks fed back. Runtime-agnostic.
+		const hasEvidence = !!goal.evidencePlan?.commands?.length;
+		if (hasEvidence && !kickoff) {
+			const verdict = await evaluateGoalCompletion(sessionId);
+			if (verdict.met) {
+				await markGoalComplete(sessionId);
+				await emitGoalCompletedIfDone(sessionId);
+				await terminateWorkflowGoalSessionIfNeeded(sessionId);
+				return;
+			}
+			const claimed = await claimNextContinuation(sessionId);
+			if (!claimed) return; // raced, spacing guard, or cap (next idle wraps up)
+			await postEvidenceRejection(sessionId, claimed, verdict);
 			return;
 		}
 		const claimed = await claimNextContinuation(sessionId);

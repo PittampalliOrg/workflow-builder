@@ -52,8 +52,10 @@
 		cliAuth: { provider: string; credentialKind: string; loginStyle: string | null } | null;
 	}
 	let runtimes = $state<Record<string, RuntimeInfo>>({});
-	// Native-goal CLI adapters (claude/codex inject /goal); agy + non-CLI use the
-	// custom BFF goal loop. Mirrors runtimeUsesNativeGoal() on the server.
+	// CLI adapters that HAVE a vendor-native /goal harness (claude/codex). The
+	// evaluator/custom BFF loop is the DEFAULT for every runtime now; native /goal
+	// is opt-in (prefix the objective with `/goal`). Mirrors
+	// runtimeHasNativeGoalHarness() on the server.
 	const NATIVE_GOAL_ADAPTERS = new Set(['claude-code', 'codex']);
 	// Live CLI-credential status for the selected runtime's provider (interactive
 	// CLI agents 400 at dispatch without a linked credential).
@@ -122,6 +124,24 @@
 	const goalObjective = $derived(
 		typeof goal.objective === 'string' ? goal.objective : ''
 	);
+	const goalAcceptance = $derived(
+		Array.isArray(goal.acceptanceCriteria)
+			? (goal.acceptanceCriteria as string[]).join('\n')
+			: ''
+	);
+	const goalEvidence = $derived(
+		goal.evidence &&
+			typeof goal.evidence === 'object' &&
+			Array.isArray((goal.evidence as { commands?: unknown }).commands)
+			? ((goal.evidence as { commands: string[] }).commands).join('\n')
+			: ''
+	);
+	function splitGoalLines(value: string): string[] {
+		return value
+			.split('\n')
+			.map((s) => s.trim())
+			.filter((s) => s.length > 0);
+	}
 	let goalOpen = $state(false);
 	const selectedAgent = $derived(
 		agentRef ? agents.find((a) => a.id === agentRef.id) ?? null : null
@@ -133,7 +153,7 @@
 	const isCliRuntime = $derived(selectedRuntime?.family === 'interactive-cli');
 	const isMultiProvider = $derived(selectedRuntime?.capabilities.multiProvider === true);
 	const runtimeProviders = $derived(selectedRuntime?.capabilities.supportedProviders ?? []);
-	const usesNativeGoal = $derived(
+	const nativeGoalAvailable = $derived(
 		isCliRuntime &&
 			!!selectedRuntime?.cliAdapter &&
 			NATIVE_GOAL_ADAPTERS.has(selectedRuntime.cliAdapter)
@@ -309,7 +329,10 @@
 
 	/** Write a Goal field. Clearing the objective removes the whole goal block
 	 *  (reverts the node to a single-shot run). */
-	function setGoalField(key: 'objective' | 'tokenBudget' | 'maxIterations', value: unknown) {
+	function setGoalField(
+		key: 'objective' | 'tokenBudget' | 'maxIterations' | 'acceptanceCriteria' | 'evidence',
+		value: unknown
+	) {
 		const next: Record<string, unknown> = { ...goal };
 		if (value === undefined || value === null || value === '') delete next[key];
 		else next[key] = value;
@@ -433,7 +456,7 @@
 							</Badge>
 						{/if}
 						<Badge variant="outline" class="text-[10px]">
-							{usesNativeGoal ? 'native /goal' : 'goal loop'}
+							evaluator goal loop{nativeGoalAvailable ? ' (native /goal opt-in)' : ''}
 						</Badge>
 					</div>
 					{#if isMultiProvider}
@@ -536,15 +559,15 @@
 					completion signal fires (or a budget/iteration cap). Leave blank for a
 					single-shot run.
 					{#if goalObjective.trim()}
-						{#if usesNativeGoal}
-							<span class="block mt-1">
-								This runtime uses its <strong>native <code>/goal</code></strong> — the
-								objective is injected into the CLI, which drives its own loop.
-							</span>
-						{:else}
-							<span class="block mt-1">
-								This runtime uses the <strong>goal loop</strong> + goal MCP — the agent
-								calls <code>update_goal</code> to mark completion.
+						<span class="block mt-1">
+							Uses the <strong>evaluator goal loop</strong>: if you declare evidence
+							commands, completion is <strong>verified</strong> by running them in the
+							workspace (else self-judged via <code>update_goal</code>).
+						</span>
+						{#if nativeGoalAvailable}
+							<span class="block mt-1 text-muted-foreground">
+								To use this CLI's <strong>native <code>/goal</code></strong> instead, start
+								the objective with <code>/goal</code>.
 							</span>
 						{/if}
 					{/if}
@@ -560,6 +583,39 @@
 							setGoalField('objective', (e.target as HTMLTextAreaElement).value)}
 					/>
 				</div>
+					<div>
+						<Label class="text-xs" for="agent-goal-acceptance">
+							Acceptance criteria (optional, one per line)
+						</Label>
+						<Textarea
+							id="agent-goal-acceptance"
+							rows={2}
+							placeholder="Human-readable success criteria"
+							value={goalAcceptance}
+							oninput={(e) => {
+								const lines = splitGoalLines((e.target as HTMLTextAreaElement).value);
+								setGoalField('acceptanceCriteria', lines.length ? lines : undefined);
+							}}
+						/>
+					</div>
+					<div>
+						<Label class="text-xs" for="agent-goal-evidence">
+							Evidence commands (optional, one per line)
+						</Label>
+						<Textarea
+							id="agent-goal-evidence"
+							rows={2}
+							placeholder="cd /sandbox && npm test"
+							value={goalEvidence}
+							oninput={(e) => {
+								const cmds = splitGoalLines((e.target as HTMLTextAreaElement).value);
+								setGoalField('evidence', cmds.length ? { commands: cmds } : undefined);
+							}}
+						/>
+						<p class="text-[10px] text-muted-foreground mt-1">
+							When set, completion is verified by running these in the workspace (ground-truth), not self-judged.
+						</p>
+					</div>
 				<div class="grid grid-cols-2 gap-3">
 					<div>
 						<Label class="text-xs">Token budget</Label>
