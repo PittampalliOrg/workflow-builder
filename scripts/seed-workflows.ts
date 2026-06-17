@@ -141,7 +141,12 @@ const SVELTEKIT_GAME_GOAL_OBJECTIVE = [
 	SVELTEKIT_GAME_BUILD_DIR,
 	'/index.html; ',
 	"(3) the game is actually playable end-to-end from the STATIC build — the board renders, the on-screen control buttons AND the keyboard both change game state, the score updates during play, and game-over followed by restart works; ",
-	"(4) there are no console, build, or type errors. ",
+	"(4) there are no console, build, or type errors; ",
+	'(5) the PRERENDERED ',
+	SVELTEKIT_GAME_BUILD_DIR,
+	'/index.html already contains the data-test hooks WITHOUT running any JS — i.e. the start screen / shell (game-root, start, score, board) and the on-screen control buttons (move-left, move-right, rotate, drop) are server-rendered into the static HTML, not injected only by client-side JS. Verify with: grep -o \\"data-test=...\\" ',
+	SVELTEKIT_GAME_BUILD_DIR,
+	'/index.html shows game-root, start, score, board, move-left, move-right, rotate AND drop. ',
 	"Keep iterating until every criterion is verified by actually building and exercising the static output; do not declare the goal complete early.\" }",
 ].join("");
 
@@ -156,6 +161,7 @@ const SVELTEKIT_GAME_BUILD_PROMPT = [
 	"Implement full game states (start screen, playing, paused, game over), a scoring system, increasing difficulty, win/lose handling, and restart. ",
 	"Controls MUST work with BOTH the keyboard AND on-screen buttons so the game is playable on touch and automatable. ",
 	'Expose these STABLE test hooks as data-test attributes on clickable elements: data-test=\\"game-root\\" (top-level container), data-test=\\"start\\" (start / new game), data-test=\\"score\\" (live score readout), data-test=\\"board\\" (play area), and on-screen control buttons data-test=\\"move-left\\", data-test=\\"move-right\\", data-test=\\"rotate\\", and data-test=\\"drop\\" (map each to the equivalent move for the chosen game). ',
+	"CRITICAL: these hooks must be PRERENDERED into the static index.html — render the game shell, start screen, score, board and the four control buttons in normal markup (not created only by client-side JS in onMount), so `grep data-test build/index.html` shows ALL of them. Use the canvas / JS only for the dynamic piece animation; the DOM scaffold + controls must exist in the server-rendered HTML. ",
 	"Verify by running npm install and npm run build, confirm ",
 	SVELTEKIT_GAME_BUILD_DIR,
 	"/index.html exists, and that the static build is genuinely playable (you MAY serve the build directory with a transient static file server to test, but do NOT leave any long-lived server running — the workflow serves the preview). ",
