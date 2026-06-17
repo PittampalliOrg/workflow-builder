@@ -19,11 +19,18 @@ import { setSpanOutput } from "./observability/content.js";
 import type { RegisteredTool } from "./workflow-tools.js";
 import { currentGoalSessionId } from "./goal-context.js";
 import {
-	completeGoalForSession,
 	createOrReplaceGoalForSession,
 	getGoalForSession,
 	type ThreadGoalRecord,
 } from "./goal-db.js";
+
+// The BFF holds evaluator-gated completion authority (it can run evidence
+// commands in the session workspace; the MCP server cannot). update_goal asks
+// it to verify before completing. Same env the server already uses for SW
+// workflow execution (see workflow-tools.ts).
+const WORKFLOW_BUILDER_URL =
+	process.env.WORKFLOW_BUILDER_URL ?? "http://localhost:3000";
+const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
 
 function textResult(data: unknown) {
 	setSpanOutput(data);
@@ -137,7 +144,7 @@ export function registerGoalTools(server: McpServer): RegisteredTool[] {
 		{
 			title: "Update Goal",
 			description:
-				"Mark the active goal complete. Call this ONLY after a completion audit shows the objective is genuinely achieved with concrete evidence — never merely because effort was spent, progress was made, or the budget is nearly exhausted. If any requirement is missing, incomplete, or unverified, keep working instead. status must be \"complete\".",
+				"Request completion of the active goal. Call this ONLY after a completion audit shows the objective is genuinely achieved with concrete evidence — never merely because effort was spent or the budget is nearly exhausted. Completion is INDEPENDENTLY VERIFIED against the goal's acceptance criteria: if verification fails, this tool returns the failing checks and the goal stays active — fix them and call update_goal again. status must be \"complete\".",
 			inputSchema: {
 				status: z
 					.string()
@@ -156,17 +163,63 @@ export function registerGoalTools(server: McpServer): RegisteredTool[] {
 					"update_goal can only mark the existing goal complete; pause, resume, and budget-limited status changes are controlled by the user or system.",
 				);
 			}
+			if (!INTERNAL_API_TOKEN) {
+				return errorResult(
+					"INTERNAL_API_TOKEN is not configured; cannot verify goal completion.",
+				);
+			}
 			try {
-				const goal = await completeGoalForSession(sessionId);
-				if (!goal) {
-					return errorResult("No active goal to complete for this session.");
+				// Completion is EVALUATOR-GATED: the BFF verifies the goal's declared
+				// evidence (deterministic checks in the session workspace) before
+				// completing. On pass it marks complete + finalizes; on fail the goal
+				// stays active and we relay the failing checks so the agent keeps going.
+				const evalUrl = `${WORKFLOW_BUILDER_URL}/api/internal/goals/${encodeURIComponent(
+					sessionId,
+				)}/evaluate`;
+				let verdict: { met?: boolean; skipped?: boolean; feedback?: string };
+				try {
+					const resp = await fetch(evalUrl, {
+						method: "POST",
+						headers: {
+							"X-Internal-Token": INTERNAL_API_TOKEN,
+							"Content-Type": "application/json",
+						},
+						body: "{}",
+					});
+					if (!resp.ok) {
+						return errorResult(
+							`Could not verify goal completion (evaluator HTTP ${resp.status}). Keep working and call update_goal again.`,
+						);
+					}
+					verdict = (await resp.json()) as {
+						met?: boolean;
+						skipped?: boolean;
+						feedback?: string;
+					};
+				} catch (err) {
+					return errorResult(
+						`Could not reach the goal evaluator (${err}). Keep working and call update_goal again.`,
+					);
 				}
+				if (!verdict.met) {
+					return errorResult(
+						verdict.feedback ||
+							"Completion rejected: the acceptance criteria are not yet met. Keep working.",
+					);
+				}
+				// Verified — the BFF already marked the goal complete + finalized.
+				const goal = await getGoalForSession(sessionId);
 				return textResult({
 					ok: true,
-					goal: shapeGoal(goal),
-					completion_budget_report: `Goal achieved. Tokens used: ${goal.tokens_used}${
-						goal.token_budget !== null ? ` / ${goal.token_budget}` : ""
-					}; elapsed: ${goal.time_used_seconds}s. Report the final elapsed time (and consumed token budget, if set) to the user.`,
+					goal: goal ? shapeGoal(goal) : null,
+					verification: verdict.skipped
+						? "self-judged (no evidence declared)"
+						: "evidence checks passed",
+					completion_budget_report: goal
+						? `Goal achieved and verified. Tokens used: ${goal.tokens_used}${
+								goal.token_budget !== null ? ` / ${goal.token_budget}` : ""
+							}; elapsed: ${goal.time_used_seconds}s. Report the final elapsed time (and consumed token budget, if set) to the user.`
+						: "Goal achieved and verified.",
 				});
 			} catch (err) {
 				return errorResult(`Failed to update goal: ${err}`);

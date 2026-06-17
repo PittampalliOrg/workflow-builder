@@ -3155,6 +3155,13 @@ export const threadGoals = pgTable(
 		timeUsedSeconds: integer("time_used_seconds").notNull().default(0),
 		iterations: integer("iterations").notNull().default(0),
 		maxIterations: integer("max_iterations").notNull().default(50),
+		// Evaluator-gated completion (Phase 1): the agent's self-declared
+		// completion is verified before the goal is marked complete. acceptance
+		// criteria are human/agent-readable; evidence.commands are deterministic
+		// shell checks the BFF evaluator runs in the session workspace.
+		// See docs/goal-loop-evaluator-design.md.
+		acceptanceCriteria: jsonb("acceptance_criteria").$type<string[]>(),
+		evidencePlan: jsonb("evidence_plan").$type<{ commands?: string[] }>(),
 		budgetSteeredAt: timestamp("budget_steered_at"),
 		lastContinuationAt: timestamp("last_continuation_at"),
 		// complete | budget | iteration_cap | interrupt

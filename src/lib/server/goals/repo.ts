@@ -33,6 +33,8 @@ function mapGoalRow(row: Record<string, unknown> | undefined): ThreadGoalRow | n
 		timeUsedSeconds: Number(row.time_used_seconds ?? 0),
 		iterations: Number(row.iterations ?? 0),
 		maxIterations: Number(row.max_iterations ?? 0),
+		acceptanceCriteria: (row.acceptance_criteria ?? null) as string[] | null,
+		evidencePlan: (row.evidence_plan ?? null) as { commands?: string[] } | null,
 		budgetSteeredAt: ts(row.budget_steered_at),
 		lastContinuationAt: ts(row.last_continuation_at),
 		stopReason: row.stop_reason === null ? null : String(row.stop_reason),
@@ -97,6 +99,10 @@ export interface CreateGoalInput {
 	tokenBudget?: number | null;
 	maxIterations?: number;
 	workflowExecutionId?: string | null;
+	/** Evaluator-gated completion: declared acceptance criteria + deterministic
+	 *  evidence commands the BFF evaluator runs before completing the goal. */
+	acceptanceCriteria?: string[] | null;
+	evidencePlan?: { commands?: string[] } | null;
 }
 
 /**
@@ -118,6 +124,16 @@ export async function createOrReplaceGoal(
 	const tokenBudget =
 		typeof input.tokenBudget === "number" && input.tokenBudget > 0
 			? Math.floor(input.tokenBudget)
+			: null;
+	const acceptanceCriteria =
+		Array.isArray(input.acceptanceCriteria) && input.acceptanceCriteria.length
+			? input.acceptanceCriteria
+			: null;
+	const evidencePlan =
+		input.evidencePlan &&
+		Array.isArray(input.evidencePlan.commands) &&
+		input.evidencePlan.commands.length
+			? { commands: input.evidencePlan.commands }
 			: null;
 
 	return database.transaction(async (tx) => {
@@ -142,6 +158,8 @@ export async function createOrReplaceGoal(
 					objective: input.objective,
 					tokenBudget,
 					maxIterations,
+					acceptanceCriteria,
+					evidencePlan,
 					workflowExecutionId: input.workflowExecutionId ?? null,
 					goalId: crypto.randomUUID(),
 					status: "active",
@@ -166,6 +184,8 @@ export async function createOrReplaceGoal(
 				objective: input.objective,
 				tokenBudget,
 				maxIterations,
+				acceptanceCriteria,
+				evidencePlan,
 				workflowExecutionId: input.workflowExecutionId ?? null,
 			})
 			.returning();
