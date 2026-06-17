@@ -1,10 +1,7 @@
 import { appendEvent } from "$lib/server/sessions/events";
 import { raiseSessionUserEvents } from "$lib/server/sessions/spawn";
 import { raiseSessionEvent } from "$lib/server/sessions/control";
-import {
-	isInteractiveCliSession,
-	sessionUsesNativeGoal,
-} from "$lib/server/sessions/runtime-target";
+import { sessionUsesNativeGoal } from "$lib/server/sessions/runtime-target";
 import type { ThreadGoalRow } from "$lib/server/db/schema";
 import {
 	accrueUsage,
@@ -182,12 +179,6 @@ async function emitGoalCompletedIfDone(sessionId: string): Promise<void> {
 	});
 }
 
-// The Dapr workflow external-event channel cli-agent-py's session_workflow waits
-// on for lifecycle/terminal events (Python: taskhub.LIFECYCLE_EVENT_NAME). A
-// {type:"session.terminate"} raised here breaks its multi-turn loop and lets the
-// session_workflow RETURN normally.
-const SESSION_LIFECYCLE_EVENT_NAME = "session.lifecycle_events";
-
 /**
  * When a goal completes (or terminally caps) on a WORKFLOW-driven session, end
  * the session so the parent durable/run resumes (its child_workflow returns).
@@ -195,14 +186,18 @@ const SESSION_LIFECYCLE_EVENT_NAME = "session.lifecycle_events";
  * cross the per-session task hub → the known cross-app wedge). Direct (UI) goal
  * sessions have no workflow_execution_id and are left idle (emit-only).
  *
- * Runtime-aware: the two families consume terminal events on DIFFERENT channels:
- *  - interactive-cli (cli-agent-py): waits on `session.lifecycle_events` and
- *    breaks on payload.type → raise that channel with {type:"session.terminate"}.
- *  - durable-session (dapr-agent-py): waits on `session.user_events`; its
- *    raise-event endpoint converts a terminal eventName into that batch AND
- *    writes the cancel-key (cancellation.py) → raise eventName="session.terminate"
- *    directly. (A lifecycle-channel raise is ignored by dapr — the original bug
- *    where dapr goal sessions completed but wedged the parent.)
+ * The eventName MUST be the semantic terminal type `session.terminate` for BOTH
+ * runtimes — each runtime's `/internal/sessions/raise-event` endpoint:
+ *   1. persists the cooperative-cancel flag when `eventName ∈ {session.terminate,
+ *      user.interrupt}` (so the session_workflow halts on its idle-probe backstop
+ *      even if the live event is missed/buffered mid-turn), AND
+ *   2. re-wraps `{type: eventName, ...payload}` onto its own internal lifecycle
+ *      channel (cli-agent-py LIFECYCLE_EVENT_NAME / dapr-agent-py user_events).
+ * (Earlier code raised the CLI side with eventName="session.lifecycle_events" —
+ * the channel name — so the endpoint saw a non-terminal eventName: it neither
+ * persisted the flag NOR delivered a recognizable terminal type, and native-CLI
+ * goal sessions hung after completing the goal. Always raise the TYPE, not the
+ * channel.)
  */
 async function terminateWorkflowGoalSessionIfNeeded(
 	sessionId: string,
@@ -210,21 +205,9 @@ async function terminateWorkflowGoalSessionIfNeeded(
 	if (process.env.WORKFLOW_GOAL_AUTO_TERMINATE === "false") return;
 	const workflowExecutionId = await getSessionWorkflowExecutionId(sessionId);
 	if (!workflowExecutionId) return; // direct UI goal session → emit-only
-	// The cooperative terminate is the PROVEN end path for goal-driven CLI
-	// sessions. (Native-CLI auto-terminate keys on a `turn.completed` lifecycle
-	// event the runtime does NOT reliably emit in /goal mode, so it can't be
-	// relied on alone — an earlier "skip for native CLI" left codex/claude hung
-	// idle.) The session ends "terminated"; the cli-agent-py session_workflow now
-	// runs outputSync on terminated too, so the build still reaches the workspace.
-	const isCli = await isInteractiveCliSession(sessionId);
-	const res = isCli
-		? await raiseSessionEvent(sessionId, SESSION_LIFECYCLE_EVENT_NAME, {
-				type: "session.terminate",
-				reason: "goal_completed",
-			})
-		: await raiseSessionEvent(sessionId, "session.terminate", {
-				reason: "goal_completed",
-			});
+	const res = await raiseSessionEvent(sessionId, "session.terminate", {
+		reason: "goal_completed",
+	});
 	if (!res.ok) {
 		console.warn(
 			`[goal-loop] ${sessionId}: goal-complete terminate raise failed (${res.status}): ${res.error ?? ""}`,
