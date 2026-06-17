@@ -1,7 +1,10 @@
 import { appendEvent } from "$lib/server/sessions/events";
 import { raiseSessionUserEvents } from "$lib/server/sessions/spawn";
 import { raiseSessionEvent } from "$lib/server/sessions/control";
-import { sessionUsesNativeGoal } from "$lib/server/sessions/runtime-target";
+import {
+	isInteractiveCliSession,
+	sessionUsesNativeGoal,
+} from "$lib/server/sessions/runtime-target";
 import type { ThreadGoalRow } from "$lib/server/db/schema";
 import {
 	accrueUsage,
@@ -166,21 +169,27 @@ async function emitGoalCompletedIfDone(sessionId: string): Promise<void> {
 	});
 }
 
-// The Dapr workflow external-event channel the agent runtimes' session_workflow
-// waits on for lifecycle/terminal events (Python: taskhub.LIFECYCLE_EVENT_NAME).
-// A {type:"session.terminate"} raised here breaks the multi-turn loop and lets
+// The Dapr workflow external-event channel cli-agent-py's session_workflow waits
+// on for lifecycle/terminal events (Python: taskhub.LIFECYCLE_EVENT_NAME). A
+// {type:"session.terminate"} raised here breaks its multi-turn loop and lets the
 // session_workflow RETURN normally.
 const SESSION_LIFECYCLE_EVENT_NAME = "session.lifecycle_events";
 
 /**
- * When a goal completes on a WORKFLOW-driven session, end the session so the
- * parent durable/run resumes. We raise a cooperative `session.terminate` on the
- * lifecycle channel (the same raise mechanism sub-orchestration already uses),
- * which makes the child `session_workflow` break its loop and RETURN NORMALLY —
- * the parent's `call_child_workflow` then completes. This is deliberately NOT an
- * external Dapr terminate (that can't cross the per-session task hub → the known
- * cross-app wedge). Direct (UI) goal sessions have no workflow_execution_id and
- * are left idle (emit-only), per the original goal-completion decision.
+ * When a goal completes (or terminally caps) on a WORKFLOW-driven session, end
+ * the session so the parent durable/run resumes (its child_workflow returns).
+ * Deliberately a COOPERATIVE raise, NOT an external Dapr terminate (which can't
+ * cross the per-session task hub → the known cross-app wedge). Direct (UI) goal
+ * sessions have no workflow_execution_id and are left idle (emit-only).
+ *
+ * Runtime-aware: the two families consume terminal events on DIFFERENT channels:
+ *  - interactive-cli (cli-agent-py): waits on `session.lifecycle_events` and
+ *    breaks on payload.type → raise that channel with {type:"session.terminate"}.
+ *  - durable-session (dapr-agent-py): waits on `session.user_events`; its
+ *    raise-event endpoint converts a terminal eventName into that batch AND
+ *    writes the cancel-key (cancellation.py) → raise eventName="session.terminate"
+ *    directly. (A lifecycle-channel raise is ignored by dapr — the original bug
+ *    where dapr goal sessions completed but wedged the parent.)
  */
 async function terminateWorkflowGoalSessionIfNeeded(
 	sessionId: string,
@@ -188,10 +197,15 @@ async function terminateWorkflowGoalSessionIfNeeded(
 	if (process.env.WORKFLOW_GOAL_AUTO_TERMINATE === "false") return;
 	const workflowExecutionId = await getSessionWorkflowExecutionId(sessionId);
 	if (!workflowExecutionId) return; // direct UI goal session → emit-only
-	const res = await raiseSessionEvent(sessionId, SESSION_LIFECYCLE_EVENT_NAME, {
-		type: "session.terminate",
-		reason: "goal_completed",
-	});
+	const isCli = await isInteractiveCliSession(sessionId);
+	const res = isCli
+		? await raiseSessionEvent(sessionId, SESSION_LIFECYCLE_EVENT_NAME, {
+				type: "session.terminate",
+				reason: "goal_completed",
+			})
+		: await raiseSessionEvent(sessionId, "session.terminate", {
+				reason: "goal_completed",
+			});
 	if (!res.ok) {
 		console.warn(
 			`[goal-loop] ${sessionId}: goal-complete terminate raise failed (${res.status}): ${res.error ?? ""}`,
