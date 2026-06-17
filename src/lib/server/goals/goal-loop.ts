@@ -13,10 +13,12 @@ import {
 	getSessionWorkflowExecutionId,
 	hasGoalCompletedEvent,
 	latestEventMeta,
+	markGoalComplete,
 	pauseGoal,
 	rawLatestEventAgeSeconds,
 	sessionStopState,
 } from "./repo";
+import { evaluateGoalCompletion } from "./evaluator";
 import {
 	renderBudgetLimitPrompt,
 	renderContinuationPrompt,
@@ -113,6 +115,14 @@ export async function onSessionEvent(
 			// Only an end_turn idle (the agent finished its turn) drives a
 			// continuation. Terminal idles (max_iters, etc.) are ignored.
 			if (reason && reason !== "end_turn") return;
+			// Native-CLI evidence gate: for a native-goal CLI that ALSO declared
+			// evidence, the BFF evaluator is the completion authority — not the CLI's
+			// own transcript-reading /goal evaluator. On each end-turn idle (a native
+			// /goal returns control only when ITS evaluator says done) verify the
+			// ground-truth evidence: pass → complete + terminate; fail → inject the
+			// failing checks back into the TUI and keep working (capped by
+			// maxIterations). Handles its own termination, so return when it fires.
+			if (await gateNativeEvidenceOnIdle(sessionId)) return;
 			// Idle-rescue: if the goal already completed (native-goal CLIs emit
 			// session.goal_completed and may then run a post-completion turn that
 			// races the cooperative terminate raised on goal_completed), re-fire the
@@ -128,10 +138,16 @@ export async function onSessionEvent(
 			return;
 		}
 		if (event.type === "session.goal_completed") {
+			// Native-CLI-with-evidence defers to the idle gate: the CLI's self-declared
+			// completion is only a REQUEST — the evaluator (gateNativeEvidenceOnIdle,
+			// run on the accompanying end-turn idle) is the authority and decides
+			// terminate-vs-keep-working. Terminating here would accept completion
+			// without verifying the ground-truth evidence.
+			if (await isNativeEvidenceGoal(sessionId)) return;
 			// Workflow-driven goal sessions must end so the parent durable/run
 			// resumes; direct (UI) goal sessions stay idle (emit-only). Covers BOTH
-			// completion sources (BFF custom loop + native-CLI adapter) since both
-			// land here as session.goal_completed.
+			// completion sources (BFF custom loop + native-CLI adapter without
+			// evidence) since both land here as session.goal_completed.
 			await terminateWorkflowGoalSessionIfNeeded(sessionId);
 			return;
 		}
@@ -236,6 +252,127 @@ async function terminateWorkflowGoalSessionIfNeeded(
 			`[goal-loop] ${sessionId}: goal-complete terminate raise failed (${res.status}): ${res.error ?? ""}`,
 		);
 	}
+}
+
+/** True iff this session is a native-goal CLI (codex/claude) that ALSO has a
+ *  goal row with declared evidence — i.e. its completion is evaluator-gated by
+ *  the BFF rather than the CLI's own /goal evaluator. */
+async function isNativeEvidenceGoal(sessionId: string): Promise<boolean> {
+	if (!(await sessionUsesNativeGoal(sessionId))) return false;
+	const goal = await getCurrentGoal(sessionId);
+	return !!goal?.evidencePlan?.commands?.length;
+}
+
+/**
+ * Evaluator gate for native-CLI-with-evidence sessions, run on each end-turn
+ * idle (when a native /goal returns control). Returns true iff it handled the
+ * idle (so the caller stops): for a native session WITHOUT evidence it returns
+ * false and the existing native idle-rescue/continuation paths run unchanged.
+ *
+ * Pass  → mark complete, emit goal_completed, cooperatively terminate (parent
+ *         durable/run resumes).
+ * Fail  → claim the next iteration (atomic increment + spacing + cap guard) and
+ *         inject the failing evidence back into the TUI so the CLI keeps working.
+ * Cap   → claimNextContinuation returns null at the cap → flip to budget_limited
+ *         + terminate so the parent isn't wedged on a perpetually-failing goal.
+ */
+async function gateNativeEvidenceOnIdle(sessionId: string): Promise<boolean> {
+	if (!(await sessionUsesNativeGoal(sessionId))) return false;
+	const goal = await getCurrentGoal(sessionId);
+	const commands = goal?.evidencePlan?.commands ?? [];
+	if (!goal || commands.length === 0) return false; // native w/o evidence → unchanged
+
+	// Already complete (e.g. a duplicate idle after we accepted) → just ensure the
+	// session ends.
+	if (goal.status === "complete") {
+		await terminateWorkflowGoalSessionIfNeeded(sessionId);
+		return true;
+	}
+
+	const verdict = await evaluateGoalCompletion(sessionId);
+	if (verdict.met) {
+		await markGoalComplete(sessionId);
+		await appendEvent(sessionId, {
+			type: "session.goal_completed",
+			data: {
+				completionSource: "native_cli_evidence_verified",
+				goalStatus: "complete",
+				objective: goal.objective,
+			},
+			processedAt: null,
+			sourceEventId: `goal-completed:${sessionId}:${goal.goalId}`,
+		});
+		await terminateWorkflowGoalSessionIfNeeded(sessionId);
+		return true;
+	}
+
+	// Rejected — push back. claimNextContinuation atomically bumps the iteration
+	// (with a spacing guard against double-fire and the maxIterations cap).
+	const claimed = await claimNextContinuation(sessionId);
+	if (!claimed) {
+		// Either the iteration cap is hit, or a recent rejection already posted
+		// (spacing). Only the cap is terminal: flip to budget_limited + end so the
+		// parent durable/run resumes with whatever the agent produced.
+		const capped = await claimIterationCap(sessionId);
+		if (capped) {
+			await appendEvent(sessionId, {
+				type: "session.goal_rejected",
+				data: {
+					reason: "iteration_cap",
+					feedback: verdict.feedback,
+					iterations: capped.iterations,
+					results: verdict.results,
+				},
+				processedAt: null,
+				sourceEventId: `goal-cap:${sessionId}:${capped.goalId}`,
+			});
+			await terminateWorkflowGoalSessionIfNeeded(sessionId);
+		}
+		return true;
+	}
+
+	await postNativeEvidenceRejection(sessionId, claimed, verdict);
+	return true;
+}
+
+/**
+ * Inject an evaluator rejection into a native-CLI session: record it (so the UI
+ * + transcript show it, and the CLI's injected-prompt hook skips re-recording)
+ * and raise it onto the live TUI as a user turn so the native loop keeps working.
+ */
+async function postNativeEvidenceRejection(
+	sessionId: string,
+	goal: ThreadGoalRow,
+	verdict: { feedback: string; results?: unknown[] },
+): Promise<void> {
+	const text =
+		"Your goal was reported complete, but an INDEPENDENT verifier ran the " +
+		"acceptance checks against the workspace and they did NOT pass. The goal " +
+		`is NOT complete.\n\n${verdict.feedback}\n\nFix the issues in the ` +
+		"workspace and keep working until every acceptance check passes.";
+	const userMessage = {
+		type: "user.message",
+		content: [{ type: "text", text }],
+		origin: "goal-evidence-reject",
+		goalIteration: goal.iterations,
+	};
+	await appendEvent(sessionId, {
+		type: "user.message",
+		data: userMessage,
+		processedAt: null,
+		sourceEventId: `goal-evidence-reject:${sessionId}:${goal.iterations}`,
+	});
+	await appendEvent(sessionId, {
+		type: "session.goal_rejected",
+		data: {
+			feedback: verdict.feedback,
+			iteration: goal.iterations,
+			results: verdict.results,
+		},
+		processedAt: null,
+		sourceEventId: `goal-rejected:${sessionId}:${goal.iterations}`,
+	});
+	await raiseSessionUserEvents(sessionId, [userMessage]);
 }
 
 async function driveContinuationIfIdle(
