@@ -3075,6 +3075,242 @@ function buildSvelteKitGameWorkflowEdges(): JsonRecord[] {
 	}));
 }
 
+// --- Evaluator-Gated Coding Goal (minimal goal-mode showcase) ---------------
+// Smallest possible scenario to exercise evaluator-gated completion: a
+// custom-loop (dapr-agent-py) agent writes a Python module to satisfy a spec;
+// its update_goal(complete) is independently VERIFIED by running deterministic
+// evidence commands in the workspace before the goal is marked complete
+// (reject→retry→pass). No browser, no live preview, no outputSync. See
+// docs/goal-loop-evaluator-design.md.
+const CODING_GOAL_WORKFLOW_ID =
+	process.env.SEED_CODING_GOAL_WORKFLOW_ID?.trim() || "coding-goal-eval-showcase";
+const CODING_GOAL_WORKFLOW_NAME = "Evaluator-Gated Coding Goal";
+const CODING_GOAL_WORKFLOW_DESCRIPTION =
+	"Minimal goal-mode showcase for evaluator-gated completion: a dapr-agent-py agent writes a Python module to satisfy a spec, and its self-declared completion is independently verified by running deterministic acceptance tests in the workspace before the goal is marked complete (reject→retry→pass). No browser/preview.";
+const CODING_GOAL_DEFAULT_AGENT_SLUG =
+	process.env.SEED_CODING_GOAL_AGENT_SLUG?.trim() || "general-assistant";
+const CODING_GOAL_DEFAULT_TASK =
+	"Implement add(a, b) (returns a+b) and isPrime(n) in a Node.js (CommonJS) module.";
+const CODING_GOAL_DEFAULT_MAX_ITERATIONS = 15;
+// Authoritative acceptance test — embedded in the evidence command (NOT written
+// by the agent, so it can't be gamed). Plain assertions + exit code via `node`,
+// which is guaranteed present in the workspace image (no extra install). Edge
+// cases (0/1/negatives) make a naive isPrime fail on the first attempt, so the
+// reject→fix→pass loop is visible.
+const CODING_GOAL_EVIDENCE_COMMAND =
+	`cd /sandbox && node -e 'const s=require("./solution.js"); const a=(c,m)=>{if(!c){console.error("FAIL: "+m);process.exit(1)}}; a(s.add(2,3)===5,"add(2,3)===5"); a(s.isPrime(2)===true,"isPrime(2)"); a(s.isPrime(1)===false,"isPrime(1)"); a(s.isPrime(0)===false,"isPrime(0)"); a(s.isPrime(-7)===false,"isPrime(-7)"); a(s.isPrime(13)===true,"isPrime(13)"); a(s.isPrime(15)===false,"isPrime(15)"); console.log("ALL PASS")'`;
+
+const CODING_GOAL_OBJECTIVE = [
+	'${ "Write /sandbox/solution.js (Node.js CommonJS) that satisfies: " + (.trigger.task // "',
+	CODING_GOAL_DEFAULT_TASK,
+	'") + ". It must module.exports an add(a, b) returning a+b, and an isPrime(n) returning true ONLY for prime integers >= 2 (false for 0, 1, all negatives, and composites). The goal is COMPLETE only when the acceptance test passes (exit 0). Do not weaken, delete, or special-case around the test." }',
+].join("");
+
+const CODING_GOAL_PROMPT = [
+	'${ "Write /sandbox/solution.js per the active goal: " + (.trigger.task // "',
+	CODING_GOAL_DEFAULT_TASK,
+	'") + ". Export it as a CommonJS module (module.exports = { add, isPrime }). When you believe it is complete, call update_goal(status=\\"complete\\"). Completion is VERIFIED by running the acceptance test against your module; if it fails you will receive the failing output — fix /sandbox/solution.js and call update_goal again." }',
+].join("");
+
+function makeCodingGoalWorkspaceProfileTask(): JsonRecord {
+	return {
+		call: "workspace/profile",
+		with: {
+			name: "coding-goal-eval",
+			rootPath: "/sandbox",
+			sandboxTemplate: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+			ttlSeconds: 3600,
+			keepAfterRun: true,
+			managedBy: "workflow-builder:demos:coding-goal-eval",
+			commandTimeoutMs: 300000,
+			timeoutMs: 600000,
+			enabledTools: [
+				"execute_command",
+				"read_file",
+				"write_file",
+				"edit_file",
+				"list_files",
+				"mkdir",
+				"file_stat",
+			],
+			sandboxPolicy: {
+				mode: "per-run",
+				template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+				ttlSeconds: 3600,
+				keepAfterRun: true,
+			},
+		},
+	};
+}
+
+function makeCodingGoalSolveTask(): JsonRecord {
+	return {
+		call: "durable/run",
+		with: {
+			mode: "execute_direct",
+			cwd: "/sandbox",
+			sandboxName: "${ .workspace_profile.sandboxName }",
+			workspaceRef: "${ .workspace_profile.workspaceRef }",
+			sandboxPolicy: {
+				mode: "per-run",
+				template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+				ttlSeconds: 3600,
+				keepAfterRun: true,
+			},
+			body: {
+				// Custom-loop runtime (dapr-agent-py) — uses the goal-MCP update_goal
+				// path, which is evaluator-gated. agentSlug overridable per run.
+				agentRef: { slug: '${ .trigger.agentSlug // "general-assistant" }' },
+				prompt: CODING_GOAL_PROMPT,
+				goalSpec: {
+					objective: CODING_GOAL_OBJECTIVE,
+					acceptanceCriteria: [
+						"/sandbox/solution.js exports add(a, b) returning a + b",
+						"isPrime(n) returns true for primes >= 2 and false for 0, 1, negatives, and composites",
+						"the acceptance test command runs clean (exit 0, prints ALL PASS)",
+					],
+					// Deterministic evidence the BFF evaluator runs before completing.
+					evidence: { commands: [CODING_GOAL_EVIDENCE_COMMAND] },
+					maxIterations: `\${ .trigger.maxIterations // ${CODING_GOAL_DEFAULT_MAX_ITERATIONS} }`,
+				},
+				overrides: { cwd: "/sandbox", maxTurns: 40, timeoutMinutes: 30 },
+			},
+		},
+	};
+}
+
+function buildCodingGoalWorkflowSpec(): JsonRecord {
+	return {
+		document: {
+			dsl: "1.0.0",
+			namespace: "workflow-builder.demos",
+			name: CODING_GOAL_WORKFLOW_ID,
+			version: "1.0.0",
+			title: CODING_GOAL_WORKFLOW_NAME,
+			summary: CODING_GOAL_WORKFLOW_DESCRIPTION,
+			"x-workflow-builder": {
+				architecture: "goal-mode+evaluator-gated-completion+single-sandbox",
+				notes:
+					"Minimal evaluator-gated completion demo. The dapr-agent-py agent's update_goal(complete) is verified by the BFF running goalSpec.evidence.commands in the shared workspace; failing checks reject completion + feed back to the agent. No browser/preview/outputSync.",
+				triggerInputs: {
+					task: "Optional. The coding task (default: add + is_prime).",
+					agentSlug:
+						"Optional. dapr-agent-py agent slug (default general-assistant; use a strong model e.g. an OpenAI/Claude dapr agent).",
+					maxIterations: "Optional. Goal-loop iteration cap (default 15).",
+				},
+				input: {
+					fields: {
+						task: {
+							type: "textarea",
+							label: "Coding task",
+							description: "Describe the Python module the agent must implement.",
+							defaultValue: CODING_GOAL_DEFAULT_TASK,
+						},
+						agentSlug: {
+							type: "text",
+							label: "Agent slug (dapr-agent-py)",
+							description:
+								"Custom-loop dapr-agent-py agent to run (uses the evaluator-gated goal MCP).",
+							defaultValue: CODING_GOAL_DEFAULT_AGENT_SLUG,
+						},
+					},
+				},
+			},
+		},
+		do: [
+			{ workspace_profile: makeCodingGoalWorkspaceProfileTask() },
+			{ solve: makeCodingGoalSolveTask() },
+		],
+		output: {
+			as: {
+				workspaceRef: "${ .workspace_profile.workspaceRef }",
+				sandboxName: '${ .workspace_profile.sandboxName // "" }',
+				solve: "${ .solve }",
+			},
+		},
+		input: {
+			schema: {
+				document: {
+					type: "object",
+					required: ["task"],
+					properties: {
+						task: {
+							type: "string",
+							title: "Coding task",
+							description: "The Python module the agent must implement.",
+							default: CODING_GOAL_DEFAULT_TASK,
+						},
+						agentSlug: {
+							type: "string",
+							title: "Agent slug",
+							description: "dapr-agent-py agent slug.",
+							default: CODING_GOAL_DEFAULT_AGENT_SLUG,
+						},
+						maxIterations: {
+							type: "integer",
+							title: "Max goal iterations",
+							default: CODING_GOAL_DEFAULT_MAX_ITERATIONS,
+							minimum: 1,
+						},
+						sandboxTemplate: {
+							type: "string",
+							title: "Sandbox template",
+							default: "dapr-agent",
+						},
+					},
+				},
+				format: "json",
+			},
+		},
+	};
+}
+
+function buildCodingGoalWorkflowNodes(): JsonRecord[] {
+	return [
+		{
+			id: "trigger",
+			type: "trigger",
+			position: { x: 80, y: 60 },
+			data: {
+				label: "Coding task trigger",
+				description: "Receives the coding task + optional agentSlug/maxIterations.",
+			},
+		},
+		{
+			id: "workspace_profile",
+			type: "action",
+			position: { x: 80, y: 200 },
+			data: {
+				label: "Provision sandbox",
+				actionType: "workspace/profile",
+				description:
+					"Single dapr-agent sandbox (python/node); shared by the agent + the evaluator's evidence checks.",
+			},
+		},
+		{
+			id: "solve",
+			type: "action",
+			position: { x: 80, y: 340 },
+			data: {
+				label: "Solve (goal mode, evaluator-gated)",
+				actionType: "durable/run",
+				description:
+					"Agent writes solution.py under a goalSpec; update_goal(complete) is verified by the BFF running the evidence command before the goal completes.",
+			},
+		},
+	];
+}
+
+function buildCodingGoalWorkflowEdges(): JsonRecord[] {
+	const ordered = ["trigger", "workspace_profile", "solve"];
+	return ordered.slice(0, -1).map((source, index) => ({
+		id: `e_coding_goal_${index + 1}`,
+		source,
+		target: ordered[index + 1],
+		type: "default",
+	}));
+}
+
 async function upsertRawWorkflow(params: {
 	db: ReturnType<typeof drizzle>;
 	workflowId: string;
@@ -3335,6 +3571,19 @@ async function seedWorkflow() {
 			spec: buildSvelteKitGameWorkflowSpec(),
 			nodes: buildSvelteKitGameWorkflowNodes(),
 			edges: buildSvelteKitGameWorkflowEdges(),
+			visibility: "public",
+		});
+
+		await upsertRawWorkflow({
+			db,
+			workflowId: CODING_GOAL_WORKFLOW_ID,
+			name: CODING_GOAL_WORKFLOW_NAME,
+			description: CODING_GOAL_WORKFLOW_DESCRIPTION,
+			userId,
+			projectId,
+			spec: buildCodingGoalWorkflowSpec(),
+			nodes: buildCodingGoalWorkflowNodes(),
+			edges: buildCodingGoalWorkflowEdges(),
 			visibility: "public",
 		});
 

@@ -1090,7 +1090,17 @@ type GoalSpec = {
 	objective: string;
 	tokenBudget: number | null;
 	maxIterations: number | null;
+	acceptanceCriteria: string[] | null;
+	evidencePlan: { commands: string[] } | null;
 };
+
+function parseStringArray(value: unknown): string[] | null {
+	if (!Array.isArray(value)) return null;
+	const out = value
+		.map((v) => (typeof v === "string" ? v.trim() : ""))
+		.filter((v) => v.length > 0);
+	return out.length ? out : null;
+}
 
 /** Validate the optional goal block from the durable/run task. Returns null
  *  (single-shot run) unless a non-empty objective is present. */
@@ -1099,10 +1109,17 @@ function parseGoalSpec(value: unknown): GoalSpec | null {
 	const g = value as Record<string, unknown>;
 	const objective = typeof g.objective === "string" ? g.objective.trim() : "";
 	if (!objective) return null;
+	const evRaw =
+		g.evidence && typeof g.evidence === "object"
+			? (g.evidence as Record<string, unknown>)
+			: null;
+	const evCommands = evRaw ? parseStringArray(evRaw.commands) : null;
 	return {
 		objective,
 		tokenBudget: parsePositiveInteger(g.tokenBudget),
 		maxIterations: parsePositiveInteger(g.maxIterations),
+		acceptanceCriteria: parseStringArray(g.acceptanceCriteria),
+		evidencePlan: evCommands ? { commands: evCommands } : null,
 	};
 }
 
@@ -1125,6 +1142,8 @@ async function ensureWorkflowGoal(
 			tokenBudget: goal.tokenBudget,
 			maxIterations: goal.maxIterations ?? undefined,
 			workflowExecutionId,
+			acceptanceCriteria: goal.acceptanceCriteria,
+			evidencePlan: goal.evidencePlan,
 		});
 	} catch (err) {
 		console.warn(

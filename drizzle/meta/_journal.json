@@ -582,6 +582,13 @@
       "when": 1781787600000,
       "tag": "0088_session_pause_requested_at",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1781874000000,
+      "tag": "0089_goal_evaluator_evidence",
+      "breakpoints": true
     }
   ]
 }
