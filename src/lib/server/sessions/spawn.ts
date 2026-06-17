@@ -20,10 +20,7 @@ import {
 	maybeProvisionAgentWorkflowHost,
 	waitForAgentWorkflowHostAppReady,
 } from "$lib/server/sessions/agent-workflow-host";
-import {
-	resolveSessionRuntimeTarget,
-	runtimeUsesNativeGoal,
-} from "$lib/server/sessions/runtime-target";
+import { resolveSessionRuntimeTarget } from "$lib/server/sessions/runtime-target";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { evaluateSwap } from "$lib/server/agents/swap-safety";
 import {
@@ -251,10 +248,11 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 			ensureGoalMcpServer(
 				rewrittenMcp,
 				swapTarget?.capabilities?.supportsMcp ?? false,
-				// Skip the goal MCP only for runtimes that drive their OWN native
-				// /goal (claude/codex). agy uses the custom codex-parity loop, so it
-				// NEEDS the goal MCP (create/update_goal) like dapr-agent-py.
-				runtimeUsesNativeGoal(swapTarget),
+				// Always wire the goal MCP for goal-capable runtimes — the evaluator
+				// custom loop is the DEFAULT for every runtime now (incl. codex/claude),
+				// and update_goal is the agent's fast completion path. Opt-in native
+				// `/goal` (objective prefixed `/goal`) simply ignores it.
+				false,
 			),
 			sessionId,
 		),

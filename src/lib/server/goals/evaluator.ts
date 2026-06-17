@@ -22,6 +22,7 @@ import {
 	resolveSessionRuntimeTarget,
 } from "$lib/server/sessions/runtime-target";
 import { waitForAgentWorkflowHostAppReady } from "$lib/server/sessions/agent-workflow-host";
+import { getSession } from "$lib/server/sessions/registry";
 import { getCurrentGoal } from "./repo";
 
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN?.trim() ?? "";
@@ -87,25 +88,42 @@ async function resolveEvidenceTarget(
 		}
 	}
 
-	// Non-CLI: the retained openshell workspace sandbox.
-	if (!db || !workflowExecutionId) return null;
-	const rows = await db
-		.select({
-			workspaceRef: workflowWorkspaceSessions.workspaceRef,
-			rootPath: workflowWorkspaceSessions.rootPath,
-		})
-		.from(workflowWorkspaceSessions)
-		.where(eq(workflowWorkspaceSessions.workflowExecutionId, workflowExecutionId))
-		.orderBy(desc(workflowWorkspaceSessions.createdAt))
-		.limit(1);
-	const row = rows[0];
-	if (!row?.workspaceRef) return null;
+	// Non-CLI (dapr): the agent's tools execute in an openshell workspace sandbox.
+	if (!db) return null;
+	// Workflow-driven: the retained workspace/profile sandbox (the same source the
+	// live-preview proxy uses: workflow_workspace_sessions keyed on the execution).
+	if (workflowExecutionId) {
+		const rows = await db
+			.select({
+				workspaceRef: workflowWorkspaceSessions.workspaceRef,
+				rootPath: workflowWorkspaceSessions.rootPath,
+			})
+			.from(workflowWorkspaceSessions)
+			.where(eq(workflowWorkspaceSessions.workflowExecutionId, workflowExecutionId))
+			.orderBy(desc(workflowWorkspaceSessions.createdAt))
+			.limit(1);
+		const row = rows[0];
+		if (row?.workspaceRef) {
+			return {
+				kind: "openshell",
+				executionId: workflowExecutionId,
+				workspaceRef: row.workspaceRef,
+				rootPath:
+					(typeof row.rootPath === "string" && row.rootPath.trim()) || "/sandbox",
+			};
+		}
+	}
+	// Direct (one-off, non-workflow) dapr session: fall back to the session's own
+	// bound sandbox so evidence verifies for one-off goals too.
+	const session = await getSession(sessionId);
+	const sandboxRef =
+		session?.workspaceSandboxName?.trim() || session?.sandboxName?.trim() || null;
+	if (!sandboxRef) return null;
 	return {
 		kind: "openshell",
-		executionId: workflowExecutionId,
-		workspaceRef: row.workspaceRef,
-		rootPath:
-			(typeof row.rootPath === "string" && row.rootPath.trim()) || "/sandbox",
+		executionId: sessionId,
+		workspaceRef: sandboxRef,
+		rootPath: "/sandbox",
 	};
 }
 

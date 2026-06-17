@@ -11,17 +11,41 @@ vi.mock("$lib/server/agents/registry", () => ({
 	resolveAgentRef: (...args: unknown[]) => resolveAgentRefMock(...args),
 }));
 
-import { resolveSessionRuntimeTarget, runtimeUsesNativeGoal } from "./runtime-target";
+import {
+	decideGoalHarness,
+	goalObjectiveRequestsNative,
+	resolveSessionRuntimeTarget,
+	runtimeHasNativeGoalHarness,
+	stripNativeGoalPrefix,
+} from "./runtime-target";
 
-describe("runtimeUsesNativeGoal", () => {
+describe("runtimeHasNativeGoalHarness", () => {
 	it("is true only for claude/codex CLI adapters, false for agy + non-CLI", () => {
-		expect(runtimeUsesNativeGoal({ family: "interactive-cli", cliAdapter: "claude-code" })).toBe(true);
-		expect(runtimeUsesNativeGoal({ family: "interactive-cli", cliAdapter: "codex" })).toBe(true);
+		expect(runtimeHasNativeGoalHarness({ family: "interactive-cli", cliAdapter: "claude-code" })).toBe(true);
+		expect(runtimeHasNativeGoalHarness({ family: "interactive-cli", cliAdapter: "codex" })).toBe(true);
 		// agy: interactive-cli but no native goal harness → custom loop
-		expect(runtimeUsesNativeGoal({ family: "interactive-cli", cliAdapter: "antigravity" })).toBe(false);
-		// non-CLI runtimes always use the custom loop
-		expect(runtimeUsesNativeGoal({ family: "durable-session", cliAdapter: undefined })).toBe(false);
-		expect(runtimeUsesNativeGoal(null)).toBe(false);
+		expect(runtimeHasNativeGoalHarness({ family: "interactive-cli", cliAdapter: "antigravity" })).toBe(false);
+		// non-CLI runtimes have no native harness
+		expect(runtimeHasNativeGoalHarness({ family: "durable-session", cliAdapter: undefined })).toBe(false);
+		expect(runtimeHasNativeGoalHarness(null)).toBe(false);
+	});
+});
+
+describe("decideGoalHarness (evaluator default, native opt-in via /goal prefix)", () => {
+	it("defaults to evaluator (non-native) with no prefix, even on claude/codex", () => {
+		expect(decideGoalHarness("Build the thing", true)).toEqual({ native: false, objective: "Build the thing" });
+	});
+	it("opts into native when prefixed AND the runtime has a harness", () => {
+		expect(decideGoalHarness("/goal all tests pass", true)).toEqual({ native: true, objective: "all tests pass" });
+	});
+	it("strips the prefix but stays evaluator when no native harness (agy/dapr)", () => {
+		expect(decideGoalHarness("/goal all tests pass", false)).toEqual({ native: false, objective: "all tests pass" });
+	});
+	it("detects + strips the prefix", () => {
+		expect(goalObjectiveRequestsNative("/goal x")).toBe(true);
+		expect(goalObjectiveRequestsNative("goal x")).toBe(false);
+		expect(goalObjectiveRequestsNative("  /goal x")).toBe(true);
+		expect(stripNativeGoalPrefix("/goal  do X")).toBe("do X");
 	});
 });
 

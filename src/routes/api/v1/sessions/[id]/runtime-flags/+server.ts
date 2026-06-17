@@ -8,7 +8,7 @@ import {
 } from '$lib/server/kube/client';
 import {
 	resolveSessionRuntimeDebugTarget,
-	runtimeUsesNativeGoal,
+	runtimeHasNativeGoalHarness,
 } from '$lib/server/sessions/runtime-target';
 import {
 	getRuntimeDescriptor,
@@ -98,10 +98,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const descriptor = getRuntimeDescriptor(target.agentRuntime);
 	const interactiveTerminal =
 		descriptor?.capabilities?.interactiveTerminal === true;
-	// Does this runtime drive its OWN native /goal (claude/codex)? agy is an
-	// interactive-cli but uses the custom codex-parity loop, so its goal card is
-	// the full custom card, not the "Native /goal" launcher.
-	const usesNativeGoal = runtimeUsesNativeGoal(descriptor);
+	// Is the vendor CLI's native /goal harness AVAILABLE (claude/codex)? The
+	// evaluator/custom loop is the DEFAULT for every runtime now; native /goal is
+	// opt-in (prefix the objective with `/goal`). This flag only tells the UI to
+	// OFFER the native escape hatch — the card is the full custom card regardless.
+	const nativeGoalAvailable = runtimeHasNativeGoalHarness(descriptor);
 	// Human label for the pinned terminal tab (e.g. "Codex CLI"). One image
 	// hosts claude/codex/agy, so the tab name must come from the runtime.
 	const cliLabel = interactiveTerminal
@@ -117,7 +118,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		shellAvailable,
 		shellContainers,
 		interactiveTerminal,
-		usesNativeGoal,
+		nativeGoalAvailable,
 		cliLabel,
 		phase,
 	});

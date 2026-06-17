@@ -110,11 +110,7 @@ function buildTarget(params: {
 
 /**
  * True when a session's agent runs on an interactive-cli family runtime
- * (claude-code-cli / codex-cli / agy-cli). These runtimes drive their OWN
- * native `/goal` loop inside the vendor CLI, so the BFF custom goal-loop
- * driver + goal MCP auto-wire are bypassed for them — see
- * `src/lib/server/goals/goal-loop.ts` and the session goal API. Non-CLI
- * runtimes (dapr-agent-py, etc.) keep the custom goal loop.
+ * (claude-code-cli / codex-cli / agy-cli).
  *
  * Resolves through the same descriptor the runtime-flags endpoint uses, so the
  * server-side decision matches the UI's `interactiveTerminal` gate exactly.
@@ -128,14 +124,21 @@ export async function isInteractiveCliSession(
 }
 
 // CLI adapters whose vendor CLI has a REAL native `/goal` harness (multi-turn
-// loop + completion evaluator/marker we can detect). Antigravity's `/goal` is a
-// thin command with no detectable completion, so agy is driven by OUR
-// codex-parity custom goal loop + goal MCP instead (like dapr-agent-py).
+// loop + completion evaluator/marker). Antigravity's `/goal` is a thin command
+// with no detectable completion, so agy has no native harness.
 const NATIVE_GOAL_CLI_ADAPTERS = new Set(["claude-code", "codex"]);
 
-/** Pure descriptor check: does this runtime drive its OWN native `/goal`?
- *  interactive-cli AND a native-goal adapter (claude-code/codex) — NOT agy. */
-export function runtimeUsesNativeGoal(
+/**
+ * Goal-harness model (post-cutover): the EVALUATOR / BFF custom loop is the
+ * DEFAULT for every runtime. The vendor CLI's native `/goal` is OPT-IN — chosen
+ * only when the user prefixes the objective with `/goal ` AND the runtime
+ * actually has a native harness (claude/codex). `GOAL_NATIVE_BY_DEFAULT=true`
+ * restores the old descriptor-default (native for claude/codex) for rollback.
+ */
+
+/** Does this runtime have a native `/goal` harness *available*? (claude/codex
+ *  interactive CLIs). This is a capability check — NOT "native is the default". */
+export function runtimeHasNativeGoalHarness(
 	descriptor: { family?: string; cliAdapter?: string } | null | undefined,
 ): boolean {
 	return (
@@ -145,11 +148,44 @@ export function runtimeUsesNativeGoal(
 	);
 }
 
-/** True when the session's goal should be driven by the vendor CLI's native
- *  `/goal` (claude/codex). False for agy + all non-CLI runtimes, which use the
- *  custom codex-parity BFF goal loop + goal MCP completion contract. */
-export async function sessionUsesNativeGoal(sessionId: string): Promise<boolean> {
+/** Rollback switch: when true, claude/codex default back to native `/goal`. */
+export function goalNativeByDefault(): boolean {
+	return process.env.GOAL_NATIVE_BY_DEFAULT === "true";
+}
+
+/** The user explicitly asked for native `/goal` by prefixing the objective. */
+export function goalObjectiveRequestsNative(objective: string): boolean {
+	return /^\/goal(\s|$)/.test(objective.trimStart());
+}
+
+/** Strip a leading `/goal ` so the clean objective is reused in either mode. */
+export function stripNativeGoalPrefix(objective: string): string {
+	return objective.replace(/^\s*\/goal\s*/, "").trim();
+}
+
+/**
+ * Single source of truth for the native-vs-evaluator decision, used by every
+ * goal-setting surface (workflow bridge + one-off session API). Returns the
+ * cleaned objective (prefix stripped) and whether to use the native harness.
+ */
+export function decideGoalHarness(
+	rawObjective: string,
+	hasNativeHarness: boolean,
+): { native: boolean; objective: string } {
+	const objective = stripNativeGoalPrefix(rawObjective);
+	const native =
+		hasNativeHarness &&
+		(goalObjectiveRequestsNative(rawObjective) || goalNativeByDefault());
+	return { native, objective };
+}
+
+/** Descriptor-based "is a native `/goal` harness available for this session?" —
+ *  for the UI hint + the one-off goal API's set-time decision. Does NOT mean the
+ *  session is currently in native mode (that's "no thread_goals row exists"). */
+export async function sessionHasNativeGoalHarness(
+	sessionId: string,
+): Promise<boolean> {
 	const target = await resolveSessionRuntimeDebugTarget(sessionId);
 	if (!target) return false;
-	return runtimeUsesNativeGoal(getRuntimeDescriptor(target.agentRuntime));
+	return runtimeHasNativeGoalHarness(getRuntimeDescriptor(target.agentRuntime));
 }
