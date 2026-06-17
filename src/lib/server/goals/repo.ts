@@ -385,6 +385,29 @@ export async function hasGoalCompletedEvent(sessionId: string): Promise<boolean>
 }
 
 /**
+ * Workflow-driven sessions whose goal is COMPLETE but whose session is still
+ * non-terminal — the tick reaper finalizes these. A custom-loop agent can mark
+ * the goal complete via the goal MCP (`update_goal`) and then NOT idle (its TUI
+ * goes silent mid-turn), so the idle-gated emit→terminate never fires and the
+ * parent durable/run wedges. The MCP completes the goal with a direct DB write
+ * (no BFF appendEvent), so there's no inline trigger — only this poll catches it.
+ */
+export async function listCompletedUnterminatedWorkflowGoalSessions(
+	limit: number,
+): Promise<string[]> {
+	const rows = await requireDb().execute<{ session_id: string }>(sql`
+		SELECT tg.session_id FROM thread_goals tg
+		JOIN sessions s ON s.id = tg.session_id
+		WHERE tg.status = 'complete'
+		  AND s.workflow_execution_id IS NOT NULL
+		  AND s.status NOT IN ('terminated','completed','failed','canceled','cancelled')
+		ORDER BY tg.updated_at ASC
+		LIMIT ${limit}
+	`);
+	return rows.map((r) => r.session_id);
+}
+
+/**
  * Sessions with a drivable goal not continued within `staleSeconds` — the tick
  * reaper re-drives these as the crash-safe backstop (covers a missed idle
  * event, a goal set after the idle fired, a raise that failed because the pod
