@@ -158,6 +158,32 @@ def _set_io_value(span: Any, prefix: str, value: Any) -> None:
         logger.debug("set %s.value failed: %s", prefix, exc)
 
 
+def _set_llm_messages(span, attr_base, messages):
+    """Emit OpenInference message-array attrs (`llm.input_messages` /
+    `llm.output_messages`) alongside the `input.value`/`output.value` envelope.
+
+    dapr-agent-py uses the OpenInference single-value convention, but the curated
+    `obs.llm_spans` ClickHouse view + the agent-conversation-view UI read the
+    `llm.{input,output}_messages` array convention (claude-agent-py's shape) — so
+    without these the curated LLM table's content columns are empty for
+    dapr-agent-py runs. ``messages`` must already be a list of ``{role, content}``
+    dicts. The materialized view reads ``<attr_base>`` (JSON array) + a
+    ``<attr_base>.truncated`` flag (note the DOT, matching the view's key)."""
+    if span is None or not messages or not beta.is_beta_tracing_enabled():
+        return
+    try:
+        safe = _redact_for_span(messages)
+        serialized = json.dumps(safe, default=str, ensure_ascii=False)
+        content, truncated = beta.truncate_content(serialized)
+        if not content:
+            return
+        span.set_attribute(attr_base, content)
+        if truncated:
+            span.set_attribute(attr_base + ".truncated", True)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("set %s failed: %s", attr_base, exc)
+
+
 def get_span_trace_context(span: Any) -> tuple[str | None, str | None]:
     """Return (trace_id_hex, span_id_hex) for a specific span."""
     return _extract_ids_from_span(span)
@@ -366,6 +392,7 @@ def start_llm_request_span(
             "tools": _safe_json_loads(tools_json),
         },
     )
+    _set_llm_messages(span, "llm.input_messages", messages_for_api)
 
     handle = _SpanHandle(
         span=span,
@@ -443,6 +470,11 @@ def end_llm_request_span(
             "cache_read_tokens": cache_read_tokens,
             "cache_creation_tokens": cache_creation_tokens,
         },
+    )
+    _set_llm_messages(
+        span,
+        "llm.output_messages",
+        [{"role": "assistant", "content": model_output}] if model_output else None,
     )
 
     try:
