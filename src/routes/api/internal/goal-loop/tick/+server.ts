@@ -1,8 +1,14 @@
 import { json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { requireInternal } from "$lib/server/internal-auth";
-import { listStalledDrivableSessions } from "$lib/server/goals/repo";
-import { kickGoalLoop } from "$lib/server/goals/goal-loop";
+import {
+	listCompletedUnterminatedWorkflowGoalSessions,
+	listStalledDrivableSessions,
+} from "$lib/server/goals/repo";
+import {
+	finalizeCompletedWorkflowGoal,
+	kickGoalLoop,
+} from "$lib/server/goals/goal-loop";
 
 /**
  * POST /api/internal/goal-loop/tick
@@ -35,5 +41,21 @@ export const POST: RequestHandler = async ({ request }) => {
 		await kickGoalLoop(sessionId, { allowStaleIdleProbe: true });
 		kicked += 1;
 	}
-	return json({ scanned: sessionIds.length, kicked });
+
+	// Backstop for goals marked complete (via the goal MCP) on a session that
+	// then never idled — the idle-gated emit→terminate can't fire, so finalize
+	// here (emit goal_completed + raise terminate) to unwedge the parent run.
+	const completed = await listCompletedUnterminatedWorkflowGoalSessions(limit);
+	let finalized = 0;
+	for (const sessionId of completed) {
+		await finalizeCompletedWorkflowGoal(sessionId);
+		finalized += 1;
+	}
+
+	return json({
+		scanned: sessionIds.length,
+		kicked,
+		completedScanned: completed.length,
+		finalized,
+	});
 };

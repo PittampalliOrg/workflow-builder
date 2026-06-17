@@ -158,6 +158,29 @@ export async function kickGoalLoop(
 }
 
 /**
+ * Finalize a workflow-driven session whose goal is already COMPLETE but which
+ * hasn't terminated — used by the tick reaper. Covers a custom-loop agent that
+ * marked the goal complete via the goal MCP and then DIDN'T idle (its TUI went
+ * silent mid-turn), so the idle-gated emit→terminate never fired and the parent
+ * durable/run wedged. Both calls are idempotent (emit dedupes on sourceEventId;
+ * terminate raise is a no-op on an already-ending session).
+ */
+export async function finalizeCompletedWorkflowGoal(
+	sessionId: string,
+): Promise<void> {
+	try {
+		// Emits session.goal_completed if the goal is complete (→ onSessionEvent
+		// fires terminate). The explicit terminate below is the belt-and-suspenders
+		// path when the event already exists (appendEvent dedupes, so onSessionEvent
+		// would not re-fire).
+		await emitGoalCompletedIfDone(sessionId);
+		await terminateWorkflowGoalSessionIfNeeded(sessionId);
+	} catch (err) {
+		console.warn(`[goal-loop] finalizeCompletedWorkflowGoal failed:`, err);
+	}
+}
+
+/**
  * Uniform completion signal for CUSTOM-loop runtimes (agy + dapr-agent-py):
  * when the agent has marked the goal complete via the goal MCP `update_goal`,
  * emit `session.goal_completed` (idempotent via sourceEventId) so it matches the
