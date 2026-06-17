@@ -17,6 +17,7 @@ import {
 	hasGoalCompletedEvent,
 	latestEventMeta,
 	pauseGoal,
+	rawLatestEventAgeSeconds,
 	sessionStopState,
 } from "./repo";
 import {
@@ -209,13 +210,12 @@ async function terminateWorkflowGoalSessionIfNeeded(
 	if (process.env.WORKFLOW_GOAL_AUTO_TERMINATE === "false") return;
 	const workflowExecutionId = await getSessionWorkflowExecutionId(sessionId);
 	if (!workflowExecutionId) return; // direct UI goal session → emit-only
-	// Native-goal CLIs (claude/codex) run the whole goal in one continuous turn
-	// and end via end-turn AUTO-terminate (status="completed" → outputSync runs).
-	// Don't also raise a cooperative terminate: it races auto-terminate and, if it
-	// wins, ends the session "terminated" — which historically skipped outputSync.
-	// Custom-loop runtimes (agy-cli, dapr-agent-py) have no auto-terminate and DO
-	// need the cooperative raise to end.
-	if (await sessionUsesNativeGoal(sessionId)) return;
+	// The cooperative terminate is the PROVEN end path for goal-driven CLI
+	// sessions. (Native-CLI auto-terminate keys on a `turn.completed` lifecycle
+	// event the runtime does NOT reliably emit in /goal mode, so it can't be
+	// relied on alone — an earlier "skip for native CLI" left codex/claude hung
+	// idle.) The session ends "terminated"; the cli-agent-py session_workflow now
+	// runs outputSync on terminated too, so the build still reaches the workspace.
 	const isCli = await isInteractiveCliSession(sessionId);
 	const res = isCli
 		? await raiseSessionEvent(sessionId, SESSION_LIFECYCLE_EVENT_NAME, {
@@ -267,9 +267,19 @@ async function driveContinuationIfIdle(
 	const latest = await latestEventMeta(sessionId);
 	if (!latest) return;
 	const idle = latest.type === "session.status_idle";
-	const staleProbe =
+	// Lost-idle backstop: only probe when the stream is genuinely frozen. The
+	// telemetry-filtered `latest` can look stale during a long custom-loop turn
+	// that emits only telemetry (no status_idle) — so ALSO require the RAW latest
+	// event (any type, incl. telemetry) to be past the grace. If raw events are
+	// still arriving the agent is alive and we must NOT inject (it would duplicate
+	// the goal-continuation user.message mid-turn).
+	let staleProbe =
 		opts.allowStaleIdleProbe === true &&
 		latest.ageSeconds >= LOST_IDLE_GRACE_SECONDS;
+	if (staleProbe) {
+		const rawAge = await rawLatestEventAgeSeconds(sessionId);
+		if (rawAge !== null && rawAge < LOST_IDLE_GRACE_SECONDS) staleProbe = false;
+	}
 	// Kickoff bypass: when a goal is freshly set (iteration 0, no continuation yet)
 	// there is no turn in flight, so post continuation #1 immediately instead of
 	// waiting for a status_idle. This removes the slow first-turn start for CLIs
