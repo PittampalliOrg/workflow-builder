@@ -338,6 +338,31 @@ export async function latestEventMeta(
 }
 
 /**
+ * Age of the latest event of ANY type (including intra-turn telemetry that
+ * `latestEventMeta` filters out). Used as a LIVENESS signal: a custom-loop
+ * runtime (dapr-agent-py/agy) on a long turn emits only telemetry and no
+ * status_idle, so the telemetry-filtered view looks "stale" even though the
+ * agent is actively working. The lost-idle backstop must NOT inject a
+ * continuation while raw events are still arriving (else it duplicates the
+ * goal-continuation user.message mid-turn).
+ */
+export async function rawLatestEventAgeSeconds(
+	sessionId: string,
+): Promise<number | null> {
+	const rows = await requireDb()
+		.select({
+			ageSeconds: sql<number>`extract(epoch from (now() - ${sessionEvents.createdAt}))`,
+		})
+		.from(sessionEvents)
+		.where(eq(sessionEvents.sessionId, sessionId))
+		.orderBy(desc(sessionEvents.sequence))
+		.limit(1);
+	const row = rows[0];
+	if (!row) return null;
+	return Number(row.ageSeconds ?? 0);
+}
+
+/**
  * Whether a `session.goal_completed` event has already been recorded for this
  * session. Used by the idle-rescue: a native-goal CLI (claude/codex) has no
  * thread_goals row, so the only durable signal that its goal finished is this
