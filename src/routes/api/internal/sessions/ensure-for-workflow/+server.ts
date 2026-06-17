@@ -383,6 +383,16 @@ export const POST: RequestHandler = async ({ request }) => {
 	// every other runtime (agy + dapr) uses the BFF goal loop + goal MCP.
 	const nativeGoal = goalMode && runtimeUsesNativeGoal(swapTarget ?? null);
 	const customGoal = goalMode && !nativeGoal;
+	// Native-CLI goal sessions that ALSO declare deterministic evidence are gated
+	// by the BFF evaluator (the completion authority), not just the CLI's own
+	// transcript-reading /goal evaluator. They still kick off the native `/goal`
+	// loop, but we (a) persist a thread_goals row so the evaluator has the
+	// evidence_plan + an iteration cap, and (b) keep the session ALIVE past the
+	// native-completion idle so the evaluator can verify and, on failure, inject
+	// the failing evidence back into the TUI. Native-goal CLIs WITHOUT evidence
+	// keep their original auto-terminate-on-end-turn behavior.
+	const nativeEvidenceGoal =
+		nativeGoal && !!bridgeGoal?.evidencePlan?.commands?.length;
 	const baseDispatchAgentConfig: AgentConfig = stampCliAdapterForDispatch(
 		agentConfig,
 		swapTarget,
@@ -560,9 +570,11 @@ export const POST: RequestHandler = async ({ request }) => {
 				projectId,
 				userId,
 			}));
-		// Goal-driven custom-loop run: ensure the goal row exists (idempotent
-		// across Dapr activity replays — skips if an active goal is already set).
-		if (customGoal && bridgeGoal) {
+		// Goal-driven run: ensure the goal row exists (idempotent across Dapr
+		// activity replays — skips if an active goal is already set). Custom-loop
+		// runs always; native-CLI runs only when they declare evidence (so the
+		// evaluator can gate them) — plain native /goal stays row-less.
+		if ((customGoal || nativeEvidenceGoal) && bridgeGoal) {
 			await ensureWorkflowGoal(
 				existing.id,
 				bridgeGoal,
@@ -595,6 +607,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				timeoutMinutes: bridgeTimeoutMinutes,
 				maxIterations: effectiveMaxIterations,
 				customGoal,
+				nativeEvidenceGoal,
 				agentSlug: reuseRuntime?.slug ?? bodyAgentSlug,
 				agentAppId: reuseChildAppId,
 				mlflowContext: reuseMlflowContext,
@@ -682,7 +695,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	// exists. The goal loop then drives continuations off each status_idle, and
 	// the agent self-completes via the auto-wired goal MCP. (Native-goal CLIs
 	// instead get the `/goal` kickoff as effectiveInitialMessage below.)
-	if (customGoal && bridgeGoal) {
+	if ((customGoal || nativeEvidenceGoal) && bridgeGoal) {
 		await ensureWorkflowGoal(sessionId, bridgeGoal, workflowExecutionId);
 	}
 	if (effectiveInitialMessage && effectiveInitialMessage.trim()) {
@@ -871,6 +884,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			timeoutMinutes: bridgeTimeoutMinutes,
 			maxIterations: effectiveMaxIterations,
 			customGoal,
+				nativeEvidenceGoal,
 			agentId,
 			agentVersion,
 			agentSlug: runtimeIdentity?.slug ?? bodyAgentSlug,
@@ -974,6 +988,12 @@ function buildChildInput(params: {
 	 * cleanly (the cooperative goal_completed terminate can't preempt a CLI
 	 * session_workflow that's stuck awaiting a finished TUI's dead tasks). */
 	customGoal?: boolean;
+	/** Native-CLI goal run that ALSO declares evidence: keep the session alive
+	 * (like customGoal) so the BFF evaluator can verify on the native-completion
+	 * idle and, on failure, inject the failing evidence back to keep it working.
+	 * Termination is then the cooperative `session.terminate` raise (post-#187,
+	 * native-CLI cooperative terminate works). */
+	nativeEvidenceGoal?: boolean;
 	agentId?: string | null;
 	agentVersion?: number | null;
 	agentSlug?: string | null;
@@ -1028,7 +1048,7 @@ function buildChildInput(params: {
 		// continuous turn, so end_turn == goal done). Only CUSTOM-loop goal runs
 		// (dapr-agent-py / agy-cli) stay alive multi-turn while the BFF goal loop
 		// drives continuations until session.goal_completed.
-		autoTerminateAfterEndTurn: !params.customGoal,
+		autoTerminateAfterEndTurn: !(params.customGoal || params.nativeEvidenceGoal),
 		// Sandbox plumbing — consumed by dapr-agent-py's
 		// _freeze_session_child_input so agent_workflow can set
 		// runtime.sandbox_name / workspace_ref / cwd. Without these,
