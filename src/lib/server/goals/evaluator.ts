@@ -98,13 +98,18 @@ async function runEvidenceCommand(
 			const detail = (await res.text().catch(() => "")).slice(0, MAX_OUTPUT_CHARS);
 			return { command, exitCode: -1, ok: false, output: `runtime error ${res.status}: ${detail}` };
 		}
-		const body = (await res.json().catch(() => ({}))) as {
+		// The workspace runtime nests the command result under `result`:
+		//   { success, result: { exitCode, stdout, stderr, ... } }
+		// Fall back to top-level fields in case a runtime returns them flat.
+		const raw = (await res.json().catch(() => ({}))) as {
+			result?: { exitCode?: number; stdout?: string; stderr?: string };
 			exitCode?: number;
 			stdout?: string;
 			stderr?: string;
 		};
-		const exitCode = typeof body.exitCode === "number" ? body.exitCode : 1;
-		const output = `${body.stderr ?? ""}${body.stderr && body.stdout ? "\n" : ""}${body.stdout ?? ""}`.trim();
+		const r = raw.result ?? raw;
+		const exitCode = typeof r.exitCode === "number" ? r.exitCode : 1;
+		const output = `${r.stderr ?? ""}${r.stderr && r.stdout ? "\n" : ""}${r.stdout ?? ""}`.trim();
 		return { command, exitCode, ok: exitCode === 0, output: output.slice(0, MAX_OUTPUT_CHARS) };
 	} catch (err) {
 		return {
