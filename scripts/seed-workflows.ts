@@ -158,7 +158,9 @@ const SVELTEKIT_GAME_BUILD_PROMPT = [
 	'Expose these STABLE test hooks as data-test attributes on clickable elements: data-test=\\"game-root\\" (top-level container), data-test=\\"start\\" (start / new game), data-test=\\"score\\" (live score readout), data-test=\\"board\\" (play area), and on-screen control buttons data-test=\\"move-left\\", data-test=\\"move-right\\", data-test=\\"rotate\\", and data-test=\\"drop\\" (map each to the equivalent move for the chosen game). ',
 	"Verify by running npm install and npm run build, confirm ",
 	SVELTEKIT_GAME_BUILD_DIR,
-	"/index.html exists, and that the static build is genuinely playable (you MAY serve the build directory with a transient static file server to test, but do NOT leave any long-lived server running — the workflow serves the preview). Fix every error before finishing.\" }",
+	"/index.html exists, and that the static build is genuinely playable (you MAY serve the build directory with a transient static file server to test, but do NOT leave any long-lived server running — the workflow serves the preview). ",
+	"IMPORTANT: npm install and npm run build can each take one to two minutes — run them in the FOREGROUND and WAIT for them to finish; do NOT background-and-kill them on a timer. The 'EnvHttpProxyAgent is experimental' line is HARMLESS Node noise (NOT a proxy error or a hang) — ignore it; you may prefix commands with NODE_NO_WARNINGS=1 to silence it. ",
+	"Fix every error before finishing.\" }",
 ].join("");
 
 const AGENT_PROFILE_TEMPLATE_ID = "tpl_coding_agent";
