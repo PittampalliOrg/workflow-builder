@@ -158,7 +158,7 @@ def _set_io_value(span: Any, prefix: str, value: Any) -> None:
         logger.debug("set %s.value failed: %s", prefix, exc)
 
 
-def _set_llm_messages(span, attr_base, messages):
+def _set_oi_content_attr(span, attr_base, value):
     """Emit OpenInference message-array attrs (`llm.input_messages` /
     `llm.output_messages`) alongside the `input.value`/`output.value` envelope.
 
@@ -169,10 +169,10 @@ def _set_llm_messages(span, attr_base, messages):
     dapr-agent-py runs. ``messages`` must already be a list of ``{role, content}``
     dicts. The materialized view reads ``<attr_base>`` (JSON array) + a
     ``<attr_base>.truncated`` flag (note the DOT, matching the view's key)."""
-    if span is None or not messages or not beta.is_beta_tracing_enabled():
+    if span is None or not value or not beta.is_beta_tracing_enabled():
         return
     try:
-        safe = _redact_for_span(messages)
+        safe = _redact_for_span(value)
         serialized = json.dumps(safe, default=str, ensure_ascii=False)
         content, truncated = beta.truncate_content(serialized)
         if not content:
@@ -396,8 +396,8 @@ def start_llm_request_span(
     # (the call_llm WorkflowActivity span — the CURRENT span here), not this
     # child claude_code.llm_request span. Set the messages on both so the
     # curated LLM table + agent-conversation-view populate.
-    _set_llm_messages(span, "llm.input_messages", messages_for_api)
-    _set_llm_messages(
+    _set_oi_content_attr(span, "llm.input_messages", messages_for_api)
+    _set_oi_content_attr(
         otel_trace.get_current_span(), "llm.input_messages", messages_for_api
     )
 
@@ -481,10 +481,10 @@ def end_llm_request_span(
     _output_messages = (
         [{"role": "assistant", "content": model_output}] if model_output else None
     )
-    _set_llm_messages(span, "llm.output_messages", _output_messages)
+    _set_oi_content_attr(span, "llm.output_messages", _output_messages)
     try:
         from opentelemetry import trace as _ot
-        _set_llm_messages(
+        _set_oi_content_attr(
             _ot.get_current_span(), "llm.output_messages", _output_messages
         )
     except Exception:
@@ -532,6 +532,22 @@ def start_tool_span(
     if tool_input:
         beta.add_tool_input_attributes(span, tool_name, tool_input)
         _set_io_value(span, "input", {"tool_name": tool_name, "input": _safe_json_loads(tool_input)})
+    # Tag the CURRENT span (the run_tool WorkflowActivity span) with the
+    # OpenInference TOOL convention so the obs.tool_spans materialized view
+    # picks it up — the claude_code.tool child span above has no
+    # openinference.span.kind, so the MV ignores it (mirror of the LLM fix).
+    # kind + name are metadata (always set); arguments are content-gated.
+    try:
+        _activity = otel_trace.get_current_span()
+        if _activity is not None:
+            _activity.set_attribute("openinference.span.kind", "TOOL")
+            _activity.set_attribute("tool.name", tool_name)
+            if tool_input:
+                _set_oi_content_attr(
+                    _activity, "tool.arguments", _safe_json_loads(tool_input)
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("tool activity TOOL-tag failed: %s", exc)
 
     handle = _SpanHandle(
         span=span,
@@ -564,6 +580,15 @@ def end_tool_span(
                 "result": _safe_json_loads(tool_result),
             },
         )
+        try:
+            from opentelemetry import trace as _ot_t
+            _activity = _ot_t.get_current_span()
+            if _activity is not None:
+                _set_oi_content_attr(
+                    _activity, "tool.result", _safe_json_loads(tool_result)
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("tool activity result-tag failed: %s", exc)
     if result_tokens is not None:
         end_attrs["result_tokens"] = result_tokens
     try:
