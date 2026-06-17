@@ -392,7 +392,14 @@ def start_llm_request_span(
             "tools": _safe_json_loads(tools_json),
         },
     )
+    # The obs.llm_spans materialized view reads the OpenInference LLM-kind span
+    # (the call_llm WorkflowActivity span — the CURRENT span here), not this
+    # child claude_code.llm_request span. Set the messages on both so the
+    # curated LLM table + agent-conversation-view populate.
     _set_llm_messages(span, "llm.input_messages", messages_for_api)
+    _set_llm_messages(
+        otel_trace.get_current_span(), "llm.input_messages", messages_for_api
+    )
 
     handle = _SpanHandle(
         span=span,
@@ -471,11 +478,17 @@ def end_llm_request_span(
             "cache_creation_tokens": cache_creation_tokens,
         },
     )
-    _set_llm_messages(
-        span,
-        "llm.output_messages",
-        [{"role": "assistant", "content": model_output}] if model_output else None,
+    _output_messages = (
+        [{"role": "assistant", "content": model_output}] if model_output else None
     )
+    _set_llm_messages(span, "llm.output_messages", _output_messages)
+    try:
+        from opentelemetry import trace as _ot
+        _set_llm_messages(
+            _ot.get_current_span(), "llm.output_messages", _output_messages
+        )
+    except Exception:
+        pass
 
     try:
         for k, v in end_attrs.items():
