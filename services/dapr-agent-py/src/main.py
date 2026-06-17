@@ -3692,7 +3692,17 @@ class OpenShellDurableAgent(DurableAgent):
             # exit path (successful return, exception, blocked-by-hook return).
             try:
                 if _tel_tool_span is not None:
-                    end_tool_span()
+                    # Pass the tool's return value so obs.tool_spans.ToolResult
+                    # (+ the claude_code.tool output.value) populate. `result` is
+                    # only bound on the success path → locals().get is exception-safe.
+                    _tool_result_json = None
+                    _res_for_span = locals().get("result")
+                    if _res_for_span is not None:
+                        try:
+                            _tool_result_json = json.dumps(_res_for_span, default=str)[:16384]
+                        except Exception:
+                            _tool_result_json = str(_res_for_span)[:16384]
+                    end_tool_span(tool_result=_tool_result_json)
                 from src.telemetry.attributes import reset_session_context
 
                 if _tel_session_token is not None:
