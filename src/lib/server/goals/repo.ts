@@ -338,6 +338,28 @@ export async function latestEventMeta(
 }
 
 /**
+ * Whether a `session.goal_completed` event has already been recorded for this
+ * session. Used by the idle-rescue: a native-goal CLI (claude/codex) has no
+ * thread_goals row, so the only durable signal that its goal finished is this
+ * event. If the cooperative terminate raised on goal_completed was lost (e.g.
+ * raced a post-completion "fallback" turn), the next clean end_turn idle re-fires
+ * the terminate so the parent durable/run isn't wedged.
+ */
+export async function hasGoalCompletedEvent(sessionId: string): Promise<boolean> {
+	const rows = await requireDb()
+		.select({ sequence: sessionEvents.sequence })
+		.from(sessionEvents)
+		.where(
+			and(
+				eq(sessionEvents.sessionId, sessionId),
+				eq(sessionEvents.type, "session.goal_completed"),
+			),
+		)
+		.limit(1);
+	return rows.length > 0;
+}
+
+/**
  * Sessions with a drivable goal not continued within `staleSeconds` — the tick
  * reaper re-drives these as the crash-safe backstop (covers a missed idle
  * event, a goal set after the idle fired, a raise that failed because the pod

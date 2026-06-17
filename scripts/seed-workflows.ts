@@ -86,6 +86,73 @@ const THREE_B_ONE_B_DEFAULT_AGENT_ID =
 const THREE_B_ONE_B_DEFAULT_AGENT_VERSION = Number(
 	process.env.SEED_3B1B_AGENT_VERSION?.trim() || "1",
 );
+
+// --- Impressive SvelteKit Game (goal-loop showcase) -------------------------
+// A goal-driven workflow that has a CLI agent (default codex-cli) iteratively
+// build a polished, fully-playable SvelteKit game until it installs, builds,
+// runs, and is verifiably playable — then captures a walkthrough and serves a
+// live preview. This is the first SEEDED workflow that exercises goal mode
+// (with.body.goalSpec). The game is configurable via the gameDescription
+// trigger input; the default is Tetris.
+const SVELTEKIT_GAME_WORKFLOW_ID =
+	process.env.SEED_SVELTEKIT_GAME_WORKFLOW_ID?.trim() ||
+	"sveltekit-game-goal-showcase";
+const SVELTEKIT_GAME_WORKFLOW_NAME =
+	process.env.SEED_SVELTEKIT_GAME_WORKFLOW_NAME?.trim() ||
+	"Impressive SvelteKit Game (Goal Loop)";
+const SVELTEKIT_GAME_WORKFLOW_DESCRIPTION =
+	process.env.SEED_SVELTEKIT_GAME_WORKFLOW_DESCRIPTION?.trim() ||
+	"Goal-driven workflow: a CLI agent (default codex-cli) iteratively builds a polished, fully-playable SvelteKit game (default: Tetris) until it installs, builds, runs, and is verifiably playable, then captures a walkthrough and serves a live preview. Exercises goal mode (goalSpec) end-to-end.";
+const SVELTEKIT_GAME_APP_DIR = "/sandbox/sveltekit-game";
+const SVELTEKIT_GAME_DEFAULT_RUNTIME = parseCliRuntime(
+	process.env.SEED_SVELTEKIT_GAME_DEFAULT_RUNTIME?.trim() || "codex-cli",
+);
+const SVELTEKIT_GAME_DEV_PORT = 3009;
+const SVELTEKIT_GAME_BASE_URL = `http://127.0.0.1:${SVELTEKIT_GAME_DEV_PORT}`;
+const SVELTEKIT_GAME_INSTALL_COMMAND =
+	"npm install --no-audit --no-fund --loglevel=warn";
+const SVELTEKIT_GAME_DEV_SERVER_COMMAND = `npm run dev -- --host 0.0.0.0 --port ${SVELTEKIT_GAME_DEV_PORT}`;
+const SVELTEKIT_GAME_OUTPUT_SANDBOX_NAME =
+	'${ .workspace_profile.sandboxName // "" }';
+const SVELTEKIT_GAME_OUTPUT_WORKSPACE_REF = "${ .workspace_profile.workspaceRef }";
+const SVELTEKIT_GAME_DEFAULT_DESCRIPTION =
+	"a polished, juicy Tetris game with all 7 tetrominoes, a hold slot and next-piece queue, increasing levels, line-clear scoring, and a neon arcade aesthetic";
+const SVELTEKIT_GAME_DEFAULT_MAX_ITERATIONS = 30;
+
+// The goal codex evaluates against — the acceptance criteria ("done when …").
+const SVELTEKIT_GAME_GOAL_OBJECTIVE = [
+	'${ "Deliver a complete, genuinely playable SvelteKit browser game (Svelte 5 runes + TypeScript) in ',
+	SVELTEKIT_GAME_APP_DIR,
+	' implementing: " + (.trigger.gameDescription // "',
+	SVELTEKIT_GAME_DEFAULT_DESCRIPTION,
+	'") + ". DONE means ALL of: ',
+	"(1) npm install succeeds; ",
+	"(2) npm run build passes with no errors; ",
+	"(3) npm run dev serves the app on its port; ",
+	"(4) the game is actually playable end-to-end — starting a game shows the board, the on-screen control buttons AND the keyboard both change game state, the score updates during play, and game-over followed by restart works; ",
+	"(5) there are no console, build, or type errors. ",
+	"Keep iterating until every criterion is verified by actually running the commands; do not declare the goal complete early.\" }",
+].join("");
+
+// The working instructions handed to the agent (how to build it).
+const SVELTEKIT_GAME_BUILD_PROMPT = [
+	'${ "Build a polished, impressive SvelteKit game in ',
+	SVELTEKIT_GAME_APP_DIR,
+	'. Game: " + (.trigger.gameDescription // "',
+	SVELTEKIT_GAME_DEFAULT_DESCRIPTION,
+	'") + ". ',
+	"Scaffold a REAL SvelteKit project (package.json with @sveltejs/kit + svelte + vite, plus a valid svelte.config.js and vite.config.ts). ",
+	"Implement full game states (start screen, playing, paused, game over), a scoring system, increasing difficulty, win/lose handling, and restart. ",
+	"Controls MUST work with BOTH the keyboard AND on-screen buttons so the game is playable on touch and automatable. ",
+	'Expose these STABLE test hooks as data-test attributes on clickable elements: data-test=\\"game-root\\" (top-level container), data-test=\\"start\\" (start / new game), data-test=\\"score\\" (live score readout), data-test=\\"board\\" (play area), and on-screen control buttons data-test=\\"move-left\\", data-test=\\"move-right\\", data-test=\\"rotate\\", and data-test=\\"drop\\" (map each to the equivalent move for the chosen game). ',
+	"In vite.config set server.allowedHosts to true so a reverse-proxied live preview can reach the dev server. ",
+	"Verify your work by running npm install, npm run build, and npm run dev, and fix every error before finishing. ",
+	"When everything passes, delete node_modules, .svelte-kit, build, and dist from ",
+	SVELTEKIT_GAME_APP_DIR,
+	" (keep package.json and package-lock.json) so only source remains — the downstream preview reinstalls dependencies. ",
+	'Do NOT start a long-lived preview server yourself; the workflow handles preview." }',
+].join("");
+
 const AGENT_PROFILE_TEMPLATE_ID = "tpl_coding_agent";
 const PLANNER_MAX_TURNS = 120;
 const PLANNER_TIMEOUT_MINUTES = 45;
@@ -2576,6 +2643,426 @@ function buildThreeBOneBCliWorkflowEdges(): JsonRecord[] {
 	}));
 }
 
+function selectedGameRuntimeExpression(): string {
+	return `\${ .trigger.cliRuntime // "${SVELTEKIT_GAME_DEFAULT_RUNTIME}" }`;
+}
+
+function makeSvelteKitGameWorkspaceProfileTask(): JsonRecord {
+	return {
+		call: "workspace/profile",
+		with: {
+			name: "sveltekit-game",
+			rootPath: "/sandbox",
+			sandboxTemplate: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+			ttlSeconds: 7200,
+			keepAfterRun: true,
+			managedBy: "workflow-builder:demos:sveltekit-game",
+			commandTimeoutMs: 900000,
+			timeoutMs: 1200000,
+			enabledTools: [
+				"execute_command",
+				"read_file",
+				"write_file",
+				"edit_file",
+				"list_files",
+				"mkdir",
+				"file_stat",
+			],
+			sandboxPolicy: {
+				mode: "per-run",
+				template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+				ttlSeconds: 7200,
+				keepAfterRun: true,
+			},
+		},
+	};
+}
+
+function makeSvelteKitGameBuildTask(): JsonRecord {
+	return {
+		call: "durable/run",
+		with: {
+			mode: "execute_direct",
+			cwd: "/sandbox",
+			sandboxName: "${ .workspace_profile.sandboxName }",
+			workspaceRef: "${ .workspace_profile.workspaceRef }",
+			// The CLI agent builds in its own per-session sandbox, so the source
+			// is synced back into the retained workspace for verify + preview.
+			// The agent removes node_modules / build output before finishing
+			// (see SVELTEKIT_GAME_BUILD_PROMPT) so this stays under the 64 MiB
+			// outputSync ceiling and only source is copied.
+			outputSync: {
+				workspaceRef: "${ .workspace_profile.workspaceRef }",
+				paths: [
+					{
+						source: SVELTEKIT_GAME_APP_DIR,
+						target: SVELTEKIT_GAME_APP_DIR,
+					},
+				],
+				timeoutSeconds: 600,
+			},
+			sandboxPolicy: {
+				mode: "per-run",
+				template: "dapr-agent",
+				ttlSeconds: 7200,
+				keepAfterRun: true,
+			},
+			body: {
+				agentRef: {
+					slug: selectedGameRuntimeExpression(),
+				},
+				prompt: SVELTEKIT_GAME_BUILD_PROMPT,
+				// Goal mode: drives a multi-turn run toward the objective until the
+				// CLI's own goal evaluator reports completion (session.goal_completed),
+				// at which point the bridge auto-terminates and the parent resumes.
+				goalSpec: {
+					objective: SVELTEKIT_GAME_GOAL_OBJECTIVE,
+					maxIterations: `\${ .trigger.maxIterations // ${SVELTEKIT_GAME_DEFAULT_MAX_ITERATIONS} }`,
+					// 0 ⇒ no budget (parsePositiveInteger treats <=0 as null). Using
+					// `// 0` (not `// null`) keeps a real default so the trigger field
+					// is satisfied by applyWorkflowInputDefaults (a null default would
+					// be flagged as a missing required field).
+					tokenBudget: "${ .trigger.tokenBudget // 0 }",
+				},
+				overrides: {
+					cwd: "/sandbox",
+					maxTurns: 80,
+					timeoutMinutes: 90,
+				},
+			},
+		},
+	};
+}
+
+function makeSvelteKitGameVerifyTask(): JsonRecord {
+	return {
+		call: "workspace/command",
+		with: {
+			workspaceRef: SVELTEKIT_GAME_OUTPUT_WORKSPACE_REF,
+			cwd: "/sandbox",
+			timeoutMs: 120000,
+			command: [
+				"set -eu",
+				`app=${JSON.stringify(SVELTEKIT_GAME_APP_DIR)}`,
+				'test -f "$app/package.json"',
+				'test -d "$app/src"',
+				'grep -q "@sveltejs/kit" "$app/package.json"',
+				'echo "sveltekit source present"',
+				'if [ -d "$app/node_modules" ]; then echo "note: node_modules present in synced source (preview install will be a no-op-ish refresh)"; fi',
+				'find "$app" -maxdepth 2 -type f -not -path "*/node_modules/*" -printf "%P %s bytes\\n" | sort | head -60',
+			].join("\n"),
+		},
+	};
+}
+
+function makeSvelteKitGameBrowserValidateTask(): JsonRecord {
+	return {
+		call: "browser/validate",
+		with: {
+			workspaceRef: SVELTEKIT_GAME_OUTPUT_WORKSPACE_REF,
+			sandboxName: SVELTEKIT_GAME_OUTPUT_SANDBOX_NAME,
+			repoPath: SVELTEKIT_GAME_APP_DIR,
+			rootPath: "/sandbox",
+			workingDir: SVELTEKIT_GAME_APP_DIR,
+			installCommand: SVELTEKIT_GAME_INSTALL_COMMAND,
+			devServerCommand: SVELTEKIT_GAME_DEV_SERVER_COMMAND,
+			baseUrl: SVELTEKIT_GAME_BASE_URL,
+			steps: [
+				{
+					id: "initial",
+					label: "Game loaded",
+					action: "visit",
+					path: "/",
+					goal: "Initial render of the game shell before starting.",
+					waitForSelector: '[data-test="game-root"]',
+					pauseMs: 2500,
+					fullPage: true,
+				},
+				{
+					id: "started",
+					label: "Game started",
+					action: "click",
+					selector: '[data-test="start"]',
+					goal: "Start a new game and show the board.",
+					waitForSelector: '[data-test="board"]',
+					pauseMs: 1500,
+					fullPage: true,
+				},
+				{
+					id: "rotate",
+					label: "After rotate",
+					action: "click",
+					selector: '[data-test="rotate"]',
+					goal: "Rotate the active piece via the on-screen control.",
+					waitForSelector: '[data-test="board"]',
+					pauseMs: 900,
+					fullPage: true,
+				},
+				{
+					id: "move",
+					label: "After move",
+					action: "click",
+					selector: '[data-test="move-left"]',
+					goal: "Move the active piece via the on-screen control.",
+					waitForSelector: '[data-test="board"]',
+					pauseMs: 900,
+					fullPage: true,
+				},
+				{
+					id: "drop",
+					label: "After drop + score",
+					action: "click",
+					selector: '[data-test="drop"]',
+					goal: "Drop the piece and capture the updated score.",
+					waitForSelector: '[data-test="score"]',
+					pauseMs: 2000,
+					fullPage: true,
+				},
+			],
+			captureVideo: true,
+			captureTrace: true,
+			viewportPreset: "desktop",
+			captureMode: "demo",
+			demoTitle: '${ "SvelteKit game: " + (.trigger.gameDescription // "Tetris") }',
+			demoSummary:
+				"Goal-driven CLI agent built a SvelteKit game; browser/validate installed dependencies, started the Vite dev server, and captured load / start / rotate / move / drop states from the retained workspace.",
+			metadata: {
+				appPath: SVELTEKIT_GAME_APP_DIR,
+				workflowStage: "post-sveltekit-game-build",
+				runtimeSandboxName: "${ .build_game.runtimeSandboxName // null }",
+				selectedCliRuntime: selectedGameRuntimeExpression(),
+			},
+			timeoutMs: 1200000,
+		},
+	};
+}
+
+function makeSvelteKitGameStartPreviewTask(): JsonRecord {
+	return {
+		call: "browser/start-preview",
+		with: {
+			body: {
+				input: {
+					previewId:
+						'${ "sveltekit-game-preview-" + (.runtime.dbExecutionId // .workspace_profile.workspaceRef) }',
+					repoPath: SVELTEKIT_GAME_APP_DIR,
+					rootPath: "/sandbox",
+					workingDir: SVELTEKIT_GAME_APP_DIR,
+					baseUrl: SVELTEKIT_GAME_BASE_URL,
+					keepAlive: true,
+					timeoutSeconds: 7200,
+					timeoutMs: 7200000,
+					sandboxName: SVELTEKIT_GAME_OUTPUT_SANDBOX_NAME,
+					workspaceRef: SVELTEKIT_GAME_OUTPUT_WORKSPACE_REF,
+					installCommand: SVELTEKIT_GAME_INSTALL_COMMAND,
+					devServerCommand: SVELTEKIT_GAME_DEV_SERVER_COMMAND,
+				},
+			},
+		},
+	};
+}
+
+function buildSvelteKitGameWorkflowSpec(): JsonRecord {
+	return {
+		document: {
+			dsl: "1.0.0",
+			namespace: "workflow-builder.demos",
+			name: SVELTEKIT_GAME_WORKFLOW_ID,
+			version: "1.0.0",
+			title: SVELTEKIT_GAME_WORKFLOW_NAME,
+			summary: SVELTEKIT_GAME_WORKFLOW_DESCRIPTION,
+			"x-workflow-builder": {
+				architecture:
+					"per-agent-runtime+cli-runtime-selector+goal-mode+session-workflow-bridge+browser-validate-capture+live-preview",
+				notes:
+					"Goal-mode showcase: a CLI agent (default codex-cli) builds a real SvelteKit game under a goalSpec objective whose completion criteria require the app to install, build, run, and be playable. The CLI agent builds in its own sandbox, removes node_modules/build output, and outputSync copies only source into the retained workspace; browser/validate reinstalls deps + boots the Vite dev server to capture a walkthrough, and browser/start-preview keeps a live dev-server preview attached. First seeded workflow that exercises with.body.goalSpec.",
+				triggerInputs: {
+					gameDescription:
+						"Optional. Plain-language description of the game to build (default: Tetris).",
+					cliRuntime:
+						"Optional. Selects the CLI agent runtime: codex-cli (default), claude-code-cli, or agy-cli.",
+					maxIterations:
+						"Optional. Goal-loop iteration cap (default 30).",
+					tokenBudget:
+						"Optional. Goal token budget; 0 = no budget (default).",
+				},
+				input: {
+					fields: {
+						cliRuntime: {
+							type: "select",
+							label: "CLI agent",
+							description: "Choose which CLI agent builds the game in goal mode.",
+							defaultValue: SVELTEKIT_GAME_DEFAULT_RUNTIME,
+							options: THREE_B_ONE_B_CLI_RUNTIME_OPTIONS,
+						},
+						gameDescription: {
+							type: "textarea",
+							label: "Game description",
+							description:
+								"Describe the SvelteKit game the agent should build. Leave as-is for a polished Tetris.",
+							defaultValue: SVELTEKIT_GAME_DEFAULT_DESCRIPTION,
+						},
+					},
+				},
+			},
+		},
+		do: [
+			{ workspace_profile: makeSvelteKitGameWorkspaceProfileTask() },
+			{ build_game: makeSvelteKitGameBuildTask() },
+			{ verify_app: makeSvelteKitGameVerifyTask() },
+			{ browser_validate_capture: makeSvelteKitGameBrowserValidateTask() },
+			{ start_preview: makeSvelteKitGameStartPreviewTask() },
+		],
+		output: {
+			as: {
+				appPath: SVELTEKIT_GAME_APP_DIR,
+				workspaceRef: SVELTEKIT_GAME_OUTPUT_WORKSPACE_REF,
+				sandboxName: SVELTEKIT_GAME_OUTPUT_SANDBOX_NAME,
+				runtimeSandboxName: "${ .build_game.runtimeSandboxName // null }",
+				selectedCliRuntime: selectedGameRuntimeExpression(),
+				build: "${ .build_game }",
+				verification: "${ .verify_app }",
+				screenshots: "${ .browser_validate_capture }",
+				preview: "${ .start_preview }",
+			},
+		},
+		input: {
+			schema: {
+				document: {
+					type: "object",
+					required: ["gameDescription"],
+					properties: {
+						cliRuntime: {
+							type: "string",
+							title: "CLI agent",
+							description: "Selects the CLI agent runtime for the build step.",
+							enum: THREE_B_ONE_B_CLI_RUNTIMES.map((item) => item.runtime),
+							default: SVELTEKIT_GAME_DEFAULT_RUNTIME,
+						},
+						gameDescription: {
+							type: "string",
+							title: "Game description",
+							description:
+								"Describe the SvelteKit game the agent should build.",
+							default: SVELTEKIT_GAME_DEFAULT_DESCRIPTION,
+						},
+						maxIterations: {
+							type: "integer",
+							title: "Max goal iterations",
+							description: "Goal-loop iteration cap.",
+							default: SVELTEKIT_GAME_DEFAULT_MAX_ITERATIONS,
+							minimum: 1,
+						},
+						tokenBudget: {
+							type: "integer",
+							title: "Goal token budget",
+							description:
+								"Token budget for the goal; 0 = no budget (default).",
+							default: 0,
+							minimum: 0,
+						},
+						sandboxTemplate: {
+							type: "string",
+							title: "Sandbox template",
+							description:
+								"Override the OpenShell sandbox template (default 'dapr-agent', which has node/npm).",
+							default: "dapr-agent",
+						},
+					},
+				},
+				format: "json",
+			},
+		},
+	};
+}
+
+function buildSvelteKitGameWorkflowNodes(): JsonRecord[] {
+	return [
+		{
+			id: "trigger",
+			type: "trigger",
+			position: { x: 80, y: 60 },
+			data: {
+				label: "Game request trigger",
+				description:
+					"Receives gameDescription + cliRuntime (and optional goal tuning) for the SvelteKit game build.",
+			},
+		},
+		{
+			id: "workspace_profile",
+			type: "action",
+			position: { x: 80, y: 200 },
+			data: {
+				label: "Provision retained sandbox",
+				actionType: "workspace/profile",
+				description:
+					"Stand up a per-run dapr-agent sandbox (node/npm) with file/exec tools; keepAfterRun=true so the live preview can attach.",
+			},
+		},
+		{
+			id: "build_game",
+			type: "action",
+			position: { x: 80, y: 340 },
+			data: {
+				label: "Build game (goal mode)",
+				actionType: "durable/run",
+				description:
+					"CLI agent iterates under a goalSpec objective until the SvelteKit game installs, builds, runs, and is playable.",
+			},
+		},
+		{
+			id: "verify_app",
+			type: "action",
+			position: { x: 80, y: 480 },
+			data: {
+				label: "Verify synced source",
+				actionType: "workspace/command",
+				description:
+					"Sanity-check package.json + src exist in the retained workspace after outputSync.",
+			},
+		},
+		{
+			id: "browser_validate_capture",
+			type: "action",
+			position: { x: 80, y: 620 },
+			data: {
+				label: "Capture game walkthrough",
+				actionType: "browser/validate",
+				description:
+					"Install deps, boot the Vite dev server, and capture load / start / rotate / move / drop screenshots.",
+			},
+		},
+		{
+			id: "start_preview",
+			type: "action",
+			position: { x: 80, y: 760 },
+			data: {
+				label: "Start live preview",
+				actionType: "browser/start-preview",
+				description:
+					"Keep a live Vite dev-server preview proxy attached to the retained workspace so the run page can open the game.",
+			},
+		},
+	];
+}
+
+function buildSvelteKitGameWorkflowEdges(): JsonRecord[] {
+	const ordered = [
+		"trigger",
+		"workspace_profile",
+		"build_game",
+		"verify_app",
+		"browser_validate_capture",
+		"start_preview",
+	];
+	return ordered.slice(0, -1).map((source, index) => ({
+		id: `e_sveltekit_game_${index + 1}`,
+		source,
+		target: ordered[index + 1],
+		type: "default",
+	}));
+}
+
 async function upsertRawWorkflow(params: {
 	db: ReturnType<typeof drizzle>;
 	workflowId: string;
@@ -2823,6 +3310,19 @@ async function seedWorkflow() {
 			spec: buildThreeBOneBCliWorkflowSpec(),
 			nodes: buildThreeBOneBCliWorkflowNodes(),
 			edges: buildThreeBOneBCliWorkflowEdges(),
+			visibility: "public",
+		});
+
+		await upsertRawWorkflow({
+			db,
+			workflowId: SVELTEKIT_GAME_WORKFLOW_ID,
+			name: SVELTEKIT_GAME_WORKFLOW_NAME,
+			description: SVELTEKIT_GAME_WORKFLOW_DESCRIPTION,
+			userId,
+			projectId,
+			spec: buildSvelteKitGameWorkflowSpec(),
+			nodes: buildSvelteKitGameWorkflowNodes(),
+			edges: buildSvelteKitGameWorkflowEdges(),
 			visibility: "public",
 		});
 

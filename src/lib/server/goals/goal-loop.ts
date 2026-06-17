@@ -14,6 +14,7 @@ import {
 	getCurrentGoal,
 	getDrivableGoal,
 	getSessionWorkflowExecutionId,
+	hasGoalCompletedEvent,
 	latestEventMeta,
 	pauseGoal,
 	sessionStopState,
@@ -114,6 +115,17 @@ export async function onSessionEvent(
 			// Only an end_turn idle (the agent finished its turn) drives a
 			// continuation. Terminal idles (max_iters, etc.) are ignored.
 			if (reason && reason !== "end_turn") return;
+			// Idle-rescue: if the goal already completed (native-goal CLIs emit
+			// session.goal_completed and may then run a post-completion turn that
+			// races the cooperative terminate raised on goal_completed), re-fire the
+			// terminate on this clean idle boundary so the parent durable/run isn't
+			// wedged. Idempotent + gated on a recorded goal_completed so it never
+			// fires mid-goal. Custom-loop runtimes reach completion via the
+			// emit→goal_completed path, so this only matters for native CLIs.
+			if (await hasGoalCompletedEvent(sessionId)) {
+				await terminateWorkflowGoalSessionIfNeeded(sessionId);
+				return;
+			}
 			await driveContinuationIfIdle(sessionId);
 			return;
 		}
