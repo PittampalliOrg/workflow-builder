@@ -3311,6 +3311,271 @@ function buildCodingGoalWorkflowEdges(): JsonRecord[] {
 	}));
 }
 
+// --- Generic evaluator-goal workflow factory --------------------------------
+// Same 3-node shape as the coding-goal showcase (trigger → workspace/profile →
+// durable/run with an evidence-gated goalSpec), parameterized so we can express
+// multiple evaluator demos. Grounded in Anthropic's eval guidance: acceptance
+// is SPECIFIC + MEASURABLE + CODE-GRADED across MULTIPLE criteria with edge
+// cases (docs: test-and-evaluate/develop-tests). Unlike Claude Code's /goal
+// evaluator (a fresh model that only reads the transcript), OUR evaluator runs
+// these commands against ground-truth workspace state.
+interface EvaluatorGoalConfig {
+	id: string;
+	name: string;
+	description: string;
+	defaultTask: string;
+	defaultAgentSlug: string;
+	maxIterations: number;
+	objective: string;
+	prompt: string;
+	acceptanceCriteria: string[];
+	evidenceCommands: string[];
+	architecture: string;
+	notes: string;
+}
+
+function buildEvaluatorGoalWorkflowSpec(cfg: EvaluatorGoalConfig): JsonRecord {
+	return {
+		document: {
+			dsl: "1.0.0",
+			namespace: "workflow-builder.demos",
+			name: cfg.id,
+			version: "1.0.0",
+			title: cfg.name,
+			summary: cfg.description,
+			"x-workflow-builder": {
+				architecture: cfg.architecture,
+				notes: cfg.notes,
+				triggerInputs: {
+					task: "Optional. The coding task.",
+					agentSlug:
+						"Optional. dapr-agent-py agent slug (custom-loop; uses the evaluator-gated goal MCP).",
+					maxIterations: "Optional. Goal-loop iteration cap.",
+				},
+				input: {
+					fields: {
+						task: {
+							type: "textarea",
+							label: "Coding task",
+							description: "Describe the module the agent must implement.",
+							defaultValue: cfg.defaultTask,
+						},
+						agentSlug: {
+							type: "text",
+							label: "Agent slug (dapr-agent-py)",
+							description:
+								"Custom-loop dapr-agent-py agent to run (uses the evaluator-gated goal MCP).",
+							defaultValue: cfg.defaultAgentSlug,
+						},
+					},
+				},
+			},
+		},
+		do: [
+			{
+				workspace_profile: {
+					call: "workspace/profile",
+					with: {
+						name: cfg.id.slice(0, 40),
+						rootPath: "/sandbox",
+						sandboxTemplate: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+						ttlSeconds: 3600,
+						keepAfterRun: true,
+						managedBy: `workflow-builder:demos:${cfg.id}`,
+						commandTimeoutMs: 300000,
+						timeoutMs: 600000,
+						enabledTools: [
+							"execute_command",
+							"read_file",
+							"write_file",
+							"edit_file",
+							"list_files",
+							"mkdir",
+							"file_stat",
+						],
+						sandboxPolicy: {
+							mode: "per-run",
+							template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+							ttlSeconds: 3600,
+							keepAfterRun: true,
+						},
+					},
+				},
+			},
+			{
+				solve: {
+					call: "durable/run",
+					with: {
+						mode: "execute_direct",
+						cwd: "/sandbox",
+						sandboxName: "${ .workspace_profile.sandboxName }",
+						workspaceRef: "${ .workspace_profile.workspaceRef }",
+						sandboxPolicy: {
+							mode: "per-run",
+							template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+							ttlSeconds: 3600,
+							keepAfterRun: true,
+						},
+						body: {
+							agentRef: {
+								slug: `\${ .trigger.agentSlug // "${cfg.defaultAgentSlug}" }`,
+							},
+							prompt: cfg.prompt,
+							goalSpec: {
+								objective: cfg.objective,
+								acceptanceCriteria: cfg.acceptanceCriteria,
+								evidence: { commands: cfg.evidenceCommands },
+								maxIterations: `\${ .trigger.maxIterations // ${cfg.maxIterations} }`,
+							},
+							overrides: { cwd: "/sandbox", maxTurns: 40, timeoutMinutes: 30 },
+						},
+					},
+				},
+			},
+		],
+		output: {
+			as: {
+				workspaceRef: "${ .workspace_profile.workspaceRef }",
+				sandboxName: '${ .workspace_profile.sandboxName // "" }',
+				solve: "${ .solve }",
+			},
+		},
+		input: {
+			schema: {
+				document: {
+					type: "object",
+					required: ["task"],
+					properties: {
+						task: {
+							type: "string",
+							title: "Coding task",
+							default: cfg.defaultTask,
+						},
+						agentSlug: {
+							type: "string",
+							title: "Agent slug",
+							default: cfg.defaultAgentSlug,
+						},
+						maxIterations: {
+							type: "integer",
+							title: "Max goal iterations",
+							default: cfg.maxIterations,
+							minimum: 1,
+						},
+						sandboxTemplate: {
+							type: "string",
+							title: "Sandbox template",
+							default: "dapr-agent",
+						},
+					},
+				},
+				format: "json",
+			},
+		},
+	};
+}
+
+function buildEvaluatorGoalWorkflowNodes(cfg: EvaluatorGoalConfig): JsonRecord[] {
+	return [
+		{
+			id: "trigger",
+			type: "trigger",
+			position: { x: 80, y: 60 },
+			data: {
+				label: "Coding task trigger",
+				description: "Receives the coding task + optional agentSlug/maxIterations.",
+			},
+		},
+		{
+			id: "workspace_profile",
+			type: "action",
+			position: { x: 80, y: 200 },
+			data: {
+				label: "Provision sandbox",
+				actionType: "workspace/profile",
+				description:
+					"Single dapr-agent sandbox; shared by the agent + the evaluator's evidence checks.",
+			},
+		},
+		{
+			id: "solve",
+			type: "action",
+			position: { x: 80, y: 340 },
+			data: {
+				label: "Solve (goal mode, evaluator-gated)",
+				actionType: "durable/run",
+				description:
+					"Agent works under a goalSpec; update_goal(complete) is verified by the BFF running the graded evidence commands before the goal completes.",
+			},
+		},
+	];
+}
+
+function buildEvaluatorGoalWorkflowEdges(): JsonRecord[] {
+	const ordered = ["trigger", "workspace_profile", "solve"];
+	return ordered.slice(0, -1).map((source, index) => ({
+		id: `e_eval_goal_${index + 1}`,
+		source,
+		target: ordered[index + 1],
+		type: "default",
+	}));
+}
+
+// --- Evaluator TDD: Roman numerals (multi-criterion, code-graded) -----------
+const ROMAN_GOAL_WORKFLOW_ID =
+	process.env.SEED_ROMAN_GOAL_WORKFLOW_ID?.trim() || "evaluator-tdd-roman-showcase";
+const ROMAN_GOAL_DEFAULT_AGENT_SLUG =
+	process.env.SEED_ROMAN_GOAL_AGENT_SLUG?.trim() || "general-assistant";
+const ROMAN_GOAL_DEFAULT_TASK =
+	"Implement a Roman-numeral converter (intToRoman + romanToInt) in a Node.js CommonJS module.";
+const ROMAN_GOAL_MAX_ITERATIONS = 20;
+
+// Criterion 1 — functional suite (code-graded, named cases + round-trip; edge
+// cases on subtractive notation are where naive impls fail first → visible
+// reject→fix→pass). Criterion 2 — export contract. Both must exit 0. No `${` so
+// the orchestrator's jq pass-through leaves these literal.
+const ROMAN_GOAL_FUNCTIONAL_CMD =
+	`cd /sandbox && node -e 'const s=require("./solution.js"); let f=[]; const eq=(n,g,e)=>{ if(JSON.stringify(g)!==JSON.stringify(e)) f.push(n+": expected "+JSON.stringify(e)+" got "+JSON.stringify(g)); else console.log("PASS "+n); }; eq("intToRoman(1)",s.intToRoman(1),"I"); eq("intToRoman(4)",s.intToRoman(4),"IV"); eq("intToRoman(9)",s.intToRoman(9),"IX"); eq("intToRoman(40)",s.intToRoman(40),"XL"); eq("intToRoman(90)",s.intToRoman(90),"XC"); eq("intToRoman(400)",s.intToRoman(400),"CD"); eq("intToRoman(900)",s.intToRoman(900),"CM"); eq("intToRoman(1994)",s.intToRoman(1994),"MCMXCIV"); eq("intToRoman(2023)",s.intToRoman(2023),"MMXXIII"); eq("intToRoman(3888)",s.intToRoman(3888),"MMMDCCCLXXXVIII"); eq("intToRoman(3999)",s.intToRoman(3999),"MMMCMXCIX"); eq("romanToInt(MCMXCIV)",s.romanToInt("MCMXCIV"),1994); eq("romanToInt(MMMDCCCLXXXVIII)",s.romanToInt("MMMDCCCLXXXVIII"),3888); eq("romanToInt(XLII)",s.romanToInt("XLII"),42); [1,4,9,40,90,400,900,944,1994,2023,3549,3888,3999].forEach(n=>{ const r=s.romanToInt(s.intToRoman(n)); if(r!==n) f.push("roundtrip("+n+"): got "+r); }); if(f.length){ console.error("FAILURES:\\n"+f.join("\\n")); process.exit(1); } console.log("ALL "+"PASS"); '`;
+
+const ROMAN_GOAL_CONTRACT_CMD =
+	`cd /sandbox && node -e 'const s=require("./solution.js"); const miss=["intToRoman","romanToInt"].filter(fn=>typeof s[fn]!=="function"); if(miss.length){ console.error("Missing exports: "+miss.join(", ")); process.exit(1);} console.log("exports OK"); '`;
+
+const ROMAN_GOAL_OBJECTIVE = [
+	'${ "Write /sandbox/solution.js (Node.js CommonJS) that satisfies: " + (.trigger.task // "',
+	ROMAN_GOAL_DEFAULT_TASK,
+	'") + ". Export intToRoman(n) (1..3999, correct SUBTRACTIVE forms IV, IX, XL, XC, CD, CM) and romanToInt(s) as its exact inverse. The goal is COMPLETE only when ALL graded acceptance checks pass (each exits 0). Do not weaken, delete, or special-case around the checks." }',
+].join("");
+
+const ROMAN_GOAL_PROMPT = [
+	'${ "Write /sandbox/solution.js per the active goal: " + (.trigger.task // "',
+	ROMAN_GOAL_DEFAULT_TASK,
+	'") + ". Export it as CommonJS (module.exports = { intToRoman, romanToInt }). When you believe it is complete, call update_goal(status=\\"complete\\"). Completion is VERIFIED by running graded acceptance checks (a functional suite incl. round-trip + an export contract) against your module; if any fails you will receive the exact failing cases — fix /sandbox/solution.js and call update_goal again." }',
+].join("");
+
+function buildRomanGoalConfig(): EvaluatorGoalConfig {
+	return {
+		id: ROMAN_GOAL_WORKFLOW_ID,
+		name: "Evaluator TDD: Roman Numerals",
+		description:
+			"Multi-criterion, code-graded evaluator showcase: a dapr-agent-py agent implements a Roman-numeral converter under a goalSpec, and its self-declared completion is verified by the BFF running TWO graded evidence checks (functional suite with subtractive-notation + round-trip edge cases, and an export contract) against ground-truth workspace state before the goal completes. Demonstrates reject→fix→pass. No browser/preview.",
+		defaultTask: ROMAN_GOAL_DEFAULT_TASK,
+		defaultAgentSlug: ROMAN_GOAL_DEFAULT_AGENT_SLUG,
+		maxIterations: ROMAN_GOAL_MAX_ITERATIONS,
+		objective: ROMAN_GOAL_OBJECTIVE,
+		prompt: ROMAN_GOAL_PROMPT,
+		acceptanceCriteria: [
+			"intToRoman(n) returns correct Roman numerals for 1..3999, including subtractive forms (IV, IX, XL, XC, CD, CM)",
+			"romanToInt(s) is the exact inverse of intToRoman (round-trips across the full graded set)",
+			"module.exports exposes intToRoman and romanToInt as functions",
+			"every graded evidence check exits 0",
+		],
+		evidenceCommands: [ROMAN_GOAL_FUNCTIONAL_CMD, ROMAN_GOAL_CONTRACT_CMD],
+		architecture: "goal-mode+evaluator-gated-completion+multi-criterion-graded+single-sandbox",
+		notes:
+			"Two graded evidence commands (functional suite + export contract) are run by the BFF evaluator in the shared workspace; failing checks reject completion with the exact failing cases and feed back to the agent. Edge cases (subtractive notation, round-trip) make a first-attempt slip likely → visible reject→fix→pass. No browser/preview/outputSync.",
+	};
+}
+
 async function upsertRawWorkflow(params: {
 	db: ReturnType<typeof drizzle>;
 	workflowId: string;
@@ -3586,6 +3851,22 @@ async function seedWorkflow() {
 			edges: buildCodingGoalWorkflowEdges(),
 			visibility: "public",
 		});
+
+		{
+			const romanCfg = buildRomanGoalConfig();
+			await upsertRawWorkflow({
+				db,
+				workflowId: romanCfg.id,
+				name: romanCfg.name,
+				description: romanCfg.description,
+				userId,
+				projectId,
+				spec: buildEvaluatorGoalWorkflowSpec(romanCfg),
+				nodes: buildEvaluatorGoalWorkflowNodes(romanCfg),
+				edges: buildEvaluatorGoalWorkflowEdges(),
+				visibility: "public",
+			});
+		}
 
 		await upsertWorkflow({
 			db,
