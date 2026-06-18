@@ -88,6 +88,7 @@
 					rootService={payload.traceSpans.find((s) => !s.parentSpanId)?.serviceName ?? payload.traceSpans[0]?.serviceName ?? null}
 					llmTurns={payload.agentDecisions.length}
 					toolCalls={payload.toolSpans.length}
+					goalFlow={payload.goalFlow}
 				/>
 				<div class="min-h-0 flex-1">
 					<InvestigationStudio {payload} mlflowHref={null} legacyTraceHref={null} onRefresh={loadInvestigation} />

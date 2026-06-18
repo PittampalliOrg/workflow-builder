@@ -14,11 +14,12 @@
 	import TurnNavigator from './turn-navigator.svelte';
 	import AgentConversationView from './agent-conversation-view.svelte';
 	import TraceConsole from '$lib/components/observability/trace-console.svelte';
+	import GoalFlowTimeline from '$lib/components/observability/goal-flow-timeline.svelte';
 	import CorrelatedLogPane from '$lib/components/observability/correlated-log-pane.svelte';
 	import SpanEvidencePanel from '$lib/components/observability/span-evidence-panel.svelte';
 	import {
 		Bot, RefreshCcw, Search, Zap, FoldVertical, UnfoldVertical,
-		ArrowUp, ArrowDown, CircleAlert, GitBranch, X, ExternalLink
+		ArrowUp, ArrowDown, CircleAlert, GitBranch, X, ExternalLink, ShieldCheck
 	} from '@lucide/svelte';
 
 	interface Props {
@@ -49,7 +50,13 @@
 	$effect(() => { store.setPayload(payload); });
 
 	// --- Local UI state ---
-	let mainViewTab = $state<'turns' | 'waterfall'>('turns');
+	let mainViewTab = $state<'goal' | 'turns' | 'waterfall'>('turns');
+	// Default to the Goal view when this trace's session has a goal flow, unless
+	// the user has manually picked a view.
+	let viewTouched = $state(false);
+	$effect(() => {
+		if (!viewTouched && payload?.goalFlow) mainViewTab = 'goal';
+	});
 
 	// --- Waterfall controls ---
 	let colorMode = $state<'kind' | 'service' | 'duration'>('kind');
@@ -350,13 +357,18 @@
 	<ObservabilityLayout>
 		{#snippet mainToolbar()}
 			<div class="flex flex-wrap items-center gap-2">
-				<!-- Main view tabs: Conversation / Waterfall -->
+				<!-- Main view tabs: Goal / Conversation / Waterfall -->
 				<div class="flex items-center rounded-lg border border-white/10 bg-white/5 p-0.5">
+					{#if payload.goalFlow}
+						<button class="rounded px-2.5 py-1 text-[11px] transition-colors {mainViewTab === 'goal' ? 'bg-pink-500/20 text-pink-100' : 'text-zinc-400 hover:text-zinc-200'}"
+							onclick={() => { mainViewTab = 'goal'; viewTouched = true; }}>
+							<ShieldCheck size={10} class="mr-1 inline" />Goal</button>
+					{/if}
 					<button class="rounded px-2.5 py-1 text-[11px] transition-colors {mainViewTab === 'turns' ? 'bg-cyan-500/20 text-cyan-100' : 'text-zinc-400 hover:text-zinc-200'}"
-						onclick={() => mainViewTab = 'turns'}>
+						onclick={() => { mainViewTab = 'turns'; viewTouched = true; }}>
 						<Bot size={10} class="mr-1 inline" />Conversation</button>
 					<button class="rounded px-2.5 py-1 text-[11px] transition-colors {mainViewTab === 'waterfall' ? 'bg-cyan-500/20 text-cyan-100' : 'text-zinc-400 hover:text-zinc-200'}"
-						onclick={() => mainViewTab = 'waterfall'}>
+						onclick={() => { mainViewTab = 'waterfall'; viewTouched = true; }}>
 						<GitBranch size={10} class="mr-1 inline" />Waterfall</button>
 				</div>
 
@@ -446,7 +458,19 @@
 		{/snippet}
 
 		{#snippet mainContent()}
-			{#if mainViewTab === 'turns'}
+			{#if mainViewTab === 'goal' && payload.goalFlow}
+				<GoalFlowTimeline
+					goalFlow={payload.goalFlow}
+					agentDecisions={filteredAgentDecisions}
+					onSelectAttempt={(a) => {
+						const first = a.relatedSpanIds[0];
+						if (first) {
+							const span = allTraceSpans.find((s) => s.spanId === first);
+							if (span) selectSpan(span);
+						}
+					}}
+				/>
+			{:else if mainViewTab === 'turns'}
 				<TurnNavigator decisions={filteredAgentDecisions} />
 			{:else}
 				<TraceConsole

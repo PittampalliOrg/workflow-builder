@@ -300,8 +300,83 @@ export interface ObservabilitySessionSummary {
 	services: string[];
 }
 
+// --- Goal-evaluator flow (Postgres-derived: thread_goals + session_events) ---
+// The evaluator emits no OTEL spans, so this layer is assembled separately and
+// rendered as the "Goal" view to make the agent-work → submit → evaluate →
+// verdict → loop → complete sequence legible.
+
+export type GoalFlowStatus = 'active' | 'paused' | 'budget_limited' | 'complete';
+export type GoalFlowVerdict = 'pass' | 'reject' | 'none';
+
+/** One deterministic evidence check (REJECT carries these; PASS persists none). */
+export interface GoalFlowCheck {
+	command: string;
+	exitCode: number;
+	ok: boolean;
+	output: string;
+}
+
+export interface GoalFlowVerdictDetail {
+	kind: GoalFlowVerdict;
+	source: 'goal_completed' | 'goal_rejected' | 'update_goal' | 'idle_backstop' | null;
+	at: string | null;
+	feedback: string | null;
+	/** REJECT: per-command results. PASS: empty (not persisted). */
+	checks: GoalFlowCheck[];
+	failingCount: number;
+	/** PASS: number of evidence commands verified; else null. */
+	verifiedCount: number | null;
+}
+
+export interface GoalFlowAttempt {
+	id: string;
+	iteration: number;
+	startedAt: string | null;
+	endedAt: string | null;
+	work: {
+		turnCount: number;
+		toolNames: string[];
+		toolCallCount: number;
+		tokenDelta: number | null;
+	};
+	submission: {
+		kind: 'update_goal' | 'idle_backstop' | 'none';
+		at: string | null;
+	};
+	verdict: GoalFlowVerdictDetail;
+	relatedTurnIds: string[];
+	relatedSpanIds: string[];
+}
+
+export interface GoalFlowOutcome {
+	verdict: GoalFlowVerdict;
+	label: string;
+	evidenceVerified: boolean;
+	attemptCount: number;
+}
+
+export interface GoalFlow {
+	sessionId: string;
+	goalId: string;
+	objective: string;
+	acceptanceCriteria: string[];
+	evidenceCommands: string[];
+	status: GoalFlowStatus;
+	iterations: number;
+	maxIterations: number;
+	tokensUsed: number;
+	tokenBudget: number | null;
+	stopReason: string | null;
+	completionSource: string | null;
+	startedAt: string | null;
+	completedAt: string | null;
+	attempts: GoalFlowAttempt[];
+	outcome: GoalFlowOutcome;
+}
+
 export interface ObservabilityInvestigationPayload {
 	summary: ObservabilitySessionSummary;
+	goalFlow?: GoalFlow | null;
 	traceSpans: ObservabilityTraceSpan[];
 	logs: ObservabilityLogEntry[];
 	llmSpans: ObservabilityLlmSpan[];

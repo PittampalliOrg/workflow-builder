@@ -36,7 +36,15 @@
 		toolCount: number;
 		totalTokens: number;
 		status: 'ok' | 'error';
+		goal?: { status: string; iterations: number; verdict: 'pass' | 'active' | 'limited' | 'paused' } | null;
 	}
+
+	const GOAL_CHIP: Record<string, { label: string; cls: string }> = {
+		pass: { label: 'goal ✓', cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' },
+		active: { label: 'goal …', cls: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300' },
+		limited: { label: 'goal ⊘', cls: 'border-amber-500/30 bg-amber-500/10 text-amber-300' },
+		paused: { label: 'goal ‖', cls: 'border-white/15 bg-white/5 text-zinc-300' }
+	};
 
 	interface Props {
 		/** Where a row navigates: `${detailBase}/<traceId>`. */
@@ -240,6 +248,11 @@
 									{/if}
 									<span class="truncate text-sm font-medium text-zinc-100">{trace.rootOperation || '(unnamed)'}</span>
 									<Badge variant="outline" class="shrink-0 border-white/15 text-[10px] text-zinc-400">{trace.rootService}</Badge>
+									{#if trace.goal}
+										<span class="shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-medium {GOAL_CHIP[trace.goal.verdict]?.cls ?? GOAL_CHIP.active.cls}" title="Goal: {trace.goal.status} ({trace.goal.iterations} iter)">
+											{GOAL_CHIP[trace.goal.verdict]?.label ?? 'goal'}
+										</span>
+									{/if}
 								</div>
 								<div class="mt-0.5 flex items-center gap-2 font-mono text-[10px] text-zinc-600">
 									<span>{trace.traceId.slice(0, 24)}</span>

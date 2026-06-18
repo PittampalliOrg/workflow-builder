@@ -1,8 +1,8 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { and, desc, eq, isNull, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm';
 import { db } from '$lib/server/db';
-import { sessions, workflowExecutions } from '$lib/server/db/schema';
+import { sessions, workflowExecutions, threadGoals } from '$lib/server/db/schema';
 import { queryClickHouse, CLICKHOUSE_DB } from '$lib/server/otel/clickhouse';
 
 const chEscape = (s: string) => s.replace(/'/g, "''");
@@ -114,6 +114,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 				countIf(SpanAttributes['openinference.span.kind'] = 'LLM') AS LlmCount,
 				countIf(SpanAttributes['openinference.span.kind'] = 'TOOL' AND SpanAttributes['tool.name'] != '') AS ToolCount,
 				sum(toUInt64OrZero(SpanAttributes['llm.token_count.total'])) AS TotalTokens,
+				arrayFilter(x -> x != '', groupUniqArray(SpanAttributes['session.id'])) AS SessionIds,
 				maxIf(1, StatusCode = 'Error') AS HasError
 			FROM ${CLICKHOUSE_DB}.otel_traces
 			${whereClause}
@@ -128,6 +129,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			rootOperation: r.RootOperation as string,
 			rootService: r.RootService as string,
 			services: (r.Services as string[]) ?? [],
+			sessionIds: (r.SessionIds as string[]) ?? [],
 			startTime: r.StartTime as string,
 			duration: Math.round(Number(r.DurationMs) || 0),
 			spanCount: Number(r.SpanCount) || 0,
@@ -135,7 +137,41 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			toolCount: Number(r.ToolCount) || 0,
 			totalTokens: Number(r.TotalTokens) || 0,
 			status: (r.HasError as number) === 1 ? ('error' as const) : ('ok' as const),
+			goal: null as
+				| null
+				| { status: string; iterations: number; verdict: 'pass' | 'active' | 'limited' | 'paused' },
 		}));
+
+		// Goal-verdict enrichment: batch-resolve thread_goals for every session id
+		// this page's traces touch (one PG query), then attach a lightweight goal
+		// chip per trace (prefer the agent `__durable__solve__run__` session).
+		const allSessionIds = [...new Set(traces.flatMap((t) => t.sessionIds))];
+		if (allSessionIds.length) {
+			const goalRows = await db
+				.select({
+					sessionId: threadGoals.sessionId,
+					status: threadGoals.status,
+					iterations: threadGoals.iterations,
+				})
+				.from(threadGoals)
+				.where(inArray(threadGoals.sessionId, allSessionIds));
+			const goalBySession = new Map(goalRows.map((g) => [g.sessionId, g]));
+			const verdictFor = (status: string): 'pass' | 'active' | 'limited' | 'paused' =>
+				status === 'complete'
+					? 'pass'
+					: status === 'budget_limited'
+						? 'limited'
+						: status === 'paused'
+							? 'paused'
+							: 'active';
+			for (const t of traces) {
+				const candidate =
+					t.sessionIds.find((s) => s.includes('__durable__solve__run__') && goalBySession.has(s)) ??
+					t.sessionIds.find((s) => goalBySession.has(s));
+				const g = candidate ? goalBySession.get(candidate) : undefined;
+				if (g) t.goal = { status: g.status, iterations: g.iterations, verdict: verdictFor(g.status) };
+			}
+		}
 
 		// Distinct services for the filter dropdown (within the time range).
 		const serviceRows = await queryClickHouse(

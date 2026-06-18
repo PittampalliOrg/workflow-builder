@@ -21,6 +21,7 @@ import {
 } from '$lib/server/otel/clickhouse';
 import { isBenignControlPlaneError } from '$lib/server/otel/service-graph';
 import { buildWorkflowTimeline } from '$lib/server/observability/workflow-timeline';
+import { buildGoalFlow } from '$lib/server/observability/goal-flow';
 import type {
 	ObservabilityAgentDecisionDiagram,
 	ObservabilityAgentDecisionDiagramEdge,
@@ -902,6 +903,7 @@ export async function buildSessionInvestigation(sessionOrExecutionId: string): P
 	const events = buildEvents({ traceSpans, logs, llmSpans, toolSpans, steps, issues });
 	const agentDecisionModel = buildAgentDecisionModel({ traceSpans, logs, llmSpans, toolSpans });
 	const workflowTimeline = buildWorkflowTimeline({ traceSpans, workflowSteps: steps });
+	const goalFlow = await buildGoalFlow(sessionId ? [sessionId] : [], agentDecisionModel.turns);
 	return {
 		summary: buildSummary({
 			scope: 'session',
@@ -917,6 +919,7 @@ export async function buildSessionInvestigation(sessionOrExecutionId: string): P
 			startedAt,
 			completedAt
 		}),
+		goalFlow,
 		traceSpans,
 		logs,
 		llmSpans,
@@ -990,6 +993,19 @@ export async function buildTraceInvestigation(traceId: string): Promise<Observab
 	const events = buildEvents({ traceSpans, logs, llmSpans, toolSpans, steps, issues });
 	const agentDecisionModel = buildAgentDecisionModel({ traceSpans, logs, llmSpans, toolSpans });
 	const workflowTimeline = buildWorkflowTimeline({ traceSpans, workflowSteps: steps });
+	// Goal flow lives on the per-session AGENT session; a workflow trace carries
+	// several session.id attrs (parent + child) — consider them all.
+	const goalCandidates = [
+		...new Set(
+			[
+				sessionId,
+				...traceSpans
+					.map((s) => s.attributes?.['session.id'])
+					.filter((v): v is string => typeof v === 'string')
+			].filter((v): v is string => Boolean(v))
+		)
+	];
+	const goalFlow = await buildGoalFlow(goalCandidates, agentDecisionModel.turns);
 	return {
 		summary: buildSummary({
 			scope: 'trace',
@@ -1005,6 +1021,7 @@ export async function buildTraceInvestigation(traceId: string): Promise<Observab
 			startedAt: sessionSteps.startedAt ?? traceSpans[0]?.startTime ?? null,
 			completedAt: sessionSteps.completedAt ?? traceSpans.at(-1)?.startTime ?? null
 		}),
+		goalFlow,
 		traceSpans,
 		logs,
 		llmSpans,
@@ -1051,6 +1068,7 @@ export async function buildExecutionInvestigation(
 	const events = buildEvents({ traceSpans, logs, llmSpans, toolSpans, steps, issues });
 	const agentDecisionModel = buildAgentDecisionModel({ traceSpans, logs, llmSpans, toolSpans });
 	const workflowTimeline = buildWorkflowTimeline({ traceSpans, workflowSteps: steps });
+	const goalFlow = await buildGoalFlow(sessionId ? [sessionId] : [], agentDecisionModel.turns);
 	return {
 		summary: buildSummary({
 			scope: 'session',
@@ -1066,6 +1084,7 @@ export async function buildExecutionInvestigation(
 			startedAt,
 			completedAt
 		}),
+		goalFlow,
 		traceSpans,
 		logs,
 		llmSpans,
