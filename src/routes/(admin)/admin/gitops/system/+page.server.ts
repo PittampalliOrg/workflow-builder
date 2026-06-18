@@ -22,7 +22,7 @@ export type GitopsSystemPageLinks = {
 	tektonWebhook: string;
 };
 
-export const load: PageServerLoad = async () => {
+export const load: PageServerLoad = async ({ locals }) => {
 	const [initial, promotions, activityEvents] = await Promise.all([
 		getDeploymentMetadata(),
 		getPromotionStrategies(),
@@ -57,5 +57,6 @@ export const load: PageServerLoad = async () => {
 		promotions,
 		activityEvents,
 		links,
+		viewerEmail: locals.session?.email ?? null,
 	};
 };

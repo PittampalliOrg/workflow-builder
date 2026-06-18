@@ -50,10 +50,10 @@ export function normalizeGitOpsActivityEvent(payload: unknown): NormalizedGitOps
 	const apiVersion = readString(body.apiVersion);
 	const apiParts = parseApiVersion(apiVersion);
 	const resourceRef = normalizeResourceRef(input, data, body, metadata, apiParts);
-	const source = readString(input.source) ?? classifySource(resourceRef);
+	const source = readString(input.source) ?? (isGitHubBody(body) ? "github" : classifySource(resourceRef));
 	const activityType =
 		readString(input.activityType) ??
-		classifyActivityType(resourceRef).activityType;
+		(isGitHubBody(body) ? classifyGitHubActivityType(body) : classifyActivityType(resourceRef).activityType);
 	const observedAt = normalizeDate(
 		input.observedAt ??
 			context.time ??
@@ -73,8 +73,8 @@ export function normalizeGitOpsActivityEvent(payload: unknown): NormalizedGitOps
 		readString(input.message) ??
 		messageFromResource(resourceRef, status);
 	const correlation = compactObject({
-		...asRecord(input.correlation),
 		...extractCorrelation(resourceRef, data, body, metadata, spec, status),
+		...asRecord(input.correlation),
 	});
 	const activityKey =
 		readString(input.activityKey) ??
@@ -282,6 +282,20 @@ function normalizeResourceRef(
 	apiParts: { group: string | null; version: string | null },
 ): GitOpsResourceRef {
 	const explicit = asRecord(input.resourceRef) ?? {};
+	const githubRepo = asRecord(body.repository);
+	if (!Object.keys(explicit).length && githubRepo) {
+		const fullName = readString(githubRepo.full_name);
+		const [owner, name] = fullName?.split("/") ?? [];
+		return {
+			group: "github.com",
+			version: "v3",
+			resource: asRecord(body.pull_request) ? "pullrequests" : "pushes",
+			kind: asRecord(body.pull_request) ? "PullRequest" : "Push",
+			namespace: owner ?? null,
+			name: name ?? fullName ?? null,
+			uid: readString(body.delivery) ?? null,
+		};
+	}
 	const resource = readString(explicit.resource) ?? readString(data.resource);
 	const kind =
 		readString(explicit.kind) ??
@@ -367,6 +381,12 @@ function classifyActivityType(ref: GitOpsResourceRef): { activityType: GitOpsAct
 		return { activityType: "gitops.inventory" };
 	}
 	return { activityType: "kubernetes.resource" };
+}
+
+function classifyGitHubActivityType(body: JsonRecord): GitOpsActivityType {
+	if (asRecord(body.pull_request)) return "github.pull_request" as GitOpsActivityType;
+	if (readString(body.ref) || Array.isArray(body.commits)) return "github.push" as GitOpsActivityType;
+	return "github.event" as GitOpsActivityType;
 }
 
 function phaseFromResource(
@@ -493,7 +513,102 @@ function extractCorrelation(
 			ref.kind === "TimedCommitStatus"
 				? ref.name
 				: readString(labels["promoter.argoproj.io/commit-status-key"]),
+		...extractGitHubCorrelation(body),
 	});
+}
+
+function extractGitHubCorrelation(body: JsonRecord): JsonRecord {
+	if (!isGitHubBody(body)) return {};
+	const repo = asRecord(body.repository);
+	const repoFullName = readString(repo?.full_name);
+	const pr = asRecord(body.pull_request);
+	const head = asRecord(pr?.head);
+	const base = asRecord(pr?.base);
+	const ref = readString(body.ref);
+	const branch = ref?.startsWith("refs/heads/")
+		? ref.slice("refs/heads/".length)
+		: readString(head?.ref) ?? readString(base?.ref);
+	const commitSha =
+		readString(body.after) ??
+		readString(asRecord(body.head_commit)?.id) ??
+		readString(pr?.merge_commit_sha) ??
+		readString(head?.sha);
+	const files = githubChangedFiles(body);
+	const imageName = imageNameFromGitHubFiles(files);
+	const pinCommit =
+		repoFullName?.toLowerCase().endsWith("/stacks") && files.some(isReleasePinPath)
+			? commitSha
+			: null;
+	return compactObject({
+		repo: repoFullName,
+		branch,
+		targetBranch: readString(base?.ref),
+		commitSha,
+		pullRequestNumber: readString(body.number) ?? readString(pr?.number),
+		pullRequestUrl: readString(pr?.html_url),
+		merged: typeof pr?.merged === "boolean" ? pr.merged : null,
+		title: readString(pr?.title) ?? readString(asRecord(body.head_commit)?.message),
+		actor: readString(asRecord(body.sender)?.login),
+		senderLogin: readString(asRecord(body.sender)?.login),
+		pusherEmail: readString(asRecord(body.pusher)?.email),
+		authorEmail: readString(asRecord(asRecord(body.head_commit)?.author)?.email),
+		imageName,
+		pinCommit,
+		expectedGitOpsLane: expectedGitOpsLane(repoFullName, branch, files),
+	});
+}
+
+function isGitHubBody(body: JsonRecord): boolean {
+	return Boolean(asRecord(body.repository) && (readString(body.ref) || asRecord(body.pull_request) || Array.isArray(body.commits)));
+}
+
+function githubChangedFiles(body: JsonRecord): string[] {
+	const files = new Set<string>();
+	const commits = Array.isArray(body.commits) ? body.commits : [];
+	for (const item of commits) {
+		const commit = asRecord(item);
+		for (const key of ["added", "modified", "removed"] as const) {
+			const paths = Array.isArray(commit?.[key]) ? commit[key] : [];
+			for (const path of paths) {
+				const value = readString(path);
+				if (value) files.add(value);
+			}
+		}
+	}
+	const pr = asRecord(body.pull_request);
+	for (const item of [readString(pr?.changed_files)]) {
+		if (item) files.add(item);
+	}
+	return [...files];
+}
+
+function imageNameFromGitHubFiles(files: string[]): string | null {
+	for (const path of files) {
+		const match = path.match(/^services\/([^/]+)\//);
+		if (match?.[1]) return match[1];
+	}
+	return null;
+}
+
+function isReleasePinPath(path: string): boolean {
+	return (
+		path.includes("release-pins/workflow-builder-images") ||
+		path.includes("workflow-builder-system-overlays") ||
+		path.includes("workflow-builder-ryzen-image")
+	);
+}
+
+function expectedGitOpsLane(repo: string | null, branch: string | null, files: string[]): string | null {
+	const lowerRepo = repo?.toLowerCase() ?? "";
+	if (branch?.includes("spokes-dev")) return "promoter-dev";
+	if (branch?.includes("ryzen")) return "direct-ryzen";
+	if (lowerRepo.endsWith("/workflow-builder") && branch === "main") {
+		return files.some((path) => path.startsWith("services/") || path.startsWith("src/") || path === "Dockerfile" || path === "package.json")
+			? "promoter-dev"
+			: "skipped";
+	}
+	if (lowerRepo.endsWith("/stacks") && branch === "main") return "direct-ryzen+promoter-dev";
+	return null;
 }
 
 function defaultActivityKey(

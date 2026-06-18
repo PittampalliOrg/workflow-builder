@@ -8,6 +8,7 @@
 	import { PIPELINE_LINKS_CONTEXT } from "$lib/gitops/pipeline-layout";
 
 	import ActivityFeed from "$lib/components/gitops/pipeline/ActivityFeed.svelte";
+	import ChangeJourneyRail from "$lib/components/gitops/pipeline/ChangeJourneyRail.svelte";
 	import FreightTimeline from "$lib/components/gitops/pipeline/FreightTimeline.svelte";
 	import GraphFilters from "$lib/components/gitops/pipeline/GraphFilters.svelte";
 	import PipelineDrawer from "$lib/components/gitops/pipeline/PipelineDrawer.svelte";
@@ -20,6 +21,12 @@
 	import { Button } from "$lib/components/ui/button";
 	import * as Popover from "$lib/components/ui/popover";
 	import { activityTargetKeys, applyPipelineActivityOverlay } from "$lib/gitops/activity-overlay";
+	import {
+		buildChangeJourneys,
+		journeyGraphHighlight,
+		type ChangeJourneyFilter,
+		type ChangeJourneySelection,
+	} from "$lib/gitops/change-journey";
 	import { clearFlowing, markFlowing } from "$lib/gitops/gitops-flow.svelte";
 	import { nowTick, startClock } from "$lib/gitops/gitops-tick.svelte";
 	import {
@@ -101,6 +108,8 @@
 	let stageSearch = $state("");
 	let selection = $state<PipelineSelection>(null);
 	let selectedFreightId = $state<string | null>(null);
+	let selectedJourneyId = $state<string | null>(null);
+	let journeyFilter = $state<ChangeJourneyFilter>("recent");
 	// Transient like stageSearch — a persisted "failing" filter would resurrect
 	// as an empty-looking page later.
 	let statusFilter = $state<StageStatusFilter[]>([]);
@@ -111,6 +120,18 @@
 	// that re-derives per event batch.
 	const baseModel = $derived(buildPipelineModel(metadata, promotions));
 	const model = $derived(applyPipelineActivityOverlay(baseModel, activityEvents));
+	const changeJourneys = $derived(
+		buildChangeJourneys({
+			events: activityEvents,
+			metadata,
+			model: baseModel,
+			links,
+			viewerEmail: data.viewerEmail,
+		}),
+	);
+	const selectedJourney = $derived(
+		selectedJourneyId ? (changeJourneys.find((journey) => journey.id === selectedJourneyId) ?? null) : null,
+	);
 	// Stages holding the selected freight. Derived from baseModel.freights (the
 	// overlay never remaps freights), so the prop reference changes only on
 	// metadata refresh or freight (de)selection — never per SSE batch, preserving
@@ -120,6 +141,7 @@
 		const freight = baseModel.freights.find((f) => f.id === selectedFreightId);
 		return freight ? { warehouse: freight.warehouse, stageNames: freight.inStages } : null;
 	});
+	const activeHighlight = $derived(selectedJourney ? journeyGraphHighlight(selectedJourney) : freightHighlight);
 	const streamState = $derived(
 		deriveStreamHealth({
 			connected: activityConnected,
@@ -278,14 +300,26 @@
 	function selectNode(sel: PipelineSelection) {
 		selection = sel;
 		selectedFreightId = null;
+		selectedJourneyId = null;
 	}
 	function selectFreight(id: string | null) {
 		selectedFreightId = id;
+		selectedJourneyId = null;
 		if (id) selection = null;
+	}
+	function selectJourney(id: string | null, nextSelection?: ChangeJourneySelection | null) {
+		selectedJourneyId = id;
+		selectedFreightId = null;
+		if (!id) {
+			selection = null;
+			return;
+		}
+		if (nextSelection) selection = nextSelection;
 	}
 	function closeDrawer() {
 		selection = null;
 		selectedFreightId = null;
+		selectedJourneyId = null;
 	}
 
 	function latestSequence(): number {
@@ -547,6 +581,15 @@
 		onselect={selectFreight}
 	/>
 
+	<ChangeJourneyRail
+		journeys={changeJourneys}
+		filter={journeyFilter}
+		{selectedJourneyId}
+		{now}
+		onFilter={(value) => (journeyFilter = value)}
+		onSelect={selectJourney}
+	/>
+
 	<!-- Filter bar -->
 	<div class="flex items-center justify-between gap-2 border-b px-4 py-2">
 		<GraphFilters
@@ -584,7 +627,7 @@
 					{stageSearch}
 					selected={selection}
 					onselect={selectNode}
-					{freightHighlight}
+					freightHighlight={activeHighlight}
 					{statusFilter}
 				/>
 			</div>
@@ -595,7 +638,7 @@
 				{stageSearch}
 				selected={selection}
 				onselect={selectNode}
-				{freightHighlight}
+				freightHighlight={activeHighlight}
 				{statusFilter}
 			/>
 		{/if}
@@ -607,6 +650,7 @@
 		freightId={selectedFreightId}
 		{links}
 		events={activityEvents}
+		journey={selectedJourney}
 		{now}
 		onClose={closeDrawer}
 		onSelectStage={selectNode}

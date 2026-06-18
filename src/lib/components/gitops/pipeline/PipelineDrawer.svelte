@@ -28,6 +28,7 @@
 		selectionForEvent,
 	} from "$lib/gitops/activity-overlay";
 	import { activityEventTone, toneClasses } from "$lib/gitops/activity-tone";
+	import type { ChangeJourney, ChangeJourneyStep } from "$lib/gitops/change-journey";
 	import { buildFreightJourney } from "$lib/gitops/freight-journey";
 	import { buildVisual, healthVisual, promotionVisual } from "$lib/gitops/kargo-status";
 	import type { PipelineModel } from "$lib/gitops/pipeline-types";
@@ -48,6 +49,7 @@
 		selection: PipelineSelection;
 		freightId?: string | null;
 		events?: GitOpsActivityEvent[];
+		journey?: ChangeJourney | null;
 		now?: number;
 		links?: {
 			argoCdBase?: string;
@@ -65,6 +67,7 @@
 		selection,
 		freightId = null,
 		events = [],
+		journey = null,
 		now = Date.now(),
 		links = {},
 		onClose,
@@ -235,6 +238,23 @@
 		}
 	}
 
+	function journeyState(step: ChangeJourneyStep): DeliveryState {
+		return step.state === "waiting" ? "pending" : step.state;
+	}
+
+	function deliveryStepFromJourney(step: ChangeJourneyStep): DeliveryStep {
+		return {
+			key: `journey:${step.id}`,
+			label: step.label,
+			state: journeyState(step),
+			detail: step.detail,
+			sub: step.sub,
+			at: epochMs(step.at),
+			href: step.href ?? null,
+			hrefLabel: step.hrefLabel ?? null,
+		};
+	}
+
 	// The timeline shows DURATIONS, not a repeated "N mins ago" — the automated
 	// outer-loop runs commit→pin in one sub-minute burst, so absolute per-row times
 	// collapse to one value. Instead: inter-step gaps on the connectors, phase
@@ -388,6 +408,15 @@
 
 		return { steps, lead };
 	});
+
+	const evidence = $derived.by<{ steps: DeliveryStep[]; lead: string | null }>(() => {
+		const githubSteps =
+			journey?.steps
+				.filter((step) => step.kind === "github-pr" || step.kind === "github-push" || step.kind === "merge")
+				.map(deliveryStepFromJourney) ?? [];
+		if (githubSteps.length === 0) return delivery;
+		return { ...delivery, steps: [...githubSteps, ...delivery.steps] };
+	});
 </script>
 
 {#snippet sectionLabel(text: string)}
@@ -538,6 +567,89 @@
 				</section>
 			{/if}
 
+			{#if journey}
+				<section class="space-y-2.5 border-t border-border/60 pt-5 first:border-t-0 first:pt-0">
+					<div class="flex items-center justify-between gap-2">
+						{@render sectionLabel("Change journey")}
+						<span class="shrink-0 text-[0.58rem] uppercase tracking-wider text-muted-foreground">
+							{journey.status} · {journey.steps.length} steps
+						</span>
+					</div>
+					<div class="rounded-md border border-border/70 bg-muted/15 p-2.5">
+						<div class="flex items-start justify-between gap-2">
+							<div class="min-w-0">
+								<div class="truncate text-[0.78rem] font-semibold" title={journey.title}>{journey.title}</div>
+								{#if journey.subtitle}
+									<div class="truncate text-[0.64rem] text-muted-foreground" title={journey.subtitle}>{journey.subtitle}</div>
+								{/if}
+							</div>
+							{#if journey.updatedAt}
+								<span class="shrink-0 font-mono text-[0.58rem] text-muted-foreground">{relativeTime(journey.updatedAt, now)}</span>
+							{/if}
+						</div>
+						<ol class="mt-3 space-y-0">
+							{#each journey.steps as step, i (step.id)}
+								{@const last = i === journey.steps.length - 1}
+								<li class="flex gap-2.5">
+									<div class="flex flex-col items-center pt-0.5">
+										<span class="relative flex size-2.5 shrink-0 items-center justify-center">
+											{#if step.state === "active"}
+												<span class="absolute inline-flex size-full animate-ping rounded-full {dotClass(journeyState(step))} opacity-60"></span>
+											{/if}
+											<span class="relative inline-flex size-2 rounded-full {dotClass(journeyState(step))}"></span>
+										</span>
+										{#if !last}
+											<span class="mt-0.5 w-px flex-1 bg-border/70"></span>
+										{/if}
+									</div>
+									<div class="min-w-0 flex-1 {last ? '' : 'pb-3'}">
+										<div class="flex items-center justify-between gap-2">
+											<span class="flex min-w-0 items-center gap-1.5 text-[0.72rem] font-semibold">
+												<button
+													type="button"
+													class="truncate text-left hover:text-primary"
+													onclick={() => step.selection && onSelectStage?.(step.selection)}
+												>
+													{step.label}
+												</button>
+												{#if step.href && step.hrefLabel}
+													<a
+														href={step.href}
+														target="_blank"
+														rel="noreferrer"
+														class="inline-flex shrink-0 items-center gap-0.5 text-[0.62rem] font-normal text-primary hover:underline"
+													>
+														{step.hrefLabel}<ExternalLink class="size-2.5" />
+													</a>
+												{/if}
+											</span>
+											{#if step.at}
+												<span
+													class="shrink-0 font-mono text-[0.58rem] text-muted-foreground"
+													title={formatAbsoluteTime(step.at, now)}
+												>
+													{relativeTime(step.at, now)}
+												</span>
+											{/if}
+										</div>
+										{#if step.detail}
+											<div class="truncate font-mono text-[0.64rem] text-muted-foreground" title={step.detail}>
+												{step.detail}
+											</div>
+										{/if}
+										{#if step.sub}
+											<div class="truncate text-[0.62rem] text-muted-foreground/80" title={step.sub}>
+												{step.sub}
+											</div>
+										{/if}
+									</div>
+								</li>
+							{/each}
+						</ol>
+					</div>
+				</section>
+			{/if}
+
 			{#if stage}
 				{@const health = healthVisual(stage.health)}
 				{@const promo = promotionVisual(stage.promotionPhase)}
@@ -674,24 +786,25 @@
 					{/if}
 				</section>
 
-				<!-- Delivery timeline: Commit → Build → Pin → Promote → Deploy. Shows
-				     inter-step gaps + phase durations + a commit→live lead time (a
+				<!-- Evidence timeline: GitHub PR/push (when a journey is selected) plus
+				     Commit -> Build -> Pin -> Promote -> Deploy. Shows
+				     inter-step gaps + phase durations + a commit->live lead time (a
 				     repeated "N mins ago" would collapse — the outer-loop is one burst). -->
 				<section class="space-y-2.5 border-t border-border/60 pt-5">
 					<div class="flex items-center justify-between gap-2">
-						{@render sectionLabel("Delivery")}
-						{#if delivery.lead}
+						{@render sectionLabel("Evidence")}
+						{#if evidence.lead}
 							<span
 								class="shrink-0 font-mono text-[0.58rem] text-muted-foreground"
 								title="Lead time from build start to live deploy"
 							>
-								commit→live <span class="text-foreground">{delivery.lead}</span>
+								commit-&gt;live <span class="text-foreground">{evidence.lead}</span>
 							</span>
 						{/if}
 					</div>
 					<ol class="space-y-0">
-						{#each delivery.steps as step, i (step.key)}
-							{@const last = i === delivery.steps.length - 1}
+						{#each evidence.steps as step, i (step.key)}
+							{@const last = i === evidence.steps.length - 1}
 							<li class="flex gap-2.5">
 								<div class="flex flex-col items-center pt-0.5">
 									<span class="relative flex size-2.5 shrink-0 items-center justify-center">

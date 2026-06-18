@@ -3241,8 +3241,17 @@ export type EnvironmentBuildActivityEventType =
 	| "digest_captured"
 	| "build_succeeded"
 	| "build_failed";
-export type GitOpsActivitySource = "tekton" | "promoter" | "argocd" | "inventory" | "kubernetes";
+export type GitOpsActivitySource =
+	| "github"
+	| "tekton"
+	| "promoter"
+	| "argocd"
+	| "inventory"
+	| "kubernetes";
 export type GitOpsActivityType =
+	| "github.push"
+	| "github.pull_request"
+	| "github.event"
 	| "tekton.pipelinerun"
 	| "tekton.taskrun"
 	| "promoter.promotionstrategy"
