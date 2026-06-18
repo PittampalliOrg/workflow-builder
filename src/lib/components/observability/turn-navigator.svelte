@@ -52,7 +52,7 @@
 			case 'tool_call': return 'bg-emerald-500/10';
 			case 'stop': return 'bg-blue-500/10';
 			case 'error': return 'bg-red-500/10';
-			default: return 'bg-zinc-800/50';
+			default: return 'bg-white/[0.05]';
 		}
 	}
 
@@ -82,8 +82,8 @@
 				<button
 					class="w-full text-left px-2 py-1.5 rounded-md border-l-2 transition-all duration-150
 						{decisionBorderColor(decision.decisionType)}
-						{isSelected ? decisionBgColor(decision.decisionType) + ' ring-1 ring-zinc-600' : 'hover:bg-zinc-800/40'}
-						{isHovered && !isSelected ? 'bg-zinc-800/30' : ''}"
+						{isSelected ? decisionBgColor(decision.decisionType) + ' ring-1 ring-cyan-500/40' : 'hover:bg-white/[0.04]'}
+						{isHovered && !isSelected ? 'bg-white/[0.04]' : ''}"
 					onclick={() => store.selectDecision(decision.id)}
 					onmouseenter={() => store.hoverDecision(decision.id)}
 					onmouseleave={() => store.hoverDecision(null)}

@@ -4,6 +4,7 @@
 	import * as Breadcrumb from '$lib/components/ui/breadcrumb';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';
+	import TraceSummaryHeader from '$lib/components/observability/trace-summary-header.svelte';
 	import type { ObservabilityInvestigationPayload } from '$lib/types/observability';
 
 	const slug = $derived(page.params.slug);
@@ -39,7 +40,7 @@
 
 <svelte:head><title>Trace {traceId?.slice(0, 12) ?? ''}</title></svelte:head>
 
-<div class="flex h-full flex-col bg-[#0a0a0e]">
+<div class="flex h-full flex-col bg-[#0b0c0e]">
 	<header class="flex h-12 shrink-0 items-center gap-3 border-b border-white/10 px-4 text-zinc-200">
 		<a
 			href={`/workspaces/${slug}/traces`}
@@ -80,7 +81,18 @@
 				<AlertDescription>{error}</AlertDescription>
 			</Alert>
 		{:else if payload}
-			<InvestigationStudio {payload} mlflowHref={null} legacyTraceHref={null} onRefresh={loadInvestigation} />
+			<div class="flex h-full flex-col">
+				<TraceSummaryHeader
+					summary={payload.summary}
+					rootOperation={payload.traceSpans.find((s) => !s.parentSpanId)?.operationName ?? payload.traceSpans[0]?.operationName ?? null}
+					rootService={payload.traceSpans.find((s) => !s.parentSpanId)?.serviceName ?? payload.traceSpans[0]?.serviceName ?? null}
+					llmTurns={payload.agentDecisions.length}
+					toolCalls={payload.toolSpans.length}
+				/>
+				<div class="min-h-0 flex-1">
+					<InvestigationStudio {payload} mlflowHref={null} legacyTraceHref={null} onRefresh={loadInvestigation} />
+				</div>
+			</div>
 		{/if}
 	</div>
 </div>

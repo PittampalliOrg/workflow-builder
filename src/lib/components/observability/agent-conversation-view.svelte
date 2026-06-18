@@ -75,9 +75,9 @@
 
 	function roleTone(role: string): string {
 		if (role === 'assistant') return 'border-cyan-500/30 bg-cyan-500/5';
-		if (role === 'system') return 'border-orange-500/30 bg-orange-500/5';
+		if (role === 'system') return 'border-violet-500/30 bg-violet-500/5';
 		if (role === 'tool') return 'border-emerald-500/30 bg-emerald-500/5';
-		return 'border-zinc-600/30 bg-zinc-800/30';
+		return 'border-zinc-600/30 bg-white/[0.04]';
 	}
 
 	function roleIcon(role: string) {
@@ -95,7 +95,7 @@
 
 	function roleTextColor(role: string): string {
 		if (role === 'assistant') return 'text-cyan-400';
-		if (role === 'system') return 'text-orange-400';
+		if (role === 'system') return 'text-violet-300';
 		if (role === 'tool') return 'text-emerald-400';
 		return 'text-zinc-300';
 	}
@@ -141,11 +141,11 @@
 		>
 			<div
 				class="rounded-lg border p-3 transition-all duration-150
-					{isSelected ? 'ring-1 ring-orange-500/50 border-orange-500/30 bg-orange-500/5' : 'border-zinc-800 hover:border-zinc-700'}"
+					{isSelected ? 'ring-1 ring-cyan-500/50 border-cyan-500/30 bg-cyan-500/5' : 'border-white/10 hover:border-white/20'}"
 			>
 				<!-- Turn label -->
 				<div class="flex items-center gap-2 mb-2">
-					<span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400">
+					<span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/10 text-zinc-400">
 						Turn {decision.turnIndex}
 					</span>
 					<span class="text-xs text-zinc-500">{formatDuration(decision.durationMs)}</span>
@@ -183,7 +183,7 @@
 						</div>
 					{/if}
 				{:else if decision.inputSummary}
-					<div class="rounded-md border p-2 mb-2 border-zinc-700 bg-zinc-800/30">
+					<div class="rounded-md border p-2 mb-2 border-white/10 bg-white/[0.04]">
 						<div class="text-xs text-zinc-400 whitespace-pre-wrap break-words line-clamp-3">
 							{decision.inputSummary}
 						</div>
@@ -266,13 +266,13 @@
 										{#if tc.arguments}
 											<div class="mb-1">
 												<div class="text-[10px] text-zinc-500 uppercase mb-0.5">Arguments</div>
-												<pre class="text-[11px] text-zinc-400 bg-zinc-900/50 rounded p-1.5 overflow-x-auto max-h-40 overflow-y-auto">{formatJson(tc.arguments)}</pre>
+												<pre class="text-[11px] text-zinc-400 bg-black/40 rounded p-1.5 overflow-x-auto max-h-40 overflow-y-auto">{formatJson(tc.arguments)}</pre>
 											</div>
 										{/if}
 										{#if matchingResult?.result != null}
 											<div>
 												<div class="text-[10px] text-zinc-500 uppercase mb-0.5">Result</div>
-												<pre class="text-[11px] text-zinc-400 bg-zinc-900/50 rounded p-1.5 overflow-x-auto max-h-40 overflow-y-auto">{formatJson(matchingResult.result)}</pre>
+												<pre class="text-[11px] text-zinc-400 bg-black/40 rounded p-1.5 overflow-x-auto max-h-40 overflow-y-auto">{formatJson(matchingResult.result)}</pre>
 											</div>
 										{/if}
 									</div>

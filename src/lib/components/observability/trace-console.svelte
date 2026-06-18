@@ -1,229 +1,338 @@
 <script lang="ts">
-	import { Badge } from '$lib/components/ui/badge';
 	import type { ObservabilityTraceSpan } from '$lib/types/observability';
-	import { ChevronDown, ChevronRight } from '@lucide/svelte';
+	import {
+		resolveSpanKind,
+		SPAN_KIND_STYLE,
+		ERROR_STYLE,
+		serviceColor,
+		formatDuration,
+		formatTokens
+	} from './span-kind';
+	import { ChevronDown, ChevronRight, Zap } from '@lucide/svelte';
 
-	export interface TraceGroup {
-		traceId: string;
-		label: string;
-		serviceName: string;
-		startTime: string;
-		durationMs: number;
-		spanCount: number;
-		errorCount: number;
-		spans: ObservabilityTraceSpan[];
-	}
+	export type ColorMode = 'kind' | 'service' | 'duration';
 
 	interface Props {
-		groups: TraceGroup[];
-		selectedSpan?: { traceId: string; spanId: string } | null;
-		relatedSpanKeys?: Set<string>;
-		llmCounts?: Record<string, number>;
-		toolCounts?: Record<string, number>;
+		/** Visible spans (already filtered by service/signal upstream). */
+		spans: ObservabilityTraceSpan[];
+		/** `${traceId}:${spanId}` of the selected span. */
+		selectedKey?: string | null;
+		/** When non-null, only these keys match the active filter (others dim). */
+		matchKeys?: Set<string> | null;
+		/** Cross-highlight keys from the selected turn. */
+		relatedKeys?: Set<string>;
+		llmMeta?: Record<string, { model: string | null; tokens: number | null }>;
+		toolMeta?: Record<string, { name: string }>;
 		logCounts?: Record<string, number>;
+		colorMode?: ColorMode;
+		showCriticalPath?: boolean;
 		globalStartMs: number;
 		globalDurationMs: number;
-		collapsedTraceIds?: Set<string>;
-		onToggleTrace?: (traceId: string) => void;
+		/** Bumping these from the parent triggers collapse-all / expand-all. */
+		collapseSignal?: number;
+		expandSignal?: number;
 		onSelectSpan?: (span: ObservabilityTraceSpan) => void;
 	}
 
 	let {
-		groups,
-		selectedSpan = null,
-		relatedSpanKeys = new Set<string>(),
-		llmCounts = {},
-		toolCounts = {},
+		spans,
+		selectedKey = null,
+		matchKeys = null,
+		relatedKeys = new Set<string>(),
+		llmMeta = {},
+		toolMeta = {},
 		logCounts = {},
+		colorMode = 'kind',
+		showCriticalPath = false,
 		globalStartMs,
 		globalDurationMs,
-		collapsedTraceIds = new Set<string>(),
-		onToggleTrace = () => {},
+		collapseSignal = 0,
+		expandSignal = 0,
 		onSelectSpan = () => {}
 	}: Props = $props();
 
-	function formatDuration(value: number): string {
-		if (!Number.isFinite(value) || value <= 0) return '0ms';
-		if (value < 1000) return `${Math.round(value)}ms`;
-		return `${(value / 1000).toFixed(2)}s`;
+	const key = (s: ObservabilityTraceSpan) => `${s.traceId}:${s.spanId}`;
+
+	// --- Build the span forest (parent → children) per the flat span list ---
+	interface TreeNode {
+		span: ObservabilityTraceSpan;
+		children: TreeNode[];
+		depth: number;
+		descendants: number;
+		endMs: number;
 	}
 
-	function formatTime(value: string): string {
-		return new Date(value).toLocaleTimeString(undefined, {
-			hour: '2-digit',
-			minute: '2-digit',
-			second: '2-digit',
-			fractionalSecondDigits: 3
-		});
+	const forest = $derived.by(() => {
+		const byId = new Map<string, ObservabilityTraceSpan>();
+		for (const s of spans) byId.set(s.spanId, s);
+		const childrenOf = new Map<string, ObservabilityTraceSpan[]>();
+		const roots: ObservabilityTraceSpan[] = [];
+		for (const s of spans) {
+			if (s.parentSpanId && byId.has(s.parentSpanId)) {
+				const arr = childrenOf.get(s.parentSpanId) ?? [];
+				arr.push(s);
+				childrenOf.set(s.parentSpanId, arr);
+			} else {
+				roots.push(s);
+			}
+		}
+		const sortByStart = (a: ObservabilityTraceSpan, b: ObservabilityTraceSpan) =>
+			new Date(a.startTime).getTime() - new Date(b.startTime).getTime();
+
+		function build(span: ObservabilityTraceSpan, depth: number): TreeNode {
+			const kids = (childrenOf.get(span.spanId) ?? []).sort(sortByStart).map((c) => build(c, depth + 1));
+			const descendants = kids.reduce((n, k) => n + 1 + k.descendants, 0);
+			const endMs = Math.max(
+				new Date(span.startTime).getTime() + span.duration,
+				...kids.map((k) => k.endMs)
+			);
+			return { span, children: kids, depth, descendants, endMs };
+		}
+		return roots.sort(sortByStart).map((r) => build(r, 0));
+	});
+
+	// --- Critical path: from each root, follow the latest-finishing child ---
+	const criticalKeys = $derived.by(() => {
+		const set = new Set<string>();
+		if (!showCriticalPath) return set;
+		function walk(node: TreeNode) {
+			set.add(key(node.span));
+			if (node.children.length === 0) return;
+			const next = node.children.reduce((a, b) => (b.endMs > a.endMs ? b : a));
+			walk(next);
+		}
+		for (const root of forest) walk(root);
+		return set;
+	});
+
+	// --- Collapse state (internal) ---
+	let collapsed = $state(new Set<string>());
+
+	function toggle(spanId: string) {
+		const next = new Set(collapsed);
+		if (next.has(spanId)) next.delete(spanId);
+		else next.add(spanId);
+		collapsed = next;
 	}
 
-	function rowKey(span: ObservabilityTraceSpan): string {
-		return `${span.traceId}:${span.spanId}`;
+	// React to collapse-all / expand-all signals from the parent toolbar.
+	let lastCollapse = $state(0);
+	let lastExpand = $state(0);
+	$effect(() => {
+		if (collapseSignal !== lastCollapse) {
+			lastCollapse = collapseSignal;
+			const next = new Set<string>();
+			const visit = (n: TreeNode) => {
+				if (n.children.length) next.add(n.span.spanId);
+				n.children.forEach(visit);
+			};
+			forest.forEach(visit);
+			collapsed = next;
+		}
+	});
+	$effect(() => {
+		if (expandSignal !== lastExpand) {
+			lastExpand = expandSignal;
+			collapsed = new Set();
+		}
+	});
+
+	// --- Flatten the forest into visible rows honoring collapse ---
+	interface Row {
+		span: ObservabilityTraceSpan;
+		depth: number;
+		hasChildren: boolean;
+		childCount: number;
+		descendants: number;
+		isCollapsed: boolean;
 	}
 
-	function offsetPct(span: ObservabilityTraceSpan): number {
+	const rows = $derived.by(() => {
+		const out: Row[] = [];
+		function walk(node: TreeNode) {
+			const isCollapsed = collapsed.has(node.span.spanId);
+			out.push({
+				span: node.span,
+				depth: node.depth,
+				hasChildren: node.children.length > 0,
+				childCount: node.children.length,
+				descendants: node.descendants,
+				isCollapsed
+			});
+			if (!isCollapsed) node.children.forEach(walk);
+		}
+		forest.forEach(walk);
+		return out;
+	});
+
+	// Cap very large traces to keep the DOM light; offer "show all".
+	let showAll = $state(false);
+	const ROW_CAP = 600;
+	const cappedRows = $derived(showAll ? rows : rows.slice(0, ROW_CAP));
+	const hiddenCount = $derived(rows.length - cappedRows.length);
+
+	function offsetPct(s: ObservabilityTraceSpan): number {
 		if (globalDurationMs <= 0) return 0;
-		return ((new Date(span.startTime).getTime() - globalStartMs) / globalDurationMs) * 100;
+		return Math.max(0, ((new Date(s.startTime).getTime() - globalStartMs) / globalDurationMs) * 100);
 	}
-
-	function widthPct(span: ObservabilityTraceSpan): number {
+	function widthPct(s: ObservabilityTraceSpan): number {
 		if (globalDurationMs <= 0) return 100;
-		return Math.max((span.duration / globalDurationMs) * 100, 1.5);
+		return Math.min(100, Math.max((s.duration / globalDurationMs) * 100, 0.6));
 	}
 
-	function statusTone(span: ObservabilityTraceSpan): string {
-		if (span.status === 'error') return 'bg-red-400';
-		if ((llmCounts[rowKey(span)] ?? 0) > 0) return 'bg-cyan-400';
-		if ((toolCounts[rowKey(span)] ?? 0) > 0) return 'bg-emerald-400';
-		return 'bg-orange-400';
+	// Bar appearance per color mode (error always wins).
+	function barStyle(s: ObservabilityTraceSpan): { class: string; style: string } {
+		if (s.status === 'error') return { class: ERROR_STYLE.bar, style: '' };
+		if (colorMode === 'service') {
+			const c = serviceColor(s.serviceName);
+			return { class: '', style: `background:linear-gradient(90deg, ${c}, ${c}cc)` };
+		}
+		if (colorMode === 'duration') {
+			const ratio = globalDurationMs > 0 ? s.duration / globalDurationMs : 0;
+			if (ratio > 0.2) return { class: 'bg-gradient-to-r from-red-500 to-orange-400', style: '' };
+			if (ratio > 0.05) return { class: 'bg-gradient-to-r from-amber-500 to-amber-300', style: '' };
+			return { class: 'bg-gradient-to-r from-emerald-500 to-emerald-300', style: '' };
+		}
+		return { class: SPAN_KIND_STYLE[resolveSpanKind(s)].bar, style: '' };
 	}
+
+	const ticks = [0, 0.25, 0.5, 0.75, 1];
+
+	// Auto-scroll the selected row into view (error-nav, turn cross-select).
+	let scrollEl = $state<HTMLElement | null>(null);
+	$effect(() => {
+		const k = selectedKey;
+		if (!k || !scrollEl) return;
+		const node = scrollEl.querySelector(`[data-spankey="${CSS.escape(k)}"]`);
+		node?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+	});
 </script>
 
-<section class="rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(17,17,22,0.96),rgba(10,10,14,0.98))] shadow-[0_14px_40px_rgba(0,0,0,0.24)]">
-	<div class="border-b border-white/10 px-4 py-3">
-		<div class="hidden xl:grid xl:grid-cols-[minmax(0,1.8fr)_120px_78px_96px_minmax(180px,1fr)] xl:gap-3 xl:text-[10px] xl:font-medium xl:uppercase xl:tracking-[0.24em] xl:text-zinc-500">
-			<span>Span</span>
-			<span>Service</span>
-			<span>Status</span>
-			<span>Duration</span>
-			<span>Waterfall</span>
+<div class="flex h-full flex-col">
+	<!-- Sticky header: column labels + time-axis ruler -->
+	<div class="sticky top-0 z-10 flex items-stretch border-b border-white/10 bg-[#0b0c0e]/95 backdrop-blur">
+		<div class="flex w-[46%] min-w-0 items-center gap-2 px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-500">
+			Span
 		</div>
-		<div class="xl:hidden">
-			<p class="text-[10px] font-medium uppercase tracking-[0.24em] text-zinc-500">Trace spans</p>
-			<p class="mt-1 text-xs text-zinc-400">Span rows collapse vertically on narrower widths to avoid horizontal scrolling.</p>
+		<div class="relative flex-1 px-3 py-1.5">
+			<div class="relative h-full">
+				{#each ticks as t}
+					<div class="absolute top-0 bottom-0 flex flex-col" style="left:{t * 100}%">
+						<span class="-translate-x-1/2 whitespace-nowrap font-mono text-[9px] tabular-nums text-zinc-600">
+							{formatDuration(t * globalDurationMs)}
+						</span>
+					</div>
+				{/each}
+			</div>
 		</div>
 	</div>
 
-	<div class="overflow-auto">
-		{#if groups.length === 0}
+	<div class="flex-1 overflow-auto" bind:this={scrollEl}>
+		{#if cappedRows.length === 0}
 			<div class="px-4 py-12 text-center text-sm text-zinc-500">No spans match the current filters.</div>
 		{:else}
-			{#each groups as group (group.traceId)}
-				{#if group.spanCount === 1}
-					<!-- Single-span group: render flat, no collapsible header -->
-					{@const span = group.spans[0]}
-					{@const key = rowKey(span)}
-					{@const isSelected = selectedSpan?.traceId === span.traceId && selectedSpan?.spanId === span.spanId}
-					{@const isDimmed = relatedSpanKeys.size > 0 && !relatedSpanKeys.has(key)}
-					<button
-						class="w-full border-b border-white/5 px-4 py-2.5 text-left transition-all duration-150 hover:bg-white/[0.04] {isSelected ? 'bg-orange-500/10 ring-1 ring-inset ring-orange-500/20' : ''} {isDimmed ? 'opacity-30' : ''}"
-						onclick={() => onSelectSpan(span)}
+			<!-- gridline backdrop for the waterfall lane -->
+			<div class="relative">
+				{#each cappedRows as row (key(row.span))}
+					{@const s = row.span}
+					{@const k = key(s)}
+					{@const kind = resolveSpanKind(s)}
+					{@const style = s.status === 'error' ? ERROR_STYLE : SPAN_KIND_STYLE[kind]}
+					{@const Icon = SPAN_KIND_STYLE[kind].icon}
+					{@const isSelected = selectedKey === k}
+					{@const isDimmed = matchKeys != null && !matchKeys.has(k)}
+					{@const isMatch = matchKeys != null && matchKeys.has(k)}
+					{@const isRelated = relatedKeys.has(k)}
+					{@const onCritical = criticalKeys.has(k)}
+					{@const bar = barStyle(s)}
+					{@const llm = llmMeta[k]}
+					{@const tool = toolMeta[k]}
+					<div
+						role="button"
+						tabindex="0"
+						data-spankey={k}
+						class="group flex w-full cursor-pointer items-stretch border-b border-white/[0.04] text-left transition-colors duration-100
+							{isSelected ? 'bg-cyan-500/[0.07] ring-1 ring-inset ring-cyan-500/20' : isRelated ? 'bg-white/[0.04]' : 'hover:bg-white/[0.03]'}
+							{isDimmed ? 'opacity-25' : ''}
+							{isMatch ? 'bg-amber-500/[0.05]' : ''}"
+						onclick={() => onSelectSpan(s)}
+						onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectSpan(s); } }}
 					>
-						<div class="grid gap-3 xl:grid-cols-[minmax(0,1.8fr)_120px_78px_96px_minmax(180px,1fr)] xl:items-center">
-							<div class="min-w-0">
-								<div class="flex items-center gap-2">
-									<div class="h-2.5 w-2.5 rounded-full ring-2 ring-black/20 {statusTone(span)}"></div>
-									<p class="truncate font-mono text-[13px] font-medium text-zinc-50">{span.operationName}</p>
-								</div>
-								<div class="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-zinc-500">
-									<span>{formatTime(span.startTime)}</span>
-									{#if (llmCounts[key] ?? 0) > 0}
-										<Badge variant="outline" class="border-cyan-500/20 bg-cyan-500/10 text-[10px] text-cyan-100">LLM {(llmCounts[key] ?? 0)}</Badge>
-									{/if}
-									{#if (toolCounts[key] ?? 0) > 0}
-										<Badge variant="outline" class="border-emerald-500/20 bg-emerald-500/10 text-[10px] text-emerald-100">Tools {(toolCounts[key] ?? 0)}</Badge>
-									{/if}
-									{#if (logCounts[key] ?? 0) > 0}
-										<Badge variant="outline" class="border-amber-500/20 bg-amber-500/10 text-[10px] text-amber-100">Logs {(logCounts[key] ?? 0)}</Badge>
-									{/if}
-								</div>
-							</div>
-							<div class="flex flex-wrap items-center gap-3 text-[11px] xl:contents">
-								<div class="truncate font-mono text-[11px] text-zinc-400">{span.serviceName}</div>
-								<div class="text-[11px]">
-									<span class={`inline-flex rounded-full px-2 py-0.5 font-mono ${span.status === 'error' ? 'bg-red-500/15 text-red-200' : 'bg-white/5 text-zinc-300'}`}>{span.status}</span>
-								</div>
-								<div class="font-mono text-[12px] font-medium text-zinc-200">{formatDuration(span.duration)}</div>
-								<div class="relative my-0.5 h-7 rounded bg-zinc-800/60 xl:my-0">
-									<div
-										class="absolute top-1 bottom-1 rounded {span.status === 'error' ? 'bg-gradient-to-r from-red-500 to-red-400' : (llmCounts[key] ?? 0) > 0 ? 'bg-gradient-to-r from-cyan-500 to-cyan-400' : (toolCounts[key] ?? 0) > 0 ? 'bg-gradient-to-r from-emerald-500 to-emerald-400' : 'bg-gradient-to-r from-orange-500 to-amber-400'}"
-										style="left:{offsetPct(span)}%; width:{widthPct(span)}%; min-width: 4px;"
-									></div>
+						<!-- LEFT: tree + name + meta -->
+						<div class="relative flex w-[46%] min-w-0 items-center py-1.5 pr-2" style="padding-left:{8 + row.depth * 14}px">
+							<!-- depth guide lines -->
+							{#each Array.from({ length: row.depth }) as _, d (d)}
+								<span class="absolute top-0 bottom-0 w-px bg-white/[0.06]" style="left:{14 + d * 14}px"></span>
+							{/each}
+
+							<!-- caret / spacer -->
+							{#if row.hasChildren}
+								<button
+									class="z-[1] mr-1 flex size-4 shrink-0 items-center justify-center rounded text-zinc-500 hover:bg-white/10 hover:text-zinc-200"
+									onclick={(e) => { e.stopPropagation(); toggle(s.spanId); }}
+									aria-label={row.isCollapsed ? 'Expand' : 'Collapse'}
+								>
+									{#if row.isCollapsed}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
+								</button>
+							{:else}
+								<span class="mr-1 size-4 shrink-0"></span>
+							{/if}
+
+							<!-- selection/critical rail -->
+							<span
+								class="mr-2 h-4 w-[3px] shrink-0 rounded-full {isSelected ? 'bg-cyan-400' : onCritical ? 'bg-amber-400' : style.dot}"
+								class:opacity-40={!isSelected && !onCritical}
+							></span>
+
+							<Icon size={13} class="mr-1.5 shrink-0 {s.status === 'error' ? 'text-red-400' : style.text}" />
+
+							<span class="truncate font-mono text-[12.5px] {s.status === 'error' ? 'text-red-200' : 'text-zinc-100'}">{s.operationName}</span>
+
+							{#if row.isCollapsed && row.descendants > 0}
+								<span class="ml-1.5 shrink-0 rounded-full bg-white/10 px-1.5 text-[9px] tabular-nums text-zinc-400">{row.descendants}</span>
+							{/if}
+							{#if onCritical}
+								<Zap size={10} class="ml-1 shrink-0 text-amber-400" />
+							{/if}
+						</div>
+
+						<!-- RIGHT: waterfall lane -->
+						<div class="relative flex-1 px-3 py-1.5">
+							<!-- vertical gridlines -->
+							{#each ticks as t}
+								<span class="pointer-events-none absolute top-0 bottom-0 w-px bg-white/[0.03]" style="left:calc({t * 100}% )"></span>
+							{/each}
+							<div class="relative h-5">
+								<div
+									class="absolute top-1/2 flex h-[7px] -translate-y-1/2 items-center rounded-full {bar.class} shadow-sm"
+									style="left:{offsetPct(s)}%; width:{widthPct(s)}%; min-width:3px; {bar.style}"
+								></div>
+								<!-- meta floats after the bar -->
+								<div
+									class="absolute top-1/2 flex -translate-y-1/2 items-center gap-1.5 whitespace-nowrap pl-2 text-[10px]"
+									style="left:calc({Math.min(offsetPct(s) + widthPct(s), 88)}%)"
+								>
+									<span class="font-mono tabular-nums {s.status === 'error' ? 'text-red-300' : 'text-zinc-300'}">{formatDuration(s.duration)}</span>
+									{#if llm?.model}<span class="hidden truncate text-cyan-300/80 lg:inline">{llm.model}</span>{/if}
+									{#if llm?.tokens}<span class="hidden font-mono tabular-nums text-cyan-300/60 lg:inline">{formatTokens(llm.tokens)}</span>{/if}
+									{#if tool?.name}<span class="hidden truncate text-emerald-300/80 lg:inline">{tool.name}</span>{/if}
+									{#if (logCounts[k] ?? 0) > 0}<span class="hidden font-mono text-amber-300/60 xl:inline">{logCounts[k]}&nbsp;log</span>{/if}
+									<span class="hidden truncate text-zinc-600 xl:inline">{s.serviceName}</span>
 								</div>
 							</div>
 						</div>
-					</button>
-				{:else}
-					<!-- Multi-span group: collapsible with header -->
-					<div class="border-b border-white/5 last:border-b-0">
-						<button
-							class="flex w-full items-center gap-3 bg-white/[0.03] px-4 py-3 text-left hover:bg-white/[0.05]"
-							onclick={() => onToggleTrace(group.traceId)}
-						>
-							{#if collapsedTraceIds.has(group.traceId)}
-								<ChevronRight size={15} class="text-zinc-400" />
-							{:else}
-								<ChevronDown size={15} class="text-zinc-400" />
-							{/if}
-							<div class="min-w-0 flex-1">
-								<div class="flex items-center gap-2">
-									<p class="truncate font-mono text-sm text-zinc-100">{group.label}</p>
-									<Badge variant="outline" class="border-white/10 bg-white/5 font-mono text-[10px] text-zinc-300">
-										{group.traceId.slice(0, 12)}
-									</Badge>
-									{#if group.errorCount > 0}
-										<Badge variant="destructive" class="text-[10px]">{group.errorCount} err</Badge>
-									{/if}
-								</div>
-								<div class="mt-1 flex flex-wrap items-center gap-3 text-[11px] text-zinc-500">
-									<span>{group.serviceName}</span>
-									<span>{group.spanCount} spans</span>
-									<span>{formatDuration(group.durationMs)}</span>
-									<span>{formatTime(group.startTime)}</span>
-								</div>
-							</div>
-						</button>
-
-						{#if !collapsedTraceIds.has(group.traceId)}
-							<div>
-								{#each group.spans as span (rowKey(span))}
-									{@const key = rowKey(span)}
-									{@const isSelected = selectedSpan?.traceId === span.traceId && selectedSpan?.spanId === span.spanId}
-									{@const isDimmed = relatedSpanKeys.size > 0 && !relatedSpanKeys.has(key)}
-									<button
-										class="border-t border-white/[0.04] px-4 py-2.5 text-left transition-all duration-150 hover:bg-white/[0.04] {isSelected ? 'bg-orange-500/10 ring-1 ring-inset ring-orange-500/20' : ''} {isDimmed ? 'opacity-30' : ''}"
-										onclick={() => onSelectSpan(span)}
-									>
-										<div class="grid gap-3 xl:grid-cols-[minmax(0,1.8fr)_120px_78px_96px_minmax(180px,1fr)] xl:items-center">
-											<div class="min-w-0" style={`padding-left: ${span.depth * 18}px`}>
-												<div class="flex items-center gap-2">
-													<div class="h-2.5 w-2.5 rounded-full ring-2 ring-black/20 {statusTone(span)}"></div>
-													<p class="truncate font-mono text-[13px] font-medium text-zinc-50">{span.operationName}</p>
-												</div>
-												<div class="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-zinc-500">
-													<span>{formatTime(span.startTime)}</span>
-													{#if (llmCounts[key] ?? 0) > 0}
-														<Badge variant="outline" class="border-cyan-500/20 bg-cyan-500/10 text-[10px] text-cyan-100">LLM {(llmCounts[key] ?? 0)}</Badge>
-													{/if}
-													{#if (toolCounts[key] ?? 0) > 0}
-														<Badge variant="outline" class="border-emerald-500/20 bg-emerald-500/10 text-[10px] text-emerald-100">Tools {(toolCounts[key] ?? 0)}</Badge>
-													{/if}
-													{#if (logCounts[key] ?? 0) > 0}
-														<Badge variant="outline" class="border-amber-500/20 bg-amber-500/10 text-[10px] text-amber-100">Logs {(logCounts[key] ?? 0)}</Badge>
-													{/if}
-												</div>
-											</div>
-											<div class="flex flex-wrap items-center gap-3 text-[11px] xl:contents">
-												<div class="truncate font-mono text-[11px] text-zinc-400">{span.serviceName}</div>
-												<div class="text-[11px]">
-													<span class={`inline-flex rounded-full px-2 py-0.5 font-mono ${span.status === 'error' ? 'bg-red-500/15 text-red-200' : 'bg-white/5 text-zinc-300'}`}>{span.status}</span>
-												</div>
-												<div class="font-mono text-[12px] font-medium text-zinc-200">{formatDuration(span.duration)}</div>
-												<div class="relative my-0.5 h-7 rounded bg-zinc-800/60 xl:my-0">
-													<div
-														class="absolute top-1 bottom-1 rounded {span.status === 'error' ? 'bg-gradient-to-r from-red-500 to-red-400' : (llmCounts[key] ?? 0) > 0 ? 'bg-gradient-to-r from-cyan-500 to-cyan-400' : (toolCounts[key] ?? 0) > 0 ? 'bg-gradient-to-r from-emerald-500 to-emerald-400' : 'bg-gradient-to-r from-orange-500 to-amber-400'}"
-														style="left:{offsetPct(span)}%; width:{widthPct(span)}%; min-width: 4px;"
-													></div>
-												</div>
-											</div>
-										</div>
-									</button>
-								{/each}
-							</div>
-						{/if}
 					</div>
+				{/each}
+
+				{#if hiddenCount > 0}
+					<button
+						class="w-full border-b border-white/5 bg-white/[0.02] px-4 py-2 text-center text-xs text-zinc-400 hover:bg-white/5"
+						onclick={() => (showAll = true)}
+					>
+						Show {hiddenCount} more spans
+					</button>
 				{/if}
-			{/each}
+			</div>
 		{/if}
 	</div>
-</section>
+</div>

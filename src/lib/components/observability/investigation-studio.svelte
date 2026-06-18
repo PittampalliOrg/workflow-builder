@@ -13,12 +13,13 @@
 	import ObservabilityLayout from './observability-layout.svelte';
 	import TurnNavigator from './turn-navigator.svelte';
 	import AgentConversationView from './agent-conversation-view.svelte';
-	import AgentStateDiagram from '$lib/components/observability/agent-state-diagram.svelte';
-	import MetricsStrip from '$lib/components/observability/metrics-strip.svelte';
 	import TraceConsole from '$lib/components/observability/trace-console.svelte';
 	import CorrelatedLogPane from '$lib/components/observability/correlated-log-pane.svelte';
 	import SpanEvidencePanel from '$lib/components/observability/span-evidence-panel.svelte';
-	import { AlertTriangle, Bot, ChevronDown, ChevronRight, ExternalLink, RefreshCcw, Wrench } from '@lucide/svelte';
+	import {
+		Bot, RefreshCcw, Search, Zap, FoldVertical, UnfoldVertical,
+		ArrowUp, ArrowDown, CircleAlert, GitBranch, X, ExternalLink
+	} from '@lucide/svelte';
 
 	interface Props {
 		payload: ObservabilityInvestigationPayload | null;
@@ -48,9 +49,15 @@
 	$effect(() => { store.setPayload(payload); });
 
 	// --- Local UI state ---
-	let collapsedTraceIds = $state<Set<string>>(new Set());
-	let showDiagram = $state(false);
 	let mainViewTab = $state<'turns' | 'waterfall'>('turns');
+
+	// --- Waterfall controls ---
+	let colorMode = $state<'kind' | 'service' | 'duration'>('kind');
+	let showCriticalPath = $state(false);
+	let collapseSignal = $state(0);
+	let expandSignal = $state(0);
+	let filterQuery = $state('');
+	let errorNavIndex = $state(0);
 
 	// --- Helpers ---
 	function formatDuration(value: number): string {
@@ -255,6 +262,44 @@
 
 	const slowestVisibleSpan = $derived([...visibleTraceSpans].sort((a, b) => b.duration - a.duration)[0] ?? null);
 
+	// --- Waterfall: inline metadata maps (model/tokens, tool name) keyed by span ---
+	const llmMeta = $derived.by(() => {
+		const map: Record<string, { model: string | null; tokens: number | null }> = {};
+		for (const l of allLlmSpans) {
+			map[`${l.traceId}:${l.spanId}`] = { model: l.modelName, tokens: l.totalTokens };
+		}
+		return map;
+	});
+	const toolMeta = $derived.by(() => {
+		const map: Record<string, { name: string }> = {};
+		for (const t of allToolSpans) map[`${t.traceId}:${t.spanId}`] = { name: t.toolName };
+		return map;
+	});
+
+	// --- Find-the-needle: filter-in-place match keys ---
+	const matchKeys = $derived.by(() => {
+		const q = filterQuery.trim().toLowerCase();
+		if (!q) return null;
+		const set = new Set<string>();
+		for (const s of visibleTraceSpans) {
+			const hay = `${s.operationName} ${s.serviceName} ${s.spanId} ${JSON.stringify(s.attributes ?? {})}`.toLowerCase();
+			if (hay.includes(q)) set.add(rowKey(s));
+		}
+		return set;
+	});
+	const matchCount = $derived(matchKeys ? matchKeys.size : 0);
+
+	// --- Error navigator ---
+	const errorSpans = $derived(visibleTraceSpans.filter((s) => s.status === 'error'));
+	const selectedSpanKey = $derived(activeSelectedSpanRef ? `${activeSelectedSpanRef.traceId}:${activeSelectedSpanRef.spanId}` : null);
+
+	function jumpError(dir: 1 | -1) {
+		if (errorSpans.length === 0) return;
+		errorNavIndex = (errorNavIndex + dir + errorSpans.length) % errorSpans.length;
+		const target = errorSpans[errorNavIndex];
+		store.selectSpan({ traceId: target.traceId, spanId: target.spanId });
+	}
+
 	const metricItems = $derived([
 		{ label: 'status', value: payload?.summary.status ?? 'unknown', meta: payload?.summary.scope === 'session' ? 'workflow session' : 'trace scope' },
 		{ label: 'duration', value: formatDuration(payload?.summary.totalDurationMs ?? 0), meta: `${visibleTraceIds.length} visible traces` },
@@ -268,12 +313,6 @@
 	// --- Actions ---
 	function selectSpan(span: ObservabilityTraceSpan) {
 		store.selectSpan({ traceId: span.traceId, spanId: span.spanId });
-	}
-
-	function toggleTrace(traceId: string) {
-		const next = new Set(collapsedTraceIds);
-		if (next.has(traceId)) next.delete(traceId); else next.add(traceId);
-		collapsedTraceIds = next;
 	}
 
 	function selectLog(log: ObservabilityLogEntry, key: string) {
@@ -311,64 +350,94 @@
 	<ObservabilityLayout>
 		{#snippet mainToolbar()}
 			<div class="flex flex-wrap items-center gap-2">
-				<!-- Main view tabs: Turns / Waterfall -->
-				<div class="flex items-center rounded-lg border border-zinc-700 bg-zinc-900 p-0.5">
-					<button class="rounded px-2.5 py-1 text-[11px] transition-colors {mainViewTab === 'turns' ? 'bg-zinc-700 text-zinc-50' : 'text-zinc-400 hover:text-zinc-200'}"
+				<!-- Main view tabs: Conversation / Waterfall -->
+				<div class="flex items-center rounded-lg border border-white/10 bg-white/5 p-0.5">
+					<button class="rounded px-2.5 py-1 text-[11px] transition-colors {mainViewTab === 'turns' ? 'bg-cyan-500/20 text-cyan-100' : 'text-zinc-400 hover:text-zinc-200'}"
 						onclick={() => mainViewTab = 'turns'}>
-						<Bot size={10} class="mr-1 inline" />Turns</button>
-					<button class="rounded px-2.5 py-1 text-[11px] transition-colors {mainViewTab === 'waterfall' ? 'bg-zinc-700 text-zinc-50' : 'text-zinc-400 hover:text-zinc-200'}"
+						<Bot size={10} class="mr-1 inline" />Conversation</button>
+					<button class="rounded px-2.5 py-1 text-[11px] transition-colors {mainViewTab === 'waterfall' ? 'bg-cyan-500/20 text-cyan-100' : 'text-zinc-400 hover:text-zinc-200'}"
 						onclick={() => mainViewTab = 'waterfall'}>
-						<Wrench size={10} class="mr-1 inline" />Waterfall</button>
+						<GitBranch size={10} class="mr-1 inline" />Waterfall</button>
 				</div>
 
 				<!-- Metric pills -->
-				<div class="flex items-center gap-1.5 text-[10px]">
-					<Badge variant="outline" class="border-white/10 bg-white/5 text-zinc-300">
-						{payload.summary.status ?? 'unknown'}
-					</Badge>
-					<Badge variant="outline" class="border-white/10 bg-white/5 text-zinc-400 font-mono">
-						{formatDuration(payload.summary.totalDurationMs ?? 0)}
-					</Badge>
-					<Badge variant="outline" class="border-cyan-500/20 bg-cyan-500/5 text-cyan-300 font-mono">
-						{allLlmSpans.length} LLM
-					</Badge>
-					<Badge variant="outline" class="border-emerald-500/20 bg-emerald-500/5 text-emerald-300 font-mono">
-						{allToolSpans.length} tools
-					</Badge>
-					<Badge variant="outline" class="border-white/10 bg-white/5 text-zinc-400 font-mono">
-						{allAgentDecisions.length} turns
-					</Badge>
+				<div class="hidden items-center gap-1.5 text-[10px] md:flex">
+					<Badge variant="outline" class="border-cyan-500/20 bg-cyan-500/5 font-mono text-cyan-300">{allLlmSpans.length} LLM</Badge>
+					<Badge variant="outline" class="border-emerald-500/20 bg-emerald-500/5 font-mono text-emerald-300">{allToolSpans.length} tools</Badge>
+					<Badge variant="outline" class="border-white/10 bg-white/5 font-mono text-zinc-400">{allAgentDecisions.length} turns</Badge>
 					{#if (payload.summary.errorCount ?? 0) > 0}
-						<Badge variant="outline" class="border-red-500/20 bg-red-500/5 text-red-300 font-mono">
-							{payload.summary.errorCount} errors
-						</Badge>
+						<Badge variant="outline" class="border-red-500/20 bg-red-500/5 font-mono text-red-300">{payload.summary.errorCount} err</Badge>
 					{/if}
 				</div>
 
-				<!-- Filters (shown in waterfall mode) -->
 				{#if mainViewTab === 'waterfall'}
-					<select class="h-7 rounded-lg border border-zinc-700 bg-zinc-900 px-2 text-[11px] text-zinc-300"
-						value={activeServiceFilter}
-						onchange={(e) => store.setServiceFilter((e.target as HTMLSelectElement).value)}>
-						<option value="all">All services</option>
-						{#each serviceOptions as svc}<option value={svc}>{svc}</option>{/each}
+					<!-- Filter-in-place -->
+					<div class="relative">
+						<Search size={12} class="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500" />
+						<input
+							bind:value={filterQuery}
+							placeholder="Filter spans"
+							class="h-7 w-44 rounded-lg border border-white/10 bg-white/5 pl-7 pr-12 text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:border-cyan-500/40 focus:outline-none"
+						/>
+						{#if filterQuery}
+							<span class="absolute right-6 top-1/2 -translate-y-1/2 font-mono text-[9px] text-zinc-500">{matchCount}</span>
+							<button class="absolute right-1.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300" onclick={() => (filterQuery = '')} aria-label="Clear filter"><X size={11} /></button>
+						{/if}
+					</div>
+
+					<!-- Error navigator -->
+					{#if errorSpans.length > 0}
+						<div class="flex items-center gap-0.5 rounded-lg border border-red-500/25 bg-red-500/10 px-1.5 py-0.5">
+							<CircleAlert size={11} class="text-red-300" />
+							<span class="font-mono text-[10px] text-red-200">{errorSpans.length}</span>
+							<button class="rounded p-0.5 text-red-300 hover:bg-red-500/20" onclick={() => jumpError(-1)} aria-label="Previous error"><ArrowUp size={11} /></button>
+							<button class="rounded p-0.5 text-red-300 hover:bg-red-500/20" onclick={() => jumpError(1)} aria-label="Next error"><ArrowDown size={11} /></button>
+						</div>
+					{/if}
+
+					<!-- Quick pills -->
+					<div class="flex items-center gap-1">
+						<button
+							class="rounded-md border px-2 py-1 text-[10px] transition-colors {activeSignalFilter === 'errors' ? 'border-red-500/40 bg-red-500/15 text-red-200' : 'border-white/10 bg-white/5 text-zinc-400 hover:text-zinc-200'}"
+							onclick={() => store.setSignalFilter(activeSignalFilter === 'errors' ? 'all' : 'errors')}
+						>Errors</button>
+						<button
+							class="rounded-md border px-2 py-1 text-[10px] transition-colors {showCriticalPath ? 'border-amber-500/40 bg-amber-500/15 text-amber-200' : 'border-white/10 bg-white/5 text-zinc-400 hover:text-zinc-200'}"
+							onclick={() => (showCriticalPath = !showCriticalPath)}
+						><Zap size={9} class="mr-0.5 inline" />Critical</button>
+						{#if slowestVisibleSpan}
+							<button class="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[10px] text-zinc-400 hover:text-zinc-200"
+								onclick={() => slowestVisibleSpan && selectSpan(slowestVisibleSpan)}>Slowest</button>
+						{/if}
+					</div>
+
+					<!-- Color mode -->
+					<select class="h-7 rounded-lg border border-white/10 bg-white/5 px-1.5 text-[10px] text-zinc-300"
+						bind:value={colorMode}>
+						<option value="kind">Color: kind</option>
+						<option value="service">Color: service</option>
+						<option value="duration">Color: duration</option>
 					</select>
+
+					<!-- Collapse / expand -->
+					<div class="flex items-center rounded-lg border border-white/10 bg-white/5">
+						<button class="p-1.5 text-zinc-400 hover:text-zinc-100" onclick={() => collapseSignal++} aria-label="Collapse all" title="Collapse all"><FoldVertical size={12} /></button>
+						<button class="p-1.5 text-zinc-400 hover:text-zinc-100" onclick={() => expandSignal++} aria-label="Expand all" title="Expand all"><UnfoldVertical size={12} /></button>
+					</div>
 				{/if}
 
 				<div class="ml-auto flex items-center gap-2">
 					{#if mlflowHref}
-						<a href={mlflowHref} target="_blank" rel="noopener noreferrer"
-							class="text-[10px] font-medium text-sky-300 hover:text-sky-200">
+						<a href={mlflowHref} target="_blank" rel="noopener noreferrer" class="text-[10px] font-medium text-sky-300 hover:text-sky-200">
 							<ExternalLink size={10} class="mr-0.5 inline" /> MLflow
 						</a>
 					{/if}
 					{#if legacyExternalTraceHref}
-						<a href={legacyExternalTraceHref} target="_blank" rel="noopener noreferrer"
-							class="text-[10px] text-orange-400 hover:text-orange-300">
-							<ExternalLink size={10} class="mr-0.5 inline" /> Legacy Phoenix
+						<a href={legacyExternalTraceHref} target="_blank" rel="noopener noreferrer" class="text-[10px] text-zinc-500 hover:text-zinc-300">
+							<ExternalLink size={10} class="mr-0.5 inline" /> Phoenix
 						</a>
 					{/if}
-					<button class="inline-flex items-center gap-1 rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800"
+					<button class="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10"
 						onclick={() => onRefresh()}>
 						<RefreshCcw size={12} /> Refresh
 					</button>
@@ -381,16 +450,19 @@
 				<TurnNavigator decisions={filteredAgentDecisions} />
 			{:else}
 				<TraceConsole
-					groups={traceGroups}
-					selectedSpan={activeSelectedSpanRef}
-					relatedSpanKeys={activeRelatedSpanKeys}
-					{llmCounts}
-					{toolCounts}
+					spans={visibleTraceSpans}
+					selectedKey={selectedSpanKey}
+					{matchKeys}
+					relatedKeys={activeRelatedSpanKeys}
+					{llmMeta}
+					{toolMeta}
 					{logCounts}
+					{colorMode}
+					{showCriticalPath}
 					{globalStartMs}
 					{globalDurationMs}
-					{collapsedTraceIds}
-					onToggleTrace={toggleTrace}
+					{collapseSignal}
+					{expandSignal}
 					onSelectSpan={selectSpan}
 				/>
 			{/if}
@@ -413,7 +485,7 @@
 				<div class="flex border-b border-zinc-800">
 				{#each (['overview', 'conversation', 'llm', 'tools', 'logs', 'raw'] as const) as tab}
 					<button
-						class="px-3 py-2 text-[11px] transition-colors border-b-2 {activeDetailTab === tab ? 'border-orange-500 text-zinc-200' : 'border-transparent text-zinc-500 hover:text-zinc-300'}"
+						class="px-3 py-2 text-[11px] transition-colors border-b-2 {activeDetailTab === tab ? 'border-cyan-400 text-zinc-100' : 'border-transparent text-zinc-500 hover:text-zinc-300'}"
 						onclick={() => store.setDetailTab(tab)}
 					>
 						{tab === 'llm' ? 'LLM' : tab.charAt(0).toUpperCase() + tab.slice(1)}
