@@ -126,9 +126,23 @@
 			if ((task as { call?: string }).call !== 'durable/run') continue;
 			const withBlock = ((task as Record<string, unknown>).with ?? {}) as Record<string, unknown>;
 			const body = (withBlock.body ?? withBlock) as Record<string, unknown>;
-			const bodyRef = (body.agentRef as { id?: string } | undefined)?.id;
-			const withRef = (withBlock.agentRef as { id?: string } | undefined)?.id;
-			if (!bodyRef && !withRef) unbound.push(taskName as string);
+			// A durable/run node is "bound" if it references a managed agent by id
+			// OR by slug — including a trigger-templated slug like
+			// `${ .trigger.agentSlug // "general-assistant" }`. The workflow→session
+			// bridge resolves slug→agent at dispatch, so slug-bound (and templated)
+			// refs are runnable and must NOT be flagged unbound.
+			const refOf = (v: unknown) => v as { id?: unknown; slug?: unknown } | undefined;
+			const nonEmpty = (v: unknown) => typeof v === 'string' && v.trim().length > 0;
+			const bodyRef = refOf(body.agentRef);
+			const withRef = refOf(withBlock.agentRef);
+			const bound =
+				nonEmpty(bodyRef?.id) ||
+				nonEmpty(withRef?.id) ||
+				nonEmpty(bodyRef?.slug) ||
+				nonEmpty(withRef?.slug) ||
+				nonEmpty(body.agentSlug) ||
+				nonEmpty(withBlock.agentSlug);
+			if (!bound) unbound.push(taskName as string);
 		}
 		return unbound;
 	}
