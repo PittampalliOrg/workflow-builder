@@ -113,6 +113,7 @@ export async function buildGoalFlow(
 
 	const attempts: GoalFlowAttempt[] = [];
 	let cur = freshAccum(0, startedAt);
+	let terminal = false;
 
 	const closeAttempt = (
 		verdict: GoalFlowAttempt['verdict'],
@@ -172,8 +173,8 @@ export async function buildGoalFlow(
 				},
 				at,
 			);
-			cur = freshAccum(cur.iteration + 1, at); // any trailing events (rare) go here
-			continue;
+			terminal = true;
+			break; // goal is complete — ignore any trailing/termination events
 		}
 
 		// --- work / submission accumulation ---
@@ -201,7 +202,7 @@ export async function buildGoalFlow(
 	// emit it if it actually saw activity, with an inferred submission.
 	const hasTrailingWork =
 		cur.turnCount > 0 || cur.toolCallCount > 0 || cur.tokenDelta > 0 || cur.submissionKind !== 'none';
-	if (hasTrailingWork) {
+	if (!terminal && hasTrailingWork) {
 		if (cur.submissionKind === 'none' && cur.sawEndTurnIdle) cur.submissionKind = 'idle_backstop';
 		closeAttempt(
 			{ kind: 'none', source: null, at: null, feedback: null, checks: [], failingCount: 0, verifiedCount: null },
