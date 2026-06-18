@@ -35,6 +35,7 @@
 	import EventTypePill from '$lib/components/sessions/event-type-pill.svelte';
 	import StopReasonChip from '$lib/components/sessions/stop-reason-chip.svelte';
 	import SessionGoalBadge from '$lib/components/sessions/session-goal-badge.svelte';
+	import GoalFlowTimeline from '$lib/components/observability/goal-flow-timeline.svelte';
 	import SessionPulse from '$lib/components/sessions/session-pulse.svelte';
 	import SessionResourcesPanel from '$lib/components/sessions/session-resources-panel.svelte';
 	import SessionOutputsPanel from '$lib/components/sessions/session-outputs-panel.svelte';
@@ -174,7 +175,20 @@
 	// container. Terminal: interactive-CLI runtimes only — the live Claude
 	// Code TUI proxied from the per-session pod (terminal-first default).
 	// The gated tabs are driven by runtime flags.
-	let viewMode = $state<'terminal' | 'transcript' | 'debug' | 'browser-state' | 'shell' | 'openshell-terminal'>('transcript');
+	let viewMode = $state<'terminal' | 'transcript' | 'debug' | 'browser-state' | 'shell' | 'openshell-terminal' | 'goal'>('transcript');
+	let goalFlow = $state<import('$lib/types/observability').GoalFlow | null>(null);
+	async function loadGoalFlow() {
+		try {
+			const res = await fetch(`/api/v1/sessions/${sessionId}/goal-flow`);
+			goalFlow = res.ok ? ((await res.json())?.goalFlow ?? null) : null;
+		} catch {
+			goalFlow = null;
+		}
+	}
+	$effect(() => {
+		void sessionId;
+		loadGoalFlow();
+	});
 
 	// Runtime flags (polled) that drive which extra tabs are visible.
 	let runtimeFlags = $state<{
@@ -1695,6 +1709,16 @@
 							{/if}
 						</button>
 					{/if}
+					{#if goalFlow}
+						<button
+							type="button"
+							title="Goal-evaluator flow: attempts, evaluator verdicts, completion"
+							class="px-3 py-1 text-xs rounded {viewMode === 'goal' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
+							onclick={() => (viewMode = 'goal')}
+						>
+							Goal
+						</button>
+					{/if}
 					<button
 						type="button"
 						class="px-3 py-1 text-xs rounded {viewMode === 'transcript' ? 'bg-background shadow-sm' : 'text-muted-foreground'}"
@@ -1861,6 +1885,10 @@
 						sessionId={session?.id ?? sessionId}
 						sandboxName={session.workspaceSandboxName ?? session.runtimeSandboxName ?? ''}
 					/>
+				</div>
+			{:else if viewMode === 'goal' && goalFlow}
+				<div class="flex-1 overflow-y-auto bg-[#0b0c0e]">
+					<GoalFlowTimeline {goalFlow} />
 				</div>
 			{:else}
 			<div class="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(260px,380px)_1fr] overflow-hidden">

@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { ObservabilitySessionSummary } from '$lib/types/observability';
+	import type { GoalFlow, ObservabilitySessionSummary } from '$lib/types/observability';
 	import { formatDuration, formatTokens } from './span-kind';
-	import { Clock, Layers, Sparkles, Wrench, CircleAlert, Database, Boxes } from '@lucide/svelte';
+	import { Clock, Layers, Sparkles, Wrench, CircleAlert, Database, Boxes, ShieldCheck } from '@lucide/svelte';
 
 	interface Props {
 		summary: ObservabilitySessionSummary;
@@ -10,9 +10,19 @@
 		/** LLM-turn count (agentDecisions length). */
 		llmTurns?: number;
 		toolCalls?: number;
+		goalFlow?: GoalFlow | null;
 	}
 
-	let { summary, rootOperation = null, rootService = null, llmTurns = 0, toolCalls = 0 }: Props = $props();
+	let { summary, rootOperation = null, rootService = null, llmTurns = 0, toolCalls = 0, goalFlow = null }: Props = $props();
+
+	const goalChip = $derived.by(() => {
+		if (!goalFlow) return null;
+		const s = goalFlow.status;
+		if (s === 'complete') return { text: 'text-emerald-300', bg: 'bg-emerald-500/10', border: 'border-emerald-500/30' };
+		if (s === 'budget_limited') return { text: 'text-amber-300', bg: 'bg-amber-500/10', border: 'border-amber-500/30' };
+		if (s === 'paused') return { text: 'text-zinc-300', bg: 'bg-white/5', border: 'border-white/15' };
+		return { text: 'text-cyan-300', bg: 'bg-cyan-500/10', border: 'border-cyan-500/30' };
+	});
 
 	const hasError = $derived((summary.errorCount ?? 0) > 0);
 	const cachePct = $derived.by(() => {
@@ -33,6 +43,11 @@
 			<h2 class="truncate font-mono text-sm font-semibold text-zinc-100">{rootOperation}</h2>
 			{#if rootService}
 				<span class="shrink-0 rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-zinc-400">{rootService}</span>
+			{/if}
+			{#if goalFlow && goalChip}
+				<span class="ml-auto inline-flex shrink-0 items-center gap-1 rounded-full border {goalChip.border} {goalChip.bg} px-2 py-0.5 text-[10px] font-medium {goalChip.text}">
+					<ShieldCheck size={11} /> Goal: {goalFlow.outcome.label}
+				</span>
 			{/if}
 		</div>
 	{/if}

@@ -1,4 +1,4 @@
-import { and, desc, eq, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
 	sessions,
@@ -66,6 +66,83 @@ export async function getCurrentGoal(
 		.orderBy(desc(threadGoals.createdAt))
 		.limit(1);
 	return rows[0] ?? null;
+}
+
+/**
+ * Most-recent goal row across a set of candidate sessions (a trace can resolve
+ * to several owner sessions — the goal lives on the per-session AGENT session,
+ * e.g. `…__durable__solve__run__0`). Prefer that agent session, then newest.
+ * One indexed `session_id = ANY(...)` lookup. Used to assemble the goal-flow
+ * view for the trace viewer.
+ */
+export async function getCurrentGoalForSessions(
+	sessionIds: string[],
+): Promise<ThreadGoalRow | null> {
+	const ids = [...new Set(sessionIds.filter(Boolean))];
+	if (ids.length === 0) return null;
+	const rows = await requireDb()
+		.select()
+		.from(threadGoals)
+		.where(inArray(threadGoals.sessionId, ids))
+		.orderBy(
+			sql`case when ${threadGoals.sessionId} like '%__durable__solve__run__%' then 0 else 1 end`,
+			desc(threadGoals.createdAt),
+		)
+		.limit(1);
+	return rows[0] ?? null;
+}
+
+/** Lean session-event row for goal-flow segmentation. */
+export interface GoalFlowEventRow {
+	sequence: number;
+	type: string;
+	data: Record<string, unknown>;
+	createdAt: Date;
+}
+
+/** Session-event types the goal-flow segmentation reads (work + goal vocabulary). */
+const GOAL_FLOW_EVENT_TYPES = [
+	"user.message",
+	"session.goal_rejected",
+	"session.goal_completed",
+	"session.status_idle",
+	"agent.message",
+	"agent.tool_use",
+	"mcp.tool_call",
+	"agent.llm_usage",
+];
+
+/**
+ * Bounded, ordered read of the goal-flow-relevant session events for one
+ * session (no full payloads beyond what segmentation needs). Indexed by
+ * (session_id) + ordered by sequence; capped to keep the investigation cheap.
+ */
+export async function listGoalFlowEvents(
+	sessionId: string,
+	limit = 5000,
+): Promise<GoalFlowEventRow[]> {
+	const rows = await requireDb()
+		.select({
+			sequence: sessionEvents.sequence,
+			type: sessionEvents.type,
+			data: sessionEvents.data,
+			createdAt: sessionEvents.createdAt,
+		})
+		.from(sessionEvents)
+		.where(
+			and(
+				eq(sessionEvents.sessionId, sessionId),
+				inArray(sessionEvents.type, GOAL_FLOW_EVENT_TYPES),
+			),
+		)
+		.orderBy(asc(sessionEvents.sequence))
+		.limit(limit);
+	return rows.map((r) => ({
+		sequence: r.sequence,
+		type: r.type,
+		data: (r.data ?? {}) as Record<string, unknown>,
+		createdAt: r.createdAt,
+	}));
 }
 
 /**
