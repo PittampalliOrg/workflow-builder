@@ -59,7 +59,11 @@ from activities.log_external_event import (
     log_approval_response,
     log_approval_timeout,
 )
-from activities.log_node_execution import log_node_start, log_node_complete
+from activities.log_node_execution import (
+    log_node_start,
+    log_node_complete,
+    update_execution_node,
+)
 from activities.persist_results_to_db import persist_results_to_db
 from activities.finalize_mlflow_trace_root import finalize_mlflow_trace_root
 from activities.emit_mlflow_node_span import emit_mlflow_node_span
@@ -3664,6 +3668,21 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 "currentNodeName": task_name,
                 "traceId": trace_id,
             }))
+
+            # Push the current node onto the DB read-model so current_node_id is
+            # fresh at every task start (the custom status above is only synced to
+            # the DB lazily on a status/run-detail fetch; unattended/API-triggered
+            # runs would otherwise show a stale node — e.g. frozen through the
+            # approval gate). Best-effort; never breaks execution.
+            if db_execution_id:
+                yield ctx.call_activity(
+                    update_execution_node,
+                    input=_freeze({
+                        "executionId": db_execution_id,
+                        "nodeId": task_name,
+                        "nodeName": task_name,
+                    }),
+                )
 
             # Log task start
             log_id = None
