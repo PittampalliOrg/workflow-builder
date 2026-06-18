@@ -110,9 +110,12 @@ const SYSTEM_PROMPT = [
 	"  task is ~10-20; a larger one up to ~40). This is a turn count, NOT a token count.",
 	"- rationale: 1-3 sentences explaining the contract for a human reviewer.",
 	"",
-	"Return JSON with exactly these keys: objective (string), acceptanceCriteria",
+	"Return json with exactly these keys: objective (string), acceptanceCriteria",
 	"(string[]), evidence (object with key commands: string[]), maxIterations",
 	"(number), rationale (string). Do NOT include a token budget.",
+	"",
+	"Example of the desired json output format (shape only — author real content):",
+	'{"objective":"Implement <X> in /sandbox/solution.js","acceptanceCriteria":["<criterion 1>","<criterion 2>"],"evidence":{"commands":["cd /sandbox && node -e \'<assert behavior; exit non-zero on failure>\'"]},"maxIterations":15,"rationale":"<why this contract proves the objective>"}',
 ].join("\n");
 
 function buildUserPrompt(intent: string, context?: PlanGoalContext): string {

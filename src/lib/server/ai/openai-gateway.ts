@@ -75,27 +75,44 @@ export async function callOpenAICompatibleChatCompletion(params: {
 		: env.OPENAI_API_KEY;
 	if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
 	const model = normalizeModel(params.model);
-
-	const response = await fetch(`${baseUrl}/chat/completions`, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			Authorization: `Bearer ${apiKey}`
-		},
-		body: JSON.stringify({
-			model,
-			...completionTokenLimit(model, params.maxTokens),
-			...(params.responseFormat ? { response_format: params.responseFormat } : {}),
-			messages: params.messages
-		})
+	const body = JSON.stringify({
+		model,
+		...completionTokenLimit(model, params.maxTokens),
+		...(params.responseFormat ? { response_format: params.responseFormat } : {}),
+		messages: params.messages
 	});
 
-	if (!response.ok) {
-		throw new Error(`OpenAI-compatible API error ${response.status}: ${await response.text()}`);
+	// DeepSeek's JSON-mode docs warn the API "may occasionally return empty
+	// content" (https://api-docs.deepseek.com/guides/json_mode). DeepSeek V4 (and
+	// other reasoning models) also intermittently return blank content. Retry the
+	// request a few times on empty content before failing — a single empty
+	// response should not hard-fail planGoal/greenfield/ai-assistant. (4xx is a
+	// real client error and is not retried.)
+	const maxAttempts = Math.max(1, Number(env.LLM_EMPTY_CONTENT_RETRIES) || 3);
+	let lastErr = '';
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		const response = await fetch(`${baseUrl}/chat/completions`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+			body
+		});
+		if (!response.ok) {
+			const detail = await response.text();
+			// Retry transient 5xx; fail fast on 4xx.
+			if (response.status >= 500 && attempt < maxAttempts) {
+				lastErr = `HTTP ${response.status}: ${detail}`;
+				await new Promise((r) => setTimeout(r, 500 * attempt));
+				continue;
+			}
+			throw new Error(`OpenAI-compatible API error ${response.status}: ${detail}`);
+		}
+		const data = await response.json();
+		const content = data.choices?.[0]?.message?.content;
+		if (content) return content;
+		lastErr = 'empty content';
+		if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, 500 * attempt));
 	}
-
-	const data = await response.json();
-	const content = data.choices?.[0]?.message?.content;
-	if (!content) throw new Error('No content in OpenAI-compatible response');
-	return content;
+	throw new Error(
+		`No content in OpenAI-compatible response after ${maxAttempts} attempts (${lastErr})`
+	);
 }
