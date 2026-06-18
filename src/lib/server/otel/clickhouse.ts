@@ -221,6 +221,13 @@ async function queryObservabilityToolSpans(whereClause: string): Promise<Observa
 			ToolResultTruncated
 		FROM ${CLICKHOUSE_OBS_DB}.tool_spans
 		${whereClause}
+		-- Dedupe: the OpenInference instrumentor tags several spans per tool call
+		-- (the canonical run_tool span with name+args+result, PLUS a content-less
+		-- execute_tool<X> span and load_tools/save_tool_results bookkeeping spans
+		-- with no tool.name). Keep only spans that carry an actual tool name AND
+		-- real argument or result content.
+		AND ToolName != ''
+		AND (ToolArguments != '{}' OR ToolResult != '{}')
 		ORDER BY Timestamp ASC
 	`);
 	return rows.map(mapObservabilityToolSpan);

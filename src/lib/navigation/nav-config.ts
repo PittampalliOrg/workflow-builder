@@ -264,6 +264,14 @@ export const NAV_GROUPS: NavGroup[] = [
 				match: /^\/workspaces\/[^/]+\/logs(\/|$)/,
 				visibility: { workspaceScoped: true },
 			},
+			{
+				id: "traces",
+				label: "Traces",
+				icon: Layers,
+				href: ({ slug }) => `/workspaces/${slug}/traces`,
+				match: /^\/workspaces\/[^/]+\/traces(\/|$)/,
+				visibility: { workspaceScoped: true },
+			},
 		],
 	},
 	{

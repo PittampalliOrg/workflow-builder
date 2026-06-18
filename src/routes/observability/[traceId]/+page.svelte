@@ -62,12 +62,7 @@
 				<AlertDescription>{error}</AlertDescription>
 			</Alert>
 		{:else if payload}
-			<InvestigationStudio
-				{payload}
-				mlflowHref={traceId ? `/api/observability/mlflow/traces/${encodeURIComponent(traceId)}` : null}
-				
-				onRefresh={loadInvestigation}
-			/>
+			<InvestigationStudio {payload} mlflowHref={null} legacyTraceHref={null} onRefresh={loadInvestigation} />
 		{/if}
 	</div>
 </div>

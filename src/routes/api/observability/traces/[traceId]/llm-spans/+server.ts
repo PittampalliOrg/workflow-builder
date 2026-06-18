@@ -4,8 +4,10 @@ import {
 	normalizeRawTraceSpans
 } from '$lib/server/benchmarks/trace-bundle';
 import { getTraceLlmSpans, getTraceSpans } from '$lib/server/otel/clickhouse';
+import { assertTraceInScope } from '$lib/server/observability/trace-scope';
 
-export const GET: RequestHandler = async ({ params }) => {
+export const GET: RequestHandler = async ({ params, locals }) => {
+	await assertTraceInScope(params.traceId ?? '', locals.session);
 	try {
 		const traceId = params.traceId ?? '';
 		let spans = await getTraceLlmSpans(traceId);
