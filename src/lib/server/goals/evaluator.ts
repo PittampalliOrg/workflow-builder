@@ -236,14 +236,20 @@ export async function evaluateGoalCompletion(
 	}
 	const failures = results.filter((r) => !r.ok);
 	const met = failures.length === 0;
+	// IMPORTANT: the agent-facing feedback shows each failing check's OUTPUT only,
+	// NOT the command text. Echoing the command would let the doer read (and
+	// hardcode against) the evaluator's checks — defeating the evaluator-gated
+	// premise — and would reveal all hidden/incremental requirements at once. The
+	// command is still kept in `results[]` for the human-facing Goal view grid.
 	const feedback = met
 		? `All ${results.length} evidence check(s) passed.`
 		: [
-				`Completion rejected — ${failures.length}/${results.length} acceptance check(s) failed:`,
+				`Completion rejected — ${failures.length}/${results.length} acceptance check(s) failed.`,
 				...failures.map(
-					(f) => `\n$ ${f.command}\n[exit ${f.exitCode}]\n${f.output || "(no output)"}`,
+					(f) =>
+						`\nCheck ${results.indexOf(f) + 1} of ${results.length} [exit ${f.exitCode}]:\n${f.output || "(no output)"}`,
 				),
-				"\nFix these and continue working before marking the goal complete.",
+				"\nFix the issues shown above and continue working before marking the goal complete.",
 			].join("\n");
 	return { met, skipped: false, results, feedback };
 }
