@@ -69,9 +69,32 @@ This also **simplifies** the per-runtime leak identified in [[agent-node-and-wor
 
 **Recommendation:** build the **BFF-orchestrated evaluator** as the primary, runtime-agnostic mechanism. Use the Dapr-agents native pattern only as an optional dapr-specific optimization once the contract is proven — the doer agent on dapr could be wrapped as a `DurableAgent` orchestrating a generator+evaluator pair, but the BFF evaluator already delivers the value across every runtime.
 
+## Independent evaluation: isolated LLM call vs separate agent (decision)
+
+> Status (2026-06-18): Phase 1 (deterministic evidence) **shipped**. The LLM-judgment tier below is the open question — "does our architecture give us *independent* evaluation, or do we need a separate agent / separate LLM call with isolated context?"
+
+**What we already have is independent — in the strongest form, for what it covers.** The deterministic evaluator (`evaluateGoalCompletion`) runs **in the BFF, out of band** from the doer, holds completion authority, and judges **ground-truth workspace output** (files / exit codes) — **not the doer's transcript or self-claims**, and it shares **zero context** with the doer. That is *more* independent than an LLM judge that reads the agent's transcript, and stronger than Claude's native `/goal` (transcript-judged). The architecture's shape — independent, output-grounded, authority-holding, isolated — is already correct. The **gap is coverage, not independence**: it's deterministic-only, so subjective / open-ended criteria currently have *no* independent evaluation (they fall back to self-judged when no `evidence.commands` are declared).
+
+**For the LLM-judgment tier, the load-bearing property is ISOLATED CONTEXT + an adversarial stance — not "agent vs not-agent".** A same-context self-evaluation is just self-judging (the failure mode we're fixing); an LLM that reads the doer's chain-of-thought tends to rubber-stamp it (sycophancy).
+
+| Option | When it fits | Trade-offs |
+|---|---|---|
+| **Isolated LLM call** (stateless judge: criteria + produced artifacts + deterministic-evidence output → structured per-criterion verdict) | **Default** — judging the quality of a produced artifact | Cheap, simple, deterministic to orchestrate, no tool/runaway risk; a fresh thread *guarantees* independence |
+| **Separate evaluator agent** (own loop + tools/MCP) | Evaluation needs **autonomous investigation** — run tests, click the live app, query DB state | Heavier/slower/costlier; but we already do "active testing" deterministically (`evidence.commands` + `browser/validate`), so the judge can *consume* those outputs instead of re-investigating |
+| Same-context / doer self-eval | never | identical to today's self-judged completion |
+
+**Decision:** implement the Phase-3 critic as a **separate LLM call with isolated context**, not a full agent. Non-negotiable rules:
+1. **Fresh thread, separate from the doer's** — never share the doer's context window.
+2. **Inputs = the goal + acceptance criteria + the produced artifacts/diff + the deterministic-evidence results.** Do **not** feed it the doer's reasoning/transcript (avoids sycophancy).
+3. **Adversarial, default-reject prompt** — "find why this *fails* the goal" (Anthropic anti-sycophancy framing).
+4. Prefer a **different model** than the doer for judgment diversity.
+5. **Gate behind the cheap deterministic checks** (only call the LLM when commands pass) and cap with `tokenBudget`/`maxIterations`.
+
+Reserve a separate evaluator **agent** only for goals that genuinely need autonomous probing (or the optional dapr-native Evaluator-Optimizer in the row above). Either way it stays **BFF-orchestrated** so completion authority remains a single, runtime-agnostic verdict.
+
 ## Phasing
 
-1. **Acceptance criteria + deterministic evidence gate.** Add `acceptanceCriteria`/`evidence.commands` to `goalSpec`; on completion-request, run the commands in the retained workspace; reject with the failing command output as feedback. (No LLM; catches codex's "build/index.html missing the hooks" instantly. Cheapest, highest-leverage.)
+1. **Acceptance criteria + deterministic evidence gate.** Add `acceptanceCriteria`/`evidence.commands` to `goalSpec`; on completion-request, run the commands in the retained workspace; reject with the failing command output as feedback. (No LLM; catches codex's "build/index.html missing the hooks" instantly. Cheapest, highest-leverage.) **— SHIPPED** (#190–#209). Note (#209): the rejection feedback shows the failing check's *output only*, not the command text, so the doer can't read/hardcode the checks — this is also what makes isolated judging meaningful.
 2. **Promote `browser/validate` to a completion gate** for UI goals (active testing), feeding pass/fail + screenshots into the verdict.
 3. **LLM critic** for criteria that aren't mechanically checkable, prompted to default-reject. Single cheap call per evaluation, budgeted.
 4. **(Optional, dapr-only)** native Evaluator-Optimizer via `DurableAgent`.
