@@ -1,6 +1,6 @@
 # Goal authoring + alignment with Claude Code `/goal`
 
-> Two questions: (1) is our evaluator-gated goal loop aligned with Claude Code's `/goal` principles? (2) what inputs does our goal-loop action need, and how do we help a user *author* them well — a pre-step that turns raw intent into an optimal goal + evaluation spec, emitted as artifacts the goal-loop action consumes? Pairs with [[goal-loop-evaluator-design]] and [[goal-loop]] (SSOT).
+> Questions: (1) is our evaluator-gated goal loop aligned with Claude Code's `/goal` principles? (2) what inputs does our goal-loop action need, and how do we help a user *author* them well — a pre-step that turns raw intent into an optimal goal + evaluation spec, emitted as artifacts the goal-loop action consumes? (3) what native human-in-the-loop building blocks do the newest Dapr Workflows + Dapr Agents give us, and where should we use them vs. BFF orchestration? Pairs with [[goal-loop-evaluator-design]] and [[goal-loop]] (SSOT).
 
 ## Part A — Alignment with Claude Code `/goal`
 
@@ -73,10 +73,33 @@ Add a step **before** the goal loop that converts raw user intent into a validat
 - **Human approves the goalSpec** — the planner proposes, the user disposes; criteria must represent the user's actual intent.
 - **Validate the checks before committing** — never ship a gate whose checks don't discriminate met vs unmet.
 
+## Part D — Dapr-native human-in-the-loop building blocks (Dapr 1.18 / Dapr Agents)
+
+Surveyed the newest Dapr Workflows + Dapr Agents HITL surface ([v1.18 workflow-patterns](https://v1-18.docs.dapr.io/developing-applications/building-blocks/workflow/workflow-patterns/), [dapr-agents hooks](https://docs.dapr.io/developing-ai/dapr-agents/dapr-agents-hooks/), [extensions](https://docs.dapr.io/developing-ai/dapr-agents/dapr-agents-extensions/)). Summary, then how each maps to the goal system.
+
+**Dapr Workflows — approval gate (native, durable).** Built from three context primitives plus a client raise API: `ctx.wait_for_external_event(name)` (suspend until a matching event), `ctx.create_timer(delta)` (durable timeout), raced via `yield wf.when_any([approval_event, timeout_event])`, and resumed from outside the workflow by `client.raise_workflow_event(instance_id, event_name, event_data)`. The canonical purchase-order shape — under-threshold auto-approves; higher-value calls `send_approval_request` then races the named event against a 24h timer; timer wins → cancel, event wins → proceed. **This is exactly our SW 1.0 approval-gate node** (WEBHOOK → `wait_for_external_event`, DELAY → `create_timer`) — we already use the native primitive.
+
+**Dapr Agents — hooks (new, v1.18+): native mid-loop interrupt/approval.** Hook slots `before_tool_call` / `before_llm_call` / `after_llm_call` (plus reserved `after_tool_call`) each receive a `HookContext` (`step_name`, `step_kind`, `source`, `payload`, `tool_call_id`) and return `Proceed | Mutate(payload) | Skip(result) | Deny(reason) | RequireApproval(timeout_seconds, instructions)`. Returning **`RequireApproval`** from `before_tool_call` pauses the agent *before a risky tool runs* — under the hood it suspends on the same `wait_for_external_event` primitive and resumes via `AgentApprovalConfig` pub/sub (`ApprovalRequiredEvent`/`ApprovalResponseEvent`) **or** the auto-mounted HTTP `GET /hitl/approvals` + `POST /hitl/approvals/{id}/respond`. Registered as `DurableAgent(hooks=Hooks(before_tool_call=[...]))`. **Constraints: dapr-agent-py only; tool-call boundary only** (not LLM-turn, for workflow determinism).
+
+**Dapr Agents — extensions.** One point: `agent.add_activation(callback)` for attaching custom **trigger sources** (event-source integration) to a `DurableAgent`. Not HITL, and **not** an evaluator.
+
+**No native Evaluator-Optimizer / judge.** Confirmed absent from both hooks and extensions — there is no built-in critic that gates completion. Our BFF evaluator-gated loop is the only option and has no Dapr equivalent to fold into.
+
+**Mapping to our goal system**
+
+| Our need | Dapr-native primitive | Native or BFF? |
+|---|---|---|
+| PLAN→SOLVE approval — human approves the `goal_spec` before solving (Part C step 5) | `wait_for_external_event` + `create_timer` + `raise_workflow_event` (= our approval-gate node) | **Native, via the existing approval-gate node** — runtime-agnostic; the gate sits between the PLAN and SOLVE `durable/run` nodes regardless of which runtime solves |
+| Mid-loop risky-tool sign-off *during* SOLVE | Dapr Agents `RequireApproval` (`before_tool_call`) | **Optional per-runtime fast-path (dapr-agent-py only)** — for a uniform cross-runtime risky-action gate use BFF-mediated approval (raise external event / the Lifecycle Controller pause); `RequireApproval` doesn't exist for claude/adk/CLI runtimes and gates at tool boundaries only |
+| Escalate when the goal can't be met (hit `iteration_cap`/`budget_limited`) | `wait_for_external_event` to ask a human instead of silently stopping | **BFF-orchestrated** (the goal loop is BFF-driven) — a natural HITL escape hatch on cap/budget exhaustion, surfacing the last verdict |
+| Evaluator/judge gating completion | none | **BFF evaluator** — no Dapr equivalent; the tiered evaluator stays the SSOT |
+
+**Net.** Dapr 1.18 gives a solid native *approval/interrupt* substrate (`wait_for_external_event` / `create_timer` / `when_any` / `raise_workflow_event`, plus `RequireApproval` for dapr-agent-py) but **zero** native evaluator. So the architecture is unchanged, just sharpened: the goal-authoring PLAN→SOLVE handoff should use the **native approval-gate primitive** (our existing node) for the human sign-off of the `goal_spec`; `RequireApproval` is a nice optional dapr-agent-py fast-path for risky-tool approval inside SOLVE; and the planner + evaluator + goal loop stay **BFF-orchestrated** for runtime-agnosticism — Dapr-native where *pausing/resuming* lives, BFF where *judgment* lives.
+
 ## Risks / guardrails
 - **Planner over/under-specifies** → human approval + the validate pass catch this; surface the drafted criteria + a dry-run result before the user commits.
 - **Cost** → the planner is a one-time call per goal (cheap relative to the solve loop); the validate dry-run reuses the cheap deterministic evidence path.
 - **Scope creep** → the planner should output the *minimal* criteria that capture intent, not gold-plate.
 
 ## Bottom line
-We're aligned with Claude's `/goal` on the loop, the independent evaluator, bounding, and resume — and deliberately stronger by gating on ground-truth instead of the transcript. The real gap relative to the *spirit* of their docs is **authoring quality**: they teach the user to write a good condition; we should **generate** a good one. A shared `planGoal` pre-step (interactive Workbench + workflow PLAN node) that emits a validated, typed `goal_spec` artifact closes that gap and feeds the existing goal-loop action without changing its contract.
+We're aligned with Claude's `/goal` on the loop, the independent evaluator, bounding, and resume — and deliberately stronger by gating on ground-truth instead of the transcript. The real gap relative to the *spirit* of their docs is **authoring quality**: they teach the user to write a good condition; we should **generate** a good one. A shared `planGoal` pre-step (interactive Workbench + workflow PLAN node) that emits a validated, typed `goal_spec` artifact closes that gap and feeds the existing goal-loop action without changing its contract. The newest Dapr HITL primitives (Part D) confirm the split: use the **native approval gate** (`wait_for_external_event`/`create_timer`) for the human sign-off of that `goal_spec` and an optional `RequireApproval` fast-path for risky tools on dapr-agent-py, while the planner and evaluator stay **BFF-orchestrated** because Dapr has no native judge and only the BFF path is runtime-agnostic.
