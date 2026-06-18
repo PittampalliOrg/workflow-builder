@@ -3832,6 +3832,301 @@ function buildPlannedGoalConfig(): PlannedGoalConfig {
 	};
 }
 
+// --- Planner-agent variant: validate-by-execution before SOLVE -------------
+// Instead of the deterministic goal/plan node, the PLAN phase is a durable/run
+// AGENT (symmetric with SOLVE) in its OWN throwaway sandbox: it drafts the
+// goalSpec, writes a reference solution, RUNS each evidence command against it
+// (must pass) and against an empty workspace (must fail), repairs any that don't
+// discriminate, then emits the validated spec as a fenced JSON block. A
+// `goal/plan` fromText node extracts/normalizes that into the structured
+// goalSpec. The planner sandbox (keepAfterRun:false) is discarded — its
+// reference solution NEVER reaches SOLVE; the evaluator runs evidence only in
+// the retained SOLVE sandbox. See docs/goal-authoring-and-claude-alignment.md.
+const PLANNED_GOAL_AGENT_WORKFLOW_ID =
+	process.env.SEED_PLANNED_GOAL_AGENT_WORKFLOW_ID?.trim() ||
+	"planned-goal-agent-showcase";
+const PLANNED_GOAL_AGENT_DEFAULT_INTENT =
+	"Build /sandbox/solution.js (CommonJS) exporting evaluate(expr): a string arithmetic expression evaluator supporting + - * / , parentheses, correct operator precedence, unary minus, integer and decimal numbers, and arbitrary whitespace. Throw a clear Error on invalid input. Do NOT use eval() or Function().";
+
+const PLANNED_GOAL_AGENT_PLANNER_INSTRUCTIONS = [
+	"You are an INDEPENDENT GOAL PLANNER. Do NOT implement the user's task as a deliverable — your job is to produce a precise, TESTABLE goal spec for ANOTHER agent to implement, and to PROVE your acceptance checks actually work before handing them off. You are in an isolated /sandbox that will be DISCARDED after you finish.",
+	"",
+	"Do this:",
+	"1. Draft: an `objective` (one measurable end state), 3-6 `acceptanceCriteria` (specific, measurable, INCLUDING edge cases), and `evidence.commands` — shell commands that verify the criteria against ground truth.",
+	"   - Each command MUST be self-contained and reference the implementation the SOLVER will write at /sandbox/solution.js. Shape: cd /sandbox && node -e '...assert...'.",
+	"   - Use SINGLE-quoted node -e scripts. Do NOT use backticks, $(...), or ${...} anywhere in a command (the shell mangles them — this is the #1 cause of broken checks).",
+	"   - exit 0 ONLY when the criterion is met; on failure print actual-vs-expected.",
+	"   - Do NOT leak the answer: test BEHAVIOR; never echo/grep a literal expected value you spelled out.",
+	"2. Write a CORRECT reference implementation to /sandbox/solution.js.",
+	"3. VALIDATE every command by RUNNING it: against the reference each MUST exit 0; then `rm -f /sandbox/solution.js` and run each again — each MUST exit non-zero. If a command errors (shell parse), always-passes, or always-fails, FIX it and re-run until ALL discriminate correctly.",
+	"4. Clean up: ensure /sandbox/solution.js is removed so nothing leaks.",
+	"5. Output your FINAL message as a SINGLE fenced ```json code block and NOTHING else, with keys: objective (string), acceptanceCriteria (string[]), evidence (object with key commands: string[]), maxIterations (number, ~15), rationale (string that notes you validated each check passes on a correct impl and fails on an empty one).",
+].join("\n");
+
+function buildPlannedGoalAgentWorkflowSpec(cfg: PlannedGoalConfig): JsonRecord {
+	const planPrompt =
+		"${ " +
+		JSON.stringify(
+			PLANNED_GOAL_AGENT_PLANNER_INSTRUCTIONS +
+				"\n\nIntent to plan a goal for:\n",
+		) +
+		" + .trigger.intent }";
+	const workspaceProfile = (name: string, keep: boolean): JsonRecord => ({
+		call: "workspace/profile",
+		with: {
+			name: name.slice(0, 40),
+			rootPath: "/sandbox",
+			sandboxTemplate: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+			ttlSeconds: 3600,
+			keepAfterRun: keep,
+			managedBy: `workflow-builder:demos:${cfg.id}`,
+			commandTimeoutMs: 300000,
+			timeoutMs: 600000,
+			enabledTools: [
+				"execute_command",
+				"read_file",
+				"write_file",
+				"edit_file",
+				"list_files",
+				"mkdir",
+				"file_stat",
+			],
+			sandboxPolicy: {
+				mode: "per-run",
+				template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+				ttlSeconds: 3600,
+				keepAfterRun: keep,
+			},
+		},
+	});
+	return {
+		document: {
+			dsl: "1.0.0",
+			namespace: "workflow-builder.demos",
+			name: cfg.id,
+			version: "1.0.0",
+			title: cfg.name,
+			summary: cfg.description,
+			"x-workflow-builder": {
+				architecture:
+					"planner-agent+validate-by-execution+approval-gate+evaluator-gated-completion+isolated-sandboxes",
+				notes:
+					"PLAN is a durable/run AGENT in its OWN throwaway sandbox: drafts the goalSpec, writes a reference solution, runs each evidence command against it (must pass) and against an empty workspace (must fail), repairs, then emits the validated spec as JSON. A goal/plan fromText node extracts it. The planner sandbox is discarded — its reference solution never reaches SOLVE; the evaluator runs evidence only in the retained SOLVE sandbox. Raise `goal_spec_approval` {approved:true} to gate SOLVE.",
+				triggerInputs: {
+					intent: "Plain-language description of what you want built.",
+					agentSlug: "Optional. dapr-agent-py agent slug for plan + solve.",
+				},
+				input: {
+					fields: {
+						intent: {
+							type: "textarea",
+							label: "Intent",
+							description:
+								"Describe the task; the PLANNER AGENT authors AND validates the goal + ground-truth checks before the solver runs.",
+							defaultValue: cfg.defaultIntent,
+						},
+						agentSlug: {
+							type: "text",
+							label: "Agent slug (dapr-agent-py)",
+							description: "dapr-agent-py agent used for both the planner and solver runs.",
+							defaultValue: cfg.defaultAgentSlug,
+						},
+					},
+				},
+			},
+		},
+		do: [
+			{ plan_workspace: workspaceProfile(`${cfg.id}-plan`, false) },
+			{
+				plan_agent: {
+					call: "durable/run",
+					with: {
+						mode: "execute_direct",
+						cwd: "/sandbox",
+						sandboxName: "${ .plan_workspace.sandboxName }",
+						workspaceRef: "${ .plan_workspace.workspaceRef }",
+						sandboxPolicy: {
+							mode: "per-run",
+							template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+							ttlSeconds: 3600,
+							keepAfterRun: false,
+						},
+						body: {
+							agentRef: {
+								slug: `\${ .trigger.agentSlug // "${cfg.defaultAgentSlug}" }`,
+							},
+							prompt: planPrompt,
+							overrides: { cwd: "/sandbox", maxTurns: 40, timeoutMinutes: 30 },
+						},
+					},
+				},
+			},
+			{
+				plan_finalize: {
+					call: "goal/plan",
+					with: {
+						fromText: "${ .plan_agent.content // .plan_agent.data.content // \"\" }",
+					},
+					artifacts: [
+						{
+							kind: "goal_spec",
+							slot: "primary",
+							title: "Validated goal spec (planner agent)",
+							description:
+								"Authored AND validated by an independent planner agent — it wrote a reference solution and ran each evidence check against it (pass) and against an empty workspace (fail) before emitting this spec.",
+							from: '${ .data.goalSpec + {rationale: (.data.rationale // ""), lint: (.data.lint // {warnings: []})} }',
+						},
+					],
+				},
+			},
+			{
+				approve_goal_spec: {
+					listen: { to: { one: { with: { type: "goal_spec_approval" } } } },
+					timeout: { after: "PT2H" },
+				},
+			},
+			{ solve_workspace: workspaceProfile(`${cfg.id}-solve`, true) },
+			{
+				solve: {
+					if: "${ (.approve_goal_spec.timedOut // false) == false and (.approve_goal_spec.approved // true) == true }",
+					call: "durable/run",
+					with: {
+						mode: "execute_direct",
+						cwd: "/sandbox",
+						sandboxName: "${ .solve_workspace.sandboxName }",
+						workspaceRef: "${ .solve_workspace.workspaceRef }",
+						sandboxPolicy: {
+							mode: "per-run",
+							template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+							ttlSeconds: 3600,
+							keepAfterRun: true,
+						},
+						body: {
+							agentRef: {
+								slug: `\${ .trigger.agentSlug // "${cfg.defaultAgentSlug}" }`,
+							},
+							prompt:
+								'${ "Work in /sandbox to satisfy the active goal: " + (.plan_finalize.goalSpec.objective // "") + ". When you believe it is complete, call update_goal(status=\\"complete\\"). Completion is VERIFIED by running the graded evidence checks against your work; if any fail you will receive the failing cases — fix and call update_goal again." }',
+							goalSpec: "${ .plan_finalize.goalSpec }",
+							overrides: { cwd: "/sandbox", maxTurns: 40, timeoutMinutes: 30 },
+						},
+					},
+				},
+			},
+		],
+		output: {
+			as: {
+				goalSpec: "${ .plan_finalize.goalSpec }",
+				sandboxName: '${ .solve_workspace.sandboxName // "" }',
+				solve: "${ .solve }",
+			},
+		},
+		input: {
+			schema: {
+				document: {
+					type: "object",
+					required: ["intent"],
+					properties: {
+						intent: { type: "string", title: "Intent", default: cfg.defaultIntent },
+						agentSlug: {
+							type: "string",
+							title: "Agent slug",
+							default: cfg.defaultAgentSlug,
+						},
+						sandboxTemplate: {
+							type: "string",
+							title: "Sandbox template",
+							default: "dapr-agent",
+						},
+					},
+				},
+				format: "json",
+			},
+		},
+	};
+}
+
+function buildPlannedGoalAgentWorkflowNodes(): JsonRecord[] {
+	const meta: Array<[string, string, string, string]> = [
+		["trigger", "trigger", "", "Intent trigger — plain-language task + optional agentSlug."],
+		[
+			"plan_workspace",
+			"action",
+			"workspace/profile",
+			"Throwaway planner sandbox (keepAfterRun:false) — discarded; isolated from solve.",
+		],
+		[
+			"plan_agent",
+			"action",
+			"durable/run",
+			"Planner AGENT: drafts the goalSpec, writes a reference solution, runs each evidence check vs it (pass) and vs empty (fail), repairs, emits validated JSON.",
+		],
+		[
+			"plan_finalize",
+			"action",
+			"goal/plan",
+			"Extracts + normalizes the planner agent's JSON into a typed goal_spec artifact (fromText mode; no LLM call).",
+		],
+		[
+			"approve_goal_spec",
+			"approval-gate",
+			"",
+			"Native approval gate. Raise `goal_spec_approval` {approved:true} to proceed.",
+		],
+		[
+			"solve_workspace",
+			"action",
+			"workspace/profile",
+			"Retained SOLVE sandbox (keepAfterRun:true) — where the evaluator runs evidence.",
+		],
+		[
+			"solve",
+			"action",
+			"durable/run",
+			"Solver agent works under the validated goalSpec; evaluator-gated completion.",
+		],
+	];
+	return meta.map(([id, type, actionType, description], i) => ({
+		id,
+		type,
+		position: { x: 80, y: 60 + i * 130 },
+		data: {
+			label: id,
+			...(actionType ? { actionType } : {}),
+			description,
+		},
+	}));
+}
+
+function buildPlannedGoalAgentWorkflowEdges(): JsonRecord[] {
+	const ordered = [
+		"trigger",
+		"plan_workspace",
+		"plan_agent",
+		"plan_finalize",
+		"approve_goal_spec",
+		"solve_workspace",
+		"solve",
+	];
+	return ordered.slice(0, -1).map((source, index) => ({
+		id: `e_planned_goal_agent_${index + 1}`,
+		source,
+		target: ordered[index + 1],
+		type: "default",
+	}));
+}
+
+function buildPlannedGoalAgentConfig(): PlannedGoalConfig {
+	return {
+		id: PLANNED_GOAL_AGENT_WORKFLOW_ID,
+		name: "Planned Goal (Agent Planner): Validate-by-Execution → Approve → Solve",
+		description:
+			"Planner-agent showcase: the PLAN phase is a durable/run agent that drafts the goalSpec AND proves it — writing a reference solution and running each evidence check against it (pass) and an empty workspace (fail) in an isolated, discarded sandbox — before a native approval gate and the evaluator-gated SOLVE agent. The planner's reference solution never reaches solve. Companion to planned-goal-showcase (deterministic planner). See docs/goal-authoring-and-claude-alignment.md.",
+		defaultIntent: PLANNED_GOAL_AGENT_DEFAULT_INTENT,
+		defaultAgentSlug: PLANNED_GOAL_DEFAULT_AGENT_SLUG,
+	};
+}
+
 async function upsertRawWorkflow(params: {
 	db: ReturnType<typeof drizzle>;
 	workflowId: string;
@@ -4136,6 +4431,22 @@ async function seedWorkflow() {
 				spec: buildPlannedGoalWorkflowSpec(plannedCfg),
 				nodes: buildPlannedGoalWorkflowNodes(plannedCfg),
 				edges: buildPlannedGoalWorkflowEdges(),
+				visibility: "public",
+			});
+		}
+
+		{
+			const plannerAgentCfg = buildPlannedGoalAgentConfig();
+			await upsertRawWorkflow({
+				db,
+				workflowId: plannerAgentCfg.id,
+				name: plannerAgentCfg.name,
+				description: plannerAgentCfg.description,
+				userId,
+				projectId,
+				spec: buildPlannedGoalAgentWorkflowSpec(plannerAgentCfg),
+				nodes: buildPlannedGoalAgentWorkflowNodes(),
+				edges: buildPlannedGoalAgentWorkflowEdges(),
 				visibility: "public",
 			});
 		}

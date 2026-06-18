@@ -319,3 +319,23 @@ export async function planGoal(
 	const lint = lintEvidenceCommands(goalSpec);
 	return { goalSpec, rationale, lint };
 }
+
+/**
+ * Recover a validated goalSpec from a planner AGENT's free-text output (no LLM
+ * call). A `durable/run` planner agent has no structured-output mode — its
+ * result is free text — so when an agent-run authors + validates the goalSpec
+ * (writing/running tests in its own sandbox), it emits the spec as a fenced
+ * ```json block and this tolerant extract turns it back into the canonical
+ * contract. Reuses the same parser/normalizer/lint as planGoal. See
+ * docs/goal-authoring-and-claude-alignment.md (planner agent).
+ */
+export function finalizeGoalSpecFromText(text: string): PlanGoalResult {
+	if (!isPresentString(text)) {
+		throw new Error("fromText is required");
+	}
+	const raw = extractJson(text);
+	const goalSpec = normalizeGoalSpec(raw);
+	const rationale = isPresentString(raw.rationale) ? raw.rationale.trim() : "";
+	const lint = lintEvidenceCommands(goalSpec);
+	return { goalSpec, rationale, lint };
+}
