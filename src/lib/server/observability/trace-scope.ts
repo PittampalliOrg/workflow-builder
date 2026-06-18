@@ -9,7 +9,7 @@
  * traces aren't exposed.
  */
 import { error } from '@sveltejs/kit';
-import { eq } from 'drizzle-orm';
+import { inArray } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { sessions, workflowExecutions } from '$lib/server/db/schema';
 import { isResourceInScope } from '$lib/server/workflows/project-scope';
@@ -19,29 +19,38 @@ const chEscape = (s: string) => s.replace(/'/g, "''");
 
 type CallerSession = { userId: string; projectId?: string | null };
 
-/** Resolve the session.id + workflow.execution.id a trace belongs to. */
+/**
+ * Resolve ALL session.id + workflow.execution.id values a trace touches.
+ *
+ * A single trace can carry several owners — e.g. a workflow trace spans the
+ * (row-less) parent workflow session, the bridged child agent session, AND the
+ * workflow execution. We must consider every candidate, not just one, or a
+ * trace whose first-seen owner happens to be unscoped (the parent workflow
+ * session has no `sessions` row) is wrongly rejected.
+ */
 export async function resolveTraceOwners(
 	traceId: string,
-): Promise<{ sessionId: string | null; executionId: string | null }> {
+): Promise<{ sessionIds: string[]; executionIds: string[] }> {
 	const t = chEscape(traceId.trim());
-	if (!t) return { sessionId: null, executionId: null };
+	if (!t) return { sessionIds: [], executionIds: [] };
 	const rows = await queryClickHouse(`
 		SELECT
-			anyIf(SpanAttributes['session.id'], SpanAttributes['session.id'] != '') AS SessionId,
-			anyIf(SpanAttributes['workflow.execution.id'], SpanAttributes['workflow.execution.id'] != '') AS ExecutionId
+			arrayFilter(x -> x != '', groupUniqArray(SpanAttributes['session.id'])) AS SessionIds,
+			arrayFilter(x -> x != '', groupUniqArray(SpanAttributes['workflow.execution.id'])) AS ExecutionIds
 		FROM ${CLICKHOUSE_DB}.otel_traces
 		WHERE TraceId = '${t}'
 	`);
 	const row = rows[0] ?? {};
 	return {
-		sessionId: (row.SessionId as string) || null,
-		executionId: (row.ExecutionId as string) || null,
+		sessionIds: (row.SessionIds as string[]) ?? [],
+		executionIds: (row.ExecutionIds as string[]) ?? [],
 	};
 }
 
 /**
- * Throw 404 unless the caller may view this trace. A trace is in scope when its
- * owning session OR workflow execution is in the caller's workspace/ownership.
+ * Throw 404 unless the caller may view this trace. A trace is in scope when ANY
+ * of its owning sessions OR workflow executions is in the caller's
+ * workspace/ownership.
  */
 export async function assertTraceInScope(
 	traceId: string,
@@ -49,23 +58,21 @@ export async function assertTraceInScope(
 ): Promise<void> {
 	if (!session?.userId) throw error(401, 'Authentication required');
 	if (!db) throw error(503, 'Database not configured');
-	const { sessionId, executionId } = await resolveTraceOwners(traceId);
+	const { sessionIds, executionIds } = await resolveTraceOwners(traceId);
 
-	if (sessionId) {
-		const [row] = await db
+	if (sessionIds.length) {
+		const rows = await db
 			.select({ projectId: sessions.projectId, userId: sessions.userId })
 			.from(sessions)
-			.where(eq(sessions.id, sessionId))
-			.limit(1);
-		if (row && isResourceInScope(row, session)) return;
+			.where(inArray(sessions.id, sessionIds));
+		if (rows.some((row) => isResourceInScope(row, session))) return;
 	}
-	if (executionId) {
-		const [row] = await db
+	if (executionIds.length) {
+		const rows = await db
 			.select({ projectId: workflowExecutions.projectId, userId: workflowExecutions.userId })
 			.from(workflowExecutions)
-			.where(eq(workflowExecutions.id, executionId))
-			.limit(1);
-		if (row && isResourceInScope(row, session)) return;
+			.where(inArray(workflowExecutions.id, executionIds));
+		if (rows.some((row) => isResourceInScope(row, session))) return;
 	}
 	throw error(404, 'Trace not found');
 }
