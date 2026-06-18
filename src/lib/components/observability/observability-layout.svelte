@@ -66,7 +66,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-	class="grid h-full overflow-hidden"
+	class="grid h-full overflow-hidden bg-[#0b0c0e] text-zinc-200"
 	style:grid-template-columns="minmax(0,1fr) {panelWidth}px"
 	style:grid-template-rows="1fr"
 	onmousemove={onResizeMove}
@@ -75,7 +75,7 @@
 >
 	<!-- MAIN AREA -->
 	<main class="flex flex-col overflow-hidden">
-		<div class="flex-none border-b border-zinc-800 px-3 py-2">
+		<div class="flex-none border-b border-white/10 px-3 py-2">
 			{@render mainToolbar()}
 		</div>
 
@@ -86,7 +86,7 @@
 		<!-- Bottom dock (logs) -->
 		{#if bottomDock && !dockCollapsed}
 			<div
-				class="flex-none border-t border-zinc-800 overflow-y-auto"
+				class="flex-none border-t border-white/10 overflow-y-auto"
 				style:height="{dockHeight}px"
 			>
 				{@render bottomDock()}
@@ -95,7 +95,7 @@
 
 		{#if bottomDock}
 			<button
-				class="flex-none flex items-center justify-center gap-2 px-3 py-1 border-t border-zinc-800 text-xs text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50 transition-colors"
+				class="flex-none flex items-center justify-center gap-2 px-3 py-1 border-t border-white/10 text-xs text-zinc-500 hover:text-zinc-300 hover:bg-white/5 transition-colors"
 				onclick={() => store.toggleLogDock()}
 			>
 				<span>{dockCollapsed ? 'Show Logs' : 'Hide Logs'}</span>
@@ -104,11 +104,11 @@
 	</main>
 
 	<!-- RIGHT PANEL with resize handle -->
-	<div class="relative border-l border-zinc-800 overflow-hidden bg-zinc-950/30">
+	<div class="relative border-l border-white/10 overflow-hidden bg-[#0b0c0e]">
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
-			class="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-orange-500/40 transition-colors z-10"
-			class:bg-orange-500={isResizing}
+			class="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-cyan-500/40 transition-colors z-10"
+			class:bg-cyan-500={isResizing}
 			onmousedown={onResizeStart}
 			ondblclick={onResizeHandleDblClick}
 		></div>

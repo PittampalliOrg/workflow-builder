@@ -17,6 +17,12 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { NativeSelect } from '$lib/components/ui/native-select';
+	import { resolveSpanKind, SPAN_KIND_STYLE } from './span-kind';
+
+	// Resolve a span-kind style for a row from its root operation name (heuristic).
+	function kindFor(op: string) {
+		return SPAN_KIND_STYLE[resolveSpanKind({ operationName: op, attributes: undefined, spanKind: undefined })];
+	}
 
 	interface Trace {
 		traceId: string;
@@ -128,7 +134,7 @@
 	}
 </script>
 
-<div class="flex h-full flex-col bg-[#0a0a0e] text-zinc-200">
+<div class="flex h-full flex-col bg-[#0b0c0e] text-zinc-200">
 	<!-- Toolbar -->
 	<header class="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-6 py-3">
 		<div class="flex items-center gap-2.5">
@@ -225,6 +231,13 @@
 							<!-- operation + service -->
 							<div class="min-w-0 flex-1">
 								<div class="flex items-center gap-2">
+									{#if trace.rootOperation}
+										{@const ks = kindFor(trace.rootOperation)}
+										{@const KIcon = ks.icon}
+										<span class="flex size-5 shrink-0 items-center justify-center rounded {ks.bg} ring-1 ring-inset {ks.border}" title={ks.label}>
+											<KIcon size={11} class={ks.text} />
+										</span>
+									{/if}
 									<span class="truncate text-sm font-medium text-zinc-100">{trace.rootOperation || '(unnamed)'}</span>
 									<Badge variant="outline" class="shrink-0 border-white/15 text-[10px] text-zinc-400">{trace.rootService}</Badge>
 								</div>
