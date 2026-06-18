@@ -59,8 +59,10 @@ export type PlanGoalResult = {
 // output; env-overridable.
 const MAX_TOKENS = Number(env.GOAL_PLAN_MAX_TOKENS) || 32000;
 const DEFAULT_MAX_ITERATIONS = 30;
+// Floor authored maxIterations so a planner picking a tiny number (e.g. 3)
+// doesn't prematurely cap the evaluator reject→fix→retry loop.
+const MIN_MAX_ITERATIONS = 10;
 const ITERATION_CEILING = 200;
-const TOKEN_BUDGET_CEILING = 50_000_000;
 
 function isPresentString(value: unknown): value is string {
 	return typeof value === "string" && value.trim().length > 0;
@@ -104,12 +106,13 @@ const SYSTEM_PROMPT = [
 	"  commands, so a command that contains the answer lets it hardcode the check.",
 	"  Write tests that exercise behavior (run the program, assert on its real output)",
 	"  rather than asserting a string equals a constant you spelled out here.",
-	"- maxIterations / tokenBudget: size to the scope (small task = small caps).",
+	"- maxIterations: the max number of autonomous TURNS for the doer agent (a small",
+	"  task is ~10-20; a larger one up to ~40). This is a turn count, NOT a token count.",
 	"- rationale: 1-3 sentences explaining the contract for a human reviewer.",
 	"",
 	"Return JSON with exactly these keys: objective (string), acceptanceCriteria",
 	"(string[]), evidence (object with key commands: string[]), maxIterations",
-	"(number), tokenBudget (number or null), rationale (string).",
+	"(number), rationale (string). Do NOT include a token budget.",
 ].join("\n");
 
 function buildUserPrompt(intent: string, context?: PlanGoalContext): string {
@@ -200,19 +203,25 @@ export function normalizeGoalSpec(raw: Record<string, unknown>): GoalSpec {
 	const acceptanceCriteria = coerceStringArray(raw.acceptanceCriteria);
 	const evidenceObj = (raw.evidence ?? {}) as Record<string, unknown>;
 	const commands = coerceStringArray(evidenceObj.commands);
-	const maxIterations =
+	// Floor maxIterations so a too-small authored value can't prematurely cap the
+	// evaluator loop.
+	const maxIterations = Math.max(
 		coercePositiveInt(raw.maxIterations, ITERATION_CEILING) ??
-		DEFAULT_MAX_ITERATIONS;
-	const tokenBudget = coercePositiveInt(raw.tokenBudget, TOKEN_BUDGET_CEILING);
+			DEFAULT_MAX_ITERATIONS,
+		MIN_MAX_ITERATIONS,
+	);
 
-	const spec: GoalSpec = {
+	// NOTE: planGoal deliberately does NOT author `tokenBudget`. The goal loop's
+	// budget is CUMULATIVE input+output+cache-creation across every turn (realistically
+	// 50k–500k); a planner LLM mis-sizes it as a small per-response number (observed:
+	// 500) → the run trips `budget_limited` on turn 1 before any work lands. Leave it
+	// unset (run bounded by maxIterations); a budget is opt-in for the user to add.
+	return {
 		objective,
 		acceptanceCriteria,
 		evidence: { commands },
 		maxIterations,
 	};
-	if (tokenBudget !== undefined) spec.tokenBudget = tokenBudget;
-	return spec;
 }
 
 /**
