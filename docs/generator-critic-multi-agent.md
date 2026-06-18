@@ -1,6 +1,6 @@
 # Generator + Critic Multi-Agent (Rubric-Gated Goal Loops)
 
-**Status:** Proposal / design. Phase 0 (deterministic evidence) is SHIPPED; this doc designs the generator/critic layering on top.
+**Status:** Phase 1 IMPLEMENTED + dev-verified (workflow-native evaluator-optimizer; see §8). Phase 0 (deterministic evidence) was already SHIPPED; Phases 2–4 remain.
 
 **Related SSOTs:** `goal-loop.md` (goal-loop SSOT), `goal-loop-evaluator-design.md` (the evaluator-optimizer proposal this extends), `callable-agents.md` (`CallAgent` peer delegation), `agent-node-and-workflow-sandbox-architecture.md` (`goalLifecycle` adapter + `sandbox.scope`), `workflow-execution-architecture.md` (SW 1.0 interpreter vs workflows-as-code), `agent-runtime-comparison.md`.
 
@@ -241,3 +241,29 @@ Phased; each phase independently shippable + dev-verifiable. Files are indicativ
 - **Subjective verdict stability:** LLM critics drift; calibration examples + `default-reject` skepticism mitigate but do not eliminate. Keep iterations bounded and surface eval logs.
 - **Strong models mask iteration:** as observed in the Stop-hook verification, capable models one-shot objective tasks and self-correct within a turn via `update_goal`. The generator/critic split is most valuable exactly where ground truth is thin (design) — which is where we should target Phase 2/3 demos.
 - **Cost:** Tier 2 (agent critic, multi-turn, screenshots) is expensive; keep it opt-in and gated behind Tiers 0/1.
+
+---
+
+## 8. Phase 1 implementation + dev verification (2026-06-18)
+
+Phase 1 chose the **workflow-native** realization (the Dapr evaluator-optimizer pattern expressed in our SW 1.0 interpreter), fed by a separate planning step — per the user's steer toward the Dapr `@workflow` while-loop. Implemented on branch `feat/evaluator-optimizer-generator-critic` (`89f0122b`):
+
+- **Loop-state ergonomic** (`sw_workflow.py` `_handle_for_task`): each `for` iteration publishes the previous iteration's sub-task outputs under `.loop.last.<subtask>`, plus `.loop.index`, `.loop.accepted` (set when any sub-task output has `meets_criteria: true`), `.loop.iterations`. Lets the `while` guard + generator prompt read the prior verdict/feedback without dynamic-index jq.
+- **`parseJson` task affordance** (`_apply_parse_json_affordance` + `_loose_extract_json`): when a task declares `parseJson: true`, a JSON object is extracted from its (agent) output and merged into the stored output, so a critic ending its turn with STRICT JSON surfaces as real fields (`.evaluate.meets_criteria`). Tolerant extractor mirrors `plan-goal.ts`.
+- **Child-instance-id sanitization** (the load-bearing bug fix): a `durable/run` nested in a `for` loop is named `<loop>/<sub>[<idx>]`, so the child Dapr **workflow instance id** contained `/` and `[]` — not routable as actor ids. The sandbox booted and registered but the child workflow never executed (stuck `rescheduling`). Now any non-`[A-Za-z0-9_.-]` char is replaced with `-`. **This is what makes `durable/run` work inside any loop**, not just this feature.
+- **planGoal rubric** (`plan-goal.ts`): authors an optional rubric (objective|subjective criteria + design dimensions) alongside the evidence contract.
+- **`evaluator-optimizer-showcase` template**: `workspace_profile (retained) → plan → for[1..N] while !.loop.accepted { generate (no goalSpec → no update_goal), evaluate (parseJson critic) } → summary`.
+
+**Verified end-to-end on ryzen** (the unmerged build deploys to the ryzen spoke; dev pins only update on merge):
+- ✅ Loop dispatches `generate→evaluate` per iteration with sanitized ids; each agent self-reaps (autoTerminate) freeing its Kueue slot for the next.
+- ✅ Accept path: critic emits `{meets_criteria:true,...}` → `parseJson` → `.loop.accepted` → `while`-break → `summary` → `exec success` (run `ScQTBFHt`).
+- ✅ Reject-continue: on `meets_criteria:false` the loop iterates (5+ rounds, run `onYgGdcE`).
+- ✅ Content carry: `.loop.last.generate.content` carries the prior attempt into the next generator prompt.
+- ✅ Feedback ref resolves null-safe; hardened so the generator consumes the **whole verdict** when the critic omits a top-level `feedback` field: `if .loop.last.evaluate then (.loop.last.evaluate.feedback // (.loop.last.evaluate | tojson)) else "(none yet)" end`.
+
+**KEY FINDING — empirical case for the ground-truth tier.** On a deliberately *objective* task (hidden round-half-to-odd), the LLM critic **hallucinated a pass**: the generator implemented round-half-*away* (`1.5→2`, even), yet the critic returned `"ties-odd": {pass:true, failing_cases:[]}` claiming all ties were odd — it asserted a pass without actually running the verification sweep. This is exactly the self/LLM-judge leniency Anthropic warns about, and it validates the tiered design: **objective criteria must be gated on ground-truth `evidence.commands` (Tier 0), not LLM judgment** — the LLM critic is for *subjective* criteria. Phase 3's objective ground-truth tier is therefore not optional polish but the correctness backbone for objective rubric items.
+
+**Environment gaps encountered (orthogonal to the feature; noted for the full plan-node path):**
+- ryzen's `function-router` predates the `goal/plan` route (routes it to a nonexistent `ap-goal-service`) — verification used a hardcoded `goalSpec` via a `set` node instead of the live `planGoal`. Deploy a current function-router to exercise the real plan step.
+- the execute route requires every `durable/run` to carry a named `agentRef`; inline-only `agentConfig` is rejected.
+- registered dapr-agent-py agents on ryzen pin `runtime_app_id: agent-runtime-pool-coding` (a phantom app-id) → stuck `rescheduling`; a per-session agent needs `runtime_app_id: null` (created `evalopt-agent`). The Kueue `interactive-agent` quota is only 2 pods — zombie sandboxes from interrupted runs exhaust it and must be reaped.
