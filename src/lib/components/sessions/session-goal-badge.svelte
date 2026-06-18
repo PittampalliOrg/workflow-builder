@@ -5,7 +5,7 @@
 	import { Label } from '$lib/components/ui/label';
 	import { Textarea } from '$lib/components/ui/textarea';
 	import * as Dialog from '$lib/components/ui/dialog';
-	import { Target, Pause, Play, CheckCheck, Loader2, Plus } from '@lucide/svelte';
+	import { Target, Pause, Play, CheckCheck, Loader2, Plus, Sparkles, TriangleAlert } from '@lucide/svelte';
 
 	interface Props {
 		sessionId: string;
@@ -47,6 +47,13 @@
 	let acceptanceCriteria = $state(''); // one criterion per line
 	let evidenceCommands = $state(''); // one shell command per line
 
+	// Goal Workbench (AI authoring) state — a non-destructive draft assist that
+	// turns raw intent into a goalSpec the user then edits/approves below.
+	let intent = $state('');
+	let drafting = $state(false);
+	let draftRationale = $state<string | null>(null);
+	let draftWarnings = $state<string[]>([]);
+
 	function splitLines(value: string): string[] {
 		return value
 			.split('\n')
@@ -77,8 +84,60 @@
 		maxIterations = String(prefill?.maxIterations ?? 20);
 		acceptanceCriteria = (prefill?.acceptanceCriteria ?? []).join('\n');
 		evidenceCommands = (prefill?.evidencePlan?.commands ?? []).join('\n');
+		intent = '';
+		draftRationale = null;
+		draftWarnings = [];
 		errorMsg = null;
 		dialogOpen = true;
+	}
+
+	type GoalSpecDraft = {
+		objective: string;
+		acceptanceCriteria?: string[];
+		evidence?: { commands?: string[] };
+		maxIterations?: number;
+		tokenBudget?: number;
+	};
+
+	// Draft a goalSpec from raw intent (isolated planner LLM call). Prefills the
+	// form fields below; the user then edits/approves and commits via submitGoal.
+	async function draftWithAI() {
+		if (!intent.trim()) {
+			errorMsg = 'Describe what you want before drafting';
+			return;
+		}
+		drafting = true;
+		errorMsg = null;
+		try {
+			const res = await fetch('/api/v1/goals/plan', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ intent: intent.trim() })
+			});
+			if (!res.ok) {
+				errorMsg = `Draft failed (${res.status}): ${await res.text().catch(() => '')}`.slice(0, 200);
+				return;
+			}
+			const data = (await res.json()) as {
+				goalSpec?: GoalSpecDraft;
+				rationale?: string;
+				lint?: { warnings?: string[] };
+			};
+			const spec = data.goalSpec;
+			if (spec) {
+				objective = spec.objective ?? objective;
+				acceptanceCriteria = (spec.acceptanceCriteria ?? []).join('\n');
+				evidenceCommands = (spec.evidence?.commands ?? []).join('\n');
+				if (spec.maxIterations) maxIterations = String(spec.maxIterations);
+				if (spec.tokenBudget) tokenBudget = String(spec.tokenBudget);
+			}
+			draftRationale = data.rationale?.trim() || null;
+			draftWarnings = data.lint?.warnings ?? [];
+		} catch (err) {
+			errorMsg = `Draft failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200);
+		} finally {
+			drafting = false;
+		}
 	}
 
 	async function submitGoal() {
@@ -254,6 +313,49 @@
 			</Dialog.Description>
 		</Dialog.Header>
 		<div class="space-y-3 py-2">
+			<div class="space-y-1.5 rounded-md border border-dashed border-violet-500/40 bg-violet-500/5 p-2.5">
+				<Label for="goal-intent" class="flex items-center gap-1.5 text-xs font-medium">
+					<Sparkles class="size-3.5 text-violet-600 dark:text-violet-400" />
+					Draft with AI (optional)
+				</Label>
+				<Textarea
+					id="goal-intent"
+					bind:value={intent}
+					rows={2}
+					placeholder="Describe what you want in plain language — e.g. “Build a working min-stack in /sandbox with a friendly empty-pop error.” A planner drafts the objective, criteria, and ground-truth checks below for you to review."
+				/>
+				<div class="flex items-center justify-between gap-2">
+					<p class="text-[10px] text-muted-foreground">
+						An independent planner authors the checks — you review and edit before starting.
+					</p>
+					<Button
+						size="sm"
+						variant="outline"
+						class="h-7 shrink-0 text-xs"
+						disabled={drafting || !intent.trim()}
+						onclick={draftWithAI}
+					>
+						{#if drafting}<Loader2 class="size-3.5 animate-spin" />{:else}<Sparkles class="size-3" />{/if}
+						Draft
+					</Button>
+				</div>
+				{#if draftRationale}
+					<p class="rounded bg-muted/50 px-2 py-1 text-[10px] text-muted-foreground">
+						<span class="font-medium text-foreground">Rationale:</span>
+						{draftRationale}
+					</p>
+				{/if}
+				{#if draftWarnings.length}
+					<ul class="space-y-1">
+						{#each draftWarnings as warning (warning)}
+							<li class="flex items-start gap-1 text-[10px] text-amber-700 dark:text-amber-300">
+								<TriangleAlert class="mt-px size-3 shrink-0" />
+								<span>{warning}</span>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</div>
 			<div class="space-y-1.5">
 				<Label for="goal-objective" class="text-xs">Objective</Label>
 				<Textarea

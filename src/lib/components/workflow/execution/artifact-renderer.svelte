@@ -12,6 +12,7 @@
     kind: 'link'      payload: { url: string, openIn?: 'new' | 'inline' }
     kind: 'card'      payload: { body: string, footer?: string }
     kind: 'image'     payload: { alt?: string }    (blob via fileId — TODO when blob endpoint lands)
+    kind: 'goal_spec' payload: { objective, acceptanceCriteria[], evidence:{commands[]}, maxIterations?, tokenBudget?, rationale, lint:{warnings[]} }
 
   Anything unknown falls back to a JSON dump so the data is still visible.
 -->
@@ -19,7 +20,7 @@
 	import Response from "$lib/components/ui/ai-elements/response/Response.svelte";
 	import JsonViewer from "$lib/components/workflow/execution/json-viewer.svelte";
 	import * as Card from "$lib/components/ui/card";
-	import { ExternalLink } from "@lucide/svelte";
+	import { ExternalLink, Target, ShieldCheck, TriangleAlert } from "@lucide/svelte";
 
 	interface Props {
 		kind: string;
@@ -58,6 +59,29 @@
 		const rows = Array.isArray(p.rows) ? (p.rows as unknown[][]) : null;
 		if (!cols || !rows) return null;
 		return { cols, rows };
+	});
+
+	// goal_spec: the authored sprint-contract (objective + acceptance criteria +
+	// ground-truth evidence + planner rationale + static lint warnings).
+	const goalSpec = $derived.by(() => {
+		const p = inlinePayload as Record<string, unknown> | null;
+		if (!p || typeof p !== "object") return null;
+		const objective = typeof p.objective === "string" ? p.objective : "";
+		const acceptanceCriteria = Array.isArray(p.acceptanceCriteria)
+			? (p.acceptanceCriteria as unknown[]).map(String)
+			: [];
+		const evidence = (p.evidence ?? {}) as { commands?: unknown };
+		const commands = Array.isArray(evidence.commands)
+			? (evidence.commands as unknown[]).map(String)
+			: [];
+		const rationale = typeof p.rationale === "string" ? p.rationale : "";
+		const lint = (p.lint ?? {}) as { warnings?: unknown };
+		const warnings = Array.isArray(lint.warnings)
+			? (lint.warnings as unknown[]).map(String)
+			: [];
+		const maxIterations = typeof p.maxIterations === "number" ? p.maxIterations : null;
+		const tokenBudget = typeof p.tokenBudget === "number" ? p.tokenBudget : null;
+		return { objective, acceptanceCriteria, commands, rationale, warnings, maxIterations, tokenBudget };
 	});
 </script>
 
@@ -125,6 +149,59 @@
 		alt={asString(payloadField("alt")) || rest.title || "image artifact"}
 		class="max-w-full rounded border"
 	/>
+{:else if kind === "goal_spec" && goalSpec}
+	<div class="space-y-3 text-sm">
+		<div class="flex items-start gap-2">
+			<Target class="mt-0.5 h-4 w-4 shrink-0 text-violet-600 dark:text-violet-400" />
+			<div>
+				<div class="text-xs font-medium text-muted-foreground">Objective</div>
+				<p class="whitespace-pre-wrap">{goalSpec.objective}</p>
+			</div>
+		</div>
+		{#if goalSpec.acceptanceCriteria.length}
+			<div>
+				<div class="mb-1 text-xs font-medium text-muted-foreground">Acceptance criteria</div>
+				<ul class="space-y-1">
+					{#each goalSpec.acceptanceCriteria as crit (crit)}
+						<li class="flex items-start gap-1.5">
+							<ShieldCheck class="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+							<span>{crit}</span>
+						</li>
+					{/each}
+				</ul>
+			</div>
+		{/if}
+		{#if goalSpec.commands.length}
+			<div>
+				<div class="mb-1 text-xs font-medium text-muted-foreground">Evidence commands (ground-truth)</div>
+				<div class="space-y-1">
+					{#each goalSpec.commands as cmd (cmd)}
+						<code class="block rounded bg-muted px-2 py-1 font-mono text-xs">{cmd}</code>
+					{/each}
+				</div>
+			</div>
+		{/if}
+		<div class="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground tabular-nums">
+			{#if goalSpec.maxIterations !== null}<span>Max iterations: {goalSpec.maxIterations}</span>{/if}
+			{#if goalSpec.tokenBudget !== null}<span>Token budget: {goalSpec.tokenBudget.toLocaleString()}</span>{/if}
+		</div>
+		{#if goalSpec.rationale}
+			<p class="rounded bg-muted/50 px-2 py-1 text-xs text-muted-foreground">
+				<span class="font-medium text-foreground">Rationale:</span>
+				{goalSpec.rationale}
+			</p>
+		{/if}
+		{#if goalSpec.warnings.length}
+			<ul class="space-y-1">
+				{#each goalSpec.warnings as warning (warning)}
+					<li class="flex items-start gap-1 text-xs text-amber-700 dark:text-amber-300">
+						<TriangleAlert class="mt-0.5 h-3.5 w-3.5 shrink-0" />
+						<span>{warning}</span>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</div>
 {:else}
 	<!-- Unknown kind — surface the raw payload so the data isn't lost. -->
 	<JsonViewer data={inlinePayload} label={`${kind} (raw)`} collapsed={false} />

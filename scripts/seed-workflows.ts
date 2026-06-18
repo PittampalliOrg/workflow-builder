@@ -3576,6 +3576,262 @@ function buildRomanGoalConfig(): EvaluatorGoalConfig {
 	};
 }
 
+// --- Planned goal: intent → PLAN (goal/plan) → approve → SOLVE -------------
+// Demonstrates the goal-authoring pre-step (docs/goal-authoring-and-claude-alignment.md):
+// a deterministic `goal/plan` node turns raw intent into a typed goal_spec
+// artifact (authored by an INDEPENDENT planner, isolated from the doer), a
+// native approval gate (Dapr listen/wait_for_external_event) lets a human
+// approve the spec, then the SOLVE agent runs under it (evaluator-gated as usual).
+interface PlannedGoalConfig {
+	id: string;
+	name: string;
+	description: string;
+	defaultIntent: string;
+	defaultAgentSlug: string;
+}
+
+const PLANNED_GOAL_WORKFLOW_ID =
+	process.env.SEED_PLANNED_GOAL_WORKFLOW_ID?.trim() || "planned-goal-showcase";
+const PLANNED_GOAL_DEFAULT_AGENT_SLUG =
+	process.env.SEED_PLANNED_GOAL_AGENT_SLUG?.trim() || "general-assistant";
+const PLANNED_GOAL_DEFAULT_INTENT =
+	"Build a working min-stack module in /sandbox/solution.js (CommonJS) with push/pop/min in O(1) and a friendly error when popping an empty stack.";
+
+function buildPlannedGoalWorkflowSpec(cfg: PlannedGoalConfig): JsonRecord {
+	return {
+		document: {
+			dsl: "1.0.0",
+			namespace: "workflow-builder.demos",
+			name: cfg.id,
+			version: "1.0.0",
+			title: cfg.name,
+			summary: cfg.description,
+			"x-workflow-builder": {
+				architecture:
+					"plan-goal+approval-gate+evaluator-gated-completion+single-sandbox",
+				notes:
+					"goal/plan authors a typed goal_spec artifact from raw intent (independent planner). A native listen/wait_for_external_event approval gate (raise `goal_spec_approval` to the workflow instance, e.g. {approved:true}) gates the SOLVE agent, which runs under the planned goalSpec with the usual evaluator-gated completion.",
+				triggerInputs: {
+					intent: "Plain-language description of what you want built.",
+					agentSlug: "Optional. dapr-agent-py agent slug for the SOLVE step.",
+				},
+				input: {
+					fields: {
+						intent: {
+							type: "textarea",
+							label: "Intent",
+							description:
+								"Describe in plain language what the agent should accomplish; the planner authors the goal + ground-truth checks.",
+							defaultValue: cfg.defaultIntent,
+						},
+						agentSlug: {
+							type: "text",
+							label: "Agent slug (dapr-agent-py)",
+							description: "Custom-loop dapr-agent-py agent to run the SOLVE step.",
+							defaultValue: cfg.defaultAgentSlug,
+						},
+					},
+				},
+			},
+		},
+		do: [
+			{
+				workspace_profile: {
+					call: "workspace/profile",
+					with: {
+						name: cfg.id.slice(0, 40),
+						rootPath: "/sandbox",
+						sandboxTemplate: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+						ttlSeconds: 3600,
+						keepAfterRun: true,
+						managedBy: `workflow-builder:demos:${cfg.id}`,
+						commandTimeoutMs: 300000,
+						timeoutMs: 600000,
+						enabledTools: [
+							"execute_command",
+							"read_file",
+							"write_file",
+							"edit_file",
+							"list_files",
+							"mkdir",
+							"file_stat",
+						],
+						sandboxPolicy: {
+							mode: "per-run",
+							template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+							ttlSeconds: 3600,
+							keepAfterRun: true,
+						},
+					},
+				},
+			},
+			{
+				plan: {
+					call: "goal/plan",
+					with: {
+						intent: "${ .trigger.intent }",
+						context: { cwd: "/sandbox", runtime: "dapr-agent-py" },
+					},
+					artifacts: [
+						{
+							kind: "goal_spec",
+							slot: "primary",
+							title: "Planned goal spec",
+							description:
+								"Authored by an independent planner from the raw intent; review before approving.",
+							from: '${ .data.goalSpec + {rationale: (.data.rationale // ""), lint: (.data.lint // {warnings: []})} }',
+						},
+					],
+				},
+			},
+			{
+				approve_goal_spec: {
+					listen: { to: { one: { with: { type: "goal_spec_approval" } } } },
+					timeout: { after: "PT2H" },
+				},
+			},
+			{
+				solve: {
+					if: "${ (.approve_goal_spec.timedOut // false) == false and (.approve_goal_spec.approved // true) == true }",
+					call: "durable/run",
+					with: {
+						mode: "execute_direct",
+						cwd: "/sandbox",
+						sandboxName: "${ .workspace_profile.sandboxName }",
+						workspaceRef: "${ .workspace_profile.workspaceRef }",
+						sandboxPolicy: {
+							mode: "per-run",
+							template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+							ttlSeconds: 3600,
+							keepAfterRun: true,
+						},
+						body: {
+							agentRef: {
+								slug: `\${ .trigger.agentSlug // "${cfg.defaultAgentSlug}" }`,
+							},
+							prompt:
+								'${ "Work in /sandbox to satisfy the active goal: " + (.plan.goalSpec.objective // "") + ". When you believe it is complete, call update_goal(status=\\"complete\\"). Completion is VERIFIED by running the graded evidence checks against your work; if any fail you will receive the failing cases — fix and call update_goal again." }',
+							goalSpec: "${ .plan.goalSpec }",
+							overrides: { cwd: "/sandbox", maxTurns: 40, timeoutMinutes: 30 },
+						},
+					},
+				},
+			},
+		],
+		output: {
+			as: {
+				workspaceRef: "${ .workspace_profile.workspaceRef }",
+				sandboxName: '${ .workspace_profile.sandboxName // "" }',
+				goalSpec: "${ .plan.goalSpec }",
+				solve: "${ .solve }",
+			},
+		},
+		input: {
+			schema: {
+				document: {
+					type: "object",
+					required: ["intent"],
+					properties: {
+						intent: {
+							type: "string",
+							title: "Intent",
+							default: cfg.defaultIntent,
+						},
+						agentSlug: {
+							type: "string",
+							title: "Agent slug",
+							default: cfg.defaultAgentSlug,
+						},
+						sandboxTemplate: {
+							type: "string",
+							title: "Sandbox template",
+							default: "dapr-agent",
+						},
+					},
+				},
+				format: "json",
+			},
+		},
+	};
+}
+
+function buildPlannedGoalWorkflowNodes(cfg: PlannedGoalConfig): JsonRecord[] {
+	return [
+		{
+			id: "trigger",
+			type: "trigger",
+			position: { x: 80, y: 60 },
+			data: {
+				label: "Intent trigger",
+				description: "Receives the plain-language intent + optional agentSlug.",
+			},
+		},
+		{
+			id: "workspace_profile",
+			type: "action",
+			position: { x: 80, y: 200 },
+			data: {
+				label: "Provision sandbox",
+				actionType: "workspace/profile",
+				description: "Single dapr-agent sandbox shared by the SOLVE agent + evidence checks.",
+			},
+		},
+		{
+			id: "plan",
+			type: "action",
+			position: { x: 80, y: 340 },
+			data: {
+				label: "Plan goal (independent planner)",
+				actionType: "goal/plan",
+				description:
+					"Turns the raw intent into a typed goal_spec artifact (objective + criteria + ground-truth evidence), authored isolated from the doer.",
+			},
+		},
+		{
+			id: "approve_goal_spec",
+			type: "approval-gate",
+			position: { x: 80, y: 480 },
+			data: {
+				label: "Approve goal spec",
+				description:
+					"Native approval gate (wait_for_external_event). Raise `goal_spec_approval` {approved:true} to proceed; times out after 2h.",
+			},
+		},
+		{
+			id: "solve",
+			type: "action",
+			position: { x: 80, y: 620 },
+			data: {
+				label: "Solve (goal mode, evaluator-gated)",
+				actionType: "durable/run",
+				description:
+					"Agent works under the approved goalSpec; update_goal(complete) is verified by the BFF running the graded evidence before the goal completes.",
+			},
+		},
+	];
+}
+
+function buildPlannedGoalWorkflowEdges(): JsonRecord[] {
+	const ordered = ["trigger", "workspace_profile", "plan", "approve_goal_spec", "solve"];
+	return ordered.slice(0, -1).map((source, index) => ({
+		id: `e_planned_goal_${index + 1}`,
+		source,
+		target: ordered[index + 1],
+		type: "default",
+	}));
+}
+
+function buildPlannedGoalConfig(): PlannedGoalConfig {
+	return {
+		id: PLANNED_GOAL_WORKFLOW_ID,
+		name: "Planned Goal: Intent → Plan → Approve → Solve",
+		description:
+			"Goal-authoring showcase: a deterministic goal/plan node turns raw intent into a typed goal_spec artifact (independent planner), a native approval gate lets a human approve it, then a dapr-agent-py agent solves under the approved goalSpec with evaluator-gated completion. Demonstrates the PLAN→SOLVE pre-step from docs/goal-authoring-and-claude-alignment.md.",
+		defaultIntent: PLANNED_GOAL_DEFAULT_INTENT,
+		defaultAgentSlug: PLANNED_GOAL_DEFAULT_AGENT_SLUG,
+	};
+}
+
 async function upsertRawWorkflow(params: {
 	db: ReturnType<typeof drizzle>;
 	workflowId: string;
@@ -3864,6 +4120,22 @@ async function seedWorkflow() {
 				spec: buildEvaluatorGoalWorkflowSpec(romanCfg),
 				nodes: buildEvaluatorGoalWorkflowNodes(romanCfg),
 				edges: buildEvaluatorGoalWorkflowEdges(),
+				visibility: "public",
+			});
+		}
+
+		{
+			const plannedCfg = buildPlannedGoalConfig();
+			await upsertRawWorkflow({
+				db,
+				workflowId: plannedCfg.id,
+				name: plannedCfg.name,
+				description: plannedCfg.description,
+				userId,
+				projectId,
+				spec: buildPlannedGoalWorkflowSpec(plannedCfg),
+				nodes: buildPlannedGoalWorkflowNodes(plannedCfg),
+				edges: buildPlannedGoalWorkflowEdges(),
 				visibility: "public",
 			});
 		}

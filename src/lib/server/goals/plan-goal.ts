@@ -1,0 +1,293 @@
+/**
+ * Goal authoring pre-step (`planGoal`) — turn raw user intent into a validated,
+ * canonical `goalSpec` for the evaluator-gated goal loop.
+ *
+ * This is the Anthropic "Planner" / sprint-contract role: an INDEPENDENT,
+ * ISOLATED LLM call that authors the goal's objective + acceptance criteria +
+ * ground-truth evidence commands. It is deliberately separate from the doer
+ * agent — the doer must never author its own checks (that is gaming; same
+ * isolation principle as the evaluator). The call never receives a doer
+ * transcript.
+ *
+ * Mirrors the dual-provider structured-generation pattern of
+ * `src/lib/server/workflows/greenfield-prompt.ts` (OpenAI-compatible gateway
+ * when available, else Anthropic direct) + a tolerant JSON extractor.
+ *
+ * Validation here is STATIC ONLY (lint) — we do NOT execute the proposed
+ * commands. The output goalSpec matches the canonical contract consumed by
+ * POST /api/v1/sessions/[id]/goal, the durable/run body.goalSpec, and
+ * thread_goals (evidence.commands -> evidencePlan.commands).
+ *
+ * See docs/goal-authoring-and-claude-alignment.md (Part C).
+ */
+import { env } from "$env/dynamic/private";
+import {
+	callOpenAICompatibleChatCompletion,
+	openAICompatibleTrafficAvailable,
+} from "$lib/server/ai/openai-gateway";
+
+export type GoalSpec = {
+	objective: string;
+	acceptanceCriteria: string[];
+	evidence: { commands: string[] };
+	maxIterations?: number;
+	tokenBudget?: number;
+};
+
+export type GoalSpecLint = {
+	/** Non-fatal authoring warnings surfaced to the user / artifact. */
+	warnings: string[];
+};
+
+export type PlanGoalContext = {
+	repo?: string;
+	cwd?: string;
+	runtime?: string;
+	notes?: string;
+};
+
+export type PlanGoalResult = {
+	goalSpec: GoalSpec;
+	rationale: string;
+	lint: GoalSpecLint;
+};
+
+const MAX_TOKENS = 1200;
+const DEFAULT_MAX_ITERATIONS = 30;
+const ITERATION_CEILING = 200;
+const TOKEN_BUDGET_CEILING = 50_000_000;
+
+function isPresentString(value: unknown): value is string {
+	return typeof value === "string" && value.trim().length > 0;
+}
+
+/** Tolerant JSON extraction: raw, fenced ```json block, or first {...} match. */
+function extractJson(text: string): Record<string, unknown> {
+	const candidates = [
+		text.trim(),
+		text.match(/```(?:json)?\s*([\s\S]*?)```/)?.[1]?.trim(),
+		text.match(/\{[\s\S]*\}/)?.[0]?.trim(),
+	].filter((c): c is string => isPresentString(c));
+
+	for (const candidate of candidates) {
+		try {
+			return JSON.parse(candidate) as Record<string, unknown>;
+		} catch {
+			// try next
+		}
+	}
+	throw new Error("Could not extract valid JSON from planGoal response");
+}
+
+const SYSTEM_PROMPT = [
+	"You are a Goal Planner. You turn a user's raw intent into a precise, testable",
+	"'sprint contract' for an autonomous coding agent — you do NOT do the work",
+	"yourself. Respond with JSON only.",
+	"",
+	"Author the contract so completion can be judged against GROUND TRUTH, not the",
+	"agent's own claims:",
+	"- objective: ONE clear, measurable end state. State the constraints that must",
+	"  not change. Concise but unambiguous.",
+	"- acceptanceCriteria: 2-6 specific, measurable conditions, including edge cases.",
+	"  Each must be independently checkable.",
+	"- evidence.commands: shell commands that PROVE the criteria against ground truth.",
+	"  Rules: each command must be independently runnable, exit 0 ONLY when the",
+	"  criterion is met, print actionable output on failure, and TOGETHER cover the",
+	"  criteria. Order them so earlier (cheaper/foundational) checks run first.",
+	"  CRITICAL: commands must NOT leak the answer. Never echo, grep-for, or embed the",
+	"  literal expected value/string a criterion is testing — the agent can read these",
+	"  commands, so a command that contains the answer lets it hardcode the check.",
+	"  Write tests that exercise behavior (run the program, assert on its real output)",
+	"  rather than asserting a string equals a constant you spelled out here.",
+	"- maxIterations / tokenBudget: size to the scope (small task = small caps).",
+	"- rationale: 1-3 sentences explaining the contract for a human reviewer.",
+	"",
+	"Return JSON with exactly these keys: objective (string), acceptanceCriteria",
+	"(string[]), evidence (object with key commands: string[]), maxIterations",
+	"(number), tokenBudget (number or null), rationale (string).",
+].join("\n");
+
+function buildUserPrompt(intent: string, context?: PlanGoalContext): string {
+	const lines = [`User intent: ${intent.trim()}`];
+	if (context?.repo) lines.push(`Repository: ${context.repo}`);
+	if (context?.cwd) lines.push(`Working directory: ${context.cwd}`);
+	if (context?.runtime) lines.push(`Agent runtime: ${context.runtime}`);
+	if (context?.notes) lines.push(`Additional context: ${context.notes}`);
+	return lines.join("\n");
+}
+
+function normalizeModel(model: string | undefined | null): string | undefined {
+	if (!isPresentString(model)) return undefined;
+	return model.trim();
+}
+
+async function callAnthropic(
+	system: string,
+	user: string,
+	model: string,
+	apiKey: string,
+): Promise<string> {
+	const cleanModel = model.startsWith("anthropic/")
+		? model.slice("anthropic/".length)
+		: model;
+	const response = await fetch("https://api.anthropic.com/v1/messages", {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			"x-api-key": apiKey,
+			"anthropic-version": "2023-06-01",
+		},
+		body: JSON.stringify({
+			model: cleanModel,
+			max_tokens: MAX_TOKENS,
+			system,
+			messages: [{ role: "user", content: user }],
+		}),
+	});
+	if (!response.ok) {
+		throw new Error(
+			`Anthropic API error ${response.status}: ${await response.text()}`,
+		);
+	}
+	const data = await response.json();
+	const content = data.content?.[0]?.text;
+	if (!isPresentString(content)) throw new Error("No content in Anthropic response");
+	return content;
+}
+
+function coerceStringArray(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return value
+		.filter((v): v is string => typeof v === "string")
+		.map((s) => s.trim())
+		.filter((s) => s.length > 0);
+}
+
+function coercePositiveInt(value: unknown, ceiling: number): number | undefined {
+	const n =
+		typeof value === "number"
+			? value
+			: typeof value === "string"
+				? Number.parseInt(value, 10)
+				: NaN;
+	if (!Number.isFinite(n) || n <= 0) return undefined;
+	return Math.min(Math.floor(n), ceiling);
+}
+
+/** Validate/coerce raw LLM output into the canonical goalSpec contract. */
+export function normalizeGoalSpec(raw: Record<string, unknown>): GoalSpec {
+	const objective = isPresentString(raw.objective) ? raw.objective.trim() : "";
+	if (!objective) {
+		throw new Error("planGoal produced no objective");
+	}
+	const acceptanceCriteria = coerceStringArray(raw.acceptanceCriteria);
+	const evidenceObj = (raw.evidence ?? {}) as Record<string, unknown>;
+	const commands = coerceStringArray(evidenceObj.commands);
+	const maxIterations =
+		coercePositiveInt(raw.maxIterations, ITERATION_CEILING) ??
+		DEFAULT_MAX_ITERATIONS;
+	const tokenBudget = coercePositiveInt(raw.tokenBudget, TOKEN_BUDGET_CEILING);
+
+	const spec: GoalSpec = {
+		objective,
+		acceptanceCriteria,
+		evidence: { commands },
+		maxIterations,
+	};
+	if (tokenBudget !== undefined) spec.tokenBudget = tokenBudget;
+	return spec;
+}
+
+/**
+ * Static lint of the proposed evidence (NO execution). Surfaces authoring
+ * smells: prose-shaped "commands", missing evidence when criteria exist, and
+ * commands that leak the answer (echo/grep of a literal acceptance-criterion
+ * string lets the doer hardcode the check — defeats the gate, see #209).
+ */
+export function lintEvidenceCommands(spec: GoalSpec): GoalSpecLint {
+	const warnings: string[] = [];
+	const { commands } = spec.evidence;
+
+	if (spec.acceptanceCriteria.length && !commands.length) {
+		warnings.push(
+			"No evidence commands declared — without them completion falls back to self-judged (the agent grades itself). Add commands that prove each criterion.",
+		);
+	}
+
+	// Distinctive multi-word fragments from each criterion; if a command embeds
+	// one verbatim it is likely leaking the expected answer into the check.
+	const criterionFragments = spec.acceptanceCriteria
+		.flatMap((c) => c.match(/"([^"]{4,})"|'([^']{4,})'/g) ?? [])
+		.map((m) => m.replace(/^['"]|['"]$/g, "").toLowerCase())
+		.filter((s) => s.length >= 4);
+
+	commands.forEach((cmd, i) => {
+		const trimmed = cmd.trim();
+		const label = `Evidence command ${i + 1}`;
+		// Prose smell: no recognizable command token and ends like a sentence.
+		const looksLikeCommand = /[|&;<>]|\b(npm|pnpm|node|python|grep|test|cat|ls|bash|sh|go|cargo|make|jq|curl|diff|exit|\.\/)\b|^[a-z0-9._/-]+\s/i.test(
+			trimmed,
+		);
+		if (!looksLikeCommand) {
+			warnings.push(
+				`${label} does not look like a runnable shell command: "${trimmed.slice(0, 60)}".`,
+			);
+		}
+		const lower = trimmed.toLowerCase();
+		const leaked = criterionFragments.find((frag) => lower.includes(frag));
+		if (leaked) {
+			warnings.push(
+				`${label} appears to embed the expected answer ("${leaked.slice(0, 40)}") — the agent can read this command and hardcode the check. Test behavior instead of asserting a literal you spelled out.`,
+			);
+		}
+	});
+
+	return { warnings };
+}
+
+/**
+ * Author a goalSpec from raw intent. Isolated, runtime-agnostic, one-shot.
+ * Provider routing mirrors greenfield-prompt: OpenAI-compatible gateway when
+ * available, else Anthropic direct. Throws if no provider is configured or the
+ * model output can't be parsed into a valid objective.
+ */
+export async function planGoal(
+	intent: string,
+	context?: PlanGoalContext,
+	options?: { model?: string },
+): Promise<PlanGoalResult> {
+	if (!isPresentString(intent)) {
+		throw new Error("intent is required");
+	}
+	const anthropicKey = env.ANTHROPIC_API_KEY;
+	const openaiAvailable = openAICompatibleTrafficAvailable();
+	if (!anthropicKey && !openaiAvailable) {
+		throw new Error("No AI API key configured for planGoal");
+	}
+
+	const user = buildUserPrompt(intent, context);
+	const override = normalizeModel(options?.model);
+
+	const responseText = openaiAvailable
+		? await callOpenAICompatibleChatCompletion({
+				model: override ?? env.GOAL_PLAN_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.5",
+				maxTokens: MAX_TOKENS,
+				responseFormat: { type: "json_object" },
+				messages: [
+					{ role: "system", content: SYSTEM_PROMPT },
+					{ role: "user", content: user },
+				],
+			})
+		: await callAnthropic(
+				SYSTEM_PROMPT,
+				user,
+				override ?? env.GOAL_PLAN_MODEL ?? env.ANTHROPIC_MODEL ?? "claude-haiku-4-5-20251001",
+				anthropicKey!,
+			);
+
+	const raw = extractJson(responseText);
+	const goalSpec = normalizeGoalSpec(raw);
+	const rationale = isPresentString(raw.rationale) ? raw.rationale.trim() : "";
+	const lint = lintEvidenceCommands(goalSpec);
+	return { goalSpec, rationale, lint };
+}

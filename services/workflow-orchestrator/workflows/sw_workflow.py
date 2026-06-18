@@ -997,6 +997,9 @@ _NON_AP_SLUG_PREFIXES: set[str] = {
     "durable",
     "environment",
     "workflow-orchestrator",
+    # goal/plan — deterministic goal-authoring activity; function-router proxies
+    # it to the BFF planGoal endpoint (NOT an AP piece; no AP durability contract).
+    "goal",
 }
 
 # Retry policy for AP piece activities (docs/activepieces-integration-architecture.md

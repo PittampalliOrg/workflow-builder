@@ -76,6 +76,10 @@ const HTTP_TIMEOUT_MS = Number.parseInt(
   process.env.HTTP_TIMEOUT_MS || "60000",
   10,
 );
+const WORKFLOW_BUILDER_URL =
+  process.env.WORKFLOW_BUILDER_URL ||
+  "http://workflow-builder.workflow-builder.svc.cluster.local:3000";
+const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
 const AGENT_HTTP_TIMEOUT_BUFFER_MS = 30_000;
 const MIN_AGENT_HTTP_TIMEOUT_MS = 90_000;
 const MAX_AGENT_HTTP_TIMEOUT_MS = 7_200_000;
@@ -545,6 +549,75 @@ export function dispatchErrorPayload(
     errorType: errorRecord.name,
     ...(targetPath ? { targetPath } : {}),
   };
+}
+
+/**
+ * goal/plan — deterministic goal-authoring activity (the workflow PLAN node).
+ * The BFF owns the LLM keys + the single `planGoal` implementation, so the
+ * router just proxies to its internal endpoint (same boundary as the evaluator
+ * credential path). Returns an ExecuteResponse whose `data` is the plan result
+ * { goalSpec, rationale, lint } — consumed downstream as `${ .plan.data.goalSpec }`.
+ */
+async function executeGoalPlan(
+  input: Record<string, unknown>,
+): Promise<ExecuteResponse> {
+  const started = Date.now();
+  const intent =
+    typeof input.intent === "string"
+      ? input.intent.trim()
+      : typeof input.prompt === "string"
+        ? input.prompt.trim()
+        : "";
+  if (!intent) {
+    return {
+      success: false,
+      data: {},
+      error: "goal/plan: missing required `intent` (or `prompt`).",
+      duration_ms: Date.now() - started,
+    } as ExecuteResponse;
+  }
+  const payload: Record<string, unknown> = { intent };
+  if (isPlainObject(input.context)) payload.context = input.context;
+  if (typeof input.model === "string" && input.model.trim()) {
+    payload.model = input.model.trim();
+  }
+
+  try {
+    const res = await fetch(`${WORKFLOW_BUILDER_URL}/api/internal/goals/plan`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Internal-Token": INTERNAL_API_TOKEN,
+      },
+      body: JSON.stringify(payload),
+    });
+    const text = await res.text();
+    const parsed = parseJsonResponse(text);
+    if (!res.ok) {
+      const message =
+        isPlainObject(parsed) && typeof parsed.error === "string"
+          ? parsed.error
+          : `planGoal failed (${res.status})`;
+      return {
+        success: false,
+        data: {},
+        error: message,
+        duration_ms: Date.now() - started,
+      } as ExecuteResponse;
+    }
+    return {
+      success: true,
+      data: isPlainObject(parsed) ? parsed : {},
+      duration_ms: Date.now() - started,
+    } as ExecuteResponse;
+  } catch (err) {
+    return {
+      success: false,
+      data: {},
+      error: err instanceof Error ? err.message : String(err),
+      duration_ms: Date.now() - started,
+    } as ExecuteResponse;
+  }
 }
 
 function firstStringField(
@@ -1222,6 +1295,15 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
         error: `The ${pluginId} runtime has been retired. Use durable/run for embedded agent execution instead.`,
         duration_ms: 0,
       } as ExecuteResponse);
+    }
+
+    // goal/plan is a thin proxy to the BFF's planGoal capability (not a Knative
+    // service / registry entry). Handle it before registry lookup.
+    if (functionSlug === "goal/plan") {
+      const planResponse = await executeGoalPlan(
+        body.input as Record<string, unknown>,
+      );
+      return reply.status(planResponse.success ? 200 : 502).send(planResponse);
     }
 
     console.log(

@@ -114,6 +114,7 @@ Standard kinds + renderers (`src/lib/components/workflow/execution/artifact-rend
 | `image` | `{ alt: string }` (blob via `fileId`) | `<img>` |
 | `link` | `{ url: string }` | anchor |
 | `card` | `{ body: string, footer?: string }` | shadcn `<Card>` |
+| `goal_spec` | `{ objective, acceptanceCriteria[], evidence:{commands[]}, maxIterations?, tokenBudget?, rationale, lint:{warnings[]} }` | authored sprint-contract card (objective + criteria checklist + evidence chips + rationale + lint warnings); emitted by the workflow `goal/plan` PLAN node, see `docs/goal-authoring-and-claude-alignment.md` |
 | anything else | passthrough | JSON dump |
 
 **`<ArtifactList>`** (`src/lib/components/workflow/execution/artifact-list.svelte`) groups by slot. `mode="primary"` renders only the primary-slot subset (used on the Overview tab); `mode="all"` renders the full grouped list (used on the Outputs tab).
