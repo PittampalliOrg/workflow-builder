@@ -2,8 +2,9 @@ import { json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { requireInternal } from "$lib/server/internal-auth";
 import { evaluateGoalCompletion } from "$lib/server/goals/evaluator";
-import { markGoalComplete } from "$lib/server/goals/repo";
+import { getCurrentGoal, markGoalComplete } from "$lib/server/goals/repo";
 import { finalizeCompletedWorkflowGoal } from "$lib/server/goals/goal-loop";
+import { appendEvent } from "$lib/server/sessions/events";
 
 /**
  * POST /api/internal/goals/[sessionId]/evaluate
@@ -27,6 +28,23 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		// Authority to complete lives here, not with the doer. Idempotent.
 		await markGoalComplete(sessionId);
 		await finalizeCompletedWorkflowGoal(sessionId);
+	} else if (!verdict.skipped) {
+		// Record the evaluator REJECT so each submit→evaluate→verdict cycle shows
+		// as a distinct attempt in the Goal view — the MCP fast-path (agent calls
+		// update_goal and resubmits within one turn) never reaches the idle
+		// backstop's emitter, so without this those rejects are invisible.
+		const goal = await getCurrentGoal(sessionId);
+		await appendEvent(sessionId, {
+			type: "session.goal_rejected",
+			data: {
+				feedback: verdict.feedback,
+				iteration: goal?.iterations ?? 0,
+				results: verdict.results,
+				source: "update_goal",
+			},
+			processedAt: null,
+			sourceEventId: `goal-rejected:${sessionId}:mcp:${Date.now()}`,
+		});
 	}
 
 	return json({

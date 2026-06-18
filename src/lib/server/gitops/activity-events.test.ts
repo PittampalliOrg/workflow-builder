@@ -91,6 +91,78 @@ describe("normalizeGitOpsActivityEvent", () => {
 		expect(event.source).toBe("kubernetes");
 		expect(event.activityType).toBe("kubernetes.resource");
 	});
+
+	it("normalizes GitHub pull_request payloads for journey grouping", () => {
+		const event = normalizeGitOpsActivityEvent({
+			action: "closed",
+			number: 42,
+			repository: { full_name: "PittampalliOrg/workflow-builder" },
+			sender: { login: "vpittamp" },
+			pull_request: {
+				number: 42,
+				merged: true,
+				merge_commit_sha: "2ee6c88921c55fcb348e42c101e7decb47450b46",
+				html_url: "https://github.com/PittampalliOrg/workflow-builder/pull/42",
+				title: "Ship GitOps journey",
+				head: { ref: "feature/journey", sha: "2ee6c88921c55fcb348e42c101e7decb47450b46" },
+				base: { ref: "main" },
+			},
+		});
+
+		expect(event.source).toBe("github");
+		expect(event.activityType).toBe("github.pull_request");
+		expect(event.resourceRef).toMatchObject({
+			group: "github.com",
+			resource: "pullrequests",
+			kind: "PullRequest",
+			namespace: "PittampalliOrg",
+			name: "workflow-builder",
+		});
+		expect(event.correlation).toMatchObject({
+			repo: "PittampalliOrg/workflow-builder",
+			branch: "feature/journey",
+			targetBranch: "main",
+			commitSha: "2ee6c88921c55fcb348e42c101e7decb47450b46",
+			pullRequestNumber: "42",
+			merged: true,
+			senderLogin: "vpittamp",
+		});
+	});
+
+	it("normalizes GitHub push payloads with repo, branch, image, lane, and pin fields", () => {
+		const event = normalizeGitOpsActivityEvent({
+			ref: "refs/heads/main",
+			after: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			repository: { full_name: "PittampalliOrg/stacks" },
+			pusher: { email: "vinod@pittampalli.com" },
+			head_commit: {
+				id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				message: "chore: pin workflow-builder",
+				author: { email: "vinod@pittampalli.com" },
+			},
+			commits: [
+				{
+					modified: [
+						"packages/components/hub-spoke-appsets/release-pins/workflow-builder-images.yaml",
+						"packages/components/workloads/workflow-builder-system-overlays/dev/kustomization.yaml",
+					],
+					added: [],
+					removed: [],
+				},
+			],
+		});
+
+		expect(event.source).toBe("github");
+		expect(event.activityType).toBe("github.push");
+		expect(event.correlation).toMatchObject({
+			repo: "PittampalliOrg/stacks",
+			branch: "main",
+			commitSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			pinCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			expectedGitOpsLane: "direct-ryzen+promoter-dev",
+			pusherEmail: "vinod@pittampalli.com",
+		});
+	});
 });
 
 function sampleInventoryConfigMapEvent(contextId: string) {
