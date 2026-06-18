@@ -52,7 +52,12 @@ export type PlanGoalResult = {
 	lint: GoalSpecLint;
 };
 
-const MAX_TOKENS = 1200;
+// DeepSeek V4 (and other reasoning models) spend completion tokens on internal
+// reasoning BEFORE emitting content — at a low cap they hit finish_reason=length
+// with EMPTY content. 1200 was far too small (reasoning alone consumed the whole
+// budget). Give very generous headroom so reasoning never starves the JSON
+// output; env-overridable.
+const MAX_TOKENS = Number(env.GOAL_PLAN_MAX_TOKENS) || 32000;
 const DEFAULT_MAX_ITERATIONS = 30;
 const ITERATION_CEILING = 200;
 const TOKEN_BUDGET_CEILING = 50_000_000;
@@ -119,6 +124,18 @@ function buildUserPrompt(intent: string, context?: PlanGoalContext): string {
 function normalizeModel(model: string | undefined | null): string | undefined {
 	if (!isPresentString(model)) return undefined;
 	return model.trim();
+}
+
+/**
+ * The MLflow AI gateway routes by BARE model name (e.g. `deepseek-v4-pro`,
+ * `gpt-5.5`) — a `provider/model` spec like `deepseek/deepseek-v4-pro` 500s.
+ * Strip a single leading provider segment so canonical model specs route
+ * correctly. Multi-segment names (e.g. `nvidia/meta/llama-3.1-8b`) are left
+ * intact (the gateway owns their routing).
+ */
+function gatewayModelName(model: string): string {
+	const parts = model.split("/");
+	return parts.length === 2 ? parts[1] : model;
 }
 
 async function callAnthropic(
@@ -270,7 +287,9 @@ export async function planGoal(
 
 	const responseText = openaiAvailable
 		? await callOpenAICompatibleChatCompletion({
-				model: override ?? env.GOAL_PLAN_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.5",
+				model: gatewayModelName(
+					override ?? env.GOAL_PLAN_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.5",
+				),
 				maxTokens: MAX_TOKENS,
 				responseFormat: { type: "json_object" },
 				messages: [
