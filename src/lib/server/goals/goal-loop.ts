@@ -148,7 +148,7 @@ export async function onSessionEvent(
  */
 export async function kickGoalLoop(
 	sessionId: string,
-	opts: { allowStaleIdleProbe?: boolean; kickoff?: boolean } = {},
+	opts: { allowStaleIdleProbe?: boolean; kickoff?: boolean; fromStopHook?: boolean } = {},
 ): Promise<void> {
 	try {
 		await driveContinuationIfIdle(sessionId, opts);
@@ -284,7 +284,7 @@ async function postEvidenceRejection(
 
 async function driveContinuationIfIdle(
 	sessionId: string,
-	opts: { allowStaleIdleProbe?: boolean; kickoff?: boolean } = {},
+	opts: { allowStaleIdleProbe?: boolean; kickoff?: boolean; fromStopHook?: boolean } = {},
 ): Promise<void> {
 	// Emit the completion signal before the drivable-goal gate (a completed goal
 	// is no longer "drivable", so this must run first). Idempotent.
@@ -335,7 +335,13 @@ async function driveContinuationIfIdle(
 	// Dapr-buffered until the composer is ready, exactly like native /goal.
 	const kickoff =
 		opts.kickoff === true && goal.iterations === 0 && !goal.lastContinuationAt;
-	if (!idle && !staleProbe && !kickoff) return;
+	// fromStopHook: the dapr-agent-py Stop hook fires synchronously at the end of a
+	// real turn (after the agent loop completes), BEFORE the idle event is emitted —
+	// so it's a valid forced drive even though the latest event isn't yet a
+	// status_idle. Bypass only the idle gate; every other guard (drivable-goal,
+	// stop-state, claimNextContinuation spacing/claim, evidence backstop) still
+	// applies, and exactly-once is preserved by the atomic claim + sourceEventId.
+	if (!idle && !staleProbe && !kickoff && !opts.fromStopHook) return;
 	if (!idle && staleProbe) {
 		console.warn(
 			`[goal-loop] ${sessionId}: lost-idle probe (latest=${latest.type}, age=${Math.round(latest.ageSeconds)}s) — posting continuation; Dapr buffers it if a turn is still running`,
