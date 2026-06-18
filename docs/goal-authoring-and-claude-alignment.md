@@ -96,6 +96,24 @@ Surveyed the newest Dapr Workflows + Dapr Agents HITL surface ([v1.18 workflow-p
 
 **Net.** Dapr 1.18 gives a solid native *approval/interrupt* substrate (`wait_for_external_event` / `create_timer` / `when_any` / `raise_workflow_event`, plus `RequireApproval` for dapr-agent-py) but **zero** native evaluator. So the architecture is unchanged, just sharpened: the goal-authoring PLAN→SOLVE handoff should use the **native approval-gate primitive** (our existing node) for the human sign-off of the `goal_spec`; `RequireApproval` is a nice optional dapr-agent-py fast-path for risky-tool approval inside SOLVE; and the planner + evaluator + goal loop stay **BFF-orchestrated** for runtime-agnosticism — Dapr-native where *pausing/resuming* lives, BFF where *judgment* lives.
 
+## Part E — Planner agent: validate-by-execution (evolution of Part C)
+
+The Part C planner is a single **blind LLM call** (`goal/plan` → `planGoal()`): it *authors* `evidence.commands` but never *runs* them. Static lint (`lintEvidenceCommands`) catches prose/answer-leak smells but cannot answer the two questions that actually decide whether the evaluator works: **does each check run, and does it discriminate met vs. unmet?** Live DeepSeek runs proved the cost — the `retry` demo's first completion was wrongly rejected because a planGoal-authored inline `node -e "…${…}…"` was mangled by the shell (`sh: Bad substitution`): a *flaky check* that burned an iteration. (Earlier, an absurd auto-authored `tokenBudget:500` tripped `budget_limited` at iteration 0 — fixed by not auto-authoring budgets.)
+
+**The evolution: make PLAN an agent run that proves its own checks.** Symmetric with SOLVE, the PLAN node becomes a `durable/run` **planner agent** in its **own throwaway sandbox** that: drafts the goalSpec → writes a **reference solution** → runs **each evidence command against it (must pass) and against an empty workspace (must fail)** → repairs any command that errors / always-passes / always-fails → emits the validated spec. This is un-deferring Part C step 4 ("validate the checks") as an agent capability instead of static lint only.
+
+**Emission.** A `durable/run` agent has **no structured-output mode** — its result is free text in `.plan_agent.content`. So the agent emits the validated spec as a fenced ```json block and a follow-up `goal/plan` **`fromText` mode** (`finalizeGoalSpecFromText` in `plan-goal.ts`) recovers the canonical contract with the *same* `extractJson` + `normalizeGoalSpec` + `lint` — **no second LLM call**. SOLVE consumes `${ .plan_finalize.goalSpec }`.
+
+**Isolation (non-negotiable).** The planner must not leak the answer to the doer. Two `workspace/profile` nodes give planner and solver **different sandboxes**; the planner's is `keepAfterRun:false` so it leaves **no `workflow_workspace_sessions` row** and is discarded — its reference solution **never reaches SOLVE**. The evaluator's `resolveEvidenceTarget` runs evidence in the **latest retained** workspace = the SOLVE sandbox. Consequence: evidence stays **self-contained inline** (each command references *solve's* `solution.js`); the planner validates those inline commands against its own throwaway reference. (Ferrying planner-written *test files* into the SOLVE sandbox as the contract is a heavier future variant — deferred, since it needs artifact→sandbox delivery.)
+
+| Approach | Evidence quality | Cost / latency | When |
+|---|---|---|---|
+| **Blind `goal/plan` call** (Part C, shipped) | low — authored, never run | ~1 LLM call | simple goals; the cheap default |
+| **Deterministic validate-loop** | medium-high — proven runnable + detects "unmet" | + a scratch sandbox, few calls | middle ground (not built) |
+| **Planner agent** (Part E, prototyped: `planned-goal-agent-showcase`) | highest — writes + runs tests vs reference + empty, repairs | a full agent run + sandbox | complex / opt-in goals |
+
+**Tiering recommendation:** keep the cheap deterministic planner as the default; promote to the planner agent for complex goals (or opt-in). Both emit the same `goal_spec` artifact + contract, so SOLVE and the evaluator are unchanged. The two demos (`planned-goal-showcase` deterministic, `planned-goal-agent-showcase` agent) exist side-by-side for A/B.
+
 ## Risks / guardrails
 - **Planner over/under-specifies** → human approval + the validate pass catch this; surface the drafted criteria + a dry-run result before the user commits.
 - **Cost** → the planner is a one-time call per goal (cheap relative to the solve loop); the validate dry-run reuses the cheap deterministic evidence path.

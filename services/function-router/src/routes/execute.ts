@@ -562,21 +562,27 @@ async function executeGoalPlan(
   input: Record<string, unknown>,
 ): Promise<ExecuteResponse> {
   const started = Date.now();
+  // `fromText` mode: a planner AGENT already authored + validated the goalSpec;
+  // the BFF just extracts/normalizes its free-text output (no LLM call).
+  const fromText =
+    typeof input.fromText === "string" ? input.fromText.trim() : "";
   const intent =
     typeof input.intent === "string"
       ? input.intent.trim()
       : typeof input.prompt === "string"
         ? input.prompt.trim()
         : "";
-  if (!intent) {
+  if (!fromText && !intent) {
     return {
       success: false,
       data: {},
-      error: "goal/plan: missing required `intent` (or `prompt`).",
+      error: "goal/plan: missing required `intent` (or `prompt`) or `fromText`.",
       duration_ms: Date.now() - started,
     } as ExecuteResponse;
   }
-  const payload: Record<string, unknown> = { intent };
+  const payload: Record<string, unknown> = fromText
+    ? { fromText }
+    : { intent };
   if (isPlainObject(input.context)) payload.context = input.context;
   if (typeof input.model === "string" && input.model.trim()) {
     payload.model = input.model.trim();
