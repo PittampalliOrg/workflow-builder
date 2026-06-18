@@ -119,6 +119,11 @@ export async function buildGoalFlow(
 		verdict: GoalFlowAttempt['verdict'],
 		endedAt: string | null,
 	) => {
+		// An attempt that produced a verdict without an explicit update_goal call
+		// was submitted by the idle evidence backstop.
+		if (cur.submissionKind === 'none' && verdict.kind !== 'none' && cur.sawEndTurnIdle) {
+			cur.submissionKind = 'idle_backstop';
+		}
 		attempts.push({
 			id: `goal-attempt:${attempts.length}`,
 			iteration: cur.iteration,
