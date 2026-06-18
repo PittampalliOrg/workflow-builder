@@ -16,12 +16,31 @@ function normalizeModel(model: string | undefined | null, fallback = 'gpt-5.5'):
 	return raw.startsWith('openai/') ? raw.slice('openai/'.length) : raw;
 }
 
+// Reasoning models (e.g. DeepSeek V4, o-series) spend completion tokens on an
+// internal reasoning pass BEFORE emitting content — at a low cap they return
+// finish_reason=length with EMPTY content. Floor the output budget so callers
+// that pass a small max_tokens (e.g. greenfield's 800) don't get empty results
+// when the default model is a reasoning model.
+const REASONING_MIN_OUTPUT_TOKENS = Number(env.REASONING_MIN_OUTPUT_TOKENS) || 8000;
+
+function isReasoningModel(model: string): boolean {
+	const lower = model.toLowerCase();
+	return /deepseek.*v4|deepseek-reasoner|^o\d/.test(lower);
+}
+
+function effectiveMaxTokens(model: string, maxTokens: number): number {
+	return isReasoningModel(model)
+		? Math.max(maxTokens, REASONING_MIN_OUTPUT_TOKENS)
+		: maxTokens;
+}
+
 function completionTokenLimit(model: string, maxTokens: number) {
 	const lower = model.toLowerCase();
+	const cap = effectiveMaxTokens(model, maxTokens);
 	if (lower.startsWith('gpt-5') || /^o\d/.test(lower)) {
-		return { max_completion_tokens: maxTokens };
+		return { max_completion_tokens: cap };
 	}
-	return { max_tokens: maxTokens };
+	return { max_tokens: cap };
 }
 
 export function openAICompatibleGatewayBaseUrl(): string | null {

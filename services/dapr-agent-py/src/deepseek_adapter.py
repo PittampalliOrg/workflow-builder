@@ -505,8 +505,20 @@ def _call_deepseek_chat(
     empty_content_retries = int(
         os.environ.get("DEEPSEEK_EMPTY_CONTENT_RETRIES", "3")
     )
+    # Reasoning-model length escalation: DeepSeek V4 spends completion tokens on
+    # the internal reasoning pass BEFORE emitting content. If max_tokens is too
+    # low it returns finish_reason=length with EMPTY content (the reasoning ate
+    # the whole budget). Rather than surface an empty response to the circuit
+    # breaker, escalate max_tokens and retry (parity with anthropic_adapter's
+    # length handling). Configurable via DEEPSEEK_LENGTH_ESCALATIONS /
+    # DEEPSEEK_MAX_TOKENS_CEILING.
+    max_length_escalations = int(
+        os.environ.get("DEEPSEEK_LENGTH_ESCALATIONS", "2")
+    )
+    length_ceiling = int(os.environ.get("DEEPSEEK_MAX_TOKENS_CEILING", "65536"))
     rate_attempt = 0
     empty_attempt = 0
+    length_escalations = 0
     content: str = ""
     tool_calls: list[dict[str, Any]] = []
     finish_reason: str | None = None
@@ -540,6 +552,32 @@ def _call_deepseek_chat(
             content, tool_calls, finish_reason, reasoning_content = (
                 _extract_deepseek_response(data)
             )
+            # Reasoning consumed the whole output budget → empty content with
+            # finish_reason=length. Escalate max_tokens and retry so the answer
+            # isn't lost (and the empty-response circuit breaker isn't tripped by
+            # a recoverable truncation).
+            current_cap = int(request_body.get("max_tokens") or output_cap)
+            if (
+                finish_reason == "length"
+                and not content.strip()
+                and not tool_calls
+                and length_escalations < max_length_escalations
+                and current_cap < length_ceiling
+            ):
+                length_escalations += 1
+                new_cap = min(current_cap * 2, length_ceiling)
+                logger.warning(
+                    "[deepseek-chat] finish_reason=length with empty content on "
+                    "%s; escalating max_tokens %d->%d (attempt %d/%d)%s",
+                    model,
+                    current_cap,
+                    new_cap,
+                    length_escalations,
+                    max_length_escalations,
+                    " (reasoning_content present)" if reasoning_content else "",
+                )
+                request_body["max_tokens"] = new_cap
+                continue
             # Retry on empty-content responses when the caller asked for
             # structured output. DeepSeek's API treats this as a known
             # intermittent edge case.
