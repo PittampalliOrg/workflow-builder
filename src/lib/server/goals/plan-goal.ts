@@ -26,10 +26,31 @@ import {
 	openAICompatibleTrafficAvailable,
 } from "$lib/server/ai/openai-gateway";
 
+/**
+ * A single gradable rubric criterion. `objective` criteria are checkable against
+ * ground truth (an evidence command); `subjective` criteria are judged by the
+ * critic LLM/agent. `dimension` tags subjective design criteria with one of the
+ * Anthropic design dimensions (design_quality | originality | craft | functionality).
+ */
+export type RubricCriterion = {
+	id: string;
+	kind: "objective" | "subjective";
+	description: string;
+	dimension?: string;
+};
+
+export type Rubric = { criteria: RubricCriterion[] };
+
 export type GoalSpec = {
 	objective: string;
 	acceptanceCriteria: string[];
 	evidence: { commands: string[] };
+	/**
+	 * Optional gradable rubric driving the generator+critic evaluator-optimizer
+	 * loop. Absent ⇒ today's deterministic-evidence-only behavior. See
+	 * docs/generator-critic-multi-agent.md.
+	 */
+	rubric?: Rubric;
 	maxIterations?: number;
 	tokenBudget?: number;
 };
@@ -106,16 +127,25 @@ const SYSTEM_PROMPT = [
 	"  commands, so a command that contains the answer lets it hardcode the check.",
 	"  Write tests that exercise behavior (run the program, assert on its real output)",
 	"  rather than asserting a string equals a constant you spelled out here.",
+	"- rubric: a gradable checklist an INDEPENDENT critic uses to accept/reject the",
+	"  work. Each criterion has: id (short slug), kind ('objective' or 'subjective'),",
+	"  description (what 'good' means), and for subjective design criteria an optional",
+	"  dimension. Use 'objective' for anything a command proves (tests, build, lint) —",
+	"  these should align with evidence.commands. Use 'subjective' for qualities a",
+	"  command cannot judge (style/tone adherence, translation nuance, UX/visual",
+	"  quality); for visual/frontend work prefer the dimensions design_quality,",
+	"  originality, craft, functionality. Author 2-6 criteria covering the objective.",
 	"- maxIterations: the max number of autonomous TURNS for the doer agent (a small",
 	"  task is ~10-20; a larger one up to ~40). This is a turn count, NOT a token count.",
 	"- rationale: 1-3 sentences explaining the contract for a human reviewer.",
 	"",
 	"Return json with exactly these keys: objective (string), acceptanceCriteria",
-	"(string[]), evidence (object with key commands: string[]), maxIterations",
+	"(string[]), evidence (object with key commands: string[]), rubric (object with",
+	"key criteria: array of {id, kind, description, dimension?}), maxIterations",
 	"(number), rationale (string). Do NOT include a token budget.",
 	"",
 	"Example of the desired json output format (shape only — author real content):",
-	'{"objective":"Implement <X> in /sandbox/solution.js","acceptanceCriteria":["<criterion 1>","<criterion 2>"],"evidence":{"commands":["cd /sandbox && node -e \'<assert behavior; exit non-zero on failure>\'"]},"maxIterations":15,"rationale":"<why this contract proves the objective>"}',
+	'{"objective":"Implement <X> in /sandbox/solution.js","acceptanceCriteria":["<criterion 1>","<criterion 2>"],"evidence":{"commands":["cd /sandbox && node -e \'<assert behavior; exit non-zero on failure>\'"]},"rubric":{"criteria":[{"id":"tests","kind":"objective","description":"All acceptance checks pass"},{"id":"craft","kind":"subjective","dimension":"craft","description":"<what good craft looks like here>"}]},"maxIterations":15,"rationale":"<why this contract proves the objective>"}',
 ].join("\n");
 
 function buildUserPrompt(intent: string, context?: PlanGoalContext): string {
@@ -197,6 +227,36 @@ function coercePositiveInt(value: unknown, ceiling: number): number | undefined 
 	return Math.min(Math.floor(n), ceiling);
 }
 
+const RUBRIC_DIMENSIONS = new Set([
+	"design_quality",
+	"originality",
+	"craft",
+	"functionality",
+]);
+
+/** Coerce raw rubric output into a validated Rubric, or undefined if absent/empty. */
+export function normalizeRubric(raw: unknown): Rubric | undefined {
+	const obj = (raw ?? {}) as Record<string, unknown>;
+	const rawCriteria = Array.isArray(obj.criteria) ? obj.criteria : [];
+	const criteria: RubricCriterion[] = [];
+	rawCriteria.forEach((entry, i) => {
+		if (!entry || typeof entry !== "object") return;
+		const c = entry as Record<string, unknown>;
+		const description = isPresentString(c.description) ? c.description.trim() : "";
+		if (!description) return;
+		const id = isPresentString(c.id)
+			? c.id.trim().replace(/\s+/g, "-").toLowerCase()
+			: `criterion-${i + 1}`;
+		const kind = c.kind === "objective" ? "objective" : "subjective";
+		const dimension =
+			isPresentString(c.dimension) && RUBRIC_DIMENSIONS.has(c.dimension.trim())
+				? c.dimension.trim()
+				: undefined;
+		criteria.push({ id, kind, description, ...(dimension ? { dimension } : {}) });
+	});
+	return criteria.length ? { criteria } : undefined;
+}
+
 /** Validate/coerce raw LLM output into the canonical goalSpec contract. */
 export function normalizeGoalSpec(raw: Record<string, unknown>): GoalSpec {
 	const objective = isPresentString(raw.objective) ? raw.objective.trim() : "";
@@ -219,10 +279,13 @@ export function normalizeGoalSpec(raw: Record<string, unknown>): GoalSpec {
 	// 50k–500k); a planner LLM mis-sizes it as a small per-response number (observed:
 	// 500) → the run trips `budget_limited` on turn 1 before any work lands. Leave it
 	// unset (run bounded by maxIterations); a budget is opt-in for the user to add.
+	const rubric = normalizeRubric(raw.rubric);
+
 	return {
 		objective,
 		acceptanceCriteria,
 		evidence: { commands },
+		...(rubric ? { rubric } : {}),
 		maxIterations,
 	};
 }
