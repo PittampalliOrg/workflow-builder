@@ -131,6 +131,7 @@ from src.capability_compiler import (
     skill_package_entries,
 )
 from src.event_publisher import (
+    drive_goal_stop_check,
     get_scoped_session,
     publish_session_event,
     scope_session,
@@ -233,6 +234,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_ITERATIONS = int(os.environ.get("DAPR_AGENT_PY_MAX_ITERATIONS", "120"))
+# When true, the Stop hook drives an in-process goal evaluation at each real
+# turn-end (calls the BFF stop-check) instead of relying solely on the
+# fire-and-forget status_idle event + cron backstop. Default off — the idle-loop
+# remains the universal mechanism (other runtimes + this one when the flag is off).
+GOAL_STOP_HOOK_ENABLED = (
+    os.environ.get("DAPR_AGENT_PY_GOAL_STOP_HOOK", "false").lower() == "true"
+)
 # Circuit breaker: after this many consecutive empty (or failed) LLM
 # responses within a single agent_workflow instance, raise to break the
 # loop. 3 covers the occasional empty-text-only response while stopping
@@ -4554,6 +4562,21 @@ class OpenShellDurableAgent(DurableAgent):
                         )
                 except Exception as exc:
                     logger.warning("[hooks] Stop error: %s", exc)
+            # Stop-hook goal drive (non-advisory): at this real turn-end, trigger
+            # the BFF goal evaluator synchronously so completion/continuation is
+            # decided reliably in-process — not dependent on the fire-and-forget
+            # status_idle ingest + the 180s cron backstop. Side-effect ONLY (the
+            # BFF enacts complete/continue via external events the workflow already
+            # handles, so we never branch control flow here — replay-safe). No-op
+            # for non-goal sessions. session_workflow tags this turn's idle reason
+            # != end_turn so the inline BFF idle hook won't ALSO drive.
+            if GOAL_STOP_HOOK_ENABLED and not ctx.is_replaying:
+                try:
+                    drive_goal_stop_check(
+                        self._session_id_by_instance.get(instance_id)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[goal-stop-hook] drive failed: %s", exc)
             # run_complete is suppressed — session_workflow emits
             # session.status_idle when the agent finishes cleanly.
             if custom_hooks_enabled and not ctx.is_replaying:
@@ -5069,6 +5092,15 @@ class OpenShellDurableAgent(DurableAgent):
 
         turn_counter = int(continuation_state["turnCounter"])
         continuation_count = int(continuation_state["continuationCount"])
+        # When the Stop-hook goal driver is active for this goal-mode session, tag
+        # the turn-end idle reason != "end_turn" so the inline BFF idle hook
+        # (goal-loop.ts) does NOT also drive — the Stop hook is the single driver
+        # (the cron, which gates on idle TYPE not reason, stays a backstop).
+        idle_stop_reason_type = (
+            "goal_stop"
+            if (GOAL_STOP_HOOK_ENABLED and not auto_terminate)
+            else "end_turn"
+        )
         while True:
             if not pending:
                 if not ctx.is_replaying:
@@ -5076,7 +5108,7 @@ class OpenShellDurableAgent(DurableAgent):
                         session_id,
                         "session.status_idle",
                         {
-                            "stop_reason": {"type": "end_turn"},
+                            "stop_reason": {"type": idle_stop_reason_type},
                             **session_native_event_fields(workflow_instance_id),
                         },
                     )
