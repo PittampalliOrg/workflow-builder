@@ -132,35 +132,33 @@
 			{#each visible as journey (journey.id)}
 				{@const selected = selectedJourneyId === journey.id}
 				<article
-					role="button"
-					tabindex="0"
-					class="w-[292px] shrink-0 cursor-pointer rounded-md border bg-background p-2 shadow-sm transition hover:border-primary/40 hover:shadow-md {selected ? 'border-primary/70 ring-2 ring-primary/30' : 'border-border/80'}"
-					onclick={() => selectJourney(journey)}
-					onkeydown={(event) => {
-						if (event.key === "Enter" || event.key === " ") {
-							event.preventDefault();
-							selectJourney(journey);
-						}
-					}}
+					class="w-[292px] shrink-0 rounded-md border bg-background p-2 shadow-sm transition hover:border-primary/40 hover:shadow-md {selected ? 'border-primary/70 ring-2 ring-primary/30' : 'border-border/80'}"
 				>
-					<div class="flex items-start justify-between gap-2">
-						<div class="min-w-0">
-							<div class="flex min-w-0 items-center gap-1.5">
-								<span
-									class="inline-flex size-2 shrink-0 rounded-full {journey.status === 'active'
-										? 'animate-pulse'
-										: ''} {dotClass(journey.status === 'neutral' ? 'skipped' : journey.status)}"
-								></span>
-								<h2 class="truncate text-xs font-semibold" title={journey.title}>{journey.title}</h2>
+					<button
+						type="button"
+						class="block w-full rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+						aria-pressed={selected}
+						onclick={() => selectJourney(journey)}
+					>
+						<div class="flex items-start justify-between gap-2">
+							<div class="min-w-0">
+								<div class="flex min-w-0 items-center gap-1.5">
+									<span
+										class="inline-flex size-2 shrink-0 rounded-full {journey.status === 'active'
+											? 'animate-pulse'
+											: ''} {dotClass(journey.status === 'neutral' ? 'skipped' : journey.status)}"
+									></span>
+									<h2 class="truncate text-xs font-semibold" title={journey.title}>{journey.title}</h2>
+								</div>
+								<div class="mt-0.5 truncate text-[0.62rem] text-muted-foreground" title={journey.subtitle ?? undefined}>
+									{journey.subtitle ?? serviceLabel(journey)}
+								</div>
 							</div>
-							<div class="mt-0.5 truncate text-[0.62rem] text-muted-foreground" title={journey.subtitle ?? undefined}>
-								{journey.subtitle ?? serviceLabel(journey)}
-							</div>
+							<Badge variant="outline" class="h-5 shrink-0 px-1.5 text-[0.56rem] {statusClass(journey.status)}">
+								{journey.status}
+							</Badge>
 						</div>
-						<Badge variant="outline" class="h-5 shrink-0 px-1.5 text-[0.56rem] {statusClass(journey.status)}">
-							{journey.status}
-						</Badge>
-					</div>
+					</button>
 
 					<div class="mt-2 flex flex-wrap items-center gap-1">
 						<span class="inline-flex max-w-36 items-center gap-1 rounded border border-border/70 bg-muted/40 px-1.5 py-px text-[0.58rem] text-muted-foreground">
@@ -213,10 +211,7 @@
 										type="button"
 										class="min-w-0 flex-1 truncate text-left text-muted-foreground hover:text-foreground"
 										title={step.detail ?? step.label}
-										onclick={(event) => {
-											event.stopPropagation();
-											selectJourney(journey, step.selection ?? journey.primarySelection);
-										}}
+										onclick={() => selectJourney(journey, step.selection ?? journey.primarySelection)}
 									>
 										{step.label}{step.detail ? ` · ${step.kind === "deploy" ? shortTag(step.detail) : step.detail}` : ""}
 									</button>
@@ -226,7 +221,6 @@
 											target="_blank"
 											rel="noreferrer"
 											class="inline-flex shrink-0 items-center gap-0.5 text-[0.56rem] text-primary hover:underline"
-											onclick={(event) => event.stopPropagation()}
 										>
 											{step.hrefLabel}<ExternalLink class="size-2.5" />
 										</a>
