@@ -156,6 +156,50 @@ def log_node_start(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "logId": log_id, "error": str(e)}
 
 
+def update_execution_node(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Push the currently-executing node onto workflow_executions so the DB
+    read-model is fresh at every task start — independent of whether anything
+    polls the orchestrator status.
+
+    `set_custom_status` already advances the Dapr runtime custom status each
+    task, but the DB `current_node_id`/`current_node_name` columns are otherwise
+    only synced lazily by the BFF read-model reconcile (on status/run-detail
+    fetch). For API-triggered or unattended runs nothing triggers that reconcile,
+    so the columns go stale (observed: frozen at an earlier node through the
+    approval gate, breaking run-detail UI + automation that keys on the node).
+    This best-effort per-task UPDATE keeps them authoritative.
+
+    Args:
+        input_data: { executionId, nodeId, nodeName }
+    """
+    execution_id = input_data.get("executionId", "")
+    node_id = input_data.get("nodeId", "")
+    node_name = input_data.get("nodeName", "")
+    if not execution_id:
+        return {"success": False}
+    try:
+        db_url = _get_database_url()
+        conn = psycopg2.connect(db_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE workflow_executions
+                    SET current_node_id = %s, current_node_name = %s
+                    WHERE id = %s
+                    """,
+                    (node_id, node_name, execution_id),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"success": True}
+    except Exception as e:  # noqa: BLE001 — logging must never break the workflow
+        logger.warning("[Update Execution Node] failed: %s", e)
+        return {"success": False, "error": str(e)}
+
+
 def log_node_complete(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """
     Update the execution log row with completion status, output, and duration.
