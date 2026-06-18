@@ -1,13 +1,15 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { queryClickHouse, CLICKHOUSE_DB } from '$lib/server/otel/clickhouse';
+import { assertTraceInScope } from '$lib/server/observability/trace-scope';
 
 /**
  * GET /api/observability/traces/[traceId]
  * Returns all spans for a trace from ClickHouse.
  */
-export const GET: RequestHandler = async ({ params }) => {
+export const GET: RequestHandler = async ({ params, locals }) => {
 	const { traceId } = params;
+	await assertTraceInScope(traceId, locals.session);
 
 	try {
 		const rows = await queryClickHouse(`

@@ -1,7 +1,10 @@
 import { json } from '@sveltejs/kit';
+import type { RequestHandler } from './$types';
 import { buildTraceInvestigation } from '$lib/server/observability/investigation';
+import { assertTraceInScope } from '$lib/server/observability/trace-scope';
 
-export const GET = async ({ params }: { params: { traceId: string } }) => {
+export const GET: RequestHandler = async ({ params, locals }) => {
+	await assertTraceInScope(params.traceId, locals.session);
 	try {
 		const payload = await buildTraceInvestigation(params.traceId);
 		return json(payload);

@@ -2096,14 +2096,22 @@
 								</code>
 							</div>
 						</div>
-						<div class="flex flex-wrap gap-2">
+						<div class="flex flex-wrap items-center gap-2">
+							<a
+								href={`/workspaces/${slug}/traces?sessionId=${encodeURIComponent(session.id)}`}
+								class="inline-flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1 font-medium text-primary-foreground hover:bg-primary/90"
+								title="Open the local trace viewer for this session"
+							>
+								<Activity class="size-3.5" /> View trace
+							</a>
+							<span class="text-[10px] text-muted-foreground">MLflow:</span>
 							{#if session.mlflowExperimentId || session.mlflowRunId || mlflowGroup?.sessionUrl}
 								<a
 									href={mlflowGroup?.sessionUrl ??
 										`/api/observability/mlflow/sessions/${encodeURIComponent(session.id)}`}
 									target="_blank"
 									rel="noreferrer"
-									class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-primary hover:bg-accent"
+									class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
 									title="Open MLflow chat session"
 								>
 									Session <ExternalLink class="size-3" />
@@ -2115,19 +2123,12 @@
 										`/api/observability/mlflow/sessions/${encodeURIComponent(session.id)}?target=run`}
 									target="_blank"
 									rel="noreferrer"
-									class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-primary hover:bg-accent"
+									class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
 									title="Open MLflow run"
 								>
 									Run <ExternalLink class="size-3" />
 								</a>
 							{/if}
-							<a
-								href={`/observability?sessionId=${encodeURIComponent(session.id)}`}
-								class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-								title="Open local trace console"
-							>
-								Local traces
-							</a>
 						</div>
 					</CardContent>
 				</Card>

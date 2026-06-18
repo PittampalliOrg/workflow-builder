@@ -6,7 +6,6 @@
 		FlaskConical,
 		LineChart,
 		PackageOpen,
-		Search,
 	} from "@lucide/svelte";
 
 	import EmbeddedAppShell, {
@@ -31,13 +30,6 @@
 			icon: FlaskConical,
 			path: "/#/experiments",
 			match: (path) => path.includes("/experiments"),
-		},
-		{
-			id: "traces",
-			label: "Traces",
-			icon: Search,
-			path: "/#/traces",
-			match: (path) => path.includes("/traces"),
 		},
 		{
 			id: "models",
