@@ -4352,18 +4352,22 @@ async function ensureShowcaseAgent(
 		.digest("hex");
 	const versionId = generateId();
 
+	// NOTE: agents.model is jsonb ({provider,name}) and is vestigial/display-only —
+	// the runtime reads modelSpec from agent_versions.config (below). Writing a bare
+	// string here ("deepseek-v4-pro") fails jsonb parse ("Token deepseek is invalid")
+	// and aborts the whole seed. Mirror ensureCliShowcaseAgentFor: omit model.
 	if (!existing.length) {
 		await sqlClient`
-			insert into agents (id, name, description, agent_type, model, max_turns, timeout_minutes, project_id, user_id, registry_status, slug, runtime)
+			insert into agents (id, name, description, agent_type, max_turns, timeout_minutes, project_id, user_id, registry_status, slug, runtime)
 			values (${agentId}, ${"Evaluator/Critic Agent"},
 				${"Shared dapr-agent-py agent for the generator/critic showcase loops; per-session dispatch (no pool pin)."},
-				${"general"}, ${modelSpec}, ${50}, ${30}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${"dapr-agent-py"})`;
+				${"general"}, ${50}, ${30}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${"dapr-agent-py"})`;
 	} else {
-		await sqlClient`update agents set registry_status = ${"registered"}, runtime = ${"dapr-agent-py"}, model = ${modelSpec} where id = ${agentId}`;
+		await sqlClient`update agents set registry_status = ${"registered"}, runtime = ${"dapr-agent-py"} where id = ${agentId}`;
 	}
 	await sqlClient`
 		insert into agent_versions (id, agent_id, version, config, config_hash)
-		values (${versionId}, ${agentId}, ${1}, ${sqlClient.json(config)}, ${configHash})`;
+		values (${versionId}, ${agentId}, ${1}, ${JSON.stringify(config)}::jsonb, ${configHash})`;
 	await sqlClient`update agents set current_version_id = ${versionId} where id = ${agentId}`;
 	console.log(`[seed-workflows] Ensured showcase agent "${slug}"`);
 	return slug;
@@ -4411,7 +4415,7 @@ async function ensureCliShowcaseAgentFor(
 	}
 	await sqlClient`
 		insert into agent_versions (id, agent_id, version, config, config_hash)
-		values (${versionId}, ${agentId}, ${1}, ${sqlClient.json(config)}, ${configHash})`;
+		values (${versionId}, ${agentId}, ${1}, ${JSON.stringify(config)}::jsonb, ${configHash})`;
 	await sqlClient`update agents set current_version_id = ${versionId} where id = ${agentId}`;
 	console.log(`[seed-workflows] Ensured CLI showcase agent "${slug}" (runtime=${runtime})`);
 	return slug;
@@ -4465,6 +4469,9 @@ async function seedGeneratorCriticShowcases(params: {
 		"retroforge-cli-showcase.json",
 		"retroforge-codex-cli-showcase.json",
 		"retroforge-agy-cli-showcase.json",
+		// Parameterized per-phase mix-and-match: planAgent/generatorAgent/criticAgent
+		// each selectable independently (Phase 1, interchangeable-agents workstream).
+		"generator-critic-showcase.json",
 	]) {
 		const full = path.join(dir, file);
 		if (!fs.existsSync(full)) {
