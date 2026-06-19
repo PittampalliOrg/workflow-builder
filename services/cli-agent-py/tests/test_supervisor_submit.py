@@ -136,3 +136,35 @@ def test_hook_ack_already_present_no_repress(_fast_ack):
     s.note_prompt_submit_ack()
     assert asyncio.run(s._await_hook_submit_ack("pane-1", 0)) is True
     assert client.enter_presses == 0
+
+
+class _OnboardClient:
+    def __init__(self, pane_text: str):
+        self._text = pane_text
+        self.enter_presses = 0
+
+    async def pane_read(self, pane, *, source="visible"):
+        return {"read": {"text": self._text}}
+
+    async def pane_submit_enter(self, pane):
+        self.enter_presses += 1
+        return {}
+
+
+def test_onboarding_trust_prompt_auto_accepted():
+    client = _OnboardClient(
+        "You are in /sandbox\nDo you trust the contents of this directory?\n"
+        "1. Yes, continue\n2. No, quit"
+    )
+    s = SessionSupervisor(client=client, disabled=False)
+    s.onboarding_accept_markers = ("do you trust the contents of this directory",)
+    assert asyncio.run(s._maybe_accept_onboarding("pane-1")) is True
+    assert client.enter_presses == 1  # Enter = highlighted "Yes, continue"
+
+
+def test_onboarding_no_dialog_no_press():
+    client = _OnboardClient("gpt-5.5 default · /sandbox")  # ordinary idle composer
+    s = SessionSupervisor(client=client, disabled=False)
+    s.onboarding_accept_markers = ("do you trust the contents of this directory",)
+    assert asyncio.run(s._maybe_accept_onboarding("pane-1")) is False
+    assert client.enter_presses == 0

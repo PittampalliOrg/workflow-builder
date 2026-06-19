@@ -200,6 +200,9 @@ class SessionSupervisor:
         # screen/status heuristics. hooks_api bumps `_prompt_submit_seen` per hook.
         self.emits_prompt_submit_hook = False
         self._prompt_submit_seen = 0
+        # Screen substrings for benign startup onboarding dialogs to auto-accept
+        # (Enter) so they don't block the composer (codex's directory-trust prompt).
+        self.onboarding_accept_markers: tuple[str, ...] = ()
         self._cli_session_id: str | None = None
 
         # Semantic-state tracking.
@@ -674,6 +677,15 @@ class SessionSupervisor:
                     # while a turn is in flight → also correct for mid-session).
                     if await self._prompt_rendered(pane):
                         return True
+                    # A known benign startup onboarding dialog (e.g. codex 0.139's
+                    # "Do you trust the contents of this directory?") blocks the
+                    # composer and is NOT suppressible via config/flags. Auto-accept
+                    # it so the composer renders — the per-session pod is the
+                    # isolation boundary, and accepting is exactly what lets our
+                    # seeded project config/hooks load.
+                    if await self._maybe_accept_onboarding(pane):
+                        await asyncio.sleep(CLI_READY_POLL_SECONDS)
+                        continue
                     if not self.trust_idle_ready_fallback:
                         # Screen-detected TUI (agy): herdr `idle` is unreliable
                         # during boot; wait for the rendered marker (or the outer
@@ -739,6 +751,31 @@ class SessionSupervisor:
             for marker in self.prompt_not_ready_markers
             if marker and marker.strip()
         )
+
+    async def _maybe_accept_onboarding(self, pane: str) -> bool:
+        """Auto-accept a known benign startup onboarding dialog (configured per
+        adapter, e.g. codex's directory-trust prompt) by pressing Enter — the
+        dialog's default is the affirmative ("Yes, continue"). Returns True if the
+        accept key was sent (so the readiness gate keeps polling for the composer).
+        Safe to call every poll: once the dialog clears it no longer matches."""
+        if not self.onboarding_accept_markers:
+            return False
+        text = await self._visible_pane_text(pane)
+        if not text:
+            return False
+        lowered = text.lower()
+        if not any(
+            m.strip().lower() in lowered
+            for m in self.onboarding_accept_markers
+            if m and m.strip()
+        ):
+            return False
+        logger.info("[supervisor] auto-accepting startup onboarding dialog (Enter)")
+        try:
+            await self._client.pane_submit_enter(pane)
+        except Exception:  # noqa: BLE001
+            pass
+        return True
 
     async def _composer_has_draft(self, pane: str) -> bool:
         """True when an un-submitted prompt DRAFT is still in the composer (a

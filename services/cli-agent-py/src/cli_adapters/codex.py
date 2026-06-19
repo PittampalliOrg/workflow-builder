@@ -571,6 +571,12 @@ class CodexAdapter(CliAdapter):
     # kickoff via that deterministic ack (re-pressing Enter until it fires) rather
     # than guessing composer-readiness from a fixed boot delay.
     emits_prompt_submit_hook = True
+    # codex 0.139 shows a blocking startup "Do you trust the contents of this
+    # directory?" prompt that NO config ([projects].trust_level) or flag
+    # (--yolo / --dangerously-bypass-approvals-and-sandbox / --dangerously-bypass-
+    # hook-trust) suppresses. The readiness gate auto-accepts it (Enter = the
+    # highlighted "Yes, continue") so the composer renders.
+    onboarding_accept_markers = ("do you trust the contents of this directory",)
     # Content-gate the kickoff on the rendered composer: herdr's native codex
     # detector races and can report `idle` while codex is still on its
     # pre-composer welcome/banner screen, so an agent_status-gated seed strands
