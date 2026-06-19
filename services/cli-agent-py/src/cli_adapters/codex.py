@@ -814,6 +814,8 @@ class CodexAdapter(CliAdapter):
             "PATH",
             "TERM",
             "RUST_LOG",
+            "GITHUB_TOKEN",  # git clone/push + PR for coding workflows (NOT the LLM key)
+            "PLAYWRIGHT_BROWSERS_PATH",  # /opt/pw-browsers — the critic's Playwright chromium
         )
         for key in passthrough:
             value = base_env.get(key)
