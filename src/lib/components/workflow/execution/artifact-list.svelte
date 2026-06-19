@@ -7,7 +7,7 @@
   the Overview tab.
 -->
 <script lang="ts">
-	import { ChevronDown, ChevronRight, FileText, Code2, Image, Link as LinkIcon, Layers, Rows3, Target } from "@lucide/svelte";
+	import { ChevronDown, ChevronRight, FileText, Code2, Image, Link as LinkIcon, Layers, Rows3, Target, AppWindow } from "@lucide/svelte";
 	import ArtifactRenderer from "./artifact-renderer.svelte";
 
 	type Artifact = {
@@ -46,6 +46,7 @@
 		if (kind === "markdown" || kind === "text") return FileText;
 		if (kind === "json" || kind === "table") return Code2;
 		if (kind === "image") return Image;
+		if (kind === "html") return AppWindow;
 		if (kind === "link") return LinkIcon;
 		if (kind === "card") return Layers;
 		if (kind === "goal_spec") return Target;

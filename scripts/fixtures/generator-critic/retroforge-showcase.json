@@ -259,6 +259,37 @@
    }
   },
   {
+   "capture": {
+    "call": "workspace/command",
+    "with": {
+     "workspaceRef": "${ .workspace_profile.workspaceRef }",
+     "command": "cd /sandbox && python3 - <<'PYEOF'\nimport os\nd='/sandbox'\ndef rd(p):\n    try:\n        return open(os.path.join(d,p)).read()\n    except Exception:\n        return ''\nhtml=rd('index.html'); css=rd('style.css'); js=rd('app.js')\nout=[]\nfor line in html.split(chr(10)):\n    low=line.lower()\n    if '<link' in low and '.css' in low:\n        continue\n    if '<script' in low and 'src=' in low and '.js' in low:\n        continue\n    out.append(line)\nhtml=chr(10).join(out)\nstyle='<style>'+chr(10)+css+chr(10)+'</style>'\nscript='<scr'+'ipt>'+chr(10)+js+chr(10)+'</scr'+'ipt>'\nif '</head>' in html:\n    html=html.replace('</head>', style+chr(10)+'</head>', 1)\nelse:\n    html=style+html\nif '</body>' in html:\n    html=html.replace('</body>', script+chr(10)+'</body>', 1)\nelse:\n    html=html+script\nopen(os.path.join(d,'standalone.html'),'w').write(html)\nPYEOF\ncat /sandbox/standalone.html",
+     "timeoutMs": 60000,
+     "allowFailure": true
+    },
+    "artifacts": [
+     {
+      "from": "${ {html: (.data.result.stdout // .data.stdout // .data.result.output // .data.output // \"\")} }",
+      "if": "${ ((.data.result.stdout // .data.stdout // .data.result.output // .data.output // \"\") | length) > 200 }",
+      "kind": "html",
+      "slot": "primary",
+      "contentType": "text/html",
+      "title": "RetroForge Sprite Editor (rendered)",
+      "description": "The built single-file editor (style.css + app.js inlined into standalone.html), rendered in a sandboxed iframe. Persisted from the run workspace so it survives sandbox teardown."
+     },
+     {
+      "from": "${ {text: (.data.result.stdout // .data.stdout // .data.result.output // .data.output // \"\")} }",
+      "if": "${ ((.data.result.stdout // .data.stdout // .data.result.output // .data.output // \"\") | length) > 200 }",
+      "kind": "text",
+      "slot": "secondary",
+      "contentType": "text/html",
+      "title": "standalone.html (source)",
+      "description": "Self-contained HTML source \u2014 copy or save as .html to run the editor offline."
+     }
+    ]
+   }
+  },
+  {
    "summary": {
     "set": {
      "objectivePass": "${ ( (.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") | test(\"OBJECTIVE PASS\") ) }",
