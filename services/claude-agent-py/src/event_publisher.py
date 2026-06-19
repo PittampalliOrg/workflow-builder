@@ -357,6 +357,44 @@ def _post_ingest(session_id: str, envelope: dict[str, Any]) -> None:
         )
 
 
+def drive_goal_stop_check(session_id: str | None) -> None:
+    """Synchronously trigger the BFF goal drive at a real turn-end (the Stop-hook
+    equivalent of Claude Code's Stop hook). The BFF runs the ground-truth
+    evaluator and enacts completion (raises session.terminate) or continuation
+    (injects the failing-checks user.message) — both as external events the
+    session workflow already handles, so this is a side-effect only (the agent
+    must NOT branch its control flow on the result; keeps Dapr replay
+    deterministic). No active evaluator-mode goal → the endpoint no-ops.
+
+    Best-effort: a failure just means the idle-event loop + cron backstop drive
+    it instead. Gated by the caller on DAPR_AGENT_PY_GOAL_STOP_HOOK + not replaying.
+    """
+    if not session_id or not _INTERNAL_API_TOKEN:
+        return
+    try:
+        import urllib.request
+
+        url = (
+            f"{_WORKFLOW_BUILDER_URL}/api/internal/goals/"
+            f"{session_id}/stop-check"
+        )
+        req = urllib.request.Request(
+            url,
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "X-Internal-Token": _INTERNAL_API_TOKEN,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            logger.info(
+                "[goal-stop-hook] %s stop-check -> HTTP %d", session_id, resp.status
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[goal-stop-hook] stop-check failed %s: %s", session_id, exc)
+
+
 def publish_session_event(
     session_id: str | None,
     event_type: str,
