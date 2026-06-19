@@ -47,7 +47,7 @@ if [ -n "${SKAFFOLD_OWNED_SERVICES:-}" ]; then
 elif declare -p SKAFFOLD_OWNED_DEFAULT >/dev/null 2>&1; then
   owned=("${SKAFFOLD_OWNED_DEFAULT[@]}")
 else
-  owned=(workflow-builder workflow-orchestrator function-router mcp-gateway swebench-coordinator)
+  owned=(workflow-builder workflow-orchestrator function-router mcp-gateway swebench-coordinator sandbox-execution-api)
 fi
 _is_owned=0
 for _o in "${owned[@]}"; do
@@ -130,7 +130,7 @@ git -C "${stacks_dir}" reset --hard "origin/${branch}"
 #     (no-ops when our local render already matches). Other Skaffold-owned services
 #     still pin via their per-app manifests block (the nested-parser path below).
 case "${service}" in
-  workflow-builder | workflow-mcp-server)
+  workflow-builder | workflow-mcp-server | sandbox-execution-api)
     ryzen_pins="${stacks_dir}/packages/components/hub-spoke-appsets/release-pins/workflow-builder-images-ryzen.yaml"
     if [ ! -f "${ryzen_pins}" ]; then
       echo "commit-pin: ryzen pins file missing: ${ryzen_pins}" >&2
