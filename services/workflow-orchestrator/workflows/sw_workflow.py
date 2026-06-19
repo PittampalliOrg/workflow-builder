@@ -2623,11 +2623,39 @@ def _handle_call_task(
             activity_input["skipIdempotencyGate"] = True
         call_kwargs["retry_policy"] = _AP_RETRY_POLICY
 
-    result = yield ctx.call_activity(
-        execute_action,
-        input=_freeze({**activity_input, "executionType": "BEGIN"}),
-        **call_kwargs,
+    # interactive-cli shared-workspace gate: a `workspace/command` with
+    # `cliWorkspace: true` can't reach the CLI agents' files via openshell
+    # (they write to the per-execution JuiceFS mount at /sandbox/work that only
+    # CLI pods see). Route the FIXED command to the execution's live CLI pod via
+    # the BFF (cli-direct /internal/workspace/command). Deterministic (command is
+    # spec-fixed, not LLM-decided) and independent of the generator agent.
+    cli_workspace_gate = (
+        action_type == "workspace/command"
+        and isinstance(final_config, dict)
+        and _as_bool(final_config.get("cliWorkspace"), False)
     )
+    if cli_workspace_gate:
+        from activities.cli_workspace_command import cli_workspace_command
+
+        gate_command = final_config.get("command")
+        if not isinstance(gate_command, str) and isinstance(final_config.get("body"), dict):
+            gate_command = final_config["body"].get("command")
+        gate_cwd = final_config.get("cwd") or "/sandbox/work"
+        result = yield ctx.call_activity(
+            cli_workspace_command,
+            input=_freeze({
+                "executionId": tc.db_execution_id or tc.execution_id,
+                "command": gate_command,
+                "cwd": gate_cwd,
+                "_otel": tc.otel_ctx,
+            }),
+        )
+    else:
+        result = yield ctx.call_activity(
+            execute_action,
+            input=_freeze({**activity_input, "executionType": "BEGIN"}),
+            **call_kwargs,
+        )
 
     # AP pause contract: DELAY → durable timer then RESUME re-invoke;
     # WEBHOOK → wait for the BFF-raised external event (ap.resume.<requestId>)

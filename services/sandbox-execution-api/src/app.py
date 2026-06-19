@@ -211,6 +211,25 @@ class ExecutionClassConfig(BaseModel):
         default_factory=lambda: ["allow_other"]
     )
 
+    # Per-EXECUTION shared workspace store (interactive-cli runtime family).
+    # Mirrors the transcript store but keyed on the workflow execution
+    # (request.sharedWorkspaceKey) so every CLI pod of one workflow run mounts
+    # the SAME Postgres-backed JuiceFS subtree and reads/writes the SAME files
+    # (e.g. a planner→generator→critic loop sharing SPEC.md + the build). Mounted
+    # at sharedWorkspaceStoreMountPath, which is a SUBDIR of /sandbox (NOT
+    # /sandbox itself): the CLI keeps its credential/config dirs under /sandbox
+    # (CLAUDE_CONFIG_DIR=/sandbox/.claude, CODEX_HOME=/sandbox/.codex) on the
+    # per-pod emptyDir, so only the build dir is shared. RWX + Retain like the
+    # transcript store; PV/PVC named per-session, CSI subPath = the shared key.
+    sharedWorkspaceStoreCsiDriver: str | None = None
+    sharedWorkspaceStoreSecretName: str | None = None
+    sharedWorkspaceStoreSecretNamespace: str | None = None
+    sharedWorkspaceStoreMountPath: str = "/sandbox/work"
+    sharedWorkspaceStoreCapacity: str = "10Gi"
+    sharedWorkspaceStoreMountOptions: list[str] = Field(
+        default_factory=lambda: ["allow_other"]
+    )
+
 
 class AgentWorkflowHostRequest(BaseModel):
     sessionId: str
@@ -233,6 +252,11 @@ class AgentWorkflowHostRequest(BaseModel):
     # passes the ORIGINAL session id so the new pod mounts the same Postgres
     # subtree (`--resume`); fresh sessions leave it unset (key = sessionId).
     resumeFromSessionId: str | None = None
+    # Shared-workspace key for the per-EXECUTION shared workspace store. The BFF
+    # passes the workflow's workspaceRef (or execution id) so every CLI pod of
+    # one workflow run mounts the SAME shared subtree at
+    # sharedWorkspaceStoreMountPath. Unset → no shared workspace (pod-local only).
+    sharedWorkspaceKey: str | None = None
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:
@@ -994,6 +1018,113 @@ def _bind_cli_transcript_pvc_owner(
         )
 
 
+def _cli_shared_workspace_enabled(class_config: ExecutionClassConfig) -> bool:
+    return bool(class_config.sharedWorkspaceStoreCsiDriver)
+
+
+def _cli_shared_workspace_resource_name(session_id: str) -> str:
+    # `cli-ws-` prefix keeps the name off the driver's `pvc-<uuid>` dynamic-PV
+    # regex, so DeleteVolume stays a data-safe no-op (same as cli-tx-).
+    return _safe_resource_name(f"cli-ws-{session_id}", max_length=63)
+
+
+def _ensure_cli_shared_workspace_volume(
+    core: Any,
+    request: AgentWorkflowHostRequest,
+    class_config: ExecutionClassConfig,
+    *,
+    namespace: str,
+) -> str | None:
+    """Provision the per-EXECUTION static PV + PVC for the shared workspace.
+
+    Identical lifecycle to the transcript store (static PV, custom volumeHandle,
+    reclaim **Retain**, RWX), but the CSI `subPath` is the SHARED key
+    (`request.sharedWorkspaceKey`, e.g. the workflow execution / workspaceRef) so
+    every CLI pod of one workflow run binds the SAME Postgres-backed subtree and
+    sees the SAME files. PV/PVC are named per-session (unique per pod) and
+    ownerRef'd to the pod's Sandbox; the data persists across pod GC via
+    Retain + the shared subPath in Postgres. Idempotent (409 = already there).
+    """
+    if not _cli_shared_workspace_enabled(class_config):
+        return None
+    shared_key = (request.sharedWorkspaceKey or "").strip()
+    if not shared_key:
+        return None
+    name = _cli_shared_workspace_resource_name(request.sessionId)
+    secret_namespace = class_config.sharedWorkspaceStoreSecretNamespace or namespace
+    labels = {
+        "app": "cli-shared-workspace",
+        "agent-app-id": _safe_name(request.agentAppId, max_length=63),
+        "workflow-builder.cnoe.io/session-id": _safe_name(
+            request.sessionId, max_length=63
+        ),
+        "workflow-builder.cnoe.io/shared-workspace-key": _safe_name(
+            shared_key, max_length=63
+        ),
+    }
+    pv_body = {
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {"name": name, "labels": labels},
+        "spec": {
+            "capacity": {"storage": class_config.sharedWorkspaceStoreCapacity},
+            "accessModes": ["ReadWriteMany"],
+            # Retain: the shared build must survive each pod's GC during the loop
+            # (the next role's pod re-binds the same subPath). Released PVs are
+            # swept separately; the subtree persists in Postgres.
+            "persistentVolumeReclaimPolicy": "Retain",
+            "storageClassName": "",
+            "mountOptions": list(class_config.sharedWorkspaceStoreMountOptions or []),
+            "volumeMode": "Filesystem",
+            "csi": {
+                "driver": class_config.sharedWorkspaceStoreCsiDriver,
+                "fsType": "juicefs",
+                "volumeHandle": name,
+                "nodePublishSecretRef": {
+                    "name": class_config.sharedWorkspaceStoreSecretName,
+                    "namespace": secret_namespace,
+                },
+                "volumeAttributes": {"subPath": shared_key},
+            },
+        },
+    }
+    pvc_body = {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": name, "namespace": namespace, "labels": labels},
+        "spec": {
+            "accessModes": ["ReadWriteMany"],
+            "storageClassName": "",
+            "volumeName": name,
+            "resources": {
+                "requests": {"storage": class_config.sharedWorkspaceStoreCapacity}
+            },
+        },
+    }
+    try:
+        core.create_persistent_volume(body=pv_body)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+        try:
+            existing = core.read_persistent_volume(name=name)
+            phase = getattr(getattr(existing, "status", None), "phase", None)
+            if phase in ("Released", "Available"):
+                core.patch_persistent_volume(name=name, body={"spec": {"claimRef": None}})
+        except Exception as patch_exc:
+            logger.warning(
+                "cli-shared-workspace pv %s: claimRef clear failed: %s", name, patch_exc
+            )
+    try:
+        core.create_namespaced_persistent_volume_claim(
+            namespace=namespace, body=pvc_body
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+    return name
+
+
 TRACEPARENT_ANNOTATION = "workflow-builder.cnoe.io/traceparent"
 TRACESTATE_ANNOTATION = "workflow-builder.cnoe.io/tracestate"
 BAGGAGE_ANNOTATION = "workflow-builder.cnoe.io/baggage"
@@ -1390,6 +1521,25 @@ def build_agent_workflow_host_sandbox_manifest(
         )
         pod_spec["containers"][0]["env"].append(
             {"name": "CLI_TRANSCRIPT_MOUNT", "value": mount_path}
+        )
+    if _cli_shared_workspace_enabled(class_config) and (request.sharedWorkspaceKey or "").strip():
+        # Per-EXECUTION shared workspace, mounted at a SUBDIR of /sandbox (the
+        # emptyDir provides /sandbox + the CLI's config dirs; this PVC overlays
+        # only the build subdir, shared across the workflow's CLI pods). Nested
+        # mount: kubelet mounts the parent emptyDir before this child path.
+        shared_pvc = _cli_shared_workspace_resource_name(request.sessionId)
+        shared_mount_path = class_config.sharedWorkspaceStoreMountPath
+        pod_spec["volumes"].append(
+            {
+                "name": "cli-shared-workspace",
+                "persistentVolumeClaim": {"claimName": shared_pvc},
+            }
+        )
+        pod_spec["containers"][0]["volumeMounts"].append(
+            {"name": "cli-shared-workspace", "mountPath": shared_mount_path}
+        )
+        pod_spec["containers"][0]["env"].append(
+            {"name": "CLI_SHARED_WORKSPACE_MOUNT", "value": shared_mount_path}
         )
     if class_config.podSecurityContext is not None:
         pod_spec["securityContext"] = dict(class_config.podSecurityContext)
@@ -1930,6 +2080,10 @@ def submit_agent_workflow_host(
         transcript_pvc_name = _ensure_cli_transcript_volume(
             core, body, class_config, namespace=namespace
         )
+        # Per-EXECUTION shared workspace PV+PVC (also before the Sandbox CR).
+        shared_workspace_pvc_name = _ensure_cli_shared_workspace_volume(
+            core, body, class_config, namespace=namespace
+        )
         created_sandbox: dict[str, Any] | None = None
         try:
             created_sandbox = custom.create_namespaced_custom_object(
@@ -1972,6 +2126,10 @@ def submit_agent_workflow_host(
                     transcript_pvc_name = _ensure_cli_transcript_volume(
                         core, body, class_config, namespace=namespace
                     )
+                if shared_workspace_pvc_name:
+                    shared_workspace_pvc_name = _ensure_cli_shared_workspace_volume(
+                        core, body, class_config, namespace=namespace
+                    )
                 created_sandbox = custom.create_namespaced_custom_object(
                     group="agents.x-k8s.io",
                     version="v1alpha1",
@@ -1994,6 +2152,17 @@ def submit_agent_workflow_host(
                 custom,
                 namespace=namespace,
                 pvc_name=transcript_pvc_name,
+                sandbox_name=sandbox_name,
+                sandbox=created_sandbox,
+            )
+        if shared_workspace_pvc_name:
+            # Same generic PVC-ownerRef patch (GC the PVC with the pod; the PV is
+            # Retain so the shared subtree survives for the next role's pod).
+            _bind_cli_transcript_pvc_owner(
+                core,
+                custom,
+                namespace=namespace,
+                pvc_name=shared_workspace_pvc_name,
                 sandbox_name=sandbox_name,
                 sandbox=created_sandbox,
             )
