@@ -34,7 +34,11 @@ import {
 	agentRuntimeDedicatedAppId,
 	resolveAgentRuntimeRoute,
 } from "./runtime-routing";
-import { getRuntimeDescriptor } from "./runtime-registry";
+import {
+	getRuntimeDescriptor,
+	workspaceBackendForRuntime,
+	type WorkspaceBackend,
+} from "./runtime-registry";
 
 export class AgentRefResolutionError extends Error {
 	constructor(
@@ -43,6 +47,52 @@ export class AgentRefResolutionError extends Error {
 	) {
 		super(message);
 		this.name = "AgentRefResolutionError";
+	}
+}
+
+/**
+ * Raised when two `durable/run` nodes that share a `workspaceRef` (i.e. intend to
+ * share files) resolve to agents with DIFFERENT {@link WorkspaceBackend}s. Their
+ * filesystems are physically distinct storage, so the shared-file handoff would
+ * silently lose data — we fail fast at dispatch instead. Mix per-phase agents only
+ * within one backend family (all interactive-cli, or all openshell).
+ */
+export class WorkspaceBackendMismatchError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "WorkspaceBackendMismatchError";
+	}
+}
+
+/**
+ * Enforce that every group of `durable/run` nodes sharing a `workspaceRef` uses a
+ * single workspace backend. Nodes without a workspaceRef (no shared FS) are exempt.
+ */
+export function assertConsistentWorkspaceBackends(
+	nodes: { taskName: string; runtime: string; workspaceRef: string }[],
+): void {
+	const byRef = new Map<
+		string,
+		{ taskName: string; runtime: string; backend: WorkspaceBackend }[]
+	>();
+	for (const n of nodes) {
+		const backend = workspaceBackendForRuntime(n.runtime);
+		const group = byRef.get(n.workspaceRef) ?? [];
+		group.push({ taskName: n.taskName, runtime: n.runtime, backend });
+		byRef.set(n.workspaceRef, group);
+	}
+	for (const [, group] of byRef) {
+		const backends = new Set(group.map((g) => g.backend));
+		if (backends.size > 1) {
+			const detail = group
+				.map((g) => `${g.taskName} (${g.runtime} → ${g.backend})`)
+				.join(", ");
+			throw new WorkspaceBackendMismatchError(
+				`Workflow mixes agent runtimes with incompatible workspace backends on a shared workspace: ${detail}. ` +
+					`Nodes that share files (same workspaceRef) must use one backend family — all interactive-cli (juicefs-shared) OR all openshell-shared. ` +
+					`Select per-phase agents within a single backend family.`,
+			);
+		}
 	}
 }
 
@@ -259,6 +309,8 @@ export async function resolveSpecAgentRefs(
 
 	const agentCache = new Map<string, ResolvedAgent | null>();
 	const envCache = new Map<string, ResolvedEnvironment | null>();
+	// Collected per node for the cross-backend file-sharing guard (below).
+	const workspaceGuard: { taskName: string; runtime: string; workspaceRef: string }[] = [];
 	for (const { task, taskName } of tasks) {
 		const withBlock = (task.with ??= {} as Record<string, unknown>);
 		const body = (withBlock as Record<string, unknown>).body;
@@ -363,6 +415,20 @@ export async function resolveSpecAgentRefs(
 		// instructions/tools/MCP in childInput while dispatching multiple
 		// agents to the same Dapr app id.
 		const agentAppId = runtimeRoute.appId;
+		// Record (runtime, workspaceRef) for the cross-backend file-sharing guard.
+		const nodeWorkspaceRef =
+			typeof (withBlock as Record<string, unknown>).workspaceRef === "string"
+				? ((withBlock as Record<string, unknown>).workspaceRef as string).trim()
+				: typeof bodyRecord?.workspaceRef === "string"
+					? (bodyRecord.workspaceRef as string).trim()
+					: "";
+		if (nodeWorkspaceRef) {
+			workspaceGuard.push({
+				taskName,
+				runtime: (config.runtime as string) ?? "dapr-agent-py",
+				workspaceRef: nodeWorkspaceRef,
+			});
+		}
 		const profileConfigHash = resolved.configHash ?? hashAgentConfig(resolved.config);
 		const sandboxName =
 			typeof bodyRecord?.sandboxName === "string"
@@ -448,6 +514,11 @@ export async function resolveSpecAgentRefs(
 		delete withRecord.agentRef;
 		delete withRecord.environmentRef;
 	}
+
+	// Reject cross-backend file-sharing: per-phase agent mix-and-match is only
+	// valid within one workspace-backend family (all interactive-cli, or all
+	// openshell). Different backends on a shared workspaceRef silently lose files.
+	assertConsistentWorkspaceBackends(workspaceGuard);
 
 	return cloned;
 }

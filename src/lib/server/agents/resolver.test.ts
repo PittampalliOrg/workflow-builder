@@ -13,8 +13,10 @@ vi.mock("$lib/server/environments/registry", () => ({
 
 import {
 	AgentRefResolutionError,
+	assertConsistentWorkspaceBackends,
 	collectDurableRunTasks,
 	resolveSpecAgentRefs,
+	WorkspaceBackendMismatchError,
 } from "./resolver";
 import type { AgentConfig } from "$lib/types/agents";
 import type { EnvironmentConfig } from "$lib/types/environments";
@@ -595,5 +597,44 @@ describe("resolveSpecAgentRefs", () => {
 		await expect(resolveSpecAgentRefs(spec)).rejects.toBeInstanceOf(
 			AgentRefResolutionError,
 		);
+	});
+});
+
+describe("assertConsistentWorkspaceBackends (cross-backend file-sharing guard)", () => {
+	it("rejects mixing interactive-cli + openshell on a shared workspaceRef", () => {
+		expect(() =>
+			assertConsistentWorkspaceBackends([
+				{ taskName: "plan", runtime: "dapr-agent-py", workspaceRef: "${ .runtime.executionId }" },
+				{ taskName: "generate", runtime: "codex-cli", workspaceRef: "${ .runtime.executionId }" },
+			]),
+		).toThrow(WorkspaceBackendMismatchError);
+	});
+
+	it("allows mixing different agents within the SAME backend (all interactive-cli)", () => {
+		expect(() =>
+			assertConsistentWorkspaceBackends([
+				{ taskName: "plan", runtime: "claude-code-cli", workspaceRef: "${ .runtime.executionId }" },
+				{ taskName: "generate", runtime: "codex-cli", workspaceRef: "${ .runtime.executionId }" },
+				{ taskName: "critic", runtime: "agy-cli", workspaceRef: "${ .runtime.executionId }" },
+			]),
+		).not.toThrow();
+	});
+
+	it("allows different backends when they do NOT share a workspaceRef", () => {
+		expect(() =>
+			assertConsistentWorkspaceBackends([
+				{ taskName: "a", runtime: "dapr-agent-py", workspaceRef: "ws-a" },
+				{ taskName: "b", runtime: "codex-cli", workspaceRef: "ws-b" },
+			]),
+		).not.toThrow();
+	});
+
+	it("allows all-openshell (dapr + browser-use) on a shared workspaceRef", () => {
+		expect(() =>
+			assertConsistentWorkspaceBackends([
+				{ taskName: "plan", runtime: "dapr-agent-py", workspaceRef: "shared" },
+				{ taskName: "gen", runtime: "browser-use-agent", workspaceRef: "shared" },
+			]),
+		).not.toThrow();
 	});
 });

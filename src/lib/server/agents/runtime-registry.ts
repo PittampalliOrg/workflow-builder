@@ -16,8 +16,24 @@ import registryData from "./runtime-registry.data.json";
 
 export type DurabilityGranularity = "per-activity" | "per-turn" | "per-session";
 
+/**
+ * Where a runtime's agent does filesystem I/O — the SHARING domain for multi-node
+ * workflows. Two `durable/run` nodes can only share files (same `workspaceRef`) if
+ * they have the SAME `workspaceBackend`:
+ *  - `juicefs-shared`    — pod-local per-execution JuiceFS at /sandbox/work, keyed by
+ *                          sharedWorkspaceKey (executionId). Interactive-cli family.
+ *  - `openshell-shared`  — a remote OpenShell sandbox, keyed by sandboxName
+ *                          (executionId-derived). dapr-agent-py / browser-use.
+ *  - `pod-local`         — the agent's own pod filesystem; NOT shared across pods.
+ *                          claude-agent-py / adk-agent-py.
+ * These backends are physically distinct storage, so mixing them across phases of
+ * one file-sharing workflow silently loses files — the resolver rejects it.
+ */
+export type WorkspaceBackend = "juicefs-shared" | "openshell-shared" | "pod-local";
+
 export type RuntimeCapabilities = {
 	durabilityGranularity: DurabilityGranularity;
+	workspaceBackend: WorkspaceBackend;
 	workflowDispatch?: "auto-turn" | "none";
 	retryMaxAttempts: number;
 	durableTurnTimer: boolean;
@@ -120,6 +136,16 @@ export function getRuntimeDescriptor(
 	id: string | null | undefined
 ): RuntimeDescriptor | undefined {
 	return id ? BY_ID.get(id) : undefined;
+}
+
+/**
+ * The filesystem SHARING domain for a runtime (see {@link WorkspaceBackend}).
+ * Unknown runtimes default to `pod-local` (the safe non-sharing assumption).
+ */
+export function workspaceBackendForRuntime(
+	id: string | null | undefined,
+): WorkspaceBackend {
+	return getRuntimeDescriptor(id)?.capabilities.workspaceBackend ?? "pod-local";
 }
 
 export function listRuntimes(): readonly RuntimeDescriptor[] {

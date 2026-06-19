@@ -17,6 +17,7 @@
       "capabilitiesVerified": true,
       "capabilities": {
         "durabilityGranularity": "per-activity",
+        "workspaceBackend": "openshell-shared",
         "workflowDispatch": "auto-turn",
         "retryMaxAttempts": 8,
         "durableTurnTimer": false,
@@ -51,6 +52,7 @@
       "capabilitiesVerified": true,
       "capabilities": {
         "durabilityGranularity": "per-activity",
+        "workspaceBackend": "openshell-shared",
         "workflowDispatch": "auto-turn",
         "retryMaxAttempts": 8,
         "durableTurnTimer": false,
@@ -85,6 +87,7 @@
       "capabilitiesVerified": false,
       "capabilities": {
         "durabilityGranularity": "per-activity",
+        "workspaceBackend": "openshell-shared",
         "retryMaxAttempts": 8,
         "durableTurnTimer": false,
         "supportsMcp": true,
@@ -115,6 +118,7 @@
       "capabilitiesVerified": false,
       "capabilities": {
         "durabilityGranularity": "per-turn",
+        "workspaceBackend": "pod-local",
         "workflowDispatch": "auto-turn",
         "retryMaxAttempts": 3,
         "durableTurnTimer": false,
@@ -156,6 +160,7 @@
       },
       "capabilities": {
         "durabilityGranularity": "per-session",
+        "workspaceBackend": "juicefs-shared",
         "workflowDispatch": "auto-turn",
         "retryMaxAttempts": 2,
         "durableTurnTimer": false,
@@ -199,6 +204,7 @@
       },
       "capabilities": {
         "durabilityGranularity": "per-session",
+        "workspaceBackend": "juicefs-shared",
         "retryMaxAttempts": 2,
         "durableTurnTimer": false,
         "supportsMcp": true,
@@ -240,6 +246,7 @@
       },
       "capabilities": {
         "durabilityGranularity": "per-session",
+        "workspaceBackend": "juicefs-shared",
         "retryMaxAttempts": 2,
         "durableTurnTimer": false,
         "supportsMcp": true,
@@ -272,6 +279,7 @@
       "capabilitiesVerified": false,
       "capabilities": {
         "durabilityGranularity": "per-turn",
+        "workspaceBackend": "pod-local",
         "workflowDispatch": "auto-turn",
         "retryMaxAttempts": 3,
         "durableTurnTimer": true,
