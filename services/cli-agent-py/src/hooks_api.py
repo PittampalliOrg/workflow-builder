@@ -314,9 +314,9 @@ def map_hook_event(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
             {
                 "type": SESSION_NOTIFICATION,
                 "data": {
-                    "message": clean_string(payload.get("message")),
-                    "level": clean_string(payload.get("level")),
-                    "notificationType": clean_string(
+                    "message": _clean(payload.get("message")),
+                    "level": _clean(payload.get("level")),
+                    "notificationType": _clean(
                         payload.get("notificationType")
                         or payload.get("notification_type")
                     ),
@@ -332,8 +332,8 @@ def map_hook_event(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "type": SESSION_CONTEXT_COMPACTED,
                 "data": {
                     "phase": "pre" if name == "PreCompact" else "post",
-                    "trigger": clean_string(payload.get("trigger")),
-                    "reason": clean_string(payload.get("reason")),
+                    "trigger": _clean(payload.get("trigger")),
+                    "reason": _clean(payload.get("reason")),
                 },
             }
         ]

@@ -202,6 +202,27 @@ def status_detail_of(obj: Any) -> str | None:
     return None
 
 
+def _retrieve_future_exception(fut: "asyncio.Future") -> None:
+    """Done-callback that consumes a pending-request future's exception.
+
+    When the herdr socket closes mid-flight, ``_fail_pending`` sets a
+    ConnectionError on every pending future. If the awaiting ``_call`` was
+    already cancelled/abandoned (e.g. its turn was torn down), nobody retrieves
+    that exception and asyncio floods the log with "Future exception was never
+    retrieved" (observed 57x on a flaky herdr socket). Retrieving it here marks
+    it consumed without hiding anything — a live awaiter still gets the error via
+    ``await``. herdr failures are already benign: ``_call`` reconnects-once and
+    the supervisor restarts herdr, and turn-completion no longer depends on herdr
+    (transcript-JSONL completion is the authoritative path).
+    """
+    if fut.cancelled():
+        return
+    try:
+        fut.exception()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class HerdrClient:
     """Request/response NDJSON client with reconnect-on-broken-socket."""
 
@@ -316,6 +337,7 @@ class HerdrClient:
                 await self._ensure_connected()
                 rid = f"req_{next(self._req_counter)}"
                 future = asyncio.get_running_loop().create_future()
+                future.add_done_callback(_retrieve_future_exception)
                 self._pending[rid] = future
                 request = {"id": rid, "method": method, "params": dict(params or {})}
                 assert self._writer is not None

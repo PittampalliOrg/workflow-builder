@@ -111,11 +111,23 @@ class TranscriptTailer:
         # default claude path below.
         self._maybe_emit_goal_completion(entry)
 
+        # Publish the entry's session events first (so the final agent.message is
+        # emitted before turn.completed terminates the turn), THEN raise the
+        # turn-completion edge for EVERY adapter — incl. the default claude path.
+        # The claude adapter returns None from map_transcript_entry (it uses
+        # _handle_claude_entry), so _adapter_events never reaches completion;
+        # calling _raise_adapter_completion here is the ONLY place claude's
+        # transcript_turn_completion actually fires — herdr/Stop-hook-independent.
+        # Idempotent: turn_completion_raised dedups; transcript_turn_completion
+        # returns None for non-end-of-turn entries.
         adapter_events = self._adapter_events(entry)
         if adapter_events is not None:
+            self._raise_adapter_completion(entry)
             return adapter_events
 
-        return self._handle_claude_entry(entry)
+        emitted = self._handle_claude_entry(entry)
+        self._raise_adapter_completion(entry)
+        return emitted
 
     def _maybe_emit_goal_completion(self, entry: Mapping[str, Any]) -> None:
         if self.goal_completion_published or self._adapter is None:
@@ -229,7 +241,9 @@ class TranscriptTailer:
             )
             emitted += 1
 
-        self._raise_adapter_completion(entry)
+        # NOTE: _raise_adapter_completion is now called once per entry from
+        # _handle_line (before this method) so it fires for the default claude
+        # path too; do not call it again here (turn_completion_raised is set-only).
         return emitted
 
     def _raise_adapter_completion(self, entry: Mapping[str, Any]) -> None:
