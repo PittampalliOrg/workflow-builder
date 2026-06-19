@@ -203,8 +203,16 @@ def _otel_table(base_env: Mapping[str, str]) -> str | None:
 
 
 def _sandbox_cwd(base_env: Mapping[str, str]) -> str:
-    """The directory codex is launched in (build_argv's --cd)."""
-    return clean_string(base_env.get("AGENT_LOCAL_SANDBOX_ROOT")) or "/sandbox"
+    """The directory codex is launched in (build_argv's --cd) AND the pre-trusted
+    project. Prefer the per-execution shared-workspace mount so codex's relative
+    apply_patch lands in the shared workspace (/sandbox/work), not one level up;
+    --cd would otherwise override the pane cwd back to /sandbox. Falls back to the
+    sandbox root for non-shared sessions."""
+    return (
+        clean_string(base_env.get("CLI_SHARED_WORKSPACE_MOUNT"))
+        or clean_string(base_env.get("AGENT_LOCAL_SANDBOX_ROOT"))
+        or "/sandbox"
+    )
 
 
 def _trusted_project_table(base_env: Mapping[str, str]) -> str:

@@ -199,7 +199,12 @@ class ClaudeCodeAdapter(CliAdapter):
         state_paths = [config_dir / ".claude.json", config_dir / "claude.json"]
         if any(p.exists() for p in state_paths):
             return  # pod restart / resumed state — never clobber claude's own file
-        cwd = os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
+        # Match the pane launch cwd (cli_lifecycle._sandbox_root): trust the
+        # shared-workspace mount when present so claude has no trust prompt there.
+        cwd = (
+            os.environ.get("CLI_SHARED_WORKSPACE_MOUNT")
+            or os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
+        )
         state = {
             "hasCompletedOnboarding": True,
             "theme": "dark",

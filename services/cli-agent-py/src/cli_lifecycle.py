@@ -64,7 +64,17 @@ def _clean(value: Any) -> str | None:
 
 
 def _sandbox_root() -> str:
-    return os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
+    # Launch the CLI pane IN the per-execution shared workspace when one is
+    # mounted (CLI_SHARED_WORKSPACE_MOUNT, set by sandbox-execution-api), so a
+    # relative write lands in the shared workspace (/sandbox/work) instead of one
+    # level up (/sandbox). Without this, codex's first relative apply_patch wrote
+    # above the workspace and the model had to self-correct. Non-shared (pod-local)
+    # sessions fall back to the sandbox root. Only the LAUNCH cwd uses this; config/
+    # transcript/relay paths stay anchored at AGENT_LOCAL_SANDBOX_ROOT.
+    return (
+        os.environ.get("CLI_SHARED_WORKSPACE_MOUNT")
+        or os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
+    )
 
 
 # ---------------------------------------------------------------------------
