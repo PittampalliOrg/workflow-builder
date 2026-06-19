@@ -421,24 +421,21 @@ def test_codex_task_complete_raises_turn_completed(codex_home):
         },
     }
 
-    event = adapter.transcript_turn_completion(entry)
-
-    assert event == {
-        "type": "turn.completed",
-        "completionSource": "codex_task_complete",
-        "turnId": "turn-1",
-        "lastAssistantText": "done",
-    }
+    # Stop-hook-exclusive cutover: the transcript no longer completes the turn.
+    assert adapter.transcript_turn_completion(entry) is None
     sessions = codex_home / "sessions" / "2026"
     sessions.mkdir(parents=True)
     (sessions / "rollout.jsonl").write_text(json.dumps(entry) + "\n")
+    # extract_completion_text still reads the rollout for the Stop hook's content.
     assert adapter.extract_completion_text({}) == "done"
 
 
-def test_codex_stop_hook_does_not_complete_turn():
+def test_codex_stop_hook_completes_turn():
+    # Stop-hook-exclusive cutover: codex now completes the turn via the Stop hook
+    # (single-turn autoTerminate runs; no native /goal loop), like claude/agy.
     adapter = get_adapter("codex")
-    assert adapter.stop_hook_completes_turn() is False
-    assert adapter.is_turn_completion_hook("Stop") is False
+    assert adapter.stop_hook_completes_turn() is True
+    assert adapter.is_turn_completion_hook("Stop") is True
 
 
 # --- antigravity -------------------------------------------------------------
@@ -973,10 +970,8 @@ def test_agy_transcript_final_response_maps_message_usage_and_completion():
             "sourceEventId": "agy-transcript:21:usage",
         },
     ]
-    assert adapter.transcript_turn_completion(entry) == {
-        "type": "turn.completed",
-        "lastAssistantText": "Created index.html, styles.css, script.js, and README.md.",
-    }
+    # Stop-hook-exclusive cutover: the transcript no longer completes the turn.
+    assert adapter.transcript_turn_completion(entry) is None
 
 
 def test_agy_transcript_maps_native_tokens_cache_usage():

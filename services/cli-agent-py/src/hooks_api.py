@@ -314,9 +314,9 @@ def map_hook_event(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
             {
                 "type": SESSION_NOTIFICATION,
                 "data": {
-                    "message": clean_string(payload.get("message")),
-                    "level": clean_string(payload.get("level")),
-                    "notificationType": clean_string(
+                    "message": _clean(payload.get("message")),
+                    "level": _clean(payload.get("level")),
+                    "notificationType": _clean(
                         payload.get("notificationType")
                         or payload.get("notification_type")
                     ),
@@ -332,8 +332,8 @@ def map_hook_event(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "type": SESSION_CONTEXT_COMPACTED,
                 "data": {
                     "phase": "pre" if name == "PreCompact" else "post",
-                    "trigger": clean_string(payload.get("trigger")),
-                    "reason": clean_string(payload.get("reason")),
+                    "trigger": _clean(payload.get("trigger")),
+                    "reason": _clean(payload.get("reason")),
                 },
             }
         ]
@@ -383,6 +383,13 @@ class HookProcessor:
         session_id = session.get("sessionId")
         instance_id = session.get("instanceId")
         self._record_adapter_hook(payload)
+        logger.info(
+            "[hooks] recv event=%r adapter=%s session=%s instance=%s",
+            name,
+            getattr(self._adapter, "name", type(self._adapter).__name__ if self._adapter else None),
+            session_id,
+            instance_id,
+        )
 
         # EVERY hook payload carries transcript_path — register the tailer
         # opportunistically from any event, never only from SessionStart
@@ -463,7 +470,19 @@ class HookProcessor:
             )
             if completion_key is not None and completion_key in self._completion_keys_raised:
                 already_completed = True
-            if instance_id and should_complete_from_hook and not already_completed:
+            will_complete = bool(
+                instance_id and should_complete_from_hook and not already_completed
+            )
+            logger.info(
+                "[hooks] completion-decision event=%r should_complete=%s "
+                "already_completed=%s key=%s -> raising=%s",
+                name,
+                should_complete_from_hook,
+                already_completed,
+                completion_key,
+                will_complete,
+            )
+            if will_complete:
                 event: dict[str, Any] = {"type": "turn.completed"}
                 if last_text:
                     event["lastAssistantText"] = last_text

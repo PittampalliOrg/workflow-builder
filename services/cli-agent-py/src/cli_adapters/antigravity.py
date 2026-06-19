@@ -989,6 +989,15 @@ class AntigravityAdapter(CliAdapter):
     prompt_not_ready_markers = (
         "executor has not processed the previous input yet",
     )
+    # herdr SCREEN-DETECTS agy and reports `idle` during the boot banner + the
+    # "model no longer available" warning, before the composer takes focus.
+    # Accepting that idle injected the kickoff too early and the Enter was
+    # dropped (prompt stranded in the composer, zero hooks). Wait for the real
+    # rendered composer marker instead.
+    trust_idle_ready_fallback = False
+    # agy's composer collapses a held multi-line draft to "↑ N more lines"; if
+    # that's on screen after Enter, the submit was dropped → re-press.
+    composer_draft_markers = ("more lines",)
 
     def __init__(self) -> None:
         self._last_user_input_text: str | None = None
@@ -1251,18 +1260,11 @@ class AntigravityAdapter(CliAdapter):
             events.append(event)
         return events
 
-    def transcript_turn_completion(self, entry: Mapping[str, Any]) -> dict[str, Any] | None:
-        # When output-sync / stop-condition guardrails are active, keep the Stop
-        # hook authoritative so durable/run cannot complete before required
-        # files exist. Plain chat turns have no guard, and AGY can skip Stop for
-        # fast text-only replies; use the final transcript row as the fallback
-        # completion edge for those turns.
-        if has_stop_guard_config():
-            return None
-        text = _agy_final_response_text(entry)
-        if not text:
-            return None
-        return {"type": "turn.completed", "lastAssistantText": text}
+    # Turn completion is owned EXCLUSIVELY by the Stop hook (base defaults). For
+    # these single-turn autoTerminate build runs AGY fires Stop after its tool use;
+    # the transcript is read only for CONTENT (map_transcript_entry). The
+    # output-sync stop-guard (has_stop_guard_config) still gates the Stop hook's
+    # completion via hook_response, not via the transcript.
 
     # -- env -------------------------------------------------------------------
 

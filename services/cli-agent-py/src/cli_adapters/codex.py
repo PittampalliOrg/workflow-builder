@@ -44,6 +44,7 @@ from src.cli_adapters.base import (
     link_transcript_subtree,
     write_hook_relay_script,
 )
+from src.codex_capture import start_capture_watcher as start_codex_capture_watcher
 from src.capability_compiler import (
     compose_instruction_file,
     emit_claude_code_cli_servers,
@@ -203,8 +204,16 @@ def _otel_table(base_env: Mapping[str, str]) -> str | None:
 
 
 def _sandbox_cwd(base_env: Mapping[str, str]) -> str:
-    """The directory codex is launched in (build_argv's --cd)."""
-    return clean_string(base_env.get("AGENT_LOCAL_SANDBOX_ROOT")) or "/sandbox"
+    """The directory codex is launched in (build_argv's --cd) AND the pre-trusted
+    project. Prefer the per-execution shared-workspace mount so codex's relative
+    apply_patch lands in the shared workspace (/sandbox/work), not one level up;
+    --cd would otherwise override the pane cwd back to /sandbox. Falls back to the
+    sandbox root for non-shared sessions."""
+    return (
+        clean_string(base_env.get("CLI_SHARED_WORKSPACE_MOUNT"))
+        or clean_string(base_env.get("AGENT_LOCAL_SANDBOX_ROOT"))
+        or "/sandbox"
+    )
 
 
 def _trusted_project_table(base_env: Mapping[str, str]) -> str:
@@ -572,6 +581,17 @@ class CodexAdapter(CliAdapter):
     # behavior, never worse).
     prompt_ready_marker = "· /sandbox"
 
+    def on_session_started(self, session_id: str | None) -> None:
+        # codex's refresh token is SINGLE-USE: on boot codex refreshes and
+        # REWRITES auth.json with a rotated token. The sequential generator/critic
+        # loop dispatches 3 codex pods (plan → generate → critic) all seeded with
+        # the SAME stored CODEX_AUTH_JSON, so without writing the rotated token
+        # back, the 2nd pod boots with a spent token → "refresh token already
+        # used". Mirror agy's capture: POST the refreshed auth.json to the BFF on
+        # every rewrite so the next sequential pod boots with a live token.
+        if session_id:
+            start_codex_capture_watcher(session_id, _codex_home() / "auth.json")
+
     # -- seeding ----------------------------------------------------------------
 
     def seed(self, session_input: Mapping[str, Any]) -> SeedResult:
@@ -743,30 +763,13 @@ class CodexAdapter(CliAdapter):
             return []
         return None
 
-    def transcript_turn_completion(self, entry: Mapping[str, Any]) -> dict[str, Any] | None:
-        payload = _codex_payload(entry)
-        if payload is None or payload.get("type") != "task_complete":
-            return None
-        event: dict[str, Any] = {
-            "type": "turn.completed",
-            "completionSource": "codex_task_complete",
-        }
-        turn_id = clean_string(payload.get("turn_id"))
-        if turn_id:
-            event["turnId"] = turn_id
-        text = _text_from_content(payload.get("last_agent_message"))
-        if text:
-            event["lastAssistantText"] = text
-        return event
-
-    def stop_hook_completes_turn(self) -> bool:
-        # Codex emits an authoritative `task_complete` rollout entry before the
-        # Stop hook. Completing from both sources creates duplicate platform
-        # turns and can leave direct sessions stuck in running.
-        return False
-
-    def is_turn_completion_hook(self, event_name: str) -> bool:
-        return False
+    # Turn completion is owned EXCLUSIVELY by the Stop hook (base defaults:
+    # is_turn_completion_hook -> "Stop", stop_hook_completes_turn -> True). These
+    # are single-turn autoTerminate runs (no native /goal multi-turn loop), so a
+    # Stop unambiguously means the turn is done — no need to disambiguate via the
+    # codex `task_complete` rollout entry (whose JuiceFS-backed transcript tail
+    # could be missed, hanging the turn). The transcript is still mapped for
+    # CONTENT via map_transcript_entry.
 
     # -- env -------------------------------------------------------------------
 
