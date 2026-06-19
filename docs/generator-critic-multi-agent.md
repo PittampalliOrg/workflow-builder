@@ -290,3 +290,26 @@ Per the "code-level now, vision when Anthropic is free" decision, Phase 2 ships 
 **Deferred to Phase 2.5 (coupled — both need the browser-render path):**
 - **Screenshot artifact** for human review: a `browser/validate` capture step was authored + correctly wired (routes to `openshell-agent-runtime /api/browser/validate`), but `openshell-agent-runtime` is a **Knative scale-to-zero** service and every call **cold-starts past the function-router's 45s timeout** (`Cold start detected: 45004ms vs avg 8894ms`). Needs a Knative min-scale (keep-warm) or a higher browser/validate timeout. The capture node is removed from the shipped template until that's addressed.
 - **Pixel-level vision critic**: flip the critic to `anthropic/claude-*` + Playwright MCP (Anthropic-only; gated on Anthropic API quota, flagged limited until 2026-07-01).
+
+---
+
+## 10. Phase 3 — objective ground-truth tier (2026-06-18)
+
+The Phase-1 finding (the LLM critic hallucinated a pass on an objective rule) made the **objective ground-truth tier** the correctness backbone. The scout confirmed it is achievable **entirely template-level** — no orchestrator/BFF/dapr-agent-py deploy.
+
+**Shipped (`evaluator-gated-showcase`):** the loop body is `generate → gate → evaluate`, where **`gate` is a deterministic `workspace/command`** node that runs the objective checks in the shared workspace (`with: { workspaceRef, command: "cd /sandbox && node -e '<sweep>' ...", allowFailure: true }`). Acceptance is an explicit AND in the `while` guard: **gate-pass (stdout contains `OBJECTIVE PASS`) AND critic `meets_criteria`** — so a hallucinated critic pass cannot accept a broken solution. The generator's prompt now includes the gate's real stdout (the failing cases) alongside the critic feedback. The `summary` node derives a `terminalState` (`satisfied | max_iterations_reached`) via jq.
+
+**Verified on ryzen (run `yxoTtvyc`, the SAME hidden round-half-to-odd task the critic hallucinated on in Phase 1):**
+- `gate[0]: OBJECTIVE FAIL (10): 1.5->2 (expected 1), 3.5->4 (expected 3) ...` — generator attempt 0 was round-half-to-**even**; the deterministic gate caught it.
+- `gate[1]: OBJECTIVE PASS` — generator attempt 1 inferred round-half-to-**odd** from the gate's failing cases and fixed it.
+- Final: `terminalState: satisfied`, `objectivePass: true`, `criticPass: true`, `iterations: 2`, `exec success`.
+
+This proves the anti-hallucination guarantee: **objective correctness is decided by running the checks, not by LLM judgment**; the critic covers only subjective criteria.
+
+**Other Phase-3 items (per the scout's template-level vs deploy split):**
+- **Terminal states** — derived in `summary` via jq (TEMPLATE-LEVEL). Done.
+- **Non-JSON critic verdict** — already fail-safe: `_apply_parse_json_affordance` leaves output untouched on parse failure → `meets_criteria` absent → not accepted → loop continues (never a silent pass). No change needed.
+- **Critic-as-agent (Tier 2)** — already works: per-node `agentConfig.mcpServers` + `modelSpec` flow through the bridge for a loop sub-task (the critic is already a `durable/run` node). A vision critic = flip `modelSpec` → `anthropic/claude-*` + add Playwright MCP (Phase 2.5; Anthropic-only).
+- **Generator `update_goal` lockout** — the structural lockout (no `goalSpec` ⇒ no goal MCP wired) already holds. An explicit `disableGoalMcp` flag (`mcp-wiring.ts` + 2 call sites) is **optional hardening requiring a BFF deploy**, deferred unless a runtime-agnostic enforcement is needed; a dapr-agent-py `PreToolUse` deny hook is a template-level alternative if `DAPR_AGENT_PY_HOOKS_ENABLED=true`.
+
+**Net:** Phase 3's correctness goal is delivered + verified, entirely template-level. The remaining items are optional hardening (BFF `disableGoalMcp`) and Phase-2.5 vision.
