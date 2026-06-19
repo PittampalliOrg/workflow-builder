@@ -580,6 +580,13 @@ class CodexAdapter(CliAdapter):
     # timeout the lifecycle still injects best-effort (degrades to the old
     # behavior, never worse).
     prompt_ready_marker = "· /sandbox"
+    # Trust ONLY the rendered composer marker, never herdr's boot-time `idle`. codex
+    # can take >10s to draw its composer (auth refresh / onboarding / a slow pod);
+    # the idle-status fallback then fired mid-boot and the kickoff's Enter was lost,
+    # leaving the prompt stranded in the composer (observed on a loop's 2nd generate
+    # pod). Waiting for `· /sandbox` (or the full seed timeout → best-effort inject)
+    # is correct because the marker only renders once the composer is ready.
+    trust_idle_ready_fallback = False
 
     def on_session_started(self, session_id: str | None) -> None:
         # codex's refresh token is SINGLE-USE: on boot codex refreshes and
