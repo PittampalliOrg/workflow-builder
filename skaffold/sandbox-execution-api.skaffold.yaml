@@ -1,0 +1,64 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: sandbox-execution-api
+
+# Python/FastAPI service that provisions per-session agent-sandbox Sandbox CRs
+# (interactive-cli + benchmark execution classes) incl. the JuiceFS transcript +
+# shared-workspace CSI mounts. Outer-loop only (no inner-loop file-sync overlay):
+# `bash scripts/skaffold-deploy.sh sandbox-execution-api` builds + pushes the prod
+# image, then commit-pin.sh pins it via the FLAT ryzen release-pins file and
+# re-renders the workflow-builder-ryzen-image Component (the Component's ArgoCD
+# App patch carries both the image pin AND SANDBOX_EXECUTION_CLASSES_JSON) — the
+# same path as workflow-builder / workflow-mcp-server.
+
+build:
+  local:
+    useBuildkit: true
+    useDockerCLI: true
+    push: true
+  tagPolicy:
+    gitCommit:
+      variant: AbbrevCommitSha
+      ignoreChanges: true
+  artifacts:
+    - image: ghcr.io/pittampalliorg/sandbox-execution-api
+      context: ../services/sandbox-execution-api
+      docker:
+        dockerfile: Dockerfile
+
+# No inner-loop kustomize overlay for this service; keep deploy a no-op so
+# `skaffold build`/`run -m sandbox-execution-api` builds without trying to apply
+# a dev overlay. Deployment is GitOps (ArgoCD ryzen-sandbox-execution-api).
+manifests:
+  rawYaml: []
+deploy:
+  kubectl: {}
+
+profiles:
+  - name: run
+    activation:
+      - command: run
+      - command: build
+    build:
+      local:
+        useBuildkit: true
+        useDockerCLI: true
+        push: true
+      tagPolicy:
+        customTemplate:
+          template: "git-{{.GIT_COMMIT}}"
+          components:
+            - name: GIT_COMMIT
+              gitCommit:
+                variant: CommitSha
+      artifacts:
+        - image: ghcr.io/pittampalliorg/sandbox-execution-api
+          context: ../services/sandbox-execution-api
+          docker:
+            dockerfile: Dockerfile
+    manifests:
+      rawYaml: []
+    deploy:
+      kubectl: {}
+    verify: []

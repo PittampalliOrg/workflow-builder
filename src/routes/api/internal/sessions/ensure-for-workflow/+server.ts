@@ -536,6 +536,14 @@ export const POST: RequestHandler = async ({ request }) => {
 			timeoutMinutes: bridgeTimeoutMinutes,
 			traceContext,
 			sessionSecretEnv: workflowSessionSecretEnv,
+			// interactive-cli: share one JuiceFS workspace subtree across every
+			// CLI pod of this workflow run (planner/generator/critic see the same
+			// files). Keyed on the durable/run workspaceRef, falling back to the
+			// execution id so CLI workflows share automatically with no
+			// workspace/profile node. No-op for classes without the shared store.
+			sharedWorkspaceKey: swapTarget?.capabilities?.interactiveTerminal
+				? (bridgeWorkspaceRef ?? workflowExecutionId)
+				: null,
 		});
 		const reuseChildAppId = reuseHost?.agentAppId ?? reuseAgentAppId;
 		const reuseRuntimeSandboxName =
@@ -740,6 +748,11 @@ export const POST: RequestHandler = async ({ request }) => {
 		timeoutMinutes: bridgeTimeoutMinutes,
 		traceContext,
 		sessionSecretEnv: workflowSessionSecretEnv,
+		// interactive-cli: share one JuiceFS workspace subtree across every CLI
+		// pod of this workflow run (keyed on workspaceRef, else execution id).
+		sharedWorkspaceKey: swapTarget?.capabilities?.interactiveTerminal
+			? (bridgeWorkspaceRef ?? workflowExecutionId)
+			: null,
 	});
 	const childAgentAppId = sessionHost?.agentAppId ?? targetAgentAppId;
 	const childRuntimeSandboxName = sessionHost?.sandboxName ?? null;

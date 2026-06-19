@@ -41,3 +41,5 @@ requires:
     path: skaffold/mcp-gateway.skaffold.yaml
   - configs: [swebench-coordinator]
     path: skaffold/swebench-coordinator.skaffold.yaml
+  - configs: [sandbox-execution-api]
+    path: skaffold/sandbox-execution-api.skaffold.yaml

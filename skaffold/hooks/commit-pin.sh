@@ -47,7 +47,7 @@ if [ -n "${SKAFFOLD_OWNED_SERVICES:-}" ]; then
 elif declare -p SKAFFOLD_OWNED_DEFAULT >/dev/null 2>&1; then
   owned=("${SKAFFOLD_OWNED_DEFAULT[@]}")
 else
-  owned=(workflow-builder workflow-orchestrator function-router mcp-gateway swebench-coordinator)
+  owned=(workflow-builder workflow-orchestrator function-router mcp-gateway swebench-coordinator sandbox-execution-api)
 fi
 _is_owned=0
 for _o in "${owned[@]}"; do

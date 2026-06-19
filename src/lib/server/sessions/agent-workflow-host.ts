@@ -332,6 +332,15 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	 * Postgres-backed transcript subtree.
 	 */
 	resumeFromSessionId?: string | null;
+	/**
+	 * Per-EXECUTION shared workspace key (interactive-cli runtime family). When
+	 * set, sandbox-execution-api mounts a shared JuiceFS subtree (CSI subPath =
+	 * this key) at the class's sharedWorkspaceStoreMountPath, so every CLI pod of
+	 * one workflow run reads/writes the SAME files (e.g. a planner→generator→
+	 * critic loop sharing SPEC.md + the build). Typically the durable/run
+	 * workspaceRef. Ignored by classes that don't enable the shared store.
+	 */
+	sharedWorkspaceKey?: string | null;
 }): Promise<AgentWorkflowHostResult | null> {
 	if (!agentConfigCanUseWorkflowHost(params.agentConfig)) return null;
 	if (params.benchmarkRunId && canUseBenchmarkStableAppId(params.agentConfig)) {
@@ -414,6 +423,9 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 		...(sessionSecretEnv ? { sessionSecretEnv } : {}),
 		...(params.resumeFromSessionId
 			? { resumeFromSessionId: params.resumeFromSessionId }
+			: {}),
+		...(params.sharedWorkspaceKey
+			? { sharedWorkspaceKey: params.sharedWorkspaceKey }
 			: {}),
 	};
 	const { response, body } = await postAgentWorkflowHost(

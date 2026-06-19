@@ -4369,6 +4369,53 @@ async function ensureShowcaseAgent(
 	return slug;
 }
 
+// CLI variant of the showcase agent: runs the planner/generator/critic loop on
+// claude-code-cli (real Claude Code TUI in a per-session pod) instead of
+// dapr-agent-py. No modelSpec — the CLI uses its own subscription auth (the
+// user's linked CLI credential; ANTHROPIC_API_KEY must never reach the pod).
+// The shared workspace (SPEC.md + the build) is the per-execution JuiceFS mount
+// at /sandbox/work, provisioned by sandbox-execution-api for interactive-cli.
+async function ensureCliShowcaseAgent(
+	sqlClient: ReturnType<typeof postgres>,
+	userId: string,
+	projectId: string,
+): Promise<string> {
+	const slug = "cli-evaluator-critic-agent";
+	const existing = await sqlClient<{ id: string; current_version_id: string | null }[]>`
+		select id, current_version_id from agents where slug = ${slug} limit 1`;
+	if (existing.length && existing[0].current_version_id) return slug;
+
+	const agentId = existing.length ? existing[0].id : generateId();
+	const config = {
+		runtime: "claude-code-cli",
+		maxTurns: 50,
+		timeoutMinutes: 30,
+		skills: [] as unknown[],
+		tools: [] as unknown[],
+		mcpServers: [] as unknown[],
+	};
+	const configHash = crypto
+		.createHash("sha256")
+		.update(JSON.stringify(config))
+		.digest("hex");
+	const versionId = generateId();
+	if (!existing.length) {
+		await sqlClient`
+			insert into agents (id, name, description, agent_type, max_turns, timeout_minutes, project_id, user_id, registry_status, slug, runtime)
+			values (${agentId}, ${"CLI Evaluator/Critic Agent"},
+				${"Shared claude-code-cli agent for the CLI generator/critic showcase loop; per-session dispatch, shared JuiceFS workspace at /sandbox/work."},
+				${"general"}, ${50}, ${30}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${"claude-code-cli"})`;
+	} else {
+		await sqlClient`update agents set registry_status = ${"registered"}, runtime = ${"claude-code-cli"} where id = ${agentId}`;
+	}
+	await sqlClient`
+		insert into agent_versions (id, agent_id, version, config, config_hash)
+		values (${versionId}, ${agentId}, ${1}, ${sqlClient.json(config)}, ${configHash})`;
+	await sqlClient`update agents set current_version_id = ${versionId} where id = ${agentId}`;
+	console.log(`[seed-workflows] Ensured CLI showcase agent "${slug}"`);
+	return slug;
+}
+
 async function seedGeneratorCriticShowcases(params: {
 	db: ReturnType<typeof drizzle>;
 	sqlClient: ReturnType<typeof postgres>;
@@ -4376,12 +4423,14 @@ async function seedGeneratorCriticShowcases(params: {
 	projectId: string;
 }) {
 	await ensureShowcaseAgent(params.sqlClient, params.userId, params.projectId);
+	await ensureCliShowcaseAgent(params.sqlClient, params.userId, params.projectId);
 	const dir = path.resolve(process.cwd(), "scripts/fixtures/generator-critic");
 	for (const file of [
 		"evaluator-optimizer-showcase.json",
 		"design-critic-showcase.json",
 		"evaluator-gated-showcase.json",
 		"retroforge-showcase.json",
+		"retroforge-cli-showcase.json",
 	]) {
 		const full = path.join(dir, file);
 		if (!fs.existsSync(full)) {
