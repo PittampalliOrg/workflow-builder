@@ -86,6 +86,25 @@ def _start_to_first_when_any(
     return driver.gen.send(start_result or {"paneRef": "p1", "agentDetected": True})
 
 
+def _bounded_winner(driver, yielded, kind):
+    """The post-loop activities (stop / extract_model_patch / sync_output) all run
+    via ``_yield_bounded``, which yields ``when_any([activity, timer])`` and only
+    returns the activity result when the activity TASK itself is the winner. Return
+    that task so the test can inspect ``.detail`` / set ``.result`` before sending
+    it back as the winner."""
+    assert yielded.kind == "when_any"
+    return next(t for t in driver._when_any_tasks if t.kind == kind)
+
+
+def _complete_bounded_stop(driver, yielded, *, stop_result=None):
+    """Drive the cooperative close (the common terminal case) — send the stop
+    activity task back as the winner. Returns the generator's next yield, or
+    re-raises StopIteration when the workflow ends."""
+    stop_act = _bounded_winner(driver, yielded, "activity:stop_cli_activity")
+    stop_act.result = {"ok": True} if stop_result is None else stop_result
+    return driver.gen.send(stop_act)
+
+
 def test_auto_terminate_stops_after_first_turn_completed(monkeypatch):
     ctx = FakeCtx()
     driver = WorkflowDriver(
@@ -97,9 +116,8 @@ def test_auto_terminate_stops_after_first_turn_completed(monkeypatch):
         "events": [{"type": "turn.completed", "lastAssistantText": "workflow answer"}]
     }
     yielded = driver.gen.send(event_task)
-    assert yielded.kind == "activity:stop_cli_activity"
     with pytest.raises(StopIteration) as stop:
-        driver.gen.send({"ok": True})
+        _complete_bounded_stop(driver, yielded)
     result = stop.value.value
     assert result["success"] is True
     assert result["status"] == "completed"
@@ -132,9 +150,8 @@ def test_happy_path_turn_then_clean_exit(monkeypatch):
     event_task = driver.event_task()
     event_task.result = {"events": [{"type": "cli.exited", "exitCode": 0}]}
     yielded = driver.gen.send(event_task)
-    assert yielded.kind == "activity:stop_cli_activity"
     with pytest.raises(StopIteration) as stop:
-        driver.gen.send({"ok": True})
+        _complete_bounded_stop(driver, yielded)
     result = stop.value.value
     assert result["success"] is True
     assert result["status"] == "completed"
@@ -183,9 +200,8 @@ def test_result_contract_reports_selected_cli_runtime(monkeypatch):
     event_task = driver.event_task()
     event_task.result = {"events": [{"type": "turn.completed", "content": "done"}]}
     yielded = driver.gen.send(event_task)
-    assert yielded.kind == "activity:stop_cli_activity"
     with pytest.raises(StopIteration) as stop:
-        driver.gen.send({"ok": True})
+        _complete_bounded_stop(driver, yielded)
     assert stop.value.value["agentRuntime"] == "codex-cli"
 
 
@@ -209,13 +225,13 @@ def test_completed_run_syncs_declared_outputs(monkeypatch):
     event_task = driver.event_task()
     event_task.result = {"events": [{"type": "turn.completed", "content": "done"}]}
     yielded = driver.gen.send(event_task)
-    assert yielded.kind == "activity:stop_cli_activity"
-    yielded = driver.gen.send({"ok": True})
-    assert yielded.kind == "activity:sync_output_activity"
-    assert yielded.detail["sandboxName"] == "workspace-1"
-    assert yielded.detail["outputSync"]["paths"][0]["source"] == "/sandbox/app"
+    yielded = _complete_bounded_stop(driver, yielded)
+    sync_act = _bounded_winner(driver, yielded, "activity:sync_output_activity")
+    assert sync_act.detail["sandboxName"] == "workspace-1"
+    assert sync_act.detail["outputSync"]["paths"][0]["source"] == "/sandbox/app"
+    sync_act.result = {"ok": True, "copied": []}
     with pytest.raises(StopIteration) as stop:
-        driver.gen.send({"ok": True, "copied": []})
+        driver.gen.send(sync_act)
     result = stop.value.value
     assert result["success"] is True
     assert result["outputSync"]["ok"] is True
@@ -243,20 +259,18 @@ def test_completed_swebench_run_extracts_model_patch(monkeypatch):
     event_task = driver.event_task()
     event_task.result = {"events": [{"type": "turn.completed", "content": "done"}]}
     yielded = driver.gen.send(event_task)
-    assert yielded.kind == "activity:stop_cli_activity"
-    yielded = driver.gen.send({"ok": True})
-    assert yielded.kind == "activity:extract_model_patch_activity"
-    assert yielded.detail["baseCommit"] == "abc123"
-    assert yielded.detail["workspaceRoot"] == "/sandbox/repo"
+    yielded = _complete_bounded_stop(driver, yielded)
+    patch_act = _bounded_winner(driver, yielded, "activity:extract_model_patch_activity")
+    assert patch_act.detail["baseCommit"] == "abc123"
+    assert patch_act.detail["workspaceRoot"] == "/sandbox/repo"
+    patch_act.result = {
+        "ok": True,
+        "modelPatch": "diff --git a/pkg.py b/pkg.py\n",
+        "patchBytes": 28,
+        "patchFilesTouched": ["pkg.py"],
+    }
     with pytest.raises(StopIteration) as stop:
-        driver.gen.send(
-            {
-                "ok": True,
-                "modelPatch": "diff --git a/pkg.py b/pkg.py\n",
-                "patchBytes": 28,
-                "patchFilesTouched": ["pkg.py"],
-            }
-        )
+        driver.gen.send(patch_act)
     result = stop.value.value
     assert result["modelPatch"] == "diff --git a/pkg.py b/pkg.py\n"
     assert result["patchBytes"] == 28
@@ -425,9 +439,8 @@ def test_propagated_history_is_reduced_to_bounded_provenance(monkeypatch):
     event_task = driver.event_task()
     event_task.result = {"events": [{"type": "turn.completed", "content": "done"}]}
     yielded = driver.gen.send(event_task)
-    assert yielded.kind == "activity:stop_cli_activity"
     with pytest.raises(StopIteration) as stop:
-        driver.gen.send({"ok": True})
+        _complete_bounded_stop(driver, yielded)
 
     result = stop.value.value
     propagation = result["provenance"]["workflowHistoryPropagation"]
@@ -512,9 +525,8 @@ def test_nonzero_exit_code_fails_run(monkeypatch):
     event_task = driver.event_task()
     event_task.result = {"events": [{"type": "cli.exited", "exitCode": 3}]}
     yielded = driver.gen.send(event_task)
-    assert yielded.kind == "activity:stop_cli_activity"
     with pytest.raises(StopIteration) as stop:
-        driver.gen.send({"ok": True})
+        _complete_bounded_stop(driver, yielded)
     assert stop.value.value["success"] is False
     assert stop.value.value["status"] == "failed"
 
@@ -526,9 +538,8 @@ def test_terminate_event_breaks_terminated(monkeypatch):
     event_task = driver.event_task()
     event_task.result = {"events": [{"type": "session.terminate"}]}
     yielded = driver.gen.send(event_task)
-    assert yielded.kind == "activity:stop_cli_activity"
     with pytest.raises(StopIteration) as stop:
-        driver.gen.send({"ok": True})
+        _complete_bounded_stop(driver, yielded)
     assert stop.value.value["status"] == "terminated"
     assert stop.value.value["success"] is True
 
@@ -557,9 +568,8 @@ def test_timer_path_probes_then_continues_then_terminal(monkeypatch):
     yielded = driver.gen.send(
         {"terminal": True, "status": "failed", "reason": "pane_gone"}
     )
-    assert yielded.kind == "activity:stop_cli_activity"
     with pytest.raises(StopIteration) as stop:
-        driver.gen.send({"ok": True})
+        _complete_bounded_stop(driver, yielded)
     assert stop.value.value["status"] == "failed"
 
 
@@ -573,9 +583,8 @@ def test_persisted_cancel_flag_terminates_on_probe_path(monkeypatch):
     yielded = driver.gen.send(
         {"cancelled": True, "request": {"type": "session.terminate"}}
     )
-    assert yielded.kind == "activity:stop_cli_activity"
     with pytest.raises(StopIteration) as stop:
-        driver.gen.send({"ok": True})
+        _complete_bounded_stop(driver, yielded)
     assert stop.value.value["status"] == "terminated"
 
 
@@ -620,10 +629,10 @@ def test_carried_input_skips_seed_and_start(monkeypatch):
     event_task = driver.event_task()
     event_task.result = {"events": [{"type": "cli.exited", "exitCode": 0}]}
     yielded = driver.gen.send(event_task)
-    assert yielded.kind == "activity:stop_cli_activity"
-    assert yielded.detail["paneRef"] == "p7"
+    stop_act = _bounded_winner(driver, yielded, "activity:stop_cli_activity")
+    assert stop_act.detail["paneRef"] == "p7"
     with pytest.raises(StopIteration) as stop:
-        driver.gen.send({"ok": True})
+        _complete_bounded_stop(driver, yielded)
     assert stop.value.value["turnCount"] == 5
     assert stop.value.value["output"] == "carried answer"
 

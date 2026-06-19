@@ -711,6 +711,16 @@ def session_workflow(
     status: str | None = None
     reason: str | None = None
     iterations = 0
+    # Subscribe to the lifecycle external-event lane ONCE and reuse the same task
+    # across idle-probe iterations, re-arming only after an event is consumed.
+    # Recreating wait_for_external_event every loop (the prior bug) leaked a fresh
+    # pending subscription per probe cycle; durabletask delivers a raised event to
+    # the OLDEST pending subscription, so on a long turn (many idle-probe cycles)
+    # the eventually-raised turn.completed matched a STALE subscription instead of
+    # the current when_any — the loop never saw completion and the run hung
+    # (observed on codex's long unified_exec build turn; short turns like `plan`
+    # finished in 1-2 cycles and matched by luck). The timer is fire-and-forget.
+    event_task = ctx.wait_for_external_event(LIFECYCLE_EVENT_NAME)
     while status is None:
         iterations += 1
         if iterations > CLI_LIFECYCLE_MAX_ITERATIONS:
@@ -728,7 +738,6 @@ def session_workflow(
             )
             return None
 
-        event_task = ctx.wait_for_external_event(LIFECYCLE_EVENT_NAME)
         timer_task = ctx.create_timer(timedelta(seconds=CLI_IDLE_PROBE_SECONDS))
         winner = yield wf_when_any([event_task, timer_task])
 
@@ -757,7 +766,11 @@ def session_workflow(
                 break
             continue
 
-        for event in _event_batch(winner.get_result()):
+        events = _event_batch(event_task.get_result())
+        # Re-arm the subscription for the next lifecycle event before handling
+        # this batch, so a rapid follow-up event can't slip in unobserved.
+        event_task = ctx.wait_for_external_event(LIFECYCLE_EVENT_NAME)
+        for event in events:
             event_type = event.get("type")
             if event_type == "turn.completed":
                 turn_count += 1
