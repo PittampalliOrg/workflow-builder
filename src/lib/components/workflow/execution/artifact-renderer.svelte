@@ -12,6 +12,7 @@
     kind: 'link'      payload: { url: string, openIn?: 'new' | 'inline' }
     kind: 'card'      payload: { body: string, footer?: string }
     kind: 'image'     payload: { alt?: string }    (blob via fileId — TODO when blob endpoint lands)
+    kind: 'html'      payload: { html: string }    (rendered live in a sandboxed iframe — see below)
     kind: 'goal_spec' payload: { objective, acceptanceCriteria[], evidence:{commands[]}, maxIterations?, tokenBudget?, rationale, lint:{warnings[]} }
 
   Anything unknown falls back to a JSON dump so the data is still visible.
@@ -149,6 +150,22 @@
 		alt={asString(payloadField("alt")) || rest.title || "image artifact"}
 		class="max-w-full rounded border"
 	/>
+{:else if kind === "html"}
+	<!--
+		Rendered HTML artifact (e.g. a self-contained single-file web app a workflow
+		built). Isolated in a sandboxed iframe: `allow-scripts` lets the artifact's
+		own JS run (canvas, handlers) while the ABSENCE of `allow-same-origin` keeps
+		it walled off from the app origin (no cookies / storage / parent access) —
+		the standard safe pattern for rendering agent-produced markup.
+	-->
+	<iframe
+		title={rest.title || "rendered HTML artifact"}
+		srcdoc={asString(payloadField("html"))}
+		sandbox="allow-scripts"
+		class="w-full rounded border bg-white"
+		style="height: 70vh; min-height: 420px;"
+		loading="lazy"
+	></iframe>
 {:else if kind === "goal_spec" && goalSpec}
 	<div class="space-y-3 text-sm">
 		<div class="flex items-start gap-2">

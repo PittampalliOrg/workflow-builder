@@ -15,6 +15,9 @@
  * - Fallback to SEED_GITHUB_USER_ID / SEED_GITHUB_USER_EMAIL
  * - Fallback to single GitHub identity in DB
  */
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
@@ -4266,6 +4269,144 @@ async function upsertWorkflow(params: {
 	);
 }
 
+// Generator/critic evaluator-optimizer showcase fixtures (verified specs live in
+// scripts/fixtures/generator-critic/*.json — see docs/generator-critic-multi-agent.md).
+// The for-loop sub-tasks (generate/gate/evaluate) render as a single `refine` canvas
+// node; the canvas adapter re-expands the loop on the next UI edit. Execution is
+// spec-driven, so a linear top-level graph is sufficient for seeding.
+function buildGeneratorCriticGraph(spec: JsonRecord): {
+	nodes: JsonRecord[];
+	edges: JsonRecord[];
+} {
+	const doArr = Array.isArray((spec as { do?: unknown[] }).do)
+		? ((spec as { do: Record<string, JsonRecord>[] }).do)
+		: [];
+	const taskNames = doArr.map((t) => Object.keys(t)[0]);
+	const ids = ["trigger", ...taskNames];
+	const nodes: JsonRecord[] = [
+		{
+			id: "trigger",
+			type: "trigger",
+			position: { x: 80, y: 40 },
+			data: {
+				label: "Manual trigger",
+				description: "Provide the intent (and optional agentSlug).",
+			},
+		},
+		...taskNames.map((name, i) => {
+			const node = (doArr[i][name] || {}) as JsonRecord;
+			const actionType =
+				(node.call as string) ||
+				(node.for ? "for" : node.set ? "set" : node.listen ? "listen" : "task");
+			return {
+				id: name,
+				type: "action",
+				position: { x: 80, y: 180 + i * 140 },
+				data: { label: name, actionType, description: "" },
+			} as JsonRecord;
+		}),
+	];
+	const edges: JsonRecord[] = ids.slice(0, -1).map((source, i) => ({
+		id: `e_gc_${i + 1}`,
+		source,
+		target: ids[i + 1],
+		type: "default",
+	}));
+	return { nodes, edges };
+}
+
+// The generator/critic showcases default `agentRef.slug` to `evaluator-critic-agent`.
+// No existing seed provisions a durable/run-ready agent under a stable slug
+// (seed-agents.ts creates differently-named agents with no version row), so ensure
+// a dedicated one here: dapr-agent-py, runtime_app_id=null (per-session dispatch —
+// works on dev AND ryzen, unlike the phantom agent-runtime-pool-coding), registered,
+// with a version row (durable/run resolves the agent by slug and needs current_version_id).
+async function ensureShowcaseAgent(
+	sqlClient: ReturnType<typeof postgres>,
+	userId: string,
+	projectId: string,
+): Promise<string> {
+	const slug = "evaluator-critic-agent";
+	const existing = await sqlClient<{ id: string; current_version_id: string | null }[]>`
+		select id, current_version_id from agents where slug = ${slug} limit 1`;
+	if (existing.length && existing[0].current_version_id) return slug;
+
+	const agentId = existing.length ? existing[0].id : generateId();
+	// Pin a quota-free, capable model. Without an explicit modelSpec the runtime
+	// falls back to the Anthropic default (llm-anthropic-opus), which is API-quota
+	// limited; deepseek-v4-pro is the cluster default used by the verified runs.
+	const modelSpec = process.env.SEED_SHOWCASE_AGENT_MODEL?.trim() || "deepseek-v4-pro";
+	const config = {
+		runtime: "dapr-agent-py",
+		modelSpec,
+		maxTurns: 50,
+		timeoutMinutes: 30,
+		memory: { backend: "dapr_state" },
+		skills: [] as unknown[],
+		tools: [] as unknown[],
+		mcpServers: [] as unknown[],
+	};
+	const configHash = crypto
+		.createHash("sha256")
+		.update(JSON.stringify(config))
+		.digest("hex");
+	const versionId = generateId();
+
+	if (!existing.length) {
+		await sqlClient`
+			insert into agents (id, name, description, agent_type, model, max_turns, timeout_minutes, project_id, user_id, registry_status, slug, runtime)
+			values (${agentId}, ${"Evaluator/Critic Agent"},
+				${"Shared dapr-agent-py agent for the generator/critic showcase loops; per-session dispatch (no pool pin)."},
+				${"general"}, ${modelSpec}, ${50}, ${30}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${"dapr-agent-py"})`;
+	} else {
+		await sqlClient`update agents set registry_status = ${"registered"}, runtime = ${"dapr-agent-py"}, model = ${modelSpec} where id = ${agentId}`;
+	}
+	await sqlClient`
+		insert into agent_versions (id, agent_id, version, config, config_hash)
+		values (${versionId}, ${agentId}, ${1}, ${sqlClient.json(config)}, ${configHash})`;
+	await sqlClient`update agents set current_version_id = ${versionId} where id = ${agentId}`;
+	console.log(`[seed-workflows] Ensured showcase agent "${slug}"`);
+	return slug;
+}
+
+async function seedGeneratorCriticShowcases(params: {
+	db: ReturnType<typeof drizzle>;
+	sqlClient: ReturnType<typeof postgres>;
+	userId: string;
+	projectId: string;
+}) {
+	await ensureShowcaseAgent(params.sqlClient, params.userId, params.projectId);
+	const dir = path.resolve(process.cwd(), "scripts/fixtures/generator-critic");
+	for (const file of [
+		"evaluator-optimizer-showcase.json",
+		"design-critic-showcase.json",
+		"evaluator-gated-showcase.json",
+		"retroforge-showcase.json",
+	]) {
+		const full = path.join(dir, file);
+		if (!fs.existsSync(full)) {
+			console.warn(`[seed-workflows] generator-critic fixture missing: ${full}`);
+			continue;
+		}
+		const spec = JSON.parse(fs.readFileSync(full, "utf8")) as JsonRecord;
+		const doc = ((spec as { document?: JsonRecord }).document || {}) as JsonRecord;
+		const id = (doc.name as string) || file.replace(/\.json$/, "");
+		const { nodes, edges } = buildGeneratorCriticGraph(spec);
+		await upsertRawWorkflow({
+			db: params.db,
+			workflowId: id,
+			name: (doc.title as string) || id,
+			description: (doc.summary as string) || "",
+			userId: params.userId,
+			projectId: params.projectId,
+			spec,
+			nodes,
+			edges,
+			visibility: "public",
+		});
+	}
+}
+
 async function seedWorkflow() {
 	console.log("[seed-workflows] Starting workflow seed...");
 	const sql = postgres(DATABASE_URL, { max: 1 });
@@ -4450,6 +4591,12 @@ async function seedWorkflow() {
 				visibility: "public",
 			});
 		}
+
+		// Generator/critic evaluator-optimizer showcases (Phases 1-3):
+		// evaluator-optimizer (subjective LLM critic), design-critic (4-dimension
+		// design grading), evaluator-gated (deterministic ground-truth gate AND critic).
+		// Ensures a dedicated per-session `evaluator-critic-agent` first.
+		await seedGeneratorCriticShowcases({ db, sqlClient: sql, userId, projectId });
 
 		await upsertWorkflow({
 			db,

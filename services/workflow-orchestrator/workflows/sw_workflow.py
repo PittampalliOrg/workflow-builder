@@ -665,6 +665,66 @@ def _unwrap_standardized_output(value: Any) -> Any:
     return value
 
 
+def _loose_extract_json(text: str) -> dict[str, Any] | None:
+    """Tolerant JSON object extraction from LLM/agent text. Mirrors the
+    extractJson shape in src/lib/server/goals/plan-goal.ts: try the raw string,
+    then a ```json fenced block, then the first {...} match. Returns the parsed
+    dict or None. Used by the `parseJson` node affordance so an agent that ends
+    its turn with a STRICT JSON verdict surfaces as real fields (e.g. a critic's
+    {meets_criteria, score, feedback})."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    candidates: list[str] = [text.strip()]
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if fenced and fenced.group(1).strip():
+        candidates.append(fenced.group(1).strip())
+    braces = re.search(r"\{[\s\S]*\}", text)
+    if braces:
+        candidates.append(braces.group(0).strip())
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _coerce_parse_json(value: Any) -> dict[str, Any] | None:
+    """Extract a JSON object from a node's unwrapped output. The text is the
+    value itself (string) or its `content` field (agent durable/run output)."""
+    if isinstance(value, str):
+        return _loose_extract_json(value)
+    if isinstance(value, dict):
+        content = value.get("content")
+        if isinstance(content, str):
+            return _loose_extract_json(content)
+    return None
+
+
+def _apply_parse_json_affordance(tc: "TaskContext", task_name: str) -> None:
+    """Merge an agent/text node's JSON-string output into its stored output so
+    downstream refs (e.g. ${ .evaluate.meets_criteria }) resolve to real fields.
+    Triggered by `parseJson: true` on the task. Best-effort: if no JSON object is
+    found the stored output is left untouched (the raw content stays available)."""
+    stored = tc.task_outputs.get(task_name)
+    if not isinstance(stored, dict) or "data" not in stored:
+        return
+    data = stored["data"]
+    # Standardized envelope {success, data}: merge into the inner data.
+    if isinstance(data, dict) and isinstance(data.get("success"), bool) and "data" in data:
+        inner = data["data"]
+        parsed = _coerce_parse_json(inner)
+        if parsed is not None:
+            data["data"] = {**inner, **parsed} if isinstance(inner, dict) else parsed
+        return
+    # Already-unwrapped output: merge into it directly.
+    parsed = _coerce_parse_json(data)
+    if parsed is not None:
+        stored["data"] = {**data, **parsed} if isinstance(data, dict) else parsed
+
+
 def _build_expression_context(
     tc: "TaskContext",
     *,
@@ -1461,8 +1521,16 @@ def _run_native_durable_agent_child_workflow(
             "app_id": f"agent-runtime-{derived_slug}",
         }
     child_execution_index = _next_task_execution_count(tc, task_name)
+    # Sanitize task_name for the child workflow instance id: a durable/run task
+    # nested in a `for` loop is named "<loop>/<sub>[<idx>]" (e.g. "refine/generate[0]"),
+    # and the resulting Dapr workflow instance id becomes an actor id — `/` and `[]`
+    # are not routable there, so the child is created but never executes (the parent
+    # waits forever / the session stays "rescheduling"). Replace any non
+    # [A-Za-z0-9_.-] char with `-` so loop-nested agents dispatch. The sanitized id
+    # is used consistently as the session id + dispatch target below.
+    safe_task_name = re.sub(r"[^A-Za-z0-9_.-]", "-", task_name)
     child_instance_id = (
-        f"{ctx.instance_id}__{target['instance_prefix']}__{task_name}__run__{child_execution_index}"
+        f"{ctx.instance_id}__{target['instance_prefix']}__{safe_task_name}__run__{child_execution_index}"
     )
 
     timeout_minutes = max(
@@ -2907,24 +2975,50 @@ def _handle_for_task(
     if not isinstance(items, list):
         items = list(items) if hasattr(items, "__iter__") else [items]
 
+    # Loop-state ergonomic: expose the PREVIOUS iteration's sub-task outputs under
+    # a stable handle so the `while` guard + sub-task inputs can read them without
+    # dynamic-index jq (e.g. ${ .loop.last.evaluate.feedback }). This is the
+    # generator↔critic feedback channel for the evaluator-optimizer pattern.
+    #   .loop.last.<subtask>  → previous iteration's unwrapped output
+    #   .loop.index           → current iteration index
+    #   .loop.accepted        → True once any sub-task output set meets_criteria:true
+    #   .loop.iterations      → completed iteration count
+    loop_state: dict[str, Any] = {"last": {}, "index": 0, "accepted": False, "iterations": 0}
+    tc.state_vars["loop"] = loop_state
+
     iteration_results = []
     for idx, item in enumerate(items):
         # Set iteration variables in state
         tc.state_vars[each_var] = item
         tc.state_vars[at_var] = idx
+        loop_state["index"] = idx
 
+        # `while` is a per-iteration BREAK guard, re-evaluated against current
+        # state (incl. the previous iteration's verdict via .loop.last/.loop.accepted).
         if while_expr is not None:
             loop_context = _build_expression_context(tc, task_input=task_input, has_task_input=True)
             if not evaluate_condition(while_expr, loop_context):
                 break
 
-        # Execute sub-tasks
+        # Execute sub-tasks; after each, publish its unwrapped output to
+        # .loop.last.<subtask> for the next iteration (and the verdict convenience
+        # flag .loop.accepted).
         for sub_item in sub_tasks:
             for sub_name, sub_data in sub_item.items():
                 iter_task_name = f"{task_name}/{sub_name}[{idx}]"
                 yield from _dispatch_task(ctx, iter_task_name, sub_data, tc)
+                stored = tc.task_outputs.get(iter_task_name)
+                sub_output = (
+                    _unwrap_standardized_output(stored.get("data", stored))
+                    if isinstance(stored, dict)
+                    else stored
+                )
+                loop_state["last"][sub_name] = sub_output
+                if isinstance(sub_output, dict) and sub_output.get("meets_criteria") is True:
+                    loop_state["accepted"] = True
 
         iteration_results.append(item)
+        loop_state["iterations"] = len(iteration_results)
 
     result = _apply_task_output_definition(
         task_data,
@@ -3333,6 +3427,10 @@ def _persist_task_artifacts(
                     inline_payload = {"markdown": str(from_value or "")}
                 elif kind == "text":
                     inline_payload = {"text": str(from_value or "")}
+                elif kind == "html":
+                    # Self-contained HTML rendered live in a sandboxed iframe by
+                    # artifact-renderer.svelte. `from` yields the raw HTML string.
+                    inline_payload = {"html": str(from_value or "")}
                 elif kind == "json":
                     inline_payload = {"value": from_value}
                 elif kind == "link":
@@ -3441,6 +3539,13 @@ def _dispatch_task(
             logger.warning("[SW Workflow] Unknown task type: %s for task: %s", task_type, task_name)
             tc.completed_tasks.add(task_name)
             return None
+
+    # parseJson affordance: when a task declares `parseJson: true`, parse a JSON
+    # object out of its (agent/text) output and merge it into the stored output
+    # so downstream refs resolve real fields — e.g. a critic node ending its turn
+    # with {meets_criteria, feedback} becomes ${ .evaluate.meets_criteria }.
+    if isinstance(task_data, dict) and task_data.get("parseJson"):
+        _apply_parse_json_affordance(tc, task_name)
 
     # Post-task hook: persist any declared artifacts. Best-effort — never
     # raises out of this point. See _persist_task_artifacts for the full
