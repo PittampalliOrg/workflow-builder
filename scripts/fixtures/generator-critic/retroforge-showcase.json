@@ -269,7 +269,7 @@
     },
     "artifacts": [
      {
-      "from": "${ {html: (.data.result.stdout // .data.stdout // .data.result.output // .data.output // \"\")} }",
+      "from": "${ (.data.result.stdout // .data.stdout // .data.result.output // .data.output // \"\") }",
       "if": "${ ((.data.result.stdout // .data.stdout // .data.result.output // .data.output // \"\") | length) > 200 }",
       "kind": "html",
       "slot": "primary",
@@ -278,7 +278,7 @@
       "description": "The built single-file editor (style.css + app.js inlined into standalone.html), rendered in a sandboxed iframe. Persisted from the run workspace so it survives sandbox teardown."
      },
      {
-      "from": "${ {text: (.data.result.stdout // .data.stdout // .data.result.output // .data.output // \"\")} }",
+      "from": "${ (.data.result.stdout // .data.stdout // .data.result.output // .data.output // \"\") }",
       "if": "${ ((.data.result.stdout // .data.stdout // .data.result.output // .data.output // \"\") | length) > 200 }",
       "kind": "text",
       "slot": "secondary",

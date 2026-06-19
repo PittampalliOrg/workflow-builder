@@ -3427,6 +3427,10 @@ def _persist_task_artifacts(
                     inline_payload = {"markdown": str(from_value or "")}
                 elif kind == "text":
                     inline_payload = {"text": str(from_value or "")}
+                elif kind == "html":
+                    # Self-contained HTML rendered live in a sandboxed iframe by
+                    # artifact-renderer.svelte. `from` yields the raw HTML string.
+                    inline_payload = {"html": str(from_value or "")}
                 elif kind == "json":
                     inline_payload = {"value": from_value}
                 elif kind == "link":
