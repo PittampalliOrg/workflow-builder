@@ -683,7 +683,18 @@ class CodexAdapter(CliAdapter):
     def build_argv(
         self, agent_config: Mapping[str, Any], seed_paths: Mapping[str, str]
     ) -> list[str]:
-        argv: list[str] = [CODEX_BIN, "--dangerously-bypass-hook-trust", "--yolo"]
+        # `--dangerously-bypass-approvals-and-sandbox` (vs the narrower `--yolo`)
+        # ALSO skips codex 0.139's startup "Do you trust the contents of this
+        # directory?" onboarding prompt — which the config.toml `[projects].trust_level`
+        # pre-trust does NOT suppress in 0.139. That prompt blocked the kickoff (the
+        # readiness gate correctly won't type into a non-composer dialog); the flag is
+        # codex's documented escape hatch for externally-sandboxed environments, which
+        # the per-session pod is (same posture as the `--yolo` it replaces).
+        argv: list[str] = [
+            CODEX_BIN,
+            "--dangerously-bypass-hook-trust",
+            "--dangerously-bypass-approvals-and-sandbox",
+        ]
         # Resume: the re-mounted $CODEX_HOME/sessions subtree holds the prior
         # rollouts, so `codex resume --last` continues the most-recent thread
         # (no thread id needed; codex merges the TUI flags below into resume).
