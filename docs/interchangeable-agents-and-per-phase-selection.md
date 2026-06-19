@@ -14,10 +14,13 @@ This doc records the current system, where it's already runtime-agnostic vs. cou
 |---|---|---|
 | **Swap a whole workflow's agent runtime via a parameter** (all phases same family) | ✅ **Yes, now** | Collapse the cloned per-runtime fixtures into ONE parameterized workflow. No backend change. |
 | **Per-phase mix-and-match WITHIN one runtime family** (e.g. plan / generate / critic = three different `claude-code-cli` agents, or three different `dapr-agent-py` agents) | ✅ **Yes, now** | Three trigger inputs + three node `agentRef`s + three UI pickers. No backend change. |
-| **Per-phase mix-and-match ACROSS families** (e.g. plan = `dapr-agent-py`, generate = `claude-code-cli`, critic = `codex-cli`) — when phases must **share files** | ⛔ **Blocked** | A **unified workspace** both families honor (see §4). The generator/critic loop shares `/sandbox/work` (SPEC.md + the built app); today that mount is interactive-cli-only. |
-| **Per-phase mix-and-match across families when phases DON'T share a filesystem** (pass artifacts via jq context / the files API instead) | ✅ **Yes, with authoring change** | Hand off via `workflow_artifacts` / task outputs rather than a shared FS. |
+| **Per-phase mix-and-match ACROSS workspace backends** (e.g. plan = `dapr-agent-py`, generate = `codex-cli`) — when phases must **share files** | ⛔ **Not supported — REJECTED at dispatch** | The two families use *physically different* file storage (see §4): cli-agents write a pod-local JuiceFS mount; dapr-agent-py writes a **remote OpenShell sandbox**. A shared `/sandbox/work` cannot span them. The resolver now fails fast (`WorkspaceBackendMismatchError`) instead of silently losing files. |
 
-**Bottom line:** the dispatch layer is *already* fully runtime-agnostic per node — the backend resolves each `durable/run` node's `agentRef` → runtime → app-id independently (verified). The work is (1) **authoring** (one parameterized workflow with three agent inputs instead of four cloned fixtures), (2) **UI** (render per-phase agent pickers — the form renderer is already schema-driven), and (3) removing the **shared-workspace** coupling if we want true cross-family mixing.
+**Decided strategy (2026-06-19):** rather than bridge the two storage backends (rejected — see §4), we **constrain per-phase mix-and-match to a single workspace-backend family** and make the boundary explicit + enforced:
+- Each runtime declares a `capabilities.workspaceBackend` in the registry SSOT (`juicefs-shared` for interactive-cli; `openshell-shared` for dapr-agent-py / browser-use; `pod-local` for claude-agent-py / adk-agent-py).
+- `resolveSpecAgentRefs` rejects any workflow whose nodes share a `workspaceRef` but resolve to different backends.
+
+**Bottom line:** the dispatch layer is *already* fully runtime-agnostic per node (verified). Within one backend family, per-phase mix-and-match works today (Phase 1, shipped). Cross-backend mixing is deliberately **not** supported — it's a storage-layer impossibility without a unified-workspace rebuild, so we guard it rather than fake it.
 
 ---
 
@@ -113,32 +116,35 @@ From `services/shared/runtime-registry.json` (capability SSOT), `src/lib/server/
 
 ---
 
-## 4. The blocker: shared workspace is interactive-cli-only
+## 4. Workspace backends — why cross-backend mixing is impossible, not just unwired
 
-The generator/critic loop relies on a **per-execution shared filesystem** so the phases hand off `SPEC.md` and the built artifact:
+The generator/critic loop relies on a **per-execution shared filesystem** so the phases hand off `SPEC.md` and the built artifact. The decisive finding (verified in source, 2026-06-19): **the two runtime families do their file I/O in physically different places.**
 
-- **interactive-cli classes** (`interactive-cli`, `interactive-cli-agy`) mount a per-execution JuiceFS at `/sandbox/work` (`sharedWorkspaceStore*` in the stacks `sandbox-execution-api` classes JSON); cli-agents launch in it via `CLI_SHARED_WORKSPACE_MOUNT`.
-- **`dapr-agent-py`** (the `interactive-agent` / agent-sandbox class) has **no `sharedWorkspaceStore`**; it gets `workspaceRef = "local"` (pod-local `/sandbox`) unless an explicit `ws_*` workspace is provisioned (`workspace/profile`). So a dapr node and a cli node in the same workflow see **different** `/sandbox/work`.
+- **interactive-cli family** (`claude-code-cli` / `codex-cli` / `agy-cli`) — tools run *in the cli pod*; files live on a **pod-local per-execution JuiceFS** mount at `/sandbox/work` (`sharedWorkspaceStore*` in the stacks `sandbox-execution-api` classes; keyed by `sharedWorkspaceKey` = executionId). `workspaceBackend: juicefs-shared`.
+- **`dapr-agent-py`** — its tools do **not touch the pod filesystem at all**. Every tool (`file_write`, shell, …) runs via `SandboxSession.exec()` against a **remote OpenShell sandbox** (`openshell_runtime.py:119-170`, `SandboxClient.from_active_cluster()` + `sandboxName`). Files live in that remote sandbox (keyed by `sandboxName` = executionId-derived). `workspaceBackend: openshell-shared`. (browser-use shares this backend.)
+- **`claude-agent-py` / `adk-agent-py`** — own pod filesystem, not shared across pods. `workspaceBackend: pod-local`.
 
-So cross-family phases cannot share files today. Options to remove it:
+So **W1 (mount the JuiceFS into the dapr pod) achieves nothing** — dapr's tools never read the dapr pod's filesystem. The backends are different storage systems; a shared `/sandbox/work` path name does not make them the same bytes. Within a family it works (all-cli share the JuiceFS; all-dapr/openshell share the OpenShell sandbox), which is why Phase 1 and the all-dapr RetroForge demo both work.
 
-| Option | What | Pros | Cons |
-|---|---|---|---|
-| **W1. Extend the shared JuiceFS mount to the `dapr-agent-py` class** | Add `sharedWorkspaceStore*` to the `interactive-agent` class so it also mounts the per-execution `/sandbox/work` | Smallest change; same handoff contract for all families; reuses proven JuiceFS plumbing | Touches the agent-sandbox pod shape (security context, mount) for ALL dapr runs; JuiceFS perf/quotas; dapr's openshell workspace model differs |
-| **W2. Workflow-scoped shared PVC/JuiceFS keyed on `executionId`, mounted by every runtime class** | Promote the mount from per-execution-class to per-execution, runtime-agnostic | Cleanest target architecture; one workspace concept | More plumbing; needs the orchestrator to provision + every class to honor `workspaceRef = executionId` |
-| **W3. No shared FS — hand off via artifacts/context** | Each phase writes its output to `workflow_artifacts` / task output; the next phase reads it from jq context (or downloads via the files API into its own pod) | No mount changes; already-standard artifact plumbing; works across ANY runtime incl. browser-use | Re-authors the loop (the deterministic gate currently greps files in-place); large blobs need the files API; not "edit-in-place" |
-| **W4. Keep cross-family mixing out of scope** | Mix-and-match only *within* a family (still a big win); document the constraint | Zero risk; ships now | Doesn't meet the full "any agent for any phase" goal |
+### Decision: constrain + guard, don't bridge
 
-**Recommendation:** ship **Goal B within-family now** (W4 as the documented constraint for v1), and pursue **W1** (or W2) as the dedicated follow-up that unlocks true cross-family mixing — with **W3** as the pattern for loops that don't need edit-in-place file sharing.
+We do **not** pursue bridging the backends (W1/W2 are a storage rebuild for marginal benefit). Instead:
+
+1. **`capabilities.workspaceBackend`** is now a first-class field in the runtime registry SSOT (`services/shared/runtime-registry.json` → synced to the orchestrator + BFF copies): `juicefs-shared` (cli family), `openshell-shared` (dapr-agent-py, browser-use), `pod-local` (claude-agent-py, adk-agent-py).
+2. **`resolveSpecAgentRefs` enforces it** (`src/lib/server/agents/resolver.ts` `assertConsistentWorkspaceBackends`): any group of `durable/run` nodes sharing a `workspaceRef` must resolve to a single `workspaceBackend`, else it throws `WorkspaceBackendMismatchError` at dispatch with a clear message. This turns the old silent failure (files vanish) into a fast, explanatory rejection.
+
+**Net rule:** per-phase mix-and-match is supported **within one workspace-backend family** (any cli ↔ any cli; any openshell ↔ any openshell) and **rejected across families** when they share a workspace.
+
+For genuinely heterogeneous pipelines, the future-if-needed path is **W3 — context/artifact handoff** (each phase reads inputs from jq context / `workflow_artifacts` and writes outputs back; no shared FS). Not built; recorded for when a real need appears.
 
 ---
 
 ## 5. Phased plan
 
-- **Phase 1 — Parameterized generator/critic + per-phase inputs (within-family).** One `generator-critic` workflow with `planAgent`/`generatorAgent`/`criticAgent` inputs; phase nodes reference them; retire the clones. *No backend change.* Delivers Goal A + Goal B within a family.
-- **Phase 2 — UI per-phase pickers + swap-safety verdict.** Render the three agent selectors in `execute-dialog` (and the node config's AgentPicker already covers static authoring); show the `swap-safety` `allow|warn|reject` badge per selection. Make `modelSpec` a conditional field (shown only for API-key runtimes).
-- **Phase 3 — Workspace unification (W1/W2).** Extend the shared per-execution mount to `dapr-agent-py` so cross-family phases can share `/sandbox/work`. Unlocks full any-agent-any-phase mixing.
-- **Phase 4 (optional) — generator/critic authoring affordance.** A canvas preset so the loop isn't fixtures-only.
+- **Phase 1 — Parameterized generator/critic + per-phase inputs (within-family).** ✅ Shipped (PR #225). One `generator-critic` workflow with `planAgent`/`generatorAgent`/`criticAgent` inputs; dev-verified with a claude+codex mix.
+- **Phase 2 — UI per-phase pickers + swap-safety verdict.** Render the three agent selectors in `execute-dialog`; show the `swap-safety` `allow|warn|reject` badge per selection; surface the `workspaceBackend` of each selection so the user can't unknowingly compose a cross-backend (now-rejected) mix. Make `modelSpec` conditional (API-key runtimes only).
+- **Phase 3 — Same-backend constraint, explicit + enforced.** ✅ Done (this revision): `workspaceBackend` in the registry SSOT + the resolver guard. (Replaces the original "extend the mount" scope, which the §4 finding invalidated.)
+- **Phase 4 (optional) — generator/critic authoring affordance.** A canvas preset so the loop isn't fixtures-only. (W3 artifact-handoff would live here if cross-backend pipelines are ever needed.)
 
 ---
 
