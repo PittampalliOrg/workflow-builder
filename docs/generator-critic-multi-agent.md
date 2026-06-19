@@ -267,3 +267,26 @@ Phase 1 chose the **workflow-native** realization (the Dapr evaluator-optimizer 
 - ryzen's `function-router` predates the `goal/plan` route (routes it to a nonexistent `ap-goal-service`) — verification used a hardcoded `goalSpec` via a `set` node instead of the live `planGoal`. Deploy a current function-router to exercise the real plan step.
 - the execute route requires every `durable/run` to carry a named `agentRef`; inline-only `agentConfig` is rejected.
 - registered dapr-agent-py agents on ryzen pin `runtime_app_id: agent-runtime-pool-coding` (a phantom app-id) → stuck `rescheduling`; a per-session agent needs `runtime_app_id: null` (created `evalopt-agent`). The Kueue `interactive-agent` quota is only 2 pods — zombie sandboxes from interrupted runs exhaust it and must be reaped.
+
+---
+
+## 9. Phase 2 — subjective design grading (2026-06-18)
+
+Per the "code-level now, vision when Anthropic is free" decision, Phase 2 ships the design-critic loop on the default (deepseek) model with a clean upgrade path to pixel-level vision.
+
+**Feasibility findings (vision):** the ONLY image-preserving path is **Anthropic models via the direct SDK** (`anthropic_adapter.py` handles image tool_results); `deepseek-v4-pro` and everything through the MLflow gateway **flatten images to text** (`gateway_adapter.py:_as_text`). `browser/validate` stores screenshots to `workflow_browser_artifacts` for human review — it does **not** feed the agent. So a true vision critic = a Tier-2 critic agent on `anthropic/claude-*` + Playwright MCP (it screenshots itself); the page must be *served* (the generator's files live in the openshell workspace, not the critic pod).
+
+**Shipped (`design-critic-showcase` template):**
+- A **4-dimension design rubric** (Anthropic's design_quality / originality / craft / functionality) — `planGoal` authors these for design intents; the template hardcodes them.
+- A **default-reject, museum-quality-calibrated critic** that reads the generator's HTML/CSS and judges each dimension (code-level critique).
+- The generator builds a landing page in the shared workspace, no `goalSpec` → no `update_goal`.
+- **Structured for the vision upgrade with no rework**: flip the critic node's `modelSpec` → `anthropic/claude-*` and add Playwright MCP to its `mcpServers`.
+
+**Verified on ryzen:**
+- ✅ The critic produces a *rigorous, taste-driven* 4-dimension evaluation — e.g. it checked AI-default tells (flagged Playfair+Inter+JetBrains fonts *not* system default, amber *not* `#007bff`, no generic 3-card layout) and cited concrete flaws (a `#pricing` nav link with no pricing section). Not a rubber stamp.
+- ✅ **Multi-cycle convergence** (run `EPY2kvr1`): generate-0 → evaluate-0 (**reject**) → generate-1 → evaluate-1 (**accept**).
+- ✅ **Real feedback carry** — generate-1's prompt contained the critic's *actual* verdict text (via the robust `.loop.last.evaluate | tojson` fallback). This also closes the Phase-1 open item (multi-iteration feedback carry with real critic feedback).
+
+**Deferred to Phase 2.5 (coupled — both need the browser-render path):**
+- **Screenshot artifact** for human review: a `browser/validate` capture step was authored + correctly wired (routes to `openshell-agent-runtime /api/browser/validate`), but `openshell-agent-runtime` is a **Knative scale-to-zero** service and every call **cold-starts past the function-router's 45s timeout** (`Cold start detected: 45004ms vs avg 8894ms`). Needs a Knative min-scale (keep-warm) or a higher browser/validate timeout. The capture node is removed from the shipped template until that's addressed.
+- **Pixel-level vision critic**: flip the critic to `anthropic/claude-*` + Playwright MCP (Anthropic-only; gated on Anthropic API quota, flagged limited until 2026-07-01).
