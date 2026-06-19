@@ -2641,12 +2641,19 @@ def _handle_call_task(
         if not isinstance(gate_command, str) and isinstance(final_config.get("body"), dict):
             gate_command = final_config["body"].get("command")
         gate_cwd = final_config.get("cwd") or "/sandbox/work"
+        # Optional readFile: return a large file's FULL contents (chunked) instead
+        # of cli-agent-py's 8 KiB-tailed stdout — used by the capture node to grab
+        # the built standalone.html.
+        gate_read_file = final_config.get("readFile")
+        if not isinstance(gate_read_file, str) and isinstance(final_config.get("body"), dict):
+            gate_read_file = final_config["body"].get("readFile")
         result = yield ctx.call_activity(
             cli_workspace_command,
             input=_freeze({
                 "executionId": tc.db_execution_id or tc.execution_id,
                 "command": gate_command,
                 "cwd": gate_cwd,
+                "readFile": gate_read_file if isinstance(gate_read_file, str) else None,
                 "_otel": tc.otel_ctx,
             }),
         )

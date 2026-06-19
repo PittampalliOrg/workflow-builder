@@ -32,6 +32,8 @@ def cli_workspace_command(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     execution_id = str(input_data.get("executionId") or "").strip()
     command = input_data.get("command")
     cwd = str(input_data.get("cwd") or "/sandbox/work")
+    read_file = input_data.get("readFile")
+    read_file = read_file.strip() if isinstance(read_file, str) and read_file.strip() else None
     if not execution_id:
         return {"success": False, "result": {"exitCode": -1, "stdout": "", "stderr": "cli_workspace_command: executionId is required"}}
     if not isinstance(command, str) or not command.strip():
@@ -48,11 +50,14 @@ def cli_workspace_command(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         if not internal_token:
             raise RuntimeError("INTERNAL_API_TOKEN is not configured — cli_workspace_command requires it")
         try:
+            payload = {"command": command, "cwd": cwd}
+            if read_file:
+                payload["readFile"] = read_file
             response = requests.post(
                 f"{url}/api/internal/workflows/executions/{execution_id}/cli-workspace-command",
-                json={"command": command, "cwd": cwd},
+                json=payload,
                 headers={"X-Internal-Token": internal_token},
-                timeout=120,
+                timeout=180,
             )
             if response.status_code >= 400:
                 detail = response.text[:2000]
