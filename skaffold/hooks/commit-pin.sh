@@ -130,7 +130,7 @@ git -C "${stacks_dir}" reset --hard "origin/${branch}"
 #     (no-ops when our local render already matches). Other Skaffold-owned services
 #     still pin via their per-app manifests block (the nested-parser path below).
 case "${service}" in
-  workflow-builder | workflow-mcp-server | sandbox-execution-api)
+  workflow-builder | workflow-mcp-server)
     ryzen_pins="${stacks_dir}/packages/components/hub-spoke-appsets/release-pins/workflow-builder-images-ryzen.yaml"
     if [ ! -f "${ryzen_pins}" ]; then
       echo "commit-pin: ryzen pins file missing: ${ryzen_pins}" >&2
