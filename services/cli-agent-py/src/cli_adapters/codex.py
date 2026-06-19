@@ -567,6 +567,16 @@ class CodexAdapter(CliAdapter):
     # duplicate user.message rows by digest.
     uses_injection_marker = False
     hook_reports_prompt_submit = True
+    # codex fires a UserPromptSubmit hook on accept → the supervisor confirms the
+    # kickoff via that deterministic ack (re-pressing Enter until it fires) rather
+    # than guessing composer-readiness from a fixed boot delay.
+    emits_prompt_submit_hook = True
+    # codex 0.139 shows a blocking startup "Do you trust the contents of this
+    # directory?" prompt that NO config ([projects].trust_level) or flag
+    # (--yolo / --dangerously-bypass-approvals-and-sandbox / --dangerously-bypass-
+    # hook-trust) suppresses. The readiness gate auto-accepts it (Enter = the
+    # highlighted "Yes, continue") so the composer renders.
+    onboarding_accept_markers = ("do you trust the contents of this directory",)
     # Content-gate the kickoff on the rendered composer: herdr's native codex
     # detector races and can report `idle` while codex is still on its
     # pre-composer welcome/banner screen, so an agent_status-gated seed strands
@@ -580,6 +590,13 @@ class CodexAdapter(CliAdapter):
     # timeout the lifecycle still injects best-effort (degrades to the old
     # behavior, never worse).
     prompt_ready_marker = "· /sandbox"
+    # Trust ONLY the rendered composer marker, never herdr's boot-time `idle`. codex
+    # can take >10s to draw its composer (auth refresh / onboarding / a slow pod);
+    # the idle-status fallback then fired mid-boot and the kickoff's Enter was lost,
+    # leaving the prompt stranded in the composer (observed on a loop's 2nd generate
+    # pod). Waiting for `· /sandbox` (or the full seed timeout → best-effort inject)
+    # is correct because the marker only renders once the composer is ready.
+    trust_idle_ready_fallback = False
 
     def on_session_started(self, session_id: str | None) -> None:
         # codex's refresh token is SINGLE-USE: on boot codex refreshes and
@@ -672,7 +689,18 @@ class CodexAdapter(CliAdapter):
     def build_argv(
         self, agent_config: Mapping[str, Any], seed_paths: Mapping[str, str]
     ) -> list[str]:
-        argv: list[str] = [CODEX_BIN, "--dangerously-bypass-hook-trust", "--yolo"]
+        # `--dangerously-bypass-approvals-and-sandbox` (vs the narrower `--yolo`)
+        # ALSO skips codex 0.139's startup "Do you trust the contents of this
+        # directory?" onboarding prompt — which the config.toml `[projects].trust_level`
+        # pre-trust does NOT suppress in 0.139. That prompt blocked the kickoff (the
+        # readiness gate correctly won't type into a non-composer dialog); the flag is
+        # codex's documented escape hatch for externally-sandboxed environments, which
+        # the per-session pod is (same posture as the `--yolo` it replaces).
+        argv: list[str] = [
+            CODEX_BIN,
+            "--dangerously-bypass-hook-trust",
+            "--dangerously-bypass-approvals-and-sandbox",
+        ]
         # Resume: the re-mounted $CODEX_HOME/sessions subtree holds the prior
         # rollouts, so `codex resume --last` continues the most-recent thread
         # (no thread id needed; codex merges the TUI flags below into resume).

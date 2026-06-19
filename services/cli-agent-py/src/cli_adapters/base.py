@@ -157,6 +157,20 @@ class CliAdapter(abc.ABC):
     # collapses to "↑ N more lines" while it holds a draft.
     composer_draft_markers: tuple[str, ...] = ()
 
+    # When True, the CLI emits a UserPromptSubmit hook when it ACCEPTS a typed prompt
+    # (codex/claude). The supervisor then confirms the kickoff submit deterministically
+    # by waiting for that hook ack (re-pressing Enter until it fires) — instead of
+    # predicting readiness from screen/status or a fixed boot delay. agy emits no such
+    # hook (it mirrors native state), so it keeps the composer-draft/status confirm.
+    emits_prompt_submit_hook: bool = False
+
+    # Screen substrings for benign one-time startup ONBOARDING dialogs that block the
+    # composer and can't be suppressed via config/flags (codex 0.139's "Do you trust
+    # the contents of this directory?"). The readiness gate auto-accepts them with
+    # Enter (their default is affirmative) so the composer can render. The per-session
+    # pod is the isolation boundary, so accepting is safe + expected.
+    onboarding_accept_markers: tuple[str, ...] = ()
+
     def format_seed_user_message(self, text: str) -> str:
         """Return the first prompt typed into the CLI TUI.
 

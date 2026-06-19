@@ -112,6 +112,15 @@ class ClaudeCodeAdapter(CliAdapter):
     # `? for shortcuts` hint footer (absent on the boot screen), so gate on it.
     # On gate timeout the lifecycle still injects best-effort (never worse).
     prompt_ready_marker = "? for shortcuts"
+    # Trust ONLY the rendered composer marker, never herdr's boot-time `idle` — the
+    # marker exists precisely because herdr reports `idle` before the composer is
+    # drawn, so the idle-status fallback would inject into the boot screen and drop
+    # the Enter (same premature-injection class fixed for codex/agy).
+    trust_idle_ready_fallback = False
+    # Claude Code fires a UserPromptSubmit hook on accept → confirm the kickoff via
+    # that deterministic ack (re-press Enter until it fires) instead of screen/status
+    # heuristics.
+    emits_prompt_submit_hook = True
 
     # -- seeding ----------------------------------------------------------------
 

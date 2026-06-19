@@ -100,7 +100,12 @@ CLI_GRACEFUL_EXIT_WAIT_SECONDS = _env_float("CLI_GRACEFUL_EXIT_WAIT_SECONDS", 30
 # mid-session injections (goal-loop continuations, chat) ride a shorter gate
 # since the TUI is already at its prompt. Both fall back to a best-effort send
 # on timeout rather than dropping the message.
-CLI_SEED_READY_TIMEOUT = _env_float("CLI_SEED_READY_TIMEOUT_SECONDS", 60.0)
+# Safety cap for the readiness gate, NOT a fixed pre-inject delay: the gate returns
+# the instant the composer marker renders (a real UI state), so this only bounds a
+# genuinely-stuck boot. codex can take >60s to draw its composer on a busy node; a
+# too-tight cap forced a best-effort inject into a not-yet-drawn composer (text never
+# landed). Keep it generous so the deterministic marker is what gates injection.
+CLI_SEED_READY_TIMEOUT = _env_float("CLI_SEED_READY_TIMEOUT_SECONDS", 180.0)
 CLI_INJECT_READY_TIMEOUT = _env_float("CLI_INJECT_READY_TIMEOUT_SECONDS", 20.0)
 CLI_READY_POLL_SECONDS = _env_float("CLI_READY_POLL_SECONDS", 0.5)
 CLI_READY_MARKER_STATUS_FALLBACK_SECONDS = _env_float(
@@ -117,6 +122,12 @@ CLI_SUBMIT_DELAY_SECONDS = _env_float("CLI_SUBMIT_DELAY_SECONDS", 2.0)
 CLI_SUBMIT_VERIFY_SECONDS = _env_float("CLI_SUBMIT_VERIFY_SECONDS", 2.0)
 CLI_SUBMIT_RETRIES = int(_env_float("CLI_SUBMIT_RETRIES", 5))
 CLI_SUBMIT_RETRY_DELAY_SECONDS = _env_float("CLI_SUBMIT_RETRY_DELAY_SECONDS", 0.5)
+# Deterministic submit confirmation for CLIs that emit a UserPromptSubmit hook
+# (codex/claude): after typing + Enter, wait this long for the CLI's own hook ack
+# before re-pressing Enter. The hook firing is PROOF the CLI accepted the prompt —
+# so submission no longer depends on guessing readiness from screen state / a fixed
+# boot delay; we re-press until the CLI itself confirms (bounded by CLI_SUBMIT_RETRIES).
+CLI_SUBMIT_ACK_WAIT_SECONDS = _env_float("CLI_SUBMIT_ACK_WAIT_SECONDS", 8.0)
 CLI_SEED_SEND_RETRIES = int(_env_float("CLI_SEED_SEND_RETRIES", 3))
 CLI_SEED_SEND_RETRY_DELAY_SECONDS = _env_float(
     "CLI_SEED_SEND_RETRY_DELAY_SECONDS", 1.0
@@ -184,6 +195,14 @@ class SessionSupervisor:
         self.idle_after_submit_is_success = False
         self.trust_idle_ready_fallback = True
         self.composer_draft_markers: tuple[str, ...] = ()
+        # When True, the CLI emits a UserPromptSubmit hook on accept; the supervisor
+        # confirms submission by waiting for that hook ack (deterministic) instead of
+        # screen/status heuristics. hooks_api bumps `_prompt_submit_seen` per hook.
+        self.emits_prompt_submit_hook = False
+        self._prompt_submit_seen = 0
+        # Screen substrings for benign startup onboarding dialogs to auto-accept
+        # (Enter) so they don't block the composer (codex's directory-trust prompt).
+        self.onboarding_accept_markers: tuple[str, ...] = ()
         self._cli_session_id: str | None = None
 
         # Semantic-state tracking.
@@ -518,6 +537,13 @@ class SessionSupervisor:
             )
         return turn
 
+    def note_prompt_submit_ack(self) -> None:
+        """Called by hooks_api on every UserPromptSubmit hook. The hook firing is
+        the CLI's own deterministic proof that it accepted a typed prompt; the
+        submit-confirmation loop watches this counter instead of guessing from
+        screen/status."""
+        self._prompt_submit_seen += 1
+
     def suppress_next_idle_status(self) -> None:
         """Drop the next ordinary idle echo after workflow turn completion.
 
@@ -651,6 +677,15 @@ class SessionSupervisor:
                     # while a turn is in flight → also correct for mid-session).
                     if await self._prompt_rendered(pane):
                         return True
+                    # A known benign startup onboarding dialog (e.g. codex 0.139's
+                    # "Do you trust the contents of this directory?") blocks the
+                    # composer and is NOT suppressible via config/flags. Auto-accept
+                    # it so the composer renders — the per-session pod is the
+                    # isolation boundary, and accepting is exactly what lets our
+                    # seeded project config/hooks load.
+                    if await self._maybe_accept_onboarding(pane):
+                        await asyncio.sleep(CLI_READY_POLL_SECONDS)
+                        continue
                     if not self.trust_idle_ready_fallback:
                         # Screen-detected TUI (agy): herdr `idle` is unreliable
                         # during boot; wait for the rendered marker (or the outer
@@ -717,6 +752,31 @@ class SessionSupervisor:
             if marker and marker.strip()
         )
 
+    async def _maybe_accept_onboarding(self, pane: str) -> bool:
+        """Auto-accept a known benign startup onboarding dialog (configured per
+        adapter, e.g. codex's directory-trust prompt) by pressing Enter — the
+        dialog's default is the affirmative ("Yes, continue"). Returns True if the
+        accept key was sent (so the readiness gate keeps polling for the composer).
+        Safe to call every poll: once the dialog clears it no longer matches."""
+        if not self.onboarding_accept_markers:
+            return False
+        text = await self._visible_pane_text(pane)
+        if not text:
+            return False
+        lowered = text.lower()
+        if not any(
+            m.strip().lower() in lowered
+            for m in self.onboarding_accept_markers
+            if m and m.strip()
+        ):
+            return False
+        logger.info("[supervisor] auto-accepting startup onboarding dialog (Enter)")
+        try:
+            await self._client.pane_submit_enter(pane)
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+
     async def _composer_has_draft(self, pane: str) -> bool:
         """True when an un-submitted prompt DRAFT is still in the composer (a
         ``composer_draft_markers`` substring is on the visible screen). Used to
@@ -772,6 +832,9 @@ class SessionSupervisor:
                 send_text
             )
             self._injected_prompt_hashes.update(prompt_digests)
+            # Sample the hook-ack counter BEFORE typing so the very first Enter's
+            # UserPromptSubmit ack is detected (not absorbed into the baseline).
+            ack_baseline = self._prompt_submit_seen
             submitted = False
             turn_started = False
             # Slash commands (native `/goal`, `/clear`, …) MUST start at column 0:
@@ -790,6 +853,23 @@ class SessionSupervisor:
                 await asyncio.sleep(CLI_SUBMIT_DELAY_SECONDS)
                 if not await self._submit_enter_reliably(pane):
                     return False
+                # Deterministic path: CLIs that emit a UserPromptSubmit hook
+                # (codex/claude) confirm via the hook ack + Enter re-press, with no
+                # reliance on screen/status readiness guessing.
+                if self.emits_prompt_submit_hook:
+                    if not await self._await_hook_submit_ack(pane, ack_baseline):
+                        logger.warning(
+                            "[supervisor] prompt not acknowledged by the CLI's "
+                            "UserPromptSubmit hook after %s re-press(es); leaving "
+                            "it in the composer",
+                            CLI_SUBMIT_RETRIES,
+                        )
+                        return False
+                    # codex's hook records turn_started itself; others need it here.
+                    if not self.hook_reports_prompt_submit:
+                        self.note_turn_started(source)
+                    submitted = True
+                    return True
                 if self.idle_after_submit_is_success and not self.hook_reports_prompt_submit:
                     self.note_turn_started(source)
                     turn_started = True
@@ -832,6 +912,37 @@ class SessionSupervisor:
                     attempts,
                 )
                 await asyncio.sleep(max(0.0, CLI_SUBMIT_RETRY_DELAY_SECONDS))
+        return False
+
+    async def _await_hook_submit_ack(self, pane: str, baseline: int) -> bool:
+        """Deterministic submit confirmation for CLIs that emit a UserPromptSubmit
+        hook (codex/claude). ``baseline`` is ``_prompt_submit_seen`` sampled BEFORE
+        the initial Enter (so that first Enter's ack still counts). Poll for the
+        CLI's own hook ack (``_prompt_submit_seen`` advancing past baseline); if it
+        doesn't arrive, re-press Enter and poll again — bounded. The hook is PROOF
+        the CLI accepted the prompt, so this needs no readiness prediction: a kickoff
+        that landed in a still-booting composer self-heals because we keep re-pressing
+        until the CLI acknowledges (the typed text already sits in the composer)."""
+        attempts = max(1, CLI_SUBMIT_RETRIES + 1)
+        for attempt in range(attempts):
+            waited = 0.0
+            while waited < CLI_SUBMIT_ACK_WAIT_SECONDS:
+                await asyncio.sleep(CLI_READY_POLL_SECONDS)
+                waited += CLI_READY_POLL_SECONDS
+                if self._prompt_submit_seen > baseline:
+                    return True  # the CLI's UserPromptSubmit hook fired → accepted
+            if attempt >= attempts - 1:
+                return False
+            logger.info(
+                "[supervisor] no UserPromptSubmit hook ack yet — re-pressing Enter "
+                "(%s/%s)",
+                attempt + 1,
+                attempts - 1,
+            )
+            try:
+                await self._client.pane_submit_enter(pane)
+            except Exception:  # noqa: BLE001
+                return False
         return False
 
     async def _confirm_submitted(self, pane: str) -> bool:

@@ -163,7 +163,7 @@ def test_codex_build_argv_default_mode(codex_home):
     argv = get_adapter("codex").build_argv(SESSION["agentConfig"], {})
     assert argv[0] == "codex"
     assert "--dangerously-bypass-hook-trust" in argv
-    assert "--yolo" in argv
+    assert "--dangerously-bypass-approvals-and-sandbox" in argv
     assert "--sandbox" not in argv
     assert "--ask-for-approval" not in argv
     assert "--model" in argv and "gpt-5.5" in argv
@@ -172,7 +172,7 @@ def test_codex_build_argv_default_mode(codex_home):
 def test_codex_build_argv_bypass_mode(codex_home):
     cfg = {**SESSION["agentConfig"], "permissionMode": "bypass"}
     argv = get_adapter("codex").build_argv(cfg, {})
-    assert "--yolo" in argv
+    assert "--dangerously-bypass-approvals-and-sandbox" in argv
 
 
 def test_codex_seed_links_sessions_into_transcript_store(codex_home, monkeypatch, tmp_path):
