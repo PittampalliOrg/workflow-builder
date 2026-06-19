@@ -111,23 +111,16 @@ class TranscriptTailer:
         # default claude path below.
         self._maybe_emit_goal_completion(entry)
 
-        # Publish the entry's session events first (so the final agent.message is
-        # emitted before turn.completed terminates the turn), THEN raise the
-        # turn-completion edge for EVERY adapter — incl. the default claude path.
-        # The claude adapter returns None from map_transcript_entry (it uses
-        # _handle_claude_entry), so _adapter_events never reaches completion;
-        # calling _raise_adapter_completion here is the ONLY place claude's
-        # transcript_turn_completion actually fires — herdr/Stop-hook-independent.
-        # Idempotent: turn_completion_raised dedups; transcript_turn_completion
-        # returns None for non-end-of-turn entries.
+        # Turn completion is owned EXCLUSIVELY by the Stop hook. These CLI runs are
+        # single-turn (autoTerminateAfterEndTurn) so a Stop unambiguously means the
+        # turn is done — no native /goal multi-turn loop to disambiguate. The
+        # transcript is read ONLY for CONTENT (agent.message / usage) + goal
+        # telemetry above; it never raises turn.completed (that path was fragile:
+        # claude dead-code wiring + codex/agy JuiceFS offset-tail misses).
         adapter_events = self._adapter_events(entry)
         if adapter_events is not None:
-            self._raise_adapter_completion(entry)
             return adapter_events
-
-        emitted = self._handle_claude_entry(entry)
-        self._raise_adapter_completion(entry)
-        return emitted
+        return self._handle_claude_entry(entry)
 
     def _maybe_emit_goal_completion(self, entry: Mapping[str, Any]) -> None:
         if self.goal_completion_published or self._adapter is None:
@@ -241,27 +234,7 @@ class TranscriptTailer:
             )
             emitted += 1
 
-        # NOTE: _raise_adapter_completion is now called once per entry from
-        # _handle_line (before this method) so it fires for the default claude
-        # path too; do not call it again here (turn_completion_raised is set-only).
         return emitted
-
-    def _raise_adapter_completion(self, entry: Mapping[str, Any]) -> None:
-        if self._adapter is None or self._raise_lifecycle is None:
-            return
-        try:
-            event = self._adapter.transcript_turn_completion(entry)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[tailer] adapter transcript completion failed: %s", exc)
-            return
-        if not isinstance(event, Mapping) or event.get("type") != "turn.completed":
-            return
-        payload = dict(event)
-        text = payload.get("lastAssistantText") or payload.get("content")
-        if isinstance(text, str) and text.strip():
-            self.last_assistant_text = text.strip()
-        self.turn_completion_raised = True
-        self._raise_lifecycle([payload])
 
 
 class TailerManager:

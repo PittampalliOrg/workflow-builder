@@ -1251,18 +1251,11 @@ class AntigravityAdapter(CliAdapter):
             events.append(event)
         return events
 
-    def transcript_turn_completion(self, entry: Mapping[str, Any]) -> dict[str, Any] | None:
-        # When output-sync / stop-condition guardrails are active, keep the Stop
-        # hook authoritative so durable/run cannot complete before required
-        # files exist. Plain chat turns have no guard, and AGY can skip Stop for
-        # fast text-only replies; use the final transcript row as the fallback
-        # completion edge for those turns.
-        if has_stop_guard_config():
-            return None
-        text = _agy_final_response_text(entry)
-        if not text:
-            return None
-        return {"type": "turn.completed", "lastAssistantText": text}
+    # Turn completion is owned EXCLUSIVELY by the Stop hook (base defaults). For
+    # these single-turn autoTerminate build runs AGY fires Stop after its tool use;
+    # the transcript is read only for CONTENT (map_transcript_entry). The
+    # output-sync stop-guard (has_stop_guard_config) still gates the Stop hook's
+    # completion via hook_response, not via the transcript.
 
     # -- env -------------------------------------------------------------------
 

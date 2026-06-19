@@ -145,9 +145,6 @@ def test_adapter_transcript_mapping_can_raise_turn_completed(tmp_path):
                 }
             ]
 
-        def transcript_turn_completion(self, entry):
-            return {"type": "turn.completed", "lastAssistantText": entry["content"]}
-
     def publish(session_id, event_type, data, *, source_event_id=None, **_kw):
         published.append((session_id, event_type, data, source_event_id))
 
@@ -168,6 +165,8 @@ def test_adapter_transcript_mapping_can_raise_turn_completed(tmp_path):
             "fake:21",
         )
     ]
-    assert raised == [[{"type": "turn.completed", "lastAssistantText": "final agy answer"}]]
+    # Stop-hook-exclusive cutover: the tailer publishes CONTENT only and never
+    # raises turn.completed from the transcript.
+    assert raised == []
     assert tailer.last_assistant_text == "final agy answer"
-    assert tailer.turn_completion_raised is True
+    assert tailer.turn_completion_raised is False

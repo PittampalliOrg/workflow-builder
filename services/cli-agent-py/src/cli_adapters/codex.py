@@ -751,30 +751,13 @@ class CodexAdapter(CliAdapter):
             return []
         return None
 
-    def transcript_turn_completion(self, entry: Mapping[str, Any]) -> dict[str, Any] | None:
-        payload = _codex_payload(entry)
-        if payload is None or payload.get("type") != "task_complete":
-            return None
-        event: dict[str, Any] = {
-            "type": "turn.completed",
-            "completionSource": "codex_task_complete",
-        }
-        turn_id = clean_string(payload.get("turn_id"))
-        if turn_id:
-            event["turnId"] = turn_id
-        text = _text_from_content(payload.get("last_agent_message"))
-        if text:
-            event["lastAssistantText"] = text
-        return event
-
-    def stop_hook_completes_turn(self) -> bool:
-        # Codex emits an authoritative `task_complete` rollout entry before the
-        # Stop hook. Completing from both sources creates duplicate platform
-        # turns and can leave direct sessions stuck in running.
-        return False
-
-    def is_turn_completion_hook(self, event_name: str) -> bool:
-        return False
+    # Turn completion is owned EXCLUSIVELY by the Stop hook (base defaults:
+    # is_turn_completion_hook -> "Stop", stop_hook_completes_turn -> True). These
+    # are single-turn autoTerminate runs (no native /goal multi-turn loop), so a
+    # Stop unambiguously means the turn is done — no need to disambiguate via the
+    # codex `task_complete` rollout entry (whose JuiceFS-backed transcript tail
+    # could be missed, hanging the turn). The transcript is still mapped for
+    # CONTENT via map_transcript_entry.
 
     # -- env -------------------------------------------------------------------
 
