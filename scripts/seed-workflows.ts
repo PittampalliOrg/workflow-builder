@@ -4472,6 +4472,9 @@ async function seedGeneratorCriticShowcases(params: {
 		// Parameterized per-phase mix-and-match: planAgent/generatorAgent/criticAgent
 		// each selectable independently (Phase 1, interchangeable-agents workstream).
 		"generator-critic-showcase.json",
+		// Coding generator/critic: clone a repo → redesign → build-gate → Playwright
+		// critic (screenshots the running app) → open a PR. (interactive-cli family.)
+		"coding-redesign-cli-showcase.json",
 	]) {
 		const full = path.join(dir, file);
 		if (!fs.existsSync(full)) {
