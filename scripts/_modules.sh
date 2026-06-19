@@ -12,7 +12,7 @@
 _MODULES_SH_LOADED=1
 
 # Skaffold module set — kept in sync with skaffold.yaml's `requires:` list.
-ACTIVE_MODULES=(workflow-builder workflow-orchestrator function-router mcp-gateway swebench-coordinator sandbox-execution-api)
+ACTIVE_MODULES=(workflow-builder workflow-orchestrator function-router mcp-gateway swebench-coordinator sandbox-execution-api cli-agent-py-sandbox)
 INACTIVE_MODULES=()
 ALL_MODULES=("${ACTIVE_MODULES[@]}" "${INACTIVE_MODULES[@]}")
 
@@ -24,7 +24,7 @@ ALL_MODULES=("${ACTIVE_MODULES[@]}" "${INACTIVE_MODULES[@]}")
 # `update-stacks-image` task — NOT by commit-pin. Narrow this to
 # `(workflow-builder)` to hand the other four back to Tekton. Override at
 # runtime via SKAFFOLD_OWNED_SERVICES="a b c".
-SKAFFOLD_OWNED_DEFAULT=(workflow-builder workflow-orchestrator function-router mcp-gateway swebench-coordinator sandbox-execution-api)
+SKAFFOLD_OWNED_DEFAULT=(workflow-builder workflow-orchestrator function-router mcp-gateway swebench-coordinator sandbox-execution-api cli-agent-py-sandbox)
 
 # module → ryzen ArgoCD Application name. ryzen's autonomous-agent `root-ryzen`
 # app-of-apps names its child Applications `ryzen-<module>` (in the `argocd` ns),
@@ -38,6 +38,10 @@ declare -gA MODULE_TO_APP=(
   [mcp-gateway]=ryzen-mcp-gateway
   [swebench-coordinator]=ryzen-swebench-coordinator
   [sandbox-execution-api]=ryzen-sandbox-execution-api
+  # cli-agent-py-sandbox is an agentHostImage, not its own Deployment; its
+  # consumer (sandbox-execution-api) + the BFF carry the pin. Map to the
+  # consumer app for argo ops/status.
+  [cli-agent-py-sandbox]=ryzen-sandbox-execution-api
 )
 
 # module → "<localPort>:<containerPort>" for the dev-loop port-forward banner.
@@ -51,4 +55,6 @@ declare -gA MODULE_PORTS=(
   [mcp-gateway]="3018:8080"
   [swebench-coordinator]="3019:8080"
   [sandbox-execution-api]="3020:8080"
+  # cli-agent-py-sandbox is build-only (no Deployment / port-forward).
+  [cli-agent-py-sandbox]="-:-"
 )

@@ -39,8 +39,14 @@ fi
 # If the stacks worktree isn't found we skip the early check; commit-pin's own
 # missing-kustomization check still catches it after the build.
 stacks_dir="${STACKS_DIR:-$(cd "${PWD}/../../stacks/main" 2>/dev/null && pwd || true)}"
+# Services pinned outside the per-workload kustomization newTag path (commit-pin
+# has a dedicated case for them) are exempt from this guard.
+GUARD_EXEMPT=" cli-agent-py-sandbox "
 if [ -n "${stacks_dir}" ]; then
   for svc in "${services[@]}"; do
+    if [[ "${GUARD_EXEMPT}" == *" ${svc} "* ]]; then
+      continue
+    fi
     if [ ! -f "${stacks_dir}/packages/components/workloads/${svc}/manifests/kustomization.yaml" ]; then
       echo "skaffold-deploy: '${svc}' has no pin target at" >&2
       echo "  packages/components/workloads/${svc}/manifests/kustomization.yaml (stacks: ${stacks_dir})" >&2

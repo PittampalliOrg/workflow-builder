@@ -215,6 +215,96 @@ Co-Authored-By: Skaffold <noreply@anthropic.com>"
     done
     exit 0
     ;;
+  cli-agent-py-sandbox)
+    # The interactive-cli agentHostImage (the real Claude Code / codex / agy TUI
+    # + herdr server). NOT a Deployment of its own. ryzen reads it from the BASE
+    # Deployment manifests directly — there is NO ryzen overlay (the render's main
+    # loop renders ONLY the workflow-builder-ryzen-image Component for ryzen, and
+    # that Component carries workflow-builder + workflow-mcp-server only, no cli
+    # refs). So for ryzen we string-replace the cli ref where it actually lands:
+    #   - workflow-builder Deployment: AGENT_RUNTIME_{CLAUDE,CODEX,AGY}_CLI_DEFAULT_IMAGE
+    #     (the effective image via the BFF imageEnvKey override) + its embedded
+    #     SANDBOX_EXECUTION_CLASSES_JSON interactive-cli/-agy agentHostImage,
+    #   - sandbox-execution-api Deployment: SANDBOX_EXECUTION_CLASSES_JSON
+    #     interactive-cli/-agy agentHostImage (the fallback when the BFF doesn't
+    #     pass agentImage),
+    #   - the flat ryzen pins (source of record + the dev/staging render input on
+    #     the next merge; dev gets the new cli image via the merge outer-loop).
+    wfb_dep="${stacks_dir}/packages/components/workloads/workflow-builder/manifests/Deployment-workflow-builder.yaml"
+    sea_dep="${stacks_dir}/packages/components/workloads/sandbox-execution-api/manifests/Deployment-sandbox-execution-api.yaml"
+    ryzen_pins="${stacks_dir}/packages/components/hub-spoke-appsets/release-pins/workflow-builder-images-ryzen.yaml"
+    for f in "${wfb_dep}" "${sea_dep}" "${ryzen_pins}"; do
+      [ -f "${f}" ] || { echo "commit-pin: missing pin target ${f}" >&2; exit 1; }
+    done
+    digest="${SKAFFOLD_IMAGE##*@}"; case "${digest}" in sha256:*) ;; *) digest="" ;; esac
+    source_sha="${tag#git-}"
+    echo "commit-pin: ${service} → ${repo}:${tag} (base Deployments + flat ryzen pins)"
+    python3 - "$repo" "$tag" "$digest" "$source_sha" "$wfb_dep" "$sea_dep" "$ryzen_pins" <<'PY'
+import sys, re, pathlib
+repo, tag, digest, source_sha, wfb_dep, sea_dep, ryzen_pins = sys.argv[1:8]
+new_ref = f"{repo}:{tag}"
+# 1) Global-replace any cli-agent-py-sandbox:git-<sha> ref in the base Deployments
+#    (covers the CLI_DEFAULT_IMAGE envs + every agentHostImage in the classes JSON).
+pat = re.compile(r"ghcr\.io/pittampalliorg/cli-agent-py-sandbox:git-[0-9a-f]+")
+total = 0
+for path in (wfb_dep, sea_dep):
+    p = pathlib.Path(path)
+    text = p.read_text()
+    text2, n = pat.subn(new_ref, text)
+    if n:
+        p.write_text(text2)
+    total += n
+    print(f"commit-pin: {path}: replaced {n} cli ref(s)")
+if total == 0:
+    sys.exit("commit-pin: no cli-agent-py-sandbox refs found in base Deployments")
+# 2) Upsert the flat ryzen pins sections (same flat schema as the wfb case).
+service = "cli-agent-py-sandbox"
+updates = {"images": tag, "imageRefs": new_ref, "sourceShas": source_sha}
+if digest:
+    updates["digests"] = digest
+pp = pathlib.Path(ryzen_pins)
+lines = pp.read_text().splitlines(keepends=True)
+def set_in_section(section, value):
+    in_s = False
+    for i, ln in enumerate(lines):
+        if ln.rstrip("\n") == section + ":":
+            in_s = True; continue
+        if in_s and ln and not ln[0].isspace() and not ln.startswith("#"):
+            in_s = False
+        if in_s and re.match(r"^\s+" + re.escape(service) + r":\s*", ln):
+            indent = re.match(r"^(\s+)", ln).group(1)
+            lines[i] = f"{indent}{service}: {value}\n"
+            return True
+    return False
+missing = [s for s, v in updates.items() if not set_in_section(s, v)]
+if missing:
+    sys.exit(f"commit-pin: {service} row missing from pins section(s) {missing}")
+pp.write_text("".join(lines))
+print(f"commit-pin: upserted {service} → {tag} in flat ryzen pins")
+PY
+    if git -C "${stacks_dir}" diff --quiet -- "${wfb_dep}" "${sea_dep}" "${ryzen_pins}"; then
+      echo "commit-pin: ${service} already at ${tag} — no commit needed"
+      exit 0
+    fi
+    git -C "${stacks_dir}" add "${wfb_dep}" "${sea_dep}" "${ryzen_pins}"
+    git -C "${stacks_dir}" commit -m "chore(${service}): pin ryzen interactive-cli image to ${tag}
+
+Base Deployment cli agentHostImage (workflow-builder AGENT_RUNTIME_*_CLI_DEFAULT_IMAGE
++ SANDBOX_EXECUTION_CLASSES_JSON; sandbox-execution-api classes JSON) + flat ryzen pins.
+Co-Authored-By: Skaffold <noreply@anthropic.com>"
+    echo "commit-pin: git push origin ${branch}"
+    git -C "${stacks_dir}" push origin "${branch}"
+    echo "commit-pin: ✓ pushed ${service} → ${tag}"
+    # Refresh BOTH consumers (the BFF env + the sandbox-execution-api classes JSON).
+    for app in ryzen-workflow-builder ryzen-sandbox-execution-api; do
+      if kubectl get application "${app}" -n argocd >/dev/null 2>&1; then
+        kubectl annotate application "${app}" -n argocd \
+          "argocd.argoproj.io/refresh=hard" --overwrite >/dev/null 2>&1 || true
+        echo "commit-pin: requested hard refresh of argocd/${app}"
+      fi
+    done
+    exit 0
+    ;;
 esac
 
 if [ ! -f "${manifest_dir}/kustomization.yaml" ]; then

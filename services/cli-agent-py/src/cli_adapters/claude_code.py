@@ -64,6 +64,29 @@ def _record(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _env_flag(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _assistant_text(blocks: Any) -> str:
+    """Join the text blocks of a claude transcript ``message.content`` array
+    (mirrors transcript_tailer._text_of_content_blocks; kept local to avoid an
+    import cycle)."""
+    if isinstance(blocks, str):
+        return blocks.strip()
+    parts: list[str] = []
+    if isinstance(blocks, list):
+        for block in blocks:
+            if isinstance(block, Mapping) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+    return "\n\n".join(parts)
+
+
 def normalize_claude_model(model_spec: Any) -> str | None:
     """Copied from claude-agent-py/src/claude_sdk_runner.py."""
     raw = clean_string(model_spec)
@@ -288,3 +311,38 @@ class ClaudeCodeAdapter(CliAdapter):
         if reason:
             data["summary"] = reason
         return data
+
+    def transcript_turn_completion(
+        self, entry: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        """Deterministic, herdr-independent turn-completion from claude's transcript.
+
+        The continuous transcript poller (``TailerManager._poll_loop``) calls this
+        on every assistant entry. When claude FINISHES a turn the entry carries
+        ``message.stop_reason == "end_turn"`` (mid-turn tool calls carry
+        ``"tool_use"``), so this is the authoritative completed-turn record — the
+        CLI equivalent of dapr-agent-py's agent-loop boundary. Raising
+        ``turn.completed`` here makes turn-end detection independent of BOTH
+        (a) the claude ``Stop`` hook (observed to not always fire) and (b) herdr
+        "idle" (the herdr client socket can drop while claude is alive) — the two
+        signals whose joint failure left durable/run turns hung until timeout.
+
+        Disable via ``CLI_TRANSCRIPT_TURN_COMPLETION=false``. Idempotency is
+        handled by the tailer (``turn_completion_raised``) + the hook path, which
+        already defers to ``tailer.turn_completion_raised``.
+        """
+        if not _env_flag("CLI_TRANSCRIPT_TURN_COMPLETION", default=True):
+            return None
+        if not isinstance(entry, Mapping) or entry.get("type") != "assistant":
+            return None
+        message = entry.get("message")
+        if not isinstance(message, Mapping):
+            return None
+        # Only the final assistant entry of a turn carries end_turn; tool_use /
+        # max_tokens / None are mid-turn and must NOT complete.
+        if message.get("stop_reason") != "end_turn":
+            return None
+        text = _assistant_text(message.get("content"))
+        if not text:
+            return None
+        return {"type": "turn.completed", "lastAssistantText": text}

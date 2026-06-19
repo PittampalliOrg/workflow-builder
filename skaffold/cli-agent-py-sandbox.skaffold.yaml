@@ -1,0 +1,64 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: cli-agent-py-sandbox
+
+# The interactive-cli agent-host image (the real Claude Code / codex / agy TUI +
+# herdr server) that sandbox-execution-api launches as the agentHostImage for
+# the interactive-cli execution classes. It is NOT a Deployment — outer-loop
+# only. `bash scripts/skaffold-deploy.sh cli-agent-py-sandbox` builds + pushes
+# the prod image, then commit-pin.sh pins it where ryzen actually reads it (the
+# workflow-builder Deployment's AGENT_RUNTIME_*_CLI_DEFAULT_IMAGE env — the
+# effective image via the BFF override — plus the sandbox-execution-api classes
+# JSON agentHostImage). The workflow-builder-ryzen-image Component does NOT carry
+# cli refs, so this uses a dedicated commit-pin case, not the flat-pins render.
+
+build:
+  local:
+    useBuildkit: true
+    useDockerCLI: true
+    push: true
+  tagPolicy:
+    gitCommit:
+      variant: AbbrevCommitSha
+      ignoreChanges: true
+  artifacts:
+    - image: ghcr.io/pittampalliorg/cli-agent-py-sandbox
+      context: ../services/cli-agent-py
+      docker:
+        dockerfile: Dockerfile.sandbox
+
+# Not a deployed workload — keep deploy a no-op so `skaffold build`/`run` builds
+# without applying a dev overlay. Delivery is GitOps via the pinned agentHostImage.
+manifests:
+  rawYaml: []
+deploy:
+  kubectl: {}
+
+profiles:
+  - name: run
+    activation:
+      - command: run
+      - command: build
+    build:
+      local:
+        useBuildkit: true
+        useDockerCLI: true
+        push: true
+      tagPolicy:
+        customTemplate:
+          template: "git-{{.GIT_COMMIT}}"
+          components:
+            - name: GIT_COMMIT
+              gitCommit:
+                variant: CommitSha
+      artifacts:
+        - image: ghcr.io/pittampalliorg/cli-agent-py-sandbox
+          context: ../services/cli-agent-py
+          docker:
+            dockerfile: Dockerfile.sandbox
+    manifests:
+      rawYaml: []
+    deploy:
+      kubectl: {}
+    verify: []
