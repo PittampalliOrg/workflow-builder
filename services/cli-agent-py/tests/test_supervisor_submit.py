@@ -80,3 +80,59 @@ def test_idle_with_persistent_draft_fails():
     )
     s = _supervisor(client)
     assert asyncio.run(s._confirm_submitted("pane-1")) is False
+
+
+class _AckClient:
+    """Fake herdr client whose Enter press fires the CLI's UserPromptSubmit hook
+    (via the supervisor ack) on the Nth press — modelling codex/claude accepting
+    the prompt once their composer is actually ready."""
+
+    def __init__(self, supervisor, ack_on_press: int):
+        self._sup = supervisor
+        self._ack_on_press = ack_on_press
+        self.enter_presses = 0
+
+    async def pane_submit_enter(self, pane):
+        self.enter_presses += 1
+        if self._ack_on_press and self.enter_presses >= self._ack_on_press:
+            self._sup.note_prompt_submit_ack()
+        return {}
+
+
+@pytest.fixture
+def _fast_ack(monkeypatch):
+    monkeypatch.setattr(sup, "CLI_SUBMIT_ACK_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(sup, "CLI_READY_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(sup, "CLI_SUBMIT_RETRIES", 5)
+
+
+def test_hook_ack_after_one_repress(_fast_ack):
+    s = SessionSupervisor(client=None, disabled=False)
+    s.emits_prompt_submit_hook = True
+    client = _AckClient(s, ack_on_press=1)
+    s._client = client
+    # No ack yet → first poll window fails → one Enter re-press fires the hook ack.
+    assert asyncio.run(s._await_hook_submit_ack("pane-1", 0)) is True
+    assert client.enter_presses == 1
+
+
+def test_hook_ack_never_arrives_fails_bounded(_fast_ack):
+    s = SessionSupervisor(client=None, disabled=False)
+    s.emits_prompt_submit_hook = True
+    client = _AckClient(s, ack_on_press=0)  # hook never fires
+    s._client = client
+    # Bounded: CLI_SUBMIT_RETRIES re-presses, then give up (prompt left in composer).
+    assert asyncio.run(s._await_hook_submit_ack("pane-1", 0)) is False
+    assert client.enter_presses == 5
+
+
+def test_hook_ack_already_present_no_repress(_fast_ack):
+    s = SessionSupervisor(client=None, disabled=False)
+    s.emits_prompt_submit_hook = True
+    client = _AckClient(s, ack_on_press=999)
+    s._client = client
+    # Hook fired during the first poll window (the initial Enter already landed) →
+    # accept without any re-press.
+    s.note_prompt_submit_ack()
+    assert asyncio.run(s._await_hook_submit_ack("pane-1", 0)) is True
+    assert client.enter_presses == 0

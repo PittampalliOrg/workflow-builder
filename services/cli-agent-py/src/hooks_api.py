@@ -502,6 +502,13 @@ class HookProcessor:
                 await asyncio.to_thread(self._safe_raise, instance_id, [event])
             return {}
 
+        if name == "UserPromptSubmit":
+            # Deterministic submit ack: the hook firing proves the CLI accepted a
+            # typed prompt. The supervisor's inject loop waits on this instead of
+            # guessing readiness from screen/status. Fire before the dedup branch so
+            # it counts for both hook-authoritative (codex) and marker (claude) CLIs.
+            self._note_prompt_submit_ack()
+
         if name == "UserPromptSubmit" and self._consume_injected_prompt(payload):
             if self._adapter_reports_prompt_submit():
                 if self._completion_fallback_started_turn:
@@ -586,6 +593,15 @@ class HookProcessor:
             record_hook_event(payload)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[hooks] adapter hook recording failed: %s", exc)
+
+    def _note_prompt_submit_ack(self) -> None:
+        supervisor = self._supervisor_getter()
+        fn = getattr(supervisor, "note_prompt_submit_ack", None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _record_turn_started(self, source: str) -> int | None:
         supervisor = self._supervisor_getter()

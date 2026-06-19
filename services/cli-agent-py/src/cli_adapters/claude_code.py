@@ -117,6 +117,10 @@ class ClaudeCodeAdapter(CliAdapter):
     # drawn, so the idle-status fallback would inject into the boot screen and drop
     # the Enter (same premature-injection class fixed for codex/agy).
     trust_idle_ready_fallback = False
+    # Claude Code fires a UserPromptSubmit hook on accept → confirm the kickoff via
+    # that deterministic ack (re-press Enter until it fires) instead of screen/status
+    # heuristics.
+    emits_prompt_submit_hook = True
 
     # -- seeding ----------------------------------------------------------------
 

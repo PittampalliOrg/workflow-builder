@@ -567,6 +567,10 @@ class CodexAdapter(CliAdapter):
     # duplicate user.message rows by digest.
     uses_injection_marker = False
     hook_reports_prompt_submit = True
+    # codex fires a UserPromptSubmit hook on accept → the supervisor confirms the
+    # kickoff via that deterministic ack (re-pressing Enter until it fires) rather
+    # than guessing composer-readiness from a fixed boot delay.
+    emits_prompt_submit_hook = True
     # Content-gate the kickoff on the rendered composer: herdr's native codex
     # detector races and can report `idle` while codex is still on its
     # pre-composer welcome/banner screen, so an agent_status-gated seed strands
