@@ -26,6 +26,12 @@
         "type": "string",
         "title": "Sandbox template",
         "default": "dapr-agent"
+       },
+       "agentSlug": {
+        "type": "string",
+        "title": "Agent slug",
+        "default": "evaluator-critic-agent",
+        "description": "dapr-agent-py agent for the generator + critic nodes."
        }
       }
      }
@@ -52,6 +58,12 @@
       "type": "string",
       "title": "Sandbox template",
       "default": "dapr-agent"
+     },
+     "agentSlug": {
+      "type": "string",
+      "title": "Agent slug",
+      "default": "evaluator-critic-agent",
+      "description": "dapr-agent-py agent for the generator + critic nodes."
      }
     }
    }
@@ -158,7 +170,7 @@
         "cwd": "/sandbox",
         "mode": "execute_direct",
         "agentRef": {
-         "slug": "${ .trigger.agentSlug // \"general-assistant\" }"
+         "slug": "${ .trigger.agentSlug // \"evaluator-critic-agent\" }"
         },
         "agentConfig": {
          "name": "generate",
@@ -190,7 +202,7 @@
         "cwd": "/sandbox",
         "mode": "execute_direct",
         "agentRef": {
-         "slug": "${ .trigger.agentSlug // \"general-assistant\" }"
+         "slug": "${ .trigger.agentSlug // \"evaluator-critic-agent\" }"
         },
         "agentConfig": {
          "name": "evaluate",
