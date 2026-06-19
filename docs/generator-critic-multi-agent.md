@@ -327,3 +327,21 @@ This proves the anti-hallucination guarantee: **objective correctness is decided
 - **Phase 2.5 vision critic** — flip the critic `modelSpec` → `anthropic/claude-*` + add Playwright MCP (Anthropic-only; quota-gated) + the `browser/validate` screenshot artifact (needs the Knative `openshell-agent-runtime` kept warm or a higher function-router timeout).
 
 **Branch:** `feat/evaluator-optimizer-generator-critic` (Phases 1–4). Templates verified on ryzen; merge opens them to the standard seed on all clusters.
+
+---
+
+## 12. RetroForge demo — planner + evaluator + critic (2026-06-18)
+
+`retroforge-showcase` reproduces a scoped slice of Anthropic's **RetroForge** (*Harness design for long-running agentic apps*) to demonstrate all the roles working together. The article's full build was ~6h/$200, so the demo builds **one representative slice — the pixel-art Sprite Editor** — as a single-file vanilla web app.
+
+**Pipeline:** `workspace_profile → plan (Planner agent) → approve_goal_spec (HITL gate) → for[while !(gate∧critic)]{ generate (Generator agent) → gate (deterministic evaluator) → evaluate (Critic agent) } → summary`.
+
+**Role → tier mapping (the article ↔ our stack):**
+- **Planner agent** — expands the one-line app idea into a high-level product spec (objective + user stories + acceptance criteria + the **four design dimensions** with the article's verbatim definitions) and **writes it to `/sandbox/SPEC.md`**; the generator and critic read that file. We use a planner *agent* (not the `goal/plan` node, which is unreachable on ryzen) and a **file-based handoff** — the article's actual "agents communicate through files" pattern. (An earlier JSON-via-`parseJson` handoff was abandoned: a strong model authors its own nested schema, so flat `.plan.objective`/`.plan.rubric` cross-refs didn't resolve and the spec didn't drive the build. A shared `SPEC.md` is schema-agnostic and robust.)
+- **Generator agent** — reads `/sandbox/SPEC.md`, builds/refines `/sandbox/{index.html,style.css,app.js}`; no `goalSpec` → no `update_goal`.
+- **Evaluator = deterministic `workspace/command` gate** — objective ground-truth (required structure present: canvas/palette/tools/export + `getContext`/handlers, plus a JS parse check) → `OBJECTIVE PASS/FAIL`. This is the anti-hallucination backbone (our LLM critic hallucinated a pass in §8/§10); it's the deterministic equivalent of the article's Playwright QA for what a command can verify.
+- **Critic agent** — reads `/sandbox/SPEC.md` and grades the four design dimensions (retro-aesthetic calibration, default-reject), STRICT-JSON verdict via `parseJson`.
+
+Acceptance requires **gate-pass AND critic-pass** (explicit `while`-guard AND); the generator receives both the gate's objective failures and the critic's design feedback each turn.
+
+**Deliberate divergences from the article (for a reliable ~20–40 min runnable demo):** vanilla single-file app instead of React+Vite (no build step / dev server); a *deterministic structural* gate instead of a *Playwright-functional* QA agent (the latter needs the Knative `openshell-agent-runtime` kept warm + a vision model — Phase 2.5); single-pass loop instead of per-sprint contracts + context resets (article V1). The three "separate agents" share the per-session `evaluator-critic-agent` base with distinct per-node `agentConfig.instructions` (Planner/Generator/Critic personas, distinct sessions).

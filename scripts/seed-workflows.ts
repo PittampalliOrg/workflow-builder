@@ -4332,8 +4332,13 @@ async function ensureShowcaseAgent(
 	if (existing.length && existing[0].current_version_id) return slug;
 
 	const agentId = existing.length ? existing[0].id : generateId();
+	// Pin a quota-free, capable model. Without an explicit modelSpec the runtime
+	// falls back to the Anthropic default (llm-anthropic-opus), which is API-quota
+	// limited; deepseek-v4-pro is the cluster default used by the verified runs.
+	const modelSpec = process.env.SEED_SHOWCASE_AGENT_MODEL?.trim() || "deepseek-v4-pro";
 	const config = {
 		runtime: "dapr-agent-py",
+		modelSpec,
 		maxTurns: 50,
 		timeoutMinutes: 30,
 		memory: { backend: "dapr_state" },
@@ -4349,12 +4354,12 @@ async function ensureShowcaseAgent(
 
 	if (!existing.length) {
 		await sqlClient`
-			insert into agents (id, name, description, agent_type, max_turns, timeout_minutes, project_id, user_id, registry_status, slug, runtime)
+			insert into agents (id, name, description, agent_type, model, max_turns, timeout_minutes, project_id, user_id, registry_status, slug, runtime)
 			values (${agentId}, ${"Evaluator/Critic Agent"},
 				${"Shared dapr-agent-py agent for the generator/critic showcase loops; per-session dispatch (no pool pin)."},
-				${"general"}, ${50}, ${30}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${"dapr-agent-py"})`;
+				${"general"}, ${modelSpec}, ${50}, ${30}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${"dapr-agent-py"})`;
 	} else {
-		await sqlClient`update agents set registry_status = ${"registered"}, runtime = ${"dapr-agent-py"} where id = ${agentId}`;
+		await sqlClient`update agents set registry_status = ${"registered"}, runtime = ${"dapr-agent-py"}, model = ${modelSpec} where id = ${agentId}`;
 	}
 	await sqlClient`
 		insert into agent_versions (id, agent_id, version, config, config_hash)
@@ -4376,6 +4381,7 @@ async function seedGeneratorCriticShowcases(params: {
 		"evaluator-optimizer-showcase.json",
 		"design-critic-showcase.json",
 		"evaluator-gated-showcase.json",
+		"retroforge-showcase.json",
 	]) {
 		const full = path.join(dir, file);
 		if (!fs.existsSync(full)) {
