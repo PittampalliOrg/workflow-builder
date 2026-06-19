@@ -43,3 +43,5 @@ requires:
     path: skaffold/swebench-coordinator.skaffold.yaml
   - configs: [sandbox-execution-api]
     path: skaffold/sandbox-execution-api.skaffold.yaml
+  - configs: [cli-agent-py-sandbox]
+    path: skaffold/cli-agent-py-sandbox.skaffold.yaml

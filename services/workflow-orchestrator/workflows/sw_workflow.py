@@ -1510,6 +1510,30 @@ def _run_native_durable_agent_child_workflow(
         if isinstance(flattened_args.get("agentConfig"), dict)
         else None
     )
+    # Billing-safety fail-closed. A durable/run node carrying an ``agentRef`` is a
+    # NAMED-agent node; the BFF's ``resolveSpecAgentRefs`` resolves it and stamps
+    # ``agentSlug``/``agentAppId``/``agentRuntime`` into the ``with`` block BEFORE
+    # dispatch. If we see an agentRef but NONE of those stamps, the resolver was
+    # bypassed (e.g. a raw spec POSTed straight to ``/api/v2/sw-workflows``), and
+    # ``_resolve_native_agent_runtime`` would SILENTLY fall back to the default
+    # runtime (``dapr-agent-py``), which authenticates the LLM via
+    # ``ANTHROPIC_API_KEY``. For an interactive-cli agent (claude-code-cli/codex/agy)
+    # that flips subscription → metered-API billing — exactly the invariant we must
+    # never violate. Refuse rather than fall back.
+    agent_ref = flattened_args.get("agentRef")
+    if agent_ref and not any(
+        _string_or_none(flattened_args.get(key))
+        for key in ("agentSlug", "agentAppId", "agentRuntime", "runtime")
+    ):
+        raise RuntimeError(
+            f"durable/run task '{task_name}' has an UNRESOLVED agentRef "
+            f"({agent_ref!r}): agentSlug/agentAppId/agentRuntime were not stamped. "
+            "Named-agent nodes MUST be resolved by the BFF (resolveSpecAgentRefs) "
+            "before dispatch — refusing to fall back to the default runtime, which "
+            "would authenticate via ANTHROPIC_API_KEY (metered) instead of the "
+            "agent's linked credential. Execute via POST /api/workflows/{id}/execute, "
+            "not the orchestrator's /api/v2/sw-workflows endpoint directly."
+        )
     agent_runtime, target = _resolve_native_agent_runtime(flattened_args, agent_config)
     if (
         agent_runtime == "browser-use-agent"

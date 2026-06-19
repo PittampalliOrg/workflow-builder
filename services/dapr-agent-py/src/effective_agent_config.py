@@ -110,8 +110,14 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
 }
 
 
+# Default to DeepSeek (NOT Anthropic). dapr-agent-py must never silently bill the
+# metered Anthropic API: CLI agents authenticate via their linked subscription
+# credential, and whenever dapr-agent-py itself runs it defaults to DeepSeek.
+# DAPR_LLM_COMPONENT_DEFAULT still overrides per-deployment; this code default is
+# the fail-safe for any pod (e.g. the coding pool) whose env wasn't synced — so an
+# unconfigured dapr-agent-py pod reaches DeepSeek, not claude-opus + ANTHROPIC_API_KEY.
 DEFAULT_LLM_COMPONENT = os.environ.get(
-    "DAPR_LLM_COMPONENT_DEFAULT", "llm-anthropic-opus"
+    "DAPR_LLM_COMPONENT_DEFAULT", "llm-deepseek-v4-pro"
 )
 
 
