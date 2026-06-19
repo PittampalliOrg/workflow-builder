@@ -4375,19 +4375,20 @@ async function ensureShowcaseAgent(
 // user's linked CLI credential; ANTHROPIC_API_KEY must never reach the pod).
 // The shared workspace (SPEC.md + the build) is the per-execution JuiceFS mount
 // at /sandbox/work, provisioned by sandbox-execution-api for interactive-cli.
-async function ensureCliShowcaseAgent(
+async function ensureCliShowcaseAgentFor(
 	sqlClient: ReturnType<typeof postgres>,
 	userId: string,
 	projectId: string,
+	opts: { slug: string; runtime: string; name: string; description: string },
 ): Promise<string> {
-	const slug = "cli-evaluator-critic-agent";
+	const { slug, runtime, name, description } = opts;
 	const existing = await sqlClient<{ id: string; current_version_id: string | null }[]>`
 		select id, current_version_id from agents where slug = ${slug} limit 1`;
 	if (existing.length && existing[0].current_version_id) return slug;
 
 	const agentId = existing.length ? existing[0].id : generateId();
 	const config = {
-		runtime: "claude-code-cli",
+		runtime,
 		maxTurns: 50,
 		timeoutMinutes: 30,
 		skills: [] as unknown[],
@@ -4402,18 +4403,35 @@ async function ensureCliShowcaseAgent(
 	if (!existing.length) {
 		await sqlClient`
 			insert into agents (id, name, description, agent_type, max_turns, timeout_minutes, project_id, user_id, registry_status, slug, runtime)
-			values (${agentId}, ${"CLI Evaluator/Critic Agent"},
-				${"Shared claude-code-cli agent for the CLI generator/critic showcase loop; per-session dispatch, shared JuiceFS workspace at /sandbox/work."},
-				${"general"}, ${50}, ${30}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${"claude-code-cli"})`;
+			values (${agentId}, ${name},
+				${description},
+				${"general"}, ${50}, ${30}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${runtime})`;
 	} else {
-		await sqlClient`update agents set registry_status = ${"registered"}, runtime = ${"claude-code-cli"} where id = ${agentId}`;
+		await sqlClient`update agents set registry_status = ${"registered"}, runtime = ${runtime} where id = ${agentId}`;
 	}
 	await sqlClient`
 		insert into agent_versions (id, agent_id, version, config, config_hash)
 		values (${versionId}, ${agentId}, ${1}, ${sqlClient.json(config)}, ${configHash})`;
 	await sqlClient`update agents set current_version_id = ${versionId} where id = ${agentId}`;
-	console.log(`[seed-workflows] Ensured CLI showcase agent "${slug}"`);
+	console.log(`[seed-workflows] Ensured CLI showcase agent "${slug}" (runtime=${runtime})`);
 	return slug;
+}
+
+// One shared agent per interactive-cli runtime for the generator/critic loop.
+// The fixture's agentRef.slug selects which; resolveSpecAgentRefs stamps the
+// agent's runtime onto every durable/run node.
+async function ensureCliShowcaseAgent(
+	sqlClient: ReturnType<typeof postgres>,
+	userId: string,
+	projectId: string,
+): Promise<string> {
+	return ensureCliShowcaseAgentFor(sqlClient, userId, projectId, {
+		slug: "cli-evaluator-critic-agent",
+		runtime: "claude-code-cli",
+		name: "CLI Evaluator/Critic Agent",
+		description:
+			"Shared claude-code-cli agent for the CLI generator/critic showcase loop; per-session dispatch, shared JuiceFS workspace at /sandbox/work.",
+	});
 }
 
 async function seedGeneratorCriticShowcases(params: {
@@ -4424,6 +4442,20 @@ async function seedGeneratorCriticShowcases(params: {
 }) {
 	await ensureShowcaseAgent(params.sqlClient, params.userId, params.projectId);
 	await ensureCliShowcaseAgent(params.sqlClient, params.userId, params.projectId);
+	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+		slug: "codex-cli-evaluator-critic-agent",
+		runtime: "codex-cli",
+		name: "Codex CLI Evaluator/Critic Agent",
+		description:
+			"Shared codex-cli agent for the CLI generator/critic showcase loop; per-session dispatch, shared JuiceFS workspace at /sandbox/work.",
+	});
+	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+		slug: "agy-cli-evaluator-critic-agent",
+		runtime: "agy-cli",
+		name: "Antigravity CLI Evaluator/Critic Agent",
+		description:
+			"Shared agy-cli (Antigravity) agent for the CLI generator/critic showcase loop; per-session dispatch, shared JuiceFS workspace at /sandbox/work. Requires a captured ~/.gemini bundle (AGY_AUTH_JSON) for headless durable/run.",
+	});
 	const dir = path.resolve(process.cwd(), "scripts/fixtures/generator-critic");
 	for (const file of [
 		"evaluator-optimizer-showcase.json",
@@ -4431,6 +4463,8 @@ async function seedGeneratorCriticShowcases(params: {
 		"evaluator-gated-showcase.json",
 		"retroforge-showcase.json",
 		"retroforge-cli-showcase.json",
+		"retroforge-codex-cli-showcase.json",
+		"retroforge-agy-cli-showcase.json",
 	]) {
 		const full = path.join(dir, file);
 		if (!fs.existsSync(full)) {
