@@ -141,6 +141,22 @@ class CliAdapter(abc.ABC):
     # executor/input queue is still busy after a cancelled tool call.
     prompt_not_ready_markers: tuple[str, ...] = ()
 
+    # When False, the readiness gate trusts ONLY the rendered ``prompt_ready_marker``
+    # and never accepts herdr's `idle` status as a fallback. For TUIs herdr merely
+    # SCREEN-DETECTS (agy), `idle` is reported during the boot banner / model-
+    # availability warning before the composer is focused — accepting it strands
+    # the kickoff above the banner with the Enter dropped. agy renders its marker
+    # within the seed timeout, so waiting for it (then best-effort on full timeout)
+    # is correct. Native-state TUIs (claude/codex) keep the fallback (True).
+    trust_idle_ready_fallback: bool = True
+
+    # Screen strings that mean an un-submitted prompt DRAFT is still sitting in the
+    # composer. Used only when ``idle_after_submit_is_success`` is True to
+    # disambiguate a post-Enter `idle` sample: a fast-turn return (composer empty)
+    # vs a dropped Enter (draft still present → re-press). agy's multi-line composer
+    # collapses to "↑ N more lines" while it holds a draft.
+    composer_draft_markers: tuple[str, ...] = ()
+
     def format_seed_user_message(self, text: str) -> str:
         """Return the first prompt typed into the CLI TUI.
 

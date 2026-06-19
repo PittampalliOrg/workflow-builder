@@ -44,6 +44,7 @@ from src.cli_adapters.base import (
     link_transcript_subtree,
     write_hook_relay_script,
 )
+from src.codex_capture import start_capture_watcher as start_codex_capture_watcher
 from src.capability_compiler import (
     compose_instruction_file,
     emit_claude_code_cli_servers,
@@ -579,6 +580,17 @@ class CodexAdapter(CliAdapter):
     # timeout the lifecycle still injects best-effort (degrades to the old
     # behavior, never worse).
     prompt_ready_marker = "· /sandbox"
+
+    def on_session_started(self, session_id: str | None) -> None:
+        # codex's refresh token is SINGLE-USE: on boot codex refreshes and
+        # REWRITES auth.json with a rotated token. The sequential generator/critic
+        # loop dispatches 3 codex pods (plan → generate → critic) all seeded with
+        # the SAME stored CODEX_AUTH_JSON, so without writing the rotated token
+        # back, the 2nd pod boots with a spent token → "refresh token already
+        # used". Mirror agy's capture: POST the refreshed auth.json to the BFF on
+        # every rewrite so the next sequential pod boots with a live token.
+        if session_id:
+            start_codex_capture_watcher(session_id, _codex_home() / "auth.json")
 
     # -- seeding ----------------------------------------------------------------
 

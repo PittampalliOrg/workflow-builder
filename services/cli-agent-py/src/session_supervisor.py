@@ -182,6 +182,8 @@ class SessionSupervisor:
         self.prompt_not_ready_markers: tuple[str, ...] = ()
         self.hook_reports_prompt_submit = False
         self.idle_after_submit_is_success = False
+        self.trust_idle_ready_fallback = True
+        self.composer_draft_markers: tuple[str, ...] = ()
         self._cli_session_id: str | None = None
 
         # Semantic-state tracking.
@@ -649,6 +651,12 @@ class SessionSupervisor:
                     # while a turn is in flight → also correct for mid-session).
                     if await self._prompt_rendered(pane):
                         return True
+                    if not self.trust_idle_ready_fallback:
+                        # Screen-detected TUI (agy): herdr `idle` is unreliable
+                        # during boot; wait for the rendered marker (or the outer
+                        # timeout → best-effort inject), never the idle fallback.
+                        await asyncio.sleep(CLI_READY_POLL_SECONDS)
+                        continue
                     try:
                         info = await self._client.agent_get(pane)
                         if (
@@ -706,6 +714,24 @@ class SessionSupervisor:
         return any(
             marker.strip().lower() in lowered
             for marker in self.prompt_not_ready_markers
+            if marker and marker.strip()
+        )
+
+    async def _composer_has_draft(self, pane: str) -> bool:
+        """True when an un-submitted prompt DRAFT is still in the composer (a
+        ``composer_draft_markers`` substring is on the visible screen). Used to
+        disambiguate a post-Enter `idle` sample. Conservative: no markers
+        configured or a read error → False (accept the idle as a landed submit,
+        the prior behaviour) so we never re-press into an empty composer."""
+        if not self.composer_draft_markers:
+            return False
+        text = await self._visible_pane_text(pane)
+        if not text:
+            return False
+        lowered = text.lower()
+        return any(
+            marker.strip().lower() in lowered
+            for marker in self.composer_draft_markers
             if marker and marker.strip()
         )
 
@@ -827,7 +853,23 @@ class SessionSupervisor:
             if status != AGENT_STATUS_IDLE:
                 return True  # working / blocked / done → the submit landed
             if self.idle_after_submit_is_success:
-                return True  # fast turn may already have returned to idle
+                # idle after Enter is ambiguous for these CLIs: a genuinely fast
+                # turn already returned to the composer, OR the Enter was dropped
+                # and the prompt is still drafted. Disambiguate via the composer —
+                # if no draft marker is on screen, accept; otherwise re-press.
+                if not await self._composer_has_draft(pane):
+                    return True
+                logger.info(
+                    "[supervisor] submit not registered (idle + draft in "
+                    "composer) — re-pressing Enter"
+                )
+                if attempt >= checks - 1:
+                    return False
+                try:
+                    await self._client.pane_submit_enter(pane)
+                except Exception:  # noqa: BLE001
+                    return False
+                continue
             if attempt >= checks - 1:
                 return False
             logger.info("[supervisor] submit not registered — re-pressing Enter")

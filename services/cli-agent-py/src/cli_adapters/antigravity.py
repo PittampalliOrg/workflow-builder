@@ -989,6 +989,15 @@ class AntigravityAdapter(CliAdapter):
     prompt_not_ready_markers = (
         "executor has not processed the previous input yet",
     )
+    # herdr SCREEN-DETECTS agy and reports `idle` during the boot banner + the
+    # "model no longer available" warning, before the composer takes focus.
+    # Accepting that idle injected the kickoff too early and the Enter was
+    # dropped (prompt stranded in the composer, zero hooks). Wait for the real
+    # rendered composer marker instead.
+    trust_idle_ready_fallback = False
+    # agy's composer collapses a held multi-line draft to "↑ N more lines"; if
+    # that's on screen after Enter, the submit was dropped → re-press.
+    composer_draft_markers = ("more lines",)
 
     def __init__(self) -> None:
         self._last_user_input_text: str | None = None
