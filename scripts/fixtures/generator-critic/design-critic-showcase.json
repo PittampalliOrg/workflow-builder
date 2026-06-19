@@ -1,0 +1,252 @@
+{
+ "document": {
+  "dsl": "1.0.0",
+  "name": "design-critic-showcase",
+  "title": "Design Critic: Generator + Critic for landing-page design quality",
+  "summary": "A generator builds a landing page in /sandbox; an independent design critic judges it against the four design dimensions (design quality, originality, craft, functionality) with default-reject skepticism, looping until accepted or maxIterations. Code-level critique today (deepseek); upgradeable to pixel-level vision by flipping the critic modelSpec to anthropic/claude + adding Playwright MCP.",
+  "version": "1.0.0",
+  "namespace": "demos",
+  "x-workflow-builder": {
+   "input": {
+    "schema": {
+     "format": "json",
+     "document": {
+      "type": "object",
+      "required": [
+       "intent"
+      ],
+      "properties": {
+       "intent": {
+        "type": "string",
+        "title": "Intent",
+        "default": "Build a polished, production-quality single-page marketing site at /sandbox/index.html (with /sandbox/style.css) for a fictional small-batch coffee roaster called 'Ember & Oak'. It should feel distinctive and crafted, not a generic template.",
+        "description": "What to build/produce. The planner turns this into an objective + rubric."
+       },
+       "sandboxTemplate": {
+        "type": "string",
+        "title": "Sandbox template",
+        "default": "dapr-agent"
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "input": {
+  "schema": {
+   "format": "json",
+   "document": {
+    "type": "object",
+    "required": [
+     "intent"
+    ],
+    "properties": {
+     "intent": {
+      "type": "string",
+      "title": "Intent",
+      "default": "Build a polished, production-quality single-page marketing site at /sandbox/index.html (with /sandbox/style.css) for a fictional small-batch coffee roaster called 'Ember & Oak'. It should feel distinctive and crafted, not a generic template.",
+      "description": "What to build/produce. The planner turns this into an objective + rubric."
+     },
+     "sandboxTemplate": {
+      "type": "string",
+      "title": "Sandbox template",
+      "default": "dapr-agent"
+     }
+    }
+   }
+  }
+ },
+ "output": {
+  "as": "${ .summary }"
+ },
+ "do": [
+  {
+   "workspace_profile": {
+    "call": "workspace/profile",
+    "with": {
+     "name": "evaluator-optimizer",
+     "rootPath": "/sandbox",
+     "managedBy": "workflow-builder:demos:evaluator-optimizer",
+     "timeoutMs": 600000,
+     "ttlSeconds": 3600,
+     "enabledTools": [
+      "execute_command",
+      "read_file",
+      "write_file",
+      "edit_file",
+      "list_files",
+      "mkdir",
+      "file_stat"
+     ],
+     "keepAfterRun": true,
+     "sandboxPolicy": {
+      "mode": "per-run",
+      "template": "${ .trigger.sandboxTemplate // \"dapr-agent\" }",
+      "ttlSeconds": 3600,
+      "keepAfterRun": true
+     },
+     "sandboxTemplate": "${ .trigger.sandboxTemplate // \"dapr-agent\" }",
+     "commandTimeoutMs": 300000
+    }
+   }
+  },
+  {
+   "plan": {
+    "set": {
+     "goalSpec": {
+      "objective": "Build a polished, production-quality landing page at /sandbox/index.html (styles in /sandbox/style.css, optional /sandbox/app.js). It must be a cohesive, distinctive, crafted design \u2014 NOT a generic/default template \u2014 and be functional and responsive.",
+      "acceptanceCriteria": [
+       "/sandbox/index.html is valid, semantic HTML5 (header/main/section/footer, headings in order, alt text)",
+       "Cohesive visual system in CSS: a consistent type scale, a spacing rhythm (e.g. a spacing unit/scale), and a deliberate, harmonious color palette with AA-contrast text",
+       "A distinctive identity \u2014 not a recognizable default/bootstrap/AI-default look (custom type pairing, considered layout, a memorable accent)",
+       "Functional & responsive: a hero, value props, and a clear CTA; layout holds up at mobile and desktop widths"
+      ],
+      "rubric": {
+       "criteria": [
+        {
+         "id": "design_quality",
+         "kind": "subjective",
+         "dimension": "design_quality",
+         "description": "The page reads as a coherent whole with a clear mood/identity, not a pile of unrelated sections."
+        },
+        {
+         "id": "originality",
+         "kind": "subjective",
+         "dimension": "originality",
+         "description": "Custom and distinctive vs template/AI-default tells (generic hero + 3 cards + default system font + #007bff blue)."
+        },
+        {
+         "id": "craft",
+         "kind": "subjective",
+         "dimension": "craft",
+         "description": "Typography (scale, pairing, line-height, measure), spacing rhythm, color harmony, and AA contrast are deliberate and consistent."
+        },
+        {
+         "id": "functionality",
+         "kind": "subjective",
+         "dimension": "functionality",
+         "description": "Semantic structure, working CTA/links, and responsive layout (no overflow/overlap at 375px and 1280px)."
+        }
+       ]
+      },
+      "maxIterations": 8
+     }
+    },
+    "artifacts": [
+     {
+      "from": "${ .data.goalSpec }",
+      "kind": "goal_spec",
+      "slot": "primary",
+      "title": "Contract + rubric (hardcoded for interpreter test)"
+     }
+    ]
+   }
+  },
+  {
+   "refine": {
+    "for": {
+     "each": "i",
+     "in": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "at": "idx"
+    },
+    "while": "${ (.loop.accepted // false) != true }",
+    "do": [
+     {
+      "generate": {
+       "call": "durable/run",
+       "with": {
+        "cwd": "/sandbox",
+        "mode": "execute_direct",
+        "agentRef": {
+         "slug": "${ .trigger.agentSlug // \"general-assistant\" }"
+        },
+        "agentConfig": {
+         "name": "generate",
+         "instructions": "You are the Generator in a generator-critic design loop. You build and iteratively refine a landing page in /sandbox (index.html + style.css, optional app.js). You do NOT grade your own work - an independent design Critic reviews each attempt against the four design dimensions and returns specific feedback. Aim for distinctive, crafted, production-quality design: a deliberate type scale and pairing, a consistent spacing rhythm, a cohesive accessible color palette, and a memorable identity - avoid generic template tells (default system font, #007bff, hero+3-cards boilerplate). On each turn: address the Critic's feedback, make the most impactful improvement, then end your turn with a one-line summary. The Critic decides when it's good enough."
+        },
+        "sandboxName": "${ .workspace_profile.sandboxName }",
+        "workspaceRef": "${ .workspace_profile.workspaceRef }",
+        "sandboxPolicy": {
+         "mode": "per-run",
+         "template": "${ .trigger.sandboxTemplate // \"dapr-agent\" }",
+         "ttlSeconds": 3600,
+         "keepAfterRun": true
+        },
+        "body": {
+         "prompt": "${ \"Objective:\\n\" + (.plan.goalSpec.objective // \"\") + \"\\n\\nAcceptance criteria:\\n- \" + ((.plan.goalSpec.acceptanceCriteria // []) | join(\"\\n- \")) + \"\\n\\nYour previous attempt summary:\\n\" + (.loop.last.generate.content // \"(this is your first attempt)\") + \"\\n\\nCritic feedback to address now:\\n\" + (if .loop.last.evaluate then (.loop.last.evaluate.feedback // (.loop.last.evaluate | tojson)) else \"(none yet - produce your first attempt)\" end) + \"\\n\\nWork in /sandbox to implement or refine the solution accordingly, then end your turn with a brief summary.\" }",
+         "overrides": {
+          "cwd": "/sandbox",
+          "maxTurns": 30,
+          "timeoutMinutes": 25
+         }
+        }
+       }
+      }
+     },
+     {
+      "evaluate": {
+       "call": "durable/run",
+       "with": {
+        "cwd": "/sandbox",
+        "mode": "execute_direct",
+        "agentRef": {
+         "slug": "${ .trigger.agentSlug // \"general-assistant\" }"
+        },
+        "agentConfig": {
+         "name": "evaluate",
+         "instructions": "You are an exacting design Critic - an independent, skeptical reviewer with strong taste. You do NOT edit the work. Read the files in /sandbox (index.html, style.css, any app.js) and judge the landing page against the four design dimensions in the rubric: design_quality (coherent whole, clear mood), originality (distinctive vs template/AI-default tells), craft (type scale & pairing, spacing rhythm, color harmony, AA contrast - inspect the actual CSS values), and functionality (semantic HTML, working CTA, responsive at 375px and 1280px). CALIBRATION: a PASS means genuinely museum-quality, portfolio-grade work - a deliberate type system, a consistent spacing scale, a cohesive palette with sufficient contrast, and a distinct identity. Generic, default, or 'fine' work is NOT a pass. DEFAULT TO NOT satisfied unless EVERY dimension is clearly strong; be specific and demanding, cite concrete CSS/HTML. You MUST end your turn with ONLY a single strict JSON object, no prose, no fences: {\"meets_criteria\": boolean, \"score\": number 0-10, \"perCriterion\": [{\"id\": string, \"met\": boolean, \"feedback\": string}], \"feedback\": string}. The top-level feedback is the prioritized, concrete guidance the Generator will act on next turn."
+        },
+        "sandboxName": "${ .workspace_profile.sandboxName }",
+        "workspaceRef": "${ .workspace_profile.workspaceRef }",
+        "sandboxPolicy": {
+         "mode": "per-run",
+         "template": "${ .trigger.sandboxTemplate // \"dapr-agent\" }",
+         "ttlSeconds": 3600,
+         "keepAfterRun": true
+        },
+        "body": {
+         "prompt": "${ \"Review the landing page the Generator built in /sandbox against this design contract.\\n\\nObjective:\\n\" + (.plan.goalSpec.objective // \"\") + \"\\n\\nDesign rubric (judge EACH dimension):\\n\" + ((.plan.goalSpec.rubric.criteria // []) | map(\"- [\" + .id + \"] \" + .description) | join(\"\\n\")) + \"\\n\\nAcceptance criteria:\\n- \" + ((.plan.goalSpec.acceptanceCriteria // []) | join(\"\\n- \")) + \"\\n\\nRead index.html and style.css (and app.js if present) in /sandbox. Inspect the actual type scale, spacing, color/contrast values and the semantic structure. Then return ONLY the strict JSON verdict from your instructions. Be demanding: set meets_criteria true ONLY for genuinely crafted, distinctive, accessible work.\" }",
+         "overrides": {
+          "cwd": "/sandbox",
+          "maxTurns": 12,
+          "timeoutMinutes": 25
+         }
+        }
+       },
+       "parseJson": true
+      }
+     }
+    ]
+   }
+  },
+  {
+   "summary": {
+    "set": {
+     "accepted": "${ .loop.accepted // false }",
+     "iterations": "${ .loop.iterations // 0 }",
+     "finalSummary": "${ .loop.last.generate.content // \"\" }",
+     "verdict": "${ .loop.last.evaluate // {} }"
+    },
+    "artifacts": [
+     {
+      "from": "${ .data }",
+      "kind": "json",
+      "slot": "primary",
+      "title": "Evaluator-Optimizer result",
+      "description": "Final generator summary, the critic's last verdict, accepted flag, and iteration count."
+     }
+    ]
+   }
+  }
+ ]
+}

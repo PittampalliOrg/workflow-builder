@@ -313,3 +313,17 @@ This proves the anti-hallucination guarantee: **objective correctness is decided
 - **Generator `update_goal` lockout** — the structural lockout (no `goalSpec` ⇒ no goal MCP wired) already holds. An explicit `disableGoalMcp` flag (`mcp-wiring.ts` + 2 call sites) is **optional hardening requiring a BFF deploy**, deferred unless a runtime-agnostic enforcement is needed; a dapr-agent-py `PreToolUse` deny hook is a template-level alternative if `DAPR_AGENT_PY_HOOKS_ENABLED=true`.
 
 **Net:** Phase 3's correctness goal is delivered + verified, entirely template-level. The remaining items are optional hardening (BFF `disableGoalMcp`) and Phase-2.5 vision.
+
+---
+
+## 11. Phase 4 — productization (2026-06-18)
+
+- **Seed persistence:** the three verified showcases are committed as fixtures (`scripts/fixtures/generator-critic/{evaluator-optimizer,design-critic,evaluator-gated}-showcase.json`) and registered by `seedGeneratorCriticShowcases()` in `scripts/seed-workflows.ts` (linear canvas graph via `buildGeneratorCriticGraph`; the for-loop sub-tasks render as one `refine` node and the canvas adapter re-expands them on edit). This makes them durable across DB reseeds and deploys to every cluster — previously they lived only in the ryzen DB. They default `agentRef.slug` to the seed's `general-assistant` (override via the `agentSlug` trigger input).
+- **Docs:** this doc (§1–§11) is the SSOT for the feature, linked from CLAUDE.md; `goal-loop-evaluator-design.md` is updated to point here for the shipped implementation.
+
+**Deferred (clean follow-ups, none blocking):**
+- **Canvas authoring UI** for rubric/critic config + loop authoring — the showcases are canvas-*viewable* (linear graph; adapter re-expands the loop), but bespoke config panels are a separate UX effort.
+- **`disableGoalMcp` BFF flag** — explicit runtime-agnostic lockout (`mcp-wiring.ts` + 2 call sites); the structural no-`goalSpec` lockout already covers these templates, so it's optional hardening requiring a BFF deploy.
+- **Phase 2.5 vision critic** — flip the critic `modelSpec` → `anthropic/claude-*` + add Playwright MCP (Anthropic-only; quota-gated) + the `browser/validate` screenshot artifact (needs the Knative `openshell-agent-runtime` kept warm or a higher function-router timeout).
+
+**Branch:** `feat/evaluator-optimizer-generator-critic` (Phases 1–4). Templates verified on ryzen; merge opens them to the standard seed on all clusters.

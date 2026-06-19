@@ -15,6 +15,8 @@
  * - Fallback to SEED_GITHUB_USER_ID / SEED_GITHUB_USER_EMAIL
  * - Fallback to single GitHub identity in DB
  */
+import fs from "node:fs";
+import path from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
@@ -4266,6 +4268,87 @@ async function upsertWorkflow(params: {
 	);
 }
 
+// Generator/critic evaluator-optimizer showcase fixtures (verified specs live in
+// scripts/fixtures/generator-critic/*.json — see docs/generator-critic-multi-agent.md).
+// The for-loop sub-tasks (generate/gate/evaluate) render as a single `refine` canvas
+// node; the canvas adapter re-expands the loop on the next UI edit. Execution is
+// spec-driven, so a linear top-level graph is sufficient for seeding.
+function buildGeneratorCriticGraph(spec: JsonRecord): {
+	nodes: JsonRecord[];
+	edges: JsonRecord[];
+} {
+	const doArr = Array.isArray((spec as { do?: unknown[] }).do)
+		? ((spec as { do: Record<string, JsonRecord>[] }).do)
+		: [];
+	const taskNames = doArr.map((t) => Object.keys(t)[0]);
+	const ids = ["trigger", ...taskNames];
+	const nodes: JsonRecord[] = [
+		{
+			id: "trigger",
+			type: "trigger",
+			position: { x: 80, y: 40 },
+			data: {
+				label: "Manual trigger",
+				description: "Provide the intent (and optional agentSlug).",
+			},
+		},
+		...taskNames.map((name, i) => {
+			const node = (doArr[i][name] || {}) as JsonRecord;
+			const actionType =
+				(node.call as string) ||
+				(node.for ? "for" : node.set ? "set" : node.listen ? "listen" : "task");
+			return {
+				id: name,
+				type: "action",
+				position: { x: 80, y: 180 + i * 140 },
+				data: { label: name, actionType, description: "" },
+			} as JsonRecord;
+		}),
+	];
+	const edges: JsonRecord[] = ids.slice(0, -1).map((source, i) => ({
+		id: `e_gc_${i + 1}`,
+		source,
+		target: ids[i + 1],
+		type: "default",
+	}));
+	return { nodes, edges };
+}
+
+async function seedGeneratorCriticShowcases(params: {
+	db: ReturnType<typeof drizzle>;
+	userId: string;
+	projectId: string;
+}) {
+	const dir = path.resolve(process.cwd(), "scripts/fixtures/generator-critic");
+	for (const file of [
+		"evaluator-optimizer-showcase.json",
+		"design-critic-showcase.json",
+		"evaluator-gated-showcase.json",
+	]) {
+		const full = path.join(dir, file);
+		if (!fs.existsSync(full)) {
+			console.warn(`[seed-workflows] generator-critic fixture missing: ${full}`);
+			continue;
+		}
+		const spec = JSON.parse(fs.readFileSync(full, "utf8")) as JsonRecord;
+		const doc = ((spec as { document?: JsonRecord }).document || {}) as JsonRecord;
+		const id = (doc.name as string) || file.replace(/\.json$/, "");
+		const { nodes, edges } = buildGeneratorCriticGraph(spec);
+		await upsertRawWorkflow({
+			db: params.db,
+			workflowId: id,
+			name: (doc.title as string) || id,
+			description: (doc.summary as string) || "",
+			userId: params.userId,
+			projectId: params.projectId,
+			spec,
+			nodes,
+			edges,
+			visibility: "public",
+		});
+	}
+}
+
 async function seedWorkflow() {
 	console.log("[seed-workflows] Starting workflow seed...");
 	const sql = postgres(DATABASE_URL, { max: 1 });
@@ -4450,6 +4533,11 @@ async function seedWorkflow() {
 				visibility: "public",
 			});
 		}
+
+		// Generator/critic evaluator-optimizer showcases (Phases 1-3):
+		// evaluator-optimizer (subjective LLM critic), design-critic (4-dimension
+		// design grading), evaluator-gated (deterministic ground-truth gate AND critic).
+		await seedGeneratorCriticShowcases({ db, userId, projectId });
 
 		await upsertWorkflow({
 			db,
