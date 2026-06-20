@@ -1160,7 +1160,10 @@ class AntigravityAdapter(CliAdapter):
         self, event_name: str, payload: Mapping[str, Any], session: Mapping[str, Any]
     ) -> dict[str, Any] | None:
         if event_name == "PreToolUse":
-            return _execute_run_command_shim(payload)
+            response = _execute_run_command_shim(payload)
+            if response is not None:
+                return response
+            return {"decision": "allow"}
         if event_name == "Stop":
             return evaluate_stop_guard(increment_continue=True)
         return None

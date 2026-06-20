@@ -879,6 +879,25 @@ def test_agy_hook_mapping_uses_non_null_fallback_tool_name_for_payloads():
     assert event[0]["data"]["name"] == "agy_tool"
 
 
+def test_agy_pretool_hook_response_allows_native_tools_when_not_shimming(monkeypatch):
+    monkeypatch.setenv("CLI_AGENT_AGY_RUN_COMMAND_SHIM", "false")
+
+    response = get_adapter("antigravity").hook_response(
+        "PreToolUse",
+        {
+            "hook_event_name": "PreToolUse",
+            "toolName": "run_command",
+            "toolInput": {
+                "CommandLine": 'printf "native-ok\\n"',
+                "Cwd": "/sandbox",
+            },
+        },
+        {},
+    )
+
+    assert response == {"decision": "allow"}
+
+
 def test_agy_run_command_hook_shim_executes_and_denies_native_tool(
     tmp_path, monkeypatch
 ):
