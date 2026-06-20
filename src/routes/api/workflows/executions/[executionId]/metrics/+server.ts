@@ -8,11 +8,13 @@ import { costFor, formatCurrency } from '$lib/server/pricing/model-pricing';
  * GET /api/workflows/executions/[executionId]/metrics
  *
  * Authoritative aggregate metrics for ONE workflow run, summed across every
- * session it spawned. Tokens come from the server-maintained `sessions.usage`
- * rollup (so the numbers are correct regardless of when the UI connected),
- * grouped by the agent's `modelSpec` to compute per-model cost via the shared
- * pricing table — the same mechanism as `/api/v1/cost`, scoped to this
- * execution. Duration/status counts are derived by the caller from the
+ * session it spawned. Tokens are aggregated directly from the run's
+ * `agent.llm_usage` session events grouped by their reported `model` — the
+ * SAME source the per-session SessionPulse uses, so the rollup is consistent
+ * AND correct for every runtime (the server-side `sessions.usage` rollup is
+ * not populated for CLI-family sessions, which would otherwise read zero).
+ * Per-model cost uses the shared pricing table (`costFor`), as in
+ * `/api/v1/cost`. Duration/status counts are derived by the caller from the
  * sessions list; live tokens/sec come from the execution SSE stream.
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
@@ -21,26 +23,27 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 	type Row = {
 		model_spec: string | null;
-		sessions: number;
 		input_tokens: number;
 		output_tokens: number;
 		cache_read: number;
 		cache_create: number;
 	};
 
+	// Aggregate from agent.llm_usage events of every session in this execution.
+	// `input_tokens` is NET of cache reads (system invariant), matching costFor.
 	const rows = await db.execute<Row>(sql`
 		SELECT
-			coalesce(av.config->>'modelSpec', 'unknown') AS model_spec,
-			count(*) AS sessions,
-			coalesce(sum((s.usage->>'input_tokens')::bigint), 0) AS input_tokens,
-			coalesce(sum((s.usage->>'output_tokens')::bigint), 0) AS output_tokens,
-			coalesce(sum((s.usage->>'cache_read_input_tokens')::bigint), 0) AS cache_read,
-			coalesce(sum((s.usage->>'cache_creation_input_tokens')::bigint), 0) AS cache_create
-		FROM sessions s
-		LEFT JOIN agent_versions av ON av.agent_id = s.agent_id AND av.version = s.agent_version
+			coalesce(se.data->>'model', se.data->>'providerModel', 'unknown') AS model_spec,
+			coalesce(sum((se.data->>'input_tokens')::bigint), 0) AS input_tokens,
+			coalesce(sum((se.data->>'output_tokens')::bigint), 0) AS output_tokens,
+			coalesce(sum((se.data->>'cache_read_input_tokens')::bigint), 0) AS cache_read,
+			coalesce(sum((se.data->>'cache_creation_input_tokens')::bigint), 0) AS cache_create
+		FROM session_events se
+		JOIN sessions s ON s.id = se.session_id
 		WHERE s.workflow_execution_id = ${params.executionId}
+			AND se.type = 'agent.llm_usage'
 			${locals.session.projectId ? sql`AND s.project_id = ${locals.session.projectId}` : sql``}
-		GROUP BY av.config->>'modelSpec'
+		GROUP BY coalesce(se.data->>'model', se.data->>'providerModel', 'unknown')
 	`);
 
 	const totals = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 };
