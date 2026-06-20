@@ -37,8 +37,8 @@
        "criticAgent": {
         "type": "string",
         "title": "Critic agent",
-        "default": "cli-evaluator-critic-agent",
-        "description": "CRITIC phase agent (drives Playwright)."
+        "default": "cli-playwright-critic-agent",
+        "description": "CRITIC phase agent (drives Playwright MCP)."
        }
       }
      }
@@ -76,8 +76,8 @@
      "criticAgent": {
       "type": "string",
       "title": "Critic agent",
-      "default": "cli-evaluator-critic-agent",
-      "description": "CRITIC phase agent (drives Playwright)."
+      "default": "cli-playwright-critic-agent",
+      "description": "CRITIC phase agent (drives Playwright MCP)."
      }
     }
    }
@@ -190,28 +190,11 @@
         "mode": "execute_direct",
         "workspaceRef": "${ .runtime.executionId }",
         "agentRef": {
-         "slug": "${ .trigger.criticAgent // \"cli-evaluator-critic-agent\" }"
+         "slug": "${ .trigger.criticAgent // \"cli-playwright-critic-agent\" }"
         },
         "agentConfig": {
          "name": "Critic",
-         "instructions": "You are an exacting design Critic with strong taste, independent of the builder; you do NOT edit the repo. Your job is to VIEW the running redesigned app in a real browser and judge it.\n\nSTEP 1 \u2014 start the app. The build already ran (node_modules + build output exist in /sandbox/work/repo). Start the production preview server on a FIXED port in the background and wait until it answers, by running this shell:\n  cd /sandbox/work/repo && (nohup npm run preview -- --port 4321 --host 127.0.0.1 >/tmp/preview.log 2>&1 &) ; for i in $(seq 1 40); do curl -sf http://127.0.0.1:4321/ >/dev/null 2>&1 && break; sleep 1; done ; tail -5 /tmp/preview.log\nIf preview never answers, fall back to dev: (nohup npm run dev -- --port 4321 --host 127.0.0.1 >/tmp/preview.log 2>&1 &) and wait the same way.\n\nSTEP 2 \u2014 inspect with the Playwright MCP browser tools (MCP server name 'playwright'): call browser_navigate to http://127.0.0.1:4321/ , then browser_snapshot to read the accessibility tree/structure, and browser_take_screenshot with filename 'critic-shot.png' (it is saved to /sandbox/work/critic-shot.png) for the visual. You MAY browser_click nav links / the primary CTA and re-snapshot to test the functionality dimension. Capture the full page.\n\nSTEP 3 \u2014 read /sandbox/work/SPEC.md and the source (src/routes/+page.svelte, +layout.svelte, any CSS).\n\nSTEP 4 \u2014 judge against SPEC.md and the FOUR dimensions: design_quality (coherent whole, distinct mood/identity), originality (deliberate custom choices vs generic/template defaults), craft (typography hierarchy, spacing, color harmony, contrast), functionality (usable, responsive, accessible, interactive elements actually work). CALIBRATION: meets_criteria is true ONLY for genuinely polished, distinctive, usable work as SEEN IN THE BROWSER; generic or merely 'fine' is NOT a pass. DEFAULT to meets_criteria=false unless EVERY dimension is clearly strong; cite concrete evidence from what you actually saw on screen.\n\nSTEP 5 \u2014 WRITE your verdict to the file /sandbox/work/verdict.json (use your file-write tool) containing EXACTLY this JSON object and nothing else (no prose, no markdown fences):\n  {\"meets_criteria\": <boolean>, \"score\": <number 0-10>, \"perCriterion\": [{\"id\": <string>, \"met\": <boolean>, \"feedback\": <string>}], \"feedback\": <string>}\nThe verdict.json file is the ONLY thing the loop reads \u2014 it MUST be valid JSON. After writing it, stop the server (pkill -f vite 2>/dev/null; pkill -f 'npm run' 2>/dev/null) and end with a one-line summary.",
-         "mcpServers": [
-          {
-           "server_name": "playwright",
-           "displayName": "Playwright",
-           "transport": "stdio",
-           "command": "playwright-mcp",
-           "args": [
-            "--headless",
-            "--browser",
-            "chromium",
-            "--no-sandbox",
-            "--isolated",
-            "--output-dir",
-            "/sandbox/work"
-           ]
-          }
-         ]
+         "instructions": "You are an exacting design Critic with strong taste, independent of the builder; you do NOT edit the repo. Your job is to VIEW the running redesigned app in a real browser and judge it.\n\nSTEP 1 \u2014 start the app. The build already ran (node_modules + build output exist in /sandbox/work/repo). Start the production preview server on a FIXED port in the background and wait until it answers, by running this shell:\n  cd /sandbox/work/repo && (nohup npm run preview -- --port 4321 --host 127.0.0.1 >/tmp/preview.log 2>&1 &) ; for i in $(seq 1 40); do curl -sf http://127.0.0.1:4321/ >/dev/null 2>&1 && break; sleep 1; done ; tail -5 /tmp/preview.log\nIf preview never answers, fall back to dev: (nohup npm run dev -- --port 4321 --host 127.0.0.1 >/tmp/preview.log 2>&1 &) and wait the same way.\n\nSTEP 2 \u2014 inspect with the Playwright MCP browser tools (MCP server name 'playwright'): call browser_navigate to http://127.0.0.1:4321/ , then browser_snapshot to read the accessibility tree/structure, and browser_take_screenshot with filename 'critic-shot.png' (it is saved to /sandbox/work/critic-shot.png) for the visual. You MAY browser_click nav links / the primary CTA and re-snapshot to test the functionality dimension. Capture the full page.\n\nSTEP 3 \u2014 read /sandbox/work/SPEC.md and the source (src/routes/+page.svelte, +layout.svelte, any CSS).\n\nSTEP 4 \u2014 judge against SPEC.md and the FOUR dimensions: design_quality (coherent whole, distinct mood/identity), originality (deliberate custom choices vs generic/template defaults), craft (typography hierarchy, spacing, color harmony, contrast), functionality (usable, responsive, accessible, interactive elements actually work). CALIBRATION: meets_criteria is true ONLY for genuinely polished, distinctive, usable work as SEEN IN THE BROWSER; generic or merely 'fine' is NOT a pass. DEFAULT to meets_criteria=false unless EVERY dimension is clearly strong; cite concrete evidence from what you actually saw on screen.\n\nSTEP 5 \u2014 WRITE your verdict to the file /sandbox/work/verdict.json (use your file-write tool) containing EXACTLY this JSON object and nothing else (no prose, no markdown fences):\n  {\"meets_criteria\": <boolean>, \"score\": <number 0-10>, \"perCriterion\": [{\"id\": <string>, \"met\": <boolean>, \"feedback\": <string>}], \"feedback\": <string>}\nThe verdict.json file is the ONLY thing the loop reads \u2014 it MUST be valid JSON. After writing it, stop the server (pkill -f vite 2>/dev/null; pkill -f 'npm run' 2>/dev/null) and end with a one-line summary."
         },
         "body": {
          "prompt": "${ \"Judge the redesigned landing page in /sandbox/work/repo against /sandbox/work/SPEC.md by VIEWING it in the browser with the Playwright MCP tools, then WRITE /sandbox/work/verdict.json. Follow your instructions exactly.\" }",

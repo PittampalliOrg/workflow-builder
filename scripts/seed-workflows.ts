@@ -4383,7 +4383,13 @@ async function ensureCliShowcaseAgentFor(
 	sqlClient: ReturnType<typeof postgres>,
 	userId: string,
 	projectId: string,
-	opts: { slug: string; runtime: string; name: string; description: string },
+	opts: {
+		slug: string;
+		runtime: string;
+		name: string;
+		description: string;
+		mcpServers?: unknown[];
+	},
 ): Promise<string> {
 	const { slug, runtime, name, description } = opts;
 	const existing = await sqlClient<{ id: string; current_version_id: string | null }[]>`
@@ -4397,7 +4403,7 @@ async function ensureCliShowcaseAgentFor(
 		timeoutMinutes: 30,
 		skills: [] as unknown[],
 		tools: [] as unknown[],
-		mcpServers: [] as unknown[],
+		mcpServers: (opts.mcpServers ?? []) as unknown[],
 	};
 	const configHash = crypto
 		.createHash("sha256")
@@ -4446,6 +4452,39 @@ async function seedGeneratorCriticShowcases(params: {
 }) {
 	await ensureShowcaseAgent(params.sqlClient, params.userId, params.projectId);
 	await ensureCliShowcaseAgent(params.sqlClient, params.userId, params.projectId);
+	// Dedicated claude-code-cli CRITIC agent with the official Playwright MCP
+	// (stdio, in-pod: @playwright/mcp v0.0.76 binary `playwright-mcp` baked into
+	// the cli sandbox image; node-compatible Chromium at /opt/pw-browsers). The
+	// critic ACTIVELY drives a real browser (navigate / accessibility-snapshot /
+	// screenshot) to judge the rendered UI — the Anthropic long-running-app
+	// harness pattern. Scoped to the critic phase so plan/generate stay lean.
+	// The orchestrator MCP resolver passes stdio/command servers through, and the
+	// BFF browser-sidecar rewrite carve-out (interactiveTerminal) keeps the stdio
+	// preset instead of substituting the dapr-agent-py-only localhost:3100 sidecar.
+	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+		slug: "cli-playwright-critic-agent",
+		runtime: "claude-code-cli",
+		name: "CLI Playwright Critic Agent",
+		description:
+			"claude-code-cli design critic with the Playwright MCP server; drives Chromium in-pod to inspect the rendered app and judge it against a design rubric.",
+		mcpServers: [
+			{
+				server_name: "playwright",
+				displayName: "Playwright",
+				transport: "stdio",
+				command: "playwright-mcp",
+				args: [
+					"--headless",
+					"--browser",
+					"chromium",
+					"--no-sandbox",
+					"--isolated",
+					"--output-dir",
+					"/sandbox/work",
+				],
+			},
+		],
+	});
 	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
 		slug: "codex-cli-evaluator-critic-agent",
 		runtime: "codex-cli",
