@@ -41,8 +41,23 @@ import {
 	sessionHostAppId,
 } from "$lib/server/sessions/agent-workflow-host";
 import { resolveWorkflowGithubToken } from "$lib/server/workflows/github-token";
+import { createFile } from "$lib/server/files/registry";
 import type { AgentConfig } from "$lib/types/agents";
 import { env } from "$env/dynamic/private";
+
+const IMAGE_CONTENT_TYPES: Record<string, string> = {
+	png: "image/png",
+	jpg: "image/jpeg",
+	jpeg: "image/jpeg",
+	gif: "image/gif",
+	webp: "image/webp",
+	svg: "image/svg+xml",
+};
+
+function imageContentType(path: string): string | null {
+	const ext = path.split(".").pop()?.toLowerCase() ?? "";
+	return IMAGE_CONTENT_TYPES[ext] ?? null;
+}
 
 const DEFAULT_CWD = "/sandbox/work";
 const MAX_OUTPUT_CHARS = 16_000;
@@ -109,6 +124,34 @@ async function readFileFull(
 	return { ok: true, content: Buffer.concat(parts).toString("utf-8") };
 }
 
+// Read a file's full bytes from the CLI pod as a Buffer (binary-safe — used for
+// images, where the utf-8 decode in readFileFull would corrupt the payload).
+async function readFileBytes(
+	baseUrl: string,
+	token: string,
+	path: string,
+	cwd: string,
+): Promise<{ ok: boolean; bytes: Buffer; error?: string }> {
+	const q = `'${path.replace(/'/g, "'\\''")}'`;
+	const sizeRes = await postCommand(baseUrl, token, `wc -c < ${q}`, cwd);
+	if (!sizeRes || sizeRes.exitCode !== 0) {
+		return { ok: false, bytes: Buffer.alloc(0), error: `cannot stat ${path}: ${sizeRes?.stderr ?? "no pod"}` };
+	}
+	const size = parseInt((sizeRes.stdout || "").trim(), 10);
+	if (!Number.isFinite(size) || size < 0) return { ok: false, bytes: Buffer.alloc(0), error: "bad size" };
+	if (size > MAX_FILE_BYTES) return { ok: false, bytes: Buffer.alloc(0), error: `file too large (${size} bytes)` };
+	if (size === 0) return { ok: false, bytes: Buffer.alloc(0), error: "empty file" };
+	const chunks = Math.ceil(size / CHUNK_RAW_BYTES);
+	const parts: Buffer[] = [];
+	for (let n = 0; n < chunks; n++) {
+		const cmd = `dd if=${q} bs=${CHUNK_RAW_BYTES} skip=${n} count=1 2>/dev/null | base64 -w0`;
+		const r = await postCommand(baseUrl, token, cmd, cwd);
+		if (!r || r.exitCode !== 0) return { ok: false, bytes: Buffer.alloc(0), error: `chunk ${n} read failed` };
+		parts.push(Buffer.from((r.stdout || "").trim(), "base64"));
+	}
+	return { ok: true, bytes: Buffer.concat(parts) };
+}
+
 export const POST: RequestHandler = async ({ params, request }) => {
 	requireInternal(request);
 	if (!db) return error(503, "Database not configured");
@@ -126,10 +169,14 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : DEFAULT_CWD;
 	const readFile =
 		typeof body.readFile === "string" && body.readFile.trim() ? body.readFile.trim() : null;
+	// When readFile points at an image, upload its bytes to the files API and
+	// return a top-level fileId (instead of stuffing binary into stdout) so a
+	// workflow `image` artifact can reference it as a blob and render inline.
+	const readFileImageType = readFile ? imageContentType(readFile) : null;
 
 	// Resolve the execution's most-recent interactive-cli session with a live pod.
 	const rows = await db
-		.select({ id: sessions.id })
+		.select({ id: sessions.id, userId: sessions.userId })
 		.from(sessions)
 		.where(
 			and(
@@ -141,6 +188,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		.limit(8);
 
 	let baseUrl: string | null = null;
+	let ownerUserId: string | null = null;
 	for (const row of rows) {
 		if (!(await isInteractiveCliSession(row.id))) continue;
 		const rt = await resolveSessionRuntimeTarget(row.id);
@@ -149,6 +197,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			const ready = await waitForAgentWorkflowHostAppReady({ agentAppId: rt.appId });
 			if (ready?.baseUrl) {
 				baseUrl = ready.baseUrl;
+				ownerUserId = row.userId ?? null;
 				break;
 			}
 		} catch {
@@ -210,6 +259,54 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	const token = env.INTERNAL_API_TOKEN ?? process.env.INTERNAL_API_TOKEN ?? "";
 	const cmd = await postCommand(baseUrl, token, command, cwd);
 	if (!cmd) return error(502, "cli runtime error invoking workspace command");
+
+	// readFile + image: read the bytes (binary), upload to the files API, and
+	// return a top-level `fileId` so an `image` workflow artifact can reference
+	// the blob and render inline. (Storing the pod path string as inline_payload
+	// — the old behavior — produced an unrenderable 31-byte "PNG".)
+	if (readFile && readFileImageType) {
+		const img = await readFileBytes(baseUrl, token, readFile, cwd);
+		let fileId: string | null = null;
+		let uploadError: string | null = img.ok ? null : (img.error ?? "image read failed");
+		if (img.ok) {
+			try {
+				const name = readFile.split("/").pop() || "screenshot.png";
+				const created = await createFile({
+					userId: ownerUserId ?? "system",
+					purpose: "output",
+					scopeId: executionId,
+					name,
+					contentType: readFileImageType,
+					bytes: img.bytes,
+				});
+				fileId = created.file.id;
+			} catch (err) {
+				uploadError = err instanceof Error ? err.message : String(err);
+			}
+		}
+		// Best-effort artifact generation: ALWAYS success. The screenshot command
+		// often exits non-zero through no real fault (e.g. -15/SIGTERM when the
+		// trailing pkill tears down the preview server, or a command timeout that
+		// fires after the file was already written + uploaded). A missing/failed
+		// screenshot must never fail the whole workflow — the cliWorkspace task
+		// path doesn't honor allowFailure, and the image artifact's
+		// `if: fileId != null` guard skips itself when there's no blob.
+		return json({
+			success: true,
+			fileId,
+			fileName: readFile.split("/").pop() ?? null,
+			contentType: readFileImageType,
+			result: {
+				exitCode: cmd.exitCode,
+				stdout: fileId
+					? `uploaded ${readFile} (${img.bytes.byteLength} bytes) as file ${fileId}`
+					: "",
+				stderr: [cmd.stderr.slice(0, MAX_OUTPUT_CHARS), uploadError ?? ""]
+					.filter(Boolean)
+					.join("\n"),
+			},
+		});
+	}
 
 	// readFile mode: return the full file (chunked) instead of the tailed stdout.
 	if (readFile) {

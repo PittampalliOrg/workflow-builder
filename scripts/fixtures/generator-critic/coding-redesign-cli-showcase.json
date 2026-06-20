@@ -216,18 +216,32 @@
         "command": "for i in $(seq 1 40); do [ -s /sandbox/work/verdict.json ] && break; sleep 1; done; [ -f /sandbox/work/critic-shot.png ] || cp \"$(ls -1 /sandbox/work/shots/*.png 2>/dev/null | head -1)\" /sandbox/work/critic-shot.png 2>/dev/null; python3 - <<'PYZZ'\nimport json,re\ntry:\n    d=json.load(open(\"/sandbox/work/verdict.json\"))\nexcept Exception:\n    print(json.dumps({\"meets_criteria\":False,\"feedback\":\"verdict.json missing/invalid\"}));raise SystemExit\nmc=d.get(\"meets_criteria\")\ntxt=(str(d.get(\"overall_verdict\") or d.get(\"verdict\") or \"\")+\" \"+str(d.get(\"summary\") or \"\")).lower()\nfailw=bool(re.search(r\"\\b(fail|fails|failed|does not pass|doesn.t pass|not pass|reject\\w*|out-of-scope|out of scope)\\b\",txt))\npassw=bool(re.search(r\"\\b(pass|passes|passed|approved?|meets|satisf\\w*|accept\\w*)\\b\",txt))\nsc=d.get(\"score\")\nscpass=isinstance(sc,(int,float)) and ((sc>=80) or (sc<=10 and sc>=8))\nif mc is not None: res=bool(mc)\nelif failw: res=False\nelif passw: res=True\nelse: res=scpass\nprint(json.dumps({\"meets_criteria\":res,\"score\":sc,\"feedback\":(d.get(\"feedback\") or d.get(\"summary\") or \"\")[:300]}))\nPYZZ",
         "timeoutMs": 60000,
         "allowFailure": true
-       },
-       "artifacts": [
-        {
-         "from": "${ \"/sandbox/work/critic-shot.png\" }",
-         "kind": "image",
-         "slot": "primary",
-         "title": "Rendered redesign (Playwright critic screenshot)",
-         "contentType": "image/png",
-         "description": "Full-page screenshot the critic captured in-browser via the Playwright MCP server."
-        }
-       ]
+       }
       }
+     }
+    ]
+   }
+  },
+  {
+   "publish_shot": {
+    "call": "workspace/command",
+    "with": {
+     "cliWorkspace": true,
+     "cwd": "/sandbox/work",
+     "command": "cd /sandbox/work/repo\n(nohup npm run preview -- --port 4321 --host 127.0.0.1 >/tmp/preview.log 2>&1 &) || (nohup npm run dev -- --port 4321 --host 127.0.0.1 >/tmp/preview.log 2>&1 &)\nfor i in $(seq 1 40); do curl -sf http://127.0.0.1:4321/ >/dev/null 2>&1 && break; sleep 1; done\nPLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers playwright screenshot --browser chromium --full-page --viewport-size 1280,900 http://127.0.0.1:4321/ /sandbox/work/critic-shot.png || echo SHOT_FAILED\npkill -f vite 2>/dev/null; pkill -f 'npm run' 2>/dev/null\nls -la /sandbox/work/critic-shot.png 2>/dev/null || echo NO-SHOT",
+     "readFile": "/sandbox/work/critic-shot.png",
+     "timeoutMs": 60000,
+     "allowFailure": true
+    },
+    "artifacts": [
+     {
+      "fileId": "${ .data.fileId }",
+      "if": "${ (.data.fileId // \"\") != \"\" }",
+      "kind": "image",
+      "slot": "primary",
+      "title": "Rendered redesign (Playwright critic screenshot)",
+      "contentType": "image/png",
+      "description": "Full-page screenshot the critic captured in-browser via the Playwright MCP server."
      }
     ]
    }
