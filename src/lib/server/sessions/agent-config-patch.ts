@@ -4,6 +4,7 @@ import {
 } from "$lib/agents/model-options";
 import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution";
 import { resolveAgentRef } from "$lib/server/agents/registry";
+import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { getSession } from "$lib/server/sessions/registry";
 import type { AgentSkillConfig } from "$lib/agent-skill-presets";
 import type { McpServerProfileConfig } from "$lib/server/agent-profiles";
@@ -221,12 +222,18 @@ async function resolveRuntimeMcpPatch(
 	});
 	if (!agent) return { ok: false, status: 404, error: "Agent not found" };
 
+	const mergedConfig = {
+		...agent.config,
+		...patch,
+	};
+	const resolutionTarget = getRuntimeDescriptor(mergedConfig.runtime ?? agent.runtime);
 	const resolved = await resolveAgentConfigMcpForProject(
-		{
-			...agent.config,
-			...patch,
-		},
+		mergedConfig,
 		agent.projectId,
+		{
+			autoIncludesProjectConnections:
+				resolutionTarget?.cliAdapter !== "antigravity",
+		},
 	);
 	return {
 		ok: true,

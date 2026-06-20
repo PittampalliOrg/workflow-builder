@@ -99,6 +99,8 @@ The visible explicit/project/auto mode `<select>` is gone. The UI is now an **at
 - toggle **on** ⇒ `mcpConnectionMode: "project"` (inherit all enabled project `mcp_connection` rows).
 - the legacy `"auto"` value is still **read** for back-compat by both resolvers, but is no longer authored.
 
+Runtime caveat: Antigravity (`agy-cli`) treats legacy `"auto"` like an explicit-only mode for implicit project fan-in. It still resolves explicitly attached project MCP references, and `"project"` still intentionally inherits every enabled workspace MCP server. This avoids presenting globally available MCP servers as configured AGY servers when an agent did not explicitly attach them.
+
 ### `?tools=` allowlist enforced on both resolvers
 
 A `?tools=` URL allowlist (already the intersection of the project ceiling and the per-agent `allowedTools`) is enforced at the piece-mcp-server transport on **both** resolution paths:

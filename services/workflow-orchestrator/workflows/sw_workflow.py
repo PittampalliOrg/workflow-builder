@@ -1465,6 +1465,26 @@ def _prompt_runtime_label(
     return None
 
 
+def _is_antigravity_runtime(
+    agent_runtime: str | None,
+    agent_config: dict[str, Any] | None,
+) -> bool:
+    return _prompt_runtime_label(agent_runtime, agent_config) == "agy-cli"
+
+
+def _should_include_project_mcp_connections(
+    mcp_connection_mode: str,
+    agent_runtime: str | None,
+    agent_config: dict[str, Any] | None,
+) -> bool:
+    mode = str(mcp_connection_mode or "").strip().lower()
+    if mode in {"project", "all"}:
+        return True
+    if mode == "auto" and not _is_antigravity_runtime(agent_runtime, agent_config):
+        return True
+    return False
+
+
 def _next_task_execution_count(tc: "TaskContext", task_name: str) -> int:
     current = tc.task_execution_counts.get(task_name, 0)
     tc.task_execution_counts[task_name] = current + 1
@@ -1717,11 +1737,11 @@ def _run_native_durable_agent_child_workflow(
     mcp_connection_mode = (
         str(existing_config.get("mcpConnectionMode") or "").strip().lower()
     )
-    should_resolve_project_mcp = mcp_connection_mode in {
-        "project",
-        "auto",
-        "all",
-    }
+    should_resolve_project_mcp = _should_include_project_mcp_connections(
+        mcp_connection_mode,
+        agent_runtime,
+        existing_config,
+    )
     has_unresolved_mcp_servers = any(
         not (
             str(item.get("url") or item.get("serverUrl") or "").strip()

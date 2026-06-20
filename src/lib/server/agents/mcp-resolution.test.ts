@@ -1,7 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { resolveMcpServerConfigsFromRows } from "./mcp-resolution";
+import {
+	resolveMcpServerConfigsFromRows,
+	shouldIncludeProjectConnectionsForMcpResolution,
+} from "./mcp-resolution";
 
 describe("agent MCP resolution", () => {
+	it("lets callers opt AGY-style auto mode out of implicit project MCP fan-in", () => {
+		const config = { mcpConnectionMode: "auto" as const, mcpServers: [] };
+
+		expect(shouldIncludeProjectConnectionsForMcpResolution(config)).toBe(true);
+		expect(
+			shouldIncludeProjectConnectionsForMcpResolution(config, {
+				autoIncludesProjectConnections: false,
+			}),
+		).toBe(false);
+	});
+
+	it("still includes all project MCPs when project mode is explicit", () => {
+		const config = { mcpConnectionMode: "project" as const, mcpServers: [] };
+
+		expect(
+			shouldIncludeProjectConnectionsForMcpResolution(config, {
+				autoIncludesProjectConnections: false,
+			}),
+		).toBe(true);
+	});
+
 	it("resolves a logical piece descriptor to the enabled project MCP connection", () => {
 		const result = resolveMcpServerConfigsFromRows({
 			rows: [

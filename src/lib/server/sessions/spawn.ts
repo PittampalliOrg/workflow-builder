@@ -140,9 +140,16 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	// BEFORE MCP resolution, so bundle-contributed MCP servers participate in
 	// project-connection resolution exactly like inline ones.
 	const flattenedAgentConfig = await flattenBundles(agent.config, agent.projectId);
+	const resolutionTarget = getRuntimeDescriptor(
+		(flattenedAgentConfig as { runtime?: string }).runtime ?? agent.runtime,
+	);
 	const resolvedAgentConfig = await resolveAgentConfigMcpForProject(
 		flattenedAgentConfig,
 		agent.projectId,
+		{
+			autoIncludesProjectConnections:
+				resolutionTarget?.cliAdapter !== "antigravity",
+		},
 	);
 	const { mcpServers: rewrittenMcp, useBrowserSidecar } =
 		resolvedAgentConfig.runtime === "browser-use-agent"

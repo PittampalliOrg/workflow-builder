@@ -127,6 +127,7 @@ describe("session agent config patch", () => {
 		expect(resolveAgentConfigMcpForProjectMock).toHaveBeenCalledWith(
 			expect.objectContaining({ mcpConnectionMode: "project" }),
 			"project-1",
+			{ autoIncludesProjectConnections: true },
 		);
 		expect(raiseSessionEventMock).toHaveBeenCalledWith(
 			"s1",
@@ -140,6 +141,42 @@ describe("session agent config patch", () => {
 					mcpConnectionWarnings: ["warning"],
 				}),
 			}),
+		);
+	});
+
+	it("does not expand AGY auto mode to all project MCP connections", async () => {
+		getSessionMock.mockResolvedValueOnce({
+			agentId: "agent-agy",
+			agentVersion: null,
+		});
+		resolveAgentRefMock.mockResolvedValueOnce({
+			config: {
+				builtinTools: ["read_file"],
+				mcpConnectionMode: "explicit",
+				mcpServers: [],
+				skills: [],
+				runtime: "agy-cli",
+				runtimeOverridePolicy: {},
+			},
+			projectId: "project-1",
+		});
+		resolveAgentConfigMcpForProjectMock.mockResolvedValueOnce({
+			mcpServers: [],
+		});
+		raiseSessionEventMock.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		const result = await raiseSessionAgentConfigPatch("s1", {
+			mcpConnectionMode: "auto",
+		});
+
+		expect(result.ok).toBe(true);
+		expect(resolveAgentConfigMcpForProjectMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				mcpConnectionMode: "auto",
+				runtime: "agy-cli",
+			}),
+			"project-1",
+			{ autoIncludesProjectConnections: false },
 		);
 	});
 });

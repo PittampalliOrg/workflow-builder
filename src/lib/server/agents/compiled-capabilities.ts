@@ -85,9 +85,16 @@ export async function compileAgentCapabilities(
 	// Mirror the spawn resolve pipeline (read-only). Bundles flatten BEFORE MCP
 	// resolution so bundle-contributed servers resolve like inline ones.
 	const flattened = await flattenBundles(baseConfig, projectId);
+	const resolutionTarget = getRuntimeDescriptor(
+		(flattened as { runtime?: string }).runtime ?? agent.runtime,
+	);
 	const resolved = (await resolveAgentConfigMcpForProject(
 		flattened,
 		projectId,
+		{
+			autoIncludesProjectConnections:
+				resolutionTarget?.cliAdapter !== "antigravity",
+		},
 	)) as AgentConfig & {
 		mcpServers?: unknown[];
 		mcpConnectionWarnings?: unknown[];

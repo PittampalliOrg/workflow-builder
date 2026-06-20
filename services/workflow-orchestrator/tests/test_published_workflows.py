@@ -1509,6 +1509,39 @@ def test_prompt_runtime_label_prefers_selected_cli_over_pool_app_id():
     )
 
 
+def test_agy_auto_mcp_mode_does_not_include_project_connections():
+    assert (
+        SW_WORKFLOW._should_include_project_mcp_connections(
+            "auto",
+            "agy-cli",
+            {"runtime": "agy-cli"},
+        )
+        is False
+    )
+
+
+def test_agy_project_mcp_mode_still_includes_project_connections():
+    assert (
+        SW_WORKFLOW._should_include_project_mcp_connections(
+            "project",
+            "agy-cli",
+            {"runtime": "agy-cli"},
+        )
+        is True
+    )
+
+
+def test_non_agy_auto_mcp_mode_keeps_legacy_project_connections():
+    assert (
+        SW_WORKFLOW._should_include_project_mcp_connections(
+            "auto",
+            "codex-cli",
+            {"runtime": "codex-cli"},
+        )
+        is True
+    )
+
+
 def test_durable_run_routes_through_session_bridge():
     workflow = types.SimpleNamespace(
         use=None,

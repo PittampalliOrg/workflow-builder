@@ -725,8 +725,12 @@ export async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 	// workspace environment. environmentRecord.imageTag is the WORKSPACE sandbox
 	// image used by workspace/profile tools, not the agent runtime image.
 	const config = await loadCurrentAgentConfig(agentId);
+	const resolutionTarget = getRuntimeDescriptor(config?.runtime ?? row.runtime);
 	const resolvedConfig = config
-		? await resolveAgentConfigMcpForProject(config, row.projectId)
+		? await resolveAgentConfigMcpForProject(config, row.projectId, {
+				autoIncludesProjectConnections:
+					resolutionTarget?.cliAdapter !== "antigravity",
+			})
 		: null;
 	const imageTag =
 		resolvedConfig?.runtime === "browser-use-agent"

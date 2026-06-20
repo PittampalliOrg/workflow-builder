@@ -29,6 +29,17 @@ export type AgentMcpResolutionResult = {
 	warnings: string[];
 };
 
+export type AgentMcpResolutionOptions = {
+	/**
+	 * Historical `auto` behavior attaches all enabled project MCP connections
+	 * when the agent has no explicit MCP list. Some runtimes, notably
+	 * Antigravity, eagerly initialize configured MCP servers and can stall on a
+	 * broken globally-enabled server, so their callers opt out while preserving
+	 * explicit `project`/`all` semantics.
+	 */
+	autoIncludesProjectConnections?: boolean;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -95,6 +106,23 @@ function hasDirectEndpoint(server: Record<string, unknown>): boolean {
 	return Boolean(
 		String(server.url || server.serverUrl || "").trim() ||
 			String(server.command || "").trim(),
+	);
+}
+
+export function shouldIncludeProjectConnectionsForMcpResolution(
+	config: Pick<AgentConfig, "mcpConnectionMode" | "mcpServers">,
+	options: AgentMcpResolutionOptions = {},
+): boolean {
+	const requestedServers = Array.isArray(config.mcpServers) ? config.mcpServers : [];
+	const mode = String(config.mcpConnectionMode || "").trim().toLowerCase();
+	const autoIncludesProjectConnections =
+		options.autoIncludesProjectConnections ?? true;
+	return (
+		mode === "project" ||
+		mode === "all" ||
+		(autoIncludesProjectConnections &&
+			mode === "auto" &&
+			requestedServers.length === 0)
 	);
 }
 
@@ -451,11 +479,11 @@ export async function resolveAgentMcpServersForProject(params: {
 export async function resolveAgentConfigMcpForProject(
 	config: AgentConfig,
 	projectId?: string | null,
+	options: AgentMcpResolutionOptions = {},
 ): Promise<AgentConfig> {
 	const requestedServers = Array.isArray(config.mcpServers) ? config.mcpServers : [];
-	const mode = String(config.mcpConnectionMode || "").trim().toLowerCase();
 	const includeProjectConnections =
-		mode === "project" || mode === "all" || (mode === "auto" && requestedServers.length === 0);
+		shouldIncludeProjectConnectionsForMcpResolution(config, options);
 	const hasUnresolvedServers = requestedServers.some((server) => !hasDirectEndpoint(server));
 	if (!includeProjectConnections && requestedServers.length === 0 && !hasUnresolvedServers) {
 		return config;
