@@ -549,21 +549,11 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def _user_namespaces_available() -> bool:
-    try:
-        raw = Path("/proc/sys/user/max_user_namespaces").read_text(encoding="utf-8")
-        return int(raw.strip()) > 0
-    except (OSError, TypeError, ValueError):
-        # If the probe is unavailable, avoid changing native AGY behavior unless
-        # the operator explicitly enables the shim.
-        return True
-
-
 def _should_shim_run_command() -> bool:
     explicit = _env_bool("CLI_AGENT_AGY_RUN_COMMAND_SHIM")
     if explicit is not None:
         return explicit
-    return not _user_namespaces_available()
+    return True
 
 
 def _run_command_value(tool_input: Mapping[str, Any]) -> str | None:

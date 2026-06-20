@@ -924,13 +924,13 @@ def test_agy_pretool_hook_response_allows_native_tools_when_not_shimming(monkeyp
     assert response == {"decision": "allow"}
 
 
-def test_agy_run_command_hook_shim_executes_and_denies_native_tool(
+def test_agy_run_command_hook_shim_executes_by_default_and_denies_native_tool(
     tmp_path, monkeypatch
 ):
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
     monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(sandbox))
-    monkeypatch.setenv("CLI_AGENT_AGY_RUN_COMMAND_SHIM", "true")
+    monkeypatch.delenv("CLI_AGENT_AGY_RUN_COMMAND_SHIM", raising=False)
     adapter = get_adapter("antigravity")
 
     response = adapter.hook_response(

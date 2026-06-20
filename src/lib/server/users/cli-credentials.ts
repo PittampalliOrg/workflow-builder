@@ -11,6 +11,8 @@
  *     metadata only.
  */
 import { and, eq } from "drizzle-orm";
+import { posix as pathPosix } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { db } from "$lib/server/db";
 import { userCliCredentials } from "$lib/server/db/schema";
 import { cliAuthForProvider } from "$lib/server/agents/runtime-registry";
@@ -57,10 +59,59 @@ export type CliCredentialSummary = {
  * Code subscription OAuth tokens are minted for ~1 year; 363 days leaves a
  * safety margin so we steer re-enrollment before the provider hard-expires. */
 const DEFAULT_TTL_DAYS = 363;
+const FILE_BUNDLE_MAX_BYTES = 8 * 1024 * 1024;
+const FILE_BUNDLE_TAR_MAX_BYTES = 32 * 1024 * 1024;
+const AGY_LOGIN_TOKEN_PATH = "antigravity-cli/antigravity-oauth-token";
 
 function requireDb() {
 	if (!db) throw new Error("Database not configured");
 	return db;
+}
+
+function readTarString(buf: Buffer, offset: number, length: number): string {
+	const slice = buf.subarray(offset, offset + length);
+	const nul = slice.indexOf(0);
+	return slice.subarray(0, nul >= 0 ? nul : undefined).toString("utf8").trim();
+}
+
+function tarGzHasRegularFile(buf: Buffer, requiredPath: string): boolean {
+	let archive: Buffer;
+	try {
+		archive = gunzipSync(buf, { maxOutputLength: FILE_BUNDLE_TAR_MAX_BYTES });
+	} catch {
+		throw new Error("Credential bundle must be a valid tar.gz archive.");
+	}
+	if (archive.length > FILE_BUNDLE_TAR_MAX_BYTES) {
+		throw new Error("Credential bundle tar archive is too large.");
+	}
+
+	for (let offset = 0; offset + 512 <= archive.length; ) {
+		const header = archive.subarray(offset, offset + 512);
+		if (header.every((byte) => byte === 0)) return false;
+
+		const name = readTarString(header, 0, 100);
+		const prefix = readTarString(header, 345, 155);
+		const rawPath = prefix ? `${prefix}/${name}` : name;
+		const normalizedPath = pathPosix.normalize(rawPath);
+		const typeflag = readTarString(header, 156, 1);
+		const sizeText = readTarString(header, 124, 12);
+		const size = Number.parseInt(sizeText || "0", 8);
+		if (!Number.isFinite(size) || size < 0) {
+			throw new Error("Credential bundle contains an invalid tar entry.");
+		}
+
+		if (
+			(typeflag === "" || typeflag === "0") &&
+			normalizedPath === requiredPath &&
+			size > 0
+		) {
+			return true;
+		}
+
+		offset += 512 + Math.ceil(size / 512) * 512;
+	}
+
+	return false;
 }
 
 /**
@@ -120,7 +171,9 @@ export function assertPlausibleCliCredential(
 
 	if (kind === "file_bundle") {
 		// A base64 tar.gz of the CLI's login dir (agy ~/.gemini), auto-captured by
-		// the runtime. Validate it decodes to a gzip stream and isn't oversized.
+		// the runtime. Validate it decodes to a gzip stream, isn't oversized, and
+		// for AGY includes the Antigravity OAuth token rather than a legacy Gemini
+		// CLI-only login file.
 		let buf: Buffer;
 		try {
 			buf = Buffer.from(trimmed, "base64");
@@ -133,8 +186,17 @@ export function assertPlausibleCliCredential(
 		if (buf[0] !== 0x1f || buf[1] !== 0x8b) {
 			throw new Error("Credential bundle must be a gzip (tar.gz) archive.");
 		}
-		if (buf.length > 8 * 1024 * 1024) {
+		if (buf.length > FILE_BUNDLE_MAX_BYTES) {
 			throw new Error("Credential bundle is too large (>8 MiB).");
+		}
+		if (
+			provider === "google" &&
+			!tarGzHasRegularFile(buf, AGY_LOGIN_TOKEN_PATH)
+		) {
+			throw new Error(
+				"AGY credential bundle is missing the Antigravity OAuth token. " +
+					"Start a fresh AGY session and complete the Antigravity login flow.",
+			);
 		}
 		return;
 	}
