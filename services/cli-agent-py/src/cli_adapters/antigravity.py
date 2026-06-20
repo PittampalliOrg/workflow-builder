@@ -304,12 +304,23 @@ def _agy_hook_group(event: str, *, matcher: str | None = None) -> list[dict[str,
     return [group]
 
 
+def _agy_hook_timeout_seconds() -> int:
+    try:
+        return max(1, int(os.environ.get("CLI_AGENT_AGY_HOOK_TIMEOUT_SECONDS", "660")))
+    except (TypeError, ValueError):
+        return 660
+
+
 def _agy_hook_handler(event: str) -> dict[str, Any]:
     return {
         "type": "command",
         "command": hook_relay_command(
             _hook_relay_path(), adapter="antigravity", event=event
         ),
+        # PreToolUse owns the managed run_command shim. Long but normal commands
+        # such as npm install must be allowed to return their synthetic tool
+        # result instead of being killed by AGY's default hook timeout.
+        "timeout": _agy_hook_timeout_seconds(),
     }
 
 

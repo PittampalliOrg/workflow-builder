@@ -616,8 +616,13 @@ def test_agy_seed_writes_hooks_json_for_completion_signal(agy_home):
     stop_hook = hooks["workflow-builder"]["Stop"][0]
     assert stop_hook["type"] == "command"
     assert "--adapter antigravity --event Stop" in stop_hook["command"]
+    assert stop_hook["timeout"] == 660
+    pre_tool_hook = hooks["workflow-builder"]["PreToolUse"][0]["hooks"][0]
+    assert "--adapter antigravity --event PreToolUse" in pre_tool_hook["command"]
+    assert pre_tool_hook["timeout"] == 660
     end_hook = hooks["workflow-builder"]["SessionEnd"][0]["hooks"][0]
     assert "--adapter antigravity --event SessionEnd" in end_hook["command"]
+    assert end_hook["timeout"] == 660
     assert result.paths["hooksPath"].endswith("hooks.json")
 
 
