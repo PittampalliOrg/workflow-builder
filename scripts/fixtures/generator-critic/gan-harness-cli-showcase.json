@@ -192,7 +192,7 @@
         },
         "agentConfig": {
          "name": "Evaluator (Contract negotiation)",
-         "instructions": "You are a HIGHLY SKEPTICAL EVALUATOR negotiating the acceptance contract for a redesign, BEFORE any code is written. You do NOT write code and you do NOT open a browser yet. Read /sandbox/work/SPEC.md and /sandbox/work/proposal.md. Adversarially review the proposed features + acceptance criteria. DEFAULT TO REJECT. Reject criteria that are vague, unmeasurable, overly broad, or that omit important edge cases (empty/error states, responsive/mobile layout, keyboard focus / accessibility, interactive elements actually working). Push for every criterion to be SPECIFIC and BROWSER-VERIFIABLE. Write your objections + required changes to /sandbox/work/contract-review.md. THEN write the current negotiated contract to /sandbox/work/contract.json as STRICT JSON with EXACTLY this shape: {\"agreed\": <boolean>, \"criteria\": [{\"id\": \"c1\", \"dimension\": \"design_quality|originality|craft|functionality\", \"description\": \"...\", \"verify\": \"how to check it in the browser\", \"passes\": false}, ...]}. Every criterion MUST start with \"passes\": false. Set \"agreed\": true ONLY when EVERY criterion is specific, testable in a browser, and the set covers the key edge cases \u2014 otherwise \"agreed\": false and keep iterating. Aim for a TIGHT but COMPLETE set (typically 6-15 criteria). End with a one-line summary."
+         "instructions": "You are a HIGHLY SKEPTICAL EVALUATOR negotiating the acceptance contract for a redesign, BEFORE any code is written. You do NOT write code and you do NOT open a browser yet. Read /sandbox/work/SPEC.md and /sandbox/work/proposal.md. Adversarially review the proposed features + acceptance criteria. DEFAULT TO REJECT vague/unmeasurable/overly-broad criteria and ones that omit key edge cases (empty/error states, responsive/mobile layout, keyboard focus / accessibility, interactive elements actually working). Produce a FOCUSED contract: at most 8-12 of the MOST IMPORTANT, user-visible acceptance criteria \u2014 quality over quantity. Do NOT enumerate dozens of micro-criteria. Each criterion MUST be PERCEPTUAL or STRUCTURAL \u2014 the kind of check a human design reviewer makes by looking at and clicking the page (e.g. 'the hero headline is clearly the largest, most prominent text', 'the primary CTA is visually distinct and obviously clickable', 'the three feature cards sit in a row on desktop and stack on mobile with no overlap', 'keyboard focus is visible on interactive elements'). STRICTLY FORBIDDEN: over-precise numeric assertions (exact pixel sizes, exact rgb/hex values, exact font-size thresholds) \u2014 they are brittle and not how a human judges design. Describe the INTENT, not a magic number. Write your objections + required changes to /sandbox/work/contract-review.md. THEN write the negotiated contract to /sandbox/work/contract.json as STRICT JSON with EXACTLY this shape: {\"agreed\": <boolean>, \"criteria\": [{\"id\": \"c1\", \"dimension\": \"design_quality|originality|craft|functionality\", \"description\": \"perceptual/structural criterion\", \"verify\": \"how a reviewer checks it in the browser\", \"passes\": false}, ...]}. EVERY criterion MUST include a non-empty \"dimension\" (exactly one of design_quality, originality, craft, functionality) and start with \"passes\": false. Set \"agreed\": true ONLY when the set is focused (<=12), every criterion is specific + perceptual/structural + browser-verifiable, and the key edge cases are covered \u2014 otherwise \"agreed\": false and keep iterating. End with a one-line summary."
         },
         "body": {
          "prompt": "${ \"Negotiate the acceptance contract. Read /sandbox/work/SPEC.md and /sandbox/work/proposal.md, write your objections to /sandbox/work/contract-review.md, and write/update /sandbox/work/contract.json (agreed + criteria, each passes:false) as STRICT JSON per your instructions. Be skeptical: set agreed:true ONLY when every criterion is specific, browser-verifiable, and covers edge cases.\" }",
@@ -231,11 +231,35 @@
       2,
       3,
       4,
-      5
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29
      ],
      "at": "idx"
     },
-    "while": "${ ( ( ((.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") | test(\"OBJECTIVE PASS\")) ) and ( (( (((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson?) // {}) as $v | ( ($v.meets_criteria) // (($v.overall_verdict // $v.verdict // \"\") | ascii_downcase | test(\"pass|approv|meet|satisf|accept\")) // (($v.score // 0) >= 80) ) )) == true ) ) | not }",
+    "while": "${ ( (( ((.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") | test(\"OBJECTIVE PASS\")) and (((((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson?) // {}) | (.meets_criteria // false)) == true) ) | not) and ((((((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson?) // {}) | (.stalled // false)) == true) | not) ) }",
     "do": [
      {
       "generate": {
@@ -305,7 +329,7 @@
        "with": {
         "cliWorkspace": true,
         "cwd": "/sandbox/work",
-        "command": "for i in $(seq 1 40); do [ -s /sandbox/work/verdict.json ] && break; sleep 1; done\n[ -f /sandbox/work/critic-shot.png ] || cp \"$(ls -1 /sandbox/work/shots/*.png 2>/dev/null | head -1)\" /sandbox/work/critic-shot.png 2>/dev/null\npython3 - <<'PYZZ'\nimport json,re\nPROG='/sandbox/work/progress.json'\ntry:\n    d=json.load(open('/sandbox/work/verdict.json'))\nexcept Exception:\n    print(json.dumps({'meets_criteria':False,'feedback':'verdict.json missing/invalid'}));raise SystemExit\ncrit=d.get('criteria') or []\ntotal=len(crit); passed=sum(1 for c in crit if isinstance(c,dict) and c.get('passes'))\nallp=d.get('allPass'); mc=d.get('meets_criteria')\ntxt=(str(d.get('overall_verdict') or d.get('verdict') or '')+' '+str(d.get('summary') or d.get('feedback') or '')).lower()\nfailw=bool(re.search(r'\\b(fail|fails|failed|does not pass|doesn.t pass|not pass|reject\\w*)\\b',txt))\npassw=bool(re.search(r'\\b(pass|passes|passed|approved?|meets|satisf\\w*|accept\\w*)\\b',txt))\nsc=d.get('score'); scpass=isinstance(sc,(int,float)) and ((sc>=80) or (sc<=10 and sc>=8))\nif allp is not None: res=bool(allp)\nelif total>0: res=(passed==total)\nelif mc is not None: res=bool(mc)\nelif failw: res=False\nelif passw: res=True\nelse: res=scpass\ntry:\n    p=json.load(open(PROG))\nexcept Exception:\n    p={'baseline':'unknown','log':[]}\np.setdefault('log',[]).append({'iteration':len(p.get('log',[])),'criteriaPassed':passed,'criteriaTotal':total,'allPass':res,'score':sc,'note':(d.get('feedback') or d.get('summary') or '')[:200]})\njson.dump(p,open(PROG,'w'))\nprint(json.dumps({'meets_criteria':res,'score':sc,'passed':passed,'total':total,'feedback':(d.get('feedback') or d.get('summary') or '')[:300]}))\nPYZZ",
+        "command": "for i in $(seq 1 40); do [ -s /sandbox/work/verdict.json ] && break; sleep 1; done\n[ -f /sandbox/work/critic-shot.png ] || cp \"$(ls -1 /sandbox/work/shots/*.png 2>/dev/null | head -1)\" /sandbox/work/critic-shot.png 2>/dev/null\npython3 - <<'PYZZ'\nimport json,re\nPROG='/sandbox/work/progress.json'\ntry:\n    d=json.load(open('/sandbox/work/verdict.json'))\nexcept Exception:\n    print(json.dumps({'meets_criteria':False,'stalled':False,'feedback':'verdict.json missing/invalid'}));raise SystemExit\ncrit=d.get('criteria') or []\ntotal=len(crit); passed=sum(1 for c in crit if isinstance(c,dict) and c.get('passes'))\nallp=d.get('allPass'); mc=d.get('meets_criteria')\ntxt=(str(d.get('overall_verdict') or d.get('verdict') or '')+' '+str(d.get('summary') or d.get('feedback') or '')).lower()\nfailw=bool(re.search(r'\\b(fail|fails|failed|does not pass|doesn.t pass|not pass|reject\\w*)\\b',txt))\npassw=bool(re.search(r'\\b(pass|passes|passed|approved?|meets|satisf\\w*|accept\\w*)\\b',txt))\nsc=d.get('score'); scpass=isinstance(sc,(int,float)) and ((sc>=80) or (sc<=10 and sc>=8))\nif allp is not None: res=bool(allp)\nelif total>0: res=(passed==total)\nelif mc is not None: res=bool(mc)\nelif failw: res=False\nelif passw: res=True\nelse: res=scpass\ntry:\n    p=json.load(open(PROG))\nexcept Exception:\n    p={'baseline':'unknown','log':[]}\np.setdefault('log',[]).append({'iteration':len(p.get('log',[])),'criteriaPassed':passed,'criteriaTotal':total,'allPass':res,'score':sc,'note':(d.get('feedback') or d.get('summary') or '')[:200]})\njson.dump(p,open(PROG,'w'))\n# stall = no improvement in criteriaPassed over the last K iterations (progress-gated 'unlimited' loop)\nK=3\nseq=[e.get('criteriaPassed',0) for e in p['log']]\nstalled=False\nif not res and len(seq)>K:\n    stalled = max(seq[-K:]) <= max(seq[:-K])\nprint(json.dumps({'meets_criteria':res,'stalled':stalled,'score':sc,'passed':passed,'total':total,'feedback':(d.get('feedback') or d.get('summary') or '')[:300]}))\nPYZZ",
         "timeoutMs": 60000,
         "allowFailure": true
        }
@@ -385,11 +409,11 @@
   {
    "summary": {
     "set": {
-     "buildPass": "${ ( (.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") | test(\"OBJECTIVE PASS\") ) }",
-     "criticPass": "${ (( (((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson?) // {}) as $v | ( ($v.meets_criteria) // (($v.overall_verdict // $v.verdict // \"\") | ascii_downcase | test(\"pass|approv|meet|satisf|accept\")) // (($v.score // 0) >= 80) ) )) == true }",
+     "buildPass": "${ ((.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") | test(\"OBJECTIVE PASS\")) }",
+     "criticPass": "${ ((((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson?) // {}) | (.meets_criteria // false)) == true }",
      "iterations": "${ .loop.iterations // 0 }",
      "prOutput": "${ (.pr.data.result.stdout // .pr.data.stdout // .pr.data.result.output // .pr.data.output // \"\") }",
-     "terminalState": "${ if ( ((.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") | test(\"OBJECTIVE PASS\")) and ((( (((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson?) // {}) as $v | ( ($v.meets_criteria) // (($v.overall_verdict // $v.verdict // \"\") | ascii_downcase | test(\"pass|approv|meet|satisf|accept\")) // (($v.score // 0) >= 80) ) )) == true) ) then \"satisfied\" else \"max_iterations_reached\" end }",
+     "terminalState": "${ if ( ((.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") | test(\"OBJECTIVE PASS\")) and (((((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson?) // {}) | (.meets_criteria // false)) == true) ) then \"satisfied\" elif (((((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson?) // {}) | (.stalled // false)) == true) then \"stalled_no_progress\" else \"max_iterations_reached\" end }",
      "criteriaPassed": "${ (((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // \"{}\") | fromjson?) // {}) | (.passed // 0) }",
      "criteriaTotal": "${ (((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // \"{}\") | fromjson?) // {}) | (.total // 0) }",
      "negotiationRounds": "${ .negotiate.iterations // .negotiate.data.iterations // 0 }"
