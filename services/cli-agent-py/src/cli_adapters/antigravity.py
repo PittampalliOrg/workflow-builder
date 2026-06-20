@@ -33,6 +33,7 @@ import signal
 import shutil
 import subprocess
 import tarfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -67,6 +68,7 @@ RUN_COMMAND_SHIM_MAX_OUTPUT = 16_000
 RUN_COMMAND_SHIM_REASON_LIMIT = 9_000
 RUN_COMMAND_SHIM_DEFAULT_TIMEOUT_SECONDS = 300
 RUN_COMMAND_SHIM_KILL_GRACE_SECONDS = 2.0
+RUN_COMMAND_SHIM_PERSISTENT_WAIT_MAX_MS = 15_000
 DEFAULT_AGY_MCP_DENYLIST = frozenset(
     {
         # AGY currently stalls response streaming when these ActivePieces MCP
@@ -584,6 +586,33 @@ def _run_command_value(tool_input: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _tool_bool(tool_input: Mapping[str, Any], *keys: str) -> bool:
+    for key in keys:
+        raw = tool_input.get(key)
+        if isinstance(raw, bool):
+            return raw
+        if raw is None:
+            continue
+        value = str(raw).strip().lower()
+        if value in {"1", "true", "yes", "on"}:
+            return True
+        if value in {"0", "false", "no", "off"}:
+            return False
+    return False
+
+
+def _tool_int(tool_input: Mapping[str, Any], default: int, *keys: str) -> int:
+    for key in keys:
+        raw = tool_input.get(key)
+        if raw is None:
+            continue
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            continue
+    return default
+
+
 def _bash_argv(command: str) -> list[str]:
     return [shutil.which("bash") or "/bin/bash", "-lc", command]
 
@@ -692,6 +721,78 @@ def _run_bash_command(command: str, cwd: Path, timeout: int) -> dict[str, Any]:
         }
 
 
+def _run_command_log_dir() -> Path:
+    sandbox_root = Path(os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox"))
+    raw = os.environ.get("CLI_AGENT_AGY_RUN_COMMAND_LOG_DIR")
+    return Path(raw) if raw else sandbox_root / ".wfb" / "run-command-logs"
+
+
+def _reap_persistent_process(proc: subprocess.Popen[str]) -> None:
+    try:
+        proc.wait()
+    except Exception:  # noqa: BLE001
+        logger.debug("persistent run_command reaper failed", exc_info=True)
+
+
+def _run_persistent_bash_command(
+    command: str, cwd: Path, wait_ms: int
+) -> dict[str, Any]:
+    started = time.monotonic()
+    log_dir = _run_command_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"run-command-{time.time_ns()}-{os.getpid()}.log"
+    with log_path.open("ab", buffering=0) as log_file:
+        proc = subprocess.Popen(
+            _bash_argv(command),
+            cwd=str(cwd),
+            env=os.environ.copy(),
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    wait_seconds = max(0.0, wait_ms / 1000.0)
+    if wait_seconds:
+        time.sleep(wait_seconds)
+    returncode = proc.poll()
+    if returncode is None:
+        threading.Thread(
+            target=_reap_persistent_process,
+            args=(proc,),
+            daemon=True,
+            name=f"agy-run-command-reaper-{proc.pid}",
+        ).start()
+
+    try:
+        output = log_path.read_text(errors="replace")
+    except OSError as exc:
+        output = f"Could not read persistent command log {log_path}: {exc}"
+    if returncode is None:
+        suffix = (
+            f"\n[workflow-builder] Persistent command is still running "
+            f"(pid {proc.pid}); output is being written to {log_path}."
+        )
+        exit_code = 0
+        running = True
+    else:
+        suffix = (
+            f"\n[workflow-builder] Persistent command exited with code "
+            f"{returncode}; output was written to {log_path}."
+        )
+        exit_code = returncode
+        running = False
+    return {
+        "exit_code": exit_code,
+        "timed_out": False,
+        "duration_ms": int((time.monotonic() - started) * 1000),
+        "stdout": _truncate_text((output or "") + suffix),
+        "stderr": "",
+        "persistent": True,
+        "running": running,
+        "pid": proc.pid,
+        "log_path": str(log_path),
+    }
+
+
 def _format_run_command_reason(result: Mapping[str, Any]) -> str:
     stdout = str(result.get("stdout") or "")
     stderr = str(result.get("stderr") or "")
@@ -721,6 +822,10 @@ def _run_command_shim_event(
             "is_error": not ok,
             "exit_code": result.get("exit_code"),
             "timed_out": bool(result.get("timed_out")),
+            "persistent": bool(result.get("persistent")),
+            "running": bool(result.get("running")),
+            "pid": result.get("pid"),
+            "log_path": result.get("log_path"),
             "duration_ms": result.get("duration_ms"),
             "output": output,
             "output_preview": output[:500],
@@ -773,7 +878,27 @@ def _execute_run_command_shim(
         }
     else:
         try:
-            result = _run_bash_command(command, cwd, timeout)
+            if _tool_bool(tool_input, "RunPersistent", "runPersistent", "persistent"):
+                wait_ms = _tool_int(
+                    tool_input,
+                    1000,
+                    "WaitMsBeforeAsync",
+                    "waitMsBeforeAsync",
+                    "wait_ms_before_async",
+                )
+                wait_ms = max(
+                    0,
+                    min(
+                        wait_ms,
+                        _env_int(
+                            "CLI_AGENT_AGY_RUN_COMMAND_PERSISTENT_WAIT_MAX_MS",
+                            RUN_COMMAND_SHIM_PERSISTENT_WAIT_MAX_MS,
+                        ),
+                    ),
+                )
+                result = _run_persistent_bash_command(command, cwd, wait_ms)
+            else:
+                result = _run_bash_command(command, cwd, timeout)
         except Exception as exc:  # noqa: BLE001
             result = {
                 "exit_code": 126,

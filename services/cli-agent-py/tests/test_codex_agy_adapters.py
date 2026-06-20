@@ -11,6 +11,8 @@ These lock the two security-critical invariants for the new OAuth CLIs:
 from __future__ import annotations
 
 import json
+import os
+import signal
 import stat
 import tomllib
 
@@ -1014,6 +1016,49 @@ def test_agy_run_command_hook_shim_times_out(tmp_path, monkeypatch):
     assert result["data"]["timed_out"] is True
     assert result["data"]["exit_code"] == 124
     assert "Command timed out after 1 seconds." in result["data"]["stderr"]
+
+
+def test_agy_run_command_hook_shim_runs_persistent_command(tmp_path, monkeypatch):
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(sandbox))
+    monkeypatch.setenv("CLI_AGENT_AGY_RUN_COMMAND_SHIM", "true")
+
+    response = get_adapter("antigravity").hook_response(
+        "PreToolUse",
+        {
+            "hook_event_name": "PreToolUse",
+            "toolName": "run_command",
+            "toolInput": {
+                "CommandLine": 'printf "ready\\n"; sleep 30',
+                "Cwd": str(sandbox),
+                "RunPersistent": True,
+                "WaitMsBeforeAsync": 100,
+            },
+        },
+        {},
+    )
+
+    assert response is not None
+    result = next(
+        event
+        for event in response["_workflowBuilderEvents"]
+        if event["type"] == "agent.tool_result"
+    )
+    pid = result["data"]["pid"]
+    try:
+        assert response["decision"] == "deny"
+        assert result["data"]["ok"] is True
+        assert result["data"]["persistent"] is True
+        assert result["data"]["running"] is True
+        assert result["data"]["exit_code"] == 0
+        assert "ready" in result["data"]["stdout"]
+        assert "still running" in result["data"]["stdout"]
+    finally:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
 
 
 def test_agy_run_command_hook_shim_rejects_cwd_outside_sandbox(tmp_path, monkeypatch):
