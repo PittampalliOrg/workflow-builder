@@ -200,9 +200,8 @@
            "server_name": "playwright",
            "displayName": "Playwright",
            "transport": "stdio",
-           "command": "npx",
+           "command": "playwright-mcp",
            "args": [
-            "@playwright/mcp@latest",
             "--headless",
             "--browser",
             "chromium",
