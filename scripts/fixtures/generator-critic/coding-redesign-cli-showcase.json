@@ -213,7 +213,7 @@
        "with": {
         "cliWorkspace": true,
         "cwd": "/sandbox/work",
-        "command": "for i in $(seq 1 40); do [ -s /sandbox/work/verdict.json ] && break; sleep 1; done; [ -f /sandbox/work/critic-shot.png ] || cp \"$(ls -1 /sandbox/work/shots/*.png 2>/dev/null | head -1)\" /sandbox/work/critic-shot.png 2>/dev/null; cat /sandbox/work/verdict.json 2>/dev/null || echo '{\"meets_criteria\":false,\"score\":0,\"feedback\":\"verdict.json missing after wait\"}'",
+        "command": "for i in $(seq 1 40); do [ -s /sandbox/work/verdict.json ] && break; sleep 1; done; [ -f /sandbox/work/critic-shot.png ] || cp \"$(ls -1 /sandbox/work/shots/*.png 2>/dev/null | head -1)\" /sandbox/work/critic-shot.png 2>/dev/null; python3 -c 'import json,re; d=json.load(open(\"/sandbox/work/verdict.json\")); mc=d.get(\"meets_criteria\"); ov=str(d.get(\"overall_verdict\") or d.get(\"verdict\") or \"\").lower(); sc=d.get(\"score\") or 0; mc=mc if mc is not None else (bool(re.search(\"pass|approv|meet|satisf|accept\",ov)) or (isinstance(sc,(int,float)) and sc>=80)); print(json.dumps({\"meets_criteria\":bool(mc),\"score\":d.get(\"score\"),\"feedback\":(d.get(\"feedback\") or d.get(\"summary\") or \"\")[:300]}))' 2>/dev/null || echo '{\"meets_criteria\":false,\"feedback\":\"verdict.json missing/invalid\"}'",
         "timeoutMs": 60000,
         "allowFailure": true
        },
