@@ -62,6 +62,33 @@ pushback) · **`contract.json`** (negotiated criteria + passes — the grading t
 · **`progress.json`** (agentic memory) · `verdict.json` (per-iteration, per-criterion)
 · `critic-shot.png` (screenshot artifact).
 
+## Structured-output conformance (why `read_contract`/`read_verdict` normalize)
+
+A CLI agent free-writes `contract.json`/`verdict.json` to disk — it can NOT use the
+Anthropic API's enforced **structured outputs** or the Agent SDK's schema-validation
+loop (those aren't exposed to the Claude Code CLI), and even structured outputs
+don't enforce **cardinality** (e.g. "≤12 criteria"). In practice the Evaluator
+honors the *spirit* (skeptical, testable criteria, `passes` flags, an `agreed`
+gate) but drifts on the *exact schema* — e.g. it emitted `{id, feature, text,
+verify, accepted, passes}` instead of `{id, dimension, description, verify,
+passes}`, and produced far more criteria than asked.
+
+Per Anthropic's guidance ("don't fight the model with prose; use validation
+loops") and the `coleam00/adversarial-dev` reference (file-based JSON contracts;
+"models are less likely to tamper with structured JSON than prose"), the fix is a
+**deterministic normalizer + validator**, not stricter prompting:
+- **`read_contract`** is schema-tolerant: it maps the agent's field names
+  (`feature`/`text` → `dimension`/`description`, etc.) to the canonical shape,
+  back-fills `dimension` heuristically, **writes the canonical contract back** so
+  the build-loop critic reads clean data, and **gates `agreed` on validity**
+  (≥3 criteria, each with a description) — a bogus `agreed:true` over garbage is
+  overridden, which keeps the negotiation loop going. The negotiate loop is itself
+  the recommended validation-feedback loop (`propose → review → read_contract`).
+- **`read_verdict`** likewise normalizes per-criterion results → `meets_criteria`.
+
+The Evaluator's prose is kept light (focused/perceptual guidance, a convergence
+nudge) and relies on the normalizer rather than brittle caps/bans.
+
 ## Reliability notes (carried from `coding-redesign-cli-showcase`)
 
 - Agent-written JSON (`contract.json`, `verdict.json`) is **normalized by
@@ -73,14 +100,35 @@ pushback) · **`contract.json`** (negotiated criteria + passes — the grading t
 - The screenshot artifact uploads via the `cli-workspace-command` image-readFile →
   files API path (renders inline; see `docs/coding-redesign-playwright-critic.md`).
 
-## Deferred (Full-harness, later — both additive on this same structure)
+## Deferred (additive on this same structure)
 
 - **Two-pass design process**: Generator emits a `design-tokens.json` (4–6 named
   hex values, display/body typefaces) + ASCII wireframe BEFORE writing CSS; the
   Evaluator reviews the design plan first and rejects generic "AI slop" defaults.
 - **Evaluator restart authority**: the critic can force the Generator to discard
-  fundamentally broken work (`git reset --hard <baseline>`) and restart, instead
-  of endlessly patching.
+  fundamentally broken work (`git reset --hard <baseline>`) and restart.
+- **Multi-sprint contracts** (per `coleam00/adversarial-dev`): decompose into
+  several sprints, each with its own negotiated contract + build + score, instead
+  of one contract for the whole redesign.
+- **Parallel voting critics**: spawn 2–3 independent Evaluators (different lenses)
+  and converge by majority / "any-FAIL" to counter evaluator sycophancy (the
+  dynamic-workflows "agents cross-check each other" pattern).
+
+## References
+
+- `GANs.md` — Anthropic long-running-agent analysis (Planner/Generator/Evaluator,
+  negotiate-the-contract, skeptical interactive Evaluator, JSON-over-Markdown).
+- Anthropic *Building Effective Agents* + *Claude Code best practices* — evaluator-
+  optimizer pattern, "don't fight the model with prose; use validation loops."
+- Anthropic **structured outputs** + **strict tool use** — enforce shape, not
+  cardinality; not exposed to the Claude Code CLI (hence the deterministic
+  normalizer here).
+- `coleam00/adversarial-dev` — three-agent (Planner/Generator/Evaluator) reference
+  harness with file-based JSON contracts + machine-readable verdicts; closely
+  mirrors this workflow.
+- Claude Code **dynamic workflows** — orchestration-as-code over many subagents;
+  our SW 1.0 workflow DAG is the analogous explicit orchestrator (vs. an in-session
+  agent deciding next).
 
 ## V1 vs V2
 
