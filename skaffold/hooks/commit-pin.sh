@@ -243,9 +243,10 @@ Co-Authored-By: Skaffold <noreply@anthropic.com>"
 import sys, re, pathlib
 repo, tag, digest, source_sha, wfb_dep, sea_dep, ryzen_pins = sys.argv[1:8]
 new_ref = f"{repo}:{tag}"
-# 1) Global-replace any cli-agent-py-sandbox:git-<sha> ref in the base Deployments
+# 1) Global-replace any cli-agent-py-sandbox:<tag> ref in the base Deployments
 #    (covers the CLI_DEFAULT_IMAGE envs + every agentHostImage in the classes JSON).
-pat = re.compile(r"ghcr\.io/pittampalliorg/cli-agent-py-sandbox:git-[0-9a-f]+")
+#    The default envs may be pinned to temporary manual tags, not only git-SHAs.
+pat = re.compile(r"ghcr\.io/pittampalliorg/cli-agent-py-sandbox:[^\"'\s,}]+")
 total = 0
 for path in (wfb_dep, sea_dep):
     p = pathlib.Path(path)
