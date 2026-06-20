@@ -87,14 +87,11 @@
 		return m;
 	});
 
-	const byId = $derived.by(() => {
-		const m = new Map<string, WorkflowItem>();
-		for (const w of workflows) m.set(w.id, w);
-		return m;
-	});
-
+	// Sort key = latest RUN time only. We deliberately do NOT fall back to the
+	// workflow's updatedAt: a seed/sync touches every workflow's updatedAt at
+	// once, which would make unrelated workflows all read "a minute ago".
 	function activityTs(w: WorkflowItem): string {
-		return latestByWf.get(w.id)?.startedAt ?? w.updatedAt ?? '';
+		return latestByWf.get(w.id)?.startedAt ?? '';
 	}
 
 	const runningWorkflows = $derived.by(() =>
@@ -102,11 +99,14 @@
 			.filter((w) => runningByWf.has(w.id))
 			.sort((a, b) => (activityTs(b)).localeCompare(activityTs(a)))
 	);
+	// "Recent" = workflows that have actually RUN (not running now), newest run
+	// first. Run-less workflows are reachable via search / "View all workflows"
+	// rather than cluttering Recent with fake timestamps.
 	const recentWorkflows = $derived.by(() =>
 		workflows
-			.filter((w) => !runningByWf.has(w.id))
+			.filter((w) => !runningByWf.has(w.id) && latestByWf.has(w.id))
 			.sort((a, b) => activityTs(b).localeCompare(activityTs(a)))
-			.slice(0, 12)
+			.slice(0, 15)
 	);
 
 	const currentIsRunning = $derived(runningByWf.has(currentWorkflowId));
@@ -203,7 +203,7 @@
 							<div class="min-w-0 flex-1">
 								<div class="truncate text-xs">{wf.name || 'Untitled'}</div>
 								<div class="text-[10px] text-muted-foreground">
-									{run ? `${run.status} · ${fmt(run.startedAt)}` : fmt(wf.updatedAt)}
+									{run ? `${run.status} · ${fmt(run.startedAt)}` : 'no runs yet'}
 								</div>
 							</div>
 							{#if wf.id === currentWorkflowId}
