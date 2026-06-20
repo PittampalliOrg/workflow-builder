@@ -65,20 +65,22 @@ Per-phase agents are selectable via the `planAgent` / `generatorAgent` /
 agy clones the repo (the `body.prompt` URL fix applies to all CLIs) but its
 **generate** turn fails for two agy-runtime reasons, both independent of the critic:
 1. **Stalls after a `run_command`.** agy's native terminal executor needs Linux
-   user-namespaces (unavailable in the sandbox), so the antigravity adapter
-   *shims* `run_command`: a PreToolUse hook **denies** the native call, runs the
-   command via bash, and injects the result. agy received the injected result and
-   then went silent until the 1800s child-workflow timeout — it does not reliably
-   continue after a tool **deny** (and it backgrounds long commands via
-   `WaitMsBeforeAsync`, expecting to poll completion the shim doesn't serve).
+   user-namespaces. On the failed dev run, the sandbox baseline exposed
+   `user.max_user_namespaces=0`, so the antigravity adapter fell back to the
+   legacy `run_command` PreToolUse shim: deny the native call, run the command via
+   bash, and inject the result. agy received the injected result and then went
+   silent until the 1800s child-workflow timeout — it does not reliably continue
+   after a tool **deny** (and it backgrounds long commands via `WaitMsBeforeAsync`,
+   expecting to poll completion the shim doesn't serve).
 2. **Did not attempt edits.** In the whole turn agy only did `view_file` +
    `run_command` (builds), zero `write_to_file`/`replace_file_content` — it never
    started the redesign (weakest model at multi-step coding).
 
-Fixing agy means changing the agy run_command shim (continue-after-deny + handle
-agy's async polling tools) in `services/cli-agent-py/src/cli_adapters/antigravity.py`
-(cli-image change) and likely a more directive generate prompt — a separate,
-uncertain agy-runtime effort.
+First fix agy's sandbox baseline so native Bash works: Talos workers for the
+`interactive-cli-agy` class need a nonzero `user.max_user_namespaces`. With that
+available, `services/cli-agent-py/src/cli_adapters/antigravity.py` stops shimming
+`run_command` and lets AGY execute commands natively. Only revisit the shim
+protocol if native AGY still fails after that baseline is in place.
 
 ## dapr-agent-py (follow-on)
 dapr-agent-py uses the `openshell-shared` workspace backend (not the cli-family
