@@ -43,8 +43,7 @@ import {
 	safeCreateWorkflowAgentMlflowRun,
 } from "$lib/server/observability/mlflow-lifecycle";
 import { getUserCliCredential } from "$lib/server/users/cli-credentials";
-import { listAppConnections } from "$lib/server/app-connections";
-import { getScmConnection } from "$lib/server/scm-connections";
+import { resolveWorkflowGithubToken } from "$lib/server/workflows/github-token";
 import {
 	provisionSessionSandboxWithRetry,
 	sandboxProvisionFailureMessage,
@@ -1004,22 +1003,6 @@ async function resolveWorkflowSessionSecretEnv(params: {
 /** First ACTIVE GitHub app_connection's token (raw), via the SCM resolver. Best-
  * effort — null when no GitHub connection is linked. (Single-owner dev: this is the
  * user's connection; a per-user filter is a multi-tenant follow-up.) */
-async function resolveWorkflowGithubToken(): Promise<string | null> {
-	try {
-		const conns = await listAppConnections({ pieceName: "github" });
-		const chosen = conns.find((c) => c.status === "ACTIVE") ?? conns[0];
-		if (!chosen) return null;
-		const scm = await getScmConnection(chosen.externalId);
-		const token = (scm?.headers?.Authorization ?? "")
-			.replace(/^Bearer\s+/i, "")
-			.replace(/^token\s+/i, "")
-			.trim();
-		return token || null;
-	} catch {
-		return null;
-	}
-}
-
 function buildChildInput(params: {
 	sessionId: string;
 	agentConfig: AgentConfig;
