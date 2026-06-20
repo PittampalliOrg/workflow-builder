@@ -450,7 +450,7 @@ def agy_home(tmp_path, monkeypatch):
     return home
 
 
-def test_agy_requires_interactive_login_is_dynamic(monkeypatch):
+def test_agy_requires_interactive_login_is_dynamic(agy_home, monkeypatch):
     import base64
     import io
     import tarfile
@@ -485,6 +485,14 @@ def test_agy_requires_interactive_login_is_dynamic(monkeypatch):
         info.size = len(data)
         tar.addfile(info, io.BytesIO(data))
     monkeypatch.setenv("AGY_AUTH_JSON", base64.b64encode(agy_buf.getvalue()).decode())
+    assert get_adapter("antigravity").requires_interactive_login is False
+
+
+def test_agy_requires_interactive_login_accepts_materialized_token(agy_home):
+    token_path = agy_home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    token_path.parent.mkdir(parents=True)
+    token_path.write_text('{"token":{}}\n', encoding="utf-8")
+
     assert get_adapter("antigravity").requires_interactive_login is False
 
 

@@ -101,6 +101,15 @@ def _auth_bundle_has_agy_login(bundle_b64: str | None) -> bool:
     return False
 
 
+def _materialized_agy_login_exists() -> bool:
+    """Return true when seed() already restored AGY's OAuth token to disk."""
+    try:
+        token = _agy_home() / ".gemini" / TOKEN_REL
+        return token.is_file() and token.stat().st_size > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def clean_string(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
@@ -1062,10 +1071,15 @@ class AntigravityAdapter(CliAdapter):
         # agy is FILE-based (the OS-keyring path is vestigial). When a captured
         # AGY ~/.gemini bundle is delivered (AGY_AUTH_JSON), seed() restores it
         # and agy boots already signed in → the kickoff can fire immediately.
+        # The durable workflow runs seed and start as separate activities, so
+        # start must also trust the token seed already materialized on disk.
         # A legacy Gemini CLI bundle also arrives through AGY_AUTH_JSON, but it
         # lacks antigravity-cli/antigravity-oauth-token and would otherwise make
         # us submit the user prompt into AGY's login screen.
-        return not _auth_bundle_has_agy_login(os.environ.get(AGY_AUTH_ENV))
+        return not (
+            _auth_bundle_has_agy_login(os.environ.get(AGY_AUTH_ENV))
+            or _materialized_agy_login_exists()
+        )
 
     def on_session_started(self, session_id: str | None) -> None:
         # Auto-capture: watch ~/.gemini and POST the curated login bundle to the
