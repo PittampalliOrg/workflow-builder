@@ -241,6 +241,10 @@ export const POST: RequestHandler = async ({ request }) => {
 					: rewriteMcpForBrowserSidecar(
 							(rawAgentConfig as { mcpServers?: unknown[] })
 								.mcpServers as never,
+							{
+								runtime: (rawAgentConfig as { runtime?: string })
+									.runtime,
+							},
 						).mcpServers,
 			} as AgentConfig)
 		: null;

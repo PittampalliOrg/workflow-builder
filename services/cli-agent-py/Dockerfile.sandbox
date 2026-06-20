@@ -54,6 +54,22 @@ RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && npm cache clean --force \
     && /usr/local/bin/claude --version && /usr/local/bin/codex --version
 
+# Playwright MCP (Node) for the design Critic — lets the critic ACTIVELY drive a
+# real browser (navigate / accessibility-snapshot / screenshot) over stdio,
+# in-pod, instead of improvising shell + python-playwright. The base
+# openshell-sandbox image already ships PYTHON Playwright's Chromium at
+# /opt/pw-browsers (PLAYWRIGHT_BROWSERS_PATH, inherited); @playwright/mcp is a
+# NODE server whose bundled playwright-core needs its own matching Chromium
+# build, installed into the SAME shared dir so the non-root runtime user
+# (uid 10001, a+rX) can launch it. `playwright` (CLI) is pinned in lockstep
+# with @playwright/mcp@latest so the browser revision matches.
+ARG PLAYWRIGHT_MCP_VERSION=latest
+RUN npm install -g --force "playwright@latest" "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" \
+    && PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers npx --yes playwright install chromium \
+    && chmod -R a+rX /opt/pw-browsers \
+    && npm cache clean --force \
+    && /usr/local/bin/npx @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} --version
+
 # agy (Antigravity CLI): pinned, sha256-verified tarball → /usr/local/bin/agy
 # (root-owned, read-only to the non-root runtime user, which defeats its
 # background self-update). Arch-selected from TARGETARCH.

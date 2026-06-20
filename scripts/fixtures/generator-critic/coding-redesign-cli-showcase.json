@@ -2,8 +2,8 @@
  "document": {
   "dsl": "1.0.0",
   "name": "coding-redesign-cli-showcase",
-  "title": "Coding redesign (CLI): clone repo → plan/generate/critic → PR (Playwright critic)",
-  "summary": "The plan agent clones PittampalliOrg/sveltekit-landing-demo, then a plan/generate/critic loop redesigns the SvelteKit landing page: the CRITIC drives the pre-installed Playwright+Chromium to screenshot the running app and judge it against a 4-dimension design rubric, a deterministic build gate must pass, and the result is opened as a pull request. GITHUB_TOKEN is auto-injected into the cli session. Same workspace-backend family per run (interactive-cli).",
+  "title": "Coding redesign (CLI): clone repo \u2192 plan/generate/critic \u2192 PR (Playwright-MCP critic)",
+  "summary": "The plan agent clones PittampalliOrg/sveltekit-landing-demo, then a plan/generate/critic loop redesigns the SvelteKit landing page: the CRITIC drives the official Playwright MCP server (in-pod, stdio) to open the running app in a real Chromium, take an accessibility snapshot + screenshot, and judge it against a 4-dimension design rubric. A deterministic build gate must pass, the critic writes a machine-readable verdict.json the loop reads, and the result is opened as a pull request. GITHUB_TOKEN auto-injected; interactive-cli workspace-backend family.",
   "version": "1.0.0",
   "namespace": "demos",
   "x-workflow-builder": {
@@ -19,14 +19,14 @@
        "intent": {
         "type": "string",
         "title": "Redesign request",
-        "default": "Redesign the Nimbus Notes landing page (src/routes/+page.svelte plus a global stylesheet) into a polished, DISTINCTIVE product landing page with a coherent visual identity — strong typography hierarchy, deliberate color/spacing, a hero, the three feature cards, a pricing section, and a clear primary CTA. Plain SvelteKit + CSS only; keep `npm run build` passing; do NOT change package.json deps or routing.",
+        "default": "Redesign the Nimbus Notes landing page (src/routes/+page.svelte plus a global stylesheet) into a polished, DISTINCTIVE product landing page with a coherent visual identity \u2014 strong typography hierarchy, deliberate color/spacing, a hero, the three feature cards, a pricing section, and a clear primary CTA. Plain SvelteKit + CSS only; keep `npm run build` passing; do NOT change package.json deps or routing.",
         "description": "What the agents change in the repo."
        },
        "planAgent": {
         "type": "string",
         "title": "Planner agent",
         "default": "cli-evaluator-critic-agent",
-        "description": "PLAN phase agent (clones + writes SPEC). Same workspace-backend family as the others."
+        "description": "PLAN phase agent (clones + writes SPEC). Same workspace-backend family."
        },
        "generatorAgent": {
         "type": "string",
@@ -58,14 +58,14 @@
      "intent": {
       "type": "string",
       "title": "Redesign request",
-      "default": "Redesign the Nimbus Notes landing page (src/routes/+page.svelte plus a global stylesheet) into a polished, DISTINCTIVE product landing page with a coherent visual identity — strong typography hierarchy, deliberate color/spacing, a hero, the three feature cards, a pricing section, and a clear primary CTA. Plain SvelteKit + CSS only; keep `npm run build` passing; do NOT change package.json deps or routing.",
+      "default": "Redesign the Nimbus Notes landing page (src/routes/+page.svelte plus a global stylesheet) into a polished, DISTINCTIVE product landing page with a coherent visual identity \u2014 strong typography hierarchy, deliberate color/spacing, a hero, the three feature cards, a pricing section, and a clear primary CTA. Plain SvelteKit + CSS only; keep `npm run build` passing; do NOT change package.json deps or routing.",
       "description": "What the agents change in the repo."
      },
      "planAgent": {
       "type": "string",
       "title": "Planner agent",
       "default": "cli-evaluator-critic-agent",
-      "description": "PLAN phase agent (clones + writes SPEC). Same workspace-backend family as the others."
+      "description": "PLAN phase agent (clones + writes SPEC). Same workspace-backend family."
      },
      "generatorAgent": {
       "type": "string",
@@ -99,10 +99,10 @@
      },
      "agentConfig": {
       "name": "Planner",
-      "instructions": "You are the Planner for a coding redesign task on a SvelteKit repo. FIRST clone the repo into /sandbox/work/repo by running this exact shell command:\\n  cd /sandbox/work && rm -rf repo && git clone \\\"https://x-access-token:${GITHUB_TOKEN}@github.com/PittampalliOrg/sveltekit-landing-demo.git\\\" repo && cd repo && git config user.name 'workflow-builder agent' && git config user.email 'agent@workflow-builder.local' && git remote set-url origin \\\"https://github.com/PittampalliOrg/sveltekit-landing-demo.git\\\"\\nThen READ the repo (especially src/routes/+page.svelte and package.json) and the redesign request, and write a concise product+design spec to /sandbox/work/SPEC.md (ONLY that file; do NOT edit the repo yet). SPEC.md must contain markdown sections: Objective (one paragraph), Acceptance Criteria (bulleted, checkable — specific sections/components, build passes, no dep changes), and a Design Rubric naming the FOUR dimensions: design_quality (coherent whole, distinct mood/identity), originality (deliberate custom choices vs generic/template defaults), craft (typography hierarchy, spacing, color harmony, contrast), functionality (usable, responsive, accessible). End with a one-line summary."
+      "instructions": "You are the Planner for a coding redesign task on a SvelteKit repo. FIRST clone the repo into /sandbox/work/repo by running EXACTLY this shell command:\n  cd /sandbox/work && rm -rf repo && git clone https://x-access-token:$GITHUB_TOKEN@github.com/PittampalliOrg/sveltekit-landing-demo.git repo && cd repo && git config user.name agent && git config user.email agent@workflow-builder.local && git remote set-url origin https://github.com/PittampalliOrg/sveltekit-landing-demo.git\nThen READ the repo (especially src/routes/+page.svelte and package.json) and write a concise product+design spec to /sandbox/work/SPEC.md (ONLY that file; do NOT edit the repo). SPEC.md needs markdown sections: Objective (one paragraph), Acceptance Criteria (bulleted, checkable \u2014 specific sections/components, build passes, no dep changes), and a Design Rubric naming the FOUR dimensions: design_quality (coherent whole, distinct mood/identity), originality (deliberate custom choices vs generic/template defaults), craft (typography hierarchy, spacing, color harmony, contrast), functionality (usable, responsive, accessible). End with a one-line summary."
      },
      "body": {
-      "prompt": "${ \"You are the Planner for a coding redesign task on a SvelteKit repo. FIRST clone the repo into /sandbox/work/repo by running this exact shell command:\\n  cd /sandbox/work && rm -rf repo && git clone \\\\\"https://x-access-token:${GITHUB_TOKEN}@github.com/PittampalliOrg/sveltekit-landing-demo.git\\\\\" repo && cd repo && git config user.name 'workflow-builder agent' && git config user.email 'agent@workflow-builder.local' && git remote set-url origin \\\\\"https://github.com/PittampalliOrg/sveltekit-landing-demo.git\\\\\"\\nThen READ the repo (especially src/routes/+page.svelte and package.json) and the redesign request, and write a concise product+design spec to /sandbox/work/SPEC.md (ONLY that file; do NOT edit the repo yet). SPEC.md must contain markdown sections: Objective (one paragraph), Acceptance Criteria (bulleted, checkable — specific sections/components, build passes, no dep changes), and a Design Rubric naming the FOUR dimensions: design_quality (coherent whole, distinct mood/identity), originality (deliberate custom choices vs generic/template defaults), craft (typography hierarchy, spacing, color harmony, contrast), functionality (usable, responsive, accessible). End with a one-line summary.\\n\\n---\\n\\nRedesign request:\\n\" + (.trigger.intent // \"redesign the landing page\") + \"\\n\\nClone the repo, read it, write /sandbox/work/SPEC.md, then end with a one-line summary.\" }",
+      "prompt": "${ \"Redesign request:\\n\" + (.trigger.intent // \"redesign the landing page\") + \"\\n\\nFollow your instructions: clone the repo into /sandbox/work/repo, read it, write /sandbox/work/SPEC.md, then end with a one-line summary.\" }",
       "overrides": {
        "cwd": "/sandbox/work",
        "maxTurns": 25,
@@ -143,7 +143,7 @@
      ],
      "at": "idx"
     },
-    "while": "${ ( ( (.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") | test(\"OBJECTIVE PASS\") ) and ( (.loop.last.evaluate.meets_criteria // false) == true ) ) | not }",
+    "while": "${ ( ( ( (.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") | test(\"OBJECTIVE PASS\") ) ) and ( (try ((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson | .meets_criteria) catch false) == true ) ) | not }",
     "do": [
      {
       "generate": {
@@ -157,10 +157,10 @@
         },
         "agentConfig": {
          "name": "Generator",
-         "instructions": "You are the Generator. Redesign the SvelteKit landing page in /sandbox/work/repo to satisfy /sandbox/work/SPEC.md. FIRST read /sandbox/work/SPEC.md. Edit src/routes/+page.svelte and add a global stylesheet (e.g. src/routes/+layout.svelte importing app.css, or a <style> block) — plain SvelteKit + CSS, NO new dependencies, do NOT touch package.json or routing. You do NOT grade your own work: a deterministic build gate plus an independent design critic (who VIEWS the rendered page) evaluate each attempt. Each turn: address the build output AND critic feedback, make the most impactful improvement, ensure `npm run build` passes, end with a one-line summary."
+         "instructions": "You are the Generator. Redesign the SvelteKit landing page in /sandbox/work/repo to satisfy /sandbox/work/SPEC.md. FIRST read /sandbox/work/SPEC.md. Edit src/routes/+page.svelte and add a global stylesheet (e.g. src/routes/+layout.svelte importing app.css, or a <style> block) \u2014 plain SvelteKit + CSS, NO new dependencies, do NOT touch package.json or routing. You do NOT grade your own work: a deterministic build gate plus an independent design critic (who VIEWS the rendered page) evaluate each attempt. Each turn: address the build output AND critic feedback, make the most impactful improvement, ensure `npm run build` passes, end with a one-line summary."
         },
         "body": {
-         "prompt": "${ \"You are the Generator. Redesign the SvelteKit landing page in /sandbox/work/repo to satisfy /sandbox/work/SPEC.md. FIRST read /sandbox/work/SPEC.md. Edit src/routes/+page.svelte and add a global stylesheet (e.g. src/routes/+layout.svelte importing app.css, or a <style> block) — plain SvelteKit + CSS, NO new dependencies, do NOT touch package.json or routing. You do NOT grade your own work: a deterministic build gate plus an independent design critic (who VIEWS the rendered page) evaluate each attempt. Each turn: address the build output AND critic feedback, make the most impactful improvement, ensure `npm run build` passes, end with a one-line summary.\\n\\n---\\n\\nRedesign request: \" + (.trigger.intent // \"redesign the landing page\") + \"\\n\\nRepo: /sandbox/work/repo; spec: /sandbox/work/SPEC.md.\" + \"\\n\\nYour previous attempt:\\n\" + (.loop.last.generate.content // \"(first attempt)\") + \"\\n\\nBuild gate (must end OBJECTIVE PASS):\\n\" + (.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"(not run yet)\") + \"\\n\\nDesign critic feedback:\\n\" + (if .loop.last.evaluate then (.loop.last.evaluate.feedback // (.loop.last.evaluate | tojson)) else \"(none yet)\" end) + \"\\n\\nMake the build pass AND satisfy the critic, then end with a brief summary.\" }",
+         "prompt": "${ \"Redesign request: \" + (.trigger.intent // \"redesign the landing page\") + \"\\n\\nRepo: /sandbox/work/repo; spec: /sandbox/work/SPEC.md (follow your instructions).\" + \"\\n\\nYour previous attempt:\\n\" + (.loop.last.generate.content // \"(first attempt)\") + \"\\n\\nBuild gate (must end OBJECTIVE PASS):\\n\" + ((.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") // \"(not run yet)\") + \"\\n\\nDesign critic feedback (from the browser):\\n\" + (try ((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson | .feedback) catch \"(none yet)\") + \"\\n\\nMake the build pass AND satisfy the critic, then end with a brief summary.\" }",
          "overrides": {
           "cwd": "/sandbox/work/repo",
           "maxTurns": 50,
@@ -194,18 +194,57 @@
         },
         "agentConfig": {
          "name": "Critic",
-         "instructions": "You are an exacting design Critic with strong taste, independent of the builder; you do NOT edit the work. INSPECT THE RENDERED PAGE: (1) start the dev server: `cd /sandbox/work/repo && (nohup npm run dev -- --host 127.0.0.1 --port 4173 >/tmp/dev.log 2>&1 &) ; sleep 10`. (2) screenshot with the pre-installed Playwright+Chromium: `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers python3 - <<'PY'\\nfrom playwright.sync_api import sync_playwright\\nwith sync_playwright() as p:\\n    b=p.chromium.launch()\\n    pg=b.new_page(viewport={'width':1280,'height':900})\\n    pg.goto('http://127.0.0.1:4173/', wait_until='networkidle', timeout=30000)\\n    pg.screenshot(path='/sandbox/work/critic-shot.png', full_page=True)\\n    b.close()\\nprint('SHOT_OK')\\nPY`. (3) READ the image /sandbox/work/critic-shot.png AND src/routes/+page.svelte + CSS, and judge the redesign against /sandbox/work/SPEC.md and the FOUR dimensions. CALIBRATION: PASS only for genuinely polished, distinctive, usable work; generic/'fine' is NOT a pass. DEFAULT to not satisfied unless EVERY dimension is clearly strong; cite concrete evidence from the screenshot + code. End with ONLY a strict JSON object, no prose/fences: {\\\"meets_criteria\\\": boolean, \\\"score\\\": number 0-10, \\\"perCriterion\\\": [{\\\"id\\\": string, \\\"met\\\": boolean, \\\"feedback\\\": string}], \\\"feedback\\\": string}."
+         "instructions": "You are an exacting design Critic with strong taste, independent of the builder; you do NOT edit the repo. Your job is to VIEW the running redesigned app in a real browser and judge it.\n\nSTEP 1 \u2014 start the app. The build already ran (node_modules + build output exist in /sandbox/work/repo). Start the production preview server on a FIXED port in the background and wait until it answers, by running this shell:\n  cd /sandbox/work/repo && (nohup npm run preview -- --port 4321 --host 127.0.0.1 >/tmp/preview.log 2>&1 &) ; for i in $(seq 1 40); do curl -sf http://127.0.0.1:4321/ >/dev/null 2>&1 && break; sleep 1; done ; tail -5 /tmp/preview.log\nIf preview never answers, fall back to dev: (nohup npm run dev -- --port 4321 --host 127.0.0.1 >/tmp/preview.log 2>&1 &) and wait the same way.\n\nSTEP 2 \u2014 inspect with the Playwright MCP browser tools (MCP server name 'playwright'): call browser_navigate to http://127.0.0.1:4321/ , then browser_snapshot to read the accessibility tree/structure, and browser_take_screenshot with filename 'critic-shot.png' (it is saved to /sandbox/work/critic-shot.png) for the visual. You MAY browser_click nav links / the primary CTA and re-snapshot to test the functionality dimension. Capture the full page.\n\nSTEP 3 \u2014 read /sandbox/work/SPEC.md and the source (src/routes/+page.svelte, +layout.svelte, any CSS).\n\nSTEP 4 \u2014 judge against SPEC.md and the FOUR dimensions: design_quality (coherent whole, distinct mood/identity), originality (deliberate custom choices vs generic/template defaults), craft (typography hierarchy, spacing, color harmony, contrast), functionality (usable, responsive, accessible, interactive elements actually work). CALIBRATION: meets_criteria is true ONLY for genuinely polished, distinctive, usable work as SEEN IN THE BROWSER; generic or merely 'fine' is NOT a pass. DEFAULT to meets_criteria=false unless EVERY dimension is clearly strong; cite concrete evidence from what you actually saw on screen.\n\nSTEP 5 \u2014 WRITE your verdict to the file /sandbox/work/verdict.json (use your file-write tool) containing EXACTLY this JSON object and nothing else (no prose, no markdown fences):\n  {\"meets_criteria\": <boolean>, \"score\": <number 0-10>, \"perCriterion\": [{\"id\": <string>, \"met\": <boolean>, \"feedback\": <string>}], \"feedback\": <string>}\nThe verdict.json file is the ONLY thing the loop reads \u2014 it MUST be valid JSON. After writing it, stop the server (pkill -f vite 2>/dev/null; pkill -f 'npm run' 2>/dev/null) and end with a one-line summary.",
+         "mcpServers": [
+          {
+           "server_name": "playwright",
+           "displayName": "Playwright",
+           "transport": "stdio",
+           "command": "npx",
+           "args": [
+            "@playwright/mcp@latest",
+            "--headless",
+            "--browser",
+            "chromium",
+            "--no-sandbox",
+            "--isolated",
+            "--output-dir",
+            "/sandbox/work"
+           ]
+          }
+         ]
         },
         "body": {
-         "prompt": "${ \"You are an exacting design Critic with strong taste, independent of the builder; you do NOT edit the work. INSPECT THE RENDERED PAGE: (1) start the dev server: `cd /sandbox/work/repo && (nohup npm run dev -- --host 127.0.0.1 --port 4173 >/tmp/dev.log 2>&1 &) ; sleep 10`. (2) screenshot with the pre-installed Playwright+Chromium: `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers python3 - <<'PY'\\nfrom playwright.sync_api import sync_playwright\\nwith sync_playwright() as p:\\n    b=p.chromium.launch()\\n    pg=b.new_page(viewport={'width':1280,'height':900})\\n    pg.goto('http://127.0.0.1:4173/', wait_until='networkidle', timeout=30000)\\n    pg.screenshot(path='/sandbox/work/critic-shot.png', full_page=True)\\n    b.close()\\nprint('SHOT_OK')\\nPY`. (3) READ the image /sandbox/work/critic-shot.png AND src/routes/+page.svelte + CSS, and judge the redesign against /sandbox/work/SPEC.md and the FOUR dimensions. CALIBRATION: PASS only for genuinely polished, distinctive, usable work; generic/'fine' is NOT a pass. DEFAULT to not satisfied unless EVERY dimension is clearly strong; cite concrete evidence from the screenshot + code. End with ONLY a strict JSON object, no prose/fences: {\\\\\"meets_criteria\\\\\": boolean, \\\\\"score\\\\\": number 0-10, \\\\\"perCriterion\\\\\": [{\\\\\"id\\\\\": string, \\\\\"met\\\\\": boolean, \\\\\"feedback\\\\\": string}], \\\\\"feedback\\\\\": string}.\\n\\n---\\n\\nReview the redesigned landing page in /sandbox/work/repo against /sandbox/work/SPEC.md. Start the dev server, screenshot it with Playwright to /sandbox/work/critic-shot.png, read that image + the source, then return ONLY the strict JSON verdict.\" }",
+         "prompt": "${ \"Judge the redesigned landing page in /sandbox/work/repo against /sandbox/work/SPEC.md by VIEWING it in the browser with the Playwright MCP tools, then WRITE /sandbox/work/verdict.json. Follow your instructions exactly.\" }",
          "overrides": {
           "cwd": "/sandbox/work/repo",
-          "maxTurns": 25,
+          "maxTurns": 35,
           "timeoutMinutes": 30
          }
         }
+       }
+      }
+     },
+     {
+      "read_verdict": {
+       "call": "workspace/command",
+       "with": {
+        "cliWorkspace": true,
+        "cwd": "/sandbox/work",
+        "command": "cat /sandbox/work/verdict.json 2>/dev/null || echo '{\"meets_criteria\":false,\"score\":0,\"perCriterion\":[],\"feedback\":\"verdict.json missing \u2014 critic did not write it\"}'",
+        "timeoutMs": 30000,
+        "allowFailure": true
        },
-       "parseJson": true
+       "artifacts": [
+        {
+         "from": "${ \"/sandbox/work/critic-shot.png\" }",
+         "kind": "image",
+         "slot": "primary",
+         "title": "Rendered redesign (Playwright critic screenshot)",
+         "contentType": "image/png",
+         "description": "Full-page screenshot the critic captured in-browser via the Playwright MCP server."
+        }
+       ]
       }
      }
     ]
@@ -217,7 +256,7 @@
     "with": {
      "cliWorkspace": true,
      "cwd": "/sandbox/work/repo",
-     "command": "cd /sandbox/work/repo && BR=\"redesign-$(date +%s)\" && git checkout -b \"$BR\" && git add -A && (git commit -m 'Redesign Nimbus Notes landing page (workflow-builder plan/generate/critic)' || echo 'nothing to commit') && git push \\\"https://x-access-token:${GITHUB_TOKEN}@github.com/PittampalliOrg/sveltekit-landing-demo.git\\\" \"HEAD:$BR\" && PR=$(curl -sS -X POST -H \\\"Authorization: Bearer ${GITHUB_TOKEN}\\\" -H 'Accept: application/vnd.github+json' https://api.github.com/repos/PittampalliOrg/sveltekit-landing-demo/pulls -d \"{\\\"title\\\":\\\"Redesign landing page (automated)\\\",\\\"head\\\":\\\"$BR\\\",\\\"base\\\":\\\"main\\\",\\\"body\\\":\\\"Automated redesign via the workflow-builder plan/generate/critic loop; a Playwright critic inspected the rendered UI.\\\"}\") && echo \"$PR\" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(\"PR_URL=\"+str(d.get(\"html_url\") or d.get(\"message\") or d))'",
+     "command": "cd /sandbox/work/repo && BR=redesign-$(date +%s) && git checkout -b $BR && git add -A && (git commit -m 'Redesign Nimbus Notes landing page (workflow-builder plan/generate/critic)' || echo nothing-to-commit) && git push https://x-access-token:$GITHUB_TOKEN@github.com/PittampalliOrg/sveltekit-landing-demo.git HEAD:$BR && PR=$(curl -sS -X POST -H \"Authorization: Bearer $GITHUB_TOKEN\" -H 'Accept: application/vnd.github+json' https://api.github.com/repos/PittampalliOrg/sveltekit-landing-demo/pulls -d \"{\\\"title\\\":\\\"Redesign landing page (automated)\\\",\\\"head\\\":\\\"$BR\\\",\\\"base\\\":\\\"main\\\",\\\"body\\\":\\\"Automated redesign via the workflow-builder plan/generate/critic loop; a Playwright critic inspected the rendered UI.\\\"}\") && echo \"$PR\" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(\"PR_URL=\"+str(d.get(\"html_url\") or d.get(\"message\") or d))'",
      "timeoutMs": 120000,
      "allowFailure": true
     },
@@ -236,10 +275,10 @@
    "summary": {
     "set": {
      "buildPass": "${ ( (.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") | test(\"OBJECTIVE PASS\") ) }",
-     "criticPass": "${ (.loop.last.evaluate.meets_criteria // false) == true }",
+     "criticPass": "${ (try ((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson | .meets_criteria) catch false) == true }",
      "iterations": "${ .loop.iterations // 0 }",
      "prOutput": "${ (.pr.data.result.stdout // .pr.data.stdout // .pr.data.result.output // .pr.data.output // \"\") }",
-     "terminalState": "${ if ( ( (.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") | test(\"OBJECTIVE PASS\") ) and ((.loop.last.evaluate.meets_criteria // false) == true) ) then \"satisfied\" else \"max_iterations_reached\" end }"
+     "terminalState": "${ if ( ( (.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") | test(\"OBJECTIVE PASS\") ) and ( (try ((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson | .meets_criteria) catch false) == true ) ) then \"satisfied\" else \"max_iterations_reached\" end }"
     },
     "artifacts": [
      {
