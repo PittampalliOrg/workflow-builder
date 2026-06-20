@@ -14,14 +14,18 @@
 	 * session opens one full stream in the main pane.
 	 */
 	import { onDestroy, type Snippet } from 'svelte';
+	import { fly } from 'svelte/transition';
+	import type { Node, Edge } from '@xyflow/svelte';
 	import { createExecutionStream, type ExecutionStreamStore } from '$lib/stores/execution-stream.svelte';
 	import { createSessionStream, type SessionStreamStore } from '$lib/stores/session-stream.svelte';
 	import type { SessionEventEnvelope } from '$lib/types/sessions';
+	import type { ExecutionReadModel } from '$lib/types/execution-stream';
 	import SessionTranscript from '$lib/components/sessions/session-transcript.svelte';
 	import RunMetricsBar, {
 		type RunMetricsLive,
 		type RunMetricsOutcome
 	} from '$lib/components/workflow/execution/run-metrics-bar.svelte';
+	import RunProgressBand from '$lib/components/workflow/execution/run-progress-band.svelte';
 	import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '$lib/components/ui/collapsible';
 	import { fmtTokens } from '$lib/utils/format-tokens';
 	import { ChevronDown, ExternalLink, Pin, Radio, Inbox } from '@lucide/svelte';
@@ -30,12 +34,15 @@
 		executionId: string;
 		slug: string;
 		workflowId: string;
+		/** Workflow graph (for the live node-progress stepper). */
+		nodes?: Node[];
+		edges?: Edge[];
 		/** Preserved run-level cards (live preview, workspace, input/output,
 		 *  artifacts) rendered by the parent page inside the Run details drawer. */
 		details?: Snippet;
 	}
 
-	let { executionId, slug, workflowId, details }: Props = $props();
+	let { executionId, slug, workflowId, nodes = [], edges = [], details }: Props = $props();
 
 	type SessionRow = {
 		id: string;
@@ -55,6 +62,8 @@
 	let tokensPerSec = $state<number | null>(null);
 	let toolCallTotal = $state<number | null>(null);
 	let isStreaming = $state(false);
+	let activeToolName = $state<string | null>(null);
+	let snapshot = $state<ExecutionReadModel | null>(null);
 	let summaryOutput = $state<Record<string, unknown> | null>(null);
 	let output = $state<unknown>(null);
 
@@ -65,6 +74,8 @@
 			currentNodeName = s.snapshot?.currentNodeName ?? s.currentPhase ?? currentNodeName;
 			toolCallTotal = s.toolCallTotal || toolCallTotal;
 			isStreaming = s.isLlmStreaming;
+			activeToolName = s.activeToolName;
+			if (s.snapshot) snapshot = s.snapshot;
 			summaryOutput = s.snapshot?.summaryOutput ?? summaryOutput;
 			output = s.snapshot?.output ?? output;
 			// tokens/sec from the last-30s rate window
@@ -169,11 +180,14 @@
 
 	// ── Per-active-session preview streams (capped) ─────────────────────────
 	const MAX_PREVIEW_STREAMS = 4;
-	type PreviewData = { lastLine: string; inTok: number; outTok: number };
+	type PreviewData = { lastLine: string; inTok: number; outTok: number; activity: string | null };
 	let previews = $state<Record<string, PreviewData>>({});
 	const previewStreams = new Map<string, { store: SessionStreamStore; unsub: () => void }>();
 
-	function summarize(events: SessionEventEnvelope[]): PreviewData {
+	function summarize(
+		events: SessionEventEnvelope[],
+		inFlight: Record<string, { kind: string }>
+	): PreviewData {
 		let lastLine = '';
 		let inTok = 0;
 		let outTok = 0;
@@ -206,7 +220,39 @@
 				break;
 			}
 		}
-		return { lastLine: lastLine.slice(0, 220), inTok, outTok };
+		// What is this session doing RIGHT NOW (drives the live activity chip)?
+		let activity: string | null = null;
+		const partial = Object.values(inFlight)[0];
+		if (partial) {
+			activity =
+				partial.kind === 'thinking'
+					? 'thinking…'
+					: partial.kind === 'tool_input'
+						? 'preparing tool…'
+						: 'writing…';
+		} else {
+			// Recent unmatched tool_use (no result yet) → that tool is in flight.
+			for (let i = events.length - 1; i >= 0; i--) {
+				const e = events[i];
+				if (
+					e.type === 'agent.tool_result' ||
+					e.type === 'agent.mcp_tool_result' ||
+					e.type === 'agent.custom_tool_result' ||
+					e.type === 'agent.message'
+				)
+					break;
+				if (
+					e.type === 'agent.tool_use' ||
+					e.type === 'agent.mcp_tool_use' ||
+					e.type === 'agent.custom_tool_use'
+				) {
+					const d = e.data as Record<string, unknown>;
+					activity = `⚙ ${(d.name as string) ?? (d.tool_name as string) ?? 'tool'}`;
+					break;
+				}
+			}
+		}
+		return { lastLine: lastLine.slice(0, 220), inTok, outTok, activity };
 	}
 
 	// Reconcile desired preview streams against open ones. Incremental — never
@@ -229,7 +275,7 @@
 			if (previewStreams.has(id)) continue;
 			const store = createSessionStream(id);
 			const unsub = store.subscribe((st) => {
-				previews = { ...previews, [id]: summarize(st.events) };
+				previews = { ...previews, [id]: summarize(st.events, st.inFlightPartials) };
 			});
 			previewStreams.set(id, { store, unsub });
 		}
@@ -317,6 +363,9 @@
 	<!-- Top strip: aggregate run metrics -->
 	<RunMetricsBar {executionId} {sessions} {runActive} {live} {outcome} />
 
+	<!-- Real-time flow progress: current node + live action + node stepper -->
+	<RunProgressBand {nodes} {edges} {snapshot} {activeToolName} {isStreaming} {tokensPerSec} {runActive} />
+
 	{#if orderedSessions.length === 0}
 		<div class="flex flex-1 flex-col items-center justify-center text-muted-foreground">
 			<div class="rounded-full bg-muted p-3"><Inbox size={24} /></div>
@@ -366,6 +415,7 @@
 							</div>
 						{/if}
 						<button
+							in:fly={{ y: -6, duration: 200 }}
 							class="mb-1 w-full rounded-md border px-2.5 py-2 text-left transition-colors {focusedId ===
 							s.id
 								? 'border-primary/50 bg-primary/5'
@@ -375,7 +425,13 @@
 							<div class="flex items-center gap-2">
 								<span class="{dot.cls} text-xs" title={dot.label}>{dot.sym}</span>
 								<span class="min-w-0 flex-1 truncate text-xs font-medium">{node}</span>
-								{#if isActive(s)}
+								{#if isActive(s) && pv?.activity}
+									<span
+										class="inline-flex shrink-0 items-center gap-1 rounded-full bg-teal-500/10 px-1.5 py-0.5 text-[9px] font-medium text-teal-600 dark:text-teal-300"
+									>
+										<span class="size-1 animate-pulse rounded-full bg-teal-400"></span>{pv.activity}
+									</span>
+								{:else if isActive(s)}
 									<span class="inline-block size-1.5 animate-pulse rounded-full bg-teal-400/80"></span>
 								{/if}
 							</div>

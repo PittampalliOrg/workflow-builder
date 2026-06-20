@@ -2065,7 +2065,7 @@
 
 		<!-- Tab 1: Overview -->
 		<TabsContent value="overview" class="flex-1 overflow-hidden p-0">
-			<RunConsole {executionId} {slug} {workflowId}>
+			<RunConsole {executionId} {slug} {workflowId} nodes={workflowNodes} edges={workflowEdges}>
 				{#snippet details()}
 				{#if primaryAppPreviewUrl}
 					<Card>
