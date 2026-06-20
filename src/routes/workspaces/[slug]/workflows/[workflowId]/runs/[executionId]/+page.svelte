@@ -47,6 +47,8 @@
 	} from '@lucide/svelte';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import OtherRunsPanel from '$lib/components/runs/other-runs-panel.svelte';
+	import WorkflowQuickSwitcher from '$lib/components/workflow/workflow-quick-switcher.svelte';
+	import RunQuickSwitcher from '$lib/components/workflow/run-quick-switcher.svelte';
 	import RunProgressBand from '$lib/components/workflow/execution/run-progress-band.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Sheet, SheetTrigger, SheetContent, SheetHeader, SheetTitle } from '$lib/components/ui/sheet';
@@ -1889,23 +1891,18 @@
 				</Breadcrumb.Item>
 				<Breadcrumb.Separator class="[&>svg]:size-3" />
 				<Breadcrumb.Item>
-					<Breadcrumb.Link
-						href="/workspaces/{slug}/workflows/{workflowId}"
-						class="text-xs truncate max-w-[220px]"
-						title={workflowName || workflowId}
-					>
-						{workflowName || workflowId}
-					</Breadcrumb.Link>
+					<!-- Switch WORKFLOW (Running / Recent) without leaving the pane -->
+					<WorkflowQuickSwitcher
+						{slug}
+						currentWorkflowId={workflowId}
+						currentWorkflowName={workflowName}
+						variant="run"
+					/>
 				</Breadcrumb.Item>
 				<Breadcrumb.Separator class="[&>svg]:size-3" />
 				<Breadcrumb.Item>
-					<Breadcrumb.Link href="/workspaces/{slug}/runs?workflowId={workflowId}" class="text-xs">Runs</Breadcrumb.Link>
-				</Breadcrumb.Item>
-				<Breadcrumb.Separator class="[&>svg]:size-3" />
-				<Breadcrumb.Item>
-					<Breadcrumb.Page class="text-xs font-mono" title={executionId}>
-						{executionId.slice(0, 8)}
-					</Breadcrumb.Page>
+					<!-- Switch RUN of the current workflow -->
+					<RunQuickSwitcher {slug} {workflowId} currentExecutionId={executionId} />
 				</Breadcrumb.Item>
 			</Breadcrumb.List>
 		</Breadcrumb.Root>

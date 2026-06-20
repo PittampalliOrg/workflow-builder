@@ -28,7 +28,7 @@
 	import RunProgressBand from '$lib/components/workflow/execution/run-progress-band.svelte';
 	import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '$lib/components/ui/collapsible';
 	import { fmtTokens } from '$lib/utils/format-tokens';
-	import { ChevronDown, ExternalLink, Pin, Radio, Inbox } from '@lucide/svelte';
+	import { ChevronDown, ExternalLink, Pin, Radio, Inbox, Loader2 } from '@lucide/svelte';
 
 	interface Props {
 		executionId: string;
@@ -289,6 +289,33 @@
 		previewStreams.clear();
 	});
 
+	// ── Sandbox provisioning status (fills the pre-session "rescheduling" gap) ──
+	type Provisioning = { phase: string; label: string; detail: string | null };
+	let provisioning = $state<Record<string, Provisioning>>({});
+	$effect(() => {
+		const pending = orderedSessions.filter((s) => s.status === 'rescheduling').map((s) => s.id);
+		if (pending.length === 0) return;
+		let cancelled = false;
+		async function poll() {
+			for (const id of pending) {
+				try {
+					const res = await fetch(`/api/v1/sessions/${id}/provisioning`);
+					if (res.ok && !cancelled) {
+						provisioning = { ...provisioning, [id]: (await res.json()) as Provisioning };
+					}
+				} catch {
+					// best-effort
+				}
+			}
+		}
+		void poll();
+		const t = setInterval(poll, 4000);
+		return () => {
+			cancelled = true;
+			clearInterval(t);
+		};
+	});
+
 	// ── Resizable rail ─────────────────────────────────────────────────────
 	const RAIL_MIN = 240;
 	const RAIL_MAX = 560;
@@ -435,6 +462,14 @@
 									<span class="inline-block size-1.5 animate-pulse rounded-full bg-teal-400/80"></span>
 								{/if}
 							</div>
+							{#if s.status === 'rescheduling'}
+								{@const prov = provisioning[s.id]}
+								<div class="mt-1 flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+									<Loader2 class="size-3 shrink-0 animate-spin" />
+									<span class="truncate">{prov?.label ?? 'Provisioning sandbox…'}</span>
+									{#if prov?.detail}<span class="truncate text-muted-foreground/70">· {prov.detail}</span>{/if}
+								</div>
+							{/if}
 							{#if pv?.lastLine}
 								<p class="mt-1 line-clamp-2 text-[11px] text-muted-foreground">{pv.lastLine}</p>
 							{/if}
