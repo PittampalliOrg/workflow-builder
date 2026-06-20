@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_AGENT_SESSION_HOST_READY_POLL_SECONDS = 5
 DEFAULT_AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS = 600
+DEFAULT_SPAWN_SESSION_HTTP_RETRY_ATTEMPTS = 8
+DEFAULT_SPAWN_SESSION_HTTP_RETRY_BASE_SECONDS = 2
+DEFAULT_SPAWN_SESSION_HTTP_RETRY_MAX_SECONDS = 15
+RETRYABLE_ENSURE_FOR_WORKFLOW_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 
 def _cancelled_benchmark_refusal(status_code: int, body: str) -> bool:
@@ -75,6 +79,18 @@ def _int_env(name: str, default: int, *, minimum: int = 1) -> int:
         return max(minimum, default)
 
 
+def _spawn_session_retry_delay(attempt: int) -> int:
+    base_seconds = _int_env(
+        "SPAWN_SESSION_HTTP_RETRY_BASE_SECONDS",
+        DEFAULT_SPAWN_SESSION_HTTP_RETRY_BASE_SECONDS,
+    )
+    max_seconds = _int_env(
+        "SPAWN_SESSION_HTTP_RETRY_MAX_SECONDS",
+        DEFAULT_SPAWN_SESSION_HTTP_RETRY_MAX_SECONDS,
+    )
+    return min(max_seconds, base_seconds * (2 ** max(0, attempt - 1)))
+
+
 def _is_agent_session_app_id(value: Any) -> bool:
     return isinstance(value, str) and value.strip().startswith("agent-session-")
 
@@ -100,21 +116,62 @@ def _post_ensure_for_workflow(
             value = otel.get(key)
             if isinstance(value, str) and value.strip():
                 headers[key] = value.strip()
-    try:
-        # The BFF may synchronously wait for host readiness for a short window.
-        # Keep the HTTP timeout above the BFF cap so slow readiness reports are
-        # returned as queued/ready instead of client-side disconnects.
-        response = requests.post(
-            endpoint,
-            json=payload,
-            headers=headers,
-            timeout=90,
-        )
-    except requests.exceptions.RequestException as exc:
-        logger.warning("[spawn_session] HTTP error calling %s: %s", endpoint, exc)
-        raise RuntimeError(
-            f"spawn_session_for_workflow: request failed: {exc}"
-        ) from exc
+    retry_attempts = _int_env(
+        "SPAWN_SESSION_HTTP_RETRY_ATTEMPTS",
+        DEFAULT_SPAWN_SESSION_HTTP_RETRY_ATTEMPTS,
+    )
+    response = None
+    for attempt in range(1, retry_attempts + 1):
+        try:
+            # The BFF may synchronously wait for host readiness for a short window.
+            # Keep the HTTP timeout above the BFF cap so slow readiness reports are
+            # returned as queued/ready instead of client-side disconnects.
+            response = requests.post(
+                endpoint,
+                json=payload,
+                headers=headers,
+                timeout=90,
+            )
+        except requests.exceptions.RequestException as exc:
+            if attempt >= retry_attempts:
+                logger.warning("[spawn_session] HTTP error calling %s: %s", endpoint, exc)
+                raise RuntimeError(
+                    f"spawn_session_for_workflow: request failed: {exc}"
+                ) from exc
+            delay = _spawn_session_retry_delay(attempt)
+            logger.warning(
+                "[spawn_session] transient HTTP error calling %s "
+                "(attempt %s/%s, retrying in %ss): %s",
+                endpoint,
+                attempt,
+                retry_attempts,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+            continue
+
+        if (
+            response.status_code in RETRYABLE_ENSURE_FOR_WORKFLOW_STATUS_CODES
+            and attempt < retry_attempts
+        ):
+            delay = _spawn_session_retry_delay(attempt)
+            body_preview = response.text[:400] if response.text else "<empty>"
+            logger.warning(
+                "[spawn_session] retryable HTTP %s from BFF "
+                "(attempt %s/%s, retrying in %ss): %s",
+                response.status_code,
+                attempt,
+                retry_attempts,
+                delay,
+                body_preview,
+            )
+            time.sleep(delay)
+            continue
+        break
+
+    if response is None:
+        raise RuntimeError("spawn_session_for_workflow: no response from BFF")
 
     if response.status_code >= 400:
         body_preview = response.text[:800] if response.text else "<empty>"

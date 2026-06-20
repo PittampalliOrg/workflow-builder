@@ -2504,6 +2504,78 @@ def test_spawn_session_activity_polls_agent_session_host_until_ready(monkeypatch
     }
 
 
+def test_spawn_session_activity_retries_transient_request_error(monkeypatch):
+    calls = []
+
+    def fake_post(endpoint, **kwargs):
+        calls.append((endpoint, kwargs))
+        if len(calls) == 1:
+            raise SPAWN_SESSION.requests.exceptions.RequestException(
+                "remote closed connection"
+            )
+        return _FakeResponse(
+            {
+                "sessionId": "child-session",
+                "agentAppId": "agent-session-abc123",
+                "agentHostStatus": "ready",
+                "childInput": {"sessionId": "child-session"},
+            }
+        )
+
+    sleeps = []
+    monkeypatch.setenv("SPAWN_SESSION_HTTP_RETRY_ATTEMPTS", "2")
+    monkeypatch.setenv("SPAWN_SESSION_HTTP_RETRY_BASE_SECONDS", "1")
+    monkeypatch.setenv("SPAWN_SESSION_HTTP_RETRY_MAX_SECONDS", "1")
+    monkeypatch.setattr(SPAWN_SESSION.requests, "post", fake_post)
+    monkeypatch.setattr(SPAWN_SESSION.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    body = SPAWN_SESSION._ensure_agent_session_host_ready(
+        "http://workflow-builder/api/internal/sessions/ensure-for-workflow",
+        {"sessionId": "child-session"},
+        "token",
+    )
+
+    assert body["childInput"]["sessionId"] == "child-session"
+    assert len(calls) == 2
+    assert sleeps == [1]
+
+
+def test_spawn_session_activity_retries_retryable_bff_status(monkeypatch):
+    responses = [
+        _FakeResponse({}, status_code=503, text="BFF restarting"),
+        _FakeResponse(
+            {
+                "sessionId": "child-session",
+                "agentAppId": "agent-session-abc123",
+                "agentHostStatus": "ready",
+                "childInput": {"sessionId": "child-session"},
+            }
+        ),
+    ]
+    calls = []
+
+    def fake_post(endpoint, **kwargs):
+        calls.append((endpoint, kwargs))
+        return responses[len(calls) - 1]
+
+    sleeps = []
+    monkeypatch.setenv("SPAWN_SESSION_HTTP_RETRY_ATTEMPTS", "2")
+    monkeypatch.setenv("SPAWN_SESSION_HTTP_RETRY_BASE_SECONDS", "1")
+    monkeypatch.setenv("SPAWN_SESSION_HTTP_RETRY_MAX_SECONDS", "1")
+    monkeypatch.setattr(SPAWN_SESSION.requests, "post", fake_post)
+    monkeypatch.setattr(SPAWN_SESSION.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    body = SPAWN_SESSION._ensure_agent_session_host_ready(
+        "http://workflow-builder/api/internal/sessions/ensure-for-workflow",
+        {"sessionId": "child-session"},
+        "token",
+    )
+
+    assert body["childInput"]["sessionId"] == "child-session"
+    assert len(calls) == 2
+    assert sleeps == [1]
+
+
 def test_spawn_session_activity_returns_cancelled_for_cancelled_benchmark_run(monkeypatch):
     def fake_post(_endpoint, **_kwargs):
         return _FakeResponse(
