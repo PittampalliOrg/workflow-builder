@@ -121,8 +121,11 @@
 		return label || s.id.slice(0, 12);
 	}
 	function groupBaseOf(node: string): string {
-		// Collapse loop iterations: "negotiate-review-0" → "negotiate-review".
-		return node.replace(/-\d+$/, '');
+		// Group by the top-level loop node: "negotiate/propose[0]" → "negotiate",
+		// "negotiate-review-0" → "negotiate-review", "plan" → "plan".
+		const slash = node.indexOf('/');
+		if (slash > 0) return node.slice(0, slash);
+		return node.replace(/\[\d+\]$/, '').replace(/-\d+$/, '');
 	}
 	function isActive(s: SessionRow): boolean {
 		return s.status === 'running' || s.status === 'idle' || s.status === 'rescheduling';
