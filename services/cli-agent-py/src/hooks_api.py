@@ -19,7 +19,7 @@ Mapping (defaults; the CLI adapter's ``map_hook_event`` can override):
   Stop               → (side effect) flush tailer; raise {type: "turn.completed"}
   SessionEnd         → (side effect) raise {type: "cli.session_end", reason}
 
-Codex and Antigravity command hooks use the generic
+Codex and the Gemini-backed agy compatibility adapter use the generic
 ``/internal/hooks/cli/{adapter}`` endpoint through the per-session relay script
 their adapters materialize. They share the same normalized event stream and use
 their adapter's ``is_turn_completion_hook`` method to decide which hook ends a
@@ -666,9 +666,9 @@ class HookProcessor:
         transcript_path = _clean(payload.get("transcript_path")) or _clean(
             payload.get("transcriptPath")
         )
-        # Fallback: some CLIs (Antigravity) don't carry transcript_path in their
-        # command-hook payloads, so a transient early-hook miss would leave the
-        # tailer unregistered and nothing mirrored (no agent.message/llm_usage).
+        # Fallback: some CLIs or legacy AGY pods don't carry transcript_path in
+        # their command-hook payloads, so a transient early-hook miss would leave
+        # the tailer unregistered and nothing mirrored (no agent.message/llm_usage).
         # Let the adapter discover its own transcript file from ANY hook; the
         # tailer reads from offset 0 so a late registration backfills losslessly.
         if not transcript_path and self._adapter is not None:

@@ -34,7 +34,7 @@ Per-phase agents are selectable via the `planAgent` / `generatorAgent` /
 | --- | --- | --- |
 | **claude-code-cli** | ✅ Works end-to-end | PR #1; `terminalState: satisfied`; critic 18 browser calls, multi-viewport |
 | **codex-cli** | ✅ Works end-to-end | PR #2; `success`; critic 12 browser calls (desktop+mobile), verdict pass/92 |
-| **agy-cli** | ❌ Blocked (agy runtime) | clones fine; generate turn stalls — see below |
+| **agy-cli** | 🔁 Runtime replaced | Antigravity blocker retired; slot now launches legacy Gemini CLI — rerun pending |
 | **dapr-agent-py** | ⏸ Not started | different backend (openshell + `:3100` sidecar); native `meets_criteria` |
 
 ## Key implementation notes / gotchas
@@ -42,8 +42,8 @@ Per-phase agents are selectable via the `planAgent` / `generatorAgent` /
   `resolveSpecAgentRefs` rebuilds `with.agentConfig` from the registry-resolved
   agent + overrides, discarding node-inline `mcpServers`. The orchestrator MCP
   resolver passes stdio/command servers through; `emit_claude_code_cli_servers`
-  wires them per-CLI (claude `.mcp.json` / codex `config.toml` / agy
-  `mcp_config.json`).
+  wires them per-CLI (claude `.mcp.json` / codex `config.toml` / Gemini-backed
+  agy `settings.json`).
 - **Browser-sidecar carve-out** (`mcp-sidecar.ts`): interactive-cli pods ship
   Chromium in-image and run `@playwright/mcp` over stdio, so the playwright entry
   is NOT rewritten to the dapr-agent-py-only `localhost:3100` sidecar.
@@ -55,15 +55,16 @@ Per-phase agents are selectable via the `planAgent` / `generatorAgent` /
   tiny JSON.
 - **Instruction delivery**: claude reads `agentConfig.instructions` via
   `--append-system-prompt-file`; codex/agy write them to `AGENTS.md` /
-  `mcp_config` which they may not consult — so the repo URL + clone command live
-  in the **`body.prompt`** (delivered to every CLI).
+  `GEMINI.md` which they may not consult consistently — so the repo URL + clone
+  command live in the **`body.prompt`** (delivered to every CLI).
 - **cliWorkspace helper pod**: when no live CLI pod exists for a `cliWorkspace`
   step, the BFF provisions a short-lived helper pod (shared JuiceFS workspace +
   `GITHUB_TOKEN`). Defensive; the CLIs tested keep their per-turn pods alive.
 
-## agy-cli blocker (follow-on)
-agy clones the repo (the `body.prompt` URL fix applies to all CLIs) but its
-**generate** turn fails for two agy-runtime reasons, both independent of the critic:
+## retired Antigravity blocker
+The original Antigravity-backed `agy-cli` cloned the repo (the `body.prompt` URL
+fix applies to all CLIs) but its **generate** turn failed for two runtime
+reasons, both independent of the critic:
 1. **Stalls after a `run_command`.** agy's native terminal executor needs Linux
    user-namespaces. On the failed dev run, the sandbox baseline exposed
    `user.max_user_namespaces=0`, so the antigravity adapter fell back to the
@@ -76,11 +77,14 @@ agy clones the repo (the `body.prompt` URL fix applies to all CLIs) but its
    `run_command` (builds), zero `write_to_file`/`replace_file_content` — it never
    started the redesign (weakest model at multi-step coding).
 
-First fix agy's sandbox baseline so native Bash works: Talos workers for the
-`interactive-cli-agy` class need a nonzero `user.max_user_namespaces`. With that
-available, `services/cli-agent-py/src/cli_adapters/antigravity.py` stops shimming
-`run_command` and lets AGY execute commands natively. Only revisit the shim
-protocol if native AGY still fails after that baseline is in place.
+We retired this path by keeping the external `agy-cli` / `cliAdapter:
+"antigravity"` compatibility slot but launching legacy Gemini CLI instead:
+`gemini --approval-mode=yolo --sandbox=false --skip-trust
+--include-directories /sandbox`. The adapter now writes Gemini's top-level
+`~/.gemini/settings.json`, maps `BeforeTool`/`AfterTool`/`AfterAgent`, and uses
+Gemini's native `run_shell_command` in normal operation. The old shim remains as
+a fallback for constrained clusters, but it now understands Gemini hook/tool
+names.
 
 ## dapr-agent-py (follow-on)
 dapr-agent-py uses the `openshell-shared` workspace backend (not the cli-family

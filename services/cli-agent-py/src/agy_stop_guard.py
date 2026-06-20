@@ -1,9 +1,9 @@
-"""Antigravity Stop-hook guard for workflow-driven output contracts.
+"""Gemini-family completion-hook guard for workflow-driven output contracts.
 
-Antigravity's Stop hook can return ``{"decision": "continue"}`` to re-enter
-the execution loop. For SW durable/run sessions, use that hook to prevent an
-early Agy stop when the workflow still needs concrete filesystem output for
-``outputSync``.
+Gemini's AfterAgent hook and the legacy Antigravity Stop hook can return
+``{"decision": "continue"}`` to re-enter the execution loop. For SW durable/run
+sessions, use that hook to prevent an early `agy-cli` completion when the
+workflow still needs concrete filesystem output for ``outputSync``.
 """
 
 from __future__ import annotations
@@ -16,10 +16,13 @@ from typing import Any, Mapping
 
 DEFAULT_MAX_CONTINUES = 3
 MUTATING_TOOLS = {
+    "edit",
     "write_to_file",
+    "write_file",
     "replace_file_content",
     "multi_replace_file_content",
     "run_command",
+    "run_shell_command",
 }
 _FILENAME_RE = re.compile(
     r"\b([A-Za-z0-9_.-]+\.(?:html|css|js|mjs|cjs|ts|tsx|jsx|md|json|txt|py|sh|yml|yaml))\b"
@@ -225,9 +228,9 @@ def _tool_name(payload: Mapping[str, Any]) -> str | None:
 
 
 def record_hook_event(payload: Mapping[str, Any]) -> None:
-    """Track mutating Agy tool attempts for guard diagnostics."""
+    """Track mutating Gemini-family tool attempts for guard diagnostics."""
     event_name = _clean(payload.get("hook_event_name") or payload.get("eventName"))
-    if event_name != "PreToolUse" or not _config_path().exists():
+    if event_name not in {"PreToolUse", "BeforeTool"} or not _config_path().exists():
         return
     tool = _tool_name(payload)
     if not tool:
@@ -275,10 +278,10 @@ def _missing_requirements(config: Mapping[str, Any]) -> list[str]:
 
 
 def evaluate_stop_guard(*, increment_continue: bool) -> dict[str, Any]:
-    """Return an Antigravity Stop-hook response.
+    """Return a Gemini-family completion-hook response.
 
-    ``{}`` allows the stop. ``{"decision": "continue", ...}`` keeps Agy in its
-    execution loop.
+    ``{}`` allows completion. ``{"decision": "continue", ...}`` keeps the CLI
+    in its execution loop.
     """
     config = _read_json(_config_path())
     if not config.get("enabled"):

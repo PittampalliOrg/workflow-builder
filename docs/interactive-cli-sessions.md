@@ -1,7 +1,8 @@
 # Interactive CLI Sessions (`interactive-cli` runtime family) — SSOT
 
 > Status: **IMPLEMENTED 2026-06** — `claude-code-cli`, **`codex-cli`**, and
-> **`agy-cli`** (Antigravity). This is the SSOT for running agent CLIs as
+> **`agy-cli`** (legacy Gemini CLI behind the compatibility adapter). This is
+> the SSOT for running agent CLIs as
 > first-class durable runtimes: the REAL TUI in a per-session Kueue-admitted
 > sandbox pod, accessed through a web terminal, with the Dapr workflow wrapping
 > the session LIFECYCLE and the transcript/status mirrored into
@@ -69,15 +70,15 @@ sessions unless the caller explicitly requests the workflow auto-turn path.
    SessionEnd hook), explicit stop, idle-TTL reaper.
 2. **CLI hooks**: Claude Code uses the baked managed settings at
    `/etc/claude-code/managed-settings.json`, POSTing to
-   `127.0.0.1:8002/internal/hooks/claude`. Codex and Antigravity write a
+   `127.0.0.1:8002/internal/hooks/claude`. Codex and Gemini-backed agy write a
    per-session hook config during `seed()` and execute a small relay script that
    posts stdin JSON to `127.0.0.1:8002/internal/hooks/cli/{adapter}`. Claude
    maps UserPromptSubmit->`user.message`, PreToolUse->`agent.tool_use`,
    PostToolUse(Failure)->`agent.tool_result`, Permission*->`hook.decision`,
    Stop->transcript flush + workflow `turn.completed`, and
-   SessionEnd->`cli.session_end`. Codex/Antigravity use their stop/end hook as
-   the durable workflow completion signal; richer tool/usage events are emitted
-   when the hook payload exposes enough structure.
+   SessionEnd->`cli.session_end`. Codex and Gemini-backed agy use their
+   completion/end hook as the durable workflow completion signal; richer
+   tool/usage events are emitted when the hook payload exposes enough structure.
 3. **Transcript JSONL tailing** (`transcript_path` from the SessionStart hook;
    `CLAUDE_CONFIG_DIR=/sandbox/.claude`): assistant text → `agent.message`
    (block-array content), usage → `agent.llm_usage` (Session Pulse works
@@ -132,15 +133,20 @@ OAuth; all keep usage on the USER's personal subscription, never a cluster key.
   `file_bundle` is optional so agy can still fall back to terminal device-code
   login and capture the bundle afterward; for SW 1.0 workflow dispatch the
   bridge requires the bundle up front because there is no operator to complete
-  an interactive login. Never in Dapr `childInput`, the CR YAML, spans
-  (redacted) or logs. `spawn.ts` also stamps `agentConfig.cliAdapter` from the
-  descriptor so the host selects claude/codex/antigravity.
+  an interactive login. Existing Antigravity-only bundles are not treated as a
+  valid Gemini login; the user must authenticate once in the Gemini-backed
+  terminal so top-level `~/.gemini/oauth_creds.json` / `google_accounts.json`
+  can be captured. Never in Dapr `childInput`, the CR YAML, spans (redacted) or
+  logs. `spawn.ts` also stamps `agentConfig.cliAdapter` from the descriptor so
+  the host selects claude/codex/antigravity.
 - **SYSTEM INVARIANT: provider API keys must NEVER reach these pods** — they
   silently outrank OAuth and flip billing to the metered API. Each adapter's
   `pane_env` strips them: claude (`ANTHROPIC_API_KEY`/`CLAUDE_API_KEY`), codex
   (`OPENAI_API_KEY`/`CODEX_API_KEY` + the `CODEX_AUTH_JSON` blob, since codex
   prefers an env credential over the file), agy
-  (`ANTIGRAVITY_API_KEY`/`GEMINI_API_KEY`/`GOOGLE_API_KEY`/`GOOGLE_APPLICATION_CREDENTIALS`).
+  (`ANTIGRAVITY_API_KEY`/`GEMINI_API_KEY`/`GOOGLE_API_KEY`/
+  `GOOGLE_APPLICATION_CREDENTIALS`; also strips `GEMINI_SANDBOX` so the pod
+  controls sandboxing).
   Codex additionally sets `forced_login_method = "chatgpt"` in config.toml.
   Enforced structurally (`agentHostEnvFrom` class override excludes the shared
   agent secrets; `ExternalSecret cli-agent-py-secrets` carries ONLY
@@ -252,21 +258,20 @@ the system prompt → `AGENTS.md`, and the OAuth `auth.json` from the
 `CODEX_AUTH_JSON` blob (0600). Codex auto-refreshes the token in-session. herdr
 detects Codex state natively.
 
-**`agy-cli`** (`AntigravityAdapter`, `cliAdapter: "antigravity"`): launches bare
-`agy` (+ `--model` for a `gemini*` model; `--dangerously-skip-permissions` only
-for bypass). `seed()` writes `$HOME/.gemini/config/mcp_config.json`
-(`mcpServers` with remote `serverUrl` — NOT `url`), `$HOME/.gemini/config/hooks.json`
-with a Stop hook relay, the system prompt → `GEMINI.md`, and a `settings.json`
-pre-trusting `/sandbox`. Direct sessions may start without a credential bundle:
-agy prints a Google OAuth URL+code on first launch and the user pastes the code
-in the web terminal; the bundle can then be captured for future launches.
-Workflow dispatch requires the captured `AGY_AUTH_JSON` bundle up front. herdr
-detects agy by screen pattern (no native socket integration), so its mirror is
-herdr-state-based; agy has no OTEL export. The pinned binary is a sha512-verified
-GCS release tarball at `/usr/local/bin/agy` (root-owned read-only → defeats its
-background self-update). The hook config is implemented from Antigravity's
-Gemini-compatible hook layout and still needs an in-pod smoke against the pinned
-binary before broad rollout.
+**`agy-cli`** (`AntigravityAdapter`, `cliAdapter: "antigravity"`): compatibility
+slot that now launches legacy `gemini --approval-mode=yolo --sandbox=false
+--skip-trust --include-directories /sandbox` (+ `--model` for a `gemini*`
+model). `seed()` writes top-level `$HOME/.gemini/settings.json` with Gemini
+`mcpServers` (`httpUrl` for streamable HTTP, `url` for SSE), Gemini hooks
+(`BeforeTool` / `AfterTool` / `AfterAgent`), disabled nested sandboxing, and the
+system prompt → `GEMINI.md`. Direct sessions may start without a credential
+bundle: Gemini prompts for Google OAuth on first launch and the user completes
+that flow in the web terminal; the bundle can then be captured for future
+launches. Workflow dispatch requires a captured legacy-Gemini `AGY_AUTH_JSON`
+bundle up front. herdr detects the Gemini TUI by screen pattern (no native
+socket integration), so its mirror is herdr-state-based; Gemini has no OTEL
+export. The pinned binary is `@google/gemini-cli@0.47.0` installed at
+`/usr/local/bin/gemini`.
 
 To add another CLI: new `CliAdapter` + register in `cli_adapters/__init__.py`;
 new registry descriptor (family `interactive-cli`, `cliAdapter`, `cliAuth` with
@@ -286,7 +291,8 @@ are CLI-agnostic (driven off the descriptor).
    descriptor ships with the wfb image.
 4. Smoke (in-pod, one-time): herdr `agent.start` param echo, hook fields against
    each pinned CLI, `--append-system-prompt-file` flag presence for Claude,
-   Codex Stop hook relay with `--dangerously-bypass-hook-trust`, Antigravity Stop
-   hook relay against the pinned `agy`, `pane.send_keys` Enter shape (CR fallback
-   exists), xterm re-attach repaint after browser refresh, and one SW 1.0
-   `durable/run` auto-turn for each CLI runtime.
+   Codex Stop hook relay with `--dangerously-bypass-hook-trust`, Gemini
+   `BeforeTool` / `AfterAgent` hook relay against the pinned `gemini`,
+   `pane.send_keys` Enter shape (CR fallback exists), xterm re-attach repaint
+   after browser refresh, and one SW 1.0 `durable/run` auto-turn for each CLI
+   runtime.

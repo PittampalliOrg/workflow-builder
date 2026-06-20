@@ -36,12 +36,11 @@ from core.config import config
 from core.sw_types import (
     TaskType,
     Workflow,
-    SWWorkflowInput,
     SWWorkflowOutput,
-    SWWorkflowCustomStatus,
     get_task_type,
 )
 from core.sw_expressions import (
+    SWExpressionError,
     evaluate_condition,
     evaluate_structure,
     resolve_input_definition,
@@ -52,11 +51,9 @@ from activities.execute_action import execute_action
 from activities.crawl4ai import crawl4ai_get_job_status, crawl4ai_start_job
 from activities.environment_build import check_environment_build, ensure_environment
 from activities.persist_artifact import persist_workflow_artifact
-from activities.persist_state import persist_state
 from activities.publish_event import publish_phase_changed
 from activities.log_external_event import (
     log_approval_request,
-    log_approval_response,
     log_approval_timeout,
 )
 from activities.log_node_execution import (
@@ -1413,7 +1410,7 @@ def _build_native_run_prompt(
     if normalized_cwd and normalized_agent_runtime == "agy-cli":
         cwd_context = (
             f"Repository root: {normalized_cwd}\n"
-            "Antigravity file and directory tools require absolute paths. "
+            "The Gemini-backed agy-cli slot is most reliable with absolute paths. "
             f"Use absolute paths under {normalized_cwd} for every file or directory tool call; "
             "do not pass '.' or other relative paths to file tools.\n\n"
         )

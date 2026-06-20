@@ -1,4 +1,4 @@
-"""CodexAdapter + AntigravityAdapter seed / argv / env tests.
+"""CodexAdapter + Gemini-backed agy adapter seed / argv / env tests.
 
 These lock the two security-critical invariants for the new OAuth CLIs:
   - codex: the delivered CODEX_AUTH_JSON blob is written to auth.json (chmod
@@ -10,15 +10,29 @@ These lock the two security-critical invariants for the new OAuth CLIs:
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import stat
+import tarfile
 import tomllib
 
 import pytest
 
+from src.agy_stop_guard import record_hook_event
 from src.cli_adapters import get_adapter
 from src.cli_adapters.antigravity import normalize_agy_model
 from src.cli_adapters.codex import normalize_codex_model
+
+
+def _gemini_auth_bundle(*entries: tuple[str, bytes]) -> str:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, data in entries:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return base64.b64encode(buf.getvalue()).decode()
 
 AUTH_BLOB = json.dumps(
     {
@@ -456,9 +470,20 @@ def test_agy_requires_interactive_login_is_dynamic(monkeypatch):
     # the login field).
     monkeypatch.delenv("AGY_AUTH_JSON", raising=False)
     assert get_adapter("antigravity").requires_interactive_login is True
-    # Bundle delivered → seed() restores ~/.gemini and agy boots signed in, so the
+    # Antigravity-only bundles do not satisfy legacy Gemini auth.
+    monkeypatch.setenv(
+        "AGY_AUTH_JSON",
+        _gemini_auth_bundle(
+            ("antigravity-cli/antigravity-oauth-token", b'{"token":{}}')
+        ),
+    )
+    assert get_adapter("antigravity").requires_interactive_login is True
+    # Legacy Gemini OAuth files delivered → seed() restores ~/.gemini and the
     # kickoff can fire immediately.
-    monkeypatch.setenv("AGY_AUTH_JSON", "x")
+    monkeypatch.setenv(
+        "AGY_AUTH_JSON",
+        _gemini_auth_bundle(("oauth_creds.json", b'{"refresh_token":"r"}')),
+    )
     assert get_adapter("antigravity").requires_interactive_login is False
 
 
@@ -472,23 +497,19 @@ def test_agy_seed_prompt_preserves_operator_goal_command():
 
 
 def test_agy_seed_restores_login_bundle(agy_home, monkeypatch):
-    import base64
-    import io
-    import tarfile
-
-    # build a base64 tar.gz with a token + init markers
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for name, data in (
+    monkeypatch.setenv(
+        "AGY_AUTH_JSON",
+        _gemini_auth_bundle(
+            ("oauth_creds.json", b'{"refresh_token":"r"}'),
+            ("google_accounts.json", b"[]"),
             ("antigravity-cli/antigravity-oauth-token", b'{"token":{}}'),
             ("config/.migrated", b""),
-        ):
-            info = tarfile.TarInfo(name)
-            info.size = len(data)
-            tar.addfile(info, io.BytesIO(data))
-    monkeypatch.setenv("AGY_AUTH_JSON", base64.b64encode(buf.getvalue()).decode())
+        ),
+    )
     get_adapter("antigravity").seed(AGY_SESSION)
     gem = agy_home / ".gemini"
+    assert (gem / "oauth_creds.json").read_bytes() == b'{"refresh_token":"r"}'
+    assert (gem / "google_accounts.json").read_bytes() == b"[]"
     assert (gem / "antigravity-cli" / "antigravity-oauth-token").read_bytes() == b'{"token":{}}'
     assert (gem / "config" / ".migrated").exists()
 
@@ -510,13 +531,13 @@ AGY_SESSION = {
 }
 
 
-def test_agy_seed_writes_mcp_with_serverUrl_key(agy_home):
+def test_agy_seed_writes_mcp_with_http_url_key(agy_home):
     result = get_adapter("antigravity").seed(AGY_SESSION)
-    mcp = json.loads((agy_home / ".gemini/config/mcp_config.json").read_text())
-    # agy's remote key is serverUrl (NOT url) — wrong key fails silently.
-    assert mcp["mcpServers"]["goal"]["serverUrl"].endswith("/mcp")
-    assert "url" not in mcp["mcpServers"]["goal"]
-    assert result.paths["mcpConfigPath"].endswith("mcp_config.json")
+    settings = json.loads((agy_home / ".gemini/settings.json").read_text())
+    # Legacy Gemini's streamable HTTP key is httpUrl (NOT Antigravity serverUrl).
+    assert settings["mcpServers"]["goal"]["httpUrl"].endswith("/mcp")
+    assert "serverUrl" not in settings["mcpServers"]["goal"]
+    assert result.paths["mcpConfigPath"].endswith("settings.json")
 
 
 def test_agy_seed_filters_known_bad_mcp_servers_by_default(agy_home):
@@ -546,9 +567,9 @@ def test_agy_seed_filters_known_bad_mcp_servers_by_default(agy_home):
     }
 
     result = get_adapter("antigravity").seed(session)
-    mcp = json.loads((agy_home / ".gemini/config/mcp_config.json").read_text())
+    settings = json.loads((agy_home / ".gemini/settings.json").read_text())
 
-    assert set(mcp["mcpServers"]) == {"goal", "piece_ntfy"}
+    assert set(settings["mcpServers"]) == {"goal", "piece_ntfy"}
     assert any("piece_microsoft-onedrive" in warning for warning in result.warnings)
     assert any("piece_microsoft-todo" in warning for warning in result.warnings)
 
@@ -570,21 +591,24 @@ def test_agy_mcp_denylist_can_be_cleared(agy_home, monkeypatch):
     }
 
     result = get_adapter("antigravity").seed(session)
-    mcp = json.loads((agy_home / ".gemini/config/mcp_config.json").read_text())
+    settings = json.loads((agy_home / ".gemini/settings.json").read_text())
 
-    assert set(mcp["mcpServers"]) == {"piece_microsoft-todo"}
+    assert set(settings["mcpServers"]) == {"piece_microsoft-todo"}
     assert not result.warnings
 
 
 def test_agy_seed_writes_hooks_json_for_completion_signal(agy_home):
     result = get_adapter("antigravity").seed(AGY_SESSION)
-    hooks = json.loads((agy_home / ".gemini/config/hooks.json").read_text())
-    stop_hook = hooks["workflow-builder"]["Stop"][0]
+    settings = json.loads((agy_home / ".gemini/settings.json").read_text())
+    hooks = settings["hooks"]
+    stop_hook = hooks["AfterAgent"][0]["hooks"][0]
     assert stop_hook["type"] == "command"
-    assert "--adapter antigravity --event Stop" in stop_hook["command"]
-    end_hook = hooks["workflow-builder"]["SessionEnd"][0]["hooks"][0]
+    assert "--adapter antigravity --event AfterAgent" in stop_hook["command"]
+    before_tool_hook = hooks["BeforeTool"][0]["hooks"][0]
+    assert "--adapter antigravity --event BeforeTool" in before_tool_hook["command"]
+    end_hook = hooks["SessionEnd"][0]["hooks"][0]
     assert "--adapter antigravity --event SessionEnd" in end_hook["command"]
-    assert result.paths["hooksPath"].endswith("hooks.json")
+    assert result.paths["hooksPath"].endswith("settings.json")
 
 
 def test_agy_seed_writes_stop_guard_for_output_sync(agy_home):
@@ -626,6 +650,30 @@ def test_agy_seed_writes_stop_guard_from_durable_run_body(agy_home):
     ]
     assert guard["requireFileChanges"] is True
     assert guard["stopCondition"].startswith("Stop only after index.html")
+
+
+def test_agy_stop_guard_records_gemini_before_tool_mutation(agy_home):
+    get_adapter("antigravity").seed(
+        {
+            **AGY_SESSION,
+            "outputSync": {
+                "paths": [{"source": str(agy_home / "app"), "target": "/sandbox/app"}]
+            },
+            "requireFileChanges": True,
+        }
+    )
+
+    record_hook_event(
+        {
+            "hook_event_name": "BeforeTool",
+            "tool_name": "run_shell_command",
+            "tool_input": {"command": 'printf "ok\\n"', "dir_path": str(agy_home)},
+        }
+    )
+
+    state = json.loads((agy_home / ".wfb/agy_stop_guard_state.json").read_text())
+    assert state["toolCounts"]["run_shell_command"] == 1
+    assert state["mutatingTools"] == ["run_shell_command"]
 
 
 def test_agy_seed_infers_stop_guard_from_initial_user_message(agy_home):
@@ -672,43 +720,35 @@ def test_agy_seed_infers_stop_guard_from_initial_user_message(agy_home):
 def test_agy_seed_writes_gemini_md_and_settings(agy_home):
     get_adapter("antigravity").seed(AGY_SESSION)
     assert (agy_home / ".gemini/GEMINI.md").read_text().startswith("Be terse.")
-    settings = json.loads((agy_home / ".gemini/antigravity-cli/settings.json").read_text())
-    assert settings["model"] == "gemini-2.5-pro"
-    assert settings["enableTelemetry"] is False
-    assert settings["toolPermission"] == "always-proceed"
-    assert settings["artifactReviewPolicy"] == "always-proceed"
-    assert settings["allowNonWorkspaceAccess"] is True
-    assert settings["terminal.integrated.shellIntegration.enabled"] is False
-    assert settings["terminal.integrated.defaultProfile.linux"] == "bash"
-    assert settings["terminal.integrated.profiles.linux"]["bash"]["path"] == "/bin/bash"
-    assert settings["enableTerminalSandbox"] is False
-    assert settings["permissions"]["allow"] == [
-        "command(*)",
-        f"read_file({agy_home})",
-        f"write_file({agy_home})",
-        "read_url(*)",
-        "execute_url(*)",
-        "mcp(*)",
-    ]
-    assert settings["permissions"]["deny"] == []
-    assert settings["permissions"]["ask"] == []
-    assert str(agy_home).endswith("sandbox") or settings["trustedWorkspaces"]
+    settings = json.loads((agy_home / ".gemini/settings.json").read_text())
+    assert settings["model"] == {"name": "gemini-2.5-pro"}
+    assert settings["general"]["enableAutoUpdate"] is False
+    assert settings["general"]["enableAutoUpdateNotification"] is False
+    assert settings["tools"]["sandbox"] is False
+    assert settings["privacy"]["usageStatisticsEnabled"] is False
+    assert settings["telemetry"]["enabled"] is False
+    assert settings["hooksConfig"] == {
+        "enabled": True,
+        "notifications": False,
+        "disabled": [],
+    }
+    assert settings["context"]["includeDirectories"] == [str(agy_home)]
+    assert settings["context"]["loadFromIncludeDirectories"] is True
+    assert settings["mcpServers"]["goal"]["httpUrl"].endswith("/mcp")
 
 
 def test_agy_seed_overrides_restored_prompting_settings(agy_home):
-    settings_path = agy_home / ".gemini/antigravity-cli/settings.json"
+    settings_path = agy_home / ".gemini/settings.json"
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text(
         json.dumps(
             {
-                "toolPermission": "request-review",
-                "enableTerminalSandbox": True,
-                "trustedWorkspaces": ["/old"],
-                "permissions": {
-                    "allow": [],
-                    "deny": ["command(*)"],
-                    "ask": ["command(*)", "mcp(*)"],
+                "general": {
+                    "preferredEditor": "nvim",
+                    "enableAutoUpdate": True,
                 },
+                "tools": {"sandbox": True},
+                "context": {"includeDirectories": ["/old"]},
             }
         )
     )
@@ -716,21 +756,27 @@ def test_agy_seed_overrides_restored_prompting_settings(agy_home):
     get_adapter("antigravity").seed(AGY_SESSION)
     settings = json.loads(settings_path.read_text())
 
-    assert settings["toolPermission"] == "always-proceed"
-    assert settings["enableTerminalSandbox"] is False
-    assert settings["permissions"]["deny"] == []
-    assert settings["permissions"]["ask"] == []
-    assert "/old" in settings["trustedWorkspaces"]
-    assert str(agy_home) in settings["trustedWorkspaces"]
+    assert "preferredEditor" not in settings["general"]
+    assert settings["general"]["enableAutoUpdate"] is False
+    assert settings["tools"]["sandbox"] is False
+    assert settings["context"]["includeDirectories"] == ["/old", str(agy_home)]
 
 
 def test_agy_build_argv():
     argv = get_adapter("antigravity").build_argv(AGY_SESSION["agentConfig"], {})
-    assert argv[0] == "agy"
+    assert argv[0] == "gemini"
     assert "--model" in argv and "gemini-2.5-pro" in argv
-    assert "--dangerously-skip-permissions" in argv
+    assert "--approval-mode=yolo" in argv
     assert "--sandbox=false" in argv
-    assert argv[argv.index("--add-dir") + 1].endswith("sandbox")
+    assert "--skip-trust" in argv
+    assert argv[argv.index("--include-directories") + 1].endswith("sandbox")
+
+
+def test_agy_turn_completion_uses_gemini_after_agent_hook():
+    adapter = get_adapter("antigravity")
+    assert adapter.is_turn_completion_hook("AfterAgent") is True
+    assert adapter.is_turn_completion_hook("Stop") is True
+    assert adapter.is_turn_completion_hook("AfterTool") is False
 
 
 def test_agy_pane_env_strips_all_google_keys_and_pins_home(agy_home):
@@ -740,6 +786,7 @@ def test_agy_pane_env_strips_all_google_keys_and_pins_home(agy_home):
             "GEMINI_API_KEY": "b",
             "GOOGLE_API_KEY": "c",
             "GOOGLE_APPLICATION_CREDENTIALS": "/x",
+            "GEMINI_SANDBOX": "docker",
             "PATH": "/usr/bin",
             "TERM": "xterm",
         },
@@ -750,9 +797,11 @@ def test_agy_pane_env_strips_all_google_keys_and_pins_home(agy_home):
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
         "GOOGLE_APPLICATION_CREDENTIALS",
+        "GEMINI_SANDBOX",
     ):
         assert k not in env
     assert env["HOME"] == str(agy_home)
+    assert env["GEMINI_CLI_HOME"] == str(agy_home / ".gemini")
 
 
 def test_agy_model_normalization():
@@ -803,6 +852,52 @@ def test_agy_hook_mapping_extracts_nested_tool_payloads():
     assert result[0]["type"] == "agent.tool_result"
     assert result[0]["data"]["tool_name"] == "write_file"
     assert result[0]["data"]["output"] == "created"
+
+
+def test_agy_hook_mapping_extracts_gemini_shell_payloads():
+    adapter = get_adapter("antigravity")
+    events = adapter.map_hook_event(
+        {
+            "hook_event_name": "BeforeTool",
+            "tool_name": "run_shell_command",
+            "tool_input": {
+                "command": 'printf "ok\\n"',
+                "dir_path": "/sandbox/repo",
+            },
+        }
+    )
+    assert events == [
+        {
+            "type": "agent.tool_use",
+            "data": {
+                "tool_name": "run_command",
+                "name": "run_command",
+                "tool_input": {
+                    "command": 'printf "ok\\n"',
+                    "dir_path": "/sandbox/repo",
+                },
+                "input": {
+                    "command": 'printf "ok\\n"',
+                    "dir_path": "/sandbox/repo",
+                },
+                "raw_tool_name": "run_shell_command",
+            },
+        }
+    ]
+
+    result = adapter.map_hook_event(
+        {
+            "hook_event_name": "AfterTool",
+            "tool_name": "run_shell_command",
+            "tool_input": {"command": 'printf "ok\\n"', "dir_path": "/sandbox/repo"},
+            "tool_response": {"llmContent": "ok\n", "returnDisplay": "ok\n"},
+        }
+    )
+    assert result is not None
+    assert result[0]["type"] == "agent.tool_result"
+    assert result[0]["data"]["tool_name"] == "run_command"
+    assert result[0]["data"]["raw_tool_name"] == "run_shell_command"
+    assert result[0]["data"]["output"] == "ok"
 
 
 def test_agy_hook_mapping_canonicalizes_mcp_call_tool_names():
@@ -879,6 +974,25 @@ def test_agy_hook_mapping_uses_non_null_fallback_tool_name_for_payloads():
     assert event[0]["data"]["name"] == "agy_tool"
 
 
+def test_agy_pretool_hook_response_allows_native_tools_when_not_shimming(monkeypatch):
+    monkeypatch.setenv("CLI_AGENT_AGY_RUN_COMMAND_SHIM", "false")
+
+    response = get_adapter("antigravity").hook_response(
+        "BeforeTool",
+        {
+            "hook_event_name": "BeforeTool",
+            "tool_name": "run_shell_command",
+            "tool_input": {
+                "command": 'printf "native-ok\\n"',
+                "dir_path": "/sandbox",
+            },
+        },
+        {},
+    )
+
+    assert response == {"decision": "allow"}
+
+
 def test_agy_run_command_hook_shim_executes_and_denies_native_tool(
     tmp_path, monkeypatch
 ):
@@ -889,13 +1003,13 @@ def test_agy_run_command_hook_shim_executes_and_denies_native_tool(
     adapter = get_adapter("antigravity")
 
     response = adapter.hook_response(
-        "PreToolUse",
+        "BeforeTool",
         {
-            "hook_event_name": "PreToolUse",
-            "toolName": "run_command",
-            "toolInput": {
-                "CommandLine": 'printf "agy-shim-ok\\n"',
-                "Cwd": str(sandbox),
+            "hook_event_name": "BeforeTool",
+            "tool_name": "run_shell_command",
+            "tool_input": {
+                "command": 'printf "agy-shim-ok\\n"',
+                "dir_path": str(sandbox),
             },
         },
         {},
@@ -911,6 +1025,8 @@ def test_agy_run_command_hook_shim_executes_and_denies_native_tool(
     assert result["data"]["exit_code"] == 0
     assert result["data"]["output"] == "agy-shim-ok\n"
     assert result["data"]["shim"] == "agy-run-command-hook"
+    decision = next(event for event in events if event["type"] == "hook.decision")
+    assert decision["data"]["hook_event"] == "BeforeTool"
 
 
 def test_agy_run_command_hook_shim_suppresses_native_post_tool_result(monkeypatch):
@@ -918,10 +1034,10 @@ def test_agy_run_command_hook_shim_suppresses_native_post_tool_result(monkeypatc
 
     events = get_adapter("antigravity").map_hook_event(
         {
-            "hook_event_name": "PostToolUse",
-            "toolName": "run_command",
-            "toolInput": {"CommandLine": 'printf "ok\\n"', "Cwd": "/sandbox"},
-            "toolResponse": {},
+            "hook_event_name": "AfterTool",
+            "tool_name": "run_shell_command",
+            "tool_input": {"command": 'printf "ok\\n"', "dir_path": "/sandbox"},
+            "tool_response": {},
         }
     )
 
@@ -936,11 +1052,11 @@ def test_agy_run_command_hook_shim_times_out(tmp_path, monkeypatch):
     monkeypatch.setenv("CLI_AGENT_AGY_RUN_COMMAND_TIMEOUT_SECONDS", "1")
 
     response = get_adapter("antigravity").hook_response(
-        "PreToolUse",
+        "BeforeTool",
         {
-            "hook_event_name": "PreToolUse",
-            "toolName": "run_command",
-            "toolInput": {"CommandLine": "sleep 10", "Cwd": str(sandbox)},
+            "hook_event_name": "BeforeTool",
+            "tool_name": "run_shell_command",
+            "tool_input": {"command": "sleep 10", "dir_path": str(sandbox)},
         },
         {},
     )
@@ -967,11 +1083,11 @@ def test_agy_run_command_hook_shim_rejects_cwd_outside_sandbox(tmp_path, monkeyp
     monkeypatch.setenv("CLI_AGENT_AGY_RUN_COMMAND_SHIM", "true")
 
     response = get_adapter("antigravity").hook_response(
-        "PreToolUse",
+        "BeforeTool",
         {
-            "hook_event_name": "PreToolUse",
-            "toolName": "run_command",
-            "toolInput": {"CommandLine": "pwd", "Cwd": str(outside)},
+            "hook_event_name": "BeforeTool",
+            "tool_name": "run_shell_command",
+            "tool_input": {"command": "pwd", "dir_path": str(outside)},
         },
         {},
     )

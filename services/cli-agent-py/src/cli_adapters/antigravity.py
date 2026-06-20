@@ -1,35 +1,37 @@
-"""Antigravity CLI (``agy``) TUI adapter (the ``agy-cli`` runtime).
+"""Gemini CLI TUI adapter behind the legacy ``agy-cli`` runtime id.
 
-``agy`` is Google's Antigravity CLI (a Go/Codeium-"jetski" rewrite that
-supersedes Gemini CLI). Auth is file-bundle OAuth: a first launch can still use
-in-pane device-code login, but once the user signs in, ``agy_capture`` persists
-the curated ``~/.gemini`` login files and future pods restore them through
-``AGY_AUTH_JSON`` before the TUI starts.
+The platform still routes sessions with ``cliAdapter=antigravity`` / runtime
+``agy-cli`` for compatibility, but the sandbox image now launches legacy
+``gemini`` instead of the Antigravity ``agy`` binary. Auth is file-bundle OAuth:
+a first launch can still use in-pane login, but once the user signs in,
+``agy_capture`` persists the curated ``~/.gemini`` login files and future pods
+restore them through ``AGY_AUTH_JSON`` before the TUI starts.
 
 Seeds (these DO apply — they configure the CLI, not its auth):
-  (a) MCP: agentConfig.mcpServers → ``$HOME/.gemini/config/mcp_config.json``
-      (the confirmed HOME-level config agy actually loads). Remote servers use
-      the ``serverUrl`` key (NOT ``url`` — renamed from Gemini CLI; miss it and
-      the server fails silently).
+  (a) MCP: agentConfig.mcpServers → ``$HOME/.gemini/settings.json`` top-level
+      ``mcpServers``. Streamable HTTP servers use ``httpUrl``; SSE servers use
+      ``url``.
   (b) system prompt: instructionBundle.rendered.system → ``$HOME/.gemini/GEMINI.md``.
-  (c) settings: a minimal ``settings.json`` pre-trusts the sandbox workspace,
-      pins the model, and disables telemetry (best-effort; agy replaces invalid
-      settings with defaults).
+  (c) settings: a minimal ``settings.json`` disables Gemini's nested sandbox,
+      enables hooks, and disables self-update notifications.
 
-agy has no OTEL export and no native herdr session integration (herdr
-screen-detects its state). $HOME is pinned to the sandbox root so ``~/.gemini``
-lands on the writable emptyDir; pane_env strips every Google/Gemini API-key env
-so the OAuth path is taken.
+Gemini has no native herdr session integration (herdr screen-detects its
+state). ``$HOME`` is pinned to the runtime user's writable home so ``~/.gemini``
+is consistent across seed(), capture, and the CLI. pane_env strips every
+Google/Gemini API-key env so OAuth is used instead of a stray key.
 """
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import logging
 import os
 import signal
 import shutil
 import subprocess
+import tarfile
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -37,7 +39,6 @@ from typing import Any, Mapping
 from src.agy_capture import restore_bundle, start_capture_watcher
 from src.agy_stop_guard import (
     evaluate_stop_guard,
-    has_stop_guard_config,
     write_stop_guard_config,
 )
 from src.cli_adapters.base import (
@@ -56,7 +57,7 @@ from src.capability_compiler import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = os.environ.get("CLI_AGENT_AGY_DEFAULT_MODEL", "")
-AGY_BIN = os.environ.get("CLI_AGENT_AGY_PATH", "agy")
+AGY_BIN = os.environ.get("CLI_AGENT_AGY_PATH", "gemini")
 # The stored ~/.gemini login bundle (base64 tar.gz), delivered when the user has
 # a captured agy login. Present → agy boots signed in (no device-code login).
 AGY_AUTH_ENV = "AGY_AUTH_JSON"
@@ -66,10 +67,10 @@ RUN_COMMAND_SHIM_DEFAULT_TIMEOUT_SECONDS = 300
 RUN_COMMAND_SHIM_KILL_GRACE_SECONDS = 2.0
 DEFAULT_AGY_MCP_DENYLIST = frozenset(
     {
-        # AGY currently stalls response streaming when these ActivePieces MCP
-        # services are present in mcp_config.json, even if the prompt never uses
+        # Gemini-family CLIs have stalled response streaming when these
+        # ActivePieces MCP services are present, even if the prompt never uses
         # their tools. Keep them out by default until their MCP/SSE readiness is
-        # fixed for AGY.
+        # fixed for this runtime family.
         "piece_microsoft-onedrive",
         "piece_microsoft_onedrive",
         "piece_microsoft-todo",
@@ -87,16 +88,12 @@ def _record(value: Any) -> dict[str, Any]:
 
 
 def _agy_home() -> Path:
-    """Where agy actually reads/writes ``$HOME/.gemini``.
+    """Where Gemini reads/writes ``$HOME/.gemini``.
 
-    agy is launched by herdr with the pod USER's passwd ``HOME`` — the pane_env
-    HOME override does NOT stick for agy (unlike claude/codex, which use their
-    own ``*_CONFIG_DIR`` env vars independent of HOME). Empirically agy writes
-    ``/home/<user>/.gemini`` even when pane_env sets HOME=/sandbox. So target the
-    runtime user's real home; seed(), the capture watcher, and restore MUST all
-    agree on this. (The legacy ``CLI_AGENT_AGY_HOME=/sandbox`` deployment env is
-    deliberately NOT honored — it pointed at the wrong dir.) ``CLI_AGENT_AGY_HOME_OVERRIDE``
-    forces a value for tests."""
+    The CLI is launched by herdr with the pod USER's passwd ``HOME``. Target the
+    runtime user's real home so seed(), capture, and restore all agree. The
+    legacy ``CLI_AGENT_AGY_HOME=/sandbox`` deployment env is deliberately not
+    honored; ``CLI_AGENT_AGY_HOME_OVERRIDE`` exists only for tests."""
     override = os.environ.get("CLI_AGENT_AGY_HOME_OVERRIDE")
     if override:
         return Path(override)
@@ -153,8 +150,7 @@ def _agy_mcp_filter_reason(name: str) -> str | None:
 def _agy_mcp_servers(
     agent_config: Mapping[str, Any], warnings: list[str] | None = None
 ) -> dict[str, dict[str, Any]]:
-    """Claude Code .mcp.json shape (from build_mcp_servers) → agy mcp_config.json
-    server map. Remote servers use ``serverUrl`` (agy's required key)."""
+    """Claude Code .mcp.json shape → Gemini settings.json ``mcpServers`` map."""
     servers = emit_claude_code_cli_servers(agent_config)
     out: dict[str, dict[str, Any]] = {}
     for name, cfg in servers.items():
@@ -176,7 +172,9 @@ def _agy_mcp_servers(
             url = clean_string(cfg.get("url"))
             if not url:
                 continue
-            entry = {"serverUrl": url}
+            transport = clean_string(cfg.get("transport") or cfg.get("type"))
+            key = "url" if transport in {"sse", "server-sent-events"} else "httpUrl"
+            entry = {key: url}
             if isinstance(cfg.get("headers"), Mapping) and cfg["headers"]:
                 entry["headers"] = {str(k): str(v) for k, v in cfg["headers"].items()}
             out[name] = entry
@@ -209,57 +207,64 @@ def _read_settings(path: Path) -> dict[str, Any]:
     return dict(parsed) if isinstance(parsed, Mapping) else {}
 
 
-def _managed_agy_settings(
-    existing: Mapping[str, Any], agent_config: Mapping[str, Any]
-) -> dict[str, Any]:
-    """Merge unattended workflow-builder settings into a restored AGY profile.
+def _auth_bundle_has_gemini_login(bundle_b64: str | None) -> bool:
+    if not bundle_b64 or not bundle_b64.strip():
+        return False
+    try:
+        raw = base64.b64decode(bundle_b64.strip())
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
+            names = {os.path.normpath(member.name) for member in tar.getmembers()}
+    except Exception:  # noqa: BLE001
+        return False
+    return "oauth_creds.json" in names or "google_accounts.json" in names
 
-    The auth bundle can include the user's local settings.json. In managed
-    sandbox pods, permission prompts strand durable workflows, so these runtime
-    keys are intentionally owned by workflow-builder on every seed.
+
+def _managed_agy_settings(
+    existing: Mapping[str, Any],
+    agent_config: Mapping[str, Any],
+    mcp_servers: Mapping[str, Mapping[str, Any]],
+    hooks: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build a managed Gemini settings.json.
+
+    The restored auth bundle can include a user's local settings.json. Gemini
+    validates settings strictly, so managed pods do not merge arbitrary local
+    settings. Only safe structured sections are owned here on every seed.
     """
     sandbox_root = os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
-    settings = dict(existing)
-    settings.update(
-        {
-            "enableTelemetry": False,
-            "toolPermission": "always-proceed",
-            "artifactReviewPolicy": "always-proceed",
-            "allowNonWorkspaceAccess": True,
-            # Antigravity shares VS Code's terminal settings surface. After some
-            # updates a null default profile or shell-integration PTY state can
-            # strand Bash tool calls in RUNNING, so pin the managed Linux shell
-            # shape for headless pods.
-            "terminal.integrated.shellIntegration.enabled": False,
-            "terminal.integrated.defaultProfile.linux": "bash",
-            "terminal.integrated.profiles.linux": {
-                "bash": {"path": "/bin/bash"},
-            },
-            # The Kubernetes Sandbox pod is the containment boundary here.
-            # AGY's nested nsjail/sandbox mode can require host privileges that
-            # are unavailable in our agent-host pod and is redundant for this
-            # managed runtime.
-            "enableTerminalSandbox": False,
-        }
-    )
-    settings["trustedWorkspaces"] = _merge_unique_strings(
-        settings.get("trustedWorkspaces"), [sandbox_root]
-    )
-    settings["permissions"] = {
-        "allow": [
-            "command(*)",
-            f"read_file({sandbox_root})",
-            f"write_file({sandbox_root})",
-            "read_url(*)",
-            "execute_url(*)",
-            "mcp(*)",
-        ],
-        "deny": [],
-        "ask": [],
+    settings: dict[str, Any] = {
+        "general": {
+            "enableAutoUpdate": False,
+            "enableAutoUpdateNotification": False,
+        },
+        "tools": {
+            # The Kubernetes/OpenShell sandbox is the containment boundary.
+            # Gemini's nested sandbox is enabled by YOLO mode unless explicitly
+            # disabled; in our pod it can require host privileges we do not
+            # grant and is redundant for managed sessions.
+            "sandbox": False,
+        },
+        "privacy": {"usageStatisticsEnabled": False},
+        "telemetry": {"enabled": False},
+        "context": {
+            "includeDirectories": _merge_unique_strings(
+                _record(existing.get("context")).get("includeDirectories"),
+                [sandbox_root],
+            ),
+            "loadFromIncludeDirectories": True,
+        },
+        "hooksConfig": {
+            "enabled": True,
+            "notifications": False,
+            "disabled": [],
+        },
+        "hooks": dict(hooks),
     }
     model = normalize_agy_model(agent_config.get("modelSpec"))
     if model:
-        settings["model"] = model
+        settings["model"] = {"name": model}
+    if mcp_servers:
+        settings["mcpServers"] = {str(k): dict(v) for k, v in mcp_servers.items()}
     return settings
 
 
@@ -281,27 +286,21 @@ def _agy_hook_handler(event: str) -> dict[str, Any]:
     }
 
 
-def _render_hooks_json() -> str:
-    # Antigravity docs describe hooks.json as a map of hook names to event
-    # configurations, located in the customization directory. agy currently
-    # triggers from ~/.gemini/config/hooks.json, the same directory as MCP.
-    payload = {
-        "workflow-builder": {
-            "enabled": True,
-            "SessionStart": _agy_hook_group("SessionStart"),
-            "PreToolUse": _agy_hook_group("PreToolUse", matcher="*"),
-            "PostToolUse": _agy_hook_group("PostToolUse", matcher="*"),
-            "Stop": [_agy_hook_handler("Stop")],
-            "SessionEnd": _agy_hook_group("SessionEnd"),
-            # dapr-agent-py parity: notification, permission-denied, and
-            # context-compaction telemetry.
-            "Notification": _agy_hook_group("Notification"),
-            "PermissionDenied": _agy_hook_group("PermissionDenied", matcher="*"),
-            "PreCompact": _agy_hook_group("PreCompact"),
-            "PostCompact": _agy_hook_group("PostCompact"),
-        }
+def _render_hooks() -> dict[str, Any]:
+    return {
+        "SessionStart": _agy_hook_group("SessionStart"),
+        "BeforeTool": _agy_hook_group("BeforeTool", matcher="*"),
+        "AfterTool": _agy_hook_group("AfterTool", matcher="*"),
+        "AfterAgent": _agy_hook_group("AfterAgent"),
+        "SessionEnd": _agy_hook_group("SessionEnd"),
+        # dapr-agent-py parity: notification and context-compaction telemetry.
+        "Notification": _agy_hook_group("Notification"),
+        "PreCompress": _agy_hook_group("PreCompress"),
     }
-    return json.dumps(payload, indent=2) + "\n"
+
+
+def _render_hooks_json() -> str:
+    return json.dumps(_render_hooks(), indent=2) + "\n"
 
 
 def _text_from_payload(value: Any) -> str | None:
@@ -318,9 +317,13 @@ def _text_from_payload(value: Any) -> str | None:
     if isinstance(value, Mapping):
         for key in (
             "finalResponse",
+            "prompt_response",
+            "promptResponse",
             "response",
             "message",
             "content",
+            "llmContent",
+            "returnDisplay",
             "text",
             "output",
             "result",
@@ -332,6 +335,13 @@ def _text_from_payload(value: Any) -> str | None:
 
 
 _HOOK_EVENT_NAMES = {
+    "AfterAgent",
+    "AfterModel",
+    "AfterTool",
+    "BeforeAgent",
+    "BeforeModel",
+    "BeforeTool",
+    "BeforeToolSelection",
     "Notification",
     "PermissionDenied",
     "PermissionRequest",
@@ -345,6 +355,10 @@ _HOOK_EVENT_NAMES = {
     "Stop",
     "UserPromptSubmit",
 }
+
+_PRE_TOOL_EVENTS = {"PreToolUse", "BeforeTool"}
+_POST_TOOL_EVENTS = {"PostToolUse", "PostToolUseFailure", "AfterTool"}
+_COMPLETION_EVENTS = {"Stop", "AfterAgent"}
 
 
 def _hook_name(payload: Mapping[str, Any]) -> str | None:
@@ -413,7 +427,15 @@ def _tool_name_from(payload: Mapping[str, Any]) -> str | None:
 
 
 def _canonical_tool_name(tool_name: str, tool_input: Mapping[str, Any]) -> str:
+    if tool_name in {"Bash", "run_shell_command", "shell"}:
+        return "run_command"
     if tool_name != "call_mcp_tool":
+        if tool_name.startswith("mcp__"):
+            return tool_name
+        if tool_name.startswith("mcp_"):
+            parts = tool_name.split("_", 2)
+            if len(parts) == 3 and parts[1] and parts[2]:
+                return f"mcp__{parts[1]}__{parts[2]}"
         return tool_name
     server = clean_string(
         tool_input.get("ServerName")
@@ -487,6 +509,8 @@ def _tool_output_from(payload: Mapping[str, Any]) -> str:
             "tool_response",
             "toolResponse",
             "output",
+            "llmContent",
+            "returnDisplay",
             "result",
             "response",
             "content",
@@ -561,6 +585,8 @@ def _safe_command_cwd(tool_input: Mapping[str, Any]) -> Path | None:
         clean_string(tool_input.get("Cwd"))
         or clean_string(tool_input.get("cwd"))
         or clean_string(tool_input.get("workingDirectory"))
+        or clean_string(tool_input.get("dir_path"))
+        or clean_string(tool_input.get("directory"))
         or str(sandbox_root)
     )
     candidate = Path(raw)
@@ -663,8 +689,8 @@ def _format_run_command_reason(result: Mapping[str, Any]) -> str:
     stdout = str(result.get("stdout") or "")
     stderr = str(result.get("stderr") or "")
     reason = (
-        "Workflow-builder executed this run_command in the managed sandbox and "
-        "blocked AGY's native terminal executor for this call. Treat the "
+        "Workflow-builder executed this shell command in the managed sandbox and "
+        "blocked Gemini's native terminal executor for this call. Treat the "
         "captured result below as the Bash tool result; do not retry the same "
         "command unless the user asks.\n"
         f"Exit code: {result.get('exit_code')}\n"
@@ -703,7 +729,8 @@ def _run_command_shim_event(
 def _execute_run_command_shim(
     payload: Mapping[str, Any],
 ) -> dict[str, Any] | None:
-    if _hook_name(payload) != "PreToolUse":
+    event_name = _hook_name(payload)
+    if event_name not in _PRE_TOOL_EVENTS:
         return None
     tool_input = _tool_input_from(payload)
     raw_tool_name = _tool_name_from(payload)
@@ -728,7 +755,7 @@ def _execute_run_command_shim(
             "timed_out": False,
             "duration_ms": 0,
             "stdout": "",
-            "stderr": "AGY run_command payload did not include CommandLine.",
+            "stderr": "Gemini run_shell_command payload did not include command.",
         }
     elif cwd is None:
         result = {
@@ -736,7 +763,7 @@ def _execute_run_command_shim(
             "timed_out": False,
             "duration_ms": 0,
             "stdout": "",
-            "stderr": "AGY run_command cwd is outside the managed sandbox.",
+            "stderr": "Gemini run_shell_command cwd is outside the managed sandbox.",
         }
     else:
         try:
@@ -763,7 +790,7 @@ def _execute_run_command_shim(
             {
                 "type": "hook.decision",
                 "data": {
-                    "hook_event": "PreToolUse",
+                    "hook_event": event_name or "BeforeTool",
                     "decision": "deny",
                     "reason": "agy-run-command-hook",
                     "tool_name": "run_command",
@@ -831,14 +858,18 @@ def _has_tool_calls(entry: Mapping[str, Any]) -> bool:
 
 
 def _is_managed_run_command_denial_text(text: str) -> bool:
-    # AGY records the denial reason from our PreToolUse shim as an assistant
-    # transcript row. It is internal tool plumbing, not a user-visible final
+    # Gemini-family CLIs can record the denial reason from our BeforeTool shim
+    # as an assistant transcript row. It is internal tool plumbing, not a
+    # user-visible final
     # answer, and treating it as final output produces duplicate turn.completed
     # events.
     return (
         "invalid tool call" in text
         and "Tool call denied with reason" in text
-        and "Workflow-builder executed this run_command in the managed sandbox" in text
+        and (
+            "Workflow-builder executed this run_command in the managed sandbox" in text
+            or "Workflow-builder executed this shell command in the managed sandbox" in text
+        )
         and "agy-run-command-hook" not in text
     )
 
@@ -1046,13 +1077,10 @@ class AntigravityAdapter(CliAdapter):
 
     @property
     def requires_interactive_login(self) -> bool:
-        # agy is FILE-based (the OS-keyring path is vestigial). When a captured
-        # ~/.gemini bundle is delivered (AGY_AUTH_JSON), seed() restores it and
-        # agy boots already signed in → the kickoff can fire immediately. With NO
-        # bundle, the user completes in-pane device-code OAuth first, so the
-        # lifecycle must DEFER the kickoff (herdr reports the auth-code prompt as
-        # `idle`, and an armed seed would land in the login field).
-        return not bool(os.environ.get(AGY_AUTH_ENV))
+        # Gemini is file-based. A restored Antigravity-only bundle is not enough
+        # for legacy Gemini auth, so only skip login when the bundle includes
+        # Gemini's top-level OAuth files.
+        return not _auth_bundle_has_gemini_login(os.environ.get(AGY_AUTH_ENV))
 
     def on_session_started(self, session_id: str | None) -> None:
         # Auto-capture: watch ~/.gemini and POST the curated login bundle to the
@@ -1070,14 +1098,11 @@ class AntigravityAdapter(CliAdapter):
         result = SeedResult()
         home = _agy_home()
         gemini_dir = home / ".gemini"
-        config_dir = gemini_dir / "config"
-        cli_dir = gemini_dir / "antigravity-cli"
-        for d in (config_dir, cli_dir):
-            d.mkdir(parents=True, exist_ok=True)
+        gemini_dir.mkdir(parents=True, exist_ok=True)
 
-        # (0) Restore the captured ~/.gemini login bundle (if delivered) so agy
-        # boots already signed in. Never clobbers an existing file; the managed
-        # files below (MCP / GEMINI.md) are then (re)written so ours win.
+        # (0) Restore the captured ~/.gemini login bundle (if delivered) so the
+        # CLI boots already signed in. Never clobbers an existing file; the
+        # managed files below are then rewritten so ours win.
         blob = os.environ.get(AGY_AUTH_ENV)
         if blob and blob.strip():
             try:
@@ -1086,31 +1111,23 @@ class AntigravityAdapter(CliAdapter):
             except Exception as exc:  # noqa: BLE001
                 result.warnings.append(f"agy: failed to restore login bundle: {exc}")
 
-        # (a) MCP config (HOME-level — the one agy actually loads).
-        servers = _agy_mcp_servers(agent_config, result.warnings)
-        if servers:
-            mcp_path = config_dir / "mcp_config.json"
-            mcp_path.write_text(
-                json.dumps({"mcpServers": servers}, indent=2) + "\n", encoding="utf-8"
-            )
-            result.paths["mcpConfigPath"] = str(mcp_path)
-
-        # (a2) Hook relay config. The CLI currently triggers hooks from
-        # ~/.gemini/config/hooks.json, not antigravity-cli/settings.json.
+        # (a) Hook relay config. Legacy Gemini reads hooks from settings.json.
         relay = write_hook_relay_script(_hook_relay_path())
-        hooks_path = config_dir / "hooks.json"
-        hooks_path.write_text(_render_hooks_json(), encoding="utf-8")
+        hooks = _render_hooks()
         result.paths["hookRelayPath"] = str(relay)
-        result.paths["hooksPath"] = str(hooks_path)
+
+        # (b) MCP config. Legacy Gemini reads top-level mcpServers from
+        # settings.json, not the Antigravity config/mcp_config.json file.
+        servers = _agy_mcp_servers(agent_config, result.warnings)
         guard_path = write_stop_guard_config(session_input)
         if guard_path:
             result.paths["agyStopGuardPath"] = guard_path
 
-        # (b) skills → _agy_home()/.gemini/skills/<slug>/ ; system prompt + a
-        # skills index → GEMINI.md. agy has no native skills auto-discovery, so
-        # the index (a delimited block, REWRITTEN each seed for restart
-        # idempotency) surfaces the skills + where their SKILL.md lives. With no
-        # skills this reduces to the prior system-prompt-only write.
+        # (c) skills → _agy_home()/.gemini/skills/<slug>/ ; system prompt + a
+        # skills index → GEMINI.md. The index (a delimited block, rewritten each
+        # seed for restart idempotency) surfaces platform-provided skills + where
+        # their SKILL.md lives. With no skills this reduces to the prior
+        # system-prompt-only write.
         materialize_skills_local(agent_config, gemini_dir / "skills", result.warnings)
         bundle = _record(session_input.get("instructionBundle"))
         rendered = _record(bundle.get("rendered"))
@@ -1122,16 +1139,20 @@ class AntigravityAdapter(CliAdapter):
             gemini_md.write_text(instructions, encoding="utf-8")
             result.paths["systemPromptPath"] = str(gemini_md)
 
-        # (c) settings.json — merge our managed unattended keys into the
-        # restored profile every run. The login bundle may carry a local
-        # request-review permission mode; keeping that value blocks workflow
-        # sessions on invisible approval prompts.
-        settings_path = cli_dir / "settings.json"
-        settings = _managed_agy_settings(_read_settings(settings_path), agent_config)
+        # (d) settings.json — replace managed runtime config every run. The
+        # login bundle may carry local settings that are invalid for the pinned
+        # Gemini CLI or would block workflow sessions on invisible prompts.
+        settings_path = gemini_dir / "settings.json"
+        settings = _managed_agy_settings(
+            _read_settings(settings_path), agent_config, servers, hooks
+        )
         settings_path.write_text(
             json.dumps(settings, indent=2) + "\n", encoding="utf-8"
         )
         result.paths["agySettingsPath"] = str(settings_path)
+        result.paths["hooksPath"] = str(settings_path)
+        if servers:
+            result.paths["mcpConfigPath"] = str(settings_path)
 
         return result
 
@@ -1143,9 +1164,10 @@ class AntigravityAdapter(CliAdapter):
         sandbox_root = os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
         argv: list[str] = [
             AGY_BIN,
-            "--dangerously-skip-permissions",
+            "--approval-mode=yolo",
             "--sandbox=false",
-            "--add-dir",
+            "--skip-trust",
+            "--include-directories",
             sandbox_root,
         ]
         model = normalize_agy_model(agent_config.get("modelSpec"))
@@ -1159,15 +1181,18 @@ class AntigravityAdapter(CliAdapter):
     def hook_response(
         self, event_name: str, payload: Mapping[str, Any], session: Mapping[str, Any]
     ) -> dict[str, Any] | None:
-        if event_name == "PreToolUse":
-            return _execute_run_command_shim(payload)
-        if event_name == "Stop":
+        if event_name in _PRE_TOOL_EVENTS:
+            response = _execute_run_command_shim(payload)
+            if response is not None:
+                return response
+            return {"decision": "allow"}
+        if event_name in _COMPLETION_EVENTS:
             return evaluate_stop_guard(increment_continue=True)
         return None
 
     def map_hook_event(self, payload: Mapping[str, Any]) -> list[dict[str, Any]] | None:
         name = _hook_name(payload)
-        if name == "PreToolUse":
+        if name in _PRE_TOOL_EVENTS:
             tool_input = _tool_input_from(payload)
             raw_tool_name = _tool_name_from(payload)
             if not raw_tool_name and not tool_input:
@@ -1189,7 +1214,7 @@ class AntigravityAdapter(CliAdapter):
                     "data": data,
                 }
             ]
-        if name in ("PostToolUse", "PostToolUseFailure"):
+        if name in _POST_TOOL_EVENTS:
             tool_input = _tool_input_from(payload)
             output = _tool_output_from(payload)
             raw_tool_name = _tool_name_from(payload)
@@ -1197,14 +1222,18 @@ class AntigravityAdapter(CliAdapter):
                 not raw_tool_name
                 and not tool_input
                 and not output
-                and name == "PostToolUse"
             ):
                 return []
             raw_tool_name = raw_tool_name or "agy_tool"
             tool_name = _canonical_tool_name(raw_tool_name, tool_input)
             if tool_name == "run_command" and _should_shim_run_command():
                 return []
-            ok = name == "PostToolUse"
+            result_record = _result_record(payload) or {}
+            ok = (
+                name != "PostToolUseFailure"
+                and not payload.get("error")
+                and not result_record.get("error")
+            )
             data: dict[str, Any] = {
                 "tool_name": tool_name,
                 "name": tool_name,
@@ -1225,14 +1254,18 @@ class AntigravityAdapter(CliAdapter):
             return [{"type": "agent.tool_result", "data": data}]
         return None
 
+    def is_turn_completion_hook(self, event_name: str) -> bool:
+        return event_name in _COMPLETION_EVENTS
+
     def discover_transcript_path(self) -> str | None:
-        """Antigravity writes its transcript to
+        """Legacy Antigravity fallback transcript discovery.
+
+        Gemini hooks carry ``transcript_path`` directly. Older Antigravity pods
+        wrote their transcript to
         ``~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript_full.jsonl``
-        with a runtime-generated conversation id, and its command hooks don't
-        reliably carry ``transcript_path``. Glob for the newest one so the hooks
-        receiver can register the tailer from any hook (it backfills from offset 0,
-        so a late register is lossless). Prevents the transient 'no agent.message/
-        llm_usage mirrored' miss seen on fresh agy sessions."""
+        with a runtime-generated conversation id, and its command hooks did not
+        reliably carry ``transcript_path``. Keep this fallback so mixed-version
+        pods still mirror content during rollout."""
         import glob
         import os
 
@@ -1299,10 +1332,9 @@ class AntigravityAdapter(CliAdapter):
             events.append(event)
         return events
 
-    # Turn completion is owned EXCLUSIVELY by the Stop hook (base defaults). For
-    # these single-turn autoTerminate build runs AGY fires Stop after its tool use;
-    # the transcript is read only for CONTENT (map_transcript_entry). The
-    # output-sync stop-guard (has_stop_guard_config) still gates the Stop hook's
+    # Turn completion is owned by Gemini's AfterAgent hook (and the legacy Stop
+    # hook for old payload compatibility). The transcript is read only for
+    # CONTENT (map_transcript_entry). The output-sync stop-guard still gates
     # completion via hook_response, not via the transcript.
 
     # -- env -------------------------------------------------------------------
@@ -1324,8 +1356,9 @@ class AntigravityAdapter(CliAdapter):
             value = base_env.get(key)
             if value:
                 env[key] = value
-        # Pin HOME to the sandbox root so ~/.gemini matches what seed() wrote.
+        # Pin HOME/GEMINI_CLI_HOME so ~/.gemini matches what seed() wrote.
         env["HOME"] = str(_agy_home())
+        env["GEMINI_CLI_HOME"] = str(_agy_home() / ".gemini")
         for key, value in base_env.items():
             if key.startswith("OTEL_") and value:
                 env[key] = value
@@ -1340,6 +1373,7 @@ class AntigravityAdapter(CliAdapter):
             "GEMINI_API_KEY",
             "GOOGLE_API_KEY",
             "GOOGLE_APPLICATION_CREDENTIALS",
+            "GEMINI_SANDBOX",
             "ANTHROPIC_API_KEY",
             "CLAUDE_API_KEY",
             AGY_AUTH_ENV,  # consumed by seed(); never expose the login bundle

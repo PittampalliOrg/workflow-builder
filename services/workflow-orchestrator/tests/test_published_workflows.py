@@ -6,7 +6,7 @@ import importlib.util
 import json
 import sys
 import types
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -1479,7 +1479,7 @@ def test_native_run_prompt_keeps_relative_root_guidance_by_default():
 
     assert "Repository root: /sandbox/repo" in prompt
     assert "Always operate relative to this repository root" in prompt
-    assert "Antigravity file and directory tools require absolute paths" not in prompt
+    assert "Gemini-backed agy-cli slot is most reliable with absolute paths" not in prompt
 
 
 def test_native_run_prompt_uses_absolute_path_guidance_for_agy():
@@ -1493,7 +1493,7 @@ def test_native_run_prompt_uses_absolute_path_guidance_for_agy():
     )
 
     assert "Repository root: /sandbox/repo" in prompt
-    assert "Antigravity file and directory tools require absolute paths" in prompt
+    assert "Gemini-backed agy-cli slot is most reliable with absolute paths" in prompt
     assert "Use absolute paths under /sandbox/repo" in prompt
     assert "do not pass '.' or other relative paths to file tools" in prompt
     assert "Always operate relative to this repository root" not in prompt

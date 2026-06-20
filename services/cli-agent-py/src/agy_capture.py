@@ -1,13 +1,10 @@
-"""Capture + restore of the agy (Antigravity CLI) login state (``~/.gemini``).
+"""Capture + restore of the Gemini/agy login state (``~/.gemini``).
 
-agy 1.0.7 stores its OAuth login as FILES under ``~/.gemini`` — the OS-keyring
-path is vestigial (verified empirically: even with a working Secret Service agy
-writes the token to ``antigravity-cli/antigravity-oauth-token``). The full
-curated set — the refreshable token PLUS the install + onboarding markers
-(``config/.migrated``, ``config/projects/*``, ``cache/onboarding.json``) — boots
-a fresh agy already signed in, even with an EXPIRED access token (agy refreshes
-on boot via the refresh_token). So we auto-capture that set after a session's
-login and re-inject it into future pods for zero-interaction sign-in.
+The external runtime id is still ``agy-cli``, but the adapter now launches
+legacy Gemini CLI. Gemini stores OAuth files at the top of ``~/.gemini`` while
+Antigravity stored them under ``antigravity-cli/``. Capture both curated shapes
+so existing bundles can still restore harmless state and new Gemini logins are
+reused by future pods.
 
 Capture is mtime-triggered (login writes the token file, a refresh rewrites it)
 by a daemon watcher; the bundle is a base64'd tar.gz POSTed to the BFF, which
@@ -29,11 +26,18 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Curated subtree (relative to ~/.gemini) that boots agy signed-in. Excludes
-# log/ brain/ conversations/ mcp/ (regenerable, or conversation data we must not
-# capture). Verified sufficient in a fresh container with no keyring + an expired
-# access token.
+# Curated subtree (relative to ~/.gemini) that boots the CLI signed-in. Excludes
+# logs, conversations, and history content (regenerable, or conversation data we
+# must not capture).
 CAPTURE_INCLUDES = (
+    # Legacy Gemini CLI auth/state.
+    "oauth_creds.json",
+    "google_accounts.json",
+    "installation_id",
+    "projects.json",
+    "settings.json",
+    "trusted_hooks.json",
+    # Antigravity auth/state retained for backward-compatible restore.
     "antigravity-cli/antigravity-oauth-token",
     "antigravity-cli/installation_id",
     "antigravity-cli/settings.json",
@@ -44,7 +48,11 @@ CAPTURE_INCLUDES = (
     "config",
 )
 
-TOKEN_REL = "antigravity-cli/antigravity-oauth-token"
+TOKEN_RELS = (
+    "oauth_creds.json",
+    "google_accounts.json",
+    "antigravity-cli/antigravity-oauth-token",
+)
 AGY_PROVIDER = "google"
 
 _WORKFLOW_BUILDER_URL = os.environ.get(
@@ -56,11 +64,16 @@ _INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "")
 def make_bundle(gemini_dir: Path) -> str | None:
     """tar.gz the curated ``~/.gemini`` subtree → base64. Returns None when no
     (non-empty) token file is present (nothing worth capturing yet)."""
-    token = gemini_dir / TOKEN_REL
-    try:
-        if not token.is_file() or token.stat().st_size == 0:
-            return None
-    except OSError:
+    has_token = False
+    for rel in TOKEN_RELS:
+        token = gemini_dir / rel
+        try:
+            if token.is_file() and token.stat().st_size > 0:
+                has_token = True
+                break
+        except OSError:
+            continue
+    if not has_token:
         return None
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
@@ -137,14 +150,21 @@ def start_capture_watcher(
         return
 
     def _run() -> None:
-        last_sig: tuple[int, int] | None = None
-        token = gemini_dir / TOKEN_REL
+        last_sig: tuple[tuple[str, int, int], ...] | None = None
         logger.info("[agy-capture] watcher started session=%s dir=%s", session_id, gemini_dir)
         while True:
             try:
-                if token.is_file() and token.stat().st_size > 0:
-                    st = token.stat()
-                    sig = (st.st_mtime_ns, st.st_size)
+                sig_parts: list[tuple[str, int, int]] = []
+                for rel in TOKEN_RELS:
+                    token = gemini_dir / rel
+                    try:
+                        if token.is_file() and token.stat().st_size > 0:
+                            st = token.stat()
+                            sig_parts.append((rel, st.st_mtime_ns, st.st_size))
+                    except OSError:
+                        continue
+                if sig_parts:
+                    sig = tuple(sig_parts)
                     if sig != last_sig:
                         time.sleep(1.0)  # let a mid-write settle
                         bundle = make_bundle(gemini_dir)
