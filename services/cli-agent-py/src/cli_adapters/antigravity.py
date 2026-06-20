@@ -64,6 +64,18 @@ RUN_COMMAND_SHIM_MAX_OUTPUT = 16_000
 RUN_COMMAND_SHIM_REASON_LIMIT = 9_000
 RUN_COMMAND_SHIM_DEFAULT_TIMEOUT_SECONDS = 300
 RUN_COMMAND_SHIM_KILL_GRACE_SECONDS = 2.0
+DEFAULT_AGY_MCP_DENYLIST = frozenset(
+    {
+        # AGY currently stalls response streaming when these ActivePieces MCP
+        # services are present in mcp_config.json, even if the prompt never uses
+        # their tools. Keep them out by default until their MCP/SSE readiness is
+        # fixed for AGY.
+        "piece_microsoft-onedrive",
+        "piece_microsoft_onedrive",
+        "piece_microsoft-todo",
+        "piece_microsoft_todo",
+    }
+)
 
 
 def clean_string(value: Any) -> str | None:
@@ -120,12 +132,39 @@ def normalize_agy_model(model_spec: Any) -> str | None:
     return clean_string(DEFAULT_MODEL)
 
 
-def _agy_mcp_servers(agent_config: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+def _csv_env_set(name: str, default: frozenset[str] | None = None) -> frozenset[str]:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default or frozenset()
+    return frozenset(item.strip().lower() for item in raw.split(",") if item.strip())
+
+
+def _agy_mcp_filter_reason(name: str) -> str | None:
+    normalized = name.strip().lower()
+    allowlist = _csv_env_set("CLI_AGENT_AGY_MCP_ALLOWLIST")
+    if allowlist and normalized not in allowlist:
+        return "not present in CLI_AGENT_AGY_MCP_ALLOWLIST"
+    denylist = _csv_env_set("CLI_AGENT_AGY_MCP_DENYLIST", DEFAULT_AGY_MCP_DENYLIST)
+    if normalized in denylist:
+        return "disabled for AGY by CLI_AGENT_AGY_MCP_DENYLIST"
+    return None
+
+
+def _agy_mcp_servers(
+    agent_config: Mapping[str, Any], warnings: list[str] | None = None
+) -> dict[str, dict[str, Any]]:
     """Claude Code .mcp.json shape (from build_mcp_servers) → agy mcp_config.json
     server map. Remote servers use ``serverUrl`` (agy's required key)."""
     servers = emit_claude_code_cli_servers(agent_config)
     out: dict[str, dict[str, Any]] = {}
     for name, cfg in servers.items():
+        filter_reason = _agy_mcp_filter_reason(name)
+        if filter_reason:
+            if warnings is not None:
+                warnings.append(
+                    f"agy: skipped MCP server {name!r}: {filter_reason}"
+                )
+            continue
         if cfg.get("type") == "stdio":
             entry: dict[str, Any] = {"command": cfg.get("command")}
             if isinstance(cfg.get("args"), list):
@@ -1048,7 +1087,7 @@ class AntigravityAdapter(CliAdapter):
                 result.warnings.append(f"agy: failed to restore login bundle: {exc}")
 
         # (a) MCP config (HOME-level — the one agy actually loads).
-        servers = _agy_mcp_servers(agent_config)
+        servers = _agy_mcp_servers(agent_config, result.warnings)
         if servers:
             mcp_path = config_dir / "mcp_config.json"
             mcp_path.write_text(

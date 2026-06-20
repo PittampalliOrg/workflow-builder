@@ -519,6 +519,63 @@ def test_agy_seed_writes_mcp_with_serverUrl_key(agy_home):
     assert result.paths["mcpConfigPath"].endswith("mcp_config.json")
 
 
+def test_agy_seed_filters_known_bad_mcp_servers_by_default(agy_home):
+    session = {
+        **AGY_SESSION,
+        "agentConfig": {
+            **AGY_SESSION["agentConfig"],
+            "mcpServers": [
+                *AGY_SESSION["agentConfig"]["mcpServers"],
+                {
+                    "name": "piece_microsoft-onedrive",
+                    "transport": "streamable_http",
+                    "url": "http://ap-microsoft-onedrive-service/mcp",
+                },
+                {
+                    "name": "piece_microsoft-todo",
+                    "transport": "streamable_http",
+                    "url": "http://ap-microsoft-todo-service/mcp",
+                },
+                {
+                    "name": "piece_ntfy",
+                    "transport": "streamable_http",
+                    "url": "http://ap-ntfy-service/mcp",
+                },
+            ],
+        },
+    }
+
+    result = get_adapter("antigravity").seed(session)
+    mcp = json.loads((agy_home / ".gemini/config/mcp_config.json").read_text())
+
+    assert set(mcp["mcpServers"]) == {"goal", "piece_ntfy"}
+    assert any("piece_microsoft-onedrive" in warning for warning in result.warnings)
+    assert any("piece_microsoft-todo" in warning for warning in result.warnings)
+
+
+def test_agy_mcp_denylist_can_be_cleared(agy_home, monkeypatch):
+    monkeypatch.setenv("CLI_AGENT_AGY_MCP_DENYLIST", "")
+    session = {
+        **AGY_SESSION,
+        "agentConfig": {
+            **AGY_SESSION["agentConfig"],
+            "mcpServers": [
+                {
+                    "name": "piece_microsoft-todo",
+                    "transport": "streamable_http",
+                    "url": "http://ap-microsoft-todo-service/mcp",
+                },
+            ],
+        },
+    }
+
+    result = get_adapter("antigravity").seed(session)
+    mcp = json.loads((agy_home / ".gemini/config/mcp_config.json").read_text())
+
+    assert set(mcp["mcpServers"]) == {"piece_microsoft-todo"}
+    assert not result.warnings
+
+
 def test_agy_seed_writes_hooks_json_for_completion_signal(agy_home):
     result = get_adapter("antigravity").seed(AGY_SESSION)
     hooks = json.loads((agy_home / ".gemini/config/hooks.json").read_text())
