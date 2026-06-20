@@ -35,7 +35,13 @@ import {
 	isInteractiveCliSession,
 	resolveSessionRuntimeTarget,
 } from "$lib/server/sessions/runtime-target";
-import { waitForAgentWorkflowHostAppReady } from "$lib/server/sessions/agent-workflow-host";
+import {
+	waitForAgentWorkflowHostAppReady,
+	maybeProvisionAgentWorkflowHost,
+	sessionHostAppId,
+} from "$lib/server/sessions/agent-workflow-host";
+import { resolveWorkflowGithubToken } from "$lib/server/workflows/github-token";
+import type { AgentConfig } from "$lib/types/agents";
 import { env } from "$env/dynamic/private";
 
 const DEFAULT_CWD = "/sandbox/work";
@@ -147,6 +153,51 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			}
 		} catch {
 			/* try the next candidate */
+		}
+	}
+	// No live agent pod between turns. Some CLIs (codex, agy) reap their per-turn
+	// pod on turn end — unlike claude-code, whose herdr TUI lingers — so the
+	// deterministic cliWorkspace steps (gate / read_verdict / pr) that run BETWEEN
+	// turns find nothing. Provision (idempotently) a dedicated short-lived CLI
+	// "workspace helper" pod for this execution: it boots cli-agent-py :8002 (no
+	// agent turn), mounts the SAME shared JuiceFS workspace (sharedWorkspaceKey =
+	// executionId, matching durable/run), and carries GITHUB_TOKEN so git push /
+	// PR-open authenticate. Adopted (not recreated) on repeat calls since the
+	// instanceId is the executionId — so gate/read_verdict/pr reuse one pod.
+	if (!baseUrl) {
+		const helperSessionId = `${executionId}__cliws`;
+		const helperAppId = sessionHostAppId(helperSessionId);
+		// Fast path: a previously-provisioned helper is already up.
+		try {
+			const ready = await waitForAgentWorkflowHostAppReady({
+				agentAppId: helperAppId,
+			});
+			if (ready?.baseUrl) baseUrl = ready.baseUrl;
+		} catch {
+			/* not up yet — provision below */
+		}
+		if (!baseUrl) {
+			const ghToken = await resolveWorkflowGithubToken();
+			try {
+				const prov = await maybeProvisionAgentWorkflowHost({
+					sessionId: helperSessionId,
+					agentConfig: { runtime: "claude-code-cli" } as AgentConfig,
+					workflowExecutionId: executionId,
+					benchmarkRunId: null,
+					benchmarkInstanceId: null,
+					timeoutMinutes: 30,
+					sessionSecretEnv: ghToken ? { GITHUB_TOKEN: ghToken } : null,
+					sharedWorkspaceKey: executionId,
+				});
+				const appId = prov?.agentAppId ?? helperAppId;
+				const ready = await waitForAgentWorkflowHostAppReady({ agentAppId: appId });
+				if (ready?.baseUrl) baseUrl = ready.baseUrl;
+			} catch (err) {
+				console.warn(
+					`[cli-workspace-command] helper-pod provision failed for ${executionId}:`,
+					err instanceof Error ? err.message : err,
+				);
+			}
 		}
 	}
 	if (!baseUrl) {

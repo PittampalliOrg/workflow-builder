@@ -760,7 +760,9 @@ export async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 	const { mcpServers, useBrowserSidecar } =
 		resolvedConfig?.runtime === "browser-use-agent"
 			? { mcpServers: rawMcpServers, useBrowserSidecar: false }
-			: rewriteMcpForBrowserSidecar(rawMcpServers);
+			: rewriteMcpForBrowserSidecar(rawMcpServers, {
+					runtime: resolvedConfig?.runtime,
+				});
 	const runtimeRoute = resolveAgentRuntimeRoute({
 		agentSlug: row.slug,
 		runtimeAppId: row.runtimeAppId,

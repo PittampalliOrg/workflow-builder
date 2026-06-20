@@ -154,6 +154,7 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 				}
 			: rewriteMcpForBrowserSidecar(
 					(resolvedAgentConfig as { mcpServers?: unknown[] }).mcpServers as never,
+					{ runtime: resolvedAgentConfig.runtime },
 				);
 	const runtimeRoute = resolveAgentRuntimeRoute({
 		agentSlug: agent.slug,

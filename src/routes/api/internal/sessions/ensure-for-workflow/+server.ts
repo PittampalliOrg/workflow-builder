@@ -43,6 +43,7 @@ import {
 	safeCreateWorkflowAgentMlflowRun,
 } from "$lib/server/observability/mlflow-lifecycle";
 import { getUserCliCredential } from "$lib/server/users/cli-credentials";
+import { resolveWorkflowGithubToken } from "$lib/server/workflows/github-token";
 import {
 	provisionSessionSandboxWithRetry,
 	sandboxProvisionFailureMessage,
@@ -239,6 +240,10 @@ export const POST: RequestHandler = async ({ request }) => {
 					: rewriteMcpForBrowserSidecar(
 							(rawAgentConfig as { mcpServers?: unknown[] })
 								.mcpServers as never,
+							{
+								runtime: (rawAgentConfig as { runtime?: string })
+									.runtime,
+							},
 						).mcpServers,
 			} as AgentConfig)
 		: null;
@@ -983,9 +988,21 @@ async function resolveWorkflowSessionSecretEnv(params: {
 			`The linked ${provider} CLI credential has expired. Re-enroll under Settings -> CLI tokens (${setupHint}) before using "${runtimeId}" in a workflow.`,
 		);
 	}
-	return { [envVar]: credential.token };
+	const secretEnv: Record<string, string> = { [envVar]: credential.token };
+	// Auto-inject the user's GitHub token so cli coding workflows can clone a
+	// private repo + push/open a PR from inside the agent's /sandbox/work (the cli
+	// pod has no other way to get an authenticated git remote, and a cliWorkspace
+	// clone can't run before any cli pod exists). GITHUB_TOKEN is a git credential,
+	// NOT the LLM key — the ANTHROPIC_API_KEY exclusion is unaffected. Best-effort;
+	// absent when the user has no GitHub connection.
+	const ghToken = await resolveWorkflowGithubToken();
+	if (ghToken) secretEnv.GITHUB_TOKEN = ghToken;
+	return secretEnv;
 }
 
+/** First ACTIVE GitHub app_connection's token (raw), via the SCM resolver. Best-
+ * effort — null when no GitHub connection is linked. (Single-owner dev: this is the
+ * user's connection; a per-user filter is a multi-tenant follow-up.) */
 function buildChildInput(params: {
 	sessionId: string;
 	agentConfig: AgentConfig;
