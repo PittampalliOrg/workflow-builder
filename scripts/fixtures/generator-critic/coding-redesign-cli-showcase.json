@@ -213,8 +213,8 @@
        "with": {
         "cliWorkspace": true,
         "cwd": "/sandbox/work",
-        "command": "[ -f /sandbox/work/critic-shot.png ] || cp \"$(ls -1 /sandbox/work/shots/*.png 2>/dev/null | head -1)\" /sandbox/work/critic-shot.png 2>/dev/null; cat /sandbox/work/verdict.json 2>/dev/null || echo '{\"meets_criteria\":false,\"score\":0,\"feedback\":\"verdict.json missing\"}'",
-        "timeoutMs": 30000,
+        "command": "for i in $(seq 1 40); do [ -s /sandbox/work/verdict.json ] && break; sleep 1; done; [ -f /sandbox/work/critic-shot.png ] || cp \"$(ls -1 /sandbox/work/shots/*.png 2>/dev/null | head -1)\" /sandbox/work/critic-shot.png 2>/dev/null; cat /sandbox/work/verdict.json 2>/dev/null || echo '{\"meets_criteria\":false,\"score\":0,\"feedback\":\"verdict.json missing after wait\"}'",
+        "timeoutMs": 60000,
         "allowFailure": true
        },
        "artifacts": [
