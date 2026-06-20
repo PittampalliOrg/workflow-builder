@@ -22,6 +22,7 @@
 		Clock,
 		ExternalLink,
 		Copy,
+		Check,
 		Terminal,
 		MessageSquare,
 		Wrench,
@@ -34,7 +35,6 @@
 		Zap,
 		FileDiff,
 		RefreshCw,
-		MessagesSquare,
 		AlertTriangle,
 		Gauge,
 		ListTree,
@@ -42,8 +42,10 @@
 		ChevronLeft,
 		Play,
 		PencilLine,
+		Ellipsis,
 		List as ListIcon
 	} from '@lucide/svelte';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import OtherRunsPanel from '$lib/components/runs/other-runs-panel.svelte';
 	import RunGauges from '$lib/components/runs/run-gauges.svelte';
 	import { Badge } from '$lib/components/ui/badge';
@@ -63,7 +65,6 @@
 		type ExecutionStreamStore,
 		type ExecutionStreamState
 	} from '$lib/stores/execution-stream.svelte';
-	import ExecutionHeader from '$lib/components/workflow/execution/execution-header.svelte';
 	import JsonViewer from '$lib/components/workflow/execution/json-viewer.svelte';
 	import ArtifactList from '$lib/components/workflow/execution/artifact-list.svelte';
 	import TimelineAutoScroll from '$lib/components/workflow/execution/timeline-auto-scroll.svelte';
@@ -124,7 +125,6 @@
 	import AnimatedEdge from '$lib/components/workflow/edges/animated-edge.svelte';
 	import LabeledEdge from '$lib/components/workflow/edges/labeled-edge.svelte';
 	import ExecutionCanvasSync from '$lib/components/workflow/execution-canvas-sync.svelte';
-	import LiveActivityRate from '$lib/components/metrics/LiveActivityRate.svelte';
 
 	let workflowId = $derived(page.params.workflowId ?? '');
 	let executionId = $derived(page.params.executionId ?? '');
@@ -907,6 +907,26 @@
 	} satisfies NodeTypes;
 
 	const isRunning = $derived(['running', 'pending'].includes(executionStatus.toLowerCase()));
+
+	// Compact cockpit-header helpers (status badge variant + copy-id), inlined so
+	// the header is one clean row instead of the old nested ExecutionHeader block.
+	function runStatusVariant(s: string): 'default' | 'secondary' | 'destructive' | 'outline' {
+		const u = s.toUpperCase();
+		if (u === 'RUNNING' || u === 'PENDING') return 'default';
+		if (u === 'COMPLETED' || u === 'SUCCESS') return 'secondary';
+		if (u === 'FAILED' || u === 'ERROR') return 'destructive';
+		return 'outline';
+	}
+	let execIdCopied = $state(false);
+	async function copyExecId() {
+		try {
+			await navigator.clipboard.writeText(executionId);
+			execIdCopied = true;
+			setTimeout(() => (execIdCopied = false), 1500);
+		} catch {
+			// clipboard unavailable
+		}
+	}
 
 	let stopBusy = $state(false);
 	// "stopping" = the stop was accepted (202) but the durable terminate is still
@@ -1882,21 +1902,32 @@
 
 		<Separator orientation="vertical" class="h-5" />
 
-		<ExecutionHeader
-			status={executionStatus}
-			duration={duration ?? undefined}
-			startedAt={relativeStart ?? undefined}
-			{executionId}
-			instanceId={instanceId ?? undefined}
-			traceId={traceId ?? undefined}
-		/>
-
-		<LiveActivityRate {executionId} active={isRunning} />
-
-		<!-- Phase 3b: trace-level feedback widget. Disabled until the run
-		     produces an MLflow trace_id (primary_trace_id populated by
-		     the orchestrator status poll). -->
-		<TraceFeedback {executionId} disabled={!traceId && isRunning} />
+		<!-- Compact status cluster: badge + duration + started + live dot. -->
+		<div class="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+			<Badge variant={runStatusVariant(executionStatus)} class="flex shrink-0 items-center gap-1">
+				{#if isRunning}
+					<Loader2 size={11} class="animate-spin" />
+				{:else if executionStatus.toLowerCase() === 'success' || executionStatus.toLowerCase() === 'completed'}
+					<CheckCircle2 size={11} />
+				{:else if executionStatus.toLowerCase() === 'error' || executionStatus.toLowerCase() === 'failed'}
+					<XCircle size={11} />
+				{:else}
+					<Clock size={11} />
+				{/if}
+				{executionStatus}
+			</Badge>
+			{#if duration}
+				<span class="whitespace-nowrap"><Clock size={11} class="mr-0.5 inline" />{duration}</span>
+			{/if}
+			{#if relativeStart}
+				<span class="hidden whitespace-nowrap md:inline">· {relativeStart}</span>
+			{/if}
+			{#if executionState.isConnected}
+				<span class="flex items-center gap-1">
+					<span class="size-1.5 animate-pulse rounded-full bg-green-500"></span>Live
+				</span>
+			{/if}
+		</div>
 
 		<div class="ml-auto flex items-center gap-1 text-xs">
 			<!-- Prev / Next sibling runs. Disabled state cascades from the
@@ -1951,17 +1982,10 @@
 					{stopBusy || stopConverging ? 'Stopping…' : 'Stop run'}
 				</Button>
 			{/if}
-			<Separator orientation="vertical" class="h-5 mx-1" />
-			<a
-				href={`/workspaces/${slug}/sessions?source=workflow&executionId=${executionId}`}
-				class="inline-flex items-center gap-1 rounded-md px-2 py-1 hover:bg-accent text-muted-foreground hover:text-foreground"
-				title="Sessions spawned by this run"
-			>
-				<MessagesSquare class="size-3.5" /> Sessions
-			</a>
+			<Separator orientation="vertical" class="mx-1 h-5" />
 			<a
 				href={`/workspaces/${slug}/workflows/${workflowId}`}
-				class="inline-flex items-center gap-1 rounded-md px-2 py-1 hover:bg-accent text-muted-foreground hover:text-foreground"
+				class="inline-flex h-7 items-center gap-1 rounded-md px-2 text-muted-foreground hover:bg-accent hover:text-foreground"
 				title="Open the workflow editor"
 			>
 				<PencilLine class="size-3.5" /> Editor
@@ -1970,18 +1994,47 @@
 				variant="default"
 				size="sm"
 				class="h-7 gap-1"
-				onclick={() =>
-					goto(`/workspaces/${slug}/workflows/${workflowId}?execute=1`)}
+				onclick={() => goto(`/workspaces/${slug}/workflows/${workflowId}?execute=1`)}
 				title="Submit a new run of this workflow (opens the Execute dialog in the editor)"
 			>
 				<Play class="size-3.5" /> Submit new run
 			</Button>
-			{#if executionState.isConnected}
-				<span class="ml-2 flex items-center gap-1 text-muted-foreground">
-					<span class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></span>
-					Live
-				</span>
-			{/if}
+
+			<!-- Overflow: secondary / niche actions tucked away to de-noise the bar. -->
+			<DropdownMenu.Root>
+				<DropdownMenu.Trigger>
+					{#snippet child({ props })}
+						<Button {...props} variant="ghost" size="icon" class="size-7" title="More actions">
+							<Ellipsis class="size-4" />
+						</Button>
+					{/snippet}
+				</DropdownMenu.Trigger>
+				<DropdownMenu.Content align="end" class="w-60">
+					<DropdownMenu.Item onSelect={copyExecId}>
+						{#if execIdCopied}
+							<Check class="size-3.5 text-green-500" />
+						{:else}
+							<Copy class="size-3.5" />
+						{/if}
+						Copy execution ID
+					</DropdownMenu.Item>
+					{#if traceId}
+						<DropdownMenu.Item onSelect={() => goto(`/observability/${traceId}`)}>
+							<ExternalLink class="size-3.5" /> View full trace
+						</DropdownMenu.Item>
+					{/if}
+					<DropdownMenu.Separator />
+					<div class="px-2 py-1.5">
+						<TraceFeedback {executionId} disabled={!traceId && isRunning} />
+					</div>
+					{#if instanceId}
+						<DropdownMenu.Separator />
+						<DropdownMenu.Label class="text-[10px] font-normal text-muted-foreground">
+							Dapr instance: <code class="text-[10px]">{instanceId.slice(0, 16)}</code>
+						</DropdownMenu.Label>
+					{/if}
+				</DropdownMenu.Content>
+			</DropdownMenu.Root>
 		</div>
 	</header>
 
