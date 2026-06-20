@@ -24,17 +24,20 @@ so the OAuth path is taken.
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import logging
 import os
 import signal
 import shutil
 import subprocess
+import tarfile
 import time
 from pathlib import Path
 from typing import Any, Mapping
 
-from src.agy_capture import restore_bundle, start_capture_watcher
+from src.agy_capture import TOKEN_REL, restore_bundle, start_capture_watcher
 from src.agy_stop_guard import (
     evaluate_stop_guard,
     has_stop_guard_config,
@@ -76,6 +79,26 @@ DEFAULT_AGY_MCP_DENYLIST = frozenset(
         "piece_microsoft_todo",
     }
 )
+
+
+def _auth_bundle_has_agy_login(bundle_b64: str | None) -> bool:
+    """Return true only when a captured bundle contains AGY's OAuth token."""
+    if not bundle_b64 or not bundle_b64.strip():
+        return False
+    try:
+        raw = base64.b64decode(bundle_b64.strip())
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                rel = os.path.normpath(member.name)
+                if (
+                    member.isfile()
+                    and rel == TOKEN_REL
+                    and getattr(member, "size", 0) > 0
+                ):
+                    return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False
 
 
 def clean_string(value: Any) -> str | None:
@@ -1047,12 +1070,12 @@ class AntigravityAdapter(CliAdapter):
     @property
     def requires_interactive_login(self) -> bool:
         # agy is FILE-based (the OS-keyring path is vestigial). When a captured
-        # ~/.gemini bundle is delivered (AGY_AUTH_JSON), seed() restores it and
-        # agy boots already signed in → the kickoff can fire immediately. With NO
-        # bundle, the user completes in-pane device-code OAuth first, so the
-        # lifecycle must DEFER the kickoff (herdr reports the auth-code prompt as
-        # `idle`, and an armed seed would land in the login field).
-        return not bool(os.environ.get(AGY_AUTH_ENV))
+        # AGY ~/.gemini bundle is delivered (AGY_AUTH_JSON), seed() restores it
+        # and agy boots already signed in → the kickoff can fire immediately.
+        # A legacy Gemini CLI bundle also arrives through AGY_AUTH_JSON, but it
+        # lacks antigravity-cli/antigravity-oauth-token and would otherwise make
+        # us submit the user prompt into AGY's login screen.
+        return not _auth_bundle_has_agy_login(os.environ.get(AGY_AUTH_ENV))
 
     def on_session_started(self, session_id: str | None) -> None:
         # Auto-capture: watch ~/.gemini and POST the curated login bundle to the

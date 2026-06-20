@@ -451,14 +451,40 @@ def agy_home(tmp_path, monkeypatch):
 
 
 def test_agy_requires_interactive_login_is_dynamic(monkeypatch):
+    import base64
+    import io
+    import tarfile
+
     # No captured bundle → device-code login first, so the kickoff is DEFERRED
     # (herdr reports the auth-code prompt as `idle`; an armed seed would land in
     # the login field).
     monkeypatch.delenv("AGY_AUTH_JSON", raising=False)
     assert get_adapter("antigravity").requires_interactive_login is True
-    # Bundle delivered → seed() restores ~/.gemini and agy boots signed in, so the
-    # kickoff can fire immediately.
+
+    # Invalid or legacy Gemini-only bundles still require AGY's login flow.
     monkeypatch.setenv("AGY_AUTH_JSON", "x")
+    assert get_adapter("antigravity").requires_interactive_login is True
+
+    legacy_buf = io.BytesIO()
+    with tarfile.open(fileobj=legacy_buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("oauth_creds.json")
+        data = b'{"refresh_token":"legacy-gemini"}'
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    monkeypatch.setenv(
+        "AGY_AUTH_JSON", base64.b64encode(legacy_buf.getvalue()).decode()
+    )
+    assert get_adapter("antigravity").requires_interactive_login is True
+
+    # AGY bundle delivered → seed() restores ~/.gemini and agy boots signed in,
+    # so the kickoff can fire immediately.
+    agy_buf = io.BytesIO()
+    with tarfile.open(fileobj=agy_buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("antigravity-cli/antigravity-oauth-token")
+        data = b'{"token":{}}'
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    monkeypatch.setenv("AGY_AUTH_JSON", base64.b64encode(agy_buf.getvalue()).decode())
     assert get_adapter("antigravity").requires_interactive_login is False
 
 
