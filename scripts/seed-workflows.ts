@@ -4452,6 +4452,29 @@ async function seedGeneratorCriticShowcases(params: {
 }) {
 	await ensureShowcaseAgent(params.sqlClient, params.userId, params.projectId);
 	await ensureCliShowcaseAgent(params.sqlClient, params.userId, params.projectId);
+	// Shared Playwright MCP config for every CLI critic (same sandbox image →
+	// same `playwright-mcp` binary + pinned Chromium; --executable-path avoids the
+	// runtime browser download). Wired per-CLI: claude .mcp.json / codex
+	// config.toml / agy mcp_config.json (all via emit_claude_code_cli_servers).
+	const PLAYWRIGHT_CRITIC_MCP = [
+		{
+			server_name: "playwright",
+			displayName: "Playwright",
+			transport: "stdio",
+			command: "playwright-mcp",
+			args: [
+				"--headless",
+				"--browser",
+				"chromium",
+				"--executable-path",
+				"/opt/pw-browsers/chromium-1228/chrome-linux64/chrome",
+				"--no-sandbox",
+				"--isolated",
+				"--output-dir",
+				"/sandbox/work",
+			],
+		},
+	];
 	// Dedicated claude-code-cli CRITIC agent with the official Playwright MCP
 	// (stdio, in-pod: @playwright/mcp v0.0.76 binary `playwright-mcp` baked into
 	// the cli sandbox image; node-compatible Chromium at /opt/pw-browsers). The
@@ -4467,29 +4490,7 @@ async function seedGeneratorCriticShowcases(params: {
 		name: "CLI Playwright Critic Agent",
 		description:
 			"claude-code-cli design critic with the Playwright MCP server; drives Chromium in-pod to inspect the rendered app and judge it against a design rubric.",
-		mcpServers: [
-			{
-				server_name: "playwright",
-				displayName: "Playwright",
-				transport: "stdio",
-				command: "playwright-mcp",
-				args: [
-					"--headless",
-					"--browser",
-					"chromium",
-					// Pin the pre-installed Chromium binary so @playwright/mcp does
-					// NOT download a browser at runtime (its bundled playwright-core
-					// wants rev 1226; the image ships 1208+1228 → it would fetch
-					// chrome-for-testing and stall). --executable-path = no download.
-					"--executable-path",
-					"/opt/pw-browsers/chromium-1228/chrome-linux64/chrome",
-					"--no-sandbox",
-					"--isolated",
-					"--output-dir",
-					"/sandbox/work",
-				],
-			},
-		],
+		mcpServers: PLAYWRIGHT_CRITIC_MCP,
 	});
 	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
 		slug: "codex-cli-evaluator-critic-agent",
@@ -4499,11 +4500,27 @@ async function seedGeneratorCriticShowcases(params: {
 			"Shared codex-cli agent for the CLI generator/critic showcase loop; per-session dispatch, shared JuiceFS workspace at /sandbox/work.",
 	});
 	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+		slug: "codex-playwright-critic-agent",
+		runtime: "codex-cli",
+		name: "Codex Playwright Critic Agent",
+		description:
+			"codex-cli design critic with the Playwright MCP server; drives Chromium in-pod to inspect the rendered app and judge it against a design rubric.",
+		mcpServers: PLAYWRIGHT_CRITIC_MCP,
+	});
+	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
 		slug: "agy-cli-evaluator-critic-agent",
 		runtime: "agy-cli",
 		name: "Antigravity CLI Evaluator/Critic Agent",
 		description:
 			"Shared agy-cli (Antigravity) agent for the CLI generator/critic showcase loop; per-session dispatch, shared JuiceFS workspace at /sandbox/work. Requires a captured ~/.gemini bundle (AGY_AUTH_JSON) for headless durable/run.",
+	});
+	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+		slug: "agy-playwright-critic-agent",
+		runtime: "agy-cli",
+		name: "Antigravity Playwright Critic Agent",
+		description:
+			"agy-cli design critic with the Playwright MCP server; drives Chromium in-pod to inspect the rendered app and judge it against a design rubric.",
+		mcpServers: PLAYWRIGHT_CRITIC_MCP,
 	});
 	const dir = path.resolve(process.cwd(), "scripts/fixtures/generator-critic");
 	for (const file of [
