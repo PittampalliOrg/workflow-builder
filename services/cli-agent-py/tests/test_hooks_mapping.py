@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 from src.hooks_api import (
@@ -127,8 +128,29 @@ def test_unknown_and_side_effect_events_map_to_nothing():
     assert map_hook_event(_hook("SessionStart", source="startup")) == []
     assert map_hook_event(_hook("Stop")) == []
     assert map_hook_event(_hook("SessionEnd", reason="exit")) == []
-    assert map_hook_event(_hook("Notification")) == []
     assert map_hook_event({"no_hook_event_name": True}) == []
+
+
+def test_notification_maps_to_session_notification():
+    events = map_hook_event(
+        _hook(
+            "Notification",
+            message="waiting for input",
+            level="info",
+            notificationType="status",
+        )
+    )
+
+    assert events == [
+        {
+            "type": "session.notification",
+            "data": {
+                "message": "waiting for input",
+                "level": "info",
+                "notificationType": "status",
+            },
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +442,42 @@ def test_processor_publishes_adapter_internal_events_and_strips_response():
         ("sess-1", "agent.tool_use", {"tool_name": "run_command"}),
         ("sess-1", "agent.tool_result", {"tool_name": "run_command", "ok": True}),
     ]
+
+
+def test_processor_keeps_event_loop_responsive_during_blocking_hook_response():
+    class BlockingAdapter:
+        name = "blocking-adapter"
+
+        def is_turn_completion_hook(self, event_name):
+            return False
+
+        def map_hook_event(self, payload):
+            return []
+
+        def hook_response(self, event_name, payload, session):
+            time.sleep(0.2)
+            return {"decision": "deny", "reason": "blocking response finished"}
+
+    processor = HookProcessor(
+        publish=lambda *_a, **_k: None,
+        raise_lifecycle=lambda *_a, **_k: None,
+        supervisor_getter=lambda: FakeSupervisor(),
+        tailer_manager=FakeTailerManager(),
+        adapter=BlockingAdapter(),
+    )
+
+    async def run_check():
+        task = asyncio.create_task(processor.process(_hook("PreToolUse")))
+        await asyncio.sleep(0.02)
+        assert not task.done()
+        return await task
+
+    response = asyncio.run(run_check())
+
+    assert response == {
+        "decision": "deny",
+        "reason": "blocking response finished",
+    }
 
 
 def test_agy_stop_hook_continues_when_output_contract_missing(tmp_path, monkeypatch):

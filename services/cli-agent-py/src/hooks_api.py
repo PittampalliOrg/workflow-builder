@@ -416,7 +416,7 @@ class HookProcessor:
             name == "Stop" and stop_hook_completes
         )
         if name == "Stop" or adapter_turn_done:
-            response = self._hook_response(name, payload, session)
+            response = await self._hook_response_async(name, payload, session)
             if response.get("decision") == "continue":
                 if session_id:
                     self._publish(
@@ -536,10 +536,18 @@ class HookProcessor:
                 self._record_turn_started("hook:UserPromptSubmit")
         for event in events:
             self._publish(session_id, event["type"], event.get("data") or {})
-        response = self._hook_response(name, payload, session)
+        response = await self._hook_response_async(name, payload, session)
         for event in self._pop_internal_events(response):
             self._publish(session_id, event["type"], event.get("data") or {})
         return response
+
+    async def _hook_response_async(
+        self, name: str | None, payload: Mapping[str, Any], session: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        # Some adapters synchronously execute managed tool shims while computing
+        # a hook response. Keep that work off the ASGI event loop so health and
+        # readiness probes keep responding during long-running commands.
+        return await asyncio.to_thread(self._hook_response, name, payload, session)
 
     def _hook_response(
         self, name: str | None, payload: Mapping[str, Any], session: Mapping[str, Any]
