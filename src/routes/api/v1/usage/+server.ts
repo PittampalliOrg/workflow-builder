@@ -36,25 +36,49 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		sql`${sessions.createdAt} <= ${end.toISOString()}`,
 	);
 
-	// Totals for the top-stat row
-	const [totals] = await db
-		.select({
-			tokensIn: sql<number>`coalesce(sum((usage->>'input_tokens')::int), 0)`,
-			tokensOut: sql<number>`coalesce(sum((usage->>'output_tokens')::int), 0)`,
-			cacheRead: sql<number>`coalesce(sum((usage->>'cache_read_input_tokens')::int), 0)`,
-			cacheCreate: sql<number>`coalesce(sum((usage->>'cache_creation_input_tokens')::int), 0)`,
-			sessionCount: sql<number>`count(*)`,
-		})
-		.from(sessions)
-		.where(filters);
-
-	// Daily + per-agent queries share the same scope clause — parameterized
-	// so the SQL statement stays cacheable across invocations.
+	// Daily + per-agent + token queries share the same scope clause —
+	// parameterized so the SQL statement stays cacheable across invocations.
 	const scopeClause = locals.session.projectId
 		? sql`s.project_id = ${locals.session.projectId}`
 		: sql`s.user_id = ${locals.session.userId}`;
 
-	// Daily breakdown (one row per day in range, zero-filled via SQL series)
+	// Token totals come from agent.llm_usage SESSION EVENTS (not sessions.usage,
+	// which is not populated for CLI-family sessions). Session count stays from
+	// `sessions`. `input_tokens` is NET of cache reads (system invariant).
+	const [tokenTotals] = await db.execute<{
+		tokens_in: number;
+		tokens_out: number;
+		cache_read: number;
+		cache_create: number;
+	}>(sql`
+		SELECT
+			coalesce(sum((se.data->>'input_tokens')::bigint), 0) AS tokens_in,
+			coalesce(sum((se.data->>'output_tokens')::bigint), 0) AS tokens_out,
+			coalesce(sum((se.data->>'cache_read_input_tokens')::bigint), 0) AS cache_read,
+			coalesce(sum((se.data->>'cache_creation_input_tokens')::bigint), 0) AS cache_create
+		FROM ${sessionEvents} se
+		JOIN ${sessions} s ON s.id = se.session_id
+		WHERE se.type = 'agent.llm_usage'
+			AND ${scopeClause}
+			AND se.created_at >= ${start.toISOString()}
+			AND se.created_at <= ${end.toISOString()}
+	`);
+
+	const [sessionTotals] = await db
+		.select({ sessionCount: sql<number>`count(*)` })
+		.from(sessions)
+		.where(filters);
+
+	const totals = {
+		tokensIn: Number(tokenTotals?.tokens_in ?? 0),
+		tokensOut: Number(tokenTotals?.tokens_out ?? 0),
+		cacheRead: Number(tokenTotals?.cache_read ?? 0),
+		cacheCreate: Number(tokenTotals?.cache_create ?? 0),
+		sessionCount: Number(sessionTotals?.sessionCount ?? 0),
+	};
+
+	// Daily breakdown (one row per day in range, zero-filled via SQL series),
+	// tokens summed from agent.llm_usage events by the day the call landed.
 	const daily = await db.execute<{
 		day: string;
 		tokens_in: number;
@@ -65,18 +89,19 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		)
 		SELECT
 			days.day::text AS day,
-			coalesce(sum((s.usage->>'input_tokens')::int), 0) AS tokens_in,
-			coalesce(sum((s.usage->>'output_tokens')::int), 0) AS tokens_out
+			coalesce(sum((se.data->>'input_tokens')::bigint), 0) AS tokens_in,
+			coalesce(sum((se.data->>'output_tokens')::bigint), 0) AS tokens_out
 		FROM days
-		LEFT JOIN ${sessions} s
-			ON ${scopeClause}
-			AND date(s.created_at) = days.day
+		LEFT JOIN ${sessionEvents} se
+			ON se.type = 'agent.llm_usage'
+			AND date(se.created_at) = days.day
+		LEFT JOIN ${sessions} s ON s.id = se.session_id
+		WHERE se.id IS NULL OR (${scopeClause})
 		GROUP BY days.day
 		ORDER BY days.day ASC
 	`);
 
-	// Breakdown by agent — join agent names so the UI can render a label
-	// instead of a raw ID.
+	// Breakdown by agent — session count from `sessions`, tokens from events.
 	const byAgent = await db.execute<{
 		agent_id: string;
 		agent_name: string | null;
@@ -87,10 +112,12 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		SELECT
 			s.agent_id AS agent_id,
 			a.name AS agent_name,
-			coalesce(sum((s.usage->>'input_tokens')::int), 0) AS tokens_in,
-			coalesce(sum((s.usage->>'output_tokens')::int), 0) AS tokens_out,
-			count(*) AS sessions
+			coalesce(sum((se.data->>'input_tokens')::bigint), 0) AS tokens_in,
+			coalesce(sum((se.data->>'output_tokens')::bigint), 0) AS tokens_out,
+			count(DISTINCT s.id) AS sessions
 		FROM ${sessions} s
+		LEFT JOIN ${sessionEvents} se
+			ON se.session_id = s.id AND se.type = 'agent.llm_usage'
 		LEFT JOIN agents a ON a.id = s.agent_id
 		WHERE ${scopeClause}
 			AND s.created_at >= ${start.toISOString()}
@@ -117,11 +144,11 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		range: { start: start.toISOString(), end: end.toISOString() },
 		groupBy,
 		totals: {
-			tokensIn: Number(totals?.tokensIn ?? 0),
-			tokensOut: Number(totals?.tokensOut ?? 0),
-			cacheReadTokens: Number(totals?.cacheRead ?? 0),
-			cacheCreateTokens: Number(totals?.cacheCreate ?? 0),
-			sessionCount: Number(totals?.sessionCount ?? 0),
+			tokensIn: totals.tokensIn,
+			tokensOut: totals.tokensOut,
+			cacheReadTokens: totals.cacheRead,
+			cacheCreateTokens: totals.cacheCreate,
+			sessionCount: totals.sessionCount,
 			toolCalls: Number(toolCalls?.count ?? 0),
 		},
 		daily: daily.map((row) => ({
