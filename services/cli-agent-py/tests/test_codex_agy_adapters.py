@@ -550,6 +550,7 @@ AGY_SESSION = {
 def test_agy_seed_writes_mcp_with_http_url_key(agy_home):
     result = get_adapter("antigravity").seed(AGY_SESSION)
     settings = json.loads((agy_home / ".gemini/settings.json").read_text())
+    assert settings["security"]["auth"]["selectedType"] == "oauth-personal"
     # Legacy Gemini's streamable HTTP key is httpUrl (NOT Antigravity serverUrl).
     assert settings["mcpServers"]["goal"]["httpUrl"].endswith("/mcp")
     assert "serverUrl" not in settings["mcpServers"]["goal"]
@@ -817,7 +818,8 @@ def test_agy_pane_env_strips_all_google_keys_and_pins_home(agy_home):
     ):
         assert k not in env
     assert env["HOME"] == str(agy_home)
-    assert env["GEMINI_CLI_HOME"] == str(agy_home / ".gemini")
+    # Gemini treats GEMINI_CLI_HOME as the base home and appends ".gemini".
+    assert env["GEMINI_CLI_HOME"] == str(agy_home)
 
 
 def test_agy_model_normalization():

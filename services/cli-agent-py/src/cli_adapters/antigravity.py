@@ -246,6 +246,15 @@ def _managed_agy_settings(
         },
         "privacy": {"usageStatisticsEnabled": False},
         "telemetry": {"enabled": False},
+        "security": {
+            "auth": {
+                # Gemini CLI requires an explicit persisted auth selection even
+                # when oauth_creds.json is already present. We strip API-key
+                # env vars in pane_env(), so managed AGY sessions are always
+                # intended to use the restored personal Google OAuth flow.
+                "selectedType": "oauth-personal",
+            },
+        },
         "context": {
             "includeDirectories": _merge_unique_strings(
                 _record(existing.get("context")).get("includeDirectories"),
@@ -1356,9 +1365,12 @@ class AntigravityAdapter(CliAdapter):
             value = base_env.get(key)
             if value:
                 env[key] = value
-        # Pin HOME/GEMINI_CLI_HOME so ~/.gemini matches what seed() wrote.
+        # Pin HOME/GEMINI_CLI_HOME so Gemini reads the same ~/.gemini directory
+        # that seed() wrote. Gemini treats GEMINI_CLI_HOME as the base home and
+        # appends ".gemini" internally; pointing it at the .gemini directory
+        # itself creates a nested ~/.gemini/.gemini state tree and misses auth.
         env["HOME"] = str(_agy_home())
-        env["GEMINI_CLI_HOME"] = str(_agy_home() / ".gemini")
+        env["GEMINI_CLI_HOME"] = str(_agy_home())
         for key, value in base_env.items():
             if key.startswith("OTEL_") and value:
                 env[key] = value
