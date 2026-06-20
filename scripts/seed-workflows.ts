@@ -4477,6 +4477,12 @@ async function seedGeneratorCriticShowcases(params: {
 					"--headless",
 					"--browser",
 					"chromium",
+					// Pin the pre-installed Chromium binary so @playwright/mcp does
+					// NOT download a browser at runtime (its bundled playwright-core
+					// wants rev 1226; the image ships 1208+1228 → it would fetch
+					// chrome-for-testing and stall). --executable-path = no download.
+					"--executable-path",
+					"/opt/pw-browsers/chromium-1228/chrome-linux64/chrome",
 					"--no-sandbox",
 					"--isolated",
 					"--output-dir",
