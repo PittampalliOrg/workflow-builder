@@ -30,6 +30,13 @@
 	import EventRow from '$lib/components/sessions/event-row.svelte';
 	import EventDetailPanel from '$lib/components/sessions/event-detail-panel.svelte';
 	import { findToolPair, computeTokenAssignments } from '$lib/utils/tool-pair';
+	import {
+		filterDisplayEvents,
+		batchEvents,
+		buildListRows,
+		collectEventTypes,
+		fmtIdleGap
+	} from '$lib/components/sessions/transcript-model';
 	import BatchDetailPanel from '$lib/components/sessions/batch-detail-panel.svelte';
 	import SessionTimelineBar from '$lib/components/sessions/session-timeline-bar.svelte';
 	import EventTypePill from '$lib/components/sessions/event-type-pill.svelte';
@@ -292,78 +299,19 @@
 		if (runtimeFlags?.phase === 'Active') return false;
 		return !events.some((e) => e.type === 'session.status_running');
 	});
-	// Types that the Transcript view hides — the polished CMA-style read where
-	// only User / Tool / Agent rows are visible. The full stream stays available
-	// in Debug. Tool results are folded into their tool_use row's detail panel
-	// via findToolPair, so they don't need their own list row. Model/usage
-	// events surface their tokens inline on the message/tool row that consumed
-	// them via computeTokenAssignments.
-	const TRANSCRIPT_HIDDEN_TYPES: ReadonlySet<string> = new Set([
-		'agent.thinking',
-		'agent.thinking_delta',
-		'agent.message_delta',
-		'agent.tool_input_delta',
-		'agent.tool_result',
-		'agent.mcp_tool_result',
-		'agent.custom_tool_result',
-		'agent.context_usage',
-		'agent.llm_usage',
-		'agent.iteration',
-		'agent.thread_context_compacted',
-		'agent.thread_images_compacted',
-		'span.model_request_start',
-		'span.model_request_end',
-		'session.status_running',
-		'session.status_idle',
-		'session.status_rescheduled',
-		'session.runtime_config',
-		'session.turn_started',
-		'session.instructions_applied',
-		'session.config_updated',
-		'instance.metrics_summary',
-		'llm_start',
-		'llm_complete'
-	]);
-
-	const displayEvents = $derived.by(() => {
-		let list = events;
-		if (viewMode !== 'debug') {
-			list = list.filter((e) => {
-				if (TRANSCRIPT_HIDDEN_TYPES.has(e.type)) return false;
-				return true;
-			});
-		}
-		if (visibleKinds.size > 0) {
-			list = list.filter((e) => visibleKinds.has(e.type));
-		}
-		if (searchText.trim()) {
-			const q = searchText.trim().toLowerCase();
-			list = list.filter((e) => {
-				if (e.type.toLowerCase().includes(q)) return true;
-				const d = e.data as Record<string, unknown>;
-				const content = (d.content as Array<{ text?: string }>) ?? [];
-				const text = content
-					.map((c) => (typeof c?.text === 'string' ? c.text : ''))
-					.join(' ')
-					.toLowerCase();
-				return text.includes(q);
-			});
-		}
-		return list;
-	});
+	// Transcript filtering/batching/list-row logic lives in transcript-model.ts
+	// so the unified Run Console's SessionTranscript renders identically.
+	const displayEvents = $derived.by(() =>
+		filterDisplayEvents(events, {
+			debug: viewMode === 'debug',
+			visibleKinds,
+			searchText
+		})
+	);
 
 	// Token cost per row, attributing each agent.llm_usage event to the
 	// content event that consumed it. Computed once per `events` change.
 	const tokenAssignments = $derived(computeTokenAssignments(events));
-	// Collapse consecutive same-tool rows into one — CMA shows "Web Search × 5"
-	// for a batch of 5 `agent.tool_use` events with the same tool name. We
-	// keep the full list in `displayEvents` for JSON export + debug view, but
-	// the left list uses this compacted shape in Transcript mode.
-	type BatchedEvent = {
-		event: SessionEventEnvelope;
-		children: SessionEventEnvelope[];
-		count: number;
-	};
 	type SessionMlflowGroup = {
 		experimentId: string | null;
 		mlflowSessionId: string | null;
@@ -407,42 +355,9 @@
 		traceparent?: string;
 		data: RuntimeConfigData;
 	};
-	const batchedEvents = $derived.by<BatchedEvent[]>(() => {
-		if (viewMode === 'debug') {
-			return displayEvents.map((event) => ({ event, children: [event], count: 1 }));
-		}
-		const out: BatchedEvent[] = [];
-		for (const e of displayEvents) {
-			const isTool =
-				e.type === 'agent.tool_use' ||
-				e.type === 'agent.mcp_tool_use' ||
-				e.type === 'agent.custom_tool_use';
-			const name = (e.data as { name?: string; tool_name?: string }).name ??
-				(e.data as { tool_name?: string }).tool_name ??
-				'';
-			const last = out[out.length - 1];
-			const lastIsTool =
-				last &&
-				(last.event.type === 'agent.tool_use' ||
-					last.event.type === 'agent.mcp_tool_use' ||
-					last.event.type === 'agent.custom_tool_use');
-			const lastName = last
-				? (last.event.data as { name?: string; tool_name?: string }).name ??
-					(last.event.data as { tool_name?: string }).tool_name ??
-					''
-				: '';
-			if (isTool && lastIsTool && name === lastName && name) {
-				last.count += 1;
-				last.children.push(e);
-				// Representative = latest invocation (its latest input wins in
-				// the detail panel header).
-				last.event = e;
-			} else {
-				out.push({ event: e, children: [e], count: 1 });
-			}
-		}
-		return out;
-	});
+	// Collapse consecutive same-tool rows ("Web Search × 5"); full list stays in
+	// `displayEvents` for export + debug. Logic in transcript-model.ts.
+	const batchedEvents = $derived(batchEvents(displayEvents, viewMode === 'debug'));
 	// Find the batch whose representative is the currently-selected event so
 	// the detail panel can render its children as a stack.
 	const selectedBatch = $derived.by(() => {
@@ -451,62 +366,11 @@
 			batchedEvents.find((b) => String(b.event.id) === String(selectedEvent.id)) ?? null
 		);
 	});
-	// Augment the row list with "Session idle · {duration}" separators between
-	// turns so the user can see at a glance when the session went quiet between
-	// the agent's response and the next user message. Matches CMA's transcript
-	// affordance.
-	type ListRow =
-		| { kind: 'batch'; key: string; batch: BatchedEvent }
-		| { kind: 'separator'; key: string; sinceMs: number };
-	const listRows = $derived.by<ListRow[]>(() => {
-		if (viewMode === 'debug') {
-			return batchedEvents.map((b) => ({ kind: 'batch' as const, key: String(b.event.id), batch: b }));
-		}
-		const out: ListRow[] = [];
-		let prev: BatchedEvent | null = null;
-		for (const b of batchedEvents) {
-			if (prev && b.event.type.startsWith('user.')) {
-				const sinceMs =
-					new Date(b.event.createdAt).getTime() - new Date(prev.event.createdAt).getTime();
-				if (Number.isFinite(sinceMs) && sinceMs >= 30_000) {
-					out.push({
-						kind: 'separator' as const,
-						key: `sep:${prev.event.id}:${b.event.id}`,
-						sinceMs
-					});
-				}
-			}
-			out.push({ kind: 'batch' as const, key: String(b.event.id), batch: b });
-			prev = b;
-		}
-		return out;
-	});
-	function fmtIdleGap(ms: number): string {
-		if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
-		if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
-		if (ms < 86_400_000) {
-			const h = Math.floor(ms / 3_600_000);
-			const m = Math.floor((ms % 3_600_000) / 60_000);
-			return m > 0 ? `${h}h ${m}m` : `${h}h`;
-		}
-		const d = Math.floor(ms / 86_400_000);
-		const h = Math.floor((ms % 86_400_000) / 3_600_000);
-		return h > 0 ? `${d}d ${h}h` : `${d}d`;
-	}
-	// Every event type seen in this session, for the "All events" filter
-	// dropdown. Order matches first-seen order so the menu stays stable
-	// across turns.
-	const eventTypeSet = $derived.by(() => {
-		const seen: string[] = [];
-		const set = new Set<string>();
-		for (const e of events) {
-			if (!set.has(e.type)) {
-				set.add(e.type);
-				seen.push(e.type);
-			}
-		}
-		return seen;
-	});
+	// Row list with "Session idle · {duration}" separators between turns; logic
+	// in transcript-model.ts (fmtIdleGap formats the gap label).
+	const listRows = $derived(buildListRows(batchedEvents, viewMode === 'debug'));
+	// Every event type seen in this session (first-seen order) for "All events".
+	const eventTypeSet = $derived(collectEventTypes(events));
 	let isConnected = $state(false);
 	let isConsolidating = $state(false);
 	let streamError = $state<string | null>(null);

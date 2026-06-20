@@ -27,7 +27,6 @@
 		Wrench,
 		Monitor,
 		CircleAlert,
-		Inbox,
 		ImageIcon,
 		Video,
 		FileArchive,
@@ -51,6 +50,7 @@
 	import { Sheet, SheetTrigger, SheetContent, SheetHeader, SheetTitle } from '$lib/components/ui/sheet';
 	import { Button } from '$lib/components/ui/button';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
+	import RunConsole from '$lib/components/workflow/execution/run-console.svelte';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import TraceFeedback from '$lib/components/observability/trace-feedback.svelte';
 	import { Separator } from '$lib/components/ui/separator';
@@ -173,18 +173,6 @@
 	let investigationError = $state<string | null>(null);
 	let investigationFetched = $state(false);
 
-	// Sessions spawned by this run's durable/run nodes. Fetched once per
-	// execution; re-fetched when an agent run completes so new sessions appear.
-	type SpawnedSessionRow = {
-		id: string;
-		title: string | null;
-		status: string;
-		agentId: string;
-		createdAt: string | null;
-		completedAt: string | null;
-	};
-	let spawnedSessions = $state<SpawnedSessionRow[]>([]);
-	let spawnedSessionsFetched = $state(false);
 
 	// Browser artifacts
 	type BrowserArtifactStep = {
@@ -241,8 +229,8 @@
 	let previewActionMessage = $state<string | null>(null);
 	let previewActionError = $state<string | null>(null);
 
-	// Active tab
-	let activeTab = $state('timeline');
+	// Active tab — the unified Live console (run-console) is the default landing.
+	let activeTab = $state('overview');
 
 	// Plan artifacts
 	let planArtifacts = $state<Array<{ id: string; status: string; goal: string; planMarkdown: string | null; planJson: unknown; nodeId: string; createdAt: string; updatedAt: string }>>([]);
@@ -1216,37 +1204,8 @@
 		}
 	});
 
-	async function fetchSpawnedSessions() {
-		try {
-			const res = await fetch(
-				`/api/workflows/executions/${encodeURIComponent(executionId)}/sessions`
-			);
-			if (!res.ok) return;
-			const data = (await res.json()) as { sessions?: SpawnedSessionRow[] };
-			spawnedSessions = data.sessions ?? [];
-		} catch {
-			// Non-fatal — the card just won't render.
-		} finally {
-			spawnedSessionsFetched = true;
-		}
-	}
-
-	// Refresh spawned sessions once on load and again whenever an agent run
-	// transitions (new durable/run → new session row).
-	$effect(() => {
-		if (!executionId) return;
-		if (!spawnedSessionsFetched) {
-			void fetchSpawnedSessions();
-			return;
-		}
-		const running = agentRuns.some((r) => r.status === 'running');
-		if (running) {
-			const handle = setTimeout(() => {
-				void fetchSpawnedSessions();
-			}, 5000);
-			return () => clearTimeout(handle);
-		}
-	});
+	// (Spawned-session listing now lives in the RunConsole component on the Live
+	// tab, which owns its own sessions fetch + per-session preview streams.)
 
 	// Load persisted events when timeline tab is shown and stream is empty
 	$effect(() => {
@@ -2011,7 +1970,7 @@
 		<Tabs bind:value={activeTab} class="flex flex-1 flex-col overflow-hidden">
 		<div class="border-b border-border px-4">
 			<TabsList class="h-10">
-				<TabsTrigger value="overview">Overview</TabsTrigger>
+				<TabsTrigger value="overview">Live</TabsTrigger>
 				<TabsTrigger value="outputs">Outputs{#if workflowArtifacts.length > 0}<span class="ml-1.5 text-xs text-muted-foreground">{workflowArtifacts.length}</span>{/if}</TabsTrigger>
 				<TabsTrigger value="steps">Steps</TabsTrigger>
 				<TabsTrigger value="timeline">Timeline</TabsTrigger>
@@ -2025,8 +1984,9 @@
 		</div>
 
 		<!-- Tab 1: Overview -->
-		<TabsContent value="overview" class="flex-1 overflow-y-auto p-4">
-			<div class="mx-auto max-w-5xl space-y-4">
+		<TabsContent value="overview" class="flex-1 overflow-hidden p-0">
+			<RunConsole {executionId} {slug} {workflowId}>
+				{#snippet details()}
 				{#if primaryAppPreviewUrl}
 					<Card>
 						<CardContent class="space-y-3 p-4">
@@ -2124,37 +2084,6 @@
 					</Card>
 				{/if}
 
-				{#if spawnedSessions.length > 0}
-					<Card>
-						<CardContent class="space-y-3 p-4">
-							<div class="flex items-center gap-2">
-								<MessageSquare class="size-4 text-muted-foreground" />
-								<div>
-									<p class="text-sm font-medium">Spawned sessions</p>
-									<p class="text-xs text-muted-foreground">
-										<code>durable/run</code> nodes in this execution produced {spawnedSessions.length}
-										session{spawnedSessions.length === 1 ? '' : 's'}. Click through for the full event trace.
-									</p>
-								</div>
-							</div>
-							<ul class="divide-y divide-border rounded-md border border-border">
-								{#each spawnedSessions as s (s.id)}
-									<li class="flex items-center justify-between gap-3 px-3 py-2 text-xs">
-										<a
-											href="/workspaces/{slug}/sessions/{s.id}"
-											class="min-w-0 flex-1 truncate text-primary hover:underline"
-											title={s.title ?? s.id}
-										>
-											{s.title ?? s.id.slice(0, 12)}
-										</a>
-										<Badge variant="outline" class="text-[10px] uppercase">{s.status}</Badge>
-									</li>
-								{/each}
-							</ul>
-						</CardContent>
-					</Card>
-				{/if}
-
 				{#if browserSources.length > 0}
 					<Card>
 						<CardContent class="space-y-3 p-4">
@@ -2199,16 +2128,8 @@
 					</Alert>
 				{/if}
 
-				{#if !input && !output && !errorMessage && !isLoadingStatus}
-					<div class="flex flex-col items-center justify-center py-16 text-muted-foreground">
-						<div class="rounded-full bg-muted p-3">
-							<Inbox size={24} />
-						</div>
-						<p class="mt-3 text-sm font-medium">No data yet</p>
-						<p class="mt-1 text-xs">Input and output will appear here once the execution produces results.</p>
-					</div>
-				{/if}
-			</div>
+				{/snippet}
+			</RunConsole>
 		</TabsContent>
 
 		<!-- Tab: Outputs (generic workflow_artifacts) -->
