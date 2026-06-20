@@ -59,7 +59,12 @@
 
 	// --- Scope: live runs vs recently-finished history vs both -----------------
 	type Scope = 'active' | 'recent' | 'all';
-	let scope = $state<Scope>('active');
+	// Seed from ?scope= so the /sessions and /runs routes can deep-link into the
+	// Fleet as filtered lenses (they redirect here with scope=all).
+	const scopeParam = page.url.searchParams.get('scope');
+	let scope = $state<Scope>(
+		scopeParam === 'recent' || scopeParam === 'all' ? scopeParam : 'active'
+	);
 	const scopedWork = $derived<CapacityBusinessWorkItem[]>(
 		scope === 'active' ? activeWork : scope === 'recent' ? recentWork : [...activeWork, ...recentWork]
 	);
@@ -136,8 +141,14 @@
 
 	// --- Filters --------------------------------------------------------------
 	type KindFilter = 'all' | 'session' | 'workflow' | 'benchmark';
-	let kindFilter = $state<KindFilter>('all');
-	let search = $state('');
+	// Seed from ?kind= so /sessions → kind=session and /runs → kind=workflow.
+	const kindParam = page.url.searchParams.get('kind');
+	let kindFilter = $state<KindFilter>(
+		kindParam === 'session' || kindParam === 'workflow' || kindParam === 'benchmark'
+			? kindParam
+			: 'all'
+	);
+	let search = $state(page.url.searchParams.get('q') ?? '');
 
 	function startedMs(item: CapacityBusinessWorkItem): number {
 		if (item.startedAt) return new Date(item.startedAt).getTime();

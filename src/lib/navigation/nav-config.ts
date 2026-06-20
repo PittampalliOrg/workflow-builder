@@ -241,19 +241,11 @@ export const NAV_GROUPS: NavGroup[] = [
 		icon: BarChart3,
 		items: [
 			{
-				id: "usage",
-				label: "Usage",
-				icon: BarChart3,
-				href: ({ slug }) => `/workspaces/${slug}/usage`,
-				match: /^\/workspaces\/[^/]+\/usage(\/|$)/,
-				visibility: { workspaceScoped: true },
-			},
-			{
-				id: "cost",
-				label: "Cost",
+				id: "cost-usage",
+				label: "Cost & Usage",
 				icon: DollarSign,
-				href: ({ slug }) => `/workspaces/${slug}/cost`,
-				match: /^\/workspaces\/[^/]+\/cost(\/|$)/,
+				href: ({ slug }) => `/workspaces/${slug}/usage`,
+				match: /^\/workspaces\/[^/]+\/(usage|cost)(\/|$)/,
 				visibility: { workspaceScoped: true },
 			},
 			{

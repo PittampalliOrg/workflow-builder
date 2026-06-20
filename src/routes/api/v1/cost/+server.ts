@@ -34,25 +34,30 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		cache_create: number;
 	};
 
+	// Tokens come from agent.llm_usage SESSION EVENTS grouped by the model the
+	// event reports (not sessions.usage, which is not populated for CLI-family
+	// sessions; and not agent_versions.modelSpec, which is a config default, not
+	// what actually ran). `input_tokens` is NET of cache reads (system invariant).
 	const rows = await db.execute<Row>(sql`
 		SELECT
 			s.agent_id AS agent_id,
-			coalesce(av.config->>'modelSpec', 'unknown') AS model_spec,
+			coalesce(se.data->>'model', se.data->>'providerModel', 'unknown') AS model_spec,
 			a.name AS agent_name,
-			count(*) AS sessions,
-			coalesce(sum((s.usage->>'input_tokens')::int), 0) AS input_tokens,
-			coalesce(sum((s.usage->>'output_tokens')::int), 0) AS output_tokens,
-			coalesce(sum((s.usage->>'cache_read_input_tokens')::int), 0) AS cache_read,
-			coalesce(sum((s.usage->>'cache_creation_input_tokens')::int), 0) AS cache_create
-		FROM sessions s
+			count(DISTINCT s.id) AS sessions,
+			coalesce(sum((se.data->>'input_tokens')::bigint), 0) AS input_tokens,
+			coalesce(sum((se.data->>'output_tokens')::bigint), 0) AS output_tokens,
+			coalesce(sum((se.data->>'cache_read_input_tokens')::bigint), 0) AS cache_read,
+			coalesce(sum((se.data->>'cache_creation_input_tokens')::bigint), 0) AS cache_create
+		FROM session_events se
+		JOIN sessions s ON s.id = se.session_id
 		LEFT JOIN agents a ON a.id = s.agent_id
-		LEFT JOIN agent_versions av ON av.agent_id = s.agent_id AND av.version = s.agent_version
-		WHERE ${locals.session.projectId
-			? sql`s.project_id = ${locals.session.projectId}`
-			: sql`s.user_id = ${locals.session.userId}`}
-			AND s.created_at >= ${start.toISOString()}
-			AND s.created_at <= ${end.toISOString()}
-		GROUP BY s.agent_id, av.config->>'modelSpec', a.name
+		WHERE se.type = 'agent.llm_usage'
+			AND ${locals.session.projectId
+				? sql`s.project_id = ${locals.session.projectId}`
+				: sql`s.user_id = ${locals.session.userId}`}
+			AND se.created_at >= ${start.toISOString()}
+			AND se.created_at <= ${end.toISOString()}
+		GROUP BY s.agent_id, coalesce(se.data->>'model', se.data->>'providerModel', 'unknown'), a.name
 	`);
 
 	let totalCost = 0;

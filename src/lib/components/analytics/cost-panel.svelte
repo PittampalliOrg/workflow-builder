@@ -1,4 +1,8 @@
 <script lang="ts">
+	/** Cost panel — extracted from the old /cost page so the merged "Cost &
+	 *  Usage" page can host it alongside the usage panel. Self-contained:
+	 *  fetches /api/v1/cost, range toggle + CSV export, total + by-model +
+	 *  by-agent + price-book. */
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
@@ -12,7 +16,7 @@
 		CardHeader,
 		CardTitle
 	} from '$lib/components/ui/card';
-	import { DollarSign, Download, Info } from '@lucide/svelte';
+	import { Download, Info } from '@lucide/svelte';
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
@@ -98,13 +102,10 @@
 	onMount(load);
 </script>
 
-<div class="h-full overflow-y-auto flex flex-col gap-6 p-6 max-w-7xl mx-auto w-full">
-	<header class="flex items-start justify-between gap-4 flex-wrap">
+<div class="flex flex-col gap-6">
+	<div class="flex items-center justify-between gap-4 flex-wrap">
 		<div>
-			<h1 class="text-2xl font-semibold flex items-center gap-2">
-				<DollarSign class="size-6" /> Cost
-			</h1>
-			<p class="text-sm text-muted-foreground mt-1">
+			<p class="text-sm text-muted-foreground">
 				Cost estimates based on token usage × model catalog pricing.
 			</p>
 			{#if apiKeyFilter}
@@ -116,9 +117,7 @@
 				{#each [7, 30, 90] as days (days)}
 					<button
 						type="button"
-						class="px-3 text-sm h-full {rangeDays === days
-							? 'bg-accent'
-							: 'hover:bg-accent/50'}"
+						class="px-3 text-sm h-full {rangeDays === days ? 'bg-accent' : 'hover:bg-accent/50'}"
 						onclick={() => setRange(days)}
 					>
 						{days}d
@@ -129,7 +128,7 @@
 				<Download class="size-4" /> Export
 			</Button>
 		</div>
-	</header>
+	</div>
 
 	<Alert>
 		<Info class="size-4" />

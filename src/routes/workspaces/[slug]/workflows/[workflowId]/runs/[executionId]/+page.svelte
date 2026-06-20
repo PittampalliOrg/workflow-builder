@@ -22,6 +22,7 @@
 		Clock,
 		ExternalLink,
 		Copy,
+		Check,
 		Terminal,
 		MessageSquare,
 		Wrench,
@@ -34,7 +35,6 @@
 		Zap,
 		FileDiff,
 		RefreshCw,
-		MessagesSquare,
 		AlertTriangle,
 		Gauge,
 		ListTree,
@@ -42,10 +42,12 @@
 		ChevronLeft,
 		Play,
 		PencilLine,
+		Ellipsis,
 		List as ListIcon
 	} from '@lucide/svelte';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import OtherRunsPanel from '$lib/components/runs/other-runs-panel.svelte';
-	import RunGauges from '$lib/components/runs/run-gauges.svelte';
+	import RunProgressBand from '$lib/components/workflow/execution/run-progress-band.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Sheet, SheetTrigger, SheetContent, SheetHeader, SheetTitle } from '$lib/components/ui/sheet';
 	import { Button } from '$lib/components/ui/button';
@@ -63,10 +65,8 @@
 		type ExecutionStreamStore,
 		type ExecutionStreamState
 	} from '$lib/stores/execution-stream.svelte';
-	import ExecutionHeader from '$lib/components/workflow/execution/execution-header.svelte';
 	import JsonViewer from '$lib/components/workflow/execution/json-viewer.svelte';
 	import ArtifactList from '$lib/components/workflow/execution/artifact-list.svelte';
-	import StepDetail from '$lib/components/workflow/execution/step-detail.svelte';
 	import TimelineAutoScroll from '$lib/components/workflow/execution/timeline-auto-scroll.svelte';
 	import AgentRunExplorer from '$lib/components/workflow/execution/agent-run-explorer.svelte';
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';
@@ -125,7 +125,6 @@
 	import AnimatedEdge from '$lib/components/workflow/edges/animated-edge.svelte';
 	import LabeledEdge from '$lib/components/workflow/edges/labeled-edge.svelte';
 	import ExecutionCanvasSync from '$lib/components/workflow/execution-canvas-sync.svelte';
-	import LiveActivityRate from '$lib/components/metrics/LiveActivityRate.svelte';
 
 	let workflowId = $derived(page.params.workflowId ?? '');
 	let executionId = $derived(page.params.executionId ?? '');
@@ -435,6 +434,16 @@
 	});
 
 	const snapshot = $derived(executionState.snapshot);
+	// Live token rate (tokens/sec over the last-30s window) for the progress band.
+	const pageTokensPerSec = $derived.by(() => {
+		const win = executionState.tokenRateWindow;
+		if (win.length > 1) {
+			const span = (win[win.length - 1].ts - win[0].ts) / 1000;
+			const sum = win.reduce((a, b) => a + b.totalDelta, 0);
+			return span > 0 ? sum / span : null;
+		}
+		return null;
+	});
 	const executionStatus = $derived(snapshot?.status ?? 'unknown');
 	const startTime = $derived(snapshot?.startedAt ?? null);
 	const endTime = $derived(snapshot?.completedAt ?? null);
@@ -492,7 +501,6 @@
 	const investigationSessionId = $derived(snapshot?.sessionId ?? null);
 	const browserArtifactError = $derived(executionState.error);
 	const isLoadingStatus = $derived(!snapshot && !executionState.error);
-	const isLoadingLogs = $derived(isLoadingStatus);
 	const isLoadingBrowserArtifacts = $derived(isLoadingStatus);
 	const activeNodeLabel = $derived(
 		snapshot?.currentNodeName?.trim() || snapshot?.currentNodeId?.trim() || null
@@ -812,6 +820,36 @@
 		}
 	});
 
+	// Eagerly probe plan + code-checkpoint presence (cheap) once the run snapshot
+	// loads, so the conditional Plan/Code tabs can show/hide without waiting for
+	// the user to open them. Works for every run shape (SWE-bench/CLI runs don't
+	// always populate `agentRuns`, but can still have code checkpoints / a plan).
+	$effect(() => {
+		if (!snapshot) return;
+		if (!planTextLoaded) void loadPlanText();
+		if (!planArtifactsLoaded) void loadPlanArtifacts();
+		if (!codeCheckpointsLoaded) void loadCodeCheckpoints();
+	});
+
+	// Conditional run-tab visibility — hide tabs whose data this run lacks, so
+	// simple runs aren't cluttered with empty Code/Plan/Browser/Agents tabs.
+	const hasAgentsTab = $derived(agentRuns.length > 0);
+	const hasBrowserTab = $derived(browserArtifacts.length > 0);
+	const hasCodeTab = $derived(codeCheckpoints.length > 0);
+	const hasPlanTab = $derived(displayPlanText != null || planArtifacts.length > 0);
+
+	// If the active tab becomes hidden (or was a removed tab like the old
+	// "steps"), fall back to the Live console so content never goes blank.
+	$effect(() => {
+		const hidden =
+			activeTab === 'steps' ||
+			(activeTab === 'agents' && !hasAgentsTab) ||
+			(activeTab === 'browser' && !hasBrowserTab) ||
+			(activeTab === 'code' && !hasCodeTab) ||
+			(activeTab === 'plan' && !hasPlanTab);
+		if (hidden) activeTab = 'overview';
+	});
+
 	async function restoreSelectedCodeCheckpoint(): Promise<void> {
 		if (!selectedCodeCheckpoint) return;
 		const sandboxName = selectedCodeCheckpoint.sandboxName || activeWorkspaceSandboxName;
@@ -879,6 +917,26 @@
 	} satisfies NodeTypes;
 
 	const isRunning = $derived(['running', 'pending'].includes(executionStatus.toLowerCase()));
+
+	// Compact cockpit-header helpers (status badge variant + copy-id), inlined so
+	// the header is one clean row instead of the old nested ExecutionHeader block.
+	function runStatusVariant(s: string): 'default' | 'secondary' | 'destructive' | 'outline' {
+		const u = s.toUpperCase();
+		if (u === 'RUNNING' || u === 'PENDING') return 'default';
+		if (u === 'COMPLETED' || u === 'SUCCESS') return 'secondary';
+		if (u === 'FAILED' || u === 'ERROR') return 'destructive';
+		return 'outline';
+	}
+	let execIdCopied = $state(false);
+	async function copyExecId() {
+		try {
+			await navigator.clipboard.writeText(executionId);
+			execIdCopied = true;
+			setTimeout(() => (execIdCopied = false), 1500);
+		} catch {
+			// clipboard unavailable
+		}
+	}
 
 	let stopBusy = $state(false);
 	// "stopping" = the stop was accepted (202) but the durable terminate is still
@@ -1854,21 +1912,32 @@
 
 		<Separator orientation="vertical" class="h-5" />
 
-		<ExecutionHeader
-			status={executionStatus}
-			duration={duration ?? undefined}
-			startedAt={relativeStart ?? undefined}
-			{executionId}
-			instanceId={instanceId ?? undefined}
-			traceId={traceId ?? undefined}
-		/>
-
-		<LiveActivityRate {executionId} active={isRunning} />
-
-		<!-- Phase 3b: trace-level feedback widget. Disabled until the run
-		     produces an MLflow trace_id (primary_trace_id populated by
-		     the orchestrator status poll). -->
-		<TraceFeedback {executionId} disabled={!traceId && isRunning} />
+		<!-- Compact status cluster: badge + duration + started + live dot. -->
+		<div class="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+			<Badge variant={runStatusVariant(executionStatus)} class="flex shrink-0 items-center gap-1">
+				{#if isRunning}
+					<Loader2 size={11} class="animate-spin" />
+				{:else if executionStatus.toLowerCase() === 'success' || executionStatus.toLowerCase() === 'completed'}
+					<CheckCircle2 size={11} />
+				{:else if executionStatus.toLowerCase() === 'error' || executionStatus.toLowerCase() === 'failed'}
+					<XCircle size={11} />
+				{:else}
+					<Clock size={11} />
+				{/if}
+				{executionStatus}
+			</Badge>
+			{#if duration}
+				<span class="whitespace-nowrap"><Clock size={11} class="mr-0.5 inline" />{duration}</span>
+			{/if}
+			{#if relativeStart}
+				<span class="hidden whitespace-nowrap md:inline">· {relativeStart}</span>
+			{/if}
+			{#if executionState.isConnected}
+				<span class="flex items-center gap-1">
+					<span class="size-1.5 animate-pulse rounded-full bg-green-500"></span>Live
+				</span>
+			{/if}
+		</div>
 
 		<div class="ml-auto flex items-center gap-1 text-xs">
 			<!-- Prev / Next sibling runs. Disabled state cascades from the
@@ -1923,17 +1992,10 @@
 					{stopBusy || stopConverging ? 'Stopping…' : 'Stop run'}
 				</Button>
 			{/if}
-			<Separator orientation="vertical" class="h-5 mx-1" />
-			<a
-				href={`/workspaces/${slug}/sessions?source=workflow&executionId=${executionId}`}
-				class="inline-flex items-center gap-1 rounded-md px-2 py-1 hover:bg-accent text-muted-foreground hover:text-foreground"
-				title="Sessions spawned by this run"
-			>
-				<MessagesSquare class="size-3.5" /> Sessions
-			</a>
+			<Separator orientation="vertical" class="mx-1 h-5" />
 			<a
 				href={`/workspaces/${slug}/workflows/${workflowId}`}
-				class="inline-flex items-center gap-1 rounded-md px-2 py-1 hover:bg-accent text-muted-foreground hover:text-foreground"
+				class="inline-flex h-7 items-center gap-1 rounded-md px-2 text-muted-foreground hover:bg-accent hover:text-foreground"
 				title="Open the workflow editor"
 			>
 				<PencilLine class="size-3.5" /> Editor
@@ -1942,22 +2004,63 @@
 				variant="default"
 				size="sm"
 				class="h-7 gap-1"
-				onclick={() =>
-					goto(`/workspaces/${slug}/workflows/${workflowId}?execute=1`)}
+				onclick={() => goto(`/workspaces/${slug}/workflows/${workflowId}?execute=1`)}
 				title="Submit a new run of this workflow (opens the Execute dialog in the editor)"
 			>
 				<Play class="size-3.5" /> Submit new run
 			</Button>
-			{#if executionState.isConnected}
-				<span class="ml-2 flex items-center gap-1 text-muted-foreground">
-					<span class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></span>
-					Live
-				</span>
-			{/if}
+
+			<!-- Overflow: secondary / niche actions tucked away to de-noise the bar. -->
+			<DropdownMenu.Root>
+				<DropdownMenu.Trigger>
+					{#snippet child({ props })}
+						<Button {...props} variant="ghost" size="icon" class="size-7" title="More actions">
+							<Ellipsis class="size-4" />
+						</Button>
+					{/snippet}
+				</DropdownMenu.Trigger>
+				<DropdownMenu.Content align="end" class="w-60">
+					<DropdownMenu.Item onSelect={copyExecId}>
+						{#if execIdCopied}
+							<Check class="size-3.5 text-green-500" />
+						{:else}
+							<Copy class="size-3.5" />
+						{/if}
+						Copy execution ID
+					</DropdownMenu.Item>
+					{#if traceId}
+						<DropdownMenu.Item onSelect={() => goto(`/observability/${traceId}`)}>
+							<ExternalLink class="size-3.5" /> View full trace
+						</DropdownMenu.Item>
+					{/if}
+					<DropdownMenu.Separator />
+					<div class="px-2 py-1.5">
+						<TraceFeedback {executionId} disabled={!traceId && isRunning} />
+					</div>
+					{#if instanceId}
+						<DropdownMenu.Separator />
+						<DropdownMenu.Label class="text-[10px] font-normal text-muted-foreground">
+							Dapr instance: <code class="text-[10px]">{instanceId.slice(0, 16)}</code>
+						</DropdownMenu.Label>
+					{/if}
+				</DropdownMenu.Content>
+			</DropdownMenu.Root>
 		</div>
 	</header>
 
-	<RunGauges state={executionState} />
+	<!-- Run-level flow progress on every NON-Live tab (the Live console renders
+	     its own band). Replaces the old live-only RunGauges token strip. -->
+	{#if activeTab !== 'overview'}
+		<RunProgressBand
+			nodes={workflowNodes}
+			edges={workflowEdges}
+			{snapshot}
+			activeToolName={executionState.activeToolName}
+			isStreaming={executionState.isLlmStreaming}
+			tokensPerSec={pageTokensPerSec}
+			runActive={isRunning}
+		/>
+	{/if}
 
 	<!-- Body: Other Runs panel on the left (collapsible), tabbed content on the right. -->
 	<div class="flex flex-1 overflow-hidden">
@@ -1972,20 +2075,19 @@
 			<TabsList class="h-10">
 				<TabsTrigger value="overview">Live</TabsTrigger>
 				<TabsTrigger value="outputs">Outputs{#if workflowArtifacts.length > 0}<span class="ml-1.5 text-xs text-muted-foreground">{workflowArtifacts.length}</span>{/if}</TabsTrigger>
-				<TabsTrigger value="steps">Steps</TabsTrigger>
 				<TabsTrigger value="timeline">Timeline</TabsTrigger>
-				<TabsTrigger value="code">Code</TabsTrigger>
-				<TabsTrigger value="plan">Plan</TabsTrigger>
 				<TabsTrigger value="canvas">Canvas</TabsTrigger>
-				<TabsTrigger value="agents">Agents</TabsTrigger>
-				<TabsTrigger value="browser">Browser</TabsTrigger>
+				{#if hasCodeTab}<TabsTrigger value="code">Code</TabsTrigger>{/if}
+				{#if hasPlanTab}<TabsTrigger value="plan">Plan</TabsTrigger>{/if}
+				{#if hasAgentsTab}<TabsTrigger value="agents">Agents</TabsTrigger>{/if}
+				{#if hasBrowserTab}<TabsTrigger value="browser">Browser</TabsTrigger>{/if}
 				<TabsTrigger value="trace">Trace</TabsTrigger>
 			</TabsList>
 		</div>
 
 		<!-- Tab 1: Overview -->
 		<TabsContent value="overview" class="flex-1 overflow-hidden p-0">
-			<RunConsole {executionId} {slug} {workflowId}>
+			<RunConsole {executionId} {slug} {workflowId} nodes={workflowNodes} edges={workflowEdges}>
 				{#snippet details()}
 				{#if primaryAppPreviewUrl}
 					<Card>
@@ -2140,26 +2242,7 @@
 		</TabsContent>
 
 		<!-- Tab 2: Steps -->
-		<TabsContent value="steps" class="flex-1 overflow-y-auto p-4">
-			<div class="mx-auto max-w-5xl space-y-2">
-				{#if isLoadingLogs}
-					{#each Array(3) as _}
-						<Skeleton class="h-14 w-full rounded-md" />
-					{/each}
-				{:else if logs.length > 0}
-					{#each logs as step, i (i)}
-						<StepDetail {step} />
-					{/each}
-				{:else}
-					<div class="flex flex-col items-center justify-center py-12 text-muted-foreground">
-						<Terminal size={24} />
-						<p class="mt-2 text-sm">No step logs available</p>
-					</div>
-				{/if}
-			</div>
-		</TabsContent>
-
-		<!-- Tab 3: Timeline -->
+		<!-- Tab: Timeline -->
 		<TabsContent value="timeline" class="flex-1 overflow-hidden">
 			<div class="flex h-full flex-col">
 				{#if executionState.currentPhase}
@@ -2849,10 +2932,6 @@
 					isLoading={isLoadingInvestigation}
 					error={investigationError}
 					fullTraceHref={primaryInvestigationTraceId ? `/observability/${primaryInvestigationTraceId}` : null}
-					mlflowHref={primaryInvestigationTraceId
-						? `/api/observability/mlflow/traces/${encodeURIComponent(primaryInvestigationTraceId)}`
-						: `/api/observability/mlflow/sessions/${encodeURIComponent(executionId)}`}
-					
 					onRefresh={() => {
 						investigationFetched = false;
 						fetchInvestigation();
