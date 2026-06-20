@@ -66,7 +66,6 @@
 	import ExecutionHeader from '$lib/components/workflow/execution/execution-header.svelte';
 	import JsonViewer from '$lib/components/workflow/execution/json-viewer.svelte';
 	import ArtifactList from '$lib/components/workflow/execution/artifact-list.svelte';
-	import StepDetail from '$lib/components/workflow/execution/step-detail.svelte';
 	import TimelineAutoScroll from '$lib/components/workflow/execution/timeline-auto-scroll.svelte';
 	import AgentRunExplorer from '$lib/components/workflow/execution/agent-run-explorer.svelte';
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';
@@ -492,7 +491,6 @@
 	const investigationSessionId = $derived(snapshot?.sessionId ?? null);
 	const browserArtifactError = $derived(executionState.error);
 	const isLoadingStatus = $derived(!snapshot && !executionState.error);
-	const isLoadingLogs = $derived(isLoadingStatus);
 	const isLoadingBrowserArtifacts = $derived(isLoadingStatus);
 	const activeNodeLabel = $derived(
 		snapshot?.currentNodeName?.trim() || snapshot?.currentNodeId?.trim() || null
@@ -810,6 +808,36 @@
 		if (activeTab === 'code') {
 			loadCodeCheckpoints();
 		}
+	});
+
+	// Eagerly probe plan + code-checkpoint presence (cheap) once the run snapshot
+	// loads, so the conditional Plan/Code tabs can show/hide without waiting for
+	// the user to open them. Works for every run shape (SWE-bench/CLI runs don't
+	// always populate `agentRuns`, but can still have code checkpoints / a plan).
+	$effect(() => {
+		if (!snapshot) return;
+		if (!planTextLoaded) void loadPlanText();
+		if (!planArtifactsLoaded) void loadPlanArtifacts();
+		if (!codeCheckpointsLoaded) void loadCodeCheckpoints();
+	});
+
+	// Conditional run-tab visibility — hide tabs whose data this run lacks, so
+	// simple runs aren't cluttered with empty Code/Plan/Browser/Agents tabs.
+	const hasAgentsTab = $derived(agentRuns.length > 0);
+	const hasBrowserTab = $derived(browserArtifacts.length > 0);
+	const hasCodeTab = $derived(codeCheckpoints.length > 0);
+	const hasPlanTab = $derived(displayPlanText != null || planArtifacts.length > 0);
+
+	// If the active tab becomes hidden (or was a removed tab like the old
+	// "steps"), fall back to the Live console so content never goes blank.
+	$effect(() => {
+		const hidden =
+			activeTab === 'steps' ||
+			(activeTab === 'agents' && !hasAgentsTab) ||
+			(activeTab === 'browser' && !hasBrowserTab) ||
+			(activeTab === 'code' && !hasCodeTab) ||
+			(activeTab === 'plan' && !hasPlanTab);
+		if (hidden) activeTab = 'overview';
 	});
 
 	async function restoreSelectedCodeCheckpoint(): Promise<void> {
@@ -1972,13 +2000,12 @@
 			<TabsList class="h-10">
 				<TabsTrigger value="overview">Live</TabsTrigger>
 				<TabsTrigger value="outputs">Outputs{#if workflowArtifacts.length > 0}<span class="ml-1.5 text-xs text-muted-foreground">{workflowArtifacts.length}</span>{/if}</TabsTrigger>
-				<TabsTrigger value="steps">Steps</TabsTrigger>
 				<TabsTrigger value="timeline">Timeline</TabsTrigger>
-				<TabsTrigger value="code">Code</TabsTrigger>
-				<TabsTrigger value="plan">Plan</TabsTrigger>
 				<TabsTrigger value="canvas">Canvas</TabsTrigger>
-				<TabsTrigger value="agents">Agents</TabsTrigger>
-				<TabsTrigger value="browser">Browser</TabsTrigger>
+				{#if hasCodeTab}<TabsTrigger value="code">Code</TabsTrigger>{/if}
+				{#if hasPlanTab}<TabsTrigger value="plan">Plan</TabsTrigger>{/if}
+				{#if hasAgentsTab}<TabsTrigger value="agents">Agents</TabsTrigger>{/if}
+				{#if hasBrowserTab}<TabsTrigger value="browser">Browser</TabsTrigger>{/if}
 				<TabsTrigger value="trace">Trace</TabsTrigger>
 			</TabsList>
 		</div>
@@ -2140,26 +2167,7 @@
 		</TabsContent>
 
 		<!-- Tab 2: Steps -->
-		<TabsContent value="steps" class="flex-1 overflow-y-auto p-4">
-			<div class="mx-auto max-w-5xl space-y-2">
-				{#if isLoadingLogs}
-					{#each Array(3) as _}
-						<Skeleton class="h-14 w-full rounded-md" />
-					{/each}
-				{:else if logs.length > 0}
-					{#each logs as step, i (i)}
-						<StepDetail {step} />
-					{/each}
-				{:else}
-					<div class="flex flex-col items-center justify-center py-12 text-muted-foreground">
-						<Terminal size={24} />
-						<p class="mt-2 text-sm">No step logs available</p>
-					</div>
-				{/if}
-			</div>
-		</TabsContent>
-
-		<!-- Tab 3: Timeline -->
+		<!-- Tab: Timeline -->
 		<TabsContent value="timeline" class="flex-1 overflow-hidden">
 			<div class="flex h-full flex-col">
 				{#if executionState.currentPhase}
@@ -2849,10 +2857,6 @@
 					isLoading={isLoadingInvestigation}
 					error={investigationError}
 					fullTraceHref={primaryInvestigationTraceId ? `/observability/${primaryInvestigationTraceId}` : null}
-					mlflowHref={primaryInvestigationTraceId
-						? `/api/observability/mlflow/traces/${encodeURIComponent(primaryInvestigationTraceId)}`
-						: `/api/observability/mlflow/sessions/${encodeURIComponent(executionId)}`}
-					
 					onRefresh={() => {
 						investigationFetched = false;
 						fetchInvestigation();
