@@ -4537,6 +4537,12 @@ async function seedGeneratorCriticShowcases(params: {
 		// Coding generator/critic: clone a repo → redesign → build-gate → Playwright
 		// critic (screenshots the running app) → open a PR. (interactive-cli family.)
 		"coding-redesign-cli-showcase.json",
+		// GAN-style long-running harness: Planner (high-level SPEC) → Generator↔Evaluator
+		// contract NEGOTIATION (contract.json: testable criteria + passes flags) →
+		// contract-graded build loop (Playwright critic grades each criterion) +
+		// progress.json agentic memory → PR. (interactive-cli family.) See
+		// docs/gan-harness-workflow.md.
+		"gan-harness-cli-showcase.json",
 	]) {
 		const full = path.join(dir, file);
 		if (!fs.existsSync(full)) {
