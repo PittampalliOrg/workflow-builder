@@ -20,6 +20,7 @@ import tomllib
 import pytest
 
 from src.agy_stop_guard import record_hook_event
+from src.agy_capture import make_bundle
 from src.cli_adapters import get_adapter
 from src.cli_adapters.antigravity import normalize_agy_model
 from src.cli_adapters.codex import normalize_codex_model
@@ -470,6 +471,12 @@ def test_agy_requires_interactive_login_is_dynamic(monkeypatch):
     # the login field).
     monkeypatch.delenv("AGY_AUTH_JSON", raising=False)
     assert get_adapter("antigravity").requires_interactive_login is True
+    # google_accounts.json is metadata, not an OAuth credential.
+    monkeypatch.setenv(
+        "AGY_AUTH_JSON",
+        _gemini_auth_bundle(("google_accounts.json", b'["user@example.com"]')),
+    )
+    assert get_adapter("antigravity").requires_interactive_login is True
     # Antigravity-only bundles do not satisfy legacy Gemini auth.
     monkeypatch.setenv(
         "AGY_AUTH_JSON",
@@ -512,6 +519,15 @@ def test_agy_seed_restores_login_bundle(agy_home, monkeypatch):
     assert (gem / "google_accounts.json").read_bytes() == b"[]"
     assert (gem / "antigravity-cli" / "antigravity-oauth-token").read_bytes() == b'{"token":{}}'
     assert (gem / "config" / ".migrated").exists()
+
+
+def test_agy_capture_requires_oauth_creds(agy_home):
+    gem = agy_home / ".gemini"
+    gem.mkdir(parents=True)
+    (gem / "google_accounts.json").write_text('["user@example.com"]')
+    assert make_bundle(gem) is None
+    (gem / "oauth_creds.json").write_text('{"refresh_token":"r"}')
+    assert make_bundle(gem) is not None
 
 
 AGY_SESSION = {

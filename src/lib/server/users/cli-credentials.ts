@@ -11,6 +11,7 @@
  *     metadata only.
  */
 import { and, eq } from "drizzle-orm";
+import { gunzipSync } from "node:zlib";
 import { db } from "$lib/server/db";
 import { userCliCredentials } from "$lib/server/db/schema";
 import { cliAuthForProvider } from "$lib/server/agents/runtime-registry";
@@ -57,6 +58,33 @@ export type CliCredentialSummary = {
  * Code subscription OAuth tokens are minted for ~1 year; 363 days leaves a
  * safety margin so we steer re-enrollment before the provider hard-expires. */
 const DEFAULT_TTL_DAYS = 363;
+
+function listTarGzEntries(buffer: Buffer): string[] {
+	const tar = gunzipSync(buffer);
+	const entries: string[] = [];
+	let offset = 0;
+	while (offset + 512 <= tar.length) {
+		const header = tar.subarray(offset, offset + 512);
+		if (header.every((byte) => byte === 0)) break;
+		const name = header
+			.subarray(0, 100)
+			.toString("utf8")
+			.replace(/\0.*$/, "")
+			.trim();
+		const sizeText = header
+			.subarray(124, 136)
+			.toString("utf8")
+			.replace(/\0.*$/, "")
+			.trim();
+		const size = Number.parseInt(sizeText || "0", 8);
+		if (!Number.isFinite(size) || size < 0) {
+			throw new Error("Credential bundle has an invalid tar entry size.");
+		}
+		if (name) entries.push(name.replace(/^\.\/+/, ""));
+		offset += 512 + Math.ceil(size / 512) * 512;
+	}
+	return entries;
+}
 
 function requireDb() {
 	if (!db) throw new Error("Database not configured");
@@ -135,6 +163,13 @@ export function assertPlausibleCliCredential(
 		}
 		if (buf.length > 8 * 1024 * 1024) {
 			throw new Error("Credential bundle is too large (>8 MiB).");
+		}
+		const entries = listTarGzEntries(buf);
+		if (provider === "google" && !entries.includes("oauth_creds.json")) {
+			throw new Error(
+				"Gemini CLI credential bundle is missing oauth_creds.json. " +
+					"Start a Gemini CLI session, complete Google OAuth, and let the runtime capture the full ~/.gemini login bundle.",
+			);
 		}
 		return;
 	}

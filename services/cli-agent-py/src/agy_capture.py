@@ -48,11 +48,10 @@ CAPTURE_INCLUDES = (
     "config",
 )
 
-TOKEN_RELS = (
-    "oauth_creds.json",
-    "google_accounts.json",
-    "antigravity-cli/antigravity-oauth-token",
-)
+# Only OAuth-bearing files should trigger capture. ``google_accounts.json`` is
+# account metadata; capturing it without ``oauth_creds.json`` overwrites a valid
+# Gemini login bundle with a non-login bundle.
+TOKEN_RELS = ("oauth_creds.json",)
 AGY_PROVIDER = "google"
 
 _WORKFLOW_BUILDER_URL = os.environ.get(

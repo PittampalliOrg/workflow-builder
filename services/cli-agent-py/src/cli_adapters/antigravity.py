@@ -216,7 +216,7 @@ def _auth_bundle_has_gemini_login(bundle_b64: str | None) -> bool:
             names = {os.path.normpath(member.name) for member in tar.getmembers()}
     except Exception:  # noqa: BLE001
         return False
-    return "oauth_creds.json" in names or "google_accounts.json" in names
+    return "oauth_creds.json" in names
 
 
 def _managed_agy_settings(
