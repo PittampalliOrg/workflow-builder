@@ -47,7 +47,7 @@
 	} from '@lucide/svelte';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import OtherRunsPanel from '$lib/components/runs/other-runs-panel.svelte';
-	import RunGauges from '$lib/components/runs/run-gauges.svelte';
+	import RunProgressBand from '$lib/components/workflow/execution/run-progress-band.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Sheet, SheetTrigger, SheetContent, SheetHeader, SheetTitle } from '$lib/components/ui/sheet';
 	import { Button } from '$lib/components/ui/button';
@@ -434,6 +434,16 @@
 	});
 
 	const snapshot = $derived(executionState.snapshot);
+	// Live token rate (tokens/sec over the last-30s window) for the progress band.
+	const pageTokensPerSec = $derived.by(() => {
+		const win = executionState.tokenRateWindow;
+		if (win.length > 1) {
+			const span = (win[win.length - 1].ts - win[0].ts) / 1000;
+			const sum = win.reduce((a, b) => a + b.totalDelta, 0);
+			return span > 0 ? sum / span : null;
+		}
+		return null;
+	});
 	const executionStatus = $derived(snapshot?.status ?? 'unknown');
 	const startTime = $derived(snapshot?.startedAt ?? null);
 	const endTime = $derived(snapshot?.completedAt ?? null);
@@ -2038,7 +2048,19 @@
 		</div>
 	</header>
 
-	<RunGauges state={executionState} />
+	<!-- Run-level flow progress on every NON-Live tab (the Live console renders
+	     its own band). Replaces the old live-only RunGauges token strip. -->
+	{#if activeTab !== 'overview'}
+		<RunProgressBand
+			nodes={workflowNodes}
+			edges={workflowEdges}
+			{snapshot}
+			activeToolName={executionState.activeToolName}
+			isStreaming={executionState.isLlmStreaming}
+			tokensPerSec={pageTokensPerSec}
+			runActive={isRunning}
+		/>
+	{/if}
 
 	<!-- Body: Other Runs panel on the left (collapsible), tabbed content on the right. -->
 	<div class="flex flex-1 overflow-hidden">
