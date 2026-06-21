@@ -216,7 +216,7 @@
 			<span class="truncate">{node.name}</span>
 		</button>
 		{#if expanded.has(node.path)}
-			{#each node.children as child (child.path)}
+			{#each node.children as child ((child.isDir ? 'd:' : 'f:') + child.path)}
 				{@render treeNode(child, depth + 1)}
 			{/each}
 		{/if}
@@ -260,7 +260,7 @@
 	{/if}
 	<div class="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,18rem)_1fr]">
 		<div class="max-h-[60vh] overflow-y-auto rounded-md border border-border p-1">
-			{#each tree as node (node.path)}
+			{#each tree as node ((node.isDir ? 'd:' : 'f:') + node.path)}
 				{@render treeNode(node, 0)}
 			{/each}
 		</div>

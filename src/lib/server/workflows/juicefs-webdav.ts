@@ -69,7 +69,8 @@ export async function listWorkspaceTree(
     if (rel === "") continue; // the root itself
     const segments = rel.split("/");
     if (segments.some((s) => SKIP_DIR_SEGMENTS.has(s))) continue;
-    const isDir = /<D:collection\s*\/>/i.test(block);
+    // Matches <D:collection/>, <D:collection />, and <D:collection xmlns:D="DAV:"/>.
+    const isDir = /<D:collection[\s/>]/i.test(block);
     const sizeMatch = block.match(/<D:getcontentlength>(\d+)<\/D:getcontentlength>/i);
     const sizeBytes = sizeMatch ? parseInt(sizeMatch[1], 10) : 0;
     entries.push({ path: rel, isDir, sizeBytes });
