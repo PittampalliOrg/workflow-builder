@@ -87,6 +87,10 @@ from src.cli_lifecycle import (  # noqa: E402
     stop_cli_activity,
 )
 from src.hooks_api import build_router as build_hooks_router  # noqa: E402
+from src.playwright_mcp_proxy import (  # noqa: E402
+    build_pw_proxy_router,
+    close_client as close_pw_proxy_client,
+)
 from src.browser_video_sync import sync_browser_video_activity  # noqa: E402
 from src.output_sync import sync_output_activity  # noqa: E402
 from src.seed import seed_session_activity  # noqa: E402
@@ -135,6 +139,7 @@ async def lifespan(_app: FastAPI):
     finally:
         logger.info("[cli-agent-py] shutting down")
         await supervisor.stop()
+        await close_pw_proxy_client()
         set_supervisor(None)
         _runtime.shutdown()
         _runtime_running = False
@@ -142,6 +147,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="cli-agent-py", lifespan=lifespan)
 app.include_router(build_hooks_router())
+app.include_router(build_pw_proxy_router())
 register_terminal_ws(app)
 
 
