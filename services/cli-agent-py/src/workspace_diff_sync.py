@@ -64,23 +64,38 @@ _CAPTURE_SCRIPT = """
 set -e
 SAFE_DIR_CMD
 [ -d "$REPO" ] || { echo "__WFB_NO_REPO__"; exit 0; }
-cd "$REPO"
-if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  SUB=$(find . -mindepth 2 -maxdepth 2 -name .git 2>/dev/null | head -1)
-  if [ -n "$SUB" ]; then cd "$(dirname "$SUB")"; else git init -q >/dev/null 2>&1; fi
+IDX=/tmp/wfb-diff-index; rm -f "$IDX"
+BASEREFS='git rev-parse -q --verify refs/tags/wfb-baseline 2>/dev/null || git rev-parse -q --verify origin/HEAD 2>/dev/null || git rev-parse -q --verify @{upstream} 2>/dev/null || echo "$EMPTY"'
+# 1) Agent-cloned subdir repo (its own real .git) wins — even if $REPO root has a
+#    stale .git from a prior run. Diff INSIDE it vs its clone point (agent-only).
+SUB=$(find "$REPO" -mindepth 2 -maxdepth 2 -name .git 2>/dev/null | head -1)
+if [ -n "$SUB" ]; then
+  cd "$(dirname "$SUB")"
+  mkdir -p .git/info; printf '%s' "$NOISE" > .git/info/exclude
+  BASE=$(eval "$BASEREFS")
+  GIT_INDEX_FILE="$IDX" git add -A 2>/dev/null || true
+  PATCH=$(GIT_INDEX_FILE="$IDX" git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true)
+elif ( cd "$REPO" && git rev-parse --is-inside-work-tree >/dev/null 2>&1 ); then
+  # 2) $REPO itself is a real repo (session-resource clone at root).
+  cd "$REPO"
+  mkdir -p .git/info; printf '%s' "$NOISE" > .git/info/exclude
+  BASE=$(eval "$BASEREFS")
+  GIT_INDEX_FILE="$IDX" git add -A 2>/dev/null || true
+  PATCH=$(GIT_INDEX_FILE="$IDX" git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true)
+else
+  # 3) Greenfield: external GIT_DIR over the work-tree — NEVER writes .git into the
+  #    workspace (avoids polluting shared multi-node /sandbox/work). Diff vs empty.
+  GD=/tmp/wfb-gitdir; rm -rf "$GD"
+  GIT_DIR="$GD" GIT_WORK_TREE="$REPO" git init -q >/dev/null 2>&1 || true
+  mkdir -p "$GD/info"; printf '%s' "$NOISE" > "$GD/info/exclude"
+  BASE="$EMPTY"
+  GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$IDX" git add -A 2>/dev/null || true
+  PATCH=$(GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$IDX" git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true)
+  rm -rf "$GD" 2>/dev/null || true
 fi
-mkdir -p .git/info
-printf '%s' "$NOISE" > .git/info/exclude
-BASE=$(git rev-parse -q --verify refs/tags/wfb-baseline 2>/dev/null \
-  || git rev-parse -q --verify origin/HEAD 2>/dev/null \
-  || git rev-parse -q --verify '@{upstream}' 2>/dev/null \
-  || echo "$EMPTY")
-export GIT_INDEX_FILE=/tmp/wfb-diff-index
-rm -f "$GIT_INDEX_FILE"
-git add -A 2>/dev/null || true
 echo "WFB_BASE=$BASE"
 echo "===WFB_PATCH==="
-git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true
+printf '%s' "$PATCH"
 """.replace("SAFE_DIR_CMD", _SAFE_DIR)
 
 
