@@ -37,10 +37,18 @@ _MAX_PATCH_BYTES = int(os.environ.get("DAPR_WORKSPACE_DIFF_MAX_BYTES", str(8 * 1
 _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 _OUT_FILE = "/tmp/wfb-run-diff.patch"
 
+# Base64 the noise list so it can be embedded in the bash command string WITHOUT
+# its newlines being mangled. (Passing it via `export NOISE=<json>` turned every
+# real newline into a literal `\n`, producing a one-line garbage exclude file and
+# disabling ALL excludes — the seed dotfiles + .wfb-diff-git internals then leaked
+# into the diff. OpenShell `execute` runs a command string, not env vars, so unlike
+# the CLI's subprocess env_extra we must encode binary-safe.)
 # Baked noise exclude (mirrors the CLI). Keeps the diff/`git add` off dependency
 # and vcs dirs so it is fast and meaningful on a greenfield sandbox with no
 # .gitignore. (The JuiceFS magic files are CLI-mount-specific but harmless here.)
 _NOISE_EXCLUDE = "node_modules/\n.git/\n.wfb-diff-git/\n.venv/\n__pycache__/\ndist/\nbuild/\n.cache/\n.next/\nvendor/\n.pytest_cache/\n.accesslog\n.config\n.stats\n.trash/\n"
+
+_NOISE_B64 = base64.b64encode(_NOISE_EXCLUDE.encode("utf-8")).decode("ascii")
 
 # Dual capture (kept in sync with cli-agent-py/src/workspace_diff_sync.py): the
 # combined patch is written to $OUTF (NOT stdout — OpenShell truncates large
@@ -61,7 +69,7 @@ if [ ! -e "$REPO/.git" ]; then
   GIT_DIR="$GD" git config user.email wfb@local >/dev/null 2>&1 || true
   GIT_DIR="$GD" git config user.name wfb >/dev/null 2>&1 || true
   mkdir -p "$GD/info"
-  { printf '%s\n' "$NOISE"; for d in $NESTED; do echo "/${d#$REPO/}"; done; } > "$GD/info/exclude"
+  { printf '%s' "$NOISE_B64" | base64 -d; echo; for d in $NESTED; do echo "/${d#$REPO/}"; done; } > "$GD/info/exclude"
   rm -f "$T"
   PREV=$(GIT_DIR="$GD" git rev-parse -q --verify refs/wfb/baseline 2>/dev/null || echo "$EMPTY")
   GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git add -A --ignore-errors 2>/dev/null || true
@@ -117,7 +125,7 @@ if [ ! -e "$REPO/.git" ]; then
     GIT_DIR="$GD" git config user.email wfb@local >/dev/null 2>&1 || true
     GIT_DIR="$GD" git config user.name wfb >/dev/null 2>&1 || true
     mkdir -p "$GD/info"
-    { printf '%s\n' "$NOISE"; for d in $NESTED; do echo "/${d#$REPO/}"; done; } > "$GD/info/exclude"
+    { printf '%s' "$NOISE_B64" | base64 -d; echo; for d in $NESTED; do echo "/${d#$REPO/}"; done; } > "$GD/info/exclude"
     rm -f "$T"
     GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git add -A --ignore-errors 2>/dev/null || true
     NEW=$(GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git write-tree 2>/dev/null || true)
@@ -147,7 +155,7 @@ def prime_workspace_baseline_openshell(runtime: Any) -> dict[str, Any]:
     """Snapshot the pre-agent sandbox state as the diff baseline (once). Best
     effort; never raises. Call at session START before the agent writes files."""
     repo_dir = (getattr(runtime, "cwd", None) or "/sandbox") or "/sandbox"
-    exports = f"export REPO={json.dumps(repo_dir)} NOISE={json.dumps(_NOISE_EXCLUDE)}; "
+    exports = f"export REPO={json.dumps(repo_dir)} NOISE_B64={json.dumps(_NOISE_B64)}; "
     try:
         res = runtime.execute(exports + _PRIME_SCRIPT, timeout_seconds=_GIT_TIMEOUT_SECONDS)
         out = str(res.get("stdout") or res.get("output") or "")
@@ -200,7 +208,7 @@ def sync_workspace_diff_openshell(
     # pass REPO explicitly to anchor the capture on the workspace root.
     exports = (
         f"export REPO={json.dumps(repo_dir)} "
-        f"NOISE={json.dumps(_NOISE_EXCLUDE)} "
+        f"NOISE_B64={json.dumps(_NOISE_B64)} "
         f"OUTF={json.dumps(_OUT_FILE)}; "
     )
     try:
