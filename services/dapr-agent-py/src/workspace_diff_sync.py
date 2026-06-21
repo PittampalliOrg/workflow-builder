@@ -96,6 +96,66 @@ echo "WFB_BYTES=$(wc -c < "$OUTF" 2>/dev/null || echo 0)"
 """
 
 
+# Baseline PRIME (run once at session START, before the agent acts): snapshot the
+# pre-existing sandbox state into refs/wfb/baseline so the session-end diff shows
+# ONLY the agent's writes — not the seeded home/config dotfiles (.bashrc, .claude.json,
+# .codex/, .gitconfig, …) that live in dapr's cwd (/sandbox is the seeded home dir,
+# unlike the CLI's clean /sandbox/work). Only sets a baseline that doesn't already
+# exist, so a workflow retry (agent already wrote files) never baselines them out.
+_PRIME_SCRIPT = r"""
+set -e
+git config --global --add safe.directory '*' 2>/dev/null || true
+[ -d "$REPO" ] || { echo "__WFB_NO_REPO__"; exit 0; }
+NESTED=$(find "$REPO" -mindepth 2 -maxdepth 3 -name .git 2>/dev/null | sed 's:/[.]git$::' | grep -v '/[.]wfb-' || true)
+T=/tmp/wfb-prime-index
+PRIMED=0
+
+if [ ! -e "$REPO/.git" ]; then
+  GD="$REPO/.wfb-diff-git"
+  if ! GIT_DIR="$GD" git rev-parse -q --verify refs/wfb/baseline >/dev/null 2>&1; then
+    [ -d "$GD" ] || GIT_DIR="$GD" GIT_WORK_TREE="$REPO" git init -q >/dev/null 2>&1 || true
+    GIT_DIR="$GD" git config user.email wfb@local >/dev/null 2>&1 || true
+    GIT_DIR="$GD" git config user.name wfb >/dev/null 2>&1 || true
+    mkdir -p "$GD/info"
+    { printf '%s\n' "$NOISE"; for d in $NESTED; do echo "/${d#$REPO/}"; done; } > "$GD/info/exclude"
+    rm -f "$T"
+    GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git add -A --ignore-errors 2>/dev/null || true
+    NEW=$(GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git write-tree 2>/dev/null || true)
+    [ -n "$NEW" ] && GIT_DIR="$GD" git update-ref refs/wfb/baseline "$NEW" 2>/dev/null && PRIMED=$((PRIMED+1)) || true
+  fi
+fi
+
+REPOS=""
+[ -e "$REPO/.git" ] && REPOS="$REPO"
+REPOS="$REPOS $NESTED"
+for R in $REPOS; do
+  [ -d "$R" ] || continue
+  cd "$R"
+  if ! git rev-parse -q --verify refs/wfb/baseline >/dev/null 2>&1; then
+    rm -f "$T"
+    GIT_INDEX_FILE="$T" git add -A --ignore-errors 2>/dev/null || true
+    NEW=$(GIT_INDEX_FILE="$T" git write-tree 2>/dev/null || true)
+    [ -n "$NEW" ] && git update-ref refs/wfb/baseline "$NEW" 2>/dev/null && PRIMED=$((PRIMED+1)) || true
+  fi
+  cd "$REPO"
+done
+echo "WFB_PRIMED=$PRIMED"
+"""
+
+
+def prime_workspace_baseline_openshell(runtime: Any) -> dict[str, Any]:
+    """Snapshot the pre-agent sandbox state as the diff baseline (once). Best
+    effort; never raises. Call at session START before the agent writes files."""
+    repo_dir = (getattr(runtime, "cwd", None) or "/sandbox") or "/sandbox"
+    exports = f"export REPO={json.dumps(repo_dir)} NOISE={json.dumps(_NOISE_EXCLUDE)}; "
+    try:
+        res = runtime.execute(exports + _PRIME_SCRIPT, timeout_seconds=_GIT_TIMEOUT_SECONDS)
+        out = str(res.get("stdout") or res.get("output") or "")
+        return {"ok": True, "out": out.strip()[-120:]}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": True, "skipped": f"prime_failed: {exc}"}
+
+
 def _clean(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 

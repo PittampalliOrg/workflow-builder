@@ -4474,6 +4474,18 @@ class OpenShellDurableAgent(DurableAgent):
                 or requested_agent_workflow_mode == "strict_sequential"
                 or is_swebench_execution_context(instance_id, runtime_context)
             )
+            # Snapshot the pre-agent sandbox state as the run-diff baseline BEFORE
+            # the agent writes, so the session-end diff shows only the agent's
+            # changes (not the seeded home/config dotfiles in dapr's /sandbox cwd).
+            # Skipped for strict/benchmark one-shot turns (no run-diff there).
+            if execution_id and not strict_one_shot_agent_turn and not ctx.is_replaying:
+                try:
+                    from src.workspace_diff_sync import prime_workspace_baseline_openshell
+
+                    prime_workspace_baseline_openshell(runtime)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[run-diff] baseline prime failed: %s", exc)
+
             if (
                 force_repo_sequential
                 or (
@@ -4549,7 +4561,7 @@ class OpenShellDurableAgent(DurableAgent):
             # into the REMOTE OpenShell sandbox (this pod's fs is empty), so the
             # diff is captured by running git INSIDE the sandbox via `runtime` —
             # same artifact pipeline as the CLI runtimes. Best-effort, replay-gated.
-            if execution_id and not ctx.is_replaying:
+            if execution_id and not strict_one_shot_agent_turn and not ctx.is_replaying:
                 try:
                     from src.workspace_diff_sync import sync_workspace_diff_openshell
 
