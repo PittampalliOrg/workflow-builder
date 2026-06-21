@@ -2158,6 +2158,33 @@
 		runActive={isRunning}
 	/>
 
+	<!-- Approval banner: full-width, ABOVE the body row (must not be a flex-row
+	     child of the body, or items-stretch blows it up to full height). -->
+	{#if approvalState.awaiting}
+		<div class="shrink-0 border-b border-amber-300/70 bg-amber-50 px-4 py-2.5 dark:border-amber-800/70 dark:bg-amber-950/30">
+			<div class="mx-auto flex max-w-5xl items-center gap-3">
+				<Clock class="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+				<div class="min-w-0 flex-1 text-sm">
+					<span class="font-medium text-amber-900 dark:text-amber-200">Approval required</span>
+					<span class="text-amber-800/80 dark:text-amber-200/70">
+						— paused at
+						<code class="rounded bg-amber-100 px-1 text-xs dark:bg-amber-900/40">{approvalState.nodeId}</code>
+						for you to approve the drafted goal spec.
+					</span>
+				</div>
+				<Button
+					size="sm"
+					class="h-8 shrink-0 bg-amber-600 text-white hover:bg-amber-700"
+					onclick={approveGoalSpec}
+					disabled={approving}
+				>
+					{#if approving}<Loader2 class="size-3.5 animate-spin" />{:else}<Check class="size-3.5" />{/if}
+					{approving ? 'Approving…' : 'Approve'}
+				</Button>
+			</div>
+		</div>
+	{/if}
+
 	<!-- Body: Other Runs panel on the left (collapsible), tabbed content on the right. -->
 	<div class="flex flex-1 overflow-hidden">
 		<OtherRunsPanel
@@ -2166,24 +2193,6 @@
 			{workflowId}
 			currentExecutionId={executionId}
 		/>
-		{#if approvalState.awaiting}
-			<div
-				class="mx-4 mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-800 dark:bg-amber-950/30"
-			>
-				<div class="min-w-0 text-sm">
-					<p class="font-medium text-amber-900 dark:text-amber-200">Approval required</p>
-					<p class="text-amber-800/80 dark:text-amber-200/70">
-						This run is paused at
-						<code class="rounded bg-amber-100 px-1 dark:bg-amber-900/40"
-							>{approvalState.nodeId}</code
-						>, waiting for you to approve the drafted goal spec before it continues.
-					</p>
-				</div>
-				<Button class="ml-auto" size="sm" onclick={approveGoalSpec} disabled={approving}>
-					{approving ? 'Approving…' : 'Approve goal spec'}
-				</Button>
-			</div>
-		{/if}
 		<Tabs bind:value={activeTab} class="flex flex-1 flex-col overflow-hidden">
 		<div class="border-b border-border px-4">
 			<TabsList class="h-10">
