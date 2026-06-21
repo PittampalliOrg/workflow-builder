@@ -116,7 +116,6 @@ from src.openshell_runtime import (
 )
 from src.code_checkpoint import (
     capture_code_checkpoint,
-    capture_run_diff,
     log_checkpoint_remote_status,
     restore_code_checkpoint,
     should_checkpoint_tool,
@@ -4593,26 +4592,6 @@ class OpenShellDurableAgent(DurableAgent):
                     )
                 except Exception as exc:
                     logger.warning("[hooks] SessionEnd (success) error: %s", exc)
-            # Durable per-run workspace diff: capture `git diff baseline..working`
-            # over the agent workspace and persist it as a `diff` artifact so the
-            # run's file changes survive sandbox reap (no live pod, no Gitea).
-            # Best-effort, fires once (replay-guarded); never affects the run.
-            if not ctx.is_replaying:
-                try:
-                    agent_ctx = self._agent_context_by_instance.get(instance_id) or {}
-                    # Use the robustly-derived local execution_id (dbExecutionId /
-                    # workflowExecutionId / executionId). `_execution_id_by_instance`
-                    # is populated only from clean["executionId"], which the bridge
-                    # often leaves empty → capture would silently skip.
-                    diff_res = capture_run_diff(
-                        execution_id=execution_id
-                        or self._execution_id_by_instance.get(instance_id),
-                        node_id=agent_ctx.get("nodeId") or metadata.get("nodeId"),
-                        repo_path=runtime.cwd or cwd or "/sandbox",
-                    )
-                    logger.info("[run-diff] capture result: %s", diff_res)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("[run-diff] capture failed: %s", exc)
             emit_metrics_summary_once()
             self._close_mcp_client(instance_id)
         except Exception as exc:
