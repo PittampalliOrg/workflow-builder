@@ -60,6 +60,11 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 EMPTY="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 T=/tmp/wfb-diff-index
 OUT=""
+# Noise/seed paths removed from the index AFTER `git add -A` — environment-
+# independent (does NOT rely on info/exclude being honored, which it is NOT in the
+# OpenShell sandbox's git). Covers dependency/vcs dirs + the openshell seed home
+# dotfiles (dapr's cwd is the seeded /sandbox HOME) + our own snapshot git dir.
+NOISE_PATHS=".wfb-diff-git node_modules .venv __pycache__ dist build .cache .next vendor .pytest_cache .accesslog .config .stats .trash .bashrc .profile .bash_history .bash_logout .gitconfig .claude.json .claude .codex .agents .workspace-initialized .ssh .npm .local .cargo .rustup"
 NESTED=$(find "$REPO" -mindepth 2 -maxdepth 3 -name .git 2>/dev/null | sed 's:/[.]git$::' | grep -v '/[.]wfb-' || true)
 
 # --- ROOT scratch tree (only when $REPO itself is not a git repo) ---
@@ -68,11 +73,10 @@ if [ ! -e "$REPO/.git" ]; then
   [ -d "$GD" ] || GIT_DIR="$GD" GIT_WORK_TREE="$REPO" git init -q >/dev/null 2>&1 || true
   GIT_DIR="$GD" git config user.email wfb@local >/dev/null 2>&1 || true
   GIT_DIR="$GD" git config user.name wfb >/dev/null 2>&1 || true
-  mkdir -p "$GD/info"
-  { printf '%s\n' 'node_modules/' '.git/' '.wfb-diff-git/' '.venv/' '__pycache__/' 'dist/' 'build/' '.cache/' '.cache' '.next/' 'vendor/' '.pytest_cache/' '.accesslog' '.config' '.stats' '.trash/' '.bashrc' '.profile' '.bash_history' '.bash_logout' '.gitconfig' '.claude.json' '.claude/' '.codex/' '.agents/' '.workspace-initialized' '.ssh/' '.npm/' '.local/' '.cargo/' '.rustup/'; for d in $NESTED; do echo "/${d#$REPO/}"; done; } > "$GD/info/exclude"
   rm -f "$T"
   PREV=$(GIT_DIR="$GD" git rev-parse -q --verify refs/wfb/baseline 2>/dev/null || echo "$EMPTY")
   GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git add -A --ignore-errors 2>/dev/null || true
+  GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git rm -r --cached --quiet --ignore-unmatch $NOISE_PATHS >/dev/null 2>&1 || true
   P=$(GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git diff --cached --find-renames --stat --patch --binary "$PREV" -- 2>/dev/null || true)
   NEW=$(GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git write-tree 2>/dev/null || true)
   [ -n "$NEW" ] && GIT_DIR="$GD" git update-ref refs/wfb/baseline "$NEW" 2>/dev/null || true
@@ -91,6 +95,7 @@ for R in $REPOS; do
   rm -f "$T"
   PREV=$(git rev-parse -q --verify refs/wfb/baseline 2>/dev/null || git rev-parse -q --verify origin/HEAD^{tree} 2>/dev/null || echo "$EMPTY")
   GIT_INDEX_FILE="$T" git add -A --ignore-errors 2>/dev/null || true
+  GIT_INDEX_FILE="$T" git rm -r --cached --quiet --ignore-unmatch $NOISE_PATHS >/dev/null 2>&1 || true
   P=$(GIT_INDEX_FILE="$T" git diff --cached --find-renames --stat --patch --binary --src-prefix="a/$REL" --dst-prefix="b/$REL" "$PREV" -- 2>/dev/null || true)
   NEW=$(GIT_INDEX_FILE="$T" git write-tree 2>/dev/null || true)
   [ -n "$NEW" ] && git update-ref refs/wfb/baseline "$NEW" 2>/dev/null || true
@@ -114,6 +119,7 @@ _PRIME_SCRIPT = r"""
 set -e
 git config --global --add safe.directory '*' 2>/dev/null || true
 [ -d "$REPO" ] || { echo "__WFB_NO_REPO__"; exit 0; }
+NOISE_PATHS=".wfb-diff-git node_modules .venv __pycache__ dist build .cache .next vendor .pytest_cache .accesslog .config .stats .trash .bashrc .profile .bash_history .bash_logout .gitconfig .claude.json .claude .codex .agents .workspace-initialized .ssh .npm .local .cargo .rustup"
 NESTED=$(find "$REPO" -mindepth 2 -maxdepth 3 -name .git 2>/dev/null | sed 's:/[.]git$::' | grep -v '/[.]wfb-' || true)
 T=/tmp/wfb-prime-index
 PRIMED=0
@@ -124,10 +130,9 @@ if [ ! -e "$REPO/.git" ]; then
     [ -d "$GD" ] || GIT_DIR="$GD" GIT_WORK_TREE="$REPO" git init -q >/dev/null 2>&1 || true
     GIT_DIR="$GD" git config user.email wfb@local >/dev/null 2>&1 || true
     GIT_DIR="$GD" git config user.name wfb >/dev/null 2>&1 || true
-    mkdir -p "$GD/info"
-    { printf '%s\n' 'node_modules/' '.git/' '.wfb-diff-git/' '.venv/' '__pycache__/' 'dist/' 'build/' '.cache/' '.cache' '.next/' 'vendor/' '.pytest_cache/' '.accesslog' '.config' '.stats' '.trash/' '.bashrc' '.profile' '.bash_history' '.bash_logout' '.gitconfig' '.claude.json' '.claude/' '.codex/' '.agents/' '.workspace-initialized' '.ssh/' '.npm/' '.local/' '.cargo/' '.rustup/'; for d in $NESTED; do echo "/${d#$REPO/}"; done; } > "$GD/info/exclude"
     rm -f "$T"
     GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git add -A --ignore-errors 2>/dev/null || true
+    GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git rm -r --cached --quiet --ignore-unmatch $NOISE_PATHS >/dev/null 2>&1 || true
     NEW=$(GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git write-tree 2>/dev/null || true)
     [ -n "$NEW" ] && GIT_DIR="$GD" git update-ref refs/wfb/baseline "$NEW" 2>/dev/null && PRIMED=$((PRIMED+1)) || true
   fi
@@ -142,6 +147,7 @@ for R in $REPOS; do
   if ! git rev-parse -q --verify refs/wfb/baseline >/dev/null 2>&1; then
     rm -f "$T"
     GIT_INDEX_FILE="$T" git add -A --ignore-errors 2>/dev/null || true
+    GIT_INDEX_FILE="$T" git rm -r --cached --quiet --ignore-unmatch $NOISE_PATHS >/dev/null 2>&1 || true
     NEW=$(GIT_INDEX_FILE="$T" git write-tree 2>/dev/null || true)
     [ -n "$NEW" ] && git update-ref refs/wfb/baseline "$NEW" 2>/dev/null && PRIMED=$((PRIMED+1)) || true
   fi
