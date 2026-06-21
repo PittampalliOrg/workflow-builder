@@ -58,6 +58,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
       sandboxName: sessions.sandboxName,
       workspaceSandboxName: sessions.workspaceSandboxName,
       runtimeSandboxName: sessions.runtimeSandboxName,
+      runtimeAppId: sessions.runtimeAppId,
       updatedAt: sessions.updatedAt,
     })
     .from(sessions)
@@ -85,17 +86,30 @@ export const GET: RequestHandler = async ({ params, locals }) => {
     .orderBy(desc(files.createdAt))
     .limit(500);
 
-  // Live-tree candidate: the most recently updated non-terminal session that
-  // carries a sandbox name the agent-runtime can exec into.
+  // CLI-family runs (claude/codex/agy) keep their working files on the shared
+  // JuiceFS mount (/sandbox/work) — browsable durably via juicefs-webdav. Detect
+  // them so the UI uses the workspace-files tree (live AND after pod reap)
+  // instead of the openshell exec path (which can't read CLI pods).
+  const CLI_SLUGS = new Set(["claude-code-cli", "codex-cli", "agy-cli"]);
+  const cliWorkspace = sessRows.some(
+    (s) =>
+      CLI_SLUGS.has(String(s.sandboxName ?? "")) ||
+      String(s.runtimeAppId ?? "").startsWith("agent-session-"),
+  );
+
+  // Openshell live-tree candidate: ONLY the openshell workspace sandbox name
+  // (workspace-*), which `/api/sandboxes/[name]/files` can exec into. The other
+  // name columns carry runtime slugs / pod names that endpoint can't serve.
   let liveSandbox: { name: string } | null = null;
-  for (const s of sessRows) {
-    if (!NON_TERMINAL_STATUSES.has(String(s.status ?? "").toLowerCase())) continue;
-    const name = s.workspaceSandboxName || s.sandboxName || s.runtimeSandboxName;
-    if (name) {
-      liveSandbox = { name };
-      break;
+  if (!cliWorkspace) {
+    for (const s of sessRows) {
+      if (!NON_TERMINAL_STATUSES.has(String(s.status ?? "").toLowerCase())) continue;
+      if (s.workspaceSandboxName) {
+        liveSandbox = { name: s.workspaceSandboxName };
+        break;
+      }
     }
   }
 
-  return json({ files: fileRows, liveSandbox });
+  return json({ files: fileRows, liveSandbox, cliWorkspace });
 };

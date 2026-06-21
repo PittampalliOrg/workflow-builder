@@ -844,7 +844,11 @@
 	// Files tab gate: a lightweight summary fetch decides whether the run has
 	// persisted output files or a live sandbox worth browsing. RunFilesTree
 	// re-fetches its own data when the tab is opened.
-	let filesSummary = $state<{ count: number; live: boolean }>({ count: 0, live: false });
+	let filesSummary = $state<{ count: number; live: boolean; cli: boolean }>({
+		count: 0,
+		live: false,
+		cli: false
+	});
 	$effect(() => {
 		const id = executionId;
 		if (!id) return;
@@ -854,12 +858,58 @@
 				if (!d) return;
 				filesSummary = {
 					count: Array.isArray(d.files) ? d.files.length : 0,
-					live: !!d.liveSandbox
+					live: !!d.liveSandbox,
+					cli: !!d.cliWorkspace
 				};
 			})
 			.catch(() => {});
 	});
-	const hasFilesTab = $derived(filesSummary.count > 0 || filesSummary.live);
+	const hasFilesTab = $derived(filesSummary.count > 0 || filesSummary.live || filesSummary.cli);
+
+	// Approval gate: while the run is active, poll whether it's parked at an
+	// approval listen-gate (e.g. planGoal `goal_spec_approval`) and surface an
+	// Approve button so it can advance from the UI (no manual API call needed).
+	let approvalState = $state<{ awaiting: boolean; eventType?: string; nodeId?: string }>({
+		awaiting: false
+	});
+	let approving = $state(false);
+	$effect(() => {
+		const id = executionId;
+		const active = executionStatus === 'running' || executionStatus === 'pending';
+		if (!id || !active) {
+			approvalState = { awaiting: false };
+			return;
+		}
+		let cancelled = false;
+		const poll = async () => {
+			try {
+				const r = await fetch(`/api/workflows/executions/${id}/approval-state`);
+				if (r.ok && !cancelled) approvalState = await r.json();
+			} catch {
+				/* transient */
+			}
+		};
+		poll();
+		const t = setInterval(poll, 10000);
+		return () => {
+			cancelled = true;
+			clearInterval(t);
+		};
+	});
+	async function approveGoalSpec(): Promise<void> {
+		if (approving) return;
+		approving = true;
+		try {
+			const r = await fetch(`/api/workflows/executions/${executionId}/approve`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ eventType: approvalState.eventType })
+			});
+			if (r.ok) approvalState = { awaiting: false };
+		} finally {
+			approving = false;
+		}
+	}
 
 	// If the active tab becomes hidden (or was a removed tab like the old
 	// "steps"), fall back to the Live console so content never goes blank.
@@ -2089,6 +2139,24 @@
 			{workflowId}
 			currentExecutionId={executionId}
 		/>
+		{#if approvalState.awaiting}
+			<div
+				class="mx-4 mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-800 dark:bg-amber-950/30"
+			>
+				<div class="min-w-0 text-sm">
+					<p class="font-medium text-amber-900 dark:text-amber-200">Approval required</p>
+					<p class="text-amber-800/80 dark:text-amber-200/70">
+						This run is paused at
+						<code class="rounded bg-amber-100 px-1 dark:bg-amber-900/40"
+							>{approvalState.nodeId}</code
+						>, waiting for you to approve the drafted goal spec before it continues.
+					</p>
+				</div>
+				<Button class="ml-auto" size="sm" onclick={approveGoalSpec} disabled={approving}>
+					{approving ? 'Approving…' : 'Approve goal spec'}
+				</Button>
+			</div>
+		{/if}
 		<Tabs bind:value={activeTab} class="flex flex-1 flex-col overflow-hidden">
 		<div class="border-b border-border px-4">
 			<TabsList class="h-10">
