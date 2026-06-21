@@ -1,6 +1,9 @@
-import { error, json } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
+import { eq, or } from 'drizzle-orm';
 import type { RequestHandler } from './$types';
 import { requireInternal } from '$lib/server/internal-auth';
+import { db } from '$lib/server/db';
+import { sessions } from '$lib/server/db/schema';
 import { appendEvent } from '$lib/server/sessions/events';
 
 /**
@@ -12,9 +15,15 @@ import { appendEvent } from '$lib/server/sessions/events';
  * row in `session_events` so it survives the pod and streams live to the Run
  * Console via the existing session-events LISTEN/NOTIFY → SSE pipeline.
  *
+ * The observer derives the session id from the pod's
+ * `workflow-builder.cnoe.io/session-id` label, which is a k8s-safe value that
+ * may not equal `sessions.id`. We resolve it tolerantly (by `id`, else
+ * `dapr_instance_id`) and — crucially — **return 200 no-op when no session
+ * matches** (e.g. benchmark-coordinator pods that have no `sessions` row).
+ * Returning an error here would FK-500 and make the observer retry forever.
+ *
  * Idempotent: `appendEvent` dedupes on `sourceEventId` (`prov:<sid>:<phase>`),
- * so observer restarts re-sending the same phase are no-ops. Best-effort by
- * contract — the observer treats failures as non-fatal to /snapshot.
+ * so observer restarts re-sending the same phase are no-ops.
  *
  * Body: { sessionId, phase, at?, durationMs?, podName?, namespace?, reason? }
  */
@@ -25,16 +34,37 @@ export const POST: RequestHandler = async ({ request }) => {
 	try {
 		body = await request.json();
 	} catch {
-		return error(400, 'Expected JSON body');
+		return json({ ok: false, skipped: 'bad_json' });
 	}
 
-	if (!body || typeof body !== 'object') return error(400, 'Expected JSON object');
+	if (!body || typeof body !== 'object') return json({ ok: false, skipped: 'bad_body' });
 	const b = body as Record<string, unknown>;
 
-	const sessionId = typeof b.sessionId === 'string' ? b.sessionId.trim() : '';
+	// runtimeAppId is the per-session sandbox app-id (= sessions.runtime_app_id),
+	// the only stable per-session key the observer can read off the pod. sessionId
+	// is the (parent) label — used only as a last-resort fallback.
+	const runtimeAppId = typeof b.runtimeAppId === 'string' ? b.runtimeAppId.trim() : '';
+	const rawSessionId = typeof b.sessionId === 'string' ? b.sessionId.trim() : '';
 	const phase = typeof b.phase === 'string' ? b.phase.trim() : '';
-	if (!sessionId) return error(400, 'sessionId is required');
-	if (!phase) return error(400, 'phase is required');
+	if ((!runtimeAppId && !rawSessionId) || !phase)
+		return json({ ok: false, skipped: 'missing_fields' });
+	if (!db) return json({ ok: false, skipped: 'no_db' });
+
+	// Resolve to a real session row by runtime_app_id (primary), else by id /
+	// dapr_instance_id. Skip (200) when none matches (e.g. benchmark-coordinator
+	// pods with no sessions row) so the observer marks it done instead of looping
+	// on an FK failure.
+	const matchers = [];
+	if (runtimeAppId) matchers.push(eq(sessions.runtimeAppId, runtimeAppId));
+	if (rawSessionId)
+		matchers.push(eq(sessions.id, rawSessionId), eq(sessions.daprInstanceId, rawSessionId));
+	const [row] = await db
+		.select({ id: sessions.id })
+		.from(sessions)
+		.where(or(...matchers))
+		.limit(1);
+	if (!row) return json({ ok: false, skipped: 'no_session' });
+	const sessionId = row.id;
 
 	const at = typeof b.at === 'string' ? b.at : null;
 	const durationMs =
