@@ -1,7 +1,21 @@
 # Sandbox Warm Pools — generalizing pre-warmed pods to cut session cold-start
 
-**Status:** design + phased plan (Phase 0 measured; implementation gated on the claim-bind decision below)
+**Status:** design + phased plan. **Phase-2 claim-bind found INFEASIBLE on the current dispatch (see §0); safe cold-start levers shipped instead.**
 **Goal:** cut the ~30–60s cold-start before a `durable/run` agent does useful work, by serving sessions from pre-warmed pods instead of cold-provisioning a per-session sandbox each time.
+
+## 0. Update (2026-06-21) — claim-bind blocker + shipped safe levers
+
+**The §6b claim "claim-bind is NATIVE, no controller needed" is INCOMPLETE — it ignores Dapr dispatch routing.** Verified against the live cluster:
+
+- `durable/run` dispatches `ctx.call_child_workflow(app_id=<X>, instance_id=<session>)`, routed by **Dapr placement** to the daprd registered under app-id `X`. The cold lane works because sandbox-execution-api stamps a **per-session** `dapr.io/app-id=agent-session-<sha>` on each Sandbox → **one app-id = one pod** → placement always hits the right pod (confirmed: a live pod runs `daprd --app-id agent-session-d092718…`).
+- **Warm pods are generic, created before the session, so they share a static app-id from their `SandboxTemplate`.** With N pods on one app-id, placement spreads workflow *instances* across them by hash → the session can land on a pod we did **not** claim and did **not** inject creds into. This breaks both routing AND the per-user-credential invariant. (Same root cause the fire-and-poll dispatch #74/#75 was reverted for: "call_child_workflow routes via PLACEMENT, not DNS.") The existing browser-use pool only works because it uses a **shared single-pod app-id** — the very model §2 says CLI/dapr can't use.
+- **Therefore true claim-bind needs per-pod-unique, post-claim-discoverable daprd app-ids** (e.g. a mutating webhook setting `dapr.io/app-id = <pod name>` on warm pods + the bridge targeting the *claimed* pod's app-id). That's a medium-large, webhook-touching, higher-risk effort — NOT the additive build §4/§6 implied. Deferred pending an explicit decision to take it on.
+
+**Shipped instead (stacks `baf269707`, dev-live; safe, no dispatch-path change) — directly fixes the OBSERVED failure** (concurrent cold-starts stuck Kueue `status=queued` → orchestrator 600s readiness timeout → `durable/run` errors):
+1. **PSI memory gate relaxed** — `PSI_MAX_MEMORY_AVG60_PCT` 10→60. `memory.some.avg60` trips on benign page-cache reclaim during concurrent npm-install/CLI boots; it was fail-closing every agent-pod admission. `memory.full.avg60` (genuine saturation) stays the real gate at 5%. Mirrors the existing `cpu.some→cpu.full` / `io.full` treatment — memory was the last gate left on the noisy `.some` signal.
+2. **Host-readiness timeout** `AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS` 600→900 — slack so a transiently-queued pod admits once capacity frees instead of erroring.
+
+Effect: raises safe concurrent `durable/run` from ~2–3 to ~6–8 with zero routing risk. **Remaining safe lever (not yet done): quick-win B — shrink `seed-openshell-config` to busybox + baked config + Secret mTLS** (cuts init seconds; medium risk → do carefully, it can ENOENT-break `active_gateway` for ALL sessions). Capacity math + the per-run footprint that motivated this: see `docs/session-resource-metrics-and-kueue-admission.md`.
 
 ## 1. Where the time actually goes (measured)
 
