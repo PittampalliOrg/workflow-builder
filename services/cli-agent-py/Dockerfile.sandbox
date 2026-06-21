@@ -70,18 +70,12 @@ RUN npm install -g --force "playwright@latest" "@playwright/mcp@${PLAYWRIGHT_MCP
     && npm cache clean --force \
     && /usr/local/bin/npx @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} --version
 
-# R1 persisted recording (automatic): a static @playwright/mcp config that turns
-# on Playwright's native per-context video via `contextOptions.recordVideo`. The
-# critic passes `--config /etc/playwright-mcp/recordvideo.json` (see
-# scripts/seed-workflows.ts PLAYWRIGHT_CRITIC_MCP), so EVERY browser context the
-# agent opens records to /sandbox/work — no dependency on the agent calling the
-# browser_start_video tool (claude won't reliably do that). cli-agent-py pushes
-# the resulting .webm to the BFF browser-artifacts ingest at session end. v0.0.76
-# has no `--save-video` flag; recordVideo via --config is the supported path.
-RUN mkdir -p /etc/playwright-mcp \
-    && printf '%s\n' '{"browser":{"contextOptions":{"recordVideo":{"dir":"/sandbox/work","size":{"width":1280,"height":720}}}}}' \
-       > /etc/playwright-mcp/recordvideo.json \
-    && chmod a+r /etc/playwright-mcp/recordvideo.json
+# R1 persisted recording is driven by cli-agent-py's supervisor: it launches
+# `playwright-mcp --port 3100 --caps=devtools …` as an HTTP co-process and calls
+# browser_start_video/browser_stop_video around the turn (see session_supervisor.py
+# + playwright_mcp_client.py). No static recordVideo config is baked — v0.0.76's
+# contextOptions.recordVideo is deleted-on-close (issue #1084); the devtools
+# screencast tools (browser_stop_video) flush the .webm without browser_close.
 
 # agy (Antigravity CLI): pinned, sha256-verified tarball → /usr/local/bin/agy
 # (root-owned, read-only to the non-root runtime user, which defeats its

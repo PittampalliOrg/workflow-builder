@@ -102,6 +102,19 @@ def sync_browser_video_activity(
     workspace_ref = _clean_string(data.get("workspaceRef"))
     session_id = _clean_string(data.get("sessionId"))
 
+    # Finalize the screencast first: browser_stop_video flushes the .webm to the
+    # output dir (the recording was started by start_cli_activity). Without this
+    # the file stays unwritten — process exit does NOT flush. Best-effort; if the
+    # MCP server is gone or recording wasn't started, fall through to the glob.
+    try:
+        from src.playwright_mcp_client import browser_stop_video
+
+        saved = browser_stop_video()
+        if saved:
+            print(f"[browser-video-sync] browser_stop_video saved {saved}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[browser-video-sync] browser_stop_video skipped: {exc}", flush=True)
+
     files = _discover_webm(output_dir)
     if not files:
         return {"ok": True, "uploaded": [], "scanned": output_dir, "found": 0}

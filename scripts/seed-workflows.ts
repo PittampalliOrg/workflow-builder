@@ -4456,34 +4456,20 @@ async function seedGeneratorCriticShowcases(params: {
 	// same `playwright-mcp` binary + pinned Chromium; --executable-path avoids the
 	// runtime browser download). Wired per-CLI: claude .mcp.json / codex
 	// config.toml / agy mcp_config.json (all via emit_claude_code_cli_servers).
+	// The critic connects to a SUPERVISOR-managed @playwright/mcp HTTP server
+	// (cli-agent-py launches `playwright-mcp --port 3100 --caps=devtools …` as a
+	// co-process; see session_supervisor.py). The supervisor — NOT the agent —
+	// drives browser_start_video/browser_stop_video around the turn (claude won't
+	// reliably call them), so the .webm is recorded + flushed without depending on
+	// the agent. v0.0.76's `contextOptions.recordVideo` (the old `--config` path)
+	// is deleted-on-close (issue #1084) → do not use it. Stdio is replaced by
+	// streamable-http so cli-agent-py can be a 2nd client on the same server.
 	const PLAYWRIGHT_CRITIC_MCP = [
 		{
 			server_name: "playwright",
 			displayName: "Playwright",
-			transport: "stdio",
-			command: "playwright-mcp",
-			args: [
-				"--headless",
-				"--browser",
-				"chromium",
-				"--executable-path",
-				"/opt/pw-browsers/chromium-1228/chrome-linux64/chrome",
-				"--no-sandbox",
-				"--isolated",
-				"--output-dir",
-				"/sandbox/work",
-				// R1 persisted recording (AUTOMATIC): point @playwright/mcp at a static
-				// config that sets Playwright's `contextOptions.recordVideo`, so EVERY
-				// browser context the critic opens records a .webm to /sandbox/work — no
-				// dependency on the agent calling browser_start_video (claude won't
-				// reliably do that, and v0.0.76 has no `--save-video` flag — that flag
-				// crashes the server). The config is baked into the cli-agent-py-sandbox
-				// image at /etc/playwright-mcp/recordvideo.json (see Dockerfile.sandbox).
-				// cli-agent-py pushes the .webm to the BFF browser-artifacts ingest
-				// (browser_video_sync) for inline <video> playback on the run page.
-				"--config",
-				"/etc/playwright-mcp/recordvideo.json",
-			],
+			transport: "streamable_http",
+			url: "http://127.0.0.1:3100/mcp",
 		},
 	];
 	// Dedicated claude-code-cli CRITIC agent with the official Playwright MCP
