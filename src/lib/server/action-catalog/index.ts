@@ -224,6 +224,228 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
   };
 }
 
+const CLI_AGENT_SLUG_OPTIONS = [
+  { label: "Claude Code CLI", value: "cli-evaluator-critic-agent" },
+  { label: "Codex CLI", value: "codex-cli-evaluator-critic-agent" },
+  { label: "Antigravity CLI", value: "agy-cli-evaluator-critic-agent" },
+  { label: "Claude Code Playwright Critic", value: "cli-playwright-critic-agent" },
+  { label: "Codex Playwright Critic", value: "codex-playwright-critic-agent" },
+  { label: "Antigravity Playwright Critic", value: "agy-playwright-critic-agent" },
+];
+
+function buildCliAgentOneShotDetail(): ActionCatalogDetail {
+  const taskConfig = {
+    call: "durable/run",
+    with: {
+      mode: "execute_direct",
+      workspaceRef: "${ .runtime.executionId }",
+      cwd: "/sandbox/work",
+      agentRef: {
+        slug: "cli-evaluator-critic-agent",
+      },
+      agentConfig: {
+        name: "CLI Agent",
+        instructions:
+          "You are a one-shot CLI agent. Complete the prompt in the requested workspace, then stop.",
+      },
+      body: {
+        prompt: "",
+        mode: "execute_direct",
+        overrides: {
+          cwd: "/sandbox/work",
+          maxTurns: 20,
+          timeoutMinutes: 25,
+        },
+      },
+    },
+  };
+
+  return {
+    id: buildActionId("builtin", "cli-agent/run-one-shot"),
+    slug: "cli-agent/run-one-shot",
+    name: "cli-agent/run-one-shot",
+    displayName: "Run CLI Agent",
+    description:
+      "Run a one-shot Claude Code, Codex, or Antigravity CLI agent via durable/run.",
+    providerId: "cli-agent",
+    providerLabel: "CLI Agents",
+    providerIconUrl: null,
+    category: "agent",
+    serviceId: "cli-agent-py",
+    kind: "dapr-activity",
+    visibility: "public-callable",
+    compatibility: "compatible",
+    group: "Agents",
+    version: "1.0.0",
+    language: "python",
+    entrypoint: "durable/run",
+    sourceKind: "activity",
+    insertable: true,
+    auth: {
+      required: true,
+      displayName: "Linked CLI credential",
+      description:
+        "Uses the selected CLI agent's linked credential: Anthropic for Claude Code, OpenAI for Codex, or Google for Antigravity.",
+      kinds: ["anthropic", "openai", "google"],
+      authType: "subscription_oauth",
+    },
+    fields: [
+      {
+        name: "agentRef.slug",
+        displayName: "CLI Agent",
+        description:
+          "Named agent profile to run. Swap this slug to use Claude Code CLI, Codex CLI, or Antigravity CLI with the same workflow task.",
+        propertyType: "string",
+        schemaType: "string",
+        required: true,
+        defaultValue: "cli-evaluator-critic-agent",
+        dependsOn: [],
+        refreshers: [],
+        refreshOnSearch: false,
+        options: {
+          kind: "static",
+          values: CLI_AGENT_SLUG_OPTIONS,
+        },
+      },
+      {
+        name: "body.prompt",
+        displayName: "Prompt",
+        description:
+          "One-shot instruction inserted as the CLI agent's user prompt. Serverless Workflow expressions are allowed.",
+        propertyType: "string",
+        schemaType: "string",
+        required: true,
+        defaultValue: "",
+        dependsOn: [],
+        refreshers: [],
+        refreshOnSearch: false,
+        options: null,
+      },
+      {
+        name: "body.overrides.cwd",
+        displayName: "Working Directory",
+        description: "Directory where the CLI agent should operate.",
+        propertyType: "string",
+        schemaType: "string",
+        required: false,
+        defaultValue: "/sandbox/work",
+        dependsOn: [],
+        refreshers: [],
+        refreshOnSearch: false,
+        options: null,
+      },
+    ],
+    tags: [
+      "agent",
+      "cli-agent",
+      "interactive-cli",
+      "one-shot",
+      "durable-run",
+      "claude-code-cli",
+      "codex-cli",
+      "agy-cli",
+    ],
+    doc:
+      "Provider-neutral one-shot CLI agent action. The workflow task is durable/run; provider differences are resolved from the selected named agent and the runtime registry before dispatch. Claude Code, Codex, and Antigravity complete via their existing hook-backed session_workflow path.",
+    inputSchema: {
+      type: "object",
+      required: ["prompt", "agentRef"],
+      properties: {
+        prompt: {
+          type: "string",
+          title: "Prompt",
+          format: "textarea",
+          description: "One-shot instruction for the CLI agent.",
+        },
+        agentRef: {
+          type: "object",
+          title: "CLI Agent",
+          required: ["slug"],
+          properties: {
+            slug: {
+              type: "string",
+              title: "Agent Slug",
+              default: "cli-evaluator-critic-agent",
+              enum: CLI_AGENT_SLUG_OPTIONS.map((item) => item.value),
+            },
+          },
+        },
+        agentConfig: {
+          type: "object",
+          title: "Role Framing",
+          properties: {
+            name: {
+              type: "string",
+              default: "CLI Agent",
+            },
+            instructions: {
+              type: "string",
+              format: "textarea",
+            },
+          },
+        },
+        workspaceRef: {
+          type: "string",
+          title: "Workspace Ref",
+          default: "${ .runtime.executionId }",
+          description:
+            "Shared workspace reference for planner/generator/critic workflows.",
+        },
+        cwd: {
+          type: "string",
+          title: "Working Directory",
+          default: "/sandbox/work",
+        },
+        maxTurns: {
+          type: "integer",
+          title: "Max Turns",
+          default: 20,
+        },
+        timeoutMinutes: {
+          type: "integer",
+          title: "Timeout Minutes",
+          default: 25,
+        },
+      },
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        success: { type: "boolean" },
+        content: { type: "string" },
+        sessionId: { type: "string" },
+        workspaceRef: { type: "string" },
+        agentRuntime: { type: "string" },
+      },
+    },
+    semanticModel: null,
+    sourceCode: null,
+    sourceHtml: null,
+    sw: {
+      functionName: "durable/run",
+      definition: taskConfig,
+      taskConfig,
+      warnings: [
+        "Select a named CLI agent slug before running. The selected agent supplies the provider runtime and auth binding.",
+      ],
+    },
+    runtime: buildRuntimeStatus(
+      true,
+      [
+        "interactive-cli",
+        "durable/run",
+        "hook-completion",
+        "claude-code-cli",
+        "codex-cli",
+        "agy-cli",
+      ],
+      [],
+    ),
+    rendered: null,
+    raw: null,
+  };
+}
+
 function buildBrowserPreviewDetails(): ActionCatalogDetail[] {
   const startTaskConfig = {
     call: "browser/start-preview",
@@ -1091,6 +1313,7 @@ async function loadRemoteActionCache(): Promise<ActionCatalogDetail[]> {
 
   const actions: ActionCatalogDetail[] = [
     buildDaprAgentPyDetail(),
+    buildCliAgentOneShotDetail(),
     ...buildBrowserPreviewDetails(),
   ];
   const services: ActionCatalogServiceSnapshot[] = [];

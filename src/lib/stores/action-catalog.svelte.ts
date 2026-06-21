@@ -192,6 +192,7 @@ export const POPULAR_PIECE_IDS = [
  * entries that don't exist in the live catalog simply don't render.
  */
 const PICKER_HIGHLIGHT_MATCHERS: Array<(item: PickerCatalogEntry) => boolean> = [
+	(item) => item.id === 'builtin.cli-agent/run-one-shot',
 	(item) => item.id === 'builtin.durable/run',
 	(item) => item.service !== 'activepieces' && `${item.name || item.id}`.includes('http-request'),
 	(item) => item.service !== 'activepieces' && `${item.name || item.id}`.includes('database-query'),

@@ -12,7 +12,7 @@
  * (stop_requested_at), finalizing them the moment Dapr goes terminal.
  */
 import { createHash } from "node:crypto";
-import { and, count, eq, inArray, isNotNull, isNull, lte, ne, notInArray } from "drizzle-orm";
+import { and, count, eq, inArray, isNotNull, isNull, lte, ne, notInArray, or } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
 	type MaybeAutoResumeResult,
@@ -27,6 +27,7 @@ import {
 	workflowExecutions,
 	workflowWorkspaceSessions,
 } from "$lib/server/db/schema";
+import { deleteKubernetesSandbox } from "$lib/server/kube/client";
 import {
 	createDaprCascadeDeps,
 	DURABLE_RUNTIME_MISSING_STATUS,
@@ -74,12 +75,32 @@ export type ReapTerminalResult = {
 	sessionsPurged: number;
 	/** Phase 2a: crashed interactive-cli sessions auto-continued before purge. */
 	sessionsAutoResumed: number;
+	/** DB-terminal sessions whose runtime Sandbox CRs were still present. */
+	terminalSessionSandboxesReaped: number;
+	/** DB-terminal sessions whose runtime Sandbox CRs were already gone. */
+	terminalSessionSandboxesMissing: number;
 	workspaceSessionsCleaned: number;
 	errors: string[];
 };
 
 const cascadeDeps = createDaprCascadeDeps();
 const EXECUTION_TERMINAL = ["success", "error", "cancelled"] as const;
+function envMinutes(
+	name: string,
+	fallback: number,
+	min: number,
+	max: number,
+): number {
+	const raw = process.env[name]?.trim();
+	if (!raw) return fallback;
+	const parsed = Number(raw);
+	if (!Number.isFinite(parsed)) return fallback;
+	return Math.max(min, Math.min(max, parsed));
+}
+
+const TERMINAL_SESSION_SANDBOX_REAP_AFTER_MS =
+	envMinutes("LIFECYCLE_TERMINAL_SESSION_SANDBOX_REAP_MINUTES", 10, 1, 24 * 60) *
+	60_000;
 // The per-session sandbox backing a retained workspace is reaped by the
 // workflow-builder-sandbox-gc CronJob at ~4h; only flip a still-'active' row to
 // 'cleaned' once its owning execution has been terminal at least this long, so we
@@ -198,6 +219,8 @@ export async function reapTerminalRuns(
 		executionsSkippedActive: 0,
 		sessionsPurged: 0,
 		sessionsAutoResumed: 0,
+		terminalSessionSandboxesReaped: 0,
+		terminalSessionSandboxesMissing: 0,
 		workspaceSessionsCleaned: 0,
 		errors: [],
 	};
@@ -394,7 +417,50 @@ export async function reapTerminalRuns(
 		}
 	}
 
-	// 4) Tidy retained workspace-session rows whose owning execution is terminal and
+	// 4) Reap runtime Sandbox CRs for sessions that completed normally. The purge
+	//    paths reap as part of stop finalization, but a happy-path CLI session can
+	//    reach DB `terminated` while its per-session Sandbox CR remains Running.
+	//    This is idempotent: 404/missing is recorded as already cleaned.
+	try {
+		const terminalSandboxCutoff = new Date(Date.now() - TERMINAL_SESSION_SANDBOX_REAP_AFTER_MS);
+		const terminalSandboxSessions = await db
+			.select({ id: sessions.id, runtimeSandboxName: sessions.runtimeSandboxName })
+			.from(sessions)
+			.where(
+				and(
+					eq(sessions.status, "terminated"),
+					isNotNull(sessions.runtimeSandboxName),
+					or(
+						lte(sessions.completedAt, terminalSandboxCutoff),
+						and(isNull(sessions.completedAt), lte(sessions.updatedAt, terminalSandboxCutoff)),
+					),
+				),
+			)
+			.limit(limit);
+		for (const s of terminalSandboxSessions) {
+			const name = (s.runtimeSandboxName ?? "").trim();
+			if (!name) continue;
+			try {
+				const deleted = await deleteKubernetesSandbox(name);
+				if (deleted === "missing") result.terminalSessionSandboxesMissing += 1;
+				else result.terminalSessionSandboxesReaped += 1;
+				await db
+					.update(sessions)
+					.set({ runtimeSandboxName: null, updatedAt: new Date() })
+					.where(eq(sessions.id, s.id));
+			} catch (err) {
+				result.errors.push(
+					`terminal session sandbox ${s.id}/${name}: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		}
+	} catch (err) {
+		result.errors.push(
+			`terminal session sandbox cleanup: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
+
+	// 5) Tidy retained workspace-session rows whose owning execution is terminal and
 	//    aged-out enough that the per-session sandbox is already gone — so they don't
 	//    linger 'active' forever (the benchmark/controller terminal paths flip these
 	//    on stop, but pre-controller and happy-path-completed rows accumulate). The
