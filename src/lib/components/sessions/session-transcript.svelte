@@ -24,8 +24,10 @@
 		filterDisplayEvents,
 		batchEvents,
 		buildListRows,
+		buildProvisioningTimeline,
 		fmtIdleGap
 	} from '$lib/components/sessions/transcript-model';
+	import ProvisioningStepper from '$lib/components/workflow/execution/provisioning-stepper.svelte';
 	import EventRow from '$lib/components/sessions/event-row.svelte';
 	import EventDetailPanel from '$lib/components/sessions/event-detail-panel.svelte';
 	import BatchDetailPanel from '$lib/components/sessions/batch-detail-panel.svelte';
@@ -91,6 +93,7 @@
 	const displayEvents = $derived.by(() =>
 		filterDisplayEvents(events, { debug: viewMode === 'debug' })
 	);
+	const provisioning = $derived(buildProvisioningTimeline(events));
 	const tokenAssignments = $derived(computeTokenAssignments(events));
 	const batchedEvents = $derived(batchEvents(displayEvents, viewMode === 'debug'));
 	const listRows = $derived(buildListRows(batchedEvents, viewMode === 'debug'));
@@ -152,6 +155,19 @@
 			<span class="inline-block size-1.5 rounded-full bg-teal-400/80" title="streaming"></span>
 		{/if}
 	</div>
+
+	{#if provisioning}
+		<div class="flex items-center gap-2 border-b px-3 py-1.5">
+			<span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+				>Sandbox</span
+			>
+			<ProvisioningStepper
+				timeline={provisioning.marks}
+				phase={provisioning.phase}
+				failedReason={provisioning.failedReason}
+			/>
+		</div>
+	{/if}
 
 	{#if showTimeline && displayEvents.length > 0}
 		<div class="border-b px-3 py-2">

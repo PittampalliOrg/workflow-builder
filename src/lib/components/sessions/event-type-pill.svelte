@@ -12,6 +12,7 @@
 		| 'mcp'
 		| 'adk'
 		| 'alert'
+		| 'provision'
 		| 'other';
 
 	/**
@@ -54,6 +55,7 @@
 			type === 'agent.thread_context_compacted'
 		)
 			return 'alert';
+		if (type.startsWith('session.provisioning_')) return 'provision';
 		if (type.startsWith('session.status_')) return 'status';
 		if (type.startsWith('span.')) return 'span';
 		return 'other';
@@ -86,6 +88,7 @@
 		mcp: 'bg-cyan-500/25 text-cyan-200 border-cyan-400/20',
 		adk: 'bg-lime-500/20 text-lime-200 border-lime-400/20',
 		alert: 'bg-red-500/25 text-red-200 border-red-400/20',
+		provision: 'bg-orange-500/20 text-orange-200 border-orange-400/20',
 		other: 'bg-muted text-muted-foreground border-border'
 	};
 
@@ -102,6 +105,7 @@
 		mcp: 'MCP',
 		adk: 'ADK',
 		alert: 'Alert',
+		provision: 'Provision',
 		other: 'Event'
 	};
 

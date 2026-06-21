@@ -118,6 +118,7 @@
 		mcp: 'bg-cyan-500',
 		adk: 'bg-lime-500',
 		alert: 'bg-red-500',
+		provision: 'bg-orange-500',
 		other: 'bg-muted-foreground/30'
 	};
 
@@ -134,6 +135,7 @@
 		mcp: 'bg-cyan-400',
 		adk: 'bg-lime-400',
 		alert: 'bg-red-400',
+		provision: 'bg-orange-400',
 		other: 'bg-muted-foreground/60'
 	};
 </script>

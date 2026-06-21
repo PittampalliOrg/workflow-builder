@@ -157,6 +157,58 @@ export function summarizeCapacityObserverForQueue(params: {
 	};
 }
 
+/** One phase mark in a session's sandbox provisioning timeline (from observer). */
+export interface ObserverProvisioningMark {
+	phase: string;
+	at: string;
+	durationMs: number | null;
+}
+
+/** Per-session sandbox provisioning projection served by the observer's
+ *  GET /provisioning?session_id= (Kueue admit → scheduled → pulling → init →
+ *  running, with authoritative timestamps + durations). */
+export interface ObserverSessionProvisioning {
+	sessionId: string;
+	podName: string | null;
+	namespace: string | null;
+	phase: string;
+	terminal: boolean;
+	failedReason: string | null;
+	timeline: ObserverProvisioningMark[];
+}
+
+function isObserverProvisioning(value: unknown): value is ObserverSessionProvisioning {
+	return (
+		isRecord(value) &&
+		typeof value.phase === 'string' &&
+		Array.isArray(value.timeline)
+	);
+}
+
+/** Fetch one session's provisioning timeline from the observer. Returns null when
+ *  the observer is unavailable or has no record for the session (caller falls back
+ *  to the direct-pod read). Best-effort + short timeout — never throws. */
+export async function fetchSessionProvisioning(
+	sessionId: string,
+): Promise<ObserverSessionProvisioning | null> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), observerTimeoutMs());
+	try {
+		const url = `${observerBaseUrl()}/provisioning?session_id=${encodeURIComponent(sessionId)}`;
+		const response = await fetch(url, {
+			signal: controller.signal,
+			headers: { accept: 'application/json' },
+		});
+		if (!response.ok) return null; // 404 = no record yet
+		const body = (await response.json().catch(() => null)) as unknown;
+		return isObserverProvisioning(body) ? body : null;
+	} catch {
+		return null;
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
 export const __capacityObserverForTest = {
 	isSnapshot,
 };

@@ -13,11 +13,16 @@
  * Running, ready → running
  */
 import { kubeApiFetch, getOwnNamespace, type KubePod } from '$lib/server/kube/client';
+import {
+	fetchSessionProvisioning,
+	type ObserverSessionProvisioning
+} from '$lib/server/capacity/observer';
 
 export const SESSION_ID_LABEL = 'workflow-builder.cnoe.io/session-id';
 
 export type ProvisioningPhase =
 	| 'queued'
+	| 'admitted'
 	| 'scheduling'
 	| 'pulling'
 	| 'initializing'
@@ -26,12 +31,53 @@ export type ProvisioningPhase =
 	| 'failed'
 	| 'unknown';
 
+export interface SessionProvisioningMark {
+	phase: string;
+	at: string;
+	durationMs: number | null;
+}
+
 export interface SessionProvisioning {
 	phase: ProvisioningPhase;
 	label: string;
 	detail: string | null;
 	podName: string | null;
 	podPhase: string | null;
+	/** Ordered phase timeline w/ authoritative timestamps + durations (observer). */
+	timeline?: SessionProvisioningMark[];
+	source?: 'observer' | 'pod';
+}
+
+const PHASE_LABEL: Record<ProvisioningPhase, string> = {
+	queued: 'Waiting for admission',
+	admitted: 'Admitted — scheduling',
+	scheduling: 'Scheduling pod',
+	pulling: 'Pulling image',
+	initializing: 'Initializing',
+	starting: 'Starting containers',
+	running: 'Sandbox ready',
+	failed: 'Sandbox failed',
+	unknown: 'Provisioning…'
+};
+
+function coercePhase(p: string): ProvisioningPhase {
+	return (Object.keys(PHASE_LABEL) as ProvisioningPhase[]).includes(p as ProvisioningPhase)
+		? (p as ProvisioningPhase)
+		: 'unknown';
+}
+
+/** Map the observer's richer projection into the BFF SessionProvisioning shape. */
+function fromObserver(o: ObserverSessionProvisioning): SessionProvisioning {
+	const phase = coercePhase(o.phase);
+	return {
+		phase,
+		label: o.failedReason ? `Sandbox failed (${o.failedReason})` : PHASE_LABEL[phase],
+		detail: o.failedReason ?? null,
+		podName: o.podName ?? null,
+		podPhase: null,
+		timeline: o.timeline ?? [],
+		source: 'observer'
+	};
 }
 
 function derive(pod: KubePod | null): SessionProvisioning {
@@ -96,8 +142,21 @@ export async function getSessionProvisioning(sessionId: string): Promise<Session
 		const pod = pods.sort((a, b) =>
 			(b.metadata?.creationTimestamp ?? '').localeCompare(a.metadata?.creationTimestamp ?? '')
 		)[0];
-		return derive(pod);
+		return { ...derive(pod), source: 'pod' };
 	} catch {
-		return { phase: 'unknown', label: 'Provisioning…', detail: null, podName: null, podPhase: null };
+		return { phase: 'unknown', label: 'Provisioning…', detail: null, podName: null, podPhase: null, source: 'pod' };
 	}
+}
+
+/**
+ * Preferred resolver: the capacity-observer's richer timeline (admit→…→running
+ * with durations), falling back to the direct-pod read when the observer is
+ * unavailable or has no record for the session yet.
+ */
+export async function getSessionProvisioningPreferObserver(
+	sessionId: string
+): Promise<SessionProvisioning> {
+	const observed = await fetchSessionProvisioning(sessionId);
+	if (observed) return fromObserver(observed);
+	return getSessionProvisioning(sessionId);
 }

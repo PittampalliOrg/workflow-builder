@@ -53,7 +53,11 @@ export function filterDisplayEvents(
 ): SessionEventEnvelope[] {
 	let list = events;
 	if (!opts.debug) {
-		list = list.filter((e) => !TRANSCRIPT_HIDDEN_TYPES.has(e.type));
+		// Sandbox provisioning events (`session.provisioning_*`) drive the
+		// provisioning stepper, not the transcript — hide them by prefix.
+		list = list.filter(
+			(e) => !TRANSCRIPT_HIDDEN_TYPES.has(e.type) && !e.type.startsWith('session.provisioning_')
+		);
 	}
 	if (opts.visibleKinds && opts.visibleKinds.size > 0) {
 		const kinds = opts.visibleKinds;
@@ -73,6 +77,39 @@ export function filterDisplayEvents(
 		});
 	}
 	return list;
+}
+
+/** Sandbox provisioning timeline derived from the durable `session.provisioning_*`
+ * events the capacity-observer pushed. Survives the pod, so a terminal session
+ * still shows how its sandbox came up (admitted → … → running, with durations). */
+export interface ProvisioningTimeline {
+	phase: string;
+	failedReason: string | null;
+	marks: { phase: string; at: string; durationMs: number | null }[];
+}
+
+const PROV_PREFIX = 'session.provisioning_';
+
+export function buildProvisioningTimeline(
+	events: SessionEventEnvelope[]
+): ProvisioningTimeline | null {
+	const marks: ProvisioningTimeline['marks'] = [];
+	let failedReason: string | null = null;
+	for (const e of events) {
+		if (!e.type.startsWith(PROV_PREFIX)) continue;
+		const d = (e.data ?? {}) as Record<string, unknown>;
+		const phase =
+			typeof d.phase === 'string' && d.phase ? d.phase : e.type.slice(PROV_PREFIX.length);
+		const at = typeof d.at === 'string' ? d.at : (e.processedAt ?? e.createdAt ?? '');
+		const durationMs =
+			typeof d.durationMs === 'number' && Number.isFinite(d.durationMs) ? d.durationMs : null;
+		if (phase === 'failed' && typeof d.reason === 'string') failedReason = d.reason;
+		// Dedupe by phase (idempotent ingest may re-deliver); keep the first.
+		if (!marks.some((m) => m.phase === phase)) marks.push({ phase, at, durationMs });
+	}
+	if (marks.length === 0) return null;
+	const overall = failedReason ? 'failed' : marks[marks.length - 1].phase;
+	return { phase: overall, failedReason, marks };
 }
 
 /** A run of consecutive same-tool events collapsed into one row — CMA shows
