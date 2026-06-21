@@ -134,6 +134,43 @@ CLI_SEED_SEND_RETRY_DELAY_SECONDS = _env_float(
 )
 HERDR_SERVER_ARGV = ["herdr", "server"]
 
+# R1 browser recording: the Playwright-MCP critic connects to a supervisor-managed
+# @playwright/mcp HTTP server (the agent's MCP config points at PLAYWRIGHT_MCP_HTTP_URL).
+# We run it with --caps=devtools so the supervisor can drive browser_start_video/
+# browser_stop_video (the agent won't). Idle-cheap (browser launches lazily on first
+# tool call), so it's fine to run on every CLI pod; disable with CLI_PW_MCP_HTTP=0.
+PW_MCP_HTTP_ENABLED = _env_bool("CLI_PW_MCP_HTTP", True)
+PW_MCP_HTTP_PORT = os.environ.get("CLI_PW_MCP_HTTP_PORT", "3100")
+PW_MCP_CHROME_PATH = os.environ.get(
+    "CLI_PW_MCP_CHROME_PATH",
+    "/opt/pw-browsers/chromium-1228/chrome-linux64/chrome",
+)
+PW_MCP_SERVER_ARGV = [
+    "playwright-mcp",
+    "--port",
+    PW_MCP_HTTP_PORT,
+    "--host",
+    "127.0.0.1",
+    "--allowed-hosts",
+    "*",
+    "--caps",
+    "devtools",
+    "--headless",
+    "--browser",
+    "chromium",
+    "--executable-path",
+    PW_MCP_CHROME_PATH,
+    "--no-sandbox",
+    # NOT --isolated: the agent (one MCP client) and cli-agent-py's video
+    # supervisor (a 2nd client) must share ONE browser context so the
+    # supervisor's browser_start_video/stop records the agent's page. The pod is
+    # already per-session, so a persistent per-pod profile is effectively
+    # session-scoped. (VERIFY on dev: if HTTP clients still get isolated
+    # contexts, the recording would capture the wrong page.)
+    "--output-dir",
+    "/sandbox/work",
+]
+
 
 def classify_blocked_reason(detail: str | None) -> str:
     """Map herdr's explain/detail string to a coarse blocked reason."""
@@ -164,6 +201,7 @@ class SessionSupervisor:
         self._publish = publish
         self._raise_lifecycle = raise_lifecycle
         self._proc: asyncio.subprocess.Process | None = None
+        self._pw_proc: asyncio.subprocess.Process | None = None
         self._tasks: list[asyncio.Task] = []
         self._stopping = False
         # The FastAPI app loop, captured in start(); seed injection is scheduled
@@ -250,6 +288,8 @@ class SessionSupervisor:
         self._tasks.append(asyncio.ensure_future(self._run_server_loop()))
         self._tasks.append(asyncio.ensure_future(self._event_loop()))
         self._tasks.append(asyncio.ensure_future(self._idle_reaper()))
+        if PW_MCP_HTTP_ENABLED:
+            self._tasks.append(asyncio.ensure_future(self._run_pw_mcp_loop()))
 
     async def stop(self) -> None:
         self._stopping = True
@@ -268,6 +308,12 @@ class SessionSupervisor:
             except ProcessLookupError:
                 pass
         self._proc = None
+        if self._pw_proc is not None and self._pw_proc.returncode is None:
+            try:
+                self._pw_proc.terminate()
+            except ProcessLookupError:
+                pass
+        self._pw_proc = None
         await self._client.close()
 
     async def _run_server_loop(self) -> None:
@@ -295,6 +341,34 @@ class SessionSupervisor:
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[supervisor] herdr server spawn failed: %s", exc)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 30.0)
+
+    async def _run_pw_mcp_loop(self) -> None:
+        """Run @playwright/mcp as a long-lived HTTP co-process (R1 recording).
+        The critic connects as one MCP client; cli-agent-py connects as a 2nd
+        client (playwright_mcp_client) to drive browser_start_video/stop. Idle
+        until a tool call launches the browser. Restarts with backoff like herdr."""
+        backoff = 1.0
+        while not self._stopping:
+            try:
+                self._pw_proc = await asyncio.create_subprocess_exec(
+                    *PW_MCP_SERVER_ARGV, env=dict(os.environ)
+                )
+                logger.info(
+                    "[supervisor] @playwright/mcp HTTP server started (pid=%s, port=%s)",
+                    self._pw_proc.pid,
+                    PW_MCP_HTTP_PORT,
+                )
+                backoff = 1.0
+                code = await self._pw_proc.wait()
+                if self._stopping:
+                    return
+                logger.warning("[supervisor] @playwright/mcp exited with code %s", code)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[supervisor] @playwright/mcp spawn failed: %s", exc)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 30.0)
 
