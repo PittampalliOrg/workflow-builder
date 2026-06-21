@@ -69,7 +69,7 @@ if [ ! -e "$REPO/.git" ]; then
   GIT_DIR="$GD" git config user.email wfb@local >/dev/null 2>&1 || true
   GIT_DIR="$GD" git config user.name wfb >/dev/null 2>&1 || true
   mkdir -p "$GD/info"
-  { printf '%s' "$NOISE_B64" | base64 -d; echo; for d in $NESTED; do echo "/${d#$REPO/}"; done; } > "$GD/info/exclude"
+  { printf '%s\n' 'node_modules/' '.git/' '.wfb-diff-git/' '.venv/' '__pycache__/' 'dist/' 'build/' '.cache/' '.cache' '.next/' 'vendor/' '.pytest_cache/' '.accesslog' '.config' '.stats' '.trash/' '.bashrc' '.profile' '.bash_history' '.bash_logout' '.gitconfig' '.claude.json' '.claude/' '.codex/' '.agents/' '.workspace-initialized' '.ssh/' '.npm/' '.local/' '.cargo/' '.rustup/'; for d in $NESTED; do echo "/${d#$REPO/}"; done; } > "$GD/info/exclude"
   rm -f "$T"
   PREV=$(GIT_DIR="$GD" git rev-parse -q --verify refs/wfb/baseline 2>/dev/null || echo "$EMPTY")
   GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git add -A --ignore-errors 2>/dev/null || true
@@ -125,7 +125,7 @@ if [ ! -e "$REPO/.git" ]; then
     GIT_DIR="$GD" git config user.email wfb@local >/dev/null 2>&1 || true
     GIT_DIR="$GD" git config user.name wfb >/dev/null 2>&1 || true
     mkdir -p "$GD/info"
-    { printf '%s' "$NOISE_B64" | base64 -d; echo; for d in $NESTED; do echo "/${d#$REPO/}"; done; } > "$GD/info/exclude"
+    { printf '%s\n' 'node_modules/' '.git/' '.wfb-diff-git/' '.venv/' '__pycache__/' 'dist/' 'build/' '.cache/' '.cache' '.next/' 'vendor/' '.pytest_cache/' '.accesslog' '.config' '.stats' '.trash/' '.bashrc' '.profile' '.bash_history' '.bash_logout' '.gitconfig' '.claude.json' '.claude/' '.codex/' '.agents/' '.workspace-initialized' '.ssh/' '.npm/' '.local/' '.cargo/' '.rustup/'; for d in $NESTED; do echo "/${d#$REPO/}"; done; } > "$GD/info/exclude"
     rm -f "$T"
     GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git add -A --ignore-errors 2>/dev/null || true
     NEW=$(GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git write-tree 2>/dev/null || true)
@@ -155,7 +155,7 @@ def prime_workspace_baseline_openshell(runtime: Any) -> dict[str, Any]:
     """Snapshot the pre-agent sandbox state as the diff baseline (once). Best
     effort; never raises. Call at session START before the agent writes files."""
     repo_dir = (getattr(runtime, "cwd", None) or "/sandbox") or "/sandbox"
-    exports = f"export REPO={json.dumps(repo_dir)} NOISE_B64={json.dumps(_NOISE_B64)}; "
+    exports = f"export REPO={json.dumps(repo_dir)}; "
     try:
         res = runtime.execute(exports + _PRIME_SCRIPT, timeout_seconds=_GIT_TIMEOUT_SECONDS)
         out = str(res.get("stdout") or res.get("output") or "")
@@ -206,11 +206,7 @@ def sync_workspace_diff_openshell(
 
     # Run the dual-capture script remotely. execute() cd's into runtime.cwd, so we
     # pass REPO explicitly to anchor the capture on the workspace root.
-    exports = (
-        f"export REPO={json.dumps(repo_dir)} "
-        f"NOISE_B64={json.dumps(_NOISE_B64)} "
-        f"OUTF={json.dumps(_OUT_FILE)}; "
-    )
+    exports = f"export REPO={json.dumps(repo_dir)} OUTF={json.dumps(_OUT_FILE)}; "
     try:
         res = runtime.execute(exports + _CAPTURE_SCRIPT, timeout_seconds=_GIT_TIMEOUT_SECONDS)
     except Exception as exc:  # noqa: BLE001
