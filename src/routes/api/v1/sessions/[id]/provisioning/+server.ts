@@ -3,13 +3,14 @@ import { and, eq } from 'drizzle-orm';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
 import { sessions } from '$lib/server/db/schema';
-import { getSessionProvisioning } from '$lib/server/sessions/provisioning';
+import { getSessionProvisioningPreferObserver } from '$lib/server/sessions/provisioning';
 
 /**
  * GET /api/v1/sessions/[id]/provisioning
  *
- * Coarse sandbox-provisioning phase for a session (queued → scheduling →
- * pulling → initializing → starting → running), read from the session's pod.
+ * Sandbox-provisioning phase + timeline for a session (admitted → scheduling →
+ * pulling → initializing → starting → running, with durations). Prefers the
+ * capacity-observer's richer projection, falling back to a direct-pod read.
  * Lets the Live view explain the gap before the agent emits its first event.
  * Terminal/running sessions return phase=running (provisioning is over).
  */
@@ -39,6 +40,6 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		});
 	}
 
-	const provisioning = await getSessionProvisioning(params.id);
+	const provisioning = await getSessionProvisioningPreferObserver(params.id);
 	return json(provisioning);
 };

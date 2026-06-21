@@ -26,6 +26,7 @@
 		type RunMetricsOutcome
 	} from '$lib/components/workflow/execution/run-metrics-bar.svelte';
 	import RunProgressBand from '$lib/components/workflow/execution/run-progress-band.svelte';
+	import ProvisioningStepper from '$lib/components/workflow/execution/provisioning-stepper.svelte';
 	import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '$lib/components/ui/collapsible';
 	import { fmtTokens } from '$lib/utils/format-tokens';
 	import { ChevronDown, ExternalLink, Pin, Radio, Inbox, Loader2 } from '@lucide/svelte';
@@ -290,7 +291,14 @@
 	});
 
 	// ── Sandbox provisioning status (fills the pre-session "rescheduling" gap) ──
-	type Provisioning = { phase: string; label: string; detail: string | null };
+	type ProvMark = { phase: string; at: string; durationMs: number | null };
+	type Provisioning = {
+		phase: string;
+		label: string;
+		detail: string | null;
+		timeline?: ProvMark[];
+		source?: string;
+	};
 	let provisioning = $state<Record<string, Provisioning>>({});
 	$effect(() => {
 		const pending = orderedSessions.filter((s) => s.status === 'rescheduling').map((s) => s.id);
@@ -469,6 +477,15 @@
 									<span class="truncate">{prov?.label ?? 'Provisioning sandbox…'}</span>
 									{#if prov?.detail}<span class="truncate text-muted-foreground/70">· {prov.detail}</span>{/if}
 								</div>
+								{#if prov?.timeline && prov.timeline.length > 0}
+									<div class="mt-1">
+										<ProvisioningStepper
+											timeline={prov.timeline}
+											phase={prov.phase}
+											compact
+										/>
+									</div>
+								{/if}
 							{/if}
 							{#if pv?.lastLine}
 								<p class="mt-1 line-clamp-2 text-[11px] text-muted-foreground">{pv.lastLine}</p>
