@@ -2782,29 +2782,38 @@
 
 									<div class="flex flex-wrap gap-3">
 										{#each artifact.manifestJson.assets ?? [] as asset}
-											{#if asset.kind === 'trace' || asset.kind === 'video'}
-												<a
-												class="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted"
-												href={browserBlobUrl(asset.storageRef)}
-												target="_blank"
-												rel="noreferrer"
-											>
-												{#if asset.kind === 'trace'}
-													<FileArchive size={12} />
-												{:else}
-													<Video size={12} />
-												{/if}
-													{asset.label}
-												</a>
-											{:else if asset.kind === 'video-annotated' || asset.kind === 'caption'}
+											{#if asset.kind === 'video' || asset.kind === 'video-annotated'}
+												<!-- R1 persisted recording: inline playback of the captured
+												     browser session (Playwright-native .webm). -->
+												<figure class="flex w-full max-w-2xl flex-col gap-1">
+													<!-- svelte-ignore a11y_media_has_caption -->
+													<video
+														class="w-full rounded-md border border-border bg-black"
+														src={browserBlobUrl(asset.storageRef)}
+														controls
+														preload="metadata"
+														playsinline
+													></video>
+													<figcaption class="flex items-center gap-1 text-xs text-muted-foreground">
+														<Video size={12} />
+														{asset.label}
+														<a
+															class="ml-auto hover:text-foreground hover:underline"
+															href={browserBlobUrl(asset.storageRef)}
+															target="_blank"
+															rel="noreferrer">Download</a
+														>
+													</figcaption>
+												</figure>
+											{:else if asset.kind === 'trace' || asset.kind === 'caption'}
 												<a
 													class="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted"
 													href={browserBlobUrl(asset.storageRef)}
 													target="_blank"
 													rel="noreferrer"
 												>
-													{#if asset.kind === 'video-annotated'}
-														<Video size={12} />
+													{#if asset.kind === 'trace'}
+														<FileArchive size={12} />
 													{:else}
 														<FileArchive size={12} />
 													{/if}

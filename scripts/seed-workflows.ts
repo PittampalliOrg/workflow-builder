@@ -4472,6 +4472,12 @@ async function seedGeneratorCriticShowcases(params: {
 				"--isolated",
 				"--output-dir",
 				"/sandbox/work",
+				// R1 persisted recording: Playwright-native per-context video to the
+				// shared /sandbox/work mount. Launch-mode (stdio) supports recordVideo
+				// (the :3100 sidecar's --cdp-endpoint connect-mode does NOT). cli-agent-py
+				// pushes the resulting .webm to the BFF browser-artifacts ingest at
+				// session end (browser_video_sync). Transparent to the agent prompt.
+				"--save-video=1280x720",
 			],
 		},
 	];
