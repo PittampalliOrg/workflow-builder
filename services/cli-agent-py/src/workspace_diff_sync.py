@@ -51,59 +51,73 @@ _NOISE_EXCLUDE = "node_modules/\n.git/\n.wfb-diff-git/\n.venv/\n__pycache__/\ndi
 # dubious ownership". Trust all repos for these throwaway in-pod captures.
 _SAFE_DIR = "git config --global --add safe.directory '*' 2>/dev/null || true"
 
-# Single-pass capture: discover the working repo, resolve the baseline, diff.
-#   Repo discovery: $REPO if it is a git repo (greenfield git-init at root, or a
-#   session-resource clone); else a child dir holding .git (agent-self-clone into
-#   a subdir, e.g. /sandbox/work/repo); else git-init $REPO (greenfield, files
-#   written directly at root). Avoids diffing an embedded repo as a gitlink.
-#   Baseline: refs/tags/wfb-baseline (session-resource clone) → origin/HEAD /
-#   @{upstream} (agent-self-clone → agent-only diff vs the clone point) →
-#   empty-tree (greenfield → all files as additions).
-# Output: "WFB_BASE=<sha>" line, sentinel, then the unified patch.
+# Per-node DUAL capture for true incremental deltas across mixed workspaces
+# (root scratch files + an embedded cloned repo, e.g. gan-harness: SPEC.md +
+# proposal.md at root AND a built `repo/` subdir). One combined patch per node:
+#
+#   ROOT scratch tree (only when $REPO is NOT itself a git repo): a dedicated
+#     $REPO/.wfb-diff-git (persisted across per-node pods via JuiceFS) tracks the
+#     root files, EXCLUDING nested repo dirs. Baseline = refs/wfb/baseline (prev
+#     node) else empty-tree. Catches proposal.md / progress.json deltas per node.
+#
+#   EACH git repo (the root clone if $REPO is a repo, + every nested repo like
+#     repo/): diff in the repo's OWN git vs refs/wfb/baseline (prev node) else
+#     origin/HEAD's tree (clone point → agent-only) else empty-tree; paths are
+#     prefixed with the repo's subdir. Catches the app edits per node.
+#
+# Baselines advance via `git write-tree` into a refs/wfb/baseline ref — NEVER
+# commits to the agent's branch, NEVER moves/renames .git (safe). The temp index
+# (GIT_INDEX_FILE) keeps the agent's real index untouched and includes untracked
+# files. Output: "WFB_BASE=per-node", sentinel, then the combined patch.
 _CAPTURE_SCRIPT = """
 set -e
 SAFE_DIR_CMD
 [ -d "$REPO" ] || { echo "__WFB_NO_REPO__"; exit 0; }
-IDX=/tmp/wfb-diff-index; rm -f "$IDX"
-BASEREFS='git rev-parse -q --verify refs/tags/wfb-baseline 2>/dev/null || git rev-parse -q --verify origin/HEAD 2>/dev/null || git rev-parse -q --verify @{upstream} 2>/dev/null || echo "$EMPTY"'
-# 1) Agent-cloned subdir repo (its own real .git) wins — even if $REPO root has a
-#    stale .git from a prior run. Diff INSIDE it vs its clone point (agent-only).
-SUB=$(find "$REPO" -mindepth 2 -maxdepth 2 -name .git 2>/dev/null | head -1)
-if [ -n "$SUB" ]; then
-  cd "$(dirname "$SUB")"
-  mkdir -p .git/info; printf '%s' "$NOISE" > .git/info/exclude
-  BASE=$(eval "$BASEREFS")
-  GIT_INDEX_FILE="$IDX" git add -A --ignore-errors 2>/dev/null || true
-  PATCH=$(GIT_INDEX_FILE="$IDX" git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true)
-elif ( cd "$REPO" && git rev-parse --is-inside-work-tree >/dev/null 2>&1 ); then
-  # 2) $REPO itself is a real repo (session-resource clone at root).
-  cd "$REPO"
-  mkdir -p .git/info; printf '%s' "$NOISE" > .git/info/exclude
-  BASE=$(eval "$BASEREFS")
-  GIT_INDEX_FILE="$IDX" git add -A --ignore-errors 2>/dev/null || true
-  PATCH=$(GIT_INDEX_FILE="$IDX" git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true)
-else
-  # 3) Greenfield: PERSISTENT per-node baseline for TRUE incremental deltas. A
-  #    dedicated git dir at $REPO/.wfb-diff-git survives across the run's per-node
-  #    pods via the shared JuiceFS workspace. Each node snapshots the tree at
-  #    session-end; node N's diff = prev snapshot (HEAD) .. now = ONLY this node's
-  #    changes. Then commit to advance HEAD for the next node. The first node has
-  #    no HEAD → diffs vs empty-tree (all its files). NOT the agent's .git (a
-  #    distinct, excluded dir), so it never confuses the agent or the diff.
-  export GIT_DIR="$REPO/.wfb-diff-git" GIT_WORK_TREE="$REPO"
-  [ -d "$GIT_DIR" ] || git init -q >/dev/null 2>&1 || true
-  git config user.email wfb@local >/dev/null 2>&1 || true
-  git config user.name wfb >/dev/null 2>&1 || true
-  mkdir -p "$GIT_DIR/info"; printf '%s' "$NOISE" > "$GIT_DIR/info/exclude"
-  rm -f "$GIT_DIR/index"
-  git add -A --ignore-errors 2>/dev/null || true
-  BASE=$(git rev-parse -q --verify HEAD 2>/dev/null || echo "$EMPTY")
-  PATCH=$(git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true)
-  git commit -q -m "wfb-node ${NODE:-?}" --allow-empty >/dev/null 2>&1 || true
+EMPTY="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+T=/tmp/wfb-diff-index
+OUT=""
+# Nested git repos (their parent dirs), excluding our own snapshot dir.
+NESTED=$(find "$REPO" -mindepth 2 -maxdepth 3 -name .git 2>/dev/null | sed 's:/[.]git$::' | grep -v '/[.]wfb-' || true)
+
+# --- ROOT scratch tree (only when $REPO itself is not a git repo) ---
+if [ ! -e "$REPO/.git" ]; then
+  GD="$REPO/.wfb-diff-git"
+  [ -d "$GD" ] || GIT_DIR="$GD" GIT_WORK_TREE="$REPO" git init -q >/dev/null 2>&1 || true
+  GIT_DIR="$GD" git config user.email wfb@local >/dev/null 2>&1 || true
+  GIT_DIR="$GD" git config user.name wfb >/dev/null 2>&1 || true
+  mkdir -p "$GD/info"
+  { printf '%s\n' "$NOISE"; for d in $NESTED; do echo "/${d#$REPO/}"; done; } > "$GD/info/exclude"
+  rm -f "$T"
+  PREV=$(GIT_DIR="$GD" git rev-parse -q --verify refs/wfb/baseline 2>/dev/null || echo "$EMPTY")
+  GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git add -A --ignore-errors 2>/dev/null || true
+  P=$(GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git diff --cached --find-renames --stat --patch --binary "$PREV" -- 2>/dev/null || true)
+  NEW=$(GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git write-tree 2>/dev/null || true)
+  [ -n "$NEW" ] && GIT_DIR="$GD" git update-ref refs/wfb/baseline "$NEW" 2>/dev/null || true
+  OUT="$OUT$P"
 fi
-echo "WFB_BASE=$BASE"
+
+# --- Each git repo: the root clone (if any) + every nested repo ---
+REPOS=""
+[ -e "$REPO/.git" ] && REPOS="$REPO"
+REPOS="$REPOS $NESTED"
+for R in $REPOS; do
+  [ -d "$R" ] || continue
+  REL=""
+  [ "$R" != "$REPO" ] && REL="${R#$REPO/}/"
+  cd "$R"
+  rm -f "$T"
+  PREV=$(git rev-parse -q --verify refs/wfb/baseline 2>/dev/null || git rev-parse -q --verify origin/HEAD^{tree} 2>/dev/null || echo "$EMPTY")
+  GIT_INDEX_FILE="$T" git add -A --ignore-errors 2>/dev/null || true
+  P=$(GIT_INDEX_FILE="$T" git diff --cached --find-renames --stat --patch --binary --src-prefix="a/$REL" --dst-prefix="b/$REL" "$PREV" -- 2>/dev/null || true)
+  NEW=$(GIT_INDEX_FILE="$T" git write-tree 2>/dev/null || true)
+  [ -n "$NEW" ] && git update-ref refs/wfb/baseline "$NEW" 2>/dev/null || true
+  cd "$REPO"
+  OUT="$OUT$P"
+done
+
+echo "WFB_BASE=per-node"
 echo "===WFB_PATCH==="
-printf '%s' "$PATCH"
+printf '%s' "$OUT"
 """.replace("SAFE_DIR_CMD", _SAFE_DIR)
 
 

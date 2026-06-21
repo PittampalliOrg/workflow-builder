@@ -128,6 +128,17 @@ CLI_SUBMIT_RETRY_DELAY_SECONDS = _env_float("CLI_SUBMIT_RETRY_DELAY_SECONDS", 0.
 # so submission no longer depends on guessing readiness from screen state / a fixed
 # boot delay; we re-press until the CLI itself confirms (bounded by CLI_SUBMIT_RETRIES).
 CLI_SUBMIT_ACK_WAIT_SECONDS = _env_float("CLI_SUBMIT_ACK_WAIT_SECONDS", 8.0)
+# Deterministic hook-ack kickoff (CLIs that emit a UserPromptSubmit hook): instead
+# of screen-scraping the composer for a "ready" marker (brittle — the footer text
+# can change between CLI versions and was observed to never match for 180s while
+# claude was actually ready), we paste → Enter → wait briefly for the CLI's own
+# UserPromptSubmit hook ack; on no ack we clear the composer and re-paste, looping
+# until the hook fires (PROOF the prompt landed) or the ceiling. This converges the
+# instant the composer is live with no display dependency and no readiness guessing.
+# Per-cycle ack window is short so we re-paste quickly while the TUI is still booting.
+CLI_HOOK_KICKOFF_ACK_WINDOW_SECONDS = _env_float("CLI_HOOK_KICKOFF_ACK_WINDOW_SECONDS", 4.0)
+CLI_HOOK_KICKOFF_REPASTE_DELAY_SECONDS = _env_float("CLI_HOOK_KICKOFF_REPASTE_DELAY_SECONDS", 1.0)
+CLI_PANE_REGISTER_TIMEOUT_SECONDS = _env_float("CLI_PANE_REGISTER_TIMEOUT_SECONDS", 60.0)
 CLI_SEED_SEND_RETRIES = int(_env_float("CLI_SEED_SEND_RETRIES", 3))
 CLI_SEED_SEND_RETRY_DELAY_SECONDS = _env_float(
     "CLI_SEED_SEND_RETRY_DELAY_SECONDS", 1.0
@@ -890,7 +901,13 @@ class SessionSupervisor:
         return False
 
     async def _send_to_pane(
-        self, text: str, marker: str, *, source: str = "pane_submit"
+        self,
+        text: str,
+        marker: str,
+        *,
+        source: str = "pane_submit",
+        ack_attempts: int | None = None,
+        ack_wait: float | None = None,
     ) -> bool:
         pane = self._pane_ref
         if not pane:
@@ -931,7 +948,9 @@ class SessionSupervisor:
                 # (codex/claude) confirm via the hook ack + Enter re-press, with no
                 # reliance on screen/status readiness guessing.
                 if self.emits_prompt_submit_hook:
-                    if not await self._await_hook_submit_ack(pane, ack_baseline):
+                    if not await self._await_hook_submit_ack(
+                        pane, ack_baseline, attempts=ack_attempts, ack_wait=ack_wait
+                    ):
                         logger.warning(
                             "[supervisor] prompt not acknowledged by the CLI's "
                             "UserPromptSubmit hook after %s re-press(es); leaving "
@@ -988,7 +1007,14 @@ class SessionSupervisor:
                 await asyncio.sleep(max(0.0, CLI_SUBMIT_RETRY_DELAY_SECONDS))
         return False
 
-    async def _await_hook_submit_ack(self, pane: str, baseline: int) -> bool:
+    async def _await_hook_submit_ack(
+        self,
+        pane: str,
+        baseline: int,
+        *,
+        attempts: int | None = None,
+        ack_wait: float | None = None,
+    ) -> bool:
         """Deterministic submit confirmation for CLIs that emit a UserPromptSubmit
         hook (codex/claude). ``baseline`` is ``_prompt_submit_seen`` sampled BEFORE
         the initial Enter (so that first Enter's ack still counts). Poll for the
@@ -996,11 +1022,16 @@ class SessionSupervisor:
         doesn't arrive, re-press Enter and poll again — bounded. The hook is PROOF
         the CLI accepted the prompt, so this needs no readiness prediction: a kickoff
         that landed in a still-booting composer self-heals because we keep re-pressing
-        until the CLI acknowledges (the typed text already sits in the composer)."""
-        attempts = max(1, CLI_SUBMIT_RETRIES + 1)
+        until the CLI acknowledges (the typed text already sits in the composer).
+
+        ``attempts``/``ack_wait`` override the defaults so the kickoff closed-loop can
+        poll a SHORT window (then re-paste at a higher level) instead of spending the
+        full mid-session budget on a paste that was lost into a still-booting screen."""
+        attempts = max(1, attempts if attempts is not None else CLI_SUBMIT_RETRIES + 1)
+        ack_wait = ack_wait if ack_wait is not None else CLI_SUBMIT_ACK_WAIT_SECONDS
         for attempt in range(attempts):
             waited = 0.0
-            while waited < CLI_SUBMIT_ACK_WAIT_SECONDS:
+            while waited < ack_wait:
                 await asyncio.sleep(CLI_READY_POLL_SECONDS)
                 waited += CLI_READY_POLL_SECONDS
                 if self._prompt_submit_seen > baseline:
@@ -1064,9 +1095,89 @@ class SessionSupervisor:
                 return False
         return False
 
+    async def _await_pane_registered(self, timeout: float) -> str | None:
+        """Block until the herdr pane is registered (``_pane_ref`` set), returning
+        it (or None on timeout). This is a DETERMINISTIC event — the pane is
+        registered when herdr reports the CLI's pty — NOT screen content, so it
+        replaces the brittle composer-marker scrape as the only precondition the
+        hook-ack closed-loop needs before it starts pasting."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() < deadline:
+            if self._pane_ref:
+                return self._pane_ref
+            await asyncio.sleep(CLI_READY_POLL_SECONDS)
+        return self._pane_ref
+
+    async def _clear_composer(self, pane: str) -> None:
+        """Best-effort clear of the composer before a re-paste so a prior paste that
+        DID land (TUI buffered it before drawing) isn't concatenated with the retry.
+        Ctrl+U (0x15, kill-to-start) via raw text; swallow errors (a no-op clear is
+        fine — if nothing landed the composer is already empty)."""
+        try:
+            await self._client.pane_send_text(pane, "\x15")
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _send_until_hook_ack(
+        self, text: str, marker: str, timeout: float, *, what: str
+    ) -> bool:
+        """Deterministic injection for CLIs that emit a UserPromptSubmit hook: no
+        screen-scraping. Wait for pane registration, then loop paste→Enter→(short
+        wait for the CLI's UserPromptSubmit hook ack); on no ack, clear + re-paste.
+        The hook ack is PROOF the prompt landed, so this converges the instant the
+        composer is live — independent of any rendered footer text. Bounded by
+        ``timeout`` (only a genuinely-stuck boot hits it → best-effort already done)."""
+        pane = await self._await_pane_registered(timeout)
+        if not pane:
+            logger.warning("[supervisor] %s: herdr pane never registered", what)
+            return False
+        deadline = time.monotonic() + max(0.0, timeout)
+        # Track acks across the WHOLE loop: a late UserPromptSubmit (arriving after a
+        # cycle's short ack window but before we re-paste) means the prompt WAS
+        # accepted — return success instead of re-pasting it (avoids a double turn).
+        start_ack_baseline = self._prompt_submit_seen
+        first = True
+        while time.monotonic() < deadline:
+            if self._prompt_submit_seen > start_ack_baseline:
+                return True
+            # Auto-accept a known benign startup dialog (e.g. codex's dir-trust
+            # prompt) so the composer renders. No-op for adapters without onboarding
+            # markers (claude) → claude stays fully screen-scrape-free.
+            if await self._maybe_accept_onboarding(pane):
+                await asyncio.sleep(CLI_READY_POLL_SECONDS)
+                continue
+            # SAFETY ONLY (not the readiness signal): never type into a blocked
+            # permission/auth dialog. Claude is seeded trusted so this is rare.
+            if await self._is_blocked_now():
+                logger.info("[supervisor] %s: TUI blocked (dialog) — waiting", what)
+                await asyncio.sleep(CLI_HOOK_KICKOFF_REPASTE_DELAY_SECONDS)
+                continue
+            if not first:
+                await self._clear_composer(pane)
+            first = False
+            if await self._send_to_pane(
+                text,
+                marker,
+                source=what,
+                ack_attempts=1,
+                ack_wait=CLI_HOOK_KICKOFF_ACK_WINDOW_SECONDS,
+            ):
+                return True
+            await asyncio.sleep(CLI_HOOK_KICKOFF_REPASTE_DELAY_SECONDS)
+        logger.warning(
+            "[supervisor] %s: no UserPromptSubmit ack within %.0fs — giving up",
+            what,
+            timeout,
+        )
+        return False
+
     async def _gated_send(self, text: str, marker: str, timeout: float, *, what: str) -> bool:
-        """Wait for the TUI to be ready, then send — but REFUSE to type into a
-        blocked (permission/auth) dialog even on gate timeout."""
+        """Send the prompt to the TUI. CLIs that emit a UserPromptSubmit hook use a
+        DETERMINISTIC closed-loop (paste → hook ack → re-paste on miss) with no
+        screen-scraping; others fall back to the legacy readiness gate. Both REFUSE
+        to type into a blocked (permission/auth) dialog."""
+        if self.emits_prompt_submit_hook:
+            return await self._send_until_hook_ack(text, marker, timeout, what=what)
         ready = await self.wait_until_ready(timeout)
         pane = self._pane_ref
         if not ready and pane and await self._prompt_blocked_by_not_ready_marker(pane):

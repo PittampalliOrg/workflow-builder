@@ -4545,6 +4545,26 @@ class OpenShellDurableAgent(DurableAgent):
                         exc,
                     )
 
+            # Durable per-run workspace diff: dapr-agent-py writes its file tools
+            # into the REMOTE OpenShell sandbox (this pod's fs is empty), so the
+            # diff is captured by running git INSIDE the sandbox via `runtime` —
+            # same artifact pipeline as the CLI runtimes. Best-effort, replay-gated.
+            if execution_id and not ctx.is_replaying:
+                try:
+                    from src.workspace_diff_sync import sync_workspace_diff_openshell
+
+                    node_id_for_diff = (
+                        self._agent_context_by_instance.get(instance_id) or {}
+                    ).get("nodeId")
+                    diff_summary = sync_workspace_diff_openshell(
+                        runtime,
+                        execution_id=execution_id,
+                        node_id=node_id_for_diff,
+                    )
+                    logger.info("[run-diff] %s -> %s", execution_id, diff_summary)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[run-diff] capture failed for %s: %s", execution_id, exc)
+
             if custom_hooks_enabled and not ctx.is_replaying:
                 try:
                     snap = _current_hook_snapshot(self, instance_id)
