@@ -852,17 +852,38 @@
 	$effect(() => {
 		const id = executionId;
 		if (!id) return;
-		fetch(`/api/workflows/executions/${id}/files`)
-			.then((r) => (r.ok ? r.json() : null))
-			.then((d) => {
-				if (!d) return;
+		let cancelled = false;
+		const load = async () => {
+			try {
+				const r = await fetch(`/api/workflows/executions/${id}/files`);
+				if (!r.ok || cancelled) return;
+				const d = await r.json();
 				filesSummary = {
 					count: Array.isArray(d.files) ? d.files.length : 0,
 					live: !!d.liveSandbox,
 					cli: !!d.cliWorkspace
 				};
-			})
-			.catch(() => {});
+			} catch {
+				/* transient */
+			}
+		};
+		load();
+		// While the run is active, re-poll so the Files tab appears as soon as a
+		// workspace exists (a run that's still cloning has none yet). Stop once a
+		// source is found or the run goes idle/terminal.
+		const active = executionStatus === 'running' || executionStatus === 'pending';
+		if (!active) return;
+		const t = setInterval(() => {
+			if (filesSummary.cli || filesSummary.live || filesSummary.count > 0) {
+				clearInterval(t);
+				return;
+			}
+			load();
+		}, 15000);
+		return () => {
+			cancelled = true;
+			clearInterval(t);
+		};
 	});
 	const hasFilesTab = $derived(filesSummary.count > 0 || filesSummary.live || filesSummary.cli);
 
@@ -2117,19 +2138,18 @@
 		</div>
 	</header>
 
-	<!-- Run-level flow progress on every NON-Live tab (the Live console renders
-	     its own band). Replaces the old live-only RunGauges token strip. -->
-	{#if activeTab !== 'overview'}
-		<RunProgressBand
-			nodes={workflowNodes}
-			edges={workflowEdges}
-			{snapshot}
-			activeToolName={executionState.activeToolName}
-			isStreaming={executionState.isLlmStreaming}
-			tokensPerSec={pageTokensPerSec}
-			runActive={isRunning}
-		/>
-	{/if}
+	<!-- Run-level flow progress as a PERSISTENT header on every tab — constant
+	     position so switching tabs never shifts the tab bar or content (the Live
+	     console no longer renders its own band; it keeps only the metrics cards). -->
+	<RunProgressBand
+		nodes={workflowNodes}
+		edges={workflowEdges}
+		{snapshot}
+		activeToolName={executionState.activeToolName}
+		isStreaming={executionState.isLlmStreaming}
+		tokensPerSec={pageTokensPerSec}
+		runActive={isRunning}
+	/>
 
 	<!-- Body: Other Runs panel on the left (collapsible), tabbed content on the right. -->
 	<div class="flex flex-1 overflow-hidden">
