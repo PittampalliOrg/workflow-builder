@@ -25,6 +25,7 @@ from typing import Any, Generator, Mapping
 from dapr.ext.workflow import DaprWorkflowContext, RetryPolicy, when_any as wf_when_any
 
 from src.cancellation import TERMINAL_CONTROL_EVENT_TYPES, check_cancellation_activity
+from src.browser_video_sync import sync_browser_video_activity
 from src.cli_lifecycle import probe_cli_activity, start_cli_activity, stop_cli_activity
 from src.event_publisher import publish_session_event
 from src.output_sync import sync_output_activity
@@ -47,6 +48,9 @@ CLI_LIFECYCLE_MAX_ITERATIONS = int(os.environ.get("CLI_LIFECYCLE_MAX_ITERATIONS"
 CLI_STOP_TIMEOUT_SECONDS = int(os.environ.get("CLI_STOP_TIMEOUT_SECONDS", "120"))
 CLI_OUTPUT_SYNC_TIMEOUT_SECONDS = int(
     os.environ.get("CLI_OUTPUT_SYNC_TIMEOUT_SECONDS", "900")
+)
+CLI_BROWSER_VIDEO_SYNC_TIMEOUT_SECONDS = int(
+    os.environ.get("CLI_BROWSER_VIDEO_SYNC_TIMEOUT_SECONDS", "180")
 )
 CLI_PATCH_TIMEOUT_SECONDS = int(os.environ.get("CLI_PATCH_TIMEOUT_SECONDS", "300"))
 _SWEBENCH_PATCH_EXCLUDE_PATHS = (
@@ -905,6 +909,33 @@ def session_workflow(
                 if last_assistant_text
                 else f"Output sync failed: {error}"
             )
+
+    # R1 persisted recording: push any Playwright-native .webm the critic's
+    # in-pod @playwright/mcp (--save-video) wrote to /sandbox/work to the BFF
+    # browser-artifacts ingest. Runs after stop+output-sync so the browser
+    # context has closed and the video is flushed. STRICTLY best-effort — a
+    # failure or timeout here must never fail the session.
+    if status in ("completed", "terminated"):
+        metadata = _record(input_data.get("_message_metadata"))
+        video_result = yield from _yield_bounded(
+            ctx,
+            sync_browser_video_activity,
+            input={
+                "workflowId": input_data.get("workflowId") or metadata.get("workflowId"),
+                "workflowExecutionId": input_data.get("workflowExecutionId")
+                or input_data.get("dbExecutionId")
+                or input_data.get("executionId")
+                or metadata.get("workflowExecutionId")
+                or metadata.get("executionId"),
+                "nodeId": input_data.get("nodeId") or metadata.get("nodeId"),
+                "workspaceRef": input_data.get("workspaceRef"),
+                "sessionId": session_id,
+            },
+            timeout_seconds=CLI_BROWSER_VIDEO_SYNC_TIMEOUT_SECONDS,
+        )
+        if video_result is _ACTIVITY_TIMED_OUT:
+            video_result = None
+
     return _result_contract(
         ctx=ctx,
         session_id=session_id,
