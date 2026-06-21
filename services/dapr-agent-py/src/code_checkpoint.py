@@ -1058,22 +1058,31 @@ _RUN_DIFF_NOISE = "node_modules/\n.git/\n.venv/\n__pycache__/\ndist/\nbuild/\n.c
 # Trust root-owned workspace dirs (JuiceFS) so git doesn't abort on "dubious
 # ownership" when it runs as the agent user.
 _RUN_DIFF_SAFE = "git config --global --add safe.directory '*' 2>/dev/null || true"
-_RUN_DIFF_BASE_SCRIPT = """
+# Single-pass: discover the working repo ($REPO if a repo; else a child .git dir
+# for agent-self-clone-into-subdir; else git-init for greenfield), resolve the
+# baseline (wfb-baseline tag → origin/HEAD/@{upstream} for agent-self-clone →
+# empty-tree for greenfield), and diff. Output: WFB_BASE=<sha>, sentinel, patch.
+# Kept in lock-step with services/cli-agent-py/src/workspace_diff_sync.py.
+_RUN_DIFF_CAPTURE_SCRIPT = """
 set -e
 SAFE
-cd "$REPO" 2>/dev/null || { echo "__WFB_NO_REPO__"; exit 0; }
-git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init -q >/dev/null 2>&1
+[ -d "$REPO" ] || { echo "__WFB_NO_REPO__"; exit 0; }
+cd "$REPO"
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  SUB=$(find . -mindepth 2 -maxdepth 2 -name .git 2>/dev/null | head -1)
+  if [ -n "$SUB" ]; then cd "$(dirname "$SUB")"; else git init -q >/dev/null 2>&1; fi
+fi
 mkdir -p .git/info
 printf '%s' "$NOISE" > .git/info/exclude
-git rev-parse -q --verify refs/tags/wfb-baseline 2>/dev/null || echo "$EMPTY"
-""".replace("SAFE", _RUN_DIFF_SAFE)
-_RUN_DIFF_DIFF_SCRIPT = """
-set -e
-SAFE
-cd "$REPO"
+BASE=$(git rev-parse -q --verify refs/tags/wfb-baseline 2>/dev/null \
+  || git rev-parse -q --verify origin/HEAD 2>/dev/null \
+  || git rev-parse -q --verify '@{upstream}' 2>/dev/null \
+  || echo "$EMPTY")
 export GIT_INDEX_FILE=/tmp/wfb-diff-index
 rm -f "$GIT_INDEX_FILE"
 git add -A 2>/dev/null || true
+echo "WFB_BASE=$BASE"
+echo "===WFB_PATCH==="
 git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true
 """.replace("SAFE", _RUN_DIFF_SAFE)
 
@@ -1100,23 +1109,22 @@ def capture_run_diff(
     repo = (repo_path or "/sandbox").strip() or "/sandbox"
     env = {**os.environ, "REPO": repo, "EMPTY": _RUN_DIFF_EMPTY_TREE, "NOISE": _RUN_DIFF_NOISE}
     try:
-        base_out = subprocess.run(
-            ["bash", "-c", _RUN_DIFF_BASE_SCRIPT], capture_output=True, text=True,
+        out = subprocess.run(
+            ["bash", "-c", _RUN_DIFF_CAPTURE_SCRIPT], capture_output=True, text=True,
             timeout=120, env=env, check=False,
-        ).stdout.strip()
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": True, "skipped": f"base_failed: {exc}"}
-    if base_out == "__WFB_NO_REPO__" or not base_out:
-        return {"ok": True, "skipped": "no_workspace"}
-    base = base_out.splitlines()[-1].strip() or _RUN_DIFF_EMPTY_TREE
-
-    try:
-        patch = subprocess.run(
-            ["bash", "-c", _RUN_DIFF_DIFF_SCRIPT], capture_output=True, text=True,
-            timeout=120, env={**env, "BASE": base}, check=False,
         ).stdout
     except Exception as exc:  # noqa: BLE001
-        return {"ok": True, "skipped": f"diff_failed: {exc}"}
+        return {"ok": True, "skipped": f"capture_failed: {exc}"}
+    if out.strip() == "__WFB_NO_REPO__":
+        return {"ok": True, "skipped": "no_workspace"}
+
+    base = _RUN_DIFF_EMPTY_TREE
+    patch = ""
+    if "===WFB_PATCH===" in out:
+        header, _, patch = out.partition("===WFB_PATCH===\n")
+        for line in header.splitlines():
+            if line.startswith("WFB_BASE="):
+                base = line[len("WFB_BASE="):].strip() or _RUN_DIFF_EMPTY_TREE
     if not patch.strip():
         return {"ok": True, "empty": True}
     if len(patch.encode("utf-8")) > 8 * 1024 * 1024:

@@ -51,23 +51,35 @@ _NOISE_EXCLUDE = "node_modules/\n.git/\n.venv/\n__pycache__/\ndist/\nbuild/\n.ca
 # dubious ownership". Trust all repos for these throwaway in-pod captures.
 _SAFE_DIR = "git config --global --add safe.directory '*' 2>/dev/null || true"
 
-_BASE_SCRIPT = """
+# Single-pass capture: discover the working repo, resolve the baseline, diff.
+#   Repo discovery: $REPO if it is a git repo (greenfield git-init at root, or a
+#   session-resource clone); else a child dir holding .git (agent-self-clone into
+#   a subdir, e.g. /sandbox/work/repo); else git-init $REPO (greenfield, files
+#   written directly at root). Avoids diffing an embedded repo as a gitlink.
+#   Baseline: refs/tags/wfb-baseline (session-resource clone) → origin/HEAD /
+#   @{upstream} (agent-self-clone → agent-only diff vs the clone point) →
+#   empty-tree (greenfield → all files as additions).
+# Output: "WFB_BASE=<sha>" line, sentinel, then the unified patch.
+_CAPTURE_SCRIPT = """
 set -e
 SAFE_DIR_CMD
-cd "$REPO" 2>/dev/null || { echo "__WFB_NO_REPO__"; exit 0; }
-git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init -q >/dev/null 2>&1
+[ -d "$REPO" ] || { echo "__WFB_NO_REPO__"; exit 0; }
+cd "$REPO"
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  SUB=$(find . -mindepth 2 -maxdepth 2 -name .git 2>/dev/null | head -1)
+  if [ -n "$SUB" ]; then cd "$(dirname "$SUB")"; else git init -q >/dev/null 2>&1; fi
+fi
 mkdir -p .git/info
 printf '%s' "$NOISE" > .git/info/exclude
-git rev-parse -q --verify refs/tags/wfb-baseline 2>/dev/null || echo "$EMPTY"
-""".replace("SAFE_DIR_CMD", _SAFE_DIR)
-
-_DIFF_SCRIPT = """
-set -e
-SAFE_DIR_CMD
-cd "$REPO"
+BASE=$(git rev-parse -q --verify refs/tags/wfb-baseline 2>/dev/null \
+  || git rev-parse -q --verify origin/HEAD 2>/dev/null \
+  || git rev-parse -q --verify '@{upstream}' 2>/dev/null \
+  || echo "$EMPTY")
 export GIT_INDEX_FILE=/tmp/wfb-diff-index
 rm -f "$GIT_INDEX_FILE"
 git add -A 2>/dev/null || true
+echo "WFB_BASE=$BASE"
+echo "===WFB_PATCH==="
 git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true
 """.replace("SAFE_DIR_CMD", _SAFE_DIR)
 
@@ -135,17 +147,20 @@ def sync_workspace_diff_activity(
     env_extra = {"REPO": repo_dir, "EMPTY": _EMPTY_TREE, "NOISE": _NOISE_EXCLUDE}
 
     try:
-        base_out = _run(_BASE_SCRIPT, env_extra).strip()
+        out = _run(_CAPTURE_SCRIPT, env_extra)
     except Exception as exc:  # noqa: BLE001
-        return {"ok": True, "skipped": f"base_failed: {exc}"}
-    if base_out == "__WFB_NO_REPO__" or not base_out:
+        return {"ok": True, "skipped": f"capture_failed: {exc}"}
+    if out.strip() == "__WFB_NO_REPO__":
         return {"ok": True, "skipped": "no_workspace"}
-    base = base_out.splitlines()[-1].strip() or _EMPTY_TREE
 
-    try:
-        patch = _run(_DIFF_SCRIPT, {**env_extra, "BASE": base})
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": True, "skipped": f"diff_failed: {exc}"}
+    # Parse "WFB_BASE=<sha>\n===WFB_PATCH===\n<patch>".
+    base = _EMPTY_TREE
+    patch = ""
+    if "===WFB_PATCH===" in out:
+        header, _, patch = out.partition("===WFB_PATCH===\n")
+        for line in header.splitlines():
+            if line.startswith("WFB_BASE="):
+                base = line[len("WFB_BASE="):].strip() or _EMPTY_TREE
 
     if not patch.strip():
         return {"ok": True, "empty": True, "base": base}
