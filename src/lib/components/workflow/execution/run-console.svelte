@@ -25,7 +25,6 @@
 		type RunMetricsLive,
 		type RunMetricsOutcome
 	} from '$lib/components/workflow/execution/run-metrics-bar.svelte';
-	import RunProgressBand from '$lib/components/workflow/execution/run-progress-band.svelte';
 	import ProvisioningStepper from '$lib/components/workflow/execution/provisioning-stepper.svelte';
 	import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '$lib/components/ui/collapsible';
 	import { fmtTokens } from '$lib/utils/format-tokens';
@@ -398,8 +397,8 @@
 	<!-- Top strip: aggregate run metrics -->
 	<RunMetricsBar {executionId} {sessions} {runActive} {live} {outcome} />
 
-	<!-- Real-time flow progress: current node + live action + node stepper -->
-	<RunProgressBand {nodes} {edges} {snapshot} {activeToolName} {isStreaming} {tokensPerSec} {runActive} />
+	<!-- Flow-progress band is now rendered once at the run-page level (persistent
+	     header on every tab) so switching tabs doesn't shift layout. -->
 
 	{#if orderedSessions.length === 0}
 		<div class="flex flex-1 flex-col items-center justify-center text-muted-foreground">
