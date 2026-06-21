@@ -1043,3 +1043,97 @@ def restore_code_checkpoint(
     except Exception as exc:
         return {"ok": False, "error": f"invalid restore output: {exc}"}
     return parsed if isinstance(parsed, dict) else {"ok": False, "error": "restore output was not an object"}
+
+
+# --- Durable per-run workspace diff (runtime-agnostic with the CLI capture) ----
+# Mirrors services/cli-agent-py/src/workspace_diff_sync.py: at session end compute
+# ONE `git diff <baseline>..working` over the agent workspace and POST the patch
+# to the BFF run-diff ingest, which persists it durably (inline ≤256 KB else
+# gzip→files). Keep this in lock-step with the CLI module. Best-effort.
+
+_RUN_DIFF_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+_RUN_DIFF_NOISE = "node_modules/\n.git/\n.venv/\n__pycache__/\ndist/\nbuild/\n.cache/\n.next/\nvendor/\n.pytest_cache/\n"
+_RUN_DIFF_BASE_SCRIPT = """
+set -e
+cd "$REPO" 2>/dev/null || { echo "__WFB_NO_REPO__"; exit 0; }
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init -q >/dev/null 2>&1
+mkdir -p .git/info
+if ! grep -q '^node_modules/$' .git/info/exclude 2>/dev/null; then printf '%s' "$NOISE" >> .git/info/exclude; fi
+git rev-parse -q --verify refs/tags/wfb-baseline 2>/dev/null || echo "$EMPTY"
+"""
+_RUN_DIFF_DIFF_SCRIPT = """
+set -e
+cd "$REPO"
+export GIT_INDEX_FILE=/tmp/wfb-diff-index
+rm -f "$GIT_INDEX_FILE"
+git add -A 2>/dev/null || true
+git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true
+"""
+
+
+def capture_run_diff(
+    *,
+    execution_id: str | None,
+    node_id: str | None = None,
+    repo_path: str | None = None,
+) -> dict:
+    """Compute + POST the per-run workspace diff. Never raises."""
+    import os
+    import subprocess
+    import urllib.error
+    import urllib.request
+
+    token = os.environ.get("INTERNAL_API_TOKEN", "").strip()
+    base_url = os.environ.get(
+        "WORKFLOW_BUILDER_URL", "http://workflow-builder.nextjs.svc.cluster.local:3000"
+    ).rstrip("/")
+    if not token or not execution_id:
+        return {"ok": True, "skipped": "no_token_or_execution"}
+
+    repo = (repo_path or "/sandbox").strip() or "/sandbox"
+    env = {**os.environ, "REPO": repo, "EMPTY": _RUN_DIFF_EMPTY_TREE, "NOISE": _RUN_DIFF_NOISE}
+    try:
+        base_out = subprocess.run(
+            ["bash", "-c", _RUN_DIFF_BASE_SCRIPT], capture_output=True, text=True,
+            timeout=120, env=env, check=False,
+        ).stdout.strip()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": True, "skipped": f"base_failed: {exc}"}
+    if base_out == "__WFB_NO_REPO__" or not base_out:
+        return {"ok": True, "skipped": "no_workspace"}
+    base = base_out.splitlines()[-1].strip() or _RUN_DIFF_EMPTY_TREE
+
+    try:
+        patch = subprocess.run(
+            ["bash", "-c", _RUN_DIFF_DIFF_SCRIPT], capture_output=True, text=True,
+            timeout=120, env={**env, "BASE": base}, check=False,
+        ).stdout
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": True, "skipped": f"diff_failed: {exc}"}
+    if not patch.strip():
+        return {"ok": True, "empty": True}
+    if len(patch.encode("utf-8")) > 8 * 1024 * 1024:
+        patch = patch.encode("utf-8")[: 8 * 1024 * 1024].decode("utf-8", errors="ignore")
+
+    body = json.dumps({
+        "patch": patch,
+        "baseRef": "empty-tree" if base == _RUN_DIFF_EMPTY_TREE else base[:12],
+        "headRef": "working",
+        "nodeId": node_id,
+        "title": "Workspace changes",
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base_url}/api/internal/workflows/executions/{execution_id}/run-diff",
+        data=body, method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "x-internal-token": token,
+            "Authorization": f"Bearer {token}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            ok = 200 <= int(getattr(resp, "status", 200) or 200) < 300
+            return {"ok": True, "posted": ok, "base": base}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": True, "posted": False, "error": str(exc)[:200]}

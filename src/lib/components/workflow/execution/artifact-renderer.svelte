@@ -20,11 +20,16 @@
 <script lang="ts">
 	import Response from "$lib/components/ui/ai-elements/response/Response.svelte";
 	import JsonViewer from "$lib/components/workflow/execution/json-viewer.svelte";
+	import DiffArtifact from "$lib/components/workflow/execution/diff-artifact.svelte";
 	import * as Card from "$lib/components/ui/card";
 	import { ExternalLink, Target, ShieldCheck, TriangleAlert } from "@lucide/svelte";
 
 	interface Props {
 		kind: string;
+		/** Artifact row id — used to lazily resolve offloaded `diff` patches. */
+		id?: string | null;
+		/** Parent execution id — used to lazily resolve offloaded `diff` patches. */
+		executionId?: string | null;
 		title?: string;
 		description?: string | null;
 		inlinePayload?: unknown;
@@ -33,7 +38,7 @@
 		metadata?: Record<string, unknown> | null;
 	}
 
-	let { kind, inlinePayload, fileId, ...rest }: Props = $props();
+	let { kind, id = null, executionId = null, inlinePayload, fileId, ...rest }: Props = $props();
 
 	// Narrowing helpers — payloads come from JSONB so we treat them as unknown.
 	function asString(v: unknown): string {
@@ -144,6 +149,8 @@
 			<Card.Footer><span class="text-xs text-muted-foreground">{asString(payloadField("footer"))}</span></Card.Footer>
 		{/if}
 	</Card.Root>
+{:else if kind === "diff"}
+	<DiffArtifact {executionId} artifactId={id} {inlinePayload} {fileId} />
 {:else if kind === "image" && fileId}
 	<img
 		src={`/api/v1/files/${fileId}/content`}

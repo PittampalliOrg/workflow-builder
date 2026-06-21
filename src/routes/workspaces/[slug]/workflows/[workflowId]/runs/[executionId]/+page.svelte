@@ -2310,7 +2310,7 @@
 				{/if}
 
 				{#if primaryArtifacts.length > 0}
-					<ArtifactList artifacts={primaryArtifacts} mode="primary" />
+					<ArtifactList artifacts={primaryArtifacts} mode="primary" {executionId} />
 				{/if}
 
 				{#if input}
@@ -2345,7 +2345,7 @@
 		<!-- Tab: Outputs (generic workflow_artifacts) -->
 		<TabsContent value="outputs" class="flex-1 overflow-y-auto p-4">
 			<div class="mx-auto max-w-5xl space-y-4">
-				<ArtifactList artifacts={workflowArtifacts} mode="all" />
+				<ArtifactList artifacts={workflowArtifacts} mode="all" {executionId} />
 			</div>
 		</TabsContent>
 

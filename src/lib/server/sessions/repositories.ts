@@ -448,6 +448,10 @@ function buildCloneCommand(opts: {
 	if (opts.ref) {
 		lines.push(`git -C "$DIR" checkout ${shQuote(opts.ref)}`);
 	}
+	// Record the clone point as the run-diff baseline so the session-end
+	// workspace diff shows ONLY what the agent changed (not the whole clone).
+	// Best-effort (lightweight tag); the capture falls back to empty-tree.
+	lines.push(`git -C "$DIR" tag -f wfb-baseline HEAD 2>/dev/null || true`);
 	return lines.join("\n");
 }
 
