@@ -1,0 +1,60 @@
+{
+  "document": {
+    "dsl": "1.0.0",
+    "namespace": "workflow-builder",
+    "name": "browser-recording-test-showcase",
+    "version": "1.0.0",
+    "title": "Browser Recording Test (Playwright-MCP .webm)",
+    "summary": "Minimal single-node test of the R1 persisted browser recording: a Playwright-MCP CLI critic agent launches a real headless Chromium, navigates to a URL, snapshots + screenshots it, then ends. The in-pod @playwright/mcp (--save-video) writes a .webm to /sandbox/work; cli-agent-py pushes it to the BFF browser-artifacts ingest at session finalize, where it renders inline on the run's Browser tab. Isolates browser/video capture from the heavier coding-redesign flow."
+  },
+  "input": {
+    "schema": {
+      "format": "json",
+      "document": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "title": "URL to inspect",
+            "default": "https://example.com"
+          },
+          "criticAgent": {
+            "type": "string",
+            "title": "Playwright critic agent slug",
+            "default": "cli-playwright-critic-agent",
+            "description": "cli-playwright-critic-agent (claude) | codex-playwright-critic-agent (codex). Must have the Playwright MCP server + --save-video."
+          }
+        }
+      }
+    }
+  },
+  "do": [
+    {
+      "drive_browser": {
+        "call": "durable/run",
+        "with": {
+          "cwd": "/sandbox/work",
+          "mode": "execute_direct",
+          "workspaceRef": "${ .runtime.executionId }",
+          "maxTurns": 12,
+          "timeoutMinutes": 8,
+          "agentRef": {
+            "slug": "${ .trigger.criticAgent // \"cli-playwright-critic-agent\" }"
+          },
+          "agentConfig": {
+            "name": "Browser Recording Test",
+            "instructions": "You are a browser smoke-test agent. You MUST drive the real browser via the Playwright MCP tools (never shell/Bash). The session is recorded automatically — you do NOT need to start/stop any recording; just drive the browser. Steps: (1) call mcp__playwright__browser_navigate to open the target URL (the Playwright MCP tools are deferred — load them with ToolSearch first if needed); (2) call mcp__playwright__browser_snapshot; (3) call mcp__playwright__browser_take_screenshot; (4) end your turn with a one-paragraph description of the page's title, headline, and layout, finishing with the literal text TASK COMPLETE. Single turn, no planning, no file edits."
+          },
+          "prompt": "${ \"Open \" + (.trigger.url // \"https://example.com\") + \" in the Playwright browser, snapshot it, screenshot it, and report what you see. Finish with TASK COMPLETE.\" }",
+          "stopCondition": "Stop after the final response includes TASK COMPLETE."
+        }
+      }
+    }
+  ],
+  "output": {
+    "as": {
+      "report": "${ .drive_browser.result }"
+    }
+  }
+}

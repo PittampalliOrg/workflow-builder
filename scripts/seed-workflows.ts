@@ -4472,12 +4472,17 @@ async function seedGeneratorCriticShowcases(params: {
 				"--isolated",
 				"--output-dir",
 				"/sandbox/work",
-				// R1 persisted recording: Playwright-native per-context video to the
-				// shared /sandbox/work mount. Launch-mode (stdio) supports recordVideo
-				// (the :3100 sidecar's --cdp-endpoint connect-mode does NOT). cli-agent-py
-				// pushes the resulting .webm to the BFF browser-artifacts ingest at
-				// session end (browser_video_sync). Transparent to the agent prompt.
-				"--save-video=1280x720",
+				// R1 persisted recording (AUTOMATIC): point @playwright/mcp at a static
+				// config that sets Playwright's `contextOptions.recordVideo`, so EVERY
+				// browser context the critic opens records a .webm to /sandbox/work — no
+				// dependency on the agent calling browser_start_video (claude won't
+				// reliably do that, and v0.0.76 has no `--save-video` flag — that flag
+				// crashes the server). The config is baked into the cli-agent-py-sandbox
+				// image at /etc/playwright-mcp/recordvideo.json (see Dockerfile.sandbox).
+				// cli-agent-py pushes the .webm to the BFF browser-artifacts ingest
+				// (browser_video_sync) for inline <video> playback on the run page.
+				"--config",
+				"/etc/playwright-mcp/recordvideo.json",
 			],
 		},
 	];
@@ -4543,6 +4548,11 @@ async function seedGeneratorCriticShowcases(params: {
 		// Coding generator/critic: clone a repo → redesign → build-gate → Playwright
 		// critic (screenshots the running app) → open a PR. (interactive-cli family.)
 		"coding-redesign-cli-showcase.json",
+		// Minimal single-node test of R1 persisted browser recording: a Playwright-MCP
+		// critic drives a real browser (navigate/snapshot/screenshot); the in-pod
+		// @playwright/mcp --save-video .webm is pushed to browser-artifacts and plays
+		// inline on the run's Browser tab. Isolates browser/video from the heavy flow.
+		"browser-recording-test-showcase.json",
 	]) {
 		const full = path.join(dir, file);
 		if (!fs.existsSync(full)) {
