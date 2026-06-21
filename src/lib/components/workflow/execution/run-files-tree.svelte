@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { Button } from '$lib/components/ui/button';
 	import {
 		Folder,
 		File,
@@ -21,30 +20,35 @@
 
 	let { executionId }: Props = $props();
 
-	interface FileRow {
-		id: string;
-		name: string;
-		contentType: string | null;
+	// A unified leaf/dir model so the same tree renders three sources:
+	//  - cli:       JuiceFS shared workspace via webdav (durable, live + after reap)
+	//  - openshell: live workspace pod via SandboxFileBrowser
+	//  - persisted: saved output files (files table)
+	interface Item {
+		path: string; // full path relative to the tree root
+		isDir: boolean;
 		sizeBytes: number;
-		createdAt: string;
+		contentUrl?: string; // for files
 	}
 	interface TreeNode {
 		name: string;
 		path: string;
 		isDir: boolean;
-		file?: FileRow;
+		item?: Item;
 		children: TreeNode[];
 	}
 
+	type Mode = 'cli' | 'openshell' | 'persisted';
+
 	let loading = $state(true);
 	let loadError = $state<string | null>(null);
-	let fileRows = $state.raw<FileRow[]>([]);
+	let mode = $state<Mode>('persisted');
 	let liveSandbox = $state<{ name: string } | null>(null);
-	// 'live' | 'persisted'. Defaults to live when a live sandbox is available.
-	let mode = $state<'live' | 'persisted'>('persisted');
+	let items = $state.raw<Item[]>([]);
+	let truncated = $state(false);
 
 	let expanded = $state<Set<string>>(new Set());
-	let selected = $state<FileRow | null>(null);
+	let selected = $state<Item | null>(null);
 	let previewText = $state<string | null>(null);
 	let previewLoading = $state(false);
 	let previewError = $state<string | null>(null);
@@ -56,10 +60,37 @@
 			const res = await fetch(`/api/workflows/executions/${executionId}/files`);
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const data = await res.json();
-			fileRows = Array.isArray(data.files) ? data.files : [];
 			liveSandbox = data.liveSandbox ?? null;
-			mode = liveSandbox ? 'live' : 'persisted';
-			// Auto-expand top-level directories for quick scanning.
+
+			if (data.cliWorkspace) {
+				mode = 'cli';
+				const wf = await fetch(`/api/workflows/executions/${executionId}/workspace-files`);
+				const wd = wf.ok ? await wf.json() : { entries: [] };
+				truncated = !!wd.truncated;
+				items = (wd.entries ?? []).map(
+					(e: { path: string; isDir: boolean; sizeBytes: number }) => ({
+						path: e.path,
+						isDir: e.isDir,
+						sizeBytes: e.sizeBytes ?? 0,
+						contentUrl: e.isDir
+							? undefined
+							: `/api/workflows/executions/${executionId}/workspace-content?path=${encodeURIComponent(e.path)}`
+					})
+				);
+			} else if (liveSandbox) {
+				mode = 'openshell';
+			} else {
+				mode = 'persisted';
+				items = (data.files ?? []).map(
+					(f: { id: string; name: string; sizeBytes: number }) => ({
+						path: f.name,
+						isDir: false,
+						sizeBytes: f.sizeBytes ?? 0,
+						contentUrl: `/api/v1/files/${encodeURIComponent(f.id)}/content`
+					})
+				);
+			}
+			// Auto-expand top-level directories.
 			expanded = new Set(tree.filter((n) => n.isDir).map((n) => n.path));
 		} catch (err) {
 			loadError = err instanceof Error ? err.message : String(err);
@@ -72,25 +103,36 @@
 		if (executionId) load();
 	});
 
-	const tree = $derived(buildTree(fileRows));
+	const tree = $derived(buildTree(items));
 
-	function buildTree(rows: FileRow[]): TreeNode[] {
+	function buildTree(list: Item[]): TreeNode[] {
 		const root: TreeNode = { name: '', path: '', isDir: true, children: [] };
-		for (const f of rows) {
-			const parts = f.name.split('/').filter(Boolean);
-			if (parts.length === 0) continue;
+		const ensureDir = (segments: string[]): TreeNode => {
 			let cur = root;
-			parts.forEach((seg, i) => {
-				const isLeaf = i === parts.length - 1;
-				const path = cur.path ? `${cur.path}/${seg}` : seg;
-				let found = cur.children.find((c) => c.name === seg && c.isDir === !isLeaf);
-				if (!found) {
-					found = { name: seg, path, isDir: !isLeaf, children: [] };
-					if (isLeaf) found.file = f;
-					cur.children.push(found);
+			let acc = '';
+			for (const seg of segments) {
+				acc = acc ? `${acc}/${seg}` : seg;
+				let next = cur.children.find((c) => c.name === seg && c.isDir);
+				if (!next) {
+					next = { name: seg, path: acc, isDir: true, children: [] };
+					cur.children.push(next);
 				}
-				cur = found;
-			});
+				cur = next;
+			}
+			return cur;
+		};
+		for (const it of list) {
+			const segments = it.path.split('/').filter(Boolean);
+			if (segments.length === 0) continue;
+			if (it.isDir) {
+				ensureDir(segments);
+			} else {
+				const parent = ensureDir(segments.slice(0, -1));
+				const name = segments[segments.length - 1];
+				if (!parent.children.find((c) => c.name === name && !c.isDir)) {
+					parent.children.push({ name, path: it.path, isDir: false, item: it, children: [] });
+				}
+			}
 		}
 		const sortRec = (n: TreeNode) => {
 			n.children.sort((a, b) =>
@@ -109,49 +151,38 @@
 		expanded = next;
 	}
 
-	function iconFor(file: FileRow) {
-		const ct = (file.contentType ?? '').toLowerCase();
-		const name = file.name.toLowerCase();
-		if (ct.startsWith('image/')) return ImageIcon;
-		if (ct.startsWith('video/')) return Video;
-		if (ct.includes('json') || name.endsWith('.json')) return FileJson;
-		if (/\.(ts|tsx|js|jsx|py|svelte|go|rs|java|c|cpp|sh|css|html)$/.test(name)) return FileCode;
-		if (ct.startsWith('text/') || /\.(md|txt|log|yaml|yml)$/.test(name)) return FileText;
+	function iconFor(name: string) {
+		const n = name.toLowerCase();
+		if (/\.(png|jpe?g|gif|webp|svg|avif|bmp)$/.test(n)) return ImageIcon;
+		if (/\.(webm|mp4|mov|mkv)$/.test(n)) return Video;
+		if (/\.json$/.test(n)) return FileJson;
+		if (/\.(ts|tsx|js|jsx|py|svelte|go|rs|java|c|cpp|sh|css|html?)$/.test(n)) return FileCode;
+		if (/\.(md|txt|log|ya?ml|csv|toml|ini|env)$/.test(n)) return FileText;
 		return File;
 	}
-
-	function contentUrl(file: FileRow): string {
-		return `/api/v1/files/${encodeURIComponent(file.id)}/content`;
+	function isImage(name: string) {
+		return /\.(png|jpe?g|gif|webp|svg|avif|bmp)$/.test(name.toLowerCase());
 	}
-
-	function isImage(file: FileRow | null) {
-		return !!file && (file.contentType ?? '').toLowerCase().startsWith('image/');
+	function isVideo(name: string) {
+		return /\.(webm|mp4|mov|mkv)$/.test(name.toLowerCase());
 	}
-	function isVideo(file: FileRow | null) {
-		return !!file && (file.contentType ?? '').toLowerCase().startsWith('video/');
-	}
-	function isTextual(file: FileRow | null) {
-		if (!file) return false;
-		const ct = (file.contentType ?? '').toLowerCase();
-		return (
-			ct.startsWith('text/') ||
-			ct.includes('json') ||
-			ct.includes('xml') ||
-			ct.includes('javascript') ||
-			/\.(md|txt|log|ya?ml|csv|svelte|ts|tsx|js|jsx|py|go|rs|sh|css|html?)$/.test(
-				file.name.toLowerCase()
-			)
+	function isTextual(name: string) {
+		return /\.(md|txt|log|ya?ml|csv|toml|ini|env|json|xml|svelte|ts|tsx|js|jsx|py|go|rs|sh|css|html?|sql|sh|dockerfile|gitignore)$/.test(
+			name.toLowerCase()
 		);
 	}
+	function baseName(p: string) {
+		return p.split('/').pop() ?? p;
+	}
 
-	async function select(file: FileRow) {
-		selected = file;
+	async function select(item: Item) {
+		selected = item;
 		previewText = null;
 		previewError = null;
-		if (!isTextual(file)) return;
+		if (!item.contentUrl || !isTextual(item.path)) return;
 		previewLoading = true;
 		try {
-			const res = await fetch(contentUrl(file));
+			const res = await fetch(item.contentUrl);
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			previewText = await res.text();
 		} catch (err) {
@@ -189,44 +220,25 @@
 				{@render treeNode(child, depth + 1)}
 			{/each}
 		{/if}
-	{:else if node.file}
-		{@const Icon = iconFor(node.file)}
+	{:else if node.item}
+		{@const Icon = iconFor(node.name)}
 		<button
 			type="button"
-			class="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left text-sm hover:bg-muted {selected?.id ===
-			node.file.id
+			class="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left text-sm hover:bg-muted {selected?.path ===
+			node.item.path
 				? 'bg-muted'
 				: ''}"
 			style="padding-left: {depth * 14 + 18}px"
-			onclick={() => node.file && select(node.file)}
+			onclick={() => node.item && select(node.item)}
 		>
 			<Icon size={14} class="shrink-0 text-muted-foreground" />
 			<span class="truncate">{node.name}</span>
-			<span class="ml-auto shrink-0 pl-2 text-xs text-muted-foreground"
-				>{fmtSize(node.file.sizeBytes)}</span
-			>
+			<span class="ml-auto shrink-0 pl-2 text-xs text-muted-foreground">{fmtSize(node.item.sizeBytes)}</span>
 		</button>
 	{/if}
 {/snippet}
 
-{#if liveSandbox}
-	<div class="mb-3 inline-flex items-center gap-1 rounded-md border border-border p-0.5 text-xs">
-		<button
-			type="button"
-			class="rounded px-2 py-1 {mode === 'live' ? 'bg-muted font-medium' : 'text-muted-foreground'}"
-			onclick={() => (mode = 'live')}>Live workspace</button
-		>
-		<button
-			type="button"
-			class="rounded px-2 py-1 {mode === 'persisted'
-				? 'bg-muted font-medium'
-				: 'text-muted-foreground'}"
-			onclick={() => (mode = 'persisted')}>Saved outputs</button
-		>
-	</div>
-{/if}
-
-{#if mode === 'live' && liveSandbox}
+{#if mode === 'openshell' && liveSandbox}
 	<SandboxFileBrowser sandboxName={liveSandbox.name} />
 {:else if loading}
 	<div class="flex items-center gap-2 p-4 text-sm text-muted-foreground">
@@ -234,14 +246,18 @@
 	</div>
 {:else if loadError}
 	<div class="p-4 text-sm text-destructive">Failed to load files: {loadError}</div>
-{:else if fileRows.length === 0}
+{:else if items.length === 0}
 	<div class="p-4 text-sm text-muted-foreground">
-		No saved output files for this run.
-		{#if !liveSandbox}
-			Files are captured from the agent's output directories when a run finishes.
-		{/if}
+		{mode === 'cli'
+			? 'No files in the run workspace yet.'
+			: 'No saved output files for this run.'}
 	</div>
 {:else}
+	{#if truncated}
+		<div class="mb-2 text-xs text-amber-600 dark:text-amber-400">
+			Showing a partial listing (workspace is large).
+		</div>
+	{/if}
 	<div class="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,18rem)_1fr]">
 		<div class="max-h-[60vh] overflow-y-auto rounded-md border border-border p-1">
 			{#each tree as node (node.path)}
@@ -253,21 +269,23 @@
 				<div class="text-sm text-muted-foreground">Select a file to preview.</div>
 			{:else}
 				<div class="mb-2 flex items-center gap-2">
-					<span class="truncate text-sm font-medium">{selected.name}</span>
-					<a
-						class="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
-						href={contentUrl(selected)}
-						target="_blank"
-						rel="noreferrer"
-					>
-						<Download size={12} /> Download
-					</a>
+					<span class="truncate text-sm font-medium">{baseName(selected.path)}</span>
+					{#if selected.contentUrl}
+						<a
+							class="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
+							href={selected.contentUrl}
+							target="_blank"
+							rel="noreferrer"
+						>
+							<Download size={12} /> Download
+						</a>
+					{/if}
 				</div>
-				{#if isImage(selected)}
-					<img src={contentUrl(selected)} alt={selected.name} class="max-w-full rounded border border-border" />
-				{:else if isVideo(selected)}
+				{#if selected.contentUrl && isImage(selected.path)}
+					<img src={selected.contentUrl} alt={baseName(selected.path)} class="max-w-full rounded border border-border" />
+				{:else if selected.contentUrl && isVideo(selected.path)}
 					<!-- svelte-ignore a11y_media_has_caption -->
-					<video src={contentUrl(selected)} controls preload="metadata" class="w-full rounded border border-border bg-black"></video>
+					<video src={selected.contentUrl} controls preload="metadata" class="w-full rounded border border-border bg-black"></video>
 				{:else if previewLoading}
 					<div class="flex items-center gap-2 text-sm text-muted-foreground">
 						<Loader2 size={14} class="animate-spin" /> Loading…
@@ -277,9 +295,7 @@
 				{:else if previewText != null}
 					<pre class="overflow-x-auto whitespace-pre-wrap break-words text-xs">{previewText}</pre>
 				{:else}
-					<div class="text-sm text-muted-foreground">
-						No inline preview for this file type. Use Download.
-					</div>
+					<div class="text-sm text-muted-foreground">No inline preview for this file type. Use Download.</div>
 				{/if}
 			{/if}
 		</div>
