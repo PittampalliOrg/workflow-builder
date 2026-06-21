@@ -1054,7 +1054,10 @@ def restore_code_checkpoint(
 _RUN_DIFF_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 # Includes JuiceFS mount-root magic files (.accesslog/.config/.stats/.trash) —
 # root-owned + unreadable, they make `git add -A` abort otherwise.
-_RUN_DIFF_NOISE = "node_modules/\n.git/\n.venv/\n__pycache__/\ndist/\nbuild/\n.cache/\n.next/\nvendor/\n.pytest_cache/\n.accesslog\n.config\n.stats\n.trash/\n"
+# dapr agents run in /sandbox, whose root carries seed clutter (.claude session
+# state, .transcripts, .wfb run metadata, seed configs) — exclude so the diff is
+# the agent's actual changes, not the sandbox scaffolding.
+_RUN_DIFF_NOISE = "node_modules/\n.git/\n.venv/\n__pycache__/\ndist/\nbuild/\n.cache/\n.next/\nvendor/\n.pytest_cache/\n.accesslog\n.config\n.stats\n.trash/\n.claude/\n.transcripts/\n.wfb/\n.codex/\n.gemini/\n"
 # Trust root-owned workspace dirs (JuiceFS) so git doesn't abort on "dubious
 # ownership" when it runs as the agent user.
 _RUN_DIFF_SAFE = "git config --global --add safe.directory '*' 2>/dev/null || true"
