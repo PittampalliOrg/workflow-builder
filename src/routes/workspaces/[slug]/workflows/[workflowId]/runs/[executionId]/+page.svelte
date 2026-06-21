@@ -69,6 +69,7 @@
 	} from '$lib/stores/execution-stream.svelte';
 	import JsonViewer from '$lib/components/workflow/execution/json-viewer.svelte';
 	import ArtifactList from '$lib/components/workflow/execution/artifact-list.svelte';
+	import RunFilesTree from '$lib/components/workflow/execution/run-files-tree.svelte';
 	import TimelineAutoScroll from '$lib/components/workflow/execution/timeline-auto-scroll.svelte';
 	import AgentRunExplorer from '$lib/components/workflow/execution/agent-run-explorer.svelte';
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';
@@ -840,6 +841,26 @@
 	const hasCodeTab = $derived(codeCheckpoints.length > 0);
 	const hasPlanTab = $derived(displayPlanText != null || planArtifacts.length > 0);
 
+	// Files tab gate: a lightweight summary fetch decides whether the run has
+	// persisted output files or a live sandbox worth browsing. RunFilesTree
+	// re-fetches its own data when the tab is opened.
+	let filesSummary = $state<{ count: number; live: boolean }>({ count: 0, live: false });
+	$effect(() => {
+		const id = executionId;
+		if (!id) return;
+		fetch(`/api/workflows/executions/${id}/files`)
+			.then((r) => (r.ok ? r.json() : null))
+			.then((d) => {
+				if (!d) return;
+				filesSummary = {
+					count: Array.isArray(d.files) ? d.files.length : 0,
+					live: !!d.liveSandbox
+				};
+			})
+			.catch(() => {});
+	});
+	const hasFilesTab = $derived(filesSummary.count > 0 || filesSummary.live);
+
 	// If the active tab becomes hidden (or was a removed tab like the old
 	// "steps"), fall back to the Live console so content never goes blank.
 	$effect(() => {
@@ -848,7 +869,8 @@
 			(activeTab === 'agents' && !hasAgentsTab) ||
 			(activeTab === 'browser' && !hasBrowserTab) ||
 			(activeTab === 'code' && !hasCodeTab) ||
-			(activeTab === 'plan' && !hasPlanTab);
+			(activeTab === 'plan' && !hasPlanTab) ||
+			(activeTab === 'files' && !hasFilesTab);
 		if (hidden) activeTab = 'overview';
 	});
 
@@ -2078,6 +2100,7 @@
 				{#if hasPlanTab}<TabsTrigger value="plan">Plan</TabsTrigger>{/if}
 				{#if hasAgentsTab}<TabsTrigger value="agents">Agents</TabsTrigger>{/if}
 				{#if hasBrowserTab}<TabsTrigger value="browser">Browser</TabsTrigger>{/if}
+				{#if hasFilesTab}<TabsTrigger value="files">Files{#if filesSummary.count > 0}<span class="ml-1.5 text-xs text-muted-foreground">{filesSummary.count}</span>{/if}</TabsTrigger>{/if}
 				<TabsTrigger value="trace">Trace</TabsTrigger>
 			</TabsList>
 		</div>
@@ -2235,6 +2258,15 @@
 		<TabsContent value="outputs" class="flex-1 overflow-y-auto p-4">
 			<div class="mx-auto max-w-5xl space-y-4">
 				<ArtifactList artifacts={workflowArtifacts} mode="all" />
+			</div>
+		</TabsContent>
+
+		<!-- Tab: Files (live workspace tree + persisted output files) -->
+		<TabsContent value="files" class="flex-1 overflow-y-auto p-4">
+			<div class="mx-auto max-w-5xl">
+				{#if activeTab === 'files'}
+					<RunFilesTree {executionId} />
+				{/if}
 			</div>
 		</TabsContent>
 
@@ -2782,30 +2814,10 @@
 
 									<div class="flex flex-wrap gap-3">
 										{#each artifact.manifestJson.assets ?? [] as asset}
-											{#if asset.kind === 'video' || asset.kind === 'video-annotated'}
-												<!-- R1 persisted recording: inline playback of the captured
-												     browser session (Playwright-native .webm). -->
-												<figure class="flex w-full max-w-2xl flex-col gap-1">
-													<!-- svelte-ignore a11y_media_has_caption -->
-													<video
-														class="w-full rounded-md border border-border bg-black"
-														src={browserBlobUrl(asset.storageRef)}
-														controls
-														preload="metadata"
-														playsinline
-													></video>
-													<figcaption class="flex items-center gap-1 text-xs text-muted-foreground">
-														<Video size={12} />
-														{asset.label}
-														<a
-															class="ml-auto hover:text-foreground hover:underline"
-															href={browserBlobUrl(asset.storageRef)}
-															target="_blank"
-															rel="noreferrer">Download</a
-														>
-													</figcaption>
-												</figure>
-											{:else if asset.kind === 'trace' || asset.kind === 'caption'}
+											<!-- Video assets are rendered ONCE by the dedicated player
+											     below (which owns caption tracks + Download); the loop
+											     only surfaces non-video assets (trace/caption links). -->
+											{#if asset.kind === 'trace' || asset.kind === 'caption'}
 												<a
 													class="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted"
 													href={browserBlobUrl(asset.storageRef)}
@@ -2838,27 +2850,49 @@
 								{/if}
 
 										{#if primaryVideoAsset(artifact)?.storageRef}
-											<!-- svelte-ignore a11y_media_has_caption -->
-											<video
-												class="w-full overflow-hidden rounded-lg border border-border bg-black"
-												src={browserBlobUrl(primaryVideoAsset(artifact)?.storageRef ?? '')}
-												controls
-												preload="metadata"
-											>
-												{#if captionAsset(artifact)?.storageRef}
-													<track
-														default
-														kind="captions"
-														label="Feature walkthrough"
-														src={browserBlobUrl(captionAsset(artifact)?.storageRef ?? '')}
-														srclang="en"
-													/>
-												{/if}
-											</video>
+											<!-- R1 persisted recording: the single inline player for the
+											     captured browser session (Playwright-native .webm). Owns
+											     caption tracks + the Download affordance. -->
+											<figure class="flex w-full flex-col gap-1">
+												<!-- svelte-ignore a11y_media_has_caption -->
+												<video
+													class="w-full overflow-hidden rounded-lg border border-border bg-black"
+													src={browserBlobUrl(primaryVideoAsset(artifact)?.storageRef ?? '')}
+													controls
+													preload="metadata"
+													playsinline
+												>
+													{#if captionAsset(artifact)?.storageRef}
+														<track
+															default
+															kind="captions"
+															label="Feature walkthrough"
+															src={browserBlobUrl(captionAsset(artifact)?.storageRef ?? '')}
+															srclang="en"
+														/>
+													{/if}
+												</video>
+												<figcaption class="flex items-center gap-1 text-xs text-muted-foreground">
+													<Video size={12} />
+													{primaryVideoAsset(artifact)?.label ?? 'Browser session recording'}
+													<a
+														class="ml-auto hover:text-foreground hover:underline"
+														href={browserBlobUrl(primaryVideoAsset(artifact)?.storageRef ?? '')}
+														target="_blank"
+														rel="noreferrer">Download</a
+													>
+												</figcaption>
+											</figure>
 											{#if primaryVideoAsset(artifact)?.kind === 'video-annotated' && rawVideoAsset(artifact)?.storageRef}
-												<p class="text-xs text-muted-foreground">
-													Primary player uses the annotated demo. The raw recording is still available in the asset list.
-												</p>
+												<a
+													class="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
+													href={browserBlobUrl(rawVideoAsset(artifact)?.storageRef ?? '')}
+													target="_blank"
+													rel="noreferrer"
+												>
+													<Video size={12} />
+													Download raw (unannotated) recording
+												</a>
 											{/if}
 										{/if}
 

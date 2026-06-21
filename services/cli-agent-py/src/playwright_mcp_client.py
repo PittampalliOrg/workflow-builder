@@ -90,8 +90,14 @@ def _initialize() -> str | None:
     return sid
 
 
-def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
-    sid = _initialize()
+def _call_tool(
+    name: str, arguments: dict[str, Any], session_id: str | None = None
+) -> dict[str, Any] | None:
+    # When an explicit session_id is supplied (the AGENT's own MCP session,
+    # captured by the in-pod proxy), reuse it so the tool runs against the
+    # agent's browser context/page — do NOT initialize a fresh session (that
+    # would get its own isolated about:blank context and record the wrong page).
+    sid = session_id or _initialize()
     if not sid:
         return None
     status, text, _ = _post(
@@ -122,21 +128,31 @@ def _result_text(envelope: dict[str, Any] | None) -> str:
     )
 
 
-def browser_start_video(size: dict[str, int] | None = None) -> bool:
-    """Start screencast recording (requires --caps=devtools). Best-effort."""
+def browser_start_video(
+    size: dict[str, int] | None = None, session_id: str | None = None
+) -> bool:
+    """Start screencast recording (requires --caps=devtools). Best-effort.
+
+    Pass ``session_id`` to record the AGENT's own browser page (the proxy
+    captures the agent's MCP session id); omit it only for standalone use.
+    """
     args: dict[str, Any] = {}
     if size:
         args["size"] = size
-    env = _call_tool("browser_start_video", args)
+    env = _call_tool("browser_start_video", args, session_id=session_id)
     return env is not None and "error" not in (env or {})
 
 
 _WEBM_RE = re.compile(r"(/\S+\.webm)")
 
 
-def browser_stop_video() -> str | None:
-    """Stop+flush the screencast and return the saved .webm path, or None."""
-    env = _call_tool("browser_stop_video", {})
+def browser_stop_video(session_id: str | None = None) -> str | None:
+    """Stop+flush the screencast and return the saved .webm path, or None.
+
+    Pass the AGENT's ``session_id`` so the flush targets the session that
+    started the recording (the proxy-injected start uses the same id).
+    """
+    env = _call_tool("browser_stop_video", {}, session_id=session_id)
     text = _result_text(env)
     m = _WEBM_RE.search(text)
     return m.group(1) if m else None

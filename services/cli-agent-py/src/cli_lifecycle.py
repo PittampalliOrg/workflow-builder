@@ -284,39 +284,16 @@ async def _start_cli(input_data: dict[str, Any]) -> dict[str, Any]:
                     "deferring kickoff to the user (post-auth)",
                     adapter.name,
                 )
-        # R1 browser recording: if this agent uses the Playwright MCP, begin
-        # recording via the supervisor-managed @playwright/mcp HTTP server (the
-        # agent + this call share one context). browser_stop_video flushes the
-        # .webm at finalize (browser_video_sync). Best-effort; never fails start.
-        if _session_uses_playwright(agent_config):
-            try:
-                from src.playwright_mcp_client import browser_start_video
-
-                ok = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: browser_start_video({"width": 1280, "height": 720})
-                )
-                logger.info("[start-cli] browser_start_video ok=%s", ok)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[start-cli] browser_start_video failed: %s", exc)
+        # R1 browser recording is now started by the in-pod recording proxy
+        # (playwright_mcp_proxy) on the AGENT's own MCP session, right after the
+        # agent's first browser_navigate — so the screencast records the agent's
+        # real page. Starting it here (a separate supervisor MCP session) only
+        # ever captured an idle about:blank (the blank-recording bug), so it was
+        # removed. browser_stop_video flushes the .webm at finalize on the
+        # agent's session id (browser_video_sync).
         return {"paneRef": pane_ref, "argv": argv, "agentDetected": agent_detected}
     finally:
         await client.close()
-
-
-def _session_uses_playwright(agent_config: Mapping[str, Any]) -> bool:
-    """True if the agent's MCP config references the Playwright server (so R1
-    video recording applies)."""
-    servers = agent_config.get("mcpServers")
-    if not isinstance(servers, list):
-        return False
-    for s in servers:
-        if not isinstance(s, Mapping):
-            continue
-        name = str(s.get("name") or s.get("server_name") or "").lower()
-        url = str(s.get("url") or s.get("serverUrl") or "").lower()
-        if name == "playwright" or "playwright" in url or ":3100" in url:
-            return True
-    return False
 
 
 async def _wait_for_agent(client: HerdrClient, pane_ref: str) -> bool:
