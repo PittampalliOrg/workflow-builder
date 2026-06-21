@@ -319,6 +319,13 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	priorityClass?: string | null;
 	traceContext?: TraceContext | null;
 	/**
+	 * Override the readiness wait (seconds). Identity-bound prewarm passes 0 so
+	 * the create returns immediately (fire-and-forget) — the real spawn that
+	 * later ADOPTS this pod is the one that waits for readiness. Defaults to the
+	 * `AGENT_WORKFLOW_HOST_WAIT_READY_SECONDS` env (45) when omitted.
+	 */
+	waitReadySeconds?: number | null;
+	/**
 	 * Per-session secret env (e.g. the owner's CLI subscription token for
 	 * `interactive-cli` runtimes). sandbox-execution-api creates a per-session
 	 * Secret and injects the keys as env into the main container. Values are
@@ -363,11 +370,14 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	}
 	const agentAppId = sessionHostAppId(params.sessionId);
 	const timeoutSeconds = agentWorkflowHostTimeoutSeconds(params);
-	const waitReadySecondsRaw = Number(
-		env.AGENT_WORKFLOW_HOST_WAIT_READY_SECONDS ??
-			process.env.AGENT_WORKFLOW_HOST_WAIT_READY_SECONDS ??
-			45,
-	);
+	const waitReadySecondsRaw =
+		params.waitReadySeconds != null
+			? params.waitReadySeconds
+			: Number(
+					env.AGENT_WORKFLOW_HOST_WAIT_READY_SECONDS ??
+						process.env.AGENT_WORKFLOW_HOST_WAIT_READY_SECONDS ??
+						45,
+				);
 	const waitReadySeconds = Number.isFinite(waitReadySecondsRaw)
 		? Math.max(0, Math.min(55, waitReadySecondsRaw))
 		: 45;

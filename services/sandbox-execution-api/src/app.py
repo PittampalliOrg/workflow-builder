@@ -1752,6 +1752,24 @@ def _patch_component_scope(namespace: str, component_name: str, app_id: str) -> 
 
 
 def _ensure_agent_host_component_scopes(namespace: str, app_id: str) -> None:
+    # DISABLED by default. The target stores (workflowstatestore,
+    # dapr-agent-py-statestore) ship intentionally UNSCOPED (scopes:null →
+    # visible to all in-namespace apps), so per-session pods already reach them
+    # without any patch — and `_patch_component_scope` no-ops on unscoped
+    # components anyway. The patch is a latent footgun: if a target ever acquired
+    # a `scopes` list, appending each ephemeral agent-session-<sha20> app-id
+    # would SCOPE the shared store to individual sessions and break other apps —
+    # a risk that grows with prewarm's earlier/heavier create volume. Invariant:
+    # workflowstatestore is the only actorStateStore=true and stays unscoped.
+    # Re-enable only with explicit opt-in (and only if a target is deliberately
+    # scoped). Default off.
+    if os.environ.get("SANDBOX_EXECUTION_PATCH_COMPONENT_SCOPES", "false").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
     raw = os.environ.get(
         "SANDBOX_EXECUTION_AGENT_HOST_SCOPED_COMPONENTS",
         "workflowstatestore,dapr-agent-py-statestore",
