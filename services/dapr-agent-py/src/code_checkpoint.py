@@ -1070,22 +1070,26 @@ _RUN_DIFF_CAPTURE_SCRIPT = """
 set -e
 SAFE
 [ -d "$REPO" ] || { echo "__WFB_NO_REPO__"; exit 0; }
+{ echo "DIAG repo=$REPO"; echo "DIAG ls:"; ls -la "$REPO" 2>&1 | head -15; echo "DIAG isrepo=$( (cd "$REPO" && git rev-parse --is-inside-work-tree 2>/dev/null) || echo no )"; echo "DIAG subfind:"; find "$REPO" -mindepth 2 -maxdepth 2 -name .git 2>/dev/null | head -3; } >&2
 IDX=/tmp/wfb-diff-index; rm -f "$IDX"
 BASEREFS='git rev-parse -q --verify refs/tags/wfb-baseline 2>/dev/null || git rev-parse -q --verify origin/HEAD 2>/dev/null || git rev-parse -q --verify @{upstream} 2>/dev/null || echo "$EMPTY"'
 SUB=$(find "$REPO" -mindepth 2 -maxdepth 2 -name .git 2>/dev/null | head -1)
 if [ -n "$SUB" ]; then
+  echo "DIAG branch=1-subdir dir=$(dirname "$SUB")" >&2
   cd "$(dirname "$SUB")"
   mkdir -p .git/info; printf '%s' "$NOISE" > .git/info/exclude
   BASE=$(eval "$BASEREFS")
   GIT_INDEX_FILE="$IDX" git add -A --ignore-errors 2>/dev/null || true
   PATCH=$(GIT_INDEX_FILE="$IDX" git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true)
 elif ( cd "$REPO" && git rev-parse --is-inside-work-tree >/dev/null 2>&1 ); then
+  echo "DIAG branch=2-rootrepo" >&2
   cd "$REPO"
   mkdir -p .git/info; printf '%s' "$NOISE" > .git/info/exclude
   BASE=$(eval "$BASEREFS")
   GIT_INDEX_FILE="$IDX" git add -A --ignore-errors 2>/dev/null || true
   PATCH=$(GIT_INDEX_FILE="$IDX" git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true)
 else
+  echo "DIAG branch=3-greenfield" >&2
   GD=/tmp/wfb-gitdir; rm -rf "$GD"
   GIT_DIR="$GD" GIT_WORK_TREE="$REPO" git init -q >/dev/null 2>&1 || true
   mkdir -p "$GD/info"; printf '%s' "$NOISE" > "$GD/info/exclude"
@@ -1122,12 +1126,16 @@ def capture_run_diff(
     repo = (repo_path or "/sandbox").strip() or "/sandbox"
     env = {**os.environ, "REPO": repo, "EMPTY": _RUN_DIFF_EMPTY_TREE, "NOISE": _RUN_DIFF_NOISE}
     try:
-        out = subprocess.run(
+        proc = subprocess.run(
             ["bash", "-c", _RUN_DIFF_CAPTURE_SCRIPT], capture_output=True, text=True,
             timeout=120, env=env, check=False,
-        ).stdout
+        )
+        out = proc.stdout
     except Exception as exc:  # noqa: BLE001
         return {"ok": True, "skipped": f"capture_failed: {exc}"}
+    # Diagnostics: the script emits a WFB_DIAG block on stderr (repo listing,
+    # is-repo, subdir-find, chosen branch) so empty results are debuggable.
+    logger.info("[run-diff] repo=%s diag=%s", repo, (proc.stderr or "")[:600].replace("\n", " | "))
     if out.strip() == "__WFB_NO_REPO__":
         return {"ok": True, "skipped": "no_workspace"}
 
@@ -1139,7 +1147,7 @@ def capture_run_diff(
             if line.startswith("WFB_BASE="):
                 base = line[len("WFB_BASE="):].strip() or _RUN_DIFF_EMPTY_TREE
     if not patch.strip():
-        return {"ok": True, "empty": True}
+        return {"ok": True, "empty": True, "outlen": len(out)}
     if len(patch.encode("utf-8")) > 8 * 1024 * 1024:
         patch = patch.encode("utf-8")[: 8 * 1024 * 1024].decode("utf-8", errors="ignore")
 
