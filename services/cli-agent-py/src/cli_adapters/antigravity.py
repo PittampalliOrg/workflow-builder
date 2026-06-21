@@ -29,6 +29,7 @@ import io
 import json
 import logging
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -69,6 +70,13 @@ RUN_COMMAND_SHIM_REASON_LIMIT = 9_000
 RUN_COMMAND_SHIM_DEFAULT_TIMEOUT_SECONDS = 300
 RUN_COMMAND_SHIM_KILL_GRACE_SECONDS = 2.0
 RUN_COMMAND_SHIM_PERSISTENT_WAIT_MAX_MS = 15_000
+RUN_COMMAND_DEV_SERVER_PATTERNS = (
+    re.compile(r"\bnpm\s+run\s+(?:dev|preview|start)(?:\b|:)", re.IGNORECASE),
+    re.compile(r"\bpnpm\s+(?:dev|preview|start)\b", re.IGNORECASE),
+    re.compile(r"\byarn\s+(?:dev|preview|start)\b", re.IGNORECASE),
+    re.compile(r"\bnpx\s+vite\s+(?:dev|preview)\b", re.IGNORECASE),
+    re.compile(r"(?:^|[;&|]\s*)vite\s+(?:dev|preview)\b", re.IGNORECASE),
+)
 DEFAULT_AGY_MCP_DENYLIST = frozenset(
     {
         # AGY currently stalls response streaming when these ActivePieces MCP
@@ -613,6 +621,31 @@ def _tool_int(tool_input: Mapping[str, Any], default: int, *keys: str) -> int:
     return default
 
 
+def _run_command_wait_ms(tool_input: Mapping[str, Any], default: int = 1000) -> int:
+    return _tool_int(
+        tool_input,
+        default,
+        "WaitMsBeforeAsync",
+        "waitMsBeforeAsync",
+        "wait_ms_before_async",
+    )
+
+
+def _looks_like_dev_server_command(command: str) -> bool:
+    return any(pattern.search(command) for pattern in RUN_COMMAND_DEV_SERVER_PATTERNS)
+
+
+def _should_infer_persistent_run_command(
+    command: str, tool_input: Mapping[str, Any]
+) -> bool:
+    explicit = _env_bool("CLI_AGENT_AGY_RUN_COMMAND_INFER_PERSISTENT")
+    if explicit is False:
+        return False
+    return _run_command_wait_ms(tool_input, 0) > 0 and _looks_like_dev_server_command(
+        command
+    )
+
+
 def _bash_argv(command: str) -> list[str]:
     return [shutil.which("bash") or "/bin/bash", "-lc", command]
 
@@ -878,14 +911,10 @@ def _execute_run_command_shim(
         }
     else:
         try:
-            if _tool_bool(tool_input, "RunPersistent", "runPersistent", "persistent"):
-                wait_ms = _tool_int(
-                    tool_input,
-                    1000,
-                    "WaitMsBeforeAsync",
-                    "waitMsBeforeAsync",
-                    "wait_ms_before_async",
-                )
+            if _tool_bool(
+                tool_input, "RunPersistent", "runPersistent", "persistent"
+            ) or _should_infer_persistent_run_command(command, tool_input):
+                wait_ms = _run_command_wait_ms(tool_input)
                 wait_ms = max(
                     0,
                     min(

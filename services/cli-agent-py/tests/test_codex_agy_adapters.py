@@ -1061,6 +1061,56 @@ def test_agy_run_command_hook_shim_runs_persistent_command(tmp_path, monkeypatch
             pass
 
 
+def test_agy_run_command_hook_shim_infers_persistent_vite_dev_command(
+    tmp_path, monkeypatch
+):
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    npx = bin_dir / "npx"
+    npx.write_text("#!/bin/sh\nprintf 'vite ready\\n'\nsleep 30\n", encoding="utf-8")
+    npx.chmod(0o755)
+    monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(sandbox))
+    monkeypatch.setenv("CLI_AGENT_AGY_RUN_COMMAND_SHIM", "true")
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
+
+    response = get_adapter("antigravity").hook_response(
+        "PreToolUse",
+        {
+            "hook_event_name": "PreToolUse",
+            "toolName": "run_command",
+            "toolInput": {
+                "CommandLine": "npx vite dev --port 5173",
+                "Cwd": str(sandbox),
+                "WaitMsBeforeAsync": 100,
+            },
+        },
+        {},
+    )
+
+    assert response is not None
+    result = next(
+        event
+        for event in response["_workflowBuilderEvents"]
+        if event["type"] == "agent.tool_result"
+    )
+    pid = result["data"]["pid"]
+    try:
+        assert response["decision"] == "deny"
+        assert result["data"]["ok"] is True
+        assert result["data"]["persistent"] is True
+        assert result["data"]["running"] is True
+        assert result["data"]["exit_code"] == 0
+        assert "vite ready" in result["data"]["stdout"]
+        assert "still running" in result["data"]["stdout"]
+    finally:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+
 def test_agy_run_command_hook_shim_rejects_cwd_outside_sandbox(tmp_path, monkeypatch):
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
