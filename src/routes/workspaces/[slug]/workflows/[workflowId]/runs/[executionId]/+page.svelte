@@ -69,6 +69,7 @@
 	} from '$lib/stores/execution-stream.svelte';
 	import JsonViewer from '$lib/components/workflow/execution/json-viewer.svelte';
 	import ArtifactList from '$lib/components/workflow/execution/artifact-list.svelte';
+	import RunChanges from '$lib/components/workflow/execution/run-changes.svelte';
 	import RunFilesTree from '$lib/components/workflow/execution/run-files-tree.svelte';
 	import TimelineAutoScroll from '$lib/components/workflow/execution/timeline-auto-scroll.svelte';
 	import AgentRunExplorer from '$lib/components/workflow/execution/agent-run-explorer.svelte';
@@ -483,7 +484,12 @@
 			createdAt: string;
 		}> | undefined) ?? []
 	);
-	const primaryArtifacts = $derived(workflowArtifacts.filter((a) => a.slot === 'primary'));
+	// Per-node workspace diffs render in the dedicated Changes tab; keep them out
+	// of Outputs to avoid duplication.
+	const diffArtifacts = $derived(workflowArtifacts.filter((a) => a.kind === 'diff'));
+	const outputArtifacts = $derived(workflowArtifacts.filter((a) => a.kind !== 'diff'));
+	const hasChangesTab = $derived(diffArtifacts.length > 0);
+	const primaryArtifacts = $derived(outputArtifacts.filter((a) => a.slot === 'primary'));
 	const agentRuns = $derived(
 		(snapshot?.agentRuns as ExecutionAgentRun[] | undefined) ?? []
 	);
@@ -941,6 +947,7 @@
 			(activeTab === 'browser' && !hasBrowserTab) ||
 			(activeTab === 'code' && !hasCodeTab) ||
 			(activeTab === 'plan' && !hasPlanTab) ||
+			(activeTab === 'changes' && !hasChangesTab) ||
 			(activeTab === 'files' && !hasFilesTab);
 		if (hidden) activeTab = 'overview';
 	});
@@ -2181,7 +2188,8 @@
 		<div class="border-b border-border px-4">
 			<TabsList class="h-10">
 				<TabsTrigger value="overview">Live</TabsTrigger>
-				<TabsTrigger value="outputs">Outputs{#if workflowArtifacts.length > 0}<span class="ml-1.5 text-xs text-muted-foreground">{workflowArtifacts.length}</span>{/if}</TabsTrigger>
+				<TabsTrigger value="outputs">Outputs{#if outputArtifacts.length > 0}<span class="ml-1.5 text-xs text-muted-foreground">{outputArtifacts.length}</span>{/if}</TabsTrigger>
+				{#if hasChangesTab}<TabsTrigger value="changes">Changes<span class="ml-1.5 text-xs text-muted-foreground">{diffArtifacts.length}</span></TabsTrigger>{/if}
 				<TabsTrigger value="timeline">Timeline</TabsTrigger>
 				<TabsTrigger value="canvas">Canvas</TabsTrigger>
 				{#if hasCodeTab}<TabsTrigger value="code">Code</TabsTrigger>{/if}
@@ -2345,9 +2353,18 @@
 		<!-- Tab: Outputs (generic workflow_artifacts) -->
 		<TabsContent value="outputs" class="flex-1 overflow-y-auto p-4">
 			<div class="mx-auto max-w-5xl space-y-4">
-				<ArtifactList artifacts={workflowArtifacts} mode="all" {executionId} />
+				<ArtifactList artifacts={outputArtifacts} mode="all" {executionId} />
 			</div>
 		</TabsContent>
+
+		<!-- Tab: Changes (per-node workspace diffs — the agent's impact) -->
+		{#if hasChangesTab}
+			<TabsContent value="changes" class="flex-1 overflow-y-auto p-4">
+				<div class="mx-auto max-w-5xl">
+					<RunChanges artifacts={diffArtifacts} {executionId} />
+				</div>
+			</TabsContent>
+		{/if}
 
 		<!-- Tab: Files (live workspace tree + persisted output files) -->
 		<TabsContent value="files" class="flex-1 overflow-y-auto p-4">

@@ -44,7 +44,7 @@ function authHeader(): string | null {
 }
 
 // Directories that are noise in a coding workspace tree.
-const SKIP_DIR_SEGMENTS = new Set([".git", "node_modules", ".cache", ".venv", "__pycache__"]);
+const SKIP_DIR_SEGMENTS = new Set([".git", ".wfb-diff-git", "node_modules", ".cache", ".venv", "__pycache__"]);
 
 export interface WebdavEntry {
   /** Path relative to the instance root (no leading slash). "" is the root. */

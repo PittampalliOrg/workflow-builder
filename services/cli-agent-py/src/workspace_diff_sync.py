@@ -44,7 +44,7 @@ _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 # the JuiceFS mount-root magic control files (.accesslog/.config/.stats/.trash),
 # which are root-owned + unreadable by the agent user and otherwise make
 # `git add -A` abort ("Permission denied").
-_NOISE_EXCLUDE = "node_modules/\n.git/\n.venv/\n__pycache__/\ndist/\nbuild/\n.cache/\n.next/\nvendor/\n.pytest_cache/\n.accesslog\n.config\n.stats\n.trash/\n"
+_NOISE_EXCLUDE = "node_modules/\n.git/\n.wfb-diff-git/\n.venv/\n__pycache__/\ndist/\nbuild/\n.cache/\n.next/\nvendor/\n.pytest_cache/\n.accesslog\n.config\n.stats\n.trash/\n"
 
 # `git config --add safe.directory '*'`: the workspace dir is often root-owned
 # (JuiceFS mount) while git runs as the agent user → git aborts with "detected
@@ -83,15 +83,23 @@ elif ( cd "$REPO" && git rev-parse --is-inside-work-tree >/dev/null 2>&1 ); then
   GIT_INDEX_FILE="$IDX" git add -A --ignore-errors 2>/dev/null || true
   PATCH=$(GIT_INDEX_FILE="$IDX" git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true)
 else
-  # 3) Greenfield: external GIT_DIR over the work-tree — NEVER writes .git into the
-  #    workspace (avoids polluting shared multi-node /sandbox/work). Diff vs empty.
-  GD=/tmp/wfb-gitdir; rm -rf "$GD"
-  GIT_DIR="$GD" GIT_WORK_TREE="$REPO" git init -q >/dev/null 2>&1 || true
-  mkdir -p "$GD/info"; printf '%s' "$NOISE" > "$GD/info/exclude"
-  BASE="$EMPTY"
-  GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$IDX" git add -A --ignore-errors 2>/dev/null || true
-  PATCH=$(GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$IDX" git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true)
-  rm -rf "$GD" 2>/dev/null || true
+  # 3) Greenfield: PERSISTENT per-node baseline for TRUE incremental deltas. A
+  #    dedicated git dir at $REPO/.wfb-diff-git survives across the run's per-node
+  #    pods via the shared JuiceFS workspace. Each node snapshots the tree at
+  #    session-end; node N's diff = prev snapshot (HEAD) .. now = ONLY this node's
+  #    changes. Then commit to advance HEAD for the next node. The first node has
+  #    no HEAD → diffs vs empty-tree (all its files). NOT the agent's .git (a
+  #    distinct, excluded dir), so it never confuses the agent or the diff.
+  export GIT_DIR="$REPO/.wfb-diff-git" GIT_WORK_TREE="$REPO"
+  [ -d "$GIT_DIR" ] || git init -q >/dev/null 2>&1 || true
+  git config user.email wfb@local >/dev/null 2>&1 || true
+  git config user.name wfb >/dev/null 2>&1 || true
+  mkdir -p "$GIT_DIR/info"; printf '%s' "$NOISE" > "$GIT_DIR/info/exclude"
+  rm -f "$GIT_DIR/index"
+  git add -A --ignore-errors 2>/dev/null || true
+  BASE=$(git rev-parse -q --verify HEAD 2>/dev/null || echo "$EMPTY")
+  PATCH=$(git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true)
+  git commit -q -m "wfb-node ${NODE:-?}" --allow-empty >/dev/null 2>&1 || true
 fi
 echo "WFB_BASE=$BASE"
 echo "===WFB_PATCH==="
@@ -159,7 +167,7 @@ def sync_workspace_diff_activity(
         return {"ok": True, "skipped": "no_run_context"}
 
     repo_dir = _clean_string(data.get("repoPath")) or DEFAULT_REPO_DIR
-    env_extra = {"REPO": repo_dir, "EMPTY": _EMPTY_TREE, "NOISE": _NOISE_EXCLUDE}
+    env_extra = {"REPO": repo_dir, "EMPTY": _EMPTY_TREE, "NOISE": _NOISE_EXCLUDE, "NODE": node_id or "?"}
 
     try:
         out = _run(_CAPTURE_SCRIPT, env_extra)
