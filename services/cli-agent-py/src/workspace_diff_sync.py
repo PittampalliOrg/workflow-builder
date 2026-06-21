@@ -40,28 +40,36 @@ _MAX_PATCH_BYTES = int(os.environ.get("CLI_WORKSPACE_DIFF_MAX_BYTES", str(8 * 10
 _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 # Baked noise exclude for greenfield workspaces that ship no .gitignore. Keeps
-# the diff (and `git add`) off dependency/vcs dirs — fast + meaningful.
-_NOISE_EXCLUDE = "node_modules/\n.git/\n.venv/\n__pycache__/\ndist/\nbuild/\n.cache/\n.next/\nvendor/\n.pytest_cache/\n"
+# the diff (and `git add`) off dependency/vcs dirs — fast + meaningful. Includes
+# the JuiceFS mount-root magic control files (.accesslog/.config/.stats/.trash),
+# which are root-owned + unreadable by the agent user and otherwise make
+# `git add -A` abort ("Permission denied").
+_NOISE_EXCLUDE = "node_modules/\n.git/\n.venv/\n__pycache__/\ndist/\nbuild/\n.cache/\n.next/\nvendor/\n.pytest_cache/\n.accesslog\n.config\n.stats\n.trash/\n"
+
+# `git config --add safe.directory '*'`: the workspace dir is often root-owned
+# (JuiceFS mount) while git runs as the agent user → git aborts with "detected
+# dubious ownership". Trust all repos for these throwaway in-pod captures.
+_SAFE_DIR = "git config --global --add safe.directory '*' 2>/dev/null || true"
 
 _BASE_SCRIPT = """
 set -e
+SAFE_DIR_CMD
 cd "$REPO" 2>/dev/null || { echo "__WFB_NO_REPO__"; exit 0; }
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init -q >/dev/null 2>&1
 mkdir -p .git/info
-if ! grep -q '^node_modules/$' .git/info/exclude 2>/dev/null; then
-  printf '%s' "$NOISE" >> .git/info/exclude
-fi
+printf '%s' "$NOISE" > .git/info/exclude
 git rev-parse -q --verify refs/tags/wfb-baseline 2>/dev/null || echo "$EMPTY"
-"""
+""".replace("SAFE_DIR_CMD", _SAFE_DIR)
 
 _DIFF_SCRIPT = """
 set -e
+SAFE_DIR_CMD
 cd "$REPO"
 export GIT_INDEX_FILE=/tmp/wfb-diff-index
 rm -f "$GIT_INDEX_FILE"
 git add -A 2>/dev/null || true
 git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true
-"""
+""".replace("SAFE_DIR_CMD", _SAFE_DIR)
 
 
 def _record(value: Any) -> dict[str, Any]:

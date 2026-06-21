@@ -1052,23 +1052,30 @@ def restore_code_checkpoint(
 # gzip→files). Keep this in lock-step with the CLI module. Best-effort.
 
 _RUN_DIFF_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-_RUN_DIFF_NOISE = "node_modules/\n.git/\n.venv/\n__pycache__/\ndist/\nbuild/\n.cache/\n.next/\nvendor/\n.pytest_cache/\n"
+# Includes JuiceFS mount-root magic files (.accesslog/.config/.stats/.trash) —
+# root-owned + unreadable, they make `git add -A` abort otherwise.
+_RUN_DIFF_NOISE = "node_modules/\n.git/\n.venv/\n__pycache__/\ndist/\nbuild/\n.cache/\n.next/\nvendor/\n.pytest_cache/\n.accesslog\n.config\n.stats\n.trash/\n"
+# Trust root-owned workspace dirs (JuiceFS) so git doesn't abort on "dubious
+# ownership" when it runs as the agent user.
+_RUN_DIFF_SAFE = "git config --global --add safe.directory '*' 2>/dev/null || true"
 _RUN_DIFF_BASE_SCRIPT = """
 set -e
+SAFE
 cd "$REPO" 2>/dev/null || { echo "__WFB_NO_REPO__"; exit 0; }
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init -q >/dev/null 2>&1
 mkdir -p .git/info
-if ! grep -q '^node_modules/$' .git/info/exclude 2>/dev/null; then printf '%s' "$NOISE" >> .git/info/exclude; fi
+printf '%s' "$NOISE" > .git/info/exclude
 git rev-parse -q --verify refs/tags/wfb-baseline 2>/dev/null || echo "$EMPTY"
-"""
+""".replace("SAFE", _RUN_DIFF_SAFE)
 _RUN_DIFF_DIFF_SCRIPT = """
 set -e
+SAFE
 cd "$REPO"
 export GIT_INDEX_FILE=/tmp/wfb-diff-index
 rm -f "$GIT_INDEX_FILE"
 git add -A 2>/dev/null || true
 git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true
-"""
+""".replace("SAFE", _RUN_DIFF_SAFE)
 
 
 def capture_run_diff(
