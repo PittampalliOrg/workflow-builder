@@ -185,16 +185,19 @@ function isObserverProvisioning(value: unknown): value is ObserverSessionProvisi
 	);
 }
 
-/** Fetch one session's provisioning timeline from the observer. Returns null when
- *  the observer is unavailable or has no record for the session (caller falls back
- *  to the direct-pod read). Best-effort + short timeout — never throws. */
-export async function fetchSessionProvisioning(
-	sessionId: string,
+/** Fetch one session's provisioning timeline from the observer, keyed by the
+ *  per-session sandbox app-id (= sessions.runtime_app_id) — the only per-session
+ *  key the observer can read off the pod. Returns null when the observer is
+ *  unavailable or has no record yet (caller falls back to the direct-pod read).
+ *  Best-effort + short timeout — never throws. */
+export async function fetchProvisioningByAppId(
+	runtimeAppId: string,
 ): Promise<ObserverSessionProvisioning | null> {
+	if (!runtimeAppId) return null;
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), observerTimeoutMs());
 	try {
-		const url = `${observerBaseUrl()}/provisioning?session_id=${encodeURIComponent(sessionId)}`;
+		const url = `${observerBaseUrl()}/provisioning?app_id=${encodeURIComponent(runtimeAppId)}`;
 		const response = await fetch(url, {
 			signal: controller.signal,
 			headers: { accept: 'application/json' },

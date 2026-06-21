@@ -12,9 +12,12 @@
  * Running, not all ready → starting
  * Running, ready → running
  */
+import { eq } from 'drizzle-orm';
 import { kubeApiFetch, getOwnNamespace, type KubePod } from '$lib/server/kube/client';
+import { db } from '$lib/server/db';
+import { sessions } from '$lib/server/db/schema';
 import {
-	fetchSessionProvisioning,
+	fetchProvisioningByAppId,
 	type ObserverSessionProvisioning
 } from '$lib/server/capacity/observer';
 
@@ -152,11 +155,27 @@ export async function getSessionProvisioning(sessionId: string): Promise<Session
  * Preferred resolver: the capacity-observer's richer timeline (admit→…→running
  * with durations), falling back to the direct-pod read when the observer is
  * unavailable or has no record for the session yet.
+ *
+ * The observer keys its map by the per-session sandbox app-id (the only stable
+ * per-session identifier on the pod — the `cnoe.io/session-id` label is the
+ * sanitized parent instance, shared across a run's node pods). So we look up the
+ * session's `runtime_app_id` and query the observer by that.
  */
 export async function getSessionProvisioningPreferObserver(
 	sessionId: string
 ): Promise<SessionProvisioning> {
-	const observed = await fetchSessionProvisioning(sessionId);
-	if (observed) return fromObserver(observed);
+	let runtimeAppId: string | null = null;
+	if (db) {
+		const [row] = await db
+			.select({ runtimeAppId: sessions.runtimeAppId })
+			.from(sessions)
+			.where(eq(sessions.id, sessionId))
+			.limit(1);
+		runtimeAppId = row?.runtimeAppId ?? null;
+	}
+	if (runtimeAppId) {
+		const observed = await fetchProvisioningByAppId(runtimeAppId);
+		if (observed) return fromObserver(observed);
+	}
 	return getSessionProvisioning(sessionId);
 }
