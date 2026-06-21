@@ -1077,20 +1077,20 @@ if [ -n "$SUB" ]; then
   cd "$(dirname "$SUB")"
   mkdir -p .git/info; printf '%s' "$NOISE" > .git/info/exclude
   BASE=$(eval "$BASEREFS")
-  GIT_INDEX_FILE="$IDX" git add -A 2>/dev/null || true
+  GIT_INDEX_FILE="$IDX" git add -A --ignore-errors 2>/dev/null || true
   PATCH=$(GIT_INDEX_FILE="$IDX" git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true)
 elif ( cd "$REPO" && git rev-parse --is-inside-work-tree >/dev/null 2>&1 ); then
   cd "$REPO"
   mkdir -p .git/info; printf '%s' "$NOISE" > .git/info/exclude
   BASE=$(eval "$BASEREFS")
-  GIT_INDEX_FILE="$IDX" git add -A 2>/dev/null || true
+  GIT_INDEX_FILE="$IDX" git add -A --ignore-errors 2>/dev/null || true
   PATCH=$(GIT_INDEX_FILE="$IDX" git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true)
 else
   GD=/tmp/wfb-gitdir; rm -rf "$GD"
   GIT_DIR="$GD" GIT_WORK_TREE="$REPO" git init -q >/dev/null 2>&1 || true
   mkdir -p "$GD/info"; printf '%s' "$NOISE" > "$GD/info/exclude"
   BASE="$EMPTY"
-  GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$IDX" git add -A 2>/dev/null || true
+  GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$IDX" git add -A --ignore-errors 2>/dev/null || true
   PATCH=$(GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$IDX" git diff --cached --find-renames --stat --patch --binary "$BASE" -- 2>/dev/null || true)
   rm -rf "$GD" 2>/dev/null || true
 fi
