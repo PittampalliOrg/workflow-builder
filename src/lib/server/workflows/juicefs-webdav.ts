@@ -37,48 +37,89 @@ function decodeHref(href: string): string {
  * `PROPFIND Depth: infinity`. Filters VCS/dependency noise and caps the entry
  * count. Returns paths RELATIVE to the instance root.
  */
-export async function listWorkspaceTree(
+/** List the IMMEDIATE children of one directory (`PROPFIND Depth: 1`). Paths
+ * returned are relative to the instance root. Returns null on 404. */
+async function listDir(
   instanceId: string,
-  opts: { maxEntries?: number } = {},
-): Promise<{ entries: WebdavEntry[]; truncated: boolean }> {
-  const maxEntries = opts.maxEntries ?? 2000;
-  const root = `${WEBDAV_BASE}/${encodeURIComponent(instanceId)}/`;
-  const res = await fetch(root, {
+  subpath: string,
+): Promise<WebdavEntry[] | null> {
+  const selfRel = subpath.replace(/^\/+|\/+$/g, "");
+  const encodedSub = selfRel
+    ? selfRel.split("/").map(encodeURIComponent).join("/") + "/"
+    : "";
+  const url = `${WEBDAV_BASE}/${encodeURIComponent(instanceId)}/${encodedSub}`;
+  const res = await fetch(url, {
     method: "PROPFIND",
-    headers: { Depth: "infinity", "Content-Type": "application/xml" },
+    headers: { Depth: "1", "Content-Type": "application/xml" },
   });
-  if (res.status === 404) return { entries: [], truncated: false };
-  if (!res.ok && res.status !== 207) {
-    throw new Error(`webdav PROPFIND ${res.status}`);
-  }
+  if (res.status === 404) return null;
+  if (!res.ok && res.status !== 207) throw new Error(`webdav PROPFIND ${res.status}`);
   const xml = await res.text();
   const prefix = `/${instanceId}/`;
 
-  const entries: WebdavEntry[] = [];
-  let truncated = false;
-  // The body is a regular <D:multistatus> of <D:response> blocks.
+  const out: WebdavEntry[] = [];
   for (const block of xml.split(/<\/?D:response>/i).filter((b) => /<D:href>/i.test(b))) {
     const hrefMatch = block.match(/<D:href>([^<]*)<\/D:href>/i);
     if (!hrefMatch) continue;
     const href = decodeHref(hrefMatch[1]);
-    // Confine to this instance's subtree; derive the relative path.
     const idx = href.indexOf(prefix);
     if (idx === -1) continue;
-    let rel = href.slice(idx + prefix.length);
-    rel = rel.replace(/\/$/, "");
-    if (rel === "") continue; // the root itself
-    const segments = rel.split("/");
-    if (segments.some((s) => SKIP_DIR_SEGMENTS.has(s))) continue;
+    const rel = href.slice(idx + prefix.length).replace(/\/$/, "");
+    if (rel === "" || rel === selfRel) continue; // skip the directory itself
     // Matches <D:collection/>, <D:collection />, and <D:collection xmlns:D="DAV:"/>.
     const isDir = /<D:collection[\s/>]/i.test(block);
     const sizeMatch = block.match(/<D:getcontentlength>(\d+)<\/D:getcontentlength>/i);
-    const sizeBytes = sizeMatch ? parseInt(sizeMatch[1], 10) : 0;
-    entries.push({ path: rel, isDir, sizeBytes });
-    if (entries.length >= maxEntries) {
-      truncated = true;
-      break;
-    }
+    out.push({ path: rel, isDir, sizeBytes: sizeMatch ? parseInt(sizeMatch[1], 10) : 0 });
   }
+  return out;
+}
+
+/**
+ * List an instance's workspace subtree as a bounded breadth-first walk of
+ * `Depth: 1` listings. CRITICAL: never recurses into VCS/dependency dirs
+ * (`node_modules` etc.) — a single `Depth: infinity` makes juicefs-webdav walk
+ * all of node_modules (1700+ entries, 90s+ timeout). Caps entries + PROPFINDs.
+ * Returns paths RELATIVE to the instance root.
+ */
+export async function listWorkspaceTree(
+  instanceId: string,
+  opts: { maxEntries?: number; maxPropfinds?: number; concurrency?: number } = {},
+): Promise<{ entries: WebdavEntry[]; truncated: boolean }> {
+  const maxEntries = opts.maxEntries ?? 2000;
+  const maxPropfinds = opts.maxPropfinds ?? 300;
+  const concurrency = opts.concurrency ?? 6;
+
+  const root = await listDir(instanceId, "");
+  if (root === null) return { entries: [], truncated: false };
+
+  const entries: WebdavEntry[] = [];
+  let truncated = false;
+  const queue: string[] = []; // dir paths to expand next
+
+  const ingest = (children: WebdavEntry[]) => {
+    for (const c of children) {
+      // Never list or recurse into node_modules/.git/... (avoids the slow walk).
+      if (c.isDir && SKIP_DIR_SEGMENTS.has(c.path.split("/").pop() ?? "")) continue;
+      if (entries.length >= maxEntries) {
+        truncated = true;
+        return;
+      }
+      entries.push(c);
+      if (c.isDir) queue.push(c.path);
+    }
+  };
+
+  ingest(root);
+  let propfinds = 1;
+  while (queue.length && entries.length < maxEntries && propfinds < maxPropfinds) {
+    const batch = queue.splice(0, concurrency);
+    propfinds += batch.length;
+    const results = await Promise.all(
+      batch.map((d) => listDir(instanceId, d).catch(() => [] as WebdavEntry[])),
+    );
+    for (const children of results) ingest(children ?? []);
+  }
+  if (queue.length) truncated = true;
   return { entries, truncated };
 }
 
