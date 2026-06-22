@@ -142,6 +142,28 @@ describe("assertSwapSafe", () => {
 		).toBe(false);
 	});
 
+	it("WARNS on a hook-blocking downgrade (full source → advisory target)", () => {
+		// hooks only — no modelSpec, so provider matching can't mask the hook drop.
+		const req = deriveAgentRequirements({ hooks: { PreToolUse: [{}] } });
+		// codex-cli supports hooks but blocking is advisory; a "full"-blocking
+		// source (dapr-agent-py/claude-code-cli) loses deny-enforcement.
+		const v = assertSwapSafe(req, runtime("codex-cli"), {
+			rejectEnabled: true,
+			sourceHookBlockingGranularity: "full"
+		});
+		expect(v.decision).toBe("warn");
+		expect(v.drops.find((d) => d.capability === "hookBlocking")?.severity).toBe("warn");
+	});
+
+	it("no hook-blocking drop when source and target are both full", () => {
+		const req = deriveAgentRequirements({ hooks: { PreToolUse: [{}] } });
+		// claude-code-cli is full-blocking — same as a full source.
+		const v = assertSwapSafe(req, runtime("claude-code-cli"), {
+			sourceHookBlockingGranularity: "full"
+		});
+		expect(v.drops.some((d) => d.capability === "hookBlocking")).toBe(false);
+	});
+
 	it("a plain agent on its own runtime is always allowed", () => {
 		const v = evaluateSwap(
 			{ modelSpec: "anthropic/claude-opus-4-8", permissionMode: "bypassPermissions" },
