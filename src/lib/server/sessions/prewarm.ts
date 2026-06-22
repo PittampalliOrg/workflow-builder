@@ -63,8 +63,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function topLevelDurableRunEntries(
 	spec: Record<string, unknown>,
 ): { taskName: string; task: Record<string, unknown> }[] {
-	const document = isRecord(spec.document) ? spec.document : spec;
-	const doList = Array.isArray(document.do) ? document.do : null;
+	// SW 1.0: `do` is a TOP-LEVEL sibling of `document` (which holds name/dsl).
+	// Mirror resolver.ts `extractDoList`: prefer `document.do`, else `spec.do`.
+	const document = isRecord(spec.document) ? spec.document : null;
+	const doList =
+		document && Array.isArray(document.do)
+			? document.do
+			: Array.isArray(spec.do)
+				? (spec.do as unknown[])
+				: null;
 	if (!doList) return [];
 	const out: { taskName: string; task: Record<string, unknown> }[] = [];
 	for (const entry of doList) {
