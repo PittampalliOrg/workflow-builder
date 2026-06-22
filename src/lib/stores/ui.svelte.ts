@@ -1,5 +1,5 @@
 export type Theme = 'light' | 'dark' | 'system';
-export type RightPanelTab = 'properties' | 'code' | 'ai' | 'runs';
+export type RightPanelTab = 'properties' | 'code' | 'ai' | 'runs' | 'triggers';
 
 export function createUiStore() {
 	let theme = $state<Theme>('system');
