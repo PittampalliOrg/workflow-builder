@@ -56,6 +56,20 @@ describe("reconstructChildSessionId", () => {
 		).toBe("sw-wf-exec-e__durable__negotiate-propose-0-__run__0");
 	});
 
+	it("CLI agents use instance_prefix 'durable' too (resolve() _synthetic, not the runtime descriptor's prefix)", () => {
+		// gan-harness plan node is claude-code-cli, but the orchestrator stamps
+		// agentAppId → resolve() returns _synthetic(instance_prefix="durable").
+		// Verified live: sw-...-exec-<id>__durable__plan__run__0 (NOT durable-claude-cli).
+		expect(
+			reconstructChildSessionId({
+				workflowName: "gan-harness-cli-showcase",
+				executionId: "XhiEgqw96GvWzDTNXeGlc",
+				instancePrefix: "durable",
+				taskName: "plan",
+			}),
+		).toBe("sw-gan-harness-cli-showcase-exec-XhiEgqw96GvWzDTNXeGlc__durable__plan__run__0");
+	});
+
 	it("honors a non-zero run index (loop re-entry)", () => {
 		expect(
 			reconstructChildSessionId({

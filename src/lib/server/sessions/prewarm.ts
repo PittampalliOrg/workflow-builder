@@ -170,10 +170,23 @@ export async function prewarmWorkflowEntrySessions(params: {
 				sharedWorkspaceKey = nodeWorkspaceRef(withBlock) ?? params.executionId;
 			}
 
+			// instance_prefix mirrors the orchestrator's runtime_registry.resolve():
+			// every resolveSpecAgentRefs node carries a stamped `agentAppId`, so
+			// resolve() ALWAYS takes the agentAppId branch → `_synthetic()` which
+			// hardcodes instance_prefix="durable" for ALL runtimes (NOT the runtime
+			// descriptor's instancePrefix — that field is for agent-runtime-<slug>
+			// pool naming, not the child-workflow instance id). dapr matched by luck
+			// (its prefix is also "durable"); CLI's "durable-claude-cli" did NOT.
+			const stampedAppId =
+				(typeof withBlock.agentAppId === "string" && withBlock.agentAppId.trim()) ||
+				(isRecord(withBlock.body) &&
+					typeof withBlock.body.agentAppId === "string" &&
+					withBlock.body.agentAppId.trim());
+			const instancePrefix = stampedAppId ? "durable" : descriptor.instancePrefix;
 			const childSessionId = reconstructChildSessionId({
 				workflowName,
 				executionId: params.executionId,
-				instancePrefix: descriptor.instancePrefix,
+				instancePrefix,
 				taskName,
 				runIndex: 0,
 			});
