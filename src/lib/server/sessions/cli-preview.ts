@@ -25,6 +25,7 @@ import {
 	waitForAgentWorkflowHostAppReady,
 } from "$lib/server/sessions/agent-workflow-host";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
+import { getExecutionSandboxPreviewInfo } from "$lib/server/workflows/sandbox-preview";
 import type { AgentConfig } from "$lib/types/agents";
 import { env } from "$env/dynamic/private";
 
@@ -314,6 +315,22 @@ export type ResolveExecutionCliPreviewResult =
 	| { ok: true; target: ExecutionCliPreviewTarget }
 	| { ok: false; status: number; message: string }
 	| { ok: false; provisioning: true; status: 202; message: string };
+
+/**
+ * Which live-preview backend (if any) applies to a completed run. Drives the
+ * unified run-page Preview tab: `cli` = the JuiceFS execution-keyed preview
+ * (provision a credential-less pod, this module); `openshell` = the retained
+ * dapr/openshell sandbox preview (`sandbox-preview.ts`); `null` = nothing to
+ * preview. Does NOT provision anything.
+ */
+export type ExecutionPreviewBackend = "cli" | "openshell" | null;
+export async function executionPreviewBackend(
+	executionId: string,
+): Promise<ExecutionPreviewBackend> {
+	if (await executionIsInteractiveCli(executionId)) return "cli";
+	const info = await getExecutionSandboxPreviewInfo(executionId);
+	return info ? "openshell" : null;
+}
 
 /** True when ANY session of this execution ran on an interactive-cli runtime. */
 async function executionIsInteractiveCli(executionId: string): Promise<boolean> {

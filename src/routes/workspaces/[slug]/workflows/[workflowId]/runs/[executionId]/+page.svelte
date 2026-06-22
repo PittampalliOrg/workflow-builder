@@ -71,7 +71,7 @@
 	import ArtifactList from '$lib/components/workflow/execution/artifact-list.svelte';
 	import RunChanges from '$lib/components/workflow/execution/run-changes.svelte';
 	import RunFilesTree from '$lib/components/workflow/execution/run-files-tree.svelte';
-	import CliExecutionPreview from '$lib/components/workflow/execution/cli-execution-preview.svelte';
+	import ExecutionPreview from '$lib/components/workflow/execution/execution-preview.svelte';
 	import TimelineAutoScroll from '$lib/components/workflow/execution/timeline-auto-scroll.svelte';
 	import AgentRunExplorer from '$lib/components/workflow/execution/agent-run-explorer.svelte';
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';
@@ -893,9 +893,24 @@
 		};
 	});
 	const hasFilesTab = $derived(filesSummary.count > 0 || filesSummary.live || filesSummary.cli);
-	// Post-run live preview: only CLI-family runs have a shared JuiceFS workspace
-	// whose retained subtree a fresh preview pod can re-mount after the run ends.
-	const hasPreviewTab = $derived(filesSummary.cli);
+	// Unified post-run live preview: which backend (if any) is previewable —
+	// `cli` (JuiceFS execution-keyed pod) or `openshell` (retained dapr sandbox).
+	// Resolved once from /preview-info so one Preview tab serves every runtime.
+	let previewBackend = $state<string | null>(null);
+	let previewBackendChecked = $state(false);
+	$effect(() => {
+		if (previewBackendChecked) return;
+		previewBackendChecked = true;
+		fetch(`/api/workflows/executions/${executionId}/preview-info`)
+			.then((r) => (r.ok ? r.json() : null))
+			.then((b) => {
+				previewBackend = b?.backend ?? null;
+			})
+			.catch(() => {});
+	});
+	const hasPreviewTab = $derived(
+		filesSummary.cli || previewBackend === 'cli' || previewBackend === 'openshell'
+	);
 
 	// Approval gate: while the run is active, poll whether it's parked at an
 	// approval listen-gate (e.g. planGoal `goal_spec_approval`) and surface an
@@ -2222,59 +2237,21 @@
 				{#snippet details()}
 				{#if primaryAppPreviewUrl}
 					<Card>
-						<CardContent class="space-y-3 p-4">
-							<div class="flex flex-wrap items-center justify-between gap-3">
-								<div>
-									<p class="text-sm font-medium">Retained Sandbox Available</p>
-									<p class="text-sm text-muted-foreground">
-										This run kept its OpenShell workspace alive so you can interact with the app after completion.
-									</p>
-								</div>
-								<div class="flex flex-wrap gap-2">
-									<a
-										class="inline-flex items-center gap-1 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
-										href={primaryAppPreviewUrl}
-										target="_blank"
-										rel="noreferrer"
-									>
-										<ExternalLink size={14} />
-										Open Live Preview
-									</a>
-									<button
-										class="inline-flex items-center gap-1 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted disabled:cursor-progress disabled:opacity-70"
-										type="button"
-										onclick={stopSandboxPreview}
-										disabled={previewActionPending}
-									>
-										{previewActionPending ? 'Stopping…' : 'Stop Preview'}
-									</button>
-								</div>
+						<CardContent class="flex flex-wrap items-center justify-between gap-3 p-4">
+							<div>
+								<p class="text-sm font-medium">Live preview available</p>
+								<p class="text-sm text-muted-foreground">
+									This run kept its workspace alive — open the <strong>Preview</strong> tab to interact with the built app.
+								</p>
 							</div>
-
-								<div class="grid gap-2 text-sm text-muted-foreground">
-									{#if sandboxWorkspaceRef}
-										<p><span class="font-medium text-foreground">Workspace:</span> <code>{sandboxWorkspaceRef}</code></p>
-									{/if}
-									{#if previewSandboxName}
-										<p><span class="font-medium text-foreground">Sandbox:</span> <code>{previewSandboxName}</code></p>
-									{/if}
-									{#if previewActionResult?.previewId}
-										<p><span class="font-medium text-foreground">Preview:</span> <code>{previewActionResult.previewId}</code></p>
-									{/if}
-									{#if sandboxWorkingDir}
-										<p><span class="font-medium text-foreground">Working Dir:</span> <code>{sandboxWorkingDir}</code></p>
-									{/if}
-								{#if sandboxProvider}
-									<p><span class="font-medium text-foreground">Provider:</span> <code>{sandboxProvider}</code></p>
-								{/if}
-							</div>
-
-							{#if previewActionMessage}
-								<p class="text-sm text-green-700 dark:text-green-400">{previewActionMessage}</p>
-							{/if}
-							{#if previewActionError}
-								<p class="text-sm text-red-600 dark:text-red-400">{previewActionError}</p>
-							{/if}
+							<button
+								type="button"
+								class="inline-flex items-center gap-1 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
+								onclick={() => (activeTab = 'preview')}
+							>
+								<ExternalLink size={14} />
+								Open Preview tab
+							</button>
 						</CardContent>
 					</Card>
 				{/if}
@@ -2390,10 +2367,10 @@
 			</div>
 		</TabsContent>
 
-		<!-- Tab: Preview (post-run live preview of the CLI run's built app) -->
+		<!-- Tab: Preview (unified post-run live preview — CLI/juicefs + dapr/openshell) -->
 		<TabsContent value="preview" class="flex-1 overflow-hidden p-0">
 			{#if activeTab === 'preview'}
-				<CliExecutionPreview {executionId} />
+				<ExecutionPreview {executionId} />
 			{/if}
 		</TabsContent>
 
