@@ -825,17 +825,28 @@ def build_router():
     """Build the FastAPI router for CLI hook receivers."""
     router = APIRouter()
 
+    # Events where the hook RESPONSE can gate the tool/turn — these must be
+    # processed synchronously so a portable agentConfig.hooks deny/ask actually
+    # reaches Claude Code (P3 blocking). All other events stay fire-and-forget so
+    # turn-completion timing is unaffected.
+    _CLAUDE_BLOCKING_EVENTS = {"PreToolUse", "PermissionRequest"}
+
     @router.post("/internal/hooks/claude")
     async def claude_hook(request: Request) -> dict[str, Any]:
         try:
             payload = await request.json()
         except Exception:  # noqa: BLE001
             payload = {}
-        if isinstance(payload, dict):
-            # Respond {} immediately; process out-of-band.
-            asyncio.get_running_loop().create_task(
-                get_processor("claude-code").process(payload)
-            )
+        if not isinstance(payload, dict):
+            return {}
+        event = _hook_name(payload)
+        if event in _CLAUDE_BLOCKING_EVENTS:
+            # Await + return the decision so a deny/ask blocks the tool.
+            return await get_processor("claude-code").process(payload)
+        # Respond {} immediately; process out-of-band.
+        asyncio.get_running_loop().create_task(
+            get_processor("claude-code").process(payload)
+        )
         return {}
 
     @router.post("/internal/hooks/cli/{adapter_name}")
