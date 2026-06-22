@@ -96,13 +96,34 @@ function topLevelDurableRunEntries(
 	return out;
 }
 
-/** Node `workspaceRef` (mirrors resolver: `with.workspaceRef` else `with.body.workspaceRef`). */
-function nodeWorkspaceRef(withBlock: Record<string, unknown>): string | null {
-	const top = withBlock.workspaceRef;
-	if (typeof top === "string" && top.trim()) return top.trim();
-	const body = isRecord(withBlock.body) ? withBlock.body.workspaceRef : undefined;
-	if (typeof body === "string" && body.trim()) return body.trim();
-	return null;
+/**
+ * Resolve the node's `sharedWorkspaceKey` for CLI prewarm, matching what the
+ * orchestrator+ensure-for-workflow will pass. The node `workspaceRef` (mirrors
+ * resolver: `with.workspaceRef` else `with.body.workspaceRef`) may be:
+ *   - absent / a whole-string jq `${ .runtime.executionId }` (the common pattern,
+ *     and any jq the orchestrator would evaluate to the execution id) → use the
+ *     executionId (== ensure-for-workflow's `bridgeWorkspaceRef ?? workflowExecutionId`).
+ *   - a literal non-jq string → that literal (orchestrator passes it through).
+ *   - ANY OTHER jq `${...}` → UNKNOWN at execute-time (the orchestrator evaluates
+ *     it against runtime context we don't have). Returning "skip" makes the caller
+ *     NOT prewarm that node — a wrong key would mount the prewarmed pod's shared
+ *     JuiceFS subtree at the wrong path, and adoption would inherit it.
+ */
+function resolveSharedWorkspaceKey(
+	withBlock: Record<string, unknown>,
+	executionId: string,
+): string | "skip" {
+	const raw =
+		(typeof withBlock.workspaceRef === "string" && withBlock.workspaceRef.trim()) ||
+		(isRecord(withBlock.body) &&
+			typeof withBlock.body.workspaceRef === "string" &&
+			withBlock.body.workspaceRef.trim()) ||
+		"";
+	if (!raw) return executionId; // no workspaceRef → ensure uses executionId
+	if (!raw.includes("${")) return raw; // literal → orchestrator passes through
+	// jq expression: only the execution-id pattern is predictable at execute-time.
+	if (/^\$\{\s*\.runtime\.executionId\s*\}$/.test(raw)) return executionId;
+	return "skip";
 }
 
 /**
@@ -163,11 +184,18 @@ export async function prewarmWorkflowEntrySessions(params: {
 			let sessionSecretEnv: Record<string, string> | null = null;
 			let sharedWorkspaceKey: string | null = null;
 			if (isCli) {
+				const wsKey = resolveSharedWorkspaceKey(withBlock, params.executionId);
+				if (wsKey === "skip") {
+					console.info(
+						`[prewarm] skip CLI node "${taskName}" exec=${params.executionId}: workspaceRef is a non-executionId jq expression (key unpredictable)`,
+					);
+					continue;
+				}
 				sessionSecretEnv = await resolveWorkflowSessionSecretEnv({
 					userId: params.userId as string,
 					runtimeDescriptor: descriptor,
 				});
-				sharedWorkspaceKey = nodeWorkspaceRef(withBlock) ?? params.executionId;
+				sharedWorkspaceKey = wsKey;
 			}
 
 			// instance_prefix mirrors the orchestrator's runtime_registry.resolve():
