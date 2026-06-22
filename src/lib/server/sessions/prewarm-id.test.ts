@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { reconstructChildSessionId } from "./prewarm-id";
+import { reconstructChildSessionId, reconstructOrchestratorInstanceId } from "./prewarm-id";
 
 /**
  * Sanitizer-drift guard. These expected values mirror the Python orchestrator's
@@ -68,6 +68,21 @@ describe("reconstructChildSessionId", () => {
 				taskName: "plan",
 			}),
 		).toBe("sw-gan-harness-cli-showcase-exec-XhiEgqw96GvWzDTNXeGlc__durable__plan__run__0");
+	});
+
+	it("instance id == the orchestrator's tc.execution_id == ${ .runtime.executionId }", () => {
+		// LOAD-BEARING: a CLI node `workspaceRef: "${ .runtime.executionId }"` resolves
+		// to THIS instance id (the JuiceFS shared-workspace subPath), NOT the bare exec
+		// id. Verified live (exec ekVw51BJ): orchestrator-spawned pods got subPath
+		// sw-retroforge-codex-cli-showcase-exec-ekVw51BJiFGQE8f70A5sg. If prewarm used
+		// the bare id, the prewarmed entry pod mounts a different subtree → downstream
+		// nodes can't see the entry node's files.
+		expect(
+			reconstructOrchestratorInstanceId({
+				workflowName: "retroforge-codex-cli-showcase",
+				executionId: "ekVw51BJiFGQE8f70A5sg",
+			}),
+		).toBe("sw-retroforge-codex-cli-showcase-exec-ekVw51BJiFGQE8f70A5sg");
 	});
 
 	it("honors a non-zero run index (loop re-entry)", () => {

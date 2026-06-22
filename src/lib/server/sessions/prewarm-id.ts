@@ -16,12 +16,18 @@
  *       safe_task_name = re.sub(r"[^A-Za-z0-9_.-]","-", task_name)
  *       child = f"{instance_id}__{instance_prefix}__{safe_task_name}__run__{index}"
  */
-export function reconstructChildSessionId(params: {
+/**
+ * The orchestrator's workflow INSTANCE id (`sw-<safeName>-exec-<execId>`).
+ *
+ * NOTE: this is `tc.execution_id` in the orchestrator — which is ALSO what the
+ * jq runtime context exposes as `${ .runtime.executionId }` (sw_workflow.py:741).
+ * It is DISTINCT from `tc.db_execution_id` (the bare BFF execution.id). A node
+ * `workspaceRef: "${ .runtime.executionId }"` therefore resolves to THIS instance
+ * id, not the bare id — load-bearing for shared-workspace subPath replication.
+ */
+export function reconstructOrchestratorInstanceId(params: {
 	workflowName: string;
 	executionId: string;
-	instancePrefix: string;
-	taskName: string;
-	runIndex?: number;
 }): string {
 	const safeName = params.workflowName
 		.toLowerCase()
@@ -29,7 +35,17 @@ export function reconstructChildSessionId(params: {
 		.replace(/^-+/, "")
 		.replace(/-+$/, "")
 		.slice(0, 40);
-	const instanceId = `sw-${safeName}-exec-${params.executionId}`;
+	return `sw-${safeName}-exec-${params.executionId}`;
+}
+
+export function reconstructChildSessionId(params: {
+	workflowName: string;
+	executionId: string;
+	instancePrefix: string;
+	taskName: string;
+	runIndex?: number;
+}): string {
+	const instanceId = reconstructOrchestratorInstanceId(params);
 	const safeTaskName = params.taskName.replace(/[^A-Za-z0-9_.-]/g, "-");
 	const index = params.runIndex ?? 0;
 	return `${instanceId}__${params.instancePrefix}__${safeTaskName}__run__${index}`;

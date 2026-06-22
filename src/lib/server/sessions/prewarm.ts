@@ -31,7 +31,10 @@ import {
 	type TraceContext,
 } from "$lib/server/sessions/agent-workflow-host";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
-import { reconstructChildSessionId } from "$lib/server/sessions/prewarm-id";
+import {
+	reconstructChildSessionId,
+	reconstructOrchestratorInstanceId,
+} from "$lib/server/sessions/prewarm-id";
 import { resolveWorkflowSessionSecretEnv } from "$lib/server/sessions/session-secret-env";
 import type { AgentConfig } from "$lib/types/agents";
 
@@ -97,21 +100,27 @@ function topLevelDurableRunEntries(
 }
 
 /**
- * Resolve the node's `sharedWorkspaceKey` for CLI prewarm, matching what the
- * orchestrator+ensure-for-workflow will pass. The node `workspaceRef` (mirrors
- * resolver: `with.workspaceRef` else `with.body.workspaceRef`) may be:
- *   - absent / a whole-string jq `${ .runtime.executionId }` (the common pattern,
- *     and any jq the orchestrator would evaluate to the execution id) → use the
- *     executionId (== ensure-for-workflow's `bridgeWorkspaceRef ?? workflowExecutionId`).
+ * Resolve the node's `sharedWorkspaceKey` for CLI prewarm, matching EXACTLY what
+ * the orchestrator+ensure-for-workflow will pass — this becomes the JuiceFS subPath
+ * the prewarmed pod's shared workspace mounts, and a wrong key means the ADOPTED
+ * pod sees a DIFFERENT subtree than the rest of the run (so a downstream node can't
+ * see the entry node's files). The node `workspaceRef` (mirrors resolver:
+ * `with.workspaceRef` else `with.body.workspaceRef`) may be:
+ *   - absent → ensure-for-workflow falls back to `workflowExecutionId`, which the
+ *     orchestrator bridge sets to `tc.db_execution_id` = the BARE execution.id
+ *     (canonical_context["workflowExecutionId"], sw_workflow.py:554).
+ *   - whole-string jq `${ .runtime.executionId }` (the common pattern) → the
+ *     orchestrator evaluates `.runtime.executionId` to `tc.execution_id` = the
+ *     INSTANCE id `sw-<safeName>-exec-<execId>` (sw_workflow.py:741), NOT the bare
+ *     id. So this case must return the instance id — they genuinely differ.
  *   - a literal non-jq string → that literal (orchestrator passes it through).
- *   - ANY OTHER jq `${...}` → UNKNOWN at execute-time (the orchestrator evaluates
- *     it against runtime context we don't have). Returning "skip" makes the caller
- *     NOT prewarm that node — a wrong key would mount the prewarmed pod's shared
- *     JuiceFS subtree at the wrong path, and adoption would inherit it.
+ *   - ANY OTHER jq `${...}` → UNKNOWN at execute-time. Returning "skip" makes the
+ *     caller NOT prewarm that node (a wrong key would silently mis-mount).
  */
 function resolveSharedWorkspaceKey(
 	withBlock: Record<string, unknown>,
 	executionId: string,
+	orchestratorInstanceId: string,
 ): string | "skip" {
 	const raw =
 		(typeof withBlock.workspaceRef === "string" && withBlock.workspaceRef.trim()) ||
@@ -119,10 +128,10 @@ function resolveSharedWorkspaceKey(
 			typeof withBlock.body.workspaceRef === "string" &&
 			withBlock.body.workspaceRef.trim()) ||
 		"";
-	if (!raw) return executionId; // no workspaceRef → ensure uses executionId
+	if (!raw) return executionId; // absent → ensure falls back to the bare execution id
 	if (!raw.includes("${")) return raw; // literal → orchestrator passes through
-	// jq expression: only the execution-id pattern is predictable at execute-time.
-	if (/^\$\{\s*\.runtime\.executionId\s*\}$/.test(raw)) return executionId;
+	// jq: `.runtime.executionId` is the orchestrator INSTANCE id, not the bare id.
+	if (/^\$\{\s*\.runtime\.executionId\s*\}$/.test(raw)) return orchestratorInstanceId;
 	return "skip";
 }
 
@@ -150,6 +159,13 @@ export async function prewarmWorkflowEntrySessions(params: {
 				? (params.spec.name as string)
 				: "") || "";
 	if (!workflowName) return;
+
+	// The orchestrator instance id (`sw-<safeName>-exec-<execId>`) is constant for
+	// this execution; `${ .runtime.executionId }` workspaceRefs resolve to it.
+	const orchestratorInstanceId = reconstructOrchestratorInstanceId({
+		workflowName,
+		executionId: params.executionId,
+	});
 
 	const entries = topLevelDurableRunEntries(params.spec).slice(0, prewarmNodeLimit());
 
@@ -184,7 +200,11 @@ export async function prewarmWorkflowEntrySessions(params: {
 			let sessionSecretEnv: Record<string, string> | null = null;
 			let sharedWorkspaceKey: string | null = null;
 			if (isCli) {
-				const wsKey = resolveSharedWorkspaceKey(withBlock, params.executionId);
+				const wsKey = resolveSharedWorkspaceKey(
+					withBlock,
+					params.executionId,
+					orchestratorInstanceId,
+				);
 				if (wsKey === "skip") {
 					console.info(
 						`[prewarm] skip CLI node "${taskName}" exec=${params.executionId}: workspaceRef is a non-executionId jq expression (key unpredictable)`,
