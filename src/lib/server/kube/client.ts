@@ -1107,6 +1107,27 @@ export async function deleteSandboxWarmPool(
 }
 
 /**
+ * Delete a Sandbox CR (`agents.x-k8s.io/v1alpha1 Sandbox`) — e.g. a per-session
+ * agent-workflow-host. Deleting the CR cascades to its pod and releases the
+ * per-session shared-workspace PVC (which in turn lets the JuiceFS CSI mount pod
+ * for that volume terminate). Used for per-turn reaping: once a workflow-driven
+ * session is terminal its host pod must be reaped promptly, else pods (and their
+ * system-critical JuiceFS mount pods) accumulate one-per-node and eventually get
+ * the agent pods preempted. 404 is success (already gone).
+ */
+export async function deleteSandbox(
+	name: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): Promise<void> {
+	const res = await kubeFetch(sandboxPath(name, namespace), {
+		method: "DELETE",
+	});
+	if (res.status !== 404 && !res.ok) {
+		throw new Error(`delete Sandbox ${name} failed: ${res.status}`);
+	}
+}
+
+/**
  * Wake (or keep awake) a SandboxWarmPool by patching `spec.replicas` to
  * `targetReplicas` and waiting for `status.readyReplicas >= targetReplicas`.
  * Replaces the AgentRuntime annotation handshake.

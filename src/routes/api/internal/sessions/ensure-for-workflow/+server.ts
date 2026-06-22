@@ -1,5 +1,6 @@
 import { error, json } from "@sveltejs/kit";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { deleteSandbox } from "$lib/server/kube/client";
 import type { RequestHandler } from "./$types";
 import { validateInternalToken } from "$lib/server/internal-auth";
 import { db } from "$lib/server/db";
@@ -886,6 +887,18 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 	}
 
+	// Per-turn reap: a workflow run dispatches one per-session agent-host pod per
+	// durable/run node, but those pods are only cleaned at run-END — so within a
+	// multi-node run they accumulate one-per-node, and each mounts a
+	// system-critical JuiceFS pod. On a small cluster the node's cpu REQUESTS
+	// saturate and the kubelet preempts the low-priority agent pods (run errors
+	// "Preempting"). As we spawn each new node, reap this run's already-terminal
+	// sessions' host sandboxes (their per-node diff was captured at session end).
+	// Best-effort, fully detached — never blocks or fails the spawn.
+	if (workflowExecutionId) {
+		void reapTerminatedRunHosts(workflowExecutionId, sessionId).catch(() => {});
+	}
+
 	return json({
 		sessionId,
 		agentId,
@@ -1458,4 +1471,39 @@ async function resolveWakeSlug(params: {
 		if (row?.slug) return row.slug;
 	}
 	return null;
+}
+
+/**
+ * Reap the host Sandbox CRs of a run's already-terminal sessions (per-turn reap).
+ * The per-session agent-host pod for a `durable/run` node is otherwise only
+ * cleaned at run-end, so a multi-node run accumulates one pod (+ a system-critical
+ * JuiceFS mount pod) per node and eventually starves/preempts the agent pods on a
+ * small cluster. Each terminal session's per-node workspace diff is captured at
+ * session end, so deleting its host after terminal status is safe. Best-effort.
+ */
+async function reapTerminatedRunHosts(
+	workflowExecutionId: string,
+	exceptSessionId: string,
+): Promise<void> {
+	if (!db) return;
+	const rows = await db
+		.select({ id: sessions.id, runtimeAppId: sessions.runtimeAppId })
+		.from(sessions)
+		.where(
+			and(
+				eq(sessions.workflowExecutionId, workflowExecutionId),
+				inArray(sessions.status, ["terminated", "failed"]),
+				isNotNull(sessions.runtimeAppId),
+			),
+		);
+	for (const row of rows) {
+		if (!row.runtimeAppId || row.id === exceptSessionId) continue;
+		try {
+			await deleteSandbox(`agent-host-${row.runtimeAppId}`);
+		} catch (err) {
+			console.warn(
+				`[ensure-for-workflow] reap host agent-host-${row.runtimeAppId} failed (best-effort): ${String(err)}`,
+			);
+		}
+	}
 }
