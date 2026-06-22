@@ -201,7 +201,7 @@ async def _start_cli(input_data: dict[str, Any]) -> dict[str, Any]:
     # them when the CLI relays each native event (command hooks; deny/ask folded
     # into the relay/HTTP response where the CLI can block).
     try:
-        from hook_exec import set_run_hooks
+        from src.hook_exec import set_run_hooks
 
         set_run_hooks(agent_config.get("hooks"), project_dir=cwd)
     except Exception as exc:  # noqa: BLE001

@@ -593,7 +593,7 @@ class HookProcessor:
         if not name:
             return response
         try:
-            from hook_exec import has_run_hooks, run_event_hooks
+            from src.hook_exec import has_run_hooks, run_event_hooks
         except Exception:  # noqa: BLE001
             return response
         if not has_run_hooks():
