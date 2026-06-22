@@ -121,6 +121,12 @@ class ClaudeCodeAdapter(CliAdapter):
     # that deterministic ack (re-press Enter until it fires) instead of screen/status
     # heuristics.
     emits_prompt_submit_hook = True
+    # claude's "? for shortcuts" composer marker is undetectable via herdr pane
+    # reads (the 180s screen-scrape timeout), so use the deterministic
+    # UserPromptSubmit-ack closed-loop instead. Verified: the kickoff submits +
+    # the turn runs (gan-harness plan agent reached its turn). codex/agy keep the
+    # screen-scrape gate (their markers work + ratatui composer is paste-sensitive).
+    kickoff_via_hook_ack = True
 
     # -- seeding ----------------------------------------------------------------
 

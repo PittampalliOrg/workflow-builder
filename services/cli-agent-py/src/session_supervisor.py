@@ -248,6 +248,9 @@ class SessionSupervisor:
         # confirms submission by waiting for that hook ack (deterministic) instead of
         # screen/status heuristics. hooks_api bumps `_prompt_submit_seen` per hook.
         self.emits_prompt_submit_hook = False
+        # Use the deterministic paste→hook-ack closed-loop for KICKOFF (claude only);
+        # codex/agy keep the screen-scrape readiness gate. See adapter docs.
+        self.kickoff_via_hook_ack = False
         self._prompt_submit_seen = 0
         # Screen substrings for benign startup onboarding dialogs to auto-accept
         # (Enter) so they don't block the composer (codex's directory-trust prompt).
@@ -1172,11 +1175,13 @@ class SessionSupervisor:
         return False
 
     async def _gated_send(self, text: str, marker: str, timeout: float, *, what: str) -> bool:
-        """Send the prompt to the TUI. CLIs that emit a UserPromptSubmit hook use a
-        DETERMINISTIC closed-loop (paste → hook ack → re-paste on miss) with no
-        screen-scraping; others fall back to the legacy readiness gate. Both REFUSE
-        to type into a blocked (permission/auth) dialog."""
-        if self.emits_prompt_submit_hook:
+        """Send the prompt to the TUI. CLIs that opt into `kickoff_via_hook_ack`
+        (claude) use a DETERMINISTIC closed-loop (paste → UserPromptSubmit ack →
+        re-paste on miss) with no screen-scraping. codex/agy keep the screen-scrape
+        readiness gate (their composer markers are reliable and their ratatui
+        composers mishandle the clear+re-paste cycle). Both REFUSE to type into a
+        blocked (permission/auth) dialog."""
+        if self.emits_prompt_submit_hook and self.kickoff_via_hook_ack:
             return await self._send_until_hook_ack(text, marker, timeout, what=what)
         ready = await self.wait_until_ready(timeout)
         pane = self._pane_ref
