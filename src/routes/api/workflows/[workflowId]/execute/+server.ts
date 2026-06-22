@@ -217,6 +217,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     void prewarmWorkflowEntrySessions({
       spec,
       executionId: execution.id,
+      userId,
       traceContext,
     }).catch(() => {});
     await safePrecreateMlflowTrace({

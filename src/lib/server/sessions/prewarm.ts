@@ -32,6 +32,7 @@ import {
 } from "$lib/server/sessions/agent-workflow-host";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { reconstructChildSessionId } from "$lib/server/sessions/prewarm-id";
+import { resolveWorkflowSessionSecretEnv } from "$lib/server/sessions/session-secret-env";
 import type { AgentConfig } from "$lib/types/agents";
 
 function truthyEnv(value: string | undefined): boolean {
@@ -41,6 +42,16 @@ function truthyEnv(value: string | undefined): boolean {
 
 function prewarmEnabled(): boolean {
 	return truthyEnv(env.AGENT_PREWARM_ENABLED ?? process.env.AGENT_PREWARM_ENABLED);
+}
+
+/**
+ * CLI runtimes (claude-code-cli/codex/agy) are gated SEPARATELY: their prewarmed
+ * pod bakes the user's per-session CLI token Secret at creation, so prewarm must
+ * resolve it byte-identically to the real spawn (shared `resolveWorkflowSessionSecretEnv`).
+ * Default off — opt in once verified, independently of the dapr default.
+ */
+function prewarmCliEnabled(): boolean {
+	return truthyEnv(env.AGENT_PREWARM_CLI_ENABLED ?? process.env.AGENT_PREWARM_CLI_ENABLED);
 }
 
 function prewarmNodeLimit(): number {
@@ -85,15 +96,28 @@ function topLevelDurableRunEntries(
 	return out;
 }
 
+/** Node `workspaceRef` (mirrors resolver: `with.workspaceRef` else `with.body.workspaceRef`). */
+function nodeWorkspaceRef(withBlock: Record<string, unknown>): string | null {
+	const top = withBlock.workspaceRef;
+	if (typeof top === "string" && top.trim()) return top.trim();
+	const body = isRecord(withBlock.body) ? withBlock.body.workspaceRef : undefined;
+	if (typeof body === "string" && body.trim()) return body.trim();
+	return null;
+}
+
 /**
- * Fire-and-forget prewarm of the dapr-agent-py entry `durable/run` node(s) for a
- * just-triggered workflow execution. MUST be called as `void prewarm(...).catch(...)`
- * — it is best-effort and never throws.
+ * Fire-and-forget prewarm of the entry `durable/run` node(s) for a just-triggered
+ * workflow execution. MUST be called as `void prewarm(...).catch(...)` — it is
+ * best-effort and never throws. Covers dapr-agent-py (AGENT_PREWARM_ENABLED) and,
+ * when AGENT_PREWARM_CLI_ENABLED, interactive-cli runtimes (needs `userId` to
+ * resolve the per-session CLI token Secret byte-identically to the real spawn).
  */
 export async function prewarmWorkflowEntrySessions(params: {
 	/** Spec AFTER `resolveSpecAgentRefs` (nodes carry stamped `with.agentConfig`). */
 	spec: Record<string, unknown>;
 	executionId: string;
+	/** Authed user — required to resolve CLI per-session creds (CLI prewarm only). */
+	userId?: string | null;
 	traceContext?: TraceContext | null;
 }): Promise<void> {
 	if (!prewarmEnabled()) return;
@@ -120,13 +144,31 @@ export async function prewarmWorkflowEntrySessions(params: {
 			if (!agentConfig) continue;
 
 			// Gate: must be a Kueue-host-eligible runtime (excludes browser /
-			// warm-pool) AND, for this first cut, dapr-agent-py only (no
-			// interactiveTerminal — CLI per-session token Secrets are deferred).
+			// warm-pool). CLI runtimes (interactiveTerminal) are additionally
+			// gated on AGENT_PREWARM_CLI_ENABLED + a resolvable user.
 			if (!agentConfigCanUseWorkflowHost(agentConfig)) continue;
 			const runtime = (agentConfig as { runtime?: string }).runtime;
 			const descriptor = getRuntimeDescriptor(runtime);
 			if (!descriptor) continue;
-			if (descriptor.capabilities.interactiveTerminal === true) continue;
+			const isCli = descriptor.capabilities.interactiveTerminal === true;
+			if (isCli && (!prewarmCliEnabled() || !params.userId)) continue;
+
+			// Creation-identical inputs for adoption: the per-session Secret +
+			// shared-workspace key are baked at Sandbox creation, so prewarm must
+			// match what the real spawn (ensure-for-workflow) will pass. For CLI:
+			// resolve the SAME secret env (shared resolver — throws 412 if the user
+			// has no linked token, caught below as a best-effort skip) and
+			// sharedWorkspaceKey = node workspaceRef ?? executionId. For dapr both
+			// are null (gateway-side model creds, no shared key).
+			let sessionSecretEnv: Record<string, string> | null = null;
+			let sharedWorkspaceKey: string | null = null;
+			if (isCli) {
+				sessionSecretEnv = await resolveWorkflowSessionSecretEnv({
+					userId: params.userId as string,
+					runtimeDescriptor: descriptor,
+				});
+				sharedWorkspaceKey = nodeWorkspaceRef(withBlock) ?? params.executionId;
+			}
 
 			const childSessionId = reconstructChildSessionId({
 				workflowName,
@@ -136,12 +178,9 @@ export async function prewarmWorkflowEntrySessions(params: {
 				runIndex: 0,
 			});
 
-			// Creation-identical to the bridge's later provision for dapr-agent-py:
-			// no per-session Secret, no shared-workspace key (those apply only to
-			// interactiveTerminal runtimes). waitReadySeconds=0 → return immediately
-			// (don't block this detached promise on pod readiness; the real spawn
-			// waits). The deterministic CR name + owner-run-id "<sessionId>|" make
-			// the later spawn ADOPT this pod.
+			// waitReadySeconds=0 → return immediately (don't block this detached
+			// promise on pod readiness; the real spawn waits). The deterministic CR
+			// name + owner-run-id "<sessionId>|" make the later spawn ADOPT this pod.
 			void maybeProvisionAgentWorkflowHost({
 				sessionId: childSessionId,
 				agentConfig,
@@ -153,8 +192,8 @@ export async function prewarmWorkflowEntrySessions(params: {
 						? (withBlock.timeoutMinutes as number)
 						: null,
 				traceContext: params.traceContext ?? null,
-				sessionSecretEnv: null,
-				sharedWorkspaceKey: null,
+				sessionSecretEnv,
+				sharedWorkspaceKey,
 				waitReadySeconds: 0,
 			})
 				.then((result) => {
