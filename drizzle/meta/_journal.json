@@ -589,6 +589,13 @@
       "when": 1781874000000,
       "tag": "0089_goal_evaluator_evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1781960400000,
+      "tag": "0090_workflow_triggers",
+      "breakpoints": true
     }
   ]
 }
