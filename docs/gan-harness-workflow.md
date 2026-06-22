@@ -100,6 +100,48 @@ nudge) and relies on the normalizer rather than brittle caps/bans.
 - The screenshot artifact uploads via the `cli-workspace-command` image-readFile →
   files API path (renders inline; see `docs/coding-redesign-playwright-critic.md`).
 
+## Parameterized build/verify convention (reusable across coding workflows)
+
+The build is **not hardcoded to npm**. This harness exposes three optional trigger
+inputs so the same DAG drives any framework (Vite/SvelteKit/Next/Cargo/Make/…),
+and any other coding workflow should adopt the same convention:
+
+| Trigger input | Default | Meaning |
+| --- | --- | --- |
+| `installCommand` | `"auto"` | Dependency install. `auto` → detect (pnpm-lock→`pnpm install --frozen-lockfile`, package.json→`npm install`, Cargo.toml→`cargo fetch`, requirements.txt→`pip install -r`). |
+| `buildCommand` | `"auto"` | Build the deterministic `gate` runs. `auto` → detect (pnpm→`pnpm build`, package.json→`npm run build`, Cargo.toml→`cargo build --release`, Makefile `build:`→`make build`). |
+| `previewCommand` | `"auto"` | Preview/serve the Playwright critic views. `auto` → `npm run preview` (else `true`). |
+
+Conventions (so other workflows stay uniform):
+
+- **Defaults are the literal string `"auto"`, never empty.** `collectRequiredTriggerFields`
+  (`src/lib/utils/trigger-fields.ts`) treats every `.trigger.X` referenced in the
+  spec as required and `hasPresentValue` rejects empty/whitespace — but
+  `applyWorkflowInputDefaults` runs **before** the required-field check in
+  `execute/+server.ts`, so a non-empty default (`"auto"`) satisfies it. An empty
+  default would 400 with "Missing required workflow input fields".
+- **Auto-detection is shell-side, not jq-side** (jq can't `stat` files in the
+  sandbox). Each `workspace/command` node carries a shared prelude that resolves
+  `WFB_INSTALL`/`WFB_BUILD`/`WFB_PREVIEW`: an override wins, else (`-z` **or**
+  `= auto`) it auto-detects by lockfile/manifest presence in `/sandbox/work/repo`.
+- **Overrides reach the shell via jq `@sh`**, per the full-string jq rule
+  (`is_expression_string`): the command value is one `${ ... }` that concatenates
+  `export WFB_BUILD_OVERRIDE=<(.trigger.buildCommand // "") | @sh>; … ; <prelude+body>`.
+  `@sh` safely quotes arbitrary user command strings.
+- **Build runs in a `workspace/command` node, NOT a hook.** Hooks are runtime-uneven
+  — only `dapr-agent-py` executes `agentConfig.hooks`; the CLI runtimes (claude/
+  codex/agy) use a separate native HTTP hook system and the `Stop` hook is
+  advisory-only. A node is uniform across all four runtimes, and the refine loop's
+  `while`/`if` already gates on the node's `OBJECTIVE PASS`/`OBJECTIVE FAIL` stdout.
+- **Deps are pre-installed once in `init_state`** (so the generator can run the
+  build itself to self-verify each turn instead of building blind); the `gate` then
+  runs **build-only** (install only if `node_modules` is missing). This is the
+  cross-runtime substitute for an "in-turn build hook".
+
+Precedent: `scripts/fixtures/async-coding-task.workflow.json` already parameterizes
+its verify command via a trigger input + `[ -f package.json ]` detection — it can
+be migrated to these exact param names.
+
 ## Deferred (additive on this same structure)
 
 - **Two-pass design process**: Generator emits a `design-tokens.json` (4–6 named
