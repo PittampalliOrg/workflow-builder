@@ -122,24 +122,28 @@ export async function startCliPreview(
 		override && override !== "auto" ? override.replace(/'/g, "'\\''") : "";
 	// Shell: stop any prior server on the port, auto-detect the preview command
 	// (override wins), start it backgrounded on 0.0.0.0, then poll readiness.
+	// NOTE: do NOT pkill by process-name pattern here — the bash command string
+	// itself contains "vite preview"/"npm run preview", so pkill -f would SIGTERM
+	// this very shell. Free the port with fuser (acts on the LISTENER, not a name)
+	// and launch with setsid so the server survives the command returning.
 	const script = `
 set -u
 PORT=${port}
 cd "${opts.cwd}" 2>/dev/null || cd /sandbox/work/repo 2>/dev/null || true
-fuser -k ${port}/tcp 2>/dev/null || true
-pkill -f "vite preview" 2>/dev/null || true
-pkill -f "vite dev" 2>/dev/null || true
+fuser -k "$PORT"/tcp 2>/dev/null || true
+sleep 1
 OVERRIDE='${overrideExport}'
 if [ -n "$OVERRIDE" ]; then PREVIEW="$OVERRIDE";
 elif [ -f pnpm-lock.yaml ]; then PREVIEW="pnpm preview";
 elif [ -f package.json ]; then PREVIEW="npm run preview --";
 else PREVIEW=""; fi
 DEV="npm run dev --"
-start() { ( nohup sh -c "$1 --host 0.0.0.0 --port $PORT --strictPort" >/tmp/wfb-preview.log 2>&1 & ) || true; }
+start() { ( setsid sh -c "$1 --host 0.0.0.0 --port $PORT --strictPort" >/tmp/wfb-preview.log 2>&1 & ) || true; }
 wait_ready() { for i in $(seq 1 "$1"); do curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&1 && return 0; sleep 1; done; return 1; }
 if [ -n "$PREVIEW" ]; then start "$PREVIEW"; fi
 if ! wait_ready 25; then
-  pkill -f "vite preview" 2>/dev/null || true
+  fuser -k "$PORT"/tcp 2>/dev/null || true
+  sleep 1
   start "$DEV"
   wait_ready 40 || true
 fi
