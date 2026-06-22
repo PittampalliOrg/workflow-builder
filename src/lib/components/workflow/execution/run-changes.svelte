@@ -48,10 +48,16 @@
 		return { files, additions, deletions, nodes: ordered.length };
 	});
 
-	// Expand the first node by default; others collapse so the impact summary leads.
+	// Expand ALL node cards by default so every node's changes are visible without
+	// hunting (the run-impact summary still leads). Seed once so the user can still
+	// collapse cards without them snapping back open.
 	let openIds = $state<Set<string>>(new Set());
+	let seeded = $state(false);
 	$effect(() => {
-		if (ordered.length && openIds.size === 0) openIds = new Set([ordered[0].id]);
+		if (!seeded && ordered.length) {
+			openIds = new Set(ordered.map((a) => a.id));
+			seeded = true;
+		}
 	});
 	function toggle(id: string) {
 		const next = new Set(openIds);
