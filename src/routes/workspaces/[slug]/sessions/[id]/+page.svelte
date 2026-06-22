@@ -1572,6 +1572,15 @@
 								<span class="ml-1 inline-block size-1.5 rounded-full bg-amber-500 animate-pulse"></span>
 							{/if}
 						</button>
+						<a
+							href="/workspaces/{slug}/sessions/{sessionId}/cli-preview"
+							target="_blank"
+							rel="noreferrer"
+							title="Open a live browser preview of the app this agent built in its sandbox"
+							class="px-3 py-1 text-xs rounded text-muted-foreground hover:bg-background/60"
+						>
+							Live preview ↗
+						</a>
 					{/if}
 					{#if goalFlow}
 						<button
