@@ -2698,6 +2698,10 @@ def _handle_call_task(
                 "command": gate_command,
                 "cwd": gate_cwd,
                 "readFile": gate_read_file if isinstance(gate_read_file, str) else None,
+                # The node's timeoutMs governs the slow gate command (install/build
+                # on JuiceFS); threaded down through the BFF to the cli pod so the
+                # 180s HTTP default doesn't cap a multi-minute build.
+                "timeoutMs": final_config.get("timeoutMs"),
                 "_otel": tc.otel_ctx,
             }),
         )

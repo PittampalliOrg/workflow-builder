@@ -312,6 +312,11 @@ async def raise_session_event_endpoint(request: dict[str, Any]) -> dict[str, Any
 WORKSPACE_COMMAND_TIMEOUT_SECONDS = float(
     os.environ.get("CLI_WORKSPACE_COMMAND_TIMEOUT_SECONDS", "600")
 )
+# Hard ceiling for a per-request timeout override (a slow `npm install` / build on
+# JuiceFS can take many minutes; the caller threads the node's `timeoutMs`).
+WORKSPACE_COMMAND_TIMEOUT_CAP_SECONDS = float(
+    os.environ.get("CLI_WORKSPACE_COMMAND_TIMEOUT_CAP_SECONDS", "1800")
+)
 _OUTPUT_TAIL_BYTES = 8 * 1024
 
 
@@ -342,6 +347,19 @@ async def workspace_command_endpoint(request: Request) -> dict[str, Any]:
     extra_env = body.get("env") if isinstance(body.get("env"), dict) else {}
     cwd = body.get("cwd") if isinstance(body.get("cwd"), str) and body.get("cwd") else None
 
+    # Optional per-request timeout (seconds) — the workflow node's `timeoutMs`
+    # threaded down so a slow install/build governs the subprocess, not the
+    # 600s default. Bounded by the hard cap.
+    timeout_seconds = WORKSPACE_COMMAND_TIMEOUT_SECONDS
+    raw_timeout = body.get("timeout")
+    if raw_timeout is not None:
+        try:
+            requested = float(raw_timeout)
+            if requested > 0:
+                timeout_seconds = min(requested, WORKSPACE_COMMAND_TIMEOUT_CAP_SECONDS)
+        except (TypeError, ValueError):
+            pass
+
     env = dict(os.environ)
     env.update({str(k): str(v) for k, v in extra_env.items() if v is not None})
 
@@ -353,7 +371,7 @@ async def workspace_command_endpoint(request: Request) -> dict[str, Any]:
                 env=env,
                 capture_output=True,
                 text=True,
-                timeout=WORKSPACE_COMMAND_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
             return {
@@ -362,7 +380,7 @@ async def workspace_command_endpoint(request: Request) -> dict[str, Any]:
                 "stdout_tail": _tail(exc.stdout if isinstance(exc.stdout, str) else ""),
                 "stderr_tail": _tail(
                     (exc.stderr if isinstance(exc.stderr, str) else "")
-                    + f"\ncommand timed out after {WORKSPACE_COMMAND_TIMEOUT_SECONDS:.0f}s"
+                    + f"\ncommand timed out after {timeout_seconds:.0f}s"
                 ),
             }
         return {
