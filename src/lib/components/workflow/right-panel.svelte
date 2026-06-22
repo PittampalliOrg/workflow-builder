@@ -5,7 +5,7 @@
 	 */
 	import { getContext } from 'svelte';
 	import { slide } from 'svelte/transition';
-	import { PanelRightClose, Settings2, Code2, Sparkles, Play } from '@lucide/svelte';
+	import { PanelRightClose, Settings2, Code2, Sparkles, Play, Webhook } from '@lucide/svelte';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
 	import { buttonVariants } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
@@ -16,6 +16,7 @@
 	import SpecEditor from './spec-editor.svelte';
 	import RunsPanel from './runs-panel.svelte';
 	import AiTabContent from './ai-tab-content.svelte';
+	import WorkflowTriggersPanel from './workflow-triggers-panel.svelte';
 
 	const ui = getContext<ReturnType<typeof createUiStore>>('ui');
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
@@ -63,6 +64,7 @@
 		all.push({ id: 'code', label: 'Spec', icon: Code2 });
 		all.push({ id: 'ai', label: 'AI', icon: Sparkles });
 		all.push({ id: 'runs', label: 'Runs', icon: Play });
+		all.push({ id: 'triggers', label: 'Triggers', icon: Webhook });
 		return all;
 	});
 
@@ -199,6 +201,16 @@
 
 		<TabsContent value="runs" class="mt-0 flex-1 overflow-hidden flex flex-col">
 			<RunsPanel embedded />
+		</TabsContent>
+
+		<TabsContent value="triggers" class="mt-0 flex-1 overflow-auto">
+			{#if store.workflowId}
+				<WorkflowTriggersPanel workflowId={store.workflowId} />
+			{:else}
+				<div class="flex h-full items-center justify-center p-4 text-center text-xs text-muted-foreground">
+					Save the workflow first to configure triggers.
+				</div>
+			{/if}
 		</TabsContent>
 	</Tabs>
 </div>
