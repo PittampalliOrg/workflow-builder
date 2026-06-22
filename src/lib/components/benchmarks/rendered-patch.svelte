@@ -67,12 +67,53 @@
 	<div class="px-3 py-6 text-center text-xs text-muted-foreground">No patch.</div>
 {:else}
 	<!-- diff2html outputs trusted HTML from a unified diff string; safe to inject. -->
-	<div class="rendered-patch overflow-x-auto text-[11px] {className}">
+	<!-- line-by-line: wrap long lines (no horizontal scroll) so diff2html's
+	     ABSOLUTELY-positioned line-number gutter can't desync from the code
+	     during scroll. side-by-side keeps its native horizontal scroll. -->
+	<div
+		class="rendered-patch text-[11px] {className}"
+		class:linewrap={layout === 'line-by-line'}
+		class:overflow-x-auto={layout !== 'line-by-line'}
+	>
 		{@html html}
 	</div>
 {/if}
 
 <style>
+	/*
+	 * line-by-line wrap mode. diff2html renders line numbers in an ABSOLUTELY
+	 * positioned cell that anchors to the nearest positioned ancestor; in our
+	 * layout none are positioned, so on horizontal scroll the gutter drifts away
+	 * from its code rows ("glitchy line numbers"). Fix = remove horizontal scroll
+	 * entirely by wrapping long lines, and make each code line a flex row so the
+	 * +/- prefix stays inline with the wrapped content (single-height rows).
+	 */
+	.rendered-patch.linewrap {
+		max-width: 100%;
+	}
+	.rendered-patch.linewrap :global(.d2h-file-wrapper),
+	.rendered-patch.linewrap :global(.d2h-file-diff),
+	.rendered-patch.linewrap :global(.d2h-code-wrapper) {
+		max-width: 100%;
+		min-width: 0;
+	}
+	.rendered-patch.linewrap :global(.d2h-diff-table) {
+		width: 100%;
+	}
+	.rendered-patch.linewrap :global(.d2h-code-line) {
+		display: flex;
+		white-space: normal;
+	}
+	.rendered-patch.linewrap :global(.d2h-code-line-prefix) {
+		flex: 0 0 auto;
+	}
+	.rendered-patch.linewrap :global(.d2h-code-line-ctn) {
+		flex: 1 1 auto;
+		min-width: 0;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+
 	/* Tighten diff2html's defaults to match the dark/light surfaces of the app. */
 	.rendered-patch :global(.d2h-wrapper) {
 		font-family:

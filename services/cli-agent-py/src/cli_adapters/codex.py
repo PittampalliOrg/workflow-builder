@@ -706,7 +706,14 @@ class CodexAdapter(CliAdapter):
         # (no thread id needed; codex merges the TUI flags below into resume).
         if bool(agent_config.get("continueSession")):
             argv += ["resume", "--last"]
-        argv += ["--cd", os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")]
+        # --cd MUST match the pre-trusted project (_trusted_project_table) and the
+        # pane launch cwd: prefer the per-execution shared-workspace mount
+        # (CLI_SHARED_WORKSPACE_MOUNT=/sandbox/work) so codex's relative + absolute
+        # /sandbox/work writes land in the shared workspace, not one level up in
+        # /sandbox. Previously hardcoded AGENT_LOCAL_SANDBOX_ROOT (unset → /sandbox),
+        # so codex wrote SPEC.md to /sandbox and downstream nodes saw an empty
+        # /sandbox/work. _sandbox_cwd falls back to the sandbox root for non-shared.
+        argv += ["--cd", _sandbox_cwd(os.environ)]
         model = normalize_codex_model(agent_config.get("modelSpec"))
         if model:
             argv += ["--model", model]

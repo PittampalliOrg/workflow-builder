@@ -7,7 +7,7 @@
   the Overview tab.
 -->
 <script lang="ts">
-	import { ChevronDown, ChevronRight, FileText, Code2, Image, Link as LinkIcon, Layers, Rows3, Target, AppWindow } from "@lucide/svelte";
+	import { ChevronDown, ChevronRight, FileText, Code2, Image, Link as LinkIcon, Layers, Rows3, Target, AppWindow, FileDiff } from "@lucide/svelte";
 	import ArtifactRenderer from "./artifact-renderer.svelte";
 
 	type Artifact = {
@@ -29,9 +29,12 @@
 		// "all" lists everything grouped; "primary" only renders primary slot
 		// (used on the Overview tab to feature the headline outputs).
 		mode?: "all" | "primary";
+		// Parent execution id — threaded to the renderer so `diff` artifacts can
+		// lazily resolve gzip-offloaded patches.
+		executionId?: string | null;
 	}
 
-	let { artifacts, mode = "all" }: Props = $props();
+	let { artifacts, mode = "all", executionId = null }: Props = $props();
 
 	const grouped = $derived.by(() => {
 		const out: Record<string, Artifact[]> = { primary: [], secondary: [], aux: [], other: [] };
@@ -50,6 +53,7 @@
 		if (kind === "link") return LinkIcon;
 		if (kind === "card") return Layers;
 		if (kind === "goal_spec") return Target;
+		if (kind === "diff") return FileDiff;
 		return Rows3;
 	}
 
@@ -78,6 +82,8 @@
 					</header>
 					<ArtifactRenderer
 						kind={a.kind}
+						id={a.id}
+						{executionId}
 						title={a.title}
 						description={a.description}
 						inlinePayload={a.inlinePayload}
@@ -113,6 +119,8 @@
 							</header>
 							<ArtifactRenderer
 								kind={a.kind}
+								id={a.id}
+								{executionId}
 								title={a.title}
 								description={a.description}
 								inlinePayload={a.inlinePayload}
@@ -146,7 +154,7 @@
 									</div>
 									<span class="text-[10px] text-muted-foreground font-mono shrink-0">{a.kind}</span>
 								</header>
-								<ArtifactRenderer kind={a.kind} title={a.title} description={a.description} inlinePayload={a.inlinePayload} fileId={a.fileId} contentType={a.contentType} metadata={a.metadata} />
+								<ArtifactRenderer kind={a.kind} id={a.id} {executionId} title={a.title} description={a.description} inlinePayload={a.inlinePayload} fileId={a.fileId} contentType={a.contentType} metadata={a.metadata} />
 							</section>
 						{/each}
 					</div>
@@ -175,7 +183,7 @@
 									</div>
 									<span class="text-[10px] text-muted-foreground font-mono shrink-0">{a.kind}</span>
 								</header>
-								<ArtifactRenderer kind={a.kind} title={a.title} description={a.description} inlinePayload={a.inlinePayload} fileId={a.fileId} contentType={a.contentType} metadata={a.metadata} />
+								<ArtifactRenderer kind={a.kind} id={a.id} {executionId} title={a.title} description={a.description} inlinePayload={a.inlinePayload} fileId={a.fileId} contentType={a.contentType} metadata={a.metadata} />
 							</section>
 						{/each}
 					</div>
@@ -200,7 +208,7 @@
 									<div><h4 class="text-xs font-medium">{a.title}</h4></div>
 									<span class="text-[10px] text-muted-foreground font-mono shrink-0">{a.kind}</span>
 								</header>
-								<ArtifactRenderer kind={a.kind} title={a.title} description={a.description} inlinePayload={a.inlinePayload} fileId={a.fileId} contentType={a.contentType} metadata={a.metadata} />
+								<ArtifactRenderer kind={a.kind} id={a.id} {executionId} title={a.title} description={a.description} inlinePayload={a.inlinePayload} fileId={a.fileId} contentType={a.contentType} metadata={a.metadata} />
 							</section>
 						{/each}
 					</div>

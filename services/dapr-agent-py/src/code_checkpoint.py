@@ -1043,3 +1043,4 @@ def restore_code_checkpoint(
     except Exception as exc:
         return {"ok": False, "error": f"invalid restore output: {exc}"}
     return parsed if isinstance(parsed, dict) else {"ok": False, "error": "restore output was not an object"}
+

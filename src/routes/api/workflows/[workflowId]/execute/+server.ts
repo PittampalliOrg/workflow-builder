@@ -21,6 +21,7 @@ import {
   resolveSpecAgentRefs,
   AgentRefResolutionError,
 } from "$lib/server/agents/resolver";
+import { prewarmWorkflowEntrySessions } from "$lib/server/sessions/prewarm";
 import {
   safeCreateWorkflowExecutionMlflowRun,
   safeFinishMlflowRun,
@@ -207,6 +208,18 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
       tracestate: headers.tracestate,
       baggage: headers.baggage,
     };
+    // Identity-bound prewarm (best-effort, fire-and-forget): create the entry
+    // dapr-agent-py `durable/run` Sandbox EARLY with its final per-session
+    // identity so it's admitted + booting before the orchestrator dispatches
+    // the child workflow; the later `spawn_session_for_workflow` ADOPTS it. Runs
+    // in parallel with the orchestrator POST and never affects this response.
+    // No-op unless AGENT_PREWARM_ENABLED. See src/lib/server/sessions/prewarm.ts.
+    void prewarmWorkflowEntrySessions({
+      spec,
+      executionId: execution.id,
+      userId,
+      traceContext,
+    }).catch(() => {});
     await safePrecreateMlflowTrace({
       traceId: workflowTraceIdFromTraceparent(headers.traceparent),
       experimentId: mlflowContext?.traceExperimentId ?? mlflowContext?.experimentId,

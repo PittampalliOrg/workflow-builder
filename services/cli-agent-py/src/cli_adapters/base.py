@@ -164,6 +164,16 @@ class CliAdapter(abc.ABC):
     # hook (it mirrors native state), so it keeps the composer-draft/status confirm.
     emits_prompt_submit_hook: bool = False
 
+    # When True, the KICKOFF readiness gate is replaced by a deterministic
+    # paste→Enter→UserPromptSubmit-ack closed-loop (re-paste on miss) with NO
+    # screen-scraping. Only for CLIs whose composer accepts a paste-then-Enter at
+    # any time AND whose UserPromptSubmit hook fires reliably (claude — whose
+    # "? for shortcuts" marker was undetectable, forcing the 180s scrape timeout).
+    # codex/agy keep the screen-scrape readiness gate: codex's ratatui composer
+    # mishandles early/clear+re-paste cycles (the prompt never cleanly submits, so
+    # no UserPromptSubmit fires) and its "· /sandbox" marker is reliable. Default off.
+    kickoff_via_hook_ack: bool = False
+
     # Screen substrings for benign one-time startup ONBOARDING dialogs that block the
     # composer and can't be suppressed via config/flags (codex 0.139's "Do you trust
     # the contents of this directory?"). The readiness gate auto-accepts them with

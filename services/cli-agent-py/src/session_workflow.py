@@ -26,6 +26,7 @@ from dapr.ext.workflow import DaprWorkflowContext, RetryPolicy, when_any as wf_w
 
 from src.cancellation import TERMINAL_CONTROL_EVENT_TYPES, check_cancellation_activity
 from src.browser_video_sync import sync_browser_video_activity
+from src.workspace_diff_sync import sync_workspace_diff_activity
 from src.cli_lifecycle import probe_cli_activity, start_cli_activity, stop_cli_activity
 from src.event_publisher import publish_session_event
 from src.output_sync import sync_output_activity
@@ -51,6 +52,9 @@ CLI_OUTPUT_SYNC_TIMEOUT_SECONDS = int(
 )
 CLI_BROWSER_VIDEO_SYNC_TIMEOUT_SECONDS = int(
     os.environ.get("CLI_BROWSER_VIDEO_SYNC_TIMEOUT_SECONDS", "180")
+)
+CLI_WORKSPACE_DIFF_SYNC_TIMEOUT_SECONDS = int(
+    os.environ.get("CLI_WORKSPACE_DIFF_SYNC_TIMEOUT_SECONDS", "180")
 )
 CLI_PATCH_TIMEOUT_SECONDS = int(os.environ.get("CLI_PATCH_TIMEOUT_SECONDS", "300"))
 _SWEBENCH_PATCH_EXCLUDE_PATHS = (
@@ -935,6 +939,29 @@ def session_workflow(
         )
         if video_result is _ACTIVITY_TIMED_OUT:
             video_result = None
+
+    # Durable per-run workspace diff: compute `git diff <baseline>..working` over
+    # the CLI workspace and persist the patch as a `diff` artifact so the run's
+    # file changes survive sandbox reap (no live pod, no Gitea). After output
+    # sync so created files are present. STRICTLY best-effort + timer-bounded.
+    if status in ("completed", "terminated"):
+        metadata = _record(input_data.get("_message_metadata"))
+        diff_result = yield from _yield_bounded(
+            ctx,
+            sync_workspace_diff_activity,
+            input={
+                "workflowExecutionId": input_data.get("workflowExecutionId")
+                or input_data.get("dbExecutionId")
+                or input_data.get("executionId")
+                or metadata.get("workflowExecutionId")
+                or metadata.get("executionId"),
+                "nodeId": input_data.get("nodeId") or metadata.get("nodeId"),
+                "repoPath": input_data.get("workspaceDir") or input_data.get("repoPath"),
+            },
+            timeout_seconds=CLI_WORKSPACE_DIFF_SYNC_TIMEOUT_SECONDS,
+        )
+        if diff_result is _ACTIVITY_TIMED_OUT:
+            diff_result = None
 
     return _result_contract(
         ctx=ctx,

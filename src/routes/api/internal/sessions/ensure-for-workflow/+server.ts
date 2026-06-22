@@ -1,5 +1,6 @@
 import { error, json } from "@sveltejs/kit";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { deleteSandbox } from "$lib/server/kube/client";
 import type { RequestHandler } from "./$types";
 import { validateInternalToken } from "$lib/server/internal-auth";
 import { db } from "$lib/server/db";
@@ -42,8 +43,7 @@ import {
 	registerAgentVersionInMlflow,
 	safeCreateWorkflowAgentMlflowRun,
 } from "$lib/server/observability/mlflow-lifecycle";
-import { getUserCliCredential } from "$lib/server/users/cli-credentials";
-import { resolveWorkflowGithubToken } from "$lib/server/workflows/github-token";
+import { resolveWorkflowSessionSecretEnv } from "$lib/server/sessions/session-secret-env";
 import {
 	provisionSessionSandboxWithRetry,
 	sandboxProvisionFailureMessage,
@@ -887,6 +887,18 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 	}
 
+	// Per-turn reap: a workflow run dispatches one per-session agent-host pod per
+	// durable/run node, but those pods are only cleaned at run-END — so within a
+	// multi-node run they accumulate one-per-node, and each mounts a
+	// system-critical JuiceFS pod. On a small cluster the node's cpu REQUESTS
+	// saturate and the kubelet preempts the low-priority agent pods (run errors
+	// "Preempting"). As we spawn each new node, reap this run's already-terminal
+	// sessions' host sandboxes (their per-node diff was captured at session end).
+	// Best-effort, fully detached — never blocks or fails the spawn.
+	if (workflowExecutionId) {
+		void reapTerminatedRunHosts(workflowExecutionId, sessionId).catch(() => {});
+	}
+
 	return json({
 		sessionId,
 		agentId,
@@ -943,61 +955,6 @@ function stampCliAdapterForDispatch(
 		...agentConfig,
 		cliAdapter: runtimeDescriptor.cliAdapter as AgentConfig["cliAdapter"],
 	};
-}
-
-async function resolveWorkflowSessionSecretEnv(params: {
-	userId: string;
-	runtimeDescriptor: RuntimeDescriptor | undefined | null;
-}): Promise<Record<string, string> | null> {
-	const descriptor = params.runtimeDescriptor;
-	const cliAuth = descriptor?.capabilities?.interactiveTerminal
-		? descriptor.cliAuth
-		: undefined;
-	if (!cliAuth) return null;
-	const runtimeId = descriptor?.id ?? "unknown-runtime";
-	const { provider, envVar, setupCommand, credentialKind } = cliAuth;
-	if (!envVar) {
-		throw error(
-			500,
-			`Runtime "${runtimeId}" cliAuth.credentialKind=${credentialKind} requires an envVar`,
-		);
-	}
-	const setupHint = setupCommand
-		? `run \`${setupCommand}\` locally`
-		: "see the runtime docs";
-	if (credentialKind === "device_login") {
-		throw error(
-			412,
-			`Runtime "${runtimeId}" requires an interactive device-code login and cannot run as an automated workflow step. Link a reusable CLI credential first (${setupHint}).`,
-		);
-	}
-	const credential = await getUserCliCredential(params.userId, provider);
-	if (!credential) {
-		throw error(
-			412,
-			`No ${provider} CLI credential linked for this user. Add one under Settings -> CLI tokens (${setupHint}) before using "${runtimeId}" in a workflow.`,
-		);
-	}
-	if (
-		credentialKind !== "file_bundle" &&
-		credential.expiresAt &&
-		credential.expiresAt.getTime() < Date.now()
-	) {
-		throw error(
-			412,
-			`The linked ${provider} CLI credential has expired. Re-enroll under Settings -> CLI tokens (${setupHint}) before using "${runtimeId}" in a workflow.`,
-		);
-	}
-	const secretEnv: Record<string, string> = { [envVar]: credential.token };
-	// Auto-inject the user's GitHub token so cli coding workflows can clone a
-	// private repo + push/open a PR from inside the agent's /sandbox/work (the cli
-	// pod has no other way to get an authenticated git remote, and a cliWorkspace
-	// clone can't run before any cli pod exists). GITHUB_TOKEN is a git credential,
-	// NOT the LLM key — the ANTHROPIC_API_KEY exclusion is unaffected. Best-effort;
-	// absent when the user has no GitHub connection.
-	const ghToken = await resolveWorkflowGithubToken();
-	if (ghToken) secretEnv.GITHUB_TOKEN = ghToken;
-	return secretEnv;
 }
 
 /** First ACTIVE GitHub app_connection's token (raw), via the SCM resolver. Best-
@@ -1514,4 +1471,39 @@ async function resolveWakeSlug(params: {
 		if (row?.slug) return row.slug;
 	}
 	return null;
+}
+
+/**
+ * Reap the host Sandbox CRs of a run's already-terminal sessions (per-turn reap).
+ * The per-session agent-host pod for a `durable/run` node is otherwise only
+ * cleaned at run-end, so a multi-node run accumulates one pod (+ a system-critical
+ * JuiceFS mount pod) per node and eventually starves/preempts the agent pods on a
+ * small cluster. Each terminal session's per-node workspace diff is captured at
+ * session end, so deleting its host after terminal status is safe. Best-effort.
+ */
+async function reapTerminatedRunHosts(
+	workflowExecutionId: string,
+	exceptSessionId: string,
+): Promise<void> {
+	if (!db) return;
+	const rows = await db
+		.select({ id: sessions.id, runtimeAppId: sessions.runtimeAppId })
+		.from(sessions)
+		.where(
+			and(
+				eq(sessions.workflowExecutionId, workflowExecutionId),
+				inArray(sessions.status, ["terminated", "failed"]),
+				isNotNull(sessions.runtimeAppId),
+			),
+		);
+	for (const row of rows) {
+		if (!row.runtimeAppId || row.id === exceptSessionId) continue;
+		try {
+			await deleteSandbox(`agent-host-${row.runtimeAppId}`);
+		} catch (err) {
+			console.warn(
+				`[ensure-for-workflow] reap host agent-host-${row.runtimeAppId} failed (best-effort): ${String(err)}`,
+			);
+		}
+	}
 }

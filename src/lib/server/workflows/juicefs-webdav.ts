@@ -9,13 +9,42 @@
  * to the requesting execution's instance subtree (see workspace-files route).
  */
 
+import { createHash } from "node:crypto";
+
 const WEBDAV_BASE = (
   process.env.JUICEFS_WEBDAV_URL ||
   "http://juicefs-webdav.workflow-builder.svc.cluster.local:9007"
 ).replace(/\/$/, "");
 
+// Basic-auth for the gateway. The gateway enables HTTP Basic auth when its
+// WEBDAV_USER/WEBDAV_PASSWORD env are set (juicefs-webdav-creds Secret, written
+// by the minio-creds-bootstrap Job). To avoid a secret-mount/restart ORDERING
+// chicken-egg (BFF pod may start before that Secret exists), the BFF derives the
+// SAME password deterministically from DATABASE_URL — the identical formula the
+// bootstrap Job uses — so both sides agree without the BFF reading the Secret.
+//   gateway pw == BFF pw == sha256("webdav:wfbcli:" + DATABASE_URL)[:32]
+// User is the fixed `wfbwebdav`. If DATABASE_URL is absent (local dev, no auth on
+// the gateway), we send no header and the gateway serves anonymously.
+const WEBDAV_USER = process.env.JUICEFS_WEBDAV_USER || "wfbwebdav";
+let _authHeader: string | null | undefined;
+function authHeader(): string | null {
+  if (_authHeader !== undefined) return _authHeader;
+  const pw =
+    process.env.JUICEFS_WEBDAV_PASSWORD ||
+    (process.env.DATABASE_URL
+      ? createHash("sha256")
+          .update(`webdav:wfbcli:${process.env.DATABASE_URL}`)
+          .digest("hex")
+          .slice(0, 32)
+      : "");
+  _authHeader = pw
+    ? `Basic ${Buffer.from(`${WEBDAV_USER}:${pw}`).toString("base64")}`
+    : null;
+  return _authHeader;
+}
+
 // Directories that are noise in a coding workspace tree.
-const SKIP_DIR_SEGMENTS = new Set([".git", "node_modules", ".cache", ".venv", "__pycache__"]);
+const SKIP_DIR_SEGMENTS = new Set([".git", ".wfb-diff-git", "node_modules", ".cache", ".venv", "__pycache__"]);
 
 export interface WebdavEntry {
   /** Path relative to the instance root (no leading slash). "" is the root. */
@@ -48,9 +77,14 @@ async function listDir(
     ? selfRel.split("/").map(encodeURIComponent).join("/") + "/"
     : "";
   const url = `${WEBDAV_BASE}/${encodeURIComponent(instanceId)}/${encodedSub}`;
+  const auth = authHeader();
   const res = await fetch(url, {
     method: "PROPFIND",
-    headers: { Depth: "1", "Content-Type": "application/xml" },
+    headers: {
+      Depth: "1",
+      "Content-Type": "application/xml",
+      ...(auth ? { Authorization: auth } : {}),
+    },
   });
   if (res.status === 404) return null;
   if (!res.ok && res.status !== 207) throw new Error(`webdav PROPFIND ${res.status}`);
@@ -135,7 +169,11 @@ export async function readWorkspaceFile(
     .split("/")
     .map(encodeURIComponent)
     .join("/")}`;
-  const res = await fetch(url, { method: "GET" });
+  const auth = authHeader();
+  const res = await fetch(url, {
+    method: "GET",
+    ...(auth ? { headers: { Authorization: auth } } : {}),
+  });
   if (!res.ok) return null;
   return {
     bytes: await res.arrayBuffer(),
