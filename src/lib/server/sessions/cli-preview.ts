@@ -14,13 +14,45 @@
  * `openshell`-namespace NetworkPolicy does not apply here.
  */
 import http from "node:http";
+import { and, eq } from "drizzle-orm";
+import { db } from "$lib/server/db";
+import { agents, sessions, workflowExecutions } from "$lib/server/db/schema";
 import { getAgentWorkflowHostPod } from "$lib/server/kube/client";
 import { resolveSessionRuntimeDebugTarget } from "$lib/server/sessions/runtime-target";
+import {
+	maybeProvisionAgentWorkflowHost,
+	sessionHostAppId,
+	waitForAgentWorkflowHostAppReady,
+} from "$lib/server/sessions/agent-workflow-host";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
+import type { AgentConfig } from "$lib/types/agents";
 import { env } from "$env/dynamic/private";
 
 export const CLI_PREVIEW_DEFAULT_PORT = 4321;
 const CLI_AGENT_PORT = 8002;
+
+/**
+ * Runtime requested for an execution-keyed PREVIEW pod. All three interactive-cli
+ * runtimes (claude/codex/agy) share the one `cli-agent-py-sandbox` image and the
+ * `interactive-cli` execution class — the actual CLI is only chosen when a session
+ * is dispatched, which a preview pod never does. So any CLI runtime id yields an
+ * identical pod (FastAPI :8002 + the shared JuiceFS `/sandbox/work` mount); we use
+ * the family default. No `sessionSecretEnv` is ever passed — the preview pod runs
+ * `npm run preview`, never the CLI loop, so it needs no credentials (and must not
+ * receive any, per the ANTHROPIC_API_KEY-exclusion invariant).
+ */
+const CLI_PREVIEW_RUNTIME = "claude-code-cli";
+
+/** Hard wall-clock lifetime (minutes) of an on-demand execution preview pod. It
+ * self-reaps via the Sandbox CR timeout; re-open the preview to get a fresh one. */
+function cliPreviewTtlMinutes(): number {
+	const raw = Number(
+		env.CLI_EXECUTION_PREVIEW_TTL_MINUTES ??
+			process.env.CLI_EXECUTION_PREVIEW_TTL_MINUTES ??
+			30,
+	);
+	return Number.isFinite(raw) ? Math.max(5, Math.min(120, Math.trunc(raw))) : 30;
+}
 
 export type CliPreviewTarget = { podIP: string; runtime: string };
 
@@ -259,4 +291,142 @@ export async function proxyCliPreview(
 		});
 	}
 	return new Response(new Uint8Array(upstream.body), { status: upstream.status, headers: out });
+}
+
+// --- Execution-keyed (post-run) preview ------------------------------------
+//
+// The session-keyed preview above only works WHILE a run's session pod is live
+// (CLI session pods reap per-turn). To preview a COMPLETED run, we provision a
+// fresh credential-less pod that re-mounts the run's RETAINED JuiceFS workspace
+// subtree (the PV is Retain + JuiceFS data is Postgres/object-store-backed, so it
+// survives the original pods' reap). The per-execution subtree is keyed on the
+// run's Dapr instance id — the same key the juicefs-webdav Files tab uses and the
+// `workspaceRef: "${ .runtime.executionId }"` CLI-coding convention resolves to.
+
+export type ExecutionCliPreviewTarget = {
+	podIP: string;
+	appId: string;
+	sharedWorkspaceKey: string;
+	reused: boolean;
+};
+
+export type ResolveExecutionCliPreviewResult =
+	| { ok: true; target: ExecutionCliPreviewTarget }
+	| { ok: false; status: number; message: string }
+	| { ok: false; provisioning: true; status: 202; message: string };
+
+/** True when ANY session of this execution ran on an interactive-cli runtime. */
+async function executionIsInteractiveCli(executionId: string): Promise<boolean> {
+	if (!db) return false;
+	const rows = await db
+		.select({ runtime: agents.runtime })
+		.from(sessions)
+		.innerJoin(agents, eq(agents.id, sessions.agentId))
+		.where(eq(sessions.workflowExecutionId, executionId));
+	return rows.some(
+		(r) => getRuntimeDescriptor(r.runtime)?.family === "interactive-cli",
+	);
+}
+
+/**
+ * Reuse-or-provision a preview pod for a completed (or running) CLI run and
+ * return its pod IP. Idempotent on the deterministic preview app-id, so repeated
+ * calls during cold-start adopt the same pod. Returns a `provisioning` result
+ * (HTTP 202 semantics) when the pod is still booting within this call's budget —
+ * the caller should retry shortly.
+ */
+export async function resolveExecutionCliPreviewTarget(
+	executionId: string,
+	projectId: string | undefined,
+	opts?: { readyBudgetSeconds?: number; provisionIfMissing?: boolean },
+): Promise<ResolveExecutionCliPreviewResult> {
+	if (!db) return { ok: false, status: 503, message: "Database not configured" };
+
+	const [exec] = await db
+		.select({
+			id: workflowExecutions.id,
+			daprInstanceId: workflowExecutions.daprInstanceId,
+			projectId: workflowExecutions.projectId,
+		})
+		.from(workflowExecutions)
+		.where(eq(workflowExecutions.id, executionId))
+		.limit(1);
+	if (!exec) return { ok: false, status: 404, message: "Run not found" };
+	// Workspace scope: only enforce when the run carries a project (older rows may
+	// be null); a mismatch is a 404 (don't leak existence across workspaces).
+	if (projectId && exec.projectId && exec.projectId !== projectId) {
+		return { ok: false, status: 404, message: "Run not found in workspace" };
+	}
+
+	if (!(await executionIsInteractiveCli(executionId))) {
+		return {
+			ok: false,
+			status: 409,
+			message:
+				"Run is not an interactive-cli workflow (no shared JuiceFS workspace to preview)",
+		};
+	}
+
+	// The per-execution JuiceFS subPath == the run's parent Dapr instance id (the
+	// `${ .runtime.executionId }` workspaceRef the CLI-coding fixtures use, and the
+	// key juicefs-webdav serves the Files tab from). Fall back to the bare exec id.
+	const sharedWorkspaceKey = exec.daprInstanceId?.trim() || executionId;
+
+	const previewSessionId = `exec-preview-${executionId}`;
+	const appId = sessionHostAppId(previewSessionId);
+
+	// Reuse a still-live preview pod from an earlier open.
+	const existing = await getAgentWorkflowHostPod(appId);
+	if (existing?.podIP) {
+		return {
+			ok: true,
+			target: { podIP: existing.podIP, appId, sharedWorkspaceKey, reused: true },
+		};
+	}
+
+	// Asset-proxy callers pass provisionIfMissing:false — a missing pod means the
+	// preview lapsed (TTL/reap), so signal restart rather than silently spin one up.
+	if (opts?.provisionIfMissing === false) {
+		return {
+			ok: false,
+			status: 502,
+			message: "Preview pod is not running — start the preview again.",
+		};
+	}
+
+	// Provision a fresh credential-less CLI pod (fire-and-forget create) that
+	// re-mounts the retained shared workspace. NO sessionSecretEnv — preview pods
+	// never run the CLI loop, so they need (and must get) no credentials.
+	await maybeProvisionAgentWorkflowHost({
+		sessionId: previewSessionId,
+		agentConfig: { runtime: CLI_PREVIEW_RUNTIME } as unknown as AgentConfig,
+		workflowExecutionId: executionId,
+		benchmarkRunId: null,
+		benchmarkInstanceId: null,
+		timeoutMinutes: cliPreviewTtlMinutes(),
+		sharedWorkspaceKey,
+		waitReadySeconds: 0,
+	});
+
+	// Poll readiness within a bounded budget so the request stays under ingress
+	// timeouts; if the pod isn't up yet, signal "provisioning" and let the caller
+	// retry (which adopts this same pod via the reuse path above).
+	const budget = Math.max(10, Math.min(55, opts?.readyBudgetSeconds ?? 50));
+	try {
+		const ready = await waitForAgentWorkflowHostAppReady({
+			agentAppId: appId,
+			timeoutSeconds: budget,
+		});
+		return {
+			ok: true,
+			target: { podIP: ready.podIP, appId, sharedWorkspaceKey, reused: false },
+		};
+	} catch {
+		return {
+			ok: false,
+			provisioning: true,
+			status: 202,
+			message: "Preview pod is starting — retry shortly.",
+		};
+	}
 }

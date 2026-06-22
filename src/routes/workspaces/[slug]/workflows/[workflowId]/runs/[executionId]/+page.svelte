@@ -71,6 +71,7 @@
 	import ArtifactList from '$lib/components/workflow/execution/artifact-list.svelte';
 	import RunChanges from '$lib/components/workflow/execution/run-changes.svelte';
 	import RunFilesTree from '$lib/components/workflow/execution/run-files-tree.svelte';
+	import CliExecutionPreview from '$lib/components/workflow/execution/cli-execution-preview.svelte';
 	import TimelineAutoScroll from '$lib/components/workflow/execution/timeline-auto-scroll.svelte';
 	import AgentRunExplorer from '$lib/components/workflow/execution/agent-run-explorer.svelte';
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';
@@ -892,6 +893,9 @@
 		};
 	});
 	const hasFilesTab = $derived(filesSummary.count > 0 || filesSummary.live || filesSummary.cli);
+	// Post-run live preview: only CLI-family runs have a shared JuiceFS workspace
+	// whose retained subtree a fresh preview pod can re-mount after the run ends.
+	const hasPreviewTab = $derived(filesSummary.cli);
 
 	// Approval gate: while the run is active, poll whether it's parked at an
 	// approval listen-gate (e.g. planGoal `goal_spec_approval`) and surface an
@@ -948,6 +952,7 @@
 			(activeTab === 'code' && !hasCodeTab) ||
 			(activeTab === 'plan' && !hasPlanTab) ||
 			(activeTab === 'changes' && !hasChangesTab) ||
+			(activeTab === 'preview' && !hasPreviewTab) ||
 			(activeTab === 'files' && !hasFilesTab);
 		if (hidden) activeTab = 'overview';
 	});
@@ -2206,6 +2211,7 @@
 				{#if hasAgentsTab}<TabsTrigger value="agents">Agents</TabsTrigger>{/if}
 				{#if hasBrowserTab}<TabsTrigger value="browser">Browser</TabsTrigger>{/if}
 				{#if hasFilesTab}<TabsTrigger value="files">Files{#if filesSummary.count > 0}<span class="ml-1.5 text-xs text-muted-foreground">{filesSummary.count}</span>{/if}</TabsTrigger>{/if}
+				{#if hasPreviewTab}<TabsTrigger value="preview">Preview</TabsTrigger>{/if}
 				<TabsTrigger value="trace">Trace</TabsTrigger>
 			</TabsList>
 		</div>
@@ -2382,6 +2388,13 @@
 					<RunFilesTree {executionId} />
 				{/if}
 			</div>
+		</TabsContent>
+
+		<!-- Tab: Preview (post-run live preview of the CLI run's built app) -->
+		<TabsContent value="preview" class="flex-1 overflow-hidden p-0">
+			{#if activeTab === 'preview'}
+				<CliExecutionPreview {executionId} />
+			{/if}
 		</TabsContent>
 
 		<!-- Tab 2: Steps -->
