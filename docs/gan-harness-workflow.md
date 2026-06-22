@@ -166,19 +166,45 @@ Precedent: `scripts/fixtures/async-coding-task.workflow.json` already parameteri
 its verify command via a trigger input + `[ -f package.json ]` detection — it can
 be migrated to these exact param names.
 
+## Implemented (the three GANs.md elements added on this structure)
+
+All three are **additive and toggleable via trigger inputs** (defaults below give the
+new behavior; set them to recover the original loop). Each agent-emitted JSON is still
+canonicalized by a deterministic `workspace/command` normalizer (never trust prose).
+
+- **Two-pass design process** (trigger `designPass`, default `true`) — a `design`
+  loop runs after `approve_goal_spec`, before `negotiate`:
+  - `design_propose` (generatorAgent) writes `/sandbox/work/design-tokens.json`
+    (`{palette:[{name,hex}×4–6], typography:{display,body}, spacing, motif}`) +
+    `/sandbox/work/wireframe.txt` (ASCII layout) — **no code**.
+  - `design_review` (criticAgent) grades the design *plan* on Originality + Craft and
+    rejects generic "AI slop"; writes `design-review.json {approved, feedback}`.
+  - `design_read` normalizes → gates `approved` (also requires the tokens file). The
+    loop (cap 3) repeats until approved; `refine/generate` then treats the tokens +
+    wireframe as the AUTHORITATIVE visual direction. `designPass=false` skips it.
+- **Parallel voting critics** (trigger `criticVotes`, default `2`) — the build loop's
+  single evaluator becomes N independent votes (`evaluate` always; `evaluate_2` runs
+  only when `criticVotes>=2`), each writing `verdict-<i>.json`. `read_verdict`
+  aggregates **skeptically** (a criterion passes only if ALL votes agree —
+  any-fail → fail), updates `contract.json` passes, and logs vote count to
+  `progress.json`. `criticVotes=1` reduces to the original single critic.
+- **Evaluator restart authority** (trigger `maxRestarts`, default `2`) — verdicts
+  carry `recommend_restart` (TRUE only when work is fundamentally broken). When the
+  vote majority flags it and `resetCount < maxRestarts`, `maybe_restart` (last node in
+  the refine loop) does `git -C /sandbox/work/repo reset --hard <baseline> && git
+  clean -fd`, bumping `resetCount` in `progress.json`. The contract / design tokens /
+  memory live at the `/sandbox/work` ROOT (outside `repo/`), so they survive the
+  reset — only the broken code is discarded.
+
 ## Deferred (additive on this same structure)
 
-- **Two-pass design process**: Generator emits a `design-tokens.json` (4–6 named
-  hex values, display/body typefaces) + ASCII wireframe BEFORE writing CSS; the
-  Evaluator reviews the design plan first and rejects generic "AI slop" defaults.
-- **Evaluator restart authority**: the critic can force the Generator to discard
-  fundamentally broken work (`git reset --hard <baseline>`) and restart.
 - **Multi-sprint contracts** (per `coleam00/adversarial-dev`): decompose into
   several sprints, each with its own negotiated contract + build + score, instead
   of one contract for the whole redesign.
-- **Parallel voting critics**: spawn 2–3 independent Evaluators (different lenses)
-  and converge by majority / "any-FAIL" to counter evaluator sycophancy (the
-  dynamic-workflows "agents cross-check each other" pattern).
+- **dapr-agent-py GAN variant**: re-author the 7 `cliWorkspace` JuiceFS nodes to the
+  `openshell-shared` backend (`workspace/*` on `openshell-agent-runtime`, no
+  `cliWorkspace`) so the canonical pattern also runs on `dapr-agent-py` (the CLI
+  fixture can't — `WorkspaceBackendMismatchError`).
 
 ## References
 
