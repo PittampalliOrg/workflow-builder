@@ -4534,6 +4534,11 @@ async function seedGeneratorCriticShowcases(params: {
 		// Coding generator/critic: clone a repo → redesign → build-gate → Playwright
 		// critic (screenshots the running app) → open a PR. (interactive-cli family.)
 		"coding-redesign-cli-showcase.json",
+		// GAN-style harness: Planner → Generator↔Evaluator contract negotiation →
+		// contract-graded build loop → PR. Parameterized build/install/preview
+		// (default "auto"). interactive-cli family ONLY (7 cliWorkspace/JuiceFS nodes;
+		// see docs/gan-harness-workflow.md "Runtime / workspace-backend compatibility").
+		"gan-harness-cli-showcase.json",
 		// Minimal single-node test of R1 persisted browser recording: a Playwright-MCP
 		// critic drives a real browser (navigate/snapshot/screenshot); the in-pod
 		// @playwright/mcp --save-video .webm is pushed to browser-artifacts and plays
