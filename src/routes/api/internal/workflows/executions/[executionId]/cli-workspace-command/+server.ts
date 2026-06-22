@@ -26,11 +26,12 @@
  */
 import { json, error } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
+import http from "node:http";
+import https from "node:https";
 import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import { sessions } from "$lib/server/db/schema";
 import { requireInternal } from "$lib/server/internal-auth";
-import { daprFetch } from "$lib/server/dapr-client";
 import {
 	isInteractiveCliSession,
 	resolveSessionRuntimeTarget,
@@ -68,32 +69,76 @@ const MAX_FILE_BYTES = 4 * 1024 * 1024;
 
 type CmdResult = { exitCode: number; stdout: string; stderr: string };
 
+// Default per-command budget when the caller doesn't thread a node `timeoutMs`
+// (the fast file-read chunk ops). The main command call passes the node budget.
+const DEFAULT_COMMAND_TIMEOUT_MS = 600_000;
+// Slack added to the socket idle timeout above the subprocess budget, so the
+// cli-agent-py subprocess timeout (clean result) fires before the HTTP socket.
+const HTTP_TIMEOUT_SLACK_MS = 60_000;
+
+// POST to cli-agent-py over node http(s) with a long socket-idle timeout. We do
+// NOT use the global undici fetch here: cli-agent-py holds the connection IDLE
+// (sends no bytes) until the subprocess finishes, so undici's ~300s headers/body
+// timeout would abort a slow `npm install`/build long before it completes. The
+// `timeout` (seconds) is forwarded so the subprocess itself is bounded.
 async function postCommand(
 	baseUrl: string,
 	token: string,
 	command: string,
 	cwd: string,
+	timeoutMs: number = DEFAULT_COMMAND_TIMEOUT_MS,
 ): Promise<CmdResult | null> {
-	const res = await daprFetch(`${baseUrl}/internal/workspace/command`, {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-			...(token ? { "X-Internal-Token": token } : {}),
-		},
-		body: JSON.stringify({ command, cwd }),
-		maxRetries: 0,
+	const subprocessBudgetMs = Math.max(1_000, Math.floor(timeoutMs));
+	const payload = JSON.stringify({
+		command,
+		cwd,
+		timeout: Math.ceil(subprocessBudgetMs / 1000),
 	});
-	if (!res.ok) return null;
-	const raw = (await res.json().catch(() => ({}))) as {
-		exit_code?: number | null;
-		stdout_tail?: string;
-		stderr_tail?: string;
-	};
-	return {
-		exitCode: typeof raw.exit_code === "number" ? raw.exit_code : 1,
-		stdout: raw.stdout_tail ?? "",
-		stderr: raw.stderr_tail ?? "",
-	};
+	const u = new URL(`${baseUrl}/internal/workspace/command`);
+	const transport = u.protocol === "https:" ? https : http;
+	return new Promise<CmdResult | null>((resolve) => {
+		const req = transport.request(
+			{
+				hostname: u.hostname,
+				port: u.port || (u.protocol === "https:" ? 443 : 80),
+				path: `${u.pathname}${u.search}`,
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"Content-Length": String(Buffer.byteLength(payload)),
+					...(token ? { "X-Internal-Token": token } : {}),
+				},
+			},
+			(res) => {
+				const chunks: Buffer[] = [];
+				res.on("data", (c) => chunks.push(Buffer.from(c)));
+				res.on("end", () => {
+					if ((res.statusCode ?? 0) >= 400) return resolve(null);
+					let raw: { exit_code?: number | null; stdout_tail?: string; stderr_tail?: string } = {};
+					try {
+						raw = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+					} catch {
+						return resolve(null);
+					}
+					resolve({
+						exitCode: typeof raw.exit_code === "number" ? raw.exit_code : 1,
+						stdout: raw.stdout_tail ?? "",
+						stderr: raw.stderr_tail ?? "",
+					});
+				});
+				res.on("error", () => resolve(null));
+			},
+		);
+		// Socket idle timeout, above the subprocess budget so the subprocess's own
+		// clean timeout wins; if this fires the command genuinely overran.
+		req.setTimeout(subprocessBudgetMs + HTTP_TIMEOUT_SLACK_MS, () => {
+			req.destroy();
+			resolve(null);
+		});
+		req.on("error", () => resolve(null));
+		req.write(payload);
+		req.end();
+	});
 }
 
 // Read a file's full contents from the CLI pod despite the 8 KiB stdout tail, by
@@ -157,7 +202,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	if (!db) return error(503, "Database not configured");
 	const executionId = params.executionId;
 
-	let body: { command?: unknown; cwd?: unknown; readFile?: unknown } = {};
+	let body: { command?: unknown; cwd?: unknown; readFile?: unknown; timeoutMs?: unknown } = {};
 	try {
 		body = await request.json();
 	} catch {
@@ -167,6 +212,12 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	if (!command.trim()) return error(400, "command is required");
 	const cwd =
 		typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : DEFAULT_CWD;
+	// The node's `timeoutMs` (threaded from the orchestrator) governs the slow
+	// command; bound to a sane window so a runaway can't pin a pod forever.
+	const rawTimeoutMs = typeof body.timeoutMs === "number" ? body.timeoutMs : NaN;
+	const commandTimeoutMs = Number.isFinite(rawTimeoutMs)
+		? Math.min(Math.max(rawTimeoutMs, 60_000), 1_800_000)
+		: DEFAULT_COMMAND_TIMEOUT_MS;
 	const readFile =
 		typeof body.readFile === "string" && body.readFile.trim() ? body.readFile.trim() : null;
 	// When readFile points at an image, upload its bytes to the files API and
@@ -257,7 +308,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	}
 
 	const token = env.INTERNAL_API_TOKEN ?? process.env.INTERNAL_API_TOKEN ?? "";
-	const cmd = await postCommand(baseUrl, token, command, cwd);
+	const cmd = await postCommand(baseUrl, token, command, cwd, commandTimeoutMs);
 	if (!cmd) return error(502, "cli runtime error invoking workspace command");
 
 	// readFile + image: read the bytes (binary), upload to the files API, and
