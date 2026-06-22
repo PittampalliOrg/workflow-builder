@@ -62,6 +62,30 @@ pushback) · **`contract.json`** (negotiated criteria + passes — the grading t
 · **`progress.json`** (agentic memory) · `verdict.json` (per-iteration, per-criterion)
 · `critic-shot.png` (screenshot artifact).
 
+## Runtime / workspace-backend compatibility (CLI-family only)
+
+This workflow is **interactive-cli-family only** (`claude-code-cli`, `codex-cli`,
+`agy-cli`). Verified e2e on ryzen for all three: each reaches `success` with per-node
+diffs captured at every node (plan → 4-round negotiate → refine generate+evaluate →
+publish → summary).
+
+It is **not** runnable on `dapr-agent-py` as authored. The deterministic spine is 7
+`workspace/command` nodes with **`cliWorkspace: true`** (`init_state`, `read_contract`,
+`gate`, `read_verdict`, `publish_shot`, `publish_contract`, `pr`) — these route to a
+cli-agent-py pod and read/write the per-execution **JuiceFS** mount `/sandbox/work`.
+`dapr-agent-py` uses the **openshell-shared** workspace backend, so a dapr generator's
+files are invisible to those juicefs nodes (the gate/read_contract/read_verdict can't
+observe the agent's work) → the loop stalls with sparse diffs. This is the
+`workspaceBackend` family split described in
+[`interchangeable-agents-and-per-phase-selection.md`](./interchangeable-agents-and-per-phase-selection.md):
+cross-family mixing is blocked by the interactive-cli-only `/sandbox/work` mount.
+
+A `dapr-agent-py` variant would require re-authoring the 7 `cliWorkspace` nodes to the
+openshell backend (`workspace/*` on `openshell-agent-runtime`, no `cliWorkspace`) — a
+separate fixture, out of scope here. (Timeouts are not the blocker; the
+[parameterized build/verify](#parameterized-buildverify-convention-reusable-across-coding-workflows)
++ end-to-end `timeoutMs` threading fixed the CLI build path.)
+
 ## Structured-output conformance (why `read_contract`/`read_verdict` normalize)
 
 A CLI agent free-writes `contract.json`/`verdict.json` to disk — it can NOT use the
