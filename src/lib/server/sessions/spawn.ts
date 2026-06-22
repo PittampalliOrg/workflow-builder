@@ -183,8 +183,14 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 			swapTarget,
 			// The agent row's configured runtime is the swap SOURCE; crossing the
 			// interactive-cli family boundary is reject-class (interaction model
-			// changes, not just feature degradation).
-			{ sourceFamily: getRuntimeDescriptor(agent.runtime)?.family ?? null },
+			// changes, not just feature degradation). Source hook-blocking
+			// granularity lets swap-safety WARN on full→advisory hook degradation.
+			{
+				sourceFamily: getRuntimeDescriptor(agent.runtime)?.family ?? null,
+				sourceHookBlockingGranularity:
+					getRuntimeDescriptor(agent.runtime)?.capabilities
+						?.hookBlockingGranularity ?? null,
+			},
 		);
 		if (verdict.drops.length > 0) {
 			console.warn(

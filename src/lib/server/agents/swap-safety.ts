@@ -99,7 +99,11 @@ export function rejectLossySwapEnabled(): boolean {
 export function assertSwapSafe(
 	requirements: AgentRequirements,
 	target: RuntimeDescriptor,
-	opts?: { rejectEnabled?: boolean; sourceFamily?: RuntimeDescriptor["family"] | null }
+	opts?: {
+		rejectEnabled?: boolean;
+		sourceFamily?: RuntimeDescriptor["family"] | null;
+		sourceHookBlockingGranularity?: "full" | "advisory" | "none" | null;
+	}
 ): SwapVerdict {
 	const caps = target.capabilities;
 	const drops: SwapDrop[] = [];
@@ -140,6 +144,20 @@ export function assertSwapSafe(
 			severity: "warn",
 			detail: `agent declares hooks but runtime "${target.id}" does not support hooks`
 		});
+	} else if (requirements.hooks) {
+		// Hooks supported but blocking semantics may weaken (full → advisory/none):
+		// e.g. a PreToolUse deny that gates dangerous tools becomes advisory-only on
+		// codex/agy. WARN so the degradation is surfaced, not silent.
+		const order = { none: 0, advisory: 1, full: 2 } as const;
+		const src = opts?.sourceHookBlockingGranularity ?? null;
+		const tgt = caps.hookBlockingGranularity ?? null;
+		if (src && tgt && order[tgt] < order[src]) {
+			drops.push({
+				capability: "hookBlocking",
+				severity: "warn",
+				detail: `agent declares hooks; runtime "${target.id}" hook blocking is "${tgt}" (weaker than source "${src}") — blocking hooks become advisory`
+			});
+		}
 	}
 	if (requirements.plugins && !caps.supportsPlugins) {
 		drops.push({
@@ -185,7 +203,11 @@ export function assertSwapSafe(
 export function evaluateSwap(
 	agentConfig: Record<string, unknown> | null | undefined,
 	target: RuntimeDescriptor,
-	opts?: { rejectEnabled?: boolean; sourceFamily?: RuntimeDescriptor["family"] | null }
+	opts?: {
+		rejectEnabled?: boolean;
+		sourceFamily?: RuntimeDescriptor["family"] | null;
+		sourceHookBlockingGranularity?: "full" | "advisory" | "none" | null;
+	}
 ): SwapVerdict {
 	return assertSwapSafe(deriveAgentRequirements(agentConfig), target, opts);
 }

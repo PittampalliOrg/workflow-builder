@@ -26,8 +26,6 @@ today's per-runtime output. Each loop dedups over its OWN kept set.
 from __future__ import annotations
 
 import logging
-import os
-import urllib.parse
 from typing import Any, Mapping
 
 from .normalize import (
@@ -39,39 +37,6 @@ from .normalize import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Route the agent's local @playwright/mcp traffic through cli-agent-py's in-pod
-# recording proxy (playwright_mcp_proxy) so the screencast records the AGENT's
-# own browser session, not a separate supervisor session (the blank-recording
-# fix). Only applied for the CLI emitter — the Claude Agent SDK / dapr twins run
-# in pods WITHOUT this proxy (their :3100 is a browser sidecar). Disable with
-# CLI_PW_MCP_PROXY=0.
-_PW_PROXY_ENABLED = os.environ.get("CLI_PW_MCP_PROXY", "1").strip().lower() not in (
-    "0", "false", "no", "off",
-)
-_PW_PROXY_URL = os.environ.get(
-    "CLI_PW_MCP_PROXY_URL", "http://127.0.0.1:8002/internal/pw-proxy/mcp"
-)
-_PW_LOCAL_HOSTS = {"127.0.0.1", "localhost", "0.0.0.0"}
-_PW_MCP_PORT = os.environ.get("CLI_PW_MCP_HTTP_PORT", "3100")
-
-
-def _redirect_local_playwright_to_proxy(url: str) -> str:
-    """If ``url`` targets the in-pod @playwright/mcp (:3100), point it at the
-    recording proxy instead. Best-effort; returns ``url`` unchanged otherwise."""
-    if not _PW_PROXY_ENABLED:
-        return url
-    try:
-        parsed = urllib.parse.urlparse(url)
-    except Exception:  # noqa: BLE001
-        return url
-    if parsed.hostname in _PW_LOCAL_HOSTS and str(parsed.port or "") == str(_PW_MCP_PORT):
-        logger.info(
-            "[mcp] Routing local playwright MCP via in-pod recording proxy: %s -> %s",
-            url, _PW_PROXY_URL,
-        )
-        return _PW_PROXY_URL
-    return url
 
 # ``{type, ...}`` transports the CLI / Claude Agent SDK can emit. ``websocket``
 # is intentionally absent — neither models it.
@@ -100,7 +65,6 @@ def _emit_cli_sdk_shape(
     agent_config: Mapping[str, Any] | None,
     *,
     collect_patterns: bool,
-    redirect_local_playwright: bool = False,
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
     """Shared body of the cli + claude-sdk twins (``{type, ...}`` map).
 
@@ -163,8 +127,6 @@ def _emit_cli_sdk_shape(
                 )
                 continue
             url = runtime_reachable_mcp_url(item, url)
-            if redirect_local_playwright:
-                url = _redirect_local_playwright_to_proxy(url)
             # streamable_http -> "http" (Streamable HTTP); sse -> "sse".
             config = {"type": "http" if transport == "streamable_http" else "sse", "url": url}
             headers = safe_headers(item)
@@ -182,9 +144,7 @@ def emit_claude_code_cli_servers(
     agent_config: Mapping[str, Any] | None,
 ) -> dict[str, dict[str, Any]]:
     """Reproduce cli-agent-py ``build_mcp_servers`` — ``{name: {type, ...}}``."""
-    servers, _ = _emit_cli_sdk_shape(
-        agent_config, collect_patterns=False, redirect_local_playwright=True
-    )
+    servers, _ = _emit_cli_sdk_shape(agent_config, collect_patterns=False)
     return servers
 
 

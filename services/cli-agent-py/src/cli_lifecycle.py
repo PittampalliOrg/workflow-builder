@@ -197,6 +197,16 @@ async def _start_cli(input_data: dict[str, Any]) -> dict[str, Any]:
     env = adapter.pane_env(os.environ, session_id=session_id)
     cwd = _sandbox_root()
 
+    # P3: install the run's portable agentConfig.hooks so HookProcessor executes
+    # them when the CLI relays each native event (command hooks; deny/ask folded
+    # into the relay/HTTP response where the CLI can block).
+    try:
+        from hook_exec import set_run_hooks
+
+        set_run_hooks(agent_config.get("hooks"), project_dir=cwd)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[cli-lifecycle] portable hook install failed: %s", exc)
+
     if HERDR_DISABLED:
         # Unit-test escape hatch — report the launch plan without herdr.
         return {

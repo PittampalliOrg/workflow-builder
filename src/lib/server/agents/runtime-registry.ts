@@ -42,6 +42,25 @@ export type RuntimeCapabilities = {
 	supportsBuiltinOpenShellTools: boolean;
 	supportsHooks: boolean;
 	hookTiming: "live" | "batch";
+	/**
+	 * The runtime can be triggered by an event (Dapr pub/sub `agent.trigger`
+	 * → BFF → `spawn.ts`). True for every dispatchable runtime (dispatch is
+	 * BFF-side + runtime-agnostic). See `docs/event-driven-invocation-and-unified-hooks.md`.
+	 */
+	eventDrivenInvocation?: boolean;
+	/**
+	 * The runtime honors a portable `agentConfig.hooks` block. dapr-agent-py
+	 * runs them natively; the interactive-cli family executes them in cli-agent-py's
+	 * HookProcessor. `false` where there is no hook execution surface (adk,
+	 * claude-agent-py).
+	 */
+	portableHooks?: boolean;
+	/**
+	 * How strongly a hook can BLOCK a tool/turn: `full` (PreToolUse can deny —
+	 * dapr-agent-py, claude-code-cli), `advisory` (hooks run but can't block —
+	 * codex-cli, agy-cli), `none`. Swap-safety WARNs on full→advisory/none.
+	 */
+	hookBlockingGranularity?: "full" | "advisory" | "none";
 	supportsPermissionGating: boolean;
 	supportsPlugins: boolean;
 	supportsCompaction: boolean;

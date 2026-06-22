@@ -103,6 +103,43 @@ def _hook_name(payload: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _merge_portable_hook_decision(
+    response: dict[str, Any],
+    event: str,
+    decision: str | None,
+    reason: str | None,
+    contexts: list[str],
+) -> dict[str, Any]:
+    """Translate an aggregated agentConfig.hooks decision into the response shape
+    a CLI honors. Emits BOTH the generic top-level form AND claude's
+    `hookSpecificOutput` form so each CLI reads what it understands. Adapter
+    responses (e.g. agy stop_guard) already present win — we only ADD."""
+    out = dict(response or {})
+    if decision == "deny":
+        out.setdefault("decision", "block")
+        if reason:
+            out.setdefault("reason", reason)
+        hso = dict(out.get("hookSpecificOutput") or {})
+        hso.setdefault("hookEventName", event)
+        hso.setdefault("permissionDecision", "deny")
+        if reason:
+            hso.setdefault("permissionDecisionReason", reason)
+        out["hookSpecificOutput"] = hso
+    elif decision == "ask":
+        hso = dict(out.get("hookSpecificOutput") or {})
+        hso.setdefault("hookEventName", event)
+        hso.setdefault("permissionDecision", "ask")
+        out["hookSpecificOutput"] = hso
+    if contexts:
+        hso = dict(out.get("hookSpecificOutput") or {})
+        hso.setdefault("hookEventName", event)
+        existing = hso.get("additionalContext")
+        joined = "\n".join([*([existing] if isinstance(existing, str) else []), *contexts])
+        hso["additionalContext"] = joined
+        out["hookSpecificOutput"] = hso
+    return out
+
+
 def _text_from_blocks(value: Any) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
@@ -537,9 +574,53 @@ class HookProcessor:
         for event in events:
             self._publish(session_id, event["type"], event.get("data") or {})
         response = await self._hook_response_async(name, payload, session)
+        # P3: portable agentConfig.hooks — execute the run's user-declared command
+        # hooks for this event and fold their decision into the response the CLI
+        # honors (claude PreToolUse blocks via the HTTP response; codex/agy are
+        # advisory). command-only; callbacks are dapr-agent-py-only.
+        response = await self._apply_portable_hooks(name, payload, session_id, response)
         for event in self._pop_internal_events(response):
             self._publish(session_id, event["type"], event.get("data") or {})
         return response
+
+    async def _apply_portable_hooks(
+        self,
+        name: str | None,
+        payload: Mapping[str, Any],
+        session_id: Any,
+        response: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not name:
+            return response
+        try:
+            from hook_exec import has_run_hooks, run_event_hooks
+        except Exception:  # noqa: BLE001
+            return response
+        if not has_run_hooks():
+            return response
+        try:
+            tool_name = _clean(payload.get("tool_name")) or _clean(payload.get("toolName"))
+            agg = await run_event_hooks(name, tool_name=tool_name, hook_input=dict(payload))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[hooks] portable hook exec failed for %s: %s", name, exc)
+            return response
+        if not agg.get("matched"):
+            return response
+        decision = agg.get("decision")
+        reason = agg.get("reason")
+        contexts = agg.get("contexts") or []
+        if session_id:
+            self._publish(
+                session_id,
+                "hook.decision",
+                {
+                    "hook_event": name,
+                    "decision": decision or "allow",
+                    "reason": reason,
+                    "source": "agentConfig.hooks",
+                },
+            )
+        return _merge_portable_hook_decision(response, name, decision, reason, contexts)
 
     async def _hook_response_async(
         self, name: str | None, payload: Mapping[str, Any], session: Mapping[str, Any]

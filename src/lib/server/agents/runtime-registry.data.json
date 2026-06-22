@@ -26,6 +26,9 @@
         "supportsBuiltinOpenShellTools": true,
         "supportsHooks": true,
         "hookTiming": "live",
+        "eventDrivenInvocation": true,
+        "portableHooks": true,
+        "hookBlockingGranularity": "full",
         "supportsPermissionGating": true,
         "supportsPlugins": true,
         "supportsCompaction": true,
@@ -35,8 +38,15 @@
         "requiresBrowserSidecars": false,
         "multiProvider": true,
         "supportedProviders": [
-          "anthropic", "openai", "deepseek", "nvidia", "kimi",
-          "alibaba", "together", "googleai", "foundry"
+          "anthropic",
+          "openai",
+          "deepseek",
+          "nvidia",
+          "kimi",
+          "alibaba",
+          "together",
+          "googleai",
+          "foundry"
         ]
       }
     },
@@ -61,6 +71,9 @@
         "supportsBuiltinOpenShellTools": true,
         "supportsHooks": true,
         "hookTiming": "live",
+        "eventDrivenInvocation": true,
+        "portableHooks": true,
+        "hookBlockingGranularity": "full",
         "supportsPermissionGating": true,
         "supportsPlugins": true,
         "supportsCompaction": true,
@@ -70,8 +83,15 @@
         "requiresBrowserSidecars": false,
         "multiProvider": true,
         "supportedProviders": [
-          "anthropic", "openai", "deepseek", "nvidia", "kimi",
-          "alibaba", "together", "googleai", "foundry"
+          "anthropic",
+          "openai",
+          "deepseek",
+          "nvidia",
+          "kimi",
+          "alibaba",
+          "together",
+          "googleai",
+          "foundry"
         ]
       }
     },
@@ -95,6 +115,9 @@
         "supportsBuiltinOpenShellTools": true,
         "supportsHooks": true,
         "hookTiming": "live",
+        "eventDrivenInvocation": true,
+        "portableHooks": true,
+        "hookBlockingGranularity": "advisory",
         "supportsPermissionGating": true,
         "supportsPlugins": true,
         "supportsCompaction": true,
@@ -103,7 +126,9 @@
         "requiresWarmPool": true,
         "requiresBrowserSidecars": true,
         "multiProvider": true,
-        "supportedProviders": ["anthropic"]
+        "supportedProviders": [
+          "anthropic"
+        ]
       }
     },
     {
@@ -127,6 +152,9 @@
         "supportsBuiltinOpenShellTools": false,
         "supportsHooks": false,
         "hookTiming": "batch",
+        "eventDrivenInvocation": true,
+        "portableHooks": false,
+        "hookBlockingGranularity": "none",
         "supportsPermissionGating": false,
         "supportsPlugins": false,
         "supportsCompaction": false,
@@ -135,7 +163,9 @@
         "requiresWarmPool": false,
         "requiresBrowserSidecars": false,
         "multiProvider": false,
-        "supportedProviders": ["googleai"]
+        "supportedProviders": [
+          "googleai"
+        ]
       }
     },
     {
@@ -169,6 +199,9 @@
         "supportsBuiltinOpenShellTools": false,
         "supportsHooks": true,
         "hookTiming": "live",
+        "eventDrivenInvocation": true,
+        "portableHooks": true,
+        "hookBlockingGranularity": "full",
         "supportsPermissionGating": true,
         "supportsPlugins": true,
         "supportsCompaction": true,
@@ -177,7 +210,9 @@
         "requiresWarmPool": false,
         "requiresBrowserSidecars": false,
         "multiProvider": false,
-        "supportedProviders": ["anthropic"],
+        "supportedProviders": [
+          "anthropic"
+        ],
         "interactiveTerminal": true
       }
     },
@@ -213,6 +248,9 @@
         "workflowDispatch": "auto-turn",
         "supportsHooks": true,
         "hookTiming": "live",
+        "eventDrivenInvocation": true,
+        "portableHooks": true,
+        "hookBlockingGranularity": "advisory",
         "supportsPermissionGating": true,
         "supportsPlugins": false,
         "supportsCompaction": true,
@@ -221,7 +259,9 @@
         "requiresWarmPool": false,
         "requiresBrowserSidecars": false,
         "multiProvider": false,
-        "supportedProviders": ["openai"],
+        "supportedProviders": [
+          "openai"
+        ],
         "interactiveTerminal": true
       }
     },
@@ -255,6 +295,9 @@
         "workflowDispatch": "auto-turn",
         "supportsHooks": true,
         "hookTiming": "live",
+        "eventDrivenInvocation": true,
+        "portableHooks": true,
+        "hookBlockingGranularity": "advisory",
         "supportsPermissionGating": true,
         "supportsPlugins": true,
         "supportsCompaction": true,
@@ -263,7 +306,9 @@
         "requiresWarmPool": false,
         "requiresBrowserSidecars": false,
         "multiProvider": false,
-        "supportedProviders": ["googleai"],
+        "supportedProviders": [
+          "googleai"
+        ],
         "interactiveTerminal": true
       }
     },
@@ -288,6 +333,9 @@
         "supportsBuiltinOpenShellTools": false,
         "supportsHooks": true,
         "hookTiming": "batch",
+        "eventDrivenInvocation": true,
+        "portableHooks": false,
+        "hookBlockingGranularity": "none",
         "supportsPermissionGating": false,
         "supportsPlugins": false,
         "supportsCompaction": false,
@@ -296,7 +344,9 @@
         "requiresWarmPool": false,
         "requiresBrowserSidecars": false,
         "multiProvider": false,
-        "supportedProviders": ["anthropic"]
+        "supportedProviders": [
+          "anthropic"
+        ]
       }
     }
   ]
