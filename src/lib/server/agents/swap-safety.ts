@@ -31,7 +31,8 @@ export type SwapDrop = {
 		| "plugins"
 		| "permissionGating"
 		| "durability"
-		| "interactionModel";
+		| "interactionModel"
+		| "hookBlocking";
 	severity: SwapSeverity;
 	detail: string;
 };

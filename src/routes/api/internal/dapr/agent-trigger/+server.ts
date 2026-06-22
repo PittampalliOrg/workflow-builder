@@ -133,10 +133,17 @@ export const POST: RequestHandler = async ({ request }) => {
 			return json({ status: "SUCCESS" });
 		}
 
-		// Resolve the named agent (by id preferred, else slug).
-		const agent = agentIdRaw
-			? await resolveAgentRef({ id: agentIdRaw, version: agentVersion })
-			: await getAgentBySlug(agentSlugRaw);
+		// Resolve the named agent → a ResolvedAgent (carries projectId/version).
+		// Slug lookups resolve to an id first, then through resolveAgentRef so the
+		// downstream shape is uniform.
+		let resolveId = agentIdRaw;
+		if (!resolveId && agentSlugRaw) {
+			const bySlug = await getAgentBySlug(agentSlugRaw);
+			if (bySlug) resolveId = bySlug.id;
+		}
+		const agent = resolveId
+			? await resolveAgentRef({ id: resolveId, version: agentVersion })
+			: null;
 		if (!agent) {
 			console.warn(
 				`[agent-trigger] agent not found (id=${agentIdRaw} slug=${agentSlugRaw}) — dropping`,
