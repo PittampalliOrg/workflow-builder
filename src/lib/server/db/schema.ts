@@ -530,6 +530,10 @@ export const workflowExecutions = pgTable(
 		errorStackTrace: text("error_stack_trace"),
 		rerunOfExecutionId: text("rerun_of_execution_id"),
 		rerunSourceInstanceId: text("rerun_source_instance_id"),
+		// Set when this run was started by the event-driven trigger spine (to the
+		// firing trigger's id/kind). NULL for manual/API runs. Drives the triggered-
+		// run concurrency gate + the "pending/active triggered runs" capacity lens.
+		triggerSource: text("trigger_source"),
 		rerunFromEventId: integer("rerun_from_event_id"),
 		startedAt: timestamp("started_at").notNull().defaultNow(),
 		completedAt: timestamp("completed_at"),
@@ -562,11 +566,70 @@ export const workflowExecutions = pgTable(
 		projectIdx: index("idx_workflow_executions_project_id").on(
 			table.projectId,
 		),
+		// Active-triggered-run count (concurrency gate + capacity lens).
+		triggerSourceStatusIdx: index("idx_workflow_executions_trigger_source_status").on(
+			table.triggerSource,
+			table.status,
+		),
 		rerunOfExecutionFk: foreignKey({
 			columns: [table.rerunOfExecutionId],
 			foreignColumns: [table.id],
 			name: "workflow_executions_rerun_of_execution_id_workflow_executions_id_fk",
 		}).onDelete("set null"),
+	}),
+);
+
+/**
+ * Event-driven workflow triggers. One row = one configured trigger on a workflow.
+ * `status` tracks the activation/reconcile lifecycle (the reconciler provisions the
+ * backing resource — Dapr Job / Subscription / input binding / Argo EventSource —
+ * on activate, tears it down on deactivate). See
+ * docs/event-driven-workflow-triggers.md + src/lib/server/lifecycle/trigger-reconciler.ts.
+ */
+export type WorkflowTriggerStatus =
+	| "inactive"
+	| "activating"
+	| "active"
+	| "deactivating"
+	| "error";
+
+export const workflowTriggers = pgTable(
+	"workflow_triggers",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		workflowId: text("workflow_id")
+			.notNull()
+			.references(() => workflows.id, { onDelete: "cascade" }),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		projectId: text("project_id").references(() => projects.id, {
+			onDelete: "cascade",
+		}),
+		// Registry kind id (webhook | schedule | topic | queue | github | resource | …).
+		kind: text("kind").notNull(),
+		// Per-kind config (validated against the kind's configSchema).
+		config: jsonb("config").$type<Record<string, unknown>>().notNull().default({}),
+		// Static defaults merged into every fired run's triggerData.
+		triggerData: jsonb("trigger_data").$type<Record<string, unknown>>(),
+		// Salt for the deterministic per-fire dedup/execution id.
+		dedupSalt: text("dedup_salt").notNull(),
+		// Opaque handle to the provisioned backing resource (job id / sensor name / …).
+		backingRef: text("backing_ref"),
+		status: text("status").$type<WorkflowTriggerStatus>().notNull().default("inactive"),
+		lastError: text("last_error"),
+		lastFiredAt: timestamp("last_fired_at"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		workflowStatusIdx: index("idx_workflow_triggers_workflow_status").on(
+			table.workflowId,
+			table.status,
+		),
+		kindIdx: index("idx_workflow_triggers_kind").on(table.kind),
 	}),
 );
 

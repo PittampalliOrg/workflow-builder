@@ -88,6 +88,9 @@ export interface StartWorkflowOptions {
 	executionId?: string;
 	/** When true + executionId set: a pre-existing row short-circuits as a no-op. */
 	idempotent?: boolean;
+	/** Set for event-driven runs (the firing trigger's id) → stamped on the
+	 *  execution row for the concurrency gate + capacity lens. */
+	triggerSource?: string;
 }
 
 export async function startWorkflowRun(
@@ -180,7 +183,8 @@ export async function startWorkflowRun(
 			phase: 'running',
 			progress: 0,
 			input: triggerData,
-			executionIrVersion: 'sw-1.0.0'
+			executionIrVersion: 'sw-1.0.0',
+			...(opts.triggerSource ? { triggerSource: opts.triggerSource } : {})
 		})
 		.returning({ id: workflowExecutions.id });
 

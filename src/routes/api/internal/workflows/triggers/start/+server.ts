@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { startWorkflowRun } from '$lib/server/workflows/start-run';
 import { triggerExecutionId } from '$lib/server/workflows/trigger-id';
+import { admitTriggeredRun } from '$lib/server/workflows/trigger-gate';
 
 /**
  * The event-driven workflow-START spine.
@@ -22,10 +23,16 @@ type TriggerPayload = {
 	workflowName?: string;
 	triggerData?: Record<string, unknown>;
 	dedupKey?: string;
+	/** The firing workflow_triggers row id (stamped on the run for the gate/lens). */
+	triggerId?: string;
 };
 
-// Dapr pub/sub ACK ("SUCCESS" drops the message; we always drop — never wedge).
+// Dapr pub/sub status responses:
+//  - SUCCESS → drop (handled / permanent failure — never wedge).
+//  - RETRY   → NACK; JetStream redelivers after ackWait (used to DEFER over the
+//              concurrency cap, bounded by the component's maxDeliver → DLQ).
 const ACK = () => json({ status: 'SUCCESS' });
+const RETRY = () => json({ status: 'RETRY' });
 
 export const POST: RequestHandler = async ({ request }) => {
 	let body: Record<string, unknown> = {};
@@ -62,13 +69,28 @@ export const POST: RequestHandler = async ({ request }) => {
 	// Carry the event id so the run records what fired it.
 	if (cloudEventId && triggerData.eventId === undefined) triggerData.eventId = cloudEventId;
 
+	// Concurrency gate (capacity layer 1): over the cap → DEFER (redeliver later)
+	// rather than create another waiting instance.
+	const gate = await admitTriggeredRun();
+	if (!gate.admit) {
+		console.info('[workflow-triggers/start] deferred (over cap); will redeliver', {
+			active: gate.active,
+			cap: gate.cap,
+			workflowId,
+			workflowName
+		});
+		return RETRY();
+	}
+
 	try {
+		const triggerId = typeof data.triggerId === 'string' ? data.triggerId.trim() : '';
 		const result = await startWorkflowRun({
 			workflowId,
 			workflowName,
 			triggerData,
 			executionId: triggerExecutionId(dedupKey),
-			idempotent: true
+			idempotent: true,
+			triggerSource: triggerId || `event:${workflowId ?? workflowName}`
 		});
 		if (!result.ok) {
 			// 4xx (e.g. workflow not found / invalid spec) is a permanent failure for
