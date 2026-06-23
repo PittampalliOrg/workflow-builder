@@ -143,6 +143,43 @@ describe("shouldForceFinalizeCrossAppWedge", () => {
 	it("does not fire when the parent's current node is unknown (null)", () => {
 		expect(shouldForceFinalizeCrossAppWedge({ ...base, parentCurrentNode: null })).toBe(false);
 	});
+
+	it("GAP-3: fires for a for/loop node whose loop-nested durable/run children are terminated", () => {
+		// GAN harness: parent currentNodeId is the bare loop name `refine`; its
+		// durable/run children dispatch as `refine-generate-0-` / `refine-evaluate-0-`,
+		// so an exact match never hit and the parent wedged RUNNING.
+		expect(
+			shouldForceFinalizeCrossAppWedge({
+				...base,
+				parentCurrentNode: "refine",
+				terminatedChildNodes: ["refine-generate-0-", "refine-evaluate-0-"],
+				activeChildNodes: [],
+			}),
+		).toBe(true);
+	});
+
+	it("GAP-3: does NOT fire while a loop iteration is still active under the parent", () => {
+		expect(
+			shouldForceFinalizeCrossAppWedge({
+				...base,
+				parentCurrentNode: "refine",
+				terminatedChildNodes: ["refine-generate-0-"],
+				activeChildNodes: ["refine-generate-1-"],
+			}),
+		).toBe(false);
+	});
+
+	it("does not loop-prefix-match an unrelated sibling node", () => {
+		// `refine` must not match a sibling like `refine_summary` (no `-`/`/` boundary).
+		expect(
+			shouldForceFinalizeCrossAppWedge({
+				...base,
+				parentCurrentNode: "refine",
+				terminatedChildNodes: ["refine_summary"],
+				activeChildNodes: [],
+			}),
+		).toBe(false);
+	});
 });
 
 describe("runDurableCascade", () => {

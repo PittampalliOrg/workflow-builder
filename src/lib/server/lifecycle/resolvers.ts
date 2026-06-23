@@ -57,6 +57,13 @@ export type ResolvedDurableTarget = {
 	 */
 	terminatedChildNodes: string[];
 	/**
+	 * Node ids that still have ≥1 NON-terminated child session. Used by the
+	 * cross-app wedge check to refuse force-finalizing a `for`/loop node while one
+	 * of its iterations is still running (loop-prefix match safety guard). Empty
+	 * for session/eval targets.
+	 */
+	activeChildNodes: string[];
+	/**
 	 * Stamp the durable stop-intent (stop_requested_at) the moment a stop is
 	 * requested — BEFORE the cascade confirms closure. Keeps the row non-terminal
 	 * but marks it so the UI shows "Stopping…" and the terminal-status reaper can
@@ -78,6 +85,7 @@ function notFoundResult(): ResolvedDurableTarget {
 		dbActive: false,
 		stopRequestedAt: null,
 		terminatedChildNodes: [],
+		activeChildNodes: [],
 		scope: null,
 		parentInstanceIds: [],
 		agentRuntimeTargets: [],
@@ -192,6 +200,11 @@ async function resolveWorkflowExecution(id: string): Promise<ResolvedDurableTarg
 			.filter(([, c]) => c.total > 0 && c.terminated === c.total)
 			.map(([node]) => node),
 	);
+	const activeChildNodes = compact(
+		[...nodeChildCounts.entries()]
+			.filter(([, c]) => c.total > 0 && c.terminated < c.total)
+			.map(([node]) => node),
+	);
 
 	const agentRuns = await database
 		.select({
@@ -212,6 +225,7 @@ async function resolveWorkflowExecution(id: string): Promise<ResolvedDurableTarg
 		dbActive: exec.status === "pending" || exec.status === "running",
 		stopRequestedAt: exec.stopRequestedAt ?? null,
 		terminatedChildNodes,
+		activeChildNodes,
 		scope: { projectId: exec.projectId ?? null, userId: exec.userId },
 		parentInstanceIds: compact([exec.daprInstanceId ?? exec.id]),
 		agentRuntimeTargets,
@@ -300,6 +314,7 @@ async function resolveSession(id: string): Promise<ResolvedDurableTarget> {
 		dbActive: s.status !== "terminated",
 		stopRequestedAt: s.stopRequestedAt ?? null,
 		terminatedChildNodes: [],
+		activeChildNodes: [],
 		scope: { projectId: s.projectId ?? null, userId: s.userId },
 		parentInstanceIds: [],
 		agentRuntimeTargets: target ? [target] : [],
@@ -348,6 +363,7 @@ async function resolveEvalRun(id: string): Promise<ResolvedDurableTarget> {
 		dbActive: !["completed", "failed", "cancelled"].includes(run.status),
 		stopRequestedAt: run.cancelRequestedAt ?? null,
 		terminatedChildNodes: [],
+		activeChildNodes: [],
 		scope: null,
 		parentInstanceIds: compact([run.coordinatorExecutionId]),
 		agentRuntimeTargets: [],

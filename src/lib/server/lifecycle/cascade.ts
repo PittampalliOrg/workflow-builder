@@ -267,12 +267,16 @@ export function agentRuntimeTargetKey(target: AgentRuntimeTarget): string {
  *   - a stop was actually requested and the grace has elapsed, AND
  *   - the parent's LIVE `currentNodeId` (from the orchestrator status) is a
  *     `durable/run` node whose child SESSION is DB-`terminated` (in
- *     `terminatedChildNodes`).
- * Requiring the node-match fixes two false-positives the old agent-`closed`
+ *     `terminatedChildNodes`) — OR a `for`/loop node CONTAINING such a child
+ *     (the SW loop `refine` dispatches children as `refine-generate-0-` /
+ *     `refine-evaluate-0-`, sanitized from `<loop>/<sub>[<idx>]`, so the parent's
+ *     currentNodeId is the bare loop name `refine` which won't exact-match), AND
+ *   - NO child under that node is still active (never finalize mid-iteration).
+ * Requiring the node-match fixes three false-positives the old agent-`closed`
  * boolean allowed: a parent that has moved on to a later non-agent node (its
- * currentNodeId won't match), and a still-booting sandbox whose agent app-id
- * merely 404s (its session is not DB-`terminated`, so its node isn't listed).
- * The caller passes only parents it has confirmed are NOT closed.
+ * currentNodeId won't match), a still-booting sandbox whose agent app-id merely
+ * 404s (its session is not DB-`terminated`, so its node isn't listed), and a loop
+ * with a still-running iteration. The caller passes only parents NOT closed.
  */
 export function shouldForceFinalizeCrossAppWedge(params: {
 	stopRequestedAt: Date | null;
@@ -280,13 +284,24 @@ export function shouldForceFinalizeCrossAppWedge(params: {
 	graceMs: number;
 	parentCurrentNode: string | null;
 	terminatedChildNodes: string[];
+	activeChildNodes?: string[];
 }): boolean {
-	return (
-		params.stopRequestedAt != null &&
-		params.nowMs - params.stopRequestedAt.getTime() >= params.graceMs &&
-		params.parentCurrentNode != null &&
-		params.terminatedChildNodes.includes(params.parentCurrentNode)
-	);
+	if (
+		params.stopRequestedAt == null ||
+		params.nowMs - params.stopRequestedAt.getTime() < params.graceMs ||
+		params.parentCurrentNode == null
+	) {
+		return false;
+	}
+	const parent = params.parentCurrentNode;
+	// A child node "belongs to" the parent currentNode when it IS that node (a
+	// direct durable/run node) or is loop-nested under it (`<loop>-<sub>-<idx>-`
+	// or `<loop>/<sub>`).
+	const under = (node: string): boolean =>
+		node === parent || node.startsWith(`${parent}-`) || node.startsWith(`${parent}/`);
+	const hasTerminatedChild = params.terminatedChildNodes.some(under);
+	const hasActiveChild = (params.activeChildNodes ?? []).some(under);
+	return hasTerminatedChild && !hasActiveChild;
 }
 
 /**

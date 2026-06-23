@@ -403,6 +403,7 @@ export async function confirmDurableStop(
 					graceMs: WEDGE_FINALIZE_GRACE_MS,
 					parentCurrentNode: node,
 					terminatedChildNodes: resolved.terminatedChildNodes,
+					activeChildNodes: resolved.activeChildNodes,
 				})
 			) {
 				wedged = true;
