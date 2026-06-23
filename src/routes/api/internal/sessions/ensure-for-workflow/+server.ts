@@ -446,9 +446,18 @@ export const POST: RequestHandler = async ({ request }) => {
 	// the 3Blue1Brown demo, which SHARE a sandbox across agent + browser/validate
 	// + preview) still take precedence. Idempotent by executionId=sessionId, and
 	// cleaned up on session-end via cleanupSessionSandbox.
+	// juicefs-shared agents (e.g. dapr-agent-py-juicefs) get their workspace from
+	// the per-execution JuiceFS CSI mount keyed by sharedWorkspaceKey — they run
+	// file/bash tools locally (LocalWorkspaceRuntime), NOT over the OpenShell remote
+	// sandbox RPC. Provisioning an OpenShell auto-sandbox here would OVERWRITE
+	// bridgeWorkspaceRef with a `ws_<id>` key, so the agent would mount the
+	// auto-sandbox subtree instead of the canonical instance-id JuiceFS subtree
+	// where clone_repo + the other nodes wrote (symptom: "/sandbox/work empty except
+	// git metadata", SPEC.md not found). Only openshell-shared agents need it.
 	const needsOpenShellSandbox =
 		swapTarget?.capabilities?.supportsBuiltinOpenShellTools === true &&
 		swapTarget?.capabilities?.ownsSandbox === false &&
+		swapTarget?.capabilities?.workspaceBackend !== "juicefs-shared" &&
 		swapTarget?.family === "durable-session";
 	const hasWiredSandbox =
 		!!bridgeSandboxName ||
