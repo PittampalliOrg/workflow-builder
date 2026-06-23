@@ -1,0 +1,124 @@
+{
+  "name": "Heavy PR Code Review (agentic, GitHub-triggered)",
+  "engineType": "dapr",
+  "spec": {
+    "document": {
+      "dsl": "1.0.0",
+      "namespace": "workflow-builder",
+      "name": "pr-heavy-review",
+      "version": "1.0.0",
+      "title": "Heavy PR Code Review",
+      "summary": "Agentic, GitHub-triggered heavy code review modeled on how leading AI reviewers (CodeRabbit, Greptile, Qodo, Diamond, Anthropic Claude review) actually work: a CONSTRAINED map->reduce, not a free-roaming agent. (1) REVIEW — a CLI agent clones the PR head into the shared workspace, computes the base..head diff (repo-aware, skipping generated/vendored/lockfiles) and produces multi-dimensional findings (correctness, breaking-changes/contract, security, concurrency/resource, error-handling, tests, performance, maintainability) each with file:line, severity, confidence, evidence, fix. (2) JUDGE — an INDEPENDENT critic grounds every finding in the actual code, drops ungrounded/duplicate/low-confidence ones, resolves conflicts, re-ranks by severity (the non-negotiable false-positive control). (3) PUBLISH — synthesizes a polished, COMMENT-ONLY review (advisory verdict, never auto-approve/block) and posts it back to the PR. GITHUB_TOKEN is auto-injected into the CLI sandbox for clone + posting; all stages share /sandbox/work."
+    },
+    "input": {
+      "schema": {
+        "format": "json",
+        "document": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "type": "string",
+              "title": "Repository (owner/repo)",
+              "description": "GitHub full_name, e.g. PittampalliOrg/workflow-builder. Provided by the github trigger.",
+              "default": "PittampalliOrg/workflow-builder"
+            },
+            "prNumber": { "type": "integer", "minimum": 1, "title": "PR number" },
+            "prTitle": { "type": "string", "title": "PR title", "default": "" },
+            "prUrl": { "type": "string", "title": "PR URL", "format": "uri", "default": "" },
+            "prHeadRef": { "type": "string", "title": "Head branch", "default": "" },
+            "prBaseRef": { "type": "string", "title": "Base branch", "default": "main" },
+            "action": { "type": "string", "title": "PR action", "default": "opened" },
+            "reviewAgent": {
+              "type": "string",
+              "title": "Review/judge agent slug",
+              "description": "claude-code-cli agent slug used for all three stages (shares /sandbox/work, has GITHUB_TOKEN).",
+              "default": "cli-evaluator-critic-agent"
+            }
+          },
+          "required": ["repository", "prNumber"]
+        }
+      }
+    },
+    "do": [
+      {
+        "review": {
+          "if": "${ ((.trigger.action // \"opened\") | (. == \"opened\" or . == \"synchronize\" or . == \"reopened\")) and ((.trigger.event.pull_request.draft // false) != true) }",
+          "call": "durable/run",
+          "with": {
+            "cwd": "/sandbox/work",
+            "mode": "execute_direct",
+            "workspaceRef": "${ .runtime.executionId }",
+            "agentRef": { "slug": "${ .trigger.reviewAgent // \"cli-evaluator-critic-agent\" }" },
+            "agentConfig": {
+              "name": "PR Reviewer (multi-dimensional)",
+              "instructions": "You are a meticulous senior code reviewer performing a HEAVY, repo-aware review of a single GitHub pull request. You work inside a sandbox at /sandbox/work; the repo is cloned to /sandbox/work/repo and checked out at the PR head; the diff is at /sandbox/work/pr/diff.patch and the changed-file list at /sandbox/work/pr/files.txt.\n\nMETHOD (constrained, evidence-first — do NOT free-roam):\n1. Read /sandbox/work/pr/files.txt and /sandbox/work/pr/diff.patch. SKIP generated/vendored/noise: lockfiles (package-lock.json, pnpm-lock.yaml, *.lock), dist/, build/, .svelte-kit/, node_modules/, minified *.min.*, *.svg, snapshots, and machine-generated files. Note them as skipped but do not review them.\n2. For each MEANINGFUL changed file, read the FULL file in /sandbox/work/repo (not just the diff hunk) and trace callers/callees/types you need — review is repo-aware, not diff-only.\n3. Analyze across these DIMENSIONS, prioritizing the high-signal ones first: correctness/logic bugs (edge cases, off-by-one, null/None, wrong branch); breaking changes / API & contract impact on callers; security (injection, authz, secrets, unsafe deserialization, SSRF); concurrency / races / resource leaks; error handling (swallowed errors, missing retries, bad failure modes); tests/coverage (missing or under-tested branches); performance (N+1, hot-path allocation, complexity regressions); readability/maintainability (lowest signal — only call out real problems, never restate the diff).\n\nOUTPUT: WRITE a JSON array to /sandbox/work/pr/findings.json. Each finding object MUST have: file (repo-relative path), line (integer best-effort, or 0), dimension (one of correctness|breaking-change|security|concurrency|error-handling|tests|performance|maintainability), severity (one of blocker|major|minor|nit), confidence (integer 0-100), title (short), rationale (why it's a problem, citing concrete code), evidence (what in the code substantiates it — a symbol, a call site, a missing guard), suggestion (concrete fix, ideally a small code snippet). Be thorough but do NOT invent issues: only include findings you can substantiate from the actual code. If the PR is clean, write an empty array []. Also write a one-paragraph PR summary to /sandbox/work/pr/SUMMARY.md. End with a one-line status."
+            },
+            "body": {
+              "prompt": "${ \"You are reviewing pull request #\" + (.trigger.prNumber|tostring) + \" (\\\"\" + (.trigger.prTitle // \"\") + \"\\\") on repository \" + .trigger.repository + \".\\n\\nSTEP 1 — materialize the PR. Run EXACTLY this shell (GITHUB_TOKEN is already in the environment). It fetches the diff via the GitHub API (instant) and does a SHALLOW clone of the PR head for repo-aware reading:\\n  mkdir -p /sandbox/work/pr && cd /sandbox/work && curl -sSL -H \\\"Authorization: Bearer $GITHUB_TOKEN\\\" -H 'Accept: application/vnd.github.v3.diff' https://api.github.com/repos/\" + .trigger.repository + \"/pulls/\" + (.trigger.prNumber|tostring) + \" > /sandbox/work/pr/diff.patch && curl -sSL -H \\\"Authorization: Bearer $GITHUB_TOKEN\\\" -H 'Accept: application/vnd.github+json' 'https://api.github.com/repos/\" + .trigger.repository + \"/pulls/\" + (.trigger.prNumber|tostring) + \"/files?per_page=100' | python3 -c 'import sys,json; [print(f[\\\"status\\\"],f[\\\"filename\\\"]) for f in json.load(sys.stdin)]' > /sandbox/work/pr/files.txt && rm -rf repo && git clone --depth 1 --single-branch --filter=blob:none --branch \" + (.trigger.prHeadRef // .trigger.prBaseRef // \"main\") + \" https://x-access-token:$GITHUB_TOKEN@github.com/\" + .trigger.repository + \".git repo\\n\\nSTEP 2 — follow your reviewer instructions: read the diff + changed files (repo-aware), and WRITE /sandbox/work/pr/findings.json (the structured findings) and /sandbox/work/pr/SUMMARY.md. Be thorough across all dimensions.\" }",
+              "overrides": { "cwd": "/sandbox/work", "maxTurns": 60, "timeoutMinutes": 45 }
+            }
+          }
+        }
+      },
+      {
+        "judge": {
+          "if": "${ ((.trigger.action // \"opened\") | (. == \"opened\" or . == \"synchronize\" or . == \"reopened\")) and ((.trigger.event.pull_request.draft // false) != true) }",
+          "call": "durable/run",
+          "with": {
+            "cwd": "/sandbox/work/repo",
+            "mode": "execute_direct",
+            "workspaceRef": "${ .runtime.executionId }",
+            "agentRef": { "slug": "${ .trigger.reviewAgent // \"cli-evaluator-critic-agent\" }" },
+            "agentConfig": {
+              "name": "Review Judge (independent verifier)",
+              "instructions": "You are an INDEPENDENT review judge — the single most important quality control. You did NOT write the findings; your job is to keep ONLY findings that are real, grounded, and actionable, because false positives are the #1 failure of automated review. The repo is at /sandbox/work/repo (checked out at the PR head); candidate findings are at /sandbox/work/pr/findings.json; the diff is at /sandbox/work/pr/diff.patch.\n\nFor EACH candidate finding:\n1. GROUND it in the actual code — open the cited file/line in /sandbox/work/repo, grep for the symbol, trace the call. A finding you cannot substantiate from the real code is DROPPED. Empty grep results are not proof of a bug.\n2. DROP duplicates (collapse the same underlying issue raised more than once into one), and DROP low-value items: confidence < 60, pure style/nits that merely restate the diff, or anything not actionable.\n3. Re-assess severity (blocker|major|minor|nit) and confidence (0-100) against the grounded evidence; resolve conflicts between findings.\n4. Bias to SILENCE: when in doubt, drop it. It is better to miss a minor nit than to post a wrong comment.\n\nWRITE the surviving, verified findings as a JSON object to /sandbox/work/pr/verified.json with shape: { \"verdict\": one of \"approve-suggested\"|\"changes-suggested\"|\"comment\", \"verdict_reason\": short string, \"findings\": [ ...same finding schema as input, kept+corrected... ] }. The verdict is ADVISORY only (this review never blocks merges): use changes-suggested only if there is at least one blocker/major grounded finding. End with a one-line status (e.g. 'kept N of M findings')."
+            },
+            "body": {
+              "prompt": "${ \"Independently verify the candidate review findings for PR #\" + (.trigger.prNumber|tostring) + \" on \" + .trigger.repository + \". Read /sandbox/work/pr/findings.json and ground each one against the real code in /sandbox/work/repo (open files, grep, trace). Drop anything ungrounded, duplicate, low-confidence (<60), or non-actionable. WRITE /sandbox/work/pr/verified.json exactly as your instructions specify. Follow your instructions.\" }",
+              "overrides": { "cwd": "/sandbox/work/repo", "maxTurns": 45, "timeoutMinutes": 40 }
+            }
+          }
+        }
+      },
+      {
+        "publish": {
+          "if": "${ ((.trigger.action // \"opened\") | (. == \"opened\" or . == \"synchronize\" or . == \"reopened\")) and ((.trigger.event.pull_request.draft // false) != true) }",
+          "call": "durable/run",
+          "with": {
+            "cwd": "/sandbox/work",
+            "mode": "execute_direct",
+            "workspaceRef": "${ .runtime.executionId }",
+            "agentRef": { "slug": "${ .trigger.reviewAgent // \"cli-evaluator-critic-agent\" }" },
+            "agentConfig": {
+              "name": "Review Publisher (synthesize + post, comment-only)",
+              "instructions": "You synthesize the verified review into a polished GitHub comment and post it back to the PR. Inputs: /sandbox/work/pr/verified.json (authoritative), /sandbox/work/pr/SUMMARY.md. GITHUB_TOKEN is in the environment.\n\nSTEP 1 — WRITE /sandbox/work/pr/REVIEW.md, a clean markdown review with this structure:\n  - A first line header: '## 🤖 Heavy code review' \n  - **Summary** — one short paragraph (from SUMMARY.md) of what the PR does.\n  - **Findings** — group the verified findings by severity (Blocker, Major, Minor, Nit). For each: a bullet with `path:line` in backticks, the dimension + severity + confidence%, the rationale, and a fenced suggestion if present. If there are no findings, write 'No blocking issues found. ✅'.\n  - **Verdict** — one line: the advisory verdict from verified.json (approve-suggested / changes-suggested / comment) with a one-sentence reason, plus the note: '_Advisory only — this automated review does not approve or block the merge._'\nKeep it tight and actionable; do NOT restate the diff or pad with process narration.\n\nSTEP 2 — POST it as a PR comment. Run EXACTLY (the prompt gives you the repo + PR number):\n  python3 -c 'import json;print(json.dumps({\"body\":open(\"/sandbox/work/pr/REVIEW.md\").read()}))' > /sandbox/work/pr/comment.json\n  curl -sS -X POST -H \"Authorization: Bearer $GITHUB_TOKEN\" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' https://api.github.com/repos/<REPO>/issues/<PR>/comments -d @/sandbox/work/pr/comment.json | python3 -c 'import sys,json;d=json.load(sys.stdin);print(\"COMMENT_URL=\"+str(d.get(\"html_url\") or d.get(\"message\") or d))'\nreplacing <REPO> and <PR> with the values from the prompt.\n\nSTEP 3 — output the FULL contents of /sandbox/work/pr/REVIEW.md as your final message (this becomes the run's primary artifact), with the COMMENT_URL line at the very end."
+            },
+            "body": {
+              "prompt": "${ \"Synthesize and post the review for PR #\" + (.trigger.prNumber|tostring) + \" on \" + .trigger.repository + \".\\n\\nWrite /sandbox/work/pr/REVIEW.md per your instructions, then POST it as a PR comment by running:\\n  python3 -c 'import json;print(json.dumps({\\\"body\\\":open(\\\"/sandbox/work/pr/REVIEW.md\\\").read()}))' > /sandbox/work/pr/comment.json\\n  curl -sS -X POST -H \\\"Authorization: Bearer $GITHUB_TOKEN\\\" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' https://api.github.com/repos/\" + .trigger.repository + \"/issues/\" + (.trigger.prNumber|tostring) + \"/comments -d @/sandbox/work/pr/comment.json | python3 -c 'import sys,json;d=json.load(sys.stdin);print(\\\"COMMENT_URL=\\\"+str(d.get(\\\"html_url\\\") or d.get(\\\"message\\\") or d))'\\n\\nThen output the full REVIEW.md as your final message with the COMMENT_URL line last.\" }",
+              "overrides": { "cwd": "/sandbox/work", "maxTurns": 25, "timeoutMinutes": 25 }
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "markdown",
+              "slot": "primary",
+              "title": "PR review",
+              "description": "${ \"Heavy code review — \" + .trigger.repository + \" #\" + (.trigger.prNumber|tostring) + \" — \" + (.trigger.prTitle // \"\") }",
+              "from": "${ .data.content }",
+              "contentType": "text/markdown"
+            }
+          ]
+        }
+      }
+    ],
+    "output": {
+      "as": {
+        "repository": "${ .trigger.repository }",
+        "pr_number": "${ .trigger.prNumber }",
+        "pr_title": "${ .trigger.prTitle // null }",
+        "action": "${ .trigger.action // null }",
+        "review": "${ .publish.data.content // null }"
+      }
+    }
+  }
+}
