@@ -474,7 +474,13 @@ def _call_zai_chat(
         f"{base_url.rstrip('/')}/chat/completions",
     )
     timeout = int(os.environ.get("ZAI_TIMEOUT_SECONDS", "300"))
-    output_cap = max_tokens or int(os.environ.get("ZAI_MAX_TOKENS", "4096"))
+    # GLM V4/V5 are REASONING models — they spend completion tokens on an internal
+    # reasoning pass BEFORE emitting content/tool_calls. A 4096 cap is too small:
+    # the reasoning eats the whole budget and the response comes back with EMPTY
+    # content + no tool_calls, which trips the empty-response circuit breaker. Match
+    # the DeepSeek fix (DEEPSEEK_MAX_TOKENS 4096->32000) so the reasoning pass plus
+    # the actual answer both fit. Still escalates further on truncation below.
+    output_cap = max_tokens or int(os.environ.get("ZAI_MAX_TOKENS", "32000"))
     request_body: dict[str, Any] = {
         "model": model,
         "messages": (
@@ -571,13 +577,22 @@ def _call_zai_chat(
             content, tool_calls, finish_reason, reasoning_content = (
                 _extract_zai_response(data)
             )
-            # Reasoning consumed the whole output budget → empty content with
-            # finish_reason=length. Escalate max_tokens and retry so the answer
-            # isn't lost (and the empty-response circuit breaker isn't tripped by
-            # a recoverable truncation).
+            # Reasoning consumed the whole output budget → empty content with the
+            # response truncated. Escalate max_tokens and retry so the answer isn't
+            # lost (and the empty-response circuit breaker isn't tripped by a
+            # recoverable truncation). GLM does not always label this
+            # finish_reason="length" — observed truncated empty responses come back
+            # finish_reason="stop" with completion_tokens pinned at the cap — so
+            # detect truncation by completion_tokens reaching the cap too, not just
+            # the finish_reason label.
             current_cap = int(request_body.get("max_tokens") or output_cap)
+            usage_now = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+            completion_now = int(usage_now.get("completion_tokens") or 0)
+            truncated_empty = finish_reason == "length" or (
+                current_cap > 0 and completion_now >= current_cap
+            )
             if (
-                finish_reason == "length"
+                truncated_empty
                 and not content.strip()
                 and not tool_calls
                 and length_escalations < max_length_escalations
@@ -586,8 +601,11 @@ def _call_zai_chat(
                 length_escalations += 1
                 new_cap = min(current_cap * 2, length_ceiling)
                 logger.warning(
-                    "[zai-chat] finish_reason=length with empty content on "
-                    "%s; escalating max_tokens %d->%d (attempt %d/%d)%s",
+                    "[zai-chat] truncated empty content (finish_reason=%s, "
+                    "completion_tokens=%d) on %s; escalating max_tokens %d->%d "
+                    "(attempt %d/%d)%s",
+                    finish_reason,
+                    completion_now,
                     model,
                     current_cap,
                     new_cap,
