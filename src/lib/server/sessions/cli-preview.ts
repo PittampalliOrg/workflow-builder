@@ -165,6 +165,12 @@ PORT=${port}
 cd "${opts.cwd}" 2>/dev/null || cd /sandbox/work/repo 2>/dev/null || true
 fuser -k "$PORT"/tcp 2>/dev/null || true
 sleep 1
+# Install deps if missing — a run whose build gate never completed (errored/partial)
+# may have no node_modules; without this the dev/preview server can't boot.
+if [ -f package.json ] && [ ! -d node_modules ]; then
+  if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile >/tmp/wfb-preview-install.log 2>&1 || pnpm install >/tmp/wfb-preview-install.log 2>&1 || true;
+  else npm install --no-audit --no-fund >/tmp/wfb-preview-install.log 2>&1 || true; fi
+fi
 OVERRIDE='${overrideExport}'
 if [ -n "$OVERRIDE" ]; then PREVIEW="$OVERRIDE";
 elif [ -f pnpm-lock.yaml ]; then PREVIEW="pnpm preview";
@@ -183,7 +189,8 @@ fi
 if curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then echo "PREVIEW_READY port=$PORT"; else echo "PREVIEW_NOT_READY"; fi
 tail -8 /tmp/wfb-preview.log 2>/dev/null || true
 `.trim();
-	const res = await podCommand(podIP, script, opts.cwd, 90_000);
+	// Allow time for an install-if-missing on partial runs (deps can take minutes).
+	const res = await podCommand(podIP, script, opts.cwd, 240_000);
 	const log = res ? `${res.stdout}\n${res.stderr}`.trim() : "no response from cli pod";
 	return { ready: !!res && /PREVIEW_READY/.test(res.stdout), log };
 }

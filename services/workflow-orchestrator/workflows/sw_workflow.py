@@ -130,6 +130,24 @@ def _configure_workflow_runtime_grpc_limits(runtime: wf.WorkflowRuntime) -> None
 wfr = _new_workflow_runtime()
 
 
+def _durable_run_parent_timer_enabled() -> bool:
+    """Whether to impose the ORCHESTRATOR's per-turn timer on a durable/run child.
+
+    Default FALSE: the timer is redundant (timeout_minutes is also passed to
+    session_workflow, which raises its OWN self-timeout and ends the turn
+    gracefully) and harmful (it races that self-timeout; when the timer wins it
+    fatally kills the whole multi-hour run, and its Scheduler reminder can outlive
+    the child completion and leave the parent instance RUNNING — the exact reason
+    the benchmark path below already omits it). We instead rely on the agent's
+    graceful self-termination + cancellation, with the lifecycle reaper as the
+    global backstop for a genuinely hung child. Set SW_DURABLE_RUN_PARENT_TIMER=true
+    to restore the old hard parent timer.
+    """
+    import os as _os
+
+    return _as_bool(_os.environ.get("SW_DURABLE_RUN_PARENT_TIMER"), False)
+
+
 def _child_workflow_result_with_timeout(
     ctx: wf.DaprWorkflowContext,
     child_task: Any,
@@ -2181,6 +2199,17 @@ def _run_native_durable_agent_child_workflow(
                 child_instance_id=child_instance_id,
                 workflow_name="session_workflow",
             )
+        elif not _durable_run_parent_timer_enabled():
+            # Default: NO orchestrator per-turn timer (see
+            # _durable_run_parent_timer_enabled). The agent self-terminates at its
+            # own timeout_minutes; a long turn yields a partial result the loop can
+            # act on instead of fatally killing the run. Cancellation still works.
+            child_result = yield from _child_workflow_result_or_cancel_event(
+                ctx,
+                child_task,
+                child_instance_id=child_instance_id,
+                workflow_name="session_workflow",
+            )
         else:
             child_result = yield from _child_workflow_result_with_timeout(
                 ctx,
@@ -2806,6 +2835,19 @@ def _handle_call_task(
     tc.completed_tasks.add(task_name)
 
     if not result.get("success", True):
+        # Honor `with.allowFailure`: a node that opts in (e.g. the GAN build gate,
+        # whose cli_workspace_command surfaces a transient dispatch/transport error
+        # as success:false ON PURPOSE) tolerates the failure — it becomes the node's
+        # output (loop `while` guards read its stdout) instead of aborting the whole
+        # run. Without this, a single transient infra blip kills a multi-hour run.
+        allow_failure = _as_bool((task_data.get("with") or {}).get("allowFailure"), False)
+        if allow_failure:
+            _log_info(
+                ctx,
+                "[SW Workflow] call task failed but allowFailure=true; continuing: %s",
+                task_name,
+            )
+            return result
         raise RuntimeError(result.get("error") or f"Call task failed: {task_name}")
 
     return result
