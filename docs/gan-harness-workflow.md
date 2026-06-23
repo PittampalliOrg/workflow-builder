@@ -124,6 +124,36 @@ nudge) and relies on the normalizer rather than brittle caps/bans.
 - The screenshot artifact uploads via the `cli-workspace-command` image-readFile →
   files API path (renders inline; see `docs/coding-redesign-playwright-critic.md`).
 
+## Refine-loop reliability (PR #262)
+
+A deep review of 5 dev runs (2 converged: codex 41-criteria, agy distinctive design;
+3 errored in `refine`) showed the failures were **reliability, not logic** — three
+mechanical causes, all fixed below. A post-fix codex run then converged end-to-end
+(`success` @ summary, PR opened) in **~94 min vs the prior ~285 min**.
+
+- **`allowFailure` is honored on call tasks.** The deterministic `gate`'s
+  `cli_workspace_command` deliberately surfaces a transient dispatch/transport error
+  as `success:false` (so the loop treats it as a build failure) — but
+  `_handle_call_task` used to raise regardless, killing the whole run. It now returns
+  the failed result when the node sets `with.allowFailure: true`, so a transient blip
+  becomes a tolerated iteration.
+- **No orchestrator per-turn parent timer on `durable/run` (agent-led).** The old
+  `_child_workflow_result_with_timeout` raced the agent's OWN self-timeout
+  (`timeout_minutes` is also passed to `session_workflow`); when the parent timer won
+  it fatally killed a multi-hour run and could leave the parent `RUNNING` via stale
+  Scheduler reminders. Non-benchmark `durable/run` now uses the agent-led
+  `_child_workflow_result_or_cancel_event` (the benchmark path already did, for the
+  same reason): the agent self-terminates gracefully → the loop gets a partial result
+  and continues; cancellation still works; the lifecycle reaper is the global backstop.
+  Restore the old hard timer with `SW_DURABLE_RUN_PARENT_TIMER=true`.
+- **Contract size is capped.** CLI agents emit 30–40+ criteria; an oversized contract
+  makes each generate/evaluate turn run for HOURS (the root driver of the per-turn
+  timeouts). `read_contract` caps to `WFB_MAX_CRITERIA` (default 24) after dedupe,
+  keeping the most-important first N (the critic orders by importance).
+- **Preview installs deps if missing.** `startCliPreview` runs `npm/pnpm install` when
+  `node_modules` is absent, so a partial/errored run (whose `gate` never completed) is
+  still previewable.
+
 ## Parameterized build/verify convention (reusable across coding workflows)
 
 The build is **not hardcoded to npm**. This harness exposes three optional trigger
