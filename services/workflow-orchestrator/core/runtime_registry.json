@@ -106,6 +106,7 @@
       "agentMetadataFramework": "Dapr Agents",
       "benchmarkEligible": false,
       "capabilitiesVerified": false,
+      "executionClass": "dapr-agent-py-juicefs",
       "capabilities": {
         "durabilityGranularity": "per-activity",
         "workspaceBackend": "juicefs-shared",

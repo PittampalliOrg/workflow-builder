@@ -541,14 +541,18 @@ export const POST: RequestHandler = async ({ request }) => {
 			timeoutMinutes: bridgeTimeoutMinutes,
 			traceContext,
 			sessionSecretEnv: workflowSessionSecretEnv,
-			// interactive-cli: share one JuiceFS workspace subtree across every
-			// CLI pod of this workflow run (planner/generator/critic see the same
-			// files). Keyed on the durable/run workspaceRef, falling back to the
-			// execution id so CLI workflows share automatically with no
-			// workspace/profile node. No-op for classes without the shared store.
-			sharedWorkspaceKey: swapTarget?.capabilities?.interactiveTerminal
-				? (bridgeWorkspaceRef ?? workflowExecutionId)
-				: null,
+			// Share one JuiceFS workspace subtree across every pod of this
+			// workflow run (planner/generator/critic + deterministic cliWorkspace
+			// nodes see the same files). Keyed on the durable/run workspaceRef,
+			// falling back to the execution id so runs share automatically with no
+			// workspace/profile node. Granted to interactive-cli (interactiveTerminal)
+			// AND juicefs-shared runtimes (e.g. dapr-agent-py-juicefs). No-op for
+			// classes without the shared store.
+			sharedWorkspaceKey:
+				swapTarget?.capabilities?.interactiveTerminal ||
+				swapTarget?.capabilities?.workspaceBackend === "juicefs-shared"
+					? (bridgeWorkspaceRef ?? workflowExecutionId)
+					: null,
 		});
 		const reuseChildAppId = reuseHost?.agentAppId ?? reuseAgentAppId;
 		const reuseRuntimeSandboxName =
@@ -753,11 +757,14 @@ export const POST: RequestHandler = async ({ request }) => {
 		timeoutMinutes: bridgeTimeoutMinutes,
 		traceContext,
 		sessionSecretEnv: workflowSessionSecretEnv,
-		// interactive-cli: share one JuiceFS workspace subtree across every CLI
-		// pod of this workflow run (keyed on workspaceRef, else execution id).
-		sharedWorkspaceKey: swapTarget?.capabilities?.interactiveTerminal
-			? (bridgeWorkspaceRef ?? workflowExecutionId)
-			: null,
+		// Share one JuiceFS workspace subtree across every pod of this workflow
+		// run (keyed on workspaceRef, else execution id). interactive-cli
+		// (interactiveTerminal) AND juicefs-shared runtimes (dapr-agent-py-juicefs).
+		sharedWorkspaceKey:
+			swapTarget?.capabilities?.interactiveTerminal ||
+			swapTarget?.capabilities?.workspaceBackend === "juicefs-shared"
+				? (bridgeWorkspaceRef ?? workflowExecutionId)
+				: null,
 	});
 	const childAgentAppId = sessionHost?.agentAppId ?? targetAgentAppId;
 	const childRuntimeSandboxName = sessionHost?.sandboxName ?? null;

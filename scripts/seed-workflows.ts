@@ -4389,6 +4389,9 @@ async function ensureCliShowcaseAgentFor(
 		name: string;
 		description: string;
 		mcpServers?: unknown[];
+		// dapr-family variants drive API-key LLMs and need an explicit modelSpec
+		// (quota-free deepseek-v4-pro); CLI variants omit it (native CLI auth).
+		modelSpec?: string;
 	},
 ): Promise<string> {
 	const { slug, runtime, name, description } = opts;
@@ -4399,6 +4402,7 @@ async function ensureCliShowcaseAgentFor(
 	const agentId = existing.length ? existing[0].id : generateId();
 	const config = {
 		runtime,
+		...(opts.modelSpec ? { modelSpec: opts.modelSpec } : {}),
 		maxTurns: 50,
 		timeoutMinutes: 30,
 		skills: [] as unknown[],
@@ -4452,6 +4456,18 @@ async function seedGeneratorCriticShowcases(params: {
 }) {
 	await ensureShowcaseAgent(params.sqlClient, params.userId, params.projectId);
 	await ensureCliShowcaseAgent(params.sqlClient, params.userId, params.projectId);
+	// PILOT: dapr-agent-py on the juicefs-shared backend (LocalWorkspaceRuntime,
+	// /sandbox/work CSI mount, no openshell RPC). Same per-session dispatch as the
+	// default dapr agent but runtime=dapr-agent-py-juicefs → the JuiceFS execution
+	// class. Pinned deepseek-v4-pro (API-key LLM). See gan-harness-dapr-juicefs-pilot.
+	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+		slug: "dapr-juicefs-evaluator-critic-agent",
+		runtime: "dapr-agent-py-juicefs",
+		name: "Dapr (JuiceFS) Evaluator/Critic Agent",
+		description:
+			"Pilot dapr-agent-py agent on the juicefs-shared backend: runs file/command tools pod-locally against the per-execution JuiceFS /sandbox/work (no openshell RPC), sharing the workspace with the cliWorkspace deterministic gate.",
+		modelSpec: process.env.SEED_SHOWCASE_AGENT_MODEL?.trim() || "deepseek-v4-pro",
+	});
 	// Shared Playwright MCP config for every CLI critic (same sandbox image →
 	// same `playwright-mcp` binary + pinned Chromium; --executable-path avoids the
 	// runtime browser download). Wired per-CLI: claude .mcp.json / codex
@@ -4546,6 +4562,14 @@ async function seedGeneratorCriticShowcases(params: {
 		// (no cliWorkspace). Code profiles (library/service); default library on
 		// jonschlinkert/is-number. ui-web/browser eval is a follow-up.
 		"gan-harness-dapr-showcase.json",
+		// PILOT: dapr-agent-py on the juicefs-shared backend (runtime
+		// dapr-agent-py-juicefs → LocalWorkspaceRuntime + /sandbox/work CSI mount,
+		// no openshell RPC). Same juicefs/cliWorkspace spine as the CLI showcase but
+		// dapr agents; a deterministic cliWorkspace clone_repo replaces the
+		// agent-driven clone (the dapr pod has no GITHUB_TOKEN). Proves the
+		// dapr→juicefs migration + cross-family workspace sharing.
+		// docs/dapr-agent-py-sandbox-architecture.md.
+		"gan-harness-dapr-juicefs-pilot.json",
 		// Minimal single-node test of R1 persisted browser recording: a Playwright-MCP
 		// critic drives a real browser (navigate/snapshot/screenshot); the in-pod
 		// @playwright/mcp --save-video .webm is pushed to browser-artifacts and plays
