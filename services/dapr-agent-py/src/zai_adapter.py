@@ -340,12 +340,26 @@ def _publish_llm_usage(
         if not sid:
             return
         usage = usage or {}
-        prompt_cache_hit = int(usage.get("prompt_cache_hit_tokens") or 0)
-        prompt_cache_miss = int(usage.get("prompt_cache_miss_tokens") or 0)
+        # z.ai GLM is OpenAI-compatible: it reports prompt-cache hits under the
+        # OpenAI-standard prompt_tokens_details.cached_tokens (NOT deepseek's
+        # prompt_cache_hit_tokens). Read the OpenAI fields first, fall back to
+        # deepseek's for safety. input_tokens MUST be NET of cache reads (the
+        # dapr-agent-py invariant — gross over-burns goal budgets ~20x).
         prompt_tokens = int(
             usage.get("prompt_tokens") or usage.get("input_tokens") or 0
         )
-        input_tokens = prompt_cache_miss if prompt_cache_miss else prompt_tokens
+        prompt_cache_hit = int(
+            (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+            or (usage.get("input_tokens_details") or {}).get("cached_tokens")
+            or usage.get("prompt_cache_hit_tokens")
+            or 0
+        )
+        prompt_cache_miss = int(usage.get("prompt_cache_miss_tokens") or 0)
+        input_tokens = (
+            prompt_cache_miss
+            if prompt_cache_miss
+            else max(0, prompt_tokens - prompt_cache_hit)
+        )
         payload: dict[str, Any] = {
             "model": model,
             **get_scoped_audit_fields(),
@@ -642,9 +656,16 @@ def _call_zai_chat(
         try:
             from src.telemetry import end_llm_request_span, record_tokens
 
-            input_tokens = int(
+            gross_input = int(
                 usage.get("prompt_tokens") or usage.get("input_tokens") or 0
             )
+            cache_read = int(
+                (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+                or (usage.get("input_tokens_details") or {}).get("cached_tokens")
+                or usage.get("prompt_cache_hit_tokens")
+                or 0
+            )
+            input_tokens = max(0, gross_input - cache_read)
             output_tokens = int(
                 usage.get("completion_tokens") or usage.get("output_tokens") or 0
             )
@@ -652,6 +673,7 @@ def _call_zai_chat(
                 llm_span,
                 input_tokens=input_tokens or None,
                 output_tokens=output_tokens or None,
+                cache_read_tokens=cache_read or None,
                 success=True,
                 has_tool_call=bool(tool_calls),
                 ttft_ms=duration_ms,

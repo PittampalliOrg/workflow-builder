@@ -206,7 +206,7 @@ export async function prewarmWorkflowEntrySessions(params: {
 			// are null (gateway-side model creds, no shared key).
 			let sessionSecretEnv: Record<string, string> | null = null;
 			let sharedWorkspaceKey: string | null = null;
-			if (usesSharedWorkspace) {
+			if (isCli) {
 				const wsKey = resolveSharedWorkspaceKey(
 					withBlock,
 					params.executionId,
@@ -214,19 +214,23 @@ export async function prewarmWorkflowEntrySessions(params: {
 				);
 				if (wsKey === "skip") {
 					console.info(
-						`[prewarm] skip shared-workspace node "${taskName}" exec=${params.executionId}: workspaceRef is a non-executionId jq expression (key unpredictable)`,
+						`[prewarm] skip CLI node "${taskName}" exec=${params.executionId}: workspaceRef is a non-executionId jq expression (key unpredictable)`,
 					);
 					continue;
 				}
 				sharedWorkspaceKey = wsKey;
-				// GITHUB_TOKEN / CLI creds only for interactive-cli pods; dapr-juicefs
-				// uses gateway-side model creds and the cliWorkspace helper handles git.
-				if (isCli) {
-					sessionSecretEnv = await resolveWorkflowSessionSecretEnv({
-						userId: params.userId as string,
-						runtimeDescriptor: descriptor,
-					});
-				}
+				sessionSecretEnv = await resolveWorkflowSessionSecretEnv({
+					userId: params.userId as string,
+					runtimeDescriptor: descriptor,
+				});
+			} else if (usesSharedWorkspace) {
+				// juicefs-shared (dapr-agent-py-juicefs): key by the BARE execution id
+				// to match the cli_workspace_command helper pod. dapr has no live cli
+				// pod, so cliWorkspace nodes run in a helper keyed by the bare id; the
+				// agent must use the same key (NOT the instance-id workspaceRef from
+				// resolveSharedWorkspaceKey) or agents + deterministic spine land on
+				// different /sandbox/work subtrees. Mirrors ensure-for-workflow.
+				sharedWorkspaceKey = params.executionId;
 			}
 
 			// instance_prefix mirrors the orchestrator's runtime_registry.resolve():
