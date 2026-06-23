@@ -7,6 +7,7 @@ export type AgentModelProvider =
   | "googleai"
   | "alibaba"
   | "deepseek"
+  | "zai"
   | "kimi"
   | "huggingface"
   | "mistral"
@@ -127,6 +128,13 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     provider: "deepseek",
     iconProvider: "deepseek",
     component: "llm-deepseek-v4-flash",
+  },
+  {
+    value: "zai/glm-5.2",
+    label: "Z.AI GLM 5.2",
+    provider: "zai",
+    iconProvider: "zai",
+    component: "llm-glm-5.2",
   },
   {
     value: "alibaba/qwen3-coder-plus",
@@ -268,6 +276,10 @@ const AGENT_MODEL_ALIASES: Record<string, string> = {
   "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
   "deepseek/deepseek-v4-flash": "deepseek/deepseek-v4-flash",
   "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+  "zai/glm-5.2": "zai/glm-5.2",
+  "z-ai/glm-5.2": "zai/glm-5.2",
+  "glm-5.2": "zai/glm-5.2",
+  "glm5.2": "zai/glm-5.2",
   "alibaba/qwen3-coder-plus": "alibaba/qwen3-coder-plus",
   "qwen3-coder-plus": "alibaba/qwen3-coder-plus",
   "qwen/qwen3-coder-plus": "alibaba/qwen3-coder-plus",
