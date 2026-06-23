@@ -449,7 +449,12 @@ def _call_zai_chat(
         logger.warning("[telemetry] llm_request (zai) start failed: %s", exc)
 
     headers, auth_mode = _auth_headers()
-    base_url = os.environ.get("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4")
+    # GLM Coding Plan endpoint (OpenAI-compatible): the /coding/ path is funded by
+    # the GLM Coding subscription quota. The pay-as-you-go endpoint
+    # (https://api.z.ai/api/paas/v4) instead draws from account balance and returns
+    # error 1113 "Insufficient balance" for Coding-Plan keys. Override via
+    # ZAI_BASE_URL for pay-as-you-go accounts.
+    base_url = os.environ.get("ZAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4")
     url = os.environ.get(
         "ZAI_CHAT_COMPLETIONS_URL",
         f"{base_url.rstrip('/')}/chat/completions",
