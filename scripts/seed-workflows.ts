@@ -4567,6 +4567,37 @@ async function seedGeneratorCriticShowcases(params: {
 			visibility: "public",
 		});
 	}
+
+	// Top-level coding-workflow fixtures (scripts/fixtures/*.workflow.json) — NOT in
+	// the generator-critic subdir, and wrapping the SW 1.0 doc under a `spec` key
+	// (with top-level name/engineType). Seed the GitHub-triggered heavy PR-review
+	// workflow (review → judge → publish, claude-code-cli; docs/pr-heavy-review-workflow.md).
+	const topDir = path.resolve(process.cwd(), "scripts/fixtures");
+	for (const file of ["pr-heavy-review.workflow.json"]) {
+		const full = path.join(topDir, file);
+		if (!fs.existsSync(full)) {
+			console.warn(`[seed-workflows] workflow fixture missing: ${full}`);
+			continue;
+		}
+		const raw = JSON.parse(fs.readFileSync(full, "utf8")) as JsonRecord;
+		// This fixture nests the SW 1.0 doc under `spec`; older ones are the doc itself.
+		const spec = ((raw as { spec?: JsonRecord }).spec || raw) as JsonRecord;
+		const doc = ((spec as { document?: JsonRecord }).document || {}) as JsonRecord;
+		const id = (doc.name as string) || file.replace(/\.workflow\.json$/, "");
+		const { nodes, edges } = buildGeneratorCriticGraph(spec);
+		await upsertRawWorkflow({
+			db: params.db,
+			workflowId: id,
+			name: (raw.name as string) || (doc.title as string) || id,
+			description: (doc.summary as string) || "",
+			userId: params.userId,
+			projectId: params.projectId,
+			spec,
+			nodes,
+			edges,
+			visibility: "public",
+		});
+	}
 }
 
 async function seedWorkflow() {
