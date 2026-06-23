@@ -30,7 +30,7 @@ import http from "node:http";
 import https from "node:https";
 import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { db } from "$lib/server/db";
-import { sessions } from "$lib/server/db/schema";
+import { sessions, workflowExecutions } from "$lib/server/db/schema";
 import { requireInternal } from "$lib/server/internal-auth";
 import {
 	isInteractiveCliSession,
@@ -260,11 +260,23 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	// deterministic cliWorkspace steps (gate / read_verdict / pr) that run BETWEEN
 	// turns find nothing. Provision (idempotently) a dedicated short-lived CLI
 	// "workspace helper" pod for this execution: it boots cli-agent-py :8002 (no
-	// agent turn), mounts the SAME shared JuiceFS workspace (sharedWorkspaceKey =
-	// executionId, matching durable/run), and carries GITHUB_TOKEN so git push /
-	// PR-open authenticate. Adopted (not recreated) on repeat calls since the
-	// instanceId is the executionId — so gate/read_verdict/pr reuse one pod.
+	// agent turn), mounts the SAME shared JuiceFS workspace (keyed below), and
+	// carries GITHUB_TOKEN so git push / PR-open authenticate. Adopted (not
+	// recreated) on repeat calls so gate/read_verdict/pr reuse one pod.
 	if (!baseUrl) {
+		// The shared JuiceFS subtree is keyed by the CANONICAL orchestrator
+		// instance id (workflowExecutions.daprInstanceId = `sw-<name>-exec-<id>`) —
+		// the SAME key durable/run agents (workspaceRef `${ .runtime.executionId }`)
+		// and the Files-tab webdav reader use. Keying the helper by the bare
+		// executionId would land it on a DIFFERENT subtree than the agents
+		// (clone/gate/read_contract couldn't see agent files; the Files tab would be
+		// empty). Fall back to the bare id only if the instance id isn't stamped.
+		const [execRow] = await db
+			.select({ daprInstanceId: workflowExecutions.daprInstanceId })
+			.from(workflowExecutions)
+			.where(eq(workflowExecutions.id, executionId))
+			.limit(1);
+		const sharedWorkspaceKey = execRow?.daprInstanceId ?? executionId;
 		const helperSessionId = `${executionId}__cliws`;
 		const helperAppId = sessionHostAppId(helperSessionId);
 		// Fast path: a previously-provisioned helper is already up.
@@ -287,7 +299,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 					benchmarkInstanceId: null,
 					timeoutMinutes: 30,
 					sessionSecretEnv: ghToken ? { GITHUB_TOKEN: ghToken } : null,
-					sharedWorkspaceKey: executionId,
+					sharedWorkspaceKey,
 				});
 				const appId = prov?.agentAppId ?? helperAppId;
 				const ready = await waitForAgentWorkflowHostAppReady({ agentAppId: appId });
