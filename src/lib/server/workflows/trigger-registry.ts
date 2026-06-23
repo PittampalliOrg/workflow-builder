@@ -21,7 +21,8 @@ export type TriggerBacking =
 	| 'dapr-job'
 	| 'dapr-subscription'
 	| 'dapr-binding'
-	| 'argo-eventsource';
+	| 'argo-eventsource'
+	| 'github-webhook';
 
 export type TriggerFieldType = 'string' | 'number' | 'boolean' | 'select' | 'cron' | 'textarea';
 
@@ -159,8 +160,8 @@ export const TRIGGER_KINDS: Record<string, TriggerKind> = {
 		id: 'github',
 		label: 'GitHub',
 		icon: 'github',
-		description: 'Fire on GitHub repo events (Argo Events GitHub EventSource).',
-		backing: 'argo-eventsource',
+		description: 'Fire on GitHub repo events (PR/push/…). Auto-registers a repo webhook over Tailscale Funnel.',
+		backing: 'github-webhook',
 		configSchema: [
 			{ key: 'owner', label: 'Owner', type: 'string', required: true },
 			{ key: 'repo', label: 'Repository', type: 'string', required: true },

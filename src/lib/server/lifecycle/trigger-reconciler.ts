@@ -42,13 +42,22 @@ export async function activateWorkflowTrigger(triggerId: string): Promise<Trigge
 
 	await setStatus(triggerId, 'activating');
 	try {
-		const { backingRef } = await provisionBacking({
+		const { backingRef, configPatch } = await provisionBacking({
 			triggerId: row.id,
 			workflowId: row.workflowId,
 			kind: row.kind,
-			config: (row.config ?? {}) as Record<string, unknown>
+			config: (row.config ?? {}) as Record<string, unknown>,
+			backingRef: row.backingRef
 		});
-		await setStatus(triggerId, 'active', { backingRef, lastError: null });
+		// Persist any backing-produced config (e.g. the encrypted HMAC secret).
+		const mergedConfig = configPatch
+			? { ...((row.config ?? {}) as Record<string, unknown>), ...configPatch }
+			: undefined;
+		await setStatus(triggerId, 'active', {
+			backingRef,
+			lastError: null,
+			...(mergedConfig ? { config: mergedConfig } : {})
+		});
 		return { ok: true, status: 'active' };
 	} catch (err) {
 		const error = err instanceof Error ? err.message : 'activation failed';
@@ -70,7 +79,7 @@ export async function deactivateWorkflowTrigger(triggerId: string): Promise<Trig
 
 	await setStatus(triggerId, 'deactivating');
 	try {
-		await deprovisionBacking({ triggerId: row.id });
+		await deprovisionBacking({ triggerId: row.id, kind: row.kind, backingRef: row.backingRef });
 		await setStatus(triggerId, 'inactive', { backingRef: null, lastError: null });
 		return { ok: true, status: 'inactive' };
 	} catch (err) {

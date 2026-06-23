@@ -15,6 +15,7 @@
  */
 import { kubeApiFetch } from '$lib/server/kube/client';
 import { getTriggerKind } from '$lib/server/workflows/trigger-registry';
+import { registerGithubWebhook, deleteGithubWebhook } from '$lib/server/lifecycle/github-webhook';
 import { env } from '$env/dynamic/private';
 
 const ARGO_NS = (env.ARGO_EVENTS_NAMESPACE ?? process.env.ARGO_EVENTS_NAMESPACE ?? 'argo-events').trim();
@@ -47,18 +48,6 @@ function eventSourceSpec(name: string, ctx: BackingContext): Record<string, unkn
 			service: { ports: [{ port: 12000, targetPort: 12000 }] },
 			webhook: {
 				trigger: { port: '12000', endpoint: str('path', '/trigger'), method: str('method', 'POST') }
-			}
-		};
-	}
-	if (ctx.kind === 'github') {
-		return {
-			github: {
-				trigger: {
-					owner: str('owner'),
-					repository: str('repo'),
-					events: str('events', 'push').split(',').map((s) => s.trim()).filter(Boolean),
-					webhook: { endpoint: '/push', port: '12000', method: 'POST', url: '' }
-				}
 			}
 		};
 	}
@@ -151,14 +140,31 @@ async function ssaDelete(plural: string, name: string): Promise<void> {
  *  eventName equals the source-type's trigger key in the spec. */
 function eventNameFor(kind: string): string {
 	if (kind === 'webhook') return 'trigger';
-	if (kind === 'github') return 'trigger';
 	if (kind === 'resource') return 'trigger';
 	return 'trigger';
 }
 
-export async function provisionBacking(ctx: BackingContext): Promise<{ backingRef: string }> {
+export interface ProvisionResult {
+	backingRef: string;
+	/** Optional config keys to persist on the trigger row (e.g. encrypted HMAC secret). */
+	configPatch?: Record<string, unknown>;
+}
+
+export async function provisionBacking(ctx: BackingContext & { backingRef?: string | null }): Promise<ProvisionResult> {
 	const kind = getTriggerKind(ctx.kind);
 	if (!kind) throw new Error(`unknown trigger kind: ${ctx.kind}`);
+
+	// GitHub: BFF-native backing — register the repo webhook via the GitHub API
+	// (PAT from External Secrets) pointing at our public Funnel receiver. The
+	// per-trigger HMAC secret is generated + returned as an encrypted configPatch.
+	if (kind.backing === 'github-webhook') {
+		const { backingRef, configPatch } = await registerGithubWebhook({
+			triggerId: ctx.triggerId,
+			config: ctx.config
+		});
+		return { backingRef, configPatch };
+	}
+
 	if (kind.backing !== 'argo-eventsource') {
 		throw new Error(
 			`backing '${kind.backing}' for kind '${ctx.kind}' is not yet implemented (P5/P6: dapr-job/subscription/binding)`
@@ -172,7 +178,16 @@ export async function provisionBacking(ctx: BackingContext): Promise<{ backingRe
 	return { backingRef: `argo:${ARGO_NS}/${name}` };
 }
 
-export async function deprovisionBacking(ctx: { triggerId: string }): Promise<void> {
+export async function deprovisionBacking(ctx: {
+	triggerId: string;
+	kind?: string;
+	backingRef?: string | null;
+}): Promise<void> {
+	const kind = ctx.kind ? getTriggerKind(ctx.kind) : null;
+	if (kind?.backing === 'github-webhook' || ctx.backingRef?.startsWith('github:')) {
+		await deleteGithubWebhook(ctx.backingRef ?? null);
+		return;
+	}
 	const name = argoResourceName(ctx.triggerId);
 	// Sensor first (it depends on the EventSource), then the EventSource.
 	await ssaDelete('sensors', name);
