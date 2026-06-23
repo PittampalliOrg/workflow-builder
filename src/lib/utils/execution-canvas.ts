@@ -124,10 +124,29 @@ export function buildExecutionCanvasState(
 		if (executionStatus === 'error' && activeNodeStatus === 'idle') {
 			nodeStatuses[activeNodeId] = 'error';
 		} else if (isTerminal) {
+			// A terminal execution can't still have a "running" active node — a
+			// stale per-node 'running' (e.g. the run was cancelled/errored mid-node,
+			// or a durable/run child's terminal state never stamped a per-node
+			// success) must NOT keep animating. Honor a real terminal per-node
+			// status; otherwise inherit the execution's terminal status.
 			nodeStatuses[activeNodeId] =
-				activeNodeStatus !== 'idle' ? activeNodeStatus : executionStatus;
+				activeNodeStatus !== 'idle' && activeNodeStatus !== 'running'
+					? activeNodeStatus
+					: executionStatus;
 		} else {
 			nodeStatuses[activeNodeId] = 'running';
+		}
+	}
+
+	// Terminal sweep: once the execution is terminal, NO node may render as
+	// 'running' (canvas spinner / animated edges). Coerce any lingering 'running'
+	// — including non-active nodes left mid-flight — to the execution's terminal
+	// status so the page stops animating even after a refresh.
+	if (isTerminal) {
+		for (const id of Object.keys(nodeStatuses)) {
+			if (nodeStatuses[id] === 'running') {
+				nodeStatuses[id] = executionStatus;
+			}
 		}
 	}
 
