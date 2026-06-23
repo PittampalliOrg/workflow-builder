@@ -53,14 +53,24 @@ case are two orthogonal knobs, so the harness exposes them as inputs:
   The two evaluator families are mutually-exclusive sibling nodes gated by task-level `if`
   on `evaluationProfile`; both write the same `verdict-<i>.json`, so `read_verdict`
   aggregates mode-agnostically (skeptical any-fail, vote-gated).
+- **Profile-aware negotiation** — `propose`/`review` are verification-method-neutral in
+  their instructions; the **prompt** (which reads `.trigger.evaluationProfile`) tells them
+  the style: `ui-web` → BROWSER-verifiable criteria (what a design reviewer sees/clicks);
+  `library`/`service` → COMMAND/TEST-verifiable criteria where each `verify` names the exact
+  shell/test command or function-call assertion (`npm test`, `pytest`, `import+assert`,
+  `curl → 200`). So the *contract content* matches the task, not just the evaluator.
 - **Objective vs subjective criteria coexist** — `GANs.md`: "objective functionality is
   easily verifiable via tests" *and* taste is "gradable … armed with a highly opinionated,
   codified rubric." Each negotiated criterion carries `kind: objective|subjective` +
   `verify`. The deterministic **`gate`** is the objective hard threshold (build for
   `ui-web`; **build + tests** for `library`/`service`); the LLM critic grounds subjective
-  ones against the profile rubric. `read_contract` normalizes `kind` + picks
-  profile-appropriate dimensions (it reads `/sandbox/work/.wfb_profile`, written by
-  `init_state`).
+  ones against the profile rubric. **`read_contract` is profile-agnostic**: it accepts the
+  union of UI + code dimensions, infers `dimension` from the criterion text and `kind` from
+  the `verify` text — so it never forces UI dims onto a code contract (it does NOT depend on
+  any profile dotfile). The evaluator dispatch (`evaluate_ui`/`evaluate_code`) and the
+  `publish_shot`-skip read the profile directly from `.trigger` via jq. `publish_shot`
+  (Playwright screenshot) runs only for `ui-web`; `pr` derives the push target from the
+  cloned repo's git remote.
 
 **Generalization trigger inputs** (all default to today's `ui-web` behavior, so an
 unchanged trigger reproduces the validated run):
