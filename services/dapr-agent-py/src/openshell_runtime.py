@@ -10,9 +10,10 @@ import shlex
 import contextvars
 import threading
 from textwrap import dedent
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from openshell import SandboxClient, SandboxSession
+if TYPE_CHECKING:
+    from openshell import SandboxSession
 
 SANDBOX_NAME_ENV = "OPENSHELL_SANDBOX_NAME"
 SANDBOX_CWD_ENV = "OPENSHELL_CWD"
@@ -115,6 +116,8 @@ class OpenShellRuntime:
         with self._lock:
             if self._session is not None:
                 return self._session
+
+            from openshell import SandboxClient, SandboxSession
 
             client = SandboxClient.from_active_cluster()
             configured_name = (
@@ -494,7 +497,113 @@ class OpenShellRuntime:
         return parsed
 
 
-_DEFAULT_RUNTIME = OpenShellRuntime()
+WORKSPACE_MODE_ENV = "DAPR_AGENT_PY_WORKSPACE_MODE"
+LOCAL_WORKSPACE_ROOT_ENV = "DAPR_AGENT_PY_LOCAL_WORKSPACE_ROOT"
+DEFAULT_LOCAL_WORKSPACE_ROOT = "/sandbox/work"
+
+
+def _workspace_mode() -> str:
+    return (os.environ.get(WORKSPACE_MODE_ENV, "openshell") or "openshell").strip().lower()
+
+
+class LocalWorkspaceRuntime(OpenShellRuntime):
+    """Local-filesystem runtime with the SAME tool surface as
+    :class:`OpenShellRuntime`, but executing commands/python *in-pod* via
+    subprocess against a CSI-mounted workspace instead of issuing per-tool
+    mTLS RPCs to a remote openshell sandbox.
+
+    Used when ``DAPR_AGENT_PY_WORKSPACE_MODE=local`` (the JuiceFS-backed
+    ``dapr-agent-py-juicefs`` runtime). Only ``_exec`` / ``_ensure_session`` /
+    ``sandbox_name`` differ — every higher-level method (``stat_path``,
+    ``read_file_lines``, ``read_text``, ``write_text``, ``read_bytes_base64``,
+    ``glob_files``) inherits unchanged because it is implemented as a python
+    script run through ``run_python`` → ``_exec``, which now runs locally.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        root = (
+            os.environ.get(LOCAL_WORKSPACE_ROOT_ENV, DEFAULT_LOCAL_WORKSPACE_ROOT)
+            or DEFAULT_LOCAL_WORKSPACE_ROOT
+        ).strip() or DEFAULT_LOCAL_WORKSPACE_ROOT
+        self._local_root = root
+        # Default the working directory to the workspace mount root unless an
+        # explicit OPENSHELL_CWD was provided (workflow `with.cwd` still wins
+        # via set_cwd()).
+        if not os.environ.get(SANDBOX_CWD_ENV):
+            self._cwd = root
+
+    def _ensure_session(self) -> None:  # type: ignore[override]
+        # No remote session in local mode.
+        return None
+
+    @property
+    def sandbox_name(self) -> str:  # type: ignore[override]
+        return self._sandbox_name or "local"
+
+    def _exec_cwd(self) -> str | None:
+        for candidate in (self._cwd, getattr(self, "_local_root", None)):
+            if candidate and os.path.isdir(candidate):
+                return candidate
+        return None
+
+    def _exec(
+        self,
+        argv: list[str],
+        *,
+        stdin: bytes | None = None,
+        timeout_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        import subprocess
+
+        try:
+            proc = subprocess.run(
+                argv,
+                input=stdin,
+                cwd=self._exec_cwd(),
+                capture_output=True,
+                timeout=timeout_seconds or DEFAULT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            partial = exc.stdout.decode("utf-8", "replace") if exc.stdout else ""
+            err = exc.stderr.decode("utf-8", "replace") if exc.stderr else ""
+            return {
+                "ok": False,
+                "exit_code": 124,
+                "stdout": partial,
+                "stderr": err or f"timed out after {exc.timeout}s",
+                "output": _merge_output(partial, err or f"timed out after {exc.timeout}s"),
+                "sandbox_name": self.sandbox_name,
+            }
+        except FileNotFoundError as exc:
+            return {
+                "ok": False,
+                "exit_code": 127,
+                "stdout": "",
+                "stderr": str(exc),
+                "output": str(exc),
+                "sandbox_name": self.sandbox_name,
+            }
+
+        stdout = proc.stdout.decode("utf-8", "replace") if proc.stdout else ""
+        stderr = proc.stderr.decode("utf-8", "replace") if proc.stderr else ""
+        return {
+            "ok": proc.returncode == 0,
+            "exit_code": proc.returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+            "output": _merge_output(stdout, stderr),
+            "sandbox_name": self.sandbox_name,
+        }
+
+
+def new_runtime() -> OpenShellRuntime:
+    if _workspace_mode() == "local":
+        return LocalWorkspaceRuntime()
+    return OpenShellRuntime()
+
+
+_DEFAULT_RUNTIME = new_runtime()
 _RUNTIME_CONTEXT: contextvars.ContextVar[OpenShellRuntime | None] = (
     contextvars.ContextVar("openshell_runtime", default=None)
 )
@@ -510,9 +619,12 @@ def bind_runtime(
     cwd: str | None = None,
     session_id: str | None = None,
 ) -> tuple[OpenShellRuntime, contextvars.Token[OpenShellRuntime | None]]:
-    runtime = OpenShellRuntime()
+    runtime = new_runtime()
     runtime.set_sandbox_name(sandbox_name)
-    runtime.set_cwd(cwd or DEFAULT_CWD)
+    if cwd:
+        runtime.set_cwd(cwd)
+    elif not isinstance(runtime, LocalWorkspaceRuntime):
+        runtime.set_cwd(DEFAULT_CWD)
     runtime.set_session_id(session_id)
     token = _RUNTIME_CONTEXT.set(runtime)
     return runtime, token
