@@ -4539,6 +4539,13 @@ async function seedGeneratorCriticShowcases(params: {
 		// (default "auto"). interactive-cli family ONLY (7 cliWorkspace/JuiceFS nodes;
 		// see docs/gan-harness-workflow.md "Runtime / workspace-backend compatibility").
 		"gan-harness-cli-showcase.json",
+		// Same GAN harness re-authored for dapr-agent-py on the openshell-shared
+		// backend: a workspace/profile provisions ONE shared /sandbox sandbox + a
+		// deterministic clone_repo; all durable/run agents (evaluator-critic-agent)
+		// bind it via sandboxName/workspaceRef; the spine is plain workspace/command
+		// (no cliWorkspace). Code profiles (library/service); default library on
+		// jonschlinkert/is-number. ui-web/browser eval is a follow-up.
+		"gan-harness-dapr-showcase.json",
 		// Minimal single-node test of R1 persisted browser recording: a Playwright-MCP
 		// critic drives a real browser (navigate/snapshot/screenshot); the in-pod
 		// @playwright/mcp --save-video .webm is pushed to browser-artifacts and plays

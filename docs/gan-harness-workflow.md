@@ -123,29 +123,57 @@ pushback) · **`contract.json`** (negotiated criteria + passes — the grading t
 · **`progress.json`** (agentic memory) · `verdict.json` (per-iteration, per-criterion)
 · `critic-shot.png` (screenshot artifact).
 
-## Runtime / workspace-backend compatibility (CLI-family only)
+## Runtime / workspace-backend compatibility (two fixtures, two backends)
 
-This workflow is **interactive-cli-family only** (`claude-code-cli`, `codex-cli`,
-`agy-cli`). Verified e2e on ryzen for all three: each reaches `success` with per-node
-diffs captured at every node (plan → 4-round negotiate → refine generate+evaluate →
-publish → summary).
+The harness exists as **two sibling fixtures**, one per workspace-backend family. The
+GAN *logic* (contract negotiation, voting critics, `progress.json` memory, restart
+authority, profiles) is backend-agnostic and identical across both — only the workspace
+plumbing differs.
 
-It is **not** runnable on `dapr-agent-py` as authored. The deterministic spine is 7
-`workspace/command` nodes with **`cliWorkspace: true`** (`init_state`, `read_contract`,
-`gate`, `read_verdict`, `publish_shot`, `publish_contract`, `pr`) — these route to a
-cli-agent-py pod and read/write the per-execution **JuiceFS** mount `/sandbox/work`.
-`dapr-agent-py` uses the **openshell-shared** workspace backend, so a dapr generator's
-files are invisible to those juicefs nodes (the gate/read_contract/read_verdict can't
-observe the agent's work) → the loop stalls with sparse diffs. This is the
-`workspaceBackend` family split described in
+### `gan-harness-cli-showcase.json` — interactive-cli family (`juicefs-shared`)
+
+**interactive-cli-family only** (`claude-code-cli`, `codex-cli`, `agy-cli`). Verified e2e
+on ryzen for all three: each reaches `success` with per-node diffs captured at every node
+(plan → 4-round negotiate → refine generate+evaluate → publish → summary). The
+deterministic spine is `workspace/command` nodes with **`cliWorkspace: true`**
+(`init_state`, `read_contract`, `gate`, `read_verdict`, `maybe_restart`, `publish_shot`,
+`publish_contract`, `pr`) — these route to a cli-agent-py pod and read/write the
+per-execution **JuiceFS** mount `/sandbox/work`. The `plan` agent clones the repo into
+`/sandbox/work/repo`.
+
+It is **not** runnable on `dapr-agent-py`: `dapr-agent-py` uses the **openshell-shared**
+backend, so a dapr generator's files would be invisible to those JuiceFS nodes (the
+gate/read_contract/read_verdict couldn't observe the agent's work) → the loop stalls. This
+is the `workspaceBackend` family split described in
 [`interchangeable-agents-and-per-phase-selection.md`](./interchangeable-agents-and-per-phase-selection.md):
 cross-family mixing is blocked by the interactive-cli-only `/sandbox/work` mount.
 
-A `dapr-agent-py` variant would require re-authoring the 7 `cliWorkspace` nodes to the
-openshell backend (`workspace/*` on `openshell-agent-runtime`, no `cliWorkspace`) — a
-separate fixture, out of scope here. (Timeouts are not the blocker; the
-[parameterized build/verify](#parameterized-buildverify-convention-reusable-across-coding-workflows)
-+ end-to-end `timeoutMs` threading fixed the CLI build path.)
+### `gan-harness-dapr-showcase.json` — dapr-agent-py (`openshell-shared`)
+
+Re-authors the harness onto the **openshell-shared** backend (rooted at `/sandbox`),
+mirroring the proven `retroforge-showcase.json` shared-sandbox pattern:
+
+- A leading **`workspace/profile`** node (`keepAfterRun: true`, `rootPath: /sandbox`)
+  provisions ONE shared openshell sandbox; its `sandboxName` + `workspaceRef` outputs are
+  threaded into **every** `durable/run` agent (`sandboxName`/`workspaceRef`/`sandboxPolicy`)
+  and **every** `workspace/command` (`workspaceRef`) so all nodes see the same `/sandbox`.
+- A deterministic **`clone_repo`** (`workspace/command`) clones `repoUrl` into
+  `/sandbox/repo` using the ambient `$GITHUB_TOKEN` (proven by `async-coding-task.workflow.json`),
+  so the `plan` agent no longer clones — it just reads `/sandbox/repo` and writes `/sandbox/SPEC.md`.
+- The spine is plain `workspace/command` (**no `cliWorkspace`**); the Python heredocs port
+  unchanged (openshell `workspace/command` runs heredocs — RetroForge's `capture` does too).
+- All three agent slots default to **`evaluator-critic-agent`** (the dapr-agent-py agent
+  RetroForge seeds; the code critic needs no Playwright).
+
+**Scope: code profiles only.** Defaults to `evaluationProfile=library` on a small test
+repo (`jonschlinkert/is-number`); fully supports `library`/`service` (the Evaluator grounds
+by running build/tests/endpoints inside `/sandbox` — no browser). The `ui-web`
+Playwright-MCP browser path stays gated/skipped (the `if`-guards already skip
+design/`evaluate_ui`/`publish_shot` off `ui-web`) and is a documented follow-up:
+cross-pod live-preview reachability (repo in the openshell sandbox pod vs the browser
+sidecar in the agent pod). See
+[`dapr-agent-py-sandbox-architecture.md`](./dapr-agent-py-sandbox-architecture.md) for the
+backend trade-offs.
 
 ## Structured-output conformance (why `read_contract`/`read_verdict` normalize)
 
@@ -292,10 +320,10 @@ canonicalized by a deterministic `workspace/command` normalizer (never trust pro
 - **Multi-sprint contracts** (per `coleam00/adversarial-dev`): decompose into
   several sprints, each with its own negotiated contract + build + score, instead
   of one contract for the whole redesign.
-- **dapr-agent-py GAN variant**: re-author the 7 `cliWorkspace` JuiceFS nodes to the
-  `openshell-shared` backend (`workspace/*` on `openshell-agent-runtime`, no
-  `cliWorkspace`) so the canonical pattern also runs on `dapr-agent-py` (the CLI
-  fixture can't — `WorkspaceBackendMismatchError`).
+- **dapr-agent-py GAN variant** — ✅ SHIPPED as `gan-harness-dapr-showcase.json` (the
+  `openshell-shared` sibling above): `workspace/profile` + `clone_repo` + `sandboxName`/
+  `workspaceRef`-bound agents, code-profile scope. Remaining follow-up: the **ui-web /
+  Playwright browser eval on dapr** (cross-pod live-preview reachability).
 
 ## References
 

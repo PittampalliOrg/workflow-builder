@@ -1,0 +1,866 @@
+{
+  "document": {
+    "dsl": "1.0.0",
+    "name": "gan-harness-dapr-showcase",
+    "title": "GAN coding harness (dapr-agent-py): Planner → Generator↔Evaluator contract → build+test-graded loop → PR (openshell-shared, code profiles)",
+    "summary": "Anthropic GAN-style general coding harness running on dapr-agent-py over the openshell-shared workspace backend (sibling of gan-harness-cli-showcase). A workspace/profile provisions ONE shared /sandbox openshell sandbox (keepAfterRun); a deterministic clone_repo node clones repoUrl into /sandbox/repo. The Planner writes a HIGH-LEVEL SPEC.md; the Generator and a skeptical Evaluator NEGOTIATE a rigid acceptance contract (each criterion kind=objective|subjective) before any code. The build loop generates, passes a deterministic gate (build + tests), and the Evaluator grades the RUNNING artifact by executing the suite + exercising the API/endpoints (evaluationProfile=library|service; no browser). Exits when the gate passes AND every criterion passes; outputMode controls PR/branch/none. All durable/run agents + workspace/command nodes share the SAME openshell sandbox via sandboxName/workspaceRef. GITHUB_TOKEN is ambient in the sandbox. ui-web (browser) profile is a documented follow-up.",
+    "version": "1.0.0",
+    "namespace": "demos",
+    "x-workflow-builder": {
+      "input": {
+        "schema": {
+          "format": "json",
+          "document": {
+            "type": "object",
+            "required": [
+              "intent"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "title": "Redesign request",
+                "default": "Improve input validation and test coverage for the is-number library: correctly classify edge cases (empty string, whitespace-only, hex like \"0x1F\", scientific notation like \"1e3\", Infinity, and numeric strings) and keep `npm test` passing. Do NOT change the public API or add dependencies.",
+                "description": "What the agents change in the repo."
+              },
+              "planAgent": {
+                "type": "string",
+                "title": "Planner agent",
+                "default": "evaluator-critic-agent",
+                "description": "PLAN phase agent (reads /sandbox/repo + writes SPEC). openshell-shared family."
+              },
+              "generatorAgent": {
+                "type": "string",
+                "title": "Generator agent",
+                "default": "evaluator-critic-agent",
+                "description": "GENERATE phase agent."
+              },
+              "criticAgent": {
+                "type": "string",
+                "title": "Critic agent",
+                "default": "evaluator-critic-agent",
+                "description": "EVALUATOR agent — negotiates the contract AND grades the build by running the test suite / exercising the API (no browser). dapr-agent-py family."
+              },
+              "installCommand": {
+                "type": "string",
+                "title": "Install command",
+                "default": "auto",
+                "description": "Dependency-install command ('auto' = detect pnpm/npm/cargo/pip)."
+              },
+              "buildCommand": {
+                "type": "string",
+                "title": "Build command",
+                "default": "auto",
+                "description": "Build command the deterministic gate runs ('auto' = detect pnpm/npm/cargo/make)."
+              },
+              "previewCommand": {
+                "type": "string",
+                "title": "Preview command",
+                "default": "auto",
+                "description": "Preview/serve command the critic views ('auto' = detect npm/pnpm)."
+              },
+              "designPass": {
+                "type": "string",
+                "title": "Two-pass design",
+                "default": "true",
+                "description": "Run the design-tokens+wireframe review BEFORE code ('false' to skip)."
+              },
+              "criticVotes": {
+                "type": "string",
+                "title": "Critic votes",
+                "default": "2",
+                "description": "Independent Evaluator votes per build iteration; a criterion passes only if ALL votes agree (1 = single critic)."
+              },
+              "maxRestarts": {
+                "type": "string",
+                "title": "Max restarts",
+                "default": "2",
+                "description": "How many times the Evaluator may force a from-scratch restart (git reset --hard baseline) on fundamentally-broken work."
+              },
+              "repoUrl": {
+                "type": "string",
+                "title": "Repository (owner/repo)",
+                "default": "jonschlinkert/is-number",
+                "description": "GitHub owner/repo the agents clone + (optionally) open a PR into."
+              },
+              "repoRef": {
+                "type": "string",
+                "title": "Branch",
+                "default": "main",
+                "description": "Branch to clone from and use as the PR base."
+              },
+              "evaluationProfile": {
+                "type": "string",
+                "title": "Evaluation profile",
+                "default": "library",
+                "description": "How the Evaluator grounds + grades: 'ui-web' (Playwright + design rubric), 'library' (run tests + exercise the public API), 'service' (boot + hit endpoints + integration tests)."
+              },
+              "outputMode": {
+                "type": "string",
+                "title": "Output mode",
+                "default": "pr",
+                "description": "Remote-write policy: 'pr' (push branch + open PR), 'branch' (push branch only), 'none' (no remote change)."
+              },
+              "testCommand": {
+                "type": "string",
+                "title": "Test command",
+                "default": "auto",
+                "description": "Objective verify the gate runs for code profiles ('auto' = detect npm/pnpm test, cargo test, pytest)."
+              },
+              "taskScope": {
+                "type": "string",
+                "title": "Task scope",
+                "default": "Edit src/routes/+page.svelte plus a global stylesheet; plain SvelteKit + CSS only; do NOT change package.json deps or routing.",
+                "description": "Free-form hint of what/where to change (replaces UI-file hardcoding)."
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "input": {
+    "schema": {
+      "format": "json",
+      "document": {
+        "type": "object",
+        "required": [
+          "intent"
+        ],
+        "properties": {
+          "intent": {
+            "type": "string",
+            "title": "Redesign request",
+            "default": "Improve input validation and test coverage for the is-number library: correctly classify edge cases (empty string, whitespace-only, hex like \"0x1F\", scientific notation like \"1e3\", Infinity, and numeric strings) and keep `npm test` passing. Do NOT change the public API or add dependencies.",
+            "description": "What the agents change in the repo."
+          },
+          "planAgent": {
+            "type": "string",
+            "title": "Planner agent",
+            "default": "evaluator-critic-agent",
+            "description": "PLAN phase agent (reads /sandbox/repo + writes SPEC). openshell-shared family."
+          },
+          "generatorAgent": {
+            "type": "string",
+            "title": "Generator agent",
+            "default": "evaluator-critic-agent",
+            "description": "GENERATE phase agent."
+          },
+          "criticAgent": {
+            "type": "string",
+            "title": "Critic agent",
+            "default": "evaluator-critic-agent",
+            "description": "EVALUATOR agent — negotiates the contract AND grades the build by running the test suite / exercising the API (no browser). dapr-agent-py family."
+          },
+          "installCommand": {
+            "type": "string",
+            "title": "Install command",
+            "default": "auto",
+            "description": "Dependency-install command ('auto' = detect pnpm/npm/cargo/pip)."
+          },
+          "buildCommand": {
+            "type": "string",
+            "title": "Build command",
+            "default": "auto",
+            "description": "Build command the deterministic gate runs ('auto' = detect pnpm/npm/cargo/make)."
+          },
+          "previewCommand": {
+            "type": "string",
+            "title": "Preview command",
+            "default": "auto",
+            "description": "Preview/serve command the critic views ('auto' = detect npm/pnpm)."
+          },
+          "designPass": {
+            "type": "string",
+            "title": "Two-pass design",
+            "default": "true",
+            "description": "Run the design-tokens+wireframe review BEFORE code ('false' to skip)."
+          },
+          "criticVotes": {
+            "type": "string",
+            "title": "Critic votes",
+            "default": "2",
+            "description": "Independent Evaluator votes per build iteration; a criterion passes only if ALL votes agree (1 = single critic)."
+          },
+          "maxRestarts": {
+            "type": "string",
+            "title": "Max restarts",
+            "default": "2",
+            "description": "How many times the Evaluator may force a from-scratch restart (git reset --hard baseline) on fundamentally-broken work."
+          },
+          "repoUrl": {
+            "type": "string",
+            "title": "Repository (owner/repo)",
+            "default": "jonschlinkert/is-number",
+            "description": "GitHub owner/repo the agents clone + (optionally) open a PR into."
+          },
+          "repoRef": {
+            "type": "string",
+            "title": "Branch",
+            "default": "main",
+            "description": "Branch to clone from and use as the PR base."
+          },
+          "evaluationProfile": {
+            "type": "string",
+            "title": "Evaluation profile",
+            "default": "library",
+            "description": "How the Evaluator grounds + grades: 'ui-web' (Playwright + design rubric), 'library' (run tests + exercise the public API), 'service' (boot + hit endpoints + integration tests)."
+          },
+          "outputMode": {
+            "type": "string",
+            "title": "Output mode",
+            "default": "pr",
+            "description": "Remote-write policy: 'pr' (push branch + open PR), 'branch' (push branch only), 'none' (no remote change)."
+          },
+          "testCommand": {
+            "type": "string",
+            "title": "Test command",
+            "default": "auto",
+            "description": "Objective verify the gate runs for code profiles ('auto' = detect npm/pnpm test, cargo test, pytest)."
+          },
+          "taskScope": {
+            "type": "string",
+            "title": "Task scope",
+            "default": "Edit src/routes/+page.svelte plus a global stylesheet; plain SvelteKit + CSS only; do NOT change package.json deps or routing.",
+            "description": "Free-form hint of what/where to change (replaces UI-file hardcoding)."
+          }
+        }
+      }
+    }
+  },
+  "output": {
+    "as": "${ .summary }"
+  },
+  "do": [
+    {
+      "workspace_profile": {
+        "call": "workspace/profile",
+        "with": {
+          "name": "gan-harness-dapr",
+          "rootPath": "/sandbox",
+          "managedBy": "workflow-builder:demos:gan-harness-dapr",
+          "timeoutMs": 600000,
+          "ttlSeconds": 3600,
+          "enabledTools": [
+            "execute_command",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "list_files",
+            "mkdir",
+            "file_stat"
+          ],
+          "keepAfterRun": true,
+          "sandboxPolicy": {
+            "mode": "per-run",
+            "template": "dapr-agent",
+            "ttlSeconds": 3600,
+            "keepAfterRun": true
+          },
+          "sandboxTemplate": "dapr-agent",
+          "commandTimeoutMs": 300000
+        }
+      }
+    },
+    {
+      "clone_repo": {
+        "call": "workspace/command",
+        "with": {
+          "workspaceRef": "${ .workspace_profile.workspaceRef }",
+          "command": "${ \"set -e\\ncd /sandbox\\nrm -rf repo\\ngit clone https://x-access-token:${GITHUB_TOKEN}@github.com/\" + (.trigger.repoUrl // \"jonschlinkert/is-number\") + \".git repo\\ncd /sandbox/repo\\nREF=\" + ((.trigger.repoRef // \"\") | @sh) + \"\\nif [ -n \\\"$REF\\\" ] && git rev-parse --verify \\\"origin/$REF\\\" >/dev/null 2>&1; then git checkout \\\"$REF\\\"; fi\\ngit config user.email agent@workflow-builder.local\\ngit config user.name \\\"workflow-builder agent\\\"\\nBASE=$(git rev-parse --abbrev-ref HEAD)\\nprintf %s \\\"$BASE\\\" > /sandbox/.wfb_base\\necho CLONED $(git rev-parse HEAD) on $BASE\" }",
+          "cwd": "/sandbox",
+          "timeoutMs": 600000,
+          "allowFailure": false
+        }
+      }
+    },
+    {
+      "plan": {
+        "call": "durable/run",
+        "with": {
+          "cwd": "/sandbox",
+          "mode": "execute_direct",
+          "workspaceRef": "${ .workspace_profile.workspaceRef }",
+          "agentRef": {
+            "slug": "${ .trigger.planAgent // \"evaluator-critic-agent\" }"
+          },
+          "agentConfig": {
+            "name": "Planner",
+            "instructions": "You are the PLANNER for an autonomous coding task. The target repo is ALREADY cloned at /sandbox/repo. READ the repo (entry points, package manifest, existing tests) and write a HIGH-LEVEL spec to /sandbox/SPEC.md (ONLY that file; do NOT edit the repo). Cover: the product/task context, the target user/consumer, and the quality dimensions that matter for THIS task — for a UI task: design_quality, originality, craft, functionality; for a library/service task: correctness, tests, code_quality, maintainability, performance. Deliberately stay HIGH-LEVEL: do NOT enumerate granular, implementation-level acceptance criteria — the Generator and the Evaluator negotiate the specific, testable criteria next. End with a one-line summary."
+          },
+          "body": {
+            "prompt": "${ \"Task:\\n\" + (.trigger.intent // \"make the requested change\") + \"\\n\\nScope hint: \" + (.trigger.taskScope // \"\") + \"\\n\\nTarget repo: https://github.com/\" + (.trigger.repoUrl // \"jonschlinkert/is-number\") + \" (branch \" + (.trigger.repoRef // \"main\") + \")\" + \"\\nThe repo is ALREADY cloned at /sandbox/repo. READ it (entry points, package manifest, existing tests) and write a HIGH-LEVEL spec to /sandbox/SPEC.md (product/task context + the quality dimensions relevant to this task). Do NOT enumerate granular acceptance criteria (those are negotiated next). Do NOT edit the repo. End with a one-line summary.\" }",
+            "overrides": {
+              "cwd": "/sandbox",
+              "maxTurns": 25,
+              "timeoutMinutes": 60
+            }
+          },
+          "sandboxName": "${ .workspace_profile.sandboxName }",
+          "sandboxPolicy": {
+            "mode": "per-run",
+            "template": "dapr-agent",
+            "ttlSeconds": 3600,
+            "keepAfterRun": true
+          }
+        }
+      }
+    },
+    {
+      "init_state": {
+        "call": "workspace/command",
+        "with": {
+          "cwd": "/sandbox",
+          "command": "${ \"export WFB_EVAL_PROFILE=\" + ((.trigger.evaluationProfile // \"ui-web\") | @sh) + \"; export WFB_REPO=\" + ((.trigger.repoUrl // \"PittampalliOrg/sveltekit-landing-demo\") | @sh) + \"; export WFB_BASE=\" + ((.trigger.repoRef // \"main\") | @sh) + \"; export WFB_OUT=\" + ((.trigger.outputMode // \"pr\") | @sh) + \"; export WFB_MAXRESTARTS=\" + ((.trigger.maxRestarts // \"2\") | @sh) + \"; export WFB_INTENT=\" + ((.trigger.intent // \"automated change\") | @sh) + \"; export WFB_BUILD_OVERRIDE=\" + ((.trigger.buildCommand // \"\") | @sh) + \"; export WFB_INSTALL_OVERRIDE=\" + ((.trigger.installCommand // \"\") | @sh) + \"; export WFB_PREVIEW_OVERRIDE=\" + ((.trigger.previewCommand // \"\") | @sh) + \"; \" + \"WFB_INSTALL=\\\"$WFB_INSTALL_OVERRIDE\\\"; WFB_BUILD=\\\"$WFB_BUILD_OVERRIDE\\\"; WFB_PREVIEW=\\\"$WFB_PREVIEW_OVERRIDE\\\"\\ncd /sandbox/repo 2>/dev/null || true\\nif [ -z \\\"$WFB_INSTALL\\\" ] || [ \\\"$WFB_INSTALL\\\" = auto ]; then\\n  if [ -f pnpm-lock.yaml ]; then WFB_INSTALL='pnpm install --frozen-lockfile';\\n  elif [ -f package.json ]; then WFB_INSTALL='npm install --no-audit --no-fund';\\n  elif [ -f Cargo.toml ]; then WFB_INSTALL='cargo fetch';\\n  elif [ -f requirements.txt ]; then WFB_INSTALL='pip install -r requirements.txt';\\n  else WFB_INSTALL='true'; fi\\nfi\\nif [ -z \\\"$WFB_BUILD\\\" ] || [ \\\"$WFB_BUILD\\\" = auto ]; then\\n  if [ -f pnpm-lock.yaml ]; then WFB_BUILD='pnpm build';\\n  elif [ -f package.json ]; then WFB_BUILD='npm run build';\\n  elif [ -f Cargo.toml ]; then WFB_BUILD='cargo build --release';\\n  elif [ -f Makefile ] && grep -q '^build:' Makefile; then WFB_BUILD='make build';\\n  else WFB_BUILD='echo no-build-step'; fi\\nfi\\nif [ -z \\\"$WFB_PREVIEW\\\" ] || [ \\\"$WFB_PREVIEW\\\" = auto ]; then\\n  if [ -f package.json ]; then WFB_PREVIEW='npm run preview -- --host 127.0.0.1';\\n  else WFB_PREVIEW='true'; fi\\nfi\\nsh -c \\\"$WFB_INSTALL\\\" >/tmp/install.log 2>&1 || true\\nprintf '%s' \\\"$WFB_EVAL_PROFILE\\\" > /sandbox/.wfb_profile\\nprintf '%s' \\\"$WFB_REPO\\\" > /sandbox/.wfb_repo\\nprintf '%s' \\\"$WFB_OUT\\\" > /sandbox/.wfb_out\\nprintf '%s' \\\"$WFB_INTENT\\\" > /sandbox/.wfb_intent\\nprintf '%s' \\\"$WFB_MAXRESTARTS\\\" > /sandbox/.wfb_maxrestarts\\nBASE=$(git rev-parse HEAD 2>/dev/null || echo unknown); printf '{\\\"baseline\\\":\\\"%s\\\",\\\"log\\\":[]}' \\\"$BASE\\\" > /sandbox/progress.json; cat /sandbox/progress.json\" }",
+          "timeoutMs": 900000,
+          "allowFailure": true,
+          "workspaceRef": "${ .workspace_profile.workspaceRef }"
+        }
+      }
+    },
+    {
+      "approve_goal_spec": {
+        "listen": {
+          "to": {
+            "one": {
+              "with": {
+                "type": "goal_spec_approval"
+              }
+            }
+          }
+        },
+        "timeout": {
+          "after": "PT2H"
+        }
+      }
+    },
+    {
+      "design": {
+        "if": "${ (.approve_goal_spec.timedOut // false) == false and (.approve_goal_spec.approved // true) == true and ((.trigger.designPass // \"true\") != \"false\") and ((.trigger.evaluationProfile // \"ui-web\") == \"ui-web\") }",
+        "for": {
+          "each": "d",
+          "in": [
+            0,
+            1,
+            2
+          ],
+          "at": "didx"
+        },
+        "while": "${ ( (((.loop.last.design_read.result.stdout // .loop.last.design_read.stdout // .loop.last.design_read.result.output // .loop.last.design_read.output // \"{}\") | fromjson?) // {}) | (.approved // false) ) | not }",
+        "do": [
+          {
+            "design_propose": {
+              "call": "durable/run",
+              "with": {
+                "cwd": "/sandbox",
+                "mode": "execute_direct",
+                "workspaceRef": "${ .workspace_profile.workspaceRef }",
+                "agentRef": {
+                  "slug": "${ .trigger.generatorAgent // \"evaluator-critic-agent\" }"
+                },
+                "agentConfig": {
+                  "name": "Designer (Generator, two-pass)",
+                  "instructions": "You are the GENERATOR doing the FIRST design pass, BEFORE writing any code (no CSS/HTML yet). Read /sandbox/SPEC.md. Produce a compact, OPINIONATED design system and commit to a distinctive direction (avoid generic 'AI slop' — no default purple-gradient-on-white-cards, no near-black + acid-green). Write TWO files at /sandbox (NOT in the repo):\n1) /sandbox/design-tokens.json — STRICT JSON: {\"palette\":[{\"name\":\"...\",\"hex\":\"#...\"}, ... 4-6 named colors], \"typography\":{\"display\":\"font + role\",\"body\":\"font + role\"}, \"spacing\":\"the scale/rhythm\", \"motif\":\"the one bold, justifiable aesthetic risk\"}.\n2) /sandbox/wireframe.txt — an ASCII wireframe of the page layout (hero, feature cards, pricing, CTA), top to bottom.\nOn later rounds READ /sandbox/design-review.json (the Evaluator's objections) and REVISE both files to address every objection. Do NOT edit the repo. End with a one-line summary."
+                },
+                "body": {
+                  "prompt": "${ \"Two-pass design (proposal). Intent: \" + (.trigger.intent // \"redesign the landing page\") + \"\n\nRead /sandbox/SPEC.md and, if present, /sandbox/design-review.json (prior objections). Write/revise /sandbox/design-tokens.json (4-6 named hex + display/body type + spacing + one bold motif) and /sandbox/wireframe.txt (ASCII layout). No code.\" }",
+                  "overrides": {
+                    "cwd": "/sandbox",
+                    "maxTurns": 15,
+                    "timeoutMinutes": 45
+                  }
+                },
+                "sandboxName": "${ .workspace_profile.sandboxName }",
+                "sandboxPolicy": {
+                  "mode": "per-run",
+                  "template": "dapr-agent",
+                  "ttlSeconds": 3600,
+                  "keepAfterRun": true
+                }
+              }
+            }
+          },
+          {
+            "design_review": {
+              "call": "durable/run",
+              "with": {
+                "cwd": "/sandbox",
+                "mode": "execute_direct",
+                "workspaceRef": "${ .workspace_profile.workspaceRef }",
+                "agentRef": {
+                  "slug": "${ .trigger.criticAgent // \"evaluator-critic-agent\" }"
+                },
+                "agentConfig": {
+                  "name": "Design lead (Evaluator, two-pass)",
+                  "instructions": "You are a SKEPTICAL design lead at a small studio reviewing a design PLAN before any code (do NOT open a browser; there is nothing to view yet). Read /sandbox/SPEC.md, /sandbox/design-tokens.json and /sandbox/wireframe.txt. Judge ONLY on Originality and Craft: does the palette/typography/spacing form a coherent, DISTINCTIVE identity grounded in the product+audience, with at least one bold, justifiable aesthetic risk? REJECT generic library-default / 'AI slop' choices (ubiquitous purple gradients over white cards; near-black backgrounds with acid-green accents; default system fonts with no hierarchy). Write /sandbox/design-review.json as STRICT JSON: {\"approved\": <bool>, \"feedback\": \"specific, actionable objections or what to change\"}. Set approved:true ONLY when the direction is distinctive and coherent (not generic) — otherwise approved:false with concrete objections. End with a one-line summary."
+                },
+                "body": {
+                  "prompt": "${ \"Review the DESIGN PLAN (no code yet). Read /sandbox/SPEC.md, design-tokens.json, wireframe.txt. Write /sandbox/design-review.json {approved, feedback}. Reject generic/AI-slop direction; approve only a distinctive, coherent one.\" }",
+                  "overrides": {
+                    "cwd": "/sandbox",
+                    "maxTurns": 12,
+                    "timeoutMinutes": 30
+                  }
+                },
+                "sandboxName": "${ .workspace_profile.sandboxName }",
+                "sandboxPolicy": {
+                  "mode": "per-run",
+                  "template": "dapr-agent",
+                  "ttlSeconds": 3600,
+                  "keepAfterRun": true
+                }
+              }
+            }
+          },
+          {
+            "design_read": {
+              "call": "workspace/command",
+              "with": {
+                "cwd": "/sandbox",
+                "command": "for i in $(seq 1 30); do [ -s /sandbox/design-review.json ] && break; sleep 1; done\npython3 - <<'PYZZ'\nimport json,os\nP='/sandbox/design-review.json'\ntry:\n    d=json.load(open(P))\nexcept Exception:\n    print(json.dumps({'approved':False,'haveTokens':os.path.exists('/sandbox/design-tokens.json'),'error':'design-review.json missing/invalid'}));raise SystemExit\nap=d.get('approved')\nif ap is None:\n    txt=str(d.get('verdict') or d.get('overall_verdict') or d.get('summary') or d.get('feedback') or '').lower()\n    ap=(('approv' in txt) or ('looks good' in txt) or ('lgtm' in txt) or ('accept' in txt)) and not (('reject' in txt) or ('revise' in txt) or ('not approv' in txt))\nhave=os.path.exists('/sandbox/design-tokens.json')\napproved=bool(ap) and have\nprint(json.dumps({'approved':approved,'haveTokens':have}))\nPYZZ",
+                "timeoutMs": 30000,
+                "allowFailure": true,
+                "workspaceRef": "${ .workspace_profile.workspaceRef }"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "negotiate": {
+        "if": "${ (.approve_goal_spec.timedOut // false) == false and (.approve_goal_spec.approved // true) == true }",
+        "for": {
+          "each": "n",
+          "in": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "at": "nidx"
+        },
+        "while": "${ ( (((.loop.last.read_contract.result.stdout // .loop.last.read_contract.stdout // .loop.last.read_contract.result.output // .loop.last.read_contract.output // \"{}\") | fromjson?) // {}) | (.agreed // false) ) | not }",
+        "do": [
+          {
+            "propose": {
+              "call": "durable/run",
+              "with": {
+                "cwd": "/sandbox",
+                "mode": "execute_direct",
+                "workspaceRef": "${ .workspace_profile.workspaceRef }",
+                "agentRef": {
+                  "slug": "${ .trigger.generatorAgent // \"evaluator-critic-agent\" }"
+                },
+                "agentConfig": {
+                  "name": "Proposer (Generator)",
+                  "instructions": "You are the GENERATOR in a contract NEGOTIATION, BEFORE writing any code. Read /sandbox/SPEC.md. Propose a concrete plan: break the work into a SMALL set of discrete, INDEPENDENTLY VERIFIABLE changes. For EACH, state (a) what you will implement, (b) EXACTLY how it can be verified — using the verification method the prompt specifies for this task's evaluation profile (a browser interaction for UI work; a shell/test command or function-call assertion for code work), and (c) a crisp acceptance criterion. On later rounds, READ /sandbox/contract-review.md (the Evaluator's objections) and REVISE your proposal to address every objection. Write your proposal to /sandbox/proposal.md (ONLY that file; do NOT edit the repo and do NOT write contract.json). End with a one-line summary."
+                },
+                "body": {
+                  "prompt": "${ \"Contract negotiation (proposal). Intent: \" + (.trigger.intent // \"make the requested change\") + \"\\nScope: \" + (.trigger.taskScope // \"\") + \"\\nEvaluation profile: \" + (.trigger.evaluationProfile // \"ui-web\") + \"\\n\\nRead /sandbox/SPEC.md and, if it exists, /sandbox/contract-review.md (prior objections). Write/revise /sandbox/proposal.md with discrete changes, each with an acceptance criterion that is \" + (if (.trigger.evaluationProfile // \"ui-web\") == \"ui-web\" then \"BROWSER-verifiable (what a design reviewer sees and clicks on the rendered page)\" else \"COMMAND/TEST-verifiable — name the EXACT shell/test command or function-call assertion that proves it (e.g. `npm test` passes, `python -m pytest -q` passes, import the module and assert f(x)==expected, or curl an endpoint and assert the status). NO browser checks.\" end) + \".\" }",
+                  "overrides": {
+                    "cwd": "/sandbox",
+                    "maxTurns": 20,
+                    "timeoutMinutes": 60
+                  }
+                },
+                "sandboxName": "${ .workspace_profile.sandboxName }",
+                "sandboxPolicy": {
+                  "mode": "per-run",
+                  "template": "dapr-agent",
+                  "ttlSeconds": 3600,
+                  "keepAfterRun": true
+                }
+              }
+            }
+          },
+          {
+            "review": {
+              "call": "durable/run",
+              "with": {
+                "cwd": "/sandbox",
+                "mode": "execute_direct",
+                "workspaceRef": "${ .workspace_profile.workspaceRef }",
+                "agentRef": {
+                  "slug": "${ .trigger.criticAgent // \"evaluator-critic-agent\" }"
+                },
+                "agentConfig": {
+                  "name": "Evaluator (Contract negotiation)",
+                  "instructions": "You are a HIGHLY SKEPTICAL EVALUATOR negotiating the acceptance contract for a coding task, BEFORE any code is written. You do NOT write code and you do NOT open a browser yet. Read /sandbox/SPEC.md and /sandbox/proposal.md. Adversarially review the proposed features + acceptance criteria. Reject vague/unmeasurable/overly-broad criteria and ones that omit key edge cases (empty/error states, responsive/mobile layout, keyboard focus / accessibility, interactive elements actually working). Produce a FOCUSED contract — aim for roughly 8-15 of the MOST IMPORTANT, user-visible acceptance criteria (quality over quantity; don't pad with dozens of micro-checks, but don't drop important coverage either). Prefer criteria checkable by THIS task's verification method (the prompt states it): for UI work, perceptual/structural checks a design reviewer makes by looking at and clicking the rendered page (e.g. 'the hero headline is clearly the largest text', 'the primary CTA is visually distinct'); for code work, criteria whose `verify` names the EXACT shell/test command or function-call assertion that proves them (e.g. '`npm test` passes', 'import the module and assert f(x)==expected', 'curl /health → 200') — NOT browser checks. AVOID brittle exact-number assertions (specific pixel sizes / hex / rgb values) where a perceptual description works; describe the INTENT. Write your objections + required changes to /sandbox/contract-review.md. THEN write the negotiated contract to /sandbox/contract.json as JSON of the form {\"agreed\": <boolean>, \"criteria\": [{\"id\":\"c1\",\"kind\":\"objective|subjective\",\"dimension\":\"<task dimension>\",\"description\":\"the criterion\",\"verify\":\"EXACTLY how to check it (a browser interaction for UI; a shell/test command for code)\",\"passes\": false}, ...]}. Mark each criterion kind=objective if it is verifiable by running a command/test (it MUST name the command in verify), or kind=subjective if it needs judgment against a rubric. Use task-appropriate dimensions: for UI use design_quality|originality|craft|functionality; for a library/service use correctness|tests|code_quality|maintainability|performance. Give each criterion a clear description + verify and a dimension when you can; every criterion starts with \"passes\": false. (A deterministic normalizer canonicalizes field names afterward, so focus on clear, testable description+verify rather than exact key names.) CONVERGENCE: set \"agreed\": true as soon as the criteria are specific, verifiable by the task's method, and cover the key cases — do NOT withhold agreement over minor polish; the build loop iterates on quality. Only keep \"agreed\": false if criteria are genuinely vague or missing important coverage. End with a one-line summary."
+                },
+                "body": {
+                  "prompt": "${ \"Negotiate the acceptance contract for the '\" + (.trigger.evaluationProfile // \"ui-web\") + \"' profile. Read /sandbox/SPEC.md and /sandbox/proposal.md, write your objections to /sandbox/contract-review.md, and write/update /sandbox/contract.json (agreed + criteria, each kind/dimension/verify, passes:false) as STRICT JSON per your instructions. Each criterion must be \" + (if (.trigger.evaluationProfile // \"ui-web\") == \"ui-web\" then \"BROWSER-verifiable (what a design reviewer sees and clicks on the rendered page)\" else \"COMMAND/TEST-verifiable — name the EXACT shell/test command or function-call assertion that proves it (e.g. `npm test` passes, `python -m pytest -q` passes, import the module and assert f(x)==expected, or curl an endpoint and assert the status). NO browser checks.\" end) + \" Be skeptical: set agreed:true ONLY when every criterion is specific, verifiable by that method, and covers edge cases.\" }",
+                  "overrides": {
+                    "cwd": "/sandbox",
+                    "maxTurns": 25,
+                    "timeoutMinutes": 60
+                  }
+                },
+                "sandboxName": "${ .workspace_profile.sandboxName }",
+                "sandboxPolicy": {
+                  "mode": "per-run",
+                  "template": "dapr-agent",
+                  "ttlSeconds": 3600,
+                  "keepAfterRun": true
+                }
+              }
+            }
+          },
+          {
+            "read_contract": {
+              "call": "workspace/command",
+              "with": {
+                "cwd": "/sandbox",
+                "command": "for i in $(seq 1 30); do [ -s /sandbox/contract.json ] && break; sleep 1; done\npython3 - <<'PYZZ'\nimport json,re,os\nP='/sandbox/contract.json'\n_UIDIMS=('design_quality','originality','craft','functionality')\n_CODEDIMS=('correctness','tests','code_quality','maintainability','performance')\n_ALLDIMS=_UIDIMS+_CODEDIMS\ndef dim(t):\n    t=t.lower()\n    if re.search(r'test|spec|coverage|assert|pytest|exit code',t): return 'tests'\n    if re.search(r'perf|latency|throughput|benchmark|memory|speed',t): return 'performance'\n    if re.search(r'lint|format|typecheck|type-check|readab|docstring|comment',t): return 'code_quality'\n    if re.search(r'maintain|modular|coupl|cohes|structure|duplicat',t): return 'maintainability'\n    if re.search(r'typograph|spacing|color|contrast|hierarch|whitespace|align|legib',t): return 'craft'\n    if re.search(r'distinct|original|custom|bold|unique|generic|template|slop|memorable',t): return 'originality'\n    if re.search(r'identity|mood|cohesi|brand|aesthetic|palette|tone|polish',t): return 'design_quality'\n    if re.search(r'click|render|responsive|keyboard|accessib|hover|focus|navigat|button|layout|visible',t): return 'functionality'\n    return 'correctness'\ndef kindof(desc,ver):\n    t=(str(desc)+' '+str(ver)).lower()\n    return 'objective' if re.search(r'\\btest\\b|command|exit|run |npm |pnpm |cargo |pytest|curl|build|lint|typecheck|assert|returns?\\b|==',t) else 'subjective'\ntry:\n    raw=json.load(open(P))\nexcept Exception:\n    print(json.dumps({'agreed':False,'criteriaCount':0,'valid':False,'error':'contract.json missing/invalid'}));raise SystemExit\ncrit=raw.get('criteria') if isinstance(raw.get('criteria'),list) else []\nnorm=[]\nfor i,c in enumerate(crit):\n    if not isinstance(c,dict): continue\n    desc=c.get('description') or c.get('text') or c.get('criterion') or c.get('requirement') or c.get('name') or ''\n    ver=c.get('verify') or c.get('verification') or c.get('check') or c.get('how') or ''\n    dd=c.get('dimension')\n    if dd not in _ALLDIMS: dd=dim(str(desc)+' '+str(ver))\n    kk=c.get('kind') if c.get('kind') in ('objective','subjective') else kindof(desc,ver)\n    norm.append({'id':str(c.get('id') or ('c'+str(i+1))),'kind':kk,'dimension':dd,'description':str(desc),'verify':str(ver),'passes':bool(c.get('passes'))})\ndef _nk(s): return ' '.join(re.sub(r'[^a-z0-9 ]',' ',str(s).lower()).split())\nseen=set(); dd2=[]\nfor c in norm:\n    k=_nk(c['description'])\n    if k and k in seen: continue\n    if k: seen.add(k)\n    dd2.append(c)\nremoved=len(norm)-len(dd2); norm=dd2\n_MAXC=int(os.environ.get('WFB_MAX_CRITERIA','24') or 24)\ncapped=max(0,len(norm)-_MAXC); norm=norm[:_MAXC]\nvalid=len(norm)>=3 and all(x['description'] for x in norm)\nagreed=bool(raw.get('agreed')) and valid\nraw['criteria']=norm; raw['agreed']=agreed\njson.dump(raw,open(P,'w'))\nprint(json.dumps({'agreed':agreed,'criteriaCount':len(norm),'deduped':removed,'capped':capped,'valid':valid}))\nPYZZ",
+                "timeoutMs": 30000,
+                "allowFailure": true,
+                "workspaceRef": "${ .workspace_profile.workspaceRef }"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "refine": {
+        "if": "${ (.approve_goal_spec.timedOut // false) == false and (.approve_goal_spec.approved // true) == true }",
+        "for": {
+          "each": "i",
+          "in": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29
+          ],
+          "at": "idx"
+        },
+        "while": "${ ( (( ((.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") | test(\"OBJECTIVE PASS\")) and (((((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson?) // {}) | (.meets_criteria // false)) == true) ) | not) and ((((((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson?) // {}) | (.stalled // false)) == true) | not) ) }",
+        "do": [
+          {
+            "generate": {
+              "call": "durable/run",
+              "with": {
+                "cwd": "/sandbox/repo",
+                "mode": "execute_direct",
+                "workspaceRef": "${ .workspace_profile.workspaceRef }",
+                "agentRef": {
+                  "slug": "${ .trigger.generatorAgent // \"evaluator-critic-agent\" }"
+                },
+                "agentConfig": {
+                  "name": "Generator",
+                  "instructions": "You are the GENERATOR. Implement the redesign in /sandbox/repo to satisfy the NEGOTIATED CONTRACT. GETTING UP TO SPEED (do this FIRST, every turn): read /sandbox/progress.json (the chronological log of prior iterations) and run `git -C /sandbox/repo log --oneline -10`. If /sandbox/design-tokens.json and /sandbox/wireframe.txt exist, treat them as the AUTHORITATIVE visual direction (color tokens, typography, spacing, the bold motif, layout) — implement THAT design; do not invent a different palette/type system. Then read /sandbox/contract.json (the AUTHORITATIVE acceptance criteria — each has id/description/verify/passes) and /sandbox/SPEC.md. Focus on the criteria whose \"passes\" is false. Edit whatever files the task requires (see the task scope in the prompt). Prefer the smallest change that satisfies the FAILING criteria; do NOT add dependencies unless the task explicitly calls for it. You do NOT grade your own work: a deterministic build gate + an independent skeptical Evaluator (who RUNS/EXERCISES the artifact per the evaluation profile and grades EACH contract criterion) evaluate every attempt. Each turn: address the build output AND the Evaluator's per-criterion feedback, make the most impactful improvement toward the FAILING criteria, dependencies are PRE-INSTALLED (node_modules present) so run the project's build yourself to verify before finishing, end with a one-line summary."
+                },
+                "body": {
+                  "prompt": "${ \"Task: \" + (.trigger.intent // \"make the requested change\") + \"\\nScope: \" + (.trigger.taskScope // \"\") + \"\\n\\nRepo: /sandbox/repo. Authoritative acceptance criteria: /sandbox/contract.json. Spec: /sandbox/SPEC.md. Memory: /sandbox/progress.json (read it + git log FIRST).\" + \"\\n\\nYour previous attempt:\\n\" + (.loop.last.generate.content // \"(first attempt)\") + \"\\n\\nBuild gate (must end OBJECTIVE PASS):\\n\" + ((.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") // \"(not run yet)\") + \"\\n\\nEvaluator per-criterion feedback (from the browser):\\n\" + (try ((((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson?) // {}) | (.feedback // .summary // \"(none)\")) catch \"(none)\") + \"\\n\\nMake the build pass AND satisfy every FAILING contract criterion, then end with a brief summary.\" }",
+                  "overrides": {
+                    "cwd": "/sandbox/repo",
+                    "maxTurns": 50,
+                    "timeoutMinutes": 120
+                  }
+                },
+                "sandboxName": "${ .workspace_profile.sandboxName }",
+                "sandboxPolicy": {
+                  "mode": "per-run",
+                  "template": "dapr-agent",
+                  "ttlSeconds": 3600,
+                  "keepAfterRun": true
+                }
+              }
+            }
+          },
+          {
+            "gate": {
+              "call": "workspace/command",
+              "with": {
+                "cwd": "/sandbox/repo",
+                "command": "${ \"export WFB_EVAL_PROFILE=\" + ((.trigger.evaluationProfile // \"ui-web\") | @sh) + \"; export WFB_TEST_OVERRIDE=\" + ((.trigger.testCommand // \"\") | @sh) + \"; export WFB_BUILD_OVERRIDE=\" + ((.trigger.buildCommand // \"\") | @sh) + \"; export WFB_INSTALL_OVERRIDE=\" + ((.trigger.installCommand // \"\") | @sh) + \"; export WFB_PREVIEW_OVERRIDE=\" + ((.trigger.previewCommand // \"\") | @sh) + \"; \" + \"WFB_INSTALL=\\\"$WFB_INSTALL_OVERRIDE\\\"; WFB_BUILD=\\\"$WFB_BUILD_OVERRIDE\\\"; WFB_PREVIEW=\\\"$WFB_PREVIEW_OVERRIDE\\\"; WFB_TEST=\\\"$WFB_TEST_OVERRIDE\\\"\\ncd /sandbox/repo 2>/dev/null || true\\nif [ -z \\\"$WFB_INSTALL\\\" ] || [ \\\"$WFB_INSTALL\\\" = auto ]; then\\n  if [ -f pnpm-lock.yaml ]; then WFB_INSTALL='pnpm install --frozen-lockfile';\\n  elif [ -f package.json ]; then WFB_INSTALL='npm install --no-audit --no-fund';\\n  elif [ -f Cargo.toml ]; then WFB_INSTALL='cargo fetch';\\n  elif [ -f requirements.txt ]; then WFB_INSTALL='pip install -r requirements.txt';\\n  else WFB_INSTALL='true'; fi\\nfi\\nif [ -z \\\"$WFB_BUILD\\\" ] || [ \\\"$WFB_BUILD\\\" = auto ]; then\\n  if [ -f pnpm-lock.yaml ]; then WFB_BUILD='pnpm build';\\n  elif [ -f package.json ]; then WFB_BUILD='npm run build';\\n  elif [ -f Cargo.toml ]; then WFB_BUILD='cargo build --release';\\n  elif [ -f Makefile ] && grep -q '^build:' Makefile; then WFB_BUILD='make build';\\n  else WFB_BUILD='echo no-build-step'; fi\\nfi\\nif [ -z \\\"$WFB_PREVIEW\\\" ] || [ \\\"$WFB_PREVIEW\\\" = auto ]; then\\n  if [ -f package.json ]; then WFB_PREVIEW='npm run preview -- --host 127.0.0.1';\\n  else WFB_PREVIEW='true'; fi\\nfi\\nif [ -z \\\"$WFB_TEST\\\" ] || [ \\\"$WFB_TEST\\\" = auto ]; then\\n  if [ -f pnpm-lock.yaml ]; then WFB_TEST='pnpm test';\\n  elif [ -f package.json ]; then WFB_TEST='npm test';\\n  elif [ -f Cargo.toml ]; then WFB_TEST='cargo test';\\n  elif [ -f pyproject.toml ] || [ -f pytest.ini ] || [ -f setup.cfg ] || [ -f requirements.txt ]; then WFB_TEST='python -m pytest -q';\\n  else WFB_TEST='true'; fi\\nfi\\n[ -d node_modules ] || sh -c \\\"$WFB_INSTALL\\\" >/tmp/install.log 2>&1 || true\\nsh -c \\\"$WFB_BUILD\\\" >/tmp/build.log 2>&1; BRC=$?\\nTRC=0\\ncase \\\"$WFB_EVAL_PROFILE\\\" in\\n  library|service) sh -c \\\"$WFB_TEST\\\" >/tmp/test.log 2>&1; TRC=$? ;;\\nesac\\nif [ \\\"$BRC\\\" -eq 0 ] && [ \\\"$TRC\\\" -eq 0 ]; then echo 'OBJECTIVE PASS: build+test OK'; else echo \\\"OBJECTIVE FAIL: build rc=$BRC test rc=$TRC\\\"; tail -30 /tmp/build.log; tail -30 /tmp/test.log 2>/dev/null; fi\\necho \\\"__EXIT__$BRC\\\"\" }",
+                "timeoutMs": 600000,
+                "allowFailure": true,
+                "workspaceRef": "${ .workspace_profile.workspaceRef }"
+              }
+            }
+          },
+          {
+            "evaluate_ui": {
+              "call": "durable/run",
+              "with": {
+                "cwd": "/sandbox/repo",
+                "mode": "execute_direct",
+                "workspaceRef": "${ .workspace_profile.workspaceRef }",
+                "agentRef": {
+                  "slug": "${ .trigger.criticAgent // \"evaluator-critic-agent\" }"
+                },
+                "agentConfig": {
+                  "name": "Critic",
+                  "instructions": "You are an exacting, SKEPTICAL EVALUATOR with strong taste, independent of the builder and of any other evaluator; you do NOT edit the repo. GRADE the running app against the negotiated contract.\n\nSTEP 1 — start the app. The build already ran (node_modules + build output exist in /sandbox/repo). Start the preview server on port 4173 in the background and wait until it answers:\n  cd /sandbox/repo && (nohup npm run preview -- --port 4173 --host 127.0.0.1 >/tmp/preview.log 2>&1 &) ; for i in $(seq 1 40); do curl -sf http://127.0.0.1:4173/ >/dev/null 2>&1 && break; sleep 1; done ; tail -5 /tmp/preview.log\nIf preview never answers, fall back to dev on the same port and wait the same way.\n\nSTEP 2 — inspect with the Playwright MCP browser tools (server 'playwright'): browser_navigate to http://127.0.0.1:4173/ , browser_snapshot, browser_take_screenshot (filename 'critic-shot.png' -> /sandbox/critic-shot.png). Resize the viewport (desktop/tablet/mobile) and browser_click the nav / primary CTA, re-snapshotting, to test interactivity + responsiveness. Use the BROWSER — do not write your own screenshot scripts.\n\nIGNORE churn in package-lock.json, node_modules/, .svelte-kit/, build/. Judge ONLY the redesign source (src/) and the rendered UI.\n\nSTEP 3 — read /sandbox/contract.json (the AUTHORITATIVE criteria), /sandbox/SPEC.md, /sandbox/design-tokens.json (the agreed visual direction), and the source.\n\nSTEP 4 — grade the rendered app against EACH criterion. Decide passes true/false based on what you ACTUALLY SAW / INTERACTED WITH (use the criterion's \"verify\"). DEFAULT to passes:false unless the evidence is clear. Generic or merely 'fine' work does NOT pass.\n\nSTEP 5 — WRITE your verdict to /sandbox/verdict-0.json as STRICT JSON with EXACTLY this shape: {\"criteria\": [{\"id\": \"c1\", \"passes\": <bool>, \"feedback\": \"concrete browser evidence\"}, ...], \"allPass\": <bool>, \"score\": <0-100>, \"meets_criteria\": <same as allPass>, \"recommend_restart\": <bool — TRUE ONLY if the work is FUNDAMENTALLY broken (build/page does not render, core layout entirely absent) so starting over beats patching; else false>, \"feedback\": \"overall summary of what still fails\"}. Write ONLY verdict-0.json (do NOT edit contract.json — a deterministic aggregator combines the votes). After writing it, stop the server (pkill -f vite 2>/dev/null; pkill -f 'npm run' 2>/dev/null) and end with a one-line summary."
+                },
+                "body": {
+                  "prompt": "${ \"Grade the redesigned app in /sandbox/repo against EACH criterion in /sandbox/contract.json by VIEWING + interacting with it in the browser (Playwright MCP), then WRITE /sandbox/verdict-0.json (per-criterion passes + allPass + meets_criteria + recommend_restart). Follow your instructions exactly.\" + \"\n\nPreview command for THIS run: \" + (.trigger.previewCommand // \"auto\") }",
+                  "overrides": {
+                    "cwd": "/sandbox/repo",
+                    "maxTurns": 35,
+                    "timeoutMinutes": 60
+                  }
+                },
+                "sandboxName": "${ .workspace_profile.sandboxName }",
+                "sandboxPolicy": {
+                  "mode": "per-run",
+                  "template": "dapr-agent",
+                  "ttlSeconds": 3600,
+                  "keepAfterRun": true
+                }
+              },
+              "if": "${ (.trigger.evaluationProfile // \"ui-web\") == \"ui-web\" }"
+            }
+          },
+          {
+            "evaluate_code": {
+              "call": "durable/run",
+              "with": {
+                "cwd": "/sandbox/repo",
+                "mode": "execute_direct",
+                "workspaceRef": "${ .workspace_profile.workspaceRef }",
+                "agentRef": {
+                  "slug": "${ .trigger.criticAgent // \"evaluator-critic-agent\" }"
+                },
+                "agentConfig": {
+                  "name": "Code critic",
+                  "instructions": "You are an exacting, SKEPTICAL EVALUATOR independent of the builder and of any other evaluator; you do NOT edit the repo and you do NOT open a browser. GRADE the artifact in /sandbox/repo against the negotiated contract by RUNNING it (objective ground-truth), per the evaluation profile in the prompt.\n\nSTEP 1 — read /sandbox/contract.json (the AUTHORITATIVE criteria; each has id/kind/dimension/description/verify), /sandbox/SPEC.md, and the relevant source.\n\nSTEP 2 — GROUND IN REALITY (never grade from a static diff):\n  - library profile: run the project's test suite + typecheck/lint (e.g. `npm test`, `cargo test`, `python -m pytest -q`), and EXERCISE the public API yourself in a scratch script (import it, call it with real + edge inputs, print results). Use the criterion's `verify` command where given.\n  - service profile: build + START the server in the background, wait for it to listen, then HIT its endpoints with curl (status codes, happy-path + error/edge payloads) and run any integration tests. Stop the server when done.\n  Capture real command output/exit codes as your evidence.\n\nSTEP 3 — grade EACH criterion. For kind=objective, it passes ONLY if the named command/test actually exits 0 / produces the asserted output (you ran it). For kind=subjective, judge against the dimension (correctness/code_quality/maintainability/performance) from what you SAW running + reading the code. DEFAULT to passes:false unless the evidence is clear; merely 'looks fine' does NOT pass.\n\nSTEP 4 — WRITE your verdict to /sandbox/verdict-0.json as STRICT JSON: {\"criteria\": [{\"id\": \"c1\", \"passes\": <bool>, \"feedback\": \"concrete command output / evidence\"}, ...], \"allPass\": <bool>, \"score\": <0-100>, \"meets_criteria\": <same as allPass>, \"recommend_restart\": <bool — TRUE only if fundamentally broken (does not build/import/run) so starting over beats patching; else false>, \"feedback\": \"overall summary of what still fails\"}. Write ONLY verdict-0.json (do NOT edit contract.json — a deterministic aggregator combines the votes). End with a one-line summary."
+                },
+                "body": {
+                  "prompt": "${ \"Grade the artifact in /sandbox/repo against EACH criterion in /sandbox/contract.json by RUNNING it (tests / API / endpoints) per the '\" + (.trigger.evaluationProfile // \"library\") + \"' profile, then WRITE /sandbox/verdict-0.json (per-criterion passes + allPass + meets_criteria + recommend_restart). Follow your instructions exactly. Test command hint: \" + (.trigger.testCommand // \"auto\") }",
+                  "overrides": {
+                    "cwd": "/sandbox/repo",
+                    "maxTurns": 35,
+                    "timeoutMinutes": 60
+                  }
+                },
+                "sandboxName": "${ .workspace_profile.sandboxName }",
+                "sandboxPolicy": {
+                  "mode": "per-run",
+                  "template": "dapr-agent",
+                  "ttlSeconds": 3600,
+                  "keepAfterRun": true
+                }
+              },
+              "if": "${ (.trigger.evaluationProfile // \"ui-web\") != \"ui-web\" }"
+            }
+          },
+          {
+            "evaluate_ui_2": {
+              "call": "durable/run",
+              "with": {
+                "cwd": "/sandbox/repo",
+                "mode": "execute_direct",
+                "workspaceRef": "${ .workspace_profile.workspaceRef }",
+                "agentRef": {
+                  "slug": "${ .trigger.criticAgent // \"evaluator-critic-agent\" }"
+                },
+                "agentConfig": {
+                  "name": "Critic (vote 2)",
+                  "instructions": "You are an exacting, SKEPTICAL EVALUATOR with strong taste, independent of the builder and of any other evaluator; you do NOT edit the repo. GRADE the running app against the negotiated contract.\n\nSTEP 1 — start the app. The build already ran (node_modules + build output exist in /sandbox/repo). Start the preview server on port 4173 in the background and wait until it answers:\n  cd /sandbox/repo && (nohup npm run preview -- --port 4173 --host 127.0.0.1 >/tmp/preview.log 2>&1 &) ; for i in $(seq 1 40); do curl -sf http://127.0.0.1:4173/ >/dev/null 2>&1 && break; sleep 1; done ; tail -5 /tmp/preview.log\nIf preview never answers, fall back to dev on the same port and wait the same way.\n\nSTEP 2 — inspect with the Playwright MCP browser tools (server 'playwright'): browser_navigate to http://127.0.0.1:4173/ , browser_snapshot, browser_take_screenshot (filename 'critic-shot.png' -> /sandbox/critic-shot.png). Resize the viewport (desktop/tablet/mobile) and browser_click the nav / primary CTA, re-snapshotting, to test interactivity + responsiveness. Use the BROWSER — do not write your own screenshot scripts.\n\nIGNORE churn in package-lock.json, node_modules/, .svelte-kit/, build/. Judge ONLY the redesign source (src/) and the rendered UI.\n\nSTEP 3 — read /sandbox/contract.json (the AUTHORITATIVE criteria), /sandbox/SPEC.md, /sandbox/design-tokens.json (the agreed visual direction), and the source.\n\nSTEP 4 — grade the rendered app against EACH criterion. Decide passes true/false based on what you ACTUALLY SAW / INTERACTED WITH (use the criterion's \"verify\"). DEFAULT to passes:false unless the evidence is clear. Generic or merely 'fine' work does NOT pass.\n\nSTEP 5 — WRITE your verdict to /sandbox/verdict-1.json as STRICT JSON with EXACTLY this shape: {\"criteria\": [{\"id\": \"c1\", \"passes\": <bool>, \"feedback\": \"concrete browser evidence\"}, ...], \"allPass\": <bool>, \"score\": <0-100>, \"meets_criteria\": <same as allPass>, \"recommend_restart\": <bool — TRUE ONLY if the work is FUNDAMENTALLY broken (build/page does not render, core layout entirely absent) so starting over beats patching; else false>, \"feedback\": \"overall summary of what still fails\"}. Write ONLY verdict-1.json (do NOT edit contract.json — a deterministic aggregator combines the votes). After writing it, stop the server (pkill -f vite 2>/dev/null; pkill -f 'npm run' 2>/dev/null) and end with a one-line summary."
+                },
+                "body": {
+                  "prompt": "${ \"Grade the redesigned app in /sandbox/repo against EACH criterion in /sandbox/contract.json by VIEWING + interacting with it in the browser (Playwright MCP), then WRITE /sandbox/verdict-1.json (per-criterion passes + allPass + meets_criteria + recommend_restart). Follow your instructions exactly.\" + \"\n\nPreview command for THIS run: \" + (.trigger.previewCommand // \"auto\") }",
+                  "overrides": {
+                    "cwd": "/sandbox/repo",
+                    "maxTurns": 35,
+                    "timeoutMinutes": 60
+                  }
+                },
+                "sandboxName": "${ .workspace_profile.sandboxName }",
+                "sandboxPolicy": {
+                  "mode": "per-run",
+                  "template": "dapr-agent",
+                  "ttlSeconds": 3600,
+                  "keepAfterRun": true
+                }
+              },
+              "if": "${ (.trigger.evaluationProfile // \"ui-web\") == \"ui-web\" and ((.trigger.criticVotes // \"2\") | tonumber? // 2) >= 2 }"
+            }
+          },
+          {
+            "evaluate_code_2": {
+              "call": "durable/run",
+              "with": {
+                "cwd": "/sandbox/repo",
+                "mode": "execute_direct",
+                "workspaceRef": "${ .workspace_profile.workspaceRef }",
+                "agentRef": {
+                  "slug": "${ .trigger.criticAgent // \"evaluator-critic-agent\" }"
+                },
+                "agentConfig": {
+                  "name": "Code critic (vote 2)",
+                  "instructions": "You are an exacting, SKEPTICAL EVALUATOR independent of the builder and of any other evaluator; you do NOT edit the repo and you do NOT open a browser. GRADE the artifact in /sandbox/repo against the negotiated contract by RUNNING it (objective ground-truth), per the evaluation profile in the prompt.\n\nSTEP 1 — read /sandbox/contract.json (the AUTHORITATIVE criteria; each has id/kind/dimension/description/verify), /sandbox/SPEC.md, and the relevant source.\n\nSTEP 2 — GROUND IN REALITY (never grade from a static diff):\n  - library profile: run the project's test suite + typecheck/lint (e.g. `npm test`, `cargo test`, `python -m pytest -q`), and EXERCISE the public API yourself in a scratch script (import it, call it with real + edge inputs, print results). Use the criterion's `verify` command where given.\n  - service profile: build + START the server in the background, wait for it to listen, then HIT its endpoints with curl (status codes, happy-path + error/edge payloads) and run any integration tests. Stop the server when done.\n  Capture real command output/exit codes as your evidence.\n\nSTEP 3 — grade EACH criterion. For kind=objective, it passes ONLY if the named command/test actually exits 0 / produces the asserted output (you ran it). For kind=subjective, judge against the dimension (correctness/code_quality/maintainability/performance) from what you SAW running + reading the code. DEFAULT to passes:false unless the evidence is clear; merely 'looks fine' does NOT pass.\n\nSTEP 4 — WRITE your verdict to /sandbox/verdict-1.json as STRICT JSON: {\"criteria\": [{\"id\": \"c1\", \"passes\": <bool>, \"feedback\": \"concrete command output / evidence\"}, ...], \"allPass\": <bool>, \"score\": <0-100>, \"meets_criteria\": <same as allPass>, \"recommend_restart\": <bool — TRUE only if fundamentally broken (does not build/import/run) so starting over beats patching; else false>, \"feedback\": \"overall summary of what still fails\"}. Write ONLY verdict-1.json (do NOT edit contract.json — a deterministic aggregator combines the votes). End with a one-line summary."
+                },
+                "body": {
+                  "prompt": "${ \"Grade the artifact in /sandbox/repo against EACH criterion in /sandbox/contract.json by RUNNING it (tests / API / endpoints) per the '\" + (.trigger.evaluationProfile // \"library\") + \"' profile, then WRITE /sandbox/verdict-1.json (per-criterion passes + allPass + meets_criteria + recommend_restart). Follow your instructions exactly. Test command hint: \" + (.trigger.testCommand // \"auto\") }",
+                  "overrides": {
+                    "cwd": "/sandbox/repo",
+                    "maxTurns": 35,
+                    "timeoutMinutes": 60
+                  }
+                },
+                "sandboxName": "${ .workspace_profile.sandboxName }",
+                "sandboxPolicy": {
+                  "mode": "per-run",
+                  "template": "dapr-agent",
+                  "ttlSeconds": 3600,
+                  "keepAfterRun": true
+                }
+              },
+              "if": "${ (.trigger.evaluationProfile // \"ui-web\") != \"ui-web\" and ((.trigger.criticVotes // \"2\") | tonumber? // 2) >= 2 }"
+            }
+          },
+          {
+            "read_verdict": {
+              "call": "workspace/command",
+              "with": {
+                "cwd": "/sandbox",
+                "command": "for i in $(seq 1 40); do ls /sandbox/verdict-*.json >/dev/null 2>&1 && break; sleep 1; done\n[ -f /sandbox/critic-shot.png ] || cp \"$(ls -1 /sandbox/shots/*.png 2>/dev/null | head -1)\" /sandbox/critic-shot.png 2>/dev/null\npython3 - <<'PYZZ'\nimport json,glob,os\nfrom collections import defaultdict\nPROG='/sandbox/progress.json'\nvotes=[]\nfor f in sorted(glob.glob('/sandbox/verdict-*.json')):\n    try: votes.append(json.load(open(f)))\n    except Exception: pass\nif not votes:\n    try: votes=[json.load(open('/sandbox/verdict.json'))]\n    except Exception: votes=[]\nif not votes:\n    print(json.dumps({'meets_criteria':False,'stalled':False,'recommend_restart':False,'votes':0,'feedback':'no verdict files'}));raise SystemExit\ncp=defaultdict(list)\nfor v in votes:\n    for c in (v.get('criteria') or []):\n        if isinstance(c,dict) and c.get('id') is not None:\n            cp[str(c.get('id'))].append(bool(c.get('passes')))\n# skeptical aggregation: a criterion passes only if ALL votes pass it\nagg={cid: (all(pl) and len(pl)>0) for cid,pl in cp.items()}\ntotal=len(agg); passed=sum(1 for ok in agg.values() if ok)\nres = total>0 and passed==total\nrr=[bool(v.get('recommend_restart')) for v in votes]\nrecommend_restart = (sum(1 for x in rr if x) > (len(rr)/2.0)) and not res\n# update contract.json passes from the aggregate\ntry:\n    con=json.load(open('/sandbox/contract.json'))\n    for c in (con.get('criteria') or []):\n        if isinstance(c,dict) and str(c.get('id')) in agg: c['passes']=agg[str(c.get('id'))]\n    json.dump(con,open('/sandbox/contract.json','w'))\nexcept Exception: pass\nfb=' || '.join(str(v.get('feedback') or v.get('summary') or '') for v in votes)[:400]\ntry: p=json.load(open(PROG))\nexcept Exception: p={'baseline':'unknown','log':[]}\np.setdefault('log',[]).append({'iteration':len(p.get('log',[])),'criteriaPassed':passed,'criteriaTotal':total,'allPass':res,'votes':len(votes),'recommendRestart':recommend_restart,'note':fb[:200]})\njson.dump(p,open(PROG,'w'))\nK=3; seq=[e.get('criteriaPassed',0) for e in p['log'] if 'criteriaPassed' in e]; stalled=False\nif not res and len(seq)>K: stalled = max(seq[-K:]) <= max(seq[:-K])\nprint(json.dumps({'meets_criteria':res,'stalled':stalled,'recommend_restart':recommend_restart,'passed':passed,'total':total,'votes':len(votes),'feedback':fb[:300]}))\nPYZZ",
+                "timeoutMs": 60000,
+                "allowFailure": true,
+                "workspaceRef": "${ .workspace_profile.workspaceRef }"
+              }
+            }
+          },
+          {
+            "maybe_restart": {
+              "if": "${ ((.trigger.maxRestarts // \"2\") | tonumber? // 2) > 0 }",
+              "call": "workspace/command",
+              "with": {
+                "cwd": "/sandbox",
+                "command": "set +e\nMAXR=$(cat /sandbox/.wfb_maxrestarts 2>/dev/null || echo 2)\nexport WFB_MAXRESTARTS=\"$MAXR\"\npython3 - <<'PYZZ'\nimport json,os,subprocess\ntry: MAXR=int(os.environ.get('WFB_MAXRESTARTS','2') or 2)\nexcept Exception: MAXR=2\ntry: p=json.load(open('/sandbox/progress.json'))\nexcept Exception: p={'log':[],'baseline':'unknown'}\nlog=p.get('log') or []\nlast=log[-1] if log else {}\nrc=int(p.get('resetCount',0))\nbase=p.get('baseline','')\nif last.get('recommendRestart') and not last.get('allPass') and rc<MAXR and base and base!='unknown':\n    subprocess.run(['git','-C','/sandbox/repo','reset','--hard',base])\n    subprocess.run(['git','-C','/sandbox/repo','clean','-fd'])\n    p['resetCount']=rc+1\n    p.setdefault('log',[]).append({'iteration':len(p.get('log',[])),'event':'restart','resetCount':rc+1,'note':'Evaluator forced from-scratch restart (recommend_restart)'})\n    json.dump(p,open('/sandbox/progress.json','w'))\n    print('RESTARTED reset_count='+str(rc+1))\nelse:\n    print('NO_RESTART reset_count='+str(rc)+' max='+str(MAXR))\nPYZZ",
+                "timeoutMs": 60000,
+                "allowFailure": true,
+                "workspaceRef": "${ .workspace_profile.workspaceRef }"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "publish_shot": {
+        "call": "workspace/command",
+        "with": {
+          "cwd": "/sandbox",
+          "command": "${ \"export WFB_BUILD_OVERRIDE=\" + ((.trigger.buildCommand // \"\") | @sh) + \"; export WFB_INSTALL_OVERRIDE=\" + ((.trigger.installCommand // \"\") | @sh) + \"; export WFB_PREVIEW_OVERRIDE=\" + ((.trigger.previewCommand // \"\") | @sh) + \"; \" + \"WFB_INSTALL=\\\"$WFB_INSTALL_OVERRIDE\\\"; WFB_BUILD=\\\"$WFB_BUILD_OVERRIDE\\\"; WFB_PREVIEW=\\\"$WFB_PREVIEW_OVERRIDE\\\"\\ncd /sandbox/repo 2>/dev/null || true\\nif [ -z \\\"$WFB_INSTALL\\\" ] || [ \\\"$WFB_INSTALL\\\" = auto ]; then\\n  if [ -f pnpm-lock.yaml ]; then WFB_INSTALL='pnpm install --frozen-lockfile';\\n  elif [ -f package.json ]; then WFB_INSTALL='npm install --no-audit --no-fund';\\n  elif [ -f Cargo.toml ]; then WFB_INSTALL='cargo fetch';\\n  elif [ -f requirements.txt ]; then WFB_INSTALL='pip install -r requirements.txt';\\n  else WFB_INSTALL='true'; fi\\nfi\\nif [ -z \\\"$WFB_BUILD\\\" ] || [ \\\"$WFB_BUILD\\\" = auto ]; then\\n  if [ -f pnpm-lock.yaml ]; then WFB_BUILD='pnpm build';\\n  elif [ -f package.json ]; then WFB_BUILD='npm run build';\\n  elif [ -f Cargo.toml ]; then WFB_BUILD='cargo build --release';\\n  elif [ -f Makefile ] && grep -q '^build:' Makefile; then WFB_BUILD='make build';\\n  else WFB_BUILD='echo no-build-step'; fi\\nfi\\nif [ -z \\\"$WFB_PREVIEW\\\" ] || [ \\\"$WFB_PREVIEW\\\" = auto ]; then\\n  if [ -f package.json ]; then WFB_PREVIEW='npm run preview -- --host 127.0.0.1';\\n  else WFB_PREVIEW='true'; fi\\nfi\\ncd /sandbox/repo\\n(nohup sh -c \\\"$WFB_PREVIEW --port 4321\\\" >/tmp/preview.log 2>&1 &) || true\\nfor i in $(seq 1 40); do curl -sf http://127.0.0.1:4321/ >/dev/null 2>&1 && break; sleep 1; done\\nPLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers playwright screenshot --browser chromium --full-page --viewport-size 1280,900 http://127.0.0.1:4321/ /sandbox/critic-shot.png || echo SHOT_FAILED\\npkill -f vite 2>/dev/null; pkill -f \\\"npm run\\\" 2>/dev/null; pkill -f preview 2>/dev/null\\nls -la /sandbox/critic-shot.png 2>/dev/null || echo NO-SHOT\" }",
+          "readFile": "/sandbox/critic-shot.png",
+          "timeoutMs": 60000,
+          "allowFailure": true,
+          "workspaceRef": "${ .workspace_profile.workspaceRef }"
+        },
+        "artifacts": [
+          {
+            "fileId": "${ .data.fileId }",
+            "if": "${ (.data.fileId // \"\") != \"\" }",
+            "kind": "image",
+            "slot": "primary",
+            "title": "Rendered redesign (Playwright critic screenshot)",
+            "contentType": "image/png",
+            "description": "Full-page screenshot the critic captured in-browser via the Playwright MCP server."
+          }
+        ],
+        "if": "${ (.trigger.evaluationProfile // \"ui-web\") == \"ui-web\" }"
+      }
+    },
+    {
+      "publish_contract": {
+        "call": "workspace/command",
+        "with": {
+          "cwd": "/sandbox",
+          "command": "ls -la /sandbox/contract.json 2>/dev/null || echo no-contract",
+          "readFile": "/sandbox/contract.json",
+          "timeoutMs": 60000,
+          "allowFailure": true,
+          "workspaceRef": "${ .workspace_profile.workspaceRef }"
+        },
+        "artifacts": [
+          {
+            "from": "${ ((.data.result.stdout // .data.stdout // \"{}\") | fromjson?) // {} }",
+            "if": "${ ((.data.result.stdout // .data.stdout // \"\") | test(\"criteria\")) }",
+            "kind": "json",
+            "slot": "secondary",
+            "title": "Negotiated acceptance contract",
+            "description": "The Generator↔Evaluator negotiated contract.json (testable criteria + per-criterion passes flags)."
+          }
+        ]
+      }
+    },
+    {
+      "pr": {
+        "call": "workspace/command",
+        "with": {
+          "cwd": "/sandbox/repo",
+          "command": "REPO=$(git -C /sandbox/repo remote get-url origin 2>/dev/null | sed -e 's#.*github.com[:/]##' -e 's#\\.git$##'); [ -n \"$REPO\" ] || REPO=$(cat /sandbox/.wfb_repo 2>/dev/null || echo PittampalliOrg/sveltekit-landing-demo)\nBASE=$(cat /sandbox/.wfb_base 2>/dev/null || echo main)\nOUT=$(cat /sandbox/.wfb_out 2>/dev/null || echo branch)\nTITLE=$(head -c 72 /sandbox/.wfb_intent 2>/dev/null || echo 'automated change'); [ -n \"$TITLE\" ] || TITLE='automated change'\ncd /sandbox/repo && git config user.email agent@workflow-builder.local && git config user.name 'workflow-builder agent'\nBR=wfb-$(date +%s) && git checkout -b \"$BR\" && git add -A && (git commit -m \"$TITLE (workflow-builder GAN harness)\" || echo nothing-to-commit)\ngit push https://x-access-token:$GITHUB_TOKEN@github.com/$REPO.git HEAD:\"$BR\"\nif [ \"$OUT\" = pr ]; then\n  PR=$(curl -sS -X POST -H \"Authorization: Bearer $GITHUB_TOKEN\" -H 'Accept: application/vnd.github+json' https://api.github.com/repos/$REPO/pulls -d \"{\\\"title\\\":\\\"$TITLE (automated)\\\",\\\"head\\\":\\\"$BR\\\",\\\"base\\\":\\\"$BASE\\\",\\\"body\\\":\\\"Automated change via the workflow-builder GAN coding harness (plan/negotiate/generate/evaluate).\\\"}\")\n  echo \"$PR\" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(\"PR_URL=\"+str(d.get(\"html_url\") or d.get(\"message\") or d))'\nelse echo \"BRANCH_PUSHED=$BR\"; fi",
+          "timeoutMs": 120000,
+          "allowFailure": true,
+          "workspaceRef": "${ .workspace_profile.workspaceRef }"
+        },
+        "artifacts": [
+          {
+            "from": "${ (.data.result.stdout // .data.stdout // .data.result.output // .data.output // \"\") }",
+            "kind": "text",
+            "slot": "primary",
+            "title": "Pull request",
+            "description": "git push + GitHub PR output (PR_URL=...)."
+          }
+        ],
+        "if": "${ (.trigger.outputMode // \"pr\") != \"none\" }"
+      }
+    },
+    {
+      "summary": {
+        "set": {
+          "buildPass": "${ ((.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") | test(\"OBJECTIVE PASS\")) }",
+          "criticPass": "${ ((((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson?) // {}) | (.meets_criteria // false)) == true }",
+          "iterations": "${ .loop.iterations // 0 }",
+          "prOutput": "${ (.pr.data.result.stdout // .pr.data.stdout // .pr.data.result.output // .pr.data.output // \"\") }",
+          "terminalState": "${ if ( ((.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") | test(\"OBJECTIVE PASS\")) and (((((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson?) // {}) | (.meets_criteria // false)) == true) ) then \"satisfied\" elif (((((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson?) // {}) | (.stalled // false)) == true) then \"stalled_no_progress\" else \"max_iterations_reached\" end }",
+          "criteriaPassed": "${ (((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // \"{}\") | fromjson?) // {}) | (.passed // 0) }",
+          "criteriaTotal": "${ (((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // \"{}\") | fromjson?) // {}) | (.total // 0) }",
+          "negotiationRounds": "${ .negotiate.iterations // .negotiate.data.iterations // 0 }",
+          "criticVotes": "${ (.trigger.criticVotes // \"2\") }",
+          "designPass": "${ (.trigger.designPass // \"true\") }",
+          "evaluationProfile": "${ (.trigger.evaluationProfile // \"ui-web\") }",
+          "outputMode": "${ (.trigger.outputMode // \"pr\") }"
+        },
+        "artifacts": [
+          {
+            "from": "${ .data }",
+            "kind": "json",
+            "slot": "primary",
+            "title": "Coding redesign result",
+            "description": "Build + critic verdicts, iterations, PR output."
+          }
+        ]
+      }
+    }
+  ]
+}
