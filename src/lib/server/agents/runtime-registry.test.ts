@@ -44,6 +44,7 @@ describe("runtime registry — readers", () => {
 				"claude-code-cli",
 				"codex-cli",
 				"dapr-agent-py",
+				"dapr-agent-py-juicefs",
 				"dapr-agent-py-testing"
 			].sort()
 		);
@@ -71,6 +72,7 @@ describe("runtime registry — readers", () => {
 				"claude-code-cli",
 				"codex-cli",
 				"dapr-agent-py",
+				"dapr-agent-py-juicefs",
 				"dapr-agent-py-testing"
 			].sort()
 		);

@@ -112,6 +112,7 @@ from src.openshell_runtime import (
     OpenShellRuntime,
     bind_runtime,
     get_runtime,
+    new_runtime,
     reset_runtime,
 )
 from src.code_checkpoint import (
@@ -3757,9 +3758,13 @@ class OpenShellDurableAgent(DurableAgent):
         # replay/resume the generator in a different Python context, while
         # activities bind their own runtime from the persisted per-instance
         # context before touching tools.
-        runtime = OpenShellRuntime()
+        runtime = new_runtime()
         runtime.set_sandbox_name(sandbox_name)
-        runtime.set_cwd(cwd or DEFAULT_CWD)
+        # When a workflow node supplies cwd, honor it for both modes. Otherwise
+        # let each runtime keep its own default (openshell → /sandbox; local →
+        # the JuiceFS mount root /sandbox/work) rather than forcing /sandbox.
+        if cwd:
+            runtime.set_cwd(cwd)
         runtime.set_session_id(session_id_raw or None)
         code_checkpoint_restore = _extract_code_checkpoint_restore(message, metadata)
 
