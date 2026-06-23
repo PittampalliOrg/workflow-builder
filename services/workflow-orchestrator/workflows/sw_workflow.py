@@ -2806,6 +2806,19 @@ def _handle_call_task(
     tc.completed_tasks.add(task_name)
 
     if not result.get("success", True):
+        # Honor `with.allowFailure`: a node that opts in (e.g. the GAN build gate,
+        # whose cli_workspace_command surfaces a transient dispatch/transport error
+        # as success:false ON PURPOSE) tolerates the failure — it becomes the node's
+        # output (loop `while` guards read its stdout) instead of aborting the whole
+        # run. Without this, a single transient infra blip kills a multi-hour run.
+        allow_failure = _as_bool((task_data.get("with") or {}).get("allowFailure"), False)
+        if allow_failure:
+            _log_info(
+                ctx,
+                "[SW Workflow] call task failed but allowFailure=true; continuing: %s",
+                task_name,
+            )
+            return result
         raise RuntimeError(result.get("error") or f"Call task failed: {task_name}")
 
     return result
