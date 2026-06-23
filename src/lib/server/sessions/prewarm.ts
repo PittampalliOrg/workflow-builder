@@ -188,6 +188,13 @@ export async function prewarmWorkflowEntrySessions(params: {
 			const descriptor = getRuntimeDescriptor(runtime);
 			if (!descriptor) continue;
 			const isCli = descriptor.capabilities.interactiveTerminal === true;
+			// Both interactive-cli AND juicefs-shared runtimes (e.g.
+			// dapr-agent-py-juicefs) mount the per-execution JuiceFS workspace, so
+			// both must bake the SAME sharedWorkspaceKey at prewarm time — otherwise
+			// the prewarmed pod is created mountless and the real dispatch adopts it
+			// (creation-identical adoption) WITHOUT /sandbox/work.
+			const usesSharedWorkspace =
+				isCli || descriptor.capabilities.workspaceBackend === "juicefs-shared";
 			if (isCli && (!prewarmCliEnabled() || !params.userId)) continue;
 
 			// Creation-identical inputs for adoption: the per-session Secret +
@@ -199,7 +206,7 @@ export async function prewarmWorkflowEntrySessions(params: {
 			// are null (gateway-side model creds, no shared key).
 			let sessionSecretEnv: Record<string, string> | null = null;
 			let sharedWorkspaceKey: string | null = null;
-			if (isCli) {
+			if (usesSharedWorkspace) {
 				const wsKey = resolveSharedWorkspaceKey(
 					withBlock,
 					params.executionId,
@@ -207,15 +214,19 @@ export async function prewarmWorkflowEntrySessions(params: {
 				);
 				if (wsKey === "skip") {
 					console.info(
-						`[prewarm] skip CLI node "${taskName}" exec=${params.executionId}: workspaceRef is a non-executionId jq expression (key unpredictable)`,
+						`[prewarm] skip shared-workspace node "${taskName}" exec=${params.executionId}: workspaceRef is a non-executionId jq expression (key unpredictable)`,
 					);
 					continue;
 				}
-				sessionSecretEnv = await resolveWorkflowSessionSecretEnv({
-					userId: params.userId as string,
-					runtimeDescriptor: descriptor,
-				});
 				sharedWorkspaceKey = wsKey;
+				// GITHUB_TOKEN / CLI creds only for interactive-cli pods; dapr-juicefs
+				// uses gateway-side model creds and the cliWorkspace helper handles git.
+				if (isCli) {
+					sessionSecretEnv = await resolveWorkflowSessionSecretEnv({
+						userId: params.userId as string,
+						runtimeDescriptor: descriptor,
+					});
+				}
 			}
 
 			// instance_prefix mirrors the orchestrator's runtime_registry.resolve():
