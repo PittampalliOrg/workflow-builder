@@ -107,14 +107,46 @@ describe("GAN harness CLI showcase fixture", () => {
 		expect(rv.with.command).toContain("recommend_restart");
 	});
 
-	it("contract negotiation tags criteria objective|subjective with profile-aware dims", () => {
+	it("negotiation is profile-aware: prompts switch browser vs command/test verification", () => {
 		const spec = loadFixture();
 		const neg = spec.do.find((e: any) => e.negotiate)?.negotiate;
+		const propose = neg.do.find((e: any) => e.propose)?.propose;
 		const review = neg.do.find((e: any) => e.review)?.review;
+		for (const n of [propose, review]) {
+			const p = n.with.body.prompt;
+			expect(p).toContain("evaluationProfile");
+			expect(p).toContain("BROWSER-verifiable");
+			expect(p).toContain("COMMAND/TEST-verifiable");
+		}
+		// instructions no longer hardcode browser-only verification
+		expect(propose.with.agentConfig.instructions).not.toContain("verified in a browser");
+		expect(review.with.agentConfig.instructions).not.toContain(
+			"human design reviewer makes by looking",
+		);
 		expect(review.with.agentConfig.instructions).toContain("kind");
+	});
+
+	it("read_contract is profile-agnostic (union dims, infers kind; no .wfb_profile)", () => {
+		const spec = loadFixture();
+		const neg = spec.do.find((e: any) => e.negotiate)?.negotiate;
 		const rc = neg.do.find((e: any) => e.read_contract)?.read_contract;
-		expect(rc.with.command).toContain(".wfb_profile"); // profile-aware dim()
-		expect(rc.with.command).toContain("_CODEDIMS");
+		expect(rc.with.command).not.toContain(".wfb_profile"); // no dotfile dependence
+		expect(rc.with.command).toContain("_ALLDIMS"); // union of UI + code dims
+		expect(rc.with.command).toContain("def kindof"); // kind inferred from verify
+	});
+
+	it("publish_shot (Playwright screenshot) is gated to ui-web", () => {
+		const spec = loadFixture();
+		const ps = spec.do.find((e: any) => e.publish_shot)?.publish_shot;
+		expect(ps.if).toContain("evaluationProfile");
+		expect(ps.if).toContain('"ui-web"');
+	});
+
+	it("pr derives the target repo from the git remote (never the demo repo by default)", () => {
+		const spec = loadFixture();
+		const pr = spec.do.find((e: any) => e.pr)?.pr;
+		expect(pr.with.command).toContain("remote get-url origin");
+		expect(pr.with.command).toContain("echo branch"); // outputMode defaults to branch when unknown
 	});
 
 	it("gives the Evaluator restart authority bounded by maxRestarts", () => {
