@@ -9500,6 +9500,10 @@ var workflowExecutions = pgTable(
     errorStackTrace: text("error_stack_trace"),
     rerunOfExecutionId: text("rerun_of_execution_id"),
     rerunSourceInstanceId: text("rerun_source_instance_id"),
+    // Set when this run was started by the event-driven trigger spine (to the
+    // firing trigger's id/kind). NULL for manual/API runs. Drives the triggered-
+    // run concurrency gate + the "pending/active triggered runs" capacity lens.
+    triggerSource: text("trigger_source"),
     rerunFromEventId: integer("rerun_from_event_id"),
     startedAt: timestamp("started_at").notNull().defaultNow(),
     completedAt: timestamp("completed_at"),
@@ -9533,11 +9537,49 @@ var workflowExecutions = pgTable(
     projectIdx: index("idx_workflow_executions_project_id").on(
       table.projectId
     ),
+    // Active-triggered-run count (concurrency gate + capacity lens).
+    triggerSourceStatusIdx: index("idx_workflow_executions_trigger_source_status").on(
+      table.triggerSource,
+      table.status
+    ),
     rerunOfExecutionFk: foreignKey({
       columns: [table.rerunOfExecutionId],
       foreignColumns: [table.id],
       name: "workflow_executions_rerun_of_execution_id_workflow_executions_id_fk"
     }).onDelete("set null")
+  })
+);
+var workflowTriggers = pgTable(
+  "workflow_triggers",
+  {
+    id: text("id").primaryKey().$defaultFn(() => generateId()),
+    workflowId: text("workflow_id").notNull().references(() => workflows.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    projectId: text("project_id").references(() => projects.id, {
+      onDelete: "cascade"
+    }),
+    // Registry kind id (webhook | schedule | topic | queue | github | resource | …).
+    kind: text("kind").notNull(),
+    // Per-kind config (validated against the kind's configSchema).
+    config: jsonb("config").$type().notNull().default({}),
+    // Static defaults merged into every fired run's triggerData.
+    triggerData: jsonb("trigger_data").$type(),
+    // Salt for the deterministic per-fire dedup/execution id.
+    dedupSalt: text("dedup_salt").notNull(),
+    // Opaque handle to the provisioned backing resource (job id / sensor name / …).
+    backingRef: text("backing_ref"),
+    status: text("status").$type().notNull().default("inactive"),
+    lastError: text("last_error"),
+    lastFiredAt: timestamp("last_fired_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow()
+  },
+  (table) => ({
+    workflowStatusIdx: index("idx_workflow_triggers_workflow_status").on(
+      table.workflowId,
+      table.status
+    ),
+    kindIdx: index("idx_workflow_triggers_kind").on(table.kind)
   })
 );
 var workflowPlanArtifacts = pgTable(
@@ -16586,6 +16628,13 @@ async function seedGeneratorCriticShowcases(params) {
     // (default "auto"). interactive-cli family ONLY (7 cliWorkspace/JuiceFS nodes;
     // see docs/gan-harness-workflow.md "Runtime / workspace-backend compatibility").
     "gan-harness-cli-showcase.json",
+    // Same GAN harness re-authored for dapr-agent-py on the openshell-shared
+    // backend: a workspace/profile provisions ONE shared /sandbox sandbox + a
+    // deterministic clone_repo; all durable/run agents (evaluator-critic-agent)
+    // bind it via sandboxName/workspaceRef; the spine is plain workspace/command
+    // (no cliWorkspace). Code profiles (library/service); default library on
+    // jonschlinkert/is-number. ui-web/browser eval is a follow-up.
+    "gan-harness-dapr-showcase.json",
     // Minimal single-node test of R1 persisted browser recording: a Playwright-MCP
     // critic drives a real browser (navigate/snapshot/screenshot); the in-pod
     // @playwright/mcp --save-video .webm is pushed to browser-artifacts and plays
@@ -16605,6 +16654,31 @@ async function seedGeneratorCriticShowcases(params) {
       db: params.db,
       workflowId: id,
       name: doc.title || id,
+      description: doc.summary || "",
+      userId: params.userId,
+      projectId: params.projectId,
+      spec,
+      nodes,
+      edges,
+      visibility: "public"
+    });
+  }
+  const topDir = path.resolve(process.cwd(), "scripts/fixtures");
+  for (const file of ["pr-heavy-review.workflow.json"]) {
+    const full = path.join(topDir, file);
+    if (!fs2.existsSync(full)) {
+      console.warn(`[seed-workflows] workflow fixture missing: ${full}`);
+      continue;
+    }
+    const raw = JSON.parse(fs2.readFileSync(full, "utf8"));
+    const spec = raw.spec || raw;
+    const doc = spec.document || {};
+    const id = doc.name || file.replace(/\.workflow\.json$/, "");
+    const { nodes, edges } = buildGeneratorCriticGraph(spec);
+    await upsertRawWorkflow({
+      db: params.db,
+      workflowId: id,
+      name: raw.name || doc.title || id,
       description: doc.summary || "",
       userId: params.userId,
       projectId: params.projectId,
