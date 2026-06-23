@@ -543,18 +543,18 @@ export const POST: RequestHandler = async ({ request }) => {
 			sessionSecretEnv: workflowSessionSecretEnv,
 			// Share one JuiceFS workspace subtree across every pod of this
 			// workflow run (planner/generator/critic + deterministic cliWorkspace
-			// nodes see the same files). interactive-cli keys on the durable/run
-			// workspaceRef (its cliWorkspace commands run IN the agent's own live
-			// pod → same subtree). juicefs-shared (dapr-agent-py-juicefs) has NO
-			// live cli pod, so cliWorkspace commands run in a helper pod keyed by
-			// the BARE workflowExecutionId (cli_workspace_command activity) — the
-			// dapr agents MUST key by the same bare id, NOT the instance-id
-			// workspaceRef, or the agents and the deterministic spine land on
-			// different subtrees (gate/clone/read_contract can't see agent files).
-			sharedWorkspaceKey: swapTarget?.capabilities?.interactiveTerminal
-				? (bridgeWorkspaceRef ?? workflowExecutionId)
-				: swapTarget?.capabilities?.workspaceBackend === "juicefs-shared"
-					? (workflowExecutionId ?? bridgeWorkspaceRef)
+			// nodes see the same files). The CANONICAL subtree key is the
+			// orchestrator instance id (`sw-<name>-exec-<id>`), which the
+			// durable/run `workspaceRef` (`${ .runtime.executionId }`) resolves to
+			// via resolveSharedWorkspaceKey — the SAME key the cli_workspace_command
+			// helper pod and the Files-tab webdav reader (workflowExecutions
+			// .daprInstanceId) use. Both interactive-cli AND juicefs-shared
+			// (dapr-agent-py-juicefs) key on it so agents, the deterministic
+			// cliWorkspace spine, and the Files tab all land on one subtree.
+			sharedWorkspaceKey:
+				swapTarget?.capabilities?.interactiveTerminal ||
+				swapTarget?.capabilities?.workspaceBackend === "juicefs-shared"
+					? (bridgeWorkspaceRef ?? workflowExecutionId)
 					: null,
 		});
 		const reuseChildAppId = reuseHost?.agentAppId ?? reuseAgentAppId;
@@ -761,14 +761,15 @@ export const POST: RequestHandler = async ({ request }) => {
 		traceContext,
 		sessionSecretEnv: workflowSessionSecretEnv,
 		// Share one JuiceFS workspace subtree across every pod of this workflow
-		// run. interactive-cli keys on workspaceRef (cliWorkspace runs in the
-		// agent's own pod); juicefs-shared (dapr-agent-py-juicefs) keys on the BARE
-		// workflowExecutionId to match the cli_workspace_command helper pod (no live
-		// cli pod for dapr) — see the spawn site above for the full rationale.
-		sharedWorkspaceKey: swapTarget?.capabilities?.interactiveTerminal
-			? (bridgeWorkspaceRef ?? workflowExecutionId)
-			: swapTarget?.capabilities?.workspaceBackend === "juicefs-shared"
-				? (workflowExecutionId ?? bridgeWorkspaceRef)
+		// run, keyed by the CANONICAL orchestrator instance id (= workflow
+		// Executions.daprInstanceId, what the Files-tab webdav reader + the
+		// cli_workspace_command helper use). Both interactive-cli and
+		// juicefs-shared resolve their workspaceRef to it — see the spawn site
+		// above for the full rationale.
+		sharedWorkspaceKey:
+			swapTarget?.capabilities?.interactiveTerminal ||
+			swapTarget?.capabilities?.workspaceBackend === "juicefs-shared"
+				? (bridgeWorkspaceRef ?? workflowExecutionId)
 				: null,
 	});
 	const childAgentAppId = sessionHost?.agentAppId ?? targetAgentAppId;
