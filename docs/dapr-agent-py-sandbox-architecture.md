@@ -74,6 +74,51 @@ separate fixtures (CLI vs dapr) instead of swapping the agent on one.
 The honest point: these benefits are real — but only the **third** (browser-use's chromium sandbox)
 *requires* the remote-pod model. Sharing + durability are also delivered by `juicefs-shared`.
 
+## 2a. Does the recommended approach keep FULL dapr durability? (hard requirement)
+
+**Yes — and it must, so spell out why.** There are two *separate* durability concerns; only one
+depends on the workspace backend:
+
+1. **Dapr Workflow orchestration durability (activity replay).** dapr-agent-py is
+   `per-activity`-durable: `session_workflow`'s completed activities + results live in the **actor
+   state store** (`workflowstatestore`, Postgres). On a pod crash/reschedule, Dapr replays the
+   workflow history and resumes from the last completed activity. **This is entirely orthogonal to
+   the workspace backend** — it is the actor state store, not the filesystem. Switching `/sandbox`
+   from openshell-RPC to a CSI mount does **not** touch it. ✅ Preserved under *any* backend; never
+   at risk.
+
+2. **Workspace-filesystem survival across pod reschedule.** This *does* depend on the backend:
+   - `openshell-shared`: ✅ the workspace is a separate pod that outlives the agent; the rescheduled
+     agent reconnects by `sandboxName` (durably replayed from workflow input).
+   - `juicefs-shared` (**the recommended target**): ✅ the workspace is a **CSI-mounted, RWX,
+     network-backed** per-execution volume. It is *external* to the agent pod (survives pod death)
+     and **remountable on any node** (RWX, not a node-locked block PV), keyed by `executionId` —
+     which is durably replayed. The rescheduled pod re-mounts the same volume and sees every file
+     prior activities wrote.
+   - `pod-local`: ❌ ephemeral pod FS — lost on reschedule. **This is why the recommendation targets
+     the SHARED-FS backend, not pod-local.**
+
+   The crisp framing: `juicefs-shared` keeps the workspace **just as external and durable** as
+   openshell, but **accesses it as a local mount instead of a remote RPC**. You keep the durability
+   *and* drop the per-tool RPC — they are not in tension. (As a bonus, converging
+   claude-agent-py/adk off `pod-local` onto the same shared-FS would *upgrade* them from
+   non-durable to durable workspaces.)
+
+**Crash-consistency is equivalent at the activity boundary.** If a pod dies mid-write, the *activity*
+that was writing did not complete → Dapr re-runs it → the file is rewritten. Partial files from an
+interrupted activity are superseded on replay. This holds for both models (a crashed mid-write RPC to
+the openshell sandbox is likewise re-done on activity replay); neither gives intra-activity atomicity,
+both give activity-boundary consistency.
+
+**Where the real risk is — and it is NOT durability loss:** it is the *engineering* of the migration:
+(a) rewriting dapr-agent-py's `OpenShellRuntime` tool surface (`execute_command`/`read_file`/
+`write_file`) to operate on the local mount while preserving tool + security semantics; (b) the **CSI
+volume attach/detach lifecycle** on pod start/reschedule introduces a new failure mode (a volume stuck
+attaching) that openshell's stateless-pod-reconnect avoids — though it is a once-per-pod-start cost,
+not per-activity, comparable to today's seed-config cost. **This must be validated on the per-activity
+reschedule path** (kill the agent pod mid-loop, confirm the rescheduled pod remounts and the
+deterministic gate still sees the agent's files) before cutting dapr-agent-py over.
+
 ## 3. Costs and pain points (with sources)
 
 - **Per-tool RPC + mTLS** on every file op and command — latency and many more failure modes than a
