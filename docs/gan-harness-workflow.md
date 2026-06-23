@@ -7,10 +7,14 @@ Execution"). It extends the proven `coding-redesign-cli-showcase` (Planner →
 Generator → Playwright-MCP critic → PR) with the doc's **central innovations** that
 the redesign workflow lacked.
 
+It is now a **general coding harness**: the same Planner→negotiate→refine loop runs
+arbitrary coding tasks via an **evaluation profile** (see "Profile-based evaluator"
+below). The web-UI redesign is the default `ui-web` preset; all generalization
+inputs default to that exact (validated) behavior.
+
 - **Fixture**: `scripts/fixtures/generator-critic/gan-harness-cli-showcase.json`
-- **Demo**: clone `PittampalliOrg/sveltekit-landing-demo`, redesign its landing
-  page, open a PR — same demo as the redesign showcase, so the Playwright visual
-  critic + 4-dimension design rubric apply.
+- **Default demo** (`ui-web`): clone `PittampalliOrg/sveltekit-landing-demo`, redesign
+  its landing page, open a PR — the Playwright visual critic + design rubric apply.
 - **Runtime**: interactive-cli family (claude-code-cli by default; per-phase
   selectable via `planAgent` / `generatorAgent` / `criticAgent` trigger inputs).
   Reuses the seeded `cli-evaluator-critic-agent` (plan/generator) and
@@ -27,6 +31,53 @@ the redesign workflow lacked.
 | **Durable JSON state with `passes` flags** (JSON > Markdown) | `contract.json` is JSON; every criterion starts `"passes": false`; the loop exits only when the deterministic build gate passes AND every criterion passes. |
 | **Agentic memory / progress log** ("getting up to speed") | `progress.json` is initialized deterministically (`init_state`), read by the Generator at the start of every turn (plus `git log`), and appended to by `read_verdict` after each iteration. |
 | **Skeptical, isolated, interactive Evaluator** | The Evaluator runs in its own context, drives Playwright MCP (real Chromium) to navigate/snapshot/screenshot/click, and defaults to reject. |
+
+## Profile-based evaluator (general coding harness)
+
+Grounded in `GANs.md`: the **evaluator role is constant** ("the Planner and Evaluator
+roles were retained … to enforce high-level project scope and rigorous, adversarial QA
+testing") — always independent, default-skeptical, graded against the **negotiated
+contract** (not the vague spec), with hard thresholds + restart authority, and it
+**grounds in the running artifact, never static diffs/screenshots.** What varies by use
+case are two orthogonal knobs, so the harness exposes them as inputs:
+
+- **Grounding modality** — `GANs.md`: "boots the application, navigates the live DOM …
+  *tests API endpoints, and reads database states*." Selected by `evaluationProfile`:
+  - `ui-web` (default) — `evaluate_ui` boots a preview server + drives **Playwright MCP**
+    (DOM/click/responsive) with the **design rubric** (design_quality/originality/craft).
+  - `library` — `evaluate_code` runs the **test suite + typecheck/lint** and exercises the
+    **public API** in a scratch script (no browser); dims correctness/tests/code_quality/
+    maintainability/performance.
+  - `service` — `evaluate_code` **boots the service + curls its endpoints** + integration
+    tests; same code dims.
+  The two evaluator families are mutually-exclusive sibling nodes gated by task-level `if`
+  on `evaluationProfile`; both write the same `verdict-<i>.json`, so `read_verdict`
+  aggregates mode-agnostically (skeptical any-fail, vote-gated).
+- **Objective vs subjective criteria coexist** — `GANs.md`: "objective functionality is
+  easily verifiable via tests" *and* taste is "gradable … armed with a highly opinionated,
+  codified rubric." Each negotiated criterion carries `kind: objective|subjective` +
+  `verify`. The deterministic **`gate`** is the objective hard threshold (build for
+  `ui-web`; **build + tests** for `library`/`service`); the LLM critic grounds subjective
+  ones against the profile rubric. `read_contract` normalizes `kind` + picks
+  profile-appropriate dimensions (it reads `/sandbox/work/.wfb_profile`, written by
+  `init_state`).
+
+**Generalization trigger inputs** (all default to today's `ui-web` behavior, so an
+unchanged trigger reproduces the validated run):
+
+| input | default | purpose |
+| --- | --- | --- |
+| `repoUrl` | `PittampalliOrg/sveltekit-landing-demo` | owner/repo to clone + (optionally) PR |
+| `repoRef` | `main` | branch to clone + PR base |
+| `evaluationProfile` | `ui-web` | `ui-web` \| `library` \| `service` (modality + rubric) |
+| `outputMode` | `pr` | `pr` \| `branch` \| `none` (remote-write policy; `pr` node gated on it) |
+| `testCommand` | `auto` | objective verify the gate runs for code profiles (`auto`-detected) |
+| `taskScope` | (UI hint) | free-form what/where-to-change for the generator |
+
+The `pr` node is a plain shell reading the repo/base/outputMode/intent dotfiles
+`init_state` writes (avoids the "string must be entirely `${…}` to be jq-evaluated" rule
++ nested-quote escaping). `cli-tool` / `data` (DB) profiles and a `dapr-agent-py`
+(openshell-backend) variant are deferred.
 
 ## Node-by-node (`do`)
 
