@@ -2590,6 +2590,11 @@ class OpenShellDurableAgent(DurableAgent):
         except Exception:
             pass
         try:
+            from src.zai_adapter import patch_for_zai
+            patch_for_zai(self.llm)
+        except Exception:
+            pass
+        try:
             from src.alibaba_adapter import patch_for_alibaba
             patch_for_alibaba(self.llm)
         except Exception:
@@ -6049,6 +6054,12 @@ try:
     patch_for_deepseek(agent.llm)
 except Exception as exc:
     logger.warning("DeepSeek adapter patch failed: %s", exc)
+
+try:
+    from src.zai_adapter import patch_for_zai
+    patch_for_zai(agent.llm)
+except Exception as exc:
+    logger.warning("Z.AI GLM adapter patch failed: %s", exc)
 
 try:
     from src.alibaba_adapter import patch_for_alibaba
