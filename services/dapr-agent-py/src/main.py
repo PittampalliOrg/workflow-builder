@@ -488,12 +488,49 @@ IMPORTANT -- Working directory:
 - bash_run commands also execute in the working directory automatically.
 - Treat /app as service implementation, not as a user workspace.
 
+ORIENT BEFORE YOU READ -- do not guess file paths:
+- Before reading or editing source files, LIST the working directory first (e.g. `ls -la`, or `ls -la repo`) to learn its actual layout. Confirm a file's path from the listing instead of assuming it.
+- The working directory is often a WORKSPACE, not the codebase itself: a cloned repository commonly lives in a `repo/` subdirectory (so source is at `repo/index.js`, `repo/src/...`), while top-level files (e.g. SPEC.md, contract.json, progress.json) are workspace artifacts — NOT the project's source files.
+- If a file you expect at the top level is "not found", it is almost certainly inside the repository subdirectory — list it and retry there rather than repeating the same path.
+
 The sandbox is policy-governed, so filesystem and network access may be restricted. If a command fails, inspect the concise error and repair the smallest relevant issue before retrying.
 """
 
 
 # Default system prompt used when no cwd is available yet
 OPENSHELL_SYSTEM_PROMPT = _build_system_prompt("/sandbox")
+
+
+def _build_workspace_snapshot(runtime: Any, cwd: str) -> str | None:
+    """A snapshot of the working-directory layout, to orient the agent at the
+    start of a session so it does not guess file paths.
+
+    Mirrors claude-code-src/main/context.ts::getGitStatus — a snapshot-in-time
+    view injected once at conversation start. Claude Code can lean on the cwd
+    being the project root; our cwd is a WORKSPACE whose code usually lives in a
+    `repo/` subdirectory, so we additionally surface that subtree (+ its git
+    status) so the agent reads `repo/<file>` instead of guessing `<file>` at the
+    workspace root.
+    """
+    safe_cwd = shlex.quote(cwd or ".")
+    cmd = (
+        f"cd {safe_cwd} 2>/dev/null || exit 0; "
+        "echo '[working directory — top level]'; ls -la; "
+        "if [ -d repo ]; then "
+        "echo; echo '[repo/ — cloned repository; SOURCE CODE IS HERE]'; ls -la repo; "
+        "echo; echo '[repo/ git status]'; "
+        "git -C repo status --short 2>/dev/null | head -30; fi"
+    )
+    try:
+        result = runtime.execute(cmd, timeout_seconds=30)
+    except Exception:
+        return None
+    out = str(result.get("stdout") or result.get("output") or "").strip()
+    if not out:
+        return None
+    if len(out) > 4000:
+        out = out[:4000] + "\n... (truncated — re-list for the rest)"
+    return out
 
 def _coerce_agent_config(value: Any) -> dict[str, Any] | None:
     if isinstance(value, dict):
@@ -3907,6 +3944,39 @@ class OpenShellDurableAgent(DurableAgent):
                         )
             except Exception:
                 pass  # No PLAN.md = first phase or no plan written
+
+        # Orient the agent with a snapshot of the working-directory layout so it
+        # reads real paths instead of guessing (e.g. source under repo/, not the
+        # workspace root). Mirrors claude-code-src getGitStatus: a snapshot at
+        # conversation start. Guard with is_replaying — the runtime read is a
+        # side effect that must run once; the injected text is persisted in
+        # message after the first run. NOT gated on strict_one_shot: one-shot
+        # workflow turns (GAN propose/review) are exactly the ones that guess.
+        if not ctx.is_replaying:
+            try:
+                snapshot = _build_workspace_snapshot(runtime, runtime.cwd)
+                if snapshot:
+                    orientation = (
+                        "Snapshot of your working directory at the start of this "
+                        "session (a point-in-time view — it will NOT update as you "
+                        "work; re-list to see changes). Use it to locate files; do "
+                        "NOT guess paths. If a `repo/` directory is present, the "
+                        "project's source code is inside it (e.g. `repo/index.js`), "
+                        "and top-level files are workspace artifacts.\n\n"
+                        f"{snapshot}"
+                    )
+                    current_task = message.get("task") or message.get("prompt") or ""
+                    if isinstance(current_task, str):
+                        message = {
+                            **message,
+                            "task": orientation + "\n\n" + current_task,
+                        }
+                        logger.info(
+                            "[orient] Injected workspace snapshot (%d chars)",
+                            len(snapshot),
+                        )
+            except Exception:
+                pass  # orientation is best-effort
 
         # Select LLM component from the per-turn snapshot when present; fall
         # back to agentConfig.modelSpec or metadata.model for legacy callers.
