@@ -109,7 +109,7 @@
               "taskScope": {
                 "type": "string",
                 "title": "Task scope",
-                "default": "Edit src/routes/+page.svelte plus a global stylesheet; plain SvelteKit + CSS only; do NOT change package.json deps or routing.",
+                "default": "Edit the is-number library's source (index.js) and its Mocha tests (test.js); plain Node.js only; keep `npm test` green; do NOT change the public API, add dependencies, or modify package.json.",
                 "description": "Free-form hint of what/where to change (replaces UI-file hardcoding)."
               }
             }
@@ -220,7 +220,7 @@
           "taskScope": {
             "type": "string",
             "title": "Task scope",
-            "default": "Edit src/routes/+page.svelte plus a global stylesheet; plain SvelteKit + CSS only; do NOT change package.json deps or routing.",
+            "default": "Edit the is-number library's source (index.js) and its Mocha tests (test.js); plain Node.js only; keep `npm test` green; do NOT change the public API, add dependencies, or modify package.json.",
             "description": "Free-form hint of what/where to change (replaces UI-file hardcoding)."
           }
         }
