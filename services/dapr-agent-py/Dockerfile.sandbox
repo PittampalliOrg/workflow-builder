@@ -1,3 +1,7 @@
+# Node.js toolchain stage — coding tasks (e.g. npm-based repos) need node/npm.
+# Mirrors Dockerfile.sandbox-testing so dapr agents can run `npm test` etc.
+FROM node:22-bookworm-slim AS node-bin
+
 FROM ghcr.io/astral-sh/uv:python3.12-trixie-slim AS python-deps
 
 WORKDIR /app
@@ -29,6 +33,14 @@ RUN apt-get update \
         ripgrep \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /sandbox /mnt/session/outputs
+
+# Node.js + npm/npx on PATH (/usr/local/bin) so coding agents can build/test
+# npm-based repos directly instead of failing "node: command not found".
+COPY --from=node-bin /usr/local/bin/node /usr/local/bin/
+COPY --from=node-bin /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && node --version && npm --version
 
 WORKDIR /app
 COPY --from=python-deps /app/.venv /app/.venv
