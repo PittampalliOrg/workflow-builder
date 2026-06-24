@@ -66,9 +66,21 @@ OUT=""
 # dotfiles (dapr's cwd is the seeded /sandbox HOME) + our own snapshot git dir.
 NOISE_PATHS=".wfb-diff-git node_modules .venv __pycache__ dist build .cache .next vendor .pytest_cache .accesslog .config .stats .trash .bashrc .profile .bash_history .bash_logout .gitconfig .claude.json .claude .codex .agents .workspace-initialized .ssh .npm .local .cargo .rustup"
 NESTED=$(find "$REPO" -mindepth 2 -maxdepth 3 -name .git 2>/dev/null | sed 's:/[.]git$::' | grep -v '/[.]wfb-' || true)
+# Nested-repo paths RELATIVE to $REPO — excluded from the root scratch tree so a
+# nested clone (e.g. repo/) is captured once (by its own repo pass), not duplicated.
+NESTED_REL=""
+for N in $NESTED; do NESTED_REL="$NESTED_REL ${N#$REPO/}"; done
+# Is $REPO itself a REAL clone (CLI shape: /sandbox/work IS the cloned repo) vs a
+# workspace root that merely happens to contain a (possibly stray) .git (GAN/juicefs
+# shape: /sandbox/work holds proposal.md/SPEC.md + a repo/ subdir)? A real clone has
+# origin/HEAD; a stray `git init` does not. Only a real clone is captured as a repo;
+# otherwise the workspace root is captured via the scratch tree so root artifacts
+# (proposal.md, SPEC.md, contract.json, …) are NOT lost just because a .git appeared.
+ROOT_IS_CLONE=0
+if [ -e "$REPO/.git" ] && git -C "$REPO" rev-parse -q --verify origin/HEAD >/dev/null 2>&1; then ROOT_IS_CLONE=1; fi
 
-# --- ROOT scratch tree (only when $REPO itself is not a git repo) ---
-if [ ! -e "$REPO/.git" ]; then
+# --- ROOT scratch tree (workspace shape: root is NOT a real clone) ---
+if [ "$ROOT_IS_CLONE" = "0" ]; then
   GD="$REPO/.wfb-diff-git"
   [ -d "$GD" ] || GIT_DIR="$GD" GIT_WORK_TREE="$REPO" git init -q >/dev/null 2>&1 || true
   GIT_DIR="$GD" git config user.email wfb@local >/dev/null 2>&1 || true
@@ -76,16 +88,16 @@ if [ ! -e "$REPO/.git" ]; then
   rm -f "$T"
   PREV=$(GIT_DIR="$GD" git rev-parse -q --verify refs/wfb/baseline 2>/dev/null || echo "$EMPTY")
   GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git add -A --ignore-errors 2>/dev/null || true
-  GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git rm -r --cached --quiet --ignore-unmatch $NOISE_PATHS >/dev/null 2>&1 || true
+  GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git rm -r --cached --quiet --ignore-unmatch $NOISE_PATHS .git $NESTED_REL >/dev/null 2>&1 || true
   P=$(GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git diff --cached --find-renames --stat --patch --binary "$PREV" -- 2>/dev/null || true)
   NEW=$(GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git write-tree 2>/dev/null || true)
   [ -n "$NEW" ] && GIT_DIR="$GD" git update-ref refs/wfb/baseline "$NEW" 2>/dev/null || true
   OUT="$OUT$P"
 fi
 
-# --- Each git repo: the root clone (if any) + every nested repo ---
+# --- Each git repo: the root clone (only if a REAL clone) + every nested repo ---
 REPOS=""
-[ -e "$REPO/.git" ] && REPOS="$REPO"
+[ "$ROOT_IS_CLONE" = "1" ] && REPOS="$REPO"
 REPOS="$REPOS $NESTED"
 for R in $REPOS; do
   [ -d "$R" ] || continue
@@ -121,10 +133,14 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 [ -d "$REPO" ] || { echo "__WFB_NO_REPO__"; exit 0; }
 NOISE_PATHS=".wfb-diff-git node_modules .venv __pycache__ dist build .cache .next vendor .pytest_cache .accesslog .config .stats .trash .bashrc .profile .bash_history .bash_logout .gitconfig .claude.json .claude .codex .agents .workspace-initialized .ssh .npm .local .cargo .rustup"
 NESTED=$(find "$REPO" -mindepth 2 -maxdepth 3 -name .git 2>/dev/null | sed 's:/[.]git$::' | grep -v '/[.]wfb-' || true)
+NESTED_REL=""
+for N in $NESTED; do NESTED_REL="$NESTED_REL ${N#$REPO/}"; done
+ROOT_IS_CLONE=0
+if [ -e "$REPO/.git" ] && git -C "$REPO" rev-parse -q --verify origin/HEAD >/dev/null 2>&1; then ROOT_IS_CLONE=1; fi
 T=/tmp/wfb-prime-index
 PRIMED=0
 
-if [ ! -e "$REPO/.git" ]; then
+if [ "$ROOT_IS_CLONE" = "0" ]; then
   GD="$REPO/.wfb-diff-git"
   if ! GIT_DIR="$GD" git rev-parse -q --verify refs/wfb/baseline >/dev/null 2>&1; then
     [ -d "$GD" ] || GIT_DIR="$GD" GIT_WORK_TREE="$REPO" git init -q >/dev/null 2>&1 || true
@@ -132,14 +148,14 @@ if [ ! -e "$REPO/.git" ]; then
     GIT_DIR="$GD" git config user.name wfb >/dev/null 2>&1 || true
     rm -f "$T"
     GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git add -A --ignore-errors 2>/dev/null || true
-    GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git rm -r --cached --quiet --ignore-unmatch $NOISE_PATHS >/dev/null 2>&1 || true
+    GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git rm -r --cached --quiet --ignore-unmatch $NOISE_PATHS .git $NESTED_REL >/dev/null 2>&1 || true
     NEW=$(GIT_DIR="$GD" GIT_WORK_TREE="$REPO" GIT_INDEX_FILE="$T" git write-tree 2>/dev/null || true)
     [ -n "$NEW" ] && GIT_DIR="$GD" git update-ref refs/wfb/baseline "$NEW" 2>/dev/null && PRIMED=$((PRIMED+1)) || true
   fi
 fi
 
 REPOS=""
-[ -e "$REPO/.git" ] && REPOS="$REPO"
+[ "$ROOT_IS_CLONE" = "1" ] && REPOS="$REPO"
 REPOS="$REPOS $NESTED"
 for R in $REPOS; do
   [ -d "$R" ] || continue
