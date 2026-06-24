@@ -493,6 +493,10 @@ ORIENT BEFORE YOU READ -- do not guess file paths:
 - The working directory is often a WORKSPACE, not the codebase itself: a cloned repository commonly lives in a `repo/` subdirectory (so source is at `repo/index.js`, `repo/src/...`), while top-level files (e.g. SPEC.md, contract.json, progress.json) are workspace artifacts — NOT the project's source files.
 - If a file you expect at the top level is "not found", it is almost certainly inside the repository subdirectory — list it and retry there rather than repeating the same path.
 
+TOOLCHAIN -- it is already installed; do not hunt for it:
+- This sandbox has a standard toolchain on PATH: bash, node, npm/npx, python3/pip3, git, jq. The session snapshot lists the exact versions present.
+- Run them DIRECTLY (e.g. `npm test`, `npm install`, `python3 -m pytest -q`, `node index.js`). Do NOT spend turns checking whether/where they exist (`which node`, `command -v npm`, `ls /usr/bin`, version-only probes) — assume they are present and just run the real command. Only investigate the toolchain if a command actually fails with "command not found".
+
 The sandbox is policy-governed, so filesystem and network access may be restricted. If a command fails, inspect the concise error and repair the smallest relevant issue before retrying.
 """
 
@@ -519,7 +523,15 @@ def _build_workspace_snapshot(runtime: Any, cwd: str) -> str | None:
         "if [ -d repo ]; then "
         "echo; echo '[repo/ — cloned repository; SOURCE CODE IS HERE]'; ls -la repo; "
         "echo; echo '[repo/ git status]'; "
-        "git -C repo status --short 2>/dev/null | head -30; fi"
+        "git -C repo status --short 2>/dev/null | head -30; fi; "
+        # Toolchain snapshot so the agent runs tools directly instead of burning
+        # turns probing whether/where node/npm/python/git exist (they're all on
+        # PATH in this image).
+        "echo; echo '[toolchain on PATH — use these directly, do NOT probe]'; "
+        "for t in bash node npm npx python3 pip3 git jq; do "
+        "  p=$(command -v $t 2>/dev/null); "
+        "  if [ -n \"$p\" ]; then v=$($t --version 2>&1 | head -1); echo \"$t: $p ($v)\"; fi; "
+        "done"
     )
     try:
         result = runtime.execute(cmd, timeout_seconds=30)
