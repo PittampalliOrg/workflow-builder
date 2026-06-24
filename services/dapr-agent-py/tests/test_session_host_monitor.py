@@ -86,6 +86,24 @@ def test_workflow_progress_marker_reads_dapr_status_timestamps() -> None:
     assert workflow_progress_marker({"runtimeStatus": "RUNNING"}) is None
 
 
+def test_workflow_progress_marker_combines_timestamp_and_custom_status() -> None:
+    # The marker must change when EITHER the checkpoint timestamp OR the agent's
+    # custom-status heartbeat advances — so a long, many-tool single turn (whose
+    # checkpoint timestamp may not tick) is still seen as progress via the
+    # per-turn/per-tool custom status. Reading the timestamp alone masked it.
+    base = {"lastUpdatedAt": "t1", "customStatus": "turn=2 tool=3 Bash"}
+    marker = workflow_progress_marker(base)
+    assert marker == "t1|turn=2 tool=3 Bash"
+    # Heartbeat advances while the timestamp is frozen -> still progress.
+    assert workflow_progress_marker(
+        {"lastUpdatedAt": "t1", "customStatus": "turn=2 tool=4 Read"}
+    ) != marker
+    # Timestamp advances while custom status is frozen -> still progress.
+    assert workflow_progress_marker(
+        {"lastUpdatedAt": "t2", "customStatus": "turn=2 tool=3 Bash"}
+    ) != marker
+
+
 def test_benchmark_activity_marker_reads_internal_progress_marker() -> None:
     assert benchmark_activity_marker({"progressMarker": "  event:42  "}) == "event:42"
     assert benchmark_activity_marker({"activityAgeSeconds": 10}) is None

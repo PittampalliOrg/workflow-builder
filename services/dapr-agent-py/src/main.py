@@ -1711,6 +1711,18 @@ class OpenShellDurableAgent(DurableAgent):
                 return (yield from super().agent_workflow(ctx, message))
 
             for turn in range(1, self.execution.max_iterations + 1):
+                # Progress heartbeat: surface the current turn as the workflow's
+                # custom status so the out-of-band session host-monitor sees real
+                # agent progress (Dapr's checkpoint timestamp does not reliably
+                # advance per activity across a long, many-tool single turn from a
+                # slow reasoning model). set_custom_status is local + flushed on the
+                # next checkpoint, consumes no history/sequence number, and is
+                # replay-safe; gate on not is_replaying to match DurableAgent.
+                if not ctx.is_replaying:
+                    try:
+                        ctx.set_custom_status(f"turn={turn}")
+                    except Exception:  # noqa: BLE001 — heartbeat is best-effort
+                        pass
                 cancellation = yield from cancellation_result_from_state()
                 if cancellation is not None:
                     self._termination_reason_by_instance[ctx.instance_id] = "cancelled"
@@ -1828,6 +1840,17 @@ class OpenShellDurableAgent(DurableAgent):
                             fn_name,
                             call_id,
                         )
+                        # Per-tool progress heartbeat: a turn can run many tools
+                        # over several minutes; tick the custom status before each
+                        # run_tool checkpoint so the host-monitor sees intra-turn
+                        # progress, not just per-turn. (See per-turn heartbeat above.)
+                        if not ctx.is_replaying:
+                            try:
+                                ctx.set_custom_status(
+                                    f"turn={turn} tool={idx} {fn_name}"
+                                )
+                            except Exception:  # noqa: BLE001 — best-effort
+                                pass
                         ordered[idx] = yield ctx.call_activity(
                             self._activity_name(self.run_tool),
                             input=tool_payload,
