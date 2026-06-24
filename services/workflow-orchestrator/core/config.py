@@ -54,6 +54,7 @@ class OrchestratorConfig:
     WORKSPACE_RUNTIME_APP_ID: str = "workspace-runtime"
     DAPR_AGENT_PY_APP_ID: str = "dapr-agent-py"
     DAPR_AGENT_PY_TESTING_APP_ID: str = "dapr-agent-py-testing"
+    DAPR_AGENT_PY_JUICEFS_APP_ID: str = "dapr-agent-py-juicefs"
     ADK_AGENT_PY_APP_ID: str = "adk-agent-py"
     CLAUDE_AGENT_PY_APP_ID: str = "claude-agent-py"
     # interactive-cli family (cli-agent-py host service; per-session sandbox pods).
@@ -108,6 +109,7 @@ class OrchestratorConfig:
                 "WORKSPACE_RUNTIME_APP_ID",
                 "DAPR_AGENT_PY_APP_ID",
                 "DAPR_AGENT_PY_TESTING_APP_ID",
+                "DAPR_AGENT_PY_JUICEFS_APP_ID",
                 "ADK_AGENT_PY_APP_ID",
                 "CLAUDE_AGENT_PY_APP_ID",
                 "CLAUDE_CODE_CLI_APP_ID",
@@ -175,6 +177,10 @@ class OrchestratorConfig:
             "DAPR_AGENT_PY_TESTING_APP_ID": (
                 "DAPR_AGENT_PY_TESTING_APP_ID",
                 "dapr-agent-py-testing",
+            ),
+            "DAPR_AGENT_PY_JUICEFS_APP_ID": (
+                "DAPR_AGENT_PY_JUICEFS_APP_ID",
+                "dapr-agent-py-juicefs",
             ),
             "ADK_AGENT_PY_APP_ID": ("ADK_AGENT_PY_APP_ID", "adk-agent-py"),
             "CLAUDE_AGENT_PY_APP_ID": (
