@@ -40,20 +40,28 @@ def normalize_nonterminal_timeout_action(value: str | None) -> str:
 
 
 def workflow_progress_marker(state: dict[str, Any]) -> str | None:
-    for key in (
-        "lastUpdatedAt",
-        "last_updated_at",
-        "updatedAt",
-        "updated_at",
-        "customStatus",
-        "custom_status",
-    ):
+    """Build a progress marker that changes when the workflow makes progress.
+
+    Combines the Dapr workflow's last-checkpoint timestamp AND its custom status,
+    so a change in EITHER counts as progress. The custom status is the agent's
+    explicit per-iteration/per-tool heartbeat (Dapr's intended mechanism for
+    surfacing workflow progress to external observers) — needed because the
+    checkpoint timestamp does not reliably advance per activity for long,
+    many-tool single turns from slow reasoning models. Reading the timestamp
+    ALONE (the old behavior) masked the heartbeat entirely.
+    """
+    parts: list[str] = []
+    for key in ("lastUpdatedAt", "last_updated_at", "updatedAt", "updated_at"):
         value = state.get(key)
-        if value is not None:
-            marker = str(value).strip()
-            if marker:
-                return marker
-    return None
+        if value is not None and str(value).strip():
+            parts.append(str(value).strip())
+            break
+    for key in ("customStatus", "custom_status", "serialized_custom_status"):
+        value = state.get(key)
+        if value is not None and str(value).strip():
+            parts.append(str(value).strip())
+            break
+    return "|".join(parts) if parts else None
 
 
 def benchmark_activity_marker(progress: dict[str, Any]) -> str | None:
