@@ -16687,7 +16687,11 @@ async function seedGeneratorCriticShowcases(params) {
     // critic drives a real browser (navigate/snapshot/screenshot); the in-pod
     // @playwright/mcp --save-video .webm is pushed to browser-artifacts and plays
     // inline on the run's Browser tab. Isolates browser/video from the heavy flow.
-    "browser-recording-test-showcase.json"
+    "browser-recording-test-showcase.json",
+    // Minimal clone + single-agent-edit workflow: fast verification of W3
+    // local-build, uid alignment, durable source-bundle persistence, and
+    // concurrency-safe parallel tool calls — no GAN plan/negotiate/refine loop.
+    "bundle-proof.json"
   ]) {
     const full = path.join(dir, file);
     if (!fs2.existsSync(full)) {
