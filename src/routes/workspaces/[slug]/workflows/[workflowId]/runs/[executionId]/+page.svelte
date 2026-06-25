@@ -40,6 +40,7 @@
 		ListTree,
 		ChevronRight,
 		ChevronLeft,
+		ChevronDown,
 		Play,
 		PencilLine,
 		Ellipsis,
@@ -1123,6 +1124,53 @@
 			stopBusy = false;
 		}
 	}
+	// --- Resume from a failed/terminal node (node-aware Dapr rerun-from-event) ---
+	let resumeBusy = $state(false);
+	const isTerminalFailed = $derived(
+		['error', 'failed', 'cancelled', 'canceled'].includes(executionStatus.toLowerCase())
+	);
+	// Top-level node ids in canvas order, for the "Resume from: <node>" picker.
+	const resumableNodeIds = $derived(
+		workflowNodeIds.filter((id) => id && id !== '__start__' && id !== '__end__')
+	);
+	async function resumeRun(fromNodeId?: string) {
+		if (resumeBusy) return;
+		const label = fromNodeId ? `node "${fromNodeId}"` : 'the failed step';
+		if (
+			!confirm(
+				`Resume from ${label}?\n\nCompleted earlier steps replay from history (not re-run); ${
+					fromNodeId ?? 'the failed node'
+				} onward re-executes with the CURRENT workflow against the original run's workspace.\n\nOnly edits to ${
+					fromNodeId ?? 'the failed node'
+				} and later take effect.`
+			)
+		)
+			return;
+		resumeBusy = true;
+		try {
+			const res = await fetch(`/api/workflows/executions/${executionId}/resume`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(fromNodeId ? { fromNodeId } : {})
+			});
+			const b = (await res.json().catch(() => ({}))) as {
+				ok?: boolean;
+				executionId?: string;
+				message?: string;
+				error?: string;
+			};
+			if (!res.ok || !b?.ok || !b.executionId) {
+				alert(b?.message || b?.error || `Resume failed (HTTP ${res.status})`);
+				return;
+			}
+			await goto(`/workspaces/${slug}/workflows/${workflowId}/runs/${b.executionId}`);
+		} catch (err) {
+			alert(err instanceof Error ? err.message : 'Resume failed');
+		} finally {
+			resumeBusy = false;
+		}
+	}
+
 	let allTimelineItems = $derived(buildTimelineItems(significantTimelineEvents, { isRunning }));
 
 	// Collect unique URLs the agent visited (from browser-use tool_result events)
@@ -2108,6 +2156,50 @@
 				>
 					{stopBusy || stopConverging ? 'Stopping…' : 'Stop run'}
 				</Button>
+			{:else if isTerminalFailed}
+				<!-- Resume from the failed step: completed steps replay from history
+				     (durable/run children are NOT re-dispatched); the failed node onward
+				     re-runs with the current workflow against the original workspace. -->
+				<div class="flex items-center">
+					<Button
+						variant="outline"
+						size="sm"
+						class="h-7 gap-1 rounded-r-none border-r-0"
+						onclick={() => resumeRun()}
+						disabled={resumeBusy}
+						title="Resume from the failed step — replays completed steps from history, re-runs the failed node onward against the original workspace"
+					>
+						<RefreshCw class="size-3.5 {resumeBusy ? 'animate-spin' : ''}" />
+						{resumeBusy ? 'Resuming' : 'Resume from failed step'}
+					</Button>
+					{#if resumableNodeIds.length}
+						<DropdownMenu.Root>
+							<DropdownMenu.Trigger>
+								{#snippet child({ props })}
+									<Button
+										{...props}
+										variant="outline"
+										size="sm"
+										class="h-7 rounded-l-none px-1"
+										disabled={resumeBusy}
+										title="Resume from a specific node"
+									>
+										<ChevronDown class="size-3.5" />
+									</Button>
+								{/snippet}
+							</DropdownMenu.Trigger>
+							<DropdownMenu.Content align="end" class="max-h-72 w-56 overflow-auto">
+								<DropdownMenu.Label>Resume from node</DropdownMenu.Label>
+								<DropdownMenu.Separator />
+								{#each resumableNodeIds as nodeId (nodeId)}
+									<DropdownMenu.Item onSelect={() => resumeRun(nodeId)}>
+										<code class="text-xs">{nodeId}</code>
+									</DropdownMenu.Item>
+								{/each}
+							</DropdownMenu.Content>
+						</DropdownMenu.Root>
+					{/if}
+				</div>
 			{/if}
 			<Separator orientation="vertical" class="mx-1 h-5" />
 			<a

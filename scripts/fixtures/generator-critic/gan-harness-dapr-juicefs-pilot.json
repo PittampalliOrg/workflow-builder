@@ -115,7 +115,8 @@
             }
           }
         }
-      }
+      },
+      "resumable": true
     }
   },
   "input": {
@@ -249,7 +250,7 @@
         "with": {
           "cwd": "/sandbox/work",
           "mode": "execute_direct",
-          "workspaceRef": "${ .runtime.executionId }",
+          "workspaceRef": "${ .runtime.workspaceExecutionId }",
           "agentRef": {
             "slug": "${ .trigger.planAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
           },
@@ -316,7 +317,7 @@
               "with": {
                 "cwd": "/sandbox/work",
                 "mode": "execute_direct",
-                "workspaceRef": "${ .runtime.executionId }",
+                "workspaceRef": "${ .runtime.workspaceExecutionId }",
                 "agentRef": {
                   "slug": "${ .trigger.generatorAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
                 },
@@ -341,7 +342,7 @@
               "with": {
                 "cwd": "/sandbox/work",
                 "mode": "execute_direct",
-                "workspaceRef": "${ .runtime.executionId }",
+                "workspaceRef": "${ .runtime.workspaceExecutionId }",
                 "agentRef": {
                   "slug": "${ .trigger.criticAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
                 },
@@ -394,7 +395,7 @@
               "with": {
                 "cwd": "/sandbox/work",
                 "mode": "execute_direct",
-                "workspaceRef": "${ .runtime.executionId }",
+                "workspaceRef": "${ .runtime.workspaceExecutionId }",
                 "agentRef": {
                   "slug": "${ .trigger.generatorAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
                 },
@@ -419,7 +420,7 @@
               "with": {
                 "cwd": "/sandbox/work",
                 "mode": "execute_direct",
-                "workspaceRef": "${ .runtime.executionId }",
+                "workspaceRef": "${ .runtime.workspaceExecutionId }",
                 "agentRef": {
                   "slug": "${ .trigger.criticAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
                 },
@@ -500,7 +501,7 @@
               "with": {
                 "cwd": "/sandbox/work/repo",
                 "mode": "execute_direct",
-                "workspaceRef": "${ .runtime.executionId }",
+                "workspaceRef": "${ .runtime.workspaceExecutionId }",
                 "agentRef": {
                   "slug": "${ .trigger.generatorAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
                 },
@@ -537,7 +538,7 @@
               "with": {
                 "cwd": "/sandbox/work/repo",
                 "mode": "execute_direct",
-                "workspaceRef": "${ .runtime.executionId }",
+                "workspaceRef": "${ .runtime.workspaceExecutionId }",
                 "agentRef": {
                   "slug": "${ .trigger.criticAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
                 },
@@ -563,7 +564,7 @@
               "with": {
                 "cwd": "/sandbox/work/repo",
                 "mode": "execute_direct",
-                "workspaceRef": "${ .runtime.executionId }",
+                "workspaceRef": "${ .runtime.workspaceExecutionId }",
                 "agentRef": {
                   "slug": "${ .trigger.criticAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
                 },
@@ -589,7 +590,7 @@
               "with": {
                 "cwd": "/sandbox/work/repo",
                 "mode": "execute_direct",
-                "workspaceRef": "${ .runtime.executionId }",
+                "workspaceRef": "${ .runtime.workspaceExecutionId }",
                 "agentRef": {
                   "slug": "${ .trigger.criticAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
                 },
@@ -615,7 +616,7 @@
               "with": {
                 "cwd": "/sandbox/work/repo",
                 "mode": "execute_direct",
-                "workspaceRef": "${ .runtime.executionId }",
+                "workspaceRef": "${ .runtime.workspaceExecutionId }",
                 "agentRef": {
                   "slug": "${ .trigger.criticAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
                 },
