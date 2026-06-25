@@ -3219,6 +3219,10 @@ class ExecuteSWWorkflowRequest(BaseModel):
     dbExecutionId: str | None = None
     mlflowContext: dict | None = None
     traceContext: dict | None = None
+    # Resume/fork: skip every top-level node before this one + reuse the source
+    # run's /sandbox/work via the stable workspace key. Omitted for normal runs.
+    resumeFromNode: str | None = None
+    workspaceExecutionId: str | None = None
 
 
 @app.post("/api/v2/sw-workflows", response_model=StartWorkflowResponse)
@@ -3309,6 +3313,8 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
             "integrations": request.integrations,
             "dbExecutionId": db_execution_id,
             "mlflowContext": request.mlflowContext,
+            "resumeFromNode": request.resumeFromNode,
+            "workspaceExecutionId": request.workspaceExecutionId,
             "features": {
                 "mlflowNodeSpans": _env_bool(
                     "WORKFLOW_ORCHESTRATOR_MLFLOW_NODE_SPANS",
