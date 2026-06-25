@@ -26,6 +26,15 @@ require the **current/edited** spec to take effect, rerun-from-event is the wron
 left workspace reuse + result persistence broken because the original input lacked a stable
 workspace key / new dbExecutionId.)
 
+**Does Dapr 1.18 "history propagation" help?** No (researched 2026-06-25). History propagation
+(`PropagateLineage()`/`PropagateOwnHistory()`, + history signing) lets a **parent** workflow share its
+execution history/context with **child** workflows/activities (audit, chain-of-custody, agent-context
+carry via `ContinueAsNew`). It does **not** let you rerun/resume an instance with a **replaced
+workflow-level input** — `RerunWorkflowFromEvent` still copies the original input, and `ContinueAsNew`
+truncates history + discards incomplete tasks. So it doesn't address this flaw; the application-level
+pattern below remains correct. (History propagation could independently help give cross-app `durable/run`
+agent children parent context — a separate opportunity.)
+
 **What we do instead.** Resume starts a **fresh execution of the workflow's CURRENT spec** that:
 1. **Skips every top-level node before `resumeFromNode`** in the interpreter (`sw_workflow.py` do-loop):
    a skipped node does **not dispatch** (no sandbox spawn) and is marked completed with `{skipped:true}`.
