@@ -43,6 +43,7 @@ import {
 } from "$lib/server/sessions/agent-workflow-host";
 import { resolveWorkflowGithubToken } from "$lib/server/workflows/github-token";
 import { createFile } from "$lib/server/files/registry";
+import { saveBrowserArtifact } from "$lib/server/browser-artifacts";
 import type { AgentConfig } from "$lib/types/agents";
 import { env } from "$env/dynamic/private";
 
@@ -66,6 +67,8 @@ const MAX_OUTPUT_CHARS = 16_000;
 // fits. Cap a chunked file read so a runaway file can't blow up the response.
 const CHUNK_RAW_BYTES = 6000;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
+// Cap a persisted browser video (base64-inlined into the artifact blob table).
+const MAX_VIDEO_BYTES = 64 * 1024 * 1024;
 
 type CmdResult = { exitCode: number; stdout: string; stderr: string };
 
@@ -176,6 +179,7 @@ async function readFileBytes(
 	token: string,
 	path: string,
 	cwd: string,
+	maxBytes: number = MAX_FILE_BYTES,
 ): Promise<{ ok: boolean; bytes: Buffer; error?: string }> {
 	const q = `'${path.replace(/'/g, "'\\''")}'`;
 	const sizeRes = await postCommand(baseUrl, token, `wc -c < ${q}`, cwd);
@@ -184,7 +188,7 @@ async function readFileBytes(
 	}
 	const size = parseInt((sizeRes.stdout || "").trim(), 10);
 	if (!Number.isFinite(size) || size < 0) return { ok: false, bytes: Buffer.alloc(0), error: "bad size" };
-	if (size > MAX_FILE_BYTES) return { ok: false, bytes: Buffer.alloc(0), error: `file too large (${size} bytes)` };
+	if (size > maxBytes) return { ok: false, bytes: Buffer.alloc(0), error: `file too large (${size} bytes)` };
 	if (size === 0) return { ok: false, bytes: Buffer.alloc(0), error: "empty file" };
 	const chunks = Math.ceil(size / CHUNK_RAW_BYTES);
 	const parts: Buffer[] = [];
@@ -202,7 +206,15 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	if (!db) return error(503, "Database not configured");
 	const executionId = params.executionId;
 
-	let body: { command?: unknown; cwd?: unknown; readFile?: unknown; timeoutMs?: unknown } = {};
+	let body: {
+		command?: unknown;
+		cwd?: unknown;
+		readFile?: unknown;
+		timeoutMs?: unknown;
+		persistBrowserVideo?: unknown;
+		nodeId?: unknown;
+		workflowId?: unknown;
+	} = {};
 	try {
 		body = await request.json();
 	} catch {
@@ -224,6 +236,16 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	// return a top-level fileId (instead of stuffing binary into stdout) so a
 	// workflow `image` artifact can reference it as a blob and render inline.
 	const readFileImageType = readFile ? imageContentType(readFile) : null;
+	// Optional `persistBrowserVideo`: an absolute path (on the CLI pod) to a .webm
+	// the command produced (e.g. the dashboard walkthrough). After the command
+	// runs we read the bytes and persist them as a `video` browser-artifact so the
+	// run page's Browser tab renders an inline <video>. Best-effort, never fatal.
+	const persistBrowserVideo =
+		typeof body.persistBrowserVideo === "string" && body.persistBrowserVideo.trim()
+			? body.persistBrowserVideo.trim()
+			: null;
+	const artifactNodeId =
+		typeof body.nodeId === "string" && body.nodeId.trim() ? body.nodeId.trim() : "publish_shot";
 
 	// Resolve the execution's most-recent interactive-cli session with a live pod.
 	const rows = await db
@@ -322,6 +344,56 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	const token = env.INTERNAL_API_TOKEN ?? process.env.INTERNAL_API_TOKEN ?? "";
 	const cmd = await postCommand(baseUrl, token, command, cwd, commandTimeoutMs);
 	if (!cmd) return error(502, "cli runtime error invoking workspace command");
+
+	// Optional: persist a .webm the command produced as a `video` browser-artifact
+	// so the run page's Browser tab renders it inline. Best-effort and isolated —
+	// a missing/oversized/failed video must NEVER fail the workflow (mirrors the
+	// screenshot's always-success contract below). Runs BEFORE the readFile return
+	// branches so it works alongside the screenshot in the same step.
+	if (persistBrowserVideo) {
+		try {
+			const vid = await readFileBytes(baseUrl, token, persistBrowserVideo, cwd, MAX_VIDEO_BYTES);
+			if (vid.ok && vid.bytes.byteLength > 0) {
+				let workflowId =
+					typeof body.workflowId === "string" && body.workflowId.trim()
+						? body.workflowId.trim()
+						: "";
+				if (!workflowId) {
+					const row = await db
+						.select({ workflowId: workflowExecutions.workflowId })
+						.from(workflowExecutions)
+						.where(eq(workflowExecutions.id, executionId))
+						.limit(1);
+					workflowId = row[0]?.workflowId ?? "";
+				}
+				if (workflowId) {
+					await saveBrowserArtifact({
+						workflowExecutionId: executionId,
+						workflowId,
+						nodeId: artifactNodeId,
+						baseUrl: "",
+						status: "completed",
+						steps: [],
+						metadata: { source: "publish_shot-recordVideo", fileName: persistBrowserVideo },
+						assets: [
+							{
+								kind: "video",
+								label: "Dashboard walkthrough",
+								payloadBase64: vid.bytes.toString("base64"),
+								contentType: "video/webm",
+								fileName: persistBrowserVideo.split("/").pop() ?? "dashboard.webm",
+							},
+						],
+					});
+				}
+			}
+		} catch (err) {
+			console.warn(
+				`[cli-workspace-command] persistBrowserVideo failed for ${executionId}:`,
+				err instanceof Error ? err.message : err,
+			);
+		}
+	}
 
 	// readFile + image: read the bytes (binary), upload to the files API, and
 	// return a top-level `fileId` so an `image` workflow artifact can reference

@@ -4753,15 +4753,10 @@ class OpenShellDurableAgent(DurableAgent):
                 agent_workflow_result = yield from super().agent_workflow(ctx, message)
             workflow_terminal = True
 
-            # W3: persist the agent's source edits from local scratch back to the
-            # shared JuiceFS repo (excl node_modules/build/.git) so the deterministic
-            # gate, a critic on another pod, the run-diff, and the Files tab see them.
-            if _w3_local and not ctx.is_replaying:
-                try:
-                    if runtime.sync_source_to_juicefs():
-                        logger.info("[W3] synced agent source: local scratch -> JuiceFS")
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("[W3] source sync-out failed: %s", exc)
+            # W3 source sync-out moved to the finally block (guarded by
+            # workflow_terminal) so it ALSO fires on error/terminate/circuit-breaker
+            # paths — otherwise the agent's final-turn edits in local scratch are
+            # lost when the per-session pod is reaped (the loss this fixes).
 
             # After agent completes, check for PLAN.md and persist full content
             # to Dapr state store (mirrors Claude Code's file-based plan persistence).
@@ -4927,6 +4922,24 @@ class OpenShellDurableAgent(DurableAgent):
             # NonDeterminismError ("previous execution called call_activity...").
             # Restore them only after the workflow body reaches a terminal
             # success/error path.
+            #
+            # W3: persist the agent's SOURCE edits from local scratch back to the
+            # shared JuiceFS repo (excl node_modules/build/.git) so the gate, a
+            # critic on another pod, the run-diff, and the Files tab see them. Run
+            # here (not on the normal path only) so it fires on EVERY true-terminal
+            # path — normal completion AND error/terminate/circuit-breaker — since
+            # those sessions (autoTerminateAfterEndTurn, empty-response breaker)
+            # routinely end off the normal path and would otherwise lose the
+            # final-turn edits when the per-session pod is reaped. Additive tar
+            # (only adds/overwrites, never deletes) → safe to run once at terminal.
+            # Gated by workflow_terminal && not is_replaying like its neighbors so
+            # it never runs on intermediate replay yields.
+            if _w3_local and workflow_terminal and not ctx.is_replaying:
+                try:
+                    if runtime.sync_source_to_juicefs():
+                        logger.info("[W3] synced agent source: local scratch -> JuiceFS")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[W3] source sync-out failed: %s", exc)
             if workflow_terminal:
                 self.execution.max_iterations = previous_max_iterations
                 self.llm._llm_component = previous_component

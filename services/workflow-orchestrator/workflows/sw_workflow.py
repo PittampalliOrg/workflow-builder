@@ -2720,6 +2720,12 @@ def _handle_call_task(
         gate_read_file = final_config.get("readFile")
         if not isinstance(gate_read_file, str) and isinstance(final_config.get("body"), dict):
             gate_read_file = final_config["body"].get("readFile")
+        # Optional persistBrowserVideo: an absolute path (on the CLI pod) to a .webm
+        # the command produced; the BFF persists it as a `video` browser-artifact so
+        # the run page's Browser tab renders it inline (e.g. the dashboard walkthrough).
+        gate_persist_video = final_config.get("persistBrowserVideo")
+        if not isinstance(gate_persist_video, str) and isinstance(final_config.get("body"), dict):
+            gate_persist_video = final_config["body"].get("persistBrowserVideo")
         result = yield ctx.call_activity(
             cli_workspace_command,
             input=_freeze({
@@ -2731,6 +2737,11 @@ def _handle_call_task(
                 # on JuiceFS); threaded down through the BFF to the cli pod so the
                 # 180s HTTP default doesn't cap a multi-minute build.
                 "timeoutMs": final_config.get("timeoutMs"),
+                "persistBrowserVideo": gate_persist_video if isinstance(gate_persist_video, str) else None,
+                # nodeId/workflowId let the BFF key the video browser-artifact to
+                # this run + node (task_name IS the node id).
+                "nodeId": task_name,
+                "workflowId": tc.workflow_id,
                 "_otel": tc.otel_ctx,
             }),
         )
