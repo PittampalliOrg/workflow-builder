@@ -121,6 +121,22 @@ from src.code_checkpoint import (
     restore_code_checkpoint,
     should_checkpoint_tool,
 )
+
+
+def _code_checkpoint_enabled() -> bool:
+    """Per-tool git checkpoint commits (capture_code_checkpoint) auto-commit every
+    Edit/Write into the workspace HEAD. That makes `git diff` (HEAD vs working tree)
+    EMPTY, which (a) breaks contract verify commands that use bare `git diff` and
+    (b) confuses code agents into working around it (using bash instead of Edit/Write
+    to keep changes uncommitted). Disable it where the per-node diff + source-bundle
+    artifacts already provide durability (the GAN/juicefs pool). Default ON for
+    backward compatibility (benchmark/legacy pools rely on checkpoint restore)."""
+    return os.environ.get("DAPR_AGENT_PY_CODE_CHECKPOINT_ENABLED", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 from src.tool_idempotency import (
     ToolResultCache,
     find_recorded_tool_result,
@@ -3773,7 +3789,7 @@ class OpenShellDurableAgent(DurableAgent):
                           result = merged
                           output = merged["content"][:500]
           checkpoint = None
-          if should_checkpoint_tool(tool_name):
+          if _code_checkpoint_enabled() and should_checkpoint_tool(tool_name):
               try:
                   with _start_checkpoint_span(tool_name, tool_call_id) as _span:
                       checkpoint = capture_code_checkpoint(
