@@ -233,3 +233,48 @@ write-up. OpenShell: github.com/NVIDIA/OpenShell, langchain-ai/openshell-deepage
 GAN loops: Reflexion (arXiv 2303.11366), Self-Refine (2303.17651), AlphaCodium (2401.08500), Agentless
 (2407.01489), Anthropic "Building Effective Agents", LangChain RubricMiddleware, Dapr/Diagrid
 evaluator-optimizer, LLM-as-judge survey (2411.15594).
+
+---
+
+## Follow-ups (filed)
+
+These are tracked here because the repo has GitHub issues disabled.
+
+### F1 — `code_checkpoint` should write to a SHADOW git ref (not HEAD)
+**Why:** `code_checkpoint` (dapr-agent-py) auto-commits every Edit/Write into the
+workspace **HEAD**, so `git diff` (HEAD vs working-tree) is always empty. That broke
+the GAN contract's `git diff` verify commands + the no-op check, and code agents
+**worked around it** (a glm-5.2 generator switched to `bash` sed/python to avoid the
+auto-commit). **Interim fix shipped:** `DAPR_AGENT_PY_CODE_CHECKPOINT_ENABLED=false`
+on the `dapr-agent-py-juicefs` pool (PR#300 + stacks). **Trade-off:** the run page's
+**Code** tab (`workflow_code_checkpoints`) + per-checkpoint **restore-to-sandbox** no
+longer appear for juicefs runs (the **Changes**/diff tab + `source-bundle` artifacts
+cover viewing + durable retrieval, but not in-UI per-tool restore).
+**Proposal:** rewrite `code_checkpoint` to snapshot into a shadow ref/dir (mirror the
+diff-capture's `.wfb-diff-git` / `refs/wfb/baseline` pattern) so the agent's HEAD/
+working-tree stay untouched (clean `git diff`) AND checkpoints + Code-tab restore keep
+working — then `CODE_CHECKPOINT_ENABLED` can default back on.
+Refs: `services/dapr-agent-py/src/code_checkpoint.py`; call-site gate
+`_code_checkpoint_enabled` in `main.py`; shadow-ref pattern in
+`services/dapr-agent-py/src/workspace_diff_sync.py`; tabs in
+`src/routes/workspaces/[slug]/workflows/[workflowId]/runs/[executionId]/+page.svelte`
+(`hasCodeTab`/`hasChangesTab`).
+
+### F2 — R1 v2: fast builds without nesting a mount in the JuiceFS volume
+R1 (emptyDir at `/sandbox/work/repo/node_modules`) was **reverted** — nesting an
+emptyDir inside the RWX JuiceFS CSI mount broke the juicefs pods' view of the cloned
+source (empty repo). Redo as non-nesting copy-to-local-build (generator builds in a
+`/sandbox/scratch` copy like the gate/evaluator already do) — or accept the gate's
+scratch build is the authoritative one and the generator's inline npm is slow. Measured:
+local `npm ci` ≈ 18s vs ~11min on JuiceFS, so this matters for large repos.
+
+### F3 — Apply the read_verdict GAN upgrades to `cli-showcase` + `dapr-showcase`
+The no-op/anchor/immutability upgrades were applied only to the two dapr-family
+fixtures (juicefs-pilot + glm-visual-dashboard). Apply the same patch format-preserving
+to `gan-harness-cli-showcase` + `gan-harness-dapr-showcase` (they weren't indent-2; a
+json reformat is a ~1400-line diff — patch the read_verdict command string in place).
+
+### F4 — Contract-immutability: lock at `read_contract`, not first `read_verdict`
+Today the `contract.lock.json` snapshot is taken on the first `read_verdict`. Move it to
+`read_contract` (end of negotiate, before any generate) to close the iteration-0
+tamper window.
