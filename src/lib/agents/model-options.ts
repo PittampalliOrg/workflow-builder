@@ -137,6 +137,23 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     component: "llm-glm-5.2",
   },
   {
+    // Faster GLM-5 family variants on the SAME coding-plan endpoint/quota as
+    // glm-5.2 (direct zai_adapter, non-vision). Smoke-tested ~1.6x (turbo) and
+    // ~3x (5.1) faster than glm-5.2 — handy for quick proof/iteration runs.
+    value: "zai/glm-5-turbo",
+    label: "Z.AI GLM-5 Turbo (fast)",
+    provider: "zai",
+    iconProvider: "zai",
+    component: "llm-glm-5-turbo",
+  },
+  {
+    value: "zai/glm-5.1",
+    label: "Z.AI GLM 5.1 (fast)",
+    provider: "zai",
+    iconProvider: "zai",
+    component: "llm-glm-5.1",
+  },
+  {
     // Z.AI VLM (vision) — routes to the pay-as-you-go /paas/v4 endpoint (see
     // zai_adapter._zai_base_url). Used as a screenshot-judging visual critic.
     value: "zai/glm-5v-turbo",
