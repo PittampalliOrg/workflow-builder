@@ -93,6 +93,7 @@ from src.playwright_mcp_proxy import (  # noqa: E402
 )
 from src.browser_video_sync import sync_browser_video_activity  # noqa: E402
 from src.workspace_diff_sync import sync_workspace_diff_activity  # noqa: E402
+from src.workspace_diff_sync import sync_source_bundle_activity  # noqa: E402
 from src.output_sync import sync_output_activity  # noqa: E402
 from src.seed import seed_session_activity  # noqa: E402
 from src.session_supervisor import (  # noqa: E402
@@ -121,6 +122,7 @@ _runtime.register_activity(stop_cli_activity)
 _runtime.register_activity(sync_output_activity)
 _runtime.register_activity(sync_browser_video_activity)
 _runtime.register_activity(sync_workspace_diff_activity)
+_runtime.register_activity(sync_source_bundle_activity)
 _runtime.register_activity(check_cancellation_activity)
 _runtime.register_activity(prepare_swebench_workspace_activity)
 _runtime.register_activity(extract_model_patch_activity)
