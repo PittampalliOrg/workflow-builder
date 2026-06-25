@@ -15,33 +15,36 @@ GAN-harness / coding workflows fail at a *late* node (e.g. `evaluate_ui`) only a
 expensive earlier work. A normal re-run starts a **new execution from the top on a fresh workspace** —
 all that work is redone. Resume-from-step keeps the prior work and re-runs just the failed node.
 
-## How it works (Dapr-native rerun-from-event)
+## How it works (fresh execution + skip-prefix + reuse workspace)
 
-Dapr Workflow has **no in-place rewind of a terminal instance**, but it ships
-`RerunWorkflowFromEvent` (durabletask; `dapr-ext-workflow==1.18.0`) — and we already exposed it at
-orchestrator `POST /api/v2/workflows/{instance_id}/rerun`. It:
+**Why not Dapr's native rerun-from-event.** Dapr ships `RerunWorkflowFromEvent` (durabletask) and we
+exposed it, but a verification spike found it **copies the source run's workflow input verbatim and
+cannot apply an edited spec** — its `overwriteInput` only retargets the *single activity* at the rerun
+event, not the workflow input (confirmed in the proto + by the resumed instance's `ExecutionStarted`
+showing the original input). Since both our use cases (fix-the-failed-step, iterate-on-a-revised-step)
+require the **current/edited** spec to take effect, rerun-from-event is the wrong primitive. (It also
+left workspace reuse + result persistence broken because the original input lacked a stable
+workspace key / new dbExecutionId.)
 
-1. Creates a **new** Dapr instance.
-2. **Replays the source history `0..(eventID-1)` as cached results** — completed activities AND completed
-   `durable/run` **sub-orchestrations** are returned from the *parent* history, **not re-executed**.
-   (Spike-verified 2026-06-25: reran a 7-agent-node GAN run from a late event → `ExecutionCompleted
-   success:true` with **zero** new `agent-host-*` session pods. Child agents replay from cache, not
-   re-dispatch.)
-3. **Re-executes from `eventID` onward** with the (optionally overwritten) input.
+**What we do instead.** Resume starts a **fresh execution of the workflow's CURRENT spec** that:
+1. **Skips every top-level node before `resumeFromNode`** in the interpreter (`sw_workflow.py` do-loop):
+   a skipped node does **not dispatch** (no sandbox spawn) and is marked completed with `{skipped:true}`.
+2. **Reuses the source run's retained `/sandbox/work`** by threading a stable `workspaceExecutionId`
+   (the root run's id) into the input → the resumed nodes resolve `workspaceRef` to the original
+   workspace (cloned repo, SPEC.md, contract.json, edits all present).
+3. **Runs from `resumeFromNode` onward with the edited spec** → the fix / revision takes effect.
 
-Resume is a **node-aware** wrapper on top of this: you pick a *node*, not a raw history event.
+Net effect matches the goal: the expensive prefix is skipped (no re-dispatch), the workspace is reused,
+and edits apply — without re-running from the beginning.
 
-### Node → event mapping
-The SW interpreter schedules an `update_execution_node` activity at the **start of every top-level
-node**, carrying the node id in its input. `_resolve_resume_event` (orchestrator `app.py`) finds that
-event and reruns from it. `fromNodeId` omitted / `"__failed__"` ⇒ the **last** node that started (the
-node in-flight when the run stopped).
+### Node selection
+`fromNodeId` is a top-level node id (validated against the current spec). Omitted ⇒ the source run's
+`currentNodeId` (the node in-flight when it stopped). The interpreter maps it to its position in the
+`do` list and skips everything before it.
 
-### Applying the fix (overwriteInput)
-The workflow **spec travels as the workflow input** and replay must be deterministic, so the rerun
-passes **`overwriteInput=true` + the current (edited) spec**. The replayed prefix uses cached results,
-so **edits to earlier nodes are ignored** — only edits to the resume node and later take effect. If an
-earlier node's *structure* (task scheduling) changed, replay would diverge.
+### Edits take effect from the resume node onward
+Because skipped prefix nodes don't run, **edits to nodes BEFORE the resume point have no effect** (their
+prior workspace state is reused as-is). Edit the resume node and later.
 
 ### Reusing the workspace (stable workspace key)
 The shared `/sandbox/work` is a JuiceFS subPath keyed on `workspaceExecutionId` (Postgres-backed,
@@ -52,40 +55,43 @@ workspace. Fix: `runtime.workspaceExecutionId` is a stable key in the expression
 resume caller threads the **root run's** instance id so the resumed node re-mounts the original
 `/sandbox/work` (cloned repo, SPEC.md, contract.json, edits).
 
-### Retain-on-failure
-Resumable workflows (`document['x-workflow-builder'].resumable: true`) **skip workspace cleanup on
-failure** (`sw_workflow.py`), so the data survives to be resumed. The Dapr **history** is retained by the
-existing `stateRetentionPolicy=168h` (failures aren't purged — only an explicit Stop purges), so **7
-days** is the resume window.
+### Retain-on-terminal
+Resumable workflows (`document['x-workflow-builder'].resumable: true`) **skip workspace cleanup on ANY
+terminal state** (success *and* failure, `sw_workflow.py`), so the `/sandbox/work` data survives to be
+resumed/forked. (A fresh fork needs no Dapr history from the source — only the retained workspace — but the
+source row + its lineage stay around as usual.)
 
 > The `workflow-builder-sandbox-gc` CronJob reaps stale Sandbox **CRs/pods**, NOT the JuiceFS workspace
-> **data** — so it does not affect resumability. (Follow-up: an *abandoned-resumable-workspace* reaper to
-> bound JuiceFS growth for resumable failed runs that are never resumed.)
+> **data** (Postgres-backed/Retain, pod-independent) — so it does not affect resumability. Follow-up: an
+> *abandoned-resumable-workspace* reaper to bound JuiceFS growth for resumable runs that are never resumed.
 
 ## Surfaces
 
 - **UI:** run-detail page → on a failed/cancelled run, **"Resume from failed step"** (auto-locates the
-  failed node) + a **"Resume from: <node>"** dropdown of the run's top-level nodes.
+  in-flight node) + a **"Resume from: <node>"** dropdown of the run's top-level nodes. (To be extended to
+  successful runs for the iteration/fork use case.)
 - **BFF:** `POST /api/workflows/executions/[executionId]/resume` `{ fromNodeId? }` (owner/project-scoped;
-  benchmark/eval instances 409 `coordinator_owned`). Creates a **new** `workflow_executions` row linked to
-  the source via the existing `rerunOfExecutionId` / `rerunSourceInstanceId` / `rerunFromEventId` columns.
-- **Orchestrator:** `POST /api/v2/workflows/{instance_id}/resume` `{ fromNodeId?, input?, reason? }` →
-  node→event map + `RerunWorkflowFromEvent`. 404 if the node never started; 409 if the run has no node
-  boundaries.
+  benchmark/eval instances 409 `coordinator_owned`). Calls `startWorkflowRun` to launch a **fresh execution
+  of the current spec** with `resumeFromNode` + `workspaceExecutionId` (root run's id) + the rerun lineage
+  columns (`rerunOfExecutionId` / `rerunSourceInstanceId`). Omitted `fromNodeId` ⇒ the source run's
+  `currentNodeId`. 404 if the node isn't a top-level node in the current spec.
+- **Orchestrator:** the SW interpreter skips top-level nodes before `resumeFromNode` (input field) and
+  threads `workspaceExecutionId` into `runtime.workspaceExecutionId`. (A node-aware
+  `POST /api/v2/workflows/{id}/resume` rerun-from-event endpoint also exists but is **not** used by the
+  resume path — it cannot apply edited specs; kept only for possible pure-retry use.)
 
 ## Constraints / gotchas
 
-- **Edit only the failed node and later.** Earlier nodes replay from cache; structural edits to them break
-  deterministic replay (the resume rejects-by-divergence). Content edits to earlier nodes are silently
-  ignored (cached).
-- **Resumable scope:** the JuiceFS `/sandbox/work` family (`gan-harness-{glm-visual-dashboard,
-  dapr-juicefs-pilot,cli-showcase}`). The openshell-shared family (`gan-harness-dapr-showcase`) is out of
-  scope (different, remote workspace).
-- **Resume window = 168h** (Dapr history retention). After that, do a full re-run.
-- **Partial node history on the resumed run:** the replayed prefix doesn't re-write node-status to the new
-  run's row, so the resumed run's UI shows only the resume-node-onward progress; the source run has the
-  full prefix (linked via the rerun lineage columns).
-- A run that was explicitly **Stop&Reset/purged** loses its Dapr history → cannot be resumed.
+- **Edit only the resume node and later.** Prefix nodes are skipped and their prior workspace state is
+  reused as-is, so edits to earlier nodes have no effect.
+- **File hand-off, not context refs.** Skipped prefix nodes produce no task output, so a resumed node must
+  read prior results from the shared `/sandbox/work` (the GAN/coding pattern), not via `${ .priorNode.x }`.
+  This is why resume is scoped to the JuiceFS `/sandbox/work` family
+  (`gan-harness-{glm-visual-dashboard,dapr-juicefs-pilot,cli-showcase}`); the openshell-shared family
+  (`gan-harness-dapr-showcase`) is out of scope.
+- **Repeated forks share the workspace** (chosen v1 behavior) — iteration 2 sees iteration 1's mutations.
+  Point-in-time per-node snapshots are a planned fast-follow for hermetic iteration.
+- The forked run is a **fresh execution** with its own row + full node history (no partial-history caveat).
 
 ## Verify (dev)
 

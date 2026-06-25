@@ -3912,8 +3912,38 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         task_index = 0
         task_name_to_index = {name: idx for idx, (name, _) in enumerate(tasks)}
 
+        # Resume / fork-from-node: this is a FRESH execution (so it runs the CURRENT,
+        # possibly edited, spec) that REUSES the source run's retained /sandbox/work
+        # and SKIPS every top-level node before `resumeFromNode`. We skip rather than
+        # use Dapr's rerun-from-event because that primitive copies the source's
+        # workflow input verbatim and cannot apply an edited spec. Skipped prefix
+        # nodes do not run (no dispatch) and produce no task output — resumable
+        # workflows must hand off via the shared workspace (files), not context refs.
+        resume_from_node = input_data.get("resumeFromNode")
+        resume_from_index = (
+            task_name_to_index.get(resume_from_node)
+            if isinstance(resume_from_node, str) and resume_from_node
+            else None
+        )
+        if resume_from_index is not None:
+            _log_info(
+                ctx,
+                "[SW Workflow] Resume/fork: skipping %d node(s) before '%s'; reusing workspace %s",
+                resume_from_index,
+                resume_from_node,
+                getattr(tc, "workspace_execution_id", execution_id),
+            )
+
         while task_index < total_tasks:
             task_name, task_data = tasks[task_index]
+
+            if resume_from_index is not None and task_index < resume_from_index:
+                # Prefix node already ran in the source run — skip (no dispatch).
+                _store_task_output(tc, task_name, "skip", {"skipped": True, "resumed": True})
+                tc.completed_tasks.add(task_name)
+                task_index += 1
+                continue
+
             task_type = get_task_type(task_data)
             tc.otel_ctx = _workflow_activity_otel_context(
                 tc=tc,

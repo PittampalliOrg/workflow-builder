@@ -3,9 +3,7 @@ import type { RequestHandler } from './$types';
 import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { workflows, workflowExecutions } from '$lib/server/db/schema';
-import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
-import { AgentRefResolutionError, resolveSpecAgentRefs } from '$lib/server/agents/resolver';
-import { isSWWorkflow } from '$lib/server/workflows/start-run';
+import { startWorkflowRun } from '$lib/server/workflows/start-run';
 import { isResourceInScope } from '$lib/server/workflows/project-scope';
 import { ownsBenchmarkOrEvalRun } from '$lib/server/lifecycle/ownership';
 
@@ -13,8 +11,8 @@ type ExecutionRow = typeof workflowExecutions.$inferSelect;
 
 /**
  * The shared /sandbox/work workspace is keyed on `workspaceExecutionId`, which on a
- * normal run equals the run's Dapr instance id. A resume must re-mount the ORIGINAL
- * run's workspace, so we thread the ROOT run's instance id (walk the rerun lineage).
+ * normal run equals the run's Dapr instance id. A resume/fork must re-mount the
+ * ORIGINAL run's workspace, so we thread the ROOT run's instance id (walk lineage).
  */
 async function resolveWorkspaceExecutionId(source: ExecutionRow): Promise<string | null> {
 	let current = source;
@@ -30,24 +28,41 @@ async function resolveWorkspaceExecutionId(source: ExecutionRow): Promise<string
 	return current.daprInstanceId;
 }
 
+/** Top-level node ids of a SW 1.0 spec, in order. */
+function topLevelNodeIds(spec: unknown): string[] {
+	const doList = (spec as { do?: unknown })?.do;
+	if (!Array.isArray(doList)) return [];
+	const ids: string[] = [];
+	for (const entry of doList) {
+		if (entry && typeof entry === 'object') {
+			for (const k of Object.keys(entry as Record<string, unknown>)) ids.push(k);
+		}
+	}
+	return ids;
+}
+
 /**
  * POST /api/workflows/executions/[executionId]/resume
  *
- * Resume a terminal/failed run from a NODE, skipping completed steps. Node-aware
- * wrapper over Dapr's native rerun-from-event: the completed prefix replays from the
- * source instance's history as cached results (validated: durable/run agent children
- * are NOT re-dispatched), and the resume node onward re-executes with the CURRENT
- * (edited) spec against the ORIGINAL run's retained /sandbox/work.
+ * Resume / fork a run from a NODE, skipping completed steps. This starts a FRESH
+ * execution of the workflow's CURRENT (possibly edited) spec that SKIPS every
+ * top-level node before `fromNodeId` and REUSES the source run's retained
+ * /sandbox/work. (We deliberately do NOT use Dapr's rerun-from-event: that copies
+ * the source's workflow input verbatim and cannot apply an edited spec.)
  *
- * Body: { fromNodeId? } — omit (or "__failed__") to auto-resume from the node that was
- * in-flight when the run stopped. Creates a NEW execution row linked to the source.
+ * Body: { fromNodeId? } — omit to auto-resume from the node in-flight when the run
+ * stopped (the source run's currentNodeId). The forked run links to the source.
+ *
+ * Use cases: (1) fix the failed step and resume; (2) iterate on a later step
+ * without re-running the expensive prefix. Edits to nodes BEFORE the resume point
+ * do not take effect (those nodes are skipped + their workspace state is reused).
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (!locals.session?.userId) return error(401, 'Authentication required');
 	if (!db) return error(503, 'Database not configured');
 
 	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-	const fromNodeId =
+	let fromNodeId =
 		typeof body.fromNodeId === 'string' && body.fromNodeId.trim() ? body.fromNodeId.trim() : undefined;
 
 	// 1. Source run + scope.
@@ -58,12 +73,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		.limit(1);
 	if (!source) return error(404, 'Execution not found');
 	if (!isResourceInScope(source, locals.session)) return error(404, 'Execution not found');
-	if (!source.daprInstanceId) {
-		return error(409, 'Run has no Dapr instance id to resume from');
-	}
+	if (!source.daprInstanceId) return error(409, 'Run has no Dapr instance id to resume from');
 
-	// Single stop/resume authority: a benchmark/eval instance is coordinator-driven —
-	// don't resume it directly (mirrors the Stop route's coordinator_owned guard).
+	// Single stop/resume authority: coordinator-driven benchmark/eval instances 409.
 	const owner = await ownsBenchmarkOrEvalRun(params.executionId);
 	if (owner) {
 		return json(
@@ -78,125 +90,44 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		);
 	}
 
-	// 2. Current (possibly edited) workflow spec.
+	// 2. Current (possibly edited) workflow spec → validate the resume node exists.
 	const [workflow] = await db
 		.select()
 		.from(workflows)
 		.where(eq(workflows.id, source.workflowId))
 		.limit(1);
 	if (!workflow) return error(404, 'Workflow not found');
-	let spec = (workflow as Record<string, unknown>).spec as Record<string, unknown> | null;
-	if (!spec || !isSWWorkflow(spec)) {
-		return error(400, 'Workflow does not have a runnable SW 1.0 spec');
+	const nodeIds = topLevelNodeIds((workflow as Record<string, unknown>).spec);
+
+	// Auto-locate: the node in-flight when the source run stopped.
+	if (!fromNodeId) fromNodeId = source.currentNodeId ?? undefined;
+	if (!fromNodeId) return error(400, 'Could not determine a resume node; pass fromNodeId');
+	if (nodeIds.length && !nodeIds.includes(fromNodeId)) {
+		return error(404, `Node '${fromNodeId}' is not a top-level node in the current workflow`);
 	}
 
-	const resumable = Boolean(
-		((((spec as Record<string, unknown>).document as Record<string, unknown>) ?? {})[
-			'x-workflow-builder'
-		] as Record<string, unknown> | undefined)?.resumable
-	);
-
-	// 3. Reuse the source run's trigger inputs (the resume node sees the same trigger).
-	const triggerData = (source.input ?? {}) as Record<string, unknown>;
-
-	// 4. Resolve agent refs against the current spec (same as a normal start).
-	try {
-		spec = await resolveSpecAgentRefs(spec, { triggerData });
-	} catch (err) {
-		if (err instanceof AgentRefResolutionError) return error(400, err.message);
-		throw err;
-	}
-
-	// 5. Stable workspace key = the root run's instance id (re-mount its /sandbox/work).
+	// 3. Stable workspace key = the root run's instance id (re-mount its /sandbox/work).
 	const workspaceExecutionId = await resolveWorkspaceExecutionId(source);
 
-	// 6. New execution row linked to the source (reuses the existing rerun lineage cols).
-	const [execution] = await db
-		.insert(workflowExecutions)
-		.values({
-			workflowId: source.workflowId,
-			userId: source.userId,
-			projectId: source.projectId,
-			status: 'running',
-			phase: 'running',
-			progress: 0,
-			input: triggerData,
-			rerunOfExecutionId: source.id,
-			rerunSourceInstanceId: source.daprInstanceId,
-			triggerSource: 'resume'
-		})
-		.returning();
-
-	// 7. Call the orchestrator node-aware resume (overwriteInput = the edited spec).
-	const resumeInput = {
-		workflow: spec,
+	// 4. Fresh execution of the CURRENT spec, skipping the prefix + reusing the workspace.
+	const result = await startWorkflowRun({
 		workflowId: source.workflowId,
-		triggerData,
-		dbExecutionId: execution.id,
-		workspaceExecutionId
-	};
-	let res: Response;
-	try {
-		res = await daprFetch(
-			`${getOrchestratorUrl()}/api/v2/workflows/${encodeURIComponent(source.daprInstanceId)}/resume`,
-			{
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					fromNodeId,
-					input: resumeInput,
-					reason: `Resume from ${fromNodeId ?? 'failed step'} (source ${source.id}) by ${locals.session.userId}`
-				}),
-				signal: AbortSignal.timeout(20_000)
-			}
-		);
-	} catch (err) {
-		await db
-			.update(workflowExecutions)
-			.set({
-				status: 'error',
-				phase: 'failed',
-				error: err instanceof Error ? err.message : 'Failed to reach orchestrator',
-				completedAt: new Date()
-			})
-			.where(eq(workflowExecutions.id, execution.id));
-		return error(502, 'Failed to reach workflow orchestrator');
-	}
+		triggerData: (source.input ?? {}) as Record<string, unknown>,
+		resumeFromNode: fromNodeId,
+		workspaceExecutionId: workspaceExecutionId ?? undefined,
+		rerunOfExecutionId: source.id,
+		rerunSourceInstanceId: source.daprInstanceId,
+		triggerSource: 'resume'
+	});
 
-	const payload = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-	if (!res.ok) {
-		const detail =
-			(typeof payload.detail === 'string' && payload.detail) ||
-			(typeof payload.error === 'string' && payload.error) ||
-			'Resume failed';
-		await db
-			.update(workflowExecutions)
-			.set({ status: 'error', phase: 'failed', error: detail, completedAt: new Date() })
-			.where(eq(workflowExecutions.id, execution.id));
-		// Surface 404 (node not in run history) / 409 (no resumable boundaries) verbatim.
-		return error(res.status, detail);
-	}
-
-	const newInstanceId = typeof payload.newInstanceId === 'string' ? payload.newInstanceId : null;
-	const fromEventId = typeof payload.fromEventId === 'number' ? payload.fromEventId : null;
-	const resolvedNode = typeof payload.fromNodeId === 'string' ? payload.fromNodeId : (fromNodeId ?? null);
-
-	await db
-		.update(workflowExecutions)
-		.set({
-			daprInstanceId: newInstanceId,
-			rerunFromEventId: fromEventId ?? undefined,
-			workflowSessionId: execution.id
-		})
-		.where(eq(workflowExecutions.id, execution.id));
+	if (!result.ok) return error(result.status, result.error);
 
 	return json({
 		ok: true,
-		executionId: execution.id,
+		executionId: result.executionId,
 		sourceExecutionId: source.id,
-		newInstanceId,
-		fromNodeId: resolvedNode,
-		fromEventId,
-		resumable
+		newInstanceId: result.instanceId,
+		fromNodeId,
+		workspaceExecutionId
 	});
 };
