@@ -16526,10 +16526,6 @@ async function ensureShowcaseAgent(sqlClient, userId, projectId) {
 }
 async function ensureCliShowcaseAgentFor(sqlClient, userId, projectId, opts) {
   const { slug, runtime, name, description } = opts;
-  const existing = await sqlClient`
-		select id, current_version_id from agents where slug = ${slug} limit 1`;
-  if (existing.length && existing[0].current_version_id) return slug;
-  const agentId = existing.length ? existing[0].id : generateId();
   const config = {
     runtime,
     ...opts.modelSpec ? { modelSpec: opts.modelSpec } : {},
@@ -16540,6 +16536,27 @@ async function ensureCliShowcaseAgentFor(sqlClient, userId, projectId, opts) {
     mcpServers: opts.mcpServers ?? []
   };
   const configHash = crypto4.createHash("sha256").update(JSON.stringify(config)).digest("hex");
+  const existing = await sqlClient`
+		select id, current_version_id from agents where slug = ${slug} limit 1`;
+  if (existing.length && existing[0].current_version_id) {
+    const cur = await sqlClient`
+			select config_hash from agent_versions where id = ${existing[0].current_version_id} limit 1`;
+    if (cur.length && cur[0].config_hash === configHash) return slug;
+    const agentId2 = existing[0].id;
+    const maxV = await sqlClient`
+			select coalesce(max(version), 0)::int as v from agent_versions where agent_id = ${agentId2}`;
+    const nextVersion = (maxV[0]?.v ?? 0) + 1;
+    const newVersionId = generateId();
+    await sqlClient`
+			insert into agent_versions (id, agent_id, version, config, config_hash)
+			values (${newVersionId}, ${agentId2}, ${nextVersion}, ${JSON.stringify(config)}::jsonb, ${configHash})`;
+    await sqlClient`update agents set current_version_id = ${newVersionId}, runtime = ${runtime}, registry_status = ${"registered"} where id = ${agentId2}`;
+    console.log(
+      `[seed-workflows] Updated showcase agent "${slug}" -> v${nextVersion} (runtime=${runtime}, modelSpec=${opts.modelSpec ?? "n/a"})`
+    );
+    return slug;
+  }
+  const agentId = existing.length ? existing[0].id : generateId();
   const versionId = generateId();
   if (!existing.length) {
     await sqlClient`
@@ -16574,6 +16591,13 @@ async function seedGeneratorCriticShowcases(params) {
     name: "Dapr (JuiceFS) Evaluator/Critic Agent",
     description: "Pilot dapr-agent-py agent on the juicefs-shared backend: runs file/command tools pod-locally against the per-execution JuiceFS /sandbox/work (no openshell RPC), sharing the workspace with the cliWorkspace deterministic gate.",
     modelSpec: process.env.SEED_SHOWCASE_AGENT_MODEL?.trim() || "deepseek-v4-pro"
+  });
+  await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+    slug: "glm-juicefs-builder-agent",
+    runtime: "dapr-agent-py-juicefs",
+    name: "GLM-5.2 (JuiceFS) Builder Agent",
+    description: "GLM-5.2 builder on the juicefs-shared backend: plans + builds the dashboard pod-locally against the per-execution JuiceFS /sandbox/work, sharing it with the deterministic gate and the Playwright visual critic.",
+    modelSpec: process.env.SEED_GLM_BUILDER_MODEL?.trim() || "zai/glm-5.2"
   });
   const PLAYWRIGHT_CRITIC_MCP = [
     {
@@ -16651,6 +16675,14 @@ async function seedGeneratorCriticShowcases(params) {
     // dapr→juicefs migration + cross-family workspace sharing.
     // docs/dapr-agent-py-sandbox-architecture.md.
     "gan-harness-dapr-juicefs-pilot.json",
+    // ALL-ON-JUICEFS GAN VISUAL LOOP: GLM-5.2 (dapr-agent-py-juicefs) plans +
+    // builds a standalone SvelteKit dashboard (workflows/sessions/fleet/gitops
+    // primitives, mock data) → deterministic ui-web build+preview gate → a real
+    // browser visual critic (cli-playwright-critic-agent, in-pod Chromium, same
+    // /sandbox/work) screenshots + judges it. Derived from the post-refinement
+    // pilot do[] (behavioral criteria, calibrated evaluator, failing[] feedback,
+    // shallow clone). repoUrl=PittampalliOrg/glm-dashboard-starter.
+    "gan-harness-glm-visual-dashboard.json",
     // Minimal single-node test of R1 persisted browser recording: a Playwright-MCP
     // critic drives a real browser (navigate/snapshot/screenshot); the in-pod
     // @playwright/mcp --save-video .webm is pushed to browser-artifacts and plays

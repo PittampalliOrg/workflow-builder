@@ -4395,11 +4395,6 @@ async function ensureCliShowcaseAgentFor(
 	},
 ): Promise<string> {
 	const { slug, runtime, name, description } = opts;
-	const existing = await sqlClient<{ id: string; current_version_id: string | null }[]>`
-		select id, current_version_id from agents where slug = ${slug} limit 1`;
-	if (existing.length && existing[0].current_version_id) return slug;
-
-	const agentId = existing.length ? existing[0].id : generateId();
 	const config = {
 		runtime,
 		...(opts.modelSpec ? { modelSpec: opts.modelSpec } : {}),
@@ -4413,6 +4408,33 @@ async function ensureCliShowcaseAgentFor(
 		.createHash("sha256")
 		.update(JSON.stringify(config))
 		.digest("hex");
+	const existing = await sqlClient<{ id: string; current_version_id: string | null }[]>`
+		select id, current_version_id from agents where slug = ${slug} limit 1`;
+
+	// Existing agent: reconcile config DRIFT (e.g. a changed modelSpec) instead of
+	// the old insert-only early-return, which froze the agent's model at first-seed.
+	// Publish a NEW version ONLY when the resolved config differs (no churn when
+	// unchanged), so re-seeding is authoritative for modelSpec/runtime.
+	if (existing.length && existing[0].current_version_id) {
+		const cur = await sqlClient<{ config_hash: string | null }[]>`
+			select config_hash from agent_versions where id = ${existing[0].current_version_id} limit 1`;
+		if (cur.length && cur[0].config_hash === configHash) return slug;
+		const agentId = existing[0].id;
+		const maxV = await sqlClient<{ v: number }[]>`
+			select coalesce(max(version), 0)::int as v from agent_versions where agent_id = ${agentId}`;
+		const nextVersion = (maxV[0]?.v ?? 0) + 1;
+		const newVersionId = generateId();
+		await sqlClient`
+			insert into agent_versions (id, agent_id, version, config, config_hash)
+			values (${newVersionId}, ${agentId}, ${nextVersion}, ${JSON.stringify(config)}::jsonb, ${configHash})`;
+		await sqlClient`update agents set current_version_id = ${newVersionId}, runtime = ${runtime}, registry_status = ${"registered"} where id = ${agentId}`;
+		console.log(
+			`[seed-workflows] Updated showcase agent "${slug}" -> v${nextVersion} (runtime=${runtime}, modelSpec=${opts.modelSpec ?? "n/a"})`,
+		);
+		return slug;
+	}
+
+	const agentId = existing.length ? existing[0].id : generateId();
 	const versionId = generateId();
 	if (!existing.length) {
 		await sqlClient`
