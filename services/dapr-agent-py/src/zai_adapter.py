@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 COMPONENT_MODEL_MAP: dict[str, str] = {
     "llm-glm-5.2": "glm-5.2",
     "llm-zai-glm-5.2": "glm-5.2",
+    # Faster GLM-5 family variants (non-vision → coding-plan endpoint, same quota
+    # as glm-5.2). glm-5-turbo ~1.6x and glm-5.1 ~3x faster than glm-5.2.
+    "llm-glm-5-turbo": "glm-5-turbo",
+    "llm-zai-glm-5-turbo": "glm-5-turbo",
+    "llm-glm-5.1": "glm-5.1",
+    "llm-zai-glm-5.1": "glm-5.1",
     "llm-glm-5v-turbo": "glm-5v-turbo",
     "llm-zai-glm-5v-turbo": "glm-5v-turbo",
 }

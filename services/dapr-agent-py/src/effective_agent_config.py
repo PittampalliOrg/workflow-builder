@@ -87,6 +87,13 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
     "zai/glm-5.2": "llm-glm-5.2",
     "glm-5.2": "llm-glm-5.2",
     "z-ai/glm-5.2": "llm-glm-5.2",
+    # Faster GLM-5 family variants (same coding-plan endpoint as glm-5.2).
+    "zai/glm-5-turbo": "llm-glm-5-turbo",
+    "glm-5-turbo": "llm-glm-5-turbo",
+    "z-ai/glm-5-turbo": "llm-glm-5-turbo",
+    "zai/glm-5.1": "llm-glm-5.1",
+    "glm-5.1": "llm-glm-5.1",
+    "z-ai/glm-5.1": "llm-glm-5.1",
     # Z.AI VLM (vision) — pay-as-you-go /paas/v4 endpoint; screenshot critic.
     "zai/glm-5v-turbo": "llm-glm-5v-turbo",
     "glm-5v-turbo": "llm-glm-5v-turbo",
@@ -163,6 +170,8 @@ _COMPONENT_PROVIDER_MODELS: dict[str, tuple[str, str]] = {
     "llm-deepseek-v4-flash": ("deepseek", "deepseek-v4-flash"),
     "llm-deepseek": ("deepseek", "default"),
     "llm-glm-5.2": ("zai", "glm-5.2"),
+    "llm-glm-5-turbo": ("zai", "glm-5-turbo"),
+    "llm-glm-5.1": ("zai", "glm-5.1"),
     "llm-glm-5v-turbo": ("zai", "glm-5v-turbo"),
     "llm-alibaba-qwen3-coder-plus": ("alibaba", "qwen3-coder-plus"),
     "llm-kimi-k26": ("kimi", "kimi-k2.6"),
