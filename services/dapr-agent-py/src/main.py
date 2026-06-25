@@ -4940,6 +4940,34 @@ class OpenShellDurableAgent(DurableAgent):
                         logger.info("[W3] synced agent source: local scratch -> JuiceFS")
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("[W3] source sync-out failed: %s", exc)
+            # Durable per-node SOURCE bundle (Pattern B2): after the W3 sync so the
+            # JuiceFS clone (/sandbox/work/repo, the only dir with .git+origin) holds
+            # this node's source, bundle it to the Files API as a `source-bundle`
+            # artifact → a re-accessible, applyable version that survives the reaped
+            # workspace (docs/code-version-persistence.md). Per-node; nodes that don't
+            # touch the repo (plan/design/negotiate write /sandbox/work/* outside it)
+            # self-skip (0 changed files). Best-effort, terminal-gated like its peers.
+            if execution_id and not strict_one_shot_agent_turn and workflow_terminal and not ctx.is_replaying:
+                try:
+                    from src.workspace_diff_sync import sync_source_bundle_openshell
+
+                    node_id_for_bundle = (
+                        self._agent_context_by_instance.get(instance_id) or {}
+                    ).get("nodeId")
+                    bundle_root = (
+                        getattr(runtime, "_local_root", None)
+                        if _w3_local
+                        else (runtime.cwd or "/sandbox")
+                    ) or "/sandbox"
+                    bundle_summary = sync_source_bundle_openshell(
+                        runtime,
+                        execution_id=execution_id,
+                        node_id=node_id_for_bundle,
+                        repo_root=bundle_root,
+                    )
+                    logger.info("[src-bundle] %s -> %s", execution_id, bundle_summary)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[src-bundle] capture failed for %s: %s", execution_id, exc)
             if workflow_terminal:
                 self.execution.max_iterations = previous_max_iterations
                 self.llm._llm_component = previous_component

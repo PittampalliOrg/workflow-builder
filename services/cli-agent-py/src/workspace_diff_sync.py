@@ -19,6 +19,7 @@ agent's real index untouched. Never raises.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
@@ -216,3 +217,138 @@ def sync_workspace_diff_activity(
         },
     )
     return {"ok": True, "posted": ok, "detail": detail, "base": base}
+
+
+# --- Source bundle (durable, applyable code version) — mirrors dapr-agent-py ----
+# Bundle the produced SOURCE (self-contained full git bundle, tiered fallback) and
+# POST it as a `source-bundle` artifact so the version survives sandbox reap and can
+# be downloaded / Promoted → PR. CLI runs pod-local: subprocess + direct file read.
+_BUNDLE_OUT_FILE = "/tmp/wfb-src.bundle"
+_MAX_BUNDLE_BYTES = int(os.environ.get("CLI_SOURCE_BUNDLE_MAX_BYTES", str(20 * 1024 * 1024)))
+
+_BUNDLE_SCRIPT = r"""
+set -e
+git config --global --add safe.directory '*' 2>/dev/null || true
+OUTB=/tmp/wfb-src.bundle
+rm -f "$OUTB"
+CLONE=""
+if [ -e "$ROOT/.git" ] && git -C "$ROOT" rev-parse -q --verify HEAD >/dev/null 2>&1; then CLONE="$ROOT"; fi
+if [ -z "$CLONE" ]; then
+  for D in $(find "$ROOT" -mindepth 2 -maxdepth 3 -name .git 2>/dev/null | sed 's:/[.]git$::' | grep -v '/[.]wfb-' || true); do
+    if git -C "$D" rev-parse -q --verify HEAD >/dev/null 2>&1; then CLONE="$D"; break; fi
+  done
+fi
+[ -n "$CLONE" ] && [ -d "$CLONE" ] || { echo "__WFB_NO_CLONE__"; exit 0; }
+cd "$CLONE"
+git config user.email wfb@local 2>/dev/null || true
+git config user.name wfb 2>/dev/null || true
+git add -A 2>/dev/null || true
+git rm -r --cached --quiet --ignore-unmatch node_modules .svelte-kit build dist .next .cache .wfb-diff-git >/dev/null 2>&1 || true
+FILECOUNT=$(git diff --cached --name-only 2>/dev/null | wc -l | tr -d ' ')
+git commit -q -m "wfb version snapshot" --no-verify 2>/dev/null || true
+HEAD=$(git rev-parse -q --verify HEAD 2>/dev/null || echo "")
+BASE=$(git rev-parse -q --verify origin/HEAD 2>/dev/null || git rev-parse -q --verify origin/main 2>/dev/null || git rev-parse -q --verify origin/master 2>/dev/null || echo "")
+TIER=""
+if [ -n "$HEAD" ]; then
+  if git bundle create "$OUTB" HEAD >/dev/null 2>&1 && [ -s "$OUTB" ]; then TIER=full; else rm -f "$OUTB"; fi
+fi
+if [ -s "$OUTB" ] && [ -n "$MAXB" ] && [ "$(wc -c < "$OUTB" 2>/dev/null || echo 0)" -gt "$MAXB" ] && [ -n "$BASE" ] && [ "$BASE" != "$HEAD" ]; then
+  if git bundle create "$OUTB.thin" "$BASE..HEAD" >/dev/null 2>&1 && [ -s "$OUTB.thin" ]; then mv -f "$OUTB.thin" "$OUTB"; TIER=thin; else rm -f "$OUTB.thin"; fi
+fi
+if { [ ! -s "$OUTB" ] || { [ -n "$MAXB" ] && [ "$(wc -c < "$OUTB" 2>/dev/null || echo 0)" -gt "$MAXB" ]; }; } && [ -n "$HEAD" ]; then
+  TREE=$(git rev-parse "HEAD^{tree}" 2>/dev/null || echo "")
+  if [ -n "$TREE" ]; then SQ=$(git commit-tree "$TREE" -m "wfb snapshot" 2>/dev/null || echo ""); [ -n "$SQ" ] && git bundle create "$OUTB" "$SQ" >/dev/null 2>&1 && TIER=squashed && BASE="" && HEAD="$SQ" || true; fi
+fi
+echo "WFB_CLONE=$CLONE"
+echo "WFB_TIER=$TIER"
+echo "WFB_BASE=$BASE"
+echo "WFB_HEAD=$HEAD"
+echo "WFB_FILECOUNT=$FILECOUNT"
+echo "WFB_BUNDLE_BYTES=$(wc -c < "$OUTB" 2>/dev/null || echo 0)"
+"""
+
+
+def _post_source_bundle(execution_id: str, payload: dict[str, Any]) -> tuple[bool, str]:
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{_WORKFLOW_BUILDER_URL}/api/internal/workflows/executions/{execution_id}/source-bundle",
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "x-internal-token": _INTERNAL_API_TOKEN,
+            "Authorization": f"Bearer {_INTERNAL_API_TOKEN}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_POST_TIMEOUT_SECONDS) as resp:
+            ok = 200 <= int(getattr(resp, "status", 200) or 200) < 300
+            return ok, "ok" if ok else f"http {getattr(resp, 'status', '?')}"
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:300]
+        return False, f"http {exc.code}: {detail}"
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+
+
+def sync_source_bundle_activity(
+    _ctx_or_input: Any, input_data: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Bundle the produced source + POST it as a `source-bundle` artifact. CLI
+    runs pod-local (subprocess + file read). Never raises."""
+    data = _record(input_data if input_data is not None else _ctx_or_input)
+    if not _INTERNAL_API_TOKEN:
+        return {"ok": True, "skipped": "no_token"}
+    execution_id = _clean_string(data.get("workflowExecutionId"))
+    node_id = _clean_string(data.get("nodeId"))
+    if not execution_id:
+        return {"ok": True, "skipped": "no_run_context"}
+
+    root = _clean_string(data.get("repoPath")) or DEFAULT_REPO_DIR
+    try:
+        out = _run(_BUNDLE_SCRIPT, {"ROOT": root, "MAXB": str(_MAX_BUNDLE_BYTES)})
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": True, "skipped": f"bundle_failed: {exc}"}
+    if "__WFB_NO_CLONE__" in out:
+        return {"ok": True, "skipped": "no_clone"}
+    meta: dict[str, str] = {}
+    for line in out.splitlines():
+        for key in ("WFB_CLONE", "WFB_TIER", "WFB_BASE", "WFB_HEAD", "WFB_FILECOUNT", "WFB_BUNDLE_BYTES"):
+            if line.startswith(key + "="):
+                meta[key] = line[len(key) + 1:].strip()
+    try:
+        file_count = int(meta.get("WFB_FILECOUNT") or "0")
+    except ValueError:
+        file_count = 0
+    try:
+        nbytes = int(meta.get("WFB_BUNDLE_BYTES") or "0")
+    except ValueError:
+        nbytes = 0
+    if file_count <= 0:
+        return {"ok": True, "empty": True}
+    if nbytes <= 0 or nbytes > _MAX_BUNDLE_BYTES:
+        return {"ok": True, "skipped": f"bad_size: {nbytes}"}
+
+    try:
+        with open(_BUNDLE_OUT_FILE, "rb") as fh:
+            bundle_b64 = base64.b64encode(fh.read()).decode("ascii")
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": True, "skipped": f"read_failed: {exc}"}
+    if not bundle_b64:
+        return {"ok": True, "skipped": "empty_read"}
+
+    ok, detail = _post_source_bundle(
+        execution_id,
+        {
+            "bundleBase64": bundle_b64,
+            "nodeId": node_id,
+            "fileName": "source.bundle",
+            "base": meta.get("WFB_BASE") or "",
+            "head": meta.get("WFB_HEAD") or "",
+            "tier": meta.get("WFB_TIER") or "",
+            "clonePath": meta.get("WFB_CLONE") or "",
+            "fileCount": file_count,
+            "sizeBytes": nbytes,
+        },
+    )
+    return {"ok": True, "posted": ok, "detail": detail, "tier": meta.get("WFB_TIER"), "bytes": nbytes}

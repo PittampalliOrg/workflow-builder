@@ -27,6 +27,7 @@ from dapr.ext.workflow import DaprWorkflowContext, RetryPolicy, when_any as wf_w
 from src.cancellation import TERMINAL_CONTROL_EVENT_TYPES, check_cancellation_activity
 from src.browser_video_sync import sync_browser_video_activity
 from src.workspace_diff_sync import sync_workspace_diff_activity
+from src.workspace_diff_sync import sync_source_bundle_activity
 from src.cli_lifecycle import probe_cli_activity, start_cli_activity, stop_cli_activity
 from src.event_publisher import publish_session_event
 from src.output_sync import sync_output_activity
@@ -962,6 +963,26 @@ def session_workflow(
         )
         if diff_result is _ACTIVITY_TIMED_OUT:
             diff_result = None
+
+        # Durable per-node SOURCE bundle (Pattern B2): a git bundle of the produced
+        # source persisted to the Files API as a `source-bundle` artifact, so the
+        # version survives sandbox reap and can be downloaded / Promoted → PR.
+        bundle_result = yield from _yield_bounded(
+            ctx,
+            sync_source_bundle_activity,
+            input={
+                "workflowExecutionId": input_data.get("workflowExecutionId")
+                or input_data.get("dbExecutionId")
+                or input_data.get("executionId")
+                or metadata.get("workflowExecutionId")
+                or metadata.get("executionId"),
+                "nodeId": input_data.get("nodeId") or metadata.get("nodeId"),
+                "repoPath": input_data.get("workspaceDir") or input_data.get("repoPath"),
+            },
+            timeout_seconds=CLI_WORKSPACE_DIFF_SYNC_TIMEOUT_SECONDS,
+        )
+        if bundle_result is _ACTIVITY_TIMED_OUT:
+            bundle_result = None
 
     return _result_contract(
         ctx=ctx,
