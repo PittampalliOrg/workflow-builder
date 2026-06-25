@@ -4468,6 +4468,21 @@ async function seedGeneratorCriticShowcases(params: {
 			"Pilot dapr-agent-py agent on the juicefs-shared backend: runs file/command tools pod-locally against the per-execution JuiceFS /sandbox/work (no openshell RPC), sharing the workspace with the cliWorkspace deterministic gate.",
 		modelSpec: process.env.SEED_SHOWCASE_AGENT_MODEL?.trim() || "deepseek-v4-pro",
 	});
+	// GLM-5.2 BUILDER on the juicefs-shared backend (zai/glm-5.2 → /coding/paas/v4).
+	// The planner/generator/design-reviewer of the all-on-juicefs GAN visual loop
+	// (gan-harness-glm-visual-dashboard); the visual critic is the dev-verified
+	// cli-playwright-critic-agent (claude-code-cli, in-pod Chromium, juicefs-shared
+	// → same /sandbox/work). A glm-5v-turbo screenshot-judge is wired in code
+	// (B1 vision + zai/glm-5v-turbo model) but deferred for the live run until a
+	// browser-on-juicefs-dapr sidecar lane exists (AgentRuntime CR retired).
+	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+		slug: "glm-juicefs-builder-agent",
+		runtime: "dapr-agent-py-juicefs",
+		name: "GLM-5.2 (JuiceFS) Builder Agent",
+		description:
+			"GLM-5.2 builder on the juicefs-shared backend: plans + builds the dashboard pod-locally against the per-execution JuiceFS /sandbox/work, sharing it with the deterministic gate and the Playwright visual critic.",
+		modelSpec: process.env.SEED_GLM_BUILDER_MODEL?.trim() || "zai/glm-5.2",
+	});
 	// Shared Playwright MCP config for every CLI critic (same sandbox image →
 	// same `playwright-mcp` binary + pinned Chromium; --executable-path avoids the
 	// runtime browser download). Wired per-CLI: claude .mcp.json / codex
@@ -4570,6 +4585,14 @@ async function seedGeneratorCriticShowcases(params: {
 		// dapr→juicefs migration + cross-family workspace sharing.
 		// docs/dapr-agent-py-sandbox-architecture.md.
 		"gan-harness-dapr-juicefs-pilot.json",
+		// ALL-ON-JUICEFS GAN VISUAL LOOP: GLM-5.2 (dapr-agent-py-juicefs) plans +
+		// builds a standalone SvelteKit dashboard (workflows/sessions/fleet/gitops
+		// primitives, mock data) → deterministic ui-web build+preview gate → a real
+		// browser visual critic (cli-playwright-critic-agent, in-pod Chromium, same
+		// /sandbox/work) screenshots + judges it. Derived from the post-refinement
+		// pilot do[] (behavioral criteria, calibrated evaluator, failing[] feedback,
+		// shallow clone). repoUrl=PittampalliOrg/glm-dashboard-starter.
+		"gan-harness-glm-visual-dashboard.json",
 		// Minimal single-node test of R1 persisted browser recording: a Playwright-MCP
 		// critic drives a real browser (navigate/snapshot/screenshot); the in-pod
 		// @playwright/mcp --save-video .webm is pushed to browser-artifacts and plays

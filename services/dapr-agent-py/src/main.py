@@ -170,6 +170,11 @@ from src.effective_agent_config import (
     resolve_llm_metadata,
     runtime_context_audit_cache_fields,
 )
+from src.tool_batching import (
+    max_tool_concurrency,
+    partition_tool_calls,
+    tool_name_concurrency_safe,
+)
 from src.runtime_config import (
     SESSION_RUNTIME_CONFIG_EVENT_TYPE,
     build_runtime_config_event,
@@ -216,6 +221,7 @@ from dapr_agents.agents.configs import (
 )
 from dapr_agents.agents.schemas import TriggerAction
 from dapr_agents.agents.durable import DurableAgent
+from dapr.ext.workflow import when_all as wf_when_all
 from dapr_agents.hooks import Hooks as NativeHooks
 from dapr_agents.hooks import LLMHookContext, Proceed
 from dapr_agents.llm.dapr import DaprChatClient
@@ -1659,6 +1665,7 @@ class OpenShellDurableAgent(DurableAgent):
         message: dict,
         *,
         force_repo_sequential: bool = False,
+        batch_safe_tools: bool = False,
     ):
         """Run the standard durable-agent loop while scheduling tools one at a time.
 
@@ -1782,19 +1789,87 @@ class OpenShellDurableAgent(DurableAgent):
                 ordered: list[dict[str, Any] | None] = [None] * len(tool_calls)
                 tool_calls_by_id: dict[str, dict[str, Any]] = {}
 
-                for idx, tc in enumerate(tool_calls):
+                # Partition the turn's tool calls into ordered runs. Consecutive
+                # concurrency-safe inline tools (Read/Grep/Glob/MCP-read) coalesce
+                # into ONE ctx.when_all batch (capped); everything else — Bash,
+                # Write/Edit, workflow/agent tools — stays strictly one-at-a-time.
+                # Execution order follows the original sequence (only adjacent safe
+                # calls batch), so a write-then-read in one turn can't race. Opt-in
+                # via batch_safe_tools; default off preserves the legacy path.
+                def _is_batchable(_tc: dict[str, Any]) -> bool:
+                    if not batch_safe_tools:
+                        return False
+                    _n = (_tc.get("function") or {}).get("name", "")
+                    if not tool_name_concurrency_safe(_n):
+                        return False
+                    _to = self.tool_executor.get_tool(_n)
+                    # Workflow/agent-call tools are sub-orchestrations → never batch.
+                    return not (_to and isinstance(_to, WorkflowContextInjectedTool))
+
+                _partitions = partition_tool_calls(
+                    tool_calls,
+                    is_batchable=_is_batchable,
+                    max_concurrency=max_tool_concurrency(),
+                )
+                for _partition in _partitions:
                     cancellation = yield from cancellation_result_from_state()
                     if cancellation is not None:
                         self._termination_reason_by_instance[ctx.instance_id] = "cancelled"
                         final_message = cancellation
                         logger.info(
-                            "Agent %s observed cancellation before tool %d on turn %d (instance=%s)",
+                            "Agent %s observed cancellation before a tool unit on turn %d (instance=%s)",
                             self.name,
-                            idx,
                             turn,
                             ctx.instance_id,
                         )
                         break
+
+                    # ---- parallel batch: consecutive concurrency-safe inline tools
+                    if _partition["parallel"]:
+                        _items = _partition["items"]
+                        if not ctx.is_replaying:
+                            try:
+                                ctx.set_custom_status(
+                                    f"turn={turn} parallel-tools x{len(_items)}"
+                                )
+                            except Exception:  # noqa: BLE001 — best-effort
+                                pass
+                        _batch_time = ctx.current_utc_datetime.isoformat()
+                        _tasks = []
+                        for _bidx, _btc in _items:
+                            logger.info(
+                                "[tool-dispatch] yielding PARALLEL inline tool activity instance=%s order=%d tool=%s call_id=%s batch=%d",
+                                ctx.instance_id,
+                                _bidx,
+                                _btc["function"]["name"],
+                                _btc.get("id"),
+                                len(_items),
+                            )
+                            _tasks.append(
+                                ctx.call_activity(
+                                    self._activity_name(self.run_tool),
+                                    input={
+                                        "tool_call": _btc,
+                                        "instance_id": ctx.instance_id,
+                                        "time": _batch_time,
+                                        "order": _bidx,
+                                    },
+                                    retry_policy=self._retry_policy,
+                                )
+                            )
+                        # when_all preserves task order → results map 1:1 to _items.
+                        _results = yield wf_when_all(_tasks)
+                        for _k, (_bidx, _btc) in enumerate(_items):
+                            ordered[_bidx] = _results[_k]
+                            tool_calls_by_id[_btc["id"]] = {
+                                "tool_call": _btc,
+                                "is_agent_call": False,
+                                "dispatch_time": _batch_time,
+                            }
+                        continue
+
+                    # ---- serial unit (single tool): legacy one-at-a-time dispatch
+                    idx, tc = _partition["items"][0]
                     fn_name = tc["function"]["name"]
                     dispatch_time = ctx.current_utc_datetime.isoformat()
                     tool_obj = self.tool_executor.get_tool(fn_name)
@@ -3876,6 +3951,27 @@ class OpenShellDurableAgent(DurableAgent):
             if restored_repo_path:
                 runtime.set_cwd(restored_repo_path)
 
+        # W3: local build mode — mirror the JuiceFS source repo to fast local
+        # scratch and run the agent there so its own npm install/build never hit
+        # the network FS (JuiceFS small-file I/O makes npm install ~11min vs ~4s
+        # local). Idempotent + side-effect-only (no yield) → replay-safe. The
+        # agent's source edits are synced back to JuiceFS after it completes.
+        _w3_local = bool(getattr(runtime, "local_build_enabled", None)) and runtime.local_build_enabled()
+        if _w3_local:
+            try:
+                _local_repo = runtime.ensure_local_build_repo()
+                if _local_repo:
+                    runtime.set_cwd(_local_repo)
+                    logger.info(
+                        "[W3] local build mode: agent cwd -> %s (source mirrored from JuiceFS)",
+                        _local_repo,
+                    )
+                else:
+                    _w3_local = False
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[W3] ensure_local_build_repo failed: %s", exc)
+                _w3_local = False
+
         # Per-run instruction bundle from agentConfig + runtime context. Named
         # agents carry persona inside agentConfig; systemPrompt no longer
         # suppresses role/goal/instructions because the composer renders all
@@ -4589,6 +4685,43 @@ class OpenShellDurableAgent(DurableAgent):
                 or requested_agent_workflow_mode == "strict_sequential"
                 or is_swebench_execution_context(instance_id, runtime_context)
             )
+            # Opt-in concurrency-safe tool batching (Claude Code partition model):
+            # group consecutive read-only inline tools into one ctx.when_all batch.
+            # Honored ONLY on the strict-sequential path and NEVER when a turn is
+            # force-sequential (SWE-bench / one-shot) or has native tool hooks
+            # (which require ordered Pre/PostToolUse). Per-agent via
+            # agentConfig.toolExecutionMode, or globally via env.
+            _rc_agent_cfg = (
+                runtime_context.get("agentConfig")
+                if isinstance(runtime_context.get("agentConfig"), dict)
+                else {}
+            )
+            _requested_tool_mode = str(
+                message.get("toolExecutionMode")
+                or metadata.get("toolExecutionMode")
+                or _rc_agent_cfg.get("toolExecutionMode")
+                or runtime_context.get("toolExecutionMode")
+                or ""
+            ).strip().lower()
+            _env_tool_batching = os.environ.get(
+                "DAPR_AGENT_PY_TOOL_BATCHING", ""
+            ).strip().lower() in ("1", "true", "yes", "on")
+            batch_safe_tools = (
+                not force_repo_sequential
+                and not _native_tool_hooks_configured(self)
+                and (
+                    _requested_tool_mode
+                    in ("parallel", "batched", "concurrency_safe", "concurrency_safe_batched")
+                    or _env_tool_batching
+                )
+            )
+            if batch_safe_tools:
+                logger.info(
+                    "[tool-dispatch] concurrency-safe batching ENABLED (mode=%r env=%s) instance=%s",
+                    _requested_tool_mode or None,
+                    _env_tool_batching,
+                    instance_id,
+                )
             # Snapshot the pre-agent sandbox state as the run-diff baseline BEFORE
             # the agent writes, so the session-end diff shows only the agent's
             # changes (not the seeded home/config dotfiles in dapr's /sandbox cwd).
@@ -4603,6 +4736,7 @@ class OpenShellDurableAgent(DurableAgent):
 
             if (
                 force_repo_sequential
+                or batch_safe_tools
                 or (
                     getattr(self.execution, "tool_execution_mode", None)
                     == ToolExecutionMode.SEQUENTIAL
@@ -4613,10 +4747,21 @@ class OpenShellDurableAgent(DurableAgent):
                     ctx,
                     message,
                     force_repo_sequential=force_repo_sequential,
+                    batch_safe_tools=batch_safe_tools,
                 )
             else:
                 agent_workflow_result = yield from super().agent_workflow(ctx, message)
             workflow_terminal = True
+
+            # W3: persist the agent's source edits from local scratch back to the
+            # shared JuiceFS repo (excl node_modules/build/.git) so the deterministic
+            # gate, a critic on another pod, the run-diff, and the Files tab see them.
+            if _w3_local and not ctx.is_replaying:
+                try:
+                    if runtime.sync_source_to_juicefs():
+                        logger.info("[W3] synced agent source: local scratch -> JuiceFS")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[W3] source sync-out failed: %s", exc)
 
             # After agent completes, check for PLAN.md and persist full content
             # to Dapr state store (mirrors Claude Code's file-based plan persistence).

@@ -27,7 +27,16 @@ logger = logging.getLogger(__name__)
 COMPONENT_MODEL_MAP: dict[str, str] = {
     "llm-glm-5.2": "glm-5.2",
     "llm-zai-glm-5.2": "glm-5.2",
+    "llm-glm-5v-turbo": "glm-5v-turbo",
+    "llm-zai-glm-5v-turbo": "glm-5v-turbo",
 }
+
+# GLM-V context windows are far smaller than Anthropic's, and each Playwright
+# screenshot is ~100-500KB base64. Keep only the last N image parts in context
+# (parity with anthropic_adapter's DAPR_AGENT_PY_MAX_IMAGE_TOOL_RESULTS).
+MAX_IMAGE_TOOL_RESULTS_IN_CONTEXT = int(
+    os.environ.get("DAPR_AGENT_PY_MAX_IMAGE_TOOL_RESULTS", "3")
+)
 
 
 def _is_zai_component(component: str) -> bool:
@@ -69,6 +78,99 @@ def _as_text(content: Any) -> str:
     return str(content)
 
 
+def _is_zai_paas_component(component: str | None) -> bool:
+    """True if a component should route to the pay-as-you-go /paas/v4 endpoint
+    (drawn from account balance) rather than the GLM Coding-Plan /coding/paas/v4
+    endpoint. The VLM (glm-5v-turbo) is PAAS-only."""
+    model = _get_zai_model(component or "")
+    extra = {
+        c.strip()
+        for c in os.environ.get("ZAI_PAAS_COMPONENTS", "").split(",")
+        if c.strip()
+    }
+    return model.startswith("glm-5v") or "vlm" in model or str(component) in extra
+
+
+def _zai_base_url(component: str | None) -> str:
+    """Per-model base URL. An explicit ZAI_BASE_URL overrides everything
+    (back-compat). Otherwise PAAS/VLM components use ZAI_PAAS_BASE_URL
+    (.../paas/v4) and coding-plan components use ZAI_CODING_BASE_URL
+    (.../coding/paas/v4)."""
+    explicit = os.environ.get("ZAI_BASE_URL")
+    if explicit:
+        return explicit
+    if _is_zai_paas_component(component):
+        return os.environ.get("ZAI_PAAS_BASE_URL", "https://api.z.ai/api/paas/v4")
+    return os.environ.get(
+        "ZAI_CODING_BASE_URL", "https://api.z.ai/api/coding/paas/v4"
+    )
+
+
+def _data_url_from_image_block(b: dict[str, Any]) -> str | None:
+    """Extract a data: (or http) image URL from a content image block, handling
+    Anthropic-native ({source:{media_type,data}}), MCP/generic ({data,mimeType})
+    and OpenAI ({image_url:{url}}) shapes."""
+    src = b.get("source")
+    if isinstance(src, dict):
+        if src.get("url"):
+            return str(src["url"])
+        data = src.get("data")
+        if data:
+            mt = src.get("media_type") or src.get("mediaType") or "image/png"
+            return f"data:{mt};base64,{data}"
+    data = b.get("data")
+    if data:
+        mt = b.get("mimeType") or b.get("mediaType") or b.get("media_type") or "image/png"
+        return f"data:{mt};base64,{data}"
+    iu = b.get("image_url")
+    if isinstance(iu, dict) and iu.get("url"):
+        return str(iu["url"])
+    if isinstance(iu, str) and iu:
+        return iu
+    return None
+
+
+def _to_zai_content_parts(content: Any) -> tuple[list[dict[str, Any]], bool]:
+    """Map a message content value to OpenAI-style content parts (text +
+    image_url). Returns (parts, has_image). Plain strings yield a single text
+    part; non-image lists collapse to text parts."""
+    if not isinstance(content, list):
+        text = _as_text(content)
+        return ([{"type": "text", "text": text}] if text else [], False)
+    parts: list[dict[str, Any]] = []
+    has_image = False
+    for item in content:
+        if isinstance(item, dict):
+            t = item.get("type")
+            if t in {"image", "image_url"} or item.get("source") or item.get("mimeType"):
+                url = _data_url_from_image_block(item)
+                if url:
+                    parts.append({"type": "image_url", "image_url": {"url": url}})
+                    has_image = True
+                    continue
+            if t in {"text", "input_text", "output_text"}:
+                txt = str(item.get("text", ""))
+                if txt:
+                    parts.append({"type": "text", "text": txt})
+                continue
+            txt = _as_text(item)
+            if txt:
+                parts.append({"type": "text", "text": txt})
+        else:
+            txt = str(item)
+            if txt:
+                parts.append({"type": "text", "text": txt})
+    return parts, has_image
+
+
+def _cap_zai_image_parts(
+    image_parts: list[dict[str, Any]], keep_last: int
+) -> list[dict[str, Any]]:
+    if keep_last <= 0:
+        return []
+    return image_parts[-keep_last:]
+
+
 def _normalize_tool_call(call: Any) -> dict[str, Any] | None:
     if not isinstance(call, dict):
         return None
@@ -104,9 +206,16 @@ def _normalize_messages_for_zai(
         source = [{"role": "user", "content": "Continue."}]
 
     messages: list[dict[str, Any]] = []
+    # Images from tool results cannot ride on OpenAI-style `tool` messages, and
+    # injecting a `user` image message inline breaks role-order when a turn made
+    # multiple tool calls. Collect tool-result images here and append them as ONE
+    # trailing user message (role-order-safe; latest screenshot last — exactly
+    # where a visual critic judges it).
+    pending_images: list[dict[str, Any]] = []
     for message in source:
         role = str(_message_attr(message, "role", "user") or "user")
-        text = _as_text(_message_attr(message, "content", ""))
+        raw_content = _message_attr(message, "content", "")
+        text = _as_text(raw_content)
 
         if role == "system":
             if text:
@@ -129,21 +238,55 @@ def _normalize_messages_for_zai(
             continue
 
         if role == "tool":
+            parts, has_image = _to_zai_content_parts(raw_content)
+            if has_image:
+                pending_images.extend(
+                    p for p in parts if p.get("type") == "image_url"
+                )
+                text_blob = "\n".join(
+                    p["text"] for p in parts if p.get("type") == "text"
+                ) or "[screenshot returned; image attached below]"
+            else:
+                text_blob = text or "ok"
             call_id = str(_message_attr(message, "tool_call_id", "") or "").strip()
             if call_id:
                 messages.append({
                     "role": "tool",
                     "tool_call_id": call_id,
-                    "content": text or "ok",
+                    "content": text_blob,
                 })
             else:
-                messages.append({"role": "user", "content": text or "ok"})
+                messages.append({"role": "user", "content": text_blob})
             continue
 
-        messages.append({
-            "role": "user" if role not in {"user", "assistant"} else role,
-            "content": text or "Continue.",
-        })
+        # user / other roles: preserve inline images as content parts.
+        parts, has_image = _to_zai_content_parts(raw_content)
+        if has_image:
+            messages.append({
+                "role": "user" if role not in {"user", "assistant"} else role,
+                "content": parts or [{"type": "text", "text": "Continue."}],
+            })
+        else:
+            messages.append({
+                "role": "user" if role not in {"user", "assistant"} else role,
+                "content": text or "Continue.",
+            })
+
+    if pending_images:
+        capped = _cap_zai_image_parts(
+            pending_images, MAX_IMAGE_TOOL_RESULTS_IN_CONTEXT
+        )
+        if capped:
+            messages.append({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Screenshot(s) returned by the browser tool (most recent last):",
+                    },
+                    *capped,
+                ],
+            })
 
     if not messages:
         messages.append({"role": "user", "content": "Continue."})
@@ -237,11 +380,17 @@ def _extract_zai_response(
     return content, tool_calls, str(finish_reason) if finish_reason else None, reasoning_content
 
 
-def _auth_headers() -> tuple[dict[str, str], str]:
-    api_key = os.environ.get("ZAI_API_KEY")
+def _auth_headers(component: str | None = None) -> tuple[dict[str, str], str]:
+    # PAAS/VLM components may use a separate pay-as-you-go key (ZAI_PAAS_API_KEY);
+    # default to the account-level ZAI_API_KEY for both endpoints.
+    use_paas = component is not None and _is_zai_paas_component(component)
+    paas_key = os.environ.get("ZAI_PAAS_API_KEY") if use_paas else None
+    api_key = paas_key or os.environ.get("ZAI_API_KEY")
     if not api_key:
         raise RuntimeError("No Z.AI GLM authentication configured. Set ZAI_API_KEY.")
-    return {"Authorization": f"Bearer {api_key}"}, "zai-api-key"
+    return {"Authorization": f"Bearer {api_key}"}, (
+        "zai-paas-key" if paas_key else "zai-api-key"
+    )
 
 
 def _user_agent() -> str:
@@ -462,13 +611,13 @@ def _call_zai_chat(
     except Exception as exc:  # noqa: BLE001
         logger.warning("[telemetry] llm_request (zai) start failed: %s", exc)
 
-    headers, auth_mode = _auth_headers()
-    # GLM Coding Plan endpoint (OpenAI-compatible): the /coding/ path is funded by
-    # the GLM Coding subscription quota. The pay-as-you-go endpoint
-    # (https://api.z.ai/api/paas/v4) instead draws from account balance and returns
-    # error 1113 "Insufficient balance" for Coding-Plan keys. Override via
-    # ZAI_BASE_URL for pay-as-you-go accounts.
-    base_url = os.environ.get("ZAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4")
+    headers, auth_mode = _auth_headers(component)
+    # Per-model endpoint: GLM Coding-Plan models (glm-5.2) use the /coding/paas/v4
+    # path (funded by the GLM Coding subscription quota); the VLM (glm-5v-turbo) is
+    # PAAS-only and uses /paas/v4 (drawn from account balance — a Coding-Plan key
+    # on /paas/v4 returns error 1113 "Insufficient balance"). An explicit
+    # ZAI_BASE_URL overrides both (back-compat). See _zai_base_url.
+    base_url = _zai_base_url(component)
     url = os.environ.get(
         "ZAI_CHAT_COMPLETIONS_URL",
         f"{base_url.rstrip('/')}/chat/completions",
@@ -511,12 +660,23 @@ def _call_zai_chat(
         tool_chat="tools" in request_body,
     )
 
+    image_msgs = sum(
+        1
+        for m in messages
+        if isinstance(m.get("content"), list)
+        and any(
+            isinstance(p, dict) and p.get("type") == "image_url"
+            for p in m["content"]
+        )
+    )
     logger.info(
-        "[zai-chat] Calling %s with %d messages, %d tools, auth=%s",
+        "[zai-chat] Calling %s with %d messages (%d w/ images), %d tools, auth=%s, base=%s",
         model,
         len(messages),
+        image_msgs,
         len(converted_tools or []),
         auth_mode,
+        base_url,
     )
     data: dict[str, Any]
     rate_limit_retries = _rate_limit_max_retries()

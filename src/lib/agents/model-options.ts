@@ -137,6 +137,15 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     component: "llm-glm-5.2",
   },
   {
+    // Z.AI VLM (vision) — routes to the pay-as-you-go /paas/v4 endpoint (see
+    // zai_adapter._zai_base_url). Used as a screenshot-judging visual critic.
+    value: "zai/glm-5v-turbo",
+    label: "Z.AI GLM-5V Turbo (vision)",
+    provider: "zai",
+    iconProvider: "zai",
+    component: "llm-glm-5v-turbo",
+  },
+  {
     value: "alibaba/qwen3-coder-plus",
     label: "Alibaba Qwen3-Coder Plus",
     provider: "alibaba",

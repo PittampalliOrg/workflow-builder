@@ -362,6 +362,17 @@ async def workspace_command_endpoint(request: Request) -> dict[str, Any]:
 
     env = dict(os.environ)
     env.update({str(k): str(v) for k, v in extra_env.items() if v is not None})
+    # W1: keep package-manager caches on local scratch (JuiceFS small-file I/O is
+    # the build wall). /sandbox is a local emptyDir; only /sandbox/work is JuiceFS.
+    env.setdefault("npm_config_cache", "/sandbox/scratch/.npm")
+    env.setdefault("npm_config_store_dir", "/sandbox/scratch/.pnpm-store")
+    env.setdefault("PNPM_STORE_DIR", "/sandbox/scratch/.pnpm-store")
+
+    # Ensure local scratch dirs exist for package-manager caches. NOTE: we do not
+    # symlink node_modules (npm reify deletes the symlink and rewrites it on
+    # JuiceFS). Hot builds run in a LOCAL working copy via the GAN fixtures'
+    # build-in-local-copy gate (tar source -> /sandbox/scratch/repo, build there).
+    command = "mkdir -p /sandbox/scratch/.npm /sandbox/scratch/.pnpm-store /sandbox/scratch/tmp 2>/dev/null||true; " + command
 
     def _run() -> dict[str, Any]:
         try:
