@@ -279,3 +279,164 @@ def sync_workspace_diff_openshell(
         },
     )
     return {"ok": True, "posted": ok, "detail": detail, "base": base}
+
+
+# --- Source bundle (durable, applyable version of the produced code) -----------
+# Persist the produced SOURCE as a git bundle in the Files API so a version can be
+# previewed + applied (Promote -> PR) long after the per-run sandbox is reaped.
+# Mirrors Claude Code's teleport bundle (utils/teleport/gitBundle.ts): commit the
+# working tree, create a THIN bundle origin/<base>..HEAD, tier down to HEAD then a
+# squashed-root commit if needed. One bundle per node (each node = one agent
+# session): nodes that don't touch the repo clone (plan/design/negotiate write
+# /sandbox/work/* OUTSIDE the repo) produce 0 changed files -> skipped.
+_BUNDLE_OUT_FILE = "/tmp/wfb-src.bundle"
+_MAX_BUNDLE_BYTES = int(os.environ.get("DAPR_SOURCE_BUNDLE_MAX_BYTES", str(20 * 1024 * 1024)))
+
+_BUNDLE_SCRIPT = r"""
+set -e
+git config --global --add safe.directory '*' 2>/dev/null || true
+OUTB=/tmp/wfb-src.bundle
+rm -f "$OUTB"
+# Find the real clone under $ROOT (a dir with a git HEAD), preferring $ROOT itself,
+# else the first nested clone (the GAN/juicefs shape: /sandbox/work/repo).
+CLONE=""
+if [ -e "$ROOT/.git" ] && git -C "$ROOT" rev-parse -q --verify HEAD >/dev/null 2>&1; then CLONE="$ROOT"; fi
+if [ -z "$CLONE" ]; then
+  for D in $(find "$ROOT" -mindepth 2 -maxdepth 3 -name .git 2>/dev/null | sed 's:/[.]git$::' | grep -v '/[.]wfb-' || true); do
+    if git -C "$D" rev-parse -q --verify HEAD >/dev/null 2>&1; then CLONE="$D"; break; fi
+  done
+fi
+[ -n "$CLONE" ] && [ -d "$CLONE" ] || { echo "__WFB_NO_CLONE__"; exit 0; }
+cd "$CLONE"
+git config user.email wfb@local 2>/dev/null || true
+git config user.name wfb 2>/dev/null || true
+# Stage the working tree; drop dependency/build noise in case there is no .gitignore.
+git add -A 2>/dev/null || true
+git rm -r --cached --quiet --ignore-unmatch node_modules .svelte-kit build dist .next .cache .wfb-diff-git >/dev/null 2>&1 || true
+FILECOUNT=$(git diff --cached --name-only 2>/dev/null | wc -l | tr -d ' ')
+git commit -q -m "wfb version snapshot" --no-verify 2>/dev/null || true
+HEAD=$(git rev-parse -q --verify HEAD 2>/dev/null || echo "")
+BASE=$(git rev-parse -q --verify origin/HEAD 2>/dev/null || git rev-parse -q --verify origin/main 2>/dev/null || git rev-parse -q --verify origin/master 2>/dev/null || echo "")
+TIER=""
+# Tier 1: SELF-CONTAINED full bundle (HEAD + all ancestors). Cloneable anywhere
+# (recovery) AND shares origin history (clean existing-repo PR). A thin base..HEAD
+# bundle is NOT self-contained — `git clone <thin>` fails — so full is primary.
+if [ -n "$HEAD" ]; then
+  if git bundle create "$OUTB" HEAD >/dev/null 2>&1 && [ -s "$OUTB" ]; then TIER=full; else rm -f "$OUTB"; fi
+fi
+# Tier 2: full bundle over the size cap → THIN (origin/<base>..HEAD), much smaller.
+# NOT self-contained: apply must `git fetch` it INTO a clone of the target (which has
+# <base>). Recorded as tier=thin so Promote knows to fetch-into-clone, not clone.
+if [ -s "$OUTB" ] && [ -n "$MAXB" ] && [ "$(wc -c < "$OUTB" 2>/dev/null || echo 0)" -gt "$MAXB" ] && [ -n "$BASE" ] && [ "$BASE" != "$HEAD" ]; then
+  if git bundle create "$OUTB.thin" "$BASE..HEAD" >/dev/null 2>&1 && [ -s "$OUTB.thin" ]; then mv -f "$OUTB.thin" "$OUTB"; TIER=thin; else rm -f "$OUTB.thin"; fi
+fi
+# Tier 3: still over cap (or no full bundle) → squashed-root single commit of the
+# current tree. Self-contained + tiny, but no shared history (existing-repo PR shows
+# all files as new; fine for greenfield).
+if { [ ! -s "$OUTB" ] || { [ -n "$MAXB" ] && [ "$(wc -c < "$OUTB" 2>/dev/null || echo 0)" -gt "$MAXB" ]; }; } && [ -n "$HEAD" ]; then
+  TREE=$(git rev-parse "HEAD^{tree}" 2>/dev/null || echo "")
+  if [ -n "$TREE" ]; then SQ=$(git commit-tree "$TREE" -m "wfb snapshot" 2>/dev/null || echo ""); [ -n "$SQ" ] && git bundle create "$OUTB" "$SQ" >/dev/null 2>&1 && TIER=squashed && BASE="" && HEAD="$SQ" || true; fi
+fi
+echo "WFB_CLONE=$CLONE"
+echo "WFB_TIER=$TIER"
+echo "WFB_BASE=$BASE"
+echo "WFB_HEAD=$HEAD"
+echo "WFB_FILECOUNT=$FILECOUNT"
+echo "WFB_BUNDLE_BYTES=$(wc -c < "$OUTB" 2>/dev/null || echo 0)"
+"""
+
+
+def _post_source_bundle(execution_id: str, payload: dict[str, Any]) -> tuple[bool, str]:
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{_WORKFLOW_BUILDER_URL}/api/internal/workflows/executions/{execution_id}/source-bundle",
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "x-internal-token": _INTERNAL_API_TOKEN,
+            "Authorization": f"Bearer {_INTERNAL_API_TOKEN}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_POST_TIMEOUT_SECONDS) as resp:
+            ok = 200 <= int(getattr(resp, "status", 200) or 200) < 300
+            return ok, "ok" if ok else f"http {getattr(resp, 'status', '?')}"
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:300]
+        return False, f"http {exc.code}: {detail}"
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        return False, str(exc)
+
+
+def sync_source_bundle_openshell(
+    runtime: Any,
+    *,
+    execution_id: str | None,
+    node_id: str | None,
+    repo_root: str | None = None,
+) -> dict[str, Any]:
+    """Bundle the produced SOURCE (git bundle, thin/tiered) and POST it as a durable
+    `source-bundle` artifact (fileId -> Files API). One per node; skipped when the
+    repo clone has no changed files. Never raises."""
+    execution_id = _clean(execution_id)
+    if not execution_id:
+        return {"ok": True, "skipped": "no_run_context"}
+    if not _INTERNAL_API_TOKEN:
+        return {"ok": True, "skipped": "no_token"}
+
+    root = _clean(repo_root) or (getattr(runtime, "cwd", None) or "/sandbox") or "/sandbox"
+    exports = f"export ROOT={json.dumps(root)} MAXB={_MAX_BUNDLE_BYTES}; "
+    try:
+        res = runtime.execute(exports + _BUNDLE_SCRIPT, timeout_seconds=_GIT_TIMEOUT_SECONDS)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": True, "skipped": f"bundle_failed: {exc}"}
+
+    out = str(res.get("stdout") or res.get("output") or "")
+    if "__WFB_NO_CLONE__" in out:
+        return {"ok": True, "skipped": "no_clone"}
+    meta: dict[str, str] = {}
+    for line in out.splitlines():
+        for key in ("WFB_CLONE", "WFB_TIER", "WFB_BASE", "WFB_HEAD", "WFB_FILECOUNT", "WFB_BUNDLE_BYTES"):
+            if line.startswith(key + "="):
+                meta[key] = line[len(key) + 1:].strip()
+    try:
+        file_count = int(meta.get("WFB_FILECOUNT") or "0")
+    except ValueError:
+        file_count = 0
+    try:
+        nbytes = int(meta.get("WFB_BUNDLE_BYTES") or "0")
+    except ValueError:
+        nbytes = 0
+    if file_count <= 0:
+        return {"ok": True, "empty": True}  # node didn't change the repo
+    if nbytes <= 0:
+        return {"ok": True, "skipped": "no_bundle"}
+    if nbytes > _MAX_BUNDLE_BYTES:
+        return {"ok": True, "skipped": f"too_large: {nbytes}"}
+
+    try:
+        read = runtime.read_bytes_base64(_BUNDLE_OUT_FILE, max_bytes=_MAX_BUNDLE_BYTES)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": True, "skipped": f"read_failed: {exc}"}
+    if not read.get("ok"):
+        return {"ok": True, "skipped": f"read_failed: {read.get('error')}"}
+    bundle_b64 = read.get("base64") or read.get("content") or ""
+    if not bundle_b64:
+        return {"ok": True, "skipped": "empty_read"}
+
+    ok, detail = _post_source_bundle(
+        execution_id,
+        {
+            "bundleBase64": bundle_b64,
+            "nodeId": node_id,
+            "fileName": "source.bundle",
+            "base": meta.get("WFB_BASE") or "",
+            "head": meta.get("WFB_HEAD") or "",
+            "tier": meta.get("WFB_TIER") or "",
+            "clonePath": meta.get("WFB_CLONE") or "",
+            "fileCount": file_count,
+            "sizeBytes": nbytes,
+        },
+    )
+    return {"ok": True, "posted": ok, "detail": detail, "tier": meta.get("WFB_TIER"), "bytes": nbytes}
