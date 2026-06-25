@@ -157,6 +157,14 @@ class OpenShellRuntime:
             "sandbox_name": self.sandbox_name,
         }
 
+    def _workspace_prelude(self) -> str:
+        """Per-command shell prelude inserted AFTER cd (override per runtime).
+
+        Base (openshell/remote) runtime adds nothing; LocalWorkspaceRuntime uses
+        it to redirect hot build dirs (node_modules, .svelte-kit) to local scratch
+        so JuiceFS small-file I/O isn't on the build hot path (see W1)."""
+        return ""
+
     def execute(self, command: str, timeout_seconds: int | None = None) -> dict[str, Any]:
         """Run a shell command in the current sandbox working directory.
 
@@ -165,7 +173,7 @@ class OpenShellRuntime:
         content via stdin.
         """
         cwd = shlex.quote(self._cwd)
-        full_script = f"{_sandbox_bash_prelude()}cd {cwd} && {command}"
+        full_script = f"{_sandbox_bash_prelude()}cd {cwd} && {self._workspace_prelude()}{command}"
         return self._exec(
             ["bash", "-l"],
             stdin=full_script.encode("utf-8"),
@@ -547,6 +555,80 @@ class LocalWorkspaceRuntime(OpenShellRuntime):
                 return candidate
         return None
 
+    # W1: keep package-manager hot caches on local scratch (/sandbox is a local
+    # emptyDir; only /sandbox/work is JuiceFS), so npm/pnpm small-file I/O never
+    # hits the JuiceFS metadata round-trip wall. Applies to EVERY command the
+    # agent runs (bash + python), not just ones the model happens to write.
+    _SCRATCH = "/sandbox/scratch"
+
+    def _subprocess_env(self) -> dict[str, str]:
+        env = dict(os.environ)
+        env.setdefault("npm_config_cache", f"{self._SCRATCH}/.npm")
+        env.setdefault("npm_config_store_dir", f"{self._SCRATCH}/.pnpm-store")
+        env.setdefault("PNPM_STORE_DIR", f"{self._SCRATCH}/.pnpm-store")
+        return env
+
+    def _workspace_prelude(self) -> str:  # type: ignore[override]
+        # Ensure local scratch dirs exist for package-manager caches. We do NOT
+        # symlink node_modules here: npm's reify step DELETES a node_modules
+        # symlink ("Removing non-directory") and rewrites it on JuiceFS, so the
+        # symlink trick is a no-op. Hot builds must run in a LOCAL working copy
+        # instead (see W3: ensure_local_build_repo).
+        s = self._SCRATCH
+        return f"mkdir -p {s}/.npm {s}/.pnpm-store {s}/tmp 2>/dev/null||true; "
+
+    # --- W3: local build root (agent works on local disk, source synced to JuiceFS) ---
+    _LOCAL_BUILD_REPO = "/sandbox/scratch/repo"
+    _SYNC_EXCLUDES = "--exclude=node_modules --exclude=.svelte-kit --exclude=build --exclude=.git --exclude=.next --exclude=dist"
+
+    def local_build_enabled(self) -> bool:
+        return os.environ.get("DAPR_AGENT_PY_LOCAL_BUILD_MODE", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+    def _tar_mirror(self, src: str, dst: str) -> None:
+        import subprocess
+
+        subprocess.run(
+            [
+                "bash",
+                "-lc",
+                f"mkdir -p {dst} && tar -C {src} {self._SYNC_EXCLUDES} -cf - . 2>/dev/null "
+                f"| tar -C {dst} -xf - 2>/dev/null",
+            ],
+            capture_output=True,
+            timeout=600,
+        )
+
+    def ensure_local_build_repo(self, juicefs_repo: str | None = None) -> str | None:
+        """W3: mirror the JuiceFS source repo to a fast local scratch repo so the
+        agent's own npm install/build never touch the network FS. Returns the
+        local repo path, or None if there's no node project to mirror. Idempotent
+        (only (re)copies when the local repo lacks package.json) → replay-safe."""
+        src = juicefs_repo or f"{self._local_root}/repo"
+        if not os.path.isfile(os.path.join(src, "package.json")):
+            return None
+        dst = self._LOCAL_BUILD_REPO
+        if not os.path.isfile(os.path.join(dst, "package.json")):
+            self._tar_mirror(src, dst)
+        self._juicefs_repo_for_syncback = src
+        return dst
+
+    def sync_source_to_juicefs(self) -> bool:
+        """W3: persist the agent's SOURCE edits from local scratch back to the
+        shared JuiceFS repo (excl node_modules/build/.git) so the deterministic
+        gate, a critic on another pod, the run-diff and the Files tab all see
+        them. Returns True if a sync ran."""
+        src = self._LOCAL_BUILD_REPO
+        dst = getattr(self, "_juicefs_repo_for_syncback", None)
+        if not dst or not os.path.isfile(os.path.join(src, "package.json")):
+            return False
+        self._tar_mirror(src, dst)
+        return True
+
     def _exec(
         self,
         argv: list[str],
@@ -562,6 +644,7 @@ class LocalWorkspaceRuntime(OpenShellRuntime):
                 input=stdin,
                 cwd=self._exec_cwd(),
                 capture_output=True,
+                env=self._subprocess_env(),
                 timeout=timeout_seconds or DEFAULT_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired as exc:

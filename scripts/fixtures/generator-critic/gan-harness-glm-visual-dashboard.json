@@ -1,9 +1,9 @@
 {
   "document": {
     "dsl": "1.0.0",
-    "name": "gan-harness-dapr-juicefs-pilot",
-    "title": "GAN coding harness PILOT (dapr-agent-py-juicefs): dapr agents on the local-FS JuiceFS workspace, sharing /sandbox/work with the cliWorkspace gate",
-    "summary": "PILOT proving dapr-agent-py runs on the juicefs-shared backend (local-FS LocalWorkspaceRuntime, no openshell RPC) and shares ONE per-execution JuiceFS /sandbox/work with the deterministic cliWorkspace spine \u2014 i.e. cross-family unification. Same GAN logic as gan-harness-cli-showcase (negotiate contract \u2192 build+test gate \u2192 voting critics \u2192 restart), but planAgent/generatorAgent/criticAgent default to dapr-agent-py-juicefs and a deterministic clone_repo (cliWorkspace, ambient GITHUB_TOKEN on the helper pod) replaces the agent-driven clone (the dapr pod has no token). Code profiles only (default library on jonschlinkert/is-number); ui-web/browser stays gated. See docs/dapr-agent-py-sandbox-architecture.md.",
+    "name": "gan-harness-glm-visual-dashboard",
+    "title": "GAN visual loop (GLM-5.2 on JuiceFS): standalone workflow-builder dashboard, browser-critic graded",
+    "summary": "GLM-5.2 (dapr-agent-py-juicefs) plans + builds a standalone SvelteKit dashboard aggregating workflow-builder primitives (workflows/runs, sessions, fleet capacity, gitops pipeline) from mock data, graded by a real-browser visual critic (cli-playwright-critic-agent) that screenshots the rendered app. Defaults: plan/generate=GLM-5.2, critic=Playwright; evaluationProfile=ui-web, designPass=true. All agents share the per-execution JuiceFS /sandbox/work.",
     "version": "1.0.0",
     "namespace": "demos",
     "x-workflow-builder": {
@@ -19,25 +19,25 @@
               "intent": {
                 "type": "string",
                 "title": "Redesign request",
-                "default": "Improve input validation and test coverage for the is-number library: correctly classify edge cases (empty string, whitespace-only, hex like \"0x1F\", scientific notation like \"1e3\", Infinity, numeric strings) and keep `npm test` passing. Do NOT change the public API or add dependencies.",
+                "default": "Build a self-contained, polished operations dashboard for the workflow-builder platform \u2014 no backend; ALL data comes from mock modules under src/lib/mock/. Aggregate FOUR primitive groups in one cohesive layout: (1) Workflows & runs \u2014 a recent-runs list with status, duration and a working status filter, plus headline stats (active sessions, recent changes); (2) Sessions \u2014 a table of agent sessions showing status, tokens in/out, cost, and context-window % with a visible warning state when context exceeds ~80%; (3) Fleet capacity \u2014 headroom, pending admissions, an admission-latency figure, and the contributor/runtime mix; (4) GitOps pipeline \u2014 the commit->build->deploy stages with per-stage health badges (Ready/Healthy/Degraded). Provide working navigation between the four sections and render sensible empty/loading states. The app MUST build and preview cleanly (adapter-static + prerender).",
                 "description": "What the agents change in the repo."
               },
               "planAgent": {
                 "type": "string",
                 "title": "Planner agent",
-                "default": "dapr-juicefs-evaluator-critic-agent",
+                "default": "glm-juicefs-builder-agent",
                 "description": "PLAN phase agent (clones + writes SPEC). Same workspace-backend family."
               },
               "generatorAgent": {
                 "type": "string",
                 "title": "Generator agent",
-                "default": "dapr-juicefs-evaluator-critic-agent",
+                "default": "glm-juicefs-builder-agent",
                 "description": "GENERATE phase agent."
               },
               "criticAgent": {
                 "type": "string",
                 "title": "Critic agent",
-                "default": "dapr-juicefs-evaluator-critic-agent",
+                "default": "cli-playwright-critic-agent",
                 "description": "EVALUATOR agent \u2014 negotiates the contract AND grades the build (drives Playwright MCP)."
               },
               "installCommand": {
@@ -61,7 +61,7 @@
               "designPass": {
                 "type": "string",
                 "title": "Two-pass design",
-                "default": "false",
+                "default": "true",
                 "description": "Run the design-tokens+wireframe review BEFORE code ('false' to skip)."
               },
               "criticVotes": {
@@ -79,19 +79,19 @@
               "repoUrl": {
                 "type": "string",
                 "title": "Repository (owner/repo)",
-                "default": "jonschlinkert/is-number",
+                "default": "PittampalliOrg/glm-dashboard-starter",
                 "description": "GitHub owner/repo the agents clone + (optionally) open a PR into."
               },
               "repoRef": {
                 "type": "string",
                 "title": "Branch",
-                "default": "master",
+                "default": "main",
                 "description": "Branch to clone from and use as the PR base."
               },
               "evaluationProfile": {
                 "type": "string",
                 "title": "Evaluation profile",
-                "default": "library",
+                "default": "ui-web",
                 "description": "How the Evaluator grounds + grades: 'ui-web' (Playwright + design rubric), 'library' (run tests + exercise the public API), 'service' (boot + hit endpoints + integration tests)."
               },
               "outputMode": {
@@ -109,7 +109,7 @@
               "taskScope": {
                 "type": "string",
                 "title": "Task scope",
-                "default": "Edit the is-number library's source (index.js) and its Mocha tests (test.js); plain Node.js only; keep `npm test` green; do NOT change the public API, add dependencies, or modify package.json.",
+                "default": "Edit only files under src/ (routes, components, and mock data in src/lib/mock/*.ts). Keep adapter-static with prerender=true so the app renders fully standalone with no backend or network calls. Do NOT add heavy dependencies, a database, or server routes. Keep `npm run build` and `npm run preview` working.",
                 "description": "Free-form hint of what/where to change (replaces UI-file hardcoding)."
               }
             }
@@ -130,25 +130,25 @@
           "intent": {
             "type": "string",
             "title": "Redesign request",
-            "default": "Improve input validation and test coverage for the is-number library: correctly classify edge cases (empty string, whitespace-only, hex like \"0x1F\", scientific notation like \"1e3\", Infinity, numeric strings) and keep `npm test` passing. Do NOT change the public API or add dependencies.",
+            "default": "Build a self-contained, polished operations dashboard for the workflow-builder platform \u2014 no backend; ALL data comes from mock modules under src/lib/mock/. Aggregate FOUR primitive groups in one cohesive layout: (1) Workflows & runs \u2014 a recent-runs list with status, duration and a working status filter, plus headline stats (active sessions, recent changes); (2) Sessions \u2014 a table of agent sessions showing status, tokens in/out, cost, and context-window % with a visible warning state when context exceeds ~80%; (3) Fleet capacity \u2014 headroom, pending admissions, an admission-latency figure, and the contributor/runtime mix; (4) GitOps pipeline \u2014 the commit->build->deploy stages with per-stage health badges (Ready/Healthy/Degraded). Provide working navigation between the four sections and render sensible empty/loading states. The app MUST build and preview cleanly (adapter-static + prerender).",
             "description": "What the agents change in the repo."
           },
           "planAgent": {
             "type": "string",
             "title": "Planner agent",
-            "default": "dapr-juicefs-evaluator-critic-agent",
+            "default": "glm-juicefs-builder-agent",
             "description": "PLAN phase agent (clones + writes SPEC). Same workspace-backend family."
           },
           "generatorAgent": {
             "type": "string",
             "title": "Generator agent",
-            "default": "dapr-juicefs-evaluator-critic-agent",
+            "default": "glm-juicefs-builder-agent",
             "description": "GENERATE phase agent."
           },
           "criticAgent": {
             "type": "string",
             "title": "Critic agent",
-            "default": "dapr-juicefs-evaluator-critic-agent",
+            "default": "cli-playwright-critic-agent",
             "description": "EVALUATOR agent \u2014 negotiates the contract AND grades the build (drives Playwright MCP)."
           },
           "installCommand": {
@@ -172,7 +172,7 @@
           "designPass": {
             "type": "string",
             "title": "Two-pass design",
-            "default": "false",
+            "default": "true",
             "description": "Run the design-tokens+wireframe review BEFORE code ('false' to skip)."
           },
           "criticVotes": {
@@ -190,19 +190,19 @@
           "repoUrl": {
             "type": "string",
             "title": "Repository (owner/repo)",
-            "default": "jonschlinkert/is-number",
+            "default": "PittampalliOrg/glm-dashboard-starter",
             "description": "GitHub owner/repo the agents clone + (optionally) open a PR into."
           },
           "repoRef": {
             "type": "string",
             "title": "Branch",
-            "default": "master",
+            "default": "main",
             "description": "Branch to clone from and use as the PR base."
           },
           "evaluationProfile": {
             "type": "string",
             "title": "Evaluation profile",
-            "default": "library",
+            "default": "ui-web",
             "description": "How the Evaluator grounds + grades: 'ui-web' (Playwright + design rubric), 'library' (run tests + exercise the public API), 'service' (boot + hit endpoints + integration tests)."
           },
           "outputMode": {
@@ -220,7 +220,7 @@
           "taskScope": {
             "type": "string",
             "title": "Task scope",
-            "default": "Edit the is-number library's source (index.js) and its Mocha tests (test.js); plain Node.js only; keep `npm test` green; do NOT change the public API, add dependencies, or modify package.json.",
+            "default": "Edit only files under src/ (routes, components, and mock data in src/lib/mock/*.ts). Keep adapter-static with prerender=true so the app renders fully standalone with no backend or network calls. Do NOT add heavy dependencies, a database, or server routes. Keep `npm run build` and `npm run preview` working.",
             "description": "Free-form hint of what/where to change (replaces UI-file hardcoding)."
           }
         }
@@ -236,7 +236,7 @@
         "call": "workspace/command",
         "with": {
           "cliWorkspace": true,
-          "command": "${ \"set -e\\ncd /sandbox/work\\nrm -rf repo\\nREF=\" + ((.trigger.repoRef // \"\") | @sh) + \"\\nBF=\\\"\\\"; [ -n \\\"$REF\\\" ] && BF=\\\"--branch $REF\\\"\\ngit clone --depth 1 --single-branch $BF https://x-access-token:${GITHUB_TOKEN}@github.com/\" + (.trigger.repoUrl // \"jonschlinkert/is-number\") + \".git repo\\ncd /sandbox/work/repo\\ngit config user.email agent@workflow-builder.local\\ngit config user.name \\\"workflow-builder agent\\\"\\necho CLONED $(git rev-parse HEAD) on $(git rev-parse --abbrev-ref HEAD)\" }",
+          "command": "${ \"set -e\\ncd /sandbox/work\\nrm -rf repo\\nREF=\" + ((.trigger.repoRef // \"\") | @sh) + \"\\nBF=\\\"\\\"; [ -n \\\"$REF\\\" ] && BF=\\\"--branch $REF\\\"\\ngit clone --depth 1 --single-branch $BF https://x-access-token:${GITHUB_TOKEN}@github.com/\" + (.trigger.repoUrl // \"PittampalliOrg/glm-dashboard-starter\") + \".git repo\\ncd /sandbox/work/repo\\ngit config user.email agent@workflow-builder.local\\ngit config user.name \\\"workflow-builder agent\\\"\\necho CLONED $(git rev-parse HEAD) on $(git rev-parse --abbrev-ref HEAD)\" }",
           "cwd": "/sandbox/work",
           "timeoutMs": 600000,
           "allowFailure": false
@@ -251,14 +251,14 @@
           "mode": "execute_direct",
           "workspaceRef": "${ .runtime.executionId }",
           "agentRef": {
-            "slug": "${ .trigger.planAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
+            "slug": "${ .trigger.planAgent // \"glm-juicefs-builder-agent\" }"
           },
           "agentConfig": {
             "name": "Planner",
             "instructions": "You are the PLANNER for an autonomous coding task. The target repo is ALREADY cloned at /sandbox/work/repo. READ the repo (entry points, package manifest, existing tests) and write a HIGH-LEVEL spec to /sandbox/work/SPEC.md (ONLY that file; do NOT edit the repo). Cover: the product/task context, the target user/consumer, and the quality dimensions that matter for THIS task \u2014 for a library/service task: correctness, tests, code_quality, maintainability, performance. Deliberately stay HIGH-LEVEL: do NOT enumerate granular, implementation-level acceptance criteria \u2014 the Generator and the Evaluator negotiate the specific, testable criteria next. End with a one-line summary."
           },
           "body": {
-            "prompt": "${ \"Task:\\n\" + (.trigger.intent // \"make the requested change\") + \"\\n\\nScope hint: \" + (.trigger.taskScope // \"\") + \"\\n\\nTarget repo: https://github.com/\" + (.trigger.repoUrl // \"jonschlinkert/is-number\") + \" (branch \" + (.trigger.repoRef // \"master\") + \")\" + \"\\nThe repo is ALREADY cloned at /sandbox/work/repo. READ it (entry points, package manifest, existing tests) and write a HIGH-LEVEL spec to /sandbox/work/SPEC.md (product/task context + the quality dimensions relevant to this task). Do NOT enumerate granular acceptance criteria (those are negotiated next). Do NOT edit the repo. End with a one-line summary.\" }",
+            "prompt": "${ \"Task:\\n\" + (.trigger.intent // \"make the requested change\") + \"\\n\\nScope hint: \" + (.trigger.taskScope // \"\") + \"\\n\\nTarget repo: https://github.com/\" + (.trigger.repoUrl // \"PittampalliOrg/glm-dashboard-starter\") + \" (branch \" + (.trigger.repoRef // \"master\") + \")\" + \"\\nThe repo is ALREADY cloned at /sandbox/work/repo. READ it (entry points, package manifest, existing tests) and write a HIGH-LEVEL spec to /sandbox/work/SPEC.md (product/task context + the quality dimensions relevant to this task). Do NOT enumerate granular acceptance criteria (those are negotiated next). Do NOT edit the repo. End with a one-line summary.\" }",
             "overrides": {
               "cwd": "/sandbox/work",
               "maxTurns": 25,
@@ -274,7 +274,7 @@
         "with": {
           "cliWorkspace": true,
           "cwd": "/sandbox/work",
-          "command": "${ \"export WFB_EVAL_PROFILE=\" + ((.trigger.evaluationProfile // \"ui-web\") | @sh) + \"; export WFB_REPO=\" + ((.trigger.repoUrl // \"PittampalliOrg/sveltekit-landing-demo\") | @sh) + \"; export WFB_BASE=\" + ((.trigger.repoRef // \"main\") | @sh) + \"; export WFB_OUT=\" + ((.trigger.outputMode // \"pr\") | @sh) + \"; export WFB_INTENT=\" + ((.trigger.intent // \"automated change\") | @sh) + \"; export WFB_BUILD_OVERRIDE=\" + ((.trigger.buildCommand // \"\") | @sh) + \"; export WFB_INSTALL_OVERRIDE=\" + ((.trigger.installCommand // \"\") | @sh) + \"; export WFB_PREVIEW_OVERRIDE=\" + ((.trigger.previewCommand // \"\") | @sh) + \"; \" + \"WFB_INSTALL=\\\"$WFB_INSTALL_OVERRIDE\\\"; WFB_BUILD=\\\"$WFB_BUILD_OVERRIDE\\\"; WFB_PREVIEW=\\\"$WFB_PREVIEW_OVERRIDE\\\"\\ncd /sandbox/work/repo 2>/dev/null || true\\n# W1: build in a LOCAL copy \u2014 JuiceFS small-file I/O makes npm install ~11min vs ~4s on local.\\n# Source-of-truth stays on /sandbox/work/repo (agent edits + diff + Files tab); node_modules/build never touch JuiceFS.\\nWFB_WORKREPO=/sandbox/work/repo; WFB_BUILDREPO=/sandbox/scratch/repo\\nmkdir -p $WFB_BUILDREPO /sandbox/scratch/.npm\\nexport npm_config_cache=/sandbox/scratch/.npm; export TMPDIR=/sandbox/scratch/tmp\\ntar -C $WFB_WORKREPO --exclude=node_modules --exclude=.svelte-kit --exclude=build --exclude=.git -cf - . 2>/dev/null | tar -C $WFB_BUILDREPO -xf - 2>/dev/null || true\\ncd $WFB_BUILDREPO 2>/dev/null || true\\nif [ -z \\\"$WFB_INSTALL\\\" ] || [ \\\"$WFB_INSTALL\\\" = auto ]; then\\n  if [ -f pnpm-lock.yaml ]; then WFB_INSTALL='pnpm install --frozen-lockfile';\\n  elif [ -f package.json ]; then WFB_INSTALL='npm install --no-audit --no-fund';\\n  elif [ -f Cargo.toml ]; then WFB_INSTALL='cargo fetch';\\n  elif [ -f requirements.txt ]; then WFB_INSTALL='pip install -r requirements.txt';\\n  else WFB_INSTALL='true'; fi\\nfi\\nif [ -z \\\"$WFB_BUILD\\\" ] || [ \\\"$WFB_BUILD\\\" = auto ]; then\\n  if [ -f pnpm-lock.yaml ]; then WFB_BUILD='pnpm build';\\n  elif [ -f package.json ]; then WFB_BUILD='npm run build';\\n  elif [ -f Cargo.toml ]; then WFB_BUILD='cargo build --release';\\n  elif [ -f Makefile ] && grep -q '^build:' Makefile; then WFB_BUILD='make build';\\n  else WFB_BUILD='echo no-build-step'; fi\\nfi\\nif [ -z \\\"$WFB_PREVIEW\\\" ] || [ \\\"$WFB_PREVIEW\\\" = auto ]; then\\n  if [ -f package.json ]; then WFB_PREVIEW='npm run preview -- --host 127.0.0.1';\\n  else WFB_PREVIEW='true'; fi\\nfi\\nsh -c \\\"$WFB_INSTALL\\\" >/tmp/install.log 2>&1 || true\\nprintf '%s' \\\"$WFB_EVAL_PROFILE\\\" > /sandbox/work/.wfb_profile\\nprintf '%s' \\\"$WFB_REPO\\\" > /sandbox/work/.wfb_repo\\nprintf '%s' \\\"$WFB_BASE\\\" > /sandbox/work/.wfb_base\\nprintf '%s' \\\"$WFB_OUT\\\" > /sandbox/work/.wfb_out\\nprintf '%s' \\\"$WFB_INTENT\\\" > /sandbox/work/.wfb_intent\\nBASE=$(git rev-parse HEAD 2>/dev/null || echo unknown); printf '{\\\"baseline\\\":\\\"%s\\\",\\\"log\\\":[]}' \\\"$BASE\\\" > /sandbox/work/progress.json; cat /sandbox/work/progress.json\" }",
+          "command": "${ \"export WFB_EVAL_PROFILE=\" + ((.trigger.evaluationProfile // \"ui-web\") | @sh) + \"; export WFB_REPO=\" + ((.trigger.repoUrl // \"PittampalliOrg/glm-dashboard-starter\") | @sh) + \"; export WFB_BASE=\" + ((.trigger.repoRef // \"main\") | @sh) + \"; export WFB_OUT=\" + ((.trigger.outputMode // \"pr\") | @sh) + \"; export WFB_INTENT=\" + ((.trigger.intent // \"automated change\") | @sh) + \"; export WFB_BUILD_OVERRIDE=\" + ((.trigger.buildCommand // \"\") | @sh) + \"; export WFB_INSTALL_OVERRIDE=\" + ((.trigger.installCommand // \"\") | @sh) + \"; export WFB_PREVIEW_OVERRIDE=\" + ((.trigger.previewCommand // \"\") | @sh) + \"; \" + \"WFB_INSTALL=\\\"$WFB_INSTALL_OVERRIDE\\\"; WFB_BUILD=\\\"$WFB_BUILD_OVERRIDE\\\"; WFB_PREVIEW=\\\"$WFB_PREVIEW_OVERRIDE\\\"\\ncd /sandbox/work/repo 2>/dev/null || true\\n# W1: build in a LOCAL copy \u2014 JuiceFS small-file I/O makes npm install ~11min vs ~4s on local.\\n# Source-of-truth stays on /sandbox/work/repo (agent edits + diff + Files tab); node_modules/build never touch JuiceFS.\\nWFB_WORKREPO=/sandbox/work/repo; WFB_BUILDREPO=/sandbox/scratch/repo\\nmkdir -p $WFB_BUILDREPO /sandbox/scratch/.npm\\nexport npm_config_cache=/sandbox/scratch/.npm; export TMPDIR=/sandbox/scratch/tmp\\ntar -C $WFB_WORKREPO --exclude=node_modules --exclude=.svelte-kit --exclude=build --exclude=.git -cf - . 2>/dev/null | tar -C $WFB_BUILDREPO -xf - 2>/dev/null || true\\ncd $WFB_BUILDREPO 2>/dev/null || true\\nif [ -z \\\"$WFB_INSTALL\\\" ] || [ \\\"$WFB_INSTALL\\\" = auto ]; then\\n  if [ -f pnpm-lock.yaml ]; then WFB_INSTALL='pnpm install --frozen-lockfile';\\n  elif [ -f package.json ]; then WFB_INSTALL='npm install --no-audit --no-fund';\\n  elif [ -f Cargo.toml ]; then WFB_INSTALL='cargo fetch';\\n  elif [ -f requirements.txt ]; then WFB_INSTALL='pip install -r requirements.txt';\\n  else WFB_INSTALL='true'; fi\\nfi\\nif [ -z \\\"$WFB_BUILD\\\" ] || [ \\\"$WFB_BUILD\\\" = auto ]; then\\n  if [ -f pnpm-lock.yaml ]; then WFB_BUILD='pnpm build';\\n  elif [ -f package.json ]; then WFB_BUILD='npm run build';\\n  elif [ -f Cargo.toml ]; then WFB_BUILD='cargo build --release';\\n  elif [ -f Makefile ] && grep -q '^build:' Makefile; then WFB_BUILD='make build';\\n  else WFB_BUILD='echo no-build-step'; fi\\nfi\\nif [ -z \\\"$WFB_PREVIEW\\\" ] || [ \\\"$WFB_PREVIEW\\\" = auto ]; then\\n  if [ -f package.json ]; then WFB_PREVIEW='npm run preview -- --host 127.0.0.1';\\n  else WFB_PREVIEW='true'; fi\\nfi\\nsh -c \\\"$WFB_INSTALL\\\" >/tmp/install.log 2>&1 || true\\nprintf '%s' \\\"$WFB_EVAL_PROFILE\\\" > /sandbox/work/.wfb_profile\\nprintf '%s' \\\"$WFB_REPO\\\" > /sandbox/work/.wfb_repo\\nprintf '%s' \\\"$WFB_BASE\\\" > /sandbox/work/.wfb_base\\nprintf '%s' \\\"$WFB_OUT\\\" > /sandbox/work/.wfb_out\\nprintf '%s' \\\"$WFB_INTENT\\\" > /sandbox/work/.wfb_intent\\nBASE=$(git rev-parse HEAD 2>/dev/null || echo unknown); printf '{\\\"baseline\\\":\\\"%s\\\",\\\"log\\\":[]}' \\\"$BASE\\\" > /sandbox/work/progress.json; cat /sandbox/work/progress.json\" }",
           "timeoutMs": 900000,
           "allowFailure": true
         }
@@ -318,7 +318,7 @@
                 "mode": "execute_direct",
                 "workspaceRef": "${ .runtime.executionId }",
                 "agentRef": {
-                  "slug": "${ .trigger.generatorAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
+                  "slug": "${ .trigger.generatorAgent // \"glm-juicefs-builder-agent\" }"
                 },
                 "agentConfig": {
                   "name": "Designer (Generator, two-pass)",
@@ -343,7 +343,7 @@
                 "mode": "execute_direct",
                 "workspaceRef": "${ .runtime.executionId }",
                 "agentRef": {
-                  "slug": "${ .trigger.criticAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
+                  "slug": "${ .trigger.criticAgent // \"cli-playwright-critic-agent\" }"
                 },
                 "agentConfig": {
                   "name": "Design lead (Evaluator, two-pass)",
@@ -396,7 +396,7 @@
                 "mode": "execute_direct",
                 "workspaceRef": "${ .runtime.executionId }",
                 "agentRef": {
-                  "slug": "${ .trigger.generatorAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
+                  "slug": "${ .trigger.generatorAgent // \"glm-juicefs-builder-agent\" }"
                 },
                 "agentConfig": {
                   "name": "Proposer (Generator)",
@@ -421,7 +421,7 @@
                 "mode": "execute_direct",
                 "workspaceRef": "${ .runtime.executionId }",
                 "agentRef": {
-                  "slug": "${ .trigger.criticAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
+                  "slug": "${ .trigger.criticAgent // \"cli-playwright-critic-agent\" }"
                 },
                 "agentConfig": {
                   "name": "Evaluator (Contract negotiation)",
@@ -502,7 +502,7 @@
                 "mode": "execute_direct",
                 "workspaceRef": "${ .runtime.executionId }",
                 "agentRef": {
-                  "slug": "${ .trigger.generatorAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
+                  "slug": "${ .trigger.generatorAgent // \"glm-juicefs-builder-agent\" }"
                 },
                 "agentConfig": {
                   "name": "Generator",
@@ -539,7 +539,7 @@
                 "mode": "execute_direct",
                 "workspaceRef": "${ .runtime.executionId }",
                 "agentRef": {
-                  "slug": "${ .trigger.criticAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
+                  "slug": "${ .trigger.criticAgent // \"cli-playwright-critic-agent\" }"
                 },
                 "agentConfig": {
                   "name": "Critic",
@@ -565,7 +565,7 @@
                 "mode": "execute_direct",
                 "workspaceRef": "${ .runtime.executionId }",
                 "agentRef": {
-                  "slug": "${ .trigger.criticAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
+                  "slug": "${ .trigger.criticAgent // \"cli-playwright-critic-agent\" }"
                 },
                 "agentConfig": {
                   "name": "Code critic",
@@ -591,7 +591,7 @@
                 "mode": "execute_direct",
                 "workspaceRef": "${ .runtime.executionId }",
                 "agentRef": {
-                  "slug": "${ .trigger.criticAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
+                  "slug": "${ .trigger.criticAgent // \"cli-playwright-critic-agent\" }"
                 },
                 "agentConfig": {
                   "name": "Critic (vote 2)",
@@ -617,7 +617,7 @@
                 "mode": "execute_direct",
                 "workspaceRef": "${ .runtime.executionId }",
                 "agentRef": {
-                  "slug": "${ .trigger.criticAgent // \"dapr-juicefs-evaluator-critic-agent\" }"
+                  "slug": "${ .trigger.criticAgent // \"cli-playwright-critic-agent\" }"
                 },
                 "agentConfig": {
                   "name": "Code critic (vote 2)",
@@ -718,7 +718,7 @@
         "with": {
           "cliWorkspace": true,
           "cwd": "/sandbox/work/repo",
-          "command": "REPO=$(git -C /sandbox/work/repo remote get-url origin 2>/dev/null | sed -e 's#.*github.com[:/]##' -e 's#\\.git$##'); [ -n \"$REPO\" ] || REPO=$(cat /sandbox/work/.wfb_repo 2>/dev/null || echo PittampalliOrg/sveltekit-landing-demo)\nBASE=$(cat /sandbox/work/.wfb_base 2>/dev/null || echo main)\nOUT=$(cat /sandbox/work/.wfb_out 2>/dev/null || echo branch)\nTITLE=$(head -c 72 /sandbox/work/.wfb_intent 2>/dev/null || echo 'automated change'); [ -n \"$TITLE\" ] || TITLE='automated change'\ncd /sandbox/work/repo && git config user.email agent@workflow-builder.local && git config user.name 'workflow-builder agent'\nBR=wfb-$(date +%s) && git checkout -b \"$BR\" && git add -A && (git commit -m \"$TITLE (workflow-builder GAN harness)\" || echo nothing-to-commit)\ngit push https://x-access-token:$GITHUB_TOKEN@github.com/$REPO.git HEAD:\"$BR\"\nif [ \"$OUT\" = pr ]; then\n  PR=$(curl -sS -X POST -H \"Authorization: Bearer $GITHUB_TOKEN\" -H 'Accept: application/vnd.github+json' https://api.github.com/repos/$REPO/pulls -d \"{\\\"title\\\":\\\"$TITLE (automated)\\\",\\\"head\\\":\\\"$BR\\\",\\\"base\\\":\\\"$BASE\\\",\\\"body\\\":\\\"Automated change via the workflow-builder GAN coding harness (plan/negotiate/generate/evaluate).\\\"}\")\n  echo \"$PR\" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(\"PR_URL=\"+str(d.get(\"html_url\") or d.get(\"message\") or d))'\nelse echo \"BRANCH_PUSHED=$BR\"; fi",
+          "command": "REPO=$(git -C /sandbox/work/repo remote get-url origin 2>/dev/null | sed -e 's#.*github.com[:/]##' -e 's#\\.git$##'); [ -n \"$REPO\" ] || REPO=$(cat /sandbox/work/.wfb_repo 2>/dev/null || echo PittampalliOrg/glm-dashboard-starter)\nBASE=$(cat /sandbox/work/.wfb_base 2>/dev/null || echo main)\nOUT=$(cat /sandbox/work/.wfb_out 2>/dev/null || echo branch)\nTITLE=$(head -c 72 /sandbox/work/.wfb_intent 2>/dev/null || echo 'automated change'); [ -n \"$TITLE\" ] || TITLE='automated change'\ncd /sandbox/work/repo && git config user.email agent@workflow-builder.local && git config user.name 'workflow-builder agent'\nBR=wfb-$(date +%s) && git checkout -b \"$BR\" && git add -A && (git commit -m \"$TITLE (workflow-builder GAN harness)\" || echo nothing-to-commit)\ngit push https://x-access-token:$GITHUB_TOKEN@github.com/$REPO.git HEAD:\"$BR\"\nif [ \"$OUT\" = pr ]; then\n  PR=$(curl -sS -X POST -H \"Authorization: Bearer $GITHUB_TOKEN\" -H 'Accept: application/vnd.github+json' https://api.github.com/repos/$REPO/pulls -d \"{\\\"title\\\":\\\"$TITLE (automated)\\\",\\\"head\\\":\\\"$BR\\\",\\\"base\\\":\\\"$BASE\\\",\\\"body\\\":\\\"Automated change via the workflow-builder GAN coding harness (plan/negotiate/generate/evaluate).\\\"}\")\n  echo \"$PR\" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(\"PR_URL=\"+str(d.get(\"html_url\") or d.get(\"message\") or d))'\nelse echo \"BRANCH_PUSHED=$BR\"; fi",
           "timeoutMs": 120000,
           "allowFailure": true
         },

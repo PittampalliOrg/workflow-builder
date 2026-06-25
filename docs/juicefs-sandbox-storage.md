@@ -27,6 +27,33 @@
 
 8. **Security** — scope the daemon with **`--subdir=<run-dir>` + `--read-only`**; WebDAV auth = HTTP Basic (`WEBDAV_USER`/`WEBDAV_PASSWORD`, >v1.0.3) + TLS (`--cert-file`/`--key-file`); gateway auth = S3 creds + IAM `readonly` policy (v1.2+). [webdav](https://juicefs.com/docs/community/deployment/webdav/)
 
+## Should we build ON JuiceFS? No — tier the workspace (live finding, 2026-06-24)
+
+**Empirical result.** A faithful isolated test (same `dapr-agent-py-sandbox` image, a real JuiceFS CSI volume, CPU req 2 / limit 4) timed the dashboard build actions on `/sandbox/work`:
+`git clone --depth 1` of a *tiny* repo = **28 s**; `npm install` reached **only 139 files / 71 MB of `node_modules` after 11 minutes and had not finished** (vs **seconds** for the identical install on a local emptyDir in the same pod). The earlier full run OOM-then-Bash-timeouted on the same step. This is **I/O-bound on JuiceFS small-file ops, not CPU** — bumping CPU does nothing. JuiceFS's own docs confirm it: "the performance of small files or large amounts of random reads/writes is significantly worse than sequential reads/writes" ([performance guide](https://juicefs.com/docs/community/performance_evaluation_guide/)); it is built for sequential/large-file/**shared** access, with local cache + (EE) distributed cache / block-device for hot data ([cache](https://juicefs.com/docs/community/guide/cache/) · [AI perf](https://juicefs.com/en/blog/engineering/juicefs-ai-workload-performance-optimization)).
+
+**Conclusion.** Treat JuiceFS as the **durable + cross-pod-shared tier**, NOT the **hot build-scratch tier**. `node_modules`, `.git` pack churn, and compile/`dist` output are thousands of tiny, high-churn, *reproducible* files that belong on **local ephemeral disk**; only the source the agents edit and the artifacts we must persist/share belong on JuiceFS. Every CLI/dapr-juicefs agent currently runs `npm install` straight onto JuiceFS — that's the misuse.
+
+**What belongs where**
+
+| Data | Tier | Why |
+|---|---|---|
+| Source working tree (files agents edit) | **JuiceFS** | small, low-churn; must be shared across agent pods (generator→critic) + durable for the Changes/Files tabs |
+| Control artifacts — `SPEC.md`, `contract.json`, `verdict-*.json`, `progress.json`, `design-*.json`, screenshots, diffs | **JuiceFS** | the GAN harness's shared state + run-page artifacts; small |
+| Final build output we want to keep (e.g. a published `dist/`) | **JuiceFS** (copied at the end) | durable deliverable; written once, sequentially |
+| `node_modules` | **local scratch (emptyDir)** | thousands of tiny files, reproducible from `package.json`, never needs cross-pod sharing |
+| build/compile intermediates, `.svelte-kit`, preview server | **local scratch** | derived/rebuildable; preview is served from local |
+| `.git` objects/packs | **local scratch** (or shallow clone) | git small-file churn is what made the 28 s clone slow |
+
+**Implementation options (ordered by effort)**
+
+- **W1 — Redirect the hot dirs to a per-pod local emptyDir (lowest effort, biggest win).** Add an `emptyDir` (or node-local SSD) at `/sandbox/scratch`; the runtime seeds a symlink so `repo/node_modules` (and `.svelte-kit`/build cache) resolve to `/sandbox/scratch/...` before any install. `npm install` then writes locally; source + artifacts stay on JuiceFS. Must be set up by the **pod/runtime** (init or `LocalWorkspaceRuntime`), not by trusting the model's ad-hoc `Bash`. node_modules is per-pod (fine — each builder re-installs locally; reproducible).
+- **W2 — Build entirely on local scratch, sync source↔JuiceFS at the edges.** Each step rsyncs the shared source JuiceFS→`/scratch/repo` (excluding node_modules/.git/build), installs+builds+previews locally, and syncs edited **source** back to JuiceFS. Cleanest perf + clearest separation; adds a sync step. Mirrors the openshell model (local `/sandbox` + outputs sync).
+- **W3 — Make the agent CWD local; mount JuiceFS only at `/sandbox/artifacts`.** The agent works on local disk end-to-end; a session-end activity persists source + declared artifacts to JuiceFS. Most architecturally correct, biggest change to `LocalWorkspaceRuntime` + the bridge.
+- **W4 — Mitigation if still building on JuiceFS:** `--writeback` (write to local cache, async upload — speeds small-file writes but risks loss if the pod dies pre-flush — bad for durability) + the object-store data tier (rec #1) + bigger `--cache-size`. Reduces, doesn't remove, the latency. ([writeback](https://juicefs.com/en/blog/solutions/juicefs-write-acceleration))
+
+**Recommended:** **W1 now** (unblocks GLM/CLI builds immediately, small change), with **W3** as the proper end-state. W1/W3 are *complementary to* rec #1 (data→object store): #1 fixes durability/DB-pressure for the source+artifacts tier; W1/W3 ensure we never put hot build I/O on a network FS in the first place — the bigger latency win, since even an object-store-backed network FS pays per-file latency that local disk doesn't. Note is-number "works" today only because its `node_modules` is tiny; any real (SvelteKit-scale) project needs W1.
+
 ## Recommendations (priority-ordered)
 
 0. **[SHIPPED #244] Lazy `Depth: 1` BFS listing** in `juicefs-webdav.ts`, never recursing into `node_modules`/`.git` — fixes the Files-tab hang (a single `Depth: infinity` walked 1700+ node_modules rows, ~90s timeout). Matches finding #5.

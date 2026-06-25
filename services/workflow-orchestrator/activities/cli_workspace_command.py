@@ -34,6 +34,12 @@ def cli_workspace_command(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     cwd = str(input_data.get("cwd") or "/sandbox/work")
     read_file = input_data.get("readFile")
     read_file = read_file.strip() if isinstance(read_file, str) and read_file.strip() else None
+    persist_video = input_data.get("persistBrowserVideo")
+    persist_video = persist_video.strip() if isinstance(persist_video, str) and persist_video.strip() else None
+    node_id = input_data.get("nodeId")
+    node_id = node_id.strip() if isinstance(node_id, str) and node_id.strip() else None
+    workflow_id = input_data.get("workflowId")
+    workflow_id = workflow_id.strip() if isinstance(workflow_id, str) and workflow_id.strip() else None
 
     # The node's timeoutMs governs slow gate commands (install/build on JuiceFS).
     # The HTTP read timeout must EXCEED the downstream subprocess budget so the
@@ -66,6 +72,12 @@ def cli_workspace_command(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 payload["readFile"] = read_file
             if timeout_ms > 0:
                 payload["timeoutMs"] = int(timeout_ms)
+            if persist_video:
+                payload["persistBrowserVideo"] = persist_video
+            if node_id:
+                payload["nodeId"] = node_id
+            if workflow_id:
+                payload["workflowId"] = workflow_id
             response = requests.post(
                 f"{url}/api/internal/workflows/executions/{execution_id}/cli-workspace-command",
                 json=payload,
