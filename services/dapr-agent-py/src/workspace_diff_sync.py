@@ -308,34 +308,60 @@ if [ -z "$CLONE" ]; then
 fi
 [ -n "$CLONE" ] && [ -d "$CLONE" ] || { echo "__WFB_NO_CLONE__"; exit 0; }
 cd "$CLONE"
-git config user.email wfb@local 2>/dev/null || true
-git config user.name wfb 2>/dev/null || true
-# Stage the working tree; drop dependency/build noise in case there is no .gitignore.
-git add -A 2>/dev/null || true
-git rm -r --cached --quiet --ignore-unmatch node_modules .svelte-kit build dist .next .cache .wfb-diff-git >/dev/null 2>&1 || true
-FILECOUNT=$(git diff --cached --name-only 2>/dev/null | wc -l | tr -d ' ')
-git commit -q -m "wfb version snapshot" --no-verify 2>/dev/null || true
-HEAD=$(git rev-parse -q --verify HEAD 2>/dev/null || echo "")
-BASE=$(git rev-parse -q --verify origin/HEAD 2>/dev/null || git rev-parse -q --verify origin/main 2>/dev/null || git rev-parse -q --verify origin/master 2>/dev/null || echo "")
+BASE=$(git rev-parse -q --verify origin/HEAD 2>/dev/null || git rev-parse -q --verify origin/main 2>/dev/null || git rev-parse -q --verify origin/master 2>/dev/null || git rev-parse -q --verify HEAD 2>/dev/null || echo "")
+# Build the snapshot from a SEPARATE index + a DETACHED commit-tree — NEVER run
+# `git add -A`/`git commit` on the real repo. Doing so would add a stray "wfb
+# snapshot" commit to HEAD and stage the harness's own .wfb-diff-git dir, poisoning
+# the diff the gate/critic inspect (breaking the "only the in-scope files changed"
+# criteria). commit-tree creates an object that moves NO ref; HEAD/index/worktree
+# are left exactly as the agent left them.
+IDX=/tmp/wfb-bundle-index; rm -f "$IDX"
+GIT_INDEX_FILE="$IDX" git add -A 2>/dev/null || true
+GIT_INDEX_FILE="$IDX" git rm -r --cached --quiet --ignore-unmatch node_modules .svelte-kit build dist .next .cache .git .wfb-diff-git >/dev/null 2>&1 || true
+FILECOUNT=$(GIT_INDEX_FILE="$IDX" git diff --cached --name-only ${BASE:+"$BASE"} 2>/dev/null | grep -vE '^(\.wfb-diff-git|node_modules)/' | wc -l | tr -d ' ')
+TREE=$(GIT_INDEX_FILE="$IDX" git write-tree 2>/dev/null || echo "")
+rm -f "$IDX"
+[ -n "$TREE" ] || { echo "__WFB_NO_TREE__"; exit 0; }
+WID="wfb"; WEM="wfb@local"
+if [ -n "$BASE" ]; then
+  COMMIT=$(GIT_AUTHOR_NAME="$WID" GIT_AUTHOR_EMAIL="$WEM" GIT_COMMITTER_NAME="$WID" GIT_COMMITTER_EMAIL="$WEM" git commit-tree "$TREE" -p "$BASE" -m "wfb snapshot" 2>/dev/null || echo "")
+else
+  COMMIT=$(GIT_AUTHOR_NAME="$WID" GIT_AUTHOR_EMAIL="$WEM" GIT_COMMITTER_NAME="$WID" GIT_COMMITTER_EMAIL="$WEM" git commit-tree "$TREE" -m "wfb snapshot" 2>/dev/null || echo "")
+fi
+[ -n "$COMMIT" ] || { echo "__WFB_NO_COMMIT__"; exit 0; }
+HEAD="$COMMIT"
 TIER=""
-# Tier 1: SELF-CONTAINED full bundle (HEAD + all ancestors). Cloneable anywhere
-# (recovery) AND shares origin history (clean existing-repo PR). A thin base..HEAD
-# bundle is NOT self-contained — `git clone <thin>` fails — so full is primary.
-if [ -n "$HEAD" ]; then
-  if git bundle create "$OUTB" HEAD >/dev/null 2>&1 && [ -s "$OUTB" ]; then TIER=full; else rm -f "$OUTB"; fi
+# Bundle a detached COMMIT so `git clone <bundle>` checks it out: a bundle is only
+# cloneable if it carries a HEAD entry, which `git bundle create <file> <bare-sha>`
+# does NOT write. So point a UNIQUE temp branch at the commit, briefly repoint the
+# symbolic HEAD to it just long enough to write `HEAD <branch>` into the bundle, then
+# restore HEAD and delete the branch. This touches ONLY refs — never the index or
+# working tree — and is fully reverted, so the gate/critic working-tree diff is
+# unaffected. Captures run sequentially at session-end, so there is no concurrent
+# git reader during the brief symref swap. Extra rev-limit args ($3+) pass through
+# (e.g. "^$BASE" for a thin bundle). Returns non-zero on empty/failed bundle.
+_BR="wfb-snapshot-$$"
+wfb_bundle_commit() {
+  _out="$1"; _commit="$2"; shift 2
+  _sym=$(git symbolic-ref -q HEAD 2>/dev/null || echo "")
+  git branch -f "$_BR" "$_commit" >/dev/null 2>&1 || return 1
+  if [ -n "$_sym" ]; then git symbolic-ref HEAD "refs/heads/$_BR" >/dev/null 2>&1; fi
+  git bundle create "$_out" HEAD "$_BR" "$@" >/dev/null 2>&1; _rc=$?
+  if [ -n "$_sym" ]; then git symbolic-ref HEAD "$_sym" >/dev/null 2>&1; fi
+  git branch -D "$_BR" >/dev/null 2>&1 || true
+  [ "$_rc" = "0" ] && [ -s "$_out" ]
+}
+# Tier 1: SELF-CONTAINED full bundle (COMMIT + ancestors incl. BASE via -p). Cloneable
+# anywhere (recovery) AND shares origin history (clean existing-repo PR).
+if wfb_bundle_commit "$OUTB" "$COMMIT"; then TIER=full; else rm -f "$OUTB"; fi
+# Tier 2: over the size cap → THIN (excludes BASE ancestors via ^BASE). NOT
+# self-contained: apply must `git fetch` it INTO a clone of the target. tier=thin.
+if [ -s "$OUTB" ] && [ -n "$MAXB" ] && [ "$(wc -c < "$OUTB" 2>/dev/null || echo 0)" -gt "$MAXB" ] && [ -n "$BASE" ] && [ "$BASE" != "$COMMIT" ]; then
+  if wfb_bundle_commit "$OUTB.thin" "$COMMIT" "^$BASE"; then mv -f "$OUTB.thin" "$OUTB"; TIER=thin; else rm -f "$OUTB.thin"; fi
 fi
-# Tier 2: full bundle over the size cap → THIN (origin/<base>..HEAD), much smaller.
-# NOT self-contained: apply must `git fetch` it INTO a clone of the target (which has
-# <base>). Recorded as tier=thin so Promote knows to fetch-into-clone, not clone.
-if [ -s "$OUTB" ] && [ -n "$MAXB" ] && [ "$(wc -c < "$OUTB" 2>/dev/null || echo 0)" -gt "$MAXB" ] && [ -n "$BASE" ] && [ "$BASE" != "$HEAD" ]; then
-  if git bundle create "$OUTB.thin" "$BASE..HEAD" >/dev/null 2>&1 && [ -s "$OUTB.thin" ]; then mv -f "$OUTB.thin" "$OUTB"; TIER=thin; else rm -f "$OUTB.thin"; fi
-fi
-# Tier 3: still over cap (or no full bundle) → squashed-root single commit of the
-# current tree. Self-contained + tiny, but no shared history (existing-repo PR shows
-# all files as new; fine for greenfield).
-if { [ ! -s "$OUTB" ] || { [ -n "$MAXB" ] && [ "$(wc -c < "$OUTB" 2>/dev/null || echo 0)" -gt "$MAXB" ]; }; } && [ -n "$HEAD" ]; then
-  TREE=$(git rev-parse "HEAD^{tree}" 2>/dev/null || echo "")
-  if [ -n "$TREE" ]; then SQ=$(git commit-tree "$TREE" -m "wfb snapshot" 2>/dev/null || echo ""); [ -n "$SQ" ] && git bundle create "$OUTB" "$SQ" >/dev/null 2>&1 && TIER=squashed && BASE="" && HEAD="$SQ" || true; fi
+# Tier 3: still over cap (or no bundle) → squashed-root (tree only, no shared history).
+if { [ ! -s "$OUTB" ] || { [ -n "$MAXB" ] && [ "$(wc -c < "$OUTB" 2>/dev/null || echo 0)" -gt "$MAXB" ]; }; }; then
+  SQ=$(GIT_AUTHOR_NAME="$WID" GIT_AUTHOR_EMAIL="$WEM" GIT_COMMITTER_NAME="$WID" GIT_COMMITTER_EMAIL="$WEM" git commit-tree "$TREE" -m "wfb snapshot" 2>/dev/null || echo ""); if [ -n "$SQ" ] && wfb_bundle_commit "$OUTB" "$SQ"; then TIER=squashed; BASE=""; HEAD="$SQ"; fi
 fi
 echo "WFB_CLONE=$CLONE"
 echo "WFB_TIER=$TIER"
