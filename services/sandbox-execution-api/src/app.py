@@ -230,6 +230,19 @@ class ExecutionClassConfig(BaseModel):
         default_factory=lambda: ["allow_other"]
     )
 
+    # Per-pod LOCAL (emptyDir) overlays mounted at sub-paths of the shared
+    # workspace so high-churn build artifacts (node_modules, .next, target,
+    # build/) live on fast NODE-LOCAL disk, never on the slow shared FS. Why a
+    # real volume and not a symlink: npm's reify step DELETES a node_modules
+    # *symlink* and rewrites a real dir on the shared FS, so a symlink can't
+    # redirect it — but it cannot delete a bind-mounted volume. Source edits stay
+    # on the shared FS (durable, cross-pod); only the build artifacts go local.
+    # Safe because the agent pods that mount these (e.g. dapr-agent-py-juicefs
+    # durable/run nodes) never `git clone` into the shared workspace — clone runs
+    # on cliWorkspace pods, which do NOT carry these overlays, so the overlay
+    # never collides with "destination not empty". Default [] = no overlay.
+    localScratchMounts: list[str] = Field(default_factory=list)
+
 
 class AgentWorkflowHostRequest(BaseModel):
     sessionId: str
@@ -1540,6 +1553,20 @@ def build_agent_workflow_host_sandbox_manifest(
         )
         pod_spec["containers"][0]["env"].append(
             {"name": "CLI_SHARED_WORKSPACE_MOUNT", "value": shared_mount_path}
+        )
+    for idx, raw_path in enumerate(class_config.localScratchMounts or []):
+        # Fast node-local emptyDir overlay for a build-artifact subdir of the
+        # shared workspace (e.g. /sandbox/work/repo/node_modules). Appended AFTER
+        # the shared-workspace mount; kubelet mounts by path depth so the deeper
+        # overlay nests inside the (already-mounted) shared FS. npm/pnpm/builds
+        # write here at local-disk speed; durable source stays on the shared FS.
+        scratch_path = str(raw_path or "").strip()
+        if not scratch_path.startswith("/"):
+            continue
+        vol_name = f"local-scratch-{idx}"
+        pod_spec["volumes"].append({"name": vol_name, "emptyDir": {}})
+        pod_spec["containers"][0]["volumeMounts"].append(
+            {"name": vol_name, "mountPath": scratch_path}
         )
     if class_config.podSecurityContext is not None:
         pod_spec["securityContext"] = dict(class_config.podSecurityContext)
