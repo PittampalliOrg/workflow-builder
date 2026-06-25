@@ -51,6 +51,10 @@
 		agentId: string | null;
 		createdAt: string | null;
 		completedAt: string | null;
+		// Resume/fork: session belongs to a source run this run was forked from
+		// (the skipped-prefix activity). Shown but labeled as inherited.
+		inherited?: boolean;
+		sourceExecutionId?: string | null;
 	};
 
 	let sessions = $state<SessionRow[]>([]);
@@ -459,6 +463,14 @@
 							<div class="flex items-center gap-2">
 								<span class="{dot.cls} text-xs" title={dot.label}>{dot.sym}</span>
 								<span class="min-w-0 flex-1 truncate text-xs font-medium">{node}</span>
+								{#if s.inherited}
+									<span
+										class="inline-flex shrink-0 items-center rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground"
+										title="Replayed from the source run this run was resumed/forked from"
+									>
+										inherited
+									</span>
+								{/if}
 								{#if isActive(s) && pv?.activity}
 									<span
 										class="inline-flex shrink-0 items-center gap-1 rounded-full bg-teal-500/10 px-1.5 py-0.5 text-[9px] font-medium text-teal-600 dark:text-teal-300"
