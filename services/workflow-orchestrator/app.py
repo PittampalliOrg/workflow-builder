@@ -1320,6 +1320,34 @@ class RerunWorkflowRequest(BaseModel):
     reason: str | None = None
 
 
+class ResumeWorkflowRequest(BaseModel):
+    """Resume a workflow run from a specific NODE (not a raw history event).
+
+    Node-aware wrapper over Dapr's RerunWorkflowFromEvent: maps a top-level SW node
+    id to the history event at which that node started (its `update_execution_node`
+    TaskScheduled event), then reruns from there. Completed nodes before the resume
+    point replay from the parent history as cached results (validated: durable/run
+    sub-orchestrations are NOT re-dispatched); the resume node onward re-executes.
+    """
+    fromNodeId: str | None = Field(
+        default=None,
+        description=(
+            "Top-level node id to resume from. None or '__failed__' auto-locates the "
+            "last node that started (the node in-flight when the run stopped)."
+        ),
+    )
+    input: Any = Field(
+        default=None,
+        description=(
+            "Replacement workflow input (e.g. the edited spec). When provided it is "
+            "sent with overwriteInput so the resume node onward runs the fix. The "
+            "replayed prefix uses cached results, so earlier-node edits are ignored."
+        ),
+    )
+    newInstanceId: str | None = None
+    reason: str | None = None
+
+
 class RuntimeRegistrationResponse(BaseModel):
     """Runtime introspection response for debug UIs."""
     service: str
@@ -3504,6 +3532,125 @@ def rerun_workflow(instance_id: str, request: RerunWorkflowRequest = RerunWorkfl
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to rerun workflow: {e}")
         _raise_workflow_route_error("rerun_workflow", e)
+
+
+def _node_start_events(events: list[dict[str, Any]]) -> list[tuple[int, str]]:
+    """Ordered (eventId, nodeId) for every top-level node start in a run history.
+
+    The SW interpreter schedules an `update_execution_node` activity at the start of
+    each top-level node, carrying the node id in its input. That TaskScheduled event
+    is the node's boundary: rerunning from its eventId re-executes the node (and all
+    later nodes) while everything before replays from cached history.
+    """
+    starts: list[tuple[int, str]] = []
+    for event in events:
+        if str(event.get("eventType") or "") != "TaskScheduled":
+            continue
+        if str(event.get("name") or "") != "update_execution_node":
+            continue
+        event_id = event.get("eventId")
+        if not isinstance(event_id, int):
+            continue
+        node_id = None
+        inp = event.get("input")
+        if isinstance(inp, dict):
+            node_id = inp.get("nodeId") or inp.get("node_id") or inp.get("node")
+        if isinstance(node_id, str) and node_id:
+            starts.append((event_id, node_id))
+    starts.sort(key=lambda item: item[0])
+    return starts
+
+
+def _resolve_resume_event(
+    events: list[dict[str, Any]], from_node_id: str | None
+) -> tuple[int, str]:
+    """Map a node id (or auto-failed) to the history eventId to rerun from.
+
+    Returns (eventId, resolvedNodeId). Raises HTTPException(404) if the node never
+    started in this run, or HTTPException(409) if the run has no node-start events.
+    """
+    starts = _node_start_events(events)
+    if not starts:
+        raise HTTPException(
+            status_code=409,
+            detail="Run has no resumable node boundaries in its history",
+        )
+    target = (from_node_id or "").strip()
+    if not target or target == "__failed__":
+        # The last node that started is the one in-flight when the run stopped.
+        event_id, node_id = starts[-1]
+        return event_id, node_id
+    # Earliest start for the requested node (a looped node only has one top-level start).
+    for event_id, node_id in starts:
+        if node_id == target:
+            return event_id, node_id
+    available = ", ".join(sorted({n for _, n in starts}))
+    raise HTTPException(
+        status_code=404,
+        detail=f"Node '{target}' did not start in this run (available: {available})",
+    )
+
+
+@app.post("/api/v2/workflows/{instance_id}/resume")
+def resume_workflow(instance_id: str, request: ResumeWorkflowRequest = ResumeWorkflowRequest()):
+    """
+    Resume a workflow run from a NODE (node-aware rerun-from-event).
+
+    POST /api/v2/workflows/:instanceId/resume
+    """
+    try:
+        state_response = _taskhub_call(
+            "GetInstance",
+            pb.GetInstanceRequest(instanceId=instance_id, getInputsAndOutputs=False),
+        )
+        if not getattr(state_response, "exists", False):
+            raise HTTPException(status_code=404, detail="Workflow not found")
+
+        events = _get_instance_history(instance_id)
+        event_id, resolved_node_id = _resolve_resume_event(events, request.fromNodeId)
+
+        rerun_request = pb.RerunWorkflowFromEventRequest(
+            sourceInstanceID=instance_id,
+            eventID=event_id,
+        )
+        new_instance_id_requested = str(request.newInstanceId or "").strip()
+        if new_instance_id_requested:
+            rerun_request.newInstanceID = new_instance_id_requested
+        # The whole point of resume is to apply the edited spec from the resume node
+        # onward, so overwrite the input whenever one is supplied.
+        if request.input is not None:
+            rerun_request.overwriteInput = True
+            rerun_request.input.CopyFrom(
+                wrappers_pb2.StringValue(
+                    value=json.dumps(jsonable_encoder(request.input)),
+                )
+            )
+        rerun_response = _taskhub_call("RerunWorkflowFromEvent", rerun_request)
+        new_instance_id = str(getattr(rerun_response, "newInstanceID", "") or "")
+        if not new_instance_id:
+            raise RuntimeError("Resume succeeded but no newInstanceID was returned")
+
+        logger.info(
+            "[Workflow Routes] Resume scheduled: source=%s node=%s event_id=%s new=%s reason=%s",
+            instance_id,
+            resolved_node_id,
+            event_id,
+            new_instance_id,
+            request.reason,
+        )
+
+        return {
+            "success": True,
+            "sourceInstanceId": instance_id,
+            "fromNodeId": resolved_node_id,
+            "fromEventId": event_id,
+            "newInstanceId": new_instance_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Workflow Routes] Failed to resume workflow: {e}")
+        _raise_workflow_route_error("resume_workflow", e)
 
 
 @app.post("/api/v2/workflows/{instance_id}/events")

@@ -759,6 +759,10 @@ def _build_expression_context(
             "executionId": tc.execution_id,
             "dbExecutionId": tc.db_execution_id,
             "workflowId": tc.workflow_id,
+            # Stable across resume — use this (not executionId) for workspaceRef so a
+            # resumed node re-mounts the original run's shared /sandbox/work.
+            "workspaceExecutionId": getattr(tc, "workspace_execution_id", None)
+            or tc.execution_id,
         },
     }
     context.update(tc.state_vars)
@@ -912,6 +916,15 @@ class TaskContext:
         self.execution_id = execution_id
         self.db_execution_id = db_execution_id
         self.integrations = integrations
+        # Stable per-workspace key, surfaced as runtime.workspaceExecutionId. On a
+        # normal run it equals execution_id; on a RESUME (rerun-from-node) the caller
+        # threads the SOURCE run's id so the resumed node re-mounts the SAME shared
+        # /sandbox/work (executionId changes each instance and would point at an empty
+        # workspace otherwise). Resumable fixtures use ${ .runtime.workspaceExecutionId }.
+        self.workspace_execution_id = execution_id
+        # Resumable workflows retain their workspace + Dapr history on failure so the
+        # run can be resumed from the failed node (set from x-workflow-builder.resumable).
+        self.resumable = False
 
         # OTEL context
         self.otel_ctx: dict[str, str] = {}
@@ -3789,6 +3802,16 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     tc.trace_id = trace_id
     tc.mlflow_node_spans_enabled = mlflow_node_spans_enabled
     tc.mlflow_context = mlflow_context
+    # Resume support: a stable workspace key threaded by the resume caller (defaults to
+    # this run's id) + the resumable flag from the spec's x-workflow-builder extension.
+    resume_workspace_id = input_data.get("workspaceExecutionId")
+    if isinstance(resume_workspace_id, str) and resume_workspace_id.strip():
+        tc.workspace_execution_id = resume_workspace_id.strip()
+    try:
+        _xwb = (workflow_data.get("document") or {}).get("x-workflow-builder") or {}
+        tc.resumable = _as_bool(_xwb.get("resumable"), False)
+    except Exception:
+        tc.resumable = False
     tc.trigger_data = resolve_input_definition(
         workflow.input.model_dump(by_alias=True) if workflow.input else None,
         _build_expression_context(tc),
@@ -4166,7 +4189,15 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 }),
             )
 
-        if _should_cleanup_workspaces(tc):
+        if getattr(tc, "resumable", False):
+            # Retain the shared workspace on failure so the run can be resumed from the
+            # failed node against the same /sandbox/work (cleanup would delete the
+            # cloned repo + SPEC.md/contract.json the resume needs).
+            _log_info(
+                ctx,
+                "[SW Workflow] Retaining workspace after failure (resumable=true) for resume-from-step",
+            )
+        elif _should_cleanup_workspaces(tc):
             try:
                 from activities.call_agent_service import cleanup_execution_workspaces
 
