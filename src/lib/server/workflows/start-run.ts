@@ -91,6 +91,15 @@ export interface StartWorkflowOptions {
 	/** Set for event-driven runs (the firing trigger's id) → stamped on the
 	 *  execution row for the concurrency gate + capacity lens. */
 	triggerSource?: string;
+	/** Resume/fork: skip every top-level node before this one (the interpreter
+	 *  reuses the retained workspace and runs only from here onward). */
+	resumeFromNode?: string;
+	/** Resume/fork: stable shared-workspace key (the SOURCE run's id) so the
+	 *  resumed nodes re-mount the original /sandbox/work. */
+	workspaceExecutionId?: string;
+	/** Resume/fork lineage: the source execution this run was forked from. */
+	rerunOfExecutionId?: string;
+	rerunSourceInstanceId?: string;
 }
 
 export async function startWorkflowRun(
@@ -184,7 +193,11 @@ export async function startWorkflowRun(
 			progress: 0,
 			input: triggerData,
 			executionIrVersion: 'sw-1.0.0',
-			...(opts.triggerSource ? { triggerSource: opts.triggerSource } : {})
+			...(opts.triggerSource ? { triggerSource: opts.triggerSource } : {}),
+			...(opts.rerunOfExecutionId ? { rerunOfExecutionId: opts.rerunOfExecutionId } : {}),
+			...(opts.rerunSourceInstanceId
+				? { rerunSourceInstanceId: opts.rerunSourceInstanceId }
+				: {})
 		})
 		.returning({ id: workflowExecutions.id });
 
@@ -239,7 +252,13 @@ export async function startWorkflowRun(
 				triggerData,
 				dbExecutionId: execution.id,
 				mlflowContext,
-				traceContext
+				traceContext,
+				// Resume/fork: skip the prefix + reuse the source workspace. Omitted
+				// (undefined) for normal runs → interpreter defaults apply.
+				...(opts.resumeFromNode ? { resumeFromNode: opts.resumeFromNode } : {}),
+				...(opts.workspaceExecutionId
+					? { workspaceExecutionId: opts.workspaceExecutionId }
+					: {})
 			})
 		});
 		if (!res.ok) {
