@@ -4106,7 +4106,16 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
         # Workspace cleanup unless
         # the caller explicitly asked to keep the sandbox alive for post-run use.
-        if _should_cleanup_workspaces(tc):
+        # Resumable workflows retain their workspace on ANY terminal state (success
+        # too) so a completed run can be FORKED from a later node for fast iteration
+        # without re-running the prefix. (Bounded by the 168h Dapr-history window; an
+        # abandoned-resumable-workspace reaper is a tracked follow-up.)
+        if getattr(tc, "resumable", False):
+            _log_info(
+                ctx,
+                "[SW Workflow] Retaining workspace after success (resumable=true) for resume/fork-from-step",
+            )
+        elif _should_cleanup_workspaces(tc):
             try:
                 from activities.call_agent_service import cleanup_execution_workspaces
 
