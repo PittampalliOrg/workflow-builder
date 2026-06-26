@@ -100,14 +100,26 @@ source row + its lineage stay around as usual.)
   (`gan-harness-dapr-showcase`) is out of scope.
 - **Forks are hermetic (all node types)** — each fork runs on an *isolated copy* of the source workspace,
   so repeated/parallel forks never interfere. The interpreter runs an **orchestrator `seed_workspace`
-  step** at the top of a resumed run (before the first resumed node): a synchronous copy Job
-  (sandbox-execution-api `/internal/workspace/seed-data`, via the BFF) mounts the source subPath RO + the
-  fork's fresh subPath RW and `cp -a` if empty — so it works whether or not the resumed node spawns an
-  agent pod. (A copy-if-empty init container in agent session pods stays as a redundant fast path.)
-  **JuiceFS gotcha:** the copy-if-empty test must ignore JuiceFS's virtual control files
-  (`.accesslog`/`.config`/`.stats`, present in every mount/subPath) — a naive `ls -A` never sees a fresh
-  subPath as empty, so the seed is wrongly skipped and the fork runs against an empty workspace. The seed
-  command filters those files both when testing emptiness and when copying (`_seed_copy_cmd`).
+  step** at the top of a resumed run (before the first resumed node), so it works whether or not the
+  resumed node spawns an agent pod. (A copy-if-empty init container in agent session pods stays as a
+  redundant fast path — it now rarely runs, since the orchestrator step populates the workspace first.)
+  - **CoW clone, not a file copy.** The seed Job ROOT-mounts the JuiceFS volume (source + dest subPaths
+    under one mount) and runs **`juicefs clone`** per top-level entry — metadata-only copy-on-write, so a
+    repo with thousands of tiny `.git` objects clones in one metadata pass instead of a file-by-file
+    `cp`. (Originally `cp -a`; that was metadata-bound on Postgres-backed JuiceFS — a ~2800-file GAN
+    workspace took ~17 min. `juicefs clone` is ~7× faster; it becomes near-instant once JuiceFS metadata
+    moves off Postgres to Redis — the tracked metadata follow-up.) This mirrors the industry pattern
+    (e.g. kagent) of *cloning/snapshotting the environment rather than walking the tree*.
+  - **Async + polled** — clone is still O(files) on Postgres meta, so a synchronous wait blew the HTTP /
+    Node `requestTimeout` budget (→ 504, fork errored). `/internal/workspace/seed-data` now STARTS the
+    Job and returns immediately; the `seed_workspace` activity polls `/seed-data/status` until done
+    (bounded by `SEED_WORKSPACE_POLL_TIMEOUT_SECONDS`, default 1500s) and raises on failure/timeout, so a
+    fork never runs against an empty workspace, regardless of workspace size.
+  - **JuiceFS gotcha:** the copy-if-empty test must ignore JuiceFS's virtual control files
+    (`.accesslog`/`.config`/`.stats`, present in every mount/subPath) — a naive `ls -A` never sees a fresh
+    subPath as empty, so the seed would be wrongly skipped and the fork would run against an empty
+    workspace. Both seed commands (`_seed_clone_cmd` for the clone Job, `_seed_copy_cmd` for the
+    init-container fallback) filter those files when testing emptiness and when copying.
   (Point-in-time *per-node* snapshots — state as-of *before* the node, vs the source's end state — remain
   a separate future option.)
 - **Retained workspaces are reaped** — the `resumable-workspace-gc` CronJob (every 6h) ages out abandoned
