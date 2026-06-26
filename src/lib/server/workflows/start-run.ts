@@ -97,6 +97,9 @@ export interface StartWorkflowOptions {
 	/** Resume/fork: stable shared-workspace key (the SOURCE run's id) so the
 	 *  resumed nodes re-mount the original /sandbox/work. */
 	workspaceExecutionId?: string;
+	/** Hermetic fork: seed this run's fresh workspace from the SOURCE run's subPath
+	 *  (read-only copy at sandbox startup) so repeated forks don't share + drift. */
+	seedWorkspaceFrom?: string;
 	/** Resume/fork lineage: the source execution this run was forked from. */
 	rerunOfExecutionId?: string;
 	rerunSourceInstanceId?: string;
@@ -258,7 +261,8 @@ export async function startWorkflowRun(
 				...(opts.resumeFromNode ? { resumeFromNode: opts.resumeFromNode } : {}),
 				...(opts.workspaceExecutionId
 					? { workspaceExecutionId: opts.workspaceExecutionId }
-					: {})
+					: {}),
+				...(opts.seedWorkspaceFrom ? { seedWorkspaceFrom: opts.seedWorkspaceFrom } : {})
 			})
 		});
 		if (!res.ok) {

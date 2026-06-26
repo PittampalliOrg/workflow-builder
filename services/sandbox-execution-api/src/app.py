@@ -270,6 +270,10 @@ class AgentWorkflowHostRequest(BaseModel):
     # one workflow run mounts the SAME shared subtree at
     # sharedWorkspaceStoreMountPath. Unset → no shared workspace (pod-local only).
     sharedWorkspaceKey: str | None = None
+    # Hermetic fork: source workspace subPath to SEED this run's fresh workspace from.
+    # When set, a read-only PV/PVC of that subPath is mounted and an init container
+    # copies it into the (fresh) shared workspace once, if the shared workspace is empty.
+    seedWorkspaceFrom: str | None = None
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:
@@ -1138,6 +1142,85 @@ def _ensure_cli_shared_workspace_volume(
     return name
 
 
+def _ensure_cli_seed_workspace_volume(
+    core: Any,
+    request: AgentWorkflowHostRequest,
+    class_config: ExecutionClassConfig,
+    *,
+    namespace: str,
+) -> str | None:
+    """Provision a static PV+PVC for the SOURCE workspace subPath of a hermetic fork
+    (`request.seedWorkspaceFrom`), mounted READ-ONLY in the pod so the seed-workspace
+    init container can copy it into the fork's fresh shared workspace. Same CSI shape
+    as the shared workspace; distinct (`cli-seed-`) name. Idempotent (409 = present)."""
+    if not _cli_shared_workspace_enabled(class_config):
+        return None
+    seed_key = (request.seedWorkspaceFrom or "").strip()
+    if not seed_key:
+        return None
+    name = f"cli-seed-{_safe_name(request.sessionId, max_length=55)}"
+    secret_namespace = class_config.sharedWorkspaceStoreSecretNamespace or namespace
+    labels = {
+        "app": "cli-seed-workspace",
+        "workflow-builder.cnoe.io/session-id": _safe_name(request.sessionId, max_length=63),
+        "workflow-builder.cnoe.io/seed-workspace-key": _safe_name(seed_key, max_length=63),
+    }
+    pv_body = {
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {"name": name, "labels": labels},
+        "spec": {
+            "capacity": {"storage": class_config.sharedWorkspaceStoreCapacity},
+            "accessModes": ["ReadWriteMany"],
+            "persistentVolumeReclaimPolicy": "Retain",
+            "storageClassName": "",
+            "mountOptions": list(class_config.sharedWorkspaceStoreMountOptions or []),
+            "volumeMode": "Filesystem",
+            "csi": {
+                "driver": class_config.sharedWorkspaceStoreCsiDriver,
+                "fsType": "juicefs",
+                "volumeHandle": name,
+                "nodePublishSecretRef": {
+                    "name": class_config.sharedWorkspaceStoreSecretName,
+                    "namespace": secret_namespace,
+                },
+                "volumeAttributes": {"subPath": seed_key},
+            },
+        },
+    }
+    pvc_body = {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": name, "namespace": namespace, "labels": labels},
+        "spec": {
+            "accessModes": ["ReadWriteMany"],
+            "storageClassName": "",
+            "volumeName": name,
+            "resources": {
+                "requests": {"storage": class_config.sharedWorkspaceStoreCapacity}
+            },
+        },
+    }
+    try:
+        core.create_persistent_volume(body=pv_body)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+        try:
+            existing = core.read_persistent_volume(name=name)
+            phase = getattr(getattr(existing, "status", None), "phase", None)
+            if phase in ("Released", "Available"):
+                core.patch_persistent_volume(name=name, body={"spec": {"claimRef": None}})
+        except Exception as patch_exc:
+            logger.warning("cli-seed pv %s claimRef clear failed: %s", name, patch_exc)
+    try:
+        core.create_namespaced_persistent_volume_claim(namespace=namespace, body=pvc_body)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+    return name
+
+
 TRACEPARENT_ANNOTATION = "workflow-builder.cnoe.io/traceparent"
 TRACESTATE_ANNOTATION = "workflow-builder.cnoe.io/tracestate"
 BAGGAGE_ANNOTATION = "workflow-builder.cnoe.io/baggage"
@@ -1554,6 +1637,35 @@ def build_agent_workflow_host_sandbox_manifest(
         pod_spec["containers"][0]["env"].append(
             {"name": "CLI_SHARED_WORKSPACE_MOUNT", "value": shared_mount_path}
         )
+        # Hermetic fork: mount the SOURCE workspace subPath read-only + an init
+        # container that COPIES it into this fork's fresh shared workspace, once, if
+        # the shared workspace is still empty (the first session pod seeds it; later
+        # pods of the same fork see it populated and no-op). Source is small (build
+        # artifacts live on localScratch, not the shared FS).
+        if (request.seedWorkspaceFrom or "").strip():
+            seed_pvc = f"cli-seed-{_safe_name(request.sessionId, max_length=55)}"
+            pod_spec["volumes"].append(
+                {
+                    "name": "cli-seed-workspace",
+                    "persistentVolumeClaim": {"claimName": seed_pvc, "readOnly": True},
+                }
+            )
+            seed_init = {
+                "name": "seed-workspace",
+                "image": "busybox:1.36",
+                "command": [
+                    "sh",
+                    "-c",
+                    'if [ -z "$(ls -A /work 2>/dev/null)" ]; then '
+                    "cp -a /seed/. /work/ 2>/dev/null || true; echo seeded; "
+                    "else echo work-not-empty; fi; true",
+                ],
+                "volumeMounts": [
+                    {"name": "cli-shared-workspace", "mountPath": "/work"},
+                    {"name": "cli-seed-workspace", "mountPath": "/seed", "readOnly": True},
+                ],
+            }
+            pod_spec.setdefault("initContainers", []).insert(0, seed_init)
     for idx, raw_path in enumerate(class_config.localScratchMounts or []):
         # Fast node-local emptyDir overlay for a build-artifact subdir of the
         # shared workspace (e.g. /sandbox/work/repo/node_modules). Appended AFTER
@@ -2129,6 +2241,10 @@ def submit_agent_workflow_host(
         shared_workspace_pvc_name = _ensure_cli_shared_workspace_volume(
             core, body, class_config, namespace=namespace
         )
+        # Hermetic fork: RO seed PV/PVC of the source workspace subPath (if requested).
+        seed_workspace_pvc_name = _ensure_cli_seed_workspace_volume(
+            core, body, class_config, namespace=namespace
+        )
         created_sandbox: dict[str, Any] | None = None
         try:
             created_sandbox = custom.create_namespaced_custom_object(
@@ -2175,6 +2291,10 @@ def submit_agent_workflow_host(
                     shared_workspace_pvc_name = _ensure_cli_shared_workspace_volume(
                         core, body, class_config, namespace=namespace
                     )
+                if seed_workspace_pvc_name:
+                    seed_workspace_pvc_name = _ensure_cli_seed_workspace_volume(
+                        core, body, class_config, namespace=namespace
+                    )
                 created_sandbox = custom.create_namespaced_custom_object(
                     group="agents.x-k8s.io",
                     version="v1alpha1",
@@ -2208,6 +2328,17 @@ def submit_agent_workflow_host(
                 custom,
                 namespace=namespace,
                 pvc_name=shared_workspace_pvc_name,
+                sandbox_name=sandbox_name,
+                sandbox=created_sandbox,
+            )
+        if seed_workspace_pvc_name:
+            # GC the seed PVC with the pod (the PV is Retain; the source subtree it
+            # points at is the SOURCE run's, untouched — read-only).
+            _bind_cli_transcript_pvc_owner(
+                core,
+                custom,
+                namespace=namespace,
+                pvc_name=seed_workspace_pvc_name,
                 sandbox_name=sandbox_name,
                 sandbox=created_sandbox,
             )
@@ -2297,7 +2428,7 @@ def purge_workspace_data(
     name = f"wspurge-{_safe_name(shared_key, max_length=54)}"
     labels = {
         "app": "workspace-purge",
-        "workflow-builder.cnoe.io/shared-workspace-key": _safe_name(shared_key, 63),
+        "workflow-builder.cnoe.io/shared-workspace-key": _safe_name(shared_key, max_length=63),
     }
     pv_body = {
         "apiVersion": "v1",
