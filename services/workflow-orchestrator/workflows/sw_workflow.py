@@ -853,10 +853,19 @@ def _call_task_uses_direct_node_logging(
     task_data: dict[str, Any],
     workflow: Workflow,
 ) -> bool:
-    _ = task_data, workflow
-    # All call-task execution paths already persist their own node logs:
-    # - function-router single-shot actions
-    # - tracked agent child workflows
+    _ = workflow
+    # Most call-task execution paths already persist their own node logs (function-router
+    # single-shot AP/system actions; tracked agent child workflows), so the orchestrator
+    # skips direct logging to avoid duplicate rows.
+    #
+    # EXCEPTION: workspace/* nodes (clone_repo, publish_*, pr, …) route to
+    # openshell-agent-runtime, which does NOT write a workflow_execution_logs row. Without
+    # direct logging they're invisible in the run console / timeline / progress — a
+    # non-agent run (or a non-agent-suffix FORK like publish_contract→pr→summary) shows no
+    # steps at all. Log these directly so every node is represented.
+    call = str(task_data.get("call") or "")
+    if call.startswith("workspace/"):
+        return True
     return False
 
 
