@@ -530,6 +530,10 @@ export const workflowExecutions = pgTable(
 		errorStackTrace: text("error_stack_trace"),
 		rerunOfExecutionId: text("rerun_of_execution_id"),
 		rerunSourceInstanceId: text("rerun_source_instance_id"),
+		// Resume/fork: the top-level node this run was forked FROM (skip-prefix point).
+		// NULL for normal (non-fork) runs. Drives the fork-lineage tree's "fork @<node>"
+		// labels so each branch shows where it diverged.
+		resumeFromNode: text("resume_from_node"),
 		// Set when this run was started by the event-driven trigger spine (to the
 		// firing trigger's id/kind). NULL for manual/API runs. Drives the triggered-
 		// run concurrency gate + the "pending/active triggered runs" capacity lens.

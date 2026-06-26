@@ -200,7 +200,9 @@ export async function startWorkflowRun(
 			...(opts.rerunOfExecutionId ? { rerunOfExecutionId: opts.rerunOfExecutionId } : {}),
 			...(opts.rerunSourceInstanceId
 				? { rerunSourceInstanceId: opts.rerunSourceInstanceId }
-				: {})
+				: {}),
+			// Persist the fork point so the lineage tree can label "fork @<node>".
+			...(opts.resumeFromNode ? { resumeFromNode: opts.resumeFromNode } : {})
 		})
 		.returning({ id: workflowExecutions.id });
 

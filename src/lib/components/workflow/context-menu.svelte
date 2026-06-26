@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
-	import { Trash2, Copy, Unplug, Settings, Replace } from '@lucide/svelte';
+	import { Trash2, Copy, Unplug, Settings, Replace, GitFork } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 
@@ -10,10 +10,23 @@
 		x: number;
 		y: number;
 		nodeId: string | null;
+		/** When a terminal run is overlaid on the canvas, its id — enables "Fork from
+		 *  here" (start a new run of the current spec from THIS node). Null disables it. */
+		forkableExecutionId?: string | null;
 		onClose: () => void;
 	}
 
-	let { x, y, nodeId, onClose }: Props = $props();
+	let { x, y, nodeId, forkableExecutionId = null, onClose }: Props = $props();
+
+	// Top-level node (forkable): not the synthetic entry/exit nodes.
+	const isForkableNode = $derived(!!nodeId && nodeId !== '__start__' && nodeId !== '__end__');
+
+	function forkFromHere() {
+		if (nodeId) {
+			window.dispatchEvent(new CustomEvent('workflow:fork-from-node', { detail: { nodeId } }));
+		}
+		onClose();
+	}
 
 	function deleteNode() {
 		if (nodeId) store.removeNode(nodeId);
@@ -81,6 +94,22 @@
 			>
 				<Replace size={14} />
 				Change action...
+			</Button>
+		{/if}
+		{#if isForkableNode}
+			<div class="my-1 h-px bg-border"></div>
+			<Button
+				variant="ghost"
+				size="sm"
+				onclick={forkFromHere}
+				disabled={!forkableExecutionId}
+				class="flex w-full items-center justify-start gap-2 rounded-sm px-2 py-1.5 text-popover-foreground"
+				title={forkableExecutionId
+					? 'Start a new run of the current workflow from this node, reusing the selected run’s workspace'
+					: 'Select a finished run (Runs panel) to fork from'}
+			>
+				<GitFork size={14} />
+				Fork from here
 			</Button>
 		{/if}
 		<Button

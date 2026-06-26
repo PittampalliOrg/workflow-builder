@@ -57,6 +57,8 @@
 	import StepPalette from './step-palette.svelte';
 	import DropTarget from './drop-target.svelte';
 	import ContextMenu from './context-menu.svelte';
+	import ForkDialog from './execution/fork-dialog.svelte';
+	import { forkRun, bareNodeName } from '$lib/workflows/fork';
 	import CommandPalette from './command-palette.svelte';
 	import ExecutionDemo from './execution-demo.svelte';
 	import ExecutionTracker from './execution-tracker.svelte';
@@ -271,14 +273,101 @@
 		openReplaceAction(detail.nodeId);
 	}
 
+	// ── Fork from a canvas node ──────────────────────────────────────────────
+	// "Runs are branches; the canvas is the branch point." When a TERMINAL run is
+	// overlaid, right-click a node → Fork from here: save any spec edits, then start a
+	// fresh run of the current spec from that node (reusing the run's workspace) and
+	// overlay the new fork live. fromNode + later re-run; the prefix is skipped.
+	const overlaidStatus = $derived(
+		(executionState.snapshot?.status ?? '').toLowerCase()
+	);
+	const isOverlaidRunTerminal = $derived(
+		['success', 'completed', 'error', 'failed', 'cancelled', 'canceled'].includes(overlaidStatus)
+	);
+	const forkableExecutionId = $derived(
+		isOverlaidRunTerminal ? activeExecutionId : null
+	);
+	// Top-level node names in canvas order (bare names — the resume API keys on these).
+	const forkNodeNames = $derived(
+		store.nodes
+			.map((n) => n.id)
+			.filter((id) => id && id !== '__start__' && id !== '__end__')
+			.map((id) => bareNodeName(id) ?? id)
+			.filter((name, i, arr): name is string => !!name && arr.indexOf(name) === i)
+	);
+	let forkDialogOpen = $state(false);
+	let forkNode = $state<string | null>(null);
+	let forkBusy = $state(false);
+	let forkError = $state<string | null>(null);
+	const forkSplit = $derived.by(() => {
+		const idx = forkNode ? forkNodeNames.indexOf(forkNode) : -1;
+		if (idx < 0) return { skipped: [] as string[], rerun: forkNodeNames };
+		return { skipped: forkNodeNames.slice(0, idx), rerun: forkNodeNames.slice(idx) };
+	});
+
+	function handleForkFromNode(event: Event) {
+		const detail = (event as CustomEvent).detail as { nodeId: string };
+		if (!forkableExecutionId) {
+			toast.error('Select a finished run in the Runs panel to fork from.');
+			return;
+		}
+		forkNode = bareNodeName(detail.nodeId) ?? null;
+		forkError = null;
+		forkDialogOpen = true;
+	}
+
+	async function confirmFork() {
+		const source = forkableExecutionId;
+		if (forkBusy || !source) return;
+		forkBusy = true;
+		forkError = null;
+		try {
+			// Fork runs the CURRENT SAVED spec → persist edits first so they take effect.
+			if (store.isDirty && store.workflowId) {
+				store.isSaving = true;
+				try {
+					const saveRes = await fetch(`/api/workflows/${store.workflowId}`, {
+						method: 'PUT',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							name: store.workflowName,
+							nodes: store.nodes,
+							edges: store.edges,
+							spec: store.spec
+						})
+					});
+					if (!saveRes.ok) {
+						forkError = `Couldn't save edits before forking (HTTP ${saveRes.status})`;
+						return;
+					}
+					store.isDirty = false;
+				} finally {
+					store.isSaving = false;
+				}
+			}
+			const r = await forkRun(source, forkNode);
+			if (!r.ok || !r.executionId) {
+				forkError = r.error ?? 'Fork failed';
+				return;
+			}
+			forkDialogOpen = false;
+			store.selectedExecutionId = r.executionId;
+			toast.success(`Forked from “${forkNode ?? 'start'}” — overlaying the new run.`);
+		} finally {
+			forkBusy = false;
+		}
+	}
+
 	onMount(() => {
 		window.addEventListener('workflow:insert-on-edge', handleInsertOnEdge);
 		window.addEventListener('workflow:command-palette', handleOpenCommandPalette);
 		window.addEventListener('workflow:replace-action', handleReplaceAction);
+		window.addEventListener('workflow:fork-from-node', handleForkFromNode);
 		return () => {
 			window.removeEventListener('workflow:insert-on-edge', handleInsertOnEdge);
 			window.removeEventListener('workflow:command-palette', handleOpenCommandPalette);
 			window.removeEventListener('workflow:replace-action', handleReplaceAction);
+			window.removeEventListener('workflow:fork-from-node', handleForkFromNode);
 		};
 	});
 
@@ -478,9 +567,21 @@
 		x={contextMenu.x}
 		y={contextMenu.y}
 		nodeId={contextMenu.nodeId}
+		{forkableExecutionId}
 		onClose={() => (contextMenu = null)}
 	/>
 {/if}
+
+<ForkDialog
+	bind:open={forkDialogOpen}
+	verb="Fork"
+	effectiveNode={forkNode}
+	skipped={forkSplit.skipped}
+	rerun={forkSplit.rerun}
+	busy={forkBusy}
+	error={forkError}
+	onConfirm={confirmFork}
+/>
 
 {#if edgeContextMenu}
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
