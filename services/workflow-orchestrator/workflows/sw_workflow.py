@@ -1107,6 +1107,9 @@ _NON_AP_SLUG_PREFIXES: set[str] = {
     # goal/plan — deterministic goal-authoring activity; function-router proxies
     # it to the BFF planGoal endpoint (NOT an AP piece; no AP durability contract).
     "goal",
+    # dev/preview (+ dev/preview-teardown) — per-run ephemeral dev-server Sandbox;
+    # function-router proxies to the BFF dev-preview endpoint (NOT an AP piece).
+    "dev",
 }
 
 # Retry policy for AP piece activities (docs/activepieces-integration-architecture.md

@@ -243,6 +243,25 @@ class ExecutionClassConfig(BaseModel):
     # never collides with "destination not empty". Default [] = no overlay.
     localScratchMounts: list[str] = Field(default_factory=list)
 
+    # ----- Non-agent "service" sandbox (per-run dev-server preview) -----
+    # When isService is True, a Sandbox of this class runs a PLAIN long-running
+    # container (e.g. `vite dev`) instead of the dapr-agent-py agent host: no
+    # daprd sidecar, no app-id, no OpenShell seed, no DB/secrets envFrom. Used
+    # by the dev-preview class so a workflow run can stand up its OWN throwaway
+    # dev server (devspace's image-replace model, realized cluster-natively) that
+    # the agent edits + /__sync-pushes to and the Playwright critic inspects at
+    # the pod IP. The privileged controller provisions it; the agent needs no
+    # kube creds.
+    isService: bool = False
+    serviceImage: str | None = None
+    serviceCommand: list[str] | None = None
+    serviceArgs: list[str] | None = None
+    servicePort: int = 3000
+    serviceCpu: str = "500m"
+    serviceMemory: str = "1Gi"
+    serviceEphemeralStorage: str = "2Gi"
+    serviceEnv: dict[str, str] = Field(default_factory=dict)
+
 
 class AgentWorkflowHostRequest(BaseModel):
     sessionId: str
@@ -274,6 +293,30 @@ class AgentWorkflowHostRequest(BaseModel):
     # When set, a read-only PV/PVC of that subPath is mounted and an init container
     # copies it into the (fresh) shared workspace once, if the shared workspace is empty.
     seedWorkspaceFrom: str | None = None
+
+
+class DevPreviewRequest(BaseModel):
+    """Provision a per-run ephemeral dev-server Sandbox (vite dev) for a workflow.
+
+    Keyed on the workflow executionId so each run gets its OWN throwaway preview
+    pod, torn down on run end. The agent (unprivileged) edits its workspace and
+    POSTs source to the returned pod's /__sync endpoint; the Playwright critic
+    inspects the same pod IP. No kube creds reach the agent — this privileged
+    controller does the provisioning.
+    """
+
+    executionId: str
+    executionClass: str = Field(default="dev-preview")
+    image: str | None = None
+    port: int = Field(default=3000, ge=1, le=65535)
+    # Shared-secret echoed into WFB_DEV_SYNC_TOKEN so /__sync requires it.
+    syncToken: str | None = None
+    # Sandbox self-deletes after this many seconds (shutdownPolicy: Delete) as a
+    # backstop if the workflow never tears it down.
+    timeoutSeconds: int | None = Field(default=3600, ge=60, le=86400)
+    waitReadySeconds: int = Field(default=150, ge=0, le=600)
+    # Extra env merged onto the dev container (e.g. feature flags).
+    env: dict[str, str] | None = None
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:
@@ -2252,6 +2295,205 @@ def submit_execution(request: Request, body: ExecutionRequest) -> dict[str, Any]
     return response
 
 
+DEFAULT_DEV_PREVIEW_IMAGE = os.environ.get(
+    "DEV_PREVIEW_DEFAULT_IMAGE",
+    "ghcr.io/pittampalliorg/workflow-builder-dev:latest",
+)
+
+
+def _dev_preview_sandbox_name(execution_id: str) -> str:
+    return _safe_resource_name(f"wfb-dev-preview-{execution_id}", max_length=63)
+
+
+def _dev_preview_shutdown_time(timeout_seconds: int | None) -> str | None:
+    if timeout_seconds is None:
+        return None
+    shutdown_after = timeout_seconds + _agent_host_shutdown_buffer_seconds()
+    return (
+        (datetime.now(UTC) + timedelta(seconds=shutdown_after))
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def build_dev_preview_sandbox_manifest(
+    request: DevPreviewRequest,
+    *,
+    namespace: str,
+    class_config: ExecutionClassConfig,
+) -> dict[str, Any]:
+    """A PLAIN single-container `vite dev` Sandbox (no daprd/app-id/OpenShell).
+
+    The Playwright critic and the agent's /__sync push reach this pod directly at
+    its pod IP:port; no Dapr service invocation, no DB, no secrets.
+    """
+    exec_label = _safe_name(request.executionId, max_length=63)
+    image = request.image or class_config.serviceImage or DEFAULT_DEV_PREVIEW_IMAGE
+    port = class_config.servicePort or request.port or 3000
+    env: list[dict[str, str]] = [
+        {"name": "WFB_DEV_SYNC_ENABLED", "value": "true"},
+        {"name": "WORKFLOW_BUILDER_SKIP_STARTUP_MIGRATIONS", "value": "true"},
+        {"name": "NODE_ENV", "value": "development"},
+    ]
+    if request.syncToken:
+        env.append({"name": "WFB_DEV_SYNC_TOKEN", "value": request.syncToken})
+    merged_env: dict[str, str] = {}
+    for key, value in {**class_config.serviceEnv, **(request.env or {})}.items():
+        if key and value is not None:
+            merged_env[key] = value
+    overridden = {entry["name"] for entry in env}
+    env.extend(
+        {"name": key, "value": value}
+        for key, value in sorted(merged_env.items())
+        if key not in overridden
+    )
+    container: dict[str, Any] = {
+        "name": "dev",
+        "image": image,
+        "imagePullPolicy": _image_pull_policy_for_agent_host(image),
+        "ports": [{"name": "http", "containerPort": port}],
+        "env": env,
+        "resources": {
+            "requests": {
+                "cpu": class_config.serviceCpu,
+                "memory": class_config.serviceMemory,
+                "ephemeral-storage": class_config.serviceEphemeralStorage,
+            },
+            "limits": {
+                "memory": class_config.serviceMemory,
+                "ephemeral-storage": class_config.serviceEphemeralStorage,
+            },
+        },
+        "startupProbe": {
+            "httpGet": {"path": "/", "port": port},
+            "initialDelaySeconds": 5,
+            "periodSeconds": 3,
+            "failureThreshold": 60,
+        },
+        "readinessProbe": {
+            "httpGet": {"path": "/", "port": port},
+            "periodSeconds": 5,
+        },
+    }
+    if class_config.serviceCommand:
+        container["command"] = list(class_config.serviceCommand)
+    if class_config.serviceArgs:
+        container["args"] = list(class_config.serviceArgs)
+    pod_spec: dict[str, Any] = {
+        "restartPolicy": "Never",
+        "serviceAccountName": class_config.serviceAccountName,
+        "terminationGracePeriodSeconds": 30,
+        "containers": [container],
+        "securityContext": dict(class_config.podSecurityContext)
+        if class_config.podSecurityContext is not None
+        else {"runAsUser": 0},
+    }
+    if class_config.nodeSelector:
+        pod_spec["nodeSelector"] = class_config.nodeSelector
+    if class_config.imagePullSecrets:
+        pod_spec["imagePullSecrets"] = [
+            {"name": name} for name in class_config.imagePullSecrets if name
+        ]
+    if class_config.priorityClassName:
+        pod_spec["priorityClassName"] = _safe_name(class_config.priorityClassName)
+    if request.timeoutSeconds is not None:
+        pod_spec["activeDeadlineSeconds"] = request.timeoutSeconds + 600
+    pod_labels = {
+        "app": "wfb-dev-preview",
+        KUEUE_QUEUE_LABEL: class_config.localQueue,
+        "workflow-execution-id": exec_label,
+    }
+    sandbox_spec: dict[str, Any] = {
+        "replicas": 1,
+        "podTemplate": {
+            "metadata": {"labels": pod_labels},
+            "spec": pod_spec,
+        },
+    }
+    shutdown_time = _dev_preview_shutdown_time(request.timeoutSeconds)
+    if shutdown_time:
+        sandbox_spec["shutdownPolicy"] = "Delete"
+        sandbox_spec["shutdownTime"] = shutdown_time
+    return {
+        "apiVersion": "agents.x-k8s.io/v1alpha1",
+        "kind": "Sandbox",
+        "metadata": {
+            "name": _dev_preview_sandbox_name(request.executionId),
+            "namespace": namespace,
+            "labels": {
+                "app": "wfb-dev-preview",
+                "workflow-execution-id": exec_label,
+                "sandbox-execution-class": _safe_name(request.executionClass),
+            },
+        },
+        "spec": sandbox_spec,
+    }
+
+
+def _wait_for_dev_preview_ready(
+    core: Any,
+    *,
+    namespace: str,
+    execution_id: str,
+    wait_seconds: int,
+    failure_probe: Any | None = None,
+) -> tuple[str, str | None]:
+    """Poll the dev-preview pod until Ready; return ``(status, podIP|None)``."""
+    selector = (
+        f"app=wfb-dev-preview,workflow-execution-id="
+        f"{_safe_name(execution_id, max_length=63)}"
+    )
+
+    def _pod_ip() -> str | None:
+        try:
+            pods = core.list_namespaced_pod(
+                namespace=namespace, label_selector=selector
+            ).items
+        except Exception:
+            return None
+        for pod in pods:
+            ip = getattr(getattr(pod, "status", None), "pod_ip", None)
+            if ip:
+                return ip
+        return None
+
+    if wait_seconds <= 0:
+        return "queued", _pod_ip()
+    deadline = time.monotonic() + wait_seconds
+    last_failure: str | None = None
+    while time.monotonic() < deadline:
+        if failure_probe is not None:
+            failed = failure_probe()
+            if failed:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"dev-preview {execution_id} failed before readiness: {failed}",
+                )
+        pods = core.list_namespaced_pod(
+            namespace=namespace, label_selector=selector
+        ).items
+        for pod in pods:
+            failure = _pod_failure_reason(pod)
+            if failure:
+                last_failure = failure
+                if getattr(getattr(pod, "status", None), "phase", None) == "Failed":
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=f"dev-preview {execution_id} failed before readiness: {failure}",
+                    )
+                continue
+            if _pod_is_ready(pod):
+                return "ready", getattr(getattr(pod, "status", None), "pod_ip", None)
+        time.sleep(1)
+    if last_failure:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"dev-preview {execution_id} not ready: {last_failure}",
+        )
+    return "queued", _pod_ip()
+
+
 @app.post("/api/v1/agent-workflow-hosts", status_code=status.HTTP_202_ACCEPTED)
 def submit_agent_workflow_host(
     request: Request,
@@ -2439,6 +2681,85 @@ def submit_agent_workflow_host(
     }
     set_current_span_io("output", response)
     return response
+
+
+@app.post("/internal/dev-preview", status_code=status.HTTP_202_ACCEPTED)
+def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str, Any]:
+    _require_internal(request)
+    set_current_span_io("input", body.model_dump())
+    classes = _load_execution_classes()
+    class_config = classes.get(body.executionClass)
+    if class_config is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"unsupported executionClass {body.executionClass}",
+        )
+    namespace = _agent_workflow_host_namespace()
+    manifest = build_dev_preview_sandbox_manifest(
+        body, namespace=namespace, class_config=class_config
+    )
+    sandbox_name = manifest["metadata"]["name"]
+    pod_ip: str | None = None
+    readiness_status = "queued"
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        _, core = _load_k8s_clients()
+        custom = _load_k8s_custom_objects_client()
+        try:
+            custom.create_namespaced_custom_object(
+                group="agents.x-k8s.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="sandboxes",
+                body=manifest,
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) != 409:
+                raise
+            # Deterministic per-execution name already exists → idempotent adopt
+            # (same run re-requesting its own preview).
+            logger.info("dev-preview CR %s already exists; adopting", sandbox_name)
+        readiness_status, pod_ip = _wait_for_dev_preview_ready(
+            core,
+            namespace=namespace,
+            execution_id=body.executionId,
+            wait_seconds=body.waitReadySeconds,
+            failure_probe=lambda: _sandbox_failure_reason(
+                custom, namespace=namespace, sandbox_name=sandbox_name
+            ),
+        )
+    port = class_config.servicePort or body.port or 3000
+    url = f"http://{pod_ip}:{port}" if pod_ip else None
+    response = {
+        "sandboxName": sandbox_name,
+        "executionId": body.executionId,
+        "status": readiness_status,
+        "ready": readiness_status == "ready",
+        "podIP": pod_ip,
+        "port": port,
+        "url": url,
+        "executionClass": body.executionClass,
+    }
+    set_current_span_io("output", response)
+    return response
+
+
+@app.delete("/internal/dev-preview/{name}")
+def teardown_dev_preview(request: Request, name: str) -> dict[str, Any]:
+    _require_internal(request)
+    namespace = _agent_workflow_host_namespace()
+    safe_name = _safe_resource_name(name, max_length=63)
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        custom = _load_k8s_custom_objects_client()
+        _delete_agent_host_cr_and_wait(custom, namespace, safe_name)
+    return {"sandboxName": safe_name, "deleted": True}
 
 
 class PurgeWorkspaceDataRequest(BaseModel):

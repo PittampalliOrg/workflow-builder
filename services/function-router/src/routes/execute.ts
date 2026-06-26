@@ -626,6 +626,93 @@ async function executeGoalPlan(
   }
 }
 
+/**
+ * dev/preview (ensure) + dev/preview-teardown — per-run ephemeral dev-server
+ * Sandbox. The BFF owns the privileged sandbox-execution-api call (the agent
+ * needs no kube creds), so the router just proxies to its internal endpoint
+ * keyed on the workflow executionId. `dev/preview` returns the dev pod's
+ * in-cluster `url` (consumed downstream as `${ .provision_preview.data.url }`).
+ */
+async function executeDevPreview(
+  input: Record<string, unknown>,
+  mode: "ensure" | "teardown",
+): Promise<ExecuteResponse> {
+  const started = Date.now();
+  const executionId =
+    typeof input.executionId === "string" ? input.executionId.trim() : "";
+  if (!executionId) {
+    return {
+      success: false,
+      data: {},
+      error: "dev/preview: missing required `executionId`.",
+      duration_ms: Date.now() - started,
+    } as ExecuteResponse;
+  }
+  const url = `${WORKFLOW_BUILDER_URL}/api/internal/workflows/executions/${encodeURIComponent(
+    executionId,
+  )}/dev-preview`;
+  try {
+    let res: Response;
+    if (mode === "teardown") {
+      const sandboxName =
+        typeof input.sandboxName === "string" ? input.sandboxName.trim() : "";
+      const qs = sandboxName
+        ? `?sandboxName=${encodeURIComponent(sandboxName)}`
+        : "";
+      res = await fetch(`${url}${qs}`, {
+        method: "DELETE",
+        headers: { "X-Internal-Token": INTERNAL_API_TOKEN },
+      });
+    } else {
+      const payload: Record<string, unknown> = {};
+      for (const key of [
+        "syncToken",
+        "timeoutSeconds",
+        "waitReadySeconds",
+        "image",
+        "executionClass",
+      ]) {
+        if (input[key] !== undefined && input[key] !== null)
+          payload[key] = input[key];
+      }
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Internal-Token": INTERNAL_API_TOKEN,
+        },
+        body: JSON.stringify(payload),
+      });
+    }
+    const text = await res.text();
+    const parsed = parseJsonResponse(text);
+    if (!res.ok) {
+      const message =
+        isPlainObject(parsed) && typeof parsed.error === "string"
+          ? parsed.error
+          : `dev/preview ${mode} failed (${res.status})`;
+      return {
+        success: false,
+        data: {},
+        error: message,
+        duration_ms: Date.now() - started,
+      } as ExecuteResponse;
+    }
+    return {
+      success: true,
+      data: isPlainObject(parsed) ? parsed : {},
+      duration_ms: Date.now() - started,
+    } as ExecuteResponse;
+  } catch (err) {
+    return {
+      success: false,
+      data: {},
+      error: err instanceof Error ? err.message : String(err),
+      duration_ms: Date.now() - started,
+    } as ExecuteResponse;
+  }
+}
+
 function firstStringField(
   record: Record<string, unknown>,
   keys: string[],
@@ -1310,6 +1397,19 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
         body.input as Record<string, unknown>,
       );
       return reply.status(planResponse.success ? 200 : 502).send(planResponse);
+    }
+
+    // dev/preview (+ dev/preview-teardown) proxy to the BFF per-run dev-server
+    // Sandbox endpoint (not a Knative service / registry entry).
+    if (
+      functionSlug === "dev/preview" ||
+      functionSlug === "dev/preview-teardown"
+    ) {
+      const devResponse = await executeDevPreview(
+        body.input as Record<string, unknown>,
+        functionSlug === "dev/preview-teardown" ? "teardown" : "ensure",
+      );
+      return reply.status(devResponse.success ? 200 : 502).send(devResponse);
     }
 
     console.log(
