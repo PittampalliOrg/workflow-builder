@@ -1,0 +1,171 @@
+{
+  "document": {
+    "dsl": "1.0.0",
+    "namespace": "workflow-builder",
+    "name": "workflow-builder-self-edit-livesync",
+    "version": "0.1.0",
+    "title": "Self-edit live-sync: edit workflow-builder UI \u2192 live on the dev preview in seconds",
+    "summary": "Clone workflow-builder, make a visible UI edit on the sign-in page, push src to the workflow-builder-dev (vite HMR) pod via Dapr service invocation (/__sync), and verify the change is live on the preview \u2014 skaffold-style live-sync from a workflow, no kubectl/RBAC. P1 of the self-update loop (docs/agentic-deploy-inspect-loop.md).",
+    "x-workflow-builder": {
+      "resumable": true
+    }
+  },
+  "input": {
+    "schema": {
+      "format": "json",
+      "document": {
+        "type": "object",
+        "properties": {
+          "repoUrl": {
+            "type": "string",
+            "title": "Repo (owner/repo)",
+            "default": "PittampalliOrg/workflow-builder"
+          },
+          "repoRef": {
+            "type": "string",
+            "title": "Branch/ref (blank=default)",
+            "default": ""
+          },
+          "marker": {
+            "type": "string",
+            "title": "Visible marker string",
+            "default": "WFB live-sync OK",
+            "description": "Replaces the 'Workflow Builder' wordmark on the sign-in page; verified live."
+          },
+          "devAppId": {
+            "type": "string",
+            "title": "Dev pod Dapr app-id",
+            "default": "workflow-builder-dev"
+          },
+          "devServiceUrl": {
+            "type": "string",
+            "title": "Dev preview in-cluster URL",
+            "default": "http://workflow-builder-dev.workflow-builder.svc.cluster.local:3000"
+          },
+          "syncToken": {
+            "type": "string",
+            "title": "Sync shared secret (blank=none)",
+            "default": ""
+          },
+          "uiVerify": {
+            "type": "string",
+            "title": "Run the Playwright UI verifier",
+            "default": "true"
+          },
+          "criticAgent": {
+            "type": "string",
+            "title": "Critic agent",
+            "default": "cli-playwright-critic-agent"
+          }
+        }
+      }
+    }
+  },
+  "output": {
+    "as": "${ .summary }"
+  },
+  "do": [
+    {
+      "clone_repo": {
+        "call": "workspace/command",
+        "with": {
+          "cliWorkspace": true,
+          "command": "${ \"export REPOURL=\" + ((.trigger.repoUrl // \"PittampalliOrg/workflow-builder\") | @sh) + \"; export REPOREF=\" + ((.trigger.repoRef // \"\") | @sh) + \";\" + \"\\nset -e\\ncd /sandbox/work\\nrm -rf repo\\nBF=\\\"\\\"; [ -n \\\"$REPOREF\\\" ] && BF=\\\"--branch $REPOREF\\\"\\ngit clone --depth 1 --single-branch $BF https://x-access-token:${GITHUB_TOKEN}@github.com/$REPOURL.git repo\\ncd /sandbox/work/repo\\ngit config user.email agent@workflow-builder.local\\ngit config user.name \\\"workflow-builder agent\\\"\\necho CLONED $(git rev-parse HEAD) on $(git rev-parse --abbrev-ref HEAD)\" }",
+          "cwd": "/sandbox/work",
+          "timeoutMs": 600000,
+          "allowFailure": false
+        }
+      }
+    },
+    {
+      "edit": {
+        "call": "workspace/command",
+        "with": {
+          "cliWorkspace": true,
+          "command": "${ \"export MARKER=\" + ((.trigger.marker // \"WFB live-sync OK\") | @sh) + \";\" + \"\\nset -e\\ncd /sandbox/work/repo\\nF=src/routes/auth/sign-in/+page.svelte\\nsed -i \\\"s|>Workflow Builder<|>$MARKER<|\\\" \\\"$F\\\"\\ngrep -qF \\\"$MARKER\\\" \\\"$F\\\" || { echo EDIT_FAILED; exit 1; }\\necho EDITED \\\"$F\\\"; grep -n \\\"$MARKER\\\" \\\"$F\\\"\" }",
+          "cwd": "/sandbox/work/repo",
+          "timeoutMs": 60000,
+          "allowFailure": false
+        }
+      }
+    },
+    {
+      "sync": {
+        "call": "workspace/command",
+        "with": {
+          "cliWorkspace": true,
+          "command": "${ \"export DEVAPPID=\" + ((.trigger.devAppId // \"workflow-builder-dev\") | @sh) + \"; export SYNCTOKEN=\" + ((.trigger.syncToken // \"\") | @sh) + \";\" + \"\\nset -e\\ncd /sandbox/work/repo\\ntar -czf /tmp/src.tgz src\\nTOKHDR=\\\"\\\"; [ -n \\\"$SYNCTOKEN\\\" ] && TOKHDR=\\\"-H x-sync-token:$SYNCTOKEN\\\"\\nHTTP=$(curl -sS -o /tmp/sync.out -w \\\"%{http_code}\\\" -X POST --data-binary @/tmp/src.tgz -H \\\"content-type: application/gzip\\\" $TOKHDR \\\"http://localhost:3500/v1.0/invoke/$DEVAPPID/method/__sync\\\")\\necho \\\"SYNC_HTTP=$HTTP\\\"; cat /tmp/sync.out 2>/dev/null; echo\\n[ \\\"$HTTP\\\" = 200 ] || { echo SYNC_FAILED; exit 1; }\\necho SYNCED\" }",
+          "cwd": "/sandbox/work/repo",
+          "timeoutMs": 120000,
+          "allowFailure": false
+        }
+      }
+    },
+    {
+      "verify_http": {
+        "call": "workspace/command",
+        "with": {
+          "cliWorkspace": true,
+          "command": "${ \"export MARKER=\" + ((.trigger.marker // \"WFB live-sync OK\") | @sh) + \"; export DEVURL=\" + ((.trigger.devServiceUrl // \"http://workflow-builder-dev.workflow-builder.svc.cluster.local:3000\") | @sh) + \";\" + \"\\nset -e\\nfor i in $(seq 1 40); do\\n  if curl -sf \\\"$DEVURL/auth/sign-in\\\" | grep -qF \\\"$MARKER\\\"; then echo \\\"LIVE_OK after ${i}s\\\"; exit 0; fi\\n  sleep 1\\ndone\\necho NOT_LIVE; curl -s \\\"$DEVURL/auth/sign-in\\\" 2>/dev/null | head -c 800; exit 1\" }",
+          "cwd": "/sandbox/work",
+          "timeoutMs": 90000,
+          "allowFailure": false
+        },
+        "artifacts": [
+          {
+            "from": "${ (.data.result.stdout // .data.stdout // \"\") }",
+            "kind": "text",
+            "slot": "secondary",
+            "title": "Live-sync verification (HTTP)"
+          }
+        ]
+      }
+    },
+    {
+      "verify_ui": {
+        "call": "durable/run",
+        "with": {
+          "cwd": "/sandbox/work",
+          "mode": "execute_direct",
+          "workspaceRef": "${ .runtime.workspaceExecutionId }",
+          "agentRef": {
+            "slug": "${ .trigger.criticAgent // \"cli-playwright-critic-agent\" }"
+          },
+          "agentConfig": {
+            "name": "Live-sync UI verifier",
+            "instructions": "You are a UI verifier. The workflow-builder-dev preview is served at the URL given in the prompt. Using the Playwright MCP browser tools (server 'playwright'): browser_navigate to <devUrl>/auth/sign-in , browser_snapshot, and browser_take_screenshot (filename 'critic-shot.png' -> /sandbox/work/critic-shot.png). Confirm whether the page VISIBLY shows the exact marker text given in the prompt (it replaced the 'Workflow Builder' wordmark on the sign-in page). Then WRITE /sandbox/work/verdict-final.json as STRICT JSON: {\"markerPresent\": <bool>, \"markerText\": \"<the marker>\", \"evidence\": \"what you saw\"}. End with a one-line summary."
+          },
+          "body": {
+            "prompt": "${ \"Verify the live-sync change is rendered. Preview URL: \" + (.trigger.devServiceUrl // \"http://workflow-builder-dev.workflow-builder.svc.cluster.local:3000\") + \" . The sign-in page should now show the marker text: \" + (.trigger.marker // \"WFB live-sync OK\") + \" . Navigate, screenshot, and write the verdict per your instructions.\" }",
+            "overrides": {
+              "cwd": "/sandbox/work",
+              "maxTurns": 15,
+              "timeoutMinutes": 15
+            }
+          }
+        },
+        "if": "${ (.trigger.uiVerify // \"true\") == \"true\" }",
+        "artifacts": [
+          {
+            "fileId": "${ .data.fileId }",
+            "if": "${ (.data.fileId // \"\") != \"\" }",
+            "kind": "image",
+            "slot": "primary",
+            "title": "Preview sign-in page (Playwright)",
+            "contentType": "image/png"
+          }
+        ]
+      }
+    },
+    {
+      "summary": {
+        "set": {
+          "marker": "${ .trigger.marker // \"WFB live-sync OK\" }",
+          "previewUrl": "${ .trigger.devServiceUrl // \"http://workflow-builder-dev.workflow-builder.svc.cluster.local:3000\" }",
+          "liveSync": "${ ((.verify_http.data.result.stdout // .verify_http.data.stdout // \"\") | test(\"LIVE_OK\")) }",
+          "terminalState": "${ if ((.verify_http.data.result.stdout // .verify_http.data.stdout // \"\") | test(\"LIVE_OK\")) then \"live\" else \"not_live\" end }"
+        }
+      }
+    }
+  ]
+}
