@@ -3943,6 +3943,23 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 resume_from_node,
                 getattr(tc, "workspace_execution_id", execution_id),
             )
+            # Hermetic fork: seed this fork's fresh workspace from the source run's
+            # subPath BEFORE any resumed node runs — node-type-agnostic (covers
+            # non-agent suffix nodes that wouldn't get the agent-pod seed init). Blocks
+            # until the copy completes; raises if seeding fails (a fork must not run
+            # against an empty workspace).
+            seed_from = getattr(tc, "seed_workspace_from", None)
+            if seed_from:
+                yield ctx.call_activity(
+                    "seed_workspace",
+                    input=_freeze({
+                        "workspaceExecutionId": getattr(
+                            tc, "workspace_execution_id", execution_id
+                        ),
+                        "seedWorkspaceFrom": seed_from,
+                        "_otel": tc.otel_ctx,
+                    }),
+                )
 
         while task_index < total_tasks:
             task_name, task_data = tasks[task_index]
