@@ -44,6 +44,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from core.config import config
+from core.resume_event_resolver import (
+    ResumeEventResolutionError,
+    resolve_resume_event,
+)
 from workflows.sw_workflow import sw_workflow
 from workflows.sw_workflow import wfr
 from activities.metadata import get_activity_metadata
@@ -3540,61 +3544,18 @@ def rerun_workflow(instance_id: str, request: RerunWorkflowRequest = RerunWorkfl
         _raise_workflow_route_error("rerun_workflow", e)
 
 
-def _node_start_events(events: list[dict[str, Any]]) -> list[tuple[int, str]]:
-    """Ordered (eventId, nodeId) for every top-level node start in a run history.
-
-    The SW interpreter schedules an `update_execution_node` activity at the start of
-    each top-level node, carrying the node id in its input. That TaskScheduled event
-    is the node's boundary: rerunning from its eventId re-executes the node (and all
-    later nodes) while everything before replays from cached history.
-    """
-    starts: list[tuple[int, str]] = []
-    for event in events:
-        if str(event.get("eventType") or "") != "TaskScheduled":
-            continue
-        if str(event.get("name") or "") != "update_execution_node":
-            continue
-        event_id = event.get("eventId")
-        if not isinstance(event_id, int):
-            continue
-        node_id = None
-        inp = event.get("input")
-        if isinstance(inp, dict):
-            node_id = inp.get("nodeId") or inp.get("node_id") or inp.get("node")
-        if isinstance(node_id, str) and node_id:
-            starts.append((event_id, node_id))
-    starts.sort(key=lambda item: item[0])
-    return starts
-
-
 def _resolve_resume_event(
     events: list[dict[str, Any]], from_node_id: str | None
 ) -> tuple[int, str]:
     """Map a node id (or auto-failed) to the history eventId to rerun from.
 
-    Returns (eventId, resolvedNodeId). Raises HTTPException(404) if the node never
-    started in this run, or HTTPException(409) if the run has no node-start events.
+    Thin wrapper over the pure `core.resume_event_resolver` (unit-tested standalone):
+    maps its `ResumeEventResolutionError` onto an HTTPException with the same status.
     """
-    starts = _node_start_events(events)
-    if not starts:
-        raise HTTPException(
-            status_code=409,
-            detail="Run has no resumable node boundaries in its history",
-        )
-    target = (from_node_id or "").strip()
-    if not target or target == "__failed__":
-        # The last node that started is the one in-flight when the run stopped.
-        event_id, node_id = starts[-1]
-        return event_id, node_id
-    # Earliest start for the requested node (a looped node only has one top-level start).
-    for event_id, node_id in starts:
-        if node_id == target:
-            return event_id, node_id
-    available = ", ".join(sorted({n for _, n in starts}))
-    raise HTTPException(
-        status_code=404,
-        detail=f"Node '{target}' did not start in this run (available: {available})",
-    )
+    try:
+        return resolve_resume_event(events, from_node_id)
+    except ResumeEventResolutionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @app.post("/api/v2/workflows/{instance_id}/resume")

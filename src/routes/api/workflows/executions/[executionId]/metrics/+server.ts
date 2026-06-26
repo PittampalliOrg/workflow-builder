@@ -1,7 +1,8 @@
 import { error, json } from '@sveltejs/kit';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
+import { workflowExecutions } from '$lib/server/db/schema';
 import { costFor, formatCurrency } from '$lib/server/pricing/model-pricing';
 
 /**
@@ -29,7 +30,27 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		cache_create: number;
 	};
 
-	// Aggregate from agent.llm_usage events of every session in this execution.
+	// Resume/fork: roll up this run AND its rerun ancestors (the inherited prefix's
+	// agent usage lives on the source run), mirroring the sessions endpoint's lineage
+	// walk — otherwise a fork's metrics read ~0 (its suffix is cheap).
+	const execIds: string[] = [params.executionId];
+	let cursor: string | null = params.executionId;
+	for (let hops = 0; hops < 20 && cursor; hops++) {
+		const rows: Array<{ parent: string | null }> = await db
+			.select({ parent: workflowExecutions.rerunOfExecutionId })
+			.from(workflowExecutions)
+			.where(eq(workflowExecutions.id, cursor))
+			.limit(1);
+		const parent: string | null = rows[0]?.parent ?? null;
+		if (parent && !execIds.includes(parent)) {
+			execIds.push(parent);
+			cursor = parent;
+		} else {
+			cursor = null;
+		}
+	}
+
+	// Aggregate from agent.llm_usage events of every session across the lineage.
 	// `input_tokens` is NET of cache reads (system invariant), matching costFor.
 	const rows = await db.execute<Row>(sql`
 		SELECT
@@ -40,7 +61,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 			coalesce(sum((se.data->>'cache_creation_input_tokens')::bigint), 0) AS cache_create
 		FROM session_events se
 		JOIN sessions s ON s.id = se.session_id
-		WHERE s.workflow_execution_id = ${params.executionId}
+		WHERE s.workflow_execution_id = ANY(${execIds})
 			AND se.type = 'agent.llm_usage'
 			${locals.session.projectId ? sql`AND s.project_id = ${locals.session.projectId}` : sql``}
 		GROUP BY coalesce(se.data->>'model', se.data->>'providerModel', 'unknown')
