@@ -1142,6 +1142,30 @@ def _ensure_cli_shared_workspace_volume(
     return name
 
 
+# JuiceFS exposes virtual control files (.accesslog / .config / .stats) in EVERY mount
+# and subPath, so a naive `ls -A` never sees a fresh fork subPath as empty (→ the seed
+# copy is wrongly skipped as "already-populated"). These helpers filter the magic files
+# both when deciding emptiness AND when copying (`cp -a /seed/.` chokes on the 0-byte
+# virtual files and would report failure even after a good data copy).
+_JFS_MAGIC_FILTER = r"grep -vxE '\.(accesslog|config|stats)'"
+
+
+def _seed_copy_cmd(empty_label: str) -> str:
+    """A busybox `sh -c` body: copy /seed → /work when /work has no REAL content.
+
+    `empty_label` is echoed when the dest already holds real data (copy skipped).
+    Echoes `seeded` / `copy-failed` otherwise. Idempotent (copy-if-empty)."""
+    return (
+        'r() { ls -A "$1" 2>/dev/null | ' + _JFS_MAGIC_FILTER + "; }; "
+        'if [ -z "$(r /work)" ]; then '
+        "find /seed -maxdepth 1 -mindepth 1 "
+        "! -name .accesslog ! -name .config ! -name .stats "
+        "-exec cp -a {} /work/ \\; 2>/dev/null; "
+        'if [ -n "$(r /work)" ]; then echo seeded; else echo copy-failed; fi; '
+        "else echo " + empty_label + "; fi; true"
+    )
+
+
 def _ensure_cli_seed_workspace_volume(
     core: Any,
     request: AgentWorkflowHostRequest,
@@ -1653,13 +1677,7 @@ def build_agent_workflow_host_sandbox_manifest(
             seed_init = {
                 "name": "seed-workspace",
                 "image": "busybox:1.36",
-                "command": [
-                    "sh",
-                    "-c",
-                    'if [ -z "$(ls -A /work 2>/dev/null)" ]; then '
-                    "cp -a /seed/. /work/ 2>/dev/null || true; echo seeded; "
-                    "else echo work-not-empty; fi; true",
-                ],
+                "command": ["sh", "-c", _seed_copy_cmd("work-not-empty")],
                 "volumeMounts": [
                     {"name": "cli-shared-workspace", "mountPath": "/work"},
                     {"name": "cli-seed-workspace", "mountPath": "/seed", "readOnly": True},
@@ -2630,11 +2648,7 @@ def seed_workspace_data(
     dname = f"wsseed-d-{sha256(dest.encode()).hexdigest()[:16]}"
     sname = f"wsseed-s-{sha256(src.encode()).hexdigest()[:16]}"
     job_name = f"wsseed-{sha256(dest.encode()).hexdigest()[:12]}-{uuid4().hex[:6]}"
-    seed_cmd = (
-        'if [ -z "$(ls -A /work 2>/dev/null)" ]; then '
-        "cp -a /seed/. /work/ 2>/dev/null && echo seeded || echo copy-failed; "
-        "else echo already-populated; fi; true"
-    )
+    seed_cmd = _seed_copy_cmd("already-populated")
     job_body = {
         "apiVersion": "batch/v1",
         "kind": "Job",
