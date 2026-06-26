@@ -74,11 +74,23 @@ source row + its lineage stay around as usual.)
 > **data** (Postgres-backed/Retain, pod-independent) — so it does not affect resumability. Follow-up: an
 > *abandoned-resumable-workspace* reaper to bound JuiceFS growth for resumable runs that are never resumed.
 
-## Surfaces
+## Surfaces (forks are first-class)
 
-- **UI:** run-detail page → on a failed/cancelled run, **"Resume from failed step"** (auto-locates the
-  in-flight node) + a **"Resume from: <node>"** dropdown of the run's top-level nodes. (To be extended to
-  successful runs for the iteration/fork use case.)
+- **Canvas (primary):** the workflow editor (`/workflows/[workflowId]`) is the branch point. Select a
+  terminal run in the **Runs panel** (overlays its per-node status) → edit the node you want to change →
+  right-click → **"Fork from here"** (also on the node toolbar). It saves the edited spec first (so the
+  fork runs it), forks, and overlays the new run live. Gated on a terminal run being selected
+  (`workflow-canvas.svelte` + `context-menu.svelte` + `node-toolbar-actions.svelte`; shared `forkRun()` in
+  `$lib/workflows/fork.ts` + `fork-dialog.svelte`).
+- **Fork lineage tree** (`run-lineage-tree.svelte`): collapsible git-log tree of the whole family
+  (ancestors + every fork, labeled `fork @<node>`), on the run-detail "Fork lineage" bar and the canvas
+  Runs panel; selecting a branch navigates (run page) or overlays (canvas).
+- **Run console node-step spine** (`run-console.svelte`): the rail is keyed by the run's NODES (from the
+  execution snapshot's `steps`) with agent sessions nested under their node — so a non-agent run, or a
+  non-agent-suffix fork (`publish_contract→pr→summary`), shows its real steps instead of a blank
+  "no sessions" panel. (Requires nodes to log: `workspace/*` nodes are now logged directly — see Gotchas.)
+- **Run-detail (legacy entry, still present):** **"Resume from failed step"** (auto-locates the in-flight
+  node) + a **"Resume from: <node>"** dropdown, now backed by the shared `fork-dialog`.
 - **BFF:** `POST /api/workflows/executions/[executionId]/resume` `{ fromNodeId? }` (owner/project-scoped;
   benchmark/eval instances 409 `coordinator_owned`). Calls `startWorkflowRun` to launch a **fresh execution
   of the current spec** with `resumeFromNode` + `workspaceExecutionId` (root run's id) + the rerun lineage
@@ -90,6 +102,15 @@ source row + its lineage stay around as usual.)
   resume path — it cannot apply edited specs; kept only for possible pure-retry use.)
 
 ## Constraints / gotchas
+
+- **Node visibility in the console depends on logging.** The run-console spine is built from
+  `workflow_execution_logs` (the snapshot `steps`). Agent (`durable/run`) nodes surface via **sessions**
+  (nested under their step); control-flow/`set`/`listen` nodes log directly; **`workspace/*` nodes** (clone,
+  publish_*, pr) now log directly too (`_call_task_uses_direct_node_logging` returns True for `workspace/*`
+  — they route to openshell-agent-runtime, which doesn't self-log; previously they were invisible). Other
+  `call` nodes (AP/system) are assumed to self-log via function-router. If a node type ever shows as
+  missing from the console/timeline, check whether its execution path writes a `workflow_execution_logs`
+  row.
 
 - **Edit only the resume node and later.** Prefix nodes are skipped and their prior workspace state is
   reused as-is, so edits to earlier nodes have no effect.
