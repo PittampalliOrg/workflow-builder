@@ -50,6 +50,7 @@
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import ForkDialog from '$lib/components/workflow/execution/fork-dialog.svelte';
 	import RunLineageTree from '$lib/components/workflow/execution/run-lineage-tree.svelte';
+	import ForkSpecDiff from '$lib/components/workflow/execution/fork-spec-diff.svelte';
 	import { forkRun } from '$lib/workflows/fork';
 	import OtherRunsPanel from '$lib/components/runs/other-runs-panel.svelte';
 	import WorkflowQuickSwitcher from '$lib/components/workflow/workflow-quick-switcher.svelte';
@@ -1159,6 +1160,8 @@
 	let resumeError = $state<string | null>(null);
 	// Fork-lineage tree (ancestors + every fork), revealed from the lineage bar.
 	let lineageOpen = $state(false);
+	// Per-branch spec diff (this fork vs its parent), revealed from the lineage bar.
+	let diffOpen = $state(false);
 	// Effective node being resumed from: explicit pick, else the in-flight (failed) node.
 	const resumeEffectiveNode = $derived(
 		resumeDialogNode ?? snapshot?.currentNodeId ?? resumableNodeIds[0] ?? null
@@ -2342,6 +2345,15 @@
 						View source run <ChevronRight class="size-3" />
 					</a>
 				{/if}
+				{#if forkedFromExecutionId}
+					<button
+						class="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-0.5 font-medium text-foreground hover:bg-accent"
+						onclick={() => (diffOpen = !diffOpen)}
+					>
+						Diff vs parent
+						<ChevronDown class="size-3 transition-transform {diffOpen ? 'rotate-180' : ''}" />
+					</button>
+				{/if}
 				<button
 					class="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-0.5 font-medium text-foreground hover:bg-accent"
 					onclick={() => (lineageOpen = !lineageOpen)}
@@ -2350,6 +2362,11 @@
 					<ChevronDown class="size-3 transition-transform {lineageOpen ? 'rotate-180' : ''}" />
 				</button>
 			</div>
+			{#if diffOpen}
+				<div class="max-h-96 overflow-y-auto border-t border-border bg-background">
+					<ForkSpecDiff {executionId} />
+				</div>
+			{/if}
 			{#if lineageOpen}
 				<div class="max-h-72 overflow-y-auto border-t border-border bg-background">
 					<RunLineageTree {executionId} {slug} {workflowId} onFork={() => openResume()} />

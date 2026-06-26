@@ -8,6 +8,7 @@
 		ChartSpline,
 		ChevronDown,
 		ExternalLink,
+		GitFork,
 		ListChecks,
 		Loader2,
 		OctagonX,
@@ -763,6 +764,14 @@
 								{/if}
 								{#if item.model}
 									<span class="hidden shrink-0 truncate text-[10px] text-muted-foreground/80 xl:inline" title={item.model}>{item.model}</span>
+								{/if}
+								{#if item.kind === 'workflowRun' && item.forkedFromNode}
+									<span
+										class="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground"
+										title="Forked from “{item.forkedFromNode}”"
+									>
+										<GitFork class="size-2.5" />@{item.forkedFromNode}
+									</span>
 								{/if}
 							</div>
 							{#if item.kind === 'workflowRun' && (item.currentNodeName || item.progress != null)}

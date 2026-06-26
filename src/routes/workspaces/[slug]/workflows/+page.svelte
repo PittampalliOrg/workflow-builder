@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { PageData } from "./$types";
 	import { page } from "$app/state";
-	import { Workflow, Search } from "@lucide/svelte";
+	import { Workflow, Search, GitFork } from "@lucide/svelte";
 
 	let { data }: { data: PageData } = $props();
 	const slug = $derived(page.params.slug as string);
@@ -130,8 +130,16 @@
 									{/if}
 									{wf.name || wf.id}
 								</a>
-								<div class="text-xs text-muted-foreground mt-0.5 font-mono">
-									{wf.id}
+								<div class="text-xs text-muted-foreground mt-0.5 flex items-center gap-2">
+									<span class="font-mono">{wf.id}</span>
+									{#if wf.forkCount > 0}
+										<span
+											class="inline-flex items-center gap-0.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+											title="{wf.forkCount} fork/resume run{wf.forkCount === 1 ? '' : 's'}"
+										>
+											<GitFork class="size-2.5" />{wf.forkCount}
+										</span>
+									{/if}
 								</div>
 							</td>
 							<td class="px-4 py-3 text-xs text-muted-foreground" title={wf.lastActivityAt}>

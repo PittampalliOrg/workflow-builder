@@ -63,6 +63,8 @@ type WorkflowDetail = {
 	workflowName: string;
 	currentNodeName: string | null;
 	progress: number | null;
+	rerunOfExecutionId: string | null;
+	resumeFromNode: string | null;
 };
 
 type BenchmarkRunDetail = {
@@ -336,7 +338,9 @@ async function selectWorkflowExecutions(projectId: string, ids: string[]): Promi
 			workflowId: workflows.id,
 			workflowName: workflows.name,
 			currentNodeName: workflowExecutions.currentNodeName,
-			progress: workflowExecutions.progress
+			progress: workflowExecutions.progress,
+			rerunOfExecutionId: workflowExecutions.rerunOfExecutionId,
+			resumeFromNode: workflowExecutions.resumeFromNode
 		})
 		.from(workflowExecutions)
 		.innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
@@ -552,6 +556,9 @@ function applyWorkflowDetail(item: CapacityBusinessWorkItem, row: WorkflowDetail
 	item.durationSeconds = row.duration ? Number(row.duration) / 1000 : secondsBetween(row.startedAt, row.completedAt ?? new Date());
 	item.currentNodeName = row.currentNodeName;
 	item.progress = row.progress;
+	item.rerunOfExecutionId = row.rerunOfExecutionId;
+	item.forkedFromNode = row.resumeFromNode;
+	item.workflowId = row.workflowId;
 	item.href = `/workspaces/${workspaceSlug}/workflows/${row.workflowId}/runs/${row.id}`;
 }
 
