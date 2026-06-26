@@ -1184,6 +1184,13 @@ def _seed_clone_cmd() -> str:
         'if [ -n "$(r "$D")" ]; then echo already-populated; exit 0; fi; '
         "rc=0; "
         'for f in $(r "$S"); do juicefs clone "$S/$f" "$D/$f" || rc=1; done; '
+        # `mkdir -p` makes $D root-owned 0755 and `juicefs clone` doesn't restore the
+        # source's mode, so the cloned workspace is read-only to the NON-root sandbox
+        # pods (a fresh workspace is 0777). Without this the forked run hits EACCES on
+        # any write (e.g. `mkdir /sandbox/work/vid`, screenshot/verdict files) — the
+        # whole suffix produces nothing. Make the cloned tree world-writable so any
+        # runtime uid can write, matching a fresh shared /sandbox/work.
+        '[ "$rc" = 0 ] && chmod -R a+rwX "$D" 2>/dev/null; '
         'if [ "$rc" = 0 ] && [ -n "$(r "$D")" ]; then echo seeded; else echo clone-failed; exit 1; fi'
     )
 
