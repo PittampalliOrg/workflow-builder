@@ -98,15 +98,14 @@ source row + its lineage stay around as usual.)
   This is why resume is scoped to the JuiceFS `/sandbox/work` family
   (`gan-harness-{glm-visual-dashboard,dapr-juicefs-pilot,cli-showcase}`); the openshell-shared family
   (`gan-harness-dapr-showcase`) is out of scope.
-- **Forks are hermetic** — each fork runs on an *isolated copy* of the source workspace, seeded at
-  sandbox startup via a read-only mount of the source subPath + a copy-if-empty init container in the
-  **agent session pod**. So repeated/parallel forks of an **agent** node (the iteration use case) never
-  interfere. **Known limitation:** the seed init runs only in agent session pods, so forking from a node
-  whose resumed suffix is **non-agent** (e.g. `publish_contract`/`pr`/`summary` `cli_workspace_command`
-  nodes) does NOT seed the fresh workspace — those nodes would see an empty `/sandbox/work`. Fix (tracked):
-  move the seed to an orchestrator-driven `seed_workspace` step (a copy Job, like `purge-data`) that runs
-  before the first resumed node regardless of its type. (Point-in-time *per-node* snapshots remain a
-  separate future option.)
+- **Forks are hermetic (all node types)** — each fork runs on an *isolated copy* of the source workspace,
+  so repeated/parallel forks never interfere. The interpreter runs an **orchestrator `seed_workspace`
+  step** at the top of a resumed run (before the first resumed node): a synchronous copy Job
+  (sandbox-execution-api `/internal/workspace/seed-data`, via the BFF) mounts the source subPath RO + the
+  fork's fresh subPath RW and `cp -a` if empty — so it works whether or not the resumed node spawns an
+  agent pod. (A copy-if-empty init container in agent session pods stays as a redundant fast path.)
+  (Point-in-time *per-node* snapshots — state as-of *before* the node, vs the source's end state — remain
+  a separate future option.)
 - **Retained workspaces are reaped** — the `resumable-workspace-gc` CronJob (every 6h) ages out abandoned
   retained JuiceFS workspaces (terminal + >24h + no active fork) via the sandbox-execution-api
   `purge-data` Job, so retention doesn't leak.
