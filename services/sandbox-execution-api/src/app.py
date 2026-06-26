@@ -2522,3 +2522,174 @@ def purge_workspace_data(
             raise
     batch.create_namespaced_job(namespace=namespace, body=job_body)
     return {"success": True, "job": job_name, "subPath": shared_key}
+
+
+def _ensure_temp_subpath_pv(
+    core: Any,
+    *,
+    name: str,
+    sub_path: str,
+    class_config: ExecutionClassConfig,
+    namespace: str,
+) -> None:
+    """Create a temp static PV+PVC (RWX, Retain) bound to one JuiceFS subPath, reusing
+    the shared-workspace CSI shape. Idempotent (409 = present; clears released claimRef)."""
+    secret_namespace = class_config.sharedWorkspaceStoreSecretNamespace or namespace
+    pv_body = {
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {
+            "name": name,
+            "labels": {"app": "workspace-seed"},
+            "annotations": {"workflow-builder.cnoe.io/shared-workspace-key": sub_path},
+        },
+        "spec": {
+            "capacity": {"storage": class_config.sharedWorkspaceStoreCapacity},
+            "accessModes": ["ReadWriteMany"],
+            "persistentVolumeReclaimPolicy": "Retain",
+            "storageClassName": "",
+            "mountOptions": list(class_config.sharedWorkspaceStoreMountOptions or []),
+            "volumeMode": "Filesystem",
+            "csi": {
+                "driver": class_config.sharedWorkspaceStoreCsiDriver,
+                "fsType": "juicefs",
+                "volumeHandle": name,
+                "nodePublishSecretRef": {
+                    "name": class_config.sharedWorkspaceStoreSecretName,
+                    "namespace": secret_namespace,
+                },
+                "volumeAttributes": {"subPath": sub_path},
+            },
+        },
+    }
+    pvc_body = {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": name, "namespace": namespace, "labels": {"app": "workspace-seed"}},
+        "spec": {
+            "accessModes": ["ReadWriteMany"],
+            "storageClassName": "",
+            "volumeName": name,
+            "resources": {"requests": {"storage": class_config.sharedWorkspaceStoreCapacity}},
+        },
+    }
+    try:
+        core.create_persistent_volume(body=pv_body)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+        try:
+            existing = core.read_persistent_volume(name=name)
+            phase = getattr(getattr(existing, "status", None), "phase", None)
+            if phase in ("Released", "Available"):
+                core.patch_persistent_volume(name=name, body={"spec": {"claimRef": None}})
+        except Exception as patch_exc:
+            logger.warning("wsseed pv %s claimRef clear failed: %s", name, patch_exc)
+    try:
+        core.create_namespaced_persistent_volume_claim(namespace=namespace, body=pvc_body)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+
+
+class SeedWorkspaceDataRequest(BaseModel):
+    """Seed (copy) one JuiceFS workspace subPath from another (hermetic fork)."""
+
+    workspaceExecutionId: str  # destination (the fork's fresh workspace key)
+    seedWorkspaceFrom: str  # source (the run being forked from)
+    executionClass: str | None = None
+
+
+@app.post("/internal/workspace/seed-data", status_code=status.HTTP_200_OK)
+def seed_workspace_data(
+    request: Request, body: SeedWorkspaceDataRequest
+) -> dict[str, Any]:
+    """Seed a fork's fresh workspace from the source run's subPath, node-type-agnostic.
+
+    The orchestrator calls this (via the BFF) before the first resumed node so the fork
+    has an ISOLATED COPY of the source workspace regardless of whether the resumed node
+    runs in an agent pod. Spawns a one-shot Job mounting BOTH subPaths (dest RW, source
+    RO) and `cp -a source -> dest` IF dest is empty. Synchronous: waits for the Job.
+    Idempotent (copy-if-empty)."""
+    _require_internal(request)
+    dest = (body.workspaceExecutionId or "").strip()
+    src = (body.seedWorkspaceFrom or "").strip()
+    if not dest or not src:
+        raise HTTPException(
+            status_code=400, detail="workspaceExecutionId + seedWorkspaceFrom required"
+        )
+    if dest == src:
+        return {"success": True, "skipped": "same_subpath"}
+    class_config = _resolve_juicefs_class(body.executionClass)
+    if class_config is None:
+        raise HTTPException(
+            status_code=409, detail="no juicefs-shared execution class configured"
+        )
+
+    namespace = _agent_workflow_host_namespace()
+    dname = f"wsseed-d-{sha256(dest.encode()).hexdigest()[:16]}"
+    sname = f"wsseed-s-{sha256(src.encode()).hexdigest()[:16]}"
+    job_name = f"wsseed-{sha256(dest.encode()).hexdigest()[:12]}-{uuid4().hex[:6]}"
+    seed_cmd = (
+        'if [ -z "$(ls -A /work 2>/dev/null)" ]; then '
+        "cp -a /seed/. /work/ 2>/dev/null && echo seeded || echo copy-failed; "
+        "else echo already-populated; fi; true"
+    )
+    job_body = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {"name": job_name, "namespace": namespace, "labels": {"app": "workspace-seed"}},
+        "spec": {
+            "backoffLimit": 1,
+            "ttlSecondsAfterFinished": 600,
+            "template": {
+                "metadata": {"labels": {"app": "workspace-seed"}},
+                "spec": {
+                    "restartPolicy": "Never",
+                    "containers": [
+                        {
+                            "name": "seed",
+                            "image": "busybox:1.36",
+                            "command": ["sh", "-c", seed_cmd],
+                            "volumeMounts": [
+                                {"name": "work", "mountPath": "/work"},
+                                {"name": "seed", "mountPath": "/seed", "readOnly": True},
+                            ],
+                        }
+                    ],
+                    "volumes": [
+                        {"name": "work", "persistentVolumeClaim": {"claimName": dname}},
+                        {
+                            "name": "seed",
+                            "persistentVolumeClaim": {"claimName": sname, "readOnly": True},
+                        },
+                    ],
+                },
+            },
+        },
+    }
+
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {"1", "true", "yes"}:
+        return {"dryRun": True, "job": job_name, "dest": dest, "source": src}
+
+    batch, core = _load_k8s_clients()
+    _ensure_temp_subpath_pv(
+        core, name=dname, sub_path=dest, class_config=class_config, namespace=namespace
+    )
+    _ensure_temp_subpath_pv(
+        core, name=sname, sub_path=src, class_config=class_config, namespace=namespace
+    )
+    batch.create_namespaced_job(namespace=namespace, body=job_body)
+    # Synchronous: wait (bounded) so the caller knows the workspace is populated before
+    # the resumed node runs.
+    for _ in range(40):
+        time.sleep(3)
+        try:
+            st = batch.read_namespaced_job_status(name=job_name, namespace=namespace).status
+        except Exception:
+            continue
+        if getattr(st, "succeeded", None):
+            return {"success": True, "job": job_name, "dest": dest, "source": src}
+        if getattr(st, "failed", None):
+            raise HTTPException(status_code=500, detail=f"seed job {job_name} failed")
+    raise HTTPException(status_code=504, detail=f"seed job {job_name} did not finish in time")
