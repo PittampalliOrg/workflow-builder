@@ -327,6 +327,12 @@ export const POST: RequestHandler = async ({ request }) => {
 		typeof body.sandboxName === "string" && body.sandboxName.trim()
 			? body.sandboxName.trim()
 			: null;
+	// Hermetic fork: source workspace subPath to seed (copy) this fork's fresh
+	// workspace from at sandbox startup. Forwarded to the agent-workflow-host.
+	const bridgeSeedWorkspaceFrom =
+		typeof body.seedWorkspaceFrom === "string" && body.seedWorkspaceFrom.trim()
+			? body.seedWorkspaceFrom.trim()
+			: null;
 	const bridgeCwd =
 		typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : null;
 	const bridgeTimeoutMinutes =
@@ -565,6 +571,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				swapTarget?.capabilities?.workspaceBackend === "juicefs-shared"
 					? (bridgeWorkspaceRef ?? workflowExecutionId)
 					: null,
+				seedWorkspaceFrom: bridgeSeedWorkspaceFrom,
 		});
 		const reuseChildAppId = reuseHost?.agentAppId ?? reuseAgentAppId;
 		const reuseRuntimeSandboxName =
@@ -780,6 +787,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			swapTarget?.capabilities?.workspaceBackend === "juicefs-shared"
 				? (bridgeWorkspaceRef ?? workflowExecutionId)
 				: null,
+			seedWorkspaceFrom: bridgeSeedWorkspaceFrom,
 	});
 	const childAgentAppId = sessionHost?.agentAppId ?? targetAgentAppId;
 	const childRuntimeSandboxName = sessionHost?.sandboxName ?? null;

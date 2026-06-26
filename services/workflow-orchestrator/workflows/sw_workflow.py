@@ -922,6 +922,9 @@ class TaskContext:
         # /sandbox/work (executionId changes each instance and would point at an empty
         # workspace otherwise). Resumable fixtures use ${ .runtime.workspaceExecutionId }.
         self.workspace_execution_id = execution_id
+        # Hermetic fork: when set (the source run's workspace key), the per-session
+        # sandbox seeds this fork's fresh workspace from that subPath on first mount.
+        self.seed_workspace_from: str | None = None
         # Resumable workflows retain their workspace + Dapr history on failure so the
         # run can be resumed from the failed node (set from x-workflow-builder.resumable).
         self.resumable = False
@@ -2080,6 +2083,10 @@ def _run_native_durable_agent_child_workflow(
             # OpenShell tools (the runtime refuses to bind a sandbox without
             # a non-empty sandboxName or a workspaceRef starting with "ws_").
             "workspaceRef": canonical_context["workspaceRef"],
+            # Hermetic fork: seed this fork's FRESH workspace subPath from the source
+            # run's retained subPath (read-only copy at startup) so repeated forks don't
+            # share + drift. None on normal runs.
+            "seedWorkspaceFrom": getattr(tc, "seed_workspace_from", None),
             "sandboxName": canonical_context["sandboxName"],
             "cwd": cwd,
             # Preserve durable/run execution guards across the workflow↔session
@@ -3807,6 +3814,9 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     resume_workspace_id = input_data.get("workspaceExecutionId")
     if isinstance(resume_workspace_id, str) and resume_workspace_id.strip():
         tc.workspace_execution_id = resume_workspace_id.strip()
+    seed_from = input_data.get("seedWorkspaceFrom")
+    if isinstance(seed_from, str) and seed_from.strip():
+        tc.seed_workspace_from = seed_from.strip()
     try:
         _xwb = (workflow_data.get("document") or {}).get("x-workflow-builder") or {}
         tc.resumable = _as_bool(_xwb.get("resumable"), False)

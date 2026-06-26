@@ -2207,8 +2207,8 @@
 							{resumeVerb} from a step
 						</DropdownMenu.Label>
 						<p class="px-2 pb-1.5 text-[11px] leading-snug text-muted-foreground">
-							Earlier steps are skipped and this run's workspace is reused — only the
-							chosen step onward re-runs with the current workflow.
+							Earlier steps are skipped and an isolated copy of this run's workspace is
+							used — only the chosen step onward re-runs with the current workflow.
 						</p>
 						<DropdownMenu.Separator />
 						{#each resumableNodeIds as nodeId, i (nodeId)}
@@ -3288,9 +3288,10 @@
 				{resumeVerb} from {resumeEffectiveNode ? `“${resumeEffectiveNode}”` : 'the failed step'}
 			</AlertDialogTitle>
 			<AlertDialogDescription>
-				Starts a new run of the <span class="font-medium">current</span> workflow that reuses this
-				run's workspace. Earlier steps are skipped; only the selected step onward re-runs — so your
-				edits to that step (and later) take effect.
+				Starts a new run of the <span class="font-medium">current</span> workflow on an
+				<span class="font-medium">isolated copy</span> of this run's workspace. Earlier steps are
+				skipped; only the selected step onward re-runs — so your edits to that step (and later) take
+				effect, and parallel forks never interfere.
 			</AlertDialogDescription>
 		</AlertDialogHeader>
 

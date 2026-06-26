@@ -3227,6 +3227,8 @@ class ExecuteSWWorkflowRequest(BaseModel):
     # run's /sandbox/work via the stable workspace key. Omitted for normal runs.
     resumeFromNode: str | None = None
     workspaceExecutionId: str | None = None
+    # Hermetic fork: seed this run's fresh workspace from the source run's subPath.
+    seedWorkspaceFrom: str | None = None
 
 
 @app.post("/api/v2/sw-workflows", response_model=StartWorkflowResponse)
@@ -3319,6 +3321,7 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
             "mlflowContext": request.mlflowContext,
             "resumeFromNode": request.resumeFromNode,
             "workspaceExecutionId": request.workspaceExecutionId,
+            "seedWorkspaceFrom": request.seedWorkspaceFrom,
             "features": {
                 "mlflowNodeSpans": _env_bool(
                     "WORKFLOW_ORCHESTRATOR_MLFLOW_NODE_SPANS",

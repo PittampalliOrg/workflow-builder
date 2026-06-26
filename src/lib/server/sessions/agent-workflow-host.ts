@@ -348,6 +348,12 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	 * workspaceRef. Ignored by classes that don't enable the shared store.
 	 */
 	sharedWorkspaceKey?: string | null;
+	/**
+	 * Hermetic fork: source workspace subPath to SEED this run's fresh workspace
+	 * from (read-only copy at sandbox startup). Lets repeated forks of one run be
+	 * isolated instead of sharing + drifting on one subtree.
+	 */
+	seedWorkspaceFrom?: string | null;
 }): Promise<AgentWorkflowHostResult | null> {
 	if (!agentConfigCanUseWorkflowHost(params.agentConfig)) return null;
 	if (params.benchmarkRunId && canUseBenchmarkStableAppId(params.agentConfig)) {
@@ -436,6 +442,9 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 			: {}),
 		...(params.sharedWorkspaceKey
 			? { sharedWorkspaceKey: params.sharedWorkspaceKey }
+			: {}),
+		...(params.seedWorkspaceFrom
+			? { seedWorkspaceFrom: params.seedWorkspaceFrom }
 			: {}),
 	};
 	const { response, body } = await postAgentWorkflowHost(

@@ -111,15 +111,16 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		return error(404, `Node '${fromNodeId}' is not a top-level node in the current workflow`);
 	}
 
-	// 3. Stable workspace key = the root run's instance id (re-mount its /sandbox/work).
-	const workspaceExecutionId = await resolveWorkspaceExecutionId(source);
+	// 3. Hermetic fork: the new run uses its OWN fresh workspace, SEEDED (copied) from
+	// the source run's retained /sandbox/work — so repeated forks are isolated (no drift).
+	const seedWorkspaceFrom = await resolveWorkspaceExecutionId(source);
 
-	// 4. Fresh execution of the CURRENT spec, skipping the prefix + reusing the workspace.
+	// 4. Fresh execution of the CURRENT spec, skipping the prefix + seeding the workspace.
 	const result = await startWorkflowRun({
 		workflowId: source.workflowId,
 		triggerData: (source.input ?? {}) as Record<string, unknown>,
 		resumeFromNode: fromNodeId,
-		workspaceExecutionId: workspaceExecutionId ?? undefined,
+		seedWorkspaceFrom: seedWorkspaceFrom ?? undefined,
 		rerunOfExecutionId: source.id,
 		rerunSourceInstanceId: source.daprInstanceId,
 		triggerSource: 'resume'
@@ -133,6 +134,6 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		sourceExecutionId: source.id,
 		newInstanceId: result.instanceId,
 		fromNodeId,
-		workspaceExecutionId
+		seedWorkspaceFrom
 	});
 };

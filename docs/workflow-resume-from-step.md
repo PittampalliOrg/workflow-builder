@@ -98,8 +98,13 @@ source row + its lineage stay around as usual.)
   This is why resume is scoped to the JuiceFS `/sandbox/work` family
   (`gan-harness-{glm-visual-dashboard,dapr-juicefs-pilot,cli-showcase}`); the openshell-shared family
   (`gan-harness-dapr-showcase`) is out of scope.
-- **Repeated forks share the workspace** (chosen v1 behavior) — iteration 2 sees iteration 1's mutations.
-  Point-in-time per-node snapshots are a planned fast-follow for hermetic iteration.
+- **Forks are hermetic** — each fork runs on an *isolated copy* of the source workspace (seeded at
+  sandbox startup via a read-only mount of the source subPath + a copy-if-empty init container), so
+  repeated/parallel forks never interfere. (Point-in-time *per-node* snapshots — state as-of *before* the
+  node, vs the source's end state — remain a future option.)
+- **Retained workspaces are reaped** — the `resumable-workspace-gc` CronJob (every 6h) ages out abandoned
+  retained JuiceFS workspaces (terminal + >24h + no active fork) via the sandbox-execution-api
+  `purge-data` Job, so retention doesn't leak.
 - The forked run is a **fresh execution** with its own row + full node history (no partial-history caveat).
 
 ## Verify (dev)
