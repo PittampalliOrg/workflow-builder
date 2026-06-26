@@ -27,6 +27,7 @@
 	import CopyIdButton from '$lib/components/console/copy-id-button.svelte';
 	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';
 	import AgentModelSelector from '$lib/components/agents/agent-model-selector.svelte';
+	import WorkflowQuickSwitcher from '$lib/components/workflow/workflow-quick-switcher.svelte';
 	import EventRow from '$lib/components/sessions/event-row.svelte';
 	import EventDetailPanel from '$lib/components/sessions/event-detail-panel.svelte';
 	import { findToolPair, computeTokenAssignments } from '$lib/utils/tool-pair';
@@ -1403,13 +1404,12 @@
 			<Workflow class="size-3" />
 			<span>Workflow run</span>
 			<span class="text-muted-foreground/60">·</span>
-			<a
-				href="/workspaces/{slug}/workflows/{workflowRunContext.workflowId}"
-				class="hover:underline truncate max-w-[220px] text-foreground"
-				title={workflowRunContext.workflowName}
-			>
-				{workflowRunContext.workflowName}
-			</a>
+			<WorkflowQuickSwitcher
+				{slug}
+				currentWorkflowId={workflowRunContext.workflowId}
+				currentWorkflowName={workflowRunContext.workflowName}
+				variant="run"
+			/>
 			<span class="text-muted-foreground/60">·</span>
 			<a
 				href="/workspaces/{slug}/workflows/{workflowRunContext.workflowId}/runs/{workflowRunContext.executionId}"

@@ -18,6 +18,10 @@ export type WorkspaceWorkflowRow = {
 	latestExecution: WorkspaceWorkflowRun | null;
 	/** Last 3 executions, newest first. Drives the activity-dots column. */
 	recentRuns: WorkspaceWorkflowRun[];
+	/** True when the latest execution is still running/pending. */
+	running: boolean;
+	/** Most recent of (edited, last run) — the sort + "last active" key. */
+	lastActivityAt: string;
 };
 
 export const load: PageServerLoad = async ({ locals, params }) => {
@@ -75,14 +79,32 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 			startedAt: e.startedAt.toISOString(),
 			completedAt: e.completedAt?.toISOString() ?? null,
 		}));
+		const latest = recentRuns[0] ?? null;
+		const updatedAtIso = row.updatedAt.toISOString();
+		const running =
+			latest?.status === "running" || latest?.status === "pending";
+		// "Last active" = the more recent of edit-time and the latest run. Runs differ
+		// per workflow, so this is meaningful even when a seed/sync set every
+		// `updatedAt` to the same instant.
+		const lastActivityAt =
+			latest && latest.startedAt > updatedAtIso ? latest.startedAt : updatedAtIso;
 		results.push({
 			id: row.id,
 			name: row.name,
-			updatedAt: row.updatedAt.toISOString(),
-			latestExecution: recentRuns[0] ?? null,
+			updatedAt: updatedAtIso,
+			latestExecution: latest,
 			recentRuns,
+			running,
+			lastActivityAt,
 		});
 	}
+
+	// Surface what matters first: running workflows, then most-recently-active.
+	// (The initial query ordered by updatedAt only to bound the 100-row window.)
+	results.sort((a, b) => {
+		if (a.running !== b.running) return a.running ? -1 : 1;
+		return b.lastActivityAt.localeCompare(a.lastActivityAt);
+	});
 
 	return { slug: params.slug, workflows: results };
 };
