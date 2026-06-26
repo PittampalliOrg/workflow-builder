@@ -1150,9 +1150,14 @@
 	// ones — same mechanism, surfaced on ANY terminal run.
 	const isTerminal = $derived(isTerminalFailed || isTerminalSuccess);
 	const resumeVerb = $derived(isTerminalFailed ? 'Resume' : 'Fork');
-	// Top-level node ids in canvas order, for the "Resume/Fork from: <node>" picker.
+	// Top-level node NAMES in canvas order, for the "Resume/Fork from: <node>" picker.
+	// Canvas ids are "/do/<i>/<name>"; the orchestrator + resume API key on the bare
+	// node name (the spec `do` key / update_execution_node nodeId), so strip the prefix.
 	const resumableNodeIds = $derived(
-		workflowNodeIds.filter((id) => id && id !== '__start__' && id !== '__end__')
+		workflowNodeIds
+			.filter((id) => id && id !== '__start__' && id !== '__end__')
+			.map((id) => id.split('/').filter(Boolean).pop() ?? id)
+			.filter((name, i, arr) => name && arr.indexOf(name) === i)
 	);
 	// Resume/fork preview dialog (replaces a blocking native confirm). `null` node = auto
 	// (the failed step). The dialog previews which steps are skipped vs re-run.

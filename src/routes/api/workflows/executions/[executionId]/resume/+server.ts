@@ -64,6 +64,11 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
 	let fromNodeId =
 		typeof body.fromNodeId === 'string' && body.fromNodeId.trim() ? body.fromNodeId.trim() : undefined;
+	// Canvas node ids are "/do/<i>/<name>"; the orchestrator keys on the bare node
+	// name, so accept either form by reducing to the last path segment.
+	if (fromNodeId?.includes('/')) {
+		fromNodeId = fromNodeId.split('/').filter(Boolean).pop() ?? fromNodeId;
+	}
 
 	// 1. Source run + scope.
 	const [source] = await db
