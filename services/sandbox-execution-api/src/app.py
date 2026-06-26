@@ -1166,6 +1166,28 @@ def _seed_copy_cmd(empty_label: str) -> str:
     )
 
 
+def _seed_clone_cmd() -> str:
+    """A juicefs `sh -c` body for the orchestrator seed Job: COW-clone a source workspace
+    subPath into a fork's fresh subPath, both visible under one ROOT JuiceFS mount at /jfs.
+
+    `juicefs clone` is metadata-only copy-on-write — it never copies file DATA, so a repo
+    with thousands of tiny .git objects clones in ~one metadata pass instead of a
+    file-by-file `cp` (≈7x faster here; instant once metadata moves off Postgres). Reads
+    $SRC_SUB / $DST_SUB from the container env. Copy-if-empty (magic-file-aware) +
+    per-top-level-entry clone (each is a recursive CoW op, so `repo` clones in one shot).
+    Exits non-zero on failure so the Job → status.failed (the poller raises)."""
+    return (
+        'r() { ls -A "$1" 2>/dev/null | ' + _JFS_MAGIC_FILTER + "; }; "
+        'S="/jfs/$SRC_SUB"; D="/jfs/$DST_SUB"; '
+        '[ -d "$S" ] || { echo source-missing; exit 1; }; '
+        'mkdir -p "$D"; '
+        'if [ -n "$(r "$D")" ]; then echo already-populated; exit 0; fi; '
+        "rc=0; "
+        'for f in $(r "$S"); do juicefs clone "$S/$f" "$D/$f" || rc=1; done; '
+        'if [ "$rc" = 0 ] && [ -n "$(r "$D")" ]; then echo seeded; else echo clone-failed; exit 1; fi'
+    )
+
+
 def _ensure_cli_seed_workspace_volume(
     core: Any,
     request: AgentWorkflowHostRequest,
@@ -2610,6 +2632,72 @@ def _ensure_temp_subpath_pv(
             raise
 
 
+def _ensure_root_pv(
+    core: Any,
+    *,
+    name: str,
+    class_config: ExecutionClassConfig,
+    namespace: str,
+) -> None:
+    """Create a static PV+PVC bound to the JuiceFS volume ROOT (no subPath) so a single
+    pod can see ALL run subPaths at once — required for `juicefs clone` (source + dest
+    must live under ONE mount). Reused across clone Jobs (idempotent). Blast radius: the
+    clone Job sees every workspace, acceptable for a short-lived internal-only Job."""
+    secret_namespace = class_config.sharedWorkspaceStoreSecretNamespace or namespace
+    pv_body = {
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {"name": name, "labels": {"app": "workspace-seed"}},
+        "spec": {
+            "capacity": {"storage": class_config.sharedWorkspaceStoreCapacity},
+            "accessModes": ["ReadWriteMany"],
+            "persistentVolumeReclaimPolicy": "Retain",
+            "storageClassName": "",
+            "mountOptions": list(class_config.sharedWorkspaceStoreMountOptions or []),
+            "volumeMode": "Filesystem",
+            "csi": {
+                "driver": class_config.sharedWorkspaceStoreCsiDriver,
+                "fsType": "juicefs",
+                "volumeHandle": name,
+                "nodePublishSecretRef": {
+                    "name": class_config.sharedWorkspaceStoreSecretName,
+                    "namespace": secret_namespace,
+                },
+                # No subPath → mount the JuiceFS root.
+                "volumeAttributes": {},
+            },
+        },
+    }
+    pvc_body = {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": name, "namespace": namespace, "labels": {"app": "workspace-seed"}},
+        "spec": {
+            "accessModes": ["ReadWriteMany"],
+            "storageClassName": "",
+            "volumeName": name,
+            "resources": {"requests": {"storage": class_config.sharedWorkspaceStoreCapacity}},
+        },
+    }
+    try:
+        core.create_persistent_volume(body=pv_body)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+        try:
+            existing = core.read_persistent_volume(name=name)
+            phase = getattr(getattr(existing, "status", None), "phase", None)
+            if phase in ("Released", "Available"):
+                core.patch_persistent_volume(name=name, body={"spec": {"claimRef": None}})
+        except Exception as patch_exc:
+            logger.warning("wsseed root pv %s claimRef clear failed: %s", name, patch_exc)
+    try:
+        core.create_namespaced_persistent_volume_claim(namespace=namespace, body=pvc_body)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+
+
 class SeedWorkspaceDataRequest(BaseModel):
     """Seed (copy) one JuiceFS workspace subPath from another (hermetic fork)."""
 
@@ -2622,12 +2710,14 @@ class SeedWorkspaceDataRequest(BaseModel):
 def seed_workspace_data(
     request: Request, body: SeedWorkspaceDataRequest
 ) -> dict[str, Any]:
-    """Seed a fork's fresh workspace from the source run's subPath, node-type-agnostic.
+    """Start an ASYNC CoW-clone Job to seed a fork's fresh workspace from the source run's
+    subPath (node-type-agnostic — works whether or not the resumed node runs in an agent
+    pod). Returns IMMEDIATELY with the Job name; the caller polls `/seed-data/status`.
 
-    The orchestrator calls this (via the BFF) before the first resumed node so the fork
-    has an ISOLATED COPY of the source workspace regardless of whether the resumed node
-    runs in an agent pod. Spawns a one-shot Job mounting BOTH subPaths (dest RW, source
-    RO) and `cp -a source -> dest` IF dest is empty. Synchronous: waits for the Job.
+    Async because cloning a many-small-file workspace (repo/.git) is metadata-bound on a
+    Postgres-backed JuiceFS — `juicefs clone` is ~7x faster than `cp` but still O(files),
+    so a synchronous wait blew the HTTP/Node request-timeout budget (504 → fork errored).
+    The Job ROOT-mounts the JuiceFS volume (source + dest under one mount) and CoW-clones.
     Idempotent (copy-if-empty)."""
     _require_internal(request)
     dest = (body.workspaceExecutionId or "").strip()
@@ -2637,7 +2727,7 @@ def seed_workspace_data(
             status_code=400, detail="workspaceExecutionId + seedWorkspaceFrom required"
         )
     if dest == src:
-        return {"success": True, "skipped": "same_subpath"}
+        return {"success": True, "skipped": "same_subpath", "done": True}
     class_config = _resolve_juicefs_class(body.executionClass)
     if class_config is None:
         raise HTTPException(
@@ -2645,10 +2735,9 @@ def seed_workspace_data(
         )
 
     namespace = _agent_workflow_host_namespace()
-    dname = f"wsseed-d-{sha256(dest.encode()).hexdigest()[:16]}"
-    sname = f"wsseed-s-{sha256(src.encode()).hexdigest()[:16]}"
+    root_pvc = "wsseed-root"
     job_name = f"wsseed-{sha256(dest.encode()).hexdigest()[:12]}-{uuid4().hex[:6]}"
-    seed_cmd = _seed_copy_cmd("already-populated")
+    seed_image = os.environ.get("WORKSPACE_SEED_JUICEFS_IMAGE", "juicedata/mount:ce-v1.3.1")
     job_body = {
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -2663,20 +2752,17 @@ def seed_workspace_data(
                     "containers": [
                         {
                             "name": "seed",
-                            "image": "busybox:1.36",
-                            "command": ["sh", "-c", seed_cmd],
-                            "volumeMounts": [
-                                {"name": "work", "mountPath": "/work"},
-                                {"name": "seed", "mountPath": "/seed", "readOnly": True},
+                            "image": seed_image,
+                            "command": ["sh", "-c", _seed_clone_cmd()],
+                            "env": [
+                                {"name": "SRC_SUB", "value": src},
+                                {"name": "DST_SUB", "value": dest},
                             ],
+                            "volumeMounts": [{"name": "root", "mountPath": "/jfs"}],
                         }
                     ],
                     "volumes": [
-                        {"name": "work", "persistentVolumeClaim": {"claimName": dname}},
-                        {
-                            "name": "seed",
-                            "persistentVolumeClaim": {"claimName": sname, "readOnly": True},
-                        },
+                        {"name": "root", "persistentVolumeClaim": {"claimName": root_pvc}},
                     ],
                 },
             },
@@ -2687,23 +2773,40 @@ def seed_workspace_data(
         return {"dryRun": True, "job": job_name, "dest": dest, "source": src}
 
     batch, core = _load_k8s_clients()
-    _ensure_temp_subpath_pv(
-        core, name=dname, sub_path=dest, class_config=class_config, namespace=namespace
-    )
-    _ensure_temp_subpath_pv(
-        core, name=sname, sub_path=src, class_config=class_config, namespace=namespace
-    )
+    _ensure_root_pv(core, name=root_pvc, class_config=class_config, namespace=namespace)
     batch.create_namespaced_job(namespace=namespace, body=job_body)
-    # Synchronous: wait (bounded) so the caller knows the workspace is populated before
-    # the resumed node runs.
-    for _ in range(40):
-        time.sleep(3)
-        try:
-            st = batch.read_namespaced_job_status(name=job_name, namespace=namespace).status
-        except Exception:
-            continue
-        if getattr(st, "succeeded", None):
-            return {"success": True, "job": job_name, "dest": dest, "source": src}
-        if getattr(st, "failed", None):
-            raise HTTPException(status_code=500, detail=f"seed job {job_name} failed")
-    raise HTTPException(status_code=504, detail=f"seed job {job_name} did not finish in time")
+    return {"success": True, "job": job_name, "namespace": namespace, "status": "running", "done": False}
+
+
+class SeedWorkspaceStatusRequest(BaseModel):
+    job: str
+    namespace: str | None = None
+
+
+@app.post("/internal/workspace/seed-data/status", status_code=status.HTTP_200_OK)
+def seed_workspace_data_status(
+    request: Request, body: SeedWorkspaceStatusRequest
+) -> dict[str, Any]:
+    """Poll a seed clone Job (started by /seed-data). Returns {done, succeeded, failed}."""
+    _require_internal(request)
+    job_name = (body.job or "").strip()
+    if not job_name:
+        raise HTTPException(status_code=400, detail="job required")
+    namespace = (body.namespace or "").strip() or _agent_workflow_host_namespace()
+    batch, _core = _load_k8s_clients()
+    try:
+        st = batch.read_namespaced_job_status(name=job_name, namespace=namespace).status
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            # TTL-reaped after success, or never created — treat as not-found.
+            raise HTTPException(status_code=404, detail=f"seed job {job_name} not found")
+        raise
+    succeeded = bool(getattr(st, "succeeded", None))
+    failed = bool(getattr(st, "failed", None))
+    return {
+        "job": job_name,
+        "done": succeeded or failed,
+        "succeeded": succeeded,
+        "failed": failed,
+        "active": int(getattr(st, "active", 0) or 0),
+    }
