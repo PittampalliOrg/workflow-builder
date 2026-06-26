@@ -48,6 +48,16 @@
 		List as ListIcon
 	} from '@lucide/svelte';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
+	import {
+		AlertDialog,
+		AlertDialogAction,
+		AlertDialogCancel,
+		AlertDialogContent,
+		AlertDialogDescription,
+		AlertDialogFooter,
+		AlertDialogHeader,
+		AlertDialogTitle
+	} from '$lib/components/ui/alert-dialog';
 	import OtherRunsPanel from '$lib/components/runs/other-runs-panel.svelte';
 	import WorkflowQuickSwitcher from '$lib/components/workflow/workflow-quick-switcher.svelte';
 	import RunQuickSwitcher from '$lib/components/workflow/run-quick-switcher.svelte';
@@ -1144,25 +1154,34 @@
 	const resumableNodeIds = $derived(
 		workflowNodeIds.filter((id) => id && id !== '__start__' && id !== '__end__')
 	);
-	async function resumeRun(fromNodeId?: string) {
+	// Resume/fork preview dialog (replaces a blocking native confirm). `null` node = auto
+	// (the failed step). The dialog previews which steps are skipped vs re-run.
+	let resumeDialogOpen = $state(false);
+	let resumeDialogNode = $state<string | null>(null);
+	let resumeError = $state<string | null>(null);
+	// Effective node being resumed from: explicit pick, else the in-flight (failed) node.
+	const resumeEffectiveNode = $derived(
+		resumeDialogNode ?? snapshot?.currentNodeId ?? resumableNodeIds[0] ?? null
+	);
+	const resumeSplit = $derived.by(() => {
+		const idx = resumeEffectiveNode ? resumableNodeIds.indexOf(resumeEffectiveNode) : -1;
+		if (idx < 0) return { skipped: [] as string[], rerun: resumableNodeIds };
+		return { skipped: resumableNodeIds.slice(0, idx), rerun: resumableNodeIds.slice(idx) };
+	});
+	function openResume(fromNodeId?: string) {
+		resumeDialogNode = fromNodeId ?? null;
+		resumeError = null;
+		resumeDialogOpen = true;
+	}
+	async function confirmResume() {
 		if (resumeBusy) return;
-		const where = fromNodeId ? `node "${fromNodeId}"` : 'the failed step';
-		const node = fromNodeId ?? 'the failed node';
-		if (
-			!confirm(
-				`${resumeVerb} from ${where}?\n\n` +
-					`Earlier steps are skipped and their workspace is reused — ${node} onward re-runs ` +
-					`with the CURRENT workflow against this run's /sandbox/work.\n\n` +
-					`Only edits to ${node} and later take effect.`
-			)
-		)
-			return;
 		resumeBusy = true;
+		resumeError = null;
 		try {
 			const res = await fetch(`/api/workflows/executions/${executionId}/resume`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(fromNodeId ? { fromNodeId } : {})
+				body: JSON.stringify(resumeDialogNode ? { fromNodeId: resumeDialogNode } : {})
 			});
 			const b = (await res.json().catch(() => ({}))) as {
 				ok?: boolean;
@@ -1171,12 +1190,13 @@
 				error?: string;
 			};
 			if (!res.ok || !b?.ok || !b.executionId) {
-				alert(b?.message || b?.error || `Resume failed (HTTP ${res.status})`);
+				resumeError = b?.message || b?.error || `Failed (HTTP ${res.status})`;
 				return;
 			}
+			resumeDialogOpen = false;
 			await goto(`/workspaces/${slug}/workflows/${workflowId}/runs/${b.executionId}`);
 		} catch (err) {
-			alert(err instanceof Error ? err.message : 'Resume failed');
+			resumeError = err instanceof Error ? err.message : 'Request failed';
 		} finally {
 			resumeBusy = false;
 		}
@@ -2187,7 +2207,7 @@
 						</p>
 						<DropdownMenu.Separator />
 						{#each resumableNodeIds as nodeId, i (nodeId)}
-							<DropdownMenu.Item onSelect={() => resumeRun(nodeId)} class="gap-2">
+							<DropdownMenu.Item onSelect={() => openResume(nodeId)} class="gap-2">
 								<span
 									class="w-4 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground"
 									>{i + 1}</span
@@ -2206,7 +2226,7 @@
 							variant="outline"
 							size="sm"
 							class="h-7 gap-1 rounded-r-none border-r-0"
-							onclick={() => resumeRun()}
+							onclick={() => openResume()}
 							disabled={resumeBusy}
 							title="Resume from the failed step — earlier steps are skipped and the workspace reused; the failed node onward re-runs with the current workflow"
 						>
@@ -3252,3 +3272,59 @@
 </Tabs>
 	</div>
 </div>
+
+<!-- Resume/fork preview — replaces a blocking native confirm() with an in-app modal
+     that previews which steps are skipped (reused) vs re-run before forking. -->
+<AlertDialog open={resumeDialogOpen} onOpenChange={(o) => (resumeDialogOpen = o)}>
+	<AlertDialogContent class="max-w-lg">
+		<AlertDialogHeader>
+			<AlertDialogTitle class="flex items-center gap-2">
+				<GitFork class="size-4 text-primary" />
+				{resumeVerb} from {resumeEffectiveNode ? `“${resumeEffectiveNode}”` : 'the failed step'}
+			</AlertDialogTitle>
+			<AlertDialogDescription>
+				Starts a new run of the <span class="font-medium">current</span> workflow that reuses this
+				run's workspace. Earlier steps are skipped; only the selected step onward re-runs — so your
+				edits to that step (and later) take effect.
+			</AlertDialogDescription>
+		</AlertDialogHeader>
+
+		<div class="space-y-3 py-1 text-xs">
+			<div>
+				<div class="mb-1 font-medium text-muted-foreground">
+					Skipped — reused from this run ({resumeSplit.skipped.length})
+				</div>
+				<div class="flex flex-wrap gap-1">
+					{#each resumeSplit.skipped as n (n)}
+						<span class="rounded bg-muted px-1.5 py-0.5 text-muted-foreground line-through">{n}</span>
+					{/each}
+					{#if resumeSplit.skipped.length === 0}
+						<span class="text-muted-foreground italic">none — runs from the start</span>
+					{/if}
+				</div>
+			</div>
+			<div>
+				<div class="mb-1 font-medium text-primary">
+					Re-runs with current workflow ({resumeSplit.rerun.length})
+				</div>
+				<div class="flex flex-wrap gap-1">
+					{#each resumeSplit.rerun as n (n)}
+						<span class="rounded bg-primary/10 px-1.5 py-0.5 font-medium text-primary">{n}</span>
+					{/each}
+				</div>
+			</div>
+			{#if resumeError}
+				<div class="rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-red-600 dark:text-red-400">
+					{resumeError}
+				</div>
+			{/if}
+		</div>
+
+		<AlertDialogFooter>
+			<AlertDialogCancel disabled={resumeBusy}>Cancel</AlertDialogCancel>
+			<AlertDialogAction onclick={confirmResume} disabled={resumeBusy}>
+				{resumeBusy ? `${resumeVerb}ing…` : `${resumeVerb} from here`}
+			</AlertDialogAction>
+		</AlertDialogFooter>
+	</AlertDialogContent>
+</AlertDialog>
