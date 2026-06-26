@@ -100,13 +100,21 @@
 			.sort((a, b) => (activityTs(b)).localeCompare(activityTs(a)))
 	);
 	// "Recent" = workflows that have actually RUN (not running now), newest run
-	// first. Run-less workflows are reachable via search / "View all workflows"
-	// rather than cluttering Recent with fake timestamps.
+	// first. Run-less workflows go in the "All workflows" group below (not "Recent",
+	// to avoid fake timestamps), but are still LISTED so every workflow is selectable
+	// from the dropdown without searching.
 	const recentWorkflows = $derived.by(() =>
 		workflows
 			.filter((w) => !runningByWf.has(w.id) && latestByWf.has(w.id))
 			.sort((a, b) => activityTs(b).localeCompare(activityTs(a)))
 			.slice(0, 15)
+	);
+	// Everything else (never run, not running) — alphabetical, so the dropdown is a
+	// complete picker rather than only "runs so far".
+	const otherWorkflows = $derived.by(() =>
+		workflows
+			.filter((w) => !runningByWf.has(w.id) && !latestByWf.has(w.id))
+			.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
 	);
 
 	const currentIsRunning = $derived(runningByWf.has(currentWorkflowId));
@@ -212,6 +220,24 @@
 						</Command.Item>
 					{/each}
 				</Command.Group>
+
+				{#if otherWorkflows.length > 0}
+					<Command.Separator />
+					<Command.Group heading="All workflows">
+						{#each otherWorkflows as wf (wf.id)}
+							<Command.Item value={'all ' + wf.name} onSelect={() => pick(wf.id)} class="flex items-center gap-2">
+								<span class="size-2 shrink-0 rounded-full bg-muted-foreground/30"></span>
+								<div class="min-w-0 flex-1">
+									<div class="truncate text-xs">{wf.name || 'Untitled'}</div>
+									<div class="text-[10px] text-muted-foreground">no runs yet</div>
+								</div>
+								{#if wf.id === currentWorkflowId}
+									<Check size={14} class="shrink-0 text-primary" />
+								{/if}
+							</Command.Item>
+						{/each}
+					</Command.Group>
+				{/if}
 
 				<Command.Separator />
 				<Command.Item value="view-all-workflows" onSelect={goToAll} class="flex items-center gap-2">

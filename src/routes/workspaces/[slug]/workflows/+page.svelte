@@ -1,10 +1,25 @@
 <script lang="ts">
 	import type { PageData } from "./$types";
 	import { page } from "$app/state";
-	import { Workflow } from "@lucide/svelte";
+	import { Workflow, Search } from "@lucide/svelte";
 
 	let { data }: { data: PageData } = $props();
 	const slug = $derived(page.params.slug as string);
+
+	let query = $state("");
+	let runningOnly = $state(false);
+
+	const runningCount = $derived(data.workflows.filter((w) => w.running).length);
+	const filtered = $derived(
+		data.workflows.filter((w) => {
+			if (runningOnly && !w.running) return false;
+			const q = query.trim().toLowerCase();
+			if (!q) return true;
+			return (
+				(w.name ?? "").toLowerCase().includes(q) || w.id.toLowerCase().includes(q)
+			);
+		}),
+	);
 
 	function statusColor(status: string): string {
 		switch (status) {
@@ -35,15 +50,46 @@
 </svelte:head>
 
 <div class="h-full overflow-y-auto p-6 space-y-6">
-	<header class="flex items-center justify-between">
+	<header class="flex flex-wrap items-end justify-between gap-3">
 		<div>
 			<h1 class="text-2xl font-semibold flex items-center gap-2">
 				<Workflow class="size-6" /> Workflows
 			</h1>
 			<p class="text-sm text-muted-foreground mt-1">
-				Visual workflows scoped to this workspace. Click a workflow to open
-				the editor, or a run to view its detail.
+				{data.workflows.length} workflow{data.workflows.length === 1 ? "" : "s"} in this workspace.
+				{#if runningCount > 0}
+					<button
+						type="button"
+						class="ml-1 inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 hover:bg-blue-100 dark:bg-blue-950 dark:text-blue-300"
+						onclick={() => (runningOnly = !runningOnly)}
+						title="Show running only"
+					>
+						<span class="size-1.5 rounded-full bg-blue-500 animate-pulse"></span>
+						{runningCount} running
+					</button>
+				{/if}
+				Sorted by recent activity.
 			</p>
+		</div>
+		<div class="flex items-center gap-2">
+			<div class="relative">
+				<Search class="absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+				<input
+					type="text"
+					bind:value={query}
+					placeholder="Search workflows…"
+					class="h-8 w-56 rounded-md border bg-background pl-7 pr-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+				/>
+			</div>
+			<button
+				type="button"
+				class="h-8 rounded-md border px-2.5 text-xs font-medium transition-colors {runningOnly
+					? 'border-blue-300 bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300'
+					: 'text-muted-foreground hover:bg-muted'}"
+				onclick={() => (runningOnly = !runningOnly)}
+			>
+				Running only
+			</button>
 		</div>
 	</header>
 
@@ -59,7 +105,7 @@
 				<thead class="bg-muted/50 text-xs font-medium text-muted-foreground">
 					<tr>
 						<th class="text-left px-4 py-2">Name</th>
-						<th class="text-left px-4 py-2">Last updated</th>
+						<th class="text-left px-4 py-2">Last active</th>
 						<th class="text-left px-4 py-2">Recent activity</th>
 						<th class="text-left px-4 py-2">Latest run</th>
 						<th class="text-left px-4 py-2">Status</th>
@@ -67,21 +113,29 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each data.workflows as wf}
+					{#if filtered.length === 0}
+						<tr><td colspan="6" class="px-4 py-8 text-center text-xs text-muted-foreground">
+							No workflows match{runningOnly ? ' (running only)' : ''}{query ? ` “${query}”` : ''}.
+						</td></tr>
+					{/if}
+					{#each filtered as wf}
 						<tr class="border-t hover:bg-muted/40">
 							<td class="px-4 py-3">
 								<a
 									href="/workspaces/{slug}/workflows/{wf.id}"
-									class="font-medium text-primary hover:underline"
+									class="font-medium text-primary hover:underline inline-flex items-center gap-1.5"
 								>
+									{#if wf.running}
+										<span class="size-1.5 rounded-full bg-blue-500 animate-pulse" title="Running"></span>
+									{/if}
 									{wf.name || wf.id}
 								</a>
 								<div class="text-xs text-muted-foreground mt-0.5 font-mono">
 									{wf.id}
 								</div>
 							</td>
-							<td class="px-4 py-3 text-xs text-muted-foreground">
-								{formatRelative(wf.updatedAt)}
+							<td class="px-4 py-3 text-xs text-muted-foreground" title={wf.lastActivityAt}>
+								{formatRelative(wf.lastActivityAt)}
 							</td>
 							<td class="px-4 py-3">
 								{#if wf.recentRuns.length > 0}
