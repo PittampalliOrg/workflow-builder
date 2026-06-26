@@ -11,7 +11,7 @@
 	import type { ExecutionReadModel } from '$lib/types/execution-stream';
 	import { buildExecutionCanvasState, type ExecutionCanvasStatus } from '$lib/utils/execution-canvas';
 	import { fmtTokens } from '$lib/utils/format-tokens';
-	import { Wrench, Sparkles, Gauge, Check, X, Loader2 } from '@lucide/svelte';
+	import { Wrench, Sparkles, Gauge, Check, X, Loader2, Hourglass } from '@lucide/svelte';
 
 	interface Props {
 		nodes: Node[];
@@ -69,10 +69,30 @@
 	const terminal = $derived(canvas.isTerminal);
 	const activeLabel = $derived(canvas.activeNodeLabel);
 
+	// Cross-app completion lag: the current node is an AGENT step (durable/run) whose
+	// run already reached a terminal state, but the workflow hasn't advanced yet — the
+	// per-session child runs on a SEPARATE Dapr task hub, so the parent observes its
+	// completion only after a short delay. Without this the band keeps saying "working…"
+	// on a step whose session already ended, which reads as "stuck". Detect it from the
+	// snapshot's agent runs (status flips terminal at session-end, before the parent
+	// resumes) and show "finishing step…" instead.
+	const finishingStep = $derived.by(() => {
+		if (terminal || !runActive) return false;
+		const cid = snapshot?.currentNodeId ?? snapshot?.currentNodeName ?? null;
+		if (!cid) return false;
+		const runs = snapshot?.agentRuns ?? [];
+		return runs.some(
+			(r) =>
+				(r.nodeId === cid || cid.startsWith(r.nodeId) || r.nodeId.startsWith(cid)) &&
+				(r.status === 'completed' || r.status === 'failed')
+		);
+	});
+
 	// Live action being performed right now (drives the "always moving" feel).
-	type LiveAction = { kind: 'thinking' | 'tool' | 'working'; text: string };
+	type LiveAction = { kind: 'thinking' | 'tool' | 'working' | 'finishing'; text: string };
 	const liveAction = $derived.by<LiveAction | null>(() => {
 		if (terminal || !runActive) return null;
+		if (finishingStep) return { kind: 'finishing', text: 'finishing step…' };
 		if (isStreaming) return { kind: 'thinking', text: 'thinking…' };
 		if (activeToolName) return { kind: 'tool', text: activeToolName };
 		return { kind: 'working', text: 'working…' };
@@ -118,6 +138,8 @@
 							<Wrench class="size-2.5" />
 						{:else if liveAction.kind === 'thinking'}
 							<Sparkles class="size-2.5" />
+						{:else if liveAction.kind === 'finishing'}
+							<Hourglass class="size-2.5" />
 						{/if}
 						{liveAction.text}
 					</span>
