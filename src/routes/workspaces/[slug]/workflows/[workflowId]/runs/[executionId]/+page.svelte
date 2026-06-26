@@ -41,6 +41,7 @@
 		ChevronRight,
 		ChevronLeft,
 		ChevronDown,
+		GitFork,
 		Play,
 		PencilLine,
 		Ellipsis,
@@ -1126,23 +1127,33 @@
 	}
 	// --- Resume from a failed/terminal node (node-aware Dapr rerun-from-event) ---
 	let resumeBusy = $state(false);
+	// The run this one was forked/resumed from (rerun lineage) — drives the
+	// "Forked from" context banner. Set from the execution row on load.
+	let forkedFromExecutionId = $state<string | null>(null);
 	const isTerminalFailed = $derived(
 		['error', 'failed', 'cancelled', 'canceled'].includes(executionStatus.toLowerCase())
 	);
-	// Top-level node ids in canvas order, for the "Resume from: <node>" picker.
+	const isTerminalSuccess = $derived(
+		['success', 'completed'].includes(executionStatus.toLowerCase())
+	);
+	// Resume (recover) framing for failed runs, fork (iterate) framing for successful
+	// ones — same mechanism, surfaced on ANY terminal run.
+	const isTerminal = $derived(isTerminalFailed || isTerminalSuccess);
+	const resumeVerb = $derived(isTerminalFailed ? 'Resume' : 'Fork');
+	// Top-level node ids in canvas order, for the "Resume/Fork from: <node>" picker.
 	const resumableNodeIds = $derived(
 		workflowNodeIds.filter((id) => id && id !== '__start__' && id !== '__end__')
 	);
 	async function resumeRun(fromNodeId?: string) {
 		if (resumeBusy) return;
-		const label = fromNodeId ? `node "${fromNodeId}"` : 'the failed step';
+		const where = fromNodeId ? `node "${fromNodeId}"` : 'the failed step';
+		const node = fromNodeId ?? 'the failed node';
 		if (
 			!confirm(
-				`Resume from ${label}?\n\nCompleted earlier steps replay from history (not re-run); ${
-					fromNodeId ?? 'the failed node'
-				} onward re-executes with the CURRENT workflow against the original run's workspace.\n\nOnly edits to ${
-					fromNodeId ?? 'the failed node'
-				} and later take effect.`
+				`${resumeVerb} from ${where}?\n\n` +
+					`Earlier steps are skipped and their workspace is reused — ${node} onward re-runs ` +
+					`with the CURRENT workflow against this run's /sandbox/work.\n\n` +
+					`Only edits to ${node} and later take effect.`
 			)
 		)
 			return;
@@ -1383,6 +1394,10 @@
 			if (executionRes.ok) {
 				const executionData = await executionRes.json();
 				coordinatorOwner = executionData?.owner ?? null;
+				forkedFromExecutionId =
+					typeof executionData?.rerunOfExecutionId === 'string'
+						? executionData.rerunOfExecutionId
+						: null;
 				const spec = executionData?.executionIr?.spec;
 				if (spec && typeof spec === 'object' && !Array.isArray(spec)) {
 					const graph = specToGraph(spec as Record<string, unknown>, {});
@@ -2156,50 +2171,89 @@
 				>
 					{stopBusy || stopConverging ? 'Stopping…' : 'Stop run'}
 				</Button>
-			{:else if isTerminalFailed}
-				<!-- Resume from the failed step: completed steps replay from history
-				     (durable/run children are NOT re-dispatched); the failed node onward
-				     re-runs with the current workflow against the original workspace. -->
-				<div class="flex items-center">
-					<Button
-						variant="outline"
-						size="sm"
-						class="h-7 gap-1 rounded-r-none border-r-0"
-						onclick={() => resumeRun()}
-						disabled={resumeBusy}
-						title="Resume from the failed step — replays completed steps from history, re-runs the failed node onward against the original workspace"
-					>
-						<RefreshCw class="size-3.5 {resumeBusy ? 'animate-spin' : ''}" />
-						{resumeBusy ? 'Resuming' : 'Resume from failed step'}
-					</Button>
-					{#if resumableNodeIds.length}
-						<DropdownMenu.Root>
-							<DropdownMenu.Trigger>
-								{#snippet child({ props })}
-									<Button
-										{...props}
-										variant="outline"
-										size="sm"
-										class="h-7 rounded-l-none px-1"
-										disabled={resumeBusy}
-										title="Resume from a specific node"
-									>
-										<ChevronDown class="size-3.5" />
-									</Button>
-								{/snippet}
-							</DropdownMenu.Trigger>
-							<DropdownMenu.Content align="end" class="max-h-72 w-56 overflow-auto">
-								<DropdownMenu.Label>Resume from node</DropdownMenu.Label>
-								<DropdownMenu.Separator />
-								{#each resumableNodeIds as nodeId (nodeId)}
-									<DropdownMenu.Item onSelect={() => resumeRun(nodeId)}>
-										<code class="text-xs">{nodeId}</code>
-									</DropdownMenu.Item>
-								{/each}
-							</DropdownMenu.Content>
-						</DropdownMenu.Root>
-					{/if}
-				</div>
+			{:else if isTerminal}
+				<!-- Resume/fork from a step: earlier steps are skipped + their workspace is
+				     reused; only the chosen step onward re-runs with the CURRENT workflow.
+				     Failed runs get a recover-framed split button (resume from the failed
+				     step + node picker); successful runs get an iterate-framed picker. -->
+				{#snippet resumePicker()}
+					<DropdownMenu.Content align="end" class="max-h-96 w-72 overflow-auto">
+						<DropdownMenu.Label class="text-xs font-semibold">
+							{resumeVerb} from a step
+						</DropdownMenu.Label>
+						<p class="px-2 pb-1.5 text-[11px] leading-snug text-muted-foreground">
+							Earlier steps are skipped and this run's workspace is reused — only the
+							chosen step onward re-runs with the current workflow.
+						</p>
+						<DropdownMenu.Separator />
+						{#each resumableNodeIds as nodeId, i (nodeId)}
+							<DropdownMenu.Item onSelect={() => resumeRun(nodeId)} class="gap-2">
+								<span
+									class="w-4 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground"
+									>{i + 1}</span
+								>
+								<code class="min-w-0 flex-1 truncate text-xs">{nodeId}</code>
+								{#if isTerminalFailed && nodeId === snapshot?.currentNodeId}
+									<span class="shrink-0 text-[9px] font-medium text-red-500">failed here</span>
+								{/if}
+							</DropdownMenu.Item>
+						{/each}
+					</DropdownMenu.Content>
+				{/snippet}
+				{#if isTerminalFailed}
+					<div class="flex items-center">
+						<Button
+							variant="outline"
+							size="sm"
+							class="h-7 gap-1 rounded-r-none border-r-0"
+							onclick={() => resumeRun()}
+							disabled={resumeBusy}
+							title="Resume from the failed step — earlier steps are skipped and the workspace reused; the failed node onward re-runs with the current workflow"
+						>
+							<RefreshCw class="size-3.5 {resumeBusy ? 'animate-spin' : ''}" />
+							{resumeBusy ? 'Resuming…' : 'Resume from failed step'}
+						</Button>
+						{#if resumableNodeIds.length}
+							<DropdownMenu.Root>
+								<DropdownMenu.Trigger>
+									{#snippet child({ props })}
+										<Button
+											{...props}
+											variant="outline"
+											size="sm"
+											class="h-7 rounded-l-none px-1"
+											disabled={resumeBusy}
+											title="Resume from a specific step"
+										>
+											<ChevronDown class="size-3.5" />
+										</Button>
+									{/snippet}
+								</DropdownMenu.Trigger>
+								{@render resumePicker()}
+							</DropdownMenu.Root>
+						{/if}
+					</div>
+				{:else if resumableNodeIds.length}
+					<DropdownMenu.Root>
+						<DropdownMenu.Trigger>
+							{#snippet child({ props })}
+								<Button
+									{...props}
+									variant="outline"
+									size="sm"
+									class="h-7 gap-1"
+									disabled={resumeBusy}
+									title="Fork this run from a step to iterate — earlier steps are reused, only the chosen step onward re-runs with your current edits"
+								>
+									<GitFork class="size-3.5 {resumeBusy ? 'animate-pulse' : ''}" />
+									{resumeBusy ? 'Forking…' : 'Fork from step'}
+									<ChevronDown class="size-3.5 opacity-70" />
+								</Button>
+							{/snippet}
+						</DropdownMenu.Trigger>
+						{@render resumePicker()}
+					</DropdownMenu.Root>
+				{/if}
 			{/if}
 			<Separator orientation="vertical" class="mx-1 h-5" />
 			<a
@@ -2256,6 +2310,26 @@
 			</DropdownMenu.Root>
 		</div>
 	</header>
+
+	{#if forkedFromExecutionId}
+		<!-- Lineage context: this run was resumed/forked from another at an earlier
+		     step; the skipped steps + their activity live on the source run. -->
+		<div
+			class="flex items-center gap-2 border-b border-border bg-muted/40 px-4 py-1.5 text-xs text-muted-foreground"
+		>
+			<GitFork class="size-3.5 shrink-0 text-primary" />
+			<span class="min-w-0 flex-1 truncate">
+				Forked from an earlier run — skipped steps were reused from its workspace and show as
+				<span class="font-medium">inherited</span> activity below.
+			</span>
+			<a
+				class="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-0.5 font-medium text-foreground hover:bg-accent"
+				href={`/workspaces/${slug}/workflows/${workflowId}/runs/${forkedFromExecutionId}`}
+			>
+				View source run <ChevronRight class="size-3" />
+			</a>
+		</div>
+	{/if}
 
 	<!-- Run-level flow progress as a PERSISTENT header on every tab — constant
 	     position so switching tabs never shifts the tab bar or content (the Live
