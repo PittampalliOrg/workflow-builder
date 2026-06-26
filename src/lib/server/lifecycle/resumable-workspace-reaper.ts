@@ -13,12 +13,17 @@
  * /api/internal/lifecycle/reap-resumable-workspaces. Destructive, so gated strictly +
  * idempotent.
  */
-import { and, eq, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, lt, notExists, notInArray, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { env } from "$env/dynamic/private";
 import { db } from "$lib/server/db";
 import { workflowExecutions, workflowWorkspaceSessions } from "$lib/server/db/schema";
 
-const TERMINAL = ["success", "error", "cancelled", "canceled"] as const;
+const TERMINAL: Array<"success" | "error" | "cancelled"> = [
+	"success",
+	"error",
+	"cancelled",
+];
 
 function sandboxExecutionApiUrl(): string | null {
 	const raw = env.SANDBOX_EXECUTION_API_URL ?? process.env.SANDBOX_EXECUTION_API_URL ?? "";
@@ -51,6 +56,7 @@ export async function reapResumableWorkspaces(
 
 	// Candidate retained juicefs workspaces whose owning run is terminal + aged, and
 	// which have NOT been superseded by a still-running fork child (rerun lineage).
+	const child = alias(workflowExecutions, "fork_child");
 	const candidates = await db
 		.select({
 			workspaceRef: workflowWorkspaceSessions.workspaceRef,
@@ -65,14 +71,20 @@ export async function reapResumableWorkspaces(
 			and(
 				eq(workflowWorkspaceSessions.status, "active"),
 				eq(workflowWorkspaceSessions.backend, "juicefs"),
-				sql`lower(${workflowExecutions.status}) = ANY(${TERMINAL as unknown as string[]})`,
+				inArray(workflowExecutions.status, TERMINAL),
 				lt(workflowExecutions.completedAt, cutoff),
 				// No active fork child still using this workspace.
-				sql`NOT EXISTS (
-					SELECT 1 FROM ${workflowExecutions} AS child
-					WHERE child.rerun_of_execution_id = ${workflowExecutions.id}
-					  AND lower(child.status) <> ALL(${TERMINAL as unknown as string[]})
-				)`,
+				notExists(
+					db
+						.select({ one: sql`1` })
+						.from(child)
+						.where(
+							and(
+								eq(child.rerunOfExecutionId, workflowExecutions.id),
+								notInArray(child.status, TERMINAL),
+							),
+						),
+				),
 			),
 		)
 		.limit(limit);
