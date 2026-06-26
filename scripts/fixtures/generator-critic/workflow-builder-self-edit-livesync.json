@@ -104,7 +104,7 @@
         "call": "workspace/command",
         "with": {
           "cliWorkspace": true,
-          "command": "${ \"export DEVURL=\" + ((.provision_preview.data.url // .trigger.devServiceUrl // \"http://workflow-builder-dev.workflow-builder.svc.cluster.local:3000\") | @sh) + \";\" + \"\\nset -e\\ncd /sandbox/work/repo\\ntar -czf /tmp/src.tgz src\\n# Direct pod-IP / Service-DNS HTTP \\u2014 Dapr service invocation corrupts large\\n# binary bodies (2MB gzip -> 500); plain HTTP handles it. Unprivileged.\\nHTTP=$(curl -sS -o /tmp/sync.out -w \\\"%{http_code}\\\" -X POST --data-binary @/tmp/src.tgz -H \\\"content-type: application/gzip\\\" \\\"$DEVURL/__sync\\\")\\necho \\\"SYNC_HTTP=$HTTP\\\"; cat /tmp/sync.out 2>/dev/null; echo\\n[ \\\"$HTTP\\\" = 200 ] || { echo SYNC_FAILED; exit 1; }\\necho SYNCED\" }",
+          "command": "${ \"export DEVURL=\" + ((.provision_preview.url // .provision_preview.data.url // .trigger.devServiceUrl // \"http://workflow-builder-dev.workflow-builder.svc.cluster.local:3000\") | @sh) + \";\" + \"\\nset -e\\ncd /sandbox/work/repo\\ntar -czf /tmp/src.tgz src\\n# Direct pod-IP / Service-DNS HTTP \\u2014 Dapr service invocation corrupts large\\n# binary bodies (2MB gzip -> 500); plain HTTP handles it. Unprivileged.\\nHTTP=$(curl -sS -o /tmp/sync.out -w \\\"%{http_code}\\\" -X POST --data-binary @/tmp/src.tgz -H \\\"content-type: application/gzip\\\" \\\"$DEVURL/__sync\\\")\\necho \\\"SYNC_HTTP=$HTTP\\\"; cat /tmp/sync.out 2>/dev/null; echo\\n[ \\\"$HTTP\\\" = 200 ] || { echo SYNC_FAILED; exit 1; }\\necho SYNCED\" }",
           "cwd": "/sandbox/work/repo",
           "timeoutMs": 120000,
           "allowFailure": false
@@ -116,7 +116,7 @@
         "call": "workspace/command",
         "with": {
           "cliWorkspace": true,
-          "command": "${ \"export MARKER=\" + ((.trigger.marker // \"WFB live-sync OK\") | @sh) + \"; export DEVURL=\" + ((.provision_preview.data.url // .trigger.devServiceUrl // \"http://workflow-builder-dev.workflow-builder.svc.cluster.local:3000\") | @sh) + \";\" + \"\\n# Always exit 0: the marker verdict is judged from stdout (LIVE_OK) downstream,\\n# so the node output always registers for the summary even when not-live.\\nfor i in $(seq 1 40); do\\n  if curl -sf \\\"$DEVURL/auth/sign-in\\\" | grep -qF \\\"$MARKER\\\"; then echo \\\"LIVE_OK after ${i}s\\\"; exit 0; fi\\n  sleep 2\\ndone\\necho NOT_LIVE; curl -s \\\"$DEVURL/auth/sign-in\\\" 2>/dev/null | head -c 800 || true; echo\" }",
+          "command": "${ \"export MARKER=\" + ((.trigger.marker // \"WFB live-sync OK\") | @sh) + \"; export DEVURL=\" + ((.provision_preview.url // .provision_preview.data.url // .trigger.devServiceUrl // \"http://workflow-builder-dev.workflow-builder.svc.cluster.local:3000\") | @sh) + \";\" + \"\\n# Always exit 0: the marker verdict is judged from stdout (LIVE_OK) downstream,\\n# so the node output always registers for the summary even when not-live.\\nfor i in $(seq 1 40); do\\n  if curl -sf \\\"$DEVURL/auth/sign-in\\\" | grep -qF \\\"$MARKER\\\"; then echo \\\"LIVE_OK after ${i}s\\\"; exit 0; fi\\n  sleep 2\\ndone\\necho NOT_LIVE; curl -s \\\"$DEVURL/auth/sign-in\\\" 2>/dev/null | head -c 800 || true; echo\" }",
           "cwd": "/sandbox/work",
           "timeoutMs": 90000,
           "allowFailure": true
@@ -146,7 +146,7 @@
             "instructions": "You are a UI verifier with EXACTLY ONE turn — do everything now and finish by WRITING the verdict file; do not wait for a follow-up. Steps in this single turn: (1) Using the Playwright MCP browser tools (server 'playwright'): browser_navigate to <devUrl>/auth/sign-in , then browser_take_screenshot with filename '/sandbox/work/critic-shot.png'. (2) Read the page (browser_snapshot) and decide whether it VISIBLY shows the exact marker text from the prompt (it replaced the 'Workflow Builder' wordmark on the sign-in page). (3) As your FINAL action, WRITE the file /sandbox/work/verdict-final.json with your file-write tool containing STRICT JSON and nothing else: {\"markerPresent\": <true|false>, \"markerText\": \"<the marker>\", \"evidence\": \"<one sentence on what you saw>\"}. The verdict-final.json file is the ONLY thing the workflow reads — writing it is mandatory. End with a one-line summary after the file is written."
           },
           "body": {
-            "prompt": "${ \"Verify the live-sync change is rendered, then write the verdict file. Preview URL: \" + (.provision_preview.data.url // .trigger.devServiceUrl // \"http://workflow-builder-dev.workflow-builder.svc.cluster.local:3000\") + \" . The sign-in page should now show the marker text: \" + (.trigger.marker // \"WFB live-sync OK\") + \" . Navigate, screenshot, and WRITE /sandbox/work/verdict-final.json per your instructions — all in this one turn.\" }",
+            "prompt": "${ \"Verify the live-sync change is rendered, then write the verdict file. Preview URL: \" + (.provision_preview.url // .provision_preview.data.url // .trigger.devServiceUrl // \"http://workflow-builder-dev.workflow-builder.svc.cluster.local:3000\") + \" . The sign-in page should now show the marker text: \" + (.trigger.marker // \"WFB live-sync OK\") + \" . Navigate, screenshot, and WRITE /sandbox/work/verdict-final.json per your instructions — all in this one turn.\" }",
             "overrides": {
               "cwd": "/sandbox/work",
               "maxTurns": 15,
@@ -184,12 +184,12 @@
       "summary": {
         "set": {
           "marker": "${ .trigger.marker // \"WFB live-sync OK\" }",
-          "previewUrl": "${ .provision_preview.data.url // .trigger.devServiceUrl // \"http://workflow-builder-dev.workflow-builder.svc.cluster.local:3000\" }",
-          "sandboxName": "${ .provision_preview.data.sandboxName // \"\" }",
+          "previewUrl": "${ .provision_preview.url // .provision_preview.data.url // .trigger.devServiceUrl // \"http://workflow-builder-dev.workflow-builder.svc.cluster.local:3000\" }",
+          "sandboxName": "${ .provision_preview.sandboxName // .provision_preview.data.sandboxName // \"\" }",
           "perRunPreview": "${ (.trigger.perRunPreview // \"true\") == \"true\" }",
-          "liveSync": "${ ((.verify_http.data.result.stdout // .verify_http.data.stdout // \"\") | test(\"LIVE_OK\")) }",
-          "terminalState": "${ if ((.verify_http.data.result.stdout // .verify_http.data.stdout // \"\") | test(\"LIVE_OK\")) then \"live\" else \"not_live\" end }",
-          "uiMarkerPresent": "${ (((.read_verdict.data.result.stdout // .read_verdict.data.stdout // \"{}\") | fromjson?) // {} | .markerPresent) }"
+          "liveSync": "${ ((.verify_http.result.stdout // .verify_http.data.result.stdout // .verify_http.stdout // \"\") | test(\"LIVE_OK\")) }",
+          "terminalState": "${ if ((.verify_http.result.stdout // .verify_http.data.result.stdout // .verify_http.stdout // \"\") | test(\"LIVE_OK\")) then \"live\" else \"not_live\" end }",
+          "uiMarkerPresent": "${ (((.read_verdict.result.stdout // .read_verdict.data.result.stdout // .read_verdict.stdout // \"{}\") | fromjson?) // {}) as $v | ($v.markerPresent // $v.marker_found // (((($v.verdict // $v.overall_verdict // \"\") | ascii_downcase) | test(\"pass\")) and ($v.verdict != null or $v.overall_verdict != null)) // null) }"
         }
       }
     },
@@ -198,7 +198,7 @@
         "call": "dev/preview-teardown",
         "with": {
           "executionId": "${ .runtime.executionId }",
-          "sandboxName": "${ .provision_preview.data.sandboxName // \"\" }"
+          "sandboxName": "${ .provision_preview.sandboxName // .provision_preview.data.sandboxName // \"\" }"
         },
         "if": "${ (.trigger.perRunPreview // \"true\") == \"true\" }",
         "allowFailure": true
