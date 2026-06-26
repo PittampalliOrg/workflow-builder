@@ -38,7 +38,7 @@ export type SessionStreamStore = Readable<SessionStreamState> & {
 	dispose: () => void;
 };
 
-export function createSessionStream(sessionId: string): SessionStreamStore {
+function createRawSessionStream(sessionId: string): SessionStreamStore {
 	const initial: SessionStreamState = {
 		isConnected: false,
 		error: null,
@@ -303,5 +303,52 @@ export function createSessionStream(sessionId: string): SessionStreamStore {
 	return {
 		subscribe,
 		dispose,
+	};
+}
+
+// ── Warm cache (refcounted, keep-alive) ────────────────────────────────────
+// Switching between sessions/nodes (run console rail, fleet drawer) previously opened
+// a COLD EventSource each time → multi-second reload. Cache the live store per
+// sessionId with a refcount: re-acquiring a session reuses the warm store (events
+// already loaded → instant), and a session kept warm for KEEP_ALIVE_MS after the last
+// consumer leaves makes back-and-forth navigation instant. The underlying EventSource
+// is only closed once nobody holds it AND the keep-alive lapses.
+const KEEP_ALIVE_MS = 60_000;
+interface CacheEntry {
+	raw: SessionStreamStore;
+	refs: number;
+	idleTimer: ReturnType<typeof setTimeout> | null;
+}
+const cache = new Map<string, CacheEntry>();
+
+export function createSessionStream(sessionId: string): SessionStreamStore {
+	let entry = cache.get(sessionId);
+	if (!entry) {
+		entry = { raw: createRawSessionStream(sessionId), refs: 0, idleTimer: null };
+		cache.set(sessionId, entry);
+	}
+	if (entry.idleTimer) {
+		clearTimeout(entry.idleTimer);
+		entry.idleTimer = null;
+	}
+	entry.refs += 1;
+	let released = false;
+	return {
+		subscribe: entry.raw.subscribe,
+		dispose() {
+			if (released) return;
+			released = true;
+			const e = cache.get(sessionId);
+			if (!e) return;
+			e.refs -= 1;
+			if (e.refs > 0) return;
+			// Last consumer left — keep warm briefly, then tear down for real.
+			e.idleTimer = setTimeout(() => {
+				if (e.refs <= 0) {
+					e.raw.dispose();
+					cache.delete(sessionId);
+				}
+			}, KEEP_ALIVE_MS);
+		},
 	};
 }

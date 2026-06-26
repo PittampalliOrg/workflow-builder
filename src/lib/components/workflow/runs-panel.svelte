@@ -43,6 +43,15 @@
 	);
 	const ui = getContext<ReturnType<typeof createUiStore>>('ui');
 
+	// Top-level node names (canvas order) → the launchpad's structured node overview.
+	const topLevelNodeNames = $derived(
+		store.nodes
+			.map((n) => n.id)
+			.filter((id) => id && id !== '__start__' && id !== '__end__')
+			.map((id) => (id.includes('/') ? (id.split('/').filter(Boolean).pop() ?? id) : id))
+			.filter((name, i, arr): name is string => !!name && arr.indexOf(name) === i)
+	);
+
 	interface Execution {
 		id: string;
 		status: string;
@@ -141,10 +150,14 @@
 		}
 	});
 
+	// Auto-select the most relevant run ONCE on first load. Not on every deselect —
+	// otherwise clicking "← All runs" instantly re-selects and the list never shows.
+	let didAutoSelect = $state(false);
 	$effect(() => {
-		if (store.selectedExecutionId || executions.length === 0) return;
+		if (didAutoSelect || store.selectedExecutionId || executions.length === 0) return;
 		const preferred = executions.find((execution) => isRunning(execution.status)) ?? executions[0];
 		if (preferred) {
+			didAutoSelect = true;
 			store.selectedExecutionId = preferred.id;
 		}
 	});
@@ -387,10 +400,9 @@
 	{/if}
 
 	{#if embedded && store.selectedExecutionId && store.workflowId}
-		<!-- Selected run → single-column "live feed" (the canvas IS the node rail; this
-		     panel is transcript-first so you can actually read what the session is doing).
-		     RunFocusPanel hosts the session switcher, branches, and "open full run".
-		     Clicking a node on the canvas focuses that node's session here. -->
+		<!-- Selected run → LAUNCHPAD: a structured node overview that deep-links into the
+		     full run page (review mode). The canvas stays the editor; review is the
+		     full-width page. No embedded transcript (that was cramped + slow). -->
 		<div class="flex items-center gap-2 border-b border-border px-3 py-1 text-[11px]">
 			<button
 				class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground hover:bg-muted"
@@ -407,6 +419,7 @@
 				executionId={store.selectedExecutionId}
 				{slug}
 				workflowId={store.workflowId}
+				nodeNames={topLevelNodeNames}
 				focusNode={store.focusedRunNode}
 			/>
 		</div>
