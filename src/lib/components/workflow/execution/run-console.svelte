@@ -40,9 +40,12 @@
 		/** Preserved run-level cards (live preview, workspace, input/output,
 		 *  artifacts) rendered by the parent page inside the Run details drawer. */
 		details?: Snippet;
+		/** Deep-link: focus this node (its step or owning session) on mount/change. */
+		focusNode?: string | null;
 	}
 
-	let { executionId, slug, workflowId, nodes = [], edges = [], details }: Props = $props();
+	let { executionId, slug, workflowId, nodes = [], edges = [], details, focusNode = null }: Props =
+		$props();
 
 	type SessionRow = {
 		id: string;
@@ -240,6 +243,22 @@
 		pinnedId = id;
 		selectedStep = null;
 	}
+
+	// Deep-link focus (`?node=` on the run page): once data loads, focus the node's
+	// owning session (transcript) if it has one, else its step. Applied once per change.
+	let lastFocusNode = $state<string | null>(null);
+	$effect(() => {
+		const fn = focusNode;
+		if (!fn || fn === lastFocusNode) return;
+		if (steps.length === 0 && orderedSessions.length === 0) return; // wait for data
+		lastFocusNode = fn;
+		const sess = orderedSessions.find((s) => {
+			const n = nodeOf(s);
+			return n === fn || n.startsWith(fn + '-') || n.startsWith(fn + '/');
+		});
+		if (sess) focusSession(sess.id);
+		else if (steps.some((s) => s.stepName === fn)) selectStep(fn);
+	});
 
 	// ── Focus / auto-follow ────────────────────────────────────────────────
 	let pinnedId = $state<string | null>(null);

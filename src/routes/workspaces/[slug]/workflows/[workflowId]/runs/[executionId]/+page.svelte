@@ -241,6 +241,9 @@
 
 	// Active tab — the unified Live console (run-console) is the default landing.
 	let activeTab = $state('overview');
+	// Deep-link from the canvas launchpad: `?node=<name>` focuses that node's activity
+	// in the run console (review mode lands on the node you clicked).
+	const deepLinkNode = $derived(page.url.searchParams.get('node'));
 
 	// Plan artifacts
 	let planArtifacts = $state<Array<{ id: string; status: string; goal: string; planMarkdown: string | null; planJson: unknown; nodeId: string; createdAt: string; updatedAt: string }>>([]);
@@ -2443,7 +2446,7 @@
 
 		<!-- Tab 1: Overview -->
 		<TabsContent value="overview" class="flex-1 overflow-hidden p-0">
-			<RunConsole {executionId} {slug} {workflowId} nodes={workflowNodes} edges={workflowEdges}>
+			<RunConsole {executionId} {slug} {workflowId} nodes={workflowNodes} edges={workflowEdges} focusNode={deepLinkNode}>
 				{#snippet details()}
 				{#if primaryAppPreviewUrl}
 					<Card>
