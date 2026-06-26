@@ -21,31 +21,16 @@
             "title": "Repo (owner/repo)",
             "default": "PittampalliOrg/workflow-builder"
           },
-          "repoRef": {
-            "type": "string",
-            "title": "Branch/ref (blank=default)",
-            "default": ""
-          },
           "marker": {
             "type": "string",
             "title": "Visible marker string",
             "default": "WFB live-sync OK",
             "description": "Replaces the 'Workflow Builder' wordmark on the sign-in page; verified live."
           },
-          "devAppId": {
-            "type": "string",
-            "title": "Dev pod Dapr app-id",
-            "default": "workflow-builder-dev"
-          },
           "devServiceUrl": {
             "type": "string",
             "title": "Dev preview in-cluster URL",
             "default": "http://workflow-builder-dev.workflow-builder.svc.cluster.local:3000"
-          },
-          "syncToken": {
-            "type": "string",
-            "title": "Sync shared secret (blank=none)",
-            "default": ""
           },
           "uiVerify": {
             "type": "string",
@@ -70,7 +55,7 @@
         "call": "workspace/command",
         "with": {
           "cliWorkspace": true,
-          "command": "${ \"export REPOURL=\" + ((.trigger.repoUrl // \"PittampalliOrg/workflow-builder\") | @sh) + \"; export REPOREF=\" + ((.trigger.repoRef // \"\") | @sh) + \";\" + \"\\nset -e\\ncd /sandbox/work\\nrm -rf repo\\nBF=\\\"\\\"; [ -n \\\"$REPOREF\\\" ] && BF=\\\"--branch $REPOREF\\\"\\ngit clone --depth 1 --single-branch $BF https://x-access-token:${GITHUB_TOKEN}@github.com/$REPOURL.git repo\\ncd /sandbox/work/repo\\ngit config user.email agent@workflow-builder.local\\ngit config user.name \\\"workflow-builder agent\\\"\\necho CLONED $(git rev-parse HEAD) on $(git rev-parse --abbrev-ref HEAD)\" }",
+          "command": "${ \"export REPOURL=\" + ((.trigger.repoUrl // \"PittampalliOrg/workflow-builder\") | @sh) + \";\" + \"\\nset -e\\ncd /sandbox/work\\nrm -rf repo\\ngit clone --depth 1 --single-branch https://x-access-token:${GITHUB_TOKEN}@github.com/$REPOURL.git repo\\ncd /sandbox/work/repo\\ngit config user.email agent@workflow-builder.local\\ngit config user.name \\\"workflow-builder agent\\\"\\necho CLONED $(git rev-parse HEAD) on $(git rev-parse --abbrev-ref HEAD)\" }",
           "cwd": "/sandbox/work",
           "timeoutMs": 600000,
           "allowFailure": false
@@ -94,7 +79,7 @@
         "call": "workspace/command",
         "with": {
           "cliWorkspace": true,
-          "command": "${ \"export DEVAPPID=\" + ((.trigger.devAppId // \"workflow-builder-dev\") | @sh) + \"; export SYNCTOKEN=\" + ((.trigger.syncToken // \"\") | @sh) + \";\" + \"\\nset -e\\ncd /sandbox/work/repo\\ntar -czf /tmp/src.tgz src\\nTOKHDR=\\\"\\\"; [ -n \\\"$SYNCTOKEN\\\" ] && TOKHDR=\\\"-H x-sync-token:$SYNCTOKEN\\\"\\nHTTP=$(curl -sS -o /tmp/sync.out -w \\\"%{http_code}\\\" -X POST --data-binary @/tmp/src.tgz -H \\\"content-type: application/gzip\\\" $TOKHDR \\\"http://localhost:3500/v1.0/invoke/$DEVAPPID/method/__sync\\\")\\necho \\\"SYNC_HTTP=$HTTP\\\"; cat /tmp/sync.out 2>/dev/null; echo\\n[ \\\"$HTTP\\\" = 200 ] || { echo SYNC_FAILED; exit 1; }\\necho SYNCED\" }",
+          "command": "${ \"export DEVURL=\" + ((.trigger.devServiceUrl // \"http://workflow-builder-dev.workflow-builder.svc.cluster.local:3000\") | @sh) + \";\" + \"\\nset -e\\ncd /sandbox/work/repo\\ntar -czf /tmp/src.tgz src\\n# Service-DNS (plain HTTP) \\u2014 Dapr service invocation corrupts large binary bodies\\n# (2MB gzip -> 500); direct HTTP to the dev Service handles it. Both unprivileged.\\nHTTP=$(curl -sS -o /tmp/sync.out -w \\\"%{http_code}\\\" -X POST --data-binary @/tmp/src.tgz -H \\\"content-type: application/gzip\\\" \\\"$DEVURL/__sync\\\")\\necho \\\"SYNC_HTTP=$HTTP\\\"; cat /tmp/sync.out 2>/dev/null; echo\\n[ \\\"$HTTP\\\" = 200 ] || { echo SYNC_FAILED; exit 1; }\\necho SYNCED\" }",
           "cwd": "/sandbox/work/repo",
           "timeoutMs": 120000,
           "allowFailure": false
@@ -106,7 +91,7 @@
         "call": "workspace/command",
         "with": {
           "cliWorkspace": true,
-          "command": "${ \"export MARKER=\" + ((.trigger.marker // \"WFB live-sync OK\") | @sh) + \"; export DEVURL=\" + ((.trigger.devServiceUrl // \"http://workflow-builder-dev.workflow-builder.svc.cluster.local:3000\") | @sh) + \";\" + \"\\nset -e\\nfor i in $(seq 1 40); do\\n  if curl -sf \\\"$DEVURL/auth/sign-in\\\" | grep -qF \\\"$MARKER\\\"; then echo \\\"LIVE_OK after ${i}s\\\"; exit 0; fi\\n  sleep 1\\ndone\\necho NOT_LIVE; curl -s \\\"$DEVURL/auth/sign-in\\\" 2>/dev/null | head -c 800; exit 1\" }",
+          "command": "${ \"export MARKER=\" + ((.trigger.marker // \"WFB live-sync OK\") | @sh) + \"; export DEVURL=\" + ((.trigger.devServiceUrl // \"http://workflow-builder-dev.workflow-builder.svc.cluster.local:3000\") | @sh) + \";\" + \"\\nset -e\\nfor i in $(seq 1 40); do\\n  if curl -sf \\\"$DEVURL/auth/sign-in\\\" | grep -qF \\\"$MARKER\\\"; then echo \\\"LIVE_OK after ${i}s\\\"; exit 0; fi\\n  sleep 2\\ndone\\necho NOT_LIVE; curl -s \\\"$DEVURL/auth/sign-in\\\" 2>/dev/null | head -c 800; exit 1\" }",
           "cwd": "/sandbox/work",
           "timeoutMs": 90000,
           "allowFailure": false
@@ -127,7 +112,7 @@
         "with": {
           "cwd": "/sandbox/work",
           "mode": "execute_direct",
-          "workspaceRef": "${ .runtime.workspaceExecutionId }",
+          "workspaceRef": "${ .runtime.executionId }",
           "agentRef": {
             "slug": "${ .trigger.criticAgent // \"cli-playwright-critic-agent\" }"
           },

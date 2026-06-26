@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import tailwindcss from '@tailwindcss/vite';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig, type Plugin } from 'vite';
@@ -28,34 +31,86 @@ function devLiveSyncPlugin(): Plugin {
 			const token = process.env.WFB_DEV_SYNC_TOKEN ?? '';
 			const root = server.config.root;
 			server.middlewares.use('/__sync', (req, res) => {
+				let replied = false;
 				const json = (code: number, body: Record<string, unknown>) => {
-					res.statusCode = code;
-					res.setHeader('content-type', 'application/json');
-					res.end(JSON.stringify(body));
+					if (replied) return;
+					replied = true;
+					try {
+						res.statusCode = code;
+						res.setHeader('content-type', 'application/json');
+						res.end(JSON.stringify(body));
+					} catch {
+						/* socket already gone */
+					}
 				};
 				if (req.method !== 'POST') return json(405, { ok: false, error: 'POST only' });
 				if (token && req.headers['x-sync-token'] !== token)
 					return json(401, { ok: false, error: 'unauthorized' });
-				// Stream the request body straight into `tar` extracting under the project
-				// root. The producer scopes the archive to `src/`; --no-absolute-names +
-				// extracting into `root` keeps writes inside the tree.
-				const tar = spawn(
-					'tar',
-					['-xzf', '-', '-C', root, '--no-same-owner', '--no-absolute-names'],
-					{ stdio: ['pipe', 'ignore', 'pipe'] }
-				);
-				let errout = '';
-				tar.stderr.on('data', (d) => (errout += String(d)));
-				tar.on('error', (e) => json(500, { ok: false, error: `tar spawn: ${e.message}` }));
-				tar.on('close', (code) => {
-					if (code === 0) {
-						console.log('[wfb-dev-live-sync] applied src sync → Vite HMR');
-						json(200, { ok: true, appliedAt: new Date().toISOString() });
-					} else {
-						json(500, { ok: false, error: errout.slice(0, 500) || `tar exit ${code}` });
-					}
+
+				// BUFFER the whole body first (do NOT pipe the request straight into
+				// tar.stdin — if tar dies on a partial/streamed gzip the broken pipe
+				// raised an unhandled EPIPE that crashed the vite process). Swallow
+				// request-stream errors so a dropped/aborted upload can never crash dev.
+				const chunks: Buffer[] = [];
+				let total = 0;
+				let aborted = false;
+				const MAX = 64 * 1024 * 1024;
+				req.on('error', () => {
+					aborted = true;
 				});
-				req.pipe(tar.stdin);
+				req.on('aborted', () => {
+					aborted = true;
+				});
+				req.on('data', (c: Buffer) => {
+					total += c.length;
+					if (total > MAX) {
+						aborted = true;
+						req.destroy();
+						return;
+					}
+					chunks.push(c);
+				});
+				req.on('end', () => {
+					if (aborted) return json(400, { ok: false, error: 'aborted or too large' });
+					const tmp = path.join(os.tmpdir(), `wfb-sync-${process.pid}-${total}.tgz`);
+					let buf: Buffer;
+					try {
+						buf = Buffer.concat(chunks);
+						fs.writeFileSync(tmp, buf);
+					} catch (e) {
+						return json(500, { ok: false, error: `buffer/write: ${(e as Error).message}` });
+					}
+					const cleanup = () => {
+						try {
+							fs.unlinkSync(tmp);
+						} catch {
+							/* ignore */
+						}
+					};
+					// Extract from the FILE (not a stream) into the project root. The dev
+					// image is node:22-alpine → BUSYBOX tar, which rejects GNU long flags
+					// (--no-same-owner/--no-absolute-names) and strips leading '/' itself;
+					// the producer archives only relative `src/`. `-o` = don't restore
+					// user:group (busybox + GNU compatible). Vite's watcher then HMRs.
+					const tar = spawn('tar', ['-xzf', tmp, '-C', root, '-o'], {
+						stdio: ['ignore', 'ignore', 'pipe']
+					});
+					let errout = '';
+					tar.stderr.on('data', (d) => (errout += String(d)));
+					tar.on('error', (e) => {
+						cleanup();
+						json(500, { ok: false, error: `tar spawn: ${e.message}` });
+					});
+					tar.on('close', (code) => {
+						cleanup();
+						if (code === 0) {
+							console.log(`[wfb-dev-live-sync] applied src sync (${buf.length}B) → Vite HMR`);
+							json(200, { ok: true, bytes: buf.length });
+						} else {
+							json(500, { ok: false, error: errout.slice(0, 500) || `tar exit ${code}` });
+						}
+					});
+				});
 			});
 		}
 	};
