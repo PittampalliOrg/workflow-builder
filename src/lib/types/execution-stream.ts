@@ -41,7 +41,7 @@ export interface ExecutionWorkspaceSession {
 	name: string;
 	rootPath: string;
 	clonePath: string | null;
-	backend: 'openshell';
+	backend: 'openshell' | 'juicefs';
 	enabledTools: string[];
 	requireReadBeforeWrite: boolean;
 	commandTimeoutMs: number;

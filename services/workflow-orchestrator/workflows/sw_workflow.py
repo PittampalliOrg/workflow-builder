@@ -4145,6 +4145,14 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 ctx,
                 "[SW Workflow] Retaining workspace after success (resumable=true) for resume/fork-from-step",
             )
+            yield ctx.call_activity(
+                "register_resumable_workspace",
+                input=_freeze({
+                    "workspaceRef": getattr(tc, "workspace_execution_id", execution_id),
+                    "dbExecutionId": db_execution_id,
+                    "_otel": tc.otel_ctx,
+                }),
+            )
         elif _should_cleanup_workspaces(tc):
             try:
                 from activities.call_agent_service import cleanup_execution_workspaces
@@ -4235,6 +4243,14 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             _log_info(
                 ctx,
                 "[SW Workflow] Retaining workspace after failure (resumable=true) for resume-from-step",
+            )
+            yield ctx.call_activity(
+                "register_resumable_workspace",
+                input=_freeze({
+                    "workspaceRef": getattr(tc, "workspace_execution_id", execution_id),
+                    "dbExecutionId": db_execution_id,
+                    "_otel": tc.otel_ctx,
+                }),
             )
         elif _should_cleanup_workspaces(tc):
             try:

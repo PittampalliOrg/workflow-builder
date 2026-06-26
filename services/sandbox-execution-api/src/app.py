@@ -2247,3 +2247,146 @@ def submit_agent_workflow_host(
     }
     set_current_span_io("output", response)
     return response
+
+
+class PurgeWorkspaceDataRequest(BaseModel):
+    """Purge the DATA of one retained JuiceFS shared workspace (subPath)."""
+
+    workspaceExecutionId: str
+    executionClass: str | None = None
+
+
+def _resolve_juicefs_class(execution_class: str | None) -> ExecutionClassConfig | None:
+    """Pick a juicefs-shared execution class (explicit, else the first one configured)."""
+    classes = _load_execution_classes()
+    if execution_class:
+        cfg = classes.get(execution_class)
+        if cfg and cfg.sharedWorkspaceStoreCsiDriver:
+            return cfg
+    for cfg in classes.values():
+        if cfg.sharedWorkspaceStoreCsiDriver:
+            return cfg
+    return None
+
+
+@app.post("/internal/workspace/purge-data", status_code=status.HTTP_202_ACCEPTED)
+def purge_workspace_data(
+    request: Request, body: PurgeWorkspaceDataRequest
+) -> dict[str, Any]:
+    """Reclaim an abandoned retained workspace by deleting its JuiceFS subPath data.
+
+    The resume/fork feature retains resumable workspaces past run end; the
+    abandoned-workspace reaper calls this to free the data. Spawns a one-shot Job that
+    mounts ONLY that subPath (RWX, via a temp static PV+PVC reusing the shared-workspace
+    CSI shape) and deletes its contents — JuiceFS then reclaims the blocks via gc/trash.
+    Idempotent (deterministic PV/PVC name; missing data = no-op).
+    """
+    _require_internal(request)
+    shared_key = (body.workspaceExecutionId or "").strip()
+    if not shared_key:
+        raise HTTPException(status_code=400, detail="workspaceExecutionId required")
+    class_config = _resolve_juicefs_class(body.executionClass)
+    if class_config is None:
+        raise HTTPException(
+            status_code=409, detail="no juicefs-shared execution class configured"
+        )
+
+    namespace = _agent_workflow_host_namespace()
+    secret_namespace = class_config.sharedWorkspaceStoreSecretNamespace or namespace
+    mount_path = class_config.sharedWorkspaceStoreMountPath or "/sandbox/work"
+    name = f"wspurge-{_safe_name(shared_key, max_length=54)}"
+    labels = {
+        "app": "workspace-purge",
+        "workflow-builder.cnoe.io/shared-workspace-key": _safe_name(shared_key, 63),
+    }
+    pv_body = {
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {"name": name, "labels": labels},
+        "spec": {
+            "capacity": {"storage": class_config.sharedWorkspaceStoreCapacity},
+            "accessModes": ["ReadWriteMany"],
+            "persistentVolumeReclaimPolicy": "Retain",
+            "storageClassName": "",
+            "mountOptions": list(class_config.sharedWorkspaceStoreMountOptions or []),
+            "volumeMode": "Filesystem",
+            "csi": {
+                "driver": class_config.sharedWorkspaceStoreCsiDriver,
+                "fsType": "juicefs",
+                "volumeHandle": name,
+                "nodePublishSecretRef": {
+                    "name": class_config.sharedWorkspaceStoreSecretName,
+                    "namespace": secret_namespace,
+                },
+                "volumeAttributes": {"subPath": shared_key},
+            },
+        },
+    }
+    pvc_body = {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": name, "namespace": namespace, "labels": labels},
+        "spec": {
+            "accessModes": ["ReadWriteMany"],
+            "storageClassName": "",
+            "volumeName": name,
+            "resources": {
+                "requests": {"storage": class_config.sharedWorkspaceStoreCapacity}
+            },
+        },
+    }
+    job_name = f"{name}-{uuid4().hex[:6]}"
+    purge_cmd = (
+        f"find {mount_path} -mindepth 1 -delete 2>/dev/null; "
+        f"rm -rf {mount_path}/* {mount_path}/.[!.]* 2>/dev/null; echo purged; true"
+    )
+    job_body = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {"name": job_name, "namespace": namespace, "labels": labels},
+        "spec": {
+            "backoffLimit": 1,
+            "ttlSecondsAfterFinished": 600,
+            "template": {
+                "metadata": {"labels": labels},
+                "spec": {
+                    "restartPolicy": "Never",
+                    "containers": [
+                        {
+                            "name": "purge",
+                            "image": "busybox:1.36",
+                            "command": ["sh", "-c", purge_cmd],
+                            "volumeMounts": [{"name": "work", "mountPath": mount_path}],
+                        }
+                    ],
+                    "volumes": [
+                        {"name": "work", "persistentVolumeClaim": {"claimName": name}}
+                    ],
+                },
+            },
+        },
+    }
+
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {"1", "true", "yes"}:
+        return {"dryRun": True, "job": job_name, "subPath": shared_key}
+
+    batch, core = _load_k8s_clients()
+    try:
+        core.create_persistent_volume(body=pv_body)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+        try:
+            existing = core.read_persistent_volume(name=name)
+            phase = getattr(getattr(existing, "status", None), "phase", None)
+            if phase in ("Released", "Available"):
+                core.patch_persistent_volume(name=name, body={"spec": {"claimRef": None}})
+        except Exception as patch_exc:
+            logger.warning("wspurge pv %s claimRef clear failed: %s", name, patch_exc)
+    try:
+        core.create_namespaced_persistent_volume_claim(namespace=namespace, body=pvc_body)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+    batch.create_namespaced_job(namespace=namespace, body=job_body)
+    return {"success": True, "job": job_name, "subPath": shared_key}
