@@ -187,6 +187,7 @@ export function createWorkflowStore() {
   // Execution state
   let currentRunningNodeId = $state<string | null>(null);
   let selectedExecutionId = $state<string | null>(null);
+  let focusedRunNode = $state<string | null>(null);
   let executionFollowMode = $state(true);
   let executionFollowSuppressUntil = $state(0);
 
@@ -670,6 +671,14 @@ export function createWorkflowStore() {
     },
     set selectedExecutionId(v) {
       selectedExecutionId = v;
+    },
+    // Canvas → run-feed sync: the node the user clicked while watching a run, so the
+    // run panel focuses that node's session (the canvas is the rail; the panel is the feed).
+    get focusedRunNode() {
+      return focusedRunNode;
+    },
+    set focusedRunNode(v) {
+      focusedRunNode = v;
     },
     get executionFollowMode() {
       return executionFollowMode;
