@@ -12,8 +12,7 @@
 	import { Card } from '$lib/components/ui/card';
 	import { formatDistanceToNow } from 'date-fns';
 	import StepTimeline from '$lib/components/workflow/execution/step-timeline.svelte';
-	import RunLineageTree from '$lib/components/workflow/execution/run-lineage-tree.svelte';
-	import RunConsole from '$lib/components/workflow/execution/run-console.svelte';
+	import RunFocusPanel from '$lib/components/workflow/execution/run-focus-panel.svelte';
 	import {
 		ChainOfThought,
 		ChainOfThoughtHeader,
@@ -387,46 +386,28 @@
 		</div>
 	{/if}
 
-	{#if store.selectedExecutionId && store.workflowId}
-		<!-- Fork lineage of the selected run — runs are branches; selecting one here
-		     overlays it on the canvas (where you can edit a node + "Fork from here"). -->
-		<div class="max-h-56 shrink-0 overflow-y-auto border-b border-border">
-			<RunLineageTree
-				executionId={store.selectedExecutionId}
-				{slug}
-				workflowId={store.workflowId}
-				selectedId={store.selectedExecutionId}
-				onSelect={(id) => (store.selectedExecutionId = id)}
-			/>
-		</div>
-	{/if}
-
 	{#if embedded && store.selectedExecutionId && store.workflowId}
-		<!-- Selected run → the full Run Console in-panel (the canvas is the unified
-		     workspace: author + run + watch + fork without leaving the editor). The
-		     lineage tree above switches branches; the canvas overlays this run live. -->
-		<div class="flex items-center justify-between gap-2 border-b border-border px-3 py-1 text-[11px]">
+		<!-- Selected run → single-column "live feed" (the canvas IS the node rail; this
+		     panel is transcript-first so you can actually read what the session is doing).
+		     RunFocusPanel hosts the session switcher, branches, and "open full run".
+		     Clicking a node on the canvas focuses that node's session here. -->
+		<div class="flex items-center gap-2 border-b border-border px-3 py-1 text-[11px]">
 			<button
 				class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground hover:bg-muted"
-				onclick={() => (store.selectedExecutionId = null)}
+				onclick={() => {
+					store.selectedExecutionId = null;
+					store.focusedRunNode = null;
+				}}
 			>
 				← All runs
 			</button>
-			<a
-				class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground hover:bg-muted"
-				href="/workspaces/{slug}/workflows/{store.workflowId}/runs/{store.selectedExecutionId}"
-				title="Open the full run page (outputs, code, plan, browser, traces)"
-			>
-				<ExternalLink size={12} /> Open full run
-			</a>
 		</div>
 		<div class="min-h-0 flex-1 overflow-hidden">
-			<RunConsole
+			<RunFocusPanel
 				executionId={store.selectedExecutionId}
 				{slug}
 				workflowId={store.workflowId}
-				nodes={store.nodes}
-				edges={store.edges}
+				focusNode={store.focusedRunNode}
 			/>
 		</div>
 	{:else}

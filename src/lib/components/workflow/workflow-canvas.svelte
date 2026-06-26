@@ -421,6 +421,11 @@
 	function onNodeClick({ node }: { node: Node; event: MouseEvent | TouchEvent }) {
 		store.selectedNodeId = node.id;
 		store.selectedEdgeId = null;
+		// Canvas is the rail: when a run is overlaid, clicking a node focuses that
+		// node's session in the run feed (right panel).
+		if (store.selectedExecutionId && node.id !== '__start__' && node.id !== '__end__') {
+			store.focusedRunNode = bareNodeName(node.id) ?? null;
+		}
 		const runId =
 			typeof (node.data as Record<string, unknown> | undefined)?.agentRunId === 'string'
 				? ((node.data as Record<string, unknown>).agentRunId as string)
