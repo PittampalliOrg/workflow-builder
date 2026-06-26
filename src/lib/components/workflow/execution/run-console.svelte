@@ -19,7 +19,7 @@
 	import { createExecutionStream, type ExecutionStreamStore } from '$lib/stores/execution-stream.svelte';
 	import { createSessionStream, type SessionStreamStore } from '$lib/stores/session-stream.svelte';
 	import type { SessionEventEnvelope } from '$lib/types/sessions';
-	import type { ExecutionReadModel } from '$lib/types/execution-stream';
+	import type { ExecutionReadModel, ExecutionStepLog } from '$lib/types/execution-stream';
 	import SessionTranscript from '$lib/components/sessions/session-transcript.svelte';
 	import RunMetricsBar, {
 		type RunMetricsLive,
@@ -171,6 +171,76 @@
 		})
 	);
 
+	// ── Node-step spine ────────────────────────────────────────────────────
+	// The run's top-level node executions (from the snapshot's workflow_execution_logs).
+	// This is the rail's spine so EVERY run reads as "what it did" — including
+	// non-agent runs and non-agent-suffix FORKS (e.g. publish_contract → pr → summary),
+	// which spawn no agent sessions and otherwise left the console blank. Agent
+	// sessions nest under their owning step.
+	const steps = $derived<ExecutionStepLog[]>(snapshot?.steps ?? []);
+
+	function stepStatusDot(status: string): { sym: string; cls: string; label: string } {
+		switch (status) {
+			case 'running':
+				return { sym: '▶', cls: 'text-teal-500', label: 'running' };
+			case 'success':
+				return { sym: '✓', cls: 'text-emerald-500', label: 'done' };
+			case 'error':
+				return { sym: '✕', cls: 'text-red-500', label: 'error' };
+			case 'pending':
+				return { sym: '○', cls: 'text-muted-foreground', label: 'pending' };
+			default:
+				return { sym: '○', cls: 'text-muted-foreground', label: status };
+		}
+	}
+
+	// Map each session to its owning top-level step (longest stepName that prefixes the
+	// session's node label). Sessions with no matching step fall into "other".
+	function ownerStepOf(s: SessionRow): string | null {
+		const node = nodeOf(s);
+		const base = groupBaseOf(node);
+		let best: string | null = null;
+		for (const st of steps) {
+			const name = st.stepName;
+			if (node === name || base === name || node.startsWith(name + '/') || node.startsWith(name + '-')) {
+				if (!best || name.length > best.length) best = name;
+			}
+		}
+		return best;
+	}
+	const sessionsByStep = $derived.by(() => {
+		const m = new Map<string, SessionRow[]>();
+		const other: SessionRow[] = [];
+		for (const s of orderedSessions) {
+			const owner = ownerStepOf(s);
+			if (owner) {
+				const arr = m.get(owner) ?? [];
+				arr.push(s);
+				m.set(owner, arr);
+			} else {
+				other.push(s);
+			}
+		}
+		return { byStep: m, other };
+	});
+	// Show the node spine when we have step data; otherwise fall back to the flat
+	// sessions list (older runs / before the first snapshot arrives).
+	const hasSpine = $derived(steps.length > 0);
+
+	// A non-agent step the user clicked to inspect (output/error in the main pane).
+	let selectedStep = $state<string | null>(null);
+	const selectedStepLog = $derived.by(() =>
+		selectedStep ? (steps.find((s) => s.stepName === selectedStep) ?? null) : null
+	);
+	function selectStep(name: string) {
+		selectedStep = name;
+		pinnedId = null;
+	}
+	function focusSession(id: string) {
+		pinnedId = id;
+		selectedStep = null;
+	}
+
 	// ── Focus / auto-follow ────────────────────────────────────────────────
 	let pinnedId = $state<string | null>(null);
 	const newestActiveId = $derived.by(() => {
@@ -180,7 +250,7 @@
 	const focusedId = $derived(
 		pinnedId ?? newestActiveId ?? (orderedSessions.length > 0 ? orderedSessions[orderedSessions.length - 1].id : null)
 	);
-	const following = $derived(pinnedId === null);
+	const following = $derived(pinnedId === null && selectedStep === null);
 
 	// ── Per-active-session preview streams (capped) ─────────────────────────
 	const MAX_PREVIEW_STREAMS = 4;
@@ -404,14 +474,102 @@
 	<!-- Flow-progress band is now rendered once at the run-page level (persistent
 	     header on every tab) so switching tabs doesn't shift layout. -->
 
-	{#if orderedSessions.length === 0}
+	{#snippet sessionRow(s: SessionRow, indented: boolean)}
+		{@const node = nodeOf(s)}
+		{@const dot = statusDot(s.status)}
+		{@const pv = previews[s.id]}
+		<button
+			in:fly={{ y: -6, duration: 200 }}
+			class="mb-1 w-full rounded-md border px-2.5 py-2 text-left transition-colors {indented
+				? 'ml-3'
+				: ''} {focusedId === s.id && selectedStep === null
+				? 'border-primary/50 bg-primary/5'
+				: 'border-transparent hover:border-border hover:bg-muted/50'}"
+			onclick={() => focusSession(s.id)}
+		>
+			<div class="flex items-center gap-2">
+				<span class="{dot.cls} text-xs" title={dot.label}>{dot.sym}</span>
+				<span class="min-w-0 flex-1 truncate text-xs font-medium">{node}</span>
+				{#if s.inherited}
+					<span
+						class="inline-flex shrink-0 items-center rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground"
+						title="Replayed from the source run this run was resumed/forked from"
+					>
+						inherited
+					</span>
+				{/if}
+				{#if isActive(s) && pv?.activity}
+					<span
+						class="inline-flex shrink-0 items-center gap-1 rounded-full bg-teal-500/10 px-1.5 py-0.5 text-[9px] font-medium text-teal-600 dark:text-teal-300"
+					>
+						<span class="size-1 animate-pulse rounded-full bg-teal-400"></span>{pv.activity}
+					</span>
+				{:else if isActive(s)}
+					<span class="inline-block size-1.5 animate-pulse rounded-full bg-teal-400/80"></span>
+				{/if}
+			</div>
+			{#if s.status === 'rescheduling'}
+				{@const prov = provisioning[s.id]}
+				<div class="mt-1 flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+					<Loader2 class="size-3 shrink-0 animate-spin" />
+					<span class="truncate">{prov?.label ?? 'Provisioning sandbox…'}</span>
+					{#if prov?.detail}<span class="truncate text-muted-foreground/70">· {prov.detail}</span>{/if}
+				</div>
+				{#if prov?.timeline && prov.timeline.length > 0}
+					<div class="mt-1">
+						<ProvisioningStepper timeline={prov.timeline} phase={prov.phase} compact />
+					</div>
+				{/if}
+			{/if}
+			{#if pv?.lastLine}
+				<p class="mt-1 line-clamp-2 text-[11px] text-muted-foreground">{pv.lastLine}</p>
+			{/if}
+			<div class="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground/80">
+				{#if pv && pv.inTok + pv.outTok > 0}
+					<span>{fmtTokens(pv.inTok)}↓ {fmtTokens(pv.outTok)}↑</span>
+				{/if}
+				<span class="ml-auto">{relTime(s.createdAt)}</span>
+			</div>
+		</button>
+	{/snippet}
+
+	{#snippet stepRow(st: ExecutionStepLog)}
+		{@const sdot = stepStatusDot(st.status)}
+		{@const kids = sessionsByStep.byStep.get(st.stepName) ?? []}
+		<button
+			class="mb-0.5 w-full rounded-md border px-2.5 py-1.5 text-left transition-colors {selectedStep ===
+			st.stepName
+				? 'border-primary/50 bg-primary/5'
+				: 'border-transparent hover:border-border hover:bg-muted/50'}"
+			onclick={() => selectStep(st.stepName)}
+		>
+			<div class="flex items-center gap-2">
+				<span class="{sdot.cls} text-xs" title={sdot.label}>{sdot.sym}</span>
+				<span class="min-w-0 flex-1 truncate text-xs font-semibold">{st.displayLabel ?? st.label ?? st.stepName}</span>
+				<span class="shrink-0 rounded bg-muted px-1 py-0.5 text-[9px] font-medium text-muted-foreground/80">
+					{st.actionType}
+				</span>
+				{#if st.durationMs != null}
+					<span class="shrink-0 text-[10px] text-muted-foreground/70">{Math.round(st.durationMs / 1000)}s</span>
+				{/if}
+			</div>
+			{#if st.error}
+				<p class="mt-0.5 line-clamp-2 text-[11px] text-red-500/90">{st.error}</p>
+			{/if}
+		</button>
+		{#each kids as s (s.id)}
+			{@render sessionRow(s, true)}
+		{/each}
+	{/snippet}
+
+	{#if !hasSpine && orderedSessions.length === 0}
 		<div class="flex flex-1 flex-col items-center justify-center text-muted-foreground">
 			<div class="rounded-full bg-muted p-3"><Inbox size={24} /></div>
 			<p class="mt-3 text-sm font-medium">
-				{runActive ? 'Waiting for sessions…' : 'No sessions in this run'}
+				{runActive ? 'Waiting for the first step…' : 'No steps recorded for this run'}
 			</p>
 			<p class="mt-1 text-xs">
-				Agent sessions spawned by <code>durable/run</code> nodes will appear here live.
+				Each workflow node — and the agent sessions it spawns — will appear here live.
 			</p>
 		</div>
 	{:else}
@@ -427,13 +585,13 @@
 			<div class="flex min-h-0 flex-col border-r">
 				<div class="flex items-center justify-between gap-2 border-b px-3 py-1.5">
 					<span class="text-xs font-medium text-muted-foreground">
-						{orderedSessions.length} session{orderedSessions.length === 1 ? '' : 's'}
+						{#if hasSpine}{steps.length} step{steps.length === 1 ? '' : 's'}{#if orderedSessions.length > 0} · {orderedSessions.length} session{orderedSessions.length === 1 ? '' : 's'}{/if}{:else}{orderedSessions.length} session{orderedSessions.length === 1 ? '' : 's'}{/if}
 					</span>
 					<button
 						class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] {following
 							? 'bg-teal-500/15 text-teal-600 dark:text-teal-400'
 							: 'text-muted-foreground hover:bg-muted'}"
-						onclick={() => (pinnedId = null)}
+						onclick={() => { pinnedId = null; selectedStep = null; }}
 						title={following ? 'Following the newest active session' : 'Resume following latest'}
 					>
 						{#if following}<Radio class="size-3" /> Following latest{:else}<Pin class="size-3" /> Pinned{/if}
@@ -441,74 +599,30 @@
 				</div>
 
 				<div class="min-h-0 flex-1 overflow-y-auto p-1.5">
-					{#each orderedSessions as s, i (s.id)}
-						{@const node = nodeOf(s)}
-						{@const base = groupBaseOf(node)}
-						{@const prevBase = i > 0 ? groupBaseOf(nodeOf(orderedSessions[i - 1])) : null}
-						{@const dot = statusDot(s.status)}
-						{@const pv = previews[s.id]}
-						{#if base !== prevBase}
+					{#if hasSpine}
+						{#each steps as st (st.stepName)}
+							{@render stepRow(st)}
+						{/each}
+						{#if sessionsByStep.other.length > 0}
 							<div class="px-1.5 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
-								{base}
+								other sessions
 							</div>
+							{#each sessionsByStep.other as s (s.id)}
+								{@render sessionRow(s, false)}
+							{/each}
 						{/if}
-						<button
-							in:fly={{ y: -6, duration: 200 }}
-							class="mb-1 w-full rounded-md border px-2.5 py-2 text-left transition-colors {focusedId ===
-							s.id
-								? 'border-primary/50 bg-primary/5'
-								: 'border-transparent hover:border-border hover:bg-muted/50'}"
-							onclick={() => (pinnedId = s.id)}
-						>
-							<div class="flex items-center gap-2">
-								<span class="{dot.cls} text-xs" title={dot.label}>{dot.sym}</span>
-								<span class="min-w-0 flex-1 truncate text-xs font-medium">{node}</span>
-								{#if s.inherited}
-									<span
-										class="inline-flex shrink-0 items-center rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground"
-										title="Replayed from the source run this run was resumed/forked from"
-									>
-										inherited
-									</span>
-								{/if}
-								{#if isActive(s) && pv?.activity}
-									<span
-										class="inline-flex shrink-0 items-center gap-1 rounded-full bg-teal-500/10 px-1.5 py-0.5 text-[9px] font-medium text-teal-600 dark:text-teal-300"
-									>
-										<span class="size-1 animate-pulse rounded-full bg-teal-400"></span>{pv.activity}
-									</span>
-								{:else if isActive(s)}
-									<span class="inline-block size-1.5 animate-pulse rounded-full bg-teal-400/80"></span>
-								{/if}
-							</div>
-							{#if s.status === 'rescheduling'}
-								{@const prov = provisioning[s.id]}
-								<div class="mt-1 flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400">
-									<Loader2 class="size-3 shrink-0 animate-spin" />
-									<span class="truncate">{prov?.label ?? 'Provisioning sandbox…'}</span>
-									{#if prov?.detail}<span class="truncate text-muted-foreground/70">· {prov.detail}</span>{/if}
+					{:else}
+						{#each orderedSessions as s, i (s.id)}
+							{@const base = groupBaseOf(nodeOf(s))}
+							{@const prevBase = i > 0 ? groupBaseOf(nodeOf(orderedSessions[i - 1])) : null}
+							{#if base !== prevBase}
+								<div class="px-1.5 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+									{base}
 								</div>
-								{#if prov?.timeline && prov.timeline.length > 0}
-									<div class="mt-1">
-										<ProvisioningStepper
-											timeline={prov.timeline}
-											phase={prov.phase}
-											compact
-										/>
-									</div>
-								{/if}
 							{/if}
-							{#if pv?.lastLine}
-								<p class="mt-1 line-clamp-2 text-[11px] text-muted-foreground">{pv.lastLine}</p>
-							{/if}
-							<div class="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground/80">
-								{#if pv && pv.inTok + pv.outTok > 0}
-									<span>{fmtTokens(pv.inTok)}↓ {fmtTokens(pv.outTok)}↑</span>
-								{/if}
-								<span class="ml-auto">{relTime(s.createdAt)}</span>
-							</div>
-						</button>
-					{/each}
+							{@render sessionRow(s, false)}
+						{/each}
+					{/if}
 				</div>
 
 				{#if details}
@@ -539,15 +653,19 @@
 				<div class="flex items-center justify-between gap-2 border-b px-3 py-1.5">
 					<div class="flex min-w-0 items-center gap-2">
 						<span class="truncate text-xs font-medium">
-							{focusedId ? nodeOf(orderedSessions.find((s) => s.id === focusedId) ?? ({} as SessionRow)) : '—'}
+							{#if selectedStepLog}{selectedStepLog.displayLabel ?? selectedStepLog.label ?? selectedStepLog.stepName}{:else}{focusedId ? nodeOf(orderedSessions.find((s) => s.id === focusedId) ?? ({} as SessionRow)) : '—'}{/if}
 						</span>
-						{#if !following}
+						{#if selectedStepLog}
+							<span class="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+								{selectedStepLog.actionType}
+							</span>
+						{:else if !following}
 							<span class="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400">
 								Pinned
 							</span>
 						{/if}
 					</div>
-					{#if focusedId}
+					{#if !selectedStepLog && focusedId}
 						<a
 							href="/workspaces/{slug}/sessions/{focusedId}"
 							class="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
@@ -558,13 +676,41 @@
 					{/if}
 				</div>
 				<div class="min-h-0 flex-1 overflow-hidden">
-					{#if focusedId}
+					{#if selectedStepLog}
+						{@const sdot = stepStatusDot(selectedStepLog.status)}
+						<div class="h-full overflow-y-auto p-4 text-sm">
+							<div class="mb-3 flex items-center gap-2">
+								<span class="{sdot.cls}" title={sdot.label}>{sdot.sym}</span>
+								<span class="font-medium">{sdot.label}</span>
+								{#if selectedStepLog.durationMs != null}
+									<span class="text-xs text-muted-foreground">· {Math.round(selectedStepLog.durationMs / 1000)}s</span>
+								{/if}
+							</div>
+							<p class="mb-3 text-xs text-muted-foreground">
+								This step ran in the workflow orchestrator (no agent session). Its outputs and any
+								diffs/artifacts are on the <span class="font-medium">Outputs</span> and
+								<span class="font-medium">Changes</span> tabs.
+							</p>
+							{#if selectedStepLog.error}
+								<div class="mb-3 rounded-md border border-red-500/30 bg-red-500/5 p-3">
+									<div class="mb-1 text-xs font-semibold text-red-500">Error</div>
+									<pre class="whitespace-pre-wrap break-words text-[11px] text-red-500/90">{selectedStepLog.error}</pre>
+								</div>
+							{/if}
+							{#if selectedStepLog.output != null}
+								<div class="rounded-md border bg-muted/30 p-3">
+									<div class="mb-1 text-xs font-semibold text-muted-foreground">Output</div>
+									<pre class="max-h-[50vh] overflow-auto whitespace-pre-wrap break-words text-[11px]">{typeof selectedStepLog.output === 'string' ? selectedStepLog.output : JSON.stringify(selectedStepLog.output, null, 2)}</pre>
+								</div>
+							{/if}
+						</div>
+					{:else if focusedId}
 						{#key focusedId}
 							<SessionTranscript sessionId={focusedId} />
 						{/key}
 					{:else}
 						<div class="flex h-full items-center justify-center text-sm text-muted-foreground">
-							Select a session on the left.
+							Select a step or session on the left.
 						</div>
 					{/if}
 				</div>

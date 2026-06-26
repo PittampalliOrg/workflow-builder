@@ -12,6 +12,7 @@
 	import { Card } from '$lib/components/ui/card';
 	import { formatDistanceToNow } from 'date-fns';
 	import StepTimeline from '$lib/components/workflow/execution/step-timeline.svelte';
+	import RunLineageTree from '$lib/components/workflow/execution/run-lineage-tree.svelte';
 	import {
 		ChainOfThought,
 		ChainOfThoughtHeader,
@@ -382,6 +383,20 @@
 			>
 				<X size={14} />
 			</button>
+		</div>
+	{/if}
+
+	{#if store.selectedExecutionId && store.workflowId}
+		<!-- Fork lineage of the selected run — runs are branches; selecting one here
+		     overlays it on the canvas (where you can edit a node + "Fork from here"). -->
+		<div class="max-h-56 shrink-0 overflow-y-auto border-b border-border">
+			<RunLineageTree
+				executionId={store.selectedExecutionId}
+				{slug}
+				workflowId={store.workflowId}
+				selectedId={store.selectedExecutionId}
+				onSelect={(id) => (store.selectedExecutionId = id)}
+			/>
 		</div>
 	{/if}
 

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
 	import { NodeToolbar, Position } from '@xyflow/svelte';
-	import { Settings, Copy, Trash2 } from '@lucide/svelte';
+	import { Settings, Copy, Trash2, GitFork } from '@lucide/svelte';
 	import { createWorkflowStore } from '$lib/stores/workflow.svelte';
 
 	interface Props {
@@ -12,6 +12,11 @@
 	let { nodeId, position = Position.Top }: Props = $props();
 
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
+	// Offer "Fork from here" whenever a run is overlaid + this is a real node; the
+	// canvas handler enforces the run-must-be-terminal gate (and toasts otherwise).
+	const canFork = $derived(
+		!!store.selectedExecutionId && nodeId !== '__start__' && nodeId !== '__end__'
+	);
 
 	function handleConfigure() {
 		store.selectedNodeId = nodeId;
@@ -24,6 +29,10 @@
 	function handleDelete() {
 		store.removeNode(nodeId);
 	}
+
+	function handleFork() {
+		window.dispatchEvent(new CustomEvent('workflow:fork-from-node', { detail: { nodeId } }));
+	}
 </script>
 
 <NodeToolbar {nodeId} {position}>
@@ -35,6 +44,15 @@
 		>
 			<Settings size={14} />
 		</button>
+		{#if canFork}
+			<button
+				class="rounded p-1.5 text-primary hover:bg-primary/10"
+				onclick={handleFork}
+				title="Fork the selected run from this node"
+			>
+				<GitFork size={14} />
+			</button>
+		{/if}
 		<button
 			class="rounded p-1.5 hover:bg-accent"
 			onclick={handleDuplicate}

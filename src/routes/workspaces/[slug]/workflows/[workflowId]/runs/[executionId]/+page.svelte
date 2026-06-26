@@ -48,16 +48,9 @@
 		List as ListIcon
 	} from '@lucide/svelte';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
-	import {
-		AlertDialog,
-		AlertDialogAction,
-		AlertDialogCancel,
-		AlertDialogContent,
-		AlertDialogDescription,
-		AlertDialogFooter,
-		AlertDialogHeader,
-		AlertDialogTitle
-	} from '$lib/components/ui/alert-dialog';
+	import ForkDialog from '$lib/components/workflow/execution/fork-dialog.svelte';
+	import RunLineageTree from '$lib/components/workflow/execution/run-lineage-tree.svelte';
+	import { forkRun } from '$lib/workflows/fork';
 	import OtherRunsPanel from '$lib/components/runs/other-runs-panel.svelte';
 	import WorkflowQuickSwitcher from '$lib/components/workflow/workflow-quick-switcher.svelte';
 	import RunQuickSwitcher from '$lib/components/workflow/run-quick-switcher.svelte';
@@ -1164,6 +1157,8 @@
 	let resumeDialogOpen = $state(false);
 	let resumeDialogNode = $state<string | null>(null);
 	let resumeError = $state<string | null>(null);
+	// Fork-lineage tree (ancestors + every fork), revealed from the lineage bar.
+	let lineageOpen = $state(false);
 	// Effective node being resumed from: explicit pick, else the in-flight (failed) node.
 	const resumeEffectiveNode = $derived(
 		resumeDialogNode ?? snapshot?.currentNodeId ?? resumableNodeIds[0] ?? null
@@ -1183,25 +1178,13 @@
 		resumeBusy = true;
 		resumeError = null;
 		try {
-			const res = await fetch(`/api/workflows/executions/${executionId}/resume`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(resumeDialogNode ? { fromNodeId: resumeDialogNode } : {})
-			});
-			const b = (await res.json().catch(() => ({}))) as {
-				ok?: boolean;
-				executionId?: string;
-				message?: string;
-				error?: string;
-			};
-			if (!res.ok || !b?.ok || !b.executionId) {
-				resumeError = b?.message || b?.error || `Failed (HTTP ${res.status})`;
+			const r = await forkRun(executionId, resumeDialogNode);
+			if (!r.ok || !r.executionId) {
+				resumeError = r.error ?? 'Request failed';
 				return;
 			}
 			resumeDialogOpen = false;
-			await goto(`/workspaces/${slug}/workflows/${workflowId}/runs/${b.executionId}`);
-		} catch (err) {
-			resumeError = err instanceof Error ? err.message : 'Request failed';
+			await goto(`/workspaces/${slug}/workflows/${workflowId}/runs/${r.executionId}`);
 		} finally {
 			resumeBusy = false;
 		}
@@ -2336,23 +2319,42 @@
 		</div>
 	</header>
 
-	{#if forkedFromExecutionId}
-		<!-- Lineage context: this run was resumed/forked from another at an earlier
-		     step; the skipped steps + their activity live on the source run. -->
-		<div
-			class="flex items-center gap-2 border-b border-border bg-muted/40 px-4 py-1.5 text-xs text-muted-foreground"
-		>
-			<GitFork class="size-3.5 shrink-0 text-primary" />
-			<span class="min-w-0 flex-1 truncate">
-				Forked from an earlier run — skipped steps were reused from its workspace and show as
-				<span class="font-medium">inherited</span> activity below.
-			</span>
-			<a
-				class="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-0.5 font-medium text-foreground hover:bg-accent"
-				href={`/workspaces/${slug}/workflows/${workflowId}/runs/${forkedFromExecutionId}`}
-			>
-				View source run <ChevronRight class="size-3" />
-			</a>
+	{#if forkedFromExecutionId || isTerminal}
+		<!-- Fork lineage bar: this run's place in the fork family. Forks are
+		     first-class — the bar names the source run (if forked) and expands the
+		     full lineage tree (ancestors + every fork) for navigation + re-forking. -->
+		<div class="border-b border-border bg-muted/40 text-xs text-muted-foreground">
+			<div class="flex items-center gap-2 px-4 py-1.5">
+				<GitFork class="size-3.5 shrink-0 text-primary" />
+				<span class="min-w-0 flex-1 truncate">
+					{#if forkedFromExecutionId}
+						Forked from an earlier run — skipped steps were reused from its workspace and show as
+						<span class="font-medium">inherited</span> activity.
+					{:else}
+						This run can be forked from any completed step — branches reuse its workspace.
+					{/if}
+				</span>
+				{#if forkedFromExecutionId}
+					<a
+						class="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-0.5 font-medium text-foreground hover:bg-accent"
+						href={`/workspaces/${slug}/workflows/${workflowId}/runs/${forkedFromExecutionId}`}
+					>
+						View source run <ChevronRight class="size-3" />
+					</a>
+				{/if}
+				<button
+					class="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-0.5 font-medium text-foreground hover:bg-accent"
+					onclick={() => (lineageOpen = !lineageOpen)}
+				>
+					Fork lineage
+					<ChevronDown class="size-3 transition-transform {lineageOpen ? 'rotate-180' : ''}" />
+				</button>
+			</div>
+			{#if lineageOpen}
+				<div class="max-h-72 overflow-y-auto border-t border-border bg-background">
+					<RunLineageTree {executionId} {slug} {workflowId} onFork={() => openResume()} />
+				</div>
+			{/if}
 		</div>
 	{/if}
 
@@ -3280,57 +3282,13 @@
 
 <!-- Resume/fork preview — replaces a blocking native confirm() with an in-app modal
      that previews which steps are skipped (reused) vs re-run before forking. -->
-<AlertDialog open={resumeDialogOpen} onOpenChange={(o) => (resumeDialogOpen = o)}>
-	<AlertDialogContent class="max-w-lg">
-		<AlertDialogHeader>
-			<AlertDialogTitle class="flex items-center gap-2">
-				<GitFork class="size-4 text-primary" />
-				{resumeVerb} from {resumeEffectiveNode ? `“${resumeEffectiveNode}”` : 'the failed step'}
-			</AlertDialogTitle>
-			<AlertDialogDescription>
-				Starts a new run of the <span class="font-medium">current</span> workflow on an
-				<span class="font-medium">isolated copy</span> of this run's workspace. Earlier steps are
-				skipped; only the selected step onward re-runs — so your edits to that step (and later) take
-				effect, and parallel forks never interfere.
-			</AlertDialogDescription>
-		</AlertDialogHeader>
-
-		<div class="space-y-3 py-1 text-xs">
-			<div>
-				<div class="mb-1 font-medium text-muted-foreground">
-					Skipped — reused from this run ({resumeSplit.skipped.length})
-				</div>
-				<div class="flex flex-wrap gap-1">
-					{#each resumeSplit.skipped as n (n)}
-						<span class="rounded bg-muted px-1.5 py-0.5 text-muted-foreground line-through">{n}</span>
-					{/each}
-					{#if resumeSplit.skipped.length === 0}
-						<span class="text-muted-foreground italic">none — runs from the start</span>
-					{/if}
-				</div>
-			</div>
-			<div>
-				<div class="mb-1 font-medium text-primary">
-					Re-runs with current workflow ({resumeSplit.rerun.length})
-				</div>
-				<div class="flex flex-wrap gap-1">
-					{#each resumeSplit.rerun as n (n)}
-						<span class="rounded bg-primary/10 px-1.5 py-0.5 font-medium text-primary">{n}</span>
-					{/each}
-				</div>
-			</div>
-			{#if resumeError}
-				<div class="rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-red-600 dark:text-red-400">
-					{resumeError}
-				</div>
-			{/if}
-		</div>
-
-		<AlertDialogFooter>
-			<AlertDialogCancel disabled={resumeBusy}>Cancel</AlertDialogCancel>
-			<AlertDialogAction onclick={confirmResume} disabled={resumeBusy}>
-				{resumeBusy ? `${resumeVerb}ing…` : `${resumeVerb} from here`}
-			</AlertDialogAction>
-		</AlertDialogFooter>
-	</AlertDialogContent>
-</AlertDialog>
+<ForkDialog
+	bind:open={resumeDialogOpen}
+	verb={resumeVerb}
+	effectiveNode={resumeEffectiveNode}
+	skipped={resumeSplit.skipped}
+	rerun={resumeSplit.rerun}
+	busy={resumeBusy}
+	error={resumeError}
+	onConfirm={confirmResume}
+/>
