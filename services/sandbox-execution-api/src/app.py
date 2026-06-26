@@ -259,6 +259,8 @@ class ExecutionClassConfig(BaseModel):
     servicePort: int = 3000
     serviceCpu: str = "500m"
     serviceMemory: str = "1Gi"
+    serviceCpuLimit: str | None = None
+    serviceMemoryLimit: str | None = None
     serviceEphemeralStorage: str = "2Gi"
     serviceEnv: dict[str, str] = Field(default_factory=dict)
 
@@ -2361,19 +2363,26 @@ def build_dev_preview_sandbox_manifest(
                 "ephemeral-storage": class_config.serviceEphemeralStorage,
             },
             "limits": {
-                "memory": class_config.serviceMemory,
+                **(
+                    {"cpu": class_config.serviceCpuLimit}
+                    if class_config.serviceCpuLimit
+                    else {}
+                ),
+                "memory": class_config.serviceMemoryLimit or class_config.serviceMemory,
                 "ephemeral-storage": class_config.serviceEphemeralStorage,
             },
         },
         "startupProbe": {
             "httpGet": {"path": "/", "port": port},
             "initialDelaySeconds": 5,
-            "periodSeconds": 3,
+            "periodSeconds": 5,
+            "timeoutSeconds": 5,
             "failureThreshold": 60,
         },
         "readinessProbe": {
             "httpGet": {"path": "/", "port": port},
-            "periodSeconds": 5,
+            "periodSeconds": 10,
+            "timeoutSeconds": 5,
         },
     }
     if class_config.serviceCommand:
