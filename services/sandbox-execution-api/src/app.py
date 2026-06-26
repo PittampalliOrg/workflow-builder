@@ -2425,15 +2425,16 @@ def purge_workspace_data(
     namespace = _agent_workflow_host_namespace()
     secret_namespace = class_config.sharedWorkspaceStoreSecretNamespace or namespace
     mount_path = class_config.sharedWorkspaceStoreMountPath or "/sandbox/work"
-    name = f"wspurge-{_safe_name(shared_key, max_length=54)}"
-    labels = {
-        "app": "workspace-purge",
-        "workflow-builder.cnoe.io/shared-workspace-key": _safe_name(shared_key, max_length=63),
-    }
+    # Hash the (long) workspace key into resource names so the Job + its auto-injected
+    # `job-name` pod label stay within k8s' 63-char limit. Full key in an annotation.
+    digest = sha256(shared_key.encode()).hexdigest()[:16]
+    name = f"wspurge-{digest}"
+    labels = {"app": "workspace-purge"}
+    key_anno = {"workflow-builder.cnoe.io/shared-workspace-key": shared_key}
     pv_body = {
         "apiVersion": "v1",
         "kind": "PersistentVolume",
-        "metadata": {"name": name, "labels": labels},
+        "metadata": {"name": name, "labels": labels, "annotations": key_anno},
         "spec": {
             "capacity": {"storage": class_config.sharedWorkspaceStoreCapacity},
             "accessModes": ["ReadWriteMany"],
