@@ -4624,6 +4624,11 @@ async function seedGeneratorCriticShowcases(params: {
 		// local-build, uid alignment, durable source-bundle persistence, and
 		// concurrency-safe parallel tool calls — no GAN plan/negotiate/refine loop.
 		"bundle-proof.json",
+		// Self-update P1: clone workflow-builder, edit a visible UI string, push src to
+		// the workflow-builder-dev (vite/HMR) pod via Dapr service invocation (/__sync),
+		// and verify the change is LIVE on the preview — skaffold-style live-sync from a
+		// workflow, no kubectl/RBAC. See docs/agentic-deploy-inspect-loop.md.
+		"workflow-builder-self-edit-livesync.json",
 	]) {
 		const full = path.join(dir, file);
 		if (!fs.existsSync(full)) {
