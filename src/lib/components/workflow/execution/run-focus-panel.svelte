@@ -71,6 +71,7 @@
 		}
 	}
 	const runActive = $derived(runStatus === 'running' || runStatus === 'pending');
+	const runSucceeded = $derived(runStatus === 'success' || runStatus === 'completed');
 	$effect(() => {
 		void executionId;
 		void refresh();
@@ -106,6 +107,12 @@
 			if (ss.some((s) => s.status === 'error')) return 'error';
 		}
 		if (currentNodeId === name || currentNodeName === name) return 'running';
+		// Many nodes never write their own status row: agent nodes report via sessions
+		// (handled above), and a FORK's skipped prefix nodes never dispatch (inherited
+		// from the source). So a node with no explicit/session status on a SUCCEEDED run
+		// did complete (or was inherited) → show success, not a misleading grey "pending".
+		// On a failed/running run we stay neutral (we can't claim success).
+		if (runSucceeded) return 'success';
 		return 'pending';
 	}
 	function dotClass(state: string): string {
