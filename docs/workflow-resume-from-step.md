@@ -104,6 +104,10 @@ source row + its lineage stay around as usual.)
   (sandbox-execution-api `/internal/workspace/seed-data`, via the BFF) mounts the source subPath RO + the
   fork's fresh subPath RW and `cp -a` if empty — so it works whether or not the resumed node spawns an
   agent pod. (A copy-if-empty init container in agent session pods stays as a redundant fast path.)
+  **JuiceFS gotcha:** the copy-if-empty test must ignore JuiceFS's virtual control files
+  (`.accesslog`/`.config`/`.stats`, present in every mount/subPath) — a naive `ls -A` never sees a fresh
+  subPath as empty, so the seed is wrongly skipped and the fork runs against an empty workspace. The seed
+  command filters those files both when testing emptiness and when copying (`_seed_copy_cmd`).
   (Point-in-time *per-node* snapshots — state as-of *before* the node, vs the source's end state — remain
   a separate future option.)
 - **Retained workspaces are reaped** — the `resumable-workspace-gc` CronJob (every 6h) ages out abandoned
