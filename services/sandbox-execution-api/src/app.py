@@ -1173,23 +1173,37 @@ def _seed_clone_cmd() -> str:
     `juicefs clone` is metadata-only copy-on-write — it never copies file DATA, so a repo
     with thousands of tiny .git objects clones in ~one metadata pass instead of a
     file-by-file `cp` (≈7x faster here; instant once metadata moves off Postgres). Reads
-    $SRC_SUB / $DST_SUB from the container env. Copy-if-empty (magic-file-aware) +
-    per-top-level-entry clone (each is a recursive CoW op, so `repo` clones in one shot).
-    Exits non-zero on failure so the Job → status.failed (the poller raises)."""
+    $SRC_SUB / $DST_SUB from the container env. Copy-if-empty (magic-file-aware).
+
+    Build artifacts (node_modules/.svelte-kit/build/dist/.next/.cache/.turbo) are EXCLUDED
+    one level under each top-level dir (i.e. `repo/node_modules`). Two reasons: (1) a stale
+    seeded `node_modules` makes the agent build IN PLACE on the slow JuiceFS workspace
+    (the SSR build then hangs) instead of copying to local scratch + installing fresh; and
+    (2) a 89MB+ node_modules dominates both the clone and the post-clone chmod (turning a
+    ~2min seed into ~9min). Source (incl. .git for diffs) is kept; deps are reinstalled on
+    local scratch by the critic/publish_shot. Exits non-zero on failure → Job status.failed."""
+    excl = "node_modules .svelte-kit build dist .next .cache .turbo .vite"
     return (
         'r() { ls -A "$1" 2>/dev/null | ' + _JFS_MAGIC_FILTER + "; }; "
         'S="/jfs/$SRC_SUB"; D="/jfs/$DST_SUB"; '
         '[ -d "$S" ] || { echo source-missing; exit 1; }; '
         'mkdir -p "$D"; '
         'if [ -n "$(r "$D")" ]; then echo already-populated; exit 0; fi; '
+        'EXCL="' + excl + '"; '
+        'skip() { for x in $EXCL; do [ "$1" = "$x" ] && return 0; done; return 1; }; '
         "rc=0; "
-        'for f in $(r "$S"); do juicefs clone "$S/$f" "$D/$f" || rc=1; done; '
-        # `mkdir -p` makes $D root-owned 0755 and `juicefs clone` doesn't restore the
-        # source's mode, so the cloned workspace is read-only to the NON-root sandbox
-        # pods (a fresh workspace is 0777). Without this the forked run hits EACCES on
-        # any write (e.g. `mkdir /sandbox/work/vid`, screenshot/verdict files) — the
-        # whole suffix produces nothing. Make the cloned tree world-writable so any
-        # runtime uid can write, matching a fresh shared /sandbox/work.
+        # Top-level files clone directly; top-level DIRS clone child-by-child so we can
+        # prune build-artifact subdirs (kept children still clone via recursive CoW).
+        'for f in $(r "$S"); do '
+        'if [ -d "$S/$f" ]; then mkdir -p "$D/$f"; '
+        'for g in $(r "$S/$f"); do skip "$g" && continue; juicefs clone "$S/$f/$g" "$D/$f/$g" || rc=1; done; '
+        'else juicefs clone "$S/$f" "$D/$f" || rc=1; fi; '
+        'done; '
+        # `mkdir -p` makes dirs root-owned 0755 and `juicefs clone` doesn't restore the
+        # source's mode, so the cloned workspace is read-only to the NON-root sandbox pods
+        # (a fresh workspace is 0777) → EACCES on any write (`mkdir /sandbox/work/vid`,
+        # screenshot/verdict files). Make the cloned tree world-writable (cheap now that
+        # node_modules is excluded) so any runtime uid can write, like a fresh workspace.
         '[ "$rc" = 0 ] && chmod -R a+rwX "$D" 2>/dev/null; '
         'if [ "$rc" = 0 ] && [ -n "$(r "$D")" ]; then echo seeded; else echo clone-failed; exit 1; fi'
     )
