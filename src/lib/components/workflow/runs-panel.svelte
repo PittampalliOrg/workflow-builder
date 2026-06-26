@@ -13,6 +13,7 @@
 	import { formatDistanceToNow } from 'date-fns';
 	import StepTimeline from '$lib/components/workflow/execution/step-timeline.svelte';
 	import RunLineageTree from '$lib/components/workflow/execution/run-lineage-tree.svelte';
+	import RunConsole from '$lib/components/workflow/execution/run-console.svelte';
 	import {
 		ChainOfThought,
 		ChainOfThoughtHeader,
@@ -400,6 +401,35 @@
 		</div>
 	{/if}
 
+	{#if embedded && store.selectedExecutionId && store.workflowId}
+		<!-- Selected run → the full Run Console in-panel (the canvas is the unified
+		     workspace: author + run + watch + fork without leaving the editor). The
+		     lineage tree above switches branches; the canvas overlays this run live. -->
+		<div class="flex items-center justify-between gap-2 border-b border-border px-3 py-1 text-[11px]">
+			<button
+				class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground hover:bg-muted"
+				onclick={() => (store.selectedExecutionId = null)}
+			>
+				← All runs
+			</button>
+			<a
+				class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground hover:bg-muted"
+				href="/workspaces/{slug}/workflows/{store.workflowId}/runs/{store.selectedExecutionId}"
+				title="Open the full run page (outputs, code, plan, browser, traces)"
+			>
+				<ExternalLink size={12} /> Open full run
+			</a>
+		</div>
+		<div class="min-h-0 flex-1 overflow-hidden">
+			<RunConsole
+				executionId={store.selectedExecutionId}
+				{slug}
+				workflowId={store.workflowId}
+				nodes={store.nodes}
+				edges={store.edges}
+			/>
+		</div>
+	{:else}
 	<div class="flex-1 overflow-auto">
 		{#if isLoadingList && executions.length === 0}
 			<div class="flex items-center justify-center p-6">
@@ -670,4 +700,5 @@
 			</Button>
 		</div>
 	</div>
+	{/if}
 </div>

@@ -28,6 +28,7 @@
 	import RegistryStatusBadge from '$lib/components/agents/registry-status-badge.svelte';
 	import AgentModelSelector from '$lib/components/agents/agent-model-selector.svelte';
 	import WorkflowQuickSwitcher from '$lib/components/workflow/workflow-quick-switcher.svelte';
+	import SessionNodeContext from '$lib/components/sessions/session-node-context.svelte';
 	import EventRow from '$lib/components/sessions/event-row.svelte';
 	import EventDetailPanel from '$lib/components/sessions/event-detail-panel.svelte';
 	import { findToolPair, computeTokenAssignments } from '$lib/utils/tool-pair';
@@ -175,6 +176,15 @@
 			workflowName: wfName ?? wfId,
 			executionId: String(execId)
 		};
+	});
+
+	// This session's node label (last "·"-segment of the title) — used to highlight
+	// the owning step in the run-node-context strip. Best-effort; null = no highlight.
+	const sessionNodeLabel = $derived.by(() => {
+		const t = session?.title ?? '';
+		const i = t.lastIndexOf('·');
+		const label = (i >= 0 ? t.slice(i + 1) : t).trim();
+		return label || null;
 	});
 	// Transcript: user-facing messages + tool-use (compacted); hides thinking
 	// and raw status events. Debug: every event verbatim. Browser state:
@@ -1419,6 +1429,12 @@
 				#{workflowRunContext.executionId}
 			</a>
 		</div>
+		<SessionNodeContext
+			executionId={workflowRunContext.executionId}
+			{slug}
+			workflowId={workflowRunContext.workflowId}
+			highlightNode={sessionNodeLabel}
+		/>
 	{/if}
 
 	<!-- Title + inline metadata pill row. Matches CMA: session id (big),

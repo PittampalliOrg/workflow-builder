@@ -29,6 +29,27 @@
 	let panelWidth = $state(loadWidth());
 	let isResizing = $state(false);
 
+	// The Runs tab hosts the full Run Console when a run is selected — give it room.
+	// One-time nudge per newly-selected run (only widens, never shrinks; not persisted,
+	// so it never clobbers the user's saved width). The panel stays user-resizable.
+	const RUN_VIEW_MIN = 600;
+	let nudgedFor = $state<string | null>(null);
+	$effect(() => {
+		const sel = store.selectedExecutionId;
+		if (!sel) {
+			nudgedFor = null;
+			return;
+		}
+		if (ui.rightPanelTab === 'runs' && sel !== nudgedFor && panelWidth < RUN_VIEW_MIN) {
+			nudgedFor = sel;
+			const cap =
+				typeof window !== 'undefined'
+					? Math.round((window.innerWidth * MAX_WIDTH_PCT) / 100)
+					: RUN_VIEW_MIN;
+			panelWidth = Math.min(RUN_VIEW_MIN, cap);
+		}
+	});
+
 	// Determine if selected node is a call/action type (shows ActionProperties vs NodeConfigPanel)
 	// Reads from the spec (source of truth) — checks if node ID maps to a task with a `call` property
 	const isCallNode = $derived.by(() => {

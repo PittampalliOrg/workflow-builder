@@ -1,5 +1,5 @@
 import { error } from "@sveltejs/kit";
-import { and, desc, eq, isNull, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { PageServerLoad } from "./$types";
 import { db } from "$lib/server/db";
 import { workflowExecutions, workflows } from "$lib/server/db/schema";
@@ -22,6 +22,8 @@ export type WorkspaceWorkflowRow = {
 	running: boolean;
 	/** Most recent of (edited, last run) — the sort + "last active" key. */
 	lastActivityAt: string;
+	/** Number of fork/resume runs of this workflow (executions with a rerun parent). */
+	forkCount: number;
 };
 
 export const load: PageServerLoad = async ({ locals, params }) => {
@@ -56,6 +58,26 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 	if (rows.length === 0) {
 		return { slug: params.slug, workflows: [] as WorkspaceWorkflowRow[] };
 	}
+
+	// Fork counts per workflow (executions with a rerun parent) — one grouped query
+	// for all visible workflows, so the list can show a "⑂ N forks" badge.
+	const workflowIds = rows.map((r) => r.id);
+	const forkCountRows = await db
+		.select({
+			workflowId: workflowExecutions.workflowId,
+			count: sql<number>`count(*)::int`,
+		})
+		.from(workflowExecutions)
+		.where(
+			and(
+				inArray(workflowExecutions.workflowId, workflowIds),
+				isNotNull(workflowExecutions.rerunOfExecutionId),
+			),
+		)
+		.groupBy(workflowExecutions.workflowId);
+	const forkCountByWorkflow = new Map<string, number>(
+		forkCountRows.map((r) => [r.workflowId, Number(r.count) || 0]),
+	);
 
 	// Fetch the last 3 executions per workflow to power both the "Latest run"
 	// column and the activity-dots column. Per-workflow loop is fine for the
@@ -96,6 +118,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 			recentRuns,
 			running,
 			lastActivityAt,
+			forkCount: forkCountByWorkflow.get(row.id) ?? 0,
 		});
 	}
 

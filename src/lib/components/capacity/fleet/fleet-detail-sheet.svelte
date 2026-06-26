@@ -13,6 +13,8 @@
 	import { createSessionStream, type SessionStreamState } from '$lib/stores/session-stream.svelte';
 	import { createExecutionStream, type ExecutionStreamState } from '$lib/stores/execution-stream.svelte';
 	import EventRow from '$lib/components/sessions/event-row.svelte';
+	import RunLineageTree from '$lib/components/workflow/execution/run-lineage-tree.svelte';
+	import { page } from '$app/state';
 	import type { CapacityBusinessWorkItem } from '$lib/types/capacity';
 
 	type Props = {
@@ -21,6 +23,7 @@
 		onOpenChange: (next: boolean) => void;
 	};
 	let { open, item, onOpenChange }: Props = $props();
+	const slug = $derived((page.params.slug as string | undefined) ?? 'default');
 
 	const sessionId = $derived(
 		item && (item.kind === 'session' || item.kind === 'benchmarkInstance') ? item.id : null
@@ -257,6 +260,20 @@
 								{/each}
 							</div>
 						</div>
+
+						{#if item.workflowId}
+							<div>
+								<h3 class="mb-2 text-xs font-semibold text-muted-foreground">Fork lineage</h3>
+								<div class="max-h-56 overflow-y-auto rounded border">
+									<RunLineageTree
+										executionId={item.id}
+										{slug}
+										workflowId={item.workflowId}
+										selectedId={item.id}
+									/>
+								</div>
+							</div>
+						{/if}
 
 						{#if recentAgentEvents.length > 0}
 							<div>

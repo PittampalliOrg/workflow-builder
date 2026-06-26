@@ -251,6 +251,14 @@ export type CapacityBusinessWorkItem = {
   currentNodeName?: string | null;
   /** Workflow-run only: 0–100 progress. */
   progress?: number | null;
+  /** Workflow-run only: this run is a fork/resume of another (rerun parent id). */
+  rerunOfExecutionId?: string | null;
+  /** Workflow-run only: the node this run was forked FROM (skip-prefix point). */
+  forkedFromNode?: string | null;
+  /** Workflow-run only: count of fork/resume children of this run. */
+  forkCount?: number | null;
+  /** Workflow-run only: the parent workflow id (for lineage deep-links). */
+  workflowId?: string | null;
   owners: CapacityOwnerRef[];
   requestedResources: Record<string, number>;
   observedResources: Record<string, number>;

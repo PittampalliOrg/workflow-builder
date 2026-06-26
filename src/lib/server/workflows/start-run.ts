@@ -195,6 +195,11 @@ export async function startWorkflowRun(
 			phase: 'running',
 			progress: 0,
 			input: triggerData,
+			// Snapshot the EXECUTED spec (agent-refs resolved) so each run — and each
+			// fork — has the exact spec it ran, enabling per-branch "what changed vs
+			// parent" diffs. Evals/benchmarks create their own rows with a richer
+			// executionIr, so this generic path never clobbers them.
+			executionIr: { spec, triggerData },
 			executionIrVersion: 'sw-1.0.0',
 			...(opts.triggerSource ? { triggerSource: opts.triggerSource } : {}),
 			...(opts.rerunOfExecutionId ? { rerunOfExecutionId: opts.rerunOfExecutionId } : {}),
