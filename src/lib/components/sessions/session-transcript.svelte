@@ -41,11 +41,22 @@
 		showPulse?: boolean;
 		/** Render the timeline bar above the list. */
 		showTimeline?: boolean;
+		/** Narrow-container mode (e.g. the canvas right panel): force a SINGLE column
+		 *  (the event-list│detail split is viewport-gated via `lg:` and wrongly triggers
+		 *  in a narrow panel because the window is wide), and show event detail as an
+		 *  overlay over the list instead of a side column. */
+		compact?: boolean;
 		/** Extra classes for the root element. */
 		class?: string;
 	}
 
-	let { sessionId, showPulse = true, showTimeline = true, class: className = '' }: Props = $props();
+	let {
+		sessionId,
+		showPulse = true,
+		showTimeline = true,
+		compact = false,
+		class: className = ''
+	}: Props = $props();
 
 	let viewMode = $state<'transcript' | 'debug'>('transcript');
 	let events = $state<SessionEventEnvelope[]>([]);
@@ -179,9 +190,13 @@
 		</div>
 	{/if}
 
-	<div class="grid flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(240px,360px)_1fr]">
+	<div
+		class="relative grid flex-1 grid-cols-1 overflow-hidden {compact
+			? ''
+			: 'lg:grid-cols-[minmax(240px,360px)_1fr]'}"
+	>
 		<!-- Left: compact event list -->
-		<div bind:this={scrollEl} class="overflow-y-auto border-r py-1">
+		<div bind:this={scrollEl} class="overflow-y-auto py-1 {compact ? '' : 'border-r'}">
 			{#if loading}
 				<div class="space-y-1.5 p-3">
 					<Skeleton class="h-6" />
@@ -255,33 +270,63 @@
 			{/if}
 		</div>
 
-		<!-- Right: expanded detail panel -->
-		<div class="overflow-hidden">
-			{#if selectedBatch && selectedBatch.count > 1}
-				<BatchDetailPanel
-					children={selectedBatch.children}
-					{events}
-					{sessionStartMs}
-					debug={viewMode === 'debug'}
-					onClose={() => (selectedEventId = null)}
-				/>
-			{:else if selectedEvent}
-				{@const elapsed =
-					sessionStartMs !== null
-						? new Date(selectedEvent.createdAt).getTime() - sessionStartMs
-						: undefined}
-				<EventDetailPanel
-					event={selectedEvent}
-					pairedResult={selectedPairedResult}
-					elapsedMs={elapsed}
-					debug={viewMode === 'debug'}
-					onClose={() => (selectedEventId = null)}
-				/>
-			{:else if !loading}
-				<div class="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
-					Select an event on the left to see its content.
+		<!-- Detail panel: a side column normally; in compact (narrow panel) an overlay
+		     over the list, shown only when an event is selected, so the list keeps full
+		     width. -->
+		{#if compact}
+			{#if selectedBatch || selectedEvent}
+				<div class="absolute inset-0 z-10 overflow-hidden border-l-0 bg-background">
+					{#if selectedBatch && selectedBatch.count > 1}
+						<BatchDetailPanel
+							children={selectedBatch.children}
+							{events}
+							{sessionStartMs}
+							debug={viewMode === 'debug'}
+							onClose={() => (selectedEventId = null)}
+						/>
+					{:else if selectedEvent}
+						{@const elapsedC =
+							sessionStartMs !== null
+								? new Date(selectedEvent.createdAt).getTime() - sessionStartMs
+								: undefined}
+						<EventDetailPanel
+							event={selectedEvent}
+							pairedResult={selectedPairedResult}
+							elapsedMs={elapsedC}
+							debug={viewMode === 'debug'}
+							onClose={() => (selectedEventId = null)}
+						/>
+					{/if}
 				</div>
 			{/if}
-		</div>
+		{:else}
+			<div class="overflow-hidden">
+				{#if selectedBatch && selectedBatch.count > 1}
+					<BatchDetailPanel
+						children={selectedBatch.children}
+						{events}
+						{sessionStartMs}
+						debug={viewMode === 'debug'}
+						onClose={() => (selectedEventId = null)}
+					/>
+				{:else if selectedEvent}
+					{@const elapsed =
+						sessionStartMs !== null
+							? new Date(selectedEvent.createdAt).getTime() - sessionStartMs
+							: undefined}
+					<EventDetailPanel
+						event={selectedEvent}
+						pairedResult={selectedPairedResult}
+						elapsedMs={elapsed}
+						debug={viewMode === 'debug'}
+						onClose={() => (selectedEventId = null)}
+					/>
+				{:else if !loading}
+					<div class="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
+						Select an event on the left to see its content.
+					</div>
+				{/if}
+			</div>
+		{/if}
 	</div>
 </div>

@@ -205,7 +205,7 @@
 	<div class="min-h-0 flex-1 overflow-hidden">
 		{#if focusedId}
 			{#key focusedId}
-				<SessionTranscript sessionId={focusedId} />
+				<SessionTranscript sessionId={focusedId} compact showPulse={false} showTimeline={false} />
 			{/key}
 		{:else}
 			<div class="flex h-full flex-col items-center justify-center px-4 text-center text-muted-foreground">
