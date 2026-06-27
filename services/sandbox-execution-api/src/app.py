@@ -2357,7 +2357,7 @@ def build_dev_preview_sandbox_manifest(
     """
     exec_label = _safe_name(request.executionId, max_length=63)
     image = request.image or class_config.serviceImage or DEFAULT_DEV_PREVIEW_IMAGE
-    port = class_config.servicePort or request.port or 3000
+    port = request.port or class_config.servicePort or 3000
     workdir = (request.workdir or class_config.serviceWorkdir or "/app").rstrip("/") or "/app"
     health_path = request.healthPath or class_config.serviceHealthPath or "/"
     sync_mode = (request.syncMode or "plugin").lower()
@@ -2839,7 +2839,7 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
                 custom, namespace=namespace, sandbox_name=sandbox_name
             ),
         )
-    port = class_config.servicePort or body.port or 3000
+    port = body.port or class_config.servicePort or 3000
     use_sidecar = (body.syncMode or "plugin").lower() == "sidecar"
     sync_port = body.syncPort or (8001 if use_sidecar else port)
     url = f"http://{pod_ip}:{port}" if pod_ip else None
