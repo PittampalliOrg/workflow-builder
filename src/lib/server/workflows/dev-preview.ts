@@ -37,6 +37,10 @@ export interface DevPreviewInfo {
 	syncPaths: string[];
 	ready: boolean;
 	status: string;
+	/** Dapr-shadow: this preview runs a daprd sidecar (isolated app-id). */
+	needsDapr: boolean;
+	/** The isolated Dapr app-id (own task hub), when needsDapr. */
+	daprAppId: string | null;
 }
 
 function sandboxExecutionApiUrl(): string | null {
@@ -88,6 +92,14 @@ export async function provisionDevPreview(
 		workdir: descriptor.workdir,
 		syncMode: descriptor.syncMode,
 		syncPort: descriptor.syncPort,
+		...(descriptor.needsDapr
+			? {
+					needsDapr: true,
+					...(descriptor.pubsubName
+						? { env: { PUBSUB_NAME: descriptor.pubsubName } }
+						: {}),
+				}
+			: {}),
 		...(params.syncToken ? { syncToken: params.syncToken } : {}),
 		...(params.timeoutSeconds == null
 			? {}
@@ -131,6 +143,8 @@ export async function provisionDevPreview(
 		syncPaths: descriptor.syncPaths,
 		ready: body.ready === true,
 		status: typeof body.status === "string" ? body.status : "queued",
+		needsDapr: body.needsDapr === true,
+		daprAppId: typeof body.daprAppId === "string" ? body.daprAppId : null,
 	};
 	await persistDevPreviewSession(info);
 	return info;
@@ -142,9 +156,16 @@ async function persistDevPreviewSession(info: DevPreviewInfo): Promise<void> {
 		kind: "dev-preview",
 		sandboxName: info.sandboxName,
 		name: info.sandboxName,
+		service: info.service,
 		podIP: info.podIP,
 		port: info.port,
+		syncPort: info.syncPort,
 		url: info.url,
+		syncUrl: info.syncUrl,
+		browseUrl: info.browseUrl,
+		needsDapr: info.needsDapr,
+		daprAppId: info.daprAppId,
+		ready: info.ready,
 		executionId: info.executionId,
 		provider: "agent-sandbox-dev-preview",
 	};

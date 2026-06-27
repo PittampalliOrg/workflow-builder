@@ -344,6 +344,22 @@ class DevPreviewRequest(BaseModel):
     syncMode: str = "plugin"
     # Port the agent POSTs /__sync to. Defaults: plugin → the dev port; sidecar → 8001.
     syncPort: int | None = None
+    # ----- Dapr-shadow mode (P3.1, for Dapr/DB-coupled services) -----
+    # When True, the dev container gets a daprd sidecar (via standard injector
+    # annotations) so services whose startup needs Dapr (secrets/state/workflow —
+    # e.g. workflow-orchestrator fetches DATABASE_URL from Dapr secrets, runs
+    # `wfr.start()`) can boot in the preview. Isolation is by a UNIQUE app-id
+    # (own task hub + placement + actors) + a dev pubsub component (own
+    # stream/consumer, set via the PUBSUB_NAME env in `env`), so the shadow runs
+    # workflows with ZERO prod blast radius. The real DB is reached via daprd's
+    # secret fetch — daprServiceAccount must be RBAC-bound to read the secret.
+    needsDapr: bool = False
+    # Unique dapr app-id for the shadow (else derived `<service>-dev-<exec-hash>`).
+    daprAppId: str | None = None
+    # Dapr Configuration CR for the daprd sidecar (defaults to the agent-runtime one).
+    daprConfig: str | None = None
+    # ServiceAccount bound to the secret-reader Role so daprd can fetch real secrets.
+    daprServiceAccount: str | None = None
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:
@@ -2332,6 +2348,22 @@ def _dev_preview_sandbox_name(execution_id: str) -> str:
     return _safe_resource_name(f"wfb-dev-preview-{execution_id}", max_length=63)
 
 
+def _dev_preview_dapr_app_id(request: DevPreviewRequest) -> str:
+    """Unique Dapr app-id for a Dapr-shadow preview.
+
+    A UNIQUE app-id is the core isolation guarantee: Dapr keys the workflow task
+    hub, placement registration, and actor partitions by app-id, so a unique id
+    gives the shadow its OWN task hub (no prod task execution leaks in/out). Keyed
+    on (service, executionId) so re-provisioning the same run is stable. Must be a
+    valid Dapr app-id (DNS-label-ish, ≤63).
+    """
+    if request.daprAppId:
+        return _safe_name(request.daprAppId, max_length=63)
+    service = _safe_name(request.service or "service", max_length=24)
+    digest = sha256(request.executionId.encode("utf-8")).hexdigest()[:10]
+    return _safe_name(f"{service}-dev-{digest}", max_length=63)
+
+
 def _dev_preview_shutdown_time(timeout_seconds: int | None) -> str | None:
     if timeout_seconds is None:
         return None
@@ -2377,8 +2409,29 @@ def build_dev_preview_sandbox_manifest(
         )
         if request.syncToken:
             env.append({"name": "WFB_DEV_SYNC_TOKEN", "value": request.syncToken})
+    # Dapr-shadow defaults (P3.1): lowest priority, so request.env can override.
+    # These GUARANTEE isolation even if a caller forgets to pass them:
+    #   - DAPR_CONFIG_STORE=disabled-dev → forces core/config.py to fall back to
+    #     env (the Dapr Configuration store wins over env, so we must disable it,
+    #     else a prod-store PUBSUB_NAME would leak the shadow onto prod pubsub).
+    #   - PUBSUB_NAME=pubsub-dev → the orchestrator publishes/consumes on the
+    #     isolated dev pubsub component (own JetStream stream + consumer group).
+    #   - APP_ID=<unique> → informational; the authoritative app-id is the
+    #     dapr.io/app-id annotation below.
+    dapr_app_id = _dev_preview_dapr_app_id(request) if request.needsDapr else None
+    dapr_defaults: dict[str, str] = {}
+    if request.needsDapr:
+        dapr_defaults = {
+            "DAPR_CONFIG_STORE": "disabled-dev",
+            "PUBSUB_NAME": "pubsub-dev",
+            "APP_ID": dapr_app_id or "",
+        }
     merged_env: dict[str, str] = {}
-    for key, value in {**class_config.serviceEnv, **(request.env or {})}.items():
+    for key, value in {
+        **dapr_defaults,
+        **class_config.serviceEnv,
+        **(request.env or {}),
+    }.items():
         if key and value is not None:
             merged_env[key] = value
     overridden = {entry["name"] for entry in env}
@@ -2427,9 +2480,18 @@ def build_dev_preview_sandbox_manifest(
     if args:
         container["args"] = list(args)
 
+    # Dapr-shadow: bind to the secret-reader SA so daprd can fetch the real
+    # DATABASE_URL secret (else class default).
+    service_account = class_config.serviceAccountName
+    if request.needsDapr:
+        service_account = (
+            request.daprServiceAccount
+            or os.environ.get("DEV_PREVIEW_DAPR_SERVICE_ACCOUNT")
+            or "dev-preview-dapr"
+        )
     pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
-        "serviceAccountName": class_config.serviceAccountName,
+        "serviceAccountName": service_account,
         "terminationGracePeriodSeconds": 30,
         "containers": [container],
         "securityContext": dict(class_config.podSecurityContext)
@@ -2511,10 +2573,40 @@ def build_dev_preview_sandbox_manifest(
         KUEUE_QUEUE_LABEL: class_config.localQueue,
         "workflow-execution-id": exec_label,
     }
+    pod_template_metadata: dict[str, Any] = {"labels": pod_labels}
+    # Dapr-shadow: stamp the standard injector annotations so the daprd sidecar is
+    # added (mirrors build_agent_workflow_host_sandbox_manifest). The UNIQUE app-id
+    # isolates the task hub/placement/actors; enable-workflow lets `wfr.start()`
+    # run; the daprd attaches to the SAME single workflowstatestore under its own
+    # app-id partition (does NOT add a 2nd actorStateStore=true component).
+    if request.needsDapr:
+        pod_template_metadata["annotations"] = {
+            "dapr.io/enabled": "true",
+            "dapr.io/app-id": dapr_app_id,
+            "dapr.io/app-port": str(port),
+            "dapr.io/app-protocol": "http",
+            "dapr.io/config": (
+                request.daprConfig
+                or os.environ.get(
+                    "DAPR_AGENT_HOST_CONFIG", "workflow-builder-agent-runtime"
+                )
+            ),
+            "dapr.io/enable-workflow": "true",
+            "dapr.io/enable-native-sidecar": "true",
+            "dapr.io/internal-grpc-port": os.environ.get(
+                "DAPR_AGENT_HOST_INTERNAL_GRPC_PORT", "3502"
+            ),
+            "dapr.io/placement-host-address": os.environ.get(
+                "DAPR_PLACEMENT_HOST_ADDRESS",
+                "dapr-placement-server.dapr-system.svc.cluster.local:50005",
+            ),
+            "dapr.io/max-body-size": os.environ.get("DAPR_MAX_BODY_SIZE", "16Mi"),
+            "dapr.io/graceful-shutdown-seconds": "60",
+        }
     sandbox_spec: dict[str, Any] = {
         "replicas": 1,
         "podTemplate": {
-            "metadata": {"labels": pod_labels},
+            "metadata": pod_template_metadata,
             "spec": pod_spec,
         },
     }
@@ -2856,6 +2948,9 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
         "url": url,
         "syncUrl": sync_url,
         "executionClass": body.executionClass,
+        # Dapr-shadow: surface the isolated app-id so callers can prove isolation.
+        "needsDapr": body.needsDapr,
+        "daprAppId": _dev_preview_dapr_app_id(body) if body.needsDapr else None,
     }
     set_current_span_io("output", response)
     return response

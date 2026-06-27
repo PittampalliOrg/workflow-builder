@@ -143,6 +143,15 @@ export const NAV_GROUPS: NavGroup[] = [
 				match: /^\/workspaces\/[^/]+\/prompts(\/|$)/,
 				visibility: { workspaceScoped: true },
 			},
+			{
+				id: "dev",
+				label: "Dev",
+				icon: Container,
+				href: ({ slug }) => `/workspaces/${slug}/dev`,
+				match: /^\/workspaces\/[^/]+\/dev(\/|$)/,
+				badge: "new",
+				visibility: { workspaceScoped: true },
+			},
 		],
 	},
 	{

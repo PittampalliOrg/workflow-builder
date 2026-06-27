@@ -44,6 +44,15 @@ export interface DevPreviewDescriptor {
 	syncPaths: string[];
 	/** Per-service tailnet hostname (stacks LB), for the human browse URL. */
 	tailnetHost: string;
+	/**
+	 * Dapr-shadow (P3.1): the service's startup needs Dapr (secrets/state/workflow)
+	 * so the preview pod gets a daprd sidecar. Isolated by a unique app-id (own task
+	 * hub) + a dev pubsub component (`pubsubName`), booting against the real DB via
+	 * daprd's secret fetch. Omit/false = lightweight no-deps preview.
+	 */
+	needsDapr?: boolean;
+	/** Isolated dev pubsub component name (forwarded as PUBSUB_NAME env). */
+	pubsubName?: string;
 }
 
 export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
@@ -76,6 +85,26 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
 		// uvicorn --reload-dir /app watches everything; sync the python source trees.
 		syncPaths: ["app.py", "core", "activities", "workflows"],
 		tailnetHost: "orchestrator-preview-ryzen.tail286401.ts.net",
+		// Startup fetches DATABASE_URL from Dapr secrets + runs `wfr.start()`.
+		needsDapr: true,
+		pubsubName: "pubsub-dev",
+	},
+	"swebench-coordinator": {
+		service: "swebench-coordinator",
+		imageEnvKey: "SWEBENCH_COORDINATOR_DEV_IMAGE",
+		imageFallback: "ghcr.io/pittampalliorg/swebench-coordinator-dev:latest",
+		port: 8080,
+		healthPath: "/healthz",
+		workdir: "/app",
+		syncMode: "sidecar",
+		syncPort: 8001,
+		repoUrl: "PittampalliOrg/workflow-builder",
+		repoSubdir: "services/swebench-coordinator",
+		syncPaths: ["app.py", "src"],
+		tailnetHost: "swebench-coordinator-preview-ryzen.tail286401.ts.net",
+		// Boots without DB but still needs daprd for `wfr.start()`.
+		needsDapr: true,
+		pubsubName: "pubsub-dev",
 	},
 	"function-router": {
 		service: "function-router",
