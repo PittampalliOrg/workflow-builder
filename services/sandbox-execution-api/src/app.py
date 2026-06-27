@@ -2494,10 +2494,18 @@ def build_dev_preview_sandbox_manifest(
         "serviceAccountName": service_account,
         "terminationGracePeriodSeconds": 30,
         "containers": [container],
-        "securityContext": dict(class_config.podSecurityContext)
-        if class_config.podSecurityContext is not None
-        else {"runAsUser": 0},
     }
+    # Pod-level securityContext: explicit class config wins. Otherwise default to
+    # root for plain previews (vite/uvicorn/tsx run as the image's root user). For
+    # needsDapr we must NOT set a pod-level runAsUser:0 — it cascades to the
+    # injected daprd native sidecar, which the cluster's non-root policy rejects
+    # ("runAsUser breaks non-root policy"). Omitting it lets daprd use its own
+    # non-root default (mirrors the working agent-host pods) while the dev/seed/
+    # sync containers still run as their image's root user.
+    if class_config.podSecurityContext is not None:
+        pod_spec["securityContext"] = dict(class_config.podSecurityContext)
+    elif not request.needsDapr:
+        pod_spec["securityContext"] = {"runAsUser": 0}
 
     # ----- sidecar mode (language-agnostic live-sync for any service) -----
     # A shared emptyDir at the workdir (local disk → inotify works). An init
