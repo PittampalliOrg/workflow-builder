@@ -3542,6 +3542,11 @@ class VclusterPreviewRequest(BaseModel):
     daprVersion: str | None = None
     tailnetHost: str | None = None
     previewDb: str | None = None
+    # ENROLL_MODE=agent → deploy the BFF + run migrate/seed via a hub-authored
+    # argocd-agent Application (GitOps-native) instead of the imperative runner deploy.
+    # Defaults from env so it can be flipped cluster-wide without an API change.
+    enrollMode: str | None = None  # imperative | agent
+    targetRevision: str | None = None  # git ref the in-vcluster controller fetches
 
 
 def _vcluster_preview_job_name(name: str, action: str) -> str:
@@ -3566,6 +3571,23 @@ def _vcluster_preview_job_manifest(
         env.append({"name": "DAPR_VERSION", "value": req.daprVersion})
     if req.previewDb:
         env.append({"name": "PREVIEW_DB", "value": req.previewDb})
+    # Agent-mode (GitOps deploy via argocd-agent): pass ENROLL_MODE + the git ref the
+    # in-vcluster controller fetches the overlay/bootstrap from. Both env-defaulted.
+    enroll_mode = req.enrollMode or os.environ.get(
+        "VCLUSTER_PREVIEW_ENROLL_MODE", "imperative"
+    )
+    env.append({"name": "ENROLL_MODE", "value": enroll_mode})
+    if enroll_mode == "agent":
+        env.append(
+            {
+                "name": "TARGET_REVISION",
+                "value": req.targetRevision
+                or os.environ.get("VCLUSTER_PREVIEW_TARGET_REVISION", "main"),
+            }
+        )
+        bff_image = os.environ.get("VCLUSTER_PREVIEW_BFF_IMAGE")
+        if bff_image:
+            env.append({"name": "BFF_IMAGE", "value": bff_image})
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -3587,6 +3609,10 @@ def _vcluster_preview_job_manifest(
                 "spec": {
                     "restartPolicy": "Never",
                     "serviceAccountName": "vcluster-preview-provisioner",
+                    # The custom runner image (with argocd-agentctl, for agent mode) is a
+                    # PRIVATE ghcr package — stock alpine/k8s was public, so the Job had no
+                    # pull secret. Harmless for the public default image.
+                    "imagePullSecrets": [{"name": "ghcr-pull-credentials"}],
                     "containers": [
                         {
                             "name": "runner",
