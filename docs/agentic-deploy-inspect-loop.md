@@ -1,6 +1,31 @@
 # Agentic Deploy → Inspect Loop — research + direction
 
-**Status:** RESEARCH / DESIGN. Surveys industry best practices + open-source projects for *agent-based sandbox development wired to fast deployment with deployment feedback and deployed-app inspection inside the agent loop (via a workflow)*, then maps them to our stack and recommends a phased architecture. Prompted by the goal of a workflow that edits the **workflow-builder app itself**, live on the ryzen cluster.
+**Status:** IMPLEMENTED (P1 → P3.1) + a first-class **Dev hub UI**. The research/recommendation below is preserved for context; the implemented system is summarized in **"IMPLEMENTED"** immediately following. Surveys industry best practices + open-source projects for *agent-based sandbox development wired to fast deployment with deployment feedback and deployed-app inspection inside the agent loop (via a workflow)*, then maps them to our stack. Prompted by the goal of a workflow that edits the **workflow-builder app itself**, live on the ryzen cluster.
+
+## IMPLEMENTED (P1 → P3.1 + Dev hub UI)
+
+The recommended **Option B/C hybrid** shipped + is e2e-verified on ryzen. A workflow run stands up its **own per-run ephemeral dev-server preview**, the coding agent **hot-reloads** it in seconds via `/__sync`, and the run **hands off into a persistent interactive coding-agent session** sharing the run's workspace — all driven from a top-level **Dev** page (no JSON authoring).
+
+**Engine — `microservice-dev-session` workflow** (`scripts/fixtures/generator-critic/microservice-dev-session.json`): `provision_preview (dev/preview)` → `clone_repo (workspace/command, cliWorkspace)` writes the repo + a `sync.sh` helper into the shared `/sandbox/work` → `handoff (session/spawn)` → `summary`.
+
+**Per-run preview** = devspace's image-replace model realized cluster-natively. The privileged `sandbox-execution-api` provisions a `Sandbox` running the service's own hot-reload image (`vite` plugin-mode for workflow-builder; `uvicorn --reload`/`tsx watch` sidecar-mode for others). The unprivileged agent edits its `/sandbox/work/repo` and runs `sync.sh` (POSTs a tar to the in-pod `dev-sync-sidecar` `/__sync`, or workflow-builder's in-process Vite `/__sync` plugin) → inotify/HMR → live in seconds. A per-service tailnet LB (`<svc>-preview-ryzen.tail286401.ts.net`) exposes it for the human. Registry: `src/lib/server/workflows/dev-preview-registry.ts` (`service → image/port/healthPath/workdir/syncMode/syncPaths/tailnetHost/needsDapr`).
+
+**Dapr-shadow (P3.1)** — Dapr/DB-coupled services (workflow-orchestrator, swebench-coordinator) whose startup needs Dapr (secrets/state/`wfr.start()`) get a **daprd sidecar** in the preview, isolated by a **unique app-id** (own task hub/placement/actors) + a **`pubsub-dev`** component (own JetStream stream+consumer, disjoint subjects) + the **real DB** via daprd's secret fetch (SA `dev-preview-dapr` → `workflow-builder-secret-reader`). `DAPR_CONFIG_STORE=disabled-dev` forces env so `PUBSUB_NAME=pubsub-dev` sticks. Zero prod blast radius. stacks: `workflow-orchestrator/manifests/{Component-pubsub-dev,ServiceAccount-dev-preview-dapr,Job-nats-stream-init}`.
+
+**Interactive handoff** — `session/spawn` → BFF `/api/internal/workflows/executions/[id]/interactive-session` → `spawnDevSession` creates a `cli-dev-agent` (claude-code-cli) session bound to the run (fire-and-forget `spawnSessionWorkflow`, so the parent workflow completes). `spawn.ts` mounts the SAME `/sandbox/work` the workflow used so the agent sees the cloned repo.
+
+**Dev hub UI** (`/workspaces/[slug]/dev`, nav: **Build → Dev**): a launcher (service dropdown + read-only Dapr-shadow badge + keep-alive) that runs the workflow, a polling **grid** of running environments, and a **detail** page = a status/isolation card (readiness, pod IP, Open-preview, and the `app-id / pubsub-dev / real-DB` proof when Dapr-shadow) beside the live interactive session (reused `SessionTranscript` + `SessionPulse` + `SessionGoalBadge` + a composer). User-auth routes under `src/routes/api/dev-environments/` (list/detail/teardown/services); teardown = `teardownDevPreview` + Lifecycle-Controller session purge.
+
+**Verified e2e on ryzen (2026-06-27):** drove the composer to add a `GET /devhubcheck` route on BOTH a Dapr service (workflow-orchestrator → `uvicorn --reload`) and a non-Dapr multi-path service (function-router → `tsx watch`); both hot-reloaded live and served through their tailnet LBs.
+
+### Gotchas / hard-won fixes (read before touching this)
+- **Shared-workspace key = the run's `dapr_instance_id`, NOT `workflow_executions.id`.** The orchestrator's `cliWorkspace` nodes key `/sandbox/work` on `runtime.executionId` = `sw-<wf>-exec-<id>` (the dapr instance id). The handoff session's `workflowExecutionId` is the canonical id (for hub linkage), so `spawn.ts` resolves `dapr_instance_id` for the *mount* (`resolveRunWorkspaceKey`) — else the agent sees an EMPTY `/sandbox/work`.
+- **BFF internal routes receive the dapr instance id, not `workflow_executions.id`.** `resolveCanonicalExecutionId` (match `id` OR `dapr_instance_id`) normalizes it in the dev-preview + interactive-session routes, else `spawnDevSession`'s owner lookup 502s and `persistDevPreviewSession`'s FK fails (→ hub 404).
+- **`needsDapr` previews must NOT set a pod-level `runAsUser:0`** — it cascades to the injected daprd (`runAsNonRoot:true`) → `CreateContainerConfigError`. Strip `runAsUser` when `needsDapr` (mirrors agent-host pods).
+- **`.syncenv` must quote `PATHS`** (multi-path services) and `sync.sh` must **filter to existing paths** before `tar` (a descriptor may list optional paths like function-router's `config`).
+- **The agent verifies via the IN-CLUSTER url (`podIP:port`), not the tailnet `browseUrl`** — the public hostname isn't resolvable inside the cluster. The kickoff hands it the in-cluster url.
+- **Dapr-coupled services key on `workflow_executions.project_id` is nullable** — scope hub queries by the *workflow's* project, not the execution's.
+- The cli-agent-py main container is NAMED `dapr-agent-py` (shared default) but the IMAGE is `cli-agent-py-sandbox`; don't mistake the container name for the runtime.
 
 ## Context / what we're trying to accomplish
 

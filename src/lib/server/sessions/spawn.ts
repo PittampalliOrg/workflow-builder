@@ -53,6 +53,32 @@ async function resolveSessionOwnerUserId(
 }
 
 /**
+ * The per-run shared workspace (`/sandbox/work`) the dev-session handoff must
+ * mount. The orchestrator's `cliWorkspace` nodes (e.g. clone_repo) key the
+ * JuiceFS subPath on the run's DAPR INSTANCE id (`sw-<wf>-exec-<id>`), NOT
+ * `workflow_executions.id`. The handoff session's `workflowExecutionId` is the
+ * canonical id (for hub linkage), so resolve the run's dapr_instance_id here to
+ * mount the SAME subtree (and thus see the cloned repo + sync.sh). Falls back to
+ * the canonical id when no dapr_instance_id is recorded.
+ */
+async function resolveRunWorkspaceKey(executionId: string): Promise<string> {
+	try {
+		const { db } = await import("$lib/server/db");
+		if (!db) return executionId;
+		const { workflowExecutions } = await import("$lib/server/db/schema");
+		const { eq } = await import("drizzle-orm");
+		const [row] = await db
+			.select({ daprInstanceId: workflowExecutions.daprInstanceId })
+			.from(workflowExecutions)
+			.where(eq(workflowExecutions.id, executionId))
+			.limit(1);
+		return row?.daprInstanceId?.trim() || executionId;
+	} catch {
+		return executionId;
+	}
+}
+
+/**
  * Spawn a `session_workflow` instance in `dapr-agent-py` for the given
  * session row. Uses the Dapr sidecar's workflow API directly — no new
  * orchestrator endpoint, no new Dapr primitive. The sidecar URL resolves
@@ -398,11 +424,13 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		workflowExecutionId: session.workflowExecutionId ?? null,
 		// Interactive-cli dev-session handoff (P3): a session row carrying a
 		// workflowExecutionId mounts the SAME per-execution /sandbox/work the
-		// workflow used (the agent sees the cloned repo). Direct UI sessions have
-		// workflowExecutionId=null → no shared mount (unchanged).
+		// workflow used (the agent sees the cloned repo). The orchestrator keys that
+		// workspace on the run's dapr_instance_id, so resolve it (NOT the canonical
+		// workflowExecutionId) to mount the same JuiceFS subPath. Direct UI sessions
+		// have workflowExecutionId=null → no shared mount (unchanged).
 		sharedWorkspaceKey:
 			swapTarget?.capabilities?.interactiveTerminal && session.workflowExecutionId
-				? session.workflowExecutionId
+				? await resolveRunWorkspaceKey(session.workflowExecutionId)
 				: null,
 		benchmarkRunId: null,
 		benchmarkInstanceId: null,

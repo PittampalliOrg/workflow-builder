@@ -1700,9 +1700,20 @@ def _fetch_database_url_from_dapr_secret(url: str) -> str:
 
 
 def _get_database_url() -> str:
-    """Fetch DATABASE_URL from the Dapr kubernetes-secrets store (cached)."""
+    """Resolve DATABASE_URL.
+
+    Preview orchestrators (the dev-preview "preview set") point at their own
+    `preview_<id>` database, delivered as a plain DATABASE_URL env var. So an
+    explicit env wins over the Dapr kubernetes-secrets fetch (the prod path).
+    """
     global _database_url
     if _database_url is not None:
+        return _database_url
+
+    env_url = os.environ.get("DATABASE_URL")
+    if env_url and env_url.strip():
+        _database_url = env_url.strip()
+        logger.info("[Execute-By-Id] Using DATABASE_URL from environment (preview/override)")
         return _database_url
 
     dapr_host = config.DAPR_HOST

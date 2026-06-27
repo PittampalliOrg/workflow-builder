@@ -270,6 +270,12 @@ class ExecutionClassConfig(BaseModel):
     syncSidecarImage: str | None = None
     serviceWorkdir: str = "/app"
     serviceHealthPath: str = "/"
+    # envFrom sources (configMapRef/secretRef) applied verbatim to the dev
+    # container — lets a functional preview reuse the prod app's config + secrets
+    # (e.g. workflow-builder-secrets carrying DATABASE_URL) without copying
+    # plaintext into the Sandbox CR. Per-service envFrom is normally supplied on
+    # the request (from the dev-preview registry), not the shared class.
+    serviceEnvFrom: list[dict[str, Any]] | None = None
 
 
 class AgentWorkflowHostRequest(BaseModel):
@@ -344,6 +350,34 @@ class DevPreviewRequest(BaseModel):
     syncMode: str = "plugin"
     # Port the agent POSTs /__sync to. Defaults: plugin → the dev port; sidecar → 8001.
     syncPort: int | None = None
+    # ----- Dapr-shadow mode (P3.1, for Dapr/DB-coupled services) -----
+    # When True, the dev container gets a daprd sidecar (via standard injector
+    # annotations) so services whose startup needs Dapr (secrets/state/workflow —
+    # e.g. workflow-orchestrator fetches DATABASE_URL from Dapr secrets, runs
+    # `wfr.start()`) can boot in the preview. Isolation is by a UNIQUE app-id
+    # (own task hub + placement + actors) + a dev pubsub component (own
+    # stream/consumer, set via the PUBSUB_NAME env in `env`), so the shadow runs
+    # workflows with ZERO prod blast radius. The real DB is reached via daprd's
+    # secret fetch — daprServiceAccount must be RBAC-bound to read the secret.
+    needsDapr: bool = False
+    # Unique dapr app-id for the shadow (else derived `<service>-dev-<exec-hash>`).
+    daprAppId: str | None = None
+    # Dapr Configuration CR for the daprd sidecar (defaults to the agent-runtime one).
+    daprConfig: str | None = None
+    # ServiceAccount bound to the secret-reader Role so daprd can fetch real secrets.
+    daprServiceAccount: str | None = None
+    # Apply the orchestrator-specific Dapr-shadow env knobs
+    # (DAPR_CONFIG_STORE=disabled-dev, PUBSUB_NAME=pubsub-dev). Correct for the
+    # workflow-orchestrator shadow; OFF for app services (e.g. the BFF) that just
+    # need a daprd sidecar and would be mis-pointed by these.
+    applyDaprShadowDefaults: bool = True
+    # envFrom sources (configMapRef/secretRef) for the dev container — used by a
+    # functional preview to reuse the prod app's config + secrets.
+    envFrom: list[dict[str, Any]] | None = None
+    # Per-preview secret values (e.g. DATABASE_URL pointing at the preview's own
+    # database). Stored in a per-preview Secret (never plaintext in the CR) and
+    # envFrom'd LAST so they override the reused prod secret.
+    serviceSecretEnv: dict[str, str] | None = None
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:
@@ -2332,6 +2366,62 @@ def _dev_preview_sandbox_name(execution_id: str) -> str:
     return _safe_resource_name(f"wfb-dev-preview-{execution_id}", max_length=63)
 
 
+def _dev_preview_secret_name(execution_id: str) -> str:
+    return _safe_resource_name(f"dev-preview-secret-{execution_id}", max_length=63)
+
+
+def _ensure_dev_preview_secret(
+    core: Any, request: DevPreviewRequest, *, namespace: str
+) -> str | None:
+    """Create/refresh the per-preview Secret (e.g. the preview's DATABASE_URL).
+
+    Created BEFORE the Sandbox CR so the pod never races a missing secretRef.
+    Keeps preview secrets out of the Sandbox CR / pod spec plaintext.
+    """
+    if not request.serviceSecretEnv:
+        return None
+    secret_name = _dev_preview_secret_name(request.executionId)
+    labels = {
+        "app": "wfb-dev-preview",
+        "workflow-execution-id": _safe_name(request.executionId, max_length=63),
+    }
+    string_data = {k: v for k, v in request.serviceSecretEnv.items() if k}
+    body = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "type": "Opaque",
+        "metadata": {"name": secret_name, "namespace": namespace, "labels": labels},
+        "stringData": string_data,
+    }
+    try:
+        core.create_namespaced_secret(namespace=namespace, body=body)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+        core.patch_namespaced_secret(
+            name=secret_name,
+            namespace=namespace,
+            body={"metadata": {"labels": labels}, "stringData": string_data},
+        )
+    return secret_name
+
+
+def _dev_preview_dapr_app_id(request: DevPreviewRequest) -> str:
+    """Unique Dapr app-id for a Dapr-shadow preview.
+
+    A UNIQUE app-id is the core isolation guarantee: Dapr keys the workflow task
+    hub, placement registration, and actor partitions by app-id, so a unique id
+    gives the shadow its OWN task hub (no prod task execution leaks in/out). Keyed
+    on (service, executionId) so re-provisioning the same run is stable. Must be a
+    valid Dapr app-id (DNS-label-ish, ≤63).
+    """
+    if request.daprAppId:
+        return _safe_name(request.daprAppId, max_length=63)
+    service = _safe_name(request.service or "service", max_length=24)
+    digest = sha256(request.executionId.encode("utf-8")).hexdigest()[:10]
+    return _safe_name(f"{service}-dev-{digest}", max_length=63)
+
+
 def _dev_preview_shutdown_time(timeout_seconds: int | None) -> str | None:
     if timeout_seconds is None:
         return None
@@ -2369,16 +2459,45 @@ def build_dev_preview_sandbox_manifest(
 
     # Main dev-server env. workflow-builder's in-process Vite /__sync plugin reads
     # WFB_DEV_SYNC_* (plugin mode only); other services use the sidecar and don't.
+    # A "functional" preview wires the app's config/secrets + its own DB (envFrom
+    # / serviceSecretEnv). UI-only previews have neither → skip startup migrations
+    # (no DB); functional previews self-migrate their empty preview DB on boot.
+    functional = bool(
+        request.envFrom or request.serviceSecretEnv or class_config.serviceEnvFrom
+    )
     env: list[dict[str, str]] = [{"name": "NODE_ENV", "value": "development"}]
     if not use_sidecar:
         env.append({"name": "WFB_DEV_SYNC_ENABLED", "value": "true"})
-        env.append(
-            {"name": "WORKFLOW_BUILDER_SKIP_STARTUP_MIGRATIONS", "value": "true"}
-        )
+        if not functional:
+            env.append(
+                {"name": "WORKFLOW_BUILDER_SKIP_STARTUP_MIGRATIONS", "value": "true"}
+            )
         if request.syncToken:
             env.append({"name": "WFB_DEV_SYNC_TOKEN", "value": request.syncToken})
+    # Dapr-shadow defaults (P3.1): lowest priority, so request.env can override.
+    # These GUARANTEE isolation even if a caller forgets to pass them:
+    #   - DAPR_CONFIG_STORE=disabled-dev → forces core/config.py to fall back to
+    #     env (the Dapr Configuration store wins over env, so we must disable it,
+    #     else a prod-store PUBSUB_NAME would leak the shadow onto prod pubsub).
+    #   - PUBSUB_NAME=pubsub-dev → the orchestrator publishes/consumes on the
+    #     isolated dev pubsub component (own JetStream stream + consumer group).
+    #   - APP_ID=<unique> → informational; the authoritative app-id is the
+    #     dapr.io/app-id annotation below.
+    dapr_app_id = _dev_preview_dapr_app_id(request) if request.needsDapr else None
+    dapr_defaults: dict[str, str] = {}
+    if request.needsDapr:
+        # APP_ID is informational on every shadow; the orchestrator-only isolation
+        # knobs are gated so they don't mis-point app services like the BFF.
+        dapr_defaults["APP_ID"] = dapr_app_id or ""
+        if request.applyDaprShadowDefaults:
+            dapr_defaults["DAPR_CONFIG_STORE"] = "disabled-dev"
+            dapr_defaults["PUBSUB_NAME"] = "pubsub-dev"
     merged_env: dict[str, str] = {}
-    for key, value in {**class_config.serviceEnv, **(request.env or {})}.items():
+    for key, value in {
+        **dapr_defaults,
+        **class_config.serviceEnv,
+        **(request.env or {}),
+    }.items():
         if key and value is not None:
             merged_env[key] = value
     overridden = {entry["name"] for entry in env}
@@ -2387,12 +2506,17 @@ def build_dev_preview_sandbox_manifest(
         for key, value in sorted(merged_env.items())
         if key not in overridden
     )
+    # envFrom (configMapRef/secretRef) for a functional preview that reuses the
+    # prod app's config + secrets. Explicit `env` (above) overrides envFrom, so a
+    # per-preview DATABASE_URL passed via request.env wins over the shared secret.
+    env_from = list(request.envFrom or class_config.serviceEnvFrom or [])
     container: dict[str, Any] = {
         "name": "dev",
         "image": image,
         "imagePullPolicy": _image_pull_policy_for_agent_host(image),
         "ports": [{"name": "http", "containerPort": port}],
         "env": env,
+        **({"envFrom": env_from} if env_from else {}),
         "resources": {
             "requests": {
                 "cpu": class_config.serviceCpu,
@@ -2427,15 +2551,73 @@ def build_dev_preview_sandbox_manifest(
     if args:
         container["args"] = list(args)
 
+    # Dapr-shadow: bind to the secret-reader SA so daprd can fetch the real
+    # DATABASE_URL secret (else class default).
+    service_account = class_config.serviceAccountName
+    if request.needsDapr:
+        service_account = (
+            request.daprServiceAccount
+            or os.environ.get("DEV_PREVIEW_DAPR_SERVICE_ACCOUNT")
+            or "dev-preview-dapr"
+        )
     pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
-        "serviceAccountName": class_config.serviceAccountName,
+        "serviceAccountName": service_account,
         "terminationGracePeriodSeconds": 30,
         "containers": [container],
-        "securityContext": dict(class_config.podSecurityContext)
-        if class_config.podSecurityContext is not None
-        else {"runAsUser": 0},
     }
+    # Pod-level securityContext: explicit class config wins, else default to root
+    # for plain previews (vite/uvicorn/tsx run as the image's root user). For
+    # needsDapr we must NOT set a pod-level runAsUser:0 — the Dapr injector gives
+    # the daprd native sidecar `runAsNonRoot: true` (no explicit runAsUser), so a
+    # pod-level runAsUser:0 makes the effective uid root and the kubelet rejects
+    # daprd ("runAsUser breaks non-root policy"). Strip runAsUser/runAsGroup for
+    # needsDapr (mirrors the working agent-host pods, whose pod securityContext is
+    # empty); the dev/seed/sync containers still run as their image's root user.
+    if class_config.podSecurityContext is not None:
+        pod_security = dict(class_config.podSecurityContext)
+    elif not request.needsDapr:
+        pod_security = {"runAsUser": 0}
+    else:
+        pod_security = {}
+    if request.needsDapr:
+        pod_security.pop("runAsUser", None)
+        pod_security.pop("runAsGroup", None)
+    if pod_security:
+        pod_spec["securityContext"] = pod_security
+
+    init_containers: list[dict[str, Any]] = []
+    # Functional preview: clone the dev schema into the per-preview database with
+    # `pg_dump --schema-only | psql` before the dev server starts. We use pg_dump
+    # (not drizzle-kit, whose tsconfig `$lib` aliases don't resolve, nor the
+    # runtime images, which don't ship atlas/migrations) because it always
+    # reflects the CURRENT dev schema, works while the source DB has live
+    # connections, and needs no maintained template. DATABASE_URL (target) +
+    # PREVIEW_SOURCE_DATABASE_URL (source) come from the per-preview Secret.
+    if functional:
+        init_containers.append(
+            {
+                "name": "db-clone",
+                "image": os.environ.get(
+                    "DEV_PREVIEW_PG_IMAGE",
+                    "docker.io/library/postgres:15.3-alpine3.18",
+                ),
+                "command": [
+                    "sh",
+                    "-c",
+                    'set -e; if [ -z "$PREVIEW_SOURCE_DATABASE_URL" ]; then '
+                    'echo "no source DB; skipping schema clone"; exit 0; fi; '
+                    'pg_dump --schema-only --no-owner --no-privileges '
+                    '"$PREVIEW_SOURCE_DATABASE_URL" | psql -v ON_ERROR_STOP=0 '
+                    '"$DATABASE_URL"; echo "schema clone done"',
+                ],
+                **({"envFrom": env_from} if env_from else {}),
+                "resources": {
+                    "requests": {"cpu": "100m", "memory": "256Mi"},
+                    "limits": {"memory": "512Mi"},
+                },
+            }
+        )
 
     # ----- sidecar mode (language-agnostic live-sync for any service) -----
     # A shared emptyDir at the workdir (local disk → inotify works). An init
@@ -2455,7 +2637,7 @@ def build_dev_preview_sandbox_manifest(
         container.setdefault("volumeMounts", []).append(
             {"name": "dev-workdir", "mountPath": workdir}
         )
-        pod_spec["initContainers"] = [
+        init_containers.append(
             {
                 "name": "seed-workdir",
                 "image": image,
@@ -2469,7 +2651,7 @@ def build_dev_preview_sandbox_manifest(
                 ],
                 "volumeMounts": [{"name": "dev-workdir", "mountPath": "/seed"}],
             }
-        ]
+        )
         sidecar_env = [
             {"name": "DEV_SYNC_PORT", "value": str(sync_port)},
             {"name": "DEV_SYNC_DEST", "value": workdir},
@@ -2495,6 +2677,8 @@ def build_dev_preview_sandbox_manifest(
             }
         )
 
+    if init_containers:
+        pod_spec["initContainers"] = init_containers
     if class_config.nodeSelector:
         pod_spec["nodeSelector"] = class_config.nodeSelector
     if class_config.imagePullSecrets:
@@ -2511,10 +2695,40 @@ def build_dev_preview_sandbox_manifest(
         KUEUE_QUEUE_LABEL: class_config.localQueue,
         "workflow-execution-id": exec_label,
     }
+    pod_template_metadata: dict[str, Any] = {"labels": pod_labels}
+    # Dapr-shadow: stamp the standard injector annotations so the daprd sidecar is
+    # added (mirrors build_agent_workflow_host_sandbox_manifest). The UNIQUE app-id
+    # isolates the task hub/placement/actors; enable-workflow lets `wfr.start()`
+    # run; the daprd attaches to the SAME single workflowstatestore under its own
+    # app-id partition (does NOT add a 2nd actorStateStore=true component).
+    if request.needsDapr:
+        pod_template_metadata["annotations"] = {
+            "dapr.io/enabled": "true",
+            "dapr.io/app-id": dapr_app_id,
+            "dapr.io/app-port": str(port),
+            "dapr.io/app-protocol": "http",
+            "dapr.io/config": (
+                request.daprConfig
+                or os.environ.get(
+                    "DAPR_AGENT_HOST_CONFIG", "workflow-builder-agent-runtime"
+                )
+            ),
+            "dapr.io/enable-workflow": "true",
+            "dapr.io/enable-native-sidecar": "true",
+            "dapr.io/internal-grpc-port": os.environ.get(
+                "DAPR_AGENT_HOST_INTERNAL_GRPC_PORT", "3502"
+            ),
+            "dapr.io/placement-host-address": os.environ.get(
+                "DAPR_PLACEMENT_HOST_ADDRESS",
+                "dapr-placement-server.dapr-system.svc.cluster.local:50005",
+            ),
+            "dapr.io/max-body-size": os.environ.get("DAPR_MAX_BODY_SIZE", "16Mi"),
+            "dapr.io/graceful-shutdown-seconds": "60",
+        }
     sandbox_spec: dict[str, Any] = {
         "replicas": 1,
         "podTemplate": {
-            "metadata": {"labels": pod_labels},
+            "metadata": pod_template_metadata,
             "spec": pod_spec,
         },
     }
@@ -2803,6 +3017,16 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
             detail=f"unsupported executionClass {body.executionClass}",
         )
     namespace = _agent_workflow_host_namespace()
+    # Per-preview secret (e.g. DATABASE_URL → the preview's own DB): create it +
+    # envFrom it LAST so it overrides the reused prod secret. Append the secretRef
+    # to envFrom BEFORE building the manifest so the dev container picks it up.
+    preview_secret_name = (
+        _dev_preview_secret_name(body.executionId) if body.serviceSecretEnv else None
+    )
+    if preview_secret_name:
+        body.envFrom = list(body.envFrom or []) + [
+            {"secretRef": {"name": preview_secret_name}}
+        ]
     manifest = build_dev_preview_sandbox_manifest(
         body, namespace=namespace, class_config=class_config
     )
@@ -2816,6 +3040,8 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
     }:
         _, core = _load_k8s_clients()
         custom = _load_k8s_custom_objects_client()
+        if preview_secret_name:
+            _ensure_dev_preview_secret(core, body, namespace=namespace)
         try:
             custom.create_namespaced_custom_object(
                 group="agents.x-k8s.io",
@@ -2856,6 +3082,9 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
         "url": url,
         "syncUrl": sync_url,
         "executionClass": body.executionClass,
+        # Dapr-shadow: surface the isolated app-id so callers can prove isolation.
+        "needsDapr": body.needsDapr,
+        "daprAppId": _dev_preview_dapr_app_id(body) if body.needsDapr else None,
     }
     set_current_span_io("output", response)
     return response
@@ -2872,6 +3101,29 @@ def teardown_dev_preview(request: Request, name: str) -> dict[str, Any]:
         "yes",
     }:
         custom = _load_k8s_custom_objects_client()
+        # Clean up the per-preview Secret (labeled by exec id on the CR) before
+        # removing the Sandbox. Best-effort; the GC reaper is the backstop.
+        try:
+            _, core = _load_k8s_clients()
+            cr = custom.get_namespaced_custom_object(
+                group="agents.x-k8s.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="sandboxes",
+                name=safe_name,
+            )
+            exec_label = (
+                (cr.get("metadata", {}) or {}).get("labels", {}) or {}
+            ).get("workflow-execution-id")
+            if exec_label:
+                core.delete_collection_namespaced_secret(
+                    namespace=namespace,
+                    label_selector=(
+                        f"app=wfb-dev-preview,workflow-execution-id={exec_label}"
+                    ),
+                )
+        except Exception as exc:
+            logger.info("dev-preview secret cleanup skipped: %s", exc)
         _delete_agent_host_cr_and_wait(custom, namespace, safe_name)
     return {"sandboxName": safe_name, "deleted": True}
 
@@ -3266,3 +3518,249 @@ def seed_workspace_data_status(
         "failed": failed,
         "active": int(getattr(st, "active", 0) or 0),
     }
+
+
+# ---------------------------------------------------------------------------
+# Tier-2 full-isolation previews (vcluster). The BFF (unprivileged) asks this
+# privileged service to create a Job that runs /config/runner.sh as the
+# cluster-admin `vcluster-preview-provisioner` SA: vcluster create + Dapr +
+# agent-sandbox + app-stack deploy + tailnet exposure (ACTION=up), or teardown
+# (ACTION=down). The runner blocks until rollouts are ready, so Job success ==
+# environment ready. See stacks .../workflow-builder-preview-vcluster/.
+# ---------------------------------------------------------------------------
+
+_VCLUSTER_PREVIEW_TAILNET_SUFFIX = os.environ.get(
+    "VCLUSTER_PREVIEW_TAILNET_SUFFIX", "tail286401.ts.net"
+)
+
+
+class VclusterPreviewRequest(BaseModel):
+    """Provision (or tear down) a Tier-2 full-isolation preview vcluster."""
+
+    name: str = Field(min_length=1, max_length=40)
+    action: str = Field(default="up")  # up | down
+    daprVersion: str | None = None
+    tailnetHost: str | None = None
+    previewDb: str | None = None
+
+
+def _vcluster_preview_job_name(name: str, action: str) -> str:
+    return _safe_resource_name(f"vcpreview-{action}-{name}", max_length=63)
+
+
+def _vcluster_preview_tailnet_host(req: VclusterPreviewRequest) -> str:
+    return req.tailnetHost or f"wfb-{req.name}"
+
+
+def _vcluster_preview_job_manifest(
+    req: VclusterPreviewRequest, *, namespace: str
+) -> dict[str, Any]:
+    job_name = _vcluster_preview_job_name(req.name, req.action)
+    image = os.environ.get("VCLUSTER_PREVIEW_RUNNER_IMAGE", "alpine/k8s:1.31.0")
+    env = [
+        {"name": "NAME", "value": req.name},
+        {"name": "ACTION", "value": req.action},
+        {"name": "TS_HOST", "value": _vcluster_preview_tailnet_host(req)},
+    ]
+    if req.daprVersion:
+        env.append({"name": "DAPR_VERSION", "value": req.daprVersion})
+    if req.previewDb:
+        env.append({"name": "PREVIEW_DB", "value": req.previewDb})
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": job_name,
+            "namespace": namespace,
+            "labels": {
+                "app": "vcluster-preview",
+                "vcluster-preview-name": _safe_resource_name(req.name),
+                "vcluster-preview-action": req.action,
+            },
+        },
+        "spec": {
+            "backoffLimit": 0,
+            "ttlSecondsAfterFinished": 1800,
+            "activeDeadlineSeconds": 1800,
+            "template": {
+                "metadata": {"labels": {"app": "vcluster-preview"}},
+                "spec": {
+                    "restartPolicy": "Never",
+                    "serviceAccountName": "vcluster-preview-provisioner",
+                    "containers": [
+                        {
+                            "name": "runner",
+                            "image": image,
+                            "command": ["bash", "/config/runner.sh"],
+                            "env": env,
+                            "volumeMounts": [
+                                {"name": "runner", "mountPath": "/config"}
+                            ],
+                        }
+                    ],
+                    "volumes": [
+                        {
+                            "name": "runner",
+                            "configMap": {"name": "vcluster-preview-runner"},
+                        }
+                    ],
+                },
+            },
+        },
+    }
+
+
+@app.post("/internal/vcluster-preview", status_code=status.HTTP_202_ACCEPTED)
+def provision_vcluster_preview(
+    request: Request, body: VclusterPreviewRequest
+) -> dict[str, Any]:
+    _require_internal(request)
+    set_current_span_io("input", body.model_dump())
+    if body.action not in {"up", "down"}:
+        raise HTTPException(status_code=400, detail="action must be up|down")
+    namespace = _agent_workflow_host_namespace()
+    manifest = _vcluster_preview_job_manifest(body, namespace=namespace)
+    job_name = manifest["metadata"]["name"]
+    tailnet_host = _vcluster_preview_tailnet_host(body)
+    url = f"https://{tailnet_host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}"
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        batch, _ = _load_k8s_clients()
+        # Idempotent: clear a prior same-action Job before recreating.
+        try:
+            batch.delete_namespaced_job(
+                name=job_name,
+                namespace=namespace,
+                propagation_policy="Background",
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) not in (404, None):
+                logger.info("vcluster-preview prior job delete: %s", exc)
+        # Brief settle so the recreate doesn't 409 on a terminating job.
+        for _ in range(20):
+            try:
+                batch.read_namespaced_job(name=job_name, namespace=namespace)
+                time.sleep(0.5)
+            except Exception as exc:
+                if getattr(exc, "status", None) == 404:
+                    break
+        try:
+            batch.create_namespaced_job(namespace=namespace, body=manifest)
+        except Exception as exc:
+            if getattr(exc, "status", None) != 409:
+                raise
+    response = {
+        "name": body.name,
+        "action": body.action,
+        "job": job_name,
+        "status": "provisioning" if body.action == "up" else "terminating",
+        "tailnetHost": tailnet_host,
+        "url": url if body.action == "up" else None,
+    }
+    set_current_span_io("output", response)
+    return response
+
+
+@app.get("/internal/vcluster-preview/{name}")
+def get_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
+    _require_internal(request)
+    namespace = _agent_workflow_host_namespace()
+    job_name = _vcluster_preview_job_name(name, "up")
+    tailnet_host = f"wfb-{name}"
+    url = f"https://{tailnet_host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}"
+    phase = "unknown"
+    active = succeeded = failed = 0
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        batch, _ = _load_k8s_clients()
+        try:
+            st = batch.read_namespaced_job_status(
+                name=job_name, namespace=namespace
+            ).status
+            active = int(getattr(st, "active", 0) or 0)
+            succeeded = int(getattr(st, "succeeded", 0) or 0)
+            failed = int(getattr(st, "failed", 0) or 0)
+            if succeeded:
+                phase = "ready"
+            elif failed:
+                phase = "failed"
+            elif active:
+                phase = "provisioning"
+            else:
+                phase = "pending"
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                phase = "absent"  # never provisioned, or TTL-reaped after success
+            else:
+                raise
+    return {
+        "name": name,
+        "job": job_name,
+        "phase": phase,
+        "ready": phase == "ready",
+        "active": active,
+        "succeeded": succeeded,
+        "failed": failed,
+        "tailnetHost": tailnet_host,
+        "url": url,
+    }
+
+
+@app.delete("/internal/vcluster-preview/{name}")
+def teardown_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
+    _require_internal(request)
+    # Teardown == an ACTION=down Job (drops the per-preview DB + vcluster delete).
+    body = VclusterPreviewRequest(name=name, action="down")
+    return provision_vcluster_preview(request, body)
+
+
+@app.get("/internal/vcluster-previews")
+def list_vcluster_previews(request: Request) -> dict[str, Any]:
+    _require_internal(request)
+    namespace = _agent_workflow_host_namespace()
+    items: list[dict[str, Any]] = []
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        batch, _ = _load_k8s_clients()
+        jobs = batch.list_namespaced_job(
+            namespace=namespace, label_selector="app=vcluster-preview"
+        )
+        seen: dict[str, dict[str, Any]] = {}
+        for j in jobs.items:
+            labels = (j.metadata.labels or {}) if j.metadata else {}
+            name = labels.get("vcluster-preview-name") or ""
+            action = labels.get("vcluster-preview-action") or "up"
+            if not name or action != "up":
+                continue
+            st = j.status
+            succeeded = int(getattr(st, "succeeded", 0) or 0)
+            failed = int(getattr(st, "failed", 0) or 0)
+            active = int(getattr(st, "active", 0) or 0)
+            phase = (
+                "ready"
+                if succeeded
+                else "failed"
+                if failed
+                else "provisioning"
+                if active
+                else "pending"
+            )
+            host = f"wfb-{name}"
+            seen[name] = {
+                "name": name,
+                "phase": phase,
+                "ready": phase == "ready",
+                "tailnetHost": host,
+                "url": f"https://{host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}",
+            }
+        items = list(seen.values())
+    return {"previews": items}

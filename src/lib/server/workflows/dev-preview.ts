@@ -37,6 +37,10 @@ export interface DevPreviewInfo {
 	syncPaths: string[];
 	ready: boolean;
 	status: string;
+	/** Dapr-shadow: this preview runs a daprd sidecar (isolated app-id). */
+	needsDapr: boolean;
+	/** The isolated Dapr app-id (own task hub), when needsDapr. */
+	daprAppId: string | null;
 }
 
 function sandboxExecutionApiUrl(): string | null {
@@ -78,6 +82,25 @@ export async function provisionDevPreview(
 		params.image ||
 		resolveDevPreviewImage(descriptor, { ...process.env, ...env });
 	const token = internalToken();
+
+	// Functional preview: provision the per-preview database first; its DATABASE_URL
+	// is delivered to the pod via a per-preview Secret (serviceSecretEnv), and the
+	// app self-migrates the empty DB on boot.
+	const previewEnv: Record<string, string> = { ...(descriptor.extraEnv ?? {}) };
+	const serviceSecretEnv: Record<string, string> = {};
+	if (descriptor.functional) {
+		const { provisionPreviewDatabase } = await import(
+			"$lib/server/workflows/preview-database"
+		);
+		const { databaseUrl, sourceUrl } = await provisionPreviewDatabase(
+			params.executionId,
+		);
+		serviceSecretEnv.DATABASE_URL = databaseUrl;
+		// Source for the db-clone init container (pg_dump --schema-only | psql).
+		if (sourceUrl) serviceSecretEnv.PREVIEW_SOURCE_DATABASE_URL = sourceUrl;
+	}
+	if (descriptor.pubsubName) previewEnv.PUBSUB_NAME = descriptor.pubsubName;
+
 	const requestBody: Record<string, unknown> = {
 		executionId: params.executionId,
 		executionClass: params.executionClass ?? "dev-preview",
@@ -88,6 +111,13 @@ export async function provisionDevPreview(
 		workdir: descriptor.workdir,
 		syncMode: descriptor.syncMode,
 		syncPort: descriptor.syncPort,
+		...(descriptor.needsDapr ? { needsDapr: true } : {}),
+		...(descriptor.applyDaprShadowDefaults === false
+			? { applyDaprShadowDefaults: false }
+			: {}),
+		...(descriptor.envFrom ? { envFrom: descriptor.envFrom } : {}),
+		...(Object.keys(serviceSecretEnv).length ? { serviceSecretEnv } : {}),
+		...(Object.keys(previewEnv).length ? { env: previewEnv } : {}),
 		...(params.syncToken ? { syncToken: params.syncToken } : {}),
 		...(params.timeoutSeconds == null
 			? {}
@@ -131,6 +161,8 @@ export async function provisionDevPreview(
 		syncPaths: descriptor.syncPaths,
 		ready: body.ready === true,
 		status: typeof body.status === "string" ? body.status : "queued",
+		needsDapr: body.needsDapr === true,
+		daprAppId: typeof body.daprAppId === "string" ? body.daprAppId : null,
 	};
 	await persistDevPreviewSession(info);
 	return info;
@@ -142,9 +174,16 @@ async function persistDevPreviewSession(info: DevPreviewInfo): Promise<void> {
 		kind: "dev-preview",
 		sandboxName: info.sandboxName,
 		name: info.sandboxName,
+		service: info.service,
 		podIP: info.podIP,
 		port: info.port,
+		syncPort: info.syncPort,
 		url: info.url,
+		syncUrl: info.syncUrl,
+		browseUrl: info.browseUrl,
+		needsDapr: info.needsDapr,
+		daprAppId: info.daprAppId,
+		ready: info.ready,
 		executionId: info.executionId,
 		provider: "agent-sandbox-dev-preview",
 	};
@@ -244,6 +283,19 @@ export async function teardownDevPreview(params: {
 		} catch {
 			/* best-effort */
 		}
+	}
+	// Drop the per-preview database (functional previews). Best-effort — IF NOT
+	// EXISTS-safe, so harmless for UI-only previews that never created one.
+	try {
+		const { dropPreviewDatabase } = await import(
+			"$lib/server/workflows/preview-database"
+		);
+		await dropPreviewDatabase(params.executionId);
+	} catch (err) {
+		console.warn(
+			"[dev-preview] preview DB drop failed:",
+			err instanceof Error ? err.message : err,
+		);
 	}
 	return { ok: true, sandboxName: name };
 }

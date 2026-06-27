@@ -1,0 +1,186 @@
+<script lang="ts">
+	import { goto } from '$app/navigation';
+	import { onMount, onDestroy } from 'svelte';
+	import { page } from '$app/state';
+	import { Alert, AlertDescription } from '$lib/components/ui/alert';
+	import { Button } from '$lib/components/ui/button';
+	import { Textarea } from '$lib/components/ui/textarea';
+	import {
+		AlertDialog,
+		AlertDialogAction,
+		AlertDialogCancel,
+		AlertDialogContent,
+		AlertDialogDescription,
+		AlertDialogFooter,
+		AlertDialogHeader,
+		AlertDialogTitle
+	} from '$lib/components/ui/alert-dialog';
+	import { ArrowLeft, SendHorizontal } from '@lucide/svelte';
+	import DevPreviewStatusCard from '$lib/components/dev/dev-preview-status-card.svelte';
+	import type { DevEnvironmentSummary } from '$lib/components/dev/dev-environment-card.svelte';
+	import SessionTranscript from '$lib/components/sessions/session-transcript.svelte';
+	import SessionGoalBadge from '$lib/components/sessions/session-goal-badge.svelte';
+	import type { PageData } from './$types';
+
+	let { data }: { data: PageData } = $props();
+
+	const slug = $derived((page.params.slug as string) ?? 'default');
+
+	let environment = $state<DevEnvironmentSummary>(data.environment);
+	let errorMessage = $state<string | null>(null);
+	let confirmTeardown = $state(false);
+	let busy = $state(false);
+	let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+	// Composer
+	let composer = $state('');
+	let sending = $state(false);
+
+	const sessionId = $derived(environment.sessionId);
+
+	async function refresh() {
+		try {
+			const res = await fetch(`/api/dev-environments/${environment.executionId}`);
+			if (res.status === 404) {
+				// Torn down elsewhere — bounce back to the hub.
+				goto(`/workspaces/${slug}/dev`);
+				return;
+			}
+			if (!res.ok) return;
+			const body = (await res.json()) as { environment: DevEnvironmentSummary };
+			if (body.environment) environment = body.environment;
+		} catch {
+			/* transient */
+		}
+	}
+
+	async function send() {
+		const text = composer.trim();
+		if (!text || !sessionId || sending) return;
+		sending = true;
+		try {
+			const res = await fetch(`/api/v1/sessions/${sessionId}/events`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					events: [{ type: 'user.message', content: [{ type: 'text', text }] }]
+				})
+			});
+			if (!res.ok) {
+				errorMessage = `Send failed (${res.status})`;
+				return;
+			}
+			composer = '';
+			errorMessage = null;
+		} catch (err) {
+			errorMessage = err instanceof Error ? err.message : String(err);
+		} finally {
+			sending = false;
+		}
+	}
+
+	function onComposerKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+			e.preventDefault();
+			void send();
+		}
+	}
+
+	async function teardown() {
+		confirmTeardown = false;
+		busy = true;
+		try {
+			const res = await fetch(`/api/dev-environments/${environment.executionId}`, {
+				method: 'DELETE'
+			});
+			if (!res.ok) {
+				errorMessage = `Teardown failed (${res.status})`;
+				return;
+			}
+			goto(`/workspaces/${slug}/dev`);
+		} finally {
+			busy = false;
+		}
+	}
+
+	onMount(() => {
+		pollTimer = setInterval(refresh, 4000);
+	});
+	onDestroy(() => {
+		if (pollTimer) clearInterval(pollTimer);
+	});
+</script>
+
+<div class="h-full flex flex-col">
+	<header class="flex items-center gap-3 border-b px-5 py-3">
+		<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/dev`)}>
+			<ArrowLeft class="size-4" /> Dev
+		</Button>
+		<h1 class="font-semibold truncate">{environment.service}</h1>
+		{#if sessionId}
+			<SessionGoalBadge {sessionId} />
+		{/if}
+	</header>
+
+	{#if errorMessage}
+		<div class="px-5 pt-3">
+			<Alert variant="destructive">
+				<AlertDescription>{errorMessage}</AlertDescription>
+			</Alert>
+		</div>
+	{/if}
+
+	<div class="flex-1 min-h-0 grid lg:grid-cols-[340px_1fr] gap-0">
+		<!-- Status / controls column -->
+		<aside class="border-r p-4 overflow-y-auto space-y-4">
+			<DevPreviewStatusCard {environment} {busy} onteardown={() => (confirmTeardown = true)} />
+		</aside>
+
+		<!-- Interactive session column -->
+		<section class="flex flex-col min-h-0">
+			{#if sessionId}
+				<div class="flex-1 min-h-0 overflow-hidden">
+					<SessionTranscript {sessionId} showPulse showTimeline class="h-full" />
+				</div>
+				<div class="border-t p-3">
+					<div class="flex items-end gap-2">
+						<Textarea
+							class="min-h-[44px] max-h-40 resize-none"
+							placeholder="Message the coding agent…  (⌘/Ctrl+Enter to send)"
+							bind:value={composer}
+							onkeydown={onComposerKeydown}
+							disabled={sending}
+						/>
+						<Button onclick={send} disabled={sending || !composer.trim()}>
+							<SendHorizontal class="size-4" />
+						</Button>
+					</div>
+				</div>
+			{:else}
+				<div class="flex-1 flex flex-col items-center justify-center text-center p-8 space-y-2">
+					<p class="text-sm text-muted-foreground">
+						Waiting for the interactive session to start…
+					</p>
+					<p class="text-xs text-muted-foreground">
+						The workflow hands off into a coding-agent session once the preview is provisioned.
+					</p>
+				</div>
+			{/if}
+		</section>
+	</div>
+</div>
+
+<AlertDialog open={confirmTeardown} onOpenChange={(open) => (confirmTeardown = open)}>
+	<AlertDialogContent>
+		<AlertDialogHeader>
+			<AlertDialogTitle>Tear down {environment.service}?</AlertDialogTitle>
+			<AlertDialogDescription>
+				Deletes the preview pod and purges the interactive session. This can't be undone.
+			</AlertDialogDescription>
+		</AlertDialogHeader>
+		<AlertDialogFooter>
+			<AlertDialogCancel>Cancel</AlertDialogCancel>
+			<AlertDialogAction onclick={teardown}>Tear down</AlertDialogAction>
+		</AlertDialogFooter>
+	</AlertDialogContent>
+</AlertDialog>
