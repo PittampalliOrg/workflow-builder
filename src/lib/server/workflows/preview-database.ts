@@ -32,10 +32,14 @@ function resolveUrls(executionId: string): {
 	return { adminUrl: admin.toString(), previewUrl: preview.toString(), dbName };
 }
 
-/** CREATE DATABASE preview_<id> (idempotent); returns its DATABASE_URL. */
+/**
+ * CREATE DATABASE preview_<id> (idempotent). Returns its DATABASE_URL plus the
+ * source (shared dev) DATABASE_URL, which the db-clone init container uses to
+ * `pg_dump --schema-only | psql` the schema into the fresh preview DB.
+ */
 export async function provisionPreviewDatabase(
 	executionId: string,
-): Promise<{ databaseUrl: string; dbName: string }> {
+): Promise<{ databaseUrl: string; sourceUrl: string; dbName: string }> {
 	const { adminUrl, previewUrl, dbName } = resolveUrls(executionId);
 	const sql = postgres(adminUrl, { max: 1 });
 	try {
@@ -48,7 +52,7 @@ export async function provisionPreviewDatabase(
 	} finally {
 		await sql.end({ timeout: 5 });
 	}
-	return { databaseUrl: previewUrl, dbName };
+	return { databaseUrl: previewUrl, sourceUrl: env.DATABASE_URL as string, dbName };
 }
 
 /** Terminate connections + DROP DATABASE preview_<id> (best-effort). */

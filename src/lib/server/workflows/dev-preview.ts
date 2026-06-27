@@ -92,8 +92,12 @@ export async function provisionDevPreview(
 		const { provisionPreviewDatabase } = await import(
 			"$lib/server/workflows/preview-database"
 		);
-		const { databaseUrl } = await provisionPreviewDatabase(params.executionId);
+		const { databaseUrl, sourceUrl } = await provisionPreviewDatabase(
+			params.executionId,
+		);
 		serviceSecretEnv.DATABASE_URL = databaseUrl;
+		// Source for the db-clone init container (pg_dump --schema-only | psql).
+		if (sourceUrl) serviceSecretEnv.PREVIEW_SOURCE_DATABASE_URL = sourceUrl;
 	}
 	if (descriptor.pubsubName) previewEnv.PUBSUB_NAME = descriptor.pubsubName;
 

@@ -2587,29 +2587,34 @@ def build_dev_preview_sandbox_manifest(
         pod_spec["securityContext"] = pod_security
 
     init_containers: list[dict[str, Any]] = []
-    # Functional preview: create the schema in the per-preview database via
-    # `drizzle-kit push` (the DEV image ships drizzle-kit + the schema; neither
-    # runtime image ships atlas/migrations, which are applied out-of-band in
-    # prod). Runs to completion before the dev server starts; reads DATABASE_URL
-    # from the per-preview Secret via envFrom. `< /dev/null` guards against any
-    # stdin prompt hanging (an empty DB applies all creates non-interactively).
+    # Functional preview: clone the dev schema into the per-preview database with
+    # `pg_dump --schema-only | psql` before the dev server starts. We use pg_dump
+    # (not drizzle-kit, whose tsconfig `$lib` aliases don't resolve, nor the
+    # runtime images, which don't ship atlas/migrations) because it always
+    # reflects the CURRENT dev schema, works while the source DB has live
+    # connections, and needs no maintained template. DATABASE_URL (target) +
+    # PREVIEW_SOURCE_DATABASE_URL (source) come from the per-preview Secret.
     if functional:
         init_containers.append(
             {
-                "name": "db-push",
-                "image": image,
-                "imagePullPolicy": _image_pull_policy_for_agent_host(image),
-                "workingDir": workdir,
+                "name": "db-clone",
+                "image": os.environ.get(
+                    "DEV_PREVIEW_PG_IMAGE",
+                    "docker.io/library/postgres:15.3-alpine3.18",
+                ),
                 "command": [
                     "sh",
-                    "-lc",
-                    "pnpm drizzle-kit push < /dev/null 2>&1 | tail -80",
+                    "-c",
+                    'set -e; if [ -z "$PREVIEW_SOURCE_DATABASE_URL" ]; then '
+                    'echo "no source DB; skipping schema clone"; exit 0; fi; '
+                    'pg_dump --schema-only --no-owner --no-privileges '
+                    '"$PREVIEW_SOURCE_DATABASE_URL" | psql -v ON_ERROR_STOP=0 '
+                    '"$DATABASE_URL"; echo "schema clone done"',
                 ],
-                "env": list(env),
                 **({"envFrom": env_from} if env_from else {}),
                 "resources": {
-                    "requests": {"cpu": "100m", "memory": "512Mi"},
-                    "limits": {"memory": "1Gi"},
+                    "requests": {"cpu": "100m", "memory": "256Mi"},
+                    "limits": {"memory": "512Mi"},
                 },
             }
         )
