@@ -3664,11 +3664,42 @@ def provision_vcluster_preview(
     return response
 
 
+def _vcluster_preview_phase(batch, core, name: str) -> tuple[str, int, int, int]:
+    """Phase keyed on the DURABLE vcluster namespace (not the provisioning Job,
+    which is TTL-GC'd ~30m after it finishes — that GC was making ready previews
+    vanish from the Dev hub). The up-Job only refines the phase while it exists."""
+    namespace = _agent_workflow_host_namespace()
+    job_name = _vcluster_preview_job_name(name, "up")
+    active = succeeded = failed = 0
+    try:
+        st = batch.read_namespaced_job_status(name=job_name, namespace=namespace).status
+        active = int(getattr(st, "active", 0) or 0)
+        succeeded = int(getattr(st, "succeeded", 0) or 0)
+        failed = int(getattr(st, "failed", 0) or 0)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 404:
+            raise
+    ns_exists = False
+    try:
+        core.read_namespace(name=f"vcluster-{name}")
+        ns_exists = True
+    except Exception as exc:
+        if getattr(exc, "status", None) != 404:
+            raise
+    if active:
+        phase = "provisioning"
+    elif ns_exists or succeeded:
+        phase = "ready"  # vcluster is up — stays ready after the Job is GC'd
+    elif failed:
+        phase = "failed"
+    else:
+        phase = "absent"
+    return phase, active, succeeded, failed
+
+
 @app.get("/internal/vcluster-preview/{name}")
 def get_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
     _require_internal(request)
-    namespace = _agent_workflow_host_namespace()
-    job_name = _vcluster_preview_job_name(name, "up")
     tailnet_host = f"wfb-{name}"
     url = f"https://{tailnet_host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}"
     phase = "unknown"
@@ -3678,30 +3709,11 @@ def get_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
         "true",
         "yes",
     }:
-        batch, _ = _load_k8s_clients()
-        try:
-            st = batch.read_namespaced_job_status(
-                name=job_name, namespace=namespace
-            ).status
-            active = int(getattr(st, "active", 0) or 0)
-            succeeded = int(getattr(st, "succeeded", 0) or 0)
-            failed = int(getattr(st, "failed", 0) or 0)
-            if succeeded:
-                phase = "ready"
-            elif failed:
-                phase = "failed"
-            elif active:
-                phase = "provisioning"
-            else:
-                phase = "pending"
-        except Exception as exc:
-            if getattr(exc, "status", None) == 404:
-                phase = "absent"  # never provisioned, or TTL-reaped after success
-            else:
-                raise
+        batch, core = _load_k8s_clients()
+        phase, active, succeeded, failed = _vcluster_preview_phase(batch, core, name)
     return {
         "name": name,
-        "job": job_name,
+        "job": _vcluster_preview_job_name(name, "up"),
         "phase": phase,
         "ready": phase == "ready",
         "active": active,
@@ -3723,44 +3735,36 @@ def teardown_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
 @app.get("/internal/vcluster-previews")
 def list_vcluster_previews(request: Request) -> dict[str, Any]:
     _require_internal(request)
-    namespace = _agent_workflow_host_namespace()
     items: list[dict[str, Any]] = []
     if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
         "1",
         "true",
         "yes",
     }:
-        batch, _ = _load_k8s_clients()
-        jobs = batch.list_namespaced_job(
-            namespace=namespace, label_selector="app=vcluster-preview"
-        )
-        seen: dict[str, dict[str, Any]] = {}
-        for j in jobs.items:
-            labels = (j.metadata.labels or {}) if j.metadata else {}
-            name = labels.get("vcluster-preview-name") or ""
-            action = labels.get("vcluster-preview-action") or "up"
-            if not name or action != "up":
-                continue
-            st = j.status
-            succeeded = int(getattr(st, "succeeded", 0) or 0)
-            failed = int(getattr(st, "failed", 0) or 0)
-            active = int(getattr(st, "active", 0) or 0)
-            phase = (
-                "ready"
-                if succeeded
-                else "failed"
-                if failed
-                else "provisioning"
-                if active
-                else "pending"
+        batch, core = _load_k8s_clients()
+        # Durable: enumerate the preview VCLUSTER NAMESPACES (labeled by the
+        # runner), not the TTL-GC'd provisioning Jobs.
+        nss = core.list_namespace(label_selector="app=vcluster-preview")
+        for ns in nss.items:
+            labels = (ns.metadata.labels or {}) if ns.metadata else {}
+            name = labels.get("vcluster-preview-name") or (
+                ns.metadata.name[len("vcluster-") :]
+                if ns.metadata.name.startswith("vcluster-")
+                else ns.metadata.name
             )
+            if (ns.status and getattr(ns.status, "phase", "") == "Terminating"):
+                continue
+            phase, _a, _s, _f = _vcluster_preview_phase(batch, core, name)
+            if phase == "absent":
+                continue
             host = f"wfb-{name}"
-            seen[name] = {
-                "name": name,
-                "phase": phase,
-                "ready": phase == "ready",
-                "tailnetHost": host,
-                "url": f"https://{host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}",
-            }
-        items = list(seen.values())
+            items.append(
+                {
+                    "name": name,
+                    "phase": phase,
+                    "ready": phase == "ready",
+                    "tailnetHost": host,
+                    "url": f"https://{host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}",
+                }
+            )
     return {"previews": items}
