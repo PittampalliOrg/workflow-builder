@@ -3665,9 +3665,10 @@ def provision_vcluster_preview(
 
 
 def _vcluster_preview_phase(batch, core, name: str) -> tuple[str, int, int, int]:
-    """Phase keyed on the DURABLE vcluster namespace (not the provisioning Job,
-    which is TTL-GC'd ~30m after it finishes — that GC was making ready previews
-    vanish from the Dev hub). The up-Job only refines the phase while it exists."""
+    """Phase keyed on the DURABLE vcluster (its host namespace), so a ready preview
+    survives the provisioning Job's TTL GC. Readiness is the ACTUAL stack: a synced
+    `workflow-builder-*` (BFF) pod reporting Ready in the `vcluster-<name>` host ns —
+    NOT mere namespace existence (an empty/half-up ns is not ready)."""
     namespace = _agent_workflow_host_namespace()
     job_name = _vcluster_preview_job_name(name, "up")
     active = succeeded = failed = 0
@@ -3680,18 +3681,31 @@ def _vcluster_preview_phase(batch, core, name: str) -> tuple[str, int, int, int]
         if getattr(exc, "status", None) != 404:
             raise
     ns_exists = False
+    bff_ready = False
     try:
-        core.read_namespace(name=f"vcluster-{name}")
+        pods = core.list_namespaced_pod(namespace=f"vcluster-{name}")
         ns_exists = True
+        for p in pods.items:
+            if not (p.metadata.name or "").startswith("workflow-builder-"):
+                continue
+            conds = (p.status.conditions or []) if p.status else []
+            if any(
+                getattr(c, "type", "") == "Ready" and getattr(c, "status", "") == "True"
+                for c in conds
+            ):
+                bff_ready = True
+                break
     except Exception as exc:
         if getattr(exc, "status", None) != 404:
             raise
-    if active:
+    if bff_ready:
+        phase = "ready"  # BFF is up — stays ready even after the Job is GC'd
+    elif active:
         phase = "provisioning"
-    elif ns_exists or succeeded:
-        phase = "ready"  # vcluster is up — stays ready after the Job is GC'd
     elif failed:
         phase = "failed"
+    elif ns_exists:
+        phase = "provisioning"  # ns up but BFF not Ready yet (or stuck)
     else:
         phase = "absent"
     return phase, active, succeeded, failed
