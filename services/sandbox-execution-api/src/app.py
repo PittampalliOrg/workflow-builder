@@ -2586,6 +2586,34 @@ def build_dev_preview_sandbox_manifest(
     if pod_security:
         pod_spec["securityContext"] = pod_security
 
+    init_containers: list[dict[str, Any]] = []
+    # Functional preview: create the schema in the per-preview database via
+    # `drizzle-kit push` (the DEV image ships drizzle-kit + the schema; neither
+    # runtime image ships atlas/migrations, which are applied out-of-band in
+    # prod). Runs to completion before the dev server starts; reads DATABASE_URL
+    # from the per-preview Secret via envFrom. `< /dev/null` guards against any
+    # stdin prompt hanging (an empty DB applies all creates non-interactively).
+    if functional:
+        init_containers.append(
+            {
+                "name": "db-push",
+                "image": image,
+                "imagePullPolicy": _image_pull_policy_for_agent_host(image),
+                "workingDir": workdir,
+                "command": [
+                    "sh",
+                    "-lc",
+                    "pnpm drizzle-kit push < /dev/null 2>&1 | tail -80",
+                ],
+                "env": list(env),
+                **({"envFrom": env_from} if env_from else {}),
+                "resources": {
+                    "requests": {"cpu": "100m", "memory": "512Mi"},
+                    "limits": {"memory": "1Gi"},
+                },
+            }
+        )
+
     # ----- sidecar mode (language-agnostic live-sync for any service) -----
     # A shared emptyDir at the workdir (local disk → inotify works). An init
     # container seeds it from the dev image's baked workdir (deps + source), so
@@ -2604,7 +2632,7 @@ def build_dev_preview_sandbox_manifest(
         container.setdefault("volumeMounts", []).append(
             {"name": "dev-workdir", "mountPath": workdir}
         )
-        pod_spec["initContainers"] = [
+        init_containers.append(
             {
                 "name": "seed-workdir",
                 "image": image,
@@ -2618,7 +2646,7 @@ def build_dev_preview_sandbox_manifest(
                 ],
                 "volumeMounts": [{"name": "dev-workdir", "mountPath": "/seed"}],
             }
-        ]
+        )
         sidecar_env = [
             {"name": "DEV_SYNC_PORT", "value": str(sync_port)},
             {"name": "DEV_SYNC_DEST", "value": workdir},
@@ -2644,6 +2672,8 @@ def build_dev_preview_sandbox_manifest(
             }
         )
 
+    if init_containers:
+        pod_spec["initContainers"] = init_containers
     if class_config.nodeSelector:
         pod_spec["nodeSelector"] = class_config.nodeSelector
     if class_config.imagePullSecrets:
