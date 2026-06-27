@@ -33,6 +33,12 @@
             "default": "true",
             "description": "true = each run gets its own throwaway vite-dev Sandbox (torn down at the end); false = target the shared standing dev pod at devServiceUrl."
           },
+          "keepPreview": {
+            "type": "string",
+            "title": "Keep the per-run preview alive after the run",
+            "default": "false",
+            "description": "true = skip teardown + extend the Sandbox TTL so you can inspect the live edit at http://wfb-preview-ryzen.tail286401.ts.net (only meaningful with perRunPreview=true)."
+          },
           "devServiceUrl": {
             "type": "string",
             "title": "Fallback dev preview URL (when perRunPreview=false)",
@@ -61,7 +67,7 @@
         "call": "dev/preview",
         "with": {
           "executionId": "${ .runtime.executionId }",
-          "timeoutSeconds": 3600,
+          "timeoutSeconds": "${ if (.trigger.keepPreview // \"false\") == \"true\" then 86400 else 3600 end }",
           "waitReadySeconds": 180
         },
         "if": "${ (.trigger.perRunPreview // \"true\") == \"true\" }",
@@ -187,6 +193,8 @@
           "previewUrl": "${ .provision_preview.url // .provision_preview.data.url // .trigger.devServiceUrl // \"http://workflow-builder-dev.workflow-builder.svc.cluster.local:3000\" }",
           "sandboxName": "${ .provision_preview.sandboxName // .provision_preview.data.sandboxName // \"\" }",
           "perRunPreview": "${ (.trigger.perRunPreview // \"true\") == \"true\" }",
+          "keptAlive": "${ (.trigger.keepPreview // \"false\") == \"true\" }",
+          "browseUrl": "${ if ((.trigger.perRunPreview // \"true\") == \"true\") and ((.trigger.keepPreview // \"false\") == \"true\") then \"http://wfb-preview-ryzen.tail286401.ts.net/auth/sign-in\" else \"\" end }",
           "liveSync": "${ ((.verify_http.result.stdout // .verify_http.data.result.stdout // .verify_http.stdout // \"\") | test(\"LIVE_OK\")) }",
           "terminalState": "${ if ((.verify_http.result.stdout // .verify_http.data.result.stdout // .verify_http.stdout // \"\") | test(\"LIVE_OK\")) then \"live\" else \"not_live\" end }",
           "uiMarkerPresent": "${ (((.read_verdict.result.stdout // .read_verdict.data.result.stdout // .read_verdict.stdout // \"{}\") | fromjson?) // {}) as $v | ($v.markerPresent // $v.marker_found // (((($v.verdict // $v.overall_verdict // \"\") | ascii_downcase) | test(\"pass\")) and ($v.verdict != null or $v.overall_verdict != null)) // null) }"
@@ -200,7 +208,7 @@
           "executionId": "${ .runtime.executionId }",
           "sandboxName": "${ .provision_preview.sandboxName // .provision_preview.data.sandboxName // \"\" }"
         },
-        "if": "${ (.trigger.perRunPreview // \"true\") == \"true\" }",
+        "if": "${ (.trigger.perRunPreview // \"true\") == \"true\" and (.trigger.keepPreview // \"false\") != \"true\" }",
         "allowFailure": true
       }
     }
