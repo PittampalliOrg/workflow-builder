@@ -2495,17 +2495,25 @@ def build_dev_preview_sandbox_manifest(
         "terminationGracePeriodSeconds": 30,
         "containers": [container],
     }
-    # Pod-level securityContext: explicit class config wins. Otherwise default to
-    # root for plain previews (vite/uvicorn/tsx run as the image's root user). For
-    # needsDapr we must NOT set a pod-level runAsUser:0 — it cascades to the
-    # injected daprd native sidecar, which the cluster's non-root policy rejects
-    # ("runAsUser breaks non-root policy"). Omitting it lets daprd use its own
-    # non-root default (mirrors the working agent-host pods) while the dev/seed/
-    # sync containers still run as their image's root user.
+    # Pod-level securityContext: explicit class config wins, else default to root
+    # for plain previews (vite/uvicorn/tsx run as the image's root user). For
+    # needsDapr we must NOT set a pod-level runAsUser:0 — the Dapr injector gives
+    # the daprd native sidecar `runAsNonRoot: true` (no explicit runAsUser), so a
+    # pod-level runAsUser:0 makes the effective uid root and the kubelet rejects
+    # daprd ("runAsUser breaks non-root policy"). Strip runAsUser/runAsGroup for
+    # needsDapr (mirrors the working agent-host pods, whose pod securityContext is
+    # empty); the dev/seed/sync containers still run as their image's root user.
     if class_config.podSecurityContext is not None:
-        pod_spec["securityContext"] = dict(class_config.podSecurityContext)
+        pod_security = dict(class_config.podSecurityContext)
     elif not request.needsDapr:
-        pod_spec["securityContext"] = {"runAsUser": 0}
+        pod_security = {"runAsUser": 0}
+    else:
+        pod_security = {}
+    if request.needsDapr:
+        pod_security.pop("runAsUser", None)
+        pod_security.pop("runAsGroup", None)
+    if pod_security:
+        pod_spec["securityContext"] = pod_security
 
     # ----- sidecar mode (language-agnostic live-sync for any service) -----
     # A shared emptyDir at the workdir (local disk → inotify works). An init
