@@ -31,6 +31,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	try {
 		const info = await provisionDevPreview({
 			executionId,
+			service: typeof body.service === "string" ? body.service : null,
 			syncToken: typeof body.syncToken === "string" ? body.syncToken : null,
 			timeoutSeconds:
 				typeof body.timeoutSeconds === "number" ? body.timeoutSeconds : null,

@@ -627,6 +627,74 @@ async function executeGoalPlan(
 }
 
 /**
+ * session/spawn — workflow → interactive dev-session handoff (P3). Proxies to the
+ * BFF, which creates + starts a persistent interactive coding-agent session bound
+ * to the execution's shared workspace. Returns `{ sessionId, url }` (consumed
+ * downstream as `${ .handoff.sessionId }` / `.handoff.url`).
+ */
+async function executeSessionSpawn(
+  input: Record<string, unknown>,
+): Promise<ExecuteResponse> {
+  const started = Date.now();
+  const executionId =
+    typeof input.executionId === "string" ? input.executionId.trim() : "";
+  const instructions =
+    typeof input.instructions === "string" ? input.instructions : "";
+  if (!executionId || !instructions.trim()) {
+    return {
+      success: false,
+      data: {},
+      error: "session/spawn: requires `executionId` and `instructions`.",
+      duration_ms: Date.now() - started,
+    } as ExecuteResponse;
+  }
+  const payload: Record<string, unknown> = { instructions };
+  if (typeof input.agentSlug === "string") payload.agentSlug = input.agentSlug;
+  if (typeof input.title === "string") payload.title = input.title;
+  try {
+    const res = await fetch(
+      `${WORKFLOW_BUILDER_URL}/api/internal/workflows/executions/${encodeURIComponent(
+        executionId,
+      )}/interactive-session`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Internal-Token": INTERNAL_API_TOKEN,
+        },
+        body: JSON.stringify(payload),
+      },
+    );
+    const text = await res.text();
+    const parsed = parseJsonResponse(text);
+    if (!res.ok) {
+      const message =
+        isPlainObject(parsed) && typeof parsed.error === "string"
+          ? parsed.error
+          : `session/spawn failed (${res.status})`;
+      return {
+        success: false,
+        data: {},
+        error: message,
+        duration_ms: Date.now() - started,
+      } as ExecuteResponse;
+    }
+    return {
+      success: true,
+      data: isPlainObject(parsed) ? parsed : {},
+      duration_ms: Date.now() - started,
+    } as ExecuteResponse;
+  } catch (err) {
+    return {
+      success: false,
+      data: {},
+      error: err instanceof Error ? err.message : String(err),
+      duration_ms: Date.now() - started,
+    } as ExecuteResponse;
+  }
+}
+
+/**
  * dev/preview (ensure) + dev/preview-teardown — per-run ephemeral dev-server
  * Sandbox. The BFF owns the privileged sandbox-execution-api call (the agent
  * needs no kube creds), so the router just proxies to its internal endpoint
@@ -666,6 +734,7 @@ async function executeDevPreview(
     } else {
       const payload: Record<string, unknown> = {};
       for (const key of [
+        "service",
         "syncToken",
         "timeoutSeconds",
         "waitReadySeconds",
@@ -1410,6 +1479,16 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
         functionSlug === "dev/preview-teardown" ? "teardown" : "ensure",
       );
       return reply.status(devResponse.success ? 200 : 502).send(devResponse);
+    }
+
+    // session/spawn — workflow → interactive dev-session handoff (proxy to BFF).
+    if (functionSlug === "session/spawn") {
+      const sessionResponse = await executeSessionSpawn(
+        body.input as Record<string, unknown>,
+      );
+      return reply
+        .status(sessionResponse.success ? 200 : 502)
+        .send(sessionResponse);
     }
 
     console.log(

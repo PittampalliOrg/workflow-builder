@@ -1110,6 +1110,9 @@ _NON_AP_SLUG_PREFIXES: set[str] = {
     # dev/preview (+ dev/preview-teardown) — per-run ephemeral dev-server Sandbox;
     # function-router proxies to the BFF dev-preview endpoint (NOT an AP piece).
     "dev",
+    # session/spawn — workflow → interactive dev-session handoff; function-router
+    # proxies to the BFF interactive-session endpoint (NOT an AP piece).
+    "session",
 }
 
 # Retry policy for AP piece activities (docs/activepieces-integration-architecture.md

@@ -4542,6 +4542,20 @@ async function seedGeneratorCriticShowcases(params: {
 			"claude-code-cli design critic with the Playwright MCP server; drives Chromium in-pod to inspect the rendered app and judge it against a design rubric.",
 		mcpServers: PLAYWRIGHT_CRITIC_MCP,
 	});
+	// Interactive DEV agent for the microservice-dev-session handoff (P3). A
+	// claude-code-cli agent the user keeps prompting: it edits the cloned repo in
+	// the shared /sandbox/work, pushes via the workspace `sync.sh` helper to the
+	// per-run dev preview (/__sync → hot-reload), and can drive Chromium via
+	// Playwright to inspect the live result. Persona/kickoff arrive as the
+	// session's initial message from the handoff.
+	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+		slug: "cli-dev-agent",
+		runtime: "claude-code-cli",
+		name: "CLI Dev Agent",
+		description:
+			"claude-code-cli interactive developer agent for microservice dev-sessions: edits the cloned repo in /sandbox/work, runs ./sync.sh to live-sync the per-run dev preview, and inspects the result (Playwright MCP).",
+		mcpServers: PLAYWRIGHT_CRITIC_MCP,
+	});
 	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
 		slug: "codex-cli-evaluator-critic-agent",
 		runtime: "codex-cli",
@@ -4629,6 +4643,8 @@ async function seedGeneratorCriticShowcases(params: {
 		// and verify the change is LIVE on the preview — skaffold-style live-sync from a
 		// workflow, no kubectl/RBAC. See docs/agentic-deploy-inspect-loop.md.
 		"workflow-builder-self-edit-livesync.json",
+		// P3: generalized per-service dev preview + interactive coding-agent handoff.
+		"microservice-dev-session.json",
 	]) {
 		const full = path.join(dir, file);
 		if (!fs.existsSync(full)) {
