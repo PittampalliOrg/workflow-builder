@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, or } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
 	sessions,
@@ -212,6 +212,30 @@ export async function getDevEnvironmentOrPending(
 		runStatus: exec.status,
 		createdAt: exec.createdAt.toISOString(),
 	};
+}
+
+/**
+ * The orchestrator calls the BFF internal dev/* + session/* routes with its
+ * DAPR INSTANCE id (`sw-<wf>-exec-<id>`), not the canonical `workflow_executions.id`.
+ * Resolve either form to the canonical id so the dev-preview row's FK holds and
+ * the bound session attaches to the row the Dev hub queries. Falls back to the
+ * input when no row matches (e.g. ad-hoc verification ids).
+ */
+export async function resolveCanonicalExecutionId(
+	idOrInstanceId: string,
+): Promise<string> {
+	if (!db || !idOrInstanceId) return idOrInstanceId;
+	const [row] = await db
+		.select({ id: workflowExecutions.id })
+		.from(workflowExecutions)
+		.where(
+			or(
+				eq(workflowExecutions.id, idOrInstanceId),
+				eq(workflowExecutions.daprInstanceId, idOrInstanceId),
+			),
+		)
+		.limit(1);
+	return row?.id ?? idOrInstanceId;
 }
 
 /** Public, credential-free catalog of launchable services for the UI dropdown. */

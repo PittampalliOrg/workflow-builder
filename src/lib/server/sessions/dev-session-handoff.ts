@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db } from "$lib/server/db";
-import { workflowExecutions } from "$lib/server/db/schema";
+import { workflowExecutions, workflows } from "$lib/server/db/schema";
 import { getAgentBySlug } from "$lib/server/agents/registry";
 import { createSession } from "$lib/server/sessions/registry";
 import { sendUserEvent } from "$lib/server/sessions/events";
@@ -45,9 +45,12 @@ export async function spawnDevSession(
 	const [exec] = await db
 		.select({
 			userId: workflowExecutions.userId,
+			// workflow_executions.project_id is nullable; fall back to the workflow's.
 			projectId: workflowExecutions.projectId,
+			workflowProjectId: workflows.projectId,
 		})
 		.from(workflowExecutions)
+		.innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
 		.where(eq(workflowExecutions.id, params.executionId))
 		.limit(1);
 	if (!exec?.userId) {
@@ -55,6 +58,7 @@ export async function spawnDevSession(
 			`execution ${params.executionId} not found or has no owner (cannot scope the dev session)`,
 		);
 	}
+	const projectId = exec.projectId ?? exec.workflowProjectId ?? null;
 	const agentSlug = (params.agentSlug || DEFAULT_DEV_AGENT_SLUG).trim();
 	const agent = await getAgentBySlug(agentSlug);
 	if (!agent) {
@@ -68,7 +72,7 @@ export async function spawnDevSession(
 	const session = await createSession({
 		agentId: agent.id,
 		userId: exec.userId,
-		projectId: exec.projectId ?? null,
+		projectId,
 		workflowExecutionId: params.executionId,
 		title: params.title ?? `Dev session (${params.executionId})`,
 	});

@@ -5,6 +5,7 @@ import {
 	provisionDevPreview,
 	teardownDevPreview,
 } from "$lib/server/workflows/dev-preview";
+import { resolveCanonicalExecutionId } from "$lib/server/workflows/dev-environments";
 
 /**
  * POST /api/internal/workflows/executions/[executionId]/dev-preview
@@ -22,8 +23,11 @@ import {
 
 export const POST: RequestHandler = async ({ params, request }) => {
 	requireInternal(request);
-	const executionId = params.executionId;
-	if (!executionId) return json({ error: "executionId required" }, { status: 400 });
+	const rawId = params.executionId;
+	if (!rawId) return json({ error: "executionId required" }, { status: 400 });
+	// The orchestrator passes its dapr instance id; map to workflow_executions.id
+	// so the persisted dev-preview row's FK holds + the Dev hub can find it.
+	const executionId = await resolveCanonicalExecutionId(rawId);
 	const body = (await request.json().catch(() => ({}))) as Record<
 		string,
 		unknown
@@ -55,8 +59,9 @@ export const POST: RequestHandler = async ({ params, request }) => {
 
 export const DELETE: RequestHandler = async ({ params, request, url }) => {
 	requireInternal(request);
-	const executionId = params.executionId;
-	if (!executionId) return json({ error: "executionId required" }, { status: 400 });
+	const rawId = params.executionId;
+	if (!rawId) return json({ error: "executionId required" }, { status: 400 });
+	const executionId = await resolveCanonicalExecutionId(rawId);
 	const sandboxName = url.searchParams.get("sandboxName");
 	const result = await teardownDevPreview({ executionId, sandboxName });
 	return json(result);
