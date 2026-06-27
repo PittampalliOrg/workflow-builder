@@ -82,6 +82,21 @@ export async function provisionDevPreview(
 		params.image ||
 		resolveDevPreviewImage(descriptor, { ...process.env, ...env });
 	const token = internalToken();
+
+	// Functional preview: provision the per-preview database first; its DATABASE_URL
+	// is delivered to the pod via a per-preview Secret (serviceSecretEnv), and the
+	// app self-migrates the empty DB on boot.
+	const previewEnv: Record<string, string> = { ...(descriptor.extraEnv ?? {}) };
+	const serviceSecretEnv: Record<string, string> = {};
+	if (descriptor.functional) {
+		const { provisionPreviewDatabase } = await import(
+			"$lib/server/workflows/preview-database"
+		);
+		const { databaseUrl } = await provisionPreviewDatabase(params.executionId);
+		serviceSecretEnv.DATABASE_URL = databaseUrl;
+	}
+	if (descriptor.pubsubName) previewEnv.PUBSUB_NAME = descriptor.pubsubName;
+
 	const requestBody: Record<string, unknown> = {
 		executionId: params.executionId,
 		executionClass: params.executionClass ?? "dev-preview",
@@ -92,14 +107,13 @@ export async function provisionDevPreview(
 		workdir: descriptor.workdir,
 		syncMode: descriptor.syncMode,
 		syncPort: descriptor.syncPort,
-		...(descriptor.needsDapr
-			? {
-					needsDapr: true,
-					...(descriptor.pubsubName
-						? { env: { PUBSUB_NAME: descriptor.pubsubName } }
-						: {}),
-				}
+		...(descriptor.needsDapr ? { needsDapr: true } : {}),
+		...(descriptor.applyDaprShadowDefaults === false
+			? { applyDaprShadowDefaults: false }
 			: {}),
+		...(descriptor.envFrom ? { envFrom: descriptor.envFrom } : {}),
+		...(Object.keys(serviceSecretEnv).length ? { serviceSecretEnv } : {}),
+		...(Object.keys(previewEnv).length ? { env: previewEnv } : {}),
 		...(params.syncToken ? { syncToken: params.syncToken } : {}),
 		...(params.timeoutSeconds == null
 			? {}
@@ -265,6 +279,19 @@ export async function teardownDevPreview(params: {
 		} catch {
 			/* best-effort */
 		}
+	}
+	// Drop the per-preview database (functional previews). Best-effort — IF NOT
+	// EXISTS-safe, so harmless for UI-only previews that never created one.
+	try {
+		const { dropPreviewDatabase } = await import(
+			"$lib/server/workflows/preview-database"
+		);
+		await dropPreviewDatabase(params.executionId);
+	} catch (err) {
+		console.warn(
+			"[dev-preview] preview DB drop failed:",
+			err instanceof Error ? err.message : err,
+		);
 	}
 	return { ok: true, sandboxName: name };
 }

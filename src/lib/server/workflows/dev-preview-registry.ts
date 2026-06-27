@@ -53,6 +53,21 @@ export interface DevPreviewDescriptor {
 	needsDapr?: boolean;
 	/** Isolated dev pubsub component name (forwarded as PUBSUB_NAME env). */
 	pubsubName?: string;
+	/**
+	 * Functional preview (the app actually runs, not UI-only). Provisions a
+	 * per-preview Postgres database (`preview_<id>`, app self-migrates on boot) +
+	 * reuses the prod config/secrets via `envFrom`. For app services like the BFF.
+	 */
+	functional?: boolean;
+	/**
+	 * Suppress the orchestrator-only Dapr-shadow env knobs (DAPR_CONFIG_STORE,
+	 * PUBSUB_NAME) when this service just needs a daprd sidecar (e.g. the BFF).
+	 */
+	applyDaprShadowDefaults?: boolean;
+	/** envFrom sources (configmaps/secret) to reuse the prod app's config + DATABASE_URL. */
+	envFrom?: Array<Record<string, unknown>>;
+	/** Extra plain env for the dev container (e.g. ORIGIN). */
+	extraEnv?: Record<string, string>;
 }
 
 export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
@@ -70,6 +85,19 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
 		repoSubdir: ".",
 		syncPaths: ["src"],
 		tailnetHost: "wfb-preview-ryzen.tail286401.ts.net",
+		// Functional preview: the BFF actually runs against its own preview DB +
+		// a daprd sidecar (to service-invoke the backend). Reuses the prod
+		// config/secrets via envFrom; the per-preview DATABASE_URL overrides the
+		// shared one (delivered via a per-preview Secret).
+		functional: true,
+		needsDapr: true,
+		applyDaprShadowDefaults: false,
+		envFrom: [
+			{ configMapRef: { name: "workflow-builder-otel-config", optional: true } },
+			{ configMapRef: { name: "workflow-builder-flipt-config", optional: true } },
+			{ secretRef: { name: "workflow-builder-secrets" } },
+		],
+		extraEnv: { ORIGIN: "http://wfb-preview-ryzen.tail286401.ts.net" },
 	},
 	"workflow-orchestrator": {
 		service: "workflow-orchestrator",

@@ -270,6 +270,12 @@ class ExecutionClassConfig(BaseModel):
     syncSidecarImage: str | None = None
     serviceWorkdir: str = "/app"
     serviceHealthPath: str = "/"
+    # envFrom sources (configMapRef/secretRef) applied verbatim to the dev
+    # container — lets a functional preview reuse the prod app's config + secrets
+    # (e.g. workflow-builder-secrets carrying DATABASE_URL) without copying
+    # plaintext into the Sandbox CR. Per-service envFrom is normally supplied on
+    # the request (from the dev-preview registry), not the shared class.
+    serviceEnvFrom: list[dict[str, Any]] | None = None
 
 
 class AgentWorkflowHostRequest(BaseModel):
@@ -360,6 +366,18 @@ class DevPreviewRequest(BaseModel):
     daprConfig: str | None = None
     # ServiceAccount bound to the secret-reader Role so daprd can fetch real secrets.
     daprServiceAccount: str | None = None
+    # Apply the orchestrator-specific Dapr-shadow env knobs
+    # (DAPR_CONFIG_STORE=disabled-dev, PUBSUB_NAME=pubsub-dev). Correct for the
+    # workflow-orchestrator shadow; OFF for app services (e.g. the BFF) that just
+    # need a daprd sidecar and would be mis-pointed by these.
+    applyDaprShadowDefaults: bool = True
+    # envFrom sources (configMapRef/secretRef) for the dev container — used by a
+    # functional preview to reuse the prod app's config + secrets.
+    envFrom: list[dict[str, Any]] | None = None
+    # Per-preview secret values (e.g. DATABASE_URL pointing at the preview's own
+    # database). Stored in a per-preview Secret (never plaintext in the CR) and
+    # envFrom'd LAST so they override the reused prod secret.
+    serviceSecretEnv: dict[str, str] | None = None
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:
@@ -2348,6 +2366,46 @@ def _dev_preview_sandbox_name(execution_id: str) -> str:
     return _safe_resource_name(f"wfb-dev-preview-{execution_id}", max_length=63)
 
 
+def _dev_preview_secret_name(execution_id: str) -> str:
+    return _safe_resource_name(f"dev-preview-secret-{execution_id}", max_length=63)
+
+
+def _ensure_dev_preview_secret(
+    core: Any, request: DevPreviewRequest, *, namespace: str
+) -> str | None:
+    """Create/refresh the per-preview Secret (e.g. the preview's DATABASE_URL).
+
+    Created BEFORE the Sandbox CR so the pod never races a missing secretRef.
+    Keeps preview secrets out of the Sandbox CR / pod spec plaintext.
+    """
+    if not request.serviceSecretEnv:
+        return None
+    secret_name = _dev_preview_secret_name(request.executionId)
+    labels = {
+        "app": "wfb-dev-preview",
+        "workflow-execution-id": _safe_name(request.executionId, max_length=63),
+    }
+    string_data = {k: v for k, v in request.serviceSecretEnv.items() if k}
+    body = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "type": "Opaque",
+        "metadata": {"name": secret_name, "namespace": namespace, "labels": labels},
+        "stringData": string_data,
+    }
+    try:
+        core.create_namespaced_secret(namespace=namespace, body=body)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+        core.patch_namespaced_secret(
+            name=secret_name,
+            namespace=namespace,
+            body={"metadata": {"labels": labels}, "stringData": string_data},
+        )
+    return secret_name
+
+
 def _dev_preview_dapr_app_id(request: DevPreviewRequest) -> str:
     """Unique Dapr app-id for a Dapr-shadow preview.
 
@@ -2401,12 +2459,19 @@ def build_dev_preview_sandbox_manifest(
 
     # Main dev-server env. workflow-builder's in-process Vite /__sync plugin reads
     # WFB_DEV_SYNC_* (plugin mode only); other services use the sidecar and don't.
+    # A "functional" preview wires the app's config/secrets + its own DB (envFrom
+    # / serviceSecretEnv). UI-only previews have neither → skip startup migrations
+    # (no DB); functional previews self-migrate their empty preview DB on boot.
+    functional = bool(
+        request.envFrom or request.serviceSecretEnv or class_config.serviceEnvFrom
+    )
     env: list[dict[str, str]] = [{"name": "NODE_ENV", "value": "development"}]
     if not use_sidecar:
         env.append({"name": "WFB_DEV_SYNC_ENABLED", "value": "true"})
-        env.append(
-            {"name": "WORKFLOW_BUILDER_SKIP_STARTUP_MIGRATIONS", "value": "true"}
-        )
+        if not functional:
+            env.append(
+                {"name": "WORKFLOW_BUILDER_SKIP_STARTUP_MIGRATIONS", "value": "true"}
+            )
         if request.syncToken:
             env.append({"name": "WFB_DEV_SYNC_TOKEN", "value": request.syncToken})
     # Dapr-shadow defaults (P3.1): lowest priority, so request.env can override.
@@ -2421,11 +2486,12 @@ def build_dev_preview_sandbox_manifest(
     dapr_app_id = _dev_preview_dapr_app_id(request) if request.needsDapr else None
     dapr_defaults: dict[str, str] = {}
     if request.needsDapr:
-        dapr_defaults = {
-            "DAPR_CONFIG_STORE": "disabled-dev",
-            "PUBSUB_NAME": "pubsub-dev",
-            "APP_ID": dapr_app_id or "",
-        }
+        # APP_ID is informational on every shadow; the orchestrator-only isolation
+        # knobs are gated so they don't mis-point app services like the BFF.
+        dapr_defaults["APP_ID"] = dapr_app_id or ""
+        if request.applyDaprShadowDefaults:
+            dapr_defaults["DAPR_CONFIG_STORE"] = "disabled-dev"
+            dapr_defaults["PUBSUB_NAME"] = "pubsub-dev"
     merged_env: dict[str, str] = {}
     for key, value in {
         **dapr_defaults,
@@ -2440,12 +2506,17 @@ def build_dev_preview_sandbox_manifest(
         for key, value in sorted(merged_env.items())
         if key not in overridden
     )
+    # envFrom (configMapRef/secretRef) for a functional preview that reuses the
+    # prod app's config + secrets. Explicit `env` (above) overrides envFrom, so a
+    # per-preview DATABASE_URL passed via request.env wins over the shared secret.
+    env_from = list(request.envFrom or class_config.serviceEnvFrom or [])
     container: dict[str, Any] = {
         "name": "dev",
         "image": image,
         "imagePullPolicy": _image_pull_policy_for_agent_host(image),
         "ports": [{"name": "http", "containerPort": port}],
         "env": env,
+        **({"envFrom": env_from} if env_from else {}),
         "resources": {
             "requests": {
                 "cpu": class_config.serviceCpu,
@@ -2911,6 +2982,16 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
             detail=f"unsupported executionClass {body.executionClass}",
         )
     namespace = _agent_workflow_host_namespace()
+    # Per-preview secret (e.g. DATABASE_URL → the preview's own DB): create it +
+    # envFrom it LAST so it overrides the reused prod secret. Append the secretRef
+    # to envFrom BEFORE building the manifest so the dev container picks it up.
+    preview_secret_name = (
+        _dev_preview_secret_name(body.executionId) if body.serviceSecretEnv else None
+    )
+    if preview_secret_name:
+        body.envFrom = list(body.envFrom or []) + [
+            {"secretRef": {"name": preview_secret_name}}
+        ]
     manifest = build_dev_preview_sandbox_manifest(
         body, namespace=namespace, class_config=class_config
     )
@@ -2924,6 +3005,8 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
     }:
         _, core = _load_k8s_clients()
         custom = _load_k8s_custom_objects_client()
+        if preview_secret_name:
+            _ensure_dev_preview_secret(core, body, namespace=namespace)
         try:
             custom.create_namespaced_custom_object(
                 group="agents.x-k8s.io",
@@ -2983,6 +3066,29 @@ def teardown_dev_preview(request: Request, name: str) -> dict[str, Any]:
         "yes",
     }:
         custom = _load_k8s_custom_objects_client()
+        # Clean up the per-preview Secret (labeled by exec id on the CR) before
+        # removing the Sandbox. Best-effort; the GC reaper is the backstop.
+        try:
+            _, core = _load_k8s_clients()
+            cr = custom.get_namespaced_custom_object(
+                group="agents.x-k8s.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="sandboxes",
+                name=safe_name,
+            )
+            exec_label = (
+                (cr.get("metadata", {}) or {}).get("labels", {}) or {}
+            ).get("workflow-execution-id")
+            if exec_label:
+                core.delete_collection_namespaced_secret(
+                    namespace=namespace,
+                    label_selector=(
+                        f"app=wfb-dev-preview,workflow-execution-id={exec_label}"
+                    ),
+                )
+        except Exception as exc:
+            logger.info("dev-preview secret cleanup skipped: %s", exc)
         _delete_agent_host_cr_and_wait(custom, namespace, safe_name)
     return {"sandboxName": safe_name, "deleted": True}
 
