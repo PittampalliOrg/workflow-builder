@@ -1,8 +1,9 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
 	sessions,
 	workflowExecutions,
+	workflows,
 	workflowWorkspaceSessions,
 } from "$lib/server/db/schema";
 import {
@@ -78,9 +79,12 @@ export async function listDevEnvironments(
 			workflowExecutions,
 			eq(workflowExecutions.id, workflowWorkspaceSessions.workflowExecutionId),
 		)
+		// Scope by the WORKFLOW's project, not workflowExecutions.projectId — the
+		// latter is nullable and the execute route doesn't always stamp it.
+		.innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
 		.where(
 			and(
-				eq(workflowExecutions.projectId, projectId),
+				eq(workflows.projectId, projectId),
 				eq(workflowWorkspaceSessions.status, "active"),
 			),
 		)
@@ -93,6 +97,9 @@ export async function listDevEnvironments(
 
 	// Resolve the bound interactive session per execution (one query).
 	const execIds = [...new Set(previews.map((p) => p.row.executionId as string))];
+	// execIds are already project-scoped (via the workflow join above), so match
+	// the bound session by workflowExecutionId without re-filtering on
+	// sessions.projectId (which can also be null).
 	const sessionRows = execIds.length
 		? await db
 				.select({
@@ -101,15 +108,13 @@ export async function listDevEnvironments(
 					createdAt: sessions.createdAt,
 				})
 				.from(sessions)
-				.where(eq(sessions.projectId, projectId))
+				.where(inArray(sessions.workflowExecutionId, execIds))
+				.orderBy(desc(sessions.createdAt))
 		: [];
 	const sessionByExec = new Map<string, string>();
 	for (const s of sessionRows) {
-		if (s.workflowExecutionId && execIds.includes(s.workflowExecutionId)) {
-			// Keep the newest session per execution.
-			if (!sessionByExec.has(s.workflowExecutionId)) {
-				sessionByExec.set(s.workflowExecutionId, s.id);
-			}
+		if (s.workflowExecutionId && !sessionByExec.has(s.workflowExecutionId)) {
+			sessionByExec.set(s.workflowExecutionId, s.id);
 		}
 	}
 
@@ -169,10 +174,12 @@ export async function getDevEnvironmentOrPending(
 			createdAt: workflowExecutions.startedAt,
 		})
 		.from(workflowExecutions)
+		// Scope by the workflow's project (executions.projectId is nullable).
+		.innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
 		.where(
 			and(
 				eq(workflowExecutions.id, executionId),
-				eq(workflowExecutions.projectId, projectId),
+				eq(workflows.projectId, projectId),
 			),
 		)
 		.limit(1);
@@ -184,12 +191,8 @@ export async function getDevEnvironmentOrPending(
 	const [boundSession] = await db
 		.select({ id: sessions.id })
 		.from(sessions)
-		.where(
-			and(
-				eq(sessions.projectId, projectId),
-				eq(sessions.workflowExecutionId, executionId),
-			),
-		)
+		.where(eq(sessions.workflowExecutionId, executionId))
+		.orderBy(desc(sessions.createdAt))
 		.limit(1);
 	const d = DEV_PREVIEW_SERVICES[service];
 	return {
