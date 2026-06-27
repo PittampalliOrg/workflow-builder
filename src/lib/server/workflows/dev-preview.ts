@@ -2,6 +2,10 @@ import { env } from "$env/dynamic/private";
 import { desc, eq } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import { workflowWorkspaceSessions } from "$lib/server/db/schema";
+import {
+	resolveDevPreviewDescriptor,
+	resolveDevPreviewImage,
+} from "$lib/server/workflows/dev-preview-registry";
 
 /**
  * Per-run ephemeral dev-server preview (P2).
@@ -18,9 +22,19 @@ import { workflowWorkspaceSessions } from "$lib/server/db/schema";
 export interface DevPreviewInfo {
 	sandboxName: string;
 	executionId: string;
+	service: string;
 	podIP: string | null;
 	port: number;
+	syncPort: number;
 	url: string | null;
+	/** Agent /__sync target (pod-IP:syncPort/__sync). */
+	syncUrl: string | null;
+	/** Human-browsable per-service tailnet URL. */
+	browseUrl: string | null;
+	/** Subdir + globs the agent should tar + push on sync. */
+	repoUrl: string;
+	repoSubdir: string;
+	syncPaths: string[];
 	ready: boolean;
 	status: string;
 }
@@ -42,9 +56,12 @@ function internalToken(): string {
 
 export interface ProvisionDevPreviewParams {
 	executionId: string;
+	/** Logical service id (resolved via the dev-preview registry). Default workflow-builder. */
+	service?: string | null;
 	syncToken?: string | null;
 	timeoutSeconds?: number | null;
 	waitReadySeconds?: number;
+	/** Image override (else the descriptor's env-pinned/fallback image). */
 	image?: string | null;
 	executionClass?: string;
 }
@@ -56,11 +73,21 @@ export async function provisionDevPreview(
 	if (!baseUrl) {
 		throw new Error("SANDBOX_EXECUTION_API_URL not configured");
 	}
+	const descriptor = resolveDevPreviewDescriptor(params.service);
+	const image =
+		params.image ||
+		resolveDevPreviewImage(descriptor, { ...process.env, ...env });
 	const token = internalToken();
 	const requestBody: Record<string, unknown> = {
 		executionId: params.executionId,
 		executionClass: params.executionClass ?? "dev-preview",
-		...(params.image ? { image: params.image } : {}),
+		service: descriptor.service,
+		image,
+		port: descriptor.port,
+		healthPath: descriptor.healthPath,
+		workdir: descriptor.workdir,
+		syncMode: descriptor.syncMode,
+		syncPort: descriptor.syncPort,
 		...(params.syncToken ? { syncToken: params.syncToken } : {}),
 		...(params.timeoutSeconds == null
 			? {}
@@ -91,9 +118,17 @@ export async function provisionDevPreview(
 	const info: DevPreviewInfo = {
 		sandboxName: String(body.sandboxName ?? ""),
 		executionId: params.executionId,
+		service: descriptor.service,
 		podIP: typeof body.podIP === "string" ? body.podIP : null,
-		port: typeof body.port === "number" ? body.port : 3000,
+		port: typeof body.port === "number" ? body.port : descriptor.port,
+		syncPort:
+			typeof body.syncPort === "number" ? body.syncPort : descriptor.syncPort,
 		url: typeof body.url === "string" ? body.url : null,
+		syncUrl: typeof body.syncUrl === "string" ? body.syncUrl : null,
+		browseUrl: `http://${descriptor.tailnetHost}`,
+		repoUrl: descriptor.repoUrl,
+		repoSubdir: descriptor.repoSubdir,
+		syncPaths: descriptor.syncPaths,
 		ready: body.ready === true,
 		status: typeof body.status === "string" ? body.status : "queued",
 	};

@@ -396,6 +396,14 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		sessionId,
 		agentConfig: agentConfigForDispatch,
 		workflowExecutionId: session.workflowExecutionId ?? null,
+		// Interactive-cli dev-session handoff (P3): a session row carrying a
+		// workflowExecutionId mounts the SAME per-execution /sandbox/work the
+		// workflow used (the agent sees the cloned repo). Direct UI sessions have
+		// workflowExecutionId=null → no shared mount (unchanged).
+		sharedWorkspaceKey:
+			swapTarget?.capabilities?.interactiveTerminal && session.workflowExecutionId
+				? session.workflowExecutionId
+				: null,
 		benchmarkRunId: null,
 		benchmarkInstanceId: null,
 		timeoutMinutes: null,

@@ -263,6 +263,13 @@ class ExecutionClassConfig(BaseModel):
     serviceMemoryLimit: str | None = None
     serviceEphemeralStorage: str = "2Gi"
     serviceEnv: dict[str, str] = Field(default_factory=dict)
+    # Language-agnostic live-sync sidecar (P3). When a dev-preview request uses
+    # syncMode="sidecar", this image runs alongside the dev server, receiving
+    # /__sync into a shared emptyDir the dev server watches (inotify). One image
+    # for all services; the dev image is unmodified.
+    syncSidecarImage: str | None = None
+    serviceWorkdir: str = "/app"
+    serviceHealthPath: str = "/"
 
 
 class AgentWorkflowHostRequest(BaseModel):
@@ -319,6 +326,24 @@ class DevPreviewRequest(BaseModel):
     waitReadySeconds: int = Field(default=150, ge=0, le=600)
     # Extra env merged onto the dev container (e.g. feature flags).
     env: dict[str, str] | None = None
+    # ----- per-service generalization (P3) -----
+    # Logical service id (workflow-builder / workflow-orchestrator / function-router);
+    # stamped as the `dev-preview-service` label so a per-service tailnet LB selects it.
+    service: str | None = None
+    # Dev-server command/args override (else the class default / image CMD), e.g.
+    # ["uvicorn","src.app:app","--reload","--reload-dir","/app","--host","0.0.0.0","--port","8080"].
+    command: list[str] | None = None
+    args: list[str] | None = None
+    # Readiness/startup probe path (services differ: "/", "/healthz", "/readyz").
+    healthPath: str = "/"
+    # Service workdir (where the dev server runs + where source is synced).
+    workdir: str = "/app"
+    # "plugin" = the dev image hosts /__sync on the dev port (workflow-builder's
+    # in-process Vite plugin). "sidecar" = a language-agnostic dev-sync-sidecar
+    # receives /__sync into a shared emptyDir the dev server watches (any service).
+    syncMode: str = "plugin"
+    # Port the agent POSTs /__sync to. Defaults: plugin → the dev port; sidecar → 8001.
+    syncPort: int | None = None
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:
@@ -2333,13 +2358,25 @@ def build_dev_preview_sandbox_manifest(
     exec_label = _safe_name(request.executionId, max_length=63)
     image = request.image or class_config.serviceImage or DEFAULT_DEV_PREVIEW_IMAGE
     port = class_config.servicePort or request.port or 3000
-    env: list[dict[str, str]] = [
-        {"name": "WFB_DEV_SYNC_ENABLED", "value": "true"},
-        {"name": "WORKFLOW_BUILDER_SKIP_STARTUP_MIGRATIONS", "value": "true"},
-        {"name": "NODE_ENV", "value": "development"},
-    ]
-    if request.syncToken:
-        env.append({"name": "WFB_DEV_SYNC_TOKEN", "value": request.syncToken})
+    workdir = (request.workdir or class_config.serviceWorkdir or "/app").rstrip("/") or "/app"
+    health_path = request.healthPath or class_config.serviceHealthPath or "/"
+    sync_mode = (request.syncMode or "plugin").lower()
+    use_sidecar = sync_mode == "sidecar"
+    sync_port = request.syncPort or (8001 if use_sidecar else port)
+    service_label = _safe_name(request.service or "workflow-builder", max_length=63)
+    command = request.command or class_config.serviceCommand
+    args = request.args or class_config.serviceArgs
+
+    # Main dev-server env. workflow-builder's in-process Vite /__sync plugin reads
+    # WFB_DEV_SYNC_* (plugin mode only); other services use the sidecar and don't.
+    env: list[dict[str, str]] = [{"name": "NODE_ENV", "value": "development"}]
+    if not use_sidecar:
+        env.append({"name": "WFB_DEV_SYNC_ENABLED", "value": "true"})
+        env.append(
+            {"name": "WORKFLOW_BUILDER_SKIP_STARTUP_MIGRATIONS", "value": "true"}
+        )
+        if request.syncToken:
+            env.append({"name": "WFB_DEV_SYNC_TOKEN", "value": request.syncToken})
     merged_env: dict[str, str] = {}
     for key, value in {**class_config.serviceEnv, **(request.env or {})}.items():
         if key and value is not None:
@@ -2373,22 +2410,23 @@ def build_dev_preview_sandbox_manifest(
             },
         },
         "startupProbe": {
-            "httpGet": {"path": "/", "port": port},
+            "httpGet": {"path": health_path, "port": port},
             "initialDelaySeconds": 5,
             "periodSeconds": 5,
             "timeoutSeconds": 5,
             "failureThreshold": 60,
         },
         "readinessProbe": {
-            "httpGet": {"path": "/", "port": port},
+            "httpGet": {"path": health_path, "port": port},
             "periodSeconds": 10,
             "timeoutSeconds": 5,
         },
     }
-    if class_config.serviceCommand:
-        container["command"] = list(class_config.serviceCommand)
-    if class_config.serviceArgs:
-        container["args"] = list(class_config.serviceArgs)
+    if command:
+        container["command"] = list(command)
+    if args:
+        container["args"] = list(args)
+
     pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
         "serviceAccountName": class_config.serviceAccountName,
@@ -2398,6 +2436,65 @@ def build_dev_preview_sandbox_manifest(
         if class_config.podSecurityContext is not None
         else {"runAsUser": 0},
     }
+
+    # ----- sidecar mode (language-agnostic live-sync for any service) -----
+    # A shared emptyDir at the workdir (local disk → inotify works). An init
+    # container seeds it from the dev image's baked workdir (deps + source), so
+    # the emptyDir mount doesn't mask node_modules/.venv. The dev server (main)
+    # runs from the emptyDir; the dev-sync-sidecar untars /__sync pushes into the
+    # SAME emptyDir → the dev server's watcher hot-reloads.
+    if use_sidecar:
+        sidecar_image = (
+            class_config.syncSidecarImage
+            or os.environ.get(
+                "DEV_SYNC_SIDECAR_IMAGE",
+                "ghcr.io/pittampalliorg/dev-sync-sidecar:latest",
+            )
+        )
+        pod_spec["volumes"] = [{"name": "dev-workdir", "emptyDir": {}}]
+        container.setdefault("volumeMounts", []).append(
+            {"name": "dev-workdir", "mountPath": workdir}
+        )
+        pod_spec["initContainers"] = [
+            {
+                "name": "seed-workdir",
+                "image": image,
+                "imagePullPolicy": _image_pull_policy_for_agent_host(image),
+                "command": ["sh", "-c"],
+                # Copy the baked workdir (deps+source) into the emptyDir so the
+                # mount doesn't hide it. cp the contents (incl dotfiles via /.).
+                "args": [
+                    f"cp -a {workdir}/. /seed/ 2>/dev/null || true; "
+                    "echo seeded $(ls /seed | wc -l) entries"
+                ],
+                "volumeMounts": [{"name": "dev-workdir", "mountPath": "/seed"}],
+            }
+        ]
+        sidecar_env = [
+            {"name": "DEV_SYNC_PORT", "value": str(sync_port)},
+            {"name": "DEV_SYNC_DEST", "value": workdir},
+        ]
+        if request.syncToken:
+            sidecar_env.append({"name": "DEV_SYNC_TOKEN", "value": request.syncToken})
+        pod_spec["containers"].append(
+            {
+                "name": "dev-sync",
+                "image": sidecar_image,
+                "imagePullPolicy": _image_pull_policy_for_agent_host(sidecar_image),
+                "ports": [{"name": "sync", "containerPort": sync_port}],
+                "env": sidecar_env,
+                "resources": {
+                    "requests": {"cpu": "25m", "memory": "64Mi"},
+                    "limits": {"memory": "256Mi"},
+                },
+                "volumeMounts": [{"name": "dev-workdir", "mountPath": workdir}],
+                "readinessProbe": {
+                    "httpGet": {"path": "/healthz", "port": sync_port},
+                    "periodSeconds": 10,
+                },
+            }
+        )
+
     if class_config.nodeSelector:
         pod_spec["nodeSelector"] = class_config.nodeSelector
     if class_config.imagePullSecrets:
@@ -2410,6 +2507,7 @@ def build_dev_preview_sandbox_manifest(
         pod_spec["activeDeadlineSeconds"] = request.timeoutSeconds + 600
     pod_labels = {
         "app": "wfb-dev-preview",
+        "dev-preview-service": service_label,
         KUEUE_QUEUE_LABEL: class_config.localQueue,
         "workflow-execution-id": exec_label,
     }
@@ -2432,6 +2530,7 @@ def build_dev_preview_sandbox_manifest(
             "namespace": namespace,
             "labels": {
                 "app": "wfb-dev-preview",
+                "dev-preview-service": service_label,
                 "workflow-execution-id": exec_label,
                 "sandbox-execution-class": _safe_name(request.executionClass),
             },
@@ -2741,15 +2840,21 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
             ),
         )
     port = class_config.servicePort or body.port or 3000
+    use_sidecar = (body.syncMode or "plugin").lower() == "sidecar"
+    sync_port = body.syncPort or (8001 if use_sidecar else port)
     url = f"http://{pod_ip}:{port}" if pod_ip else None
+    sync_url = f"http://{pod_ip}:{sync_port}/__sync" if pod_ip else None
     response = {
         "sandboxName": sandbox_name,
         "executionId": body.executionId,
+        "service": body.service or "workflow-builder",
         "status": readiness_status,
         "ready": readiness_status == "ready",
         "podIP": pod_ip,
         "port": port,
+        "syncPort": sync_port,
         "url": url,
+        "syncUrl": sync_url,
         "executionClass": body.executionClass,
     }
     set_current_span_io("output", response)

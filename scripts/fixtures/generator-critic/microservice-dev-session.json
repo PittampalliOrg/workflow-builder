@@ -1,0 +1,103 @@
+{
+  "document": {
+    "dsl": "1.0.0",
+    "namespace": "workflow-builder",
+    "name": "microservice-dev-session",
+    "version": "0.1.0",
+    "title": "Microservice dev-session: provision a live dev preview, then hand off to an interactive coding agent",
+    "summary": "Generalizes the per-run live-sync loop to ANY microservice (workflow-builder/workflow-orchestrator/function-router). Provisions that service's per-run dev preview (kept alive, browsable at its tailnet URL), clones the repo into the shared /sandbox/work + writes a sync.sh helper, then ENDS INTO a persistent interactive coding-agent session bound to the same workspace + preview. Keep prompting the agent: it edits repo/, runs ./sync.sh to live-sync, you inspect. P3 of the agentic dev loop (docs/agentic-deploy-inspect-loop.md).",
+    "x-workflow-builder": {
+      "resumable": true
+    }
+  },
+  "input": {
+    "schema": {
+      "format": "json",
+      "document": {
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string",
+            "title": "Microservice to develop",
+            "default": "workflow-orchestrator",
+            "description": "workflow-builder | workflow-orchestrator | function-router (registered in the dev-preview registry)."
+          },
+          "keepPreview": {
+            "type": "string",
+            "title": "Keep the preview alive after the run",
+            "default": "true"
+          },
+          "repoUrl": {
+            "type": "string",
+            "title": "Repo (owner/repo)",
+            "default": "PittampalliOrg/workflow-builder"
+          },
+          "agentSlug": {
+            "type": "string",
+            "title": "Interactive dev agent (claude-code-cli)",
+            "default": "cli-dev-agent"
+          }
+        }
+      }
+    }
+  },
+  "output": {
+    "as": "${ .summary }"
+  },
+  "do": [
+    {
+      "provision_preview": {
+        "call": "dev/preview",
+        "with": {
+          "executionId": "${ .runtime.executionId }",
+          "service": "${ .trigger.service // \"workflow-orchestrator\" }",
+          "timeoutSeconds": "${ if (.trigger.keepPreview // \"true\") == \"true\" then 86400 else 3600 end }",
+          "waitReadySeconds": 180
+        },
+        "artifacts": [
+          {
+            "from": "${ { service: (.data.service // \"\"), url: (.data.url // \"\"), browseUrl: (.data.browseUrl // \"\"), syncUrl: (.data.syncUrl // \"\"), podIP: (.data.podIP // \"\"), ready: (.data.ready // false) } }",
+            "kind": "json",
+            "slot": "secondary",
+            "title": "Per-run dev preview"
+          }
+        ]
+      }
+    },
+    {
+      "clone_repo": {
+        "call": "workspace/command",
+        "with": {
+          "cliWorkspace": true,
+          "command": "${ \"export REPOURL=\" + ((.trigger.repoUrl // \"PittampalliOrg/workflow-builder\") | @sh) + \"; export SUBDIR=\" + ((.provision_preview.repoSubdir // \".\") | @sh) + \"; export PATHS=\" + (((.provision_preview.syncPaths // [\"src\"]) | join(\" \")) | @sh) + \"; export SYNCURL=\" + ((.provision_preview.syncUrl // \"\") | @sh) + \";\" + \"\\nset -e\\ncd /sandbox/work\\nrm -rf repo\\ngit clone --depth 1 --single-branch https://x-access-token:${GITHUB_TOKEN}@github.com/$REPOURL.git repo\\nprintf 'SUBDIR=%s\\\\nPATHS=%s\\\\nSYNCURL=%s\\\\n' \\\"$SUBDIR\\\" \\\"$PATHS\\\" \\\"$SYNCURL\\\" > /sandbox/work/.syncenv\\ncat > /sandbox/work/sync.sh <<'SH'\\n#!/bin/sh\\nset -e\\n. /sandbox/work/.syncenv\\ncd /sandbox/work/repo/$SUBDIR\\ntar -czf /tmp/sync.tgz $PATHS\\ncurl -sS -X POST --data-binary @/tmp/sync.tgz -H 'content-type: application/gzip' \\\"$SYNCURL\\\"\\necho\\necho SYNCED\\nSH\\nchmod +x /sandbox/work/sync.sh\\necho CLONED $(git -C repo rev-parse --short HEAD); echo '--- .syncenv ---'; cat /sandbox/work/.syncenv\" }",
+          "cwd": "/sandbox/work",
+          "timeoutMs": 600000,
+          "allowFailure": false
+        }
+      }
+    },
+    {
+      "handoff": {
+        "call": "session/spawn",
+        "with": {
+          "executionId": "${ .runtime.executionId }",
+          "agentSlug": "${ .trigger.agentSlug // \"cli-dev-agent\" }",
+          "instructions": "${ \"You are an interactive developer for the microservice **\" + (.trigger.service // \"workflow-orchestrator\") + \"**.\\n\\n- The repo is cloned at /sandbox/work/repo (work in the subdir: \" + (.provision_preview.repoSubdir // \".\") + \").\\n- A live dev preview of this service is ALREADY running with hot-reload.\\n- After you edit files, run /sandbox/work/sync.sh to push your changes to the preview; it hot-reloads in a few seconds.\\n- Inspect the running result at \" + (.provision_preview.browseUrl // \"\") + \" (you can also use the Playwright MCP browser to navigate it).\\n- The in-cluster sync endpoint is \" + (.provision_preview.syncUrl // \"\") + \" (sync.sh targets it).\\n\\nReply 'ready' and then wait for the user's next message describing the change to make. Then implement it in repo/, run ./sync.sh, and confirm it is live.\" }"
+        }
+      }
+    },
+    {
+      "summary": {
+        "set": {
+          "service": "${ .provision_preview.service // .trigger.service // \"workflow-orchestrator\" }",
+          "browseUrl": "${ .provision_preview.browseUrl // \"\" }",
+          "syncUrl": "${ .provision_preview.syncUrl // \"\" }",
+          "sandboxName": "${ .provision_preview.sandboxName // \"\" }",
+          "sessionId": "${ .handoff.sessionId // \"\" }",
+          "sessionUrl": "${ .handoff.url // \"\" }",
+          "keptAlive": "${ (.trigger.keepPreview // \"true\") == \"true\" }"
+        }
+      }
+    }
+  ]
+}
