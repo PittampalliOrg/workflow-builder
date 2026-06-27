@@ -3518,3 +3518,249 @@ def seed_workspace_data_status(
         "failed": failed,
         "active": int(getattr(st, "active", 0) or 0),
     }
+
+
+# ---------------------------------------------------------------------------
+# Tier-2 full-isolation previews (vcluster). The BFF (unprivileged) asks this
+# privileged service to create a Job that runs /config/runner.sh as the
+# cluster-admin `vcluster-preview-provisioner` SA: vcluster create + Dapr +
+# agent-sandbox + app-stack deploy + tailnet exposure (ACTION=up), or teardown
+# (ACTION=down). The runner blocks until rollouts are ready, so Job success ==
+# environment ready. See stacks .../workflow-builder-preview-vcluster/.
+# ---------------------------------------------------------------------------
+
+_VCLUSTER_PREVIEW_TAILNET_SUFFIX = os.environ.get(
+    "VCLUSTER_PREVIEW_TAILNET_SUFFIX", "tail286401.ts.net"
+)
+
+
+class VclusterPreviewRequest(BaseModel):
+    """Provision (or tear down) a Tier-2 full-isolation preview vcluster."""
+
+    name: str = Field(min_length=1, max_length=40)
+    action: str = Field(default="up")  # up | down
+    daprVersion: str | None = None
+    tailnetHost: str | None = None
+    previewDb: str | None = None
+
+
+def _vcluster_preview_job_name(name: str, action: str) -> str:
+    return _safe_resource_name(f"vcpreview-{action}-{name}", max_length=63)
+
+
+def _vcluster_preview_tailnet_host(req: VclusterPreviewRequest) -> str:
+    return req.tailnetHost or f"wfb-{req.name}"
+
+
+def _vcluster_preview_job_manifest(
+    req: VclusterPreviewRequest, *, namespace: str
+) -> dict[str, Any]:
+    job_name = _vcluster_preview_job_name(req.name, req.action)
+    image = os.environ.get("VCLUSTER_PREVIEW_RUNNER_IMAGE", "alpine/k8s:1.31.0")
+    env = [
+        {"name": "NAME", "value": req.name},
+        {"name": "ACTION", "value": req.action},
+        {"name": "TS_HOST", "value": _vcluster_preview_tailnet_host(req)},
+    ]
+    if req.daprVersion:
+        env.append({"name": "DAPR_VERSION", "value": req.daprVersion})
+    if req.previewDb:
+        env.append({"name": "PREVIEW_DB", "value": req.previewDb})
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": job_name,
+            "namespace": namespace,
+            "labels": {
+                "app": "vcluster-preview",
+                "vcluster-preview-name": _safe_resource_name(req.name),
+                "vcluster-preview-action": req.action,
+            },
+        },
+        "spec": {
+            "backoffLimit": 0,
+            "ttlSecondsAfterFinished": 1800,
+            "activeDeadlineSeconds": 1800,
+            "template": {
+                "metadata": {"labels": {"app": "vcluster-preview"}},
+                "spec": {
+                    "restartPolicy": "Never",
+                    "serviceAccountName": "vcluster-preview-provisioner",
+                    "containers": [
+                        {
+                            "name": "runner",
+                            "image": image,
+                            "command": ["bash", "/config/runner.sh"],
+                            "env": env,
+                            "volumeMounts": [
+                                {"name": "runner", "mountPath": "/config"}
+                            ],
+                        }
+                    ],
+                    "volumes": [
+                        {
+                            "name": "runner",
+                            "configMap": {"name": "vcluster-preview-runner"},
+                        }
+                    ],
+                },
+            },
+        },
+    }
+
+
+@app.post("/internal/vcluster-preview", status_code=status.HTTP_202_ACCEPTED)
+def provision_vcluster_preview(
+    request: Request, body: VclusterPreviewRequest
+) -> dict[str, Any]:
+    _require_internal(request)
+    set_current_span_io("input", body.model_dump())
+    if body.action not in {"up", "down"}:
+        raise HTTPException(status_code=400, detail="action must be up|down")
+    namespace = _agent_workflow_host_namespace()
+    manifest = _vcluster_preview_job_manifest(body, namespace=namespace)
+    job_name = manifest["metadata"]["name"]
+    tailnet_host = _vcluster_preview_tailnet_host(body)
+    url = f"https://{tailnet_host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}"
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        batch, _ = _load_k8s_clients()
+        # Idempotent: clear a prior same-action Job before recreating.
+        try:
+            batch.delete_namespaced_job(
+                name=job_name,
+                namespace=namespace,
+                propagation_policy="Background",
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) not in (404, None):
+                logger.info("vcluster-preview prior job delete: %s", exc)
+        # Brief settle so the recreate doesn't 409 on a terminating job.
+        for _ in range(20):
+            try:
+                batch.read_namespaced_job(name=job_name, namespace=namespace)
+                time.sleep(0.5)
+            except Exception as exc:
+                if getattr(exc, "status", None) == 404:
+                    break
+        try:
+            batch.create_namespaced_job(namespace=namespace, body=manifest)
+        except Exception as exc:
+            if getattr(exc, "status", None) != 409:
+                raise
+    response = {
+        "name": body.name,
+        "action": body.action,
+        "job": job_name,
+        "status": "provisioning" if body.action == "up" else "terminating",
+        "tailnetHost": tailnet_host,
+        "url": url if body.action == "up" else None,
+    }
+    set_current_span_io("output", response)
+    return response
+
+
+@app.get("/internal/vcluster-preview/{name}")
+def get_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
+    _require_internal(request)
+    namespace = _agent_workflow_host_namespace()
+    job_name = _vcluster_preview_job_name(name, "up")
+    tailnet_host = f"wfb-{name}"
+    url = f"https://{tailnet_host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}"
+    phase = "unknown"
+    active = succeeded = failed = 0
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        batch, _ = _load_k8s_clients()
+        try:
+            st = batch.read_namespaced_job_status(
+                name=job_name, namespace=namespace
+            ).status
+            active = int(getattr(st, "active", 0) or 0)
+            succeeded = int(getattr(st, "succeeded", 0) or 0)
+            failed = int(getattr(st, "failed", 0) or 0)
+            if succeeded:
+                phase = "ready"
+            elif failed:
+                phase = "failed"
+            elif active:
+                phase = "provisioning"
+            else:
+                phase = "pending"
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                phase = "absent"  # never provisioned, or TTL-reaped after success
+            else:
+                raise
+    return {
+        "name": name,
+        "job": job_name,
+        "phase": phase,
+        "ready": phase == "ready",
+        "active": active,
+        "succeeded": succeeded,
+        "failed": failed,
+        "tailnetHost": tailnet_host,
+        "url": url,
+    }
+
+
+@app.delete("/internal/vcluster-preview/{name}")
+def teardown_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
+    _require_internal(request)
+    # Teardown == an ACTION=down Job (drops the per-preview DB + vcluster delete).
+    body = VclusterPreviewRequest(name=name, action="down")
+    return provision_vcluster_preview(request, body)
+
+
+@app.get("/internal/vcluster-previews")
+def list_vcluster_previews(request: Request) -> dict[str, Any]:
+    _require_internal(request)
+    namespace = _agent_workflow_host_namespace()
+    items: list[dict[str, Any]] = []
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        batch, _ = _load_k8s_clients()
+        jobs = batch.list_namespaced_job(
+            namespace=namespace, label_selector="app=vcluster-preview"
+        )
+        seen: dict[str, dict[str, Any]] = {}
+        for j in jobs.items:
+            labels = (j.metadata.labels or {}) if j.metadata else {}
+            name = labels.get("vcluster-preview-name") or ""
+            action = labels.get("vcluster-preview-action") or "up"
+            if not name or action != "up":
+                continue
+            st = j.status
+            succeeded = int(getattr(st, "succeeded", 0) or 0)
+            failed = int(getattr(st, "failed", 0) or 0)
+            active = int(getattr(st, "active", 0) or 0)
+            phase = (
+                "ready"
+                if succeeded
+                else "failed"
+                if failed
+                else "provisioning"
+                if active
+                else "pending"
+            )
+            host = f"wfb-{name}"
+            seen[name] = {
+                "name": name,
+                "phase": phase,
+                "ready": phase == "ready",
+                "tailnetHost": host,
+                "url": f"https://{host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}",
+            }
+        items = list(seen.values())
+    return {"previews": items}

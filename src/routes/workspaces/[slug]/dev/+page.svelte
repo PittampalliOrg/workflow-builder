@@ -19,6 +19,7 @@
 		type DevEnvironmentSummary
 	} from '$lib/components/dev/dev-environment-card.svelte';
 	import DevLaunchDialog from '$lib/components/dev/dev-launch-dialog.svelte';
+	import VclusterPreviewPanel from '$lib/components/dev/vcluster-preview-panel.svelte';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -103,6 +104,8 @@
 			<AlertDescription>{errorMessage}</AlertDescription>
 		</Alert>
 	{/if}
+
+	<VclusterPreviewPanel />
 
 	{#if loading && environments.length === 0}
 		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
