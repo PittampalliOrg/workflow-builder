@@ -1,10 +1,12 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, like, or } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import { workflows } from "$lib/server/db/schema";
 import { devPreviewServiceCatalog } from "$lib/server/workflows/dev-environments";
 import type { PageServerLoad } from "./$types";
 
-const DEV_SESSION_WORKFLOW_NAME = "microservice-dev-session";
+// The seeded fixture's stable id (its `name` is a long display string, so resolve
+// by id first; fall back to a name match for hand-authored copies).
+const DEV_SESSION_WORKFLOW_ID = "microservice-dev-session";
 
 /**
  * Resolve the launchable service catalog + the seeded `microservice-dev-session`
@@ -22,11 +24,14 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.where(
 				and(
 					eq(workflows.projectId, projectId),
-					eq(workflows.name, DEV_SESSION_WORKFLOW_NAME),
+					or(
+						eq(workflows.id, DEV_SESSION_WORKFLOW_ID),
+						like(workflows.name, "Microservice dev-session%"),
+					),
 				),
 			)
 			.limit(1);
 		devWorkflowId = row?.id ?? null;
 	}
-	return { services, devWorkflowId, devWorkflowName: DEV_SESSION_WORKFLOW_NAME };
+	return { services, devWorkflowId, devWorkflowName: DEV_SESSION_WORKFLOW_ID };
 };
