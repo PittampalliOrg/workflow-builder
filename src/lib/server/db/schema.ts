@@ -3038,6 +3038,27 @@ export const userCliCredentials = pgTable(
 	}),
 );
 
+/**
+ * Boot-serialization lease for single-use-refresh CLI credentials (codex/openai).
+ * A session claims the per-(user,provider) lease at spawn and holds it across the
+ * spawn→capture gap; the capture route releases it once the rotated token is
+ * persisted, so the next concurrent codex boot seeds the fresh token instead of
+ * racing the spent single-use refresh token. Stale leases (crashed/never-captured
+ * sessions) are stolen after a TTL. See cli-credentials.ts acquire/release.
+ */
+export const cliCredentialLocks = pgTable(
+	"cli_credential_locks",
+	{
+		userId: text("user_id").notNull(),
+		provider: text("provider").notNull(),
+		holderSessionId: text("holder_session_id").notNull(),
+		acquiredAt: timestamp("acquired_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		pk: primaryKey({ columns: [table.userId, table.provider] }),
+	}),
+);
+
 // ============================================================================
 // Sessions (one agent run, multi-turn, streamed events)
 // ============================================================================

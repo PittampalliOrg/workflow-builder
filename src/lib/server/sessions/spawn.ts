@@ -26,6 +26,8 @@ import { evaluateSwap } from "$lib/server/agents/swap-safety";
 import {
 	CliTokenError,
 	getUserCliCredential,
+	acquireCliBootLease,
+	cliCredentialNeedsBootLease,
 } from "$lib/server/users/cli-credentials";
 import { mountSessionRepositoriesViaHost } from "$lib/server/sessions/repositories";
 
@@ -377,6 +379,18 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		const optional = credentialKind === "file_bundle";
 		const setupHint = setupCommand ? `run \`${setupCommand}\` locally` : "see the runtime docs";
 		const ownerUserId = await resolveSessionOwnerUserId(sessionId);
+		// Serialize concurrent single-use-refresh boots (codex): hold the per-(user,
+		// provider) lease across spawn→capture so this session resolves the freshest
+		// token instead of racing the spent refresh token. Best-effort (proceeds on
+		// timeout); released by the cli-credentials capture route.
+		if (ownerUserId && cliCredentialNeedsBootLease(provider)) {
+			const leased = await acquireCliBootLease(ownerUserId, provider, sessionId);
+			if (!leased) {
+				console.warn(
+					`[spawn] ${provider} boot-lease not acquired in time for session ${sessionId}; proceeding (may race a concurrent refresh)`,
+				);
+			}
+		}
 		const credential = ownerUserId
 			? await getUserCliCredential(ownerUserId, provider)
 			: null;

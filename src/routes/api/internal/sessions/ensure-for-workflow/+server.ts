@@ -513,6 +513,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	const workflowSessionSecretEnv = await resolveWorkflowSessionSecretEnv({
 		userId,
 		runtimeDescriptor: swapTarget,
+		sessionId,
 	});
 
 	// Idempotent: if a session with this deterministic id already exists, return it.

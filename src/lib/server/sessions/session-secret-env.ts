@@ -1,5 +1,9 @@
 import { error } from "@sveltejs/kit";
-import { getUserCliCredential } from "$lib/server/users/cli-credentials";
+import {
+	getUserCliCredential,
+	acquireCliBootLease,
+	cliCredentialNeedsBootLease,
+} from "$lib/server/users/cli-credentials";
 import { resolveWorkflowGithubToken } from "$lib/server/workflows/github-token";
 import type { RuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 
@@ -23,6 +27,12 @@ import type { RuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 export async function resolveWorkflowSessionSecretEnv(params: {
 	userId: string;
 	runtimeDescriptor: RuntimeDescriptor | undefined | null;
+	/**
+	 * The real session id. When provided, single-use-refresh providers (codex)
+	 * serialize their boot via the per-(user,provider) lease (released by the
+	 * capture route). OMITTED by prewarm (not a real boot → must not take a lease).
+	 */
+	sessionId?: string | null;
 }): Promise<Record<string, string> | null> {
 	const descriptor = params.runtimeDescriptor;
 	const cliAuth = descriptor?.capabilities?.interactiveTerminal
@@ -45,6 +55,20 @@ export async function resolveWorkflowSessionSecretEnv(params: {
 			412,
 			`Runtime "${runtimeId}" requires an interactive device-code login and cannot run as an automated workflow step. Link a reusable CLI credential first (${setupHint}).`,
 		);
+	}
+	// Serialize concurrent single-use-refresh boots (codex) for real sessions —
+	// best-effort; prewarm passes no sessionId so it never takes a lease.
+	if (params.sessionId && cliCredentialNeedsBootLease(provider)) {
+		const leased = await acquireCliBootLease(
+			params.userId,
+			provider,
+			params.sessionId,
+		);
+		if (!leased) {
+			console.warn(
+				`[workflow-secret-env] ${provider} boot-lease not acquired in time for session ${params.sessionId}; proceeding (may race)`,
+			);
+		}
 	}
 	const credential = await getUserCliCredential(params.userId, provider);
 	if (!credential) {
