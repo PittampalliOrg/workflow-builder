@@ -10,7 +10,7 @@
  *   - never in any API response — the token routes return presence/expiry
  *     metadata only.
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { posix as pathPosix } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { db } from "$lib/server/db";
@@ -243,6 +243,86 @@ export async function getUserCliCredential(
 		expiresAt: row.expiresAt ?? null,
 		status: row.status,
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Boot-serialization lease for single-use-refresh CLI credentials
+// ---------------------------------------------------------------------------
+// codex (provider "openai") authenticates via a ChatGPT OAuth auth.json whose
+// REFRESH TOKEN IS SINGLE-USE — codex rotates it on every boot-refresh. Two
+// concurrent codex pods that both seed the SAME token both refresh it; the loser
+// gets "refresh token already used" and the turn stalls. We serialize per-(user,
+// provider) codex boots with a DB lease held across the spawn→capture gap: a
+// session claims it at spawn (so it resolves the freshest token) and the capture
+// route releases it once codex's rotated token is persisted, so the next
+// concurrent boot seeds the fresh token. Stale leases (crashed/never-captured
+// sessions, or sessions whose codex didn't need to refresh) are stolen after a
+// TTL. Acquire is BEST-EFFORT: on timeout the caller proceeds anyway, so a lease
+// bug can only add latency, never hard-block a spawn.
+const SINGLE_USE_REFRESH_PROVIDERS = new Set(["openai"]);
+const LEASE_STALE_MS = 75_000;
+const LEASE_ACQUIRE_TIMEOUT_MS = 75_000;
+const LEASE_POLL_MS = 1_500;
+
+/** True for providers whose refresh token is single-use (need boot serialization). */
+export function cliCredentialNeedsBootLease(provider: string): boolean {
+	return SINGLE_USE_REFRESH_PROVIDERS.has(provider);
+}
+
+function leaseRows(result: unknown): Array<{ holder_session_id?: string }> {
+	if (Array.isArray(result)) return result as Array<{ holder_session_id?: string }>;
+	const rows = (result as { rows?: unknown })?.rows;
+	return Array.isArray(rows) ? (rows as Array<{ holder_session_id?: string }>) : [];
+}
+
+/**
+ * Claim the per-(user,provider) boot lease for `sessionId`, waiting (best-effort)
+ * until a prior holder releases it or its lease goes stale. No-op + returns true
+ * for providers that don't need serialization. Returns true if the lease is held
+ * by this session on return; false if it timed out (caller proceeds regardless).
+ */
+export async function acquireCliBootLease(
+	userId: string,
+	provider: string,
+	sessionId: string,
+	opts?: { staleMs?: number; timeoutMs?: number },
+): Promise<boolean> {
+	if (!cliCredentialNeedsBootLease(provider) || !sessionId) return true;
+	const database = requireDb();
+	const staleSecs = (opts?.staleMs ?? LEASE_STALE_MS) / 1000;
+	const deadline = Date.now() + (opts?.timeoutMs ?? LEASE_ACQUIRE_TIMEOUT_MS);
+	for (;;) {
+		// Atomic claim-or-steal: insert; on conflict take over only if we already
+		// hold it or the existing lease is stale. A live foreign holder → no row
+		// returned (DO UPDATE WHERE false) → we don't have it yet.
+		const result = await database.execute(sql`
+			INSERT INTO cli_credential_locks (user_id, provider, holder_session_id, acquired_at)
+			VALUES (${userId}, ${provider}, ${sessionId}, now())
+			ON CONFLICT (user_id, provider) DO UPDATE
+				SET holder_session_id = EXCLUDED.holder_session_id, acquired_at = now()
+				WHERE cli_credential_locks.holder_session_id = ${sessionId}
+				   OR cli_credential_locks.acquired_at < now() - make_interval(secs => ${staleSecs})
+			RETURNING holder_session_id
+		`);
+		if (leaseRows(result)[0]?.holder_session_id === sessionId) return true;
+		if (Date.now() >= deadline) return false;
+		await new Promise((r) => setTimeout(r, LEASE_POLL_MS));
+	}
+}
+
+/** Release the boot lease if held by `sessionId` (no-op otherwise). */
+export async function releaseCliBootLease(
+	userId: string,
+	provider: string,
+	sessionId: string,
+): Promise<void> {
+	if (!cliCredentialNeedsBootLease(provider) || !sessionId) return;
+	const database = requireDb();
+	await database.execute(sql`
+		DELETE FROM cli_credential_locks
+		WHERE user_id = ${userId} AND provider = ${provider}
+		  AND holder_session_id = ${sessionId}
+	`);
 }
 
 /**

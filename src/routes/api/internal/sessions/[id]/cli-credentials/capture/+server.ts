@@ -15,7 +15,10 @@ import { eq } from "drizzle-orm";
 import { validateInternalToken } from "$lib/server/internal-auth";
 import { db } from "$lib/server/db";
 import { sessions } from "$lib/server/db/schema";
-import { upsertUserCliCredential } from "$lib/server/users/cli-credentials";
+import {
+	upsertUserCliCredential,
+	releaseCliBootLease,
+} from "$lib/server/users/cli-credentials";
 
 export const POST: RequestHandler = async ({ params, request }) => {
 	if (!validateInternalToken(request)) return error(401, "Unauthorized");
@@ -43,6 +46,10 @@ export const POST: RequestHandler = async ({ params, request }) => {
 
 	try {
 		const summary = await upsertUserCliCredential(userId, provider, bundle);
+		// The rotated single-use token is now persisted — release the boot lease so
+		// the next concurrent codex session can seed the fresh token (no-op for
+		// providers that don't need serialization).
+		await releaseCliBootLease(userId, provider, sessionId);
 		return json({ stored: true, provider: summary.provider });
 	} catch (e) {
 		// Bundle failed the format guard — log-and-reject (don't 500).
