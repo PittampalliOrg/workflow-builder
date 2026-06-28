@@ -20,6 +20,13 @@ import {
 	decryptString,
 	encryptString,
 } from "$lib/server/security/encryption";
+import {
+	hostCredStoreEnabled,
+	getHostProviderCred,
+	captureHostProviderCred,
+	hostLeaseAcquire,
+	hostLeaseRelease,
+} from "$lib/server/users/host-cred-store";
 
 export type CliTokenErrorCode = "CLI_TOKEN_MISSING" | "CLI_TOKEN_EXPIRED";
 
@@ -222,6 +229,15 @@ export async function getUserCliCredential(
 	userId: string,
 	provider: string,
 ): Promise<CliCredential | null> {
+	// Single-store: in a preview, single-use-refresh providers (codex/openai)
+	// resolve against the ONE host store instead of a (diverging) local copy, so
+	// host + previews share one token lineage. No-op on the host (env unset).
+	if (cliCredentialNeedsBootLease(provider) && hostCredStoreEnabled()) {
+		const hc = await getHostProviderCred(provider);
+		return hc
+			? { token: hc.token, expiresAt: hc.expiresAt, status: "active" }
+			: null;
+	}
 	const database = requireDb();
 	const [row] = await database
 		.select({
@@ -288,9 +304,20 @@ export async function acquireCliBootLease(
 	opts?: { staleMs?: number; timeoutMs?: number },
 ): Promise<boolean> {
 	if (!cliCredentialNeedsBootLease(provider) || !sessionId) return true;
-	const database = requireDb();
 	const staleSecs = (opts?.staleMs ?? LEASE_STALE_MS) / 1000;
 	const deadline = Date.now() + (opts?.timeoutMs ?? LEASE_ACQUIRE_TIMEOUT_MS);
+	// Single-store: serialize against the HOST lease row (keyed on the host cred's
+	// owner) so host + every preview codex boot share ONE lease. No-op on the host.
+	if (hostCredStoreEnabled()) {
+		const owner = (await getHostProviderCred(provider))?.ownerUserId;
+		if (!owner) return true;
+		for (;;) {
+			if (await hostLeaseAcquire(owner, provider, sessionId, staleSecs)) return true;
+			if (Date.now() >= deadline) return false;
+			await new Promise((r) => setTimeout(r, LEASE_POLL_MS));
+		}
+	}
+	const database = requireDb();
 	for (;;) {
 		// Atomic claim-or-steal: insert; on conflict take over only if we already
 		// hold it or the existing lease is stale. A live foreign holder → no row
@@ -317,6 +344,11 @@ export async function releaseCliBootLease(
 	sessionId: string,
 ): Promise<void> {
 	if (!cliCredentialNeedsBootLease(provider) || !sessionId) return;
+	if (hostCredStoreEnabled()) {
+		const owner = (await getHostProviderCred(provider))?.ownerUserId;
+		if (owner) await hostLeaseRelease(owner, provider, sessionId);
+		return;
+	}
 	const database = requireDb();
 	await database.execute(sql`
 		DELETE FROM cli_credential_locks
@@ -336,6 +368,18 @@ export async function upsertUserCliCredential(
 	expiresAt?: Date | null,
 ): Promise<CliCredentialSummary> {
 	assertPlausibleCliCredential(provider, token);
+	// Single-store: a preview's codex token capture writes back to the ONE host
+	// row (the operator's lineage), never a diverging local copy.
+	if (cliCredentialNeedsBootLease(provider) && hostCredStoreEnabled()) {
+		const owner = await captureHostProviderCred(provider, token);
+		return {
+			provider,
+			linked: !!owner,
+			expiresAt: (expiresAt ?? null)?.toISOString() ?? null,
+			lastValidatedAt: null,
+			status: "active",
+		};
+	}
 	const database = requireDb();
 	const now = new Date();
 	const effectiveExpiresAt =
