@@ -640,12 +640,16 @@ def build_job_manifest(
         pod_spec["runtimeClassName"] = class_config.runtimeClassName
     if class_config.priorityClassName:
         pod_spec["priorityClassName"] = _safe_name(class_config.priorityClassName)
-    kueue_labels: dict[str, str] = {
-        KUEUE_QUEUE_LABEL: class_config.localQueue,
-    }
-    kueue_priority = request.priorityClass or class_config.priorityClass
-    if kueue_priority:
-        kueue_labels[KUEUE_PRIORITY_CLASS_LABEL] = _safe_name(kueue_priority)
+    # An EMPTY localQueue opts the class OUT of Kueue (no queue-name label → the pod
+    # is not gated and schedules directly). Required for vcluster-synced preview pods:
+    # the host Kueue plain-pod webhook fights the vcluster pod-syncer over the gate and
+    # churns the pod (validated). Such previews bound capacity by vcluster-count, not Kueue.
+    kueue_labels: dict[str, str] = {}
+    if class_config.localQueue:
+        kueue_labels[KUEUE_QUEUE_LABEL] = class_config.localQueue
+        kueue_priority = request.priorityClass or class_config.priorityClass
+        if kueue_priority:
+            kueue_labels[KUEUE_PRIORITY_CLASS_LABEL] = _safe_name(kueue_priority)
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -1886,14 +1890,17 @@ def build_agent_workflow_host_sandbox_manifest(
         pod_spec["containers"][0]["env"] = [*base_env, *session_secret_env]
     pod_labels: dict[str, str] = {
         "app": "agent-workflow-host",
-        KUEUE_QUEUE_LABEL: class_config.localQueue,
         "benchmark-run-id": run_label,
         "benchmark-instance-id": instance_label,
         "agent-app-id": app_label,
         "workflow-builder.cnoe.io/session-id": session_label,
     }
-    if request.priorityClass:
-        pod_labels[KUEUE_PRIORITY_CLASS_LABEL] = _safe_name(request.priorityClass)
+    # Empty localQueue → no Kueue gate (vcluster-synced preview pods; see _job manifest
+    # builder). The kueue priority-class label is meaningful only when Kueue manages the pod.
+    if class_config.localQueue:
+        pod_labels[KUEUE_QUEUE_LABEL] = class_config.localQueue
+        if request.priorityClass:
+            pod_labels[KUEUE_PRIORITY_CLASS_LABEL] = _safe_name(request.priorityClass)
     # Capture inbound W3C trace-context. Stamp on BOTH:
     #   - Sandbox CR metadata.annotations (for operator visibility)
     #   - Pod template metadata.annotations (so the pod's downward-API
@@ -2692,9 +2699,11 @@ def build_dev_preview_sandbox_manifest(
     pod_labels = {
         "app": "wfb-dev-preview",
         "dev-preview-service": service_label,
-        KUEUE_QUEUE_LABEL: class_config.localQueue,
         "workflow-execution-id": exec_label,
     }
+    # Empty localQueue → no Kueue gate (vcluster-synced preview pods).
+    if class_config.localQueue:
+        pod_labels[KUEUE_QUEUE_LABEL] = class_config.localQueue
     pod_template_metadata: dict[str, Any] = {"labels": pod_labels}
     # Dapr-shadow: stamp the standard injector annotations so the daprd sidecar is
     # added (mirrors build_agent_workflow_host_sandbox_manifest). The UNIQUE app-id
