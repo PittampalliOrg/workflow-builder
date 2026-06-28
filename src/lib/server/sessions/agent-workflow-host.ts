@@ -384,9 +384,26 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 						process.env.AGENT_WORKFLOW_HOST_WAIT_READY_SECONDS ??
 						45,
 				);
+	// Upper bound on the SYNCHRONOUS readiness wait. The 55s default suits the
+	// user-facing interactive spawn (a ~60s ingress/gateway would otherwise cut it
+	// off). Preview / workflow-host deployments raise it via
+	// AGENT_WORKFLOW_HOST_WAIT_READY_MAX_SECONDS so a COLD agent pod (first image
+	// pull + daprd connect + openshell mTLS handshake + LLM warmup, which exceeds
+	// 55s) reaches Ready in ONE spawn instead of timing out → re-dispatch → pod
+	// churn. Hard-ceilinged at 280s to stay under undici's 300s headersTimeout on
+	// the BFF→SEA fetch (the SEA handler holds the whole response until readiness
+	// resolves). SEA itself accepts waitReadySeconds ≤ 600.
+	const waitReadyMaxRaw = Number(
+		env.AGENT_WORKFLOW_HOST_WAIT_READY_MAX_SECONDS ??
+			process.env.AGENT_WORKFLOW_HOST_WAIT_READY_MAX_SECONDS ??
+			55,
+	);
+	const waitReadyMax = Number.isFinite(waitReadyMaxRaw)
+		? Math.max(0, Math.min(280, waitReadyMaxRaw))
+		: 55;
 	const waitReadySeconds = Number.isFinite(waitReadySecondsRaw)
-		? Math.max(0, Math.min(55, waitReadySecondsRaw))
-		: 45;
+		? Math.max(0, Math.min(waitReadyMax, waitReadySecondsRaw))
+		: Math.min(45, waitReadyMax);
 	const priorityClass = agentWorkflowHostPriorityClass({
 		benchmarkRunId: params.benchmarkRunId,
 		priorityClass: params.priorityClass,
