@@ -1,6 +1,12 @@
 # Code-Version Persistence for Long-Running Code Workflows
 
-**Status:** DESIGN / evaluation — not yet implemented. **Last updated:** 2026-06-25.
+**Status:** SHIPPED. **Last updated:** 2026-06-29.
+
+> **Implementation note (2026-06-29):** The recommended **Pattern B2 (git bundles in the Files
+> API)** is SHIPPED (#290) for runs whose code lands in `/sandbox/work`, AND extended with a
+> **dev-pod-as-source `tar-overlay`** path for the in-preview GAN loop (code that lives only behind
+> the dev pod's `/__export`). Both feed ONE durable-version → manual **Promote → PR** pipeline. See
+> §6.1 for the as-built summary; the design discussion below (§§1–6) is retained for context.
 
 > What durable substrate should hold the code our agentic workflows produce, so we can
 > **preview the impact** of a change, keep **many versions across many runs/iterations**,
@@ -226,14 +232,63 @@ durability domain).
 
 ---
 
-## 7. Verification (when implemented)
+## 6.1 As-built (SHIPPED)
 
-- **P1:** run a code workflow → confirm each accepted checkpoint has a `bundleRef`/`file_id`; after the
-  workspace is reaped, download the bundle and `git clone` it to recover the exact source.
-- **P2:** from a *completed, reaped* run, click Promote → confirm a PR opens on the target repo with the
-  chosen version's contents; verify no PR was created for the non-chosen iterations.
-- **P3:** browse two runs of the same workflow, compare iteration diffs side-by-side, pick one, promote.
-- **Dedup/GC:** two identical iterations share one Files-API blob; age/count retention deletes old bundles.
+Two capture paths feed **one** durable-version → manual Promote → PR pipeline. The discriminator is the
+`source-bundle` artifact's `inlinePayload.tier`; promotion routes on it.
+
+**A. `/sandbox/work` runs → git bundle (#290).**
+- `cli-agent-py/src/workspace_diff_sync.py::_BUNDLE_SCRIPT` + `sync_source_bundle_activity` (dapr mirror
+  `sync_source_bundle_openshell`) builds a cloneable git bundle of the agent's tree at session end —
+  tiered `full → thin → squashed`, excludes `node_modules`/build, ≤20 MB.
+- `src/lib/server/workflows/source-bundle.ts::persistSourceBundle` → Files API blob (SHA-1 dedup, 25 MB
+  cap) + a `workflow_artifacts` row `kind:"source-bundle"`.
+
+**B. Dev-pod-as-source (in-preview GAN) → `tar-overlay`.** The produced code lives only on the dev pod
+behind `GET /__export` (the agent edits in a reaped per-pod scratch repo and `/__sync`-pushes); the
+`/sandbox/work` bundle producer is empty/wrong for these runs. So:
+- `src/lib/server/workflows/dev-preview.ts::captureDevPreviewSource(executionId,{nodeId,iteration})`
+  resolves the persisted dev-preview pod (`podIP`/`syncPort` from the `workflow_workspace_sessions`
+  row), fetches `http://<podIP>:<syncPort>/__export?paths=<syncPaths>` (tar.gz, `x-sync-token`), skips
+  empty/>25 MB, and calls `persistSourceBundle` with `contentType:"application/gzip"`,
+  `tier:"tar-overlay"`, and `inlinePayload {repoUrl, repoSubdir, syncPaths, base, iteration}` (self-
+  contained — promote never needs the registry).
+- **Per-iteration capture:** the `preview-dev-gan` fixture calls a `snapshot` node
+  (`dev/preview-snapshot` → internal `POST …/dev-preview/snapshot {nodeId,iteration:${.idx}}`) right
+  after `generate` inside the refine loop, so **every iteration's design is a distinct, promotable
+  version** (the deterministic artifact id includes `iteration`). A best-effort capture in
+  `teardownDevPreview` is the fallback when no snapshot node runs.
+
+**Promote (manual, on-demand — zero standing compute).**
+`POST /api/workflows/executions/[id]/versions/[artifactId]/promote {mode:"pr"|"branch"}` provisions a
+`withGithubToken` helper pod and, keyed on `tier`:
+- `full|squashed` → `git clone` the bundle; `thin` → clone target + `git fetch` the bundle;
+- `tar-overlay` → `git clone --depth 1 -b <base>` the base repo, `rm -rf` each `syncPath` under
+  `repoSubdir`, `tar -xzf` the export over it, commit.
+Then push a `wfb-promote-<ts>` branch and open a PR. **A PR is created only for the version you pick** —
+no PR per iteration. In a Tier-2 preview vcluster (schema-only DB, no app-connection rows) the helper
+falls back to the **pod-level PAT** (`GITHUB_TOKEN` from `workflow-builder-secrets`); the in-pod
+`[ -n "$GH" ]` guard returns `ERR=no_github_token` gracefully if neither is present.
+
+**UI.** `GET /api/workflows/[workflowId]/versions` (cross-run) and `GET …/executions/[id]/versions`
+(per-run). The Dev-hub detail page (`/workspaces/[slug]/dev/[executionId]`) shows a **Code versions**
+panel (`code-versions-panel.svelte`): one row per version (iteration · tier · size · time) with a
+per-row **Promote → PR** button that renders the returned PR link.
+
+---
+
+## 7. Verification
+
+- **A (`/sandbox/work`):** run a code workflow → each accepted checkpoint has a `source-bundle`
+  artifact; after reap, download the bundle and `git clone` it to recover the exact source.
+- **B (`tar-overlay`):** run `preview-dev-gan` (`workflow-builder`, `mode:preview-native`,
+  `adopt:false`) → `GET …/executions/[id]/versions` shows **one `tar-overlay` version per iteration**,
+  non-zero `sizeBytes`, payload carrying `repoUrl/repoSubdir/syncPaths/base/iteration`.
+- **Promote:** from a chosen iteration click **Promote → PR** → a PR opens against
+  `PittampalliOrg/workflow-builder@main` with the overlaid `src` diff (run inside a Tier-2 preview to
+  exercise the pod-PAT path); non-chosen iterations get no PR. Re-promoting a different iteration yields
+  a distinct branch/PR; re-capturing UPSERTs (deterministic per-iteration id, no dup).
+- **Dedup/GC:** identical iterations share one Files-API blob; age/count retention deletes old blobs.
 
 ---
 

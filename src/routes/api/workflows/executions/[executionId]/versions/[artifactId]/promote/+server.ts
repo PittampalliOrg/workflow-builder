@@ -82,38 +82,67 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		/* empty body ok */
 	}
 	const input = (exec.input ?? {}) as Record<string, unknown>;
-	const repo = normalizeRepo(body.repo) ?? normalizeRepo(input.repoUrl);
+	const payload = (artifact.inlinePayload ?? {}) as {
+		tier?: string;
+		repoUrl?: string | null;
+		base?: string | null;
+		repoSubdir?: string | null;
+		syncPaths?: string[] | null;
+	};
+	const tier = payload.tier ?? "full";
+	// Resolve the target repo: explicit body → the captured artifact's repoUrl
+	// (dev-pod-as-source records it) → the run's trigger repoUrl.
+	const repo =
+		normalizeRepo(body.repo) ?? normalizeRepo(payload.repoUrl) ?? normalizeRepo(input.repoUrl);
 	if (!repo) {
 		return error(400, "Target repo could not be resolved — pass { repo: 'owner/name' }");
 	}
 	const base =
 		(typeof body.base === "string" && body.base.trim()) ||
+		(typeof payload.base === "string" && payload.base.trim()) ||
 		(typeof input.repoRef === "string" && input.repoRef.trim()) ||
 		"main";
 	const mode = body.mode === "branch" ? "branch" : "pr";
 	const title =
 		(typeof body.title === "string" && body.title.trim()) || "Promoted change (workflow-builder)";
-	const tier = (artifact.inlinePayload as { tier?: string } | null)?.tier ?? "full";
+	// tar-overlay (dev-pod-as-source): where the exported syncPaths map into the repo.
+	const repoSubdir =
+		typeof payload.repoSubdir === "string" && payload.repoSubdir.trim() && payload.repoSubdir !== "."
+			? payload.repoSubdir.replace(/^\/+|\/+$/g, "")
+			: "";
+	const syncPaths =
+		Array.isArray(payload.syncPaths) && payload.syncPaths.length ? payload.syncPaths : ["src"];
 
 	const helper = await provisionWorkspaceHelperPod(executionId, "promote", { withGithubToken: true });
 	if (!helper) return error(502, "could not provision a helper pod for promote");
-	if (!helper.githubToken) {
-		return error(
-			409,
-			"No GitHub connection — connect a GitHub app-connection to open a PR (branch/download still works via the bundle).",
-		);
-	}
+	// Don't hard-fail when no GitHub APP-CONNECTION token resolves (e.g. a Tier-2
+	// preview vcluster whose schema-only DB has no app_connections): the helper pod
+	// also carries the pod-level PAT ($GITHUB_TOKEN from workflow-builder-secrets),
+	// and the in-pod `[ -n "$GH" ]` guard returns ERR=no_github_token gracefully if
+	// neither is present. So proceed and let the pod decide.
 
 	const bundleUrl = `${internalBffBaseUrl()}/api/internal/files/${artifact.fileId}/content`;
+	const overlayPaths = syncPaths.map(shQuote).join(" ");
+	const destSub = repoSubdir ? `/${repoSubdir}` : "";
 	const cloneStep =
-		tier === "thin"
-			? // Thin bundle is not self-contained: clone the target (has <base>), then fetch.
-				`git clone -q "https://x-access-token:$GH@github.com/${repo}.git" /tmp/promote && cd /tmp/promote && ` +
-				`git fetch -q /tmp/v.bundle 'refs/*:refs/wfb-bundle/*' >/dev/null 2>&1 || git fetch -q /tmp/v.bundle >/dev/null 2>&1; ` +
-				`TGT=$(git bundle list-heads /tmp/v.bundle 2>/dev/null | head -1 | awk '{print $1}'); ` +
-				`git checkout -q -b "$BR" "$TGT"`
-			: // Self-contained (full / squashed): clone the bundle directly.
-				`git clone -q /tmp/v.bundle /tmp/promote && cd /tmp/promote && git checkout -q -b "$BR"`;
+		tier === "tar-overlay"
+			? // dev-pod-as-source: the artifact is a tar.gz of `syncPaths` (no .git). Clone
+				// the BASE repo at $BASE, overlay the exported trees onto repoSubdir, commit.
+				`git clone -q --depth 1 -b "$BASE" "https://x-access-token:$GH@github.com/${repo}.git" /tmp/promote && ` +
+				`cd /tmp/promote && git checkout -q -b "$BR" && ` +
+				`DEST="/tmp/promote${destSub}" && mkdir -p "$DEST" && ` +
+				`for p in ${overlayPaths}; do rm -rf "$DEST/$p"; done && ` +
+				`tar -xzf /tmp/v.bundle -C "$DEST" && ` +
+				`git config user.email agent@workflow-builder.local && git config user.name 'workflow-builder' && ` +
+				`git add -A && git commit -q -m "$TITLE" || { echo "ERR=no_changes"; exit 0; }`
+			: tier === "thin"
+				? // Thin bundle is not self-contained: clone the target (has <base>), then fetch.
+					`git clone -q "https://x-access-token:$GH@github.com/${repo}.git" /tmp/promote && cd /tmp/promote && ` +
+					`git fetch -q /tmp/v.bundle 'refs/*:refs/wfb-bundle/*' >/dev/null 2>&1 || git fetch -q /tmp/v.bundle >/dev/null 2>&1; ` +
+					`TGT=$(git bundle list-heads /tmp/v.bundle 2>/dev/null | head -1 | awk '{print $1}'); ` +
+					`git checkout -q -b "$BR" "$TGT"`
+				: // Self-contained (full / squashed): clone the bundle directly.
+					`git clone -q /tmp/v.bundle /tmp/promote && cd /tmp/promote && git checkout -q -b "$BR"`;
 
 	const command = [
 		`set -e`,

@@ -25,6 +25,12 @@ export type SourceBundleMeta = {
 	tier?: string | null;
 	clonePath?: string | null;
 	fileCount?: number | null;
+	// dev-pod-as-source (tar-overlay) reconstruction context — lets Promote rebuild
+	// against the base repo without consulting the dev-preview registry at promote time.
+	repoUrl?: string | null;
+	repoSubdir?: string | null;
+	syncPaths?: string[] | null;
+	iteration?: number | null;
 };
 
 export type PersistSourceBundleInput = {
@@ -32,15 +38,29 @@ export type PersistSourceBundleInput = {
 	userId: string;
 	projectId?: string | null;
 	nodeId?: string | null;
+	/** Loop iteration index — distinguishes per-iteration versions (no UPSERT collapse). */
+	iteration?: number | null;
 	fileName?: string;
 	bytes: Buffer;
+	/** Defaults to a git bundle; tar-overlay snapshots pass "application/gzip". */
+	contentType?: string;
 	meta?: SourceBundleMeta;
 };
 
-/** Deterministic id so a node re-capture UPSERTs the same version row. */
-function sourceBundleArtifactId(executionId: string, nodeId: string | null): string {
+/**
+ * Deterministic id so a node re-capture UPSERTs the same version row. When an
+ * `iteration` is supplied (dev-pod-as-source per-iteration snapshots), it is part
+ * of the key so each iteration is a DISTINCT version; runs without an iteration
+ * keep their original `${exec}|${node}|${kind}` id (backward compatible).
+ */
+function sourceBundleArtifactId(
+	executionId: string,
+	nodeId: string | null,
+	iteration: number | null,
+): string {
+	const iterSeg = iteration == null ? "" : `iter${iteration}|`;
 	return createHash("sha256")
-		.update(`${executionId}|${nodeId ?? ""}|${SOURCE_BUNDLE_KIND}`)
+		.update(`${executionId}|${nodeId ?? ""}|${iterSeg}${SOURCE_BUNDLE_KIND}`)
 		.digest("hex")
 		.slice(0, 24);
 }
@@ -49,8 +69,10 @@ export async function persistSourceBundle(
 	input: PersistSourceBundleInput,
 ): Promise<{ id: string; fileId: string; bytes: number }> {
 	if (!db) throw new Error("Database not configured");
-	const id = sourceBundleArtifactId(input.executionId, input.nodeId ?? null);
+	const iteration = input.iteration ?? input.meta?.iteration ?? null;
+	const id = sourceBundleArtifactId(input.executionId, input.nodeId ?? null, iteration);
 	const sizeBytes = input.bytes.byteLength;
+	const contentType = input.contentType?.trim() || "application/x-git-bundle";
 
 	const { file } = await createFile({
 		userId: input.userId,
@@ -58,11 +80,14 @@ export async function persistSourceBundle(
 		name: input.fileName?.trim() || `source-${input.executionId}.bundle`,
 		purpose: "output",
 		scopeId: input.executionId,
-		contentType: "application/x-git-bundle",
+		contentType,
 		bytes: input.bytes,
 	});
 
-	const title = input.nodeId ? `${DEFAULT_TITLE} (${input.nodeId})` : DEFAULT_TITLE;
+	const iterLabel = iteration == null ? "" : ` #${iteration}`;
+	const title = input.nodeId
+		? `${DEFAULT_TITLE} (${input.nodeId}${iterLabel})`
+		: DEFAULT_TITLE;
 	const values = {
 		id,
 		workflowExecutionId: input.executionId,
@@ -77,9 +102,13 @@ export async function persistSourceBundle(
 			tier: input.meta?.tier ?? null,
 			clonePath: input.meta?.clonePath ?? null,
 			fileCount: input.meta?.fileCount ?? null,
+			repoUrl: input.meta?.repoUrl ?? null,
+			repoSubdir: input.meta?.repoSubdir ?? null,
+			syncPaths: input.meta?.syncPaths ?? null,
+			iteration,
 		} as unknown,
 		fileId: file.id,
-		contentType: "application/x-git-bundle",
+		contentType,
 		sizeBytes,
 		metadata: { createdBy: "source-bundle", capturedAt: new Date().toISOString() },
 	};

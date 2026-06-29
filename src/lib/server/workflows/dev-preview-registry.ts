@@ -42,6 +42,8 @@ export interface DevPreviewDescriptor {
 	repoSubdir: string;
 	/** Globs (relative to repoSubdir) the agent tars + pushes on /__sync. */
 	syncPaths: string[];
+	/** Base branch a captured version Promotes against (default "main"). */
+	baseBranch?: string;
 	/** Per-service tailnet hostname (stacks LB), for the human browse URL. */
 	tailnetHost: string;
 	/**
@@ -96,6 +98,7 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
 		repoUrl: "PittampalliOrg/workflow-builder",
 		repoSubdir: ".",
 		syncPaths: ["src"],
+		baseBranch: "main",
 		tailnetHost: "wfb-preview-ryzen.tail286401.ts.net",
 		// Functional preview: the BFF actually runs against its own preview DB +
 		// a daprd sidecar (to service-invoke the backend). Reuses the prod

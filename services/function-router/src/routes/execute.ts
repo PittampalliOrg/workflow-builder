@@ -703,7 +703,7 @@ async function executeSessionSpawn(
  */
 async function executeDevPreview(
   input: Record<string, unknown>,
-  mode: "ensure" | "teardown",
+  mode: "ensure" | "teardown" | "snapshot",
 ): Promise<ExecuteResponse> {
   const started = Date.now();
   const executionId =
@@ -730,6 +730,21 @@ async function executeDevPreview(
       res = await fetch(`${url}${qs}`, {
         method: "DELETE",
         headers: { "X-Internal-Token": INTERNAL_API_TOKEN },
+      });
+    } else if (mode === "snapshot") {
+      // Per-iteration durable code capture: pull the dev pod's /__export and store
+      // it as a promotable `source-bundle` version (tar-overlay tier).
+      const snap: Record<string, unknown> = {};
+      if (typeof input.nodeId === "string") snap.nodeId = input.nodeId;
+      if (input.iteration !== undefined && input.iteration !== null)
+        snap.iteration = input.iteration;
+      res = await fetch(`${url}/snapshot`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Internal-Token": INTERNAL_API_TOKEN,
+        },
+        body: JSON.stringify(snap),
       });
     } else {
       const payload: Record<string, unknown> = {};
@@ -1472,15 +1487,20 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(planResponse.success ? 200 : 502).send(planResponse);
     }
 
-    // dev/preview (+ dev/preview-teardown) proxy to the BFF per-run dev-server
-    // Sandbox endpoint (not a Knative service / registry entry).
+    // dev/preview (+ dev/preview-teardown + dev/preview-snapshot) proxy to the BFF
+    // per-run dev-server Sandbox endpoint (not a Knative service / registry entry).
     if (
       functionSlug === "dev/preview" ||
-      functionSlug === "dev/preview-teardown"
+      functionSlug === "dev/preview-teardown" ||
+      functionSlug === "dev/preview-snapshot"
     ) {
       const devResponse = await executeDevPreview(
         body.input as Record<string, unknown>,
-        functionSlug === "dev/preview-teardown" ? "teardown" : "ensure",
+        functionSlug === "dev/preview-teardown"
+          ? "teardown"
+          : functionSlug === "dev/preview-snapshot"
+            ? "snapshot"
+            : "ensure",
       );
       return reply.status(devResponse.success ? 200 : 502).send(devResponse);
     }
