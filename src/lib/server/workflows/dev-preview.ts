@@ -350,9 +350,19 @@ export async function captureDevPreviewSource(
 	opts: { nodeId?: string | null; iteration?: number | null; sandboxName?: string | null } = {},
 ): Promise<{ ok: boolean; artifactId?: string; bytes?: number; skipped?: string }> {
 	if (!db) return { ok: false, skipped: "no_db" };
+	const label = `[dev-preview] capture exec=${executionId} node=${opts.nodeId ?? "?"} iter=${opts.iteration ?? "?"}`;
 	try {
-		const details = await resolveDevPreviewDetails(executionId);
+		// The snapshot node fires right after `generate`, which can race the
+		// dev-preview session row being stamped with podIP/syncPort (the dev pod may
+		// still be reporting ready). Retry resolution briefly before giving up so a
+		// per-iteration capture isn't silently lost to a transient empty row.
+		let details = await resolveDevPreviewDetails(executionId);
+		for (let i = 0; i < 8 && (!details?.podIP || !details.syncPort); i++) {
+			await new Promise((r) => setTimeout(r, 2000));
+			details = await resolveDevPreviewDetails(executionId);
+		}
 		if (!details?.podIP || !details.syncPort) {
+			console.warn(`${label} skip: no_dev_pod (podIP/syncPort unresolved after retries)`);
 			return { ok: true, skipped: "no_dev_pod" };
 		}
 		const descriptor = resolveDevPreviewDescriptor(details.service);
@@ -365,11 +375,29 @@ export async function captureDevPreviewSource(
 			headers: token ? { "x-sync-token": token } : {},
 			signal: AbortSignal.timeout(60_000),
 		});
-		if (!resp.ok) return { ok: true, skipped: `export_http_${resp.status}` };
+		if (!resp.ok) {
+			console.warn(`${label} skip: export_http_${resp.status} (${exportUrl})`);
+			return { ok: true, skipped: `export_http_${resp.status}` };
+		}
 		const bytes = Buffer.from(await resp.arrayBuffer());
-		if (bytes.byteLength === 0) return { ok: true, skipped: "empty" };
+		if (bytes.byteLength === 0) {
+			console.warn(`${label} skip: empty export`);
+			return { ok: true, skipped: "empty" };
+		}
 		if (bytes.byteLength > 25 * 1024 * 1024) {
+			console.warn(`${label} skip: too_large (${bytes.byteLength}B)`);
 			return { ok: true, skipped: "too_large" };
+		}
+		// Guard against a dev image that lacks the `/__export` plugin: it falls
+		// through to the SvelteKit handler and returns the app HTML (not a gzip
+		// tar). Persisting that would yield a useless "version" that Promote would
+		// overlay as garbage — skip with a clear, diagnosable reason instead.
+		if (bytes[0] !== 0x1f || bytes[1] !== 0x8b) {
+			const ctype = resp.headers.get("content-type") ?? "?";
+			console.warn(
+				`${label} skip: export_not_gzip (ctype=${ctype}, first2=${bytes[0]?.toString(16)},${bytes[1]?.toString(16)}, ${bytes.byteLength}B) — dev image likely predates /__export`,
+			);
+			return { ok: true, skipped: "export_not_gzip" };
 		}
 
 		const [exec] = await db
@@ -400,12 +428,10 @@ export async function captureDevPreviewSource(
 				iteration: opts.iteration ?? null,
 			},
 		});
+		console.info(`${label} captured ${result.bytes}B → artifact ${result.id}`);
 		return { ok: true, artifactId: result.id, bytes: result.bytes };
 	} catch (err) {
-		console.warn(
-			"[dev-preview] captureDevPreviewSource failed:",
-			err instanceof Error ? err.message : err,
-		);
+		console.warn(`${label} failed:`, err instanceof Error ? err.message : err);
 		return { ok: false, skipped: "error" };
 	}
 }
