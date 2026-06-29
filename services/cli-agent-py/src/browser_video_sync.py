@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -56,6 +57,46 @@ def _discover_webm(output_dir: str) -> list[Path]:
     # Newest first so the most relevant recordings win the per-session cap.
     files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return files[:MAX_VIDEO_FILES]
+
+
+def _safe_size(p: Path) -> int:
+    try:
+        return p.stat().st_size
+    except OSError:
+        return 0
+
+
+def _wait_for_settled_webm(output_dir: str, hint_path: str | None) -> list[Path]:
+    """Wait (bounded) for at least one non-zero, size-STABLE .webm before
+    discovering. `browser_stop_video` returns as soon as the screencast tool
+    reports the path, but the .webm finishes WRITING to disk asynchronously — so
+    globbing immediately races the final flush and finds 0 files (or a 0-byte
+    file), which made the in-run upload silently upload nothing. Prefer the path
+    `browser_stop_video` reported (it may not be rglob-visible for a beat); fall
+    back to the glob. Returns discovered files or [] (never blocks forever)."""
+    # Fast path: no recording evidence (no stop-reported path AND nothing on disk)
+    # → don't burn the settle window on every non-browser session's teardown.
+    if not hint_path and not _discover_webm(output_dir):
+        return []
+    tries = max(1, int(os.environ.get("CLI_BROWSER_VIDEO_SETTLE_TRIES", "30")))
+    interval = float(os.environ.get("CLI_BROWSER_VIDEO_SETTLE_INTERVAL", "0.5"))
+    prev: dict[str, int] = {}
+    for _ in range(tries):
+        files = _discover_webm(output_dir)
+        if hint_path:
+            hp = Path(hint_path)
+            if hp.is_file() and hp not in files:
+                files = [hp, *files]
+        sizes = {str(p): _safe_size(p) for p in files}
+        # Settled = a file that is non-zero AND unchanged since the previous poll.
+        stable = [p for p in files if sizes[str(p)] > 0 and prev.get(str(p)) == sizes[str(p)]]
+        if stable:
+            # Re-glob so callers get the canonical (newest-first, capped) list.
+            return _discover_webm(output_dir) or stable
+        prev = sizes
+        time.sleep(interval)
+    # Give up waiting for stability — upload whatever non-zero files exist now.
+    return [p for p in _discover_webm(output_dir) if _safe_size(p) > 0]
 
 
 def _post_artifact(payload: dict[str, Any]) -> tuple[bool, str]:
@@ -109,22 +150,30 @@ def sync_browser_video_activity(
     # Without this the file stays unwritten — process exit does NOT flush.
     # Best-effort; if the MCP server is gone or recording wasn't started, fall
     # through to the glob.
+    saved_path: str | None = None
     try:
         from src.playwright_mcp_client import browser_stop_video
         from src.playwright_mcp_proxy import read_agent_session_id
 
         agent_sid = read_agent_session_id()
-        saved = browser_stop_video(session_id=agent_sid)
-        if saved:
+        saved_path = browser_stop_video(session_id=agent_sid)
+        if saved_path:
             print(
-                f"[browser-video-sync] browser_stop_video saved {saved} "
+                f"[browser-video-sync] browser_stop_video saved {saved_path} "
                 f"(session={agent_sid})",
                 flush=True,
             )
     except Exception as exc:  # noqa: BLE001
         print(f"[browser-video-sync] browser_stop_video skipped: {exc}", flush=True)
 
-    files = _discover_webm(output_dir)
+    # Wait for the .webm to finish flushing to disk before globbing (the screencast
+    # write completes async after browser_stop_video returns — globbing immediately
+    # races it and finds 0 files, so the upload no-ops). See _wait_for_settled_webm.
+    files = _wait_for_settled_webm(output_dir, saved_path)
+    print(
+        f"[browser-video-sync] discovered {len(files)} .webm in {output_dir}",
+        flush=True,
+    )
     if not files:
         return {"ok": True, "uploaded": [], "scanned": output_dir, "found": 0}
 
