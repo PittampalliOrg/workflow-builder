@@ -378,6 +378,22 @@ class DevPreviewRequest(BaseModel):
     # database). Stored in a per-preview Secret (never plaintext in the CR) and
     # envFrom'd LAST so they override the reused prod secret.
     serviceSecretEnv: dict[str, str] | None = None
+    # ----- preview-native adopt mode (in-preview agentic dev loop, P1) -----
+    # When True this dev-server pod REPLACES a running prod Deployment INSIDE a
+    # Tier-2 vcluster preview: it ADOPTS the preview's own Service (so the preview's
+    # existing tailnet URL serves the live-edited build) and reuses the preview's
+    # own DB/secrets (via envFrom) instead of a throwaway preview DB + Dapr-shadow.
+    # The vcluster IS the isolation boundary, so no nested DB/shadow is needed.
+    previewNative: bool = False
+    # Service whose `.spec.selector` the dev pod adopts so the Service routes to it.
+    # SEA reads the live selector (privileged) and merges it onto the pod labels
+    # (the selector wins on key collisions, e.g. `app`).
+    adoptService: str | None = None
+    # Deployment scaled to 0 on provision (frees the Service endpoints + the prod
+    # Dapr app-id so the dev pod can claim it) and restored to its original replica
+    # count on teardown. The prior replica count is stashed in a Deployment
+    # annotation so teardown survives an SEA restart.
+    adoptDeployment: str | None = None
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:
@@ -702,6 +718,106 @@ def _load_k8s_custom_objects_client():
     except Exception:
         config.load_kube_config()
     return client.CustomObjectsApi()
+
+
+def _load_k8s_apps_client():
+    from kubernetes import client, config
+
+    try:
+        config.load_incluster_config()
+    except Exception:
+        config.load_kube_config()
+    return client.AppsV1Api()
+
+
+# Stashes a Deployment's replica count before preview-native adopt scales it to 0,
+# so teardown can restore it (survives an SEA restart — state lives on the object).
+DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION = "wfb-dev-preview/original-replicas"
+
+
+def _adopt_prepare_deployment(
+    apps: Any, *, namespace: str, name: str
+) -> dict[str, Any] | None:
+    """Capture the prod Deployment's pod identity, then scale it to 0.
+
+    Reads the live Deployment so the dev pod can FAITHFULLY assume its identity
+    (ServiceAccount + Dapr app-id / config / app-port) instead of guessing — then
+    scales it to 0 (freeing the Service endpoints + the Dapr app-id for the dev pod)
+    while stashing the prior replica count in an annotation so teardown can restore
+    it (survives an SEA restart — state lives on the object). Idempotent on
+    re-provision. Returns the discovered identity, or None if the Deployment is
+    absent.
+    """
+    try:
+        dep = apps.read_namespaced_deployment(name=name, namespace=namespace)
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            logger.info("adopt: deployment %s not found; skipping scale-down", name)
+            return None
+        raise
+    spec = dep.spec
+    template = spec.template if spec else None
+    tmpl_meta = template.metadata if template else None
+    tmpl_spec = template.spec if template else None
+    pod_annotations = (tmpl_meta.annotations or {}) if tmpl_meta else {}
+    identity = {
+        "serviceAccountName": (
+            tmpl_spec.service_account_name if tmpl_spec else None
+        ),
+        "daprAppId": pod_annotations.get("dapr.io/app-id"),
+        "daprConfig": pod_annotations.get("dapr.io/config"),
+        "daprAppPort": pod_annotations.get("dapr.io/app-port"),
+    }
+    dep_annotations = (dep.metadata.annotations or {}) if dep.metadata else {}
+    current = spec.replicas if spec and spec.replicas is not None else 1
+    stashed = dep_annotations.get(DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION)
+    # Only stash a non-zero count (don't overwrite a prior stash with 0 on re-provision).
+    original = stashed if stashed is not None else (str(current) if current > 0 else "1")
+    apps.patch_namespaced_deployment(
+        name=name,
+        namespace=namespace,
+        body={
+            "metadata": {
+                "annotations": {DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION: original}
+            },
+            "spec": {"replicas": 0},
+        },
+    )
+    logger.info(
+        "adopt: scaled deployment %s to 0 (original=%s, identity=%s)",
+        name,
+        original,
+        identity,
+    )
+    return identity
+
+
+def _adopt_restore_deployment(apps: Any, *, namespace: str, name: str) -> None:
+    """Restore a Deployment scaled down by preview-native adopt to its original
+    replica count (from the stashed annotation; default 1). Best-effort."""
+    try:
+        dep = apps.read_namespaced_deployment(name=name, namespace=namespace)
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            logger.info("adopt: deployment %s gone; nothing to restore", name)
+            return
+        raise
+    annotations = (dep.metadata.annotations or {}) if dep.metadata else {}
+    try:
+        replicas = int(annotations.get(DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION, "1"))
+    except (TypeError, ValueError):
+        replicas = 1
+    apps.patch_namespaced_deployment(
+        name=name,
+        namespace=namespace,
+        body={
+            "metadata": {
+                "annotations": {DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION: None}
+            },
+            "spec": {"replicas": max(replicas, 1)},
+        },
+    )
+    logger.info("adopt: restored deployment %s to %s replicas", name, max(replicas, 1))
 
 
 def _require_internal(request: Request) -> None:
@@ -2446,11 +2562,17 @@ def build_dev_preview_sandbox_manifest(
     *,
     namespace: str,
     class_config: ExecutionClassConfig,
+    adopt_selector: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """A PLAIN single-container `vite dev` Sandbox (no daprd/app-id/OpenShell).
 
     The Playwright critic and the agent's /__sync push reach this pod directly at
     its pod IP:port; no Dapr service invocation, no DB, no secrets.
+
+    In preview-native adopt mode (`request.previewNative`), the pod additionally
+    carries `adopt_selector` labels (the target Service's selector) so the preview's
+    own Service routes to it, and the Sandbox CR records the adopted Deployment so
+    teardown can restore it.
     """
     exec_label = _safe_name(request.executionId, max_length=63)
     image = request.image or class_config.serviceImage or DEFAULT_DEV_PREVIEW_IMAGE
@@ -2601,7 +2723,9 @@ def build_dev_preview_sandbox_manifest(
     # reflects the CURRENT dev schema, works while the source DB has live
     # connections, and needs no maintained template. DATABASE_URL (target) +
     # PREVIEW_SOURCE_DATABASE_URL (source) come from the per-preview Secret.
-    if functional:
+    # Preview-native adopt reuses the PREVIEW's already-migrated DB (no throwaway
+    # DB, no source set) → skip the clone init entirely.
+    if functional and not request.previewNative:
         init_containers.append(
             {
                 "name": "db-clone",
@@ -2701,6 +2825,14 @@ def build_dev_preview_sandbox_manifest(
         "dev-preview-service": service_label,
         "workflow-execution-id": exec_label,
     }
+    # Preview-native adopt: merge the target Service's selector LAST so it wins on
+    # collisions (e.g. `app` flips from `wfb-dev-preview` to the prod value) and the
+    # preview's own Service routes to this dev pod. `workflow-execution-id` is never
+    # in a Service selector, so it survives → readiness/teardown still find the pod.
+    if request.previewNative and adopt_selector:
+        for key, value in adopt_selector.items():
+            if key and value is not None:
+                pod_labels[key] = value
     # Empty localQueue → no Kueue gate (vcluster-synced preview pods).
     if class_config.localQueue:
         pod_labels[KUEUE_QUEUE_LABEL] = class_config.localQueue
@@ -2745,19 +2877,28 @@ def build_dev_preview_sandbox_manifest(
     if shutdown_time:
         sandbox_spec["shutdownPolicy"] = "Delete"
         sandbox_spec["shutdownTime"] = shutdown_time
+    cr_metadata: dict[str, Any] = {
+        "name": _dev_preview_sandbox_name(request.executionId),
+        "namespace": namespace,
+        "labels": {
+            "app": "wfb-dev-preview",
+            "dev-preview-service": service_label,
+            "workflow-execution-id": exec_label,
+            "sandbox-execution-class": _safe_name(request.executionClass),
+        },
+    }
+    # Record the adopted Deployment so teardown can restore it without the caller
+    # re-supplying it (teardown only receives the Sandbox name).
+    if request.previewNative and request.adoptDeployment:
+        cr_metadata["annotations"] = {
+            "wfb-dev-preview/adopt-deployment": _safe_resource_name(
+                request.adoptDeployment
+            )
+        }
     return {
         "apiVersion": "agents.x-k8s.io/v1alpha1",
         "kind": "Sandbox",
-        "metadata": {
-            "name": _dev_preview_sandbox_name(request.executionId),
-            "namespace": namespace,
-            "labels": {
-                "app": "wfb-dev-preview",
-                "dev-preview-service": service_label,
-                "workflow-execution-id": exec_label,
-                "sandbox-execution-class": _safe_name(request.executionClass),
-            },
-        },
+        "metadata": cr_metadata,
         "spec": sandbox_spec,
     }
 
@@ -2771,10 +2912,10 @@ def _wait_for_dev_preview_ready(
     failure_probe: Any | None = None,
 ) -> tuple[str, str | None]:
     """Poll the dev-preview pod until Ready; return ``(status, podIP|None)``."""
-    selector = (
-        f"app=wfb-dev-preview,workflow-execution-id="
-        f"{_safe_name(execution_id, max_length=63)}"
-    )
+    # Key on workflow-execution-id alone (unique per run, never in a Service
+    # selector) — in preview-native adopt mode the `app` label is overwritten by the
+    # adopted Service's selector, so we cannot rely on `app=wfb-dev-preview`.
+    selector = f"workflow-execution-id={_safe_name(execution_id, max_length=63)}"
 
     def _pod_ip() -> str | None:
         try:
@@ -3036,19 +3177,59 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
         body.envFrom = list(body.envFrom or []) + [
             {"secretRef": {"name": preview_secret_name}}
         ]
-    manifest = build_dev_preview_sandbox_manifest(
-        body, namespace=namespace, class_config=class_config
-    )
-    sandbox_name = manifest["metadata"]["name"]
+    sandbox_name = _dev_preview_sandbox_name(body.executionId)
+    adopt_selector: dict[str, str] | None = None
     pod_ip: str | None = None
     readiness_status = "queued"
-    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
+    dry_run = os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
         "1",
         "true",
         "yes",
-    }:
+    }
+    if not dry_run:
+        apps = _load_k8s_apps_client()
         _, core = _load_k8s_clients()
         custom = _load_k8s_custom_objects_client()
+        # Preview-native adopt (in a Tier-2 vcluster preview): read the target
+        # Service's selector + free the prod Deployment (scale to 0) BEFORE creating
+        # the dev pod, so the Service endpoints AND the prod Dapr app-id are
+        # available for the dev pod to claim (a Dapr app-id can't be held twice).
+        if body.previewNative and body.adoptService:
+            try:
+                svc = core.read_namespaced_service(
+                    name=_safe_resource_name(body.adoptService), namespace=namespace
+                )
+                adopt_selector = dict(svc.spec.selector or {}) if svc.spec else None
+                logger.info(
+                    "adopt: service %s selector=%s", body.adoptService, adopt_selector
+                )
+            except Exception as exc:
+                logger.warning(
+                    "adopt: failed reading service %s selector: %s",
+                    body.adoptService,
+                    exc,
+                )
+        if body.previewNative and body.adoptDeployment:
+            identity = _adopt_prepare_deployment(
+                apps, namespace=namespace, name=_safe_resource_name(body.adoptDeployment)
+            )
+            # Faithfully assume the prod pod's identity (don't override an explicit
+            # caller value). Critical when needsDapr: the dev pod must use the SAME
+            # SA (RBAC-bound for daprd) + Dapr config the prod BFF used, and claim
+            # the prod app-id (freed by the scale-to-0 above).
+            if identity:
+                if identity.get("serviceAccountName") and not body.daprServiceAccount:
+                    body.daprServiceAccount = identity["serviceAccountName"]
+                if identity.get("daprConfig") and not body.daprConfig:
+                    body.daprConfig = identity["daprConfig"]
+                if identity.get("daprAppId") and not body.daprAppId:
+                    body.daprAppId = identity["daprAppId"]
+        manifest = build_dev_preview_sandbox_manifest(
+            body,
+            namespace=namespace,
+            class_config=class_config,
+            adopt_selector=adopt_selector,
+        )
         if preview_secret_name:
             _ensure_dev_preview_secret(core, body, namespace=namespace)
         try:
@@ -3111,7 +3292,10 @@ def teardown_dev_preview(request: Request, name: str) -> dict[str, Any]:
     }:
         custom = _load_k8s_custom_objects_client()
         # Clean up the per-preview Secret (labeled by exec id on the CR) before
-        # removing the Sandbox. Best-effort; the GC reaper is the backstop.
+        # removing the Sandbox. Best-effort; the GC reaper is the backstop. Also
+        # capture the adopted Deployment (preview-native mode) so we restore it
+        # AFTER the dev pod is gone (avoids two pods sharing one Dapr app-id).
+        adopt_deployment: str | None = None
         try:
             _, core = _load_k8s_clients()
             cr = custom.get_namespaced_custom_object(
@@ -3121,9 +3305,13 @@ def teardown_dev_preview(request: Request, name: str) -> dict[str, Any]:
                 plural="sandboxes",
                 name=safe_name,
             )
-            exec_label = (
-                (cr.get("metadata", {}) or {}).get("labels", {}) or {}
-            ).get("workflow-execution-id")
+            cr_metadata = (cr.get("metadata", {}) or {}) if cr else {}
+            exec_label = (cr_metadata.get("labels", {}) or {}).get(
+                "workflow-execution-id"
+            )
+            adopt_deployment = (cr_metadata.get("annotations", {}) or {}).get(
+                "wfb-dev-preview/adopt-deployment"
+            )
             if exec_label:
                 core.delete_collection_namespaced_secret(
                     namespace=namespace,
@@ -3134,6 +3322,18 @@ def teardown_dev_preview(request: Request, name: str) -> dict[str, Any]:
         except Exception as exc:
             logger.info("dev-preview secret cleanup skipped: %s", exc)
         _delete_agent_host_cr_and_wait(custom, namespace, safe_name)
+        # Preview-native adopt: the dev pod is gone → restore the prod Deployment to
+        # its original replica count (it reclaims the Service + its Dapr app-id).
+        if adopt_deployment:
+            try:
+                apps = _load_k8s_apps_client()
+                _adopt_restore_deployment(
+                    apps, namespace=namespace, name=adopt_deployment
+                )
+            except Exception as exc:
+                logger.warning(
+                    "adopt: failed restoring deployment %s: %s", adopt_deployment, exc
+                )
     return {"sandboxName": safe_name, "deleted": True}
 
 

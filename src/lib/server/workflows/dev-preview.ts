@@ -68,6 +68,15 @@ export interface ProvisionDevPreviewParams {
 	/** Image override (else the descriptor's env-pinned/fallback image). */
 	image?: string | null;
 	executionClass?: string;
+	/**
+	 * Provisioning mode (in-preview agentic dev loop, P1):
+	 *  - "host-throwaway" (default): the legacy per-run preview on the host dev
+	 *    cluster — a throwaway `preview_<id>` DB + (for the BFF) a separate dev URL.
+	 *  - "preview-native": the dev pod runs INSIDE a Tier-2 vcluster preview and
+	 *    REPLACES the preview's prod Deployment (adopts its Service + reuses the
+	 *    preview's own DB/secrets), so the preview's existing URL serves live edits.
+	 */
+	mode?: "host-throwaway" | "preview-native";
 }
 
 export async function provisionDevPreview(
@@ -83,12 +92,15 @@ export async function provisionDevPreview(
 		resolveDevPreviewImage(descriptor, { ...process.env, ...env });
 	const token = internalToken();
 
+	const previewNative = params.mode === "preview-native";
 	// Functional preview: provision the per-preview database first; its DATABASE_URL
 	// is delivered to the pod via a per-preview Secret (serviceSecretEnv), and the
-	// app self-migrates the empty DB on boot.
+	// app self-migrates the empty DB on boot. Preview-native adopt SKIPS this — the
+	// vcluster preview already has its OWN isolated, migrated DB, and the dev pod
+	// reuses it via the preview's `workflow-builder-secrets` (envFrom).
 	const previewEnv: Record<string, string> = { ...(descriptor.extraEnv ?? {}) };
 	const serviceSecretEnv: Record<string, string> = {};
-	if (descriptor.functional) {
+	if (descriptor.functional && !previewNative) {
 		const { provisionPreviewDatabase } = await import(
 			"$lib/server/workflows/preview-database"
 		);
@@ -99,7 +111,8 @@ export async function provisionDevPreview(
 		// Source for the db-clone init container (pg_dump --schema-only | psql).
 		if (sourceUrl) serviceSecretEnv.PREVIEW_SOURCE_DATABASE_URL = sourceUrl;
 	}
-	if (descriptor.pubsubName) previewEnv.PUBSUB_NAME = descriptor.pubsubName;
+	if (descriptor.pubsubName && !previewNative)
+		previewEnv.PUBSUB_NAME = descriptor.pubsubName;
 
 	const requestBody: Record<string, unknown> = {
 		executionId: params.executionId,
@@ -114,6 +127,19 @@ export async function provisionDevPreview(
 		...(descriptor.needsDapr ? { needsDapr: true } : {}),
 		...(descriptor.applyDaprShadowDefaults === false
 			? { applyDaprShadowDefaults: false }
+			: {}),
+		// Preview-native adopt: replace the preview's prod Deployment + adopt its
+		// Service so the preview URL serves live edits; claim the prod Dapr app-id
+		// (the prod pod is scaled to 0 first, freeing it).
+		...(previewNative
+			? {
+					previewNative: true,
+					adoptService: descriptor.adoptService ?? descriptor.service,
+					adoptDeployment: descriptor.adoptDeployment ?? descriptor.service,
+					...(descriptor.needsDapr
+						? { daprAppId: descriptor.adoptDaprAppId ?? descriptor.service }
+						: {}),
+				}
 			: {}),
 		...(descriptor.envFrom ? { envFrom: descriptor.envFrom } : {}),
 		...(Object.keys(serviceSecretEnv).length ? { serviceSecretEnv } : {}),
