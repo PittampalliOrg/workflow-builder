@@ -742,6 +742,8 @@ async function executeDevPreview(
         "executionClass",
         // Preview-native adopt mode (in-preview agentic dev loop, P1).
         "mode",
+        // Preview-native: adopt=false → dev pod on its IP, no Service takeover (P2 GAN).
+        "adopt",
       ]) {
         if (input[key] !== undefined && input[key] !== null)
           payload[key] = input[key];

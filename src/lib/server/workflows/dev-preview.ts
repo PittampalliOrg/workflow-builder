@@ -73,10 +73,21 @@ export interface ProvisionDevPreviewParams {
 	 *  - "host-throwaway" (default): the legacy per-run preview on the host dev
 	 *    cluster — a throwaway `preview_<id>` DB + (for the BFF) a separate dev URL.
 	 *  - "preview-native": the dev pod runs INSIDE a Tier-2 vcluster preview and
-	 *    REPLACES the preview's prod Deployment (adopts its Service + reuses the
-	 *    preview's own DB/secrets), so the preview's existing URL serves live edits.
+	 *    reuses the preview's own DB/secrets (functional, serves HMR on its pod IP).
+	 *    When `adopt` is also set it REPLACES the preview's prod Deployment (takes
+	 *    its Service + scales it to 0) so the preview's existing URL serves edits.
 	 */
 	mode?: "host-throwaway" | "preview-native";
+	/**
+	 * Preview-native ADOPT (default true): take over the preview's Service + scale
+	 * its prod Deployment to 0 so the preview URL serves the dev build — the right
+	 * choice for a HUMAN interactive session watching that URL. Set FALSE for an
+	 * ORCHESTRATED workflow (e.g. the GAN loop): the cutover scales the prod BFF the
+	 * orchestrator is driving its own calls through (clone/dispatch) → in-flight
+	 * RemoteDisconnected. With adopt=false the dev pod just serves HMR on its pod IP
+	 * (the critic/generator use that IP), and the prod BFF stays up for the orchestrator.
+	 */
+	adopt?: boolean;
 }
 
 export async function provisionDevPreview(
@@ -128,16 +139,26 @@ export async function provisionDevPreview(
 		...(descriptor.applyDaprShadowDefaults === false
 			? { applyDaprShadowDefaults: false }
 			: {}),
-		// Preview-native adopt: replace the preview's prod Deployment + adopt its
-		// Service so the preview URL serves live edits; claim the prod Dapr app-id
-		// (the prod pod is scaled to 0 first, freeing it).
+		// Preview-native: always reuse the preview's own DB/secrets (skip throwaway).
+		// ADOPT (replace the prod Deployment + take its Service + claim its app-id) is
+		// opt-out: ON for a human interactive session (preview URL serves edits), OFF
+		// for an orchestrated workflow (the cutover would disrupt the orchestrator's
+		// own BFF calls) — there the dev pod just serves HMR on its pod IP.
 		...(previewNative
 			? {
 					previewNative: true,
-					adoptService: descriptor.adoptService ?? descriptor.service,
-					adoptDeployment: descriptor.adoptDeployment ?? descriptor.service,
-					...(descriptor.needsDapr
-						? { daprAppId: descriptor.adoptDaprAppId ?? descriptor.service }
+					...(params.adopt !== false
+						? {
+								adoptService: descriptor.adoptService ?? descriptor.service,
+								adoptDeployment:
+									descriptor.adoptDeployment ?? descriptor.service,
+								...(descriptor.needsDapr
+									? {
+											daprAppId:
+												descriptor.adoptDaprAppId ?? descriptor.service,
+										}
+									: {}),
+							}
 						: {}),
 				}
 			: {}),
