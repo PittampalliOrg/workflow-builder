@@ -735,24 +735,18 @@ def _load_k8s_apps_client():
 DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION = "wfb-dev-preview/original-replicas"
 
 
-def _adopt_prepare_deployment(
+def _adopt_read_identity(
     apps: Any, *, namespace: str, name: str
 ) -> dict[str, Any] | None:
-    """Capture the prod Deployment's pod identity, then scale it to 0.
-
-    Reads the live Deployment so the dev pod can FAITHFULLY assume its identity
-    (ServiceAccount + Dapr app-id / config / app-port) instead of guessing — then
-    scales it to 0 (freeing the Service endpoints + the Dapr app-id for the dev pod)
-    while stashing the prior replica count in an annotation so teardown can restore
-    it (survives an SEA restart — state lives on the object). Idempotent on
-    re-provision. Returns the discovered identity, or None if the Deployment is
-    absent.
+    """Read the prod Deployment's pod identity (ServiceAccount + Dapr
+    app-id/config/app-port) so the dev pod can FAITHFULLY assume it instead of
+    guessing. Read-only. Returns the identity, or None if the Deployment is absent.
     """
     try:
         dep = apps.read_namespaced_deployment(name=name, namespace=namespace)
     except Exception as exc:
         if getattr(exc, "status", None) == 404:
-            logger.info("adopt: deployment %s not found; skipping scale-down", name)
+            logger.info("adopt: deployment %s not found; no identity", name)
             return None
         raise
     spec = dep.spec
@@ -760,18 +754,27 @@ def _adopt_prepare_deployment(
     tmpl_meta = template.metadata if template else None
     tmpl_spec = template.spec if template else None
     pod_annotations = (tmpl_meta.annotations or {}) if tmpl_meta else {}
-    identity = {
-        "serviceAccountName": (
-            tmpl_spec.service_account_name if tmpl_spec else None
-        ),
+    return {
+        "serviceAccountName": (tmpl_spec.service_account_name if tmpl_spec else None),
         "daprAppId": pod_annotations.get("dapr.io/app-id"),
         "daprConfig": pod_annotations.get("dapr.io/config"),
         "daprAppPort": pod_annotations.get("dapr.io/app-port"),
     }
+
+
+def _adopt_scale_deployment_down(apps: Any, *, namespace: str, name: str) -> None:
+    """Scale the adopted Deployment to 0 (freeing the Service endpoints), stashing
+    its prior replica count in an annotation so teardown can restore it. Idempotent."""
+    try:
+        dep = apps.read_namespaced_deployment(name=name, namespace=namespace)
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            logger.info("adopt: deployment %s not found; skip scale-down", name)
+            return
+        raise
     dep_annotations = (dep.metadata.annotations or {}) if dep.metadata else {}
-    current = spec.replicas if spec and spec.replicas is not None else 1
+    current = dep.spec.replicas if dep.spec and dep.spec.replicas is not None else 1
     stashed = dep_annotations.get(DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION)
-    # Only stash a non-zero count (don't overwrite a prior stash with 0 on re-provision).
     original = stashed if stashed is not None else (str(current) if current > 0 else "1")
     apps.patch_namespaced_deployment(
         name=name,
@@ -783,13 +786,68 @@ def _adopt_prepare_deployment(
             "spec": {"replicas": 0},
         },
     )
-    logger.info(
-        "adopt: scaled deployment %s to 0 (original=%s, identity=%s)",
-        name,
-        original,
-        identity,
+    logger.info("adopt: scaled deployment %s to 0 (original=%s)", name, original)
+
+
+def _adopt_deferred_scale_down(
+    *, namespace: str, deployment: str, execution_id: str, wait_seconds: int
+) -> None:
+    """Background target: wait for the dev pod to be Ready, THEN scale the prod
+    Deployment to 0. Deferring is REQUIRED when the dev pod adopts the BFF's own
+    Service: scaling the BFF to 0 during the provision request would kill the very
+    pod serving it (→ 502). By the time this runs, the provision response has long
+    returned through the still-up prod pod. Only scales once the dev pod is Ready,
+    so there is NO downtime; if the dev pod never becomes Ready, the prod Deployment
+    is LEFT UP (failsafe — the preview keeps serving)."""
+    import time
+
+    try:
+        apps = _load_k8s_apps_client()
+        _, core = _load_k8s_clients()
+    except Exception as exc:
+        logger.warning("adopt: deferred scale-down could not load clients: %s", exc)
+        return
+    selector = f"workflow-execution-id={_safe_name(execution_id, max_length=63)}"
+    # Generous: the full BFF vite dev server can cold-boot well past waitReadySeconds.
+    # Until the dev pod is Ready the prod Deployment is LEFT UP, so over-waiting only
+    # delays the cutover; it never causes downtime.
+    deadline = time.monotonic() + max(wait_seconds, 600)
+    while time.monotonic() < deadline:
+        try:
+            pods = core.list_namespaced_pod(
+                namespace=namespace, label_selector=selector
+            ).items
+            ready = any(
+                any(
+                    cs.name == "dev" and cs.ready
+                    for cs in (p.status.container_statuses or [])
+                )
+                for p in pods
+            )
+            if ready:
+                # Grace so the provision HTTP response (which returns when the dev
+                # pod is Ready) fully propagates orchestrator←router←BFF BEFORE we
+                # scale the BFF to 0 — otherwise the scale could still kill the pod
+                # mid-response.
+                time.sleep(15)
+                _adopt_scale_deployment_down(
+                    apps, namespace=namespace, name=deployment
+                )
+                logger.info(
+                    "adopt: dev pod ready → scaled %s to 0 (exec %s)",
+                    deployment,
+                    execution_id,
+                )
+                return
+        except Exception as exc:
+            logger.warning("adopt: deferred scale-down poll error: %s", exc)
+        time.sleep(5)
+    logger.warning(
+        "adopt: dev pod for exec %s not Ready within %ss; leaving %s UP (failsafe)",
+        execution_id,
+        wait_seconds,
+        deployment,
     )
-    return identity
 
 
 def _adopt_restore_deployment(apps: Any, *, namespace: str, name: str) -> None:
@@ -3191,9 +3249,12 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
         _, core = _load_k8s_clients()
         custom = _load_k8s_custom_objects_client()
         # Preview-native adopt (in a Tier-2 vcluster preview): read the target
-        # Service's selector + free the prod Deployment (scale to 0) BEFORE creating
-        # the dev pod, so the Service endpoints AND the prod Dapr app-id are
-        # available for the dev pod to claim (a Dapr app-id can't be held twice).
+        # Service's selector so the dev pod can adopt it (the Service then routes to
+        # the dev pod). Read-only here — the prod Deployment scale-to-0 is DEFERRED
+        # to a background thread (below) because the adopted service is usually the
+        # BFF ITSELF: scaling it to 0 during this request would kill the pod serving
+        # it (→ 502). The Dapr app-id may be held by multiple replicas, so no
+        # exclusivity problem with the prod pod lingering briefly.
         if body.previewNative and body.adoptService:
             try:
                 svc = core.read_namespaced_service(
@@ -3210,13 +3271,13 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
                     exc,
                 )
         if body.previewNative and body.adoptDeployment:
-            identity = _adopt_prepare_deployment(
-                apps, namespace=namespace, name=_safe_resource_name(body.adoptDeployment)
-            )
             # Faithfully assume the prod pod's identity (don't override an explicit
             # caller value). Critical when needsDapr: the dev pod must use the SAME
-            # SA (RBAC-bound for daprd) + Dapr config the prod BFF used, and claim
-            # the prod app-id (freed by the scale-to-0 above).
+            # SA (RBAC-bound for daprd) + Dapr config the prod BFF used, and the
+            # prod app-id.
+            identity = _adopt_read_identity(
+                apps, namespace=namespace, name=_safe_resource_name(body.adoptDeployment)
+            )
             if identity:
                 if identity.get("serviceAccountName") and not body.daprServiceAccount:
                     body.daprServiceAccount = identity["serviceAccountName"]
@@ -3246,6 +3307,24 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
             # Deterministic per-execution name already exists → idempotent adopt
             # (same run re-requesting its own preview).
             logger.info("dev-preview CR %s already exists; adopting", sandbox_name)
+        # Preview-native: DEFER the prod Deployment scale-to-0 to a background thread
+        # that waits for the dev pod to be Ready (+grace) then scales. Doing it now
+        # would kill the BFF pod serving this very request (the BFF adopts its own
+        # Service) → 502. Started right after CR creation so it races the readiness
+        # wait below but only scales once the dev pod can take over (no downtime).
+        if body.previewNative and body.adoptDeployment:
+            import threading
+
+            threading.Thread(
+                target=_adopt_deferred_scale_down,
+                kwargs={
+                    "namespace": namespace,
+                    "deployment": _safe_resource_name(body.adoptDeployment),
+                    "execution_id": body.executionId,
+                    "wait_seconds": body.waitReadySeconds,
+                },
+                daemon=True,
+            ).start()
         readiness_status, pod_ip = _wait_for_dev_preview_ready(
             core,
             namespace=namespace,
