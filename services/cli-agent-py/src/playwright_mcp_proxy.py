@@ -104,7 +104,26 @@ def _remember_session(sid: str) -> None:
         logger.debug("[pw-proxy] could not persist session id: %s", exc)
 
 
-def _is_navigate(body: bytes) -> bool:
+# Browser tool calls that imply a page exists and the agent is interacting with
+# it → a good moment to start recording. We DON'T require `browser_navigate`
+# specifically: codex/agy often drive the page via `browser_run_code_unsafe`,
+# `browser_snapshot`, `browser_take_screenshot`, etc. (and never call
+# browser_navigate), which previously meant the recording never started. Exclude
+# the recording-control + lifecycle tools so we don't recurse or record nothing.
+_NON_PAGE_BROWSER_TOOLS = frozenset(
+    {
+        "browser_start_video",
+        "browser_stop_video",
+        "browser_close",
+        "browser_install",
+    }
+)
+
+
+def _wants_recording(body: bytes) -> bool:
+    """True if the request is a tools/call for a browser_* tool that implies an
+    active page — the trigger to lazily start the screencast on the agent's
+    session. Broader than just browser_navigate (see note above)."""
     if not body:
         return False
     try:
@@ -115,7 +134,12 @@ def _is_navigate(body: bytes) -> bool:
     for it in items:
         if isinstance(it, dict) and it.get("method") == "tools/call":
             params = it.get("params") or {}
-            if isinstance(params, dict) and params.get("name") == "browser_navigate":
+            name = params.get("name") if isinstance(params, dict) else None
+            if (
+                isinstance(name, str)
+                and name.startswith("browser_")
+                and name not in _NON_PAGE_BROWSER_TOOLS
+            ):
                 return True
     return False
 
@@ -150,7 +174,7 @@ async def _inject_start_video() -> None:
 
 async def _proxy(request: Request, method: str) -> Response:
     body = await request.body()
-    want_start = method == "POST" and not _video_started and _is_navigate(body)
+    want_start = method == "POST" and not _video_started and _wants_recording(body)
 
     client = _client_session()
     try:
@@ -202,8 +226,35 @@ async def pw_proxy_get(request: Request):
     return await _proxy(request, "GET")
 
 
+async def _flush_video_on_close() -> None:
+    """Flush the screencast to a .webm BEFORE the agent's MCP session (and its
+    browser context) is torn down by the DELETE. The agent (e.g. codex) closes
+    its MCP session at turn-end, which discards an unfinished recording — and
+    sync_browser_video_activity runs AFTER that, so its browser_stop_video would
+    hit a dead session. Flushing here guarantees the .webm exists on /sandbox/work
+    for the later glob. Best-effort; never blocks the DELETE."""
+    global _video_started
+    async with _lock:
+        if not _video_started or not _session_id:
+            return
+        sid = _session_id
+        _video_started = False
+    try:
+        from src.playwright_mcp_client import browser_stop_video
+
+        saved = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: browser_stop_video(session_id=sid)
+        )
+        logger.info("[pw-proxy] flushed video on session close %s -> %s", sid, saved)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[pw-proxy] flush-on-close failed: %s", exc)
+
+
 @router.delete(PROXY_PATH)
 async def pw_proxy_delete(request: Request):
+    # Flush any in-progress recording BEFORE forwarding the DELETE (which closes
+    # the browser context). Otherwise the .webm is never written.
+    await _flush_video_on_close()
     return await _proxy(request, "DELETE")
 
 

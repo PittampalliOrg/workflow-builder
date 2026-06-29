@@ -87,7 +87,7 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
 		service: "workflow-builder",
 		imageEnvKey: "WORKFLOW_BUILDER_DEV_IMAGE",
 		imageFallback:
-			"ghcr.io/pittampalliorg/workflow-builder-dev@sha256:b5347497cb6c6ce03b8a9359d5392ab88a5173de3316ea43e54c148750053b96",
+			"ghcr.io/pittampalliorg/workflow-builder-dev@sha256:d272c036902a8d79e33abba3f40abfef67fb025eb772e14f59d0be8bf94715a3",
 		port: 3000,
 		healthPath: "/",
 		workdir: "/app",
