@@ -52,6 +52,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 				body.mode === "preview-native" || body.mode === "host-throwaway"
 					? body.mode
 					: undefined,
+			adopt: typeof body.adopt === "boolean" ? body.adopt : undefined,
 		});
 		return json(info);
 	} catch (err) {
