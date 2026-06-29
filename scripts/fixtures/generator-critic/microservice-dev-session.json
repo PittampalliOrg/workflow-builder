@@ -22,6 +22,12 @@
             "default": "workflow-orchestrator",
             "description": "workflow-builder | workflow-orchestrator | function-router (registered in the dev-preview registry)."
           },
+          "mode": {
+            "type": "string",
+            "title": "Dev-preview mode",
+            "default": "host-throwaway",
+            "description": "host-throwaway (legacy per-run preview on the host dev cluster) | preview-native (run INSIDE a Tier-2 vcluster preview: REPLACE the preview's prod pod with this dev server + adopt its Service, so the preview's own URL serves live edits). preview-native is for workflow-builder (the BFF) first."
+          },
           "keepPreview": {
             "type": "string",
             "title": "Keep the preview alive after the run",
@@ -51,6 +57,7 @@
         "with": {
           "executionId": "${ .runtime.executionId }",
           "service": "${ .trigger.service // \"workflow-orchestrator\" }",
+          "mode": "${ .trigger.mode // \"host-throwaway\" }",
           "timeoutSeconds": "${ if (.trigger.keepPreview // \"true\") == \"true\" then 86400 else 3600 end }",
           "waitReadySeconds": 180
         },

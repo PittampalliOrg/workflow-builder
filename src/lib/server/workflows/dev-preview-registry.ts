@@ -68,6 +68,18 @@ export interface DevPreviewDescriptor {
 	envFrom?: Array<Record<string, unknown>>;
 	/** Extra plain env for the dev container (e.g. ORIGIN). */
 	extraEnv?: Record<string, string>;
+	/**
+	 * Preview-native adopt (in-preview agentic dev loop, P1): when a run requests
+	 * `mode: "preview-native"`, the dev pod runs INSIDE a Tier-2 vcluster preview
+	 * and REPLACES the preview's prod Deployment — it adopts the preview's own
+	 * Service (so the preview's existing tailnet URL serves live edits) and reuses
+	 * the preview's own DB/secrets (no throwaway DB). These name the Service /
+	 * Deployment / Dapr app-id to take over; each defaults to `service` when unset
+	 * (true for the BFF, where all three are `workflow-builder`).
+	 */
+	adoptService?: string;
+	adoptDeployment?: string;
+	adoptDaprAppId?: string;
 }
 
 export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
@@ -98,6 +110,11 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
 			{ secretRef: { name: "workflow-builder-secrets" } },
 		],
 		extraEnv: { ORIGIN: "http://wfb-preview-ryzen.tail286401.ts.net" },
+		// Preview-native adopt: take over the preview's `workflow-builder`
+		// Service/Deployment/app-id so the preview URL serves the HMR build.
+		adoptService: "workflow-builder",
+		adoptDeployment: "workflow-builder",
+		adoptDaprAppId: "workflow-builder",
 	},
 	"workflow-orchestrator": {
 		service: "workflow-orchestrator",

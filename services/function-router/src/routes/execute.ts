@@ -740,6 +740,8 @@ async function executeDevPreview(
         "waitReadySeconds",
         "image",
         "executionClass",
+        // Preview-native adopt mode (in-preview agentic dev loop, P1).
+        "mode",
       ]) {
         if (input[key] !== undefined && input[key] !== null)
           payload[key] = input[key];

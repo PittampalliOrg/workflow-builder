@@ -48,6 +48,10 @@ export const POST: RequestHandler = async ({ params, request }) => {
 				typeof body.executionClass === "string"
 					? body.executionClass
 					: undefined,
+			mode:
+				body.mode === "preview-native" || body.mode === "host-throwaway"
+					? body.mode
+					: undefined,
 		});
 		return json(info);
 	} catch (err) {
