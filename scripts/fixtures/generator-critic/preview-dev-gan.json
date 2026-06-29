@@ -5,7 +5,7 @@
     "name": "preview-dev-gan",
     "version": "0.1.0",
     "title": "In-preview GAN dev loop: edit the live BFF (HMR) \u2194 Playwright visual critic",
-    "summary": "Runs INSIDE a Tier-2 vcluster preview. enter_dev_mode replaces the prod pod with a hot-reload dev-server Sandbox (P1 preview-native, adopt:false). The DEV POD is the source-of-truth (bakes full source + warm vite SSR). The generator PULLs current src from the dev pod via GET /__export into LOCAL /sandbox/scratch (NO repo clone into JuiceFS), edits the public sign-in page, and PUSHes back via POST /__sync (HMR). A Playwright-MCP critic renders the in-cluster URL, screenshots (persisted .webm), and grades it \u2014 looping until accepted. JuiceFS holds only artifacts.",
+    "summary": "Runs INSIDE a Tier-2 vcluster preview. enter_dev_mode replaces the prod pod with a hot-reload dev-server Sandbox (P2 preview-native, adopt:false: dev pod on its own IP, the PROD BFF stays up as the control plane \u2014 required so per-session CLI agent sandboxes can be created; adopt:true makes the dev pod the BFF which lacks that RBAC/env and wedges CLI sessions). The DEV POD is the source-of-truth (bakes full source + warm vite SSR). The generator PULLs current src from the dev pod via GET /__export into LOCAL /sandbox/scratch (NO repo clone into JuiceFS), edits the public sign-in page, and PUSHes back via POST /__sync (HMR). A Playwright-MCP critic renders the in-cluster URL, screenshots, and grades it \u2014 looping until accepted. JuiceFS holds only artifacts.",
     "x-workflow-builder": {
       "resumable": true,
       "input": {
@@ -91,7 +91,7 @@
           "executionId": "${ .runtime.executionId }",
           "service": "${ .trigger.service // \"workflow-builder\" }",
           "mode": "preview-native",
-          "adopt": true,
+          "adopt": false,
           "timeoutSeconds": 86400,
           "waitReadySeconds": 240
         },
