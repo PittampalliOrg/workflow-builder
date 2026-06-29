@@ -1,11 +1,12 @@
 import { env } from "$env/dynamic/private";
 import { desc, eq } from "drizzle-orm";
 import { db } from "$lib/server/db";
-import { workflowWorkspaceSessions } from "$lib/server/db/schema";
+import { workflowExecutions, workflowWorkspaceSessions } from "$lib/server/db/schema";
 import {
 	resolveDevPreviewDescriptor,
 	resolveDevPreviewImage,
 } from "$lib/server/workflows/dev-preview-registry";
+import { persistSourceBundle } from "$lib/server/workflows/source-bundle";
 
 /**
  * Per-run ephemeral dev-server preview (P2).
@@ -294,10 +295,131 @@ async function resolveDevPreviewSandboxName(
 	return null;
 }
 
+type DevPreviewDetails = {
+	sandboxName: string | null;
+	service: string | null;
+	podIP: string | null;
+	syncPort: number | null;
+};
+
+/** Pull the persisted dev-preview details (pod IP/port/service) for an execution. */
+async function resolveDevPreviewDetails(
+	executionId: string,
+): Promise<DevPreviewDetails | null> {
+	if (!db) return null;
+	const [row] = await db
+		.select({
+			workspaceRef: workflowWorkspaceSessions.workspaceRef,
+			sandboxState: workflowWorkspaceSessions.sandboxState,
+		})
+		.from(workflowWorkspaceSessions)
+		.where(eq(workflowWorkspaceSessions.workflowExecutionId, executionId))
+		.orderBy(desc(workflowWorkspaceSessions.createdAt))
+		.limit(1);
+	if (!row) return null;
+	const details = (
+		row.sandboxState as {
+			details?: {
+				sandboxName?: string;
+				service?: string;
+				podIP?: string | null;
+				syncPort?: number | null;
+			};
+		}
+	)?.details;
+	return {
+		sandboxName: details?.sandboxName ?? row.workspaceRef ?? null,
+		service: details?.service ?? null,
+		podIP: details?.podIP ?? null,
+		syncPort: typeof details?.syncPort === "number" ? details.syncPort : null,
+	};
+}
+
+/**
+ * Durably persist the code a dev-pod-as-source run produced (in-preview GAN), so it
+ * can be reconstructed into a PR (Promote). In dev-pod-as-source the edited code
+ * lives ONLY on the dev pod behind `GET /__export` (a tar.gz of `syncPaths`); the
+ * agent's `/sandbox/work` is empty, so the standard git-bundle producer captures
+ * nothing. This pulls `/__export` from the live dev pod and stores it as a
+ * `source-bundle` version with `tier:"tar-overlay"` + the base-repo context so
+ * Promote can rebuild against the base (clone base + overlay syncPaths). Per-iteration
+ * (distinct `iteration`) so any iteration's design is promotable. Best-effort.
+ */
+export async function captureDevPreviewSource(
+	executionId: string,
+	opts: { nodeId?: string | null; iteration?: number | null; sandboxName?: string | null } = {},
+): Promise<{ ok: boolean; artifactId?: string; bytes?: number; skipped?: string }> {
+	if (!db) return { ok: false, skipped: "no_db" };
+	try {
+		const details = await resolveDevPreviewDetails(executionId);
+		if (!details?.podIP || !details.syncPort) {
+			return { ok: true, skipped: "no_dev_pod" };
+		}
+		const descriptor = resolveDevPreviewDescriptor(details.service);
+		const syncPaths = descriptor.syncPaths?.length ? descriptor.syncPaths : ["src"];
+		const token = (env.WFB_DEV_SYNC_TOKEN ?? process.env.WFB_DEV_SYNC_TOKEN ?? "").trim();
+		const exportUrl = `http://${details.podIP}:${details.syncPort}/__export?paths=${encodeURIComponent(
+			syncPaths.join(","),
+		)}`;
+		const resp = await fetch(exportUrl, {
+			headers: token ? { "x-sync-token": token } : {},
+			signal: AbortSignal.timeout(60_000),
+		});
+		if (!resp.ok) return { ok: true, skipped: `export_http_${resp.status}` };
+		const bytes = Buffer.from(await resp.arrayBuffer());
+		if (bytes.byteLength === 0) return { ok: true, skipped: "empty" };
+		if (bytes.byteLength > 25 * 1024 * 1024) {
+			return { ok: true, skipped: "too_large" };
+		}
+
+		const [exec] = await db
+			.select({
+				userId: workflowExecutions.userId,
+				projectId: workflowExecutions.projectId,
+			})
+			.from(workflowExecutions)
+			.where(eq(workflowExecutions.id, executionId))
+			.limit(1);
+		if (!exec) return { ok: true, skipped: "no_execution" };
+
+		const result = await persistSourceBundle({
+			executionId,
+			userId: exec.userId,
+			projectId: exec.projectId ?? null,
+			nodeId: opts.nodeId ?? "dev-preview",
+			iteration: opts.iteration ?? null,
+			fileName: `source-${executionId}-${opts.iteration ?? "final"}.tar.gz`,
+			contentType: "application/gzip",
+			bytes,
+			meta: {
+				tier: "tar-overlay",
+				base: descriptor.baseBranch ?? "main",
+				repoUrl: descriptor.repoUrl,
+				repoSubdir: descriptor.repoSubdir,
+				syncPaths,
+				iteration: opts.iteration ?? null,
+			},
+		});
+		return { ok: true, artifactId: result.id, bytes: result.bytes };
+	} catch (err) {
+		console.warn(
+			"[dev-preview] captureDevPreviewSource failed:",
+			err instanceof Error ? err.message : err,
+		);
+		return { ok: false, skipped: "error" };
+	}
+}
+
 export async function teardownDevPreview(params: {
 	executionId: string;
 	sandboxName?: string | null;
 }): Promise<{ ok: boolean; sandboxName: string | null }> {
+	// Capture a durable, promotable version of the produced code BEFORE the dev pod
+	// is deleted (dev-pod-as-source code lives only behind /__export). Best-effort.
+	await captureDevPreviewSource(params.executionId, {
+		nodeId: "dev-preview",
+		iteration: null,
+	});
 	const baseUrl = sandboxExecutionApiUrl();
 	const name = await resolveDevPreviewSandboxName(
 		params.executionId,

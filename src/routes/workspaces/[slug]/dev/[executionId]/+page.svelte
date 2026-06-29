@@ -17,6 +17,7 @@
 	} from '$lib/components/ui/alert-dialog';
 	import { ArrowLeft, SendHorizontal } from '@lucide/svelte';
 	import DevPreviewStatusCard from '$lib/components/dev/dev-preview-status-card.svelte';
+	import CodeVersionsPanel from '$lib/components/dev/code-versions-panel.svelte';
 	import type { DevEnvironmentSummary } from '$lib/components/dev/dev-environment-card.svelte';
 	import SessionTranscript from '$lib/components/sessions/session-transcript.svelte';
 	import SessionGoalBadge from '$lib/components/sessions/session-goal-badge.svelte';
@@ -134,6 +135,12 @@
 		<!-- Status / controls column -->
 		<aside class="border-r p-4 overflow-y-auto space-y-4">
 			<DevPreviewStatusCard {environment} {busy} onteardown={() => (confirmTeardown = true)} />
+			<CodeVersionsPanel
+				executionId={environment.executionId}
+				live={environment.runStatus !== 'completed' &&
+					environment.runStatus !== 'failed' &&
+					environment.runStatus !== 'terminated'}
+			/>
 		</aside>
 
 		<!-- Interactive session column -->

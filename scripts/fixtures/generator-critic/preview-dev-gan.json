@@ -146,6 +146,17 @@
             }
           },
           {
+            "snapshot": {
+              "call": "dev/preview-snapshot",
+              "with": {
+                "executionId": "${ .runtime.executionId }",
+                "nodeId": "generate",
+                "iteration": "${ .idx }"
+              },
+              "allowFailure": true
+            }
+          },
+          {
             "critique": {
               "call": "durable/run",
               "with": {
