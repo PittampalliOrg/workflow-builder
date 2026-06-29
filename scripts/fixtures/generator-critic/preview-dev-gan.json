@@ -32,13 +32,13 @@
               "generatorAgent": {
                 "type": "string",
                 "title": "Generator agent",
-                "default": "codex-cli",
+                "default": "claude-code-cli",
                 "description": "Edits repo/src + runs ./sync.sh. interactive-cli family (shares /sandbox/work)."
               },
               "criticAgent": {
                 "type": "string",
                 "title": "Critic agent",
-                "default": "codex-playwright-critic-agent",
+                "default": "cli-playwright-critic-agent",
                 "description": "Drives Playwright MCP against the live preview URL + grades the UI. interactive-cli family (in-pod Chromium)."
               }
             }
@@ -69,12 +69,12 @@
           "generatorAgent": {
             "type": "string",
             "title": "Generator agent",
-            "default": "codex-cli"
+            "default": "claude-code-cli"
           },
           "criticAgent": {
             "type": "string",
             "title": "Critic agent",
-            "default": "codex-playwright-critic-agent"
+            "default": "cli-playwright-critic-agent"
           }
         }
       }
@@ -128,7 +128,7 @@
                 "mode": "execute_direct",
                 "workspaceRef": "${ .runtime.workspaceExecutionId }",
                 "agentRef": {
-                  "slug": "${ .trigger.generatorAgent // \"codex-cli\" }"
+                  "slug": "${ .trigger.generatorAgent // \"claude-code-cli\" }"
                 },
                 "agentConfig": {
                   "name": "Generator (dev-pod source)",
@@ -164,7 +164,7 @@
                 "mode": "execute_direct",
                 "workspaceRef": "${ .runtime.workspaceExecutionId }",
                 "agentRef": {
-                  "slug": "${ .trigger.criticAgent // \"codex-playwright-critic-agent\" }"
+                  "slug": "${ .trigger.criticAgent // \"cli-playwright-critic-agent\" }"
                 },
                 "agentConfig": {
                   "name": "Visual critic (Playwright)",
