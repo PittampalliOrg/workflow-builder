@@ -112,6 +112,71 @@ function devLiveSyncPlugin(): Plugin {
 					});
 				});
 			});
+
+			// Read-back counterpart to /__sync: GET /__export streams a `tar.gz` of the
+			// current working `src/` (the live state, incl. everything synced so far) so an
+			// agent can pull the dev pod's source — making the DEV POD the source-of-truth
+			// (no full-repo clone into the slow JuiceFS shared workspace). The agent then
+			// edits on local disk and POSTs back to /__sync. Same gating + busybox-tar
+			// (relative paths) as the producer side. See docs/agentic-deploy-inspect-loop.md.
+			server.middlewares.use('/__export', (req, res) => {
+				if (req.method !== 'GET') {
+					res.statusCode = 405;
+					res.setHeader('content-type', 'application/json');
+					res.end(JSON.stringify({ ok: false, error: 'GET only' }));
+					return;
+				}
+				if (token && req.headers['x-sync-token'] !== token) {
+					res.statusCode = 401;
+					res.setHeader('content-type', 'application/json');
+					res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+					return;
+				}
+				// `?paths=src,static` (default `src`); reject absolute / parent-escaping paths.
+				const url = new URL(req.url ?? '/__export', 'http://localhost');
+				const paths = (url.searchParams.get('paths') ?? 'src')
+					.split(',')
+					.map((p) => p.trim())
+					.filter((p) => p && !p.startsWith('/') && !p.split('/').includes('..'));
+				if (paths.length === 0) {
+					res.statusCode = 400;
+					res.setHeader('content-type', 'application/json');
+					res.end(JSON.stringify({ ok: false, error: 'no valid paths' }));
+					return;
+				}
+				res.statusCode = 200;
+				res.setHeader('content-type', 'application/gzip');
+				// `-czf -` to stdout; relative paths under root (busybox + GNU compatible).
+				const tar = spawn('tar', ['-czf', '-', '-C', root, ...paths], {
+					stdio: ['ignore', 'pipe', 'pipe']
+				});
+				let errout = '';
+				tar.stderr.on('data', (d) => (errout += String(d)));
+				tar.stdout.pipe(res);
+				tar.on('error', () => {
+					try {
+						res.destroy();
+					} catch {
+						/* socket gone */
+					}
+				});
+				tar.on('close', (code) => {
+					if (code === 0) {
+						console.log(`[wfb-dev-live-sync] exported ${paths.join(',')} (tar.gz)`);
+					} else {
+						console.warn(`[wfb-dev-live-sync] export tar exit ${code}: ${errout.slice(0, 200)}`);
+					}
+					// stdout pipe already ended `res`; nothing else to do.
+				});
+				// Abort the tar if the client disconnects mid-stream.
+				req.on('aborted', () => {
+					try {
+						tar.kill();
+					} catch {
+						/* already gone */
+					}
+				});
+			});
 		}
 	};
 }
