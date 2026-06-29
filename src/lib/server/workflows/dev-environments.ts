@@ -235,7 +235,25 @@ export async function resolveCanonicalExecutionId(
 			),
 		)
 		.limit(1);
-	return row?.id ?? idOrInstanceId;
+	if (row?.id) return row.id;
+	// Backstop for the dispatch race: the orchestrator stamps
+	// `dapr_instance_id` only AFTER it returns, but it can call the dev-preview
+	// ensure/snapshot routes (with the deterministic instance id
+	// `sw-<workflowId>-exec-<execId>`) before that UPDATE lands — so the lookup
+	// above misses. Parse the canonical execId out of the instance id (strip the
+	// LAST `-exec-`) so we never fall back to a non-canonical id (which would name
+	// the pod wrong AND fail the workflow_workspace_sessions FK on persist).
+	const m = idOrInstanceId.match(/^sw-.+-exec-(.+)$/);
+	if (m?.[1]) {
+		const suffix = m[1];
+		const [byId] = await db
+			.select({ id: workflowExecutions.id })
+			.from(workflowExecutions)
+			.where(eq(workflowExecutions.id, suffix))
+			.limit(1);
+		return byId?.id ?? suffix;
+	}
+	return idOrInstanceId;
 }
 
 /** Public, credential-free catalog of launchable services for the UI dropdown. */

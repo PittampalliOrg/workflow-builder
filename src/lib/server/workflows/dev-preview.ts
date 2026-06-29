@@ -261,8 +261,12 @@ async function persistDevPreviewSession(info: DevPreviewInfo): Promise<void> {
 			});
 	} catch (err) {
 		// Best-effort: provisioning succeeded; persistence is for discovery/reaping.
-		console.warn(
-			"[dev-preview] failed to persist workspace session row:",
+		// Log at ERROR with the offending id — the common cause is a non-canonical
+		// `workflowExecutionId` (a Dapr instance id) violating the FK to
+		// workflow_executions.id, which otherwise leaves the run with a live pod but
+		// no session row (capture/teardown then can't find it).
+		console.error(
+			`[dev-preview] failed to persist workspace session row (execId=${info.executionId}, ref=${info.sandboxName}):`,
 			err instanceof Error ? err.message : err,
 		);
 	}
@@ -307,7 +311,18 @@ async function resolveDevPreviewDetails(
 	executionId: string,
 ): Promise<DevPreviewDetails | null> {
 	if (!db) return null;
-	const [row] = await db
+	type DevDetails = {
+		sandboxName?: string;
+		service?: string;
+		podIP?: string | null;
+		syncPort?: number | null;
+	};
+	// A run can legitimately have MORE THAN ONE workspace_session row (e.g. an
+	// early ensure that captured a null podIP plus the ready-pod row). Pick the
+	// newest row that actually carries a podIP+syncPort, falling back to the
+	// newest overall — newest-only would otherwise resolve to a stale podIP-null
+	// row and make capture/teardown skip `no_dev_pod`.
+	const rows = await db
 		.select({
 			workspaceRef: workflowWorkspaceSessions.workspaceRef,
 			sandboxState: workflowWorkspaceSessions.sandboxState,
@@ -315,20 +330,18 @@ async function resolveDevPreviewDetails(
 		.from(workflowWorkspaceSessions)
 		.where(eq(workflowWorkspaceSessions.workflowExecutionId, executionId))
 		.orderBy(desc(workflowWorkspaceSessions.createdAt))
-		.limit(1);
-	if (!row) return null;
-	const details = (
-		row.sandboxState as {
-			details?: {
-				sandboxName?: string;
-				service?: string;
-				podIP?: string | null;
-				syncPort?: number | null;
-			};
-		}
-	)?.details;
+		.limit(8);
+	if (rows.length === 0) return null;
+	const detailsOf = (r: (typeof rows)[number]): DevDetails | undefined =>
+		(r.sandboxState as { details?: DevDetails } | null)?.details;
+	const chosen =
+		rows.find((r) => {
+			const d = detailsOf(r);
+			return !!d?.podIP && typeof d.syncPort === "number";
+		}) ?? rows[0];
+	const details = detailsOf(chosen);
 	return {
-		sandboxName: details?.sandboxName ?? row.workspaceRef ?? null,
+		sandboxName: details?.sandboxName ?? chosen.workspaceRef ?? null,
 		service: details?.service ?? null,
 		podIP: details?.podIP ?? null,
 		syncPort: typeof details?.syncPort === "number" ? details.syncPort : null,
