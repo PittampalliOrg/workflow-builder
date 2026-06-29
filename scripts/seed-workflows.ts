@@ -4509,20 +4509,25 @@ async function seedGeneratorCriticShowcases(params: {
 	// same `playwright-mcp` binary + pinned Chromium; --executable-path avoids the
 	// runtime browser download). Wired per-CLI: claude .mcp.json / codex
 	// config.toml / agy mcp_config.json (all via emit_claude_code_cli_servers).
-	// The critic connects to a SUPERVISOR-managed @playwright/mcp HTTP server
-	// (cli-agent-py launches `playwright-mcp --port 3100 --caps=devtools …` as a
-	// co-process; see session_supervisor.py). The supervisor — NOT the agent —
-	// drives browser_start_video/browser_stop_video around the turn (claude won't
-	// reliably call them), so the .webm is recorded + flushed without depending on
-	// the agent. v0.0.76's `contextOptions.recordVideo` (the old `--config` path)
-	// is deleted-on-close (issue #1084) → do not use it. Stdio is replaced by
-	// streamable-http so cli-agent-py can be a 2nd client on the same server.
+	// The critic connects to the in-pod RECORDING PROXY (playwright_mcp_proxy,
+	// mounted on the cli-agent-py app at :8002 PROXY_PATH), which transparently
+	// forwards to the supervisor-managed @playwright/mcp on :3100 (launched
+	// `playwright-mcp --port 3100 --caps=devtools …`; see session_supervisor.py).
+	// CRITICAL: the agent MUST go THROUGH the proxy (NOT straight to :3100) — the
+	// proxy captures the agent's MCP session id and injects browser_start_video on
+	// the first browser_navigate, and sync_browser_video_activity later flushes
+	// with browser_stop_video on that SAME session id (read_agent_session_id) and
+	// globs the .webm from /sandbox/work. Pointing the agent directly at :3100
+	// bypasses the proxy → no session id captured → no recording → 0 .webm.
+	// v0.0.76's `contextOptions.recordVideo` (the old `--config` path) is
+	// deleted-on-close (issue #1084) → do not use it. Stdio is replaced by
+	// streamable-http so the proxy + cli-agent-py can be clients on the server.
 	const PLAYWRIGHT_CRITIC_MCP = [
 		{
 			server_name: "playwright",
 			displayName: "Playwright",
 			transport: "streamable_http",
-			url: "http://127.0.0.1:3100/mcp",
+			url: "http://127.0.0.1:8002/internal/pw-proxy/mcp",
 		},
 	];
 	// Dedicated claude-code-cli CRITIC agent with the official Playwright MCP
