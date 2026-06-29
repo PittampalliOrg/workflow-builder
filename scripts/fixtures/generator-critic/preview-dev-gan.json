@@ -91,7 +91,7 @@
           "executionId": "${ .runtime.executionId }",
           "service": "${ .trigger.service // \"workflow-builder\" }",
           "mode": "preview-native",
-          "adopt": false,
+          "adopt": true,
           "timeoutSeconds": 86400,
           "waitReadySeconds": 240
         },
