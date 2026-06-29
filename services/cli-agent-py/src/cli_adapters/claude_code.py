@@ -22,9 +22,14 @@ Seeds per-session artifacts and builds the pane argv/env for the real
       CLAUDE_CODE_ENABLE_TELEMETRY pass-through + wfb.session.id resource
       attribute; NEVER ANTHROPIC_API_KEY / CLAUDE_API_KEY.
 
-Static hook wiring lives in the image's /etc/claude-code/managed-settings.json
-(see Dockerfile.sandbox) — nothing per-session is needed there v1, so no
-per-session settings.json is written (per-session knobs all travel via argv).
+Hook wiring is written PER-SESSION at seed time into
+``$CLAUDE_CONFIG_DIR/settings.json`` — NOT baked into the image (the image's
+managed-settings.json carries env only). The mirroring events (SessionStart,
+PreToolUse, Stop, …) are always registered; the BLOCKING events
+(PermissionRequest/PermissionDenied) are registered ONLY for INTERACTIVE
+sessions. A one-shot workflow run (``autoTerminateAfterEndTurn``) has no human to
+approve a prompt, so it omits them and relies on ``--dangerously-skip-permissions``
+(like codex/agy) — a baked PermissionRequest→ask hook otherwise strands it.
 """
 
 from __future__ import annotations
@@ -45,6 +50,34 @@ DEFAULT_MODEL = os.environ.get("CLI_AGENT_PY_DEFAULT_MODEL", "claude-opus-4-8")
 # headless bypassPermissions default.
 DEFAULT_PERMISSION_MODE = os.environ.get("CLI_AGENT_PY_PERMISSION_MODE", "default")
 CLI_BIN = os.environ.get("CLI_AGENT_CLI_PATH", "claude")
+
+# Runtime hook wiring (written per-session into $CLAUDE_CONFIG_DIR/settings.json;
+# NOT baked into the image). Every claude hook event POSTs to the in-pod hooks
+# receiver, which mirrors it to the BFF session-event stream.
+HOOK_RELAY_URL = os.environ.get(
+    "CLI_AGENT_HOOK_RELAY_URL", "http://127.0.0.1:8002/internal/hooks/claude"
+)
+# Mirroring/lifecycle events — always registered (event streaming + transcript
+# tailer + turn-completion edge). Matcher-LESS on purpose: a "matcher":"*" entry
+# silently suppressed SessionStart on the live ryzen E2E (its matcher domain is
+# startup|resume|clear|compact, not tool names).
+_MIRROR_HOOK_EVENTS = (
+    "SessionStart",
+    "UserPromptSubmit",
+    "Stop",
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "SessionEnd",
+    "Notification",
+    "PreCompact",
+    "PostCompact",
+)
+# BLOCKING events — surface a permission prompt to the live user + mark the
+# session blocked so a human approves in the web terminal. Registered ONLY for
+# INTERACTIVE sessions; a one-shot workflow run omits them (no human → it would
+# strand) and relies on --dangerously-skip-permissions.
+_BLOCKING_HOOK_EVENTS = ("PermissionRequest", "PermissionDenied")
 
 # Modes the Claude Code CLI's --permission-mode flag accepts.
 _CLI_PERMISSION_MODES = {"default", "acceptEdits", "plan", "bypassPermissions"}
@@ -179,7 +212,52 @@ class ClaudeCodeAdapter(CliAdapter):
         if linked:
             result.paths["transcriptStore"] = linked
 
+        # (j) Runtime hook wiring (replaces the baked managed-settings.json hooks):
+        # write the relay hooks into settings.json, gating the blocking permission
+        # hooks on session type so one-shot workflow runs don't strand.
+        self._seed_runtime_hooks(session_input, result)
+
         return result
+
+    def _seed_runtime_hooks(
+        self, session_input: Mapping[str, Any], result: SeedResult
+    ) -> None:
+        """Write claude hook wiring per-session into $CLAUDE_CONFIG_DIR/settings.json.
+        Mirroring events always; PermissionRequest/PermissionDenied only for
+        INTERACTIVE sessions (a one-shot `autoTerminateAfterEndTurn` workflow run
+        has no human to approve, so it relies on --dangerously-skip-permissions)."""
+        import json
+
+        one_shot = bool(session_input.get("autoTerminateAfterEndTurn"))
+        entry = [{"hooks": [{"type": "http", "url": HOOK_RELAY_URL}]}]
+        events = list(_MIRROR_HOOK_EVENTS)
+        if not one_shot:
+            events += list(_BLOCKING_HOOK_EVENTS)
+        hooks = {ev: entry for ev in events}
+
+        config_dir = _claude_config_dir()
+        config_dir.mkdir(parents=True, exist_ok=True)
+        settings_path = config_dir / "settings.json"
+        existing: dict[str, Any] = {}
+        if settings_path.exists():
+            try:
+                loaded = json.loads(settings_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    existing = loaded
+            except Exception:  # noqa: BLE001 — never fail seeding on a bad file
+                existing = {}
+        existing["hooks"] = hooks
+        # Pre-accept the bypass-mode dialog so --dangerously-skip-permissions boots
+        # straight into work (claude would otherwise write this itself on first run).
+        existing.setdefault("skipDangerousModePermissionPrompt", True)
+        settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+        result.paths["settingsPath"] = str(settings_path)
+        logger.info(
+            "[claude] runtime hooks written: %d events (one_shot=%s, blocking=%s)",
+            len(events),
+            one_shot,
+            not one_shot,
+        )
 
     def _seed_onboarding_state(self, result: SeedResult) -> None:
         config_dir = _claude_config_dir()
