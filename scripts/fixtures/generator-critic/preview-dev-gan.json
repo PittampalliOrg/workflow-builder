@@ -1,0 +1,182 @@
+{
+  "document": {
+    "dsl": "1.0.0",
+    "namespace": "demos",
+    "name": "preview-dev-gan",
+    "version": "0.1.0",
+    "title": "In-preview GAN dev loop: edit the live BFF (HMR) ↔ Playwright visual critic",
+    "summary": "Runs INSIDE a Tier-2 vcluster preview. enter_dev_mode replaces the preview's prod BFF pod with a hot-reload dev-server Sandbox that adopts the preview's Service (so the preview URL serves live edits — P1 'preview-native' mode). Then a generator↔critic GAN loop: the generator edits /sandbox/work/repo/src and runs ./sync.sh to push changes to the live preview (vite HMR, ~seconds), and an independent Playwright-MCP visual critic drives a real browser against the in-cluster preview URL, screenshots the rendered app, and grades it — looping until accepted or the iteration cap. Generator + critic share the per-execution JuiceFS /sandbox/work (interactive-cli family). See docs/agentic-deploy-inspect-loop.md + docs/generator-critic-multi-agent.md.",
+    "x-workflow-builder": {
+      "resumable": true,
+      "input": {
+        "schema": {
+          "format": "json",
+          "document": {
+            "type": "object",
+            "required": ["intent"],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "title": "Change request",
+                "default": "Improve the visual design and clarity of the workflow-builder home/dashboard page: a clear visual hierarchy, a cohesive color + spacing system, and an obvious primary call-to-action. Keep it functional and responsive; do not break navigation.",
+                "description": "What the generator changes in the live BFF UI (edits land under src/ and hot-reload onto the preview)."
+              },
+              "service": {
+                "type": "string",
+                "title": "Service",
+                "default": "workflow-builder",
+                "description": "The preview service whose pod is replaced with a dev server (P1 preview-native; workflow-builder = the BFF)."
+              },
+              "generatorAgent": {
+                "type": "string",
+                "title": "Generator agent",
+                "default": "cli-dev-agent",
+                "description": "Edits repo/src + runs ./sync.sh. interactive-cli family (shares /sandbox/work)."
+              },
+              "criticAgent": {
+                "type": "string",
+                "title": "Critic agent",
+                "default": "cli-playwright-critic-agent",
+                "description": "Drives Playwright MCP against the live preview URL + grades the UI. interactive-cli family (in-pod Chromium)."
+              },
+              "repoUrl": {
+                "type": "string",
+                "title": "Repo (owner/repo)",
+                "default": "PittampalliOrg/workflow-builder"
+              },
+              "repoRef": {
+                "type": "string",
+                "title": "Branch",
+                "default": "main"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "input": {
+    "schema": {
+      "format": "json",
+      "document": {
+        "type": "object",
+        "required": ["intent"],
+        "properties": {
+          "intent": {
+            "type": "string",
+            "title": "Change request",
+            "default": "Improve the visual design and clarity of the workflow-builder home/dashboard page: a clear visual hierarchy, a cohesive color + spacing system, and an obvious primary call-to-action. Keep it functional and responsive; do not break navigation."
+          },
+          "service": { "type": "string", "title": "Service", "default": "workflow-builder" },
+          "generatorAgent": { "type": "string", "title": "Generator agent", "default": "cli-dev-agent" },
+          "criticAgent": { "type": "string", "title": "Critic agent", "default": "cli-playwright-critic-agent" },
+          "repoUrl": { "type": "string", "title": "Repo (owner/repo)", "default": "PittampalliOrg/workflow-builder" },
+          "repoRef": { "type": "string", "title": "Branch", "default": "main" }
+        }
+      }
+    }
+  },
+  "output": { "as": "${ .summary }" },
+  "do": [
+    {
+      "enter_dev_mode": {
+        "call": "dev/preview",
+        "with": {
+          "executionId": "${ .runtime.executionId }",
+          "service": "${ .trigger.service // \"workflow-builder\" }",
+          "mode": "preview-native",
+          "timeoutSeconds": 86400,
+          "waitReadySeconds": 240
+        },
+        "artifacts": [
+          {
+            "from": "${ { service: (.data.service // \"\"), url: (.data.url // \"\"), browseUrl: (.data.browseUrl // \"\"), syncUrl: (.data.syncUrl // \"\"), ready: (.data.ready // false) } }",
+            "kind": "json",
+            "slot": "secondary",
+            "title": "Preview-native dev mode"
+          }
+        ]
+      }
+    },
+    {
+      "clone_repo": {
+        "call": "workspace/command",
+        "with": {
+          "cliWorkspace": true,
+          "command": "${ \"export REPOURL=\" + ((.trigger.repoUrl // \"PittampalliOrg/workflow-builder\") | @sh) + \"; export REF=\" + ((.trigger.repoRef // \"main\") | @sh) + \"; export SUBDIR=\" + ((.enter_dev_mode.repoSubdir // \".\") | @sh) + \"; export PATHS=\" + (((.enter_dev_mode.syncPaths // [\"src\"]) | join(\" \")) | @sh) + \"; export SYNCURL=\" + ((.enter_dev_mode.syncUrl // \"\") | @sh) + \";\" + \"\\nset -e\\ncd /sandbox/work\\nrm -rf repo\\ngit clone --depth 1 --single-branch --branch \\\"$REF\\\" https://x-access-token:${GITHUB_TOKEN}@github.com/$REPOURL.git repo\\nprintf 'SUBDIR=%s\\\\nPATHS=\\\"%s\\\"\\\\nSYNCURL=%s\\\\n' \\\"$SUBDIR\\\" \\\"$PATHS\\\" \\\"$SYNCURL\\\" > /sandbox/work/.syncenv\\ncat > /sandbox/work/sync.sh <<'SH'\\n#!/bin/sh\\nset -e\\n. /sandbox/work/.syncenv\\ncd /sandbox/work/repo/$SUBDIR\\nSYNCPATHS=\\\"\\\"; for p in $PATHS; do [ -e \\\"$p\\\" ] && SYNCPATHS=\\\"$SYNCPATHS $p\\\"; done\\ntar -czf /tmp/sync.tgz $SYNCPATHS\\ncurl -sS -X POST --data-binary @/tmp/sync.tgz -H 'content-type: application/gzip' \\\"$SYNCURL\\\"\\necho\\necho SYNCED\\nSH\\nchmod +x /sandbox/work/sync.sh\\necho CLONED $(git -C repo rev-parse --short HEAD); echo '--- .syncenv ---'; cat /sandbox/work/.syncenv\" }",
+          "cwd": "/sandbox/work",
+          "timeoutMs": 600000,
+          "allowFailure": false
+        }
+      }
+    },
+    {
+      "refine": {
+        "for": { "each": "i", "in": [0, 1, 2, 3, 4], "at": "idx" },
+        "while": "${ (.loop.accepted // false) != true }",
+        "do": [
+          {
+            "generate": {
+              "call": "durable/run",
+              "with": {
+                "cwd": "/sandbox/work",
+                "mode": "execute_direct",
+                "workspaceRef": "${ .runtime.workspaceExecutionId }",
+                "agentRef": { "slug": "${ .trigger.generatorAgent // \"cli-dev-agent\" }" },
+                "agentConfig": {
+                  "name": "Generator (live BFF dev)",
+                  "instructions": "You are the GENERATOR in a generator-critic loop editing a LIVE, hot-reloading microservice UI. The repo is cloned at /sandbox/work/repo. EDIT FILES ONLY UNDER /sandbox/work/repo/src (only paths under there are synced). After each batch of edits, run /sandbox/work/sync.sh to push your changes to the live preview — it hot-reloads (vite HMR) in a few seconds. Do NOT run npm install or a build (the preview already runs the dev server). VERIFY your change took by curling the IN-CLUSTER preview URL given in the prompt (NOT the public/browse URL — that is for the human + the critic's browser). An independent visual Critic reviews the RENDERED page each round and returns specific feedback; address it, make the most impactful improvement, run ./sync.sh, then end your turn with a one-line summary. Keep the app functional — do not break routing or the build."
+                },
+                "body": {
+                  "prompt": "${ \"Change request:\\n\" + (.trigger.intent // \"improve the UI\") + \"\\n\\nThe repo is cloned at /sandbox/work/repo; edit ONLY under repo/\" + (.enter_dev_mode.repoSubdir // \".\") + \"/src. After editing, run /sandbox/work/sync.sh to hot-reload the live preview. Verify by curling the IN-CLUSTER preview URL \" + (.enter_dev_mode.url // \"\") + \" (do NOT curl the public URL \" + (.enter_dev_mode.browseUrl // \"\") + \").\\n\\nYour previous attempt summary:\\n\" + (.loop.last.generate.content // \"(this is your first attempt)\") + \"\\n\\nCritic feedback to address now:\\n\" + (if .loop.last.critique then (.loop.last.critique.feedback // (.loop.last.critique | tojson)) else \"(none yet — make your first improvement)\" end) + \"\\n\\nImplement the change under repo/src, run ./sync.sh, confirm it is live, then end with a brief summary.\" }",
+                  "overrides": { "cwd": "/sandbox/work", "maxTurns": 30, "timeoutMinutes": 25 }
+                }
+              }
+            }
+          },
+          {
+            "critique": {
+              "call": "durable/run",
+              "with": {
+                "cwd": "/sandbox/work",
+                "mode": "execute_direct",
+                "workspaceRef": "${ .runtime.workspaceExecutionId }",
+                "agentRef": { "slug": "${ .trigger.criticAgent // \"cli-playwright-critic-agent\" }" },
+                "agentConfig": {
+                  "name": "Visual critic (Playwright)",
+                  "instructions": "You are an exacting, INDEPENDENT visual design critic with strong taste. You do NOT edit the code. Use your Playwright MCP browser tools to OPEN the in-cluster preview URL given in the prompt, take a screenshot, and inspect the RENDERED page (navigate key views, resize to a mobile width if useful). Judge the change against the stated intent on: visual hierarchy & clarity, cohesion (type scale, spacing rhythm, color harmony, AA contrast), distinctiveness (not a generic/AI-default look), and functionality (the page still works, nav intact, no obvious layout breakage at mobile + desktop). CALIBRATION: a PASS means the intent is genuinely well-realized and the page is crafted — not merely 'fine'. DEFAULT TO NOT satisfied unless it is clearly strong; cite concrete, visible specifics. You MUST end your turn with ONLY a single strict JSON object, no prose, no fences: {\"meets_criteria\": boolean, \"score\": number 0-10, \"feedback\": string}. `feedback` is the prioritized, concrete guidance the generator will act on next round."
+                },
+                "body": {
+                  "prompt": "${ \"Review the LIVE preview against this change request using your Playwright browser tools.\\n\\nChange request:\\n\" + (.trigger.intent // \"improve the UI\") + \"\\n\\nOpen the in-cluster preview URL: \" + (.enter_dev_mode.url // \"\") + \" (navigate, screenshot, check mobile + desktop). Then return ONLY the strict JSON verdict {meets_criteria, score, feedback} from your instructions. Be demanding: meets_criteria true ONLY if the intent is clearly well-realized AND the page still works.\" }",
+                  "overrides": { "cwd": "/sandbox/work", "maxTurns": 18, "timeoutMinutes": 25 }
+                }
+              },
+              "parseJson": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "summary": {
+        "set": {
+          "service": "${ .enter_dev_mode.service // .trigger.service // \"workflow-builder\" }",
+          "browseUrl": "${ .enter_dev_mode.browseUrl // \"\" }",
+          "accepted": "${ .loop.accepted // false }",
+          "iterations": "${ .loop.iterations // 0 }",
+          "finalSummary": "${ .loop.last.generate.content // \"\" }",
+          "verdict": "${ .loop.last.critique // {} }"
+        },
+        "artifacts": [
+          {
+            "from": "${ .data }",
+            "kind": "json",
+            "slot": "primary",
+            "title": "In-preview GAN result",
+            "description": "Accepted flag, iteration count, final generator summary, and the critic's last verdict."
+          }
+        ]
+      }
+    }
+  ]
+}

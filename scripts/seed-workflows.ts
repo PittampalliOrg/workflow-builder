@@ -4645,6 +4645,11 @@ async function seedGeneratorCriticShowcases(params: {
 		"workflow-builder-self-edit-livesync.json",
 		// P3: generalized per-service dev preview + interactive coding-agent handoff.
 		"microservice-dev-session.json",
+		// In-preview GAN dev loop: enter preview-native dev mode (dev pod replaces the
+		// prod BFF, serves HMR) → clone → generator edits+./sync.sh ↔ Playwright visual
+		// critic inspects the LIVE preview URL, looping until accepted. Runs INSIDE a
+		// Tier-2 preview. docs/agentic-deploy-inspect-loop.md.
+		"preview-dev-gan.json",
 	]) {
 		const full = path.join(dir, file);
 		if (!fs.existsSync(full)) {
