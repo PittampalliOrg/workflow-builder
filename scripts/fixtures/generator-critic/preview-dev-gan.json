@@ -4,8 +4,8 @@
     "namespace": "demos",
     "name": "preview-dev-gan",
     "version": "0.1.0",
-    "title": "In-preview GAN dev loop: edit the live BFF (HMR) ↔ Playwright visual critic",
-    "summary": "Runs INSIDE a Tier-2 vcluster preview. enter_dev_mode replaces the preview's prod BFF pod with a hot-reload dev-server Sandbox that adopts the preview's Service (so the preview URL serves live edits — P1 'preview-native' mode). Then a generator↔critic GAN loop: the generator edits /sandbox/work/repo/src and runs ./sync.sh to push changes to the live preview (vite HMR, ~seconds), and an independent Playwright-MCP visual critic drives a real browser against the in-cluster preview URL, screenshots the rendered app, and grades it — looping until accepted or the iteration cap. Generator + critic share the per-execution JuiceFS /sandbox/work (interactive-cli family). See docs/agentic-deploy-inspect-loop.md + docs/generator-critic-multi-agent.md.",
+    "title": "In-preview GAN dev loop: edit the live BFF (HMR) \u2194 Playwright visual critic",
+    "summary": "Runs INSIDE a Tier-2 vcluster preview. enter_dev_mode replaces the preview's prod BFF pod with a hot-reload dev-server Sandbox that adopts the preview's Service (so the preview URL serves live edits \u2014 P1 'preview-native' mode). Then a generator\u2194critic GAN loop: the generator edits /sandbox/work/repo/src and runs ./sync.sh to push changes to the live preview (vite HMR, ~seconds), and an independent Playwright-MCP visual critic drives a real browser against the in-cluster preview URL, screenshots the rendered app, and grades it \u2014 looping until accepted or the iteration cap. Generator + critic share the per-execution JuiceFS /sandbox/work (interactive-cli family). See docs/agentic-deploy-inspect-loop.md + docs/generator-critic-multi-agent.md.",
     "x-workflow-builder": {
       "resumable": true,
       "input": {
@@ -13,12 +13,14 @@
           "format": "json",
           "document": {
             "type": "object",
-            "required": ["intent"],
+            "required": [
+              "intent"
+            ],
             "properties": {
               "intent": {
                 "type": "string",
                 "title": "Change request",
-                "default": "Improve the visual design and clarity of the workflow-builder home/dashboard page: a clear visual hierarchy, a cohesive color + spacing system, and an obvious primary call-to-action. Keep it functional and responsive; do not break navigation.",
+                "default": "Redesign the PUBLIC sign-in page \u2014 the page served at / for a logged-out visitor (its Svelte component lives under src/routes, e.g. the login/(auth) route, plus src/app.css). Give it a distinctive, polished, cohesive look: strong visual hierarchy for the product name, a clearly prominent primary 'Sign in' action, a deliberate color + spacing system, and one memorable accent. Do NOT touch authenticated/dashboard routes. Keep the sign-in form working.",
                 "description": "What the generator changes in the live BFF UI (edits land under src/ and hot-reload onto the preview)."
               },
               "service": {
@@ -60,23 +62,47 @@
       "format": "json",
       "document": {
         "type": "object",
-        "required": ["intent"],
+        "required": [
+          "intent"
+        ],
         "properties": {
           "intent": {
             "type": "string",
             "title": "Change request",
-            "default": "Improve the visual design and clarity of the workflow-builder home/dashboard page: a clear visual hierarchy, a cohesive color + spacing system, and an obvious primary call-to-action. Keep it functional and responsive; do not break navigation."
+            "default": "Redesign the PUBLIC sign-in page \u2014 the page served at / for a logged-out visitor (its Svelte component lives under src/routes, e.g. the login/(auth) route, plus src/app.css). Give it a distinctive, polished, cohesive look: strong visual hierarchy for the product name, a clearly prominent primary 'Sign in' action, a deliberate color + spacing system, and one memorable accent. Do NOT touch authenticated/dashboard routes. Keep the sign-in form working."
           },
-          "service": { "type": "string", "title": "Service", "default": "workflow-builder" },
-          "generatorAgent": { "type": "string", "title": "Generator agent", "default": "cli-dev-agent" },
-          "criticAgent": { "type": "string", "title": "Critic agent", "default": "cli-playwright-critic-agent" },
-          "repoUrl": { "type": "string", "title": "Repo (owner/repo)", "default": "PittampalliOrg/workflow-builder" },
-          "repoRef": { "type": "string", "title": "Branch", "default": "main" }
+          "service": {
+            "type": "string",
+            "title": "Service",
+            "default": "workflow-builder"
+          },
+          "generatorAgent": {
+            "type": "string",
+            "title": "Generator agent",
+            "default": "cli-dev-agent"
+          },
+          "criticAgent": {
+            "type": "string",
+            "title": "Critic agent",
+            "default": "cli-playwright-critic-agent"
+          },
+          "repoUrl": {
+            "type": "string",
+            "title": "Repo (owner/repo)",
+            "default": "PittampalliOrg/workflow-builder"
+          },
+          "repoRef": {
+            "type": "string",
+            "title": "Branch",
+            "default": "main"
+          }
         }
       }
     }
   },
-  "output": { "as": "${ .summary }" },
+  "output": {
+    "as": "${ .summary }"
+  },
   "do": [
     {
       "enter_dev_mode": {
@@ -112,8 +138,30 @@
       }
     },
     {
+      "prewarm": {
+        "call": "workspace/command",
+        "with": {
+          "cliWorkspace": true,
+          "command": "${ \"URL=\" + ((.enter_dev_mode.url // \"\") | @sh) + \"; echo prewarming $URL ...; for i in 1 2 3; do code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 240 \\\"$URL/\\\" 2>/dev/null); echo attempt $i -> $code; [ \\\"$code\\\" != 000 ] && break; sleep 3; done; echo PREWARMED\" }",
+          "cwd": "/sandbox/work",
+          "timeoutMs": 900000,
+          "allowFailure": true
+        }
+      }
+    },
+    {
       "refine": {
-        "for": { "each": "i", "in": [0, 1, 2, 3, 4], "at": "idx" },
+        "for": {
+          "each": "i",
+          "in": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "at": "idx"
+        },
         "while": "${ (.loop.accepted // false) != true }",
         "do": [
           {
@@ -123,14 +171,20 @@
                 "cwd": "/sandbox/work",
                 "mode": "execute_direct",
                 "workspaceRef": "${ .runtime.workspaceExecutionId }",
-                "agentRef": { "slug": "${ .trigger.generatorAgent // \"cli-dev-agent\" }" },
+                "agentRef": {
+                  "slug": "${ .trigger.generatorAgent // \"cli-dev-agent\" }"
+                },
                 "agentConfig": {
                   "name": "Generator (live BFF dev)",
-                  "instructions": "You are the GENERATOR in a generator-critic loop editing a LIVE, hot-reloading microservice UI. The repo is cloned at /sandbox/work/repo. EDIT FILES ONLY UNDER /sandbox/work/repo/src (only paths under there are synced). After each batch of edits, run /sandbox/work/sync.sh to push your changes to the live preview — it hot-reloads (vite HMR) in a few seconds. Do NOT run npm install or a build (the preview already runs the dev server). VERIFY your change took by curling the IN-CLUSTER preview URL given in the prompt (NOT the public/browse URL — that is for the human + the critic's browser). An independent visual Critic reviews the RENDERED page each round and returns specific feedback; address it, make the most impactful improvement, run ./sync.sh, then end your turn with a one-line summary. Keep the app functional — do not break routing or the build."
+                  "instructions": "You are the GENERATOR in a generator-critic loop refining a LIVE, hot-reloading microservice UI. The repo is cloned at /sandbox/work/repo. The TARGET is the PUBLIC sign-in page \u2014 the page a logged-out visitor sees at / (find its Svelte route under /sandbox/work/repo/src/routes, e.g. a login/(auth)/+page.svelte, plus shared styles in src/app.css). EDIT ONLY files under /sandbox/work/repo/src (only paths under there are synced). Do NOT touch authenticated/dashboard routes and do NOT break the sign-in form. After each batch of edits, run /sandbox/work/sync.sh to push to the live preview (vite HMR, a few seconds). Then VERIFY it took by curling the IN-CLUSTER preview URL from the prompt with a GENEROUS timeout (the dev server compiles SSR on first load \u2014 use `curl -s --max-time 240 <url>/`); confirm your change is in the returned HTML. An independent visual Critic reviews the RENDERED sign-in page each round and returns specific feedback \u2014 address it, make the most impactful improvement, run ./sync.sh, then end with a one-line summary."
                 },
                 "body": {
-                  "prompt": "${ \"Change request:\\n\" + (.trigger.intent // \"improve the UI\") + \"\\n\\nThe repo is cloned at /sandbox/work/repo; edit ONLY under repo/\" + (.enter_dev_mode.repoSubdir // \".\") + \"/src. After editing, run /sandbox/work/sync.sh to hot-reload the live preview. Verify by curling the IN-CLUSTER preview URL \" + (.enter_dev_mode.url // \"\") + \" (do NOT curl the public URL \" + (.enter_dev_mode.browseUrl // \"\") + \").\\n\\nYour previous attempt summary:\\n\" + (.loop.last.generate.content // \"(this is your first attempt)\") + \"\\n\\nCritic feedback to address now:\\n\" + (if .loop.last.critique then (.loop.last.critique.feedback // (.loop.last.critique | tojson)) else \"(none yet — make your first improvement)\" end) + \"\\n\\nImplement the change under repo/src, run ./sync.sh, confirm it is live, then end with a brief summary.\" }",
-                  "overrides": { "cwd": "/sandbox/work", "maxTurns": 30, "timeoutMinutes": 25 }
+                  "prompt": "${ \"Change request:\\n\" + (.trigger.intent // \"redesign the sign-in page\") + \"\\n\\nThe repo is cloned at /sandbox/work/repo; edit ONLY the PUBLIC sign-in page + styles under repo/\" + (.enter_dev_mode.repoSubdir // \".\") + \"/src (the page served at / when logged out). After editing run /sandbox/work/sync.sh, then verify with `curl -s --max-time 240 \" + (.enter_dev_mode.url // \"\") + \"/` (the first render is slow \u2014 be patient). Do NOT curl the public URL \" + (.enter_dev_mode.browseUrl // \"\") + \".\\n\\nYour previous attempt summary:\\n\" + (.loop.last.generate.content // \"(this is your first attempt)\") + \"\\n\\nCritic feedback to address now:\\n\" + (if .loop.last.critique then (.loop.last.critique.feedback // (.loop.last.critique | tojson)) else \"(none yet \u2014 make your first improvement)\" end) + \"\\n\\nImplement the change under repo/src, run ./sync.sh, confirm it is live, then end with a brief summary.\" }",
+                  "overrides": {
+                    "cwd": "/sandbox/work",
+                    "maxTurns": 30,
+                    "timeoutMinutes": 25
+                  }
                 }
               }
             }
@@ -142,14 +196,20 @@
                 "cwd": "/sandbox/work",
                 "mode": "execute_direct",
                 "workspaceRef": "${ .runtime.workspaceExecutionId }",
-                "agentRef": { "slug": "${ .trigger.criticAgent // \"cli-playwright-critic-agent\" }" },
+                "agentRef": {
+                  "slug": "${ .trigger.criticAgent // \"cli-playwright-critic-agent\" }"
+                },
                 "agentConfig": {
                   "name": "Visual critic (Playwright)",
-                  "instructions": "You are an exacting, INDEPENDENT visual design critic with strong taste. You do NOT edit the code. Use your Playwright MCP browser tools to OPEN the in-cluster preview URL given in the prompt, take a screenshot, and inspect the RENDERED page (navigate key views, resize to a mobile width if useful). Judge the change against the stated intent on: visual hierarchy & clarity, cohesion (type scale, spacing rhythm, color harmony, AA contrast), distinctiveness (not a generic/AI-default look), and functionality (the page still works, nav intact, no obvious layout breakage at mobile + desktop). CALIBRATION: a PASS means the intent is genuinely well-realized and the page is crafted — not merely 'fine'. DEFAULT TO NOT satisfied unless it is clearly strong; cite concrete, visible specifics. You MUST end your turn with ONLY a single strict JSON object, no prose, no fences: {\"meets_criteria\": boolean, \"score\": number 0-10, \"feedback\": string}. `feedback` is the prioritized, concrete guidance the generator will act on next round."
+                  "instructions": "You are an exacting, INDEPENDENT visual design critic with strong taste. You do NOT edit code. Using your Playwright MCP browser tools, OPEN the in-cluster preview URL from the prompt \u2014 this serves the PUBLIC sign-in page. IMPORTANT: it is a DEV server that compiles SSR on first load, so the FIRST navigation can take 1-3 MINUTES \u2014 set a generous navigation timeout (e.g. 180000 ms) and if it times out, RETRY the navigation once or twice before giving up; wait until the page has actually rendered. Then ALWAYS take a screenshot (browser_take_screenshot) of the rendered page (this also records the review video), and inspect it: judge the sign-in page against the stated intent on visual hierarchy & clarity, cohesion (type scale, spacing rhythm, color harmony, AA contrast), distinctiveness (not a generic/AI-default look), and that the sign-in form is intact. CALIBRATION: a PASS means the intent is genuinely well-realized and the page is crafted, not merely 'fine'; DEFAULT TO NOT satisfied unless clearly strong; cite concrete visible specifics. If you could not get the page to render at all after retries, return meets_criteria:false with feedback saying the preview did not load. You MUST end your turn with ONLY a single strict JSON object, no prose, no fences: {\\\"meets_criteria\\\": boolean, \\\"score\\\": number 0-10, \\\"feedback\\\": string}."
                 },
                 "body": {
-                  "prompt": "${ \"Review the LIVE preview against this change request using your Playwright browser tools.\\n\\nChange request:\\n\" + (.trigger.intent // \"improve the UI\") + \"\\n\\nOpen the in-cluster preview URL: \" + (.enter_dev_mode.url // \"\") + \" (navigate, screenshot, check mobile + desktop). Then return ONLY the strict JSON verdict {meets_criteria, score, feedback} from your instructions. Be demanding: meets_criteria true ONLY if the intent is clearly well-realized AND the page still works.\" }",
-                  "overrides": { "cwd": "/sandbox/work", "maxTurns": 18, "timeoutMinutes": 25 }
+                  "prompt": "${ \"Review the LIVE sign-in page against this change request using your Playwright browser tools.\\n\\nChange request:\\n\" + (.trigger.intent // \"redesign the sign-in page\") + \"\\n\\nOpen the in-cluster preview URL: \" + (.enter_dev_mode.url // \"\") + \" (it serves the sign-in page at /). The FIRST load is slow (dev SSR compile) \u2014 use a 180000 ms navigation timeout and retry once or twice if needed; wait for it to render, then ALWAYS browser_take_screenshot before judging. Return ONLY the strict JSON verdict {meets_criteria, score, feedback}. Be demanding: meets_criteria true ONLY if the intent is clearly well-realized AND the form still works.\" }",
+                  "overrides": {
+                    "cwd": "/sandbox/work",
+                    "maxTurns": 24,
+                    "timeoutMinutes": 25
+                  }
                 }
               },
               "parseJson": true
