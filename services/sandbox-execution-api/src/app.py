@@ -394,6 +394,13 @@ class DevPreviewRequest(BaseModel):
     # count on teardown. The prior replica count is stashed in a Deployment
     # annotation so teardown survives an SEA restart.
     adoptDeployment: str | None = None
+    # When True (preview-native BFF adopt over HTTPS), co-locate an nginx
+    # tls-terminator sidecar (https-tls:8443 → 127.0.0.1:<port>) using the wildcard
+    # cert, so the adopted dev pod serves HTTPS at the preview's tailnet URL exactly
+    # like the prod BFF it replaces. The prod tls-terminator sidecar is NOT otherwise
+    # copied into the dev Sandbox, so without this the prod LB (targetPort https-tls)
+    # finds no endpoint → 502.
+    adoptTlsTerminator: bool = False
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:
@@ -2878,6 +2885,55 @@ def build_dev_preview_sandbox_manifest(
         pod_spec["priorityClassName"] = _safe_name(class_config.priorityClassName)
     if request.timeoutSeconds is not None:
         pod_spec["activeDeadlineSeconds"] = request.timeoutSeconds + 600
+    # Preview-native BFF adopt over HTTPS: co-locate the SAME nginx tls-terminator
+    # the prod Deployment uses (https-tls:8443 → 127.0.0.1:<port>), so the prod
+    # tailnet LB (targetPort https-tls) serves this dev pod over HTTPS with the
+    # wildcard cert — making the adopt Sandbox a faithful dev replica of the prod BFF.
+    if request.adoptTlsTerminator:
+        tls_image = os.environ.get(
+            "DEV_PREVIEW_TLS_TERMINATOR_IMAGE",
+            "docker.io/nginxinc/nginx-unprivileged:1.27-alpine",
+        )
+        tls_secret = os.environ.get("DEV_PREVIEW_TLS_SECRET", "tailnet-wildcard-tls")
+        tls_conf_cm = os.environ.get(
+            "DEV_PREVIEW_TLS_CONF_CONFIGMAP", "workflow-builder-tls-terminator"
+        )
+        pod_spec["containers"].append(
+            {
+                "name": "tls-terminator",
+                "image": tls_image,
+                "imagePullPolicy": "IfNotPresent",
+                "ports": [{"name": "https-tls", "containerPort": 8443}],
+                "volumeMounts": [
+                    {
+                        "name": "tailnet-wildcard-tls",
+                        "mountPath": "/etc/nginx/tls",
+                        "readOnly": True,
+                    },
+                    {
+                        "name": "tls-terminator-conf",
+                        "mountPath": "/etc/nginx/conf.d",
+                        "readOnly": True,
+                    },
+                ],
+                "resources": {
+                    "requests": {"cpu": "10m", "memory": "32Mi"},
+                    "limits": {"memory": "128Mi"},
+                },
+            }
+        )
+        pod_spec.setdefault("volumes", []).extend(
+            [
+                {
+                    "name": "tailnet-wildcard-tls",
+                    "secret": {"secretName": tls_secret},
+                },
+                {
+                    "name": "tls-terminator-conf",
+                    "configMap": {"name": tls_conf_cm},
+                },
+            ]
+        )
     pod_labels = {
         "app": "wfb-dev-preview",
         "dev-preview-service": service_label,
@@ -3839,6 +3895,11 @@ class VclusterPreviewRequest(BaseModel):
     # vcluster (no shared host-Postgres connection ceiling). Defaults from env so it
     # can be flipped cluster-wide without an API change. cnpg | shared
     previewDbMode: str | None = None
+    # PREVIEW_DEV_MODE=true → interactive dev preview: the dev image replaces the prod
+    # BFF in-place via the adopt:true dev-preview Sandbox; the runner forces
+    # EXPOSE_DEV_POD=false so the prod tailnet LB fronts the adopted dev pod (its
+    # tls-terminator) over HTTPS. Defaults from env so it can be flipped without an API change.
+    previewDevMode: bool | None = None
 
 
 def _vcluster_preview_job_name(name: str, action: str) -> str:
@@ -3874,6 +3935,17 @@ def _vcluster_preview_job_manifest(
         "VCLUSTER_PREVIEW_DB_MODE", "shared"
     )
     env.append({"name": "PREVIEW_DB_MODE", "value": preview_db_mode})
+    # Interactive dev preview (adopt:true dev image replaces the prod BFF): thread
+    # PREVIEW_DEV_MODE so the runner wires the prod LB to the adopted dev pod
+    # (EXPOSE_DEV_POD=false). Defaults from env for a cluster-wide flip.
+    preview_dev_mode = req.previewDevMode
+    if preview_dev_mode is None:
+        preview_dev_mode = (
+            os.environ.get("VCLUSTER_PREVIEW_DEV_MODE", "false") == "true"
+        )
+    env.append(
+        {"name": "PREVIEW_DEV_MODE", "value": "true" if preview_dev_mode else "false"}
+    )
     if enroll_mode == "agent":
         env.append(
             {
