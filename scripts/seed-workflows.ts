@@ -4655,6 +4655,12 @@ async function seedGeneratorCriticShowcases(params: {
 		// critic inspects the LIVE preview URL, looping until accepted. Runs INSIDE a
 		// Tier-2 preview. docs/agentic-deploy-inspect-loop.md.
 		"preview-dev-gan.json",
+		// Comprehensive GAN frontend redesign (Anthropic harness, V2-simplified): Planner
+		// authors a testable JSON contract + frontend-design token system → two-pass
+		// design_review → refine loop (trimmed generator edit→/__sync ↔ skeptical Playwright
+		// critic that LOGS IN, boots the live authenticated page, grades per-criterion) →
+		// per-iteration tar-overlay snapshot → promote→PR. dev-pod-as-source, per-CLI.
+		"preview-gan-redesign.json",
 	]) {
 		const full = path.join(dir, file);
 		if (!fs.existsSync(full)) {
