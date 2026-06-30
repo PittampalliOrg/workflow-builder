@@ -33,6 +33,8 @@
 
 	let { collapsed, onToggle, user = null, platformRole = 'MEMBER' }: Props = $props();
 	const ui = getContext<ReturnType<typeof createUiStore>>('ui');
+	let narrowViewport = $state(false);
+	let navCollapsed = $derived(collapsed || narrowViewport);
 
 	// Workspace state — fetched from /api/v1/workspaces on mount. Drives the
 	// workspace switcher dropdown and supplies the `slug` context the nav
@@ -89,6 +91,17 @@
 		} catch {
 			/* corrupt storage — fall back to defaults */
 		}
+	});
+
+	onMount(() => {
+		if (typeof window === 'undefined') return;
+		const query = window.matchMedia('(max-width: 700px)');
+		const update = () => {
+			narrowViewport = query.matches;
+		};
+		update();
+		query.addEventListener('change', update);
+		return () => query.removeEventListener('change', update);
 	});
 
 	// Auto-open the group containing the active route. Read `openGroups`
@@ -170,12 +183,12 @@
 </script>
 
 <aside
-	class="flex h-full flex-col border-r border-border bg-card transition-[width] duration-200 ease-linear"
-	style="width: {collapsed ? '3.5rem' : '14rem'};"
+	class="app-sidebar flex h-full flex-col border-r border-border bg-card transition-[width] duration-200 ease-linear"
+	style="width: {navCollapsed ? '3.5rem' : '14rem'};"
 >
 	<!-- Header -->
-	<div class="flex h-12 items-center border-b border-border {collapsed ? 'justify-center px-0' : 'justify-between px-3'}">
-		{#if !collapsed}
+	<div class="sidebar-header flex h-12 items-center border-b border-border {navCollapsed ? 'justify-center px-0' : 'justify-between px-3'}">
+		{#if !navCollapsed}
 			<a
 				href="/workspaces/{activeSlug}/workflows"
 				class="flex items-center gap-2 text-xs font-semibold tracking-tight text-foreground"
@@ -184,7 +197,7 @@
 			</a>
 		{/if}
 		<Button variant="ghost" size="icon" class="h-7 w-7 shrink-0" onclick={onToggle}>
-			{#if collapsed}
+			{#if navCollapsed}
 				<ChevronRight size={14} />
 			{:else}
 				<ChevronLeft size={14} />
@@ -193,8 +206,8 @@
 	</div>
 
 	<!-- Workspace switcher (CMA parity) -->
-	{#if !collapsed && activeWorkspace}
-		<div class="px-3 py-2 border-b border-border">
+	{#if !navCollapsed && activeWorkspace}
+		<div class="workspace-switcher px-3 py-2 border-b border-border">
 			<DropdownMenu.Root>
 				<DropdownMenu.Trigger>
 					{#snippet child({ props })}
@@ -254,9 +267,9 @@
 	{/if}
 
 	<!-- Navigation -->
-	<nav class="flex-1 overflow-y-auto p-2">
+	<nav class="primary-nav flex-1 overflow-y-auto p-2">
 		<!-- Dashboard: top-level link (matches CMA's dashboard shortcut above all groups) -->
-		{#if collapsed}
+		{#if navCollapsed}
 			<Tooltip.Root>
 				<Tooltip.Trigger>
 					{#snippet child({ props })}
@@ -290,9 +303,9 @@
 		{/if}
 
 		<!-- Grouped nav -->
-		<div class="flex flex-col gap-0.5">
+		<div class="mobile-nav-groups flex flex-col gap-0.5">
 			{#each navGroups as group (group.id)}
-				{#if collapsed}
+				{#if navCollapsed}
 					<!-- Collapsed: show group-level icon, flatten items into tooltips -->
 					{#each group.items as item (item.id)}
 						{@const itemHref = item.href({ slug: activeSlug, platformRole })}
@@ -371,21 +384,21 @@
 
 	<!-- Footer -->
 	<Separator />
-	<div class="p-2">
+	<div class="sidebar-footer p-2">
 		<div class="flex flex-col gap-0.5">
 			<!-- Current environment + running image metadata -->
-			<RuntimeStatusBadge {collapsed} {platformRole} />
+			<RuntimeStatusBadge collapsed={navCollapsed} {platformRole} />
 
 			<!-- App-wide deployment notifications (admin-gated; data is admin-only) -->
 			{#if platformRole === 'ADMIN'}
-				<NotificationBell {collapsed} />
+				<NotificationBell collapsed={navCollapsed} />
 			{/if}
 
 			<!-- AI Assistant toggle -->
-			<AiAssistantToggle {collapsed} />
+			<AiAssistantToggle collapsed={navCollapsed} />
 
 			<!-- Theme toggle -->
-			{#if collapsed}
+			{#if navCollapsed}
 				<Tooltip.Root>
 					<Tooltip.Trigger>
 						{#snippet child({ props })}
@@ -424,7 +437,7 @@
 					{#snippet child({ props })}
 						<button
 							{...props}
-							class="flex h-8 w-full items-center rounded-md transition-colors hover:bg-accent/50 {collapsed ? 'justify-center px-0' : 'gap-2.5 px-2.5'}"
+							class="flex h-8 w-full items-center rounded-md transition-colors hover:bg-accent/50 {navCollapsed ? 'justify-center px-0' : 'gap-2.5 px-2.5'}"
 						>
 							<Avatar class="h-5 w-5 shrink-0">
 								{#if user?.image}
@@ -432,14 +445,14 @@
 								{/if}
 								<AvatarFallback class="text-[8px] font-medium">{initials}</AvatarFallback>
 							</Avatar>
-							{#if !collapsed}
+							{#if !navCollapsed}
 								<span class="min-w-0 flex-1 truncate text-left text-xs text-foreground">{displayName}</span>
 								<ChevronsUpDown size={11} class="shrink-0 text-muted-foreground" />
 							{/if}
 						</button>
 					{/snippet}
 				</DropdownMenu.Trigger>
-				<DropdownMenu.Content side={collapsed ? 'right' : 'top'} align="start" class="w-48">
+				<DropdownMenu.Content side={navCollapsed ? 'right' : 'top'} align="start" class="w-48">
 					{#if user?.email}
 						<div class="px-2 py-1.5">
 							<p class="text-xs font-medium">{displayName}</p>
@@ -456,3 +469,52 @@
 		</div>
 	</div>
 </aside>
+
+<style>
+	@media (max-width: 700px) {
+		:global(body) {
+			padding-bottom: 3.75rem;
+		}
+
+		.app-sidebar {
+			position: fixed;
+			inset: auto 0 0 0;
+			z-index: 50;
+			width: 100% !important;
+			height: 3.75rem;
+			flex-direction: row;
+			border-top: 1px solid var(--border);
+			border-right: 0;
+			box-shadow: 0 -12px 32px rgb(0 0 0 / 0.18);
+		}
+
+		.sidebar-header,
+		.workspace-switcher,
+		.sidebar-footer {
+			display: none;
+		}
+
+		.primary-nav {
+			display: flex;
+			min-width: 0;
+			overflow-x: auto;
+			overflow-y: hidden;
+			padding: 0.55rem;
+			scrollbar-width: none;
+		}
+
+		.primary-nav::-webkit-scrollbar {
+			display: none;
+		}
+
+		.mobile-nav-groups {
+			flex: 0 0 auto;
+			flex-direction: row;
+			gap: 0.25rem;
+		}
+
+		.primary-nav a {
+			min-width: 2.35rem;
+		}
+	}
+</style>
