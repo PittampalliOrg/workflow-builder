@@ -15,14 +15,15 @@
 	} from '$lib/components/ui/card';
 	import {
 		Activity,
+		ArrowUpRight,
 		Bot,
 		ExternalLink,
 		KeyRound,
 		Layers,
 		MessageSquare,
 		MessagesSquare,
-		Plus,
-		Sparkles
+		Sparkles,
+		Zap
 	} from '@lucide/svelte';
 
 	type DashboardPayload = {
@@ -86,6 +87,54 @@
 	// slug — hooks.server.ts resolves it to the caller's active workspace.
 	const slug = DEFAULT_WORKSPACE_SLUG;
 
+	// Headline tiles for the command center — same numbers as before, each
+	// keyed to a brand chart hue so the row reads as a set of gauges.
+	let statTiles = $derived(
+		data
+			? [
+					{
+						label: 'Active sessions',
+						value: data.stats.activeSessions.toLocaleString(),
+						sub: `${data.stats.sessionsToday} started today`,
+						accent: 'var(--chart-2)',
+						icon: MessagesSquare
+					},
+					{
+						label: 'Tokens out · 7d',
+						value: data.stats.tokensOut7d.toLocaleString(),
+						sub: `${data.stats.tokensIn7d.toLocaleString()} in`,
+						accent: 'var(--chart-1)',
+						icon: Zap
+					},
+					{
+						label: 'Agents',
+						value: data.stats.totalAgents.toLocaleString(),
+						sub: `${data.stats.totalEnvironments} environments · ${data.stats.totalVaults} vaults`,
+						accent: 'var(--chart-3)',
+						icon: Bot
+					},
+					{
+						label: 'Archived · 24h',
+						value: data.stats.archivedLast24h.toLocaleString(),
+						sub: 'sessions cleaned up',
+						accent: 'var(--chart-4)',
+						icon: Layers
+					}
+				]
+			: []
+	);
+
+	// Inline "system vitals" for the Command Deck signature header.
+	let vitals = $derived(
+		data
+			? [
+					{ label: 'Active sessions', value: data.stats.activeSessions, icon: Activity },
+					{ label: 'Agents', value: data.stats.totalAgents, icon: Bot },
+					{ label: 'Environments', value: data.stats.totalEnvironments, icon: Layers }
+				]
+			: []
+	);
+
 	async function load() {
 		loading = true;
 		errorMessage = null;
@@ -129,23 +178,71 @@
 </script>
 
 <div class="h-full overflow-y-auto flex flex-col gap-6 p-6 max-w-7xl mx-auto w-full">
-	<header class="flex items-start justify-between gap-4 flex-wrap">
-		<div>
-			<h1 class="text-2xl font-semibold">{greeting}, {displayName}</h1>
-			<p class="text-sm text-muted-foreground mt-1">
-				Create, run, and monitor your Managed Agents.
-			</p>
-		</div>
-		<div class="flex items-center gap-2">
-			<Button onclick={() => goto(`/workspaces/${slug}/agents/quickstart`)}>
-				<Sparkles class="size-4" /> Get started with agents
-			</Button>
-			<Button variant="outline" onclick={() => goto('/workbench')}>
-				<MessageSquare class="size-4" /> Generate a prompt
-			</Button>
-			<Button variant="outline" onclick={() => goto(`/workspaces/${slug}/settings/keys`)}>
-				<KeyRound class="size-4" /> Get API Key
-			</Button>
+	<!-- ───────────────────────────────────────────────────────────
+	     Signature element: the "Command Deck" — a branded gradient
+	     status banner with a live operational pulse, the time-aware
+	     greeting, primary actions, and an inline system-vitals strip.
+	     ─────────────────────────────────────────────────────────── -->
+	<header
+		class="command-deck relative overflow-hidden rounded-2xl px-6 py-6 text-white shadow-[var(--elevation-hover)] sm:px-8 sm:py-7"
+	>
+		<div class="relative flex flex-col gap-6">
+			<div class="flex items-start justify-between gap-4 flex-wrap">
+				<div class="space-y-2">
+					<div class="flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-white/75">
+						<span class="relative flex size-2">
+							<span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-300 opacity-75"></span>
+							<span class="relative inline-flex size-2 rounded-full bg-emerald-300"></span>
+						</span>
+						Systems nominal · Command center
+					</div>
+					<h1 class="text-3xl font-bold tracking-tight">{greeting}, {displayName}</h1>
+					<p class="text-sm text-white/80 max-w-xl">
+						Create, run, and monitor your Managed Agents.
+					</p>
+				</div>
+				<div class="flex items-center gap-2 flex-wrap">
+					<Button
+						class="bg-white text-indigo-700 shadow-sm hover:bg-white/90"
+						onclick={() => goto(`/workspaces/${slug}/agents/quickstart`)}
+					>
+						<Sparkles class="size-4" /> Get started with agents
+					</Button>
+					<Button
+						variant="outline"
+						class="border-white/30 bg-white/10 text-white hover:bg-white/20 hover:text-white"
+						onclick={() => goto('/workbench')}
+					>
+						<MessageSquare class="size-4" /> Generate a prompt
+					</Button>
+					<Button
+						variant="outline"
+						class="border-white/30 bg-white/10 text-white hover:bg-white/20 hover:text-white"
+						onclick={() => goto(`/workspaces/${slug}/settings/keys`)}
+					>
+						<KeyRound class="size-4" /> Get API Key
+					</Button>
+				</div>
+			</div>
+
+			{#if vitals.length > 0}
+				<div class="grid grid-cols-3 gap-px overflow-hidden rounded-xl border border-white/15 bg-white/10">
+					{#each vitals as v (v.label)}
+						{@const Icon = v.icon}
+						<div class="flex items-center gap-3 bg-white/5 px-4 py-3">
+							<Icon class="size-4 text-white/70" />
+							<div class="min-w-0">
+								<div class="text-xl font-bold font-mono tabular-nums leading-none">
+									{v.value.toLocaleString()}
+								</div>
+								<div class="mt-1 text-[10px] font-mono uppercase tracking-[0.14em] text-white/65 truncate">
+									{v.label}
+								</div>
+							</div>
+						</div>
+					{/each}
+				</div>
+			{/if}
 		</div>
 	</header>
 
@@ -158,70 +255,47 @@
 	{#if loading}
 		<div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
 			{#each Array(4) as _, i (i)}
-				<Skeleton class="h-24" />
+				<Skeleton class="h-28 rounded-xl" />
 			{/each}
 		</div>
-		<Skeleton class="h-64" />
+		<Skeleton class="h-64 rounded-xl" />
 	{:else if data}
-		<!-- Stats row -->
+		<!-- Headline vitals row -->
 		<div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-			<Card>
-				<CardHeader class="pb-2">
-					<CardDescription class="text-[11px] uppercase tracking-wide">
-						Active sessions
-					</CardDescription>
-				</CardHeader>
-				<CardContent>
-					<div class="text-3xl font-semibold">{data.stats.activeSessions}</div>
-					<div class="text-xs text-muted-foreground">
-						{data.stats.sessionsToday} started today
-					</div>
-				</CardContent>
-			</Card>
-			<Card>
-				<CardHeader class="pb-2">
-					<CardDescription class="text-[11px] uppercase tracking-wide">
-						Tokens out (7d)
-					</CardDescription>
-				</CardHeader>
-				<CardContent>
-					<div class="text-3xl font-semibold">
-						{data.stats.tokensOut7d.toLocaleString()}
-					</div>
-					<div class="text-xs text-muted-foreground">
-						{data.stats.tokensIn7d.toLocaleString()} in
-					</div>
-				</CardContent>
-			</Card>
-			<Card>
-				<CardHeader class="pb-2">
-					<CardDescription class="text-[11px] uppercase tracking-wide">
-						Agents
-					</CardDescription>
-				</CardHeader>
-				<CardContent>
-					<div class="text-3xl font-semibold">{data.stats.totalAgents}</div>
-					<div class="text-xs text-muted-foreground">
-						{data.stats.totalEnvironments} environments · {data.stats.totalVaults} vaults
-					</div>
-				</CardContent>
-			</Card>
-			<Card>
-				<CardHeader class="pb-2">
-					<CardDescription class="text-[11px] uppercase tracking-wide">
-						Archived (24h)
-					</CardDescription>
-				</CardHeader>
-				<CardContent>
-					<div class="text-3xl font-semibold">{data.stats.archivedLast24h}</div>
-					<div class="text-xs text-muted-foreground">sessions cleaned up</div>
-				</CardContent>
-			</Card>
+			{#each statTiles as tile (tile.label)}
+				{@const Icon = tile.icon}
+				<Card
+					class="relative overflow-hidden shadow-[var(--elevation-card)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[var(--elevation-hover)]"
+				>
+					<div class="absolute inset-x-0 top-0 h-1" style="background: {tile.accent}"></div>
+					<CardHeader class="pb-2 flex-row items-center justify-between">
+						<CardDescription
+							class="text-[11px] font-mono uppercase tracking-[0.14em] text-muted-foreground"
+						>
+							{tile.label}
+						</CardDescription>
+						<span
+							class="flex size-8 items-center justify-center rounded-lg"
+							style="background: color-mix(in oklch, {tile.accent} 14%, transparent); color: {tile.accent}"
+						>
+							<Icon class="size-4" />
+						</span>
+					</CardHeader>
+					<CardContent>
+						<div class="text-3xl font-bold font-mono tabular-nums tracking-tight">
+							{tile.value}
+						</div>
+						<div class="text-xs text-muted-foreground mt-1">
+							{tile.sub}
+						</div>
+					</CardContent>
+				</Card>
+			{/each}
 		</div>
 
 		<!-- Quick start grid -->
 		{#if data.stats.totalAgents === 0}
-			<Card class="border-primary/40 bg-primary/5">
+			<Card class="border-primary/40 bg-accent/40 shadow-[var(--elevation-card)]">
 				<CardHeader>
 					<CardTitle>Start with an agent</CardTitle>
 					<CardDescription>
@@ -239,30 +313,36 @@
 		<!-- Recent runs (workflow executions) — added for Phase C to expose
 		     the /runs feed without making users drill into a specific workflow. -->
 		{#if recentRuns.length > 0}
-			<Card>
+			<Card class="shadow-[var(--elevation-card)]">
 				<CardHeader class="pb-2 flex-row items-center justify-between">
-					<div>
-						<CardTitle class="text-base flex items-center gap-2">
-							<Activity class="size-4" /> Recent runs
-						</CardTitle>
-						<CardDescription class="text-xs">
-							Workflow executions across this workspace.
-						</CardDescription>
+					<div class="flex items-center gap-3">
+						<span
+							class="flex size-9 items-center justify-center rounded-lg"
+							style="background: color-mix(in oklch, var(--chart-1) 14%, transparent); color: var(--chart-1)"
+						>
+							<Activity class="size-4" />
+						</span>
+						<div>
+							<CardTitle class="text-base">Recent runs</CardTitle>
+							<CardDescription class="text-xs">
+								Workflow executions across this workspace.
+							</CardDescription>
+						</div>
 					</div>
 					<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/runs`)}>
 						View all <ExternalLink class="size-3" />
 					</Button>
 				</CardHeader>
 				<CardContent>
-					<ul class="divide-y">
+					<ul class="divide-y divide-border/60">
 						{#each recentRuns as r (r.executionId)}
 							<li class="py-2">
 								<a
 									href="/workspaces/{slug}/workflows/{r.workflowId}/runs/{r.executionId}"
-									class="flex items-center justify-between gap-2 hover:bg-muted/40 rounded px-2 -mx-2"
+									class="flex items-center justify-between gap-2 hover:bg-accent/50 rounded-lg px-2 -mx-2 py-1.5 transition-colors"
 								>
 									<div class="flex items-center gap-2 min-w-0 flex-1">
-										<span class="text-sm truncate" title={r.workflowName}>
+										<span class="text-sm truncate font-medium" title={r.workflowName}>
 											{r.workflowName}
 										</span>
 										{#if r.sessionCount > 0}
@@ -283,7 +363,7 @@
 									>
 										{r.status}
 									</Badge>
-									<span class="text-[11px] text-muted-foreground whitespace-nowrap">
+									<span class="text-[11px] text-muted-foreground whitespace-nowrap font-mono tabular-nums">
 										{formatRelative(r.startedAt)}
 									</span>
 								</a>
@@ -296,15 +376,21 @@
 
 		<!-- Two-column: active sessions + recent changes -->
 		<div class="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
-			<Card>
+			<Card class="shadow-[var(--elevation-card)]">
 				<CardHeader class="pb-2 flex-row items-center justify-between">
-					<div>
-						<CardTitle class="text-base flex items-center gap-2">
-							<MessagesSquare class="size-4" /> Active sessions
-						</CardTitle>
-						<CardDescription class="text-xs">
-							Running + idle; click to open the live stream.
-						</CardDescription>
+					<div class="flex items-center gap-3">
+						<span
+							class="flex size-9 items-center justify-center rounded-lg"
+							style="background: color-mix(in oklch, var(--chart-2) 14%, transparent); color: var(--chart-2)"
+						>
+							<MessagesSquare class="size-4" />
+						</span>
+						<div>
+							<CardTitle class="text-base">Active sessions</CardTitle>
+							<CardDescription class="text-xs">
+								Running + idle; click to open the live stream.
+							</CardDescription>
+						</div>
 					</div>
 					<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/sessions`)}>
 						View all <ExternalLink class="size-3" />
@@ -324,17 +410,21 @@
 							.
 						</p>
 					{:else}
-						<ul class="divide-y">
+						<ul class="divide-y divide-border/60">
 							{#each data.activeSessions as s}
 								<li class="py-2">
 									<a
 										href="/workspaces/{slug}/sessions/{s.id}"
-										class="flex items-center justify-between gap-2 hover:bg-muted/40 rounded px-2 -mx-2"
+										class="flex items-center justify-between gap-2 hover:bg-accent/50 rounded-lg px-2 -mx-2 py-1.5 transition-colors"
 									>
-										<div class="flex items-center gap-2 min-w-0 flex-1">
-											<span class="text-lg">{s.agentAvatar ?? '🤖'}</span>
+										<div class="flex items-center gap-3 min-w-0 flex-1">
+											<span
+												class="flex size-9 items-center justify-center rounded-lg bg-secondary text-lg"
+											>
+												{s.agentAvatar ?? '🤖'}
+											</span>
 											<div class="min-w-0">
-												<div class="text-sm truncate">
+												<div class="text-sm truncate font-medium">
 													{s.title ?? 'Untitled session'}
 												</div>
 												<div class="text-[11px] text-muted-foreground">
@@ -358,12 +448,22 @@
 				</CardContent>
 			</Card>
 
-			<Card>
+			<Card class="shadow-[var(--elevation-card)]">
 				<CardHeader class="pb-2">
-					<CardTitle class="text-base">Recent changes</CardTitle>
-					<CardDescription class="text-xs">
-						Published versions of agents + environments.
-					</CardDescription>
+					<div class="flex items-center gap-3">
+						<span
+							class="flex size-9 items-center justify-center rounded-lg"
+							style="background: color-mix(in oklch, var(--chart-3) 14%, transparent); color: var(--chart-3)"
+						>
+							<Layers class="size-4" />
+						</span>
+						<div>
+							<CardTitle class="text-base">Recent changes</CardTitle>
+							<CardDescription class="text-xs">
+								Published versions of agents + environments.
+							</CardDescription>
+						</div>
+					</div>
 				</CardHeader>
 				<CardContent>
 					{#if data.recentChanges.length === 0}
@@ -371,24 +471,24 @@
 							Nothing yet.
 						</p>
 					{:else}
-						<ul class="space-y-2">
+						<ul class="space-y-1">
 							{#each data.recentChanges as change}
-								<li class="text-xs">
+								<li class="rounded-lg px-2 -mx-2 py-1.5 hover:bg-accent/50 transition-colors">
 									<a
 										href={change.kind === 'agent'
 											? `/workspaces/${slug}/agents/${change.resourceId}`
 											: `/workspaces/${slug}/environments/${change.resourceId}`}
-										class="flex items-center gap-2 hover:underline"
+										class="flex items-center gap-2 text-xs"
 									>
 										{#if change.kind === 'agent'}
-											<Bot class="size-3 text-muted-foreground" />
+											<Bot class="size-3.5 text-muted-foreground" />
 										{:else}
-											<Layers class="size-3 text-muted-foreground" />
+											<Layers class="size-3.5 text-muted-foreground" />
 										{/if}
-										<span class="flex-1 truncate">{change.resourceName}</span>
-										<Badge variant="outline" class="text-[9px]">v{change.version}</Badge>
+										<span class="flex-1 truncate font-medium">{change.resourceName}</span>
+										<Badge variant="outline" class="text-[9px] font-mono">v{change.version}</Badge>
 									</a>
-									<div class="text-[10px] text-muted-foreground pl-5">
+									<div class="text-[10px] text-muted-foreground pl-5.5 font-mono">
 										{change.publishedAt
 											? formatRelative(change.publishedAt)
 											: 'unpublished'}
@@ -405,44 +505,94 @@
 		<div class="grid grid-cols-1 md:grid-cols-4 gap-3">
 			<button
 				type="button"
-				class="rounded border p-3 text-left hover:border-primary/50 hover:bg-muted/30 transition-colors"
+				class="group/q relative overflow-hidden rounded-xl border bg-card p-4 text-left shadow-[var(--elevation-card)] transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-[var(--elevation-hover)]"
 				onclick={() => goto(`/workspaces/${slug}/agents/new`)}
 			>
-				<Bot class="size-4 mb-1" />
-				<div class="text-sm font-medium">Create agent</div>
-				<div class="text-[10px] text-muted-foreground">Persistent config, versioned.</div>
+				<ArrowUpRight class="absolute right-3 top-3 size-4 text-muted-foreground/50 transition-transform group-hover/q:translate-x-0.5 group-hover/q:-translate-y-0.5" />
+				<span
+					class="mb-3 flex size-9 items-center justify-center rounded-lg"
+					style="background: color-mix(in oklch, var(--chart-1) 14%, transparent); color: var(--chart-1)"
+				>
+					<Bot class="size-4" />
+				</span>
+				<div class="text-sm font-semibold">Create agent</div>
+				<div class="text-[11px] text-muted-foreground mt-0.5">Persistent config, versioned.</div>
 			</button>
 			<button
 				type="button"
-				class="rounded border p-3 text-left hover:border-primary/50 hover:bg-muted/30 transition-colors"
+				class="group/q relative overflow-hidden rounded-xl border bg-card p-4 text-left shadow-[var(--elevation-card)] transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-[var(--elevation-hover)]"
 				onclick={() => goto(`/workspaces/${slug}/sessions/new`)}
 			>
-				<MessagesSquare class="size-4 mb-1" />
-				<div class="text-sm font-medium">New session</div>
-				<div class="text-[10px] text-muted-foreground">Chat directly with an agent.</div>
+				<ArrowUpRight class="absolute right-3 top-3 size-4 text-muted-foreground/50 transition-transform group-hover/q:translate-x-0.5 group-hover/q:-translate-y-0.5" />
+				<span
+					class="mb-3 flex size-9 items-center justify-center rounded-lg"
+					style="background: color-mix(in oklch, var(--chart-2) 14%, transparent); color: var(--chart-2)"
+				>
+					<MessagesSquare class="size-4" />
+				</span>
+				<div class="text-sm font-semibold">New session</div>
+				<div class="text-[11px] text-muted-foreground mt-0.5">Chat directly with an agent.</div>
 			</button>
 			<button
 				type="button"
-				class="rounded border p-3 text-left hover:border-primary/50 hover:bg-muted/30 transition-colors"
+				class="group/q relative overflow-hidden rounded-xl border bg-card p-4 text-left shadow-[var(--elevation-card)] transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-[var(--elevation-hover)]"
 				onclick={() => goto(`/workspaces/${slug}/environments/new`)}
 			>
-				<Layers class="size-4 mb-1" />
-				<div class="text-sm font-medium">Define environment</div>
-				<div class="text-[10px] text-muted-foreground">
+				<ArrowUpRight class="absolute right-3 top-3 size-4 text-muted-foreground/50 transition-transform group-hover/q:translate-x-0.5 group-hover/q:-translate-y-0.5" />
+				<span
+					class="mb-3 flex size-9 items-center justify-center rounded-lg"
+					style="background: color-mix(in oklch, var(--chart-3) 14%, transparent); color: var(--chart-3)"
+				>
+					<Layers class="size-4" />
+				</span>
+				<div class="text-sm font-semibold">Define environment</div>
+				<div class="text-[11px] text-muted-foreground mt-0.5">
 					Sandbox template + networking.
 				</div>
 			</button>
 			<button
 				type="button"
-				class="rounded border p-3 text-left hover:border-primary/50 hover:bg-muted/30 transition-colors"
+				class="group/q relative overflow-hidden rounded-xl border bg-card p-4 text-left shadow-[var(--elevation-card)] transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-[var(--elevation-hover)]"
 				onclick={() => goto(`/workspaces/${slug}/credentials`)}
 			>
-				<KeyRound class="size-4 mb-1" />
-				<div class="text-sm font-medium">Add vault</div>
-				<div class="text-[10px] text-muted-foreground">
+				<ArrowUpRight class="absolute right-3 top-3 size-4 text-muted-foreground/50 transition-transform group-hover/q:translate-x-0.5 group-hover/q:-translate-y-0.5" />
+				<span
+					class="mb-3 flex size-9 items-center justify-center rounded-lg"
+					style="background: color-mix(in oklch, var(--chart-4) 14%, transparent); color: var(--chart-4)"
+				>
+					<KeyRound class="size-4" />
+				</span>
+				<div class="text-sm font-semibold">Add vault</div>
+				<div class="text-[11px] text-muted-foreground mt-0.5">
 					Store MCP credentials securely.
 				</div>
 			</button>
 		</div>
 	{/if}
 </div>
+
+<style>
+	/* Command Deck — brand gradient + faint mission-control grid texture */
+	.command-deck {
+		background:
+			radial-gradient(130% 150% at 0% 0%, oklch(1 0 0 / 0.16), transparent 52%),
+			linear-gradient(
+				115deg,
+				var(--command-grad-from),
+				var(--command-grad-via) 52%,
+				var(--command-grad-to)
+			);
+	}
+	.command-deck::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		background-image:
+			linear-gradient(to right, oklch(1 0 0 / 0.06) 1px, transparent 1px),
+			linear-gradient(to bottom, oklch(1 0 0 / 0.06) 1px, transparent 1px);
+		background-size: 34px 34px;
+		-webkit-mask-image: radial-gradient(120% 110% at 100% 0%, black, transparent 72%);
+		mask-image: radial-gradient(120% 110% at 100% 0%, black, transparent 72%);
+		pointer-events: none;
+	}
+</style>

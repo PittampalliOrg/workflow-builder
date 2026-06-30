@@ -4,73 +4,95 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* ============================================================
+   Brand: "Mission Control" — indigo→violet primary (hue 276)
+   with an electric-cyan accent (hue 210). Neutrals carry a faint
+   cool tint so the surface reads as one cohesive identity, not
+   the stock grayscale shadcn theme. Wired into the shared
+   semantic layer so it reaches the dashboard's primary / accent /
+   ring / chart / sidebar tokens in both themes.
+   ============================================================ */
 :root {
 	--radius: 0.625rem;
-	--background: oklch(1 0 0);
-	--foreground: oklch(0.145 0 0);
+	--background: oklch(0.99 0.004 274);
+	--foreground: oklch(0.17 0.02 276);
 	--card: oklch(1 0 0);
-	--card-foreground: oklch(0.145 0 0);
+	--card-foreground: oklch(0.17 0.02 276);
 	--popover: oklch(1 0 0);
-	--popover-foreground: oklch(0.145 0 0);
-	--primary: oklch(0.205 0 0);
-	--primary-foreground: oklch(0.985 0 0);
-	--secondary: oklch(0.97 0 0);
-	--secondary-foreground: oklch(0.205 0 0);
-	--muted: oklch(0.97 0 0);
-	--muted-foreground: oklch(0.556 0 0);
-	--accent: oklch(0.97 0 0);
-	--accent-foreground: oklch(0.205 0 0);
+	--popover-foreground: oklch(0.17 0.02 276);
+	--primary: oklch(0.51 0.214 276);
+	--primary-foreground: oklch(0.985 0.01 276);
+	--secondary: oklch(0.965 0.012 276);
+	--secondary-foreground: oklch(0.34 0.11 276);
+	--muted: oklch(0.965 0.008 276);
+	--muted-foreground: oklch(0.5 0.03 276);
+	--accent: oklch(0.95 0.032 274);
+	--accent-foreground: oklch(0.42 0.16 276);
 	--destructive: oklch(0.577 0.245 27.325);
-	--border: oklch(0.922 0 0);
-	--input: oklch(0.922 0 0);
-	--ring: oklch(0.708 0 0);
-	--chart-1: oklch(0.646 0.222 41.116);
-	--chart-2: oklch(0.6 0.118 184.704);
-	--chart-3: oklch(0.398 0.07 227.392);
-	--chart-4: oklch(0.828 0.189 84.429);
-	--chart-5: oklch(0.769 0.188 70.08);
-	--sidebar: oklch(0.985 0 0);
-	--sidebar-foreground: oklch(0.145 0 0);
-	--sidebar-primary: oklch(0.205 0 0);
-	--sidebar-primary-foreground: oklch(0.985 0 0);
-	--sidebar-accent: oklch(0.97 0 0);
-	--sidebar-accent-foreground: oklch(0.205 0 0);
-	--sidebar-border: oklch(0.922 0 0);
-	--sidebar-ring: oklch(0.708 0 0);
+	--border: oklch(0.91 0.012 276);
+	--input: oklch(0.91 0.012 276);
+	--ring: oklch(0.51 0.214 276);
+	--chart-1: oklch(0.51 0.214 276);
+	--chart-2: oklch(0.64 0.13 210);
+	--chart-3: oklch(0.62 0.15 162);
+	--chart-4: oklch(0.74 0.16 78);
+	--chart-5: oklch(0.62 0.21 12);
+	--sidebar: oklch(0.985 0.006 276);
+	--sidebar-foreground: oklch(0.17 0.02 276);
+	--sidebar-primary: oklch(0.51 0.214 276);
+	--sidebar-primary-foreground: oklch(0.985 0.01 276);
+	--sidebar-accent: oklch(0.95 0.032 274);
+	--sidebar-accent-foreground: oklch(0.42 0.16 276);
+	--sidebar-border: oklch(0.91 0.012 276);
+	--sidebar-ring: oklch(0.51 0.214 276);
+
+	/* Dashboard command-center extensions */
+	--command-grad-from: oklch(0.51 0.214 276);
+	--command-grad-via: oklch(0.46 0.2 286);
+	--command-grad-to: oklch(0.54 0.16 232);
+	--elevation-card: 0 1px 2px 0 oklch(0.17 0.02 276 / 0.04), 0 4px 16px -6px oklch(0.17 0.02 276 / 0.1);
+	--elevation-hover: 0 2px 4px 0 oklch(0.17 0.02 276 / 0.06), 0 12px 28px -10px oklch(0.51 0.214 276 / 0.28);
 }
 
 .dark {
-	--background: oklch(0.05 0 0);
-	--foreground: oklch(0.985 0 0);
-	--card: oklch(0.12 0 0);
-	--card-foreground: oklch(0.985 0 0);
-	--popover: oklch(0.16 0 0);
-	--popover-foreground: oklch(0.985 0 0);
-	--primary: oklch(0.922 0 0);
-	--primary-foreground: oklch(0.1 0 0);
-	--secondary: oklch(0.18 0 0);
-	--secondary-foreground: oklch(0.985 0 0);
-	--muted: oklch(0.18 0 0);
-	--muted-foreground: oklch(0.708 0 0);
-	--accent: oklch(0.22 0 0);
-	--accent-foreground: oklch(0.985 0 0);
+	--background: oklch(0.15 0.018 274);
+	--foreground: oklch(0.97 0.01 276);
+	--card: oklch(0.19 0.02 274);
+	--card-foreground: oklch(0.97 0.01 276);
+	--popover: oklch(0.21 0.022 274);
+	--popover-foreground: oklch(0.97 0.01 276);
+	--primary: oklch(0.62 0.19 274);
+	--primary-foreground: oklch(0.99 0.01 276);
+	--secondary: oklch(0.25 0.022 274);
+	--secondary-foreground: oklch(0.97 0.01 276);
+	--muted: oklch(0.24 0.018 274);
+	--muted-foreground: oklch(0.71 0.03 274);
+	--accent: oklch(0.3 0.06 274);
+	--accent-foreground: oklch(0.92 0.04 274);
 	--destructive: oklch(0.704 0.191 22.216);
-	--border: oklch(1 0 0 / 14%);
-	--input: oklch(1 0 0 / 18%);
-	--ring: oklch(0.556 0 0);
-	--chart-1: oklch(0.488 0.243 264.376);
-	--chart-2: oklch(0.696 0.17 162.48);
-	--chart-3: oklch(0.769 0.188 70.08);
-	--chart-4: oklch(0.627 0.265 303.9);
-	--chart-5: oklch(0.645 0.246 16.439);
-	--sidebar: oklch(0.08 0 0);
-	--sidebar-foreground: oklch(0.985 0 0);
-	--sidebar-primary: oklch(0.488 0.243 264.376);
-	--sidebar-primary-foreground: oklch(0.985 0 0);
-	--sidebar-accent: oklch(0.18 0 0);
-	--sidebar-accent-foreground: oklch(0.985 0 0);
+	--border: oklch(1 0 0 / 12%);
+	--input: oklch(1 0 0 / 15%);
+	--ring: oklch(0.62 0.19 274);
+	--chart-1: oklch(0.66 0.18 274);
+	--chart-2: oklch(0.7 0.13 210);
+	--chart-3: oklch(0.7 0.15 162);
+	--chart-4: oklch(0.78 0.16 78);
+	--chart-5: oklch(0.66 0.21 12);
+	--sidebar: oklch(0.13 0.018 274);
+	--sidebar-foreground: oklch(0.97 0.01 276);
+	--sidebar-primary: oklch(0.62 0.19 274);
+	--sidebar-primary-foreground: oklch(0.99 0.01 276);
+	--sidebar-accent: oklch(0.26 0.04 274);
+	--sidebar-accent-foreground: oklch(0.95 0.02 274);
 	--sidebar-border: oklch(1 0 0 / 10%);
-	--sidebar-ring: oklch(0.439 0 0);
+	--sidebar-ring: oklch(0.62 0.19 274);
+
+	/* Dashboard command-center extensions */
+	--command-grad-from: oklch(0.46 0.2 278);
+	--command-grad-via: oklch(0.4 0.18 288);
+	--command-grad-to: oklch(0.44 0.14 230);
+	--elevation-card: 0 1px 2px 0 oklch(0 0 0 / 0.4), 0 6px 20px -8px oklch(0 0 0 / 0.5);
+	--elevation-hover: 0 2px 4px 0 oklch(0 0 0 / 0.5), 0 14px 32px -10px oklch(0.62 0.19 274 / 0.35);
 }
 
 @layer base {
