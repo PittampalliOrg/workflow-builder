@@ -3835,6 +3835,10 @@ class VclusterPreviewRequest(BaseModel):
     # Defaults from env so it can be flipped cluster-wide without an API change.
     enrollMode: str | None = None  # imperative | agent
     targetRevision: str | None = None  # git ref the in-vcluster controller fetches
+    # PREVIEW_DB_MODE=cnpg → per-preview isolated CloudNativePG Postgres inside the
+    # vcluster (no shared host-Postgres connection ceiling). Defaults from env so it
+    # can be flipped cluster-wide without an API change. cnpg | shared
+    previewDbMode: str | None = None
 
 
 def _vcluster_preview_job_name(name: str, action: str) -> str:
@@ -3865,6 +3869,11 @@ def _vcluster_preview_job_manifest(
         "VCLUSTER_PREVIEW_ENROLL_MODE", "imperative"
     )
     env.append({"name": "ENROLL_MODE", "value": enroll_mode})
+    # Per-preview DB backend (cnpg = isolated CloudNativePG inside the vcluster).
+    preview_db_mode = req.previewDbMode or os.environ.get(
+        "VCLUSTER_PREVIEW_DB_MODE", "shared"
+    )
+    env.append({"name": "PREVIEW_DB_MODE", "value": preview_db_mode})
     if enroll_mode == "agent":
         env.append(
             {
