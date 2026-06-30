@@ -89,6 +89,12 @@ export interface ProvisionDevPreviewParams {
 	 * (the critic/generator use that IP), and the prod BFF stays up for the orchestrator.
 	 */
 	adopt?: boolean;
+	/**
+	 * Canonical origin to set on the dev pod (`ORIGIN` env), overriding the
+	 * descriptor default. For a vcluster preview pass the preview's own HTTPS host
+	 * (e.g. `https://wfb-<name>.tail286401.ts.net`) so auth/CSRF/cookies match the URL.
+	 */
+	origin?: string;
 }
 
 export async function provisionDevPreview(
@@ -111,6 +117,10 @@ export async function provisionDevPreview(
 	// vcluster preview already has its OWN isolated, migrated DB, and the dev pod
 	// reuses it via the preview's `workflow-builder-secrets` (envFrom).
 	const previewEnv: Record<string, string> = { ...(descriptor.extraEnv ?? {}) };
+	// Per-preview canonical origin. The descriptor's ORIGIN points at the HOST
+	// standing preview; a vcluster preview is served at its own tailnet host, so the
+	// caller can override ORIGIN to match the preview URL (auth/CSRF/cookie origin).
+	if (params.origin) previewEnv.ORIGIN = params.origin;
 	const serviceSecretEnv: Record<string, string> = {};
 	if (descriptor.functional && !previewNative) {
 		const { provisionPreviewDatabase } = await import(
@@ -158,6 +168,12 @@ export async function provisionDevPreview(
 											daprAppId:
 												descriptor.adoptDaprAppId ?? descriptor.service,
 										}
+									: {}),
+								// HTTPS at the preview URL: co-locate the prod tls-terminator
+								// sidecar so the prod LB (targetPort https-tls) serves this
+								// adopted dev pod over HTTPS (else 502 — no https-tls endpoint).
+								...(descriptor.adoptTlsTerminator
+									? { adoptTlsTerminator: true }
 									: {}),
 							}
 						: {}),
