@@ -57,10 +57,13 @@ CLI_BIN = os.environ.get("CLI_AGENT_CLI_PATH", "claude")
 HOOK_RELAY_URL = os.environ.get(
     "CLI_AGENT_HOOK_RELAY_URL", "http://127.0.0.1:8002/internal/hooks/claude"
 )
-# Mirroring/lifecycle events — always registered (event streaming + transcript
-# tailer + turn-completion edge). Matcher-LESS on purpose: a "matcher":"*" entry
-# silently suppressed SessionStart on the live ryzen E2E (its matcher domain is
-# startup|resume|clear|compact, not tool names).
+# Mirroring/lifecycle events — always-on (event streaming + transcript tailer +
+# the DETERMINISTIC ``Stop`` turn-completion edge). These are BAKED into
+# docker/managed-settings.json (highest precedence, always enforced) so turn-end
+# never falls back to herdr idle detection; this tuple is the canonical list that
+# managed-settings.json MUST match (drift-guarded by the adapter tests). Matcher-LESS
+# on purpose: a "matcher":"*" entry silently suppressed SessionStart on the live
+# ryzen E2E (its matcher domain is startup|resume|clear|compact, not tool names).
 _MIRROR_HOOK_EVENTS = (
     "SessionStart",
     "UserPromptSubmit",
@@ -222,18 +225,24 @@ class ClaudeCodeAdapter(CliAdapter):
     def _seed_runtime_hooks(
         self, session_input: Mapping[str, Any], result: SeedResult
     ) -> None:
-        """Write claude hook wiring per-session into $CLAUDE_CONFIG_DIR/settings.json.
-        Mirroring events always; PermissionRequest/PermissionDenied only for
-        INTERACTIVE sessions (a one-shot `autoTerminateAfterEndTurn` workflow run
-        has no human to approve, so it relies on --dangerously-skip-permissions)."""
+        """Write claude's PER-SESSION hook wiring into $CLAUDE_CONFIG_DIR/settings.json.
+
+        The mirroring/lifecycle hooks — including the DETERMINISTIC ``Stop``
+        turn-end signal — are BAKED in managed-settings.json (highest precedence,
+        always enforced), so turn-completion never depends on herdr idle detection.
+        Here we add ONLY the BLOCKING permission hooks
+        (PermissionRequest/PermissionDenied), and ONLY for INTERACTIVE sessions: a
+        one-shot ``autoTerminateAfterEndTurn`` workflow run has no human to approve,
+        so it must NOT register them (relay returns ask/deny → it would strand) and
+        relies on --dangerously-skip-permissions. settings.json hooks MERGE with the
+        baked managed hooks, so the always-on Stop/mirroring relay keeps firing."""
         import json
 
         one_shot = bool(session_input.get("autoTerminateAfterEndTurn"))
+        # Only interactive sessions add the blocking permission hooks on top of the
+        # baked mirroring set; one-shot runs add none (managed Stop still fires).
+        blocking = [] if one_shot else list(_BLOCKING_HOOK_EVENTS)
         entry = [{"hooks": [{"type": "http", "url": HOOK_RELAY_URL}]}]
-        events = list(_MIRROR_HOOK_EVENTS)
-        if not one_shot:
-            events += list(_BLOCKING_HOOK_EVENTS)
-        hooks = {ev: entry for ev in events}
 
         config_dir = _claude_config_dir()
         config_dir.mkdir(parents=True, exist_ok=True)
@@ -246,17 +255,21 @@ class ClaudeCodeAdapter(CliAdapter):
                     existing = loaded
             except Exception:  # noqa: BLE001 — never fail seeding on a bad file
                 existing = {}
-        existing["hooks"] = hooks
+        if blocking:
+            existing["hooks"] = {ev: entry for ev in blocking}
+        else:
+            # No per-session hooks for one-shot runs — leave the baked managed
+            # mirroring/Stop hooks as the sole (deterministic) wiring.
+            existing.pop("hooks", None)
         # Pre-accept the bypass-mode dialog so --dangerously-skip-permissions boots
         # straight into work (claude would otherwise write this itself on first run).
         existing.setdefault("skipDangerousModePermissionPrompt", True)
         settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         result.paths["settingsPath"] = str(settings_path)
         logger.info(
-            "[claude] runtime hooks written: %d events (one_shot=%s, blocking=%s)",
-            len(events),
+            "[claude] runtime hooks written: blocking=%s (one_shot=%s; mirroring/Stop baked in managed-settings)",
+            blocking,
             one_shot,
-            not one_shot,
         )
 
     def _seed_onboarding_state(self, result: SeedResult) -> None:

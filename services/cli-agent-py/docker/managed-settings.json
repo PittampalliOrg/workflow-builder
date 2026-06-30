@@ -2,5 +2,107 @@
   "env": {
     "CLAUDE_CODE_ENABLE_TELEMETRY": "1"
   },
-  "_comment": "NO hooks baked here. Claude hook wiring is written PER-SESSION at seed time into $CLAUDE_CONFIG_DIR/settings.json (see cli_adapters/claude_code.py::_seed_runtime_hooks) so it can be gated by session type — the blocking PermissionRequest/PermissionDenied hooks are registered only for INTERACTIVE sessions, NOT one-shot autoTerminateAfterEndTurn workflow runs (which would otherwise strand on a permission prompt). Baked hooks here applied to every session indiscriminately and overrode --dangerously-skip-permissions for one-shot runs."
+  "_comment": "Mirroring/lifecycle hooks are BAKED here (managed-settings = highest precedence, always enforced) so turn-completion is DETERMINISTIC: the Stop hook is the authoritative turn-end signal (relayed to the cli-agent-py hooks receiver on :8002), NOT herdr idle detection (which surfaced an interactive idle_prompt and wedged one-shot durable/run loops). No 'matcher' fields on purpose: omitting the matcher means 'always run' (a 'matcher':'*' entry silently suppressed SessionStart on the ryzen E2E). The two BLOCKING permission hooks (PermissionRequest/PermissionDenied) are deliberately NOT baked here \u2014 they return ask/deny and would strand one-shot autoTerminateAfterEndTurn runs that have no human to approve; they are written PER-SESSION for INTERACTIVE sessions only by cli_adapters/claude_code.py::_seed_runtime_hooks.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8002/internal/hooks/claude"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8002/internal/hooks/claude"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8002/internal/hooks/claude"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8002/internal/hooks/claude"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8002/internal/hooks/claude"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8002/internal/hooks/claude"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8002/internal/hooks/claude"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8002/internal/hooks/claude"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8002/internal/hooks/claude"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8002/internal/hooks/claude"
+          }
+        ]
+      }
+    ]
+  }
 }
