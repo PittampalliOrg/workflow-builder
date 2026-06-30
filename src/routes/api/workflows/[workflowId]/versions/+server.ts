@@ -38,6 +38,8 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		sizeBytes: r.sizeBytes,
 		title: r.title,
 		payload: r.inlinePayload,
+		// Durable version→GitHub-PR status (set by promote); null = not yet pushed.
+		promotion: (r.metadata as { promotion?: unknown } | null)?.promotion ?? null,
 		createdAt: r.createdAt,
 	}));
 	return json({ versions });
