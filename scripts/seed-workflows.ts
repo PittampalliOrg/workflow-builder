@@ -4392,12 +4392,17 @@ async function ensureCliShowcaseAgentFor(
 		// dapr-family variants drive API-key LLMs and need an explicit modelSpec
 		// (quota-free deepseek-v4-pro); CLI variants omit it (native CLI auth).
 		modelSpec?: string;
+		// Role system prompt. resolveSpecAgentRefs builds the instructionBundle from
+		// the agent's resolved config, so a per-role system prompt MUST live on the
+		// agent (node-level agentConfig.instructions is ignored for CLI agents).
+		instructions?: string;
 	},
 ): Promise<string> {
 	const { slug, runtime, name, description } = opts;
 	const config = {
 		runtime,
 		...(opts.modelSpec ? { modelSpec: opts.modelSpec } : {}),
+		...(opts.instructions ? { instructions: opts.instructions } : {}),
 		maxTurns: 50,
 		timeoutMinutes: 30,
 		skills: [] as unknown[],
@@ -4427,7 +4432,7 @@ async function ensureCliShowcaseAgentFor(
 		await sqlClient`
 			insert into agent_versions (id, agent_id, version, config, config_hash)
 			values (${newVersionId}, ${agentId}, ${nextVersion}, ${JSON.stringify(config)}::jsonb, ${configHash})`;
-		await sqlClient`update agents set current_version_id = ${newVersionId}, runtime = ${runtime}, registry_status = ${"registered"} where id = ${agentId}`;
+		await sqlClient`update agents set current_version_id = ${newVersionId}, runtime = ${runtime}, registry_status = ${"registered"}, instructions = ${opts.instructions ?? null} where id = ${agentId}`;
 		console.log(
 			`[seed-workflows] Updated showcase agent "${slug}" -> v${nextVersion} (runtime=${runtime}, modelSpec=${opts.modelSpec ?? "n/a"})`,
 		);
@@ -4438,12 +4443,12 @@ async function ensureCliShowcaseAgentFor(
 	const versionId = generateId();
 	if (!existing.length) {
 		await sqlClient`
-			insert into agents (id, name, description, agent_type, max_turns, timeout_minutes, project_id, user_id, registry_status, slug, runtime)
+			insert into agents (id, name, description, agent_type, max_turns, timeout_minutes, project_id, user_id, registry_status, slug, runtime, instructions)
 			values (${agentId}, ${name},
 				${description},
-				${"general"}, ${50}, ${30}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${runtime})`;
+				${"general"}, ${50}, ${30}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${runtime}, ${opts.instructions ?? null})`;
 	} else {
-		await sqlClient`update agents set registry_status = ${"registered"}, runtime = ${runtime} where id = ${agentId}`;
+		await sqlClient`update agents set registry_status = ${"registered"}, runtime = ${runtime}, instructions = ${opts.instructions ?? null} where id = ${agentId}`;
 	}
 	await sqlClient`
 		insert into agent_versions (id, agent_id, version, config, config_hash)
@@ -4591,6 +4596,47 @@ async function seedGeneratorCriticShowcases(params: {
 			"agy-cli design critic with the Playwright MCP server; drives Chromium in-pod to inspect the rendered app and judge it against a design rubric.",
 		mcpServers: PLAYWRIGHT_CRITIC_MCP,
 	});
+
+		// --- Dedicated GAN role agents (planner/generator/critic) per CLI ---
+		// Each carries a ROLE SYSTEM PROMPT seeded on the agent, since node-level
+		// agentConfig.instructions is ignored for CLI agents (resolveSpecAgentRefs
+		// builds the instructionBundle from the agent's own config).
+		const GAN_PLANNER_PERSONA =
+			"You are the PLANNER in a GAN frontend-redesign harness. You NEVER write or edit application code \u2014 a separate GENERATOR does that, and ANY edit you make to app source is thrown away (this step does not sync). Read the current page for understanding ONLY, then write a single TESTABLE contract as strict JSON to /sandbox/work/contract.json (objective, acceptanceCriteria, designTokens, rubric) and verify it with cat. Stay high-level; do not enumerate granular code steps. The dashboard is a FOCUSED, UNIFIED monitoring command center (what is running now / what happened recently / capacity & usage / system health), NOT one-card-per-resource. Write the contract file, then STOP.";
+		const GAN_GENERATOR_PERSONA =
+			"You are the GENERATOR in a GAN frontend-redesign harness. You build and iterate the REAL UI: pull the dev server source from $EXPORT_URL (/__export), edit ONLY files under src/ to satisfy the contract + the latest critic feedback, push live via $SYNC_URL (/__sync), then STOP. Do NOT self-verify against the dev server (a separate Playwright critic verifies; self-verifying against cold vite wastes the turn). Wire REAL data via +page.server.ts from existing repo endpoints; NEVER fabricate data; graceful empty states. Keep existing functionality working; NEVER touch the sign-in/auth pages.";
+		const GAN_CRITIC_PERSONA =
+			"You are the EVALUATOR/CRITIC in a GAN frontend-redesign harness (Anthropic skeptical-evaluator pattern). You NEVER write code. Using your Playwright MCP tools you log into the LIVE app with the provided credentials, drive the real DOM at desktop AND mobile widths, and grade it strictly against the contract + rubric, DEFAULTING TO NOT SATISFIED. Boot the live app, never grade from a static diff. Return ONLY the strict JSON verdict requested in the task \u2014 no prose outside the JSON.";
+		const GAN_CLI_RUNTIMES: { suffix: string; runtime: string; label: string }[] = [
+			{ suffix: "claude", runtime: "claude-code-cli", label: "Claude Code" },
+			{ suffix: "codex", runtime: "codex-cli", label: "Codex" },
+			{ suffix: "agy", runtime: "agy-cli", label: "Antigravity" },
+		];
+		for (const cli of GAN_CLI_RUNTIMES) {
+			await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+				slug: `gan-planner-${cli.suffix}`,
+				runtime: cli.runtime,
+				name: `GAN Planner (${cli.label})`,
+				description: `${cli.label} PLANNER for the GAN dashboard-redesign harness \u2014 writes the testable contract, never app code.`,
+				instructions: GAN_PLANNER_PERSONA,
+			});
+			await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+				slug: `gan-generator-${cli.suffix}`,
+				runtime: cli.runtime,
+				name: `GAN Generator (${cli.label})`,
+				description: `${cli.label} GENERATOR for the GAN dashboard-redesign harness \u2014 builds/iterates the UI via /__export + /__sync.`,
+				instructions: GAN_GENERATOR_PERSONA,
+			});
+			await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+				slug: `gan-critic-${cli.suffix}`,
+				runtime: cli.runtime,
+				name: `GAN Critic (${cli.label})`,
+				description: `${cli.label} skeptical Playwright EVALUATOR for the GAN dashboard-redesign harness \u2014 logs in, grades the live app against the contract.`,
+				mcpServers: PLAYWRIGHT_CRITIC_MCP,
+				instructions: GAN_CRITIC_PERSONA,
+			});
+		}
+
 	const dir = path.resolve(process.cwd(), "scripts/fixtures/generator-critic");
 	for (const file of [
 		"evaluator-optimizer-showcase.json",
