@@ -20,6 +20,12 @@
 		repoSubdir?: string | null;
 		syncPaths?: string[] | null;
 	} | null;
+	type Promotion = {
+		prUrl?: string | null;
+		branch?: string | null;
+		mode?: string;
+		promotedAt?: string;
+	} | null;
 	type Version = {
 		artifactId: string;
 		executionId: string;
@@ -28,10 +34,20 @@
 		sizeBytes: number | null;
 		title: string | null;
 		payload: VersionPayload;
+		promotion: Promotion;
 		createdAt: string;
 	};
 
-	let { executionId, live = false }: { executionId: string; live?: boolean } = $props();
+	let {
+		executionId,
+		live = false,
+		onoutstanding
+	}: {
+		executionId: string;
+		live?: boolean;
+		/** Called after each load with the count of versions not yet pushed to a GitHub PR. */
+		onoutstanding?: (count: number) => void;
+	} = $props();
 
 	let versions = $state<Version[]>([]);
 	let loading = $state(true);
@@ -40,6 +56,9 @@
 		{}
 	);
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+	/** Versions with no GitHub PR yet — un-pushed work to promote before teardown. */
+	const outstandingCount = $derived(versions.filter((v) => !v.promotion?.prUrl).length);
 
 	function fmtBytes(n: number | null): string {
 		if (!n) return '—';
@@ -54,6 +73,7 @@
 			if (!res.ok) return;
 			const body = (await res.json()) as { versions: Version[] };
 			versions = body.versions ?? [];
+			onoutstanding?.(versions.filter((v) => !v.promotion?.prUrl).length);
 		} catch {
 			/* transient */
 		} finally {
@@ -89,6 +109,9 @@
 					error: body.prError ?? undefined
 				};
 			}
+			// Refresh so the durable promotion status (PR link, outstanding count) updates
+			// immediately rather than waiting for the next poll.
+			await load();
 		} catch (err) {
 			results[v.artifactId] = { error: err instanceof Error ? err.message : String(err) };
 		} finally {
@@ -107,7 +130,24 @@
 
 <div class="space-y-2">
 	<div class="flex items-center justify-between">
-		<h3 class="text-sm font-medium">Code versions</h3>
+		<div class="flex items-center gap-2">
+			<h3 class="text-sm font-medium">Code versions</h3>
+			{#if !loading && versions.length > 0}
+				{#if outstandingCount > 0}
+					<Badge
+						variant="outline"
+						class="border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+						title="Not yet pushed to a GitHub PR — promote before tearing down this preview"
+					>
+						{outstandingCount} not pushed
+					</Badge>
+				{:else}
+					<Badge variant="outline" class="border-emerald-500/40 text-emerald-600 dark:text-emerald-400">
+						all pushed
+					</Badge>
+				{/if}
+			{/if}
+		</div>
 		<Button variant="ghost" size="sm" onclick={load} title="Refresh">
 			<RefreshCw class="size-3.5" />
 		</Button>
@@ -123,6 +163,7 @@
 		<ul class="space-y-2">
 			{#each versions as v (v.artifactId)}
 				{@const r = results[v.artifactId]}
+				{@const prUrl = v.promotion?.prUrl ?? r?.prUrl ?? null}
 				<li class="rounded-md border p-2.5 text-xs space-y-1.5">
 					<div class="flex items-center gap-2 flex-wrap">
 						{#if v.payload?.iteration != null}
@@ -135,29 +176,45 @@
 						</span>
 					</div>
 					<div class="flex items-center gap-2">
-						<Button
-							variant="outline"
-							size="sm"
-							class="h-7"
-							disabled={promoting === v.artifactId || !v.fileId}
-							onclick={() => promote(v)}
-						>
-							{#if promoting === v.artifactId}
-								<Loader2 class="size-3.5 animate-spin" /> Promoting…
-							{:else}
-								<GitPullRequest class="size-3.5" /> Promote → PR
-							{/if}
-						</Button>
-						{#if r?.prUrl}
+						{#if prUrl}
 							<a
-								href={r.prUrl}
+								href={prUrl}
 								target="_blank"
 								rel="noopener noreferrer"
-								class="inline-flex items-center gap-1 text-primary hover:underline"
+								class="inline-flex items-center gap-1 font-medium text-emerald-600 hover:underline dark:text-emerald-400"
 							>
-								Open PR <ExternalLink class="size-3" />
+								<GitPullRequest class="size-3.5" /> Pushed → PR <ExternalLink class="size-3" />
 							</a>
-						{:else if r?.branch}
+							<Button
+								variant="ghost"
+								size="sm"
+								class="h-7 text-muted-foreground"
+								disabled={promoting === v.artifactId || !v.fileId}
+								onclick={() => promote(v)}
+							>
+								{#if promoting === v.artifactId}
+									<Loader2 class="size-3.5 animate-spin" /> …
+								{:else}
+									Promote again
+								{/if}
+							</Button>
+						{:else}
+							<Button
+								variant="outline"
+								size="sm"
+								class="h-7"
+								disabled={promoting === v.artifactId || !v.fileId}
+								onclick={() => promote(v)}
+							>
+								{#if promoting === v.artifactId}
+									<Loader2 class="size-3.5 animate-spin" /> Promoting…
+								{:else}
+									<GitPullRequest class="size-3.5" /> Promote → PR
+								{/if}
+							</Button>
+							<span class="text-amber-600 dark:text-amber-400">not pushed to GitHub</span>
+						{/if}
+						{#if r?.branch && !prUrl}
 							<span class="text-muted-foreground">branch <code>{r.branch}</code></span>
 						{/if}
 					</div>
