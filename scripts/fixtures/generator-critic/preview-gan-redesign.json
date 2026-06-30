@@ -1,0 +1,313 @@
+{
+  "document": {
+    "dsl": "1.0.0",
+    "namespace": "demos",
+    "name": "preview-gan-redesign",
+    "version": "0.1.0",
+    "title": "Comprehensive GAN frontend redesign (Planner \u2192 two-pass design \u2192 Generator \u2194 skeptical Playwright critic), in-preview, per-CLI \u2192 PR",
+    "summary": "Comprehensive GAN frontend-redesign (Anthropic harness, V2-simplified) running INSIDE a Tier-2 vcluster preview. Planner authors a TESTABLE JSON contract (objective + acceptance criteria + a frontend-design token system + the frontend-design rubric); a two-pass design_review critiques the token system BEFORE any code (penalizing AI-default looks); then a refine loop has the GENERATOR pull the live source via GET /__export, edit the page rendered at targetRoute, and PUSH via POST /__sync (HMR) \u2014 STOPPING after sync (no slow self-verify) \u2014 while a skeptical Playwright critic LOGS IN, boots the live authenticated page, screenshots desktop+mobile, and grades it against the contract per-criterion (default-reject). Each iteration is captured as a promotable tar-overlay source-bundle version (dev/preview-snapshot) that can be promoted to a PR. dev-pod-as-source (adopt:false); per-CLI via generatorAgent/criticAgent (pair each CLI with its own Playwright critic). Contract threaded via .plan cross-node refs (no fragile file I/O).",
+    "x-workflow-builder": {
+      "resumable": true,
+      "input": {
+        "schema": {
+          "format": "json",
+          "document": {
+            "type": "object",
+            "required": [
+              "intent"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "title": "Change request",
+                "default": "Redesign the AUTHENTICATED dashboard home \u2014 the page served at / for a logged-in user (its Svelte component lives under src/routes, e.g. src/routes/+page.svelte, plus src/app.css and any components it renders). Give it a distinctive, polished, cohesive, on-brand look: a deliberate color + typography + spacing system, strong visual hierarchy, and one memorable signature element \u2014 while keeping ALL data, links, and functionality intact. Do NOT touch the sign-in/auth pages.",
+                "description": "What the generator redesigns in the live BFF UI (edits land under src/ and hot-reload onto the preview)."
+              },
+              "service": {
+                "type": "string",
+                "title": "Service",
+                "default": "workflow-builder",
+                "description": "The preview service whose pod is replaced with a dev server (preview-native; workflow-builder = the BFF)."
+              },
+              "targetRoute": {
+                "type": "string",
+                "title": "Target route",
+                "default": "/",
+                "description": "The route the generator redesigns and the critic evaluates (default the authenticated dashboard home)."
+              },
+              "generatorAgent": {
+                "type": "string",
+                "title": "Generator/planner agent",
+                "default": "claude-code-cli",
+                "description": "Plans + edits repo/src. interactive-cli family (shares the run workspace)."
+              },
+              "criticAgent": {
+                "type": "string",
+                "title": "Critic agent",
+                "default": "cli-playwright-critic-agent",
+                "description": "Reviews the design tokens + drives Playwright MCP against the live preview. Same CLI family as the generator."
+              },
+              "previewLogin": {
+                "type": "string",
+                "title": "Preview login email",
+                "default": "preview@local",
+                "description": "Admin login the critic uses to reach the authenticated target page (seeded by the preview runner)."
+              },
+              "previewPassword": {
+                "type": "string",
+                "title": "Preview login password",
+                "default": "preview-access"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "input": {
+    "schema": {
+      "format": "json",
+      "document": {
+        "type": "object",
+        "required": [
+          "intent"
+        ],
+        "properties": {
+          "intent": {
+            "type": "string",
+            "title": "Change request",
+            "default": "Redesign the AUTHENTICATED dashboard home \u2014 the page served at / for a logged-in user (its Svelte component lives under src/routes, e.g. src/routes/+page.svelte, plus src/app.css and any components it renders). Give it a distinctive, polished, cohesive, on-brand look: a deliberate color + typography + spacing system, strong visual hierarchy, and one memorable signature element \u2014 while keeping ALL data, links, and functionality intact. Do NOT touch the sign-in/auth pages."
+          },
+          "service": {
+            "type": "string",
+            "title": "Service",
+            "default": "workflow-builder"
+          },
+          "targetRoute": {
+            "type": "string",
+            "title": "Target route",
+            "default": "/"
+          },
+          "generatorAgent": {
+            "type": "string",
+            "title": "Generator/planner agent",
+            "default": "claude-code-cli"
+          },
+          "criticAgent": {
+            "type": "string",
+            "title": "Critic agent",
+            "default": "cli-playwright-critic-agent"
+          },
+          "previewLogin": {
+            "type": "string",
+            "title": "Preview login email",
+            "default": "preview@local"
+          },
+          "previewPassword": {
+            "type": "string",
+            "title": "Preview login password",
+            "default": "preview-access"
+          }
+        }
+      }
+    }
+  },
+  "output": {
+    "as": "${ .summary }"
+  },
+  "do": [
+    {
+      "enter_dev_mode": {
+        "call": "dev/preview",
+        "with": {
+          "executionId": "${ .runtime.executionId }",
+          "service": "${ .trigger.service // \"workflow-builder\" }",
+          "mode": "preview-native",
+          "adopt": false,
+          "timeoutSeconds": 86400,
+          "waitReadySeconds": 240
+        },
+        "artifacts": [
+          {
+            "from": "${ { service:(.data.service // \"\"), url:(.data.url // \"\"), syncUrl:(.data.syncUrl // \"\"), browseUrl:(.data.browseUrl // \"\"), ready:(.data.ready // false) } }",
+            "kind": "json",
+            "slot": "secondary",
+            "title": "Preview-native dev mode"
+          }
+        ]
+      }
+    },
+    {
+      "plan": {
+        "call": "durable/run",
+        "with": {
+          "cwd": "/sandbox/scratch",
+          "mode": "execute_direct",
+          "workspaceRef": "${ .runtime.workspaceExecutionId }",
+          "agentRef": {
+            "slug": "${ .trigger.generatorAgent // \"claude-code-cli\" }"
+          },
+          "agentConfig": {
+            "name": "Planner + design lead",
+            "instructions": "You are the PLANNER and design lead for a frontend redesign, following Anthropic's GAN harness. Stay HIGH-LEVEL: define the brief and a TESTABLE contract \u2014 do NOT write code or enumerate granular implementation steps (avoid the overspecification trap).\nSteps:\n1) Look at the CURRENT page so your contract preserves its function: rm -rf /sandbox/scratch/repo && mkdir -p /sandbox/scratch/repo && curl -sS \"$EXPORT_URL\" | tar -xz -C /sandbox/scratch/repo, then read the source that renders $TARGET_ROUTE under /sandbox/scratch/repo/src (e.g. src/routes/+page.svelte and the components it imports). Note the data, links and forms you MUST keep working.\n2) Produce a CONTRACT as STRICT JSON (no prose, no markdown fences) with EXACTLY these keys:\n   - objective: one sentence.\n   - subject, audience, pageJob: ground the design (what this page is, who uses it, its single job).\n   - acceptanceCriteria: array of 4-8 objects {id, description, verify} that are TESTABLE on the live page in a browser (e.g. {id:'hierarchy', description:'the primary action is visually dominant', verify:'open the page; the primary CTA is the most prominent element and is keyboard-focusable'}). Every criterion must be checkable visually/interactively, not by reading code.\n   - designTokens: {palette: array of 4-6 {name, hex} (a deliberate palette specific to THIS brief, NOT a generic default), typography: {display, body, utility} (deliberate pairing), wireframe: an ASCII sketch of the layout, signature: the single memorable element this page will be known for}.\n   - rubric: a string containing the FRONTEND-DESIGN RUBRIC below, verbatim, so the critic grades against it.\n\nFRONTEND-DESIGN RUBRIC (apply strictly):\n- Design quality: coherent palette, typography, layout and spacing; a distinct brand identity grounded in the subject + audience.\n- Originality: make deliberate, opinionated choices specific to THIS brief. PENALIZE the three AI-default clusters \u2014 (a) warm cream + serif + terracotta, (b) dark background + acid-green/vermilion accent, (c) newspaper grid with hairlines. No ubiquitous purple-gradient-on-white-cards 'AI slop'. REQUIRE one bold, justifiable aesthetic risk.\n- Craft: pair display + body faces deliberately (not the same families you reach for on every project); structure encodes meaning (numbered markers ONLY for real sequences); disciplined spacing; AA contrast; responsive down to mobile; VISIBLE keyboard focus; reduced motion respected; animation deliberate, not scattered.\n- Functionality: usability independent of aesthetics; the page's data/links/forms keep working.\n- Copy/voice: write from the user's side of the screen; active voice ('Save changes', not 'Submit'); an action keeps the same name through a flow; errors explain what happened + how to fix it and DO NOT apologize; empty states invite action.\n\nEnd your turn with ONLY the strict JSON contract object \u2014 nothing else."
+          },
+          "body": {
+            "prompt": "${ \"Target route: \" + (.trigger.targetRoute // \"/\") + \"\\nEXPORT_URL=\" + ((.enter_dev_mode.url // \"\") + \"/__export\") + \"\\n\\nBrief:\\n\" + (.trigger.intent // \"redesign the page\") + \"\\n\\nLook at the current page, then produce the CONTRACT as strict JSON per your instructions.\" }",
+            "overrides": {
+              "cwd": "/sandbox/scratch",
+              "maxTurns": 20,
+              "timeoutMinutes": 20
+            }
+          }
+        },
+        "parseJson": true
+      }
+    },
+    {
+      "design_review": {
+        "call": "durable/run",
+        "with": {
+          "cwd": "/sandbox/scratch",
+          "mode": "execute_direct",
+          "workspaceRef": "${ .runtime.workspaceExecutionId }",
+          "agentRef": {
+            "slug": "${ .trigger.criticAgent // \"cli-playwright-critic-agent\" }"
+          },
+          "agentConfig": {
+            "name": "Two-pass design review",
+            "instructions": "You are an exacting design lead doing the SECOND pass of a two-pass design review (frontend-design skill): you review the proposed token system BEFORE any code is written. You do NOT write code. Review the CONTRACT's designTokens + rubric (given in the prompt) against the brief. REJECT anything that reads like a generic default or 'AI slop': the three default clusters (cream+serif+terracotta; dark+acid-green; newspaper grid with hairlines), type used as a neutral delivery vehicle, big-number+gradient stat cards, or decoration that does not serve the brief. The plan MUST take one bold, justifiable aesthetic risk and have a distinct signature element grounded in the subject. DEFAULT to not approved; approve only if the token system is genuinely distinctive and grounded. End with ONLY strict JSON {\"approved\": boolean, \"feedback\": string} \u2014 feedback gives concrete, actionable design direction the generator must apply on its first attempt."
+          },
+          "body": {
+            "prompt": "${ \"Second-pass design review BEFORE any code. Brief:\\n\" + (.trigger.intent // \"\") + \"\\n\\nProposed CONTRACT (designTokens + rubric):\\n\" + (.plan | tojson) + \"\\n\\nReturn ONLY {approved, feedback} with concrete design direction.\" }",
+            "overrides": {
+              "cwd": "/sandbox/scratch",
+              "maxTurns": 12,
+              "timeoutMinutes": 15
+            }
+          }
+        },
+        "parseJson": true
+      }
+    },
+    {
+      "plan_artifact": {
+        "set": {
+          "contract": "${ .plan }",
+          "designApproved": "${ .design_review.approved // false }",
+          "designFeedback": "${ .design_review.feedback // \"\" }"
+        },
+        "artifacts": [
+          {
+            "from": "${ .data }",
+            "kind": "json",
+            "slot": "secondary",
+            "title": "GAN contract (objective + acceptance criteria + design tokens + rubric)"
+          }
+        ]
+      }
+    },
+    {
+      "refine": {
+        "for": {
+          "each": "i",
+          "in": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "at": "idx"
+        },
+        "while": "${ (.loop.accepted // false) != true }",
+        "do": [
+          {
+            "generate": {
+              "call": "durable/run",
+              "with": {
+                "cwd": "/sandbox/scratch",
+                "mode": "execute_direct",
+                "workspaceRef": "${ .runtime.workspaceExecutionId }",
+                "agentRef": {
+                  "slug": "${ .trigger.generatorAgent // \"claude-code-cli\" }"
+                },
+                "agentConfig": {
+                  "name": "Generator (dev-pod source, contract-driven)",
+                  "instructions": "You are the GENERATOR refining a LIVE, hot-reloading microservice UI to satisfy a FIXED CONTRACT. The DEV POD is the source-of-truth (it bakes the full source and serves warm vite SSR); do NOT clone the repo. EXPORT_URL, SYNC_URL and TARGET_ROUTE are in the prompt. Each turn:\n1) PULL the current source: rm -rf /sandbox/scratch/repo && mkdir -p /sandbox/scratch/repo && curl -sS \"$EXPORT_URL\" | tar -xz -C /sandbox/scratch/repo (gives src/ with ALL prior edits, cumulative).\n2) Edit the page rendered at $TARGET_ROUTE under /sandbox/scratch/repo/src to satisfy the CONTRACT \u2014 its acceptanceCriteria, designTokens (implement the palette/typography/wireframe/signature faithfully) and rubric \u2014 and address the latest critic feedback. Edit ONLY files under src/; KEEP the page's data, links and forms working; do NOT touch the sign-in/auth pages. Do NOT run npm install or a build (the dev pod runs the dev server).\n3) PUSH live (HMR in ~seconds): cd /sandbox/scratch/repo && tar -czf - src | curl -sS -X POST --data-binary @- -H 'content-type: application/gzip' \"$SYNC_URL\".\n4) STOP as soon as your sync POST returns 2xx. Do NOT curl any URL to self-verify \u2014 a separate Playwright critic renders and verifies. Self-verifying against cold vite is slow and wedges the turn.\nKeep the turn TIGHT: pull, edit, sync, stop. End with a one-line summary of what you changed."
+                },
+                "body": {
+                  "prompt": "${ \"CONTRACT \u2014 build the page rendered at \" + (.trigger.targetRoute // \"/\") + \" to satisfy this:\\n\" + (.plan | tojson) + \"\\n\\nDesign-review direction to apply:\\n\" + (.design_review.feedback // \"(none)\") + \"\\n\\nEXPORT_URL=\" + ((.enter_dev_mode.url // \"\") + \"/__export\") + \"\\nSYNC_URL=\" + (.enter_dev_mode.syncUrl // \"\") + \"\\nTARGET_ROUTE=\" + (.trigger.targetRoute // \"/\") + \"\\n\\nYour previous attempt:\\n\" + (.loop.last.generate.content // \"(first attempt)\") + \"\\n\\nCritic feedback to address now:\\n\" + (if .loop.last.critique then (.loop.last.critique.feedback // (.loop.last.critique | tojson)) else \"(none yet \u2014 make your first improvement)\" end) }",
+                  "overrides": {
+                    "cwd": "/sandbox/scratch",
+                    "maxTurns": 30,
+                    "timeoutMinutes": 25
+                  }
+                }
+              }
+            }
+          },
+          {
+            "snapshot": {
+              "call": "dev/preview-snapshot",
+              "with": {
+                "executionId": "${ .runtime.executionId }",
+                "nodeId": "generate",
+                "iteration": "${ .idx }"
+              },
+              "allowFailure": true
+            }
+          },
+          {
+            "critique": {
+              "call": "durable/run",
+              "with": {
+                "cwd": "/sandbox/scratch",
+                "mode": "execute_direct",
+                "workspaceRef": "${ .runtime.workspaceExecutionId }",
+                "agentRef": {
+                  "slug": "${ .trigger.criticAgent // \"cli-playwright-critic-agent\" }"
+                },
+                "agentConfig": {
+                  "name": "Skeptical visual+functional critic (Playwright, contract-graded)",
+                  "instructions": "You are an exacting, INDEPENDENT visual + functional design critic (Anthropic's skeptical-evaluator pattern). You do NOT edit code; you boot the LIVE app and grade it \u2014 never from a static diff. The page is AUTHENTICATED, so you must log in first. Using your Playwright MCP browser tools:\n1) Open $PREVIEW_URL/auth/sign-in. It is a DEV server that compiles SSR on first load, so the FIRST navigation can take 1-3 MINUTES \u2014 set a generous navigation timeout (e.g. 180000 ms) and RETRY once or twice if it times out; wait until it renders.\n2) LOG IN: type $LOGIN_EMAIL into the email field and $LOGIN_PASSWORD into the password field, click the sign-in button, and wait for the navigation to complete.\n3) Navigate to $PREVIEW_URL$TARGET_ROUTE (the redesigned page).\n4) ALWAYS browser_take_screenshot (this also records the review video) at a desktop width AND a mobile width.\n5) GRADE the live page against the CONTRACT in the prompt: check EACH acceptanceCriterion (pass/fail with a concrete visible reason) AND the rubric (design quality, originality/no-AI-slop, craft including AA contrast + visible keyboard focus + responsive, functionality, copy/voice). Interact with the live DOM.\nCALIBRATION: DEFAULT to not satisfied. meets_criteria is true ONLY if EVERY acceptanceCriterion passes AND the page is genuinely well-crafted and distinctive (no AI-default look). Cite concrete visible specifics. If the page never rendered after retries, return meets_criteria:false with feedback that the preview did not load.\nEnd with ONLY a strict JSON object, no prose, no fences: {\"meets_criteria\": boolean, \"score\": number 0-10, \"perCriterion\": [{\"id\": string, \"passes\": boolean, \"note\": string}], \"feedback\": string}."
+                },
+                "body": {
+                  "prompt": "${ \"Grade the LIVE redesigned page against this CONTRACT using your Playwright tools.\\n\\nCONTRACT:\\n\" + (.plan | tojson) + \"\\n\\nPREVIEW_URL=\" + (.enter_dev_mode.url // \"\") + \"\\nTARGET_ROUTE=\" + (.trigger.targetRoute // \"/\") + \"\\nLOGIN_EMAIL=\" + (.trigger.previewLogin // \"preview@local\") + \"\\nLOGIN_PASSWORD=\" + (.trigger.previewPassword // \"preview-access\") + \"\\n\\nOpen sign-in (slow first load \u2014 180000 ms timeout + retry), LOG IN, navigate to the target route, screenshot desktop + mobile, then grade every acceptanceCriterion + the rubric. Return ONLY the strict JSON verdict.\" }",
+                  "overrides": {
+                    "cwd": "/sandbox/scratch",
+                    "maxTurns": 24,
+                    "timeoutMinutes": 25
+                  }
+                }
+              },
+              "parseJson": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "summary": {
+        "set": {
+          "service": "${ .enter_dev_mode.service // .trigger.service // \"workflow-builder\" }",
+          "browseUrl": "${ .enter_dev_mode.browseUrl // \"\" }",
+          "targetRoute": "${ .trigger.targetRoute // \"/\" }",
+          "accepted": "${ .loop.accepted // false }",
+          "iterations": "${ .loop.iterations // 0 }",
+          "objective": "${ .plan.objective // \"\" }",
+          "finalSummary": "${ .loop.last.generate.content // \"\" }",
+          "verdict": "${ .loop.last.critique // {} }"
+        },
+        "artifacts": [
+          {
+            "from": "${ .data }",
+            "kind": "json",
+            "slot": "primary",
+            "title": "Comprehensive GAN redesign result",
+            "description": "Accepted flag, iteration count, objective, final generator summary, the critic's last per-criterion verdict."
+          }
+        ]
+      }
+    }
+  ]
+}
