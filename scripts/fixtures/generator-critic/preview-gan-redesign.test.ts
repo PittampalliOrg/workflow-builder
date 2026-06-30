@@ -13,7 +13,7 @@ describe("preview-gan-redesign fixture", () => {
   });
   it("has the V2-simplified GAN node sequence", () => {
     const ids = spec().do.map((n: any) => Object.keys(n)[0]);
-    expect(ids).toEqual(["enter_dev_mode", "plan", "design_review", "plan_artifact", "refine", "summary"]);
+    expect(ids).toEqual(["enter_dev_mode", "plan", "design_review", "refine", "summary"]);
     const refine = spec().do.find((n: any) => n.refine).refine;
     expect(refine.do.map((n: any) => Object.keys(n)[0])).toEqual(["generate", "snapshot", "critique"]);
   });
@@ -29,12 +29,18 @@ describe("preview-gan-redesign fixture", () => {
       expect(block.previewLogin?.default).toBe("preview@local");
     }
   });
-  it("threads the contract via .plan and grades against it", () => {
+  it("shares the contract via a /sandbox/work file and grades against it (no cross-node parseJson refs in the loop)", () => {
     const refine = spec().do.find((n: any) => n.refine).refine;
     const critique = refine.do.find((n: any) => n.critique).critique;
-    expect(critique.parseJson).toBe(true);
-    expect(critique.with.body.prompt).toContain(".plan | tojson");
+    expect(critique.parseJson).toBe(true); // verdict drives .loop.accepted
+    // contract is read from the shared file, not threaded via .plan cross-node refs
+    expect(critique.with.agentConfig.instructions).toContain("/sandbox/work/contract.json");
+    const generate = refine.do.find((n: any) => n.generate).generate;
+    expect(generate.with.agentConfig.instructions).toContain("/sandbox/work/contract.json");
+    // the loop prompts must NOT reference .plan/.design_review (excluded from loop jq context)
+    expect(JSON.stringify(refine)).not.toContain(".plan");
+    expect(JSON.stringify(refine)).not.toContain(".design_review");
     const plan = spec().do.find((n: any) => n.plan).plan;
-    expect(plan.parseJson).toBe(true);
+    expect(plan.with.agentConfig.instructions).toContain("/sandbox/work/contract.json");
   });
 });
