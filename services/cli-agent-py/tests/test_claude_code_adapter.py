@@ -292,3 +292,58 @@ def test_normalizers():
     assert normalize_permission_mode("dontAsk") == "bypassPermissions"
     assert normalize_permission_mode("bogus") == "default"
     assert normalize_permission_mode(None) == "default"
+
+
+# --- hook wiring: deterministic Stop baked in managed-settings; only the
+#     blocking permission hooks are per-session (interactive-only) ---
+
+def _managed_settings() -> dict:
+    from pathlib import Path
+
+    import src.cli_adapters.claude_code as cc
+
+    path = Path(cc.__file__).resolve().parents[2] / "docker" / "managed-settings.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_managed_settings_bakes_exactly_the_mirroring_hooks():
+    """managed-settings.json must bake all mirroring/lifecycle hooks (incl Stop)
+    and must NOT bake the blocking permission hooks (those strand one-shot runs)."""
+    from src.cli_adapters.claude_code import (
+        _BLOCKING_HOOK_EVENTS,
+        _MIRROR_HOOK_EVENTS,
+        HOOK_RELAY_URL,
+    )
+
+    settings = _managed_settings()
+    baked = set(settings.get("hooks", {}).keys())
+    assert baked == set(_MIRROR_HOOK_EVENTS), "managed-settings drifted from _MIRROR_HOOK_EVENTS"
+    assert "Stop" in baked, "deterministic Stop turn-end hook must be baked"
+    for ev in _BLOCKING_HOOK_EVENTS:
+        assert ev not in baked, f"{ev} must NOT be baked (strands one-shot runs)"
+    # every baked hook relays to the cli-agent-py hooks receiver, matcher-less
+    for ev, cfgs in settings["hooks"].items():
+        assert cfgs == [{"hooks": [{"type": "http", "url": HOOK_RELAY_URL}]}]
+
+
+def test_seed_one_shot_writes_no_per_session_hooks(seeded_dirs):
+    """A one-shot autoTerminate run must not register ANY per-session hooks —
+    the baked managed Stop is its turn-end; blocking hooks would strand it."""
+    _, config_dir = seeded_dirs
+    adapter = get_adapter("claude-code")
+    adapter.seed({"agentConfig": {}, "autoTerminateAfterEndTurn": True})
+    settings = json.loads((config_dir / "settings.json").read_text(encoding="utf-8"))
+    assert "hooks" not in settings  # mirroring/Stop come from managed-settings
+
+
+def test_seed_interactive_adds_only_blocking_hooks(seeded_dirs):
+    """An interactive session adds ONLY the blocking permission hooks per-session
+    (mirroring/Stop stay baked)."""
+    from src.cli_adapters.claude_code import _BLOCKING_HOOK_EVENTS
+
+    _, config_dir = seeded_dirs
+    adapter = get_adapter("claude-code")
+    adapter.seed({"agentConfig": {}})  # no autoTerminate → interactive
+    settings = json.loads((config_dir / "settings.json").read_text(encoding="utf-8"))
+    assert set(settings["hooks"].keys()) == set(_BLOCKING_HOOK_EVENTS)
+    assert "Stop" not in settings["hooks"]  # baked, not duplicated per-session
