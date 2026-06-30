@@ -17,6 +17,7 @@ import {
 	gte,
 	ilike,
 	inArray,
+	isNull,
 	or,
 	type SQL,
 } from "drizzle-orm";
@@ -77,7 +78,12 @@ export async function listRecentRuns(
 	if (!db) throw new Error("Database not configured");
 	const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
 
-	const conds: SQL[] = [eq(workflowExecutions.projectId, filter.projectId)];
+	const conds: SQL[] = [
+		or(
+			eq(workflowExecutions.projectId, filter.projectId),
+			isNull(workflowExecutions.projectId)
+		) as SQL
+	];
 	if (filter.workflowId)
 		conds.push(eq(workflowExecutions.workflowId, filter.workflowId));
 	if (filter.status) conds.push(eq(workflowExecutions.status, filter.status));
