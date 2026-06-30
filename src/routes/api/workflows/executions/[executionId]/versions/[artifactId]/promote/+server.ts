@@ -175,29 +175,6 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		return json({ ok: false, error: errMatch[1], output: out.slice(0, 2000) }, { status: 502 });
 	}
 	const prErr = out.match(/PR_ERR=(.+)/);
-	const prUrl = prMatch ? prMatch[1] : null;
-	const branch = branchMatch ? branchMatch[1] : null;
-
-	// Record the promotion on the version itself so version→GitHub status is durable
-	// and queryable (the Dev page flags versions with NO promotion as "outstanding"
-	// — un-pushed work to push a PR for before the ephemeral preview is torn down).
-	if (prUrl || branch) {
-		const promotion = {
-			prUrl,
-			branch,
-			mode,
-			repo,
-			base,
-			promotedAt: new Date().toISOString(),
-			promotedBy: locals.session.userId,
-		};
-		await db
-			.update(workflowArtifacts)
-			.set({
-				metadata: { ...((artifact.metadata as Record<string, unknown>) ?? {}), promotion },
-			})
-			.where(eq(workflowArtifacts.id, artifactId));
-	}
 
 	return json({
 		ok: true,
@@ -205,8 +182,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		repo,
 		base,
 		tier,
-		prUrl,
-		branch,
+		prUrl: prMatch ? prMatch[1] : null,
+		branch: branchMatch ? branchMatch[1] : null,
 		prError: !prMatch && prErr ? prErr[1].trim() : null,
 		output: out.slice(0, 2000),
 	});
