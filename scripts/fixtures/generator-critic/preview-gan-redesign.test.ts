@@ -25,8 +25,8 @@ describe("preview-gan-redesign fixture", () => {
     ]) {
       expect(block.generatorAgent?.default).toBe("claude-code-cli");
       expect(block.criticAgent?.default).toBe("cli-playwright-critic-agent");
-      expect(block.targetRoute?.default).toBe("/");
-      expect(block.previewLogin?.default).toBe("preview@local");
+      expect(block.targetRoute?.default).toBe("/dashboard");
+      expect(block.previewLogin?.default).toBe("admin@example.com");
     }
   });
   it("shares the contract via a /sandbox/work file and grades against it (no cross-node parseJson refs in the loop)", () => {
