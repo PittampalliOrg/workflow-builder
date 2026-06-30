@@ -401,6 +401,12 @@ class DevPreviewRequest(BaseModel):
     # copied into the dev Sandbox, so without this the prod LB (targetPort https-tls)
     # finds no endpoint → 502.
     adoptTlsTerminator: bool = False
+    # Inline container env inherited from the adopted prod Deployment (set
+    # server-side by provision via _adopt_read_identity, not by the caller). Merged as
+    # the BASE of the dev pod's env (the dev-specific env overrides), so the adopted
+    # BFF carries the prod CLI-runtime app-ids/images + DAPR_* knobs needed to
+    # dispatch CLI agent sandboxes (else interactive CLI sessions wedge).
+    adoptInheritedEnv: list[dict[str, Any]] | None = None
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:
@@ -761,11 +767,30 @@ def _adopt_read_identity(
     tmpl_meta = template.metadata if template else None
     tmpl_spec = template.spec if template else None
     pod_annotations = (tmpl_meta.annotations or {}) if tmpl_meta else {}
+    # Inherit the prod app container's INLINE env so the dev pod that REPLACES it is a
+    # faithful stand-in. This is essential for the BFF: it carries the CLI-runtime
+    # app-ids/images (CLAUDE_CODE_CLI_APP_ID, AGENT_RUNTIME_*_DEFAULT_IMAGE) + the
+    # DAPR_* secret/config-store knobs the BFF needs to dispatch CLI agent sandboxes;
+    # without them the adopted dev BFF wedges interactive CLI sessions. envFrom is
+    # already reused via the descriptor; only the inline env was missing.
+    container_env: list[dict[str, Any]] | None = None
+    if tmpl_spec and tmpl_spec.containers:
+        main = next(
+            (c for c in tmpl_spec.containers if c.name == name),
+            tmpl_spec.containers[0],
+        )
+        if main.env:
+            try:
+                container_env = apps.api_client.sanitize_for_serialization(main.env)
+            except Exception as exc:  # noqa: BLE001 — best-effort; fall back to envFrom only
+                logger.warning("adopt: failed to read %s container env: %s", name, exc)
+                container_env = None
     return {
         "serviceAccountName": (tmpl_spec.service_account_name if tmpl_spec else None),
         "daprAppId": pod_annotations.get("dapr.io/app-id"),
         "daprConfig": pod_annotations.get("dapr.io/config"),
         "daprAppPort": pod_annotations.get("dapr.io/app-port"),
+        "containerEnv": container_env,
     }
 
 
@@ -2700,6 +2725,20 @@ def build_dev_preview_sandbox_manifest(
         for key, value in sorted(merged_env.items())
         if key not in overridden
     )
+    # Preview-native adopt: merge the inherited prod Deployment inline env UNDERNEATH
+    # the dev env above (deduped by name; the dev env wins on collisions like
+    # NODE_ENV=development). This carries the prod CLI-runtime app-ids/images +
+    # DAPR_* secret/config-store knobs so the adopted BFF can dispatch CLI agent
+    # sandboxes instead of wedging interactive sessions. Preserves valueFrom entries.
+    if request.adoptInheritedEnv:
+        by_name: dict[str, dict[str, Any]] = {}
+        for entry in request.adoptInheritedEnv:
+            if isinstance(entry, dict) and entry.get("name"):
+                by_name[entry["name"]] = entry
+        for entry in env:  # dev env overrides the inherited prod env
+            if entry.get("name"):
+                by_name[entry["name"]] = entry
+        env = list(by_name.values())
     # envFrom (configMapRef/secretRef) for a functional preview that reuses the
     # prod app's config + secrets. Explicit `env` (above) overrides envFrom, so a
     # per-preview DATABASE_URL passed via request.env wins over the shared secret.
@@ -3341,6 +3380,11 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
                     body.daprConfig = identity["daprConfig"]
                 if identity.get("daprAppId") and not body.daprAppId:
                     body.daprAppId = identity["daprAppId"]
+                # Inherit the prod container's inline env so the adopted BFF can
+                # dispatch CLI agent sandboxes (CLI app-ids/images + DAPR_* knobs);
+                # the dev-specific env (NODE_ENV=development, WFB_DEV_SYNC*) overrides.
+                if identity.get("containerEnv") and not body.adoptInheritedEnv:
+                    body.adoptInheritedEnv = identity["containerEnv"]
         manifest = build_dev_preview_sandbox_manifest(
             body,
             namespace=namespace,
