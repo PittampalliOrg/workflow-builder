@@ -23,8 +23,9 @@ describe("preview-gan-redesign fixture", () => {
       s.document["x-workflow-builder"].input.schema.document.properties,
       s.input.schema.document.properties,
     ]) {
-      expect(block.generatorAgent?.default).toBe("claude-code-cli");
-      expect(block.criticAgent?.default).toBe("cli-playwright-critic-agent");
+      expect(block.planAgent?.default).toBe("gan-planner-claude");
+      expect(block.generatorAgent?.default).toBe("gan-generator-claude");
+      expect(block.criticAgent?.default).toBe("gan-critic-claude");
       expect(block.targetRoute?.default).toBe("/dashboard");
       expect(block.previewLogin?.default).toBe("admin@example.com");
     }
