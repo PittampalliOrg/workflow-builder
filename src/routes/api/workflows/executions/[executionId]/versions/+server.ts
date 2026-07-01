@@ -44,12 +44,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		sizeBytes: r.sizeBytes,
 		title: r.title,
 		payload: r.inlinePayload,
-		// Durable version→GitHub-PR status (set by promote); null = not yet pushed.
-		promotion: (r.metadata as { promotion?: unknown } | null)?.promotion ?? null,
 		createdAt: r.createdAt,
 	}));
-	// `outstanding` = the run produced promotable code but NO version has been pushed
-	// to a GitHub PR yet → un-pushed work to promote before tearing the preview down.
-	const outstanding = versions.length > 0 && versions.every((v) => !v.promotion);
-	return json({ versions, outstanding });
+	return json({ versions });
 };
