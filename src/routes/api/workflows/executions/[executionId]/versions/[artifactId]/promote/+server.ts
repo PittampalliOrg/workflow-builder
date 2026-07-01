@@ -19,6 +19,7 @@ import type { RequestHandler } from "./$types";
 import { db } from "$lib/server/db";
 import { workflowArtifacts, workflowExecutions } from "$lib/server/db/schema";
 import { assertInScope } from "$lib/server/workflows/project-scope";
+import { evaluatePromotionGate } from "$lib/server/workflows/promotion-gates";
 import { SOURCE_BUNDLE_KIND } from "$lib/server/workflows/source-bundle";
 import {
 	provisionWorkspaceHelperPod,
@@ -55,6 +56,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			projectId: workflowExecutions.projectId,
 			userId: workflowExecutions.userId,
 			input: workflowExecutions.input,
+			output: workflowExecutions.output,
+			summaryOutput: workflowExecutions.summaryOutput,
 		})
 		.from(workflowExecutions)
 		.where(eq(workflowExecutions.id, executionId))
@@ -103,6 +106,22 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		(typeof input.repoRef === "string" && input.repoRef.trim()) ||
 		"main";
 	const mode = body.mode === "branch" ? "branch" : "pr";
+	const promotionGate = evaluatePromotionGate({
+		mode,
+		artifactPayload: payload,
+		executionOutput: exec.output,
+		summaryOutput: exec.summaryOutput,
+	});
+	if (!promotionGate.allowed) {
+		return json(
+			{
+				ok: false,
+				error: "promotion_gate_failed",
+				promotionGate,
+			},
+			{ status: 409 },
+		);
+	}
 	const title =
 		(typeof body.title === "string" && body.title.trim()) || "Promoted change (workflow-builder)";
 	// tar-overlay (dev-pod-as-source): where the exported syncPaths map into the repo.
@@ -205,6 +224,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		repo,
 		base,
 		tier,
+		promotionGate,
 		prUrl,
 		branch,
 		prError: !prMatch && prErr ? prErr[1].trim() : null,

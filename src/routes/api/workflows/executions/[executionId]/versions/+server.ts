@@ -16,6 +16,7 @@ import type { RequestHandler } from "./$types";
 import { db } from "$lib/server/db";
 import { workflowExecutions } from "$lib/server/db/schema";
 import { assertInScope } from "$lib/server/workflows/project-scope";
+import { evaluatePromotionGate } from "$lib/server/workflows/promotion-gates";
 import { listSourceBundlesForExecution } from "$lib/server/workflows/source-bundle";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
@@ -29,6 +30,8 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 			id: workflowExecutions.id,
 			projectId: workflowExecutions.projectId,
 			userId: workflowExecutions.userId,
+			output: workflowExecutions.output,
+			summaryOutput: workflowExecutions.summaryOutput,
 		})
 		.from(workflowExecutions)
 		.where(eq(workflowExecutions.id, executionId))
@@ -44,6 +47,12 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		sizeBytes: r.sizeBytes,
 		title: r.title,
 		payload: r.inlinePayload,
+		promotionGate: evaluatePromotionGate({
+			mode: "pr",
+			artifactPayload: r.inlinePayload,
+			executionOutput: exec.output,
+			summaryOutput: exec.summaryOutput,
+		}),
 		// Durable version→GitHub-PR status (set by promote); null = not yet pushed.
 		promotion: (r.metadata as { promotion?: unknown } | null)?.promotion ?? null,
 		createdAt: r.createdAt,

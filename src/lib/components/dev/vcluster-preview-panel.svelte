@@ -5,6 +5,9 @@
 
 	type Preview = {
 		name: string;
+		targetCluster?: string;
+		fallbackCluster?: string;
+		isolationTier?: string;
 		phase: string;
 		ready: boolean;
 		tailnetHost: string | null;
@@ -86,8 +89,8 @@
 		<div class="min-w-0">
 			<h2 class="text-base font-semibold">Full environments (vcluster)</h2>
 			<p class="text-sm text-muted-foreground">
-				A fully-isolated vcluster running the whole stack (BFF + orchestrator + function-router) on
-				its own database — for end-to-end workflow runs. Takes a few minutes to provision. Log in
+				A dev-primary vcluster running the whole stack (BFF + orchestrator + function-router) on
+				its own database. Ryzen remains a canary/fallback path. Takes a few minutes to provision. Log in
 				with <code class="text-xs">preview@local</code> / <code class="text-xs">preview-access</code>.
 			</p>
 		</div>
@@ -118,6 +121,7 @@
 					<div class="flex items-center gap-2 min-w-0">
 						<span class="font-medium truncate">{p.name}</span>
 						<span class="text-xs px-1.5 py-0.5 rounded {tone(p.phase)}">{p.phase}</span>
+						<span class="text-xs text-muted-foreground">{p.targetCluster ?? 'dev'}</span>
 					</div>
 					<div class="flex items-center gap-1 shrink-0">
 						{#if p.ready && p.url}
