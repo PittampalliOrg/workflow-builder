@@ -191,6 +191,11 @@ export async function startWorkflowRun(
 			...(opts.executionId ? { id: opts.executionId } : {}),
 			workflowId: workflow.id,
 			userId: workflow.userId,
+			// Scope the run to the workflow's project so event/trigger-started runs
+			// (which have no user session context) still appear under the correct
+			// workspace in the UI — the workspace-scoped run pages filter by projectId,
+			// so a null here renders the run invisible ("empty" run page).
+			projectId: workflow.projectId ?? null,
 			status: 'running',
 			phase: 'running',
 			progress: 0,
