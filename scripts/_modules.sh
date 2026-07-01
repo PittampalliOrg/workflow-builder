@@ -16,14 +16,14 @@ ACTIVE_MODULES=(workflow-builder workflow-orchestrator function-router mcp-gatew
 INACTIVE_MODULES=()
 ALL_MODULES=("${ACTIVE_MODULES[@]}" "${INACTIVE_MODULES[@]}")
 
-# Services whose packages/components/workloads/<svc>/manifests/kustomization.yaml
-# image pin is OWNED by the Skaffold outer-loop commit-pin on GitHub `main`
+# Services whose ryzen image pin is OWNED by the explicit Skaffold canary
+# commit-pin on GitHub `main`
 # (single-writer invariant: the gitea Tekton dev-pin task
 # `update-ryzen-dev-image-tag` that used to also write these was retired). Every
 # other ryzen workload's base pin is written by the hub outer-loop
-# `update-stacks-image` task — NOT by commit-pin. Narrow this to
-# `(workflow-builder)` to hand the other four back to Tekton. Override at
-# runtime via SKAFFOLD_OWNED_SERVICES="a b c".
+# `update-stacks-image` task — NOT by commit-pin. This is not the default
+# prod-like validation lane; use dev for automated agentic previews and
+# acceptance. Override at runtime via SKAFFOLD_OWNED_SERVICES="a b c".
 SKAFFOLD_OWNED_DEFAULT=(workflow-builder workflow-orchestrator function-router mcp-gateway swebench-coordinator sandbox-execution-api cli-agent-py-sandbox)
 
 # module → ryzen ArgoCD Application name. ryzen's autonomous-agent `root-ryzen`

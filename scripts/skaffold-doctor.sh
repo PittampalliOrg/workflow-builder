@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Read-only preflight for the ryzen Skaffold dev loop.
+# Read-only preflight for the explicit ryzen Skaffold canary loop.
 #
 # Checks the Skaffold side of the loop: command availability, kubectl context,
 # the GHCR default-repo, the stacks worktree + GitHub-main pin cache, per-module
@@ -32,10 +32,13 @@ for arg in "$@"; do
       cat <<'EOF'
 Usage: bash scripts/skaffold-doctor.sh [--json] [--all]
 
-Read-only preflight for the ryzen Skaffold loop. Checks command availability,
-kubectl context, the GHCR default-repo, the stacks worktree + GitHub-main pin
-cache, per-module Argo/Deployment state + pin drift, and Argo skip-reconcile
-leaks.
+Read-only preflight for the explicit ryzen Skaffold canary loop. Checks command
+availability, kubectl context, the GHCR default-repo, the stacks worktree +
+GitHub-main pin cache, per-module Argo/Deployment state + pin drift, and Argo
+skip-reconcile leaks.
+
+Use this for local hot-loop or autonomous-spoke validation. Automated agentic
+development, vCluster previews, and prod-like acceptance should target dev.
 EOF
       exit 0
       ;;

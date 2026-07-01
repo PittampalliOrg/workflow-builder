@@ -5,13 +5,15 @@ metadata:
 
 # Root config: composes one Skaffold module per microservice via `requires:`.
 #
-# Inner loop (HMR file-sync into Skaffold-owned dev pods):
+# Ryzen-only inner loop (HMR file-sync into Skaffold-owned dev pods):
 #   bash scripts/skaffold-dev.sh                            # default: workflow-builder
 #   bash scripts/skaffold-dev.sh workflow-orchestrator
 #   bash scripts/skaffold-dev.sh workflow-builder workflow-orchestrator function-router
 #   bash scripts/skaffold-dev.sh ALL                        # all 6 modules (heavy)
 #
-# Outer loop (build + push + commit kustomize pin to stacks repo, Argo deploys):
+# Explicit ryzen canary loop (build + push + commit kustomize pin to stacks repo,
+# ryzen local Argo deploys). Normal automated delivery and prod-like previews go
+# through the dev cluster's GitHub/Tekton/release-pins/Promoter lane instead.
 #   skaffold run -m workflow-builder
 #   skaffold build -m workflow-builder                      # build+push only
 #

@@ -133,8 +133,8 @@ export const CHANGE_JOURNEY_FILTERS: { value: ChangeJourneyFilter; label: string
 	{ value: "workflow-builder", label: "Workflow-builder repo" },
 	{ value: "images", label: "Images replaced" },
 	{ value: "waiting-failed", label: "Waiting / failed" },
-	{ value: "direct-ryzen", label: "Direct ryzen lane" },
-	{ value: "promoter-dev", label: "Promoter dev lane" },
+	{ value: "promoter-dev", label: "Dev promoted lane" },
+	{ value: "direct-ryzen", label: "Ryzen canary lane" },
 ];
 
 export function buildChangeJourneys(input: BuildChangeJourneysInput): ChangeJourney[] {
@@ -402,7 +402,7 @@ function applyStageEvidence(
 		upsertStep(journey, {
 			id: `promote:${stage.name}:direct`,
 			kind: "promote",
-			label: "Direct ryzen lane",
+			label: "Ryzen canary lane",
 			state: "done",
 			detail: "main -> local ArgoCD",
 			at: null,
@@ -1008,7 +1008,7 @@ function githubBody(event: GitOpsActivityEvent): Record<string, unknown> {
 
 function envFromAppName(name: string | null | undefined): string | null {
 	if (!name) return null;
-	for (const env of ["ryzen", "dev", "staging"]) {
+	for (const env of ["dev", "staging", "ryzen"]) {
 		if (name.startsWith(`${env}-`)) return env;
 	}
 	if (name === "spoke-dev-workflow-builder") return "dev";
@@ -1074,7 +1074,7 @@ function compareIsoDesc(a: string | null | undefined, b: string | null | undefin
 }
 
 function envSort(a: string, b: string): number {
-	const order = ["ryzen", "dev", "staging"];
+	const order = ["dev", "staging", "ryzen"];
 	return (order.indexOf(a) === -1 ? 99 : order.indexOf(a)) - (order.indexOf(b) === -1 ? 99 : order.indexOf(b));
 }
 

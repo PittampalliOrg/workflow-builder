@@ -34,7 +34,7 @@
 	});
 
 	const hasIssue = $derived.by(() => {
-		for (const env of ["ryzen", "dev", "staging"] as const) {
+		for (const env of ["dev", "staging", "ryzen"] as const) {
 			const cell = row.envs[env];
 			if (!cell) continue;
 			if (cell.syncStatus === "OutOfSync") return true;

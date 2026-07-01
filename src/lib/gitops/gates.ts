@@ -42,13 +42,10 @@ export type GateOptions = {
 };
 
 /**
- * Gate between ryzen and dev — "has the ryzen commit made it into the dev
- * release pin yet?" Not a Promoter gate in the strict sense: the transition
- * is an outer-loop release-intent PR merging to `origin/main` and then the
- * source-hydrator rendering a new env/spokes-dev-next. For the UI we derive
- * the state from observable inventory data: dev's desired commitSha should
- * equal ryzen's commitSha once the release PR has merged and hydration
- * landed.
+ * Canary parity between ryzen and dev. Ryzen is an explicit local/autonomous
+ * lane now, not the release source for dev. The comparison stays useful when
+ * operators intentionally pin the same commit to ryzen and want to confirm
+ * that dev's promoted release pin has caught up.
  */
 export function releasePrGate(
 	ryzen: EnvCell | null,
@@ -80,15 +77,15 @@ export function releasePrGate(
 		const mergedAt = dev.updatedAt;
 		return {
 			status: "passed",
-			label: mergedAt ? `merged ${relativeTime(mergedAt)}` : "merged",
-			tooltip: `release PR merged; dev release pin = ryzen source ${shortSha(ryzenSha)}`,
+			label: mergedAt ? `aligned ${relativeTime(mergedAt)}` : "aligned",
+			tooltip: `dev release pin matches ryzen canary source ${shortSha(ryzenSha)}`,
 		};
 	}
 
 	return {
 		status: "pending",
-		label: "release PR pending",
-		tooltip: `ryzen source ${shortSha(ryzenSha)} has not been merged into the dev release pin (currently ${shortSha(devSha)})`,
+		label: "not aligned",
+		tooltip: `ryzen canary source ${shortSha(ryzenSha)} differs from dev release pin ${shortSha(devSha)}`,
 	};
 }
 

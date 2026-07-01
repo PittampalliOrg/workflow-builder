@@ -92,7 +92,7 @@
 	const gateSummary = $derived.by(() => {
 		const gates: Array<{ key: string; label: string; state: GateState }> = [];
 		if (envsVisible.ryzen && envsVisible.dev) {
-			gates.push({ key: "ryzen-dev", label: "ryzen → dev (release PR)", state: prGate });
+			gates.push({ key: "ryzen-dev", label: "ryzen canary parity", state: prGate });
 		}
 		if (envsVisible.dev && envsVisible.staging) {
 			gates.push({ key: "dev-staging", label: "dev → staging (Promoter gates)", state: argoGate });

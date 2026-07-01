@@ -294,7 +294,7 @@ describe("buildChangeJourneys", () => {
 
 		expect(journey.lanes).toEqual(["direct-ryzen"]);
 		expect(journey.steps.some((step) => step.label.includes("Promoter"))).toBe(false);
-		expect(journey.steps.some((step) => step.label === "Direct ryzen lane")).toBe(true);
+		expect(journey.steps.some((step) => step.label === "Ryzen canary lane")).toBe(true);
 		expect(journey.hasImageReplacement).toBe(true);
 	});
 

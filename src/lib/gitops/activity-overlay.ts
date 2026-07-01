@@ -336,7 +336,7 @@ export function correlationChips(
 
 function parseAppName(name: string | null | undefined): ActivityTarget | null {
 	if (!name) return null;
-	for (const env of ["ryzen", "dev", "staging"]) {
+	for (const env of ["dev", "staging", "ryzen"]) {
 		const prefix = `${env}-`;
 		if (name.startsWith(prefix)) {
 			return { warehouse: name.slice(prefix.length), env };

@@ -14,23 +14,23 @@ describe("buildFreightJourney", () => {
 		const model = journeyModel();
 		const rows = buildFreightJourney(freightOf(model, "f-new"), model);
 
-		expect(rows.map((r) => r.env)).toEqual(["ryzen", "dev", "staging"]);
-		expect(rows[0].state).toBe("deployed");
-		expect(rows[0].detail).toBe("Healthy");
-		expect(rows[0].at).toBe("2026-06-10T12:00:00Z");
-		expect(rows[1].state).toBe("promoting");
-		expect(rows[1].detail).toContain("→ def5678");
-		expect(rows[1].detail).toContain("soak 4m of 10m");
-		expect(rows[2].state).toBe("dormant");
+		expect(rows.map((r) => r.env)).toEqual(["dev", "staging", "ryzen"]);
+		expect(rows[0].state).toBe("promoting");
+		expect(rows[0].detail).toContain("→ def5678");
+		expect(rows[0].detail).toContain("soak 4m of 10m");
+		expect(rows[1].state).toBe("dormant");
+		expect(rows[2].state).toBe("deployed");
+		expect(rows[2].detail).toBe("Healthy");
+		expect(rows[2].at).toBe("2026-06-10T12:00:00Z");
 	});
 
 	it("marks stages running a newer freight as superseded, with what they run", () => {
 		const model = journeyModel();
 		const rows = buildFreightJourney(freightOf(model, "f-old"), model);
 
-		expect(rows[0].state).toBe("superseded"); // ryzen runs f-new
-		expect(rows[0].detail).toBe("running git-abc1234");
-		expect(rows[1].state).toBe("deployed"); // dev still runs f-old
+		expect(rows[0].state).toBe("deployed"); // dev still runs f-old
+		expect(rows[2].state).toBe("superseded"); // ryzen runs f-new
+		expect(rows[2].detail).toBe("running git-abc1234");
 	});
 
 	it("marks stages running an older freight as queued for the newer freight", () => {
@@ -39,8 +39,8 @@ describe("buildFreightJourney", () => {
 		const model = journeyModel({ devPromotion: null });
 		const rows = buildFreightJourney(freightOf(model, "f-new"), model);
 
-		expect(rows[1].state).toBe("queued");
-		expect(rows[1].detail).toBe("running git-old9999");
+		expect(rows[0].state).toBe("queued");
+		expect(rows[0].detail).toBe("running git-old9999");
 	});
 
 	it("does not show promoting for a non-current freight even when a promotion is in flight", () => {
@@ -57,7 +57,7 @@ describe("buildFreightJourney", () => {
 			inStages: f.inStages.filter((s) => s !== "workflow-builder::dev"),
 		}));
 		const rows = buildFreightJourney(freightOf(model, "f-new"), model);
-		expect(rows[1].state).toBe("unknown");
+		expect(rows[0].state).toBe("unknown");
 	});
 });
 
