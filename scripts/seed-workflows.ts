@@ -4291,6 +4291,14 @@ function buildGeneratorCriticGraph(spec: JsonRecord): {
 			data: {
 				label: "Manual trigger",
 				description: "Provide the intent (and optional agentSlug).",
+				// Materialize the SW 1.0 trigger-input schema onto the START node so the
+				// canvas run dialog renders editable parameter fields (intent/targetRoute/
+				// agents). The execute-dialog reads
+				// `startNode.data.taskConfig.input.schema.document`; without this the inputs
+				// live only in `spec.input` and can't be changed from the UI.
+				...((spec as { input?: unknown }).input
+					? { taskConfig: { input: (spec as { input: unknown }).input } }
+					: {}),
 			},
 		},
 		...taskNames.map((name, i) => {
@@ -4602,7 +4610,7 @@ async function seedGeneratorCriticShowcases(params: {
 		// agentConfig.instructions is ignored for CLI agents (resolveSpecAgentRefs
 		// builds the instructionBundle from the agent's own config).
 		const GAN_PLANNER_PERSONA =
-			"You are the PLANNER in a GAN frontend-redesign harness. You NEVER write or edit application code \u2014 a separate GENERATOR does that, and ANY edit you make to app source is thrown away (this step does not sync). Read the current page for understanding ONLY, then write a single TESTABLE contract as strict JSON to /sandbox/work/contract.json (objective, acceptanceCriteria, designTokens, rubric) and verify it with cat. Stay high-level; do not enumerate granular code steps. The dashboard is a FOCUSED, UNIFIED monitoring command center (what is running now / what happened recently / capacity & usage / system health), NOT one-card-per-resource. Write the contract file, then STOP.";
+			"You are the PLANNER in a GAN frontend-redesign harness. You NEVER write or edit application code \u2014 a separate GENERATOR does that, and ANY edit you make to app source is thrown away (this step does not sync). Read the current page for understanding ONLY, then write a single TESTABLE contract as strict JSON to /sandbox/work/contract.json (objective, acceptanceCriteria, designTokens, rubric) and verify it with cat. Stay high-level; do not enumerate granular code steps. The SPECIFIC redesign objective and target page come from YOUR TASK PROMPT (the change request) — derive the contract's objective, acceptanceCriteria, and rubric STRICTLY from that change request and from reading the current target page; do NOT assume any particular page, product area, or a fixed rubric (never default to a generic monitoring/command-center framing unless the change request asks for it). Write the contract file, then STOP.";
 		const GAN_GENERATOR_PERSONA =
 			"You are the GENERATOR in a GAN frontend-redesign harness. You build and iterate the REAL UI: pull the dev server source from $EXPORT_URL (/__export), edit ONLY files under src/ to satisfy the contract + the latest critic feedback, push live via $SYNC_URL (/__sync), then STOP. Wire REAL data via +page.server.ts from existing repo endpoints; NEVER fabricate data; graceful empty states. " +
 			"HARD RULES (the critic boots the live page \u2014 broken builds waste a whole iteration): " +
@@ -4625,21 +4633,21 @@ async function seedGeneratorCriticShowcases(params: {
 				slug: `gan-planner-${cli.suffix}`,
 				runtime: cli.runtime,
 				name: `GAN Planner (${cli.label})`,
-				description: `${cli.label} PLANNER for the GAN dashboard-redesign harness \u2014 writes the testable contract, never app code.`,
+				description: `${cli.label} PLANNER for the GAN frontend-redesign harness \u2014 writes the testable contract, never app code.`,
 				instructions: GAN_PLANNER_PERSONA,
 			});
 			await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
 				slug: `gan-generator-${cli.suffix}`,
 				runtime: cli.runtime,
 				name: `GAN Generator (${cli.label})`,
-				description: `${cli.label} GENERATOR for the GAN dashboard-redesign harness \u2014 builds/iterates the UI via /__export + /__sync.`,
+				description: `${cli.label} GENERATOR for the GAN frontend-redesign harness \u2014 builds/iterates the UI via /__export + /__sync.`,
 				instructions: GAN_GENERATOR_PERSONA,
 			});
 			await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
 				slug: `gan-critic-${cli.suffix}`,
 				runtime: cli.runtime,
 				name: `GAN Critic (${cli.label})`,
-				description: `${cli.label} skeptical Playwright EVALUATOR for the GAN dashboard-redesign harness \u2014 logs in, grades the live app against the contract.`,
+				description: `${cli.label} skeptical Playwright EVALUATOR for the GAN frontend-redesign harness \u2014 logs in, grades the live app against the contract.`,
 				mcpServers: PLAYWRIGHT_CRITIC_MCP,
 				instructions: GAN_CRITIC_PERSONA,
 			});
