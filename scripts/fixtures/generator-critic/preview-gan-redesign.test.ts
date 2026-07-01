@@ -44,4 +44,12 @@ describe("preview-gan-redesign fixture", () => {
     const plan = spec().do.find((n: any) => n.plan).plan;
     expect(plan.with.agentConfig.instructions).toContain("/sandbox/work/contract.json");
   });
+  it("requires an accepted critic verdict and score threshold before the loop stops", () => {
+    const refine = spec().do.find((n: any) => n.refine).refine;
+    expect(refine.while).toContain(".loop.last.critique.meets_criteria");
+    expect(refine.while).toContain(">= 8");
+    const summary = spec().do.find((n: any) => n.summary).summary;
+    expect(summary.set.accepted).toContain(".loop.last.critique.meets_criteria");
+    expect(summary.set.accepted).toContain(">= 8");
+  });
 });

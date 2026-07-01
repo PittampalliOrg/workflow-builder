@@ -118,7 +118,7 @@
           ],
           "at": "idx"
         },
-        "while": "${ (.loop.accepted // false) != true }",
+        "while": "${ ( ((.loop.last.critique.meets_criteria // false) == true) and (((.loop.last.critique.score // 0) as $s | if $s > 10 then ($s / 10) else $s end) >= 8) ) | not }",
         "do": [
           {
             "generate": {
@@ -190,7 +190,7 @@
         "set": {
           "service": "${ .enter_dev_mode.service // .trigger.service // \"workflow-builder\" }",
           "browseUrl": "${ .enter_dev_mode.browseUrl // \"\" }",
-          "accepted": "${ .loop.accepted // false }",
+          "accepted": "${ ((.loop.last.critique.meets_criteria // false) == true) and (((.loop.last.critique.score // 0) as $s | if $s > 10 then ($s / 10) else $s end) >= 8) }",
           "iterations": "${ .loop.iterations // 0 }",
           "finalSummary": "${ .loop.last.generate.content // \"\" }",
           "verdict": "${ .loop.last.critique // {} }"

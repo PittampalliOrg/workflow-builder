@@ -18,6 +18,9 @@ import { env } from "$env/dynamic/private";
 export interface VclusterPreview {
 	name: string;
 	job: string;
+	targetCluster: "dev";
+	fallbackCluster: "ryzen";
+	isolationTier: "tier-2-vcluster";
 	/** provisioning | ready | failed | pending | terminating | absent | unknown */
 	phase: string;
 	ready: boolean;
@@ -81,6 +84,9 @@ function toPreview(d: Record<string, unknown>): VclusterPreview {
 	return {
 		name: String(d.name ?? ""),
 		job: String(d.job ?? ""),
+		targetCluster: "dev",
+		fallbackCluster: "ryzen",
+		isolationTier: "tier-2-vcluster",
 		phase: typeof d.phase === "string" ? d.phase : String(d.status ?? "unknown"),
 		ready: d.ready === true,
 		tailnetHost: typeof d.tailnetHost === "string" ? d.tailnetHost : null,
