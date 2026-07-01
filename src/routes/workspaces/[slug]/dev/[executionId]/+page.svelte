@@ -31,6 +31,9 @@
 	let errorMessage = $state<string | null>(null);
 	let confirmTeardown = $state(false);
 	let busy = $state(false);
+	// Code versions this run produced that haven't been pushed to a GitHub PR yet —
+	// surfaced so they can be promoted before this ephemeral preview is torn down.
+	let outstandingVersions = $state(0);
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 	// Composer
@@ -140,6 +143,7 @@
 				live={environment.runStatus !== 'completed' &&
 					environment.runStatus !== 'failed' &&
 					environment.runStatus !== 'terminated'}
+				onoutstanding={(n) => (outstandingVersions = n)}
 			/>
 		</aside>
 
@@ -185,6 +189,15 @@
 				Deletes the preview pod and purges the interactive session. This can't be undone.
 			</AlertDialogDescription>
 		</AlertDialogHeader>
+		{#if outstandingVersions > 0}
+			<div
+				class="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300"
+			>
+				⚠ {outstandingVersions} code version{outstandingVersions === 1 ? '' : 's'} from this run
+				{outstandingVersions === 1 ? 'has' : 'have'} not been pushed to a GitHub PR. They live only in
+				this preview and will be lost on teardown — promote them first if you want to keep them.
+			</div>
+		{/if}
 		<AlertDialogFooter>
 			<AlertDialogCancel>Cancel</AlertDialogCancel>
 			<AlertDialogAction onclick={teardown}>Tear down</AlertDialogAction>
