@@ -9,7 +9,7 @@ import { commitShaFromTag } from "$lib/utils/gitops-display";
 
 export type EnvName = "ryzen" | "dev" | "staging";
 
-export const ENVIRONMENTS: readonly EnvName[] = ["ryzen", "dev", "staging"] as const;
+export const ENVIRONMENTS: readonly EnvName[] = ["dev", "staging", "ryzen"] as const;
 
 /**
  * Ordered list of every workflow-builder system service that the admin GitOps

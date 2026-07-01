@@ -37,7 +37,7 @@
 		{ id: "sandbox", label: "Sandbox" },
 	];
 
-	const envs: EnvName[] = ["ryzen", "dev", "staging"];
+	const envs: EnvName[] = ["dev", "staging", "ryzen"];
 
 	const envColor = (env: EnvName) =>
 		env === "ryzen"

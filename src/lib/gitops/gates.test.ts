@@ -50,7 +50,7 @@ describe("releasePrGate", () => {
 		const dev = cell({ commitSha: "deadbeef", updatedAt: "2026-04-24T11:00:00Z" });
 		const state = releasePrGate(ryzen, dev);
 		expect(state.status).toBe("passed");
-		expect(state.label).toMatch(/merged/);
+		expect(state.label).toMatch(/aligned/);
 	});
 
 	it("returns pending when shas differ", () => {
@@ -58,7 +58,7 @@ describe("releasePrGate", () => {
 		const dev = cell({ commitSha: "cafef00d" });
 		const state = releasePrGate(ryzen, dev);
 		expect(state.status).toBe("pending");
-		expect(state.label).toBe("release PR pending");
+		expect(state.label).toBe("not aligned");
 	});
 
 	it("returns unknown when data is missing", () => {

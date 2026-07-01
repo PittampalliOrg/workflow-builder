@@ -188,22 +188,24 @@
 	const needsYou = $derived(deriveNeedsYou(envRows, errors, streamState, inventoryStale));
 	const runningNow = $derived(deriveRunningNow(envRows, changeJourneys));
 	const evidenceJourney = $derived.by(() => {
-		if (evidenceTarget?.kind === "change") {
-			return changeJourneys.find((journey) => journey.id === evidenceTarget.id) ?? null;
+		const target = evidenceTarget;
+		if (target?.kind === "change") {
+			return changeJourneys.find((journey) => journey.id === target.id) ?? null;
 		}
-		if (evidenceTarget?.kind === "environment") {
+		if (target?.kind === "environment") {
 			return (
-				changeJourneys.find((journey) => journey.environments.includes(evidenceTarget.env)) ??
+				changeJourneys.find((journey) => journey.environments.includes(target.env)) ??
 				null
 			);
 		}
 		return selectedJourney;
 	});
-	const evidenceEnv = $derived(
-		evidenceTarget?.kind === "environment"
-			? (envRows.find((row) => row.env === evidenceTarget.env) ?? null)
-			: null,
-	);
+	const evidenceEnv = $derived.by(() => {
+		const target = evidenceTarget;
+		return target?.kind === "environment"
+			? (envRows.find((row) => row.env === target.env) ?? null)
+			: null;
+	});
 	const evidenceDisplaySteps = $derived(evidenceSteps(evidenceJourney, evidenceEnv));
 
 	async function refresh(options: { fresh?: boolean } = {}) {
