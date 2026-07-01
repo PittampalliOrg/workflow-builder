@@ -82,6 +82,13 @@ export interface DevPreviewDescriptor {
 	adoptService?: string;
 	adoptDeployment?: string;
 	adoptDaprAppId?: string;
+	/**
+	 * Preview-native adopt over HTTPS: co-locate an nginx tls-terminator sidecar in
+	 * the dev pod (the prod Deployment's tls-terminator is not otherwise copied), so
+	 * the prod tailnet LB (targetPort `https-tls`) serves the adopted dev pod over
+	 * HTTPS. Set for the BFF, which the prod LB fronts via its tls-terminator.
+	 */
+	adoptTlsTerminator?: boolean;
 }
 
 export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
@@ -118,6 +125,9 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
 		adoptService: "workflow-builder",
 		adoptDeployment: "workflow-builder",
 		adoptDaprAppId: "workflow-builder",
+		// The prod BFF serves HTTPS via an nginx tls-terminator sidecar; co-locate it
+		// on the adopted dev pod so the preview's tailnet URL stays HTTPS in dev mode.
+		adoptTlsTerminator: true,
 	},
 	"workflow-orchestrator": {
 		service: "workflow-orchestrator",

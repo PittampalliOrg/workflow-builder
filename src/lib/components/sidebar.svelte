@@ -170,7 +170,7 @@
 </script>
 
 <aside
-	class="app-sidebar flex h-full flex-col border-r border-border bg-card transition-[width] duration-200 ease-linear"
+	class="flex h-full flex-col border-r border-border bg-card transition-[width] duration-200 ease-linear"
 	style="width: {collapsed ? '3.5rem' : '14rem'};"
 >
 	<!-- Header -->
@@ -456,11 +456,3 @@
 		</div>
 	</div>
 </aside>
-
-<style>
-	@media (max-width: 767px) {
-		.app-sidebar {
-			display: none;
-		}
-	}
-</style>

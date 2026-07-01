@@ -94,6 +94,10 @@ export async function launchVclusterPreview(params: {
 	daprVersion?: string;
 	tailnetHost?: string;
 	previewDb?: string;
+	/** Interactive dev preview: provision so the dev image can adopt the prod BFF
+	 * over HTTPS (runner sets EXPOSE_DEV_POD=false). The adopt:true dev/preview is
+	 * triggered separately after provisioning. */
+	devMode?: boolean;
 }): Promise<VclusterPreview> {
 	const name = safePreviewName(params.name);
 	const data = await call("POST", "/internal/vcluster-preview", {
@@ -102,6 +106,7 @@ export async function launchVclusterPreview(params: {
 		...(params.daprVersion ? { daprVersion: params.daprVersion } : {}),
 		...(params.tailnetHost ? { tailnetHost: params.tailnetHost } : {}),
 		...(params.previewDb ? { previewDb: params.previewDb } : {}),
+		...(params.devMode ? { previewDevMode: true } : {}),
 	});
 	return toPreview(data);
 }

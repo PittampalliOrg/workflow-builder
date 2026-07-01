@@ -43,7 +43,7 @@
 </script>
 
 {#if !dismissed}
-	<div class="feedback-widget fixed bottom-4 left-4 z-30">
+	<div class="fixed bottom-4 right-4 z-40">
 		<div
 			class="flex items-center gap-1 rounded-full border border-border bg-background/95 px-3 py-1.5 text-xs shadow-md backdrop-blur"
 		>
@@ -67,11 +67,3 @@
 		</div>
 	</div>
 {/if}
-
-<style>
-	@media (max-width: 767px) {
-		.feedback-widget {
-			display: none;
-		}
-	}
-</style>
