@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { workflowTriggers } from '$lib/server/db/schema';
-import { daprFetch, getDaprSidecarUrl } from '$lib/server/dapr-client';
+import { getEventBusAdapter } from '$lib/server/application/event-bus';
 import { getGithubTriggerSecret } from '$lib/server/lifecycle/github-webhook';
 
 /**
@@ -119,18 +119,7 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	};
 
 	try {
-		const res = await daprFetch(
-			`${getDaprSidecarUrl()}/v1.0/publish/workflow-triggers-pubsub/workflow.triggers`,
-			{
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(envelope)
-			}
-		);
-		if (!res.ok) {
-			const text = await res.text().catch(() => '');
-			return json({ error: `publish failed (${res.status})`, detail: text }, { status: 502 });
-		}
+		await getEventBusAdapter().publish('workflow.triggers', envelope);
 	} catch (err) {
 		return json(
 			{ error: err instanceof Error ? err.message : 'publish failed' },

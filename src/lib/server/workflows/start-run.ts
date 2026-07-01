@@ -13,14 +13,13 @@
  * orchestrator stamps the Dapr instance id as `sw-<name>-exec-<executionId>`, the
  * instance id is deterministic too, so Dapr also dedups the start.
  */
-import { eq, desc } from 'drizzle-orm';
-import { db } from '$lib/server/db';
 import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
-import { workflows, workflowExecutions } from '$lib/server/db/schema';
-import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
+import { getOrchestratorUrl } from '$lib/server/dapr-client';
 import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
 import { getRemovedSw10AgentCallsError } from '$lib/server/workflows/sw10-agent-validation';
 import { AgentRefResolutionError, resolveSpecAgentRefs } from '$lib/server/agents/resolver';
+import { getApplicationAdapters } from '$lib/server/application';
+import type { WorkflowDefinition } from '$lib/server/application/ports';
 import {
 	applyWorkflowInputDefaults,
 	getPromptExpansionConfig
@@ -50,22 +49,8 @@ export function isSWWorkflow(spec: unknown): boolean {
 export async function resolveWorkflow(input: {
 	workflowId?: string;
 	workflowName?: string;
-}): Promise<typeof workflows.$inferSelect | null> {
-	const workflowId = input.workflowId?.trim();
-	if (workflowId) {
-		const [row] = await db!.select().from(workflows).where(eq(workflows.id, workflowId)).limit(1);
-		return row ?? null;
-	}
-	const workflowName = input.workflowName?.trim();
-	if (!workflowName) return null;
-	const candidates = await db!
-		.select()
-		.from(workflows)
-		.where(eq(workflows.name, workflowName))
-		.orderBy(desc(workflows.updatedAt))
-		.limit(20);
-	if (candidates.length === 0) return null;
-	return candidates.find((w) => w.visibility === 'public') ?? candidates[0] ?? null;
+}): Promise<WorkflowDefinition | null> {
+	return getApplicationAdapters().workflowDefinitions.getByRef(input);
 }
 
 export type StartWorkflowResult =
@@ -108,7 +93,16 @@ export interface StartWorkflowOptions {
 export async function startWorkflowRun(
 	opts: StartWorkflowOptions
 ): Promise<StartWorkflowResult> {
-	if (!db) return { ok: false, status: 503, error: 'Database not configured' };
+	let app: ReturnType<typeof getApplicationAdapters>;
+	try {
+		app = getApplicationAdapters();
+	} catch (adapterError) {
+		return {
+			ok: false,
+			status: 503,
+			error: adapterError instanceof Error ? adapterError.message : 'Application adapters unavailable'
+		};
+	}
 	try {
 		await assertExecutionReadModelColumns();
 	} catch (schemaError) {
@@ -122,7 +116,7 @@ export async function startWorkflowRun(
 		};
 	}
 
-	const workflow = await resolveWorkflow({
+	const workflow = await app.workflowDefinitions.getByRef({
 		workflowId: opts.workflowId,
 		workflowName: opts.workflowName
 	});
@@ -130,11 +124,7 @@ export async function startWorkflowRun(
 
 	// Idempotency: a deterministic id that already exists → return it (no-op).
 	if (opts.executionId && opts.idempotent) {
-		const [existing] = await db
-			.select({ id: workflowExecutions.id, daprInstanceId: workflowExecutions.daprInstanceId })
-			.from(workflowExecutions)
-			.where(eq(workflowExecutions.id, opts.executionId))
-			.limit(1);
+		const existing = await app.workflowExecutions.getById(opts.executionId);
 		if (existing) {
 			return {
 				ok: true,
@@ -149,7 +139,7 @@ export async function startWorkflowRun(
 	}
 
 	let triggerData = opts.triggerData ?? {};
-	let spec = (workflow as Record<string, unknown>).spec as Record<string, unknown> | null;
+	let spec = workflow.spec as Record<string, unknown> | null;
 	if (spec && isSWWorkflow(spec)) {
 		const removedAgentCallsError = getRemovedSw10AgentCallsError(spec);
 		if (removedAgentCallsError) return { ok: false, status: 400, error: removedAgentCallsError };
@@ -185,36 +175,33 @@ export async function startWorkflowRun(
 	}
 
 	// 1. Create execution record (explicit deterministic id when provided).
-	const [execution] = await db
-		.insert(workflowExecutions)
-		.values({
-			...(opts.executionId ? { id: opts.executionId } : {}),
-			workflowId: workflow.id,
-			userId: workflow.userId,
-			// Scope the run to the workflow's project so event/trigger-started runs
-			// (which have no user session context) still appear under the correct
-			// workspace in the UI — the workspace-scoped run pages filter by projectId,
-			// so a null here renders the run invisible ("empty" run page).
-			projectId: workflow.projectId ?? null,
-			status: 'running',
-			phase: 'running',
-			progress: 0,
-			input: triggerData,
-			// Snapshot the EXECUTED spec (agent-refs resolved) so each run — and each
-			// fork — has the exact spec it ran, enabling per-branch "what changed vs
-			// parent" diffs. Evals/benchmarks create their own rows with a richer
-			// executionIr, so this generic path never clobbers them.
-			executionIr: { spec, triggerData },
-			executionIrVersion: 'sw-1.0.0',
-			...(opts.triggerSource ? { triggerSource: opts.triggerSource } : {}),
-			...(opts.rerunOfExecutionId ? { rerunOfExecutionId: opts.rerunOfExecutionId } : {}),
-			...(opts.rerunSourceInstanceId
-				? { rerunSourceInstanceId: opts.rerunSourceInstanceId }
-				: {}),
-			// Persist the fork point so the lineage tree can label "fork @<node>".
-			...(opts.resumeFromNode ? { resumeFromNode: opts.resumeFromNode } : {})
-		})
-		.returning({ id: workflowExecutions.id });
+	const execution = await app.workflowExecutions.create({
+		...(opts.executionId ? { id: opts.executionId } : {}),
+		workflowId: workflow.id,
+		userId: workflow.userId,
+		// Scope the run to the workflow's project so event/trigger-started runs
+		// (which have no user session context) still appear under the correct
+		// workspace in the UI — the workspace-scoped run pages filter by projectId,
+		// so a null here renders the run invisible ("empty" run page).
+		projectId: workflow.projectId ?? null,
+		status: 'running',
+		phase: 'running',
+		progress: 0,
+		input: triggerData,
+		// Snapshot the EXECUTED spec (agent-refs resolved) so each run — and each
+		// fork — has the exact spec it ran, enabling per-branch "what changed vs
+		// parent" diffs. Evals/benchmarks create their own rows with a richer
+		// executionIr, so this generic path never clobbers them.
+		executionIr: { spec, triggerData },
+		executionIrVersion: 'sw-1.0.0',
+		...(opts.triggerSource ? { triggerSource: opts.triggerSource } : {}),
+		...(opts.rerunOfExecutionId ? { rerunOfExecutionId: opts.rerunOfExecutionId } : {}),
+		...(opts.rerunSourceInstanceId
+			? { rerunSourceInstanceId: opts.rerunSourceInstanceId }
+			: {}),
+		// Persist the fork point so the lineage tree can label "fork @<node>".
+		...(opts.resumeFromNode ? { resumeFromNode: opts.resumeFromNode } : {})
+	});
 
 	const orchestratorUrl = workflow.daprOrchestratorUrl || getOrchestratorUrl();
 	const sessionId = buildWorkflowSessionId(execution.id);
@@ -258,42 +245,30 @@ export async function startWorkflowRun(
 				'mlflow.run_id': mlflowContext?.runId
 			}
 		});
-		const res = await daprFetch(`${orchestratorUrl}/api/v2/sw-workflows`, {
-			method: 'POST',
+		const result = await app.workflowScheduler.startSwWorkflow({
+			orchestratorUrl,
 			headers,
-			body: JSON.stringify({
-				workflow: spec,
-				workflowId: workflow.id,
-				triggerData,
-				dbExecutionId: execution.id,
-				mlflowContext,
-				traceContext,
-				// Resume/fork: skip the prefix + reuse the source workspace. Omitted
-				// (undefined) for normal runs → interpreter defaults apply.
-				...(opts.resumeFromNode ? { resumeFromNode: opts.resumeFromNode } : {}),
-				...(opts.workspaceExecutionId
-					? { workspaceExecutionId: opts.workspaceExecutionId }
-					: {}),
-				...(opts.seedWorkspaceFrom ? { seedWorkspaceFrom: opts.seedWorkspaceFrom } : {})
-			})
+			workflow: spec,
+			workflowId: workflow.id,
+			triggerData,
+			dbExecutionId: execution.id,
+			mlflowContext,
+			traceContext,
+			// Resume/fork: skip the prefix + reuse the source workspace. Omitted
+			// (undefined) for normal runs → interpreter defaults apply.
+			...(opts.resumeFromNode ? { resumeFromNode: opts.resumeFromNode } : {}),
+			...(opts.workspaceExecutionId
+				? { workspaceExecutionId: opts.workspaceExecutionId }
+				: {}),
+			...(opts.seedWorkspaceFrom ? { seedWorkspaceFrom: opts.seedWorkspaceFrom } : {})
 		});
-		if (!res.ok) {
-			const errText = await res.text().catch(() => 'Unknown error');
-			void safeFinishMlflowRun({ runId: mlflowContext?.runId, status: 'FAILED' });
-			throw new Error(`Orchestrator error (${res.status}): ${errText}`);
-		}
-		const result = await res.json();
 		instanceId = result.instanceId;
 	} catch (err) {
-		await db
-			.update(workflowExecutions)
-			.set({
-				status: 'error',
-				phase: 'failed',
-				error: err instanceof Error ? err.message : 'Failed to start workflow execution',
-				completedAt: new Date()
-			})
-			.where(eq(workflowExecutions.id, execution.id));
+		void safeFinishMlflowRun({ runId: mlflowContext?.runId, status: 'FAILED' });
+		await app.workflowExecutions.markStartFailed({
+			executionId: execution.id,
+			error: err instanceof Error ? err.message : 'Failed to start workflow execution'
+		});
 		return {
 			ok: false,
 			status: 500,
@@ -302,15 +277,11 @@ export async function startWorkflowRun(
 	}
 
 	if (instanceId) {
-		await db
-			.update(workflowExecutions)
-			.set({
-				daprInstanceId: instanceId,
-				phase: 'running',
-				progress: 0,
-				workflowSessionId: sessionId ?? execution.id
-			})
-			.where(eq(workflowExecutions.id, execution.id));
+		await app.workflowExecutions.attachSchedulerInstance({
+			executionId: execution.id,
+			instanceId,
+			workflowSessionId: sessionId ?? execution.id
+		});
 	}
 
 	return {

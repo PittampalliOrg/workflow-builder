@@ -87,6 +87,7 @@ vi.mock("$lib/server/prompt-presets", () => ({
 
 vi.mock("$lib/server/users/cli-credentials", () => ({
 	getUserCliCredential: mocks.getUserCliCredential,
+	cliCredentialNeedsBootLease: vi.fn(() => false),
 }));
 
 vi.mock("$lib/server/sessions/agent-workflow-host", () => ({

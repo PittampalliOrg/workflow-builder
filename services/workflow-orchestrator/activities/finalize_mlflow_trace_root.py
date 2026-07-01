@@ -10,6 +10,7 @@ from typing import Any
 
 import requests
 
+from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
 from tracing import emit_mlflow_trace_root_span, set_current_span_attrs
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,31 @@ def _trace_attrs(record: dict[str, Any]) -> dict[str, str]:
     return attrs
 
 
+def _api_target_to_local(target: dict[str, Any]) -> dict[str, str | None] | None:
+    entity_type = str(target.get("entityType") or target.get("entity_type") or "").strip()
+    entity_id = str(target.get("entityId") or target.get("entity_id") or "").strip()
+    run_id = str(target.get("runId") or target.get("run_id") or "").strip()
+    if entity_type not in {"workflow_execution", "session"} or not entity_id or not run_id:
+        return None
+    return {
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "project_id": target.get("projectId") or target.get("project_id"),
+        "experiment_id": target.get("experimentId") or target.get("experiment_id"),
+        "run_id": run_id,
+    }
+
+
+def _local_target_to_api(target: dict[str, str | None]) -> dict[str, str | None]:
+    return {
+        "entityType": target.get("entity_type"),
+        "entityId": target.get("entity_id"),
+        "projectId": target.get("project_id"),
+        "experimentId": target.get("experiment_id"),
+        "runId": target.get("run_id"),
+    }
+
+
 def _search_related_mlflow_traces(
     *,
     experiment_id: str,
@@ -225,6 +251,25 @@ def _fetch_mlflow_run_targets(db_execution_id: str | None) -> list[dict[str, str
         return []
 
     targets: list[dict[str, str | None]] = []
+    api_mode = workflow_data_api_mode()
+    if api_mode != "postgres":
+        try:
+            api_targets = workflow_data_client.get_mlflow_run_targets(str(db_execution_id))
+            for target in api_targets:
+                normalized = _api_target_to_local(target)
+                if normalized:
+                    targets.append(normalized)
+        except Exception as exc:  # noqa: BLE001 - lineage is best effort
+            logger.warning(
+                "[MLflow Finalize] workflow-data failed to load MLflow run targets for %s: %s",
+                db_execution_id,
+                exc,
+            )
+            if api_mode == "http":
+                return []
+        else:
+            return targets
+
     conn = None
     try:
         import psycopg2
@@ -424,6 +469,30 @@ def _record_lineage_links(
 ) -> None:
     if not targets:
         return
+    api_mode = workflow_data_api_mode()
+    if api_mode != "postgres":
+        try:
+            api_targets = [
+                _local_target_to_api(target)
+                for target in targets
+                if target.get("entity_type") and target.get("entity_id") and target.get("run_id")
+            ]
+            if not api_targets:
+                return
+            workflow_data_client.upsert_mlflow_trace_lineage(
+                {
+                    "traceId": trace_id,
+                    "targets": api_targets,
+                    "source": source,
+                    "attrs": attrs or {},
+                }
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - lineage is best effort
+            logger.warning("[MLflow Finalize] workflow-data lineage link recording failed: %s", exc)
+            if api_mode == "http":
+                return
+
     conn = None
     try:
         import psycopg2

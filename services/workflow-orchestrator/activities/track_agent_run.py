@@ -12,9 +12,9 @@ import json
 import logging
 from typing import Any
 
-import psycopg2
 import requests
 
+from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
 from core.config import config
 from tracing import start_activity_span
 
@@ -110,6 +110,10 @@ def _extract_workspace_ref(result: Any) -> str | None:
     return None
 
 
+def _use_workflow_data_api() -> bool:
+    return workflow_data_api_mode() != "postgres"
+
+
 def track_agent_run_scheduled(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """
     Insert/update a scheduled workflow_agent_runs row.
@@ -165,7 +169,41 @@ def track_agent_run_scheduled(ctx, input_data: dict[str, Any]) -> dict[str, Any]
 
     with start_activity_span("activity.track_agent_run_scheduled", otel, attrs):
         try:
+            api_mode = workflow_data_api_mode()
+            if _use_workflow_data_api():
+                try:
+                    workflow_data_client.schedule_agent_run(
+                        {
+                            "id": run_id,
+                            "workflowExecutionId": workflow_execution_id,
+                            "workflowId": workflow_id,
+                            "nodeId": node_id,
+                            "mode": mode,
+                            "agentWorkflowId": agent_workflow_id,
+                            "daprInstanceId": dapr_instance_id,
+                            "parentExecutionId": parent_execution_id,
+                            "workspaceRef": workspace_ref,
+                            "artifactRef": artifact_ref,
+                        }
+                    )
+                    return {"success": True, "id": run_id}
+                except Exception as exc:
+                    if api_mode == "http":
+                        logger.warning(
+                            "[Track Agent Run] workflow-data scheduled row failed in strict mode %s: %s",
+                            run_id,
+                            exc,
+                        )
+                        return {"success": False, "id": run_id, "error": str(exc)}
+                    logger.warning(
+                        "[Track Agent Run] workflow-data scheduled row failed; falling back to Postgres %s: %s",
+                        run_id,
+                        exc,
+                    )
+
             db_url = _get_database_url()
+            import psycopg2
+
             conn = psycopg2.connect(db_url)
             try:
                 with conn.cursor() as cur:
@@ -277,7 +315,37 @@ def track_agent_run_completed(ctx, input_data: dict[str, Any]) -> dict[str, Any]
 
     with start_activity_span("activity.track_agent_run_completed", otel, attrs):
         try:
+            api_mode = workflow_data_api_mode()
+            if _use_workflow_data_api():
+                try:
+                    workflow_data_client.update_agent_run(
+                        run_id,
+                        {
+                            "status": status,
+                            "result": result_value,
+                            "error": error,
+                            "workspaceRef": workspace_ref,
+                            "eventPublished": mark_event_published,
+                        },
+                    )
+                    return {"success": True, "id": run_id, "status": status}
+                except Exception as exc:
+                    if api_mode == "http":
+                        logger.warning(
+                            "[Track Agent Run] workflow-data completion row failed in strict mode %s: %s",
+                            run_id,
+                            exc,
+                        )
+                        return {"success": False, "id": run_id, "error": str(exc)}
+                    logger.warning(
+                        "[Track Agent Run] workflow-data completion row failed; falling back to Postgres %s: %s",
+                        run_id,
+                        exc,
+                    )
+
             db_url = _get_database_url()
+            import psycopg2
+
             conn = psycopg2.connect(db_url)
             try:
                 with conn.cursor() as cur:
@@ -344,7 +412,34 @@ def track_agent_run_running(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
 
     with start_activity_span("activity.track_agent_run_running", otel, attrs):
         try:
+            api_mode = workflow_data_api_mode()
+            if _use_workflow_data_api():
+                try:
+                    workflow_data_client.update_agent_run(
+                        run_id,
+                        {
+                            "status": "running",
+                            "result": input_data.get("result"),
+                        },
+                    )
+                    return {"success": True, "id": run_id, "status": "running"}
+                except Exception as exc:
+                    if api_mode == "http":
+                        logger.warning(
+                            "[Track Agent Run] workflow-data running row failed in strict mode %s: %s",
+                            run_id,
+                            exc,
+                        )
+                        return {"success": False, "id": run_id, "error": str(exc)}
+                    logger.warning(
+                        "[Track Agent Run] workflow-data running row failed; falling back to Postgres %s: %s",
+                        run_id,
+                        exc,
+                    )
+
             db_url = _get_database_url()
+            import psycopg2
+
             conn = psycopg2.connect(db_url)
             try:
                 with conn.cursor() as cur:

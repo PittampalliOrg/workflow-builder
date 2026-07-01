@@ -90,6 +90,14 @@ if "dapr.ext.workflow._durabletask.internal.protos" not in sys.modules:
         "dapr.ext.workflow._durabletask.internal.orchestrator_service_pb2_grpc"
     ] = pb_grpc_module
 
+    durabletask_module.internal = internal_module
+    internal_module.protos = pb_module
+    internal_module.orchestrator_service_pb2_grpc = pb_grpc_module
+
+# This suite imports app.py directly and needs a deterministic lightweight Dapr
+# surface even when another collection step already imported the real namespace
+# package from the editable repo/venv.
+sys.modules.pop("dapr", None)
 if "dapr" not in sys.modules:
     dapr_module = types.ModuleType("dapr")
     ext_module = types.ModuleType("dapr.ext")
@@ -158,7 +166,11 @@ if "dapr" not in sys.modules:
         LINEAGE="LINEAGE",
     )
     workflow_module.when_any = lambda tasks: {"kind": "when_any", "tasks": tasks}
+    workflow_module._durabletask = sys.modules.get("dapr.ext.workflow._durabletask")
     clients_module.DaprClient = _FakeDaprClient
+    dapr_module.ext = ext_module
+    dapr_module.clients = clients_module
+    ext_module.workflow = workflow_module
 
     sys.modules["dapr"] = dapr_module
     sys.modules["dapr.ext"] = ext_module
@@ -275,7 +287,12 @@ def _load_module(name: str, relative_path: str):
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load module from {module_path}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(name, None)
+        raise
     return module
 
 
@@ -1192,7 +1209,10 @@ def test_sw_workflow_failure_schedules_mlflow_finalizer_with_error_after_cleanup
         ),
     )
 
-    execution = next(workflow_gen)
+    node_update = next(workflow_gen)
+    assert node_update["activity"] == "update_execution_node"
+
+    execution = workflow_gen.send({"success": True})
     assert execution["activity"] == "execute_action"
 
     persisted = workflow_gen.send({"success": False, "error": "forced failure"})
@@ -1232,8 +1252,13 @@ def test_sw_workflow_dispatches_task_activity_otel_context(monkeypatch):
         ),
     )
 
-    execution = next(workflow_gen)
+    node_update = next(workflow_gen)
+    assert node_update["activity"] == "update_execution_node"
 
+    started = workflow_gen.send({"success": True})
+    assert started["activity"] == "log_node_start"
+
+    execution = workflow_gen.send({"logId": "log_profile"})
     assert execution["activity"] == "execute_action"
     otel = execution["input"]["_otel"]
     assert otel["traceId"] == "1234567890abcdef1234567890abcdef"
@@ -1242,6 +1267,60 @@ def test_sw_workflow_dispatches_task_activity_otel_context(monkeypatch):
     assert otel["workflow.node.sequence"] == "0"
     assert "workflow.activity.correlation_id=db_exec_123:profile:0" in otel["baggage"]
     assert "workflow.node.action_type=workspace/profile" in otel["baggage"]
+
+
+def test_sw_workflow_goal_plan_persists_plan_artifact(monkeypatch):
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    ctx = _FakeTerminalWorkflowCtx()
+    workflow_gen = SW_WORKFLOW.sw_workflow(
+        ctx,
+        _terminal_workflow_input(
+            [
+                {
+                    "plan_finalize": {
+                        "call": "goal/plan",
+                        "with": {
+                            "fromText": json.dumps(
+                                {
+                                    "objective": "ship workflow-data",
+                                    "acceptanceCriteria": ["strict mode passes"],
+                                    "evidence": [],
+                                }
+                            )
+                        },
+                    }
+                }
+            ]
+        ),
+    )
+
+    node_update = next(workflow_gen)
+    assert node_update["activity"] == "update_execution_node"
+
+    execution = workflow_gen.send({"success": True})
+    assert execution["activity"] == "execute_action"
+
+    persisted = workflow_gen.send(
+        {
+            "success": True,
+            "data": {
+                "goalSpec": {
+                    "objective": "ship workflow-data",
+                    "acceptanceCriteria": ["strict mode passes"],
+                    "evidence": [],
+                },
+                "rationale": "parsed from planner output",
+                "lint": {"warnings": []},
+            },
+        }
+    )
+    assert persisted["activity"] == "persist_plan_artifact"
+    assert persisted["input"]["artifactRef"] == "plan_db_exec_123_plan_finalize"
+    assert persisted["input"]["workflowId"] == "wf_test"
+    assert persisted["input"]["nodeId"] == "plan_finalize"
+    assert persisted["input"]["goal"] == "ship workflow-data"
+    assert persisted["input"]["artifactType"] == "goal_spec_v1"
+    assert persisted["input"]["planJson"]["goalSpec"]["objective"] == "ship workflow-data"
 
 
 def test_sw_workflow_parse_failure_schedules_error_finalizer_when_trace_exists(monkeypatch):
@@ -1593,6 +1672,9 @@ def test_durable_run_routes_through_session_bridge():
         def create_timer(self, timeout):
             return _FakeWorkflowTask("timer", timeout=timeout)
 
+        def wait_for_external_event(self, event_name):
+            return _FakeWorkflowTask("external_event", result={}, name=event_name)
+
     ctx = _FakeCtx()
     workflow_gen = SW_WORKFLOW._handle_call_task(
         ctx,
@@ -1649,7 +1731,7 @@ def test_durable_run_routes_through_session_bridge():
         }
     )
     assert wait_yield["kind"] == "when_any"
-    child_task, timer_task = wait_yield["tasks"]
+    child_task, cancel_task = wait_yield["tasks"]
     assert child_task.kind == "call_child_workflow"
     assert child_task.name == "session_workflow"
     assert child_task.app_id == "agent-runtime-test"
@@ -1666,7 +1748,8 @@ def test_durable_run_routes_through_session_bridge():
     assert child_task.input["sandboxName"] == "ws-test-123"
     assert child_task.input["workspaceRef"] == "ws_test_123"
     assert child_task.input["_message_metadata"]["agentSlug"] == "durable-validation"
-    assert timer_task.kind == "timer"
+    assert cancel_task.kind == "external_event"
+    assert cancel_task.name == "workflow.cancel"
 
     with pytest.raises(StopIteration) as stop:
         workflow_gen.send(child_task)
@@ -1729,6 +1812,9 @@ def test_durable_run_session_bridge_passes_own_history_propagation():
 
         def create_timer(self, timeout):
             return _FakeWorkflowTask("timer", timeout=timeout)
+
+        def wait_for_external_event(self, event_name):
+            return _FakeWorkflowTask("external_event", result={}, name=event_name)
 
     workflow_gen = SW_WORKFLOW._handle_call_task(
         _FakeCtx(),
@@ -1895,7 +1981,8 @@ def test_durable_run_rejects_invalid_history_propagation():
         next(workflow_gen)
 
 
-def test_durable_run_session_bridge_times_out_when_child_does_not_finish():
+def test_durable_run_session_bridge_times_out_when_child_does_not_finish(monkeypatch):
+    monkeypatch.setenv("SW_DURABLE_RUN_PARENT_TIMER", "true")
     workflow = types.SimpleNamespace(
         use=None,
         document=types.SimpleNamespace(name="test-workflow"),

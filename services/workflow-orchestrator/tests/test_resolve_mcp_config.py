@@ -9,9 +9,20 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+if "activities" not in sys.modules:
+    activities_module = types.ModuleType("activities")
+    activities_module.__path__ = [str(ROOT / "activities")]
+    sys.modules["activities"] = activities_module
+
 if "requests" not in sys.modules:
     requests_module = types.ModuleType("requests")
     requests_module.get = lambda *_args, **_kwargs: None
+    requests_module.post = lambda *_args, **_kwargs: None
+    requests_module.request = lambda *_args, **_kwargs: None
+    requests_module.Session = lambda *_args, **_kwargs: types.SimpleNamespace(
+        request=lambda *_req_args, **_req_kwargs: None
+    )
+    requests_module.exceptions = types.SimpleNamespace(RequestException=Exception)
     sys.modules["requests"] = requests_module
 
 if "psycopg2" not in sys.modules:
@@ -65,6 +76,120 @@ class FakeConnection:
         return None
 
 
+class FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self.payload = payload
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self.payload
+
+
+def test_prefers_workflow_data_api_when_configured(monkeypatch):
+    calls = []
+
+    class FakeWorkflowDataClient:
+        def resolve_mcp_config(self, payload):
+            calls.append(payload)
+            return {
+                "mcpServers": [
+                    {
+                        "server_name": "piece_github",
+                        "url": "http://ap-github-service.workflow-builder.svc.cluster.local/mcp",
+                    }
+                ],
+                "warnings": ["resolved through workflow-data"],
+            }
+
+    def fail_connect(_url):
+        raise AssertionError("Postgres should not be used when workflow-data resolves")
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    monkeypatch.setattr(resolve_mcp_config, "workflow_data_client", FakeWorkflowDataClient())
+    monkeypatch.setattr(resolve_mcp_config.psycopg2, "connect", fail_connect)
+
+    result = resolve_mcp_config.resolve_agent_mcp_servers(
+        None,
+        {
+            "workflowId": "wf-1",
+            "projectId": "project-1",
+            "requestedServers": [{"pieceName": "github"}],
+            "includeProjectConnections": True,
+        },
+    )
+
+    assert result == {
+        "mcpServers": [
+            {
+                "server_name": "piece_github",
+                "url": "http://ap-github-service.workflow-builder.svc.cluster.local/mcp",
+            }
+        ],
+        "warnings": ["resolved through workflow-data"],
+    }
+    assert calls == [
+        {
+            "workflowId": "wf-1",
+            "projectId": "project-1",
+            "requestedServers": [{"pieceName": "github"}],
+            "includeProjectConnections": True,
+        }
+    ]
+
+
+def test_workflow_data_api_falls_back_to_postgres_by_default(monkeypatch):
+    rows = [
+        {
+            "id": "mcp_gh",
+            "project_id": "default",
+            "source_type": "nimble_piece",
+            "piece_name": "github",
+            "server_key": None,
+            "connection_external_id": "conn_gh",
+            "display_name": "GitHub",
+            "registry_ref": "ap-github-service",
+            "server_url": "http://ap-github-service:3100/mcp",
+            "metadata": {"transport": "streamable_http"},
+        }
+    ]
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http-fallback-db")
+    monkeypatch.setattr(
+        resolve_mcp_config,
+        "workflow_data_client",
+        types.SimpleNamespace(
+            resolve_mcp_config=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("api down")
+            )
+        ),
+    )
+    monkeypatch.setattr(resolve_mcp_config, "_get_database_url", lambda: "postgres://test")
+    monkeypatch.setattr(
+        resolve_mcp_config.psycopg2,
+        "connect",
+        lambda _url: FakeConnection(rows),
+    )
+
+    result = resolve_mcp_config.resolve_agent_mcp_servers(
+        None,
+        {
+            "projectId": "default",
+            "requestedServers": [{"pieceName": "github"}],
+        },
+    )
+
+    assert result["warnings"] == []
+    assert result["mcpServers"][0]["pieceName"] == "github"
+    assert (
+        result["mcpServers"][0]["url"]
+        == "http://ap-github-service.workflow-builder.svc.cluster.local/mcp"
+    )
+
+
 def test_resolves_logical_profile_server_to_project_connection(monkeypatch):
     rows = [
         {
@@ -107,11 +232,11 @@ def test_resolves_logical_profile_server_to_project_connection(monkeypatch):
             "server_name": "piece_github",
             "displayName": "GitHub",
             "sourceType": "nimble_piece",
-                "pieceName": "github",
-                "connectionExternalId": "conn_1",
-                "transport": "streamable_http",
-                # per-agent allowedTools now reaches the piece server's ?tools=
-                "url": "http://piece-mcp-server.workflow-builder.svc.cluster.local/mcp?tools=list_repositories",
+            "pieceName": "github",
+            "connectionExternalId": "conn_1",
+            "transport": "streamable_http",
+            # per-agent allowedTools now reaches the piece server's ?tools=
+            "url": "http://piece-mcp-server.workflow-builder.svc.cluster.local/mcp?tools=list_repositories",
             "headers": {"X-Connection-External-Id": "conn_1"},
             "allowedTools": ["list_repositories"],
         }

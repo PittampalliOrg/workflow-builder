@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import tailwindcss from '@tailwindcss/vite';
 import { sveltekit } from '@sveltejs/kit/vite';
-import { defineConfig, type Plugin } from 'vite';
+import type { Plugin } from 'vite';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 /**
  * Dev-only live-sync endpoint for the `workflow-builder-dev` preview pod.
@@ -236,5 +237,8 @@ export default defineConfig({
 	},
 	ssr: {
 		noExternal: ['nats']
+	},
+	test: {
+		exclude: [...configDefaults.exclude, 'tests/e2e/**']
 	}
 });

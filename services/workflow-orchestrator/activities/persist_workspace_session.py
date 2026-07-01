@@ -23,6 +23,7 @@ from typing import Any
 import psycopg2
 import requests
 
+from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
 from core.config import config
 from tracing import start_activity_span
 
@@ -172,6 +173,41 @@ def persist_workspace_session(ctx, input_data: dict[str, Any]) -> dict[str, Any]
     }
     with start_activity_span("activity.persist_workspace_session", otel, attrs):
         try:
+            api_mode = workflow_data_api_mode()
+            if api_mode != "postgres":
+                try:
+                    workflow_data_client.upsert_workspace_session(
+                        {
+                            "workspaceRef": workspace_ref,
+                            "workflowExecutionId": workflow_execution_id,
+                            "name": task_name,
+                            "rootPath": root_path,
+                            "backend": backend,
+                            "enabledTools": enabled_tools,
+                            "status": "active",
+                            "sandboxState": sandbox_state,
+                        }
+                    )
+                    return {"success": True, "workspace_ref": workspace_ref}
+                except Exception as exc:
+                    if api_mode == "http":
+                        logger.warning(
+                            "[Persist Workspace Session] workflow-data upsert failed for %s (exec=%s): %s",
+                            workspace_ref,
+                            workflow_execution_id,
+                            exc,
+                        )
+                        return {
+                            "success": False,
+                            "workspace_ref": workspace_ref,
+                            "error": str(exc),
+                        }
+                    logger.warning(
+                        "[Persist Workspace Session] workflow-data upsert failed for %s; falling back to Postgres",
+                        workspace_ref,
+                        exc_info=True,
+                    )
+
             db_url = _get_database_url()
             conn = psycopg2.connect(db_url, connect_timeout=3)
             try:

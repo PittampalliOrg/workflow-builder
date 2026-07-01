@@ -18,6 +18,7 @@ from typing import Any
 
 import psycopg2
 
+from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
 from activities.persist_workspace_session import _get_database_url
 from tracing import start_activity_span
 
@@ -44,6 +45,40 @@ def register_resumable_workspace(ctx, input_data: dict[str, Any]) -> dict[str, A
     }
     with start_activity_span("activity.register_resumable_workspace", otel, attrs):
         try:
+            api_mode = workflow_data_api_mode()
+            if api_mode != "postgres":
+                try:
+                    workflow_data_client.upsert_workspace_session(
+                        {
+                            "workspaceRef": workspace_ref,
+                            "workflowExecutionId": execution_id,
+                            "name": execution_id,
+                            "rootPath": "/sandbox/work",
+                            "backend": "juicefs",
+                            "enabledTools": [],
+                            "status": "active",
+                            "sandboxState": {},
+                        }
+                    )
+                    return {"success": True, "workspace_ref": workspace_ref}
+                except Exception as exc:  # noqa: BLE001 — best-effort, never fail the run
+                    if api_mode == "http":
+                        logger.warning(
+                            "[Register Resumable Workspace] workflow-data upsert failed for %s (exec=%s): %s",
+                            workspace_ref,
+                            execution_id,
+                            exc,
+                        )
+                        return {
+                            "success": False,
+                            "workspace_ref": workspace_ref,
+                            "error": str(exc),
+                        }
+                    logger.warning(
+                        "[Register Resumable Workspace] workflow-data upsert failed for %s; falling back to Postgres",
+                        workspace_ref,
+                        exc_info=True,
+                    )
             conn = psycopg2.connect(_get_database_url(), connect_timeout=3)
             try:
                 with conn.cursor() as cur:

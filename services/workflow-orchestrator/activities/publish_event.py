@@ -17,6 +17,7 @@ from dapr.clients import DaprClient
 
 from content_tracing import io_attributes
 from core.config import config
+from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
 from .metadata import (
     activity_metadata,
     schema_any_object,
@@ -153,6 +154,24 @@ def _persist_execution_phase(
 ) -> None:
     if not execution_id:
         return
+
+    api_mode = workflow_data_api_mode()
+    if api_mode != "postgres":
+        try:
+            workflow_data_client.patch_execution(
+                execution_id,
+                {
+                    "phase": str(phase) if phase is not None else None,
+                    "progress": int(progress) if progress is not None else None,
+                },
+            )
+            return
+        except Exception:
+            if api_mode == "http":
+                raise
+            logger.exception(
+                "[Publish Event] workflow-data phase update failed; falling back to Postgres"
+            )
 
     db_url = _get_database_url()
     conn = psycopg2.connect(db_url)

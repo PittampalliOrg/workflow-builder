@@ -18,6 +18,7 @@ except Exception:  # pragma: no cover - test harness may provide a lightweight s
     RealDictCursor = None
 
 from core.config import config
+from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
 
 logger = logging.getLogger(__name__)
 
@@ -446,6 +447,28 @@ def _build_server_config(
     return config, None
 
 
+def _resolve_agent_mcp_servers_via_workflow_data_api(
+    input_data: dict[str, Any],
+    requested_servers: list[dict[str, Any]],
+    include_project_connections: bool,
+) -> dict[str, Any] | None:
+    payload = workflow_data_client.resolve_mcp_config(
+        {
+            "workflowId": str(input_data.get("workflowId") or "").strip() or None,
+            "projectId": str(input_data.get("projectId") or "").strip() or None,
+            "requestedServers": requested_servers,
+            "includeProjectConnections": include_project_connections,
+        }
+    )
+    if not isinstance(payload, dict) or not isinstance(payload.get("mcpServers"), list):
+        raise RuntimeError("workflow-data MCP response did not include mcpServers[]")
+    warnings = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
+    return {
+        "mcpServers": payload["mcpServers"],
+        "warnings": [str(item) for item in warnings],
+    }
+
+
 def resolve_agent_mcp_servers(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """Return sanitized MCP server configs for an agent child workflow."""
     workflow_id = str(input_data.get("workflowId") or "").strip()
@@ -467,6 +490,31 @@ def resolve_agent_mcp_servers(ctx, input_data: dict[str, Any]) -> dict[str, Any]
             if _request_has_direct_endpoint(item)
         ]
         return {"mcpServers": direct_servers, "warnings": []}
+
+    api_mode = workflow_data_api_mode()
+    if api_mode != "postgres":
+        try:
+            api_result = _resolve_agent_mcp_servers_via_workflow_data_api(
+                input_data,
+                requested_servers,
+                include_project_connections,
+            )
+            if api_result is not None:
+                logger.info(
+                    "[resolve_agent_mcp_servers] resolved via workflow-data API workflow=%s project=%s servers=%d warnings=%d",
+                    workflow_id,
+                    project_id,
+                    len(api_result.get("mcpServers") or []),
+                    len(api_result.get("warnings") or []),
+                )
+                return api_result
+        except Exception as exc:
+            if api_mode == "http":
+                raise
+            logger.warning(
+                "workflow-data MCP resolve failed; falling back to direct Postgres path: %s",
+                exc,
+            )
 
     warnings: list[str] = []
     servers: list[dict[str, Any]] = []

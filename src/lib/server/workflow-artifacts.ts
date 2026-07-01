@@ -4,16 +4,8 @@
  * Mirrors `browser-artifacts.ts:listBrowserArtifactsByExecutionId` but for the
  * generic `workflow_artifacts` table — feeds the run-detail UI's snapshot.
  */
-import { asc, eq, sql } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { workflowArtifacts, type WorkflowArtifactRow } from '$lib/server/db/schema';
-
-const SLOT_RANK = sql<number>`CASE ${workflowArtifacts.slot}
-	WHEN 'primary' THEN 0
-	WHEN 'secondary' THEN 1
-	WHEN 'aux' THEN 2
-	ELSE 3
-END`;
+import { getApplicationAdapters } from '$lib/server/application';
+import type { WorkflowArtifactRecord as ApplicationWorkflowArtifactRecord } from '$lib/server/application/ports';
 
 export type WorkflowArtifactRecord = {
 	id: string;
@@ -30,7 +22,7 @@ export type WorkflowArtifactRecord = {
 	createdAt: string;
 };
 
-function rowToRecord(row: WorkflowArtifactRow): WorkflowArtifactRecord {
+function rowToRecord(row: ApplicationWorkflowArtifactRecord): WorkflowArtifactRecord {
 	return {
 		id: row.id,
 		nodeId: row.nodeId,
@@ -50,11 +42,8 @@ function rowToRecord(row: WorkflowArtifactRow): WorkflowArtifactRecord {
 export async function listWorkflowArtifactsByExecutionId(
 	workflowExecutionId: string
 ): Promise<WorkflowArtifactRecord[]> {
-	if (!db) throw new Error('Database not configured');
-	const rows = await db
-		.select()
-		.from(workflowArtifacts)
-		.where(eq(workflowArtifacts.workflowExecutionId, workflowExecutionId))
-		.orderBy(SLOT_RANK, asc(workflowArtifacts.createdAt));
+	const rows = await getApplicationAdapters().artifactStore.listWorkflowArtifactsByExecutionId(
+		workflowExecutionId
+	);
 	return rows.map(rowToRecord);
 }

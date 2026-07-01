@@ -429,7 +429,13 @@ export async function confirmDurableStop(
 				err instanceof Error ? err.message : err,
 			);
 		}
+		const finalized = await finalizeConfirmedStop(
+			resolved,
+			"stop confirmed (cross-app wedge force-finalized)",
+		);
 		// Now that the state rows are gone the Dapr purge will 404 — best-effort.
+		// Keep this after the DB finalize so a slow/unhealthy orchestrator purge
+		// cannot leave an already-stopped child run stuck in "running".
 		for (const id of resolved.parentInstanceIds) {
 			try {
 				await cascadeDeps.purgeParent(id);
@@ -437,7 +443,7 @@ export async function confirmDurableStop(
 				/* best-effort */
 			}
 		}
-		return finalizeConfirmedStop(resolved, "stop confirmed (cross-app wedge force-finalized)");
+		return finalized;
 	}
 
 	return { state: "stopping", scope: resolved.scope };

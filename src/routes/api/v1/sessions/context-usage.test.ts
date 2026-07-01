@@ -21,6 +21,7 @@ describe("GET /api/v1/sessions/:id/control/context-usage", () => {
 	beforeEach(() => {
 		getSessionMock.mockReset();
 		dbState.db = dbReturningRows([
+			[{ projectId: null, userId: "user-1" }],
 			[{ eventCount: 3, totalBytes: 1234, turns: 2 }],
 			[{ data: { context_source: "dapr_state", context_input_tokens: 24000 } }],
 			[{ data: { context_source: "provider_usage", context_input_tokens: 23000 } }],

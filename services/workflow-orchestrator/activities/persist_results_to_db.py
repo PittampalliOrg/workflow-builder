@@ -24,6 +24,7 @@ from dapr.clients import DaprClient
 
 from core.config import config
 from core.output_summary import SUMMARY_OUTPUT_KEYS, extract_summary_fields_from_outputs
+from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
 from tracing import extract_otel_trace_id, set_current_span_attrs, start_activity_span
 
 logger = logging.getLogger(__name__)
@@ -382,7 +383,7 @@ def _log_browser_artifacts_to_mlflow(
 def _enrich_mlflow_workflow_run(
     *,
     run_id: str | None,
-    db_url: str,
+    db_url: str | None,
     db_execution_id: str,
     workflow_id: str | None,
     project_id: str | None,
@@ -396,10 +397,20 @@ def _enrich_mlflow_workflow_run(
 ) -> None:
     if not run_id or not _mlflow_enabled():
         return
-    browser_counts = _log_browser_artifacts_to_mlflow(
-        run_id=run_id,
-        db_url=db_url,
-        db_execution_id=db_execution_id,
+    browser_counts = (
+        _log_browser_artifacts_to_mlflow(
+            run_id=run_id,
+            db_url=db_url,
+            db_execution_id=db_execution_id,
+        )
+        if db_url
+        else {
+            "browser_artifacts": 0,
+            "browser_screenshots": 0,
+            "browser_traces": 0,
+            "browser_videos": 0,
+            "browser_assets_logged": 0,
+        }
     )
     _log_mlflow_json_artifact(run_id, "workflow/input.json", workflow_input or {})
     _log_mlflow_json_artifact(run_id, "workflow/output.json", final_output)
@@ -462,6 +473,18 @@ def _coerce_duration_ms(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed >= 0 else None
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _get_database_url() -> str:
@@ -572,6 +595,96 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             phase = "completed" if success else "failed"
             progress = 100
             completed_at = datetime.now(timezone.utc)
+
+            api_mode = workflow_data_api_mode()
+            if api_mode != "postgres":
+                try:
+                    execution_row = workflow_data_client.get_execution(str(db_execution_id)) or {}
+                    started_at = _parse_iso_datetime(execution_row.get("startedAt"))
+                    computed_duration_ms = None
+                    if started_at:
+                        computed_duration_ms = max(
+                            int((completed_at - started_at).total_seconds() * 1000), 0
+                        )
+                    persisted_duration_ms = (
+                        computed_duration_ms
+                        if computed_duration_ms is not None
+                        else duration_ms
+                    )
+                    workflow_data_client.patch_execution(
+                        str(db_execution_id),
+                        {
+                            "output": final_output,
+                            "summaryOutput": summary_fields or None,
+                            "status": status,
+                            "phase": phase,
+                            "progress": progress,
+                            "error": None if success else error,
+                            "completedAt": completed_at.isoformat(),
+                            "duration": (
+                                str(persisted_duration_ms)
+                                if persisted_duration_ms is not None
+                                else None
+                            ),
+                            **(
+                                {"primaryTraceId": trace_id}
+                                if trace_id and not execution_row.get("primaryTraceId")
+                                else {}
+                            ),
+                        },
+                    )
+
+                    persisted_trace_id = execution_row.get("primaryTraceId")
+                    final_trace_id = trace_id or (
+                        str(persisted_trace_id).removeprefix("tr-")
+                        if persisted_trace_id
+                        else None
+                    )
+                    mlflow_run_id = execution_row.get("mlflowRunId")
+                    _enrich_mlflow_workflow_run(
+                        run_id=mlflow_run_id if isinstance(mlflow_run_id, str) else None,
+                        db_url=None,
+                        db_execution_id=str(db_execution_id),
+                        workflow_id=(
+                            str(execution_row.get("workflowId"))
+                            if execution_row.get("workflowId") is not None
+                            else None
+                        ),
+                        project_id=(
+                            str(execution_row.get("projectId"))
+                            if execution_row.get("projectId") is not None
+                            else None
+                        ),
+                        workflow_input=execution_row.get("input"),
+                        trace_id=final_trace_id,
+                        final_output=final_output,
+                        summary_fields=summary_fields,
+                        status=status,
+                        duration_ms=persisted_duration_ms,
+                        outputs_size_chars=outputs_size_chars,
+                    )
+                    _finish_mlflow_run(
+                        mlflow_run_id if isinstance(mlflow_run_id, str) else None,
+                        "FINISHED" if success else "FAILED",
+                    )
+                    logger.info(
+                        "[Persist Results] Successfully persisted output via workflow-data for: %s",
+                        db_execution_id,
+                    )
+                    return {"success": True}
+                except Exception as exc:
+                    if api_mode == "http":
+                        logger.error(
+                            "[Persist Results] workflow-data persistence failed for %s: %s",
+                            db_execution_id,
+                            exc,
+                        )
+                        return {"success": False, "error": str(exc)}
+                    logger.warning(
+                        "[Persist Results] workflow-data persistence failed for %s; falling back to Postgres: %s",
+                        db_execution_id,
+                        exc,
+                    )
 
             db_url = _get_database_url()
             conn = psycopg2.connect(db_url)

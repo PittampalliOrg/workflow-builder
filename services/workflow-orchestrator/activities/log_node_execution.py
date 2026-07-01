@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -21,6 +22,7 @@ import psycopg2
 import requests
 
 from core.config import config
+from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +87,14 @@ def _json_dumps_safe(value: Any) -> str | None:
         return json.dumps(str(value))
 
 
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _use_workflow_data_api() -> bool:
+    return workflow_data_api_mode() != "postgres"
+
+
 def log_node_start(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """
     Insert a 'running' row into workflow_execution_logs.
@@ -119,6 +129,23 @@ def log_node_start(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     log_id = str(uuid.uuid4())
 
     try:
+        if _use_workflow_data_api():
+            workflow_data_client.append_execution_log(
+                execution_id,
+                {
+                    "id": log_id,
+                    "nodeId": node_id,
+                    "nodeName": node_name,
+                    "nodeType": node_type,
+                    "activityName": action_type,
+                    "status": "running",
+                    "input": node_input,
+                    "startedAt": _iso_now(),
+                },
+            )
+            logger.info(f"[Log Node Execution] Inserted running log via workflow-data: {log_id}")
+            return {"success": True, "logId": log_id}
+
         db_url = _get_database_url()
         conn = psycopg2.connect(db_url)
         try:
@@ -151,6 +178,23 @@ def log_node_start(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         return {"success": True, "logId": log_id}
 
     except Exception as e:
+        if workflow_data_api_mode() == "http":
+            logger.error("[Log Node Execution] workflow-data log_node_start failed: %s", e)
+            return {"success": False, "logId": log_id, "error": str(e)}
+        if _use_workflow_data_api():
+            logger.warning(
+                "[Log Node Execution] workflow-data log_node_start failed; falling back to Postgres: %s",
+                e,
+            )
+            try:
+                mode = os.environ.get("WORKFLOW_DATA_API_MODE")
+                os.environ["WORKFLOW_DATA_API_MODE"] = "postgres"
+                return log_node_start(ctx, input_data)
+            finally:
+                if mode is None:
+                    os.environ.pop("WORKFLOW_DATA_API_MODE", None)
+                else:
+                    os.environ["WORKFLOW_DATA_API_MODE"] = mode
         logger.error(f"[Log Node Execution] Failed to log node start: {e}")
         # Don't throw - logging failure shouldn't break workflow execution
         return {"success": False, "logId": log_id, "error": str(e)}
@@ -179,6 +223,16 @@ def update_execution_node(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     if not execution_id:
         return {"success": False}
     try:
+        if _use_workflow_data_api():
+            workflow_data_client.patch_execution(
+                execution_id,
+                {
+                    "currentNodeId": node_id,
+                    "currentNodeName": node_name,
+                },
+            )
+            return {"success": True}
+
         db_url = _get_database_url()
         conn = psycopg2.connect(db_url)
         try:
@@ -196,6 +250,23 @@ def update_execution_node(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             conn.close()
         return {"success": True}
     except Exception as e:  # noqa: BLE001 — logging must never break the workflow
+        if workflow_data_api_mode() == "http":
+            logger.warning("[Update Execution Node] workflow-data update failed: %s", e)
+            return {"success": False, "error": str(e)}
+        if _use_workflow_data_api():
+            logger.warning(
+                "[Update Execution Node] workflow-data update failed; falling back to Postgres: %s",
+                e,
+            )
+            try:
+                mode = os.environ.get("WORKFLOW_DATA_API_MODE")
+                os.environ["WORKFLOW_DATA_API_MODE"] = "postgres"
+                return update_execution_node(ctx, input_data)
+            finally:
+                if mode is None:
+                    os.environ.pop("WORKFLOW_DATA_API_MODE", None)
+                else:
+                    os.environ["WORKFLOW_DATA_API_MODE"] = mode
         logger.warning("[Update Execution Node] failed: %s", e)
         return {"success": False, "error": str(e)}
 
@@ -218,6 +289,7 @@ def log_node_complete(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Dict with success status
     """
+    execution_id = input_data.get("executionId", "")
     log_id = input_data.get("logId", "")
     status = input_data.get("status", "success")
     output = input_data.get("output")
@@ -230,6 +302,23 @@ def log_node_complete(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     )
 
     try:
+        if _use_workflow_data_api():
+            if not execution_id:
+                raise RuntimeError("executionId is required for workflow-data log completion")
+            workflow_data_client.update_execution_log(
+                str(execution_id),
+                str(log_id),
+                {
+                    "status": status,
+                    "output": output,
+                    "error": error,
+                    "completedAt": _iso_now(),
+                    "duration": str(duration_ms) if duration_ms is not None else None,
+                },
+            )
+            logger.info(f"[Log Node Execution] Updated log via workflow-data to {status}: {log_id}")
+            return {"success": True}
+
         db_url = _get_database_url()
         conn = psycopg2.connect(db_url)
         try:
@@ -261,6 +350,23 @@ def log_node_complete(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         return {"success": True}
 
     except Exception as e:
+        if workflow_data_api_mode() == "http":
+            logger.error("[Log Node Execution] workflow-data log_node_complete failed: %s", e)
+            return {"success": False, "error": str(e)}
+        if _use_workflow_data_api():
+            logger.warning(
+                "[Log Node Execution] workflow-data log_node_complete failed; falling back to Postgres: %s",
+                e,
+            )
+            try:
+                mode = os.environ.get("WORKFLOW_DATA_API_MODE")
+                os.environ["WORKFLOW_DATA_API_MODE"] = "postgres"
+                return log_node_complete(ctx, input_data)
+            finally:
+                if mode is None:
+                    os.environ.pop("WORKFLOW_DATA_API_MODE", None)
+                else:
+                    os.environ["WORKFLOW_DATA_API_MODE"] = mode
         logger.error(f"[Log Node Execution] Failed to log node complete: {e}")
         # Don't throw - logging failure shouldn't break workflow execution
         return {"success": False, "error": str(e)}

@@ -30,8 +30,7 @@ import logging
 import os
 from typing import Any
 
-import requests
-
+from activities.workflow_data_client import workflow_data_client
 from tracing import set_current_span_attrs, start_activity_span
 
 logger = logging.getLogger("activities.persist_artifact")
@@ -128,12 +127,7 @@ def persist_workflow_artifact(ctx, input_data: dict[str, Any]) -> dict[str, Any]
         "node.id": input_data.get("nodeId"),
     })
     with start_activity_span("activity.persist_workflow_artifact", otel, attrs):
-        url = os.environ.get(
-            "WORKFLOW_BUILDER_URL",
-            "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
-        ).rstrip("/")
-        internal_token = os.environ.get("INTERNAL_API_TOKEN", "")
-        if not internal_token:
+        if not os.environ.get("INTERNAL_API_TOKEN", "").strip():
             raise RuntimeError(
                 "INTERNAL_API_TOKEN is not configured — persist_workflow_artifact requires it"
             )
@@ -153,21 +147,7 @@ def persist_workflow_artifact(ctx, input_data: dict[str, Any]) -> dict[str, Any]
         }
 
         try:
-            response = requests.post(
-                f"{url}/api/internal/workflows/executions/{execution_id}/artifacts",
-                json=body,
-                headers={"X-Internal-Token": internal_token},
-                timeout=10,
-            )
-            if response.status_code >= 400:
-                # Don't raise — observability must not break the workflow.
-                logger.warning(
-                    "persist_workflow_artifact failed: status=%s body=%s artifactId=%s",
-                    response.status_code,
-                    response.text[:200],
-                    artifact_id,
-                )
-                return {"ok": False, "id": artifact_id, "status": response.status_code}
+            workflow_data_client.upsert_workflow_artifact(execution_id, body)
             return {"ok": True, "id": artifact_id}
         except Exception as exc:
             # Best-effort. Workflow continues regardless.

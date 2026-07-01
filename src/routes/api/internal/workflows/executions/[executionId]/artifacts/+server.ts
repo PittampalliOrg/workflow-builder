@@ -14,10 +14,8 @@
  */
 
 import { error, json } from "@sveltejs/kit";
-import { eq } from "drizzle-orm";
 import type { RequestHandler } from "./$types";
-import { db } from "$lib/server/db";
-import { workflowArtifacts, workflowExecutions } from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
 import { requireInternal } from "$lib/server/internal-auth";
 
 type IncomingArtifact = {
@@ -38,7 +36,6 @@ const VALID_SLOTS = new Set(["primary", "secondary", "aux"]);
 
 export const POST: RequestHandler = async ({ params, request }) => {
 	requireInternal(request);
-	if (!db) return error(503, "Database not configured");
 
 	const { executionId } = params;
 	if (!executionId) return error(400, "executionId required");
@@ -66,20 +63,10 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		return error(400, "either inlinePayload or fileId must be set");
 	}
 
-	// Verify the execution exists. Cascade-delete on the FK would otherwise
-	// silently 404 the row later if the caller had the wrong id.
-	const exec = await db
-		.select({ id: workflowExecutions.id })
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, executionId))
-		.limit(1);
-	if (!exec[0]) return error(404, `execution ${executionId} not found`);
-
-	// UPSERT by deterministic id. Activity retries become no-ops (or update
-	// in-place if the producer recomputed the payload).
-	await db
-		.insert(workflowArtifacts)
-		.values({
+	try {
+		// The adapter verifies the execution before upserting. Activity retries
+		// remain no-ops when the orchestrator supplies a deterministic id.
+		await getApplicationAdapters().workflowData.upsertWorkflowArtifact({
 			id: body.id,
 			workflowExecutionId: executionId,
 			nodeId: body.nodeId ?? null,
@@ -92,22 +79,13 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			contentType: body.contentType ?? null,
 			sizeBytes: body.sizeBytes ?? null,
 			metadata: body.metadata ?? null,
-		})
-		.onConflictDoUpdate({
-			target: workflowArtifacts.id,
-			set: {
-				nodeId: body.nodeId ?? null,
-				slot: body.slot ?? null,
-				kind: body.kind,
-				title: body.title,
-				description: body.description ?? null,
-				inlinePayload: body.inlinePayload ?? null,
-				fileId: body.fileId ?? null,
-				contentType: body.contentType ?? null,
-				sizeBytes: body.sizeBytes ?? null,
-				metadata: body.metadata ?? null,
-			},
 		});
+	} catch (err) {
+		const message = err instanceof Error ? err.message : "artifact write failed";
+		if (message === "Database not configured") return error(503, message);
+		if (message.includes(`execution ${executionId} not found`)) return error(404, message);
+		throw err;
+	}
 
 	return json({ ok: true, id: body.id });
 };

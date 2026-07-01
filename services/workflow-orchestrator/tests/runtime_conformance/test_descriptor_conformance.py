@@ -58,6 +58,17 @@ EXPECTED: dict[str, dict[str, object]] = {
         "supportsMcp": True,
         "capabilitiesVerified": True,
     },
+    "dapr-agent-py-juicefs": {
+        "family": "durable-session",
+        "durabilityGranularity": "per-activity",
+        "workflowDispatch": "auto-turn",
+        "multiProvider": True,
+        "ownsSandbox": False,
+        "requiresWarmPool": False,
+        "requiresBrowserSidecars": False,
+        "supportsMcp": True,
+        "capabilitiesVerified": False,
+    },
     "browser-use-agent": {
         "family": "browser",
         "durabilityGranularity": "per-activity",

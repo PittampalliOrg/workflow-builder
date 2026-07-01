@@ -603,6 +603,13 @@
       "when": 1782046800000,
       "tag": "0091_execution_resume_from_node",
       "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1782937110000,
+      "tag": "0093_workflow_plan_artifacts",
+      "breakpoints": true
     }
   ]
 }

@@ -38,19 +38,34 @@ describe("isValidPresetRef", () => {
 describe("resolveCompiledPromptStack", () => {
 	it("returns empty arrays when no refs", () => {
 		const out = resolveCompiledPromptStack([], [], []);
-		expect(out).toEqual({ static: [], dynamic: [] });
+		expect(out).toEqual({
+			static: [],
+			dynamic: [],
+			staticManifest: [],
+			dynamicManifest: [],
+		});
 	});
 
 	it("resolves a static ref to its system content", () => {
 		const rows = [rowFor("p_static", 1, "Static prefix prose.")];
 		const out = resolveCompiledPromptStack([STATIC_REF], [], rows);
-		expect(out).toEqual({ static: ["Static prefix prose."], dynamic: [] });
+		expect(out).toEqual({
+			static: ["Static prefix prose."],
+			dynamic: [],
+			staticManifest: [],
+			dynamicManifest: [],
+		});
 	});
 
 	it("resolves a dynamic ref to its system content", () => {
 		const rows = [rowFor("p_dynamic", 2, "Dynamic tail prose.")];
 		const out = resolveCompiledPromptStack([], [DYNAMIC_REF], rows);
-		expect(out).toEqual({ static: [], dynamic: ["Dynamic tail prose."] });
+		expect(out).toEqual({
+			static: [],
+			dynamic: ["Dynamic tail prose."],
+			staticManifest: [],
+			dynamicManifest: [],
+		});
 	});
 
 	it("preserves binding order in static and dynamic arrays", () => {
@@ -158,6 +173,11 @@ describe("resolveCompiledPromptStack", () => {
 			rowFor("p_dynamic", 2, "Dynamic."),
 		];
 		const out = resolveCompiledPromptStack([STATIC_REF], [DYNAMIC_REF], rows);
-		expect(out).toEqual({ static: ["Static."], dynamic: ["Dynamic."] });
+		expect(out).toEqual({
+			static: ["Static."],
+			dynamic: ["Dynamic."],
+			staticManifest: [],
+			dynamicManifest: [],
+		});
 	});
 });

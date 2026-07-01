@@ -25,6 +25,10 @@ describe("agent model options", () => {
       "foundry/DeepSeek-V4-Flash",
       "deepseek/deepseek-v4-pro",
       "deepseek/deepseek-v4-flash",
+      "zai/glm-5.2",
+      "zai/glm-5-turbo",
+      "zai/glm-5.1",
+      "zai/glm-5v-turbo",
       "alibaba/qwen3-coder-plus",
       "kimi/kimi-k2.6",
       "kimi/kimi-k2.5",
@@ -80,6 +84,7 @@ describe("agent model options", () => {
     expect(canonicalAgentModelSpec("deepseek-v4-flash")).toBe(
       "deepseek/deepseek-v4-flash",
     );
+    expect(canonicalAgentModelSpec("glm-5.2")).toBe("zai/glm-5.2");
     expect(canonicalAgentModelSpec("qwen3-coder-plus")).toBe(
       "alibaba/qwen3-coder-plus",
     );
@@ -140,6 +145,7 @@ describe("agent model options", () => {
     );
     expect(agentModelLabel("deepseek-v4-pro")).toBe("DeepSeek V4 Pro");
     expect(agentModelLabel("deepseek-v4-flash")).toBe("DeepSeek V4 Flash");
+    expect(agentModelLabel("glm-5.2")).toBe("Z.AI GLM 5.2");
     expect(agentModelLabel("qwen3-coder-plus")).toBe(
       "Alibaba Qwen3-Coder Plus",
     );

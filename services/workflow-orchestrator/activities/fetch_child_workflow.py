@@ -13,6 +13,8 @@ from typing import Any
 
 import dapr.ext.workflow as wf
 
+from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,6 +29,25 @@ def _fetch_workflow_from_db(workflow_id: str) -> dict[str, Any]:
     """Fetch a workflow definition from the database by ID."""
     from app import _fetch_workflow_from_db as fetch_wf
     return fetch_wf(workflow_id)
+
+
+def _fetch_workflow(workflow_id: str) -> dict[str, Any]:
+    """Fetch a workflow definition through the application boundary."""
+    mode = workflow_data_api_mode()
+    if mode != "postgres":
+        try:
+            workflow = workflow_data_client.get_workflow(workflow_id, by="id")
+            if not workflow:
+                raise RuntimeError(f"Workflow {workflow_id} not found")
+            return workflow
+        except Exception:
+            if mode == "http":
+                raise
+            logger.warning(
+                "[Fetch Child Workflow] workflow-data lookup failed; falling back to Postgres",
+                exc_info=True,
+            )
+    return _fetch_workflow_from_db(workflow_id)
 
 
 def _topological_sort(nodes: list[dict], edges: list[dict]) -> list[str]:
@@ -118,8 +139,7 @@ def fetch_child_workflow(ctx: wf.WorkflowActivityContext, input: dict) -> dict:
             f"{parent_chain}"
         )
 
-    # Fetch from DB
-    wf_data = _fetch_workflow_from_db(workflow_id)
+    wf_data = _fetch_workflow(workflow_id)
     raw_nodes = wf_data["nodes"]
     raw_edges = wf_data["edges"]
 

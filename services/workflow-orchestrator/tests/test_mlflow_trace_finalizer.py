@@ -152,6 +152,7 @@ def test_emit_mlflow_trace_root_span_sets_error_status(monkeypatch):
         "WORKFLOW_ORCHESTRATOR_MLFLOW_OTLP_ENDPOINT",
         "http://mlflow:5000/v1/traces",
     )
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318/v1/traces")
     monkeypatch.setattr(tracing.requests, "post", fake_post)
 

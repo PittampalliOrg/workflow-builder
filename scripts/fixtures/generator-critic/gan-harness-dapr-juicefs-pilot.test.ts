@@ -83,7 +83,7 @@ describe("GAN harness dapr-agent-py-juicefs PILOT fixture", () => {
 		walkNodes(spec.do, (name, node) => {
 			if (node.call !== "durable/run") return;
 			agents++;
-			expect(node.with?.workspaceRef, `${name} workspaceRef`).toContain("runtime.executionId");
+			expect(node.with?.workspaceRef, `${name} workspaceRef`).toContain("runtime.workspaceExecutionId");
 			expect(node.with?.sandboxPolicy, `${name} sandboxPolicy`).toBeUndefined();
 			if (node.with?.cwd) expect(node.with.cwd, `${name} cwd`).toMatch(/^\/sandbox\/work/);
 		});

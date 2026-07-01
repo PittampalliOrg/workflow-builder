@@ -277,6 +277,37 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert "cpu" not in container["resources"]["limits"]
 
 
+def test_agent_workflow_host_can_prefix_pubsub_topics(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_AGENT_TOPIC_PREFIX", "wbpreview-codex-nats")
+
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+            runId="run_1",
+            instanceId="sympy__sympy-20590",
+            executionClass="benchmark-fast",
+            timeoutSeconds=900,
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            agentHostImage="ghcr.io/example/dapr-agent-py-sandbox:git-1",
+        ),
+    )
+
+    env = {
+        entry["name"]: entry.get("value")
+        for entry in manifest["spec"]["podTemplate"]["spec"]["containers"][0]["env"]
+    }
+    assert env["AGENT_SERVICE_NAME"] == "agent-session-abc123"
+    assert env["AGENT_TOPIC"] == "wbpreview-codex-nats.agent-session-abc123.requests"
+    assert (
+        env["AGENT_BROADCAST_TOPIC"]
+        == "wbpreview-codex-nats.agent-session-abc123.broadcast"
+    )
+
+
 def test_agent_workflow_host_sandbox_can_override_resource_limits() -> None:
     manifest = build_agent_workflow_host_sandbox_manifest(
         AgentWorkflowHostRequest(

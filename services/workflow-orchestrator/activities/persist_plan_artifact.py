@@ -5,9 +5,9 @@ import logging
 import uuid
 from typing import Any
 
-import psycopg2
 import requests
 
+from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
 from core.config import config
 from tracing import start_activity_span
 
@@ -38,6 +38,10 @@ def _get_database_url() -> str:
         raise RuntimeError("DATABASE_URL not found in Dapr secrets")
     _database_url = db_url
     return db_url
+
+
+def _use_workflow_data_api() -> bool:
+    return workflow_data_api_mode() != "postgres"
 
 
 def persist_plan_artifact(_ctx, input_data: dict[str, Any]) -> dict[str, Any]:
@@ -71,7 +75,49 @@ def persist_plan_artifact(_ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         },
     ):
         try:
+            api_mode = workflow_data_api_mode()
+            if _use_workflow_data_api():
+                try:
+                    result = workflow_data_client.upsert_plan_artifact(
+                        {
+                            "artifactRef": artifact_ref,
+                            "workflowExecutionId": db_execution_id,
+                            "workflowId": workflow_id,
+                            "nodeId": node_id,
+                            "goal": goal,
+                            "planJson": plan_json,
+                            "planMarkdown": plan_markdown,
+                            "sourcePrompt": source_prompt,
+                            "artifactType": artifact_type,
+                            "status": status,
+                            "workspaceRef": workspace_ref,
+                            "clonePath": clone_path,
+                            "metadata": metadata,
+                        }
+                    )
+                    return {
+                        "success": True,
+                        "artifactRef": result.get("artifactRef", artifact_ref),
+                        "storageBackend": result.get(
+                            "storageBackend",
+                            "workflow_plan_artifacts",
+                        ),
+                        "artifactType": result.get("artifactType", artifact_type),
+                        "status": result.get("status", status),
+                    }
+                except Exception as exc:
+                    if api_mode == "http":
+                        logger.error("workflow-data failed to persist plan artifact %s: %s", artifact_ref, exc)
+                        return {"success": False, "error": str(exc)}
+                    logger.warning(
+                        "workflow-data failed to persist plan artifact %s; falling back to Postgres: %s",
+                        artifact_ref,
+                        exc,
+                    )
+
             db_url = _get_database_url()
+            import psycopg2
+
             conn = psycopg2.connect(db_url)
             try:
                 with conn.cursor() as cur:
@@ -165,7 +211,34 @@ def update_plan_artifact_status(_ctx, input_data: dict[str, Any]) -> dict[str, A
         {"artifact.ref": artifact_ref, "artifact.status": status},
     ):
         try:
+            api_mode = workflow_data_api_mode()
+            if _use_workflow_data_api():
+                try:
+                    result = workflow_data_client.update_plan_artifact(
+                        artifact_ref,
+                        {
+                            "status": status,
+                            "metadata": metadata,
+                        },
+                    )
+                    return {
+                        "success": True,
+                        "artifactRef": result.get("artifactRef", artifact_ref),
+                        "status": result.get("status", status),
+                    }
+                except Exception as exc:
+                    if api_mode == "http":
+                        logger.error("workflow-data failed to update plan artifact %s: %s", artifact_ref, exc)
+                        return {"success": False, "error": str(exc)}
+                    logger.warning(
+                        "workflow-data failed to update plan artifact %s; falling back to Postgres: %s",
+                        artifact_ref,
+                        exc,
+                    )
+
             db_url = _get_database_url()
+            import psycopg2
+
             conn = psycopg2.connect(db_url)
             try:
                 with conn.cursor() as cur:
@@ -204,7 +277,36 @@ def fetch_plan_artifact(_ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         {"artifact.ref": artifact_ref},
     ):
         try:
+            api_mode = workflow_data_api_mode()
+            if _use_workflow_data_api():
+                try:
+                    artifact = workflow_data_client.get_plan_artifact(artifact_ref)
+                    if not artifact:
+                        return {"success": False, "error": f"Plan artifact not found: {artifact_ref}"}
+                    return {
+                        "success": True,
+                        "artifactRef": artifact.get("artifactRef", artifact_ref),
+                        "status": artifact.get("status"),
+                        "goal": artifact.get("goal"),
+                        "planJson": artifact.get("planJson"),
+                        "planMarkdown": artifact.get("planMarkdown"),
+                        "metadata": artifact.get("metadata"),
+                        "workspaceRef": artifact.get("workspaceRef"),
+                        "clonePath": artifact.get("clonePath"),
+                    }
+                except Exception as exc:
+                    if api_mode == "http":
+                        logger.error("workflow-data failed to fetch plan artifact %s: %s", artifact_ref, exc)
+                        return {"success": False, "error": str(exc)}
+                    logger.warning(
+                        "workflow-data failed to fetch plan artifact %s; falling back to Postgres: %s",
+                        artifact_ref,
+                        exc,
+                    )
+
             db_url = _get_database_url()
+            import psycopg2
+
             conn = psycopg2.connect(db_url)
             try:
                 with conn.cursor() as cur:

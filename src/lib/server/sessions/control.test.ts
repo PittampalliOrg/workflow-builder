@@ -74,8 +74,7 @@ describe("raiseSessionEvent", () => {
 			podName: "agent-host-agent-session-abc123",
 			podIP: "10.244.1.20",
 		});
-		const fetchMock = vi.fn().mockResolvedValueOnce(new Response("{}", { status: 200 }));
-		vi.stubGlobal("fetch", fetchMock);
+		daprFetchMock.mockResolvedValueOnce(new Response("{}", { status: 200 }));
 
 		const result = await raiseSessionEvent("s1", "session.control.update_agent_config", {
 			patch: { modelSpec: "openai/o3" },
@@ -83,11 +82,10 @@ describe("raiseSessionEvent", () => {
 
 		expect(result.ok).toBe(true);
 		expect(resolveSessionRuntimeTargetMock).toHaveBeenCalledWith("s1");
-		expect(daprFetchMock).not.toHaveBeenCalled();
 		expect(waitForAgentWorkflowHostAppReadyMock).toHaveBeenCalledWith({
 			agentAppId: "agent-session-abc123",
 		});
-		expect(fetchMock).toHaveBeenCalledWith(
+		expect(daprFetchMock).toHaveBeenCalledWith(
 			"http://10.244.1.20:8002/internal/sessions/raise-event",
 			expect.objectContaining({
 				method: "POST",

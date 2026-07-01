@@ -2876,6 +2876,29 @@ def _handle_call_task(
                 }),
             )
 
+    if action_type == "goal/plan":
+        artifact_input = _build_goal_plan_artifact_input(tc, task_name, task_input, result)
+        if artifact_input:
+            try:
+                from activities.persist_plan_artifact import persist_plan_artifact
+
+                persisted_plan = yield ctx.call_activity(
+                    persist_plan_artifact,
+                    input=_freeze(artifact_input),
+                )
+                if isinstance(persisted_plan, dict) and not persisted_plan.get("success", True):
+                    logger.warning(
+                        "[SW Workflow] Failed to persist plan artifact for %s: %s",
+                        task_name,
+                        persisted_plan.get("error") or persisted_plan,
+                    )
+            except Exception as plan_err:
+                logger.warning(
+                    "[SW Workflow] Failed to schedule plan artifact persistence for %s: %s",
+                    task_name,
+                    plan_err,
+                )
+
     # Store in NodeOutputs format for cross-node template resolution
     _store_task_output(tc, task_name, action_type, result)
     tc.completed_tasks.add(task_name)
@@ -2897,6 +2920,68 @@ def _handle_call_task(
         raise RuntimeError(result.get("error") or f"Call task failed: {task_name}")
 
     return result
+
+
+def _stable_plan_artifact_ref(db_execution_id: str, task_name: str) -> str:
+    execution_part = re.sub(r"[^a-zA-Z0-9_-]+", "_", db_execution_id).strip("_")
+    task_part = re.sub(r"[^a-zA-Z0-9_-]+", "_", task_name).strip("_")
+    return f"plan_{execution_part[:64]}_{task_part[:64]}"
+
+
+def _build_goal_plan_artifact_input(
+    tc: TaskContext,
+    task_name: str,
+    task_input: Any,
+    result: Any,
+) -> dict[str, Any] | None:
+    if not tc.db_execution_id or not isinstance(result, dict) or not result.get("success", True):
+        return None
+
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    goal_spec = data.get("goalSpec") or result.get("goalSpec")
+    if not isinstance(goal_spec, dict):
+        return None
+
+    task_input_dict = task_input if isinstance(task_input, dict) else {}
+    goal = str(
+        goal_spec.get("objective")
+        or task_input_dict.get("intent")
+        or task_input_dict.get("prompt")
+        or task_name
+    ).strip()
+    source_prompt = str(
+        task_input_dict.get("fromText")
+        or task_input_dict.get("intent")
+        or task_input_dict.get("prompt")
+        or goal
+    ).strip()
+
+    metadata: dict[str, Any] = {}
+    if "rationale" in data:
+        metadata["rationale"] = data.get("rationale")
+    if "lint" in data:
+        metadata["lint"] = data.get("lint")
+
+    return {
+        "artifactRef": _stable_plan_artifact_ref(tc.db_execution_id, task_name),
+        "dbExecutionId": tc.db_execution_id,
+        "workflowId": tc.workflow_id,
+        "nodeId": task_name,
+        "goal": goal or task_name,
+        "sourcePrompt": source_prompt or goal or task_name,
+        "planJson": {
+            "goalSpec": goal_spec,
+            "rationale": data.get("rationale"),
+            "lint": data.get("lint"),
+        },
+        "planMarkdown": result.get("content") if isinstance(result.get("content"), str) else None,
+        "artifactType": "goal_spec_v1",
+        "status": "draft",
+        "workspaceRef": task_input_dict.get("workspaceRef"),
+        "clonePath": task_input_dict.get("clonePath"),
+        "metadata": metadata or None,
+        "_otel": tc.otel_ctx,
+    }
 
 
 def _handle_set_task(
@@ -4048,6 +4133,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     yield ctx.call_activity(
                         log_node_complete,
                         input=_freeze({
+                            "executionId": db_execution_id,
                             "logId": log_id,
                             "status": "error",
                             "output": None,
@@ -4085,6 +4171,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 yield ctx.call_activity(
                     log_node_complete,
                     input=_freeze({
+                        "executionId": db_execution_id,
                         "logId": log_id,
                         "status": "success" if task_success else "error",
                         "output": result if isinstance(result, dict) else {"raw": str(result)},

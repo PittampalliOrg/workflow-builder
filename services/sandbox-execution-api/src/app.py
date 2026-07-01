@@ -459,6 +459,19 @@ def _agent_host_start_timeout_seconds(request: AgentWorkflowHostRequest) -> str:
     return str(min(request.timeoutSeconds, 1800))
 
 
+def _agent_host_topic_env(agent_app_id: str) -> list[dict[str, str]]:
+    prefix = os.environ.get("SANDBOX_EXECUTION_AGENT_TOPIC_PREFIX", "").strip().strip(".")
+    if not prefix:
+        return []
+    return [
+        {"name": "AGENT_TOPIC", "value": f"{prefix}.{agent_app_id}.requests"},
+        {
+            "name": "AGENT_BROADCAST_TOPIC",
+            "value": f"{prefix}.{agent_app_id}.broadcast",
+        },
+    ]
+
+
 def _agent_host_resource_limits(
     class_config: ExecutionClassConfig,
 ) -> dict[str, str]:
@@ -1756,6 +1769,7 @@ def build_agent_workflow_host_sandbox_manifest(
                 "env": [
                     {"name": "AGENT_SERVICE_NAME", "value": request.agentAppId},
                     {"name": "AGENT_SLUG", "value": request.agentAppId},
+                    *_agent_host_topic_env(request.agentAppId),
                     {"name": "XDG_CONFIG_HOME", "value": config_home},
                     {
                         "name": "DAPR_LLM_COMPONENT_DEFAULT",
