@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 DAPR_HOST = config.DAPR_HOST
 DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
 WORKSPACE_RUNTIME_APP_ID = config.WORKSPACE_RUNTIME_APP_ID
+WORKSPACE_RUNTIME_URL = (config.WORKSPACE_RUNTIME_URL or "").rstrip("/")
 DAPR_AGENT_PY_APP_ID = config.DAPR_AGENT_PY_APP_ID
 DAPR_AGENT_PY_TESTING_APP_ID = config.DAPR_AGENT_PY_TESTING_APP_ID
 CLAUDE_AGENT_PY_APP_ID = config.CLAUDE_AGENT_PY_APP_ID
@@ -379,15 +380,21 @@ def cleanup_execution_workspaces(ctx, input_data: dict) -> dict:
             "error": "executionId or dbExecutionId is required",
         }
 
-    url = (
-        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{WORKSPACE_RUNTIME_APP_ID}/method/api/workspaces/cleanup"
-    )
+    if WORKSPACE_RUNTIME_URL:
+        url = f"{WORKSPACE_RUNTIME_URL}/api/workspaces/cleanup"
+        transport = "http"
+    else:
+        url = (
+            f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
+            f"{WORKSPACE_RUNTIME_APP_ID}/method/api/workspaces/cleanup"
+        )
+        transport = "dapr"
     otel = input_data.get("_otel") or {}
     attrs = {
         "action.type": "workspace/cleanup",
         "workflow.instance_id": execution_id,
         "workflow.db_execution_id": db_execution_id,
+        "workspace.cleanup.transport": transport,
     }
 
     with start_activity_span("activity.cleanup_execution_workspaces", otel, attrs):

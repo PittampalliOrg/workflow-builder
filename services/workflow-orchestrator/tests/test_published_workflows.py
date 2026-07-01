@@ -1235,6 +1235,104 @@ def test_sw_workflow_failure_schedules_mlflow_finalizer_with_error_after_cleanup
     assert stop.value.value["phase"] == "failed"
 
 
+def test_cleanup_execution_workspaces_defaults_to_dapr_invoke(monkeypatch):
+    module = _load_module(
+        "workflow_orchestrator_call_agent_service_dapr",
+        "activities/call_agent_service.py",
+    )
+    calls = []
+
+    class _Response:
+        status_code = 200
+        text = '{"success":true}'
+
+        def json(self):
+            return {"success": True}
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, json=None, headers=None):
+            calls.append({"url": url, "json": json, "headers": headers})
+            return _Response()
+
+    monkeypatch.setattr(module.httpx, "Client", _Client, raising=False)
+    monkeypatch.setattr(module, "WORKSPACE_RUNTIME_URL", "")
+
+    result = module.cleanup_execution_workspaces(
+        None,
+        {"executionId": "wf-123", "dbExecutionId": "db-123"},
+    )
+
+    assert result == {"success": True}
+    assert calls == [
+        {
+            "url": "http://localhost:3500/v1.0/invoke/workspace-runtime/method/api/workspaces/cleanup",
+            "json": {"executionId": "wf-123", "dbExecutionId": "db-123"},
+            "headers": None,
+        }
+    ]
+
+
+def test_cleanup_execution_workspaces_uses_direct_workspace_runtime_url(monkeypatch):
+    module = _load_module(
+        "workflow_orchestrator_call_agent_service_direct",
+        "activities/call_agent_service.py",
+    )
+    calls = []
+
+    class _Response:
+        status_code = 200
+        text = '{"success":true,"transport":"http"}'
+
+        def json(self):
+            return {"success": True, "transport": "http"}
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, json=None, headers=None):
+            calls.append({"url": url, "json": json, "headers": headers})
+            return _Response()
+
+    monkeypatch.setattr(module.httpx, "Client", _Client, raising=False)
+    monkeypatch.setattr(
+        module,
+        "WORKSPACE_RUNTIME_URL",
+        "http://workspace-runtime.workflow-builder.svc.cluster.local:8001",
+    )
+
+    result = module.cleanup_execution_workspaces(
+        None,
+        {"executionId": "wf-123", "dbExecutionId": "db-123"},
+    )
+
+    assert result == {"success": True, "transport": "http"}
+    assert calls == [
+        {
+            "url": "http://workspace-runtime.workflow-builder.svc.cluster.local:8001/api/workspaces/cleanup",
+            "json": {"executionId": "wf-123", "dbExecutionId": "db-123"},
+            "headers": None,
+        }
+    ]
+
+
 def test_sw_workflow_dispatches_task_activity_otel_context(monkeypatch):
     _install_terminal_workflow_model_fakes(monkeypatch)
     ctx = _FakeTerminalWorkflowCtx()

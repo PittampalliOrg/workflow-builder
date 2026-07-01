@@ -52,6 +52,7 @@ class OrchestratorConfig:
     # Service app IDs for Dapr service invocation
     FUNCTION_ROUTER_APP_ID: str = "function-router"
     WORKSPACE_RUNTIME_APP_ID: str = "workspace-runtime"
+    WORKSPACE_RUNTIME_URL: str = ""
     DAPR_AGENT_PY_APP_ID: str = "dapr-agent-py"
     DAPR_AGENT_PY_TESTING_APP_ID: str = "dapr-agent-py-testing"
     DAPR_AGENT_PY_JUICEFS_APP_ID: str = "dapr-agent-py-juicefs"
@@ -173,6 +174,7 @@ class OrchestratorConfig:
                 "WORKSPACE_RUNTIME_APP_ID",
                 "workspace-runtime",
             ),
+            "WORKSPACE_RUNTIME_URL": ("WORKSPACE_RUNTIME_URL", ""),
             "DAPR_AGENT_PY_APP_ID": ("DAPR_AGENT_PY_APP_ID", "dapr-agent-py"),
             "DAPR_AGENT_PY_TESTING_APP_ID": (
                 "DAPR_AGENT_PY_TESTING_APP_ID",
