@@ -3388,6 +3388,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.workflowExecutions.getByDaprInstanceId(instanceId);
 	}
 
+	getWorkflowExecutionSessionOwnerContext(executionId: string) {
+		return this.deps.workflowExecutions.getSessionOwnerContext(executionId);
+	}
+
 	getRunningWorkflowExecution(workflowId: string) {
 		return this.deps.workflowExecutions.getRunningByWorkflowId(workflowId);
 	}

@@ -154,6 +154,7 @@ import type {
 	WorkflowExecutionReadModelPatch,
 	WorkflowExecutionRecentRunRecord,
 	WorkflowExecutionRepository,
+	WorkflowExecutionSessionOwnerContext,
 	WorkflowExecutionStatus,
 	WorkflowExecutionLineage,
 	WorkflowExecutionListItem,
@@ -2977,6 +2978,22 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			.where(eq(workflowExecutions.daprInstanceId, instanceId))
 			.limit(1);
 		return row ? mapExecution(row) : null;
+	}
+
+	async getSessionOwnerContext(
+		executionId: string,
+	): Promise<WorkflowExecutionSessionOwnerContext | null> {
+		const [row] = await this.database
+			.select({
+				userId: workflowExecutions.userId,
+				workflowId: workflowExecutions.workflowId,
+				projectId: workflows.projectId,
+			})
+			.from(workflowExecutions)
+			.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+			.where(eq(workflowExecutions.id, executionId))
+			.limit(1);
+		return row ?? null;
 	}
 
 	async getRunningByWorkflowId(workflowId: string): Promise<{ id: string; status: string } | null> {

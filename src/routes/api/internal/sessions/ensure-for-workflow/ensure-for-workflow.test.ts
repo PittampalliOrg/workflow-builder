@@ -66,6 +66,7 @@ const mocks = vi.hoisted(() => {
 			};
 		}),
 		workflowData: {
+			getWorkflowExecutionSessionOwnerContext: vi.fn(async () => null),
 			getWorkflowEnsureSession: vi.fn(async () => null),
 			createWorkflowEnsureSession: vi.fn(async (input: unknown) => {
 				state.inserted.push(input);
@@ -210,9 +211,14 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 			"utf8",
 		);
 
+		expect(source).toContain("workflowData.getWorkflowExecutionSessionOwnerContext");
 		expect(source).toContain("workflowData.getWorkflowEnsureSession");
 		expect(source).toContain("workflowData.createWorkflowEnsureSession");
 		expect(source).toContain("workflowData.updateWorkflowEnsureSessionRuntime");
+		expect(source).not.toContain("workflowExecutions,");
+		expect(source).not.toContain("from(workflowExecutions)");
+		expect(source).not.toContain("workflows,");
+		expect(source).not.toContain("from(workflows)");
 		expect(source).not.toContain("db.insert(sessions)");
 		expect(source).not.toContain("db.update(sessions)");
 		expect(source).not.toContain("from(sessions)");

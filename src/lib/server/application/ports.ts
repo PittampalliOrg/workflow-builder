@@ -1520,6 +1520,12 @@ export type WorkflowExecutionUsageMetricsRow = {
 	cacheCreateTokens: number;
 };
 
+export type WorkflowExecutionSessionOwnerContext = {
+	userId: string;
+	workflowId: string;
+	projectId: string | null;
+};
+
 export type UsageReportingScope = {
 	userId: string;
 	projectId?: string | null;
@@ -1802,6 +1808,9 @@ export interface WorkflowExecutionRepository {
 	assertReadModelReady(): Promise<void>;
 	getById(id: string): Promise<WorkflowExecutionRecord | null>;
 	getByDaprInstanceId(instanceId: string): Promise<WorkflowExecutionRecord | null>;
+	getSessionOwnerContext(
+		executionId: string,
+	): Promise<WorkflowExecutionSessionOwnerContext | null>;
 	getRunningByWorkflowId(workflowId: string): Promise<{ id: string; status: string } | null>;
 	getLineage(executionId: string): Promise<WorkflowExecutionLineage | null>;
 	listActiveForUser(userId: string): Promise<ActiveWorkflowExecutionReadModel[]>;
@@ -2663,6 +2672,9 @@ export interface WorkflowDataService {
 	getExecutionByDaprInstanceId(
 		instanceId: string,
 	): Promise<WorkflowExecutionRecord | null>;
+	getWorkflowExecutionSessionOwnerContext(
+		executionId: string,
+	): Promise<WorkflowExecutionSessionOwnerContext | null>;
 	getRunningWorkflowExecution(workflowId: string): Promise<{ id: string; status: string } | null>;
 	listCliWorkspaceCommandCandidates(input: {
 		executionId: string;

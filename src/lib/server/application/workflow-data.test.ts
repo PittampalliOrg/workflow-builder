@@ -311,6 +311,11 @@ function fakeWorkflowExecutions(): WorkflowExecutionRepository {
 		assertReadModelReady: vi.fn(async () => undefined),
 		getById: vi.fn(async () => null),
 		getByDaprInstanceId: vi.fn(async () => null),
+		getSessionOwnerContext: vi.fn(async () => ({
+			userId: "user-1",
+			workflowId: "wf-1",
+			projectId: "project-1",
+		})),
 		getRunningByWorkflowId: vi.fn(async () => null),
 		getLineage: vi.fn(async () => ({
 			rootId: "exec-1",
@@ -4489,6 +4494,11 @@ describe("ApplicationWorkflowDataService", () => {
 			assertReadModelReady: vi.fn(async () => undefined),
 			getById: vi.fn(async () => null),
 			getByDaprInstanceId: vi.fn(async () => null),
+			getSessionOwnerContext: vi.fn(async () => ({
+				userId: "user-1",
+				workflowId: "wf-1",
+				projectId: "project-1",
+			})),
 			getRunningByWorkflowId: vi.fn(async () => null),
 			getLineage: vi.fn(async () => ({
 				rootId: "exec-1",
@@ -4587,6 +4597,7 @@ describe("ApplicationWorkflowDataService", () => {
 			error: "failed to start",
 		});
 		await service.getExecutionByDaprInstanceId("sw-example-exec-exec-1");
+		await service.getWorkflowExecutionSessionOwnerContext("exec-1");
 		await service.getRunningWorkflowExecution("wf-1");
 		await service.getExecutionLineage("exec-1");
 		await service.listActiveWorkflowExecutionsForUser("user-1");
@@ -4710,6 +4721,7 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(workflowExecutions.getByDaprInstanceId).toHaveBeenCalledWith(
 			"sw-example-exec-exec-1",
 		);
+		expect(workflowExecutions.getSessionOwnerContext).toHaveBeenCalledWith("exec-1");
 		expect(workflowExecutions.getRunningByWorkflowId).toHaveBeenCalledWith("wf-1");
 		expect(workflowExecutions.getLineage).toHaveBeenCalledWith("exec-1");
 		expect(workflowExecutions.listActiveForUser).toHaveBeenCalledWith("user-1");

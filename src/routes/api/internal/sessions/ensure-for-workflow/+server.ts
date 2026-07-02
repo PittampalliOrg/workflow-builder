@@ -11,8 +11,6 @@ import {
 	agentVersions,
 	benchmarkRunInstances,
 	benchmarkRuns,
-	workflowExecutions,
-	workflows,
 } from "$lib/server/db/schema";
 import {
 	addResource,
@@ -130,20 +128,14 @@ export const POST: RequestHandler = async ({ request }) => {
 	// row. The orchestrator doesn't carry user_id on TaskContext today, so
 	// this makes the Python side simpler: it only needs the execution id.
 	if (!userId && workflowExecutionId) {
-		const [execRow] = await db
-			.select({ userId: workflowExecutions.userId, workflowId: workflowExecutions.workflowId })
-			.from(workflowExecutions)
-			.where(eq(workflowExecutions.id, workflowExecutionId))
-			.limit(1);
-		if (execRow) {
-			userId = execRow.userId;
+		const executionContext =
+			await workflowData.getWorkflowExecutionSessionOwnerContext(
+				workflowExecutionId,
+			);
+		if (executionContext) {
+			userId = executionContext.userId;
 			if (!projectId) {
-				const [wfRow] = await db
-					.select({ projectId: workflows.projectId })
-					.from(workflows)
-					.where(eq(workflows.id, execRow.workflowId))
-					.limit(1);
-				projectId = wfRow?.projectId ?? null;
+				projectId = executionContext.projectId;
 			}
 		}
 	}
