@@ -11,6 +11,7 @@ import type {
 	McpRunRepository,
 	SettingsRepository,
 	TraceLineageStore,
+	UsageReportingRepository,
 	WorkflowDefinition,
 	WorkflowDefinitionRepository,
 	WorkflowTriggerStore,
@@ -464,6 +465,56 @@ function fakeBenchmarkBrowser(): BenchmarkBrowserRepository {
 	};
 }
 
+function fakeUsageReporting(): UsageReportingRepository {
+	return {
+		getUsageAnalytics: vi.fn(async () => ({
+			totals: {
+				tokensIn: 1000,
+				tokensOut: 250,
+				cacheReadTokens: 100,
+				cacheCreateTokens: 50,
+				sessionCount: 3,
+				toolCalls: 2,
+			},
+			daily: [{ day: "2026-07-01", tokensIn: 1000, tokensOut: 250 }],
+			byAgent: [
+				{
+					agentId: "agent-1",
+					agentName: "Agent One",
+					tokensIn: 1000,
+					tokensOut: 250,
+					sessions: 3,
+				},
+			],
+		})),
+		listCostUsageRows: vi.fn(async () => [
+			{
+				agentId: "agent-1",
+				agentName: "Agent One",
+				modelSpec: "anthropic/claude-opus-4-8",
+				sessions: 2,
+				inputTokens: 1_000_000,
+				outputTokens: 100_000,
+				cacheReadTokens: 500_000,
+				cacheCreateTokens: 200_000,
+			},
+		]),
+		getLiveLimitSnapshot: vi.fn(async () => ({
+			activeSessions: 1,
+			byModel: [
+				{
+					model: "claude-opus-4-8",
+					sessionsLastHour: 2,
+					tokensInLastHour: 1000,
+					tokensOutLastHour: 250,
+					tokensInLastMinute: 100,
+					tokensOutLastMinute: 25,
+				},
+			],
+		})),
+	};
+}
+
 function makeService(options: {
 	byId?: WorkflowDefinition | null;
 	byName?: WorkflowDefinition | null;
@@ -619,6 +670,32 @@ function makeServiceWithWorkspaceProjects(workspaceProjects: WorkspaceProjectRep
 		agentRuns: {} as WorkflowAgentRunStore,
 		planArtifacts: {} as WorkflowPlanArtifactStore,
 		traceLineage: {} as TraceLineageStore,
+	});
+}
+
+function makeServiceWithUsageReporting(usageReporting: UsageReportingRepository) {
+	return new ApplicationWorkflowDataService({
+		workflowDefinitions: makeService({}).workflowDefinitions,
+		workflowTriggers: fakeWorkflowTriggers(),
+		userProfiles: fakeUserProfiles(),
+		settings: fakeSettings(),
+		mcpConnections: fakeMcpConnections(),
+		hostedMcpServers: fakeHostedMcpServers(),
+		mcpRuns: fakeMcpRuns(),
+		appConnections: fakeAppConnections(),
+		adminPieces: fakeAdminPieces(),
+		apiKeys: fakeApiKeys(),
+		workspaceProjects: fakeWorkspaceProjects(),
+		pieceCatalog: fakePieceCatalog(),
+		benchmarkBrowser: fakeBenchmarkBrowser(),
+		workflowExecutions: {} as WorkflowExecutionRepository,
+		sessionEventNotifications: fakeSessionEventNotifications(),
+		artifactStore: {} as ArtifactStore,
+		workspaceSessions: {} as WorkspaceSessionStore,
+		agentRuns: {} as WorkflowAgentRunStore,
+		planArtifacts: {} as WorkflowPlanArtifactStore,
+		traceLineage: {} as TraceLineageStore,
+		usageReporting,
 	});
 }
 
@@ -2799,6 +2876,120 @@ describe("ApplicationWorkflowDataService", () => {
 			message: "Cannot remove the last admin",
 		});
 		expect(workspaceProjects.deleteProjectMember).not.toHaveBeenCalled();
+	});
+
+	it("returns usage analytics through usage reporting ports with application-owned defaults", async () => {
+		const usageReporting = fakeUsageReporting();
+		const service = makeServiceWithUsageReporting(usageReporting);
+		const now = new Date("2026-07-15T12:00:00.000Z");
+		const expectedStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+		await expect(
+			service.getUsageAnalytics({
+				userId: "user-1",
+				projectId: "project-1",
+				groupBy: "agent",
+				now,
+			}),
+		).resolves.toEqual({
+			range: { start: expectedStart.toISOString(), end: now.toISOString() },
+			groupBy: "agent",
+			totals: {
+				tokensIn: 1000,
+				tokensOut: 250,
+				cacheReadTokens: 100,
+				cacheCreateTokens: 50,
+				sessionCount: 3,
+				toolCalls: 2,
+			},
+			daily: [{ day: "2026-07-01", tokensIn: 1000, tokensOut: 250 }],
+			byAgent: [
+				{
+					agentId: "agent-1",
+					agentName: "Agent One",
+					tokensIn: 1000,
+					tokensOut: 250,
+					sessions: 3,
+				},
+			],
+		});
+		expect(usageReporting.getUsageAnalytics).toHaveBeenCalledWith({
+			scope: { userId: "user-1", projectId: "project-1" },
+			start: expectedStart,
+			end: now,
+		});
+	});
+
+	it("computes cost breakdowns in workflow-data and resolves provider-prefixed model ids", async () => {
+		const usageReporting = fakeUsageReporting();
+		const service = makeServiceWithUsageReporting(usageReporting);
+		const now = new Date("2026-07-15T12:00:00.000Z");
+		const start = "2026-07-01T00:00:00.000Z";
+		const end = "2026-07-02T00:00:00.000Z";
+
+		const result = await service.getCostBreakdown({
+			userId: "user-1",
+			start,
+			end,
+			now,
+		});
+
+		expect(result.range).toEqual({ start, end });
+		expect(result.totalCost).toBeCloseTo(9);
+		expect(result.byAgent).toEqual([
+			{
+				agentId: "agent-1",
+				agentName: "Agent One",
+				sessions: 2,
+				cost: 9,
+			},
+		]);
+		expect(result.byModel).toEqual([
+			{
+				model: "anthropic/claude-opus-4-8",
+				sessions: 2,
+				inputTokens: 1_000_000,
+				outputTokens: 100_000,
+				cost: 9,
+			},
+		]);
+		expect(result.priceBook.some((row) => row.model === "claude-opus-4-8")).toBe(true);
+		expect(usageReporting.listCostUsageRows).toHaveBeenCalledWith({
+			scope: { userId: "user-1", projectId: undefined },
+			start: new Date(start),
+			end: new Date(end),
+		});
+	});
+
+	it("returns live limit snapshots through usage reporting ports", async () => {
+		const usageReporting = fakeUsageReporting();
+		const service = makeServiceWithUsageReporting(usageReporting);
+		const now = new Date("2026-07-15T12:00:00.000Z");
+
+		await expect(
+			service.getLiveLimitSnapshot({
+				userId: "user-1",
+				projectId: "project-1",
+				now,
+			}),
+		).resolves.toEqual({
+			activeSessions: 1,
+			asOf: now.toISOString(),
+			byModel: [
+				{
+					model: "claude-opus-4-8",
+					sessionsLastHour: 2,
+					tokensInLastHour: 1000,
+					tokensOutLastHour: 250,
+					tokensInLastMinute: 100,
+					tokensOutLastMinute: 25,
+				},
+			],
+		});
+		expect(usageReporting.getLiveLimitSnapshot).toHaveBeenCalledWith({
+			scope: { userId: "user-1", projectId: "project-1" },
+			now,
+		});
 	});
 
 	it("composes workspace workflow summaries through application ports", async () => {

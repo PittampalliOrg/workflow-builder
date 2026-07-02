@@ -1378,6 +1378,114 @@ export type WorkflowExecutionUsageMetricsRow = {
 	cacheCreateTokens: number;
 };
 
+export type UsageReportingScope = {
+	userId: string;
+	projectId?: string | null;
+};
+
+export type UsageAnalyticsTotalsRecord = {
+	tokensIn: number;
+	tokensOut: number;
+	cacheReadTokens: number;
+	cacheCreateTokens: number;
+	sessionCount: number;
+	toolCalls: number;
+};
+
+export type UsageAnalyticsDailyRecord = {
+	day: string;
+	tokensIn: number;
+	tokensOut: number;
+};
+
+export type UsageAnalyticsAgentRecord = {
+	agentId: string;
+	agentName: string | null;
+	tokensIn: number;
+	tokensOut: number;
+	sessions: number;
+};
+
+export type UsageAnalyticsSnapshot = {
+	totals: UsageAnalyticsTotalsRecord;
+	daily: UsageAnalyticsDailyRecord[];
+	byAgent: UsageAnalyticsAgentRecord[];
+};
+
+export type UsageCostRow = {
+	agentId: string;
+	agentName: string | null;
+	modelSpec: string | null;
+	sessions: number;
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheCreateTokens: number;
+};
+
+export type LiveLimitModelRecord = {
+	model: string;
+	sessionsLastHour: number;
+	tokensInLastHour: number;
+	tokensOutLastHour: number;
+	tokensInLastMinute: number;
+	tokensOutLastMinute: number;
+};
+
+export type LiveLimitSnapshot = {
+	activeSessions: number;
+	byModel: LiveLimitModelRecord[];
+};
+
+export type UsageAnalyticsReadModel = UsageAnalyticsSnapshot & {
+	range: { start: string; end: string };
+	groupBy: string;
+};
+
+export type CostBreakdownReadModel = {
+	range: { start: string; end: string };
+	totalCost: number;
+	priceBook: Array<{
+		model: string;
+		inputPerMillion: number;
+		outputPerMillion: number;
+	}>;
+	byAgent: Array<{
+		agentId: string;
+		agentName: string;
+		sessions: number;
+		cost: number;
+	}>;
+	byModel: Array<{
+		model: string;
+		sessions: number;
+		inputTokens: number;
+		outputTokens: number;
+		cost: number;
+	}>;
+};
+
+export type LiveLimitReadModel = LiveLimitSnapshot & {
+	asOf: string;
+};
+
+export interface UsageReportingRepository {
+	getUsageAnalytics(input: {
+		scope: UsageReportingScope;
+		start: Date;
+		end: Date;
+	}): Promise<UsageAnalyticsSnapshot>;
+	listCostUsageRows(input: {
+		scope: UsageReportingScope;
+		start: Date;
+		end: Date;
+	}): Promise<UsageCostRow[]>;
+	getLiveLimitSnapshot(input: {
+		scope: UsageReportingScope;
+		now: Date;
+	}): Promise<LiveLimitSnapshot>;
+}
+
 export type WorkflowExecutionReadModelPatch = Partial<
 	Pick<
 		WorkflowExecutionRecord,
@@ -1845,6 +1953,26 @@ export interface WorkflowDataService {
 		memberId: string;
 		userId: string;
 	}): Promise<ProjectMemberDeleteResult>;
+	getUsageAnalytics(input: {
+		userId: string;
+		projectId?: string | null;
+		start?: string | null;
+		end?: string | null;
+		groupBy?: string | null;
+		now?: Date;
+	}): Promise<UsageAnalyticsReadModel>;
+	getCostBreakdown(input: {
+		userId: string;
+		projectId?: string | null;
+		start?: string | null;
+		end?: string | null;
+		now?: Date;
+	}): Promise<CostBreakdownReadModel>;
+	getLiveLimitSnapshot(input: {
+		userId: string;
+		projectId?: string | null;
+		now?: Date;
+	}): Promise<LiveLimitReadModel>;
 	getWorkflowByRef(
 		ref: WorkflowRef & { lookup?: "id" | "name" | "auto" },
 	): Promise<WorkflowDefinition | null>;

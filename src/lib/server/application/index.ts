@@ -14,6 +14,7 @@ import {
 	PostgresPieceCatalogRepository,
 	PostgresSettingsRepository,
 	PostgresTraceLineageStore,
+	PostgresUsageReportingRepository,
 	PostgresUserProfileRepository,
 	PostgresWorkflowAgentRunStore,
 	PostgresWorkspaceSessionStore,
@@ -80,6 +81,7 @@ export function getApplicationAdapters(
 	let agentRuns: PostgresWorkflowAgentRunStore | undefined;
 	let planArtifacts: PostgresWorkflowPlanArtifactStore | undefined;
 	let traceLineage: PostgresTraceLineageStore | undefined;
+	let usageReporting: PostgresUsageReportingRepository | undefined;
 	let sessionEventNotifications:
 		| PostgresWorkflowSessionEventNotificationSource
 		| undefined;
@@ -121,6 +123,8 @@ export function getApplicationAdapters(
 		(planArtifacts ??= new PostgresWorkflowPlanArtifactStore(getDatabase()));
 	const getTraceLineage = () =>
 		(traceLineage ??= new PostgresTraceLineageStore(getDatabase()));
+	const getUsageReporting = () =>
+		(usageReporting ??= new PostgresUsageReportingRepository(getDatabase()));
 	const getSessionEventNotifications = () =>
 		(sessionEventNotifications ??= new PostgresWorkflowSessionEventNotificationSource());
 	const previewEnvironmentProvisioner =
@@ -161,6 +165,7 @@ export function getApplicationAdapters(
 				agentRuns: getAgentRuns(),
 				planArtifacts: getPlanArtifacts(),
 				traceLineage: getTraceLineage(),
+				usageReporting: getUsageReporting(),
 				workflowScheduler,
 			}));
 		},

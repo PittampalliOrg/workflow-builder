@@ -141,8 +141,24 @@ export type UsageTotals = {
 	cacheCreateTokens: number;
 };
 
+export function resolveModelPricing(model: string | null | undefined): {
+	pricing: ModelPricing;
+	fallback: boolean;
+	resolvedModel: string | null;
+} {
+	const normalized = typeof model === "string" ? model.trim() : "";
+	const exact = normalized ? MODEL_PRICING[normalized] : undefined;
+	const bareModel = normalized.split("/").pop() ?? "";
+	const bare = bareModel ? MODEL_PRICING[bareModel] : undefined;
+	return {
+		pricing: exact ?? bare ?? FALLBACK_PRICING,
+		fallback: !exact && !bare,
+		resolvedModel: exact ? normalized : bare ? bareModel : null,
+	};
+}
+
 export function costFor(model: string | null | undefined, usage: UsageTotals): number {
-	const price = (model && MODEL_PRICING[model]) || FALLBACK_PRICING;
+	const { pricing: price } = resolveModelPricing(model);
 	const input = (usage.inputTokens / 1_000_000) * price.inputPerMillion;
 	const output = (usage.outputTokens / 1_000_000) * price.outputPerMillion;
 	const cacheRead =

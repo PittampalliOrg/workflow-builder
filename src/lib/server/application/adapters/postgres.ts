@@ -89,6 +89,11 @@ import type {
 	WorkflowArtifactRecord,
 	WorkflowArtifactInput,
 	WorkflowAgentRunStore,
+	UsageAnalyticsSnapshot,
+	UsageCostRow,
+	UsageReportingRepository,
+	UsageReportingScope,
+	LiveLimitSnapshot,
 	CreateMcpConnectionRecordInput,
 	HostedMcpServerRecord,
 	HostedMcpServerRepository,
@@ -194,6 +199,250 @@ export class PostgresWorkflowSessionEventNotificationSource
 		});
 		return {
 			unlisten: () => listener.unlisten(),
+		};
+	}
+}
+
+function usageScopeClause(scope: UsageReportingScope) {
+	return scope.projectId
+		? sql`s.project_id = ${scope.projectId}`
+		: sql`s.user_id = ${scope.userId}`;
+}
+
+export class PostgresUsageReportingRepository implements UsageReportingRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async getUsageAnalytics(input: {
+		scope: UsageReportingScope;
+		start: Date;
+		end: Date;
+	}): Promise<UsageAnalyticsSnapshot> {
+		const scopeClause = usageScopeClause(input.scope);
+		const startIso = input.start.toISOString();
+		const endIso = input.end.toISOString();
+
+		const [tokenTotals] = await this.database.execute<{
+			tokens_in: number;
+			tokens_out: number;
+			cache_read: number;
+			cache_create: number;
+		}>(sql`
+			SELECT
+				coalesce(sum((se.data->>'input_tokens')::bigint), 0) AS tokens_in,
+				coalesce(sum((se.data->>'output_tokens')::bigint), 0) AS tokens_out,
+				coalesce(sum((se.data->>'cache_read_input_tokens')::bigint), 0) AS cache_read,
+				coalesce(sum((se.data->>'cache_creation_input_tokens')::bigint), 0) AS cache_create
+			FROM ${sessionEvents} se
+			JOIN ${sessions} s ON s.id = se.session_id
+			WHERE se.type = 'agent.llm_usage'
+				AND ${scopeClause}
+				AND se.created_at >= ${startIso}
+				AND se.created_at <= ${endIso}
+		`);
+
+		const [sessionTotals] = await this.database.execute<{ session_count: number }>(sql`
+			SELECT count(*)::int AS session_count
+			FROM ${sessions} s
+			WHERE ${scopeClause}
+				AND s.created_at >= ${startIso}
+				AND s.created_at <= ${endIso}
+		`);
+
+		const daily = await this.database.execute<{
+			day: string;
+			tokens_in: number;
+			tokens_out: number;
+		}>(sql`
+			WITH days AS (
+				SELECT generate_series(${startIso}::date, ${endIso}::date, '1 day'::interval)::date AS day
+			),
+			scoped_events AS (
+				SELECT se.created_at, se.data
+				FROM ${sessionEvents} se
+				JOIN ${sessions} s ON s.id = se.session_id
+				WHERE se.type = 'agent.llm_usage'
+					AND ${scopeClause}
+					AND se.created_at >= ${startIso}
+					AND se.created_at <= ${endIso}
+			)
+			SELECT
+				days.day::text AS day,
+				coalesce(sum((scoped_events.data->>'input_tokens')::bigint), 0) AS tokens_in,
+				coalesce(sum((scoped_events.data->>'output_tokens')::bigint), 0) AS tokens_out
+			FROM days
+			LEFT JOIN scoped_events ON date(scoped_events.created_at) = days.day
+			GROUP BY days.day
+			ORDER BY days.day ASC
+		`);
+
+		const byAgent = await this.database.execute<{
+			agent_id: string | null;
+			agent_name: string | null;
+			tokens_in: number;
+			tokens_out: number;
+			sessions: number;
+		}>(sql`
+			WITH scoped_sessions AS (
+				SELECT s.id, s.agent_id, a.name AS agent_name
+				FROM ${sessions} s
+				LEFT JOIN ${agents} a ON a.id = s.agent_id
+				WHERE ${scopeClause}
+					AND s.created_at >= ${startIso}
+					AND s.created_at <= ${endIso}
+			)
+			SELECT
+				scoped_sessions.agent_id,
+				scoped_sessions.agent_name,
+				coalesce(sum((se.data->>'input_tokens')::bigint), 0) AS tokens_in,
+				coalesce(sum((se.data->>'output_tokens')::bigint), 0) AS tokens_out,
+				count(DISTINCT scoped_sessions.id)::int AS sessions
+			FROM scoped_sessions
+			LEFT JOIN ${sessionEvents} se
+				ON se.session_id = scoped_sessions.id
+				AND se.type = 'agent.llm_usage'
+				AND se.created_at >= ${startIso}
+				AND se.created_at <= ${endIso}
+			GROUP BY scoped_sessions.agent_id, scoped_sessions.agent_name
+			ORDER BY tokens_out DESC
+			LIMIT 20
+		`);
+
+		const [toolCalls] = await this.database.execute<{ count: number }>(sql`
+			SELECT count(*)::int AS count
+			FROM ${sessionEvents} se
+			JOIN ${sessions} s ON s.id = se.session_id
+			WHERE se.type IN ('agent.tool_use', 'agent.mcp_tool_use', 'agent.custom_tool_use')
+				AND ${scopeClause}
+				AND se.created_at >= ${startIso}
+				AND se.created_at <= ${endIso}
+		`);
+
+		return {
+			totals: {
+				tokensIn: Number(tokenTotals?.tokens_in ?? 0),
+				tokensOut: Number(tokenTotals?.tokens_out ?? 0),
+				cacheReadTokens: Number(tokenTotals?.cache_read ?? 0),
+				cacheCreateTokens: Number(tokenTotals?.cache_create ?? 0),
+				sessionCount: Number(sessionTotals?.session_count ?? 0),
+				toolCalls: Number(toolCalls?.count ?? 0),
+			},
+			daily: daily.map((row) => ({
+				day: String(row.day),
+				tokensIn: Number(row.tokens_in),
+				tokensOut: Number(row.tokens_out),
+			})),
+			byAgent: byAgent.map((row) => ({
+				agentId: String(row.agent_id),
+				agentName: row.agent_name ?? null,
+				tokensIn: Number(row.tokens_in),
+				tokensOut: Number(row.tokens_out),
+				sessions: Number(row.sessions),
+			})),
+		};
+	}
+
+	async listCostUsageRows(input: {
+		scope: UsageReportingScope;
+		start: Date;
+		end: Date;
+	}): Promise<UsageCostRow[]> {
+		const scopeClause = usageScopeClause(input.scope);
+		const startIso = input.start.toISOString();
+		const endIso = input.end.toISOString();
+		const rows = await this.database.execute<{
+			agent_id: string | null;
+			model_spec: string | null;
+			agent_name: string | null;
+			sessions: number;
+			input_tokens: number;
+			output_tokens: number;
+			cache_read: number;
+			cache_create: number;
+		}>(sql`
+			SELECT
+				s.agent_id AS agent_id,
+				coalesce(se.data->>'model', se.data->>'providerModel', 'unknown') AS model_spec,
+				a.name AS agent_name,
+				count(DISTINCT s.id)::int AS sessions,
+				coalesce(sum((se.data->>'input_tokens')::bigint), 0) AS input_tokens,
+				coalesce(sum((se.data->>'output_tokens')::bigint), 0) AS output_tokens,
+				coalesce(sum((se.data->>'cache_read_input_tokens')::bigint), 0) AS cache_read,
+				coalesce(sum((se.data->>'cache_creation_input_tokens')::bigint), 0) AS cache_create
+			FROM ${sessionEvents} se
+			JOIN ${sessions} s ON s.id = se.session_id
+			LEFT JOIN ${agents} a ON a.id = s.agent_id
+			WHERE se.type = 'agent.llm_usage'
+				AND ${scopeClause}
+				AND se.created_at >= ${startIso}
+				AND se.created_at <= ${endIso}
+			GROUP BY s.agent_id, coalesce(se.data->>'model', se.data->>'providerModel', 'unknown'), a.name
+		`);
+		return rows.map((row) => ({
+			agentId: String(row.agent_id),
+			agentName: row.agent_name ?? null,
+			modelSpec: row.model_spec,
+			sessions: Number(row.sessions),
+			inputTokens: Number(row.input_tokens),
+			outputTokens: Number(row.output_tokens),
+			cacheReadTokens: Number(row.cache_read),
+			cacheCreateTokens: Number(row.cache_create),
+		}));
+	}
+
+	async getLiveLimitSnapshot(input: {
+		scope: UsageReportingScope;
+		now: Date;
+	}): Promise<LiveLimitSnapshot> {
+		const scopeClause = usageScopeClause(input.scope);
+		const nowIso = input.now.toISOString();
+		const [active] = await this.database.execute<{ n: number }>(sql`
+			SELECT count(*)::int AS n
+			FROM ${sessions} s
+			WHERE ${scopeClause} AND s.status = 'running'
+		`);
+		const rows = await this.database.execute<{
+			model: string;
+			sessions_last_hour: number;
+			tokens_in_last_hour: number;
+			tokens_out_last_hour: number;
+			tokens_in_last_minute: number;
+			tokens_out_last_minute: number;
+		}>(sql`
+			SELECT
+				coalesce(se.data->>'model', se.data->>'providerModel', 'unknown') AS model,
+				count(DISTINCT s.id) FILTER (
+					WHERE s.created_at > ${nowIso}::timestamptz - interval '1 hour'
+				)::int AS sessions_last_hour,
+				coalesce(sum((se.data->>'input_tokens')::bigint) FILTER (
+					WHERE se.created_at > ${nowIso}::timestamptz - interval '1 hour'
+				), 0)::bigint AS tokens_in_last_hour,
+				coalesce(sum((se.data->>'output_tokens')::bigint) FILTER (
+					WHERE se.created_at > ${nowIso}::timestamptz - interval '1 hour'
+				), 0)::bigint AS tokens_out_last_hour,
+				coalesce(sum((se.data->>'input_tokens')::bigint) FILTER (
+					WHERE se.created_at > ${nowIso}::timestamptz - interval '1 minute'
+				), 0)::bigint AS tokens_in_last_minute,
+				coalesce(sum((se.data->>'output_tokens')::bigint) FILTER (
+					WHERE se.created_at > ${nowIso}::timestamptz - interval '1 minute'
+				), 0)::bigint AS tokens_out_last_minute
+			FROM ${sessionEvents} se
+			JOIN ${sessions} s ON s.id = se.session_id
+			WHERE se.type = 'agent.llm_usage'
+				AND ${scopeClause}
+				AND se.created_at > ${nowIso}::timestamptz - interval '2 hours'
+			GROUP BY coalesce(se.data->>'model', se.data->>'providerModel', 'unknown')
+			ORDER BY sessions_last_hour DESC
+		`);
+		return {
+			activeSessions: Number(active?.n ?? 0),
+			byModel: rows.map((row) => ({
+				model: String(row.model),
+				sessionsLastHour: Number(row.sessions_last_hour),
+				tokensInLastHour: Number(row.tokens_in_last_hour),
+				tokensOutLastHour: Number(row.tokens_out_last_hour),
+				tokensInLastMinute: Number(row.tokens_in_last_minute),
+				tokensOutLastMinute: Number(row.tokens_out_last_minute),
+			})),
 		};
 	}
 }

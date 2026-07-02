@@ -28,6 +28,7 @@ import {
 	type OAuth2AuthorizationMethod,
 } from "$lib/server/app-connections/oauth2";
 import { getOrchestratorUrl } from "$lib/server/dapr-client";
+import { costFor, MODEL_PRICING } from "$lib/server/pricing/model-pricing";
 import {
 	decryptObject,
 	decryptString,
@@ -87,6 +88,7 @@ import type {
 	WorkflowPlanArtifactStatus,
 	WorkflowPlanArtifactStore,
 	WorkflowRef,
+	UsageReportingRepository,
 	TraceLineageStore,
 	UpdateWorkflowDefinitionInput,
 	UpsertTraceLineageLinksInput,
@@ -609,6 +611,16 @@ function isProjectMembershipRole(value: unknown): value is ProjectMembershipRole
 	);
 }
 
+function parseDateOrDefault(value: string | null | undefined, fallback: Date): Date {
+	if (!value) return fallback;
+	const parsed = new Date(value);
+	return Number.isNaN(parsed.getTime()) ? fallback : parsed;
+}
+
+function usageMonthStart(now: Date): Date {
+	return new Date(now.getFullYear(), now.getMonth(), 1);
+}
+
 export class ApplicationWorkflowDataService implements WorkflowDataService {
 	constructor(
 		private readonly deps: {
@@ -632,6 +644,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			agentRuns: WorkflowAgentRunStore;
 			planArtifacts: WorkflowPlanArtifactStore;
 			traceLineage: TraceLineageStore;
+			usageReporting?: UsageReportingRepository;
 			workflowScheduler?: WorkflowScheduler;
 		},
 	) {}
@@ -2298,6 +2311,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.workspaceProjects.getProjectMembershipDetail(input);
 	}
 
+	private requireUsageReporting(): UsageReportingRepository {
+		if (!this.deps.usageReporting) {
+			throw new Error("Usage reporting repository not configured");
+		}
+		return this.deps.usageReporting;
+	}
+
 	private async requireProjectAdmin(input: {
 		projectId: string;
 		userId: string;
@@ -2478,6 +2498,126 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			memberId: input.memberId,
 		});
 		return { ok: true as const, status: 200 as const };
+	}
+
+	async getUsageAnalytics(input: {
+		userId: string;
+		projectId?: string | null;
+		start?: string | null;
+		end?: string | null;
+		groupBy?: string | null;
+		now?: Date;
+	}) {
+		const now = input.now ?? new Date();
+		const start = parseDateOrDefault(input.start, usageMonthStart(now));
+		const end = parseDateOrDefault(input.end, now);
+		const snapshot = await this.requireUsageReporting().getUsageAnalytics({
+			scope: { userId: input.userId, projectId: input.projectId },
+			start,
+			end,
+		});
+		return {
+			range: { start: start.toISOString(), end: end.toISOString() },
+			groupBy: input.groupBy ?? "day",
+			totals: snapshot.totals,
+			daily: snapshot.daily,
+			byAgent: snapshot.byAgent,
+		};
+	}
+
+	async getCostBreakdown(input: {
+		userId: string;
+		projectId?: string | null;
+		start?: string | null;
+		end?: string | null;
+		now?: Date;
+	}) {
+		const now = input.now ?? new Date();
+		const start = parseDateOrDefault(
+			input.start,
+			new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000),
+		);
+		const end = parseDateOrDefault(input.end, now);
+		const rows = await this.requireUsageReporting().listCostUsageRows({
+			scope: { userId: input.userId, projectId: input.projectId },
+			start,
+			end,
+		});
+
+		let totalCost = 0;
+		const byAgent = new Map<
+			string,
+			{ agentId: string; agentName: string; sessions: number; cost: number }
+		>();
+		const byModel = new Map<
+			string,
+			{ model: string; sessions: number; inputTokens: number; outputTokens: number; cost: number }
+		>();
+
+		for (const row of rows) {
+			const usage = {
+				inputTokens: row.inputTokens,
+				outputTokens: row.outputTokens,
+				cacheReadTokens: row.cacheReadTokens,
+				cacheCreateTokens: row.cacheCreateTokens,
+			};
+			const rowCost = costFor(row.modelSpec, usage);
+			totalCost += rowCost;
+
+			const agentKey = row.agentId;
+			const agentEntry = byAgent.get(agentKey) ?? {
+				agentId: row.agentId,
+				agentName: row.agentName ?? row.agentId,
+				sessions: 0,
+				cost: 0,
+			};
+			agentEntry.sessions += row.sessions;
+			agentEntry.cost += rowCost;
+			byAgent.set(agentKey, agentEntry);
+
+			const modelKey = row.modelSpec ?? "unknown";
+			const modelEntry = byModel.get(modelKey) ?? {
+				model: modelKey,
+				sessions: 0,
+				inputTokens: 0,
+				outputTokens: 0,
+				cost: 0,
+			};
+			modelEntry.sessions += row.sessions;
+			modelEntry.inputTokens += usage.inputTokens;
+			modelEntry.outputTokens += usage.outputTokens;
+			modelEntry.cost += rowCost;
+			byModel.set(modelKey, modelEntry);
+		}
+
+		return {
+			range: { start: start.toISOString(), end: end.toISOString() },
+			totalCost,
+			priceBook: Object.entries(MODEL_PRICING).map(([model, p]) => ({
+				model,
+				inputPerMillion: p.inputPerMillion,
+				outputPerMillion: p.outputPerMillion,
+			})),
+			byAgent: [...byAgent.values()].sort((a, b) => b.cost - a.cost),
+			byModel: [...byModel.values()].sort((a, b) => b.cost - a.cost),
+		};
+	}
+
+	async getLiveLimitSnapshot(input: {
+		userId: string;
+		projectId?: string | null;
+		now?: Date;
+	}) {
+		const now = input.now ?? new Date();
+		const snapshot = await this.requireUsageReporting().getLiveLimitSnapshot({
+			scope: { userId: input.userId, projectId: input.projectId },
+			now,
+		});
+		return {
+			activeSessions: snapshot.activeSessions,
+			byModel: snapshot.byModel,
+			asOf: now.toISOString(),
+		};
 	}
 
 	async getWorkflowByRef(ref: WorkflowRef & { lookup?: "id" | "name" | "auto" }) {

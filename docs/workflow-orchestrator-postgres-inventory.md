@@ -10,7 +10,8 @@ Inventory status: 2026-07-02, after the workflow start/control slice and the
 workspace workflow, service graph, connections, benchmark, top-level
 connections redirect, settings OAuth/profile, settings members, admin pieces,
 root UI-facing route, MCP connection, and app-connection CRUD/OAuth/decrypt
-route slices, plus the project members API route family.
+route slices, the project members API route family, and the usage/cost/live
+limits reporting route family.
 
 ## Strict HTTP Runtime Paths
 
@@ -360,11 +361,19 @@ The first UI-facing route has also moved behind the application service:
   catalog reads, environment-image status reads, runnable-agent eligibility,
   environment coverage, and runtime capacity shaping are behind application
   ports; Drizzle access is confined to the Postgres benchmark browser adapter.
+- `src/routes/api/v1/usage/+server.ts`, `src/routes/api/v1/cost/+server.ts`,
+  and `src/routes/api/v1/limits/live/+server.ts` now read reporting snapshots
+  through workflow-data application ports. Default time windows, response
+  shaping, price-book exposure, and provider-prefixed model pricing resolution
+  live in `ApplicationWorkflowDataService`; `sessions`, `session_events`, and
+  `agents` SQL is confined to `PostgresUsageReportingRepository`. Live limit
+  token windows now use `agent.llm_usage` session events instead of the legacy
+  `sessions.usage` JSON field.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
-workspace/root UI, settings, connections, and admin-pieces route subset is also
-clean.
+workspace/root UI, settings, connections, admin-pieces, project-members, and
+usage/cost/live-limits route subset is also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:

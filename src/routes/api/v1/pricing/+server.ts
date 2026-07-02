@@ -1,8 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import {
-	FALLBACK_PRICING,
-	MODEL_PRICING,
+	resolveModelPricing,
 } from "$lib/server/pricing/model-pricing";
 
 /**
@@ -18,12 +17,10 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	const model = (url.searchParams.get("model") ?? "").trim();
 	if (!model) return error(400, "model query param is required");
-	const exact = MODEL_PRICING[model];
-	const bare = MODEL_PRICING[model.split("/").pop() ?? ""];
-	const pricing = exact ?? bare ?? FALLBACK_PRICING;
+	const { pricing, fallback } = resolveModelPricing(model);
 	return json({
 		model,
 		pricing,
-		fallback: !exact && !bare,
+		fallback,
 	});
 };
