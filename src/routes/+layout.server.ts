@@ -1,8 +1,6 @@
 import { redirect } from '@sveltejs/kit';
 import type { LayoutServerLoad } from './$types';
-import { db } from '$lib/server/db';
-import { users } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
+import { getApplicationAdapters } from '$lib/server/application';
 
 export const load: LayoutServerLoad = async ({ locals, url, cookies }) => {
 	const theme = cookies.get('theme') || 'system';
@@ -23,21 +21,14 @@ export const load: LayoutServerLoad = async ({ locals, url, cookies }) => {
 	// behind the layout-level 403; this data is UX only.
 	let user: { name: string | null; email: string | null; image: string | null } | null = null;
 	let platformRole: 'ADMIN' | 'MEMBER' = 'MEMBER';
-	if (locals.session?.userId && db) {
+	if (locals.session?.userId) {
 		try {
-			const [row] = await db
-				.select({
-					name: users.name,
-					email: users.email,
-					image: users.image,
-					platformRole: users.platformRole
-				})
-				.from(users)
-				.where(eq(users.id, locals.session.userId))
-				.limit(1);
+			const row = await getApplicationAdapters().workflowData.getUserProfile(
+				locals.session.userId
+			);
 			if (row) {
 				user = { name: row.name, email: row.email, image: row.image };
-				platformRole = row.platformRole === 'ADMIN' ? 'ADMIN' : 'MEMBER';
+				platformRole = row.platformRole;
 			}
 		} catch {
 			// DB not available

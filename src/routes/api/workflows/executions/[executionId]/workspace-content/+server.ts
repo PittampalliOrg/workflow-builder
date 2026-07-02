@@ -8,15 +8,12 @@
  */
 
 import { error } from "@sveltejs/kit";
-import { eq } from "drizzle-orm";
 import type { RequestHandler } from "./$types";
-import { db } from "$lib/server/db";
-import { workflowExecutions } from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
 import { assertInScope } from "$lib/server/workflows/project-scope";
 import { readWorkspaceFile } from "$lib/server/workflows/juicefs-webdav";
 
 export const GET: RequestHandler = async ({ params, url, locals }) => {
-  if (!db) return error(503, "Database not configured");
   if (!locals.session?.userId) return error(401, "Authentication required");
   const { executionId } = params;
   if (!executionId) return error(400, "executionId required");
@@ -24,16 +21,7 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
   const relPath = url.searchParams.get("path");
   if (!relPath) return error(400, "path required");
 
-  const [exec] = await db
-    .select({
-      id: workflowExecutions.id,
-      projectId: workflowExecutions.projectId,
-      userId: workflowExecutions.userId,
-      daprInstanceId: workflowExecutions.daprInstanceId,
-    })
-    .from(workflowExecutions)
-    .where(eq(workflowExecutions.id, executionId))
-    .limit(1);
+  const exec = await getApplicationAdapters().workflowData.getExecutionById(executionId);
   assertInScope(exec, locals.session, "Execution not found");
 
   if (!exec.daprInstanceId) return error(404, "Run has no workspace");

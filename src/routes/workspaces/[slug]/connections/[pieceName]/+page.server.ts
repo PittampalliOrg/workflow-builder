@@ -1,8 +1,6 @@
 import { error } from '@sveltejs/kit';
-import { and, desc, eq, inArray } from 'drizzle-orm';
 import type { PageServerLoad } from './$types';
-import { db } from '$lib/server/db';
-import { pieceMetadata, workflowConnectionRefs, workflows } from '$lib/server/db/schema';
+import { getApplicationAdapters } from '$lib/server/application';
 import {
 	isOAuth2AuthType,
 	pieceActionsFromMetadata,
@@ -26,62 +24,15 @@ export const load: PageServerLoad = async ({ params, parent }) => {
 	const { workspaceProjectId } = await parent();
 	const pieceName = normalizePieceName(params.pieceName);
 	if (!pieceName) throw error(404, 'Integration not found');
-	if (!db) throw error(503, 'Database not available');
 
 	const candidates = pieceCandidates(pieceName);
-	const [piece] = await db
-		.select({
-			name: pieceMetadata.name,
-			displayName: pieceMetadata.displayName,
-			description: pieceMetadata.description,
-			logoUrl: pieceMetadata.logoUrl,
-			categories: pieceMetadata.categories,
-			version: pieceMetadata.version,
-			auth: pieceMetadata.auth,
-			actions: pieceMetadata.actions,
-			availableOnly: pieceMetadata.availableOnly,
-			catalogSourceImage: pieceMetadata.catalogSourceImage,
-			catalogSyncedAt: pieceMetadata.catalogSyncedAt,
-			updatedAt: pieceMetadata.updatedAt
-		})
-		.from(pieceMetadata)
-		.where(inArray(pieceMetadata.name, candidates))
-		.orderBy(desc(pieceMetadata.updatedAt))
-		.limit(1);
+	const { piece, usageByConnection } =
+		await getApplicationAdapters().workflowData.getPieceCatalogDetail({
+			pieceNameCandidates: candidates,
+			projectId: workspaceProjectId
+		});
 
 	if (!piece) throw error(404, 'Integration not found');
-
-	// Usage counts: workflow_connection_ref rows per connection for this piece,
-	// scoped to the workspace via the owning workflow's project_id.
-	const refRows = await db
-		.select({
-			connectionExternalId: workflowConnectionRefs.connectionExternalId,
-			workflowId: workflowConnectionRefs.workflowId
-		})
-		.from(workflowConnectionRefs)
-		.innerJoin(workflows, eq(workflowConnectionRefs.workflowId, workflows.id))
-		.where(
-			and(
-				inArray(workflowConnectionRefs.pieceName, candidates),
-				eq(workflows.projectId, workspaceProjectId)
-			)
-		);
-
-	const usageByConnection: Record<string, PieceConnectionUsage> = {};
-	const workflowsByConnection = new Map<string, Set<string>>();
-	for (const row of refRows) {
-		const usage = (usageByConnection[row.connectionExternalId] ??= {
-			refCount: 0,
-			workflowCount: 0
-		});
-		usage.refCount += 1;
-		const set = workflowsByConnection.get(row.connectionExternalId) ?? new Set<string>();
-		set.add(row.workflowId);
-		workflowsByConnection.set(row.connectionExternalId, set);
-	}
-	for (const [externalId, set] of workflowsByConnection) {
-		usageByConnection[externalId].workflowCount = set.size;
-	}
 
 	const authType = pieceAuthType(piece.auth);
 

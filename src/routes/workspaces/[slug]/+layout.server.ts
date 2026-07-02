@@ -1,7 +1,5 @@
-import { eq } from "drizzle-orm";
 import { error, redirect } from "@sveltejs/kit";
-import { db } from "$lib/server/db";
-import { projects } from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
 import type { LayoutServerLoad } from "./$types";
 import { resolveWorkspaceProjectId } from "$lib/server/workspaces/resolve";
 
@@ -32,13 +30,12 @@ export const load: LayoutServerLoad = async ({ params, locals, url }) => {
 	if (!projectId) {
 		// Stale-URL recovery: look up the session's (already-healed) project
 		// external_id and redirect the rest of the path onto it.
-		if (db && locals.session.projectId) {
-			const [project] = await db
-				.select({ externalId: projects.externalId })
-				.from(projects)
-				.where(eq(projects.id, locals.session.projectId))
-				.limit(1);
-			const fallbackSlug = project?.externalId || locals.session.projectId;
+		if (locals.session.projectId) {
+			const externalId =
+				await getApplicationAdapters().workflowData.getWorkspaceProjectExternalId(
+					locals.session.projectId,
+				);
+			const fallbackSlug = externalId || locals.session.projectId;
 			if (fallbackSlug && fallbackSlug !== params.slug) {
 				const suffix = url.pathname.replace(/^\/workspaces\/[^/]+/, "");
 				const search = url.search ?? "";

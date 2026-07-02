@@ -1,6 +1,4 @@
-import { and, eq, or } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import { projects, projectMembers } from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * Resolve a URL `[slug]` segment to the authoritative project id, given the
@@ -20,35 +18,9 @@ export async function resolveWorkspaceProjectId(
 	userId: string,
 	currentProjectId: string,
 ): Promise<string | null> {
-	if (!slug || slug === "default") {
-		// Verify the caller actually has a membership row for their JWT
-		// project — defensive against stale tokens referencing a project
-		// the user was removed from.
-		if (!db) return currentProjectId; // graceful in dev without db
-		const [row] = await db
-			.select({ projectId: projectMembers.projectId })
-			.from(projectMembers)
-			.where(
-				and(
-					eq(projectMembers.projectId, currentProjectId),
-					eq(projectMembers.userId, userId),
-				),
-			)
-			.limit(1);
-		return row ? row.projectId : null;
-	}
-	if (!db) return null;
-	const [row] = await db
-		.select({ projectId: projects.id })
-		.from(projects)
-		.innerJoin(
-			projectMembers,
-			and(
-				eq(projectMembers.projectId, projects.id),
-				eq(projectMembers.userId, userId),
-			),
-		)
-		.where(or(eq(projects.externalId, slug), eq(projects.id, slug)))
-		.limit(1);
-	return row ? row.projectId : null;
+	return getApplicationAdapters().workflowData.resolveWorkspaceProjectId({
+		slug,
+		userId,
+		currentProjectId,
+	});
 }

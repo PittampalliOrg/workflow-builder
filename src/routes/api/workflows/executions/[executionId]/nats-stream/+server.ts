@@ -1,30 +1,58 @@
 import type { RequestHandler } from './$types';
+import { getApplicationAdapters } from '$lib/server/application';
+import type { WorkflowExecutionAgentEventRecord } from '$lib/server/application/ports';
 import {
 	loadExecutionReadModel,
-	serializeExecutionReadModel,
-	listExecutionAgentEvents
+	serializeExecutionReadModel
 } from '$lib/server/execution-read-model';
-import { db, sql } from '$lib/server/db';
-import { sessions } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
+import type { ExecutionTimelineEvent } from '$lib/types/execution-stream';
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const SNAPSHOT_INTERVAL_MS = 10_000;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function mapAgentEvent(row: WorkflowExecutionAgentEventRecord): ExecutionTimelineEvent {
+	const data = isRecord(row.data) ? { ...row.data } : {};
+	const toolName =
+		typeof data.tool_name === 'string'
+			? data.tool_name
+			: typeof data.toolName === 'string'
+				? data.toolName
+				: typeof data.name === 'string'
+					? data.name
+					: null;
+	const phase = typeof data.phase === 'string' ? data.phase : null;
+	return {
+		id: row.id,
+		type: row.type,
+		data,
+		timestamp: row.createdAt.toISOString(),
+		workflowAgentRunId: row.sessionId,
+		daprInstanceId: row.sessionId,
+		sourceEventId: row.sourceEventId,
+		phase,
+		toolName
+	};
+}
 
 /**
  * SSE endpoint for an execution's agent event stream.
  *
  * Phase 4 Step 2b migrated agent event publishing from NATS (`workflow.events.*`)
- * to Postgres `session_events` + a pg_notify trigger. This endpoint now tails
- * that notify channel, filtering by the sessions that belong to the given
- * execution via `sessions.workflow_execution_id`.
+ * to persisted `session_events` plus a notification source owned by the
+ * workflow-data application adapter. This endpoint now consumes that port,
+ * filtering by the sessions that belong to the given execution without
+ * importing the infrastructure adapter directly.
  *
  * Pipeline:
  *   1. Initial `snapshot` from loadExecutionReadModel (includes all persisted
  *      agent events so far).
- *   2. LISTEN on 'session_events' → on each NOTIFY, if the sessionId belongs
- *      to this execution, call listExecutionAgentEvents(executionId, cursor)
- *      and send each new event as `agent_event`.
+ *   2. Session-event notification → if the sessionId belongs to this execution,
+ *      call workflowData.listExecutionAgentEventsAfter(executionId, cursor) and
+ *      send each new event as `agent_event`.
  *   3. Every SNAPSHOT_INTERVAL_MS, refresh execution status (phase, progress,
  *      nodeStatuses) and emit an updated `snapshot` if anything changed. Also
  *      refresh the execution's session set so late-spawned sessions get
@@ -38,9 +66,10 @@ const SNAPSHOT_INTERVAL_MS = 10_000;
  */
 export const GET: RequestHandler = async ({ params, request }) => {
 	const executionId = params.executionId;
+	const { workflowData } = getApplicationAdapters();
 	// Last-Event-ID is still read to support future per-session reconnect
 	// replay, but the current implementation falls back to the initial
-	// snapshot + LISTEN-tail model for simplicity.
+	// snapshot + notification-tail model for simplicity.
 	void request.headers.get('last-event-id');
 
 	let cancelled = false;
@@ -49,8 +78,8 @@ export const GET: RequestHandler = async ({ params, request }) => {
 		async start(controller) {
 			const encoder = new TextEncoder();
 			let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-				let lastSnapshotAt = 0;
-				let lastSnapshotHash = '';
+			let lastSnapshotAt = 0;
+			let lastSnapshotHash = '';
 
 			function send(event: string, data: unknown, id?: string | number) {
 				if (cancelled) return;
@@ -80,7 +109,8 @@ export const GET: RequestHandler = async ({ params, request }) => {
 				// Flush proxy buffers
 				sendComment(' '.repeat(2048));
 
-				// Load initial snapshot from DB (NATS only has events from when publishing was enabled)
+				// Load the initial read model snapshot; the workflow-data port tails
+				// newer persisted agent events after this point.
 				const model = await loadExecutionReadModel(executionId, {
 					refreshRuntime: true,
 					includeAgentEvents: true
@@ -114,15 +144,11 @@ export const GET: RequestHandler = async ({ params, request }) => {
 				// is a child workflow session bridged from a `durable/run` step.
 				const executionSessions = new Set<string>();
 				async function refreshSessions(): Promise<void> {
-					if (!db) return;
 					try {
-						const rows = await db
-							.select({ id: sessions.id })
-							.from(sessions)
-							.where(eq(sessions.workflowExecutionId, executionId));
-						for (const r of rows) executionSessions.add(r.id);
+						const sessionIds = await workflowData.listExecutionSessionIds(executionId);
+						for (const sessionId of sessionIds) executionSessions.add(sessionId);
 					} catch {
-						/* transient DB hiccup — keep whatever we had */
+						/* transient event-store hiccup — keep whatever we had */
 					}
 				}
 				await refreshSessions();
@@ -139,49 +165,54 @@ export const GET: RequestHandler = async ({ params, request }) => {
 				}
 
 				// Drain any events that landed after our initial snapshot but
-				// before LISTEN armed. Per-session cursors handle multi-session
-				// executions cleanly (sequence is unique per session, not global).
+				// before the notification subscription armed. Per-session cursors
+				// handle multi-session executions cleanly.
 				async function drainSession(sessionId: string): Promise<void> {
-					if (cancelled || !db) return;
+					if (cancelled) return;
 					const after = seqBySession.get(sessionId) ?? 0;
-					// listExecutionAgentEvents returns all sessions for this exec
-					// with sequence > after. In the common single-session case,
-					// that's correct. For multi-session we further filter to the
-					// notified session to respect per-session cursors.
-					const events = await listExecutionAgentEvents(executionId, after);
-					for (const ev of events) {
-						const sid = ev.workflowAgentRunId ?? ev.daprInstanceId;
+					let records: WorkflowExecutionAgentEventRecord[];
+					try {
+						records = await workflowData.listExecutionAgentEventsAfter({
+							executionId,
+							afterEventId: after
+						});
+					} catch {
+						return;
+					}
+					for (const record of records) {
+						const sid = record.sessionId;
 						if (sid !== sessionId) continue;
+						const ev = mapAgentEvent(record);
 						send('agent_event', ev, ev.id as number);
-						if (typeof ev.id === 'number' && ev.id > (seqBySession.get(sessionId) ?? 0)) {
-							seqBySession.set(sessionId, ev.id);
+						if (record.id > (seqBySession.get(sessionId) ?? 0)) {
+							seqBySession.set(sessionId, record.id);
 						}
 					}
 				}
 
-				// Arm LISTEN. `sql.listen` subscribes once for the whole
-				// process; the callback fires per NOTIFY.
+				// Arm the notification source. The underlying transport is owned by
+				// the workflow-data infrastructure adapter.
 				let unlisten: (() => Promise<void>) | null = null;
+				const pendingDrains = new Set<string>();
 				let draining = false;
-				let drainAgain = false;
 				async function drainLoop(sessionId: string): Promise<void> {
-					if (draining) { drainAgain = true; return; }
+					pendingDrains.add(sessionId);
+					if (draining) return;
 					draining = true;
 					try {
-						do {
-							drainAgain = false;
-							await drainSession(sessionId);
-						} while (drainAgain && !cancelled);
+						while (pendingDrains.size > 0 && !cancelled) {
+							const next = pendingDrains.values().next().value;
+							if (!next) break;
+							pendingDrains.delete(next);
+							await drainSession(next);
+						}
 					} finally {
 						draining = false;
 					}
 				}
 				try {
-					const meta = await sql.listen('session_events', (payloadStr: string) => {
+					const subscription = await workflowData.listenSessionEventNotifications(({ sessionId: sid }) => {
 						if (cancelled) return;
-						let payload: { sessionId?: string } = {};
-						try { payload = JSON.parse(payloadStr); } catch { /* fall through */ }
-						const sid = payload.sessionId;
 						if (!sid) return;
 						// If the notified session belongs to this execution,
 						// drain its new events. Unknown sessions trigger a
@@ -195,13 +226,13 @@ export const GET: RequestHandler = async ({ params, request }) => {
 							})();
 						}
 					});
-					unlisten = () => meta.unlisten();
+					unlisten = () => subscription.unlisten();
 					// Drain each known session once to cover the gap between
-					// initial snapshot and LISTEN arm.
+					// initial snapshot and notification subscription arm.
 					for (const sid of executionSessions) void drainLoop(sid);
 				} catch (err) {
 					send('stream_unavailable', {
-						error: 'LISTEN arm failed',
+						error: 'Event stream subscription failed',
 						fallback: true,
 						message: err instanceof Error ? err.message : 'Connection failed'
 					});
@@ -258,7 +289,7 @@ export const GET: RequestHandler = async ({ params, request }) => {
 								send('snapshot', snap);
 							}
 						} catch {
-							// Transient DB issue — keep the stream open
+							// Transient read-model issue — keep the stream open
 						}
 					}
 				} finally {

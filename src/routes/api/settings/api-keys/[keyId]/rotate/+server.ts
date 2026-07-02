@@ -1,9 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { createHash, randomBytes } from 'node:crypto';
-import { db } from '$lib/server/db';
-import { apiKeys } from '$lib/server/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { getApplicationAdapters } from '$lib/server/application';
 
 /**
  * POST /api/settings/api-keys/[keyId]/rotate
@@ -16,37 +13,15 @@ import { and, eq } from 'drizzle-orm';
  * references from any external systems that persist the key id.
  */
 export const POST: RequestHandler = async ({ params, locals }) => {
-	if (!db) return error(503, 'Database not configured');
 	if (!locals.session?.userId) return error(401, 'Unauthorized');
 
 	const { keyId } = params;
 
-	const [existing] = await db
-		.select({ id: apiKeys.id })
-		.from(apiKeys)
-		.where(and(eq(apiKeys.id, keyId), eq(apiKeys.userId, locals.session.userId)))
-		.limit(1);
-	if (!existing) return error(404, { message: 'API key not found' });
+	const rotated = await getApplicationAdapters().workflowData.rotateUserApiKey({
+		userId: locals.session.userId,
+		keyId,
+	});
 
-	const rawBytes = randomBytes(32);
-	const plaintextKey = `wfb_${rawBytes.toString('hex')}`;
-	const keyPrefix = plaintextKey.slice(0, 11) + '...';
-	const keyHash = createHash('sha256').update(plaintextKey).digest('hex');
-
-	const [rotated] = await db
-		.update(apiKeys)
-		.set({
-			keyHash,
-			keyPrefix,
-			lastUsedAt: null,
-		})
-		.where(eq(apiKeys.id, keyId))
-		.returning({
-			id: apiKeys.id,
-			name: apiKeys.name,
-			keyPrefix: apiKeys.keyPrefix,
-			createdAt: apiKeys.createdAt,
-		});
-
-	return json({ ...rotated, key: plaintextKey });
+	if (!rotated) return error(404, { message: 'API key not found' });
+	return json(rotated);
 };

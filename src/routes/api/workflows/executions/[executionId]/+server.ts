@@ -1,8 +1,6 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { workflowExecutions } from '$lib/server/db/schema';
+import { getApplicationAdapters } from '$lib/server/application';
 import { ownsBenchmarkOrEvalRun } from '$lib/server/lifecycle/ownership';
 import { isResourceInScope } from '$lib/server/workflows/project-scope';
 
@@ -16,13 +14,7 @@ import { isResourceInScope } from '$lib/server/workflows/project-scope';
 export const GET: RequestHandler = async ({ params, locals }) => {
 	const { executionId } = params;
 
-	if (!db) return error(503, 'Database not configured');
-
-	const [row] = await db
-		.select()
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, executionId))
-		.limit(1);
+	const row = await getApplicationAdapters().workflowData.getExecutionById(executionId);
 
 	if (!row) return error(404, 'Execution not found');
 

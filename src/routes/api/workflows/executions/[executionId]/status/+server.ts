@@ -1,8 +1,6 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { workflowExecutions } from '$lib/server/db/schema';
+import { getApplicationAdapters } from '$lib/server/application';
 import {
 	loadExecutionReadModel,
 	serializeExecutionReadModel
@@ -23,15 +21,8 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 	// CMA scoping: pre-check the execution's project_id against the caller's
 	// active workspace before loading the read model. Cross-workspace
 	// mismatches return 404 so existence isn't leaked.
-	if (db && locals.session?.userId) {
-		const [row] = await db
-			.select({
-				projectId: workflowExecutions.projectId,
-				userId: workflowExecutions.userId
-			})
-			.from(workflowExecutions)
-			.where(eq(workflowExecutions.id, executionId))
-			.limit(1);
+	if (locals.session?.userId) {
+		const row = await getApplicationAdapters().workflowData.getExecutionById(executionId);
 		if (!isResourceInScope(row, locals.session)) {
 			return error(404, 'Execution not found');
 		}

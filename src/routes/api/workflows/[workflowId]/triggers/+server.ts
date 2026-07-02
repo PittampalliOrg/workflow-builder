@@ -1,8 +1,7 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { and, eq, desc } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { workflows, workflowTriggers } from '$lib/server/db/schema';
+import { getApplicationAdapters } from '$lib/server/application';
+import type { WorkflowDefinition } from '$lib/server/application/ports';
 import { isResourceInScope } from '$lib/server/workflows/project-scope';
 import { getTriggerKind, validateTriggerConfig } from '$lib/server/workflows/trigger-registry';
 import { generateId } from '$lib/server/utils/id';
@@ -19,15 +18,13 @@ function sanitizeTrigger<T extends { config?: Record<string, unknown> | null }>(
 }
 
 async function scopedWorkflow(workflowId: string, locals: App.Locals) {
-	if (!db) throw error(503, 'Database not configured');
 	if (!locals.session?.userId) throw error(401, 'Authentication required');
-	const [wf] = await db
-		.select({ id: workflows.id, projectId: workflows.projectId, userId: workflows.userId })
-		.from(workflows)
-		.where(eq(workflows.id, workflowId))
-		.limit(1);
+	const wf = await getApplicationAdapters().workflowData.getWorkflowByRef({
+		workflowId,
+		lookup: 'id'
+	});
 	if (!wf) throw error(404, 'Workflow not found');
-	if (!isResourceInScope({ projectId: wf.projectId, userId: wf.userId }, locals.session)) {
+	if (!isResourceInScope(wf, locals.session)) {
 		throw error(404, 'Workflow not found');
 	}
 	return wf;
@@ -36,11 +33,7 @@ async function scopedWorkflow(workflowId: string, locals: App.Locals) {
 // GET — list a workflow's triggers.
 export const GET: RequestHandler = async ({ params, locals }) => {
 	await scopedWorkflow(params.workflowId!, locals);
-	const rows = await db!
-		.select()
-		.from(workflowTriggers)
-		.where(eq(workflowTriggers.workflowId, params.workflowId!))
-		.orderBy(desc(workflowTriggers.createdAt));
+	const rows = await getApplicationAdapters().workflowData.listWorkflowTriggers(params.workflowId!);
 	return json({ triggers: rows.map(sanitizeTrigger) });
 };
 
@@ -57,18 +50,15 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const v = validateTriggerConfig(kind.id, body.config);
 	if (!v.ok) return error(400, `Missing required config: ${v.missing.join(', ')}`);
 
-	const [row] = await db!
-		.insert(workflowTriggers)
-		.values({
-			workflowId: wf.id,
-			userId: locals.session!.userId,
-			projectId: wf.projectId ?? null,
-			kind: kind.id,
-			config: body.config ?? {},
-			triggerData: body.triggerData ?? null,
-			dedupSalt: generateId(),
-			status: 'inactive'
-		})
-		.returning();
+	const row = await getApplicationAdapters().workflowData.createWorkflowTrigger({
+		workflowId: (wf as WorkflowDefinition).id,
+		userId: locals.session!.userId,
+		projectId: wf.projectId ?? null,
+		kind: kind.id,
+		config: body.config ?? {},
+		triggerData: body.triggerData ?? null,
+		dedupSalt: generateId(),
+		status: 'inactive'
+	});
 	return json({ trigger: sanitizeTrigger(row) }, { status: 201 });
 };

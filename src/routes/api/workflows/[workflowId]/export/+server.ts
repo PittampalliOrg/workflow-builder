@@ -1,8 +1,6 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { workflows } from '$lib/server/db/schema';
+import { getApplicationAdapters } from '$lib/server/application';
 import { assertInScope } from '$lib/server/workflows/project-scope';
 import { emitWorkflow, type EmitterLanguage } from '$lib/server/workflows/code-emitter';
 import { createCodeFunction } from '$lib/server/code-functions';
@@ -18,23 +16,21 @@ function parseInlineFlag(value: string | null): boolean {
 }
 
 async function loadWorkflow(workflowId: string, session: App.Locals['session']) {
-	if (!db) throw error(503, 'Database not configured');
 	if (!session?.userId) throw error(401, 'Authentication required');
 
-	const [workflow] = await db
-		.select()
-		.from(workflows)
-		.where(eq(workflows.id, workflowId))
-		.limit(1);
+	const workflow = await getApplicationAdapters().workflowData.getWorkflowByRef({
+		workflowId,
+		lookup: 'id',
+	});
 
 	if (!workflow) throw error(404, 'Workflow not found');
 	assertInScope(
-		{ projectId: workflow.projectId ?? null, userId: workflow.userId },
+		workflow,
 		session,
 		'Workflow not found',
 	);
 
-	const spec = (workflow as Record<string, unknown>).spec as Record<string, unknown> | null;
+	const spec = workflow.spec as Record<string, unknown> | null;
 	if (!spec || typeof spec !== 'object') {
 		throw error(
 			400,

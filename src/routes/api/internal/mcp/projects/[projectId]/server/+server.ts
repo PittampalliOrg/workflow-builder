@@ -1,7 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { validateInternalToken } from '$lib/server/internal-auth';
-import { getPopulatedMcpServerByProjectId } from '$lib/server/db/mcp';
+import { getApplicationAdapters } from '$lib/server/application';
 
 /**
  * GET /api/internal/mcp/projects/[projectId]/server
@@ -17,6 +17,9 @@ export const GET: RequestHandler = async ({ request, params }) => {
 	}
 
 	const { projectId } = params;
-	const server = await getPopulatedMcpServerByProjectId(projectId);
-	return json(server);
+	const result = await getApplicationAdapters().workflowData.getInternalHostedMcpServer({
+		projectId
+	});
+	if (!result.ok) return error(result.status, result.message);
+	return json(result.server);
 };

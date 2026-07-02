@@ -1,10 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { db } from '$lib/server/db';
-import { apiKeys } from '$lib/server/db/schema';
-import { desc, eq } from 'drizzle-orm';
-import { generateId } from '$lib/server/utils/id';
-import { createHash, randomBytes } from 'node:crypto';
+import { getApplicationAdapters } from '$lib/server/application';
 
 /**
  * GET /api/settings/api-keys
@@ -12,22 +8,9 @@ import { createHash, randomBytes } from 'node:crypto';
  * List all API keys for the current user (without key hashes).
  */
 export const GET: RequestHandler = async ({ locals }) => {
-	if (!db) return json([]);
 	if (!locals.session?.userId) return error(401, 'Unauthorized');
 
-	const result = await db
-		.select({
-			id: apiKeys.id,
-			name: apiKeys.name,
-			keyPrefix: apiKeys.keyPrefix,
-			createdAt: apiKeys.createdAt,
-			lastUsedAt: apiKeys.lastUsedAt
-		})
-		.from(apiKeys)
-		.where(eq(apiKeys.userId, locals.session?.userId))
-		.orderBy(desc(apiKeys.createdAt));
-
-	return json(result);
+	return json(await getApplicationAdapters().workflowData.listUserApiKeys(locals.session.userId));
 };
 
 /**
@@ -36,7 +19,6 @@ export const GET: RequestHandler = async ({ locals }) => {
  * Create a new API key. Returns the plaintext key once — it cannot be retrieved again.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	if (!db) return error(503, 'Database not configured');
 	if (!locals.session?.userId) return error(401, 'Unauthorized');
 
 	const body = await request.json();
@@ -46,30 +28,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		return error(400, { message: 'name is required' });
 	}
 
-	// Generate a random API key: wfb_<32 random hex chars>. The `wfb_` prefix
-	// matches the webhook validator in /api/workflows/[workflowId]/webhook.
-	const rawBytes = randomBytes(32);
-	const plaintextKey = `wfb_${rawBytes.toString('hex')}`;
-	const keyPrefix = plaintextKey.slice(0, 11) + '...';
-	const keyHash = createHash('sha256').update(plaintextKey).digest('hex');
+	const created = await getApplicationAdapters().workflowData.createUserApiKey({
+		userId: locals.session.userId,
+		name,
+	});
 
-	const id = generateId();
-
-	const [created] = await db
-		.insert(apiKeys)
-		.values({
-			id,
-			userId: locals.session?.userId,
-			name: name.trim(),
-			keyHash,
-			keyPrefix
-		})
-		.returning({
-			id: apiKeys.id,
-			name: apiKeys.name,
-			keyPrefix: apiKeys.keyPrefix,
-			createdAt: apiKeys.createdAt
-		});
-
-	return json({ ...created, key: plaintextKey }, { status: 201 });
+	return json(created, { status: 201 });
 };

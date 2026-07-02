@@ -14,10 +14,8 @@
  */
 
 import { error, json } from "@sveltejs/kit";
-import { and, eq } from "drizzle-orm";
 import type { RequestHandler } from "./$types";
-import { db } from "$lib/server/db";
-import { workflowArtifacts, workflowExecutions } from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
 import { assertInScope } from "$lib/server/workflows/project-scope";
 import { evaluatePromotionGate } from "$lib/server/workflows/promotion-gates";
 import { SOURCE_BUNDLE_KIND } from "$lib/server/workflows/source-bundle";
@@ -46,34 +44,17 @@ function shQuote(s: string): string {
 }
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	if (!db) return error(503, "Database not configured");
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	const { executionId, artifactId } = params;
+	const { workflowData } = getApplicationAdapters();
 
-	const [exec] = await db
-		.select({
-			id: workflowExecutions.id,
-			projectId: workflowExecutions.projectId,
-			userId: workflowExecutions.userId,
-			input: workflowExecutions.input,
-			output: workflowExecutions.output,
-			summaryOutput: workflowExecutions.summaryOutput,
-		})
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, executionId))
-		.limit(1);
+	const exec = await workflowData.getExecutionById(executionId);
 	assertInScope(exec, locals.session, "Execution not found");
 
-	const [artifact] = await db
-		.select()
-		.from(workflowArtifacts)
-		.where(
-			and(
-				eq(workflowArtifacts.id, artifactId),
-				eq(workflowArtifacts.workflowExecutionId, executionId),
-			),
-		)
-		.limit(1);
+	const artifact = await workflowData.getWorkflowArtifactForExecution({
+		executionId,
+		artifactId,
+	});
 	if (!artifact || artifact.kind !== SOURCE_BUNDLE_KIND || !artifact.fileId) {
 		return error(404, "Source-bundle version not found");
 	}
@@ -210,12 +191,11 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			promotedAt: new Date().toISOString(),
 			promotedBy: locals.session.userId,
 		};
-		await db
-			.update(workflowArtifacts)
-			.set({
-				metadata: { ...((artifact.metadata as Record<string, unknown>) ?? {}), promotion },
-			})
-			.where(eq(workflowArtifacts.id, artifactId));
+		await workflowData.updateWorkflowArtifactMetadata({
+			executionId,
+			artifactId,
+			metadata: { ...((artifact.metadata as Record<string, unknown>) ?? {}), promotion },
+		});
 	}
 
 	return json({

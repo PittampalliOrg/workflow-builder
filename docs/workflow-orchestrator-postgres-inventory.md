@@ -6,7 +6,11 @@ runtime boundary is Dapr service invocation to `workflow-builder` internal
 workflow-data routes. Postgres remains the first workflow-data infrastructure
 adapter, not an orchestrator dependency.
 
-Inventory status: 2026-07-02, after the workflow start/control slice.
+Inventory status: 2026-07-02, after the workflow start/control slice and the
+workspace workflow, service graph, connections, benchmark, top-level
+connections redirect, settings OAuth/profile, settings members, admin pieces,
+root UI-facing route, MCP connection, and app-connection CRUD/OAuth/decrypt
+route slices, plus the project members API route family.
 
 ## Strict HTTP Runtime Paths
 
@@ -79,19 +83,299 @@ application services; `rg` shows the new
 `$lib/server/db`. Direct DB imports for those domains are confined to
 `src/lib/server/application/adapters/postgres.ts`.
 
-The broader BFF/control-plane still has route-level or service-level
-`$lib/server/db` imports and remains the next migration area. Current categories
-include:
+The first UI-facing route has also moved behind the application service:
 
-- workflow execution/start/status routes, including execute/webhook/resume,
-  run detail, logs, artifacts, plans, lineage, metrics, sessions, and approvals.
+- `src/routes/api/workflows/executions/[executionId]/artifacts/+server.ts`
+  now loads the parent execution and artifact list through
+  `getApplicationAdapters().workflowData`; the route imports no Drizzle schema
+  or `$lib/server/db`.
+  `src/routes/api/workflows/executions/[executionId]/artifacts/artifacts-route.test.ts`
+  locks both the response behavior and the no-direct-db boundary.
+- `src/routes/api/workflows/executions/[executionId]/plan-artifacts/+server.ts`
+  now lists, creates, and updates plan artifacts through `workflowData`.
+  The application port gained `listPlanArtifactsByExecutionId`, with the
+  Postgres query confined to
+  `src/lib/server/application/adapters/postgres.ts`. The route keeps the
+  legacy response `id` field while using the application DTO `artifactRef`
+  internally.
+- `src/routes/api/workflows/executions/[executionId]/plan/+server.ts` now reads
+  the newest persisted plan through `workflowData` and retains the existing
+  Dapr service-invocation fallback to `dapr-agent-py` for older runs.
+- `src/routes/api/workflows/executions/[executionId]/lineage/+server.ts` now
+  scopes the requested execution through `workflowData.getExecutionById` and
+  loads the fork lineage tree through `workflowData.getExecutionLineage`.
+  Recursive lineage traversal is confined to the Postgres execution repository
+  adapter.
+- `src/routes/api/workflows/executions/[executionId]/+server.ts` now loads the
+  execution row through `workflowData.getExecutionById`; the route still calls
+  the Lifecycle Controller ownership helper to surface coordinator ownership,
+  so lifecycle internals remain a separate service seam.
+- `src/routes/api/workflows/[workflowId]/executions/+server.ts` now lists
+  workflow executions through `workflowData.listWorkflowExecutions`, preserving
+  the existing `summary`/`full` query behavior. The Postgres column selection is
+  confined to the execution repository adapter.
+- `src/routes/api/workflows/[workflowId]/runs-summary/+server.ts` now loads the
+  session/agent run summary through `workflowData.listWorkflowExecutionRunSummaries`.
+  Session and agent-run joins are confined to the execution repository adapter.
+- `src/routes/api/workflows/executions/[executionId]/status/+server.ts` now
+  performs its workspace-scope pre-check through `workflowData.getExecutionById`
+  before calling the shared execution read-model loader.
+- `src/routes/api/workflows/executions/[executionId]/approval-state/+server.ts`
+  now resolves both execution and workflow spec through `workflowData` before
+  detecting an approval listen gate.
+- `src/routes/api/workflows/executions/[executionId]/approve/+server.ts` now
+  resolves the execution and Dapr instance through `workflowData` before raising
+  the approval event through Dapr service invocation.
+- `src/routes/api/workflows/executions/[executionId]/spec-diff/+server.ts` now
+  loads the forked execution and its parent through `workflowData`; spec
+  comparison remains route-local presentation shaping over application DTOs.
+- `src/routes/api/workflows/executions/[executionId]/sessions/+server.ts` now
+  scope-checks the execution through `workflowData.getExecutionById` and lists
+  direct plus inherited rerun-lineage sessions through
+  `workflowData.listExecutionSessions`. Ancestor traversal and session/project
+  filtering are confined to the execution repository adapter.
+- `src/routes/api/workflows/executions/[executionId]/logs/+server.ts` now loads
+  the execution, persisted node logs, and session-backed agent events through
+  `workflowData`. Node-log and session-event queries are confined to the
+  execution repository adapter; route-local logic only normalizes response shape
+  and extracts trace ids from the execution output payload.
+- `src/routes/api/workflows/executions/[executionId]/artifacts/[artifactId]/diff/+server.ts`
+  now scope-checks the execution and fetches the artifact through
+  `workflowData.getWorkflowArtifactForExecution`; diff patch resolution remains
+  route-local readback over the artifact DTO.
+- `src/routes/api/workflows/executions/[executionId]/versions/+server.ts` now
+  scope-checks the execution through `workflowData.getExecutionById` and derives
+  source-bundle versions from `workflowData.listWorkflowArtifactsByExecutionId`.
+  Promotion-gate evaluation remains route-local response shaping over execution
+  and artifact DTOs.
+- `src/routes/api/workflows/executions/[executionId]/versions/[artifactId]/promote/+server.ts`
+  now scope-checks the execution and source-bundle artifact through
+  `workflowData`, provisions the existing helper-pod command path as route-local
+  orchestration, and records durable promotion metadata through
+  `workflowData.updateWorkflowArtifactMetadata`.
+- `src/routes/api/workflows/executions/[executionId]/workspace-files/+server.ts`
+  and `src/routes/api/workflows/executions/[executionId]/workspace-content/+server.ts`
+  now scope-check and resolve the execution's Dapr instance through
+  `workflowData.getExecutionById`; JuiceFS/WebDAV access remains behind the
+  existing workspace helper service boundary.
+- `src/routes/api/workflows/executions/[executionId]/files/+server.ts` now
+  scope-checks through `workflowData.getExecutionById` and loads the persisted
+  output-file read model through `workflowData.listExecutionOutputFiles`.
+  Session/file joins, live-sandbox selection, and CLI workspace detection are
+  confined to the execution repository adapter.
+- `src/routes/api/workflows/executions/[executionId]/metrics/+server.ts` now
+  scope-checks through `workflowData.getExecutionById` and loads lineage-aware
+  token aggregates through `workflowData.aggregateExecutionUsageMetrics`.
+  The SQL aggregation over `session_events`/`sessions` is confined to the
+  execution repository adapter; model pricing remains route-local response
+  shaping.
+- `src/routes/api/workflows/executions/[executionId]/nats-stream/+server.ts`
+  now tails execution agent events through workflow-data application ports:
+  session id lookup, cursor-based agent-event reads, and session-event
+  notifications. The route keeps the legacy `/nats-stream` path and SSE
+  response contract for client compatibility, while the Postgres
+  `LISTEN/NOTIFY` implementation is confined to
+  `PostgresWorkflowSessionEventNotificationSource` in the Postgres adapter.
+- `src/routes/api/workflows/executions/[executionId]/resume/+server.ts` now
+  loads the source execution, root workspace execution, and current workflow spec
+  through `workflowData`; it still delegates the actual fork/start command to
+  `startWorkflowRun` and preserves Lifecycle Controller ownership checks.
+- `src/routes/api/workflows/[workflowId]/execute/+server.ts` is now a thin
+  presentation adapter: it scope-checks the workflow through `workflowData` and
+  delegates execution creation, validation, prewarm, Dapr scheduling, scheduler
+  attachment, and start-failure marking to the canonical `startWorkflowRun`
+  command service.
+- `src/routes/api/workflows/[workflowId]/export/+server.ts` now loads and
+  scope-checks workflow definitions through `workflowData`; code emission and
+  code-function creation remain behind their existing service boundaries.
+- `src/routes/api/workflows/[workflowId]/published/[version]/+server.ts` now
+  loads the workflow definition through `workflowData` before extracting the
+  requested published revision from the workflow spec metadata.
+- `src/routes/api/workflows/[workflowId]/versions/+server.ts` now scope-checks
+  the workflow through `workflowData` and loads cross-run source-bundle artifacts
+  through `workflowData.listSourceBundleArtifactsByWorkflowId`.
+- `src/routes/api/workflows/+server.ts` and
+  `src/routes/api/workflows/[workflowId]/+server.ts` now list, create, fetch,
+  update, active-run-check, and delete workflow definitions through
+  workflow-data application ports. Route-local logic is limited to request/body
+  shaping, workspace scope checks, and the existing connection-ref sync call.
+- `src/routes/api/workflows/[workflowId]/publish/+server.ts` now reads and
+  updates workflow definitions through workflow-data application ports while
+  preserving the existing published-runtime metadata shape.
+- `src/routes/api/workflows/[workflowId]/triggers/**` now scope-checks
+  workflows through `workflowData`, lists/creates/gets/deletes trigger rows
+  through a workflow-data trigger store, and leaves activation/deactivation
+  backing reconciliation behind the existing Lifecycle Controller reconciler.
+- `src/routes/workspaces/[slug]/workflows/runs/[executionId]/+page.server.ts`
+  now resolves the execution through `workflowData.getExecutionById` before
+  redirecting to the canonical workflow run URL. The page loader keeps only URL
+  shaping and workspace scope checks, and no longer imports Drizzle schema or
+  `$lib/server/db`.
+- `src/routes/workspaces/[slug]/workflows/+page.server.ts` now delegates the
+  workflow list read model to `workflowData.listWorkspaceWorkflowSummaries`.
+  Workspace scoping, recent-run lookup, fork counts, running-first ordering, and
+  "last active" sorting moved into application-service composition over
+  workflow definition/execution ports; SQL remains confined to the Postgres
+  adapter.
+- `src/routes/workspaces/[slug]/service-graph/+page.server.ts` now delegates
+  its workflow/execution picker read model to
+  `workflowData.listServiceGraphPickerOptions`. Workflow option lookup, recent
+  execution lookup, scoped legacy fallback, default execution selection, and
+  selector label formatting moved out of the page loader.
+- `src/routes/workspaces/[slug]/dev/+page.server.ts` now resolves the
+  `microservice-dev-session` launch workflow through
+  `workflowData.findProjectWorkflowIdByIdOrNamePrefix`. The loader still owns
+  the UI service catalog, but the project-scoped workflow id/name-prefix lookup
+  is behind workflow-data.
+- `src/routes/workspaces/[slug]/+layout.server.ts` and
+  `src/lib/server/workspaces/resolve.ts` now validate workspace slug membership
+  and stale-slug redirect targets through workflow-data workspace-project
+  ports. The workspace layout keeps URL shaping and 401/404/302 presentation
+  behavior, while `projects`/`project_members` queries are confined to the
+  Postgres adapter.
+- `src/routes/workspaces/[slug]/connections/[pieceName]/+page.server.ts` now
+  reads piece metadata and per-connection workflow usage through
+  `workflowData.getPieceCatalogDetail`. The page loader still owns auth/action
+  presentation shaping, while `piece_metadata` and `workflow_connection_ref`
+  SQL is confined to the Postgres piece catalog adapter.
+- `src/routes/connections/+page.server.ts` now resolves the active project's
+  workspace slug through `workflowData.getWorkspaceProjectExternalId` before
+  redirecting to the workspace-scoped connections page. The route no longer
+  imports `projects`, Drizzle, or `$lib/server/db`.
+- `src/routes/settings/members/+page.server.ts` now reads the active project
+  membership panel through `workflowData.getWorkspaceProjectMembershipDetail`.
+  The page loader no longer imports `projects`, `project_members`, Drizzle, or
+  `$lib/server/db`.
+- `src/routes/settings/+page.server.ts` now reads profile and platform OAuth
+  app configuration through `workflowData.getSettingsPageReadModel`. User,
+  platform OAuth app, and OAuth-capable piece metadata queries are confined to
+  the Postgres settings adapter; the route keeps only base URL shaping and
+  unauthenticated fallback response shape.
+- `src/routes/api/settings/api-keys/**` now lists, creates, deletes, and rotates
+  user API keys through workflow-data application ports. Plaintext key
+  generation and hashing moved into the application service, while persisted
+  hashed-key SQL is confined to the Postgres API-key adapter.
+- `src/routes/api/settings/oauth-apps/+server.ts` now creates, updates, and
+  deletes platform OAuth app configuration through workflow-data application
+  ports. Platform resolution, encrypted secret persistence, and
+  `platform_oauth_apps` upserts/deletes are confined to the settings
+  application service plus Postgres settings adapter; the route owns only auth,
+  request validation, and response status.
+- `src/routes/api/mcp-connections/+server.ts`,
+  `src/routes/api/mcp-connections/[id]/{+server.ts,tools/+server.ts}`, and
+  `src/routes/api/mcp-connections/catalog/**` now list, create, upsert,
+  update, delete, discover tools, fetch per-piece catalog actions, and compose
+  the browser-safe MCP catalog through workflow-data application ports.
+  Piece-name normalization, piece-backed idempotent upsert, active
+  app-connection binding validation, tool-selection metadata mutation,
+  hosted-workflow delete protection, metadata-first tool discovery, MCP health
+  fallback, action flattening, OAuth configured-state enrichment, and catalog
+  search/filtering are application service behavior; `mcp_connection`,
+  `app_connection`, `platform_oauth_apps`, and piece metadata SQL is confined to
+  Postgres adapters. The MCP connection route family is now free of direct
+  `$lib/server/db`, `$lib/server/db/schema`, and `drizzle-orm` imports.
+  `src/lib/server/mcp-connections.ts` is now a pure normalization/session helper;
+  the stale direct-DB credential binding export was removed because
+  `ApplicationWorkflowDataService` owns active app-connection binding
+  validation through ports.
+- `src/routes/api/v1/projects/[projectId]/mcp-server/+server.ts` and
+  `src/routes/api/v1/projects/[projectId]/mcp-server/rotate/+server.ts` now
+  read, enable/disable, rotate tokens, project MCP-triggered workflow catalogs,
+  and sync the hosted workflow MCP connection through workflow-data application
+  ports. Project-role authorization, create-on-read server provisioning,
+  encrypted token creation/decryption, MCP trigger parsing, public gateway URL
+  fallback, and `hosted_workflow` connection upsert behavior are now owned by
+  `ApplicationWorkflowDataService`; `mcp_server`, `mcp_connection`,
+  `project_members`, `projects`, and workflow catalog SQL is confined to the
+  Postgres hosted MCP server adapter. The public hosted MCP server route family
+  is now free of direct `$lib/server/db`, `$lib/server/db/schema`,
+  `$lib/server/db/mcp`, and `drizzle-orm` imports.
+- `src/routes/api/internal/mcp/projects/[projectId]/server/+server.ts` and
+  `src/routes/api/internal/mcp/projects/[projectId]/catalog/+server.ts` now
+  bootstrap the mcp-gateway hosted server config and internal project catalog
+  through workflow-data application ports. Project id/external-id resolution,
+  enabled-connection listing, hosted-connection sync, hosted bearer token
+  resolution, and catalog entry shaping are application service behavior;
+  `mcp_server`, `mcp_connection`, `projects`, and workflow catalog SQL remains
+  confined to Postgres adapters. `src/lib/server/agents/mcp-resolution.ts` is
+  now a pure row-to-runtime-config resolver, and
+  `src/lib/server/mcp-catalog.ts` imports application-owned MCP connection
+  types instead of Drizzle schema types.
+- `src/routes/api/internal/mcp/runs/[runId]/+server.ts` and
+  `src/routes/api/internal/mcp/runs/[runId]/respond/+server.ts` now read and
+  respond to MCP run rows through workflow-data application ports. `mcp_run`
+  create/attach/read/respond persistence is behind the Postgres MCP run
+  adapter; the poll/respond routes are now free of direct `$lib/server/db/mcp`
+  imports.
+- `src/routes/api/internal/mcp/projects/[projectId]/tools/[workflowId]/execute/+server.ts`
+  now starts hosted workflow MCP tools through workflow-data application ports.
+  Project/workflow validation, hosted server status checks, MCP run creation,
+  execution read-model row creation, input defaulting/validation, Dapr workflow
+  scheduler dispatch, execution instance attachment, and MCP run attachment are
+  owned by `ApplicationWorkflowDataService`; `mcp_run` and
+  `workflow_executions` SQL remains confined to Postgres adapters. The route now
+  owns only internal auth, request parsing, trace-header forwarding, and
+  response mapping, and is free of direct `$lib/server/db`,
+  `$lib/server/db/schema`, `$lib/server/db/mcp`, `drizzle-orm`, and `daprFetch`
+  imports.
+- `src/routes/api/v1/projects/[projectId]/members/**` now list, add, update,
+  and delete project members through workflow-data application ports. Read
+  access, admin-only mutations, same-platform member binding, duplicate-member
+  checks, and last-admin guards live in `ApplicationWorkflowDataService`;
+  `projects`, `project_members`, and `users` SQL is confined to the
+  `PostgresWorkspaceProjectRepository` adapter. The route family imports no
+  `$lib/server/db`, `$lib/server/db/schema`, `projectMembers`, or
+  `drizzle-orm`.
+- `src/routes/api/app-connections/+server.ts` and
+  `src/routes/api/app-connections/[connectionId]/+server.ts`,
+  `src/routes/api/app-connections/oauth2/{start,complete,authorize}/+server.ts`,
+  `src/routes/api/internal/connections/[externalId]/decrypt/+server.ts`, and
+  `src/lib/server/app-connections/index.ts` now list, create, update, delete,
+  start OAuth, complete OAuth, decrypt credentials, refresh OAuth tokens, and
+  expose legacy helper functions through workflow-data application ports.
+  Provider/piece enrichment, filter normalization, encrypted value creation,
+  scope-aware row creation, project ownership checks, OAuth metadata lookup,
+  OAuth app secret resolution, token exchange persistence, decrypt-time refresh,
+  platform OAuth client-secret injection, and 404 mapping are application
+  service behavior; `app_connection`, `piece_metadata`, and
+  `platform_oauth_apps` SQL is confined to the Postgres app-connection adapter.
+  The app-connections route/helper family is now free of direct
+  `$lib/server/db`, `$lib/server/db/schema`, `drizzle-orm`, `appConnections`,
+  `pieceMetadata`, `platformOauthApps`, `encryptObject`, `decryptObject`, and
+  `decryptString` imports.
+- `src/routes/(admin)/admin/pieces/+page.server.ts` now reads provisioned and
+  available piece enablement state through `workflowData.getAdminPiecesReadModel`
+  and mutates the platform disable list through
+  `workflowData.setAdminPieceEnabled`. Catalog, disabled-piece, workflow-usage,
+  MCP-usage, and per-piece image status SQL is confined to the Postgres admin
+  piece adapter. The remaining per-piece image build trigger still delegates to
+  the existing `enablePiece` service path.
+- `src/routes/+layout.server.ts` and `src/routes/+page.server.ts` now read
+  sidebar/dashboard user profile data through `workflowData.getUserProfile`.
+  The root UI loaders no longer import `users`, Drizzle, or `$lib/server/db`
+  for profile display fields.
+- `src/routes/workspaces/[slug]/benchmarks/+page.server.ts` now delegates the
+  SWE-bench instance browser read model to
+  `workflowData.getBenchmarkBrowserReadModel`. Suite bootstrap, instance/repo
+  catalog reads, environment-image status reads, runnable-agent eligibility,
+  environment coverage, and runtime capacity shaping are behind application
+  ports; Drizzle access is confined to the Postgres benchmark browser adapter.
+
+All `+page.server.ts` files are now free of direct `$lib/server/db`,
+`$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
+workspace/root UI, settings, connections, and admin-pieces route subset is also
+clean.
+The broader BFF/control-plane still has route-level or service-level direct DB
+imports outside that subset and remains the next migration area. Current
+categories include:
+
 - Lifecycle Controller internals under `src/lib/server/lifecycle/**`.
 - session/runtime/workspace helpers under `src/lib/server/sessions/**`,
   `src/lib/server/openshell-sessions.ts`, `src/lib/server/sandbox-sessions.ts`,
   and related API routes.
-- MCP/auth/connection resolution and decrypt routes.
-- benchmark/evaluation/admin/reporting surfaces.
-- startup/migration/bootstrap and UI page loaders.
+- benchmark/evaluation/admin/reporting API surfaces outside the workspace
+  benchmark browser loader.
+- startup/migration/bootstrap and remaining non-migrated API route handlers.
 
 Those BFF paths are not strict-orchestrator runtime fallbacks; they are product
 runtime seams to migrate behind application ports in later checkpoints. Raw DB

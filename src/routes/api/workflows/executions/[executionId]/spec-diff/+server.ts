@@ -1,9 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { eq } from 'drizzle-orm';
 import { createTwoFilesPatch } from 'diff';
-import { db } from '$lib/server/db';
-import { workflowExecutions } from '$lib/server/db/schema';
+import { getApplicationAdapters } from '$lib/server/application';
 import { isResourceInScope } from '$lib/server/workflows/project-scope';
 import { getTask, getTaskNames, type Spec } from '$lib/helpers/spec-mutations';
 
@@ -33,13 +31,9 @@ function taskJson(spec: Spec, name: string): string {
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, 'Authentication required');
-	if (!db) return error(500, 'Database not available');
 
-	const [self] = await db
-		.select()
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, params.executionId))
-		.limit(1);
+	const workflowData = getApplicationAdapters().workflowData;
+	const self = await workflowData.getExecutionById(params.executionId);
 	if (!self) return error(404, 'Execution not found');
 	if (!isResourceInScope(self, locals.session)) return error(404, 'Execution not found');
 
@@ -48,11 +42,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		return json({ hasParent: false, parentId: null, fromNode: self.resumeFromNode ?? null });
 	}
 
-	const [parent] = await db
-		.select()
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, parentId))
-		.limit(1);
+	const parent = await workflowData.getExecutionById(parentId);
 
 	const thisSpec = specOf(self.executionIr);
 	const parentSpec = parent ? specOf(parent.executionIr) : null;

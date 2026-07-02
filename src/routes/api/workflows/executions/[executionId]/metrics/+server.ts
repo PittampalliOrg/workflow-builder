@@ -1,8 +1,7 @@
 import { error, json } from '@sveltejs/kit';
-import { eq, sql } from 'drizzle-orm';
 import type { RequestHandler } from './$types';
-import { db } from '$lib/server/db';
-import { workflowExecutions } from '$lib/server/db/schema';
+import { getApplicationAdapters } from '$lib/server/application';
+import { assertInScope } from '$lib/server/workflows/project-scope';
 import { costFor, formatCurrency } from '$lib/server/pricing/model-pricing';
 
 /**
@@ -20,52 +19,15 @@ import { costFor, formatCurrency } from '$lib/server/pricing/model-pricing';
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, 'Authentication required');
-	if (!db) return error(503, 'Database not configured');
 
-	type Row = {
-		model_spec: string | null;
-		input_tokens: number;
-		output_tokens: number;
-		cache_read: number;
-		cache_create: number;
-	};
-
-	// Resume/fork: roll up this run AND its rerun ancestors (the inherited prefix's
-	// agent usage lives on the source run), mirroring the sessions endpoint's lineage
-	// walk — otherwise a fork's metrics read ~0 (its suffix is cheap).
-	const execIds: string[] = [params.executionId];
-	let cursor: string | null = params.executionId;
-	for (let hops = 0; hops < 20 && cursor; hops++) {
-		const rows: Array<{ parent: string | null }> = await db
-			.select({ parent: workflowExecutions.rerunOfExecutionId })
-			.from(workflowExecutions)
-			.where(eq(workflowExecutions.id, cursor))
-			.limit(1);
-		const parent: string | null = rows[0]?.parent ?? null;
-		if (parent && !execIds.includes(parent)) {
-			execIds.push(parent);
-			cursor = parent;
-		} else {
-			cursor = null;
-		}
-	}
-
-	// Aggregate from agent.llm_usage events of every session across the lineage.
-	// `input_tokens` is NET of cache reads (system invariant), matching costFor.
-	const rows = await db.execute<Row>(sql`
-		SELECT
-			coalesce(se.data->>'model', se.data->>'providerModel', 'unknown') AS model_spec,
-			coalesce(sum((se.data->>'input_tokens')::bigint), 0) AS input_tokens,
-			coalesce(sum((se.data->>'output_tokens')::bigint), 0) AS output_tokens,
-			coalesce(sum((se.data->>'cache_read_input_tokens')::bigint), 0) AS cache_read,
-			coalesce(sum((se.data->>'cache_creation_input_tokens')::bigint), 0) AS cache_create
-		FROM session_events se
-		JOIN sessions s ON s.id = se.session_id
-		WHERE s.workflow_execution_id = ANY(${execIds})
-			AND se.type = 'agent.llm_usage'
-			${locals.session.projectId ? sql`AND s.project_id = ${locals.session.projectId}` : sql``}
-		GROUP BY coalesce(se.data->>'model', se.data->>'providerModel', 'unknown')
-	`);
+	const workflowData = getApplicationAdapters().workflowData;
+	const execution = await workflowData.getExecutionById(params.executionId);
+	assertInScope(execution, locals.session, 'Execution not found');
+	const rows = await workflowData.aggregateExecutionUsageMetrics({
+		executionId: params.executionId,
+		projectId: locals.session.projectId,
+		includeAncestors: true
+	});
 
 	const totals = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 };
 	let totalCost = 0;
@@ -80,18 +42,18 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 	for (const row of rows) {
 		const usage = {
-			inputTokens: Number(row.input_tokens),
-			outputTokens: Number(row.output_tokens),
-			cacheReadTokens: Number(row.cache_read),
-			cacheCreateTokens: Number(row.cache_create)
+			inputTokens: row.inputTokens,
+			outputTokens: row.outputTokens,
+			cacheReadTokens: row.cacheReadTokens,
+			cacheCreateTokens: row.cacheCreateTokens
 		};
-		const cost = costFor(row.model_spec, usage);
+		const cost = costFor(row.modelSpec, usage);
 		totalCost += cost;
 		totals.inputTokens += usage.inputTokens;
 		totals.outputTokens += usage.outputTokens;
 		totals.cacheReadTokens += usage.cacheReadTokens;
 		totals.cacheCreateTokens += usage.cacheCreateTokens;
-		byModel.push({ model: row.model_spec ?? 'unknown', ...usage, cost });
+		byModel.push({ model: row.modelSpec ?? 'unknown', ...usage, cost });
 	}
 
 	byModel.sort((a, b) => b.cost - a.cost);

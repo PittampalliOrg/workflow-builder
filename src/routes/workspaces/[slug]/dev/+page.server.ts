@@ -1,6 +1,4 @@
-import { and, eq, like, or } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import { workflows } from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
 import { devPreviewServiceCatalog } from "$lib/server/workflows/dev-environments";
 import type { PageServerLoad } from "./$types";
 
@@ -17,21 +15,13 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const services = devPreviewServiceCatalog();
 	let devWorkflowId: string | null = null;
 	const projectId = locals.session?.projectId;
-	if (db && projectId) {
-		const [row] = await db
-			.select({ id: workflows.id })
-			.from(workflows)
-			.where(
-				and(
-					eq(workflows.projectId, projectId),
-					or(
-						eq(workflows.id, DEV_SESSION_WORKFLOW_ID),
-						like(workflows.name, "Microservice dev-session%"),
-					),
-				),
-			)
-			.limit(1);
-		devWorkflowId = row?.id ?? null;
+	if (projectId) {
+		devWorkflowId =
+			await getApplicationAdapters().workflowData.findProjectWorkflowIdByIdOrNamePrefix({
+				projectId,
+				workflowId: DEV_SESSION_WORKFLOW_ID,
+				namePrefix: "Microservice dev-session%",
+			});
 	}
 	return { services, devWorkflowId, devWorkflowName: DEV_SESSION_WORKFLOW_ID };
 };

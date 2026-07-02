@@ -10,46 +10,43 @@
  */
 
 import { error, json } from "@sveltejs/kit";
-import { and, asc, eq, sql } from "drizzle-orm";
 import type { RequestHandler } from "./$types";
-import { db } from "$lib/server/db";
-import { workflowArtifacts, workflowExecutions } from "$lib/server/db/schema";
-import { assertInScope } from "$lib/server/workflows/project-scope";
-
-// Slot ordering for stable rendering: primary first, then secondary, aux,
-// finally null. The CASE expression below maps slot → integer for ORDER BY.
-const SLOT_RANK = sql<number>`CASE ${workflowArtifacts.slot}
-	WHEN 'primary' THEN 0
-	WHEN 'secondary' THEN 1
-	WHEN 'aux' THEN 2
-	ELSE 3
-END`;
+import { getApplicationAdapters } from "$lib/server/application";
+import { isResourceInScope } from "$lib/server/workflows/project-scope";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
-	if (!db) return error(503, "Database not configured");
 	if (!locals.session?.userId) return error(401, "Authentication required");
 
 	const { executionId } = params;
 	if (!executionId) return error(400, "executionId required");
 
+	const workflowData = getApplicationAdapters().workflowData;
+	let execution;
+	try {
+		execution = await workflowData.getExecutionById(executionId);
+	} catch (err) {
+		console.error("[WorkflowArtifacts] execution lookup failed:", err);
+		return error(
+			503,
+			err instanceof Error ? err.message : "Execution lookup failed",
+		);
+	}
+
 	// Workspace-scope check via the parent execution row.
-	const execRows = await db
-		.select({
-			id: workflowExecutions.id,
-			projectId: workflowExecutions.projectId,
-			userId: workflowExecutions.userId,
-		})
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, executionId))
-		.limit(1);
-	const exec = execRows[0];
-	assertInScope(exec, locals.session, "Execution not found");
+	if (!isResourceInScope(execution, locals.session)) {
+		return error(404, "Execution not found");
+	}
 
-	const rows = await db
-		.select()
-		.from(workflowArtifacts)
-		.where(eq(workflowArtifacts.workflowExecutionId, executionId))
-		.orderBy(SLOT_RANK, asc(workflowArtifacts.createdAt));
+	let artifacts;
+	try {
+		artifacts = await workflowData.listWorkflowArtifactsByExecutionId(executionId);
+	} catch (err) {
+		console.error("[WorkflowArtifacts] artifact list failed:", err);
+		return error(
+			503,
+			err instanceof Error ? err.message : "Artifact lookup failed",
+		);
+	}
 
-	return json({ artifacts: rows });
+	return json({ artifacts });
 };

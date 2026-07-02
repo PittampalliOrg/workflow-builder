@@ -1,8 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { db } from '$lib/server/db';
-import { sessions, workflowExecutions } from '$lib/server/db/schema';
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { getApplicationAdapters } from '$lib/server/application';
+import { isResourceInScope } from '$lib/server/workflows/project-scope';
 
 /**
  * GET /api/workflows/executions/[executionId]/sessions
@@ -20,44 +19,15 @@ import { and, asc, eq, inArray } from 'drizzle-orm';
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, 'Authentication required');
-	if (!db) return error(500, 'Database not available');
+	const workflowData = getApplicationAdapters().workflowData;
+	const execution = await workflowData.getExecutionById(params.executionId);
+	if (!isResourceInScope(execution, locals.session)) return error(404, 'Execution not found');
 
-	// This run + its rerun ancestors (resume/fork lineage), nearest-first.
-	const execIds: string[] = [params.executionId];
-	let cursor: string | null = params.executionId;
-	for (let hops = 0; hops < 20 && cursor; hops++) {
-		const rows: Array<{ parent: string | null }> = await db
-			.select({ parent: workflowExecutions.rerunOfExecutionId })
-			.from(workflowExecutions)
-			.where(eq(workflowExecutions.id, cursor))
-			.limit(1);
-		const parent: string | null = rows[0]?.parent ?? null;
-		if (parent && !execIds.includes(parent)) {
-			execIds.push(parent);
-			cursor = parent;
-		} else {
-			cursor = null;
-		}
-	}
-
-	const conditions = [inArray(sessions.workflowExecutionId, execIds)];
-	if (locals.session.projectId) {
-		conditions.push(eq(sessions.projectId, locals.session.projectId));
-	}
-
-	const rows = await db
-		.select({
-			id: sessions.id,
-			title: sessions.title,
-			status: sessions.status,
-			agentId: sessions.agentId,
-			workflowExecutionId: sessions.workflowExecutionId,
-			createdAt: sessions.createdAt,
-			completedAt: sessions.completedAt,
-		})
-		.from(sessions)
-		.where(and(...conditions))
-		.orderBy(asc(sessions.createdAt));
+	const rows = await workflowData.listExecutionSessions({
+		executionId: params.executionId,
+		projectId: locals.session.projectId,
+		includeAncestors: true,
+	});
 
 	return json({
 		sessions: rows.map((r) => ({

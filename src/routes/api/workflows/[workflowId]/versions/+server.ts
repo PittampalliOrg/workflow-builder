@@ -9,27 +9,20 @@
  */
 
 import { error, json } from "@sveltejs/kit";
-import { eq } from "drizzle-orm";
 import type { RequestHandler } from "./$types";
-import { db } from "$lib/server/db";
-import { workflows } from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
 import { assertInScope } from "$lib/server/workflows/project-scope";
-import { listSourceBundlesForWorkflow } from "$lib/server/workflows/source-bundle";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
-	if (!db) return error(503, "Database not configured");
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	const { workflowId } = params;
 	if (!workflowId) return error(400, "workflowId required");
 
-	const [wf] = await db
-		.select({ id: workflows.id, projectId: workflows.projectId, userId: workflows.userId })
-		.from(workflows)
-		.where(eq(workflows.id, workflowId))
-		.limit(1);
+	const workflowData = getApplicationAdapters().workflowData;
+	const wf = await workflowData.getWorkflowByRef({ workflowId, lookup: "id" });
 	assertInScope(wf, locals.session, "Workflow not found");
 
-	const rows = await listSourceBundlesForWorkflow(workflowId);
+	const rows = await workflowData.listSourceBundleArtifactsByWorkflowId(workflowId);
 	const versions = rows.map((r) => ({
 		artifactId: r.id,
 		executionId: r.workflowExecutionId,

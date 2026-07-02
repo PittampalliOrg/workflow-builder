@@ -8,7 +8,7 @@ import { resolveAgentRef } from "$lib/server/agents/registry";
 import { resolveEnvironmentRef } from "$lib/server/environments/registry";
 import { appendEvent, listEvents } from "$lib/server/sessions/events";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
-import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution";
+import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution-application";
 import { flattenBundles } from "$lib/server/capabilities/flatten";
 import { compilePromptStack } from "$lib/server/prompt-presets";
 import {

@@ -1,15 +1,85 @@
+import { createHash, randomBytes } from "node:crypto";
+import { env } from "$env/dynamic/private";
+import { agentModelOptionFor } from "$lib/agents/model-options";
+import { pieceActionsFromMetadata } from "$lib/connections/piece-tools";
 import type { McpServerProfileConfig } from "$lib/server/agent-profiles";
-import { resolveAgentMcpServersForProject } from "$lib/server/agents/mcp-resolution";
+import { resolveMcpServerConfigsFromRows } from "$lib/server/agents/mcp-resolution";
+import { buildProjectMcpCatalogEntry } from "$lib/server/mcp-catalog";
+import { resolveAgentRuntimeRoute } from "$lib/server/agents/runtime-routing";
+import { benchmarkRuntimeSupportsProvider } from "$lib/server/benchmarks/agents";
+import { benchmarkExecutionBackend } from "$lib/server/benchmarks/execution-plane";
+import {
+	isExactValidatedSwebenchInferenceEnvironment,
+	loadSwebenchInferenceEnvironmentMappings,
+	resolveSwebenchInferenceEnvironment,
+} from "$lib/server/benchmarks/inference-environments";
+import { normalizeSwebenchSuiteSlug } from "$lib/server/benchmarks/swebench";
+import { estimateBenchmarkRuntimeCapacity } from "$lib/server/benchmarks/runtime-capacity";
+import { buildSwebenchEnvironmentSpec } from "$lib/server/environments/environment-image-builds";
+import { connectionBelongsToProject, mergeConnectionProjectId } from "$lib/server/app-connection-scope";
+import {
+	buildOAuth2AuthorizationUrl,
+	exchangeOAuth2CodePlatform,
+	generateOAuthState,
+	generatePkceChallenge,
+	generatePkceVerifier,
+	getOAuth2AuthConfig,
+	resolveValueFromProps,
+	type OAuth2AuthorizationMethod,
+} from "$lib/server/app-connections/oauth2";
+import { getOrchestratorUrl } from "$lib/server/dapr-client";
+import {
+	decryptObject,
+	decryptString,
+	encryptObject,
+	encryptString,
+	type EncryptedObject,
+} from "$lib/server/security/encryption";
+import {
+	AppConnectionScope,
+	AppConnectionStatus,
+	AppConnectionType,
+} from "$lib/server/types/app-connection";
+import { generateId } from "$lib/server/utils/id";
+import { expandGreenfieldPromptInput } from "$lib/server/workflows/greenfield-prompt";
+import { getMissingRequiredTriggerFields } from "$lib/server/workflows/trigger-validation";
 import type {
 	AppendWorkflowExecutionLogInput,
+	AdminPiecesReadModel,
+	AdminPieceRepository,
+	AppConnectionCreateInput,
+	AppConnectionListItem,
+	AppConnectionRepository,
+	AppConnectionSummary,
+	ApiKeyStore,
 	ArtifactStore,
+	BenchmarkBrowserEnvironmentBuildRecord,
+	BenchmarkBrowserReadModel,
+	BenchmarkBrowserRepository,
+	CreateProjectMcpConnectionInput,
+	CreateWorkflowDefinitionInput,
+	CreateWorkflowTriggerInput,
 	CreateWorkflowExecutionInput,
+	HostedMcpInputProperty,
+	HostedMcpServerReadModel,
+	HostedMcpServerRecord,
+	HostedMcpServerRepository,
+	HostedMcpServerStatus,
+	HostedMcpWorkflow,
+	McpRunRepository,
+	ProjectMembershipRole,
+	StartHostedMcpWorkflowToolInput,
+	StartHostedMcpWorkflowToolResult,
 	WorkflowArtifactInput,
 	WorkflowDataService,
 	WorkflowDefinitionRepository,
+	WorkflowTriggerStore,
+	UserProfileRepository,
 	WorkflowExecutionLogPatch,
 	WorkflowExecutionReadModelPatch,
 	WorkflowExecutionRepository,
+	WorkflowSessionEventNotification,
+	WorkflowSessionEventNotificationSource,
 	WorkflowAgentRunStore,
 	UpdateWorkflowAgentRunLifecycleInput,
 	UpsertWorkflowAgentRunScheduledInput,
@@ -18,23 +88,2397 @@ import type {
 	WorkflowPlanArtifactStore,
 	WorkflowRef,
 	TraceLineageStore,
+	UpdateWorkflowDefinitionInput,
 	UpsertTraceLineageLinksInput,
 	WorkspaceSessionStore,
+	ServiceGraphPickerOptions,
+	WorkspaceWorkflowListItem,
+	WorkspaceProjectRepository,
+	PieceCatalogDetail,
+	PieceCatalogRepository,
+	McpConnectionRepository,
+	UpdateProjectMcpConnectionInput,
+	SavePlatformOAuthAppInput,
+	SettingsPageReadModel,
+	SettingsRepository,
 	UpsertWorkspaceSessionInput,
+	WorkflowScheduler,
 } from "$lib/server/application/ports";
+import type { AgentConfig } from "$lib/types/agents";
+import type { BenchmarkInstanceRow } from "$lib/types/benchmark-instance";
+import {
+	applyWorkflowInputDefaults,
+	getPromptExpansionConfig,
+} from "$lib/utils/workflow-input-config";
+
+const PROBLEM_PREVIEW_LEN = 240;
+const TOOL_CAPABLE_BENCHMARK_PROVIDERS = new Set([
+	"anthropic",
+	"openai",
+	"foundry",
+	"together",
+	"nvidia",
+	"deepseek",
+	"alibaba",
+	"kimi",
+	"googleai",
+]);
+const PINNED_ADMIN_PIECES = new Set(["github", "google-calendar", "openai"]);
+const MCP_TOKEN_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
+const PROJECT_MEMBERSHIP_ROLES: readonly ProjectMembershipRole[] = [
+	"ADMIN",
+	"EDITOR",
+	"OPERATOR",
+	"VIEWER",
+];
+
+type BenchmarkInstanceEnvironmentStatus = BenchmarkInstanceRow["environmentStatus"];
+
+function trimProblem(s: string | null): string {
+	if (!s) return "";
+	const cleaned = s.replace(/\s+/g, " ").trim();
+	return cleaned.length > PROBLEM_PREVIEW_LEN
+		? `${cleaned.slice(0, PROBLEM_PREVIEW_LEN).trimEnd()}...`
+		: cleaned;
+}
+
+function metadataString(
+	metadata: Record<string, unknown> | null | undefined,
+	keys: string[],
+): string | null {
+	for (const key of keys) {
+		const value = metadata?.[key];
+		if (typeof value === "string" && value.trim()) return value.trim();
+		if (typeof value === "number") return String(value);
+	}
+	return null;
+}
+
+function normalizePieceName(pieceName: string): string {
+	return pieceName.startsWith("@activepieces/piece-")
+		? pieceName.slice("@activepieces/piece-".length)
+		: pieceName;
+}
+
+function normalizeMcpPieceName(value: string | null | undefined): string {
+	return (value || "")
+		.trim()
+		.toLowerCase()
+		.replace(/^@activepieces\/piece-/, "")
+		.replace(/[_\s]+/g, "-")
+		.replace(/-+/g, "-")
+		.replace(/^-|-$/g, "");
+}
+
+function mcpPieceCandidates(value: string | null | undefined): string[] {
+	const normalized = normalizeMcpPieceName(value);
+	if (!normalized) return [];
+	return [normalized, `@activepieces/piece-${normalized}`];
+}
+
+function pieceMcpRegistryRef(pieceName: string): string {
+	return `ap-${normalizeMcpPieceName(pieceName)}-service`;
+}
+
+function pieceMcpServerUrl(pieceName: string): string {
+	return `http://${pieceMcpRegistryRef(pieceName)}/mcp`;
+}
+
+function generateHostedMcpToken(length = 72): string {
+	const bytes = randomBytes(length);
+	return Array.from(
+		bytes,
+		(byte) => MCP_TOKEN_ALPHABET[byte % MCP_TOKEN_ALPHABET.length],
+	).join("");
+}
+
+function parseBoolString(value: unknown, defaultValue: boolean): boolean {
+	if (typeof value === "boolean") return value;
+	if (typeof value === "string") return value.toLowerCase() === "true";
+	return defaultValue;
+}
+
+function parseHostedMcpInputSchema(value: unknown): HostedMcpInputProperty[] {
+	if (!value) return [];
+	if (Array.isArray(value)) return value as HostedMcpInputProperty[];
+	if (typeof value === "string") {
+		try {
+			const parsed = JSON.parse(value) as unknown;
+			return Array.isArray(parsed) ? (parsed as HostedMcpInputProperty[]) : [];
+		} catch {
+			return [];
+		}
+	}
+	return [];
+}
+
+function getHostedMcpTriggerFromWorkflowNodes(nodes: unknown): {
+	enabled: boolean;
+	toolName: string;
+	toolDescription: string;
+	inputSchema: HostedMcpInputProperty[];
+	returnsResponse: boolean;
+} | null {
+	if (!Array.isArray(nodes)) return null;
+
+	const triggerNode = nodes.find((node) => {
+		if (!isRecord(node)) return false;
+		const data = node.data;
+		return isRecord(data) && data.type === "trigger";
+	});
+	if (!isRecord(triggerNode)) return null;
+	const data = isRecord(triggerNode.data) ? triggerNode.data : null;
+	const config = isRecord(data?.config) ? data.config : {};
+	if (config.triggerType !== "MCP") return null;
+
+	return {
+		enabled: parseBoolString(config.enabled, true),
+		toolName: typeof config.toolName === "string" ? config.toolName : "",
+		toolDescription:
+			typeof config.toolDescription === "string" ? config.toolDescription : "",
+		inputSchema: parseHostedMcpInputSchema(config.inputSchema),
+		returnsResponse: parseBoolString(config.returnsResponse, false),
+	};
+}
+
+function trimTrailingSlash(value: string): string {
+	return value.replace(/\/+$/, "");
+}
+
+function normalizeBaseUrl(value: string | null | undefined): string | null {
+	if (!value) return null;
+	const trimmed = value.trim();
+	return trimmed ? trimTrailingSlash(trimmed) : null;
+}
+
+function resolvePublicMcpGatewayBaseUrl(requestUrl?: string | null): string | null {
+	const explicit =
+		normalizeBaseUrl(env.MCP_GATEWAY_BASE_URL) ?? normalizeBaseUrl(env.APP_URL);
+	if (explicit) return explicit;
+	if (!requestUrl) return null;
+	try {
+		return new URL(requestUrl).origin;
+	} catch {
+		return null;
+	}
+}
+
+function buildHostedMcpServerUrl(
+	projectId: string,
+	requestUrl?: string | null,
+): string | null {
+	const baseUrl = resolvePublicMcpGatewayBaseUrl(requestUrl);
+	if (!baseUrl) return null;
+	return `${baseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/mcp-server/http`;
+}
+
+function canWriteHostedMcp(role: string | null | undefined): boolean {
+	return role === "ADMIN" || role === "EDITOR";
+}
+
+function humanizeMcpPieceName(pieceName: string): string {
+	return normalizeMcpPieceName(pieceName)
+		.split("-")
+		.filter(Boolean)
+		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+		.join(" ");
+}
+
+function metadataFromMcpBody(value: unknown): Record<string, unknown> {
+	if (value && typeof value === "object" && !Array.isArray(value)) {
+		return { transport: "streamable_http", ...(value as Record<string, unknown>) };
+	}
+	return { transport: "streamable_http" };
+}
+
+function serverKeyFromDisplayName(value: string): string {
+	return value
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9-]+/g, "-")
+		.replace(/-+/g, "-")
+		.replace(/^-|-$/g, "");
+}
+
+function parseMcpToolSelection(
+	value: unknown,
+): { ok: true; value: { tools: string[] } | null } | { ok: false; message: string } {
+	if (value === null) return { ok: true, value: null };
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return { ok: false, message: "toolSelection must be null or { tools: string[] }" };
+	}
+	const tools = (value as Record<string, unknown>).tools;
+	if (!Array.isArray(tools) || tools.some((tool) => typeof tool !== "string")) {
+		return { ok: false, message: "toolSelection.tools must be an array of tool names" };
+	}
+	return {
+		ok: true,
+		value: {
+			tools: Array.from(new Set(tools.map((tool) => tool.trim()).filter(Boolean))),
+		},
+	};
+}
+
+function isActivepiecesPieceServiceHost(hostname: string): boolean {
+	const serviceName = hostname.split(".")[0] ?? "";
+	return /^ap-[a-z0-9]([-a-z0-9]*[a-z0-9])?-service$/.test(serviceName);
+}
+
+function normalizePieceMcpServerUrl(value: string): string {
+	const text = value.trim();
+	if (!text) return text;
+	try {
+		const url = new URL(text);
+		if (isActivepiecesPieceServiceHost(url.hostname)) {
+			if (url.port === "3100") {
+				url.port = "";
+			}
+			if (!url.hostname.includes(".")) {
+				url.hostname = `${url.hostname}.workflow-builder.svc.cluster.local`;
+			}
+		}
+		return url.toString();
+	} catch {
+		return text;
+	}
+}
+
+function mcpToolNameFromUnknown(value: unknown): string | null {
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		return trimmed || null;
+	}
+	if (value && typeof value === "object") {
+		const record = value as Record<string, unknown>;
+		for (const key of ["name", "toolName", "id", "title"]) {
+			const candidate = record[key];
+			if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+		}
+	}
+	return null;
+}
+
+function normalizeMcpToolNames(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const names = value
+		.map(mcpToolNameFromUnknown)
+		.filter((item): item is string => Boolean(item));
+	return Array.from(new Set(names));
+}
+
+function mcpToolsFromMetadata(metadata: Record<string, unknown> | null): string[] {
+	const candidates = [metadata?.toolNames, metadata?.tools, metadata?.allowedTools];
+	for (const candidate of candidates) {
+		if (Array.isArray(candidate)) return normalizeMcpToolNames(candidate);
+	}
+	return [];
+}
+
+function mcpHealthUrl(serverUrl: string): string {
+	const url = new URL(serverUrl);
+	url.pathname = url.pathname.replace(/\/mcp\/?$/, "/health");
+	if (!url.pathname.endsWith("/health")) {
+		url.pathname = `${url.pathname.replace(/\/+$/, "")}/health`;
+	}
+	url.search = "";
+	return url.toString();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isServerlessWorkflow10Spec(value: unknown): value is Record<string, unknown> {
+	if (!isRecord(value)) return false;
+	const document = value.document;
+	if (!isRecord(document)) return false;
+	return (
+		document.dsl === "1.0.0" &&
+		typeof document.namespace === "string" &&
+		typeof document.name === "string"
+	);
+}
+
+function hostedMcpToolInput(value: unknown): Record<string, unknown> {
+	return isRecord(value) ? value : {};
+}
+
+function hostedMcpTraceHeaders(
+	traceHeaders: Record<string, string> | undefined,
+): Record<string, string> {
+	const headers: Record<string, string> = { "Content-Type": "application/json" };
+	for (const name of ["traceparent", "tracestate", "baggage"]) {
+		const value = traceHeaders?.[name];
+		if (value) headers[name] = value;
+	}
+	return headers;
+}
+
+function firstAuthRecord(auth: unknown): Record<string, unknown> | null {
+	if (Array.isArray(auth)) {
+		return auth.find(isRecord) ?? null;
+	}
+	return isRecord(auth) ? auth : null;
+}
+
+function mcpPieceAuthType(auth: unknown): string {
+	const record = firstAuthRecord(auth);
+	const type = typeof record?.type === "string" ? record.type.trim() : "";
+	return type || "NONE";
+}
+
+function mcpPieceAuthDisplayName(auth: unknown): string | null {
+	const record = firstAuthRecord(auth);
+	const displayName =
+		typeof record?.displayName === "string" ? record.displayName.trim() : "";
+	return displayName || null;
+}
+
+function isOAuth2AuthType(authType: string | null | undefined): boolean {
+	return String(authType || "").toUpperCase().includes("OAUTH2");
+}
+
+function mcpPieceRequiresAuth(authType: string | null | undefined): boolean {
+	const normalized = String(authType || "").toUpperCase();
+	return Boolean(normalized && normalized !== "NONE" && normalized !== "NO_AUTH");
+}
+
+function mcpActionCount(actions: unknown): number {
+	if (!isRecord(actions)) return 0;
+	return Object.keys(actions).length;
+}
+
+function canonicalMcpPieceName(pieceName: string): string {
+	const normalized = normalizeMcpPieceName(pieceName);
+	return normalized ? `@activepieces/piece-${normalized}` : pieceName;
+}
+
+function mcpCatalogSearchableText(entry: {
+	pieceName: string;
+	displayName: string;
+	description: string | null;
+	categories: string[];
+	authType: string;
+}): string {
+	return [
+		entry.pieceName,
+		entry.displayName,
+		entry.description ?? "",
+		entry.authType,
+		...entry.categories,
+	]
+		.join(" ")
+		.toLowerCase();
+}
+
+function appConnectionPieceCandidates(value: string): string[] {
+	const normalized = normalizeMcpPieceName(value);
+	const raw = value.trim();
+	const candidates = new Set([normalized, raw]);
+	if (raw.startsWith("@activepieces/piece-")) {
+		candidates.add(raw.slice("@activepieces/piece-".length));
+	} else if (normalized) {
+		candidates.add(`@activepieces/piece-${normalized}`);
+	}
+	return Array.from(candidates).filter(Boolean);
+}
+
+function appConnectionMatchesPieceFilter(
+	connectionPieceName: string,
+	filter: string,
+	piece?: { name: string; displayName: string; categories: string[] },
+): boolean {
+	const normalizedFilter = filter.trim().toLowerCase();
+	if (!normalizedFilter) return true;
+
+	const candidates = appConnectionPieceCandidates(connectionPieceName).map((item) =>
+		item.toLowerCase(),
+	);
+	if (
+		candidates.some(
+			(candidate) =>
+				candidate === normalizedFilter || candidate.includes(normalizedFilter),
+		)
+	) {
+		return true;
+	}
+
+	if (piece) {
+		const providerCandidates = [
+			piece.name,
+			piece.displayName,
+			...piece.categories,
+		]
+			.map((item) => item.toLowerCase())
+			.filter(Boolean);
+		return providerCandidates.some(
+			(candidate) =>
+				candidate === normalizedFilter || candidate.includes(normalizedFilter),
+		);
+	}
+
+	return false;
+}
+
+const REFRESH_THRESHOLD_SECONDS = 5 * 60;
+
+function isEncryptedObject(value: unknown): value is EncryptedObject {
+	return (
+		!!value &&
+		typeof value === "object" &&
+		!Array.isArray(value) &&
+		"iv" in value &&
+		"data" in value
+	);
+}
+
+function resolveAppConnectionClientSecret(value: unknown): string {
+	if (typeof value === "string") {
+		try {
+			const parsed = JSON.parse(value) as unknown;
+			if (isEncryptedObject(parsed)) return decryptString(parsed);
+		} catch {
+			return value;
+		}
+		return value;
+	}
+	if (isEncryptedObject(value)) return decryptString(value);
+	throw new Error("OAuth client secret is not configured correctly");
+}
+
+function isTokenExpired(token: Record<string, unknown>): boolean {
+	const claimedAt = typeof token.claimed_at === "number" ? token.claimed_at : 0;
+	const expiresIn = typeof token.expires_in === "number" ? token.expires_in : 3600;
+	if (!claimedAt) return false;
+	const now = Math.floor(Date.now() / 1000);
+	return now + REFRESH_THRESHOLD_SECONDS >= claimedAt + expiresIn;
+}
+
+function formatPieceName(pieceName: string): string {
+	return normalizePieceName(pieceName)
+		.split("-")
+		.map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+		.join(" ");
+}
+
+function hasAdminPieceName(piece: {
+	name: string | null;
+	displayName: string | null;
+	logoUrl: string | null;
+}): piece is { name: string; displayName: string | null; logoUrl: string | null } {
+	return typeof piece.name === "string" && piece.name.length > 0;
+}
+
+function classifyEnvironmentBuild(
+	build: BenchmarkBrowserEnvironmentBuildRecord,
+): BenchmarkInstanceEnvironmentStatus {
+	if (
+		build.status === "validated" &&
+		build.validationStatus === "validated" &&
+		build.sandboxImage &&
+		build.digest
+	) {
+		return "validated";
+	}
+	if (build.status === "queued" || build.status === "building") {
+		return "building";
+	}
+	return "failed";
+}
+
+const ENVIRONMENT_STATUS_RANK: Record<BenchmarkInstanceEnvironmentStatus, number> = {
+	validated: 4,
+	building: 3,
+	failed: 2,
+	not_built: 1,
+};
+
+function createPlaintextWorkflowBuilderApiKey() {
+	const plaintextKey = `wfb_${randomBytes(32).toString("hex")}`;
+	return {
+		plaintextKey,
+		keyPrefix: `${plaintextKey.slice(0, 11)}...`,
+		keyHash: createHash("sha256").update(plaintextKey).digest("hex"),
+	};
+}
+
+function isProjectMembershipRole(value: unknown): value is ProjectMembershipRole {
+	return (
+		typeof value === "string" &&
+		(PROJECT_MEMBERSHIP_ROLES as readonly string[]).includes(value)
+	);
+}
 
 export class ApplicationWorkflowDataService implements WorkflowDataService {
 	constructor(
 		private readonly deps: {
 			workflowDefinitions: WorkflowDefinitionRepository;
+			workflowTriggers: WorkflowTriggerStore;
+			userProfiles: UserProfileRepository;
+			settings: SettingsRepository;
+			mcpConnections: McpConnectionRepository;
+			hostedMcpServers: HostedMcpServerRepository;
+			mcpRuns: McpRunRepository;
+			appConnections: AppConnectionRepository;
+			adminPieces: AdminPieceRepository;
+			apiKeys: ApiKeyStore;
+			workspaceProjects: WorkspaceProjectRepository;
+			pieceCatalog: PieceCatalogRepository;
+			benchmarkBrowser: BenchmarkBrowserRepository;
 			workflowExecutions: WorkflowExecutionRepository;
+			sessionEventNotifications: WorkflowSessionEventNotificationSource;
 			artifactStore: ArtifactStore;
 			workspaceSessions: WorkspaceSessionStore;
 			agentRuns: WorkflowAgentRunStore;
 			planArtifacts: WorkflowPlanArtifactStore;
 			traceLineage: TraceLineageStore;
+			workflowScheduler?: WorkflowScheduler;
 		},
 	) {}
+
+	getUserProfile(userId: string) {
+		return this.deps.userProfiles.getUserProfile(userId);
+	}
+
+	async getSettingsPageReadModel(input: {
+		userId: string;
+		sessionPlatformId?: string | null;
+	}): Promise<SettingsPageReadModel> {
+		const profile = await this.deps.settings.getSettingsUserProfile(input.userId);
+		const platformId = profile?.platformId ?? input.sessionPlatformId ?? null;
+		const [oauthApps, oauthPieces] = await Promise.all([
+			platformId
+				? this.deps.settings.listPlatformOAuthApps(platformId)
+				: Promise.resolve([]),
+			this.deps.settings.listOAuthPieces(),
+		]);
+
+		const configuredByPiece = new Map(
+			oauthApps.map((app) => [normalizePieceName(app.pieceName), app]),
+		);
+		const oauthPieceNames = new Set(oauthPieces.map((piece) => piece.name));
+		const enrichedOauthApps = [
+			...oauthPieces.map((piece) => {
+				const app = configuredByPiece.get(piece.name);
+				return {
+					id: app?.id ?? null,
+					pieceName: `@activepieces/piece-${piece.name}`,
+					clientId: app?.clientId ?? "",
+					displayName: piece.displayName || formatPieceName(piece.name),
+					logoUrl: piece.logoUrl || null,
+					configured: Boolean(app),
+					createdAt: app?.createdAt ?? null,
+					updatedAt: app?.updatedAt ?? null,
+				};
+			}),
+			...oauthApps
+				.filter((app) => !oauthPieceNames.has(normalizePieceName(app.pieceName)))
+				.map((app) => ({
+					id: app.id,
+					pieceName: app.pieceName,
+					clientId: app.clientId,
+					displayName: formatPieceName(app.pieceName),
+					logoUrl: null,
+					configured: true,
+					createdAt: app.createdAt,
+					updatedAt: app.updatedAt,
+				})),
+		].sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+		return {
+			profile,
+			oauthApps: enrichedOauthApps,
+		};
+	}
+
+	async savePlatformOAuthApp(input: SavePlatformOAuthAppInput) {
+		const id = input.id?.trim() || null;
+		const clientSecret = input.clientSecret?.trim();
+		const encryptedClientSecret = clientSecret ? encryptString(clientSecret) : null;
+		if (id) {
+			await this.deps.settings.savePlatformOAuthApp({
+				id,
+				pieceName: input.pieceName.trim(),
+				clientId: input.clientId.trim(),
+				encryptedClientSecret,
+			});
+			return { success: true as const };
+		}
+
+		const platformId = await this.deps.settings.resolvePlatformId(
+			input.sessionPlatformId,
+		);
+		const app = await this.deps.settings.savePlatformOAuthApp({
+			id: generateId(),
+			platformId,
+			pieceName: input.pieceName.trim(),
+			clientId: input.clientId.trim(),
+			encryptedClientSecret,
+		});
+		return { success: true as const, app };
+	}
+
+	async deletePlatformOAuthApp(id: string) {
+		await this.deps.settings.deletePlatformOAuthApp(id);
+	}
+
+	listProjectMcpConnections(projectId: string) {
+		return this.deps.mcpConnections.listProjectConnections(projectId);
+	}
+
+	private async validateMcpCredentialBinding(input: {
+		projectId: string;
+		pieceName: string | null | undefined;
+		externalId: unknown;
+	}): Promise<{ ok: true; externalId: string | null } | { ok: false; message: string }> {
+		const externalId = typeof input.externalId === "string" ? input.externalId.trim() : "";
+		if (!externalId) return { ok: true, externalId: null };
+		const pieceNameCandidates = mcpPieceCandidates(input.pieceName);
+		if (pieceNameCandidates.length === 0) {
+			return {
+				ok: false,
+				message: "connectionExternalId can only be set for a piece MCP connection",
+			};
+		}
+		const exists = await this.deps.mcpConnections.activeAppConnectionExistsForPiece({
+			projectId: input.projectId,
+			externalId,
+			pieceNameCandidates,
+		});
+		if (!exists) {
+			return {
+				ok: false,
+				message:
+					"connectionExternalId must reference an active app connection for the same piece",
+			};
+		}
+		return { ok: true, externalId };
+	}
+
+	async createProjectMcpConnection(input: CreateProjectMcpConnectionInput) {
+		const sourceType =
+			typeof input.sourceType === "string" ? input.sourceType : "custom_url";
+		if (sourceType !== "custom_url" && sourceType !== "nimble_piece") {
+			return {
+				ok: false as const,
+				status: 400 as const,
+				message: "sourceType must be custom_url or nimble_piece",
+			};
+		}
+
+		if (sourceType === "nimble_piece") {
+			const pieceName = normalizeMcpPieceName(
+				typeof input.pieceName === "string" ? input.pieceName : "",
+			);
+			if (!pieceName) {
+				return {
+					ok: false as const,
+					status: 400 as const,
+					message: "pieceName is required for piece MCP connections",
+				};
+			}
+
+			const displayName =
+				(typeof input.displayName === "string" && input.displayName.trim()) ||
+				humanizeMcpPieceName(pieceName);
+			const binding = await this.validateMcpCredentialBinding({
+				projectId: input.projectId,
+				pieceName,
+				externalId: input.connectionExternalId,
+			});
+			if (!binding.ok) {
+				return { ok: false as const, status: 400 as const, message: binding.message };
+			}
+			const metadata = metadataFromMcpBody(input.metadata);
+			const existing = await this.deps.mcpConnections.findProjectNimblePieceConnection({
+				projectId: input.projectId,
+				pieceName,
+			});
+
+			if (existing) {
+				const connection = await this.deps.mcpConnections.updateProjectConnection({
+					id: existing.id,
+					projectId: input.projectId,
+					connectionExternalId: binding.externalId,
+					displayName,
+					registryRef: pieceMcpRegistryRef(pieceName),
+					serverUrl: pieceMcpServerUrl(pieceName),
+					status: "ENABLED",
+					metadata,
+					updatedBy: input.userId,
+				});
+				if (!connection) {
+					return {
+						ok: false as const,
+						status: 404 as const,
+						message: "Connection not found",
+					};
+				}
+				return { ok: true as const, status: 200 as const, connection };
+			}
+
+			const connection = await this.deps.mcpConnections.createProjectConnection({
+				id: generateId(),
+				projectId: input.projectId,
+				sourceType: "nimble_piece",
+				pieceName,
+				serverKey: null,
+				connectionExternalId: binding.externalId,
+				displayName,
+				registryRef: pieceMcpRegistryRef(pieceName),
+				serverUrl: pieceMcpServerUrl(pieceName),
+				status: "ENABLED",
+				metadata,
+				createdBy: input.userId,
+				updatedBy: input.userId,
+			});
+			return { ok: true as const, status: 201 as const, connection };
+		}
+
+		const displayName =
+			typeof input.displayName === "string" ? input.displayName.trim() : "";
+		const serverUrl = typeof input.serverUrl === "string" ? input.serverUrl.trim() : "";
+		if (!displayName || !serverUrl) {
+			return {
+				ok: false as const,
+				status: 400 as const,
+				message: "displayName and serverUrl are required",
+			};
+		}
+		if (!serverUrl.startsWith("http://") && !serverUrl.startsWith("https://")) {
+			return {
+				ok: false as const,
+				status: 400 as const,
+				message: "serverUrl must be HTTP(S)",
+			};
+		}
+
+		const connection = await this.deps.mcpConnections.createProjectConnection({
+			id: generateId(),
+			projectId: input.projectId,
+			sourceType: "custom_url",
+			pieceName: null,
+			serverKey: serverKeyFromDisplayName(displayName),
+			connectionExternalId: null,
+			displayName,
+			registryRef: null,
+			serverUrl,
+			status: "ENABLED",
+			metadata: metadataFromMcpBody(input.metadata),
+			createdBy: input.userId,
+			updatedBy: input.userId,
+		});
+		return { ok: true as const, status: 201 as const, connection };
+	}
+
+	async updateProjectMcpConnection(input: UpdateProjectMcpConnectionInput) {
+		if (
+			input.status !== undefined &&
+			input.status !== "ENABLED" &&
+			input.status !== "DISABLED"
+		) {
+			return {
+				ok: false as const,
+				status: 400 as const,
+				message: "status must be ENABLED or DISABLED",
+			};
+		}
+
+		const existing = await this.deps.mcpConnections.findProjectConnection({
+			id: input.id,
+			projectId: input.projectId,
+		});
+		if (!existing) {
+			return { ok: false as const, status: 404 as const, message: "Connection not found" };
+		}
+
+		const updates: Parameters<
+			McpConnectionRepository["updateProjectConnection"]
+		>[0] = {
+			id: input.id,
+			projectId: input.projectId,
+			updatedBy: input.userId,
+		};
+		if (input.status !== undefined) updates.status = input.status;
+
+		if (input.connectionExternalIdProvided) {
+			if (existing.sourceType !== "nimble_piece") {
+				return {
+					ok: false as const,
+					status: 400 as const,
+					message: "connectionExternalId can only be set for piece MCP connections",
+				};
+			}
+			const binding = await this.validateMcpCredentialBinding({
+				projectId: input.projectId,
+				pieceName: existing.pieceName,
+				externalId: input.connectionExternalId,
+			});
+			if (!binding.ok) {
+				return { ok: false as const, status: 400 as const, message: binding.message };
+			}
+			updates.connectionExternalId = binding.externalId;
+		}
+
+		if (input.toolSelectionProvided) {
+			if (existing.sourceType !== "nimble_piece") {
+				return {
+					ok: false as const,
+					status: 400 as const,
+					message: "toolSelection can only be set for piece MCP connections",
+				};
+			}
+			const parsed = parseMcpToolSelection(input.toolSelection);
+			if (!parsed.ok) {
+				return { ok: false as const, status: 400 as const, message: parsed.message };
+			}
+			const metadata = { ...(existing.metadata ?? {}) };
+			if (parsed.value === null) {
+				delete metadata.toolSelection;
+			} else {
+				metadata.toolSelection = parsed.value;
+			}
+			updates.metadata = Object.keys(metadata).length > 0 ? metadata : null;
+		}
+
+		const connection = await this.deps.mcpConnections.updateProjectConnection(updates);
+		if (!connection) {
+			return { ok: false as const, status: 404 as const, message: "Connection not found" };
+		}
+		return { ok: true as const, status: 200 as const, connection };
+	}
+
+	async deleteProjectMcpConnection(input: { id: string; projectId: string }) {
+		const existing = await this.deps.mcpConnections.findProjectConnection(input);
+		if (!existing) {
+			return { ok: false as const, status: 404 as const, message: "Connection not found" };
+		}
+		if (existing.sourceType === "hosted_workflow") {
+			return {
+				ok: false as const,
+				status: 400 as const,
+				message: "Cannot delete hosted workflow connections",
+			};
+		}
+		await this.deps.mcpConnections.deleteProjectConnection(input);
+		return { ok: true as const };
+	}
+
+	async discoverProjectMcpConnectionTools(input: { id: string; projectId: string }) {
+		const connection = await this.deps.mcpConnections.findProjectConnection(input);
+		if (!connection) {
+			return {
+				ok: false as const,
+				status: 404 as const,
+				message: "MCP connection not found",
+			};
+		}
+
+		const metadataTools = mcpToolsFromMetadata(connection.metadata);
+		if (metadataTools.length > 0) {
+			return { ok: true as const, toolNames: metadataTools, source: "metadata" as const };
+		}
+
+		if (!connection.serverUrl) {
+			return { ok: true as const, toolNames: [], source: "none" as const };
+		}
+
+		try {
+			const response = await fetch(
+				mcpHealthUrl(normalizePieceMcpServerUrl(connection.serverUrl)),
+				{
+					headers: { Accept: "application/json" },
+					signal: AbortSignal.timeout(5000),
+				},
+			);
+			if (!response.ok) {
+				return {
+					ok: false as const,
+					status: response.status as 500 | 502,
+					message: `MCP server health check failed with HTTP ${response.status}`,
+				};
+			}
+			const payload = (await response.json()) as Record<string, unknown>;
+			const toolNames = normalizeMcpToolNames(payload.toolNames ?? payload.tools);
+			return { ok: true as const, toolNames, source: "health" as const };
+		} catch (err) {
+			return {
+				ok: false as const,
+				status: 502 as const,
+				message: `Unable to discover MCP tools: ${err instanceof Error ? err.message : "Unknown error"}`,
+			};
+		}
+	}
+
+	async getMcpCatalogPieceActions(pieceNameInput: string) {
+		const pieceName = normalizeMcpPieceName(pieceNameInput);
+		if (!pieceName) {
+			return { ok: false as const, status: 404 as const, message: "Integration not found" };
+		}
+		const piece = await this.deps.pieceCatalog.getLatestPieceMetadata(
+			mcpPieceCandidates(pieceName),
+		);
+		if (!piece) {
+			return { ok: false as const, status: 404 as const, message: "Integration not found" };
+		}
+
+		return {
+			ok: true as const,
+			pieceName,
+			actions: pieceActionsFromMetadata(piece.actions),
+		};
+	}
+
+	async getMcpConnectionCatalog(input: {
+		projectId: string;
+		platformId?: string | null;
+		query?: string | null;
+		authOnly?: boolean;
+		configuredOnly?: boolean;
+	}) {
+		const q = (input.query ?? "").trim().toLowerCase();
+		const [pieces, appConnectionRows, projectConnections] = await Promise.all([
+			this.deps.pieceCatalog.listMcpCatalogPieces(),
+			this.deps.mcpConnections.listActiveAppConnectionCatalogSummaries(input.projectId),
+			this.deps.mcpConnections.listProjectConnections(input.projectId),
+		]);
+
+		const pieceNames = Array.from(
+			new Set(
+				pieces.flatMap((piece) => {
+					const normalized = normalizeMcpPieceName(piece.name);
+					return [normalized, canonicalMcpPieceName(piece.name)].filter(Boolean);
+				}),
+			),
+		);
+		const oauthConfigured = new Set(
+			(
+				await this.deps.mcpConnections.listPlatformOAuthAppPieceNames({
+					pieceNames,
+					platformId: input.platformId,
+				})
+			).map((pieceName) => normalizeMcpPieceName(pieceName)),
+		);
+
+		const appConnectionsByPiece = new Map<
+			string,
+			{
+				id: string;
+				externalId: string;
+				displayName: string;
+				type: string;
+				status: string;
+			}[]
+		>();
+		for (const row of appConnectionRows) {
+			const key = normalizeMcpPieceName(row.pieceName);
+			if (!key) continue;
+			const list = appConnectionsByPiece.get(key) ?? [];
+			const { pieceName: _pieceName, ...summary } = row;
+			list.push(summary);
+			appConnectionsByPiece.set(key, list);
+		}
+
+		const mcpByPiece = new Map<
+			string,
+			{
+				id: string;
+				displayName: string;
+				sourceType: "nimble_piece";
+				pieceName: string | null;
+				serverKey: string | null;
+				connectionExternalId: string | null;
+				serverUrl: string | null;
+				status: string;
+				metadata: Record<string, unknown> | null;
+			}
+		>();
+		for (const row of projectConnections) {
+			if (row.sourceType !== "nimble_piece") continue;
+			const key = normalizeMcpPieceName(row.pieceName);
+			if (!key) continue;
+			mcpByPiece.set(key, {
+				id: row.id,
+				displayName: row.displayName,
+				sourceType: row.sourceType,
+				pieceName: row.pieceName,
+				serverKey: row.serverKey,
+				connectionExternalId: row.connectionExternalId,
+				serverUrl: row.serverUrl,
+				status: row.status,
+				metadata: row.metadata,
+			});
+		}
+
+		const entries = pieces
+			.map((piece) => {
+				const normalized = normalizeMcpPieceName(piece.name);
+				if (!normalized) return null;
+				const actionTotal = mcpActionCount(piece.actions);
+				if (actionTotal <= 0) return null;
+				const authType = mcpPieceAuthType(piece.auth);
+				const entry = {
+					pieceName: normalized,
+					canonicalPieceName: `@activepieces/piece-${normalized}`,
+					displayName: piece.displayName?.trim() || humanizeMcpPieceName(normalized),
+					description: piece.description ?? null,
+					logoUrl: piece.logoUrl || null,
+					categories: Array.isArray(piece.categories) ? piece.categories : [],
+					authType,
+					authDisplayName: mcpPieceAuthDisplayName(piece.auth),
+					requiresAuth: mcpPieceRequiresAuth(authType),
+					isOAuth2: isOAuth2AuthType(authType),
+					oauthAppConfigured: oauthConfigured.has(normalized),
+					actionCount: actionTotal,
+					registryRef: pieceMcpRegistryRef(normalized),
+					serverUrl: pieceMcpServerUrl(normalized),
+					appConnections: appConnectionsByPiece.get(normalized) ?? [],
+					mcpConnection: mcpByPiece.get(normalized) ?? null,
+					availableOnly: piece.availableOnly === true,
+				};
+				return entry;
+			})
+			.filter((entry) => entry !== null)
+			.filter((entry) => !input.authOnly || entry.requiresAuth)
+			.filter((entry) => !input.configuredOnly || Boolean(entry.mcpConnection))
+			.filter((entry) => !q || mcpCatalogSearchableText(entry).includes(q))
+			.sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+		return { entries };
+	}
+
+	private async getOrCreateHostedMcpServer(
+		projectId: string,
+	): Promise<HostedMcpServerRecord> {
+		const existing = await this.deps.hostedMcpServers.getServerByProjectId(projectId);
+		if (existing) return existing;
+		return this.deps.hostedMcpServers.createServer({
+			id: generateId(),
+			projectId,
+			status: "DISABLED",
+			tokenEncrypted: encryptString(generateHostedMcpToken()),
+		});
+	}
+
+	private async listHostedMcpWorkflows(projectId: string): Promise<HostedMcpWorkflow[]> {
+		const ownerId = await this.deps.hostedMcpServers.getProjectOwnerId(projectId);
+		if (!ownerId) return [];
+		const rows = await this.deps.hostedMcpServers.listWorkflowSourcesForProject({
+			projectId,
+			ownerId,
+		});
+
+		const flows: HostedMcpWorkflow[] = [];
+		for (const workflow of rows) {
+			const trigger = getHostedMcpTriggerFromWorkflowNodes(workflow.nodes);
+			if (!trigger) continue;
+			flows.push({
+				id: workflow.id,
+				name: workflow.name,
+				description: workflow.description,
+				enabled: trigger.enabled,
+				trigger: {
+					toolName: trigger.toolName || workflow.name,
+					toolDescription: trigger.toolDescription || "",
+					inputSchema: trigger.inputSchema,
+					returnsResponse: trigger.returnsResponse,
+				},
+			});
+		}
+		return flows;
+	}
+
+	private async populateHostedMcpServer(
+		server: HostedMcpServerRecord,
+	): Promise<HostedMcpServerReadModel> {
+		const { tokenEncrypted, ...rest } = server;
+		return {
+			...rest,
+			token: decryptString(tokenEncrypted),
+			flows: await this.listHostedMcpWorkflows(server.projectId),
+		};
+	}
+
+	private async syncHostedWorkflowMcpConnection(input: {
+		projectId: string;
+		status: HostedMcpServerStatus;
+		actorUserId?: string | null;
+		requestUrl?: string | null;
+	}) {
+		await this.deps.hostedMcpServers.upsertHostedWorkflowConnection({
+			projectId: input.projectId,
+			status: input.status,
+			serverUrl: buildHostedMcpServerUrl(input.projectId, input.requestUrl),
+			registryRef: "mcp-gateway",
+			metadata: {
+				provider: "workflow-builder",
+				serviceName: "mcp-gateway",
+				endpointPath: "/api/v1/projects/:projectId/mcp-server/http",
+			},
+			actorUserId: input.actorUserId ?? null,
+			lastError: null,
+		});
+	}
+
+	async getProjectHostedMcpServer(input: {
+		projectId: string;
+		userId: string;
+		requestUrl?: string | null;
+	}) {
+		const membership = await this.deps.workspaceProjects.getProjectMembershipDetail({
+			projectId: input.projectId,
+			userId: input.userId,
+		});
+		if (!membership?.selfRole) {
+			return { ok: false as const, status: 403 as const, message: "Forbidden" };
+		}
+
+		const server = await this.populateHostedMcpServer(
+			await this.getOrCreateHostedMcpServer(input.projectId),
+		);
+		await this.syncHostedWorkflowMcpConnection({
+			projectId: input.projectId,
+			status: server.status,
+			actorUserId: input.userId,
+			requestUrl: input.requestUrl,
+		});
+		return { ok: true as const, status: 200 as const, server };
+	}
+
+	async getInternalHostedMcpServer(input: { projectId?: string | null }) {
+		const projectId = input.projectId?.trim();
+		if (!projectId) {
+			return {
+				ok: false as const,
+				status: 400 as const,
+				message: "Project id is required",
+			};
+		}
+		const ownerId = await this.deps.hostedMcpServers.getProjectOwnerId(projectId);
+		if (!ownerId) {
+			return {
+				ok: false as const,
+				status: 404 as const,
+				message: "Project not found",
+			};
+		}
+		const server = await this.populateHostedMcpServer(
+			await this.getOrCreateHostedMcpServer(projectId),
+		);
+		return { ok: true as const, status: 200 as const, server };
+	}
+
+	async getInternalProjectMcpCatalog(input: { projectRef?: string | null }) {
+		const projectRef = input.projectRef?.trim();
+		if (!projectRef) {
+			return {
+				ok: false as const,
+				status: 400 as const,
+				message: "Project id is required",
+			};
+		}
+		const project =
+			await this.deps.hostedMcpServers.resolveProjectByIdOrExternalId(projectRef);
+		if (!project) {
+			return {
+				ok: false as const,
+				status: 404 as const,
+				message: "Project not found",
+			};
+		}
+
+		const hostedServer = await this.populateHostedMcpServer(
+			await this.getOrCreateHostedMcpServer(project.id),
+		);
+		await this.syncHostedWorkflowMcpConnection({
+			projectId: project.id,
+			status: hostedServer.status,
+		});
+
+		const hostedGatewayBaseUrl =
+			env.MCP_GATEWAY_INTERNAL_BASE_URL?.trim() ||
+			"http://mcp-gateway.workflow-builder.svc.cluster.local:8080";
+		const servers = (await this.deps.mcpConnections.listProjectConnections(project.id))
+			.filter((connection) => connection.status === "ENABLED")
+			.map((connection) =>
+				buildProjectMcpCatalogEntry(connection, {
+					hostedProjectId: project.id,
+					hostedToken: hostedServer.token,
+					hostedGatewayBaseUrl,
+				}),
+			)
+			.filter((entry) => entry !== null);
+
+		return {
+			ok: true as const,
+			status: 200 as const,
+			catalog: {
+				projectId: project.id,
+				projectExternalId: project.externalId,
+				servers,
+			},
+		};
+	}
+
+	async updateProjectHostedMcpServerStatus(input: {
+		projectId: string;
+		userId: string;
+		status?: unknown;
+		requestUrl?: string | null;
+	}) {
+		const membership = await this.deps.workspaceProjects.getProjectMembershipDetail({
+			projectId: input.projectId,
+			userId: input.userId,
+		});
+		if (!canWriteHostedMcp(membership?.selfRole)) {
+			return { ok: false as const, status: 403 as const, message: "Forbidden" };
+		}
+		if (input.status !== "ENABLED" && input.status !== "DISABLED") {
+			return { ok: false as const, status: 400 as const, message: "Invalid status" };
+		}
+
+		const current = await this.getOrCreateHostedMcpServer(input.projectId);
+		await this.deps.hostedMcpServers.updateServerStatus({
+			id: current.id,
+			status: input.status,
+		});
+		const server = await this.populateHostedMcpServer({
+			...current,
+			status: input.status,
+			updatedAt: new Date(),
+		});
+		await this.syncHostedWorkflowMcpConnection({
+			projectId: input.projectId,
+			status: server.status,
+			actorUserId: input.userId,
+			requestUrl: input.requestUrl,
+		});
+		return { ok: true as const, status: 200 as const, server };
+	}
+
+	async rotateProjectHostedMcpServerToken(input: {
+		projectId: string;
+		userId: string;
+		requestUrl?: string | null;
+	}) {
+		const membership = await this.deps.workspaceProjects.getProjectMembershipDetail({
+			projectId: input.projectId,
+			userId: input.userId,
+		});
+		if (!canWriteHostedMcp(membership?.selfRole)) {
+			return { ok: false as const, status: 403 as const, message: "Forbidden" };
+		}
+
+		const current = await this.getOrCreateHostedMcpServer(input.projectId);
+		const tokenEncrypted = encryptString(generateHostedMcpToken());
+		await this.deps.hostedMcpServers.updateServerToken({
+			id: current.id,
+			tokenEncrypted,
+		});
+		const server = await this.populateHostedMcpServer({
+			...current,
+			tokenEncrypted,
+			updatedAt: new Date(),
+		});
+		await this.syncHostedWorkflowMcpConnection({
+			projectId: input.projectId,
+			status: server.status,
+			actorUserId: input.userId,
+			requestUrl: input.requestUrl,
+		});
+		return { ok: true as const, status: 200 as const, server };
+	}
+
+	getMcpRun(runId: string) {
+		return this.deps.mcpRuns.getRun(runId);
+	}
+
+	respondToMcpRun(input: { runId: string; response: unknown }) {
+		return this.deps.mcpRuns.respondToRun(input);
+	}
+
+	async startHostedMcpWorkflowTool(
+		input: StartHostedMcpWorkflowToolInput,
+	): Promise<StartHostedMcpWorkflowToolResult> {
+		const projectId = input.projectId.trim();
+		const workflowId = input.workflowId.trim();
+		if (!projectId || !workflowId) {
+			return {
+				ok: false,
+				status: 400,
+				message: "Project id and workflow id are required",
+			};
+		}
+		if (!this.deps.workflowScheduler) {
+			return {
+				ok: false,
+				status: 503,
+				message: "Workflow scheduler is not configured",
+			};
+		}
+
+		try {
+			await this.deps.workflowExecutions.assertReadModelReady();
+		} catch (schemaError) {
+			return {
+				ok: false,
+				status: 503,
+				message:
+					schemaError instanceof Error
+						? schemaError.message
+						: "Execution read-model migration is required",
+			};
+		}
+
+		const ownerId = await this.deps.hostedMcpServers.getProjectOwnerId(projectId);
+		if (!ownerId) {
+			return { ok: false, status: 404, message: "Project not found" };
+		}
+
+		const workflow = await this.deps.workflowDefinitions.getById(workflowId);
+		if (
+			!workflow ||
+			!(
+				workflow.projectId === projectId ||
+				(workflow.projectId === null && workflow.userId === ownerId)
+			)
+		) {
+			return { ok: false, status: 404, message: "Workflow not found" };
+		}
+
+		const trigger = getHostedMcpTriggerFromWorkflowNodes(workflow.nodes);
+		if (!trigger?.enabled) {
+			return {
+				ok: false,
+				status: 400,
+				message: "Workflow is not enabled as an MCP tool",
+			};
+		}
+
+		const server = await this.getOrCreateHostedMcpServer(projectId);
+		if (server.status !== "ENABLED") {
+			return {
+				ok: false,
+				status: 403,
+				message: "MCP access is disabled for this project",
+			};
+		}
+
+		const spec = workflow.spec;
+		if (!isServerlessWorkflow10Spec(spec)) {
+			return {
+				ok: false,
+				status: 400,
+				message: "Workflow does not have a valid CNCF Serverless Workflow 1.0 spec",
+			};
+		}
+
+		const toolName =
+			typeof input.toolName === "string" ? input.toolName : (trigger.toolName ?? workflow.name);
+		const runInput = hostedMcpToolInput(input.input);
+		const run = await this.deps.mcpRuns.createRun({
+			projectId,
+			mcpServerId: server.id,
+			workflowId: workflow.id,
+			toolName,
+			input: runInput,
+		});
+
+		let triggerData: Record<string, unknown> = {
+			__mcp: {
+				runId: run.id,
+				projectId,
+				workflowId: workflow.id,
+				toolName,
+				returnsResponse: trigger.returnsResponse,
+			},
+			...runInput,
+		};
+		triggerData = applyWorkflowInputDefaults(spec, triggerData);
+		if (getPromptExpansionConfig(spec)?.requiresExpansion) {
+			triggerData = await expandGreenfieldPromptInput(spec, triggerData);
+		}
+		const missingTriggerFields = getMissingRequiredTriggerFields(spec, triggerData);
+		if (missingTriggerFields.length > 0) {
+			return {
+				ok: false,
+				status: 400,
+				message: `Missing required workflow input fields: ${missingTriggerFields.join(", ")}`,
+			};
+		}
+
+		const execution = await this.deps.workflowExecutions.create({
+			workflowId: workflow.id,
+			userId: workflow.userId,
+			projectId,
+			status: "running",
+			phase: "running",
+			progress: 0,
+			input: triggerData,
+			executionIrVersion: "sw-1.0",
+			executionIr: { spec, triggerData },
+		});
+
+		let instanceId: string | null = null;
+		try {
+			const result = await this.deps.workflowScheduler.startSwWorkflow({
+				orchestratorUrl: workflow.daprOrchestratorUrl || getOrchestratorUrl(),
+				headers: hostedMcpTraceHeaders(input.traceHeaders),
+				workflow: spec,
+				workflowId,
+				triggerData,
+				dbExecutionId: execution.id,
+			});
+			instanceId = result.instanceId ?? null;
+		} catch (err) {
+			const message = err instanceof Error ? err.message : "Unknown error";
+			console.error(`[MCP Execute] ${message}`);
+			await this.deps.workflowExecutions.updateReadModel(execution.id, {
+				status: "error",
+				error: message.slice(0, 500),
+			});
+			return {
+				ok: false,
+				status: 502,
+				message: `SW workflow failed: ${message}`,
+			};
+		}
+
+		if (!instanceId) {
+			const message = "Orchestrator did not return an instanceId";
+			console.error(`[MCP Execute] ${message}`);
+			await this.deps.workflowExecutions.updateReadModel(execution.id, {
+				status: "error",
+				error: message,
+			});
+			return {
+				ok: false,
+				status: 502,
+				message: "SW workflow failed: missing instanceId",
+			};
+		}
+
+		await this.deps.workflowExecutions.attachSchedulerInstance({
+			executionId: execution.id,
+			instanceId,
+			workflowSessionId: execution.id,
+		});
+
+		await this.deps.mcpRuns.attachExecution({
+			runId: run.id,
+			workflowExecutionId: execution.id,
+			daprInstanceId: instanceId,
+		});
+
+		return {
+			ok: true,
+			status: 200,
+			runId: run.id,
+			executionId: execution.id,
+			instanceId,
+			returnsResponse: trigger.returnsResponse,
+		};
+	}
+
+	async listAppConnectionSummaries(input: {
+		pieceName?: string | null;
+		providerId?: string | null;
+	}): Promise<AppConnectionSummary[]> {
+		const pieceNameFilter = input.pieceName || input.providerId || null;
+		const candidates = pieceNameFilter
+			? appConnectionPieceCandidates(pieceNameFilter)
+			: [];
+		const [connections, pieces] = await Promise.all([
+			this.deps.appConnections.listConnectionSummaries({
+				pieceNameCandidates: candidates,
+			}),
+			this.deps.appConnections.listPieceInfo(),
+		]);
+
+		const pieceMap = new Map<
+			string,
+			{ displayName: string | null; logoUrl: string | null }
+		>();
+		for (const piece of pieces) {
+			const info = {
+				displayName: piece.displayName ?? null,
+				logoUrl: piece.logoUrl ?? null,
+			};
+			for (const candidate of appConnectionPieceCandidates(piece.name)) {
+				pieceMap.set(candidate.toLowerCase(), info);
+			}
+			pieceMap.set(normalizeMcpPieceName(piece.name), info);
+			pieceMap.set(piece.name.toLowerCase(), info);
+		}
+
+		return connections.map((connection) => {
+			const meta =
+				pieceMap.get(normalizeMcpPieceName(connection.pieceName)) ??
+				pieceMap.get(connection.pieceName.toLowerCase()) ??
+				null;
+			return {
+				...connection,
+				pieceDisplayName: meta?.displayName ?? null,
+				pieceLogoUrl: meta?.logoUrl ?? null,
+			};
+		});
+	}
+
+	async listProjectAppConnections(input: {
+		projectId: string;
+		pieceName?: string | null;
+		provider?: string | null;
+		search?: string | null;
+		status?: string | null;
+		type?: string | null;
+		scope?: string | null;
+	}): Promise<AppConnectionListItem[]> {
+		const [
+			connections,
+			pieces,
+		] = await Promise.all([
+			this.deps.appConnections.listProjectConnections(input.projectId),
+			this.deps.appConnections.listPieceInfo(),
+		]);
+
+		const pieceMap = new Map<
+			string,
+			{ name: string; displayName: string; logoUrl: string | null; categories: string[] }
+		>();
+		for (const piece of pieces) {
+			const info = {
+				name: piece.name,
+				displayName: piece.displayName,
+				logoUrl: piece.logoUrl,
+				categories: Array.isArray(piece.categories) ? piece.categories : [],
+			};
+			for (const candidate of appConnectionPieceCandidates(piece.name)) {
+				pieceMap.set(candidate.toLowerCase(), info);
+			}
+			pieceMap.set(normalizeMcpPieceName(piece.name), info);
+			pieceMap.set(piece.name.toLowerCase(), info);
+			pieceMap.set(piece.displayName.toLowerCase(), info);
+		}
+
+		const pieceNameFilter = input.pieceName?.trim() ?? "";
+		const providerFilter = input.provider?.trim() ?? "";
+		const searchFilter = input.search?.trim().toLowerCase() ?? "";
+		const statusFilter = input.status?.trim().toUpperCase() ?? "";
+		const typeFilter = input.type?.trim().toUpperCase() ?? "";
+		const scopeFilter = input.scope?.trim().toUpperCase() ?? "";
+
+		return connections
+			.map((connection) => {
+				const normalizedPieceName = normalizeMcpPieceName(connection.pieceName);
+				const piece =
+					pieceMap.get(connection.pieceName.toLowerCase()) ??
+					pieceMap.get(normalizedPieceName) ??
+					pieceMap.get(
+						appConnectionPieceCandidates(connection.pieceName)[0]?.toLowerCase() ||
+							"",
+					);
+				const { projectIds: _projectIds, ...publicConnection } = connection;
+				return {
+					...publicConnection,
+					providerId: piece?.name ? normalizeMcpPieceName(piece.name) : normalizedPieceName,
+					providerLabel: piece?.displayName || humanizeMcpPieceName(connection.pieceName),
+					providerIconUrl: piece?.logoUrl || null,
+					category: piece?.categories?.[0] || null,
+				};
+			})
+			.filter((connection) => {
+				const piece = pieceMap.get(normalizeMcpPieceName(connection.pieceName));
+				return (
+					appConnectionMatchesPieceFilter(
+						connection.pieceName,
+						pieceNameFilter,
+						piece,
+					) &&
+					appConnectionMatchesPieceFilter(
+						connection.pieceName,
+						providerFilter,
+						piece,
+					) &&
+					(!statusFilter || connection.status === statusFilter) &&
+					(!typeFilter || connection.type === typeFilter) &&
+					(!scopeFilter || connection.scope === scopeFilter) &&
+					(!searchFilter ||
+						[
+							connection.displayName,
+							connection.pieceName,
+							connection.providerId,
+							connection.providerLabel,
+							connection.category || "",
+						]
+							.join(" ")
+							.toLowerCase()
+							.includes(searchFilter))
+				);
+			});
+	}
+
+	async createProjectAppConnection(input: AppConnectionCreateInput) {
+		if (!input.pieceName || !input.displayName || !input.type) {
+			return {
+				ok: false as const,
+				status: 400 as const,
+				message: "pieceName, displayName, and type are required",
+			};
+		}
+
+		const normalizedType = String(input.type).toUpperCase() as AppConnectionType;
+		const supportedTypes = new Set<string>(Object.values(AppConnectionType));
+		if (!supportedTypes.has(normalizedType)) {
+			return {
+				ok: false as const,
+				status: 400 as const,
+				message: `Unsupported connection type: ${input.type}`,
+			};
+		}
+
+		if (normalizedType === AppConnectionType.SECRET_TEXT && !input.value) {
+			return {
+				ok: false as const,
+				status: 400 as const,
+				message: "value is required for SECRET_TEXT connections",
+			};
+		}
+
+		const isOAuth =
+			normalizedType === AppConnectionType.OAUTH2 ||
+			normalizedType === AppConnectionType.PLATFORM_OAUTH2 ||
+			normalizedType === AppConnectionType.CLOUD_OAUTH2;
+		const rawValue =
+			input.value && typeof input.value === "object" && !Array.isArray(input.value)
+				? (input.value as Record<string, unknown>)
+				: typeof input.value === "string"
+					? { secret_text: input.value }
+					: {};
+		const encryptedValue = encryptObject({
+			type: normalizedType,
+			...rawValue,
+		});
+
+		const id = generateId();
+		const scope =
+			input.scope === AppConnectionScope.PLATFORM
+				? AppConnectionScope.PLATFORM
+				: AppConnectionScope.PROJECT;
+		const connection = await this.deps.appConnections.createConnection({
+			id,
+			externalId: `conn_${id}`,
+			pieceName: String(input.pieceName),
+			displayName: String(input.displayName).trim(),
+			type: normalizedType,
+			status: isOAuth ? AppConnectionStatus.MISSING : AppConnectionStatus.ACTIVE,
+			value: encryptedValue,
+			pieceVersion: "0.0.0",
+			projectIds: [input.projectId],
+			ownerId: input.userId ?? null,
+			platformId: input.platformId ?? null,
+			scope,
+		});
+		return { ok: true as const, connection };
+	}
+
+	async updateProjectAppConnection(input: {
+		id: string;
+		projectId: string;
+		displayName?: unknown;
+	}) {
+		const displayName =
+			typeof input.displayName === "string" ? input.displayName.trim() : "";
+		if (!displayName) {
+			return {
+				ok: false as const,
+				status: 400 as const,
+				message: "displayName is required",
+			};
+		}
+		const connection = await this.deps.appConnections.updateDisplayName({
+			id: input.id,
+			projectId: input.projectId,
+			displayName,
+		});
+		if (!connection) {
+			return { ok: false as const, status: 404 as const, message: "Connection not found" };
+		}
+		return { ok: true as const, connection };
+	}
+
+	async deleteProjectAppConnection(input: { id: string; projectId: string }) {
+		const deleted = await this.deps.appConnections.deleteProjectConnection(input);
+		if (!deleted) {
+			return { ok: false as const, status: 404 as const, message: "Connection not found" };
+		}
+		return { ok: true as const };
+	}
+
+	async startAppConnectionOAuth2(input: {
+		pieceName?: unknown;
+		pieceVersion?: unknown;
+		clientId?: unknown;
+		redirectUrl: string;
+		props?: unknown;
+	}) {
+		const pieceName = typeof input.pieceName === "string" ? input.pieceName.trim() : "";
+		if (!pieceName) {
+			return { ok: false as const, status: 400 as const, message: "pieceName is required" };
+		}
+
+		const piece = await this.deps.appConnections.findOAuthPieceMetadata({
+			pieceNameCandidates: appConnectionPieceCandidates(pieceName),
+			pieceVersion:
+				typeof input.pieceVersion === "string" ? input.pieceVersion : null,
+		});
+		if (!piece) {
+			return { ok: false as const, status: 404 as const, message: "Piece not found" };
+		}
+
+		const oauthAuth = getOAuth2AuthConfig(piece);
+		if (!oauthAuth?.authUrl) {
+			return {
+				ok: false as const,
+				status: 400 as const,
+				message: "Piece does not define OAuth2 auth URL",
+			};
+		}
+
+		let clientId = typeof input.clientId === "string" ? input.clientId.trim() : "";
+		if (!clientId) {
+			const oauthApp = await this.deps.appConnections.findPlatformOAuthApp({
+				pieceNameCandidates: appConnectionPieceCandidates(pieceName),
+			});
+			if (!oauthApp) {
+				return {
+					ok: false as const,
+					status: 400 as const,
+					message:
+						"No OAuth app configured for this piece. Configure it in Settings > OAuth Apps.",
+				};
+			}
+			clientId = oauthApp.clientId;
+		}
+
+		const props =
+			input.props && typeof input.props === "object" && !Array.isArray(input.props)
+				? (input.props as Record<string, unknown>)
+				: undefined;
+		const verifier = generatePkceVerifier();
+		const pkceEnabled = oauthAuth.pkce ?? false;
+		const pkceMethod = oauthAuth.pkceMethod ?? "plain";
+		const challenge = pkceEnabled
+			? pkceMethod === "S256"
+				? generatePkceChallenge(verifier)
+				: verifier
+			: "";
+		const state = generateOAuthState();
+		const scope = (oauthAuth.scope ?? []).map((entry) =>
+			resolveValueFromProps(entry, props),
+		);
+		const extraParams = oauthAuth.extra
+			? Object.fromEntries(
+					Object.entries(oauthAuth.extra).map(([key, value]) => [
+						key,
+						resolveValueFromProps(value, props),
+					]),
+				)
+			: undefined;
+
+		return {
+			ok: true as const,
+			authorizationUrl: buildOAuth2AuthorizationUrl({
+				authUrl: resolveValueFromProps(oauthAuth.authUrl, props),
+				clientId,
+				redirectUrl: input.redirectUrl,
+				scope,
+				state,
+				codeChallenge: pkceEnabled ? challenge : undefined,
+				codeChallengeMethod: pkceMethod,
+				prompt: oauthAuth.prompt,
+				extraParams,
+			}),
+			clientId,
+			state,
+			codeVerifier: pkceEnabled ? verifier : "",
+			codeChallenge: pkceEnabled ? challenge : "",
+			redirectUrl: input.redirectUrl,
+			scope: scope.join(" "),
+		};
+	}
+
+	async completeAppConnectionOAuth2(input: {
+		projectId: string;
+		connectionId?: unknown;
+		pieceName?: unknown;
+		code?: unknown;
+		codeVerifier?: unknown;
+		redirectUrl?: unknown;
+		defaultRedirectUrl: string;
+	}) {
+		const connectionId =
+			typeof input.connectionId === "string" ? input.connectionId.trim() : "";
+		const pieceName = typeof input.pieceName === "string" ? input.pieceName.trim() : "";
+		const code = typeof input.code === "string" ? input.code.trim() : "";
+		if (!connectionId || !pieceName || !code) {
+			return {
+				ok: false as const,
+				status: 400 as const,
+				message: "connectionId, pieceName, and code are required",
+			};
+		}
+
+		const connection = await this.deps.appConnections.findConnectionById(connectionId);
+		if (!connection || !connectionBelongsToProject(connection.projectIds, input.projectId)) {
+			return { ok: false as const, status: 404 as const, message: "Connection not found" };
+		}
+
+		const connectionValue = decryptObject<Record<string, unknown>>(
+			connection.value as EncryptedObject,
+		);
+		const connectionProps =
+			connectionValue.props &&
+			typeof connectionValue.props === "object" &&
+			!Array.isArray(connectionValue.props)
+				? (connectionValue.props as Record<string, unknown>)
+				: undefined;
+		const pieceNameCandidates = appConnectionPieceCandidates(pieceName);
+		const piece = await this.deps.appConnections.findOAuthPieceMetadata({
+			pieceNameCandidates,
+		});
+		if (!piece) {
+			return { ok: false as const, status: 404 as const, message: "Piece not found" };
+		}
+
+		const oauthAuth = getOAuth2AuthConfig(piece);
+		if (!oauthAuth?.tokenUrl) {
+			return {
+				ok: false as const,
+				status: 400 as const,
+				message: "Piece does not define OAuth2 token URL",
+			};
+		}
+
+		const oauthApp = await this.deps.appConnections.findPlatformOAuthApp({
+			pieceNameCandidates,
+			platformId: connection.platformId,
+		});
+		if (!oauthApp) {
+			return {
+				ok: false as const,
+				status: 400 as const,
+				message:
+					"No OAuth app configured for this piece. Configure it in Settings > OAuth Apps.",
+			};
+		}
+
+		const authorizationMethod =
+			(typeof connectionValue.authorization_method === "string"
+				? connectionValue.authorization_method
+				: oauthAuth.authorizationMethod) as OAuth2AuthorizationMethod | undefined;
+		const redirectUrl =
+			typeof input.redirectUrl === "string" && input.redirectUrl.trim()
+				? input.redirectUrl.trim()
+				: typeof connectionValue.redirect_url === "string" &&
+					  connectionValue.redirect_url.trim()
+					? connectionValue.redirect_url.trim()
+					: input.defaultRedirectUrl;
+		const tokenValue = await exchangeOAuth2CodePlatform({
+			code,
+			tokenUrl: resolveValueFromProps(oauthAuth.tokenUrl, connectionProps),
+			clientId: oauthApp.clientId,
+			clientSecret: resolveAppConnectionClientSecret(oauthApp.clientSecret),
+			redirectUrl,
+			scope: (oauthAuth.scope ?? [])
+				.map((entry) => resolveValueFromProps(entry, connectionProps))
+				.join(" "),
+			props: connectionProps,
+			authorizationMethod,
+			codeVerifier:
+				typeof input.codeVerifier === "string" ? input.codeVerifier : undefined,
+		});
+
+		const updated = await this.deps.appConnections.updateOAuthConnection({
+			id: connection.id,
+			value: encryptObject(tokenValue as unknown as Record<string, unknown>),
+			pieceName,
+			pieceVersion: piece.version,
+			projectIds: mergeConnectionProjectId(connection.projectIds, input.projectId),
+		});
+		return { ok: true as const, connection: updated };
+	}
+
+	private async refreshOAuth2Token(
+		token: Record<string, unknown>,
+		pieceName: string,
+	): Promise<Record<string, unknown> | null> {
+		const refreshToken = typeof token.refresh_token === "string" ? token.refresh_token : "";
+		const tokenUrl = typeof token.token_url === "string" ? token.token_url : "";
+		if (!refreshToken || !tokenUrl) return null;
+
+		const oauthApp = await this.deps.appConnections.findPlatformOAuthApp({
+			pieceNameCandidates: appConnectionPieceCandidates(pieceName),
+		});
+		if (!oauthApp) return null;
+
+		let clientSecret: string;
+		try {
+			clientSecret = resolveAppConnectionClientSecret(oauthApp.clientSecret);
+		} catch {
+			return null;
+		}
+
+		const clientId =
+			typeof token.client_id === "string" && token.client_id
+				? token.client_id
+				: oauthApp.clientId;
+		const authMethod =
+			typeof token.authorization_method === "string"
+				? token.authorization_method
+				: "BODY";
+		const body: Record<string, string> = {
+			grant_type: "refresh_token",
+			refresh_token: refreshToken,
+		};
+		const headers: Record<string, string> = {
+			"Content-Type": "application/x-www-form-urlencoded",
+		};
+		if (authMethod === "HEADER") {
+			headers.Authorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
+		} else {
+			body.client_id = clientId;
+			body.client_secret = clientSecret;
+		}
+
+		try {
+			const response = await fetch(tokenUrl, {
+				method: "POST",
+				headers,
+				body: new URLSearchParams(body).toString(),
+				signal: AbortSignal.timeout(20000),
+			});
+			if (!response.ok) return null;
+			const data = (await response.json()) as Record<string, unknown>;
+			return {
+				...token,
+				access_token: data.access_token ?? token.access_token,
+				token_type: data.token_type ?? token.token_type,
+				expires_in: data.expires_in ?? token.expires_in,
+				scope: data.scope ?? token.scope,
+				refresh_token: data.refresh_token ?? token.refresh_token,
+				claimed_at: Math.floor(Date.now() / 1000),
+				data: {
+					...((token.data as Record<string, unknown> | undefined) ?? {}),
+					...((data.data as Record<string, unknown> | undefined) ?? {}),
+				},
+			};
+		} catch {
+			return null;
+		}
+	}
+
+	async decryptAppConnectionValue(input: { externalId: string }) {
+		const connection = await this.deps.appConnections.findConnectionByExternalId(
+			input.externalId,
+		);
+		if (!connection) {
+			return { ok: false as const, status: 404 as const, message: "Connection not found" };
+		}
+
+		let decryptedValue = decryptObject<Record<string, unknown>>(
+			connection.value as EncryptedObject,
+		);
+		const isOAuth2 =
+			connection.type === AppConnectionType.OAUTH2 ||
+			connection.type === AppConnectionType.PLATFORM_OAUTH2 ||
+			connection.type === AppConnectionType.CLOUD_OAUTH2;
+
+		if (isOAuth2 && decryptedValue.secret_text && !decryptedValue.access_token) {
+			const secretText = String(decryptedValue.secret_text);
+			try {
+				const parsed = JSON.parse(secretText) as Record<string, unknown>;
+				decryptedValue =
+					parsed && typeof parsed === "object" && parsed.access_token
+						? { ...parsed, type: parsed.type || connection.type }
+						: { ...decryptedValue, access_token: secretText, type: connection.type };
+			} catch {
+				decryptedValue = {
+					...decryptedValue,
+					access_token: secretText,
+					type: connection.type,
+				};
+			}
+		}
+
+		if (isOAuth2 && isTokenExpired(decryptedValue)) {
+			const refreshed = await this.refreshOAuth2Token(
+				decryptedValue,
+				connection.pieceName,
+			);
+			if (refreshed) {
+				await this.deps.appConnections.updateEncryptedValue({
+					id: connection.id,
+					value: encryptObject(refreshed),
+				});
+				decryptedValue = refreshed;
+			}
+		}
+
+		if (
+			connection.type === AppConnectionType.PLATFORM_OAUTH2 &&
+			!decryptedValue.client_secret &&
+			decryptedValue.client_id
+		) {
+			const oauthApp = await this.deps.appConnections.findPlatformOAuthApp({
+				pieceNameCandidates: appConnectionPieceCandidates(connection.pieceName),
+				platformId: connection.platformId,
+			});
+			if (oauthApp) {
+				try {
+					decryptedValue.client_secret = resolveAppConnectionClientSecret(
+						oauthApp.clientSecret,
+					);
+				} catch {
+					// Leave the token usable for callers that do not need client_secret.
+				}
+			}
+		}
+
+		if (
+			connection.type === AppConnectionType.PLATFORM_OAUTH2 &&
+			typeof decryptedValue.claimed_at === "number" &&
+			!decryptedValue.expiry_date
+		) {
+			const expiresIn =
+				typeof decryptedValue.expires_in === "number" ? decryptedValue.expires_in : 3600;
+			decryptedValue.expiry_date = (decryptedValue.claimed_at + expiresIn) * 1000;
+		}
+
+		return {
+			ok: true as const,
+			connection: {
+				id: connection.id,
+				externalId: connection.externalId,
+				type: connection.type,
+				pieceName: connection.pieceName,
+				displayName: connection.displayName,
+				status: connection.status,
+				value: decryptedValue,
+			},
+		};
+	}
+
+	async getAdminPiecesReadModel(): Promise<AdminPiecesReadModel> {
+		const [bundled, availableRows, disabled, wfRefs, mcpEnabled] =
+			await Promise.all([
+				this.deps.adminPieces.listCatalogPieces({ availableOnly: false }),
+				this.deps.adminPieces.listCatalogPieces({ availableOnly: true }),
+				this.deps.adminPieces.listDisabledPieceNames(),
+				this.deps.adminPieces.listWorkflowReferencedPieceNames(),
+				this.deps.adminPieces.listEnabledMcpPieceNames(),
+			]);
+
+		const disabledSet = new Set(disabled);
+		const inUse = new Set([...wfRefs, ...mcpEnabled]);
+		const bundledNames = bundled
+			.map((piece) => piece.name)
+			.filter((name): name is string => Boolean(name));
+		const availableNames = availableRows
+			.map((piece) => piece.name)
+			.filter((name): name is string => Boolean(name));
+		const imageStatuses = new Map(
+			(
+				await this.deps.adminPieces.listLatestImageStatuses([
+					...bundledNames,
+					...availableNames,
+				])
+			).map((status) => [status.pieceName, status]),
+		);
+		const enabledByImage = (name: string) => {
+			const img = imageStatuses.get(name);
+			return img?.status === "ready" && img.enabled === true;
+		};
+
+		const bundledPieces = bundled
+			.filter(hasAdminPieceName)
+			.map((piece) => ({
+				name: piece.name,
+				displayName: piece.displayName ?? piece.name,
+				logoUrl: piece.logoUrl ?? "",
+				enabled: !disabledSet.has(piece.name),
+				inUse: inUse.has(piece.name),
+				pinned: PINNED_ADMIN_PIECES.has(piece.name),
+				perPiece: imageStatuses.get(piece.name)?.status === "ready",
+			}));
+
+		const perPieceEnabled = availableRows
+			.filter(hasAdminPieceName)
+			.filter((piece) => enabledByImage(piece.name))
+			.map((piece) => ({
+				name: piece.name,
+				displayName: piece.displayName ?? piece.name,
+				logoUrl: piece.logoUrl ?? "",
+				enabled: !disabledSet.has(piece.name),
+				inUse: inUse.has(piece.name),
+				pinned: PINNED_ADMIN_PIECES.has(piece.name),
+				perPiece: true,
+			}));
+
+		const uniqueByName = <T extends { name: string }>(rows: T[]): T[] =>
+			[...new Map(rows.map((row) => [row.name, row])).values()];
+		const pieces = uniqueByName([...bundledPieces, ...perPieceEnabled]).sort((a, b) =>
+			a.displayName.localeCompare(b.displayName),
+		);
+
+		const available = uniqueByName(
+			availableRows
+				.filter(hasAdminPieceName)
+				.filter((piece) => !enabledByImage(piece.name))
+				.map((piece) => {
+					const img = imageStatuses.get(piece.name);
+					const buildStatus: "building" | "ready" | "failed" | null =
+						img?.status === "building" ||
+						img?.status === "ready" ||
+						img?.status === "failed"
+							? img.status
+							: null;
+					return {
+						name: piece.name,
+						displayName: piece.displayName ?? piece.name,
+						logoUrl: piece.logoUrl ?? "",
+						buildStatus,
+						errorMessage: img?.errorMessage ?? null,
+					};
+				}),
+		).sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+		return {
+			pieces,
+			available,
+			total: pieces.length,
+			enabledCount: pieces.filter((piece) => piece.enabled).length,
+			availableCount: available.length,
+		};
+	}
+
+	setAdminPieceEnabled(input: {
+		pieceName: string;
+		enabled: boolean;
+		disabledBy?: string | null;
+	}) {
+		return this.deps.adminPieces.setPieceEnabled(input);
+	}
+
+	resolveWorkspaceProjectId(input: {
+		slug?: string | null;
+		userId: string;
+		currentProjectId: string;
+	}) {
+		const slug = input.slug?.trim();
+		if (!slug || slug === "default") {
+			return this.deps.workspaceProjects.getMemberProjectId({
+				projectId: input.currentProjectId,
+				userId: input.userId,
+			});
+		}
+		return this.deps.workspaceProjects.getMemberProjectIdBySlug({
+			slug,
+			userId: input.userId,
+		});
+	}
+
+	getWorkspaceProjectExternalId(projectId: string) {
+		return this.deps.workspaceProjects.getProjectExternalId(projectId);
+	}
+
+	getWorkspaceProjectMembershipDetail(input: {
+		projectId: string;
+		userId: string;
+	}) {
+		return this.deps.workspaceProjects.getProjectMembershipDetail(input);
+	}
+
+	private async requireProjectAdmin(input: {
+		projectId: string;
+		userId: string;
+	}): Promise<{ ok: true } | { ok: false; status: 403; message: string }> {
+		const role = await this.deps.workspaceProjects.getProjectMemberRole(input);
+		if (role !== "ADMIN") {
+			return { ok: false, status: 403, message: "Forbidden" };
+		}
+		return { ok: true };
+	}
+
+	async listProjectMembers(input: { projectId: string; userId: string }) {
+		const selfRole = await this.deps.workspaceProjects.getProjectMemberRole({
+			projectId: input.projectId,
+			userId: input.userId,
+		});
+		if (!selfRole) return { ok: false as const, status: 403 as const, message: "Forbidden" };
+		const members = await this.deps.workspaceProjects.listProjectMembers(input.projectId);
+		return { ok: true as const, status: 200 as const, members, selfRole };
+	}
+
+	async addProjectMember(input: {
+		projectId: string;
+		userId: string;
+		targetUserId?: unknown;
+		email?: unknown;
+		role?: unknown;
+	}) {
+		const admin = await this.requireProjectAdmin({
+			projectId: input.projectId,
+			userId: input.userId,
+		});
+		if (!admin.ok) return admin;
+
+		const role = isProjectMembershipRole(input.role) ? input.role : "VIEWER";
+		const targetUserId =
+			typeof input.targetUserId === "string" && input.targetUserId.trim()
+				? input.targetUserId.trim()
+				: null;
+		const email =
+			typeof input.email === "string" && input.email.trim()
+				? input.email.trim().toLowerCase()
+				: null;
+		if (!targetUserId && !email) {
+			return {
+				ok: false as const,
+				status: 400 as const,
+				message: "email or userId is required",
+			};
+		}
+
+		const target = await this.deps.workspaceProjects.findPlatformUserForProject({
+			projectId: input.projectId,
+			userId: targetUserId,
+			email,
+		});
+		if (!target.ok) {
+			if (target.reason === "project_not_found") {
+				return { ok: false as const, status: 404 as const, message: "Project not found" };
+			}
+			if (target.reason === "user_not_found") {
+				return {
+					ok: false as const,
+					status: 404 as const,
+					message: targetUserId
+						? "User not found"
+						: "No user with that email. Ask them to sign up first.",
+				};
+			}
+			return {
+				ok: false as const,
+				status: 403 as const,
+				message: "User is not part of this platform",
+			};
+		}
+
+		const exists = await this.deps.workspaceProjects.projectMemberExists({
+			projectId: input.projectId,
+			userId: target.userId,
+		});
+		if (exists) {
+			return {
+				ok: false as const,
+				status: 409 as const,
+				message: "User is already a member",
+			};
+		}
+
+		const member = await this.deps.workspaceProjects.addProjectMember({
+			projectId: input.projectId,
+			userId: target.userId,
+			role,
+		});
+		return { ok: true as const, status: 201 as const, member };
+	}
+
+	async updateProjectMemberRole(input: {
+		projectId: string;
+		memberId: string;
+		userId: string;
+		role?: unknown;
+	}) {
+		const admin = await this.requireProjectAdmin({
+			projectId: input.projectId,
+			userId: input.userId,
+		});
+		if (!admin.ok) return admin;
+		if (!isProjectMembershipRole(input.role)) {
+			return {
+				ok: false as const,
+				status: 400 as const,
+				message: `role must be one of ${PROJECT_MEMBERSHIP_ROLES.join(", ")}`,
+			};
+		}
+
+		const existing = await this.deps.workspaceProjects.getProjectMember({
+			projectId: input.projectId,
+			memberId: input.memberId,
+		});
+		if (!existing) {
+			return { ok: false as const, status: 404 as const, message: "Member not found" };
+		}
+
+		if (existing.role === "ADMIN" && input.role !== "ADMIN") {
+			const admins = await this.deps.workspaceProjects.countProjectAdmins(input.projectId);
+			if (admins <= 1) {
+				return {
+					ok: false as const,
+					status: 400 as const,
+					message: "Cannot demote the last admin",
+				};
+			}
+		}
+
+		const member = await this.deps.workspaceProjects.updateProjectMemberRole({
+			projectId: input.projectId,
+			memberId: input.memberId,
+			role: input.role,
+		});
+		if (!member) {
+			return { ok: false as const, status: 404 as const, message: "Member not found" };
+		}
+		return { ok: true as const, status: 200 as const, member };
+	}
+
+	async deleteProjectMember(input: {
+		projectId: string;
+		memberId: string;
+		userId: string;
+	}) {
+		const admin = await this.requireProjectAdmin({
+			projectId: input.projectId,
+			userId: input.userId,
+		});
+		if (!admin.ok) return admin;
+
+		const existing = await this.deps.workspaceProjects.getProjectMember({
+			projectId: input.projectId,
+			memberId: input.memberId,
+		});
+		if (!existing) {
+			return { ok: false as const, status: 404 as const, message: "Member not found" };
+		}
+
+		if (existing.role === "ADMIN") {
+			const admins = await this.deps.workspaceProjects.countProjectAdmins(input.projectId);
+			if (admins <= 1) {
+				return {
+					ok: false as const,
+					status: 400 as const,
+					message: "Cannot remove the last admin",
+				};
+			}
+		}
+
+		await this.deps.workspaceProjects.deleteProjectMember({
+			projectId: input.projectId,
+			memberId: input.memberId,
+		});
+		return { ok: true as const, status: 200 as const };
+	}
 
 	async getWorkflowByRef(ref: WorkflowRef & { lookup?: "id" | "name" | "auto" }) {
 		if (ref.lookup === "id") {
@@ -58,6 +2502,460 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			: null;
 	}
 
+	listWorkflows(input: { limit: number; projectId?: string | null }) {
+		return this.deps.workflowDefinitions.list(input);
+	}
+
+	async listWorkspaceWorkflowSummaries(input: {
+		limit: number;
+		userId: string;
+		projectId?: string | null;
+	}): Promise<WorkspaceWorkflowListItem[]> {
+		const rows = await this.deps.workflowDefinitions.listForWorkspace(input);
+		if (rows.length === 0) return [];
+
+		const workflowIds = rows.map((row) => row.id);
+		const [forkCounts, recentRuns] = await Promise.all([
+			this.deps.workflowExecutions.countForksByWorkflowIds(workflowIds),
+			this.deps.workflowExecutions.listRecentRunsByWorkflowIds({
+				workflowIds,
+				limitPerWorkflow: 3,
+			}),
+		]);
+		const forkCountByWorkflow = new Map(
+			forkCounts.map((row) => [row.workflowId, row.count]),
+		);
+		const recentRunsByWorkflow = new Map<
+			string,
+			WorkspaceWorkflowListItem["recentRuns"]
+		>();
+		for (const run of recentRuns) {
+			const list = recentRunsByWorkflow.get(run.workflowId) ?? [];
+			list.push({
+				id: run.id,
+				status: run.status,
+				startedAt: run.startedAt.toISOString(),
+				completedAt: run.completedAt?.toISOString() ?? null,
+			});
+			recentRunsByWorkflow.set(run.workflowId, list);
+		}
+
+		const results = rows.map((row) => {
+			const recentRuns = recentRunsByWorkflow.get(row.id) ?? [];
+			const latest = recentRuns[0] ?? null;
+			const updatedAt = row.updatedAt.toISOString();
+			const running = latest?.status === "running" || latest?.status === "pending";
+			const lastActivityAt =
+				latest && latest.startedAt > updatedAt ? latest.startedAt : updatedAt;
+			return {
+				id: row.id,
+				name: row.name,
+				updatedAt,
+				latestExecution: latest,
+				recentRuns,
+				running,
+				lastActivityAt,
+				forkCount: forkCountByWorkflow.get(row.id) ?? 0,
+			};
+		});
+
+		results.sort((a, b) => {
+			if (a.running !== b.running) return a.running ? -1 : 1;
+			return b.lastActivityAt.localeCompare(a.lastActivityAt);
+		});
+		return results;
+	}
+
+	async listServiceGraphPickerOptions(input: {
+		userId: string;
+		projectId?: string | null;
+		workflowLimit: number;
+		executionLimit: number;
+	}): Promise<ServiceGraphPickerOptions> {
+		const [workflowRows, executionRows] = await Promise.all([
+			this.deps.workflowDefinitions.listForWorkspace({
+				limit: input.workflowLimit,
+				userId: input.userId,
+				projectId: input.projectId,
+			}),
+			this.deps.workflowExecutions.listRecentExecutionPickerRecords({
+				limit: input.executionLimit,
+				userId: input.userId,
+				projectId: input.projectId,
+			}),
+		]);
+		const workflowName = new Map(workflowRows.map((workflow) => [workflow.id, workflow.name]));
+		const executions = executionRows.map((execution) => {
+			const when = execution.startedAt.toISOString().slice(5, 16).replace("T", " ");
+			const workflow =
+				execution.workflowId && workflowName.has(execution.workflowId)
+					? workflowName.get(execution.workflowId)
+					: "workflow";
+			return {
+				id: execution.id,
+				label: `${workflow} \u00b7 ${execution.status} \u00b7 ${when}`,
+				workflowId: execution.workflowId,
+			};
+		});
+		return {
+			workflows: workflowRows.map((workflow) => ({
+				id: workflow.id,
+				name: workflow.name,
+			})),
+			executions,
+			defaultExecutionId: executions[0]?.id ?? "",
+		};
+	}
+
+	findProjectWorkflowIdByIdOrNamePrefix(input: {
+		projectId: string;
+		workflowId: string;
+		namePrefix: string;
+	}) {
+		return this.deps.workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix(input);
+	}
+
+	async getPieceCatalogDetail(input: {
+		pieceNameCandidates: string[];
+		projectId: string;
+	}): Promise<PieceCatalogDetail> {
+		const [piece, usage] = await Promise.all([
+			this.deps.pieceCatalog.getLatestPieceMetadata(input.pieceNameCandidates),
+			this.deps.pieceCatalog.listConnectionUsageByPieceNames(input),
+		]);
+		const usageByConnection: PieceCatalogDetail["usageByConnection"] = {};
+		for (const row of usage) {
+			usageByConnection[row.connectionExternalId] = {
+				refCount: row.refCount,
+				workflowCount: row.workflowCount,
+			};
+		}
+		return { piece, usageByConnection };
+	}
+
+	async getBenchmarkBrowserReadModel(input: {
+		projectId: string | null;
+	}): Promise<BenchmarkBrowserReadModel> {
+		await this.deps.benchmarkBrowser.ensureDefaultSuites();
+		const [
+			instanceRows,
+			repoFacetRows,
+			suiteRows,
+			agentRows,
+			environmentBuildRows,
+		] = await Promise.all([
+			this.deps.benchmarkBrowser.listInstances(),
+			this.deps.benchmarkBrowser.listRepoFacets(),
+			this.deps.benchmarkBrowser.listSuites(),
+			this.deps.benchmarkBrowser.listRunnableAgentCandidates(input),
+			this.deps.benchmarkBrowser.listEnvironmentBuilds(),
+		]);
+
+		const staticEnvironmentMappings = loadSwebenchInferenceEnvironmentMappings();
+		const buildStatusByHash = new Map<
+			string,
+			{
+				status: BenchmarkInstanceEnvironmentStatus;
+				environmentKey: string | null;
+			}
+		>();
+		for (const build of environmentBuildRows) {
+			const hash = build.envSpecHash?.trim();
+			if (!hash) continue;
+			const status = classifyEnvironmentBuild(build);
+			const existing = buildStatusByHash.get(hash);
+			if (
+				existing &&
+				ENVIRONMENT_STATUS_RANK[existing.status] >=
+					ENVIRONMENT_STATUS_RANK[status]
+			) {
+				continue;
+			}
+			buildStatusByHash.set(hash, {
+				status,
+				environmentKey: build.environmentKey ?? null,
+			});
+		}
+
+		const instances: BenchmarkInstanceRow[] = instanceRows.map((row) => {
+			const md = row.testMetadata ?? {};
+			const versionField = metadataString(md, ["version"]);
+			const dynamicEnvironmentSpecHash =
+				row.repo && row.baseCommit
+					? buildSwebenchEnvironmentSpec({
+							dataset: row.datasetName,
+							suiteSlug: normalizeSwebenchSuiteSlug(row.suiteSlug),
+							instanceId: row.instanceId,
+							repo: row.repo,
+							baseCommit: row.baseCommit,
+							testMetadata: md,
+						}).envSpecHash
+					: null;
+			const staticEnvironment = resolveSwebenchInferenceEnvironment(
+				{
+					suiteSlug: row.suiteSlug,
+					repo: row.repo,
+					baseCommit: row.baseCommit,
+					testMetadata: md,
+				},
+				dynamicEnvironmentSpecHash ?? "",
+				{ mappings: staticEnvironmentMappings },
+			);
+			const exactStaticEnvironment = isExactValidatedSwebenchInferenceEnvironment(
+				{
+					suiteSlug: row.suiteSlug,
+					repo: row.repo,
+					baseCommit: row.baseCommit,
+					testMetadata: md,
+				},
+				dynamicEnvironmentSpecHash ?? "",
+				{ mappings: staticEnvironmentMappings },
+			);
+			const buildStatus = dynamicEnvironmentSpecHash
+				? buildStatusByHash.get(dynamicEnvironmentSpecHash)
+				: null;
+			const environmentStatus: BenchmarkInstanceEnvironmentStatus =
+				exactStaticEnvironment
+					? "validated"
+					: (buildStatus?.status ?? "not_built");
+			const environmentKey =
+				exactStaticEnvironment
+					? (staticEnvironment.environmentKey ?? null)
+					: (buildStatus?.environmentKey ?? null);
+			const hintsLen = row.hintsText ? row.hintsText.length : 0;
+			return {
+				id: row.id,
+				instanceId: row.instanceId,
+				suiteSlug: row.suiteSlug,
+				suiteName: row.suiteName,
+				repo: row.repo,
+				baseCommit: row.baseCommit ? row.baseCommit.slice(0, 12) : null,
+				version: versionField,
+				environmentStatus,
+				environmentKey,
+				problemPreview: trimProblem(row.problemStatement),
+				hasHints: hintsLen > 0,
+				hintsLen,
+			};
+		});
+
+		const repoFacets = repoFacetRows
+			.filter((r): r is { repo: string; count: number } => Boolean(r.repo))
+			.map((r) => ({
+				value: r.repo,
+				label: r.repo,
+				count: Number(r.count),
+			}))
+			.sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+
+		const suiteCounts = new Map<string, number>();
+		const suiteEnvironmentCoverage = new Map<
+			string,
+			{ validated: number; building: number; failed: number; notBuilt: number }
+		>();
+		for (const instance of instances) {
+			suiteCounts.set(
+				instance.suiteSlug,
+				(suiteCounts.get(instance.suiteSlug) ?? 0) + 1,
+			);
+			const coverage =
+				suiteEnvironmentCoverage.get(instance.suiteSlug) ??
+				{ validated: 0, building: 0, failed: 0, notBuilt: 0 };
+			if (instance.environmentStatus === "validated") coverage.validated += 1;
+			else if (instance.environmentStatus === "building") coverage.building += 1;
+			else if (instance.environmentStatus === "failed") coverage.failed += 1;
+			else coverage.notBuilt += 1;
+			suiteEnvironmentCoverage.set(instance.suiteSlug, coverage);
+		}
+		const suiteFacets = suiteRows.map((suite) => ({
+			slug: suite.slug,
+			name: suite.name,
+			instanceCount: suiteCounts.get(suite.slug) ?? 0,
+			environmentCoverage: suiteEnvironmentCoverage.get(suite.slug) ?? {
+				validated: 0,
+				building: 0,
+				failed: 0,
+				notBuilt: 0,
+			},
+		}));
+
+		const runnableAgents = agentRows
+			.filter(
+				(row): row is typeof row & { versionNumber: number } =>
+					row.currentVersionId != null && row.versionNumber != null,
+			)
+			.filter((row) => {
+				const cfg = row.config ?? {};
+				const modelSpec =
+					typeof cfg.modelSpec === "string" ? cfg.modelSpec : null;
+				const option = agentModelOptionFor(modelSpec);
+				return Boolean(
+					option &&
+						option.sweBenchCapable !== false &&
+						TOOL_CAPABLE_BENCHMARK_PROVIDERS.has(option.provider) &&
+						benchmarkRuntimeSupportsProvider(row.runtime, option.provider),
+				);
+			})
+			.map((row) => {
+				const cfg = row.config ?? {};
+				const modelSpec =
+					typeof cfg.modelSpec === "string" ? cfg.modelSpec : null;
+				const runtimeRoute = resolveAgentRuntimeRoute({
+					agentSlug: row.slug,
+					runtimeAppId: row.runtimeAppId,
+					config: cfg as AgentConfig,
+				});
+				const capacity = estimateBenchmarkRuntimeCapacity({
+					runtimeClass: runtimeRoute.runtimeClass,
+					runtimeIsolation: runtimeRoute.isolation,
+					runtimeAppId: runtimeRoute.appId,
+					poolMaxReplicas: runtimeRoute.pool?.maxReplicas,
+					slotsPerReplica: runtimeRoute.pool?.slotsPerReplica,
+					maxActiveSessions: runtimeRoute.pool?.maxActiveSessions,
+					requestedInstanceCount: 500,
+					requestedConcurrency: 500,
+					executionBackend: benchmarkExecutionBackend(),
+				});
+				return {
+					id: row.id,
+					slug: row.slug,
+					name: row.name,
+					avatar: row.avatar,
+					runtime: row.runtime,
+					currentVersion: row.versionNumber,
+					registryStatus: row.registryStatus ?? "unregistered",
+					modelSpec,
+					benchmarkCapacity: {
+						runtimeClass: capacity.runtimeClass,
+						runtimeAppId: capacity.runtimeAppId,
+						runtimeReplicas: capacity.runtimeReplicas,
+						perSidecarWorkflowLimit: capacity.perSidecarWorkflowLimit,
+						slotsPerReplica: capacity.slotsPerReplica,
+						maxActiveSessions: capacity.maxActiveSessions,
+						maxActiveSandboxes: capacity.maxActiveSandboxes,
+					},
+				};
+			});
+
+		return {
+			instances,
+			repoFacets,
+			suiteFacets,
+			runnableAgents,
+		};
+	}
+
+	createWorkflowDefinition(input: CreateWorkflowDefinitionInput) {
+		return this.deps.workflowDefinitions.create(input);
+	}
+
+	updateWorkflowDefinition(id: string, input: UpdateWorkflowDefinitionInput) {
+		return this.deps.workflowDefinitions.update(id, input);
+	}
+
+	hasActiveWorkflowExecutions(id: string) {
+		return this.deps.workflowDefinitions.hasActiveExecutions(id);
+	}
+
+	deleteWorkflowDefinition(id: string) {
+		return this.deps.workflowDefinitions.delete(id);
+	}
+
+	listWorkflowTriggers(workflowId: string) {
+		return this.deps.workflowTriggers.listByWorkflowId(workflowId);
+	}
+
+	createWorkflowTrigger(input: CreateWorkflowTriggerInput) {
+		return this.deps.workflowTriggers.create(input);
+	}
+
+	getWorkflowTrigger(input: { workflowId: string; triggerId: string }) {
+		return this.deps.workflowTriggers.getForWorkflow(input);
+	}
+
+	deleteWorkflowTrigger(triggerId: string) {
+		return this.deps.workflowTriggers.delete(triggerId);
+	}
+
+	async validateApiKeyForUser(input: {
+		authorizationHeader: string | null;
+		userId: string;
+	}) {
+		const authHeader = input.authorizationHeader;
+		if (!authHeader) {
+			return { valid: false as const, error: "Missing Authorization header", statusCode: 401 };
+		}
+
+		const key = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
+		if (!key?.startsWith("wfb_")) {
+			return { valid: false as const, error: "Invalid API key format", statusCode: 401 };
+		}
+
+		const keyHash = createHash("sha256").update(key).digest("hex");
+		const apiKey = await this.deps.apiKeys.getByKeyHash(keyHash);
+		if (!apiKey) {
+			return { valid: false as const, error: "Invalid API key", statusCode: 401 };
+		}
+		if (apiKey.userId !== input.userId) {
+			return {
+				valid: false as const,
+				error: "You do not have permission to run this workflow",
+				statusCode: 403,
+			};
+		}
+
+		void this.deps.apiKeys.markUsed(apiKey.id, new Date()).catch(() => {});
+		return { valid: true as const, apiKeyId: apiKey.id };
+	}
+
+	listUserApiKeys(userId: string) {
+		return this.deps.apiKeys.listByUserId(userId);
+	}
+
+	async createUserApiKey(input: { userId: string; name: string }) {
+		const secret = createPlaintextWorkflowBuilderApiKey();
+		const created = await this.deps.apiKeys.createUserApiKey({
+			id: generateId(),
+			userId: input.userId,
+			name: input.name.trim(),
+			keyHash: secret.keyHash,
+			keyPrefix: secret.keyPrefix,
+		});
+		return {
+			id: created.id,
+			name: created.name,
+			keyPrefix: created.keyPrefix,
+			createdAt: created.createdAt,
+			key: secret.plaintextKey,
+		};
+	}
+
+	deleteUserApiKey(input: { userId: string; keyId: string }) {
+		return this.deps.apiKeys.deleteForUser({
+			id: input.keyId,
+			userId: input.userId,
+		});
+	}
+
+	async rotateUserApiKey(input: { userId: string; keyId: string }) {
+		const secret = createPlaintextWorkflowBuilderApiKey();
+		const rotated = await this.deps.apiKeys.updateSecretForUser({
+			id: input.keyId,
+			userId: input.userId,
+			keyHash: secret.keyHash,
+			keyPrefix: secret.keyPrefix,
+		});
+		return rotated
+			? {
+					id: rotated.id,
+					name: rotated.name,
+					keyPrefix: rotated.keyPrefix,
+					createdAt: rotated.createdAt,
+					key: secret.plaintextKey,
+				}
+			: null;
+	}
+
 	assertExecutionReadModelReady() {
 		return this.deps.workflowExecutions.assertReadModelReady();
 	}
@@ -68,6 +2966,57 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	getExecutionByDaprInstanceId(instanceId: string) {
 		return this.deps.workflowExecutions.getByDaprInstanceId(instanceId);
+	}
+
+	getRunningWorkflowExecution(workflowId: string) {
+		return this.deps.workflowExecutions.getRunningByWorkflowId(workflowId);
+	}
+
+	getExecutionLineage(executionId: string) {
+		return this.deps.workflowExecutions.getLineage(executionId);
+	}
+
+	listWorkflowExecutions(input: {
+		workflowId: string;
+		limit: number;
+		include?: "summary" | "full";
+	}) {
+		return this.deps.workflowExecutions.listByWorkflowId(input);
+	}
+
+	listWorkflowExecutionRunSummaries(input: {
+		workflowId: string;
+		limit: number;
+	}) {
+		return this.deps.workflowExecutions.listRunSummariesByWorkflowId(input);
+	}
+
+	listExecutionSessions(input: {
+		executionId: string;
+		projectId?: string | null;
+		includeAncestors?: boolean;
+	}) {
+		return this.deps.workflowExecutions.listSessionsForExecutionLineage({
+			executionId: input.executionId,
+			projectId: input.projectId,
+			maxAncestors: input.includeAncestors === false ? 0 : 20,
+		});
+	}
+
+	listExecutionOutputFiles(executionId: string) {
+		return this.deps.workflowExecutions.listOutputFilesByExecutionId(executionId);
+	}
+
+	aggregateExecutionUsageMetrics(input: {
+		executionId: string;
+		projectId?: string | null;
+		includeAncestors?: boolean;
+	}) {
+		return this.deps.workflowExecutions.aggregateUsageMetricsForExecutionLineage({
+			executionId: input.executionId,
+			projectId: input.projectId,
+			maxAncestors: input.includeAncestors === false ? 0 : 20,
+		});
 	}
 
 	createWorkflowExecution(input: CreateWorkflowExecutionInput) {
@@ -121,12 +3070,50 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.workflowExecutions.updateLog(executionId, id, patch);
 	}
 
+	listExecutionLogs(executionId: string) {
+		return this.deps.workflowExecutions.listLogsByExecutionId(executionId);
+	}
+
+	listExecutionSessionIds(executionId: string) {
+		return this.deps.workflowExecutions.listSessionIdsByExecutionId(executionId);
+	}
+
+	listExecutionAgentEvents(executionId: string) {
+		return this.deps.workflowExecutions.listAgentEventsByExecutionId(executionId);
+	}
+
+	listExecutionAgentEventsAfter(input: { executionId: string; afterEventId: number }) {
+		return this.deps.workflowExecutions.listAgentEventsByExecutionIdAfter(input);
+	}
+
+	listenSessionEventNotifications(
+		onNotification: (notification: WorkflowSessionEventNotification) => void,
+	) {
+		return this.deps.sessionEventNotifications.listenSessionEvents(onNotification);
+	}
+
 	upsertWorkflowArtifact(input: WorkflowArtifactInput) {
 		return this.deps.artifactStore.upsertWorkflowArtifact(input);
 	}
 
 	listWorkflowArtifactsByExecutionId(executionId: string) {
 		return this.deps.artifactStore.listWorkflowArtifactsByExecutionId(executionId);
+	}
+
+	listSourceBundleArtifactsByWorkflowId(workflowId: string) {
+		return this.deps.artifactStore.listSourceBundleArtifactsByWorkflowId(workflowId);
+	}
+
+	getWorkflowArtifactForExecution(input: { executionId: string; artifactId: string }) {
+		return this.deps.artifactStore.getWorkflowArtifactForExecution(input);
+	}
+
+	updateWorkflowArtifactMetadata(input: {
+		executionId: string;
+		artifactId: string;
+		metadata: Record<string, unknown> | null;
+	}) {
+		return this.deps.artifactStore.updateWorkflowArtifactMetadata(input);
 	}
 
 	upsertWorkflowWorkspaceSession(input: UpsertWorkspaceSessionInput) {
@@ -143,6 +3130,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	upsertPlanArtifact(input: WorkflowPlanArtifactInput) {
 		return this.deps.planArtifacts.upsertPlanArtifact(input);
+	}
+
+	listPlanArtifactsByExecutionId(executionId: string) {
+		return this.deps.planArtifacts.listPlanArtifactsByExecutionId(executionId);
 	}
 
 	updatePlanArtifactStatus(input: {
@@ -178,12 +3169,29 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			projectId = workflow?.projectId ?? null;
 		}
 
-		const result = await resolveAgentMcpServersForProject({
-			projectId,
-			requestedServers: Array.isArray(input.requestedServers)
-				? (input.requestedServers as McpServerProfileConfig[])
-				: [],
+		const requestedServers = Array.isArray(input.requestedServers)
+			? (input.requestedServers as McpServerProfileConfig[])
+			: [];
+		const rows = projectId
+			? (await this.deps.mcpConnections.listProjectConnections(projectId)).filter(
+					(row) => row.status === "ENABLED",
+				)
+			: [];
+		let hostedToken: string | null = null;
+		if (projectId && rows.some((row) => row.sourceType === "hosted_workflow")) {
+			try {
+				const hostedServer = await this.getOrCreateHostedMcpServer(projectId);
+				hostedToken = decryptString(hostedServer.tokenEncrypted);
+			} catch {
+				hostedToken = null;
+			}
+		}
+
+		const result = resolveMcpServerConfigsFromRows({
+			rows,
+			requestedServers,
 			includeProjectConnections: input.includeProjectConnections,
+			hostedToken,
 		});
 		return { projectId, ...result };
 	}

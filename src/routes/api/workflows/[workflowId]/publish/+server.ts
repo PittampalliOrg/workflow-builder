@@ -1,19 +1,15 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { db } from '$lib/server/db';
-import { workflows } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
+import { getApplicationAdapters } from '$lib/server/application';
 import { nanoid } from 'nanoid';
 import { getRemovedSw10AgentCallsError } from '$lib/server/workflows/sw10-agent-validation';
 
 export const POST: RequestHandler = async ({ params }) => {
-	if (!db) return error(503, 'Database not configured');
-
-	const [workflow] = await db
-		.select()
-		.from(workflows)
-		.where(eq(workflows.id, params.workflowId))
-		.limit(1);
+	const workflowData = getApplicationAdapters().workflowData;
+	const workflow = await workflowData.getWorkflowByRef({
+		workflowId: params.workflowId,
+		lookup: 'id',
+	});
 
 	if (!workflow) {
 		return error(404, 'Workflow not found');
@@ -56,15 +52,10 @@ export const POST: RequestHandler = async ({ params }) => {
 		}
 	};
 
-	const [updated] = await db
-		.update(workflows)
-		.set({
-			spec: updatedSpec,
-			daprWorkflowName: daprWorkflowName,
-			updatedAt: new Date()
-		})
-		.where(eq(workflows.id, params.workflowId))
-		.returning();
+	const updated = await workflowData.updateWorkflowDefinition(params.workflowId, {
+		spec: updatedSpec,
+		daprWorkflowName,
+	});
 
 	return json(updated);
 };

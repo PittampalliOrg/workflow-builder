@@ -11,6 +11,16 @@ vi.mock("$lib/server/application/adapters/postgres", () => ({
 	PostgresWorkflowPlanArtifactStore: vi.fn(),
 	PostgresWorkflowDefinitionRepository: vi.fn(),
 	PostgresWorkflowExecutionRepository: vi.fn(),
+	PostgresWorkspaceProjectRepository: vi.fn(),
+	PostgresPieceCatalogRepository: vi.fn(),
+	PostgresBenchmarkBrowserRepository: vi.fn(),
+	PostgresMcpConnectionRepository: vi.fn(),
+	PostgresHostedMcpServerRepository: vi.fn(),
+	PostgresMcpRunRepository: vi.fn(),
+	PostgresAppConnectionRepository: vi.fn(),
+	PostgresUserProfileRepository: vi.fn(),
+	PostgresSettingsRepository: vi.fn(),
+	PostgresAdminPieceRepository: vi.fn(),
 }));
 
 import { getApplicationAdapters } from "$lib/server/application";

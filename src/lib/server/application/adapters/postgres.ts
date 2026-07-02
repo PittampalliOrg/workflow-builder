@@ -1,15 +1,60 @@
-import { and, asc, desc, eq, lt, sql } from "drizzle-orm";
-import { db as defaultDb } from "$lib/server/db";
 import {
+	and,
+	asc,
+	count,
+	desc,
+	eq,
+	gt,
+	inArray,
+	isNotNull,
+	isNull,
+	like,
+	lt,
+	or,
+	sql,
+} from "drizzle-orm";
+import { db as defaultDb, sql as defaultSql } from "$lib/server/db";
+import { BENCHMARK_AGENT_RUNTIMES } from "$lib/benchmarks/agent-runtimes";
+import { connectionBelongsToProject } from "$lib/server/app-connection-scope";
+import { SWEBENCH_SUITES } from "$lib/server/benchmarks/swebench";
+import { generateId } from "$lib/server/utils/id";
+import {
+	AppConnectionScope,
+	AppConnectionStatus,
+	AppConnectionType,
+} from "$lib/server/types/app-connection";
+import {
+	files,
+	apiKeys,
+	appConnections,
 	mlflowLineageLinks,
+	agents,
+	agentVersions,
+	benchmarkInstances,
+	benchmarkSuites,
+	environmentImageBuilds,
+	projects,
+	projectMembers,
+	pieceMetadata,
+	pieceImages,
+	platformOauthApps,
+	platforms,
+	platformDisabledPieces,
+	mcpConnections,
+	mcpServers,
+	mcpRuns,
+	sessionEvents,
 	sessions,
+	workflowConnectionRefs,
 	workflowArtifacts,
 	workflowAgentRuns,
 	workflowExecutionLogs,
 	workflowExecutions,
 	workflowPlanArtifacts,
+	workflowTriggers,
 	workflowWorkspaceSessions,
 	workflows,
+	users,
 	type Workflow,
 	type WorkflowArtifactRow,
 	type WorkflowExecution,
@@ -18,23 +63,69 @@ import {
 } from "$lib/server/db/schema";
 import type {
 	AppendWorkflowExecutionLogInput,
+	AdminPieceRepository,
+	AppConnectionCreatedRecord,
+	AppConnectionOAuthCompletedRecord,
+	AppConnectionOAuthPieceMetadataRecord,
+	AppConnectionPlatformOAuthAppRecord,
+	AppConnectionRecord,
+	AppConnectionRepository,
+	AppConnectionSecretRecord,
+	AppConnectionSummaryRecord,
+	AppConnectionUpdatedRecord,
+	ApiKeyRecord,
+	ApiKeyStore,
 	ArtifactStore,
+	BenchmarkBrowserRepository,
+	CreateWorkflowDefinitionInput,
+	CreateWorkflowTriggerInput,
 	CreateWorkflowExecutionInput,
 	TraceLinkTarget,
 	TraceLineageStore,
 	UpsertTraceLineageLinksInput,
+	UpdateWorkflowDefinitionInput,
 	UpdateWorkflowAgentRunLifecycleInput,
 	UpsertWorkflowAgentRunScheduledInput,
 	WorkflowArtifactRecord,
 	WorkflowArtifactInput,
 	WorkflowAgentRunStore,
+	CreateMcpConnectionRecordInput,
+	HostedMcpServerRecord,
+	HostedMcpServerRepository,
+	HostedMcpWorkflowSourceRecord,
+	McpConnectionRecord,
+	McpConnectionRepository,
+	McpRunRecord,
+	McpRunRepository,
+	McpCatalogAppConnectionSummary,
+	ProjectMemberListItem,
+	ProjectMemberRecord,
+	ProjectMembershipRole,
+	PieceCatalogRepository,
+	SettingsRepository,
+	UserProfileRecord,
+	UserProfileRepository,
+	WorkspaceProjectRepository,
 	WorkflowDefinition,
+	WorkflowDefinitionListItem,
 	WorkflowDefinitionRepository,
+	WorkflowTriggerRecord,
+	WorkflowTriggerStore,
 	WorkflowExecutionRecord,
+	WorkflowExecutionForkCountRecord,
 	WorkflowExecutionLogPatch,
+	WorkflowExecutionPickerRecord,
 	WorkflowExecutionReadModelPatch,
+	WorkflowExecutionRecentRunRecord,
 	WorkflowExecutionRepository,
+	WorkflowExecutionLineage,
+	WorkflowExecutionListItem,
+	WorkflowExecutionRunSummary,
+	WorkflowExecutionSessionSummary,
+	WorkflowExecutionOutputFiles,
+	WorkflowExecutionUsageMetricsRow,
 	WorkflowExecutionLogRecord,
+	WorkflowSessionEventNotificationSource,
 	WorkflowPlanArtifactInput,
 	WorkflowPlanArtifactRecord,
 	WorkflowPlanArtifactStore,
@@ -43,6 +134,7 @@ import type {
 } from "$lib/server/application/ports";
 
 type Database = typeof defaultDb;
+type PostgresSqlClient = typeof defaultSql;
 
 const SLOT_RANK = sql<number>`CASE ${workflowArtifacts.slot}
 	WHEN 'primary' THEN 0
@@ -50,6 +142,7 @@ const SLOT_RANK = sql<number>`CASE ${workflowArtifacts.slot}
 	WHEN 'aux' THEN 2
 	ELSE 3
 END`;
+const SOURCE_BUNDLE_KIND = "source-bundle";
 
 const EXECUTION_READ_MODEL_COLUMNS = [
 	"current_node_id",
@@ -67,6 +160,42 @@ const EXECUTION_READ_MODEL_MIGRATIONS = [
 export function requirePostgresDb(database: Database = defaultDb): Database {
 	if (!database) throw new Error("Database not configured");
 	return database;
+}
+
+function requirePostgresSql(sqlClient: PostgresSqlClient = defaultSql): PostgresSqlClient {
+	if (!sqlClient) throw new Error("Database not configured");
+	return sqlClient;
+}
+
+function parseSessionEventNotification(payload: string): { sessionId: string | null } {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(payload);
+	} catch {
+		return { sessionId: null };
+	}
+	if (!parsed || typeof parsed !== "object" || !("sessionId" in parsed)) {
+		return { sessionId: null };
+	}
+	const sessionId = (parsed as { sessionId?: unknown }).sessionId;
+	return { sessionId: typeof sessionId === "string" && sessionId ? sessionId : null };
+}
+
+export class PostgresWorkflowSessionEventNotificationSource
+	implements WorkflowSessionEventNotificationSource
+{
+	constructor(private readonly sqlClient: PostgresSqlClient = requirePostgresSql()) {}
+
+	async listenSessionEvents(
+		onNotification: (notification: { sessionId: string | null }) => void,
+	) {
+		const listener = await this.sqlClient.listen("session_events", (payload) => {
+			onNotification(parseSessionEventNotification(payload));
+		});
+		return {
+			unlisten: () => listener.unlisten(),
+		};
+	}
 }
 
 function mapWorkflow(row: Workflow): WorkflowDefinition {
@@ -195,6 +324,1521 @@ function mapPlanArtifact(row: WorkflowPlanArtifact): WorkflowPlanArtifactRecord 
 	};
 }
 
+function mapTrigger(row: typeof workflowTriggers.$inferSelect): WorkflowTriggerRecord {
+	return {
+		id: row.id,
+		workflowId: row.workflowId,
+		userId: row.userId,
+		projectId: row.projectId,
+		kind: row.kind,
+		config: row.config ?? {},
+		triggerData: row.triggerData ?? null,
+		dedupSalt: row.dedupSalt,
+		backingRef: row.backingRef,
+		status: row.status,
+		lastError: row.lastError,
+		lastFiredAt: row.lastFiredAt,
+		createdAt: row.createdAt,
+		updatedAt: row.updatedAt,
+	};
+}
+
+export class PostgresUserProfileRepository implements UserProfileRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async getUserProfile(userId: string): Promise<UserProfileRecord | null> {
+		const [row] = await this.database
+			.select({
+				name: users.name,
+				email: users.email,
+				image: users.image,
+				platformRole: users.platformRole,
+			})
+			.from(users)
+			.where(eq(users.id, userId))
+			.limit(1);
+		if (!row) return null;
+		const platformRole: UserProfileRecord["platformRole"] =
+			row.platformRole === "ADMIN" ? "ADMIN" : "MEMBER";
+		return {
+			name: row.name,
+			email: row.email,
+			image: row.image,
+			platformRole,
+		};
+	}
+}
+
+export class PostgresSettingsRepository implements SettingsRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async getSettingsUserProfile(userId: string) {
+		const [row] = await this.database
+			.select({
+				id: users.id,
+				name: users.name,
+				email: users.email,
+				image: users.image,
+				platformId: users.platformId,
+				platformRole: users.platformRole,
+			})
+			.from(users)
+			.where(eq(users.id, userId))
+			.limit(1);
+		return row ?? null;
+	}
+
+	listPlatformOAuthApps(platformId: string) {
+		return this.database
+			.select({
+				id: platformOauthApps.id,
+				pieceName: platformOauthApps.pieceName,
+				clientId: platformOauthApps.clientId,
+				createdAt: platformOauthApps.createdAt,
+				updatedAt: platformOauthApps.updatedAt,
+			})
+			.from(platformOauthApps)
+			.where(eq(platformOauthApps.platformId, platformId))
+			.orderBy(platformOauthApps.pieceName);
+	}
+
+	listOAuthPieces() {
+		return this.database
+			.selectDistinctOn([pieceMetadata.name], {
+				name: pieceMetadata.name,
+				displayName: pieceMetadata.displayName,
+				logoUrl: pieceMetadata.logoUrl,
+			})
+			.from(pieceMetadata)
+			.where(
+				sql`${pieceMetadata.auth}->>'type' = 'OAUTH2' AND ${pieceMetadata.availableOnly} = false`,
+			)
+			.orderBy(pieceMetadata.name, pieceMetadata.displayName);
+	}
+
+	async resolvePlatformId(sessionPlatformId?: string | null) {
+		if (sessionPlatformId) return sessionPlatformId;
+
+		const [existing] = await this.database
+			.select({ id: platforms.id })
+			.from(platforms)
+			.orderBy(platforms.createdAt)
+			.limit(1);
+		if (existing?.id) return existing.id;
+
+		const now = new Date();
+		const [created] = await this.database
+			.insert(platforms)
+			.values({
+				id: "default-platform",
+				name: "Default Platform",
+				createdAt: now,
+				updatedAt: now,
+			})
+			.onConflictDoNothing()
+			.returning({ id: platforms.id });
+		if (created?.id) return created.id;
+
+		const [winner] = await this.database
+			.select({ id: platforms.id })
+			.from(platforms)
+			.orderBy(platforms.createdAt)
+			.limit(1);
+		if (!winner?.id) throw new Error("Platform could not be resolved");
+		return winner.id;
+	}
+
+	async savePlatformOAuthApp(input: {
+		id?: string | null;
+		platformId?: string | null;
+		pieceName: string;
+		clientId: string;
+		encryptedClientSecret?: { iv: string; data: string } | null;
+	}) {
+		const mutationFields = {
+			id: platformOauthApps.id,
+			platformId: platformOauthApps.platformId,
+			pieceName: platformOauthApps.pieceName,
+			clientId: platformOauthApps.clientId,
+			createdAt: platformOauthApps.createdAt,
+			updatedAt: platformOauthApps.updatedAt,
+		};
+		const now = new Date();
+
+		if (!input.platformId) {
+			const updateData: Partial<typeof platformOauthApps.$inferInsert> = {
+				clientId: input.clientId,
+				updatedAt: now,
+			};
+			if (input.encryptedClientSecret) {
+				updateData.clientSecret = input.encryptedClientSecret;
+			}
+			const [updated] = await this.database
+				.update(platformOauthApps)
+				.set(updateData)
+				.where(eq(platformOauthApps.id, String(input.id)))
+				.returning(mutationFields);
+			return updated ?? null;
+		}
+
+		if (!input.encryptedClientSecret) {
+			throw new Error("clientSecret is required when creating an OAuth app");
+		}
+
+		const [app] = await this.database
+			.insert(platformOauthApps)
+			.values({
+				id: input.id ?? undefined,
+				platformId: input.platformId,
+				pieceName: input.pieceName,
+				clientId: input.clientId,
+				clientSecret: input.encryptedClientSecret,
+				createdAt: now,
+				updatedAt: now,
+			})
+			.onConflictDoUpdate({
+				target: [platformOauthApps.platformId, platformOauthApps.pieceName],
+				set: {
+					clientId: input.clientId,
+					clientSecret: input.encryptedClientSecret,
+					updatedAt: now,
+				},
+			})
+			.returning(mutationFields);
+
+		return app ?? null;
+	}
+
+	async deletePlatformOAuthApp(id: string) {
+		await this.database.delete(platformOauthApps).where(eq(platformOauthApps.id, id));
+	}
+}
+
+export class PostgresMcpConnectionRepository implements McpConnectionRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	private mapConnection(row: typeof mcpConnections.$inferSelect): McpConnectionRecord {
+		return {
+			id: row.id,
+			projectId: row.projectId,
+			sourceType: row.sourceType,
+			pieceName: row.pieceName,
+			serverKey: row.serverKey,
+			connectionExternalId: row.connectionExternalId,
+			displayName: row.displayName,
+			registryRef: row.registryRef,
+			serverUrl: row.serverUrl,
+			status: row.status,
+			lastSyncAt: row.lastSyncAt,
+			lastError: row.lastError,
+			metadata: row.metadata,
+			createdBy: row.createdBy,
+			updatedBy: row.updatedBy,
+			createdAt: row.createdAt,
+			updatedAt: row.updatedAt,
+		};
+	}
+
+	async listProjectConnections(projectId: string) {
+		const rows = await this.database
+			.select()
+			.from(mcpConnections)
+			.where(eq(mcpConnections.projectId, projectId))
+			.orderBy(mcpConnections.displayName);
+		return rows.map((row) => this.mapConnection(row));
+	}
+
+	async findProjectConnection(input: { id: string; projectId: string }) {
+		const [row] = await this.database
+			.select()
+			.from(mcpConnections)
+			.where(
+				and(
+					eq(mcpConnections.id, input.id),
+					eq(mcpConnections.projectId, input.projectId),
+				),
+			)
+			.limit(1);
+		return row ? this.mapConnection(row) : null;
+	}
+
+	async findProjectNimblePieceConnection(input: {
+		projectId: string;
+		pieceName: string;
+	}) {
+		const [row] = await this.database
+			.select()
+			.from(mcpConnections)
+			.where(
+				and(
+					eq(mcpConnections.projectId, input.projectId),
+					eq(mcpConnections.sourceType, "nimble_piece"),
+					eq(mcpConnections.pieceName, input.pieceName),
+				),
+			)
+			.limit(1);
+		return row ? this.mapConnection(row) : null;
+	}
+
+	async createProjectConnection(input: CreateMcpConnectionRecordInput) {
+		const [row] = await this.database
+			.insert(mcpConnections)
+			.values({
+				id: input.id,
+				projectId: input.projectId,
+				sourceType: input.sourceType,
+				pieceName: input.pieceName,
+				serverKey: input.serverKey,
+				connectionExternalId: input.connectionExternalId,
+				displayName: input.displayName,
+				registryRef: input.registryRef,
+				serverUrl: input.serverUrl,
+				status: input.status,
+				lastSyncAt: input.lastSyncAt ?? null,
+				lastError: input.lastError ?? null,
+				metadata: input.metadata,
+				createdBy: input.createdBy,
+				updatedBy: input.updatedBy,
+			})
+			.returning();
+		return this.mapConnection(row);
+	}
+
+	async updateProjectConnection(input: {
+		id: string;
+		projectId: string;
+		status?: McpConnectionRecord["status"];
+		connectionExternalId?: string | null;
+		displayName?: string;
+		registryRef?: string | null;
+		serverUrl?: string | null;
+		metadata?: Record<string, unknown> | null;
+		updatedBy: string;
+	}) {
+		const updates: Partial<typeof mcpConnections.$inferInsert> = {
+			updatedBy: input.updatedBy,
+			updatedAt: new Date(),
+		};
+		if (input.status !== undefined) updates.status = input.status;
+		if (Object.hasOwn(input, "connectionExternalId")) {
+			updates.connectionExternalId = input.connectionExternalId ?? null;
+		}
+		if (input.displayName !== undefined) updates.displayName = input.displayName;
+		if (Object.hasOwn(input, "registryRef")) updates.registryRef = input.registryRef ?? null;
+		if (Object.hasOwn(input, "serverUrl")) updates.serverUrl = input.serverUrl ?? null;
+		if (Object.hasOwn(input, "metadata")) updates.metadata = input.metadata ?? null;
+
+		const [row] = await this.database
+			.update(mcpConnections)
+			.set(updates)
+			.where(
+				and(
+					eq(mcpConnections.id, input.id),
+					eq(mcpConnections.projectId, input.projectId),
+				),
+			)
+			.returning();
+		return row ? this.mapConnection(row) : null;
+	}
+
+	async deleteProjectConnection(input: { id: string; projectId: string }) {
+		await this.database
+			.delete(mcpConnections)
+			.where(
+				and(
+					eq(mcpConnections.id, input.id),
+					eq(mcpConnections.projectId, input.projectId),
+				),
+			);
+	}
+
+	async activeAppConnectionExistsForPiece(input: {
+		projectId: string;
+		externalId: string;
+		pieceNameCandidates: string[];
+	}) {
+		if (input.pieceNameCandidates.length === 0) return false;
+		const [row] = await this.database
+			.select({ projectIds: appConnections.projectIds })
+			.from(appConnections)
+			.where(
+				and(
+					eq(appConnections.externalId, input.externalId),
+					eq(appConnections.status, AppConnectionStatus.ACTIVE),
+					inArray(appConnections.pieceName, input.pieceNameCandidates),
+				),
+			)
+			.limit(1);
+		return Boolean(row && connectionBelongsToProject(row.projectIds, input.projectId));
+	}
+
+	async listActiveAppConnectionCatalogSummaries(
+		projectId: string,
+	): Promise<McpCatalogAppConnectionSummary[]> {
+		const rows = await this.database
+			.select({
+				id: appConnections.id,
+				externalId: appConnections.externalId,
+				displayName: appConnections.displayName,
+				pieceName: appConnections.pieceName,
+				type: appConnections.type,
+				status: appConnections.status,
+				projectIds: appConnections.projectIds,
+			})
+			.from(appConnections)
+			.where(eq(appConnections.status, AppConnectionStatus.ACTIVE))
+			.orderBy(desc(appConnections.createdAt));
+		return rows
+			.filter((row) => connectionBelongsToProject(row.projectIds, projectId))
+			.map(({ projectIds: _projectIds, ...row }) => row);
+	}
+
+	async listPlatformOAuthAppPieceNames(input: {
+		pieceNames: string[];
+		platformId?: string | null;
+	}) {
+		if (input.pieceNames.length === 0) return [];
+		const rows = await this.database
+			.select({
+				pieceName: platformOauthApps.pieceName,
+				platformId: platformOauthApps.platformId,
+			})
+			.from(platformOauthApps)
+			.where(inArray(platformOauthApps.pieceName, input.pieceNames));
+		return rows
+			.filter((row) => !input.platformId || row.platformId === input.platformId)
+			.map((row) => row.pieceName);
+	}
+}
+
+export class PostgresHostedMcpServerRepository implements HostedMcpServerRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	private mapServer(row: typeof mcpServers.$inferSelect): HostedMcpServerRecord {
+		return {
+			id: row.id,
+			projectId: row.projectId,
+			status: row.status,
+			tokenEncrypted: row.tokenEncrypted,
+			createdAt: row.createdAt,
+			updatedAt: row.updatedAt,
+		};
+	}
+
+	private mapConnection(row: typeof mcpConnections.$inferSelect): McpConnectionRecord {
+		return {
+			id: row.id,
+			projectId: row.projectId,
+			sourceType: row.sourceType,
+			pieceName: row.pieceName,
+			serverKey: row.serverKey,
+			connectionExternalId: row.connectionExternalId,
+			displayName: row.displayName,
+			registryRef: row.registryRef,
+			serverUrl: row.serverUrl,
+			status: row.status,
+			lastSyncAt: row.lastSyncAt,
+			lastError: row.lastError,
+			metadata: row.metadata,
+			createdBy: row.createdBy,
+			updatedBy: row.updatedBy,
+			createdAt: row.createdAt,
+			updatedAt: row.updatedAt,
+		};
+	}
+
+	async resolveProjectByIdOrExternalId(projectRef: string) {
+		const [row] = await this.database
+			.select({ id: projects.id, externalId: projects.externalId })
+			.from(projects)
+			.where(or(eq(projects.id, projectRef), eq(projects.externalId, projectRef)))
+			.limit(1);
+		return row ?? null;
+	}
+
+	async getServerByProjectId(projectId: string) {
+		const [row] = await this.database
+			.select()
+			.from(mcpServers)
+			.where(eq(mcpServers.projectId, projectId))
+			.limit(1);
+		return row ? this.mapServer(row) : null;
+	}
+
+	async createServer(input: {
+		id: string;
+		projectId: string;
+		status: HostedMcpServerRecord["status"];
+		tokenEncrypted: HostedMcpServerRecord["tokenEncrypted"];
+	}) {
+		const [row] = await this.database
+			.insert(mcpServers)
+			.values({
+				id: input.id,
+				projectId: input.projectId,
+				status: input.status,
+				tokenEncrypted: input.tokenEncrypted,
+			})
+			.returning();
+		return this.mapServer(row);
+	}
+
+	async updateServerStatus(input: {
+		id: string;
+		status: HostedMcpServerRecord["status"];
+	}) {
+		await this.database
+			.update(mcpServers)
+			.set({ status: input.status, updatedAt: new Date() })
+			.where(eq(mcpServers.id, input.id));
+	}
+
+	async updateServerToken(input: {
+		id: string;
+		tokenEncrypted: HostedMcpServerRecord["tokenEncrypted"];
+	}) {
+		await this.database
+			.update(mcpServers)
+			.set({ tokenEncrypted: input.tokenEncrypted, updatedAt: new Date() })
+			.where(eq(mcpServers.id, input.id));
+	}
+
+	async getProjectOwnerId(projectId: string) {
+		const [row] = await this.database
+			.select({ ownerId: projects.ownerId })
+			.from(projects)
+			.where(eq(projects.id, projectId))
+			.limit(1);
+		return row?.ownerId ?? null;
+	}
+
+	async listWorkflowSourcesForProject(input: {
+		projectId: string;
+		ownerId: string;
+	}): Promise<HostedMcpWorkflowSourceRecord[]> {
+		return this.database
+			.select({
+				id: workflows.id,
+				name: workflows.name,
+				description: workflows.description,
+				nodes: workflows.nodes,
+			})
+			.from(workflows)
+			.where(
+				or(
+					eq(workflows.projectId, input.projectId),
+					and(isNull(workflows.projectId), eq(workflows.userId, input.ownerId)),
+				),
+			);
+	}
+
+	async upsertHostedWorkflowConnection(input: {
+		projectId: string;
+		displayName?: string | null;
+		serverUrl?: string | null;
+		registryRef?: string | null;
+		status: McpConnectionRecord["status"];
+		metadata?: Record<string, unknown> | null;
+		lastError?: string | null;
+		actorUserId?: string | null;
+	}) {
+		const now = new Date();
+		const displayName =
+			typeof input.displayName === "string" && input.displayName.trim()
+				? input.displayName.trim()
+				: "Workflow Builder Hosted MCP";
+		const [existing] = await this.database
+			.select()
+			.from(mcpConnections)
+			.where(
+				and(
+					eq(mcpConnections.projectId, input.projectId),
+					eq(mcpConnections.sourceType, "hosted_workflow"),
+				),
+			)
+			.limit(1);
+
+		if (existing) {
+			const existingMeta = (existing.metadata as Record<string, unknown>) ?? {};
+			const mergedMeta = input.metadata
+				? { ...existingMeta, ...input.metadata }
+				: existingMeta;
+			const [row] = await this.database
+				.update(mcpConnections)
+				.set({
+					displayName,
+					serverUrl: input.serverUrl ?? existing.serverUrl,
+					registryRef: input.registryRef ?? existing.registryRef,
+					status: input.status,
+					lastSyncAt: now,
+					lastError: input.lastError ?? null,
+					metadata: Object.keys(mergedMeta).length > 0 ? mergedMeta : null,
+					updatedBy: input.actorUserId ?? null,
+					updatedAt: now,
+				})
+				.where(eq(mcpConnections.id, existing.id))
+				.returning();
+			return this.mapConnection(row);
+		}
+
+		const [row] = await this.database
+			.insert(mcpConnections)
+			.values({
+				id: generateId(),
+				projectId: input.projectId,
+				sourceType: "hosted_workflow",
+				pieceName: null,
+				serverKey: null,
+				displayName,
+				registryRef: input.registryRef ?? "mcp-gateway",
+				serverUrl: input.serverUrl ?? null,
+				status: input.status,
+				lastSyncAt: now,
+				lastError: input.lastError ?? null,
+				metadata: input.metadata ?? null,
+				createdBy: input.actorUserId ?? null,
+				updatedBy: input.actorUserId ?? null,
+			})
+			.returning();
+		return this.mapConnection(row);
+	}
+}
+
+export class PostgresMcpRunRepository implements McpRunRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	private mapRun(row: typeof mcpRuns.$inferSelect): McpRunRecord {
+		return {
+			id: row.id,
+			projectId: row.projectId,
+			mcpServerId: row.mcpServerId,
+			workflowId: row.workflowId,
+			workflowExecutionId: row.workflowExecutionId,
+			daprInstanceId: row.daprInstanceId,
+			toolName: row.toolName,
+			input: row.input,
+			response: row.response,
+			status: row.status,
+			respondedAt: row.respondedAt,
+			createdAt: row.createdAt,
+			updatedAt: row.updatedAt,
+		};
+	}
+
+	async createRun(input: {
+		projectId: string;
+		mcpServerId: string;
+		workflowId: string;
+		toolName: string;
+		input: Record<string, unknown>;
+	}) {
+		const [row] = await this.database
+			.insert(mcpRuns)
+			.values({
+				id: generateId(),
+				projectId: input.projectId,
+				mcpServerId: input.mcpServerId,
+				workflowId: input.workflowId,
+				toolName: input.toolName,
+				input: input.input,
+				status: "STARTED",
+			})
+			.returning();
+		return this.mapRun(row);
+	}
+
+	async attachExecution(input: {
+		runId: string;
+		workflowExecutionId: string;
+		daprInstanceId: string | null;
+	}) {
+		await this.database
+			.update(mcpRuns)
+			.set({
+				workflowExecutionId: input.workflowExecutionId,
+				daprInstanceId: input.daprInstanceId ?? null,
+				updatedAt: new Date(),
+			})
+			.where(eq(mcpRuns.id, input.runId));
+	}
+
+	async getRun(runId: string) {
+		const [row] = await this.database
+			.select()
+			.from(mcpRuns)
+			.where(eq(mcpRuns.id, runId))
+			.limit(1);
+		return row ? this.mapRun(row) : null;
+	}
+
+	async respondToRun(input: { runId: string; response: unknown }) {
+		const [row] = await this.database
+			.update(mcpRuns)
+			.set({
+				response: input.response,
+				respondedAt: new Date(),
+				status: "RESPONDED",
+				updatedAt: new Date(),
+			})
+			.where(eq(mcpRuns.id, input.runId))
+			.returning();
+		return row ? this.mapRun(row) : null;
+	}
+}
+
+export class PostgresAppConnectionRepository implements AppConnectionRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	private mapConnection(row: typeof appConnections.$inferSelect): AppConnectionRecord {
+		return {
+			id: row.id,
+			externalId: row.externalId,
+			pieceName: row.pieceName,
+			displayName: row.displayName,
+			type: row.type,
+			status: row.status,
+			scope: row.scope,
+			ownerId: row.ownerId,
+			platformId: row.platformId,
+			projectIds: row.projectIds,
+			createdAt: row.createdAt,
+			updatedAt: row.updatedAt,
+		};
+	}
+
+	private mapSecretConnection(
+		row: typeof appConnections.$inferSelect,
+	): AppConnectionSecretRecord {
+		return {
+			...this.mapConnection(row),
+			value: row.value,
+			pieceVersion: row.pieceVersion ?? null,
+		};
+	}
+
+	async listProjectConnections(projectId: string) {
+		const rows = await this.database
+			.select()
+			.from(appConnections)
+			.orderBy(desc(appConnections.createdAt));
+		return rows
+			.filter((row) => connectionBelongsToProject(row.projectIds, projectId))
+			.map((row) => this.mapConnection(row));
+	}
+
+	listConnectionSummaries(input: {
+		pieceNameCandidates?: string[];
+	}): Promise<AppConnectionSummaryRecord[]> {
+		const where =
+			input.pieceNameCandidates && input.pieceNameCandidates.length > 0
+				? inArray(appConnections.pieceName, input.pieceNameCandidates)
+				: undefined;
+		return this.database
+			.select({
+				id: appConnections.id,
+				externalId: appConnections.externalId,
+				pieceName: appConnections.pieceName,
+				displayName: appConnections.displayName,
+				type: appConnections.type,
+				status: appConnections.status,
+				createdAt: appConnections.createdAt,
+			})
+			.from(appConnections)
+			.where(where)
+			.orderBy(desc(appConnections.createdAt));
+	}
+
+	listPieceInfo() {
+		return this.database
+			.selectDistinctOn([pieceMetadata.name], {
+				name: pieceMetadata.name,
+				displayName: pieceMetadata.displayName,
+				logoUrl: pieceMetadata.logoUrl,
+				categories: pieceMetadata.categories,
+			})
+			.from(pieceMetadata)
+			.orderBy(pieceMetadata.name, desc(pieceMetadata.updatedAt));
+	}
+
+	async findConnectionById(id: string): Promise<AppConnectionSecretRecord | null> {
+		const [row] = await this.database
+			.select()
+			.from(appConnections)
+			.where(eq(appConnections.id, id))
+			.limit(1);
+		return row ? this.mapSecretConnection(row) : null;
+	}
+
+	async findConnectionByExternalId(
+		externalId: string,
+	): Promise<AppConnectionSecretRecord | null> {
+		const [row] = await this.database
+			.select()
+			.from(appConnections)
+			.where(eq(appConnections.externalId, externalId))
+			.limit(1);
+		return row ? this.mapSecretConnection(row) : null;
+	}
+
+	async findOAuthPieceMetadata(input: {
+		pieceNameCandidates: string[];
+		pieceVersion?: string | null;
+	}): Promise<AppConnectionOAuthPieceMetadataRecord | null> {
+		if (input.pieceNameCandidates.length === 0) return null;
+		const rows = await this.database
+			.select({
+				name: pieceMetadata.name,
+				version: pieceMetadata.version,
+				auth: pieceMetadata.auth,
+			})
+			.from(pieceMetadata)
+			.where(inArray(pieceMetadata.name, input.pieceNameCandidates))
+			.orderBy(desc(pieceMetadata.createdAt))
+			.limit(5);
+		const row = input.pieceVersion
+			? rows.find((piece) => piece.version === input.pieceVersion)
+			: rows[0];
+		return row ?? rows[0] ?? null;
+	}
+
+	async findPlatformOAuthApp(input: {
+		pieceNameCandidates: string[];
+		platformId?: string | null;
+	}): Promise<AppConnectionPlatformOAuthAppRecord | null> {
+		if (input.pieceNameCandidates.length === 0) return null;
+		const where = input.platformId
+			? and(
+					inArray(platformOauthApps.pieceName, input.pieceNameCandidates),
+					eq(platformOauthApps.platformId, input.platformId),
+				)
+			: inArray(platformOauthApps.pieceName, input.pieceNameCandidates);
+		const [row] = await this.database
+			.select({
+				pieceName: platformOauthApps.pieceName,
+				platformId: platformOauthApps.platformId,
+				clientId: platformOauthApps.clientId,
+				clientSecret: platformOauthApps.clientSecret,
+			})
+			.from(platformOauthApps)
+			.where(where)
+			.limit(1);
+		return row ?? null;
+	}
+
+	async createConnection(input: {
+		id: string;
+		externalId: string;
+		pieceName: string;
+		displayName: string;
+		type: string;
+		status: string;
+		scope: string;
+		value: { iv: string; data: string };
+		pieceVersion: string;
+		projectIds: string[];
+		ownerId: string | null;
+		platformId: string | null;
+	}): Promise<AppConnectionCreatedRecord> {
+		const [connection] = await this.database
+			.insert(appConnections)
+			.values({
+				id: input.id,
+				externalId: input.externalId,
+				pieceName: input.pieceName,
+				displayName: input.displayName,
+				type: input.type as AppConnectionType,
+				status: input.status as AppConnectionStatus,
+				value: input.value,
+				pieceVersion: input.pieceVersion,
+				projectIds: input.projectIds,
+				ownerId: input.ownerId,
+				platformId: input.platformId,
+				scope: input.scope as AppConnectionScope,
+			})
+			.returning({
+				id: appConnections.id,
+				externalId: appConnections.externalId,
+				pieceName: appConnections.pieceName,
+				displayName: appConnections.displayName,
+				type: appConnections.type,
+				status: appConnections.status,
+				scope: appConnections.scope,
+				createdAt: appConnections.createdAt,
+				updatedAt: appConnections.updatedAt,
+			});
+		return connection;
+	}
+
+	async updateDisplayName(input: {
+		id: string;
+		projectId: string;
+		displayName: string;
+	}): Promise<AppConnectionUpdatedRecord | null> {
+		const [existing] = await this.database
+			.select({ id: appConnections.id, projectIds: appConnections.projectIds })
+			.from(appConnections)
+			.where(eq(appConnections.id, input.id))
+			.limit(1);
+		if (!existing || !connectionBelongsToProject(existing.projectIds, input.projectId)) {
+			return null;
+		}
+
+		const [connection] = await this.database
+			.update(appConnections)
+			.set({ displayName: input.displayName, updatedAt: new Date() })
+			.where(eq(appConnections.id, input.id))
+			.returning({
+				id: appConnections.id,
+				externalId: appConnections.externalId,
+				pieceName: appConnections.pieceName,
+				displayName: appConnections.displayName,
+				type: appConnections.type,
+				status: appConnections.status,
+				createdAt: appConnections.createdAt,
+		});
+		return connection ?? null;
+	}
+
+	async updateOAuthConnection(input: {
+		id: string;
+		value: { iv: string; data: string };
+		pieceName: string;
+		pieceVersion: string;
+		projectIds: string[];
+	}): Promise<AppConnectionOAuthCompletedRecord | null> {
+		const [connection] = await this.database
+			.update(appConnections)
+			.set({
+				status: AppConnectionStatus.ACTIVE,
+				type: AppConnectionType.PLATFORM_OAUTH2,
+				value: input.value,
+				pieceName: input.pieceName,
+				pieceVersion: input.pieceVersion,
+				projectIds: input.projectIds,
+				updatedAt: new Date(),
+			})
+			.where(eq(appConnections.id, input.id))
+			.returning({
+				id: appConnections.id,
+				externalId: appConnections.externalId,
+				pieceName: appConnections.pieceName,
+				displayName: appConnections.displayName,
+				type: appConnections.type,
+				status: appConnections.status,
+				createdAt: appConnections.createdAt,
+				updatedAt: appConnections.updatedAt,
+			});
+		return connection ?? null;
+	}
+
+	async updateEncryptedValue(input: {
+		id: string;
+		value: { iv: string; data: string };
+	}): Promise<void> {
+		await this.database
+			.update(appConnections)
+			.set({ value: input.value, updatedAt: new Date() })
+			.where(eq(appConnections.id, input.id));
+	}
+
+	async deleteProjectConnection(input: { id: string; projectId: string }) {
+		const [existing] = await this.database
+			.select({ id: appConnections.id, projectIds: appConnections.projectIds })
+			.from(appConnections)
+			.where(eq(appConnections.id, input.id))
+			.limit(1);
+		if (!existing || !connectionBelongsToProject(existing.projectIds, input.projectId)) {
+			return false;
+		}
+
+		const deleted = await this.database
+			.delete(appConnections)
+			.where(eq(appConnections.id, input.id))
+			.returning({ id: appConnections.id });
+		return deleted.length > 0;
+	}
+}
+
+export class PostgresAdminPieceRepository implements AdminPieceRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	listCatalogPieces(input: { availableOnly: boolean }) {
+		return this.database
+			.select({
+				name: pieceMetadata.name,
+				displayName: pieceMetadata.displayName,
+				logoUrl: pieceMetadata.logoUrl,
+			})
+			.from(pieceMetadata)
+			.where(
+				and(
+					eq(pieceMetadata.catalogSchemaVersion, 1),
+					eq(pieceMetadata.availableOnly, input.availableOnly),
+				),
+			);
+	}
+
+	async listDisabledPieceNames(): Promise<string[]> {
+		const rows = await this.database
+			.select({ pieceName: platformDisabledPieces.pieceName })
+			.from(platformDisabledPieces);
+		return rows.map((row) => row.pieceName).filter(Boolean);
+	}
+
+	async listWorkflowReferencedPieceNames(): Promise<string[]> {
+		const rows = await this.database
+			.selectDistinct({ pieceName: workflowConnectionRefs.pieceName })
+			.from(workflowConnectionRefs);
+		return rows.map((row) => row.pieceName).filter((name): name is string => Boolean(name));
+	}
+
+	async listEnabledMcpPieceNames(): Promise<string[]> {
+		const rows = await this.database
+			.selectDistinct({ pieceName: mcpConnections.pieceName })
+			.from(mcpConnections)
+			.where(
+				and(
+					eq(mcpConnections.sourceType, "nimble_piece"),
+					eq(mcpConnections.status, "ENABLED"),
+				),
+			);
+		return rows.map((row) => row.pieceName).filter((name): name is string => Boolean(name));
+	}
+
+	async listLatestImageStatuses(pieceNames: string[]) {
+		if (pieceNames.length === 0) return [];
+		const rows = await this.database
+			.select({
+				pieceName: pieceImages.pieceName,
+				status: pieceImages.status,
+				image: pieceImages.image,
+				errorMessage: pieceImages.errorMessage,
+				enabledAt: pieceImages.enabledAt,
+				disabledAt: pieceImages.disabledAt,
+			})
+			.from(pieceImages)
+			.where(inArray(pieceImages.pieceName, pieceNames))
+			.orderBy(desc(pieceImages.updatedAt));
+		const latest = new Map<
+			string,
+			{
+				pieceName: string;
+				status: string;
+				image: string | null;
+				errorMessage: string | null;
+				enabled: boolean;
+			}
+		>();
+		for (const row of rows) {
+			if (latest.has(row.pieceName)) continue;
+			latest.set(row.pieceName, {
+				pieceName: row.pieceName,
+				status: row.status,
+				image: row.image,
+				errorMessage: row.errorMessage,
+				enabled: row.enabledAt != null && row.disabledAt == null,
+			});
+		}
+		return [...latest.values()];
+	}
+
+	async setPieceEnabled(input: {
+		pieceName: string;
+		enabled: boolean;
+		disabledBy?: string | null;
+		platformId?: string;
+	}): Promise<void> {
+		if (input.enabled) {
+			await this.database
+				.delete(platformDisabledPieces)
+				.where(eq(platformDisabledPieces.pieceName, input.pieceName));
+			return;
+		}
+		await this.database
+			.insert(platformDisabledPieces)
+			.values({
+				pieceName: input.pieceName,
+				disabledBy: input.disabledBy ?? null,
+				platformId: input.platformId ?? "default-platform",
+			})
+			.onConflictDoNothing();
+	}
+}
+
+export class PostgresWorkspaceProjectRepository implements WorkspaceProjectRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async getMemberProjectId(input: {
+		projectId: string;
+		userId: string;
+	}): Promise<string | null> {
+		const [row] = await this.database
+			.select({ projectId: projectMembers.projectId })
+			.from(projectMembers)
+			.where(
+				and(
+					eq(projectMembers.projectId, input.projectId),
+					eq(projectMembers.userId, input.userId),
+				),
+			)
+			.limit(1);
+		return row?.projectId ?? null;
+	}
+
+	async getMemberProjectIdBySlug(input: {
+		slug: string;
+		userId: string;
+	}): Promise<string | null> {
+		const [row] = await this.database
+			.select({ projectId: projects.id })
+			.from(projects)
+			.innerJoin(
+				projectMembers,
+				and(
+					eq(projectMembers.projectId, projects.id),
+					eq(projectMembers.userId, input.userId),
+				),
+			)
+			.where(or(eq(projects.externalId, input.slug), eq(projects.id, input.slug)))
+			.limit(1);
+		return row?.projectId ?? null;
+	}
+
+	async getProjectExternalId(projectId: string): Promise<string | null> {
+		const [row] = await this.database
+			.select({ externalId: projects.externalId })
+			.from(projects)
+			.where(eq(projects.id, projectId))
+			.limit(1);
+		return row?.externalId ?? null;
+	}
+
+	async getProjectMembershipDetail(input: {
+		projectId: string;
+		userId: string;
+	}) {
+		const [project] = await this.database
+			.select({
+				id: projects.id,
+				displayName: projects.displayName,
+				externalId: projects.externalId,
+			})
+			.from(projects)
+			.where(eq(projects.id, input.projectId))
+			.limit(1);
+		if (!project) return null;
+
+		const [self] = await this.database
+			.select({ role: projectMembers.role })
+			.from(projectMembers)
+			.where(
+				and(
+					eq(projectMembers.projectId, project.id),
+					eq(projectMembers.userId, input.userId),
+				),
+			)
+			.limit(1);
+
+		return {
+			id: project.id,
+			displayName: project.displayName,
+			externalId: project.externalId,
+			selfRole: self?.role ?? null,
+		};
+	}
+
+	async getProjectMemberRole(input: {
+		projectId: string;
+		userId: string;
+	}): Promise<ProjectMembershipRole | null> {
+		const [row] = await this.database
+			.select({ role: projectMembers.role })
+			.from(projectMembers)
+			.where(
+				and(
+					eq(projectMembers.projectId, input.projectId),
+					eq(projectMembers.userId, input.userId),
+				),
+			)
+			.limit(1);
+		return (row?.role as ProjectMembershipRole | undefined) ?? null;
+	}
+
+	async listProjectMembers(projectId: string): Promise<ProjectMemberListItem[]> {
+		const rows = await this.database
+			.select({
+				id: projectMembers.id,
+				userId: users.id,
+				name: users.name,
+				email: users.email,
+				image: users.image,
+				role: projectMembers.role,
+				createdAt: projectMembers.createdAt,
+			})
+			.from(projectMembers)
+			.innerJoin(users, eq(users.id, projectMembers.userId))
+			.where(eq(projectMembers.projectId, projectId))
+			.orderBy(asc(projectMembers.createdAt));
+		return rows.map((row) => ({
+			id: row.id,
+			userId: row.userId,
+			name: row.name ?? null,
+			email: row.email ?? null,
+			image: row.image ?? null,
+			role: row.role as ProjectMembershipRole,
+			createdAt: row.createdAt,
+		}));
+	}
+
+	async findPlatformUserForProject(input: {
+		projectId: string;
+		userId?: string | null;
+		email?: string | null;
+	}): Promise<
+		| { ok: true; userId: string }
+		| {
+				ok: false;
+				reason: "project_not_found" | "user_not_found" | "different_platform";
+		  }
+	> {
+		const [project] = await this.database
+			.select({ platformId: projects.platformId })
+			.from(projects)
+			.where(eq(projects.id, input.projectId))
+			.limit(1);
+		if (!project) return { ok: false, reason: "project_not_found" };
+
+		const userId = input.userId?.trim();
+		const email = input.email?.trim().toLowerCase();
+		const [user] = await this.database
+			.select({ id: users.id, platformId: users.platformId })
+			.from(users)
+			.where(userId ? eq(users.id, userId) : eq(users.email, email ?? ""))
+			.limit(1);
+		if (!user) return { ok: false, reason: "user_not_found" };
+		if (user.platformId !== project.platformId) {
+			return { ok: false, reason: "different_platform" };
+		}
+		return { ok: true, userId: user.id };
+	}
+
+	async getProjectMember(input: {
+		projectId: string;
+		memberId: string;
+	}): Promise<ProjectMemberRecord | null> {
+		const [row] = await this.database
+			.select()
+			.from(projectMembers)
+			.where(
+				and(
+					eq(projectMembers.id, input.memberId),
+					eq(projectMembers.projectId, input.projectId),
+				),
+			)
+			.limit(1);
+		return row
+			? {
+					id: row.id,
+					projectId: row.projectId,
+					userId: row.userId,
+					role: row.role as ProjectMembershipRole,
+					createdAt: row.createdAt,
+					updatedAt: row.updatedAt,
+				}
+			: null;
+	}
+
+	async projectMemberExists(input: {
+		projectId: string;
+		userId: string;
+	}): Promise<boolean> {
+		const [row] = await this.database
+			.select({ id: projectMembers.id })
+			.from(projectMembers)
+			.where(
+				and(
+					eq(projectMembers.projectId, input.projectId),
+					eq(projectMembers.userId, input.userId),
+				),
+			)
+			.limit(1);
+		return Boolean(row);
+	}
+
+	async countProjectAdmins(projectId: string): Promise<number> {
+		const [row] = await this.database
+			.select({ value: count() })
+			.from(projectMembers)
+			.where(
+				and(
+					eq(projectMembers.projectId, projectId),
+					eq(projectMembers.role, "ADMIN"),
+				),
+			);
+		return Number(row?.value ?? 0);
+	}
+
+	async addProjectMember(input: {
+		projectId: string;
+		userId: string;
+		role: ProjectMembershipRole;
+	}): Promise<ProjectMemberRecord> {
+		const [row] = await this.database
+			.insert(projectMembers)
+			.values({
+				projectId: input.projectId,
+				userId: input.userId,
+				role: input.role,
+			})
+			.returning();
+		if (!row) throw new Error("Failed to add project member");
+		return {
+			id: row.id,
+			projectId: row.projectId,
+			userId: row.userId,
+			role: row.role as ProjectMembershipRole,
+			createdAt: row.createdAt,
+			updatedAt: row.updatedAt,
+		};
+	}
+
+	async updateProjectMemberRole(input: {
+		projectId: string;
+		memberId: string;
+		role: ProjectMembershipRole;
+	}): Promise<ProjectMemberRecord | null> {
+		const [row] = await this.database
+			.update(projectMembers)
+			.set({ role: input.role, updatedAt: new Date() })
+			.where(
+				and(
+					eq(projectMembers.id, input.memberId),
+					eq(projectMembers.projectId, input.projectId),
+				),
+			)
+			.returning();
+		return row
+			? {
+					id: row.id,
+					projectId: row.projectId,
+					userId: row.userId,
+					role: row.role as ProjectMembershipRole,
+					createdAt: row.createdAt,
+					updatedAt: row.updatedAt,
+				}
+			: null;
+	}
+
+	async deleteProjectMember(input: {
+		projectId: string;
+		memberId: string;
+	}): Promise<void> {
+		await this.database
+			.delete(projectMembers)
+			.where(
+				and(
+					eq(projectMembers.id, input.memberId),
+					eq(projectMembers.projectId, input.projectId),
+				),
+			);
+	}
+}
+
+export class PostgresPieceCatalogRepository implements PieceCatalogRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async getLatestPieceMetadata(pieceNameCandidates: string[]) {
+		if (pieceNameCandidates.length === 0) return null;
+		const [row] = await this.database
+			.select({
+				name: pieceMetadata.name,
+				displayName: pieceMetadata.displayName,
+				description: pieceMetadata.description,
+				logoUrl: pieceMetadata.logoUrl,
+				categories: pieceMetadata.categories,
+				version: pieceMetadata.version,
+				auth: pieceMetadata.auth,
+				actions: pieceMetadata.actions,
+				availableOnly: pieceMetadata.availableOnly,
+				catalogSourceImage: pieceMetadata.catalogSourceImage,
+				catalogSyncedAt: pieceMetadata.catalogSyncedAt,
+				updatedAt: pieceMetadata.updatedAt,
+			})
+			.from(pieceMetadata)
+			.where(inArray(pieceMetadata.name, pieceNameCandidates))
+			.orderBy(desc(pieceMetadata.updatedAt))
+			.limit(1);
+		return row ?? null;
+	}
+
+	listMcpCatalogPieces() {
+		return this.database
+			.selectDistinctOn([pieceMetadata.name], {
+				name: pieceMetadata.name,
+				displayName: pieceMetadata.displayName,
+				description: pieceMetadata.description,
+				logoUrl: pieceMetadata.logoUrl,
+				categories: pieceMetadata.categories,
+				auth: pieceMetadata.auth,
+				actions: pieceMetadata.actions,
+				availableOnly: pieceMetadata.availableOnly,
+				updatedAt: pieceMetadata.updatedAt,
+			})
+			.from(pieceMetadata)
+			.orderBy(pieceMetadata.name, desc(pieceMetadata.updatedAt));
+	}
+
+	async listConnectionUsageByPieceNames(input: {
+		pieceNameCandidates: string[];
+		projectId: string;
+	}) {
+		if (input.pieceNameCandidates.length === 0) return [];
+		const rows = await this.database
+			.select({
+				connectionExternalId: workflowConnectionRefs.connectionExternalId,
+				refCount: sql<number>`count(*)::int`,
+				workflowCount: sql<number>`count(distinct ${workflowConnectionRefs.workflowId})::int`,
+			})
+			.from(workflowConnectionRefs)
+			.innerJoin(workflows, eq(workflowConnectionRefs.workflowId, workflows.id))
+			.where(
+				and(
+					inArray(workflowConnectionRefs.pieceName, input.pieceNameCandidates),
+					eq(workflows.projectId, input.projectId),
+				),
+			)
+			.groupBy(workflowConnectionRefs.connectionExternalId);
+		return rows.map((row) => ({
+			connectionExternalId: row.connectionExternalId,
+			refCount: Number(row.refCount) || 0,
+			workflowCount: Number(row.workflowCount) || 0,
+		}));
+	}
+}
+
+export class PostgresBenchmarkBrowserRepository implements BenchmarkBrowserRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async ensureDefaultSuites(): Promise<void> {
+		for (const suite of SWEBENCH_SUITES) {
+			await this.database
+				.insert(benchmarkSuites)
+				.values({
+					id: suite.id,
+					slug: suite.slug,
+					name: suite.name,
+					description: suite.description,
+					datasetName: suite.datasetName,
+					datasetSplit: suite.datasetSplit,
+					sourceUrl: suite.sourceUrl,
+					defaultInstanceLimit: suite.defaultInstanceLimit,
+					metadata: suite.metadata,
+				})
+				.onConflictDoUpdate({
+					target: benchmarkSuites.slug,
+					set: {
+						name: suite.name,
+						description: suite.description,
+						datasetName: suite.datasetName,
+						datasetSplit: suite.datasetSplit,
+						sourceUrl: suite.sourceUrl,
+						defaultInstanceLimit: suite.defaultInstanceLimit,
+						metadata: suite.metadata,
+						updatedAt: new Date(),
+					},
+				});
+		}
+	}
+
+	listInstances() {
+		return this.database
+			.select({
+				id: benchmarkInstances.id,
+				instanceId: benchmarkInstances.instanceId,
+				repo: benchmarkInstances.repo,
+				baseCommit: benchmarkInstances.baseCommit,
+				problemStatement: benchmarkInstances.problemStatement,
+				hintsText: benchmarkInstances.hintsText,
+				testMetadata: benchmarkInstances.testMetadata,
+				suiteSlug: benchmarkSuites.slug,
+				suiteName: benchmarkSuites.name,
+				datasetName: benchmarkSuites.datasetName,
+			})
+			.from(benchmarkInstances)
+			.innerJoin(
+				benchmarkSuites,
+				eq(benchmarkInstances.suiteId, benchmarkSuites.id),
+			)
+			.orderBy(asc(benchmarkInstances.instanceId));
+	}
+
+	listRepoFacets() {
+		return this.database
+			.select({
+				repo: benchmarkInstances.repo,
+				count: count(),
+			})
+			.from(benchmarkInstances)
+			.groupBy(benchmarkInstances.repo);
+	}
+
+	listSuites() {
+		return this.database
+			.select({
+				id: benchmarkSuites.id,
+				slug: benchmarkSuites.slug,
+				name: benchmarkSuites.name,
+			})
+			.from(benchmarkSuites)
+			.orderBy(asc(benchmarkSuites.name));
+	}
+
+	listEnvironmentBuilds() {
+		return this.database
+			.select({
+				envSpecHash: environmentImageBuilds.envSpecHash,
+				environmentKey: environmentImageBuilds.environmentKey,
+				status: environmentImageBuilds.status,
+				validationStatus: environmentImageBuilds.validationStatus,
+				sandboxImage: environmentImageBuilds.sandboxImage,
+				digest: environmentImageBuilds.digest,
+			})
+			.from(environmentImageBuilds)
+			.orderBy(desc(environmentImageBuilds.updatedAt));
+	}
+
+	listRunnableAgentCandidates(input: { projectId: string | null }) {
+		if (!input.projectId) {
+			return Promise.resolve([]);
+		}
+		return this.database
+			.select({
+				id: agents.id,
+				slug: agents.slug,
+				name: agents.name,
+				avatar: agents.avatar,
+				runtime: agents.runtime,
+				registryStatus: agents.registryStatus,
+				currentVersionId: agents.currentVersionId,
+				runtimeAppId: agents.runtimeAppId,
+				versionNumber: agentVersions.version,
+				config: agentVersions.config,
+			})
+			.from(agents)
+			.leftJoin(agentVersions, eq(agentVersions.id, agents.currentVersionId))
+			.where(
+				and(
+					eq(agents.projectId, input.projectId),
+					eq(agents.isArchived, false),
+					inArray(agents.runtime, [...BENCHMARK_AGENT_RUNTIMES]),
+					eq(agents.registryStatus, "registered"),
+					sql`NOT (${agents.tags} @> '["workflow-ephemeral"]'::jsonb)`,
+				),
+			)
+			.orderBy(asc(agents.name));
+	}
+}
+
 export class PostgresWorkflowDefinitionRepository implements WorkflowDefinitionRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
@@ -225,6 +1869,271 @@ export class PostgresWorkflowDefinitionRepository implements WorkflowDefinitionR
 		const workflowName = ref.workflowName?.trim();
 		if (!workflowName) return null;
 		return this.getLatestByName(workflowName);
+	}
+
+	async list(input: {
+		limit: number;
+		projectId?: string | null;
+	}): Promise<WorkflowDefinitionListItem[]> {
+		const limit = Number.isFinite(input.limit) ? Math.max(1, input.limit) : 50;
+		let query = this.database
+			.select({
+				id: workflows.id,
+				name: workflows.name,
+				engineType: workflows.engineType,
+				createdAt: workflows.createdAt,
+				updatedAt: workflows.updatedAt,
+			})
+			.from(workflows)
+			.$dynamic();
+		if (input.projectId) {
+			query = query.where(eq(workflows.projectId, input.projectId));
+		}
+		return query.orderBy(desc(workflows.updatedAt)).limit(limit);
+	}
+
+	async listForWorkspace(input: {
+		limit: number;
+		userId: string;
+		projectId?: string | null;
+	}) {
+		const limit = Number.isFinite(input.limit) ? Math.max(1, input.limit) : 100;
+		return this.database
+			.select({
+				id: workflows.id,
+				name: workflows.name,
+				updatedAt: workflows.updatedAt,
+			})
+			.from(workflows)
+			.where(
+				input.projectId
+					? or(
+							eq(workflows.projectId, input.projectId),
+							and(isNull(workflows.projectId), eq(workflows.userId, input.userId)),
+						)
+					: eq(workflows.userId, input.userId),
+			)
+			.orderBy(desc(workflows.updatedAt))
+			.limit(limit);
+	}
+
+	async findProjectWorkflowIdByIdOrNamePrefix(input: {
+		projectId: string;
+		workflowId: string;
+		namePrefix: string;
+	}): Promise<string | null> {
+		const [row] = await this.database
+			.select({ id: workflows.id })
+			.from(workflows)
+			.where(
+				and(
+					eq(workflows.projectId, input.projectId),
+					or(
+						eq(workflows.id, input.workflowId),
+						like(workflows.name, input.namePrefix),
+					),
+				),
+			)
+			.limit(1);
+		return row?.id ?? null;
+	}
+
+	async create(input: CreateWorkflowDefinitionInput): Promise<WorkflowDefinition> {
+		const [row] = await this.database
+			.insert(workflows)
+			.values({
+				name: input.name,
+				nodes: input.nodes,
+				edges: input.edges,
+				engineType: input.engineType,
+				userId: input.userId,
+				projectId: input.projectId,
+				...(input.spec !== undefined ? { spec: input.spec } : {}),
+			})
+			.returning();
+		if (!row) throw new Error("Failed to create workflow");
+		return mapWorkflow(row);
+	}
+
+	async update(
+		id: string,
+		input: UpdateWorkflowDefinitionInput,
+	): Promise<WorkflowDefinition | null> {
+		const values: Record<string, unknown> = { updatedAt: new Date() };
+		if (input.name !== undefined) values.name = input.name;
+		if (input.nodes !== undefined) values.nodes = input.nodes;
+		if (input.edges !== undefined) values.edges = input.edges;
+		if (input.spec !== undefined) values.spec = input.spec;
+		if (input.daprWorkflowName !== undefined) values.daprWorkflowName = input.daprWorkflowName;
+		const [row] = await this.database
+			.update(workflows)
+			.set(values)
+			.where(eq(workflows.id, id))
+			.returning();
+		return row ? mapWorkflow(row) : null;
+	}
+
+	async hasActiveExecutions(id: string): Promise<boolean> {
+		const rows = await this.database
+			.select({ id: workflowExecutions.id })
+			.from(workflowExecutions)
+			.where(
+				and(
+					eq(workflowExecutions.workflowId, id),
+					inArray(workflowExecutions.status, ["pending", "running"]),
+				),
+			)
+			.limit(1);
+		return rows.length > 0;
+	}
+
+	async delete(id: string): Promise<void> {
+		await this.database.delete(workflows).where(eq(workflows.id, id));
+	}
+}
+
+export class PostgresWorkflowTriggerStore implements WorkflowTriggerStore {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async listByWorkflowId(workflowId: string): Promise<WorkflowTriggerRecord[]> {
+		const rows = await this.database
+			.select()
+			.from(workflowTriggers)
+			.where(eq(workflowTriggers.workflowId, workflowId))
+			.orderBy(desc(workflowTriggers.createdAt));
+		return rows.map(mapTrigger);
+	}
+
+	async create(input: CreateWorkflowTriggerInput): Promise<WorkflowTriggerRecord> {
+		const [row] = await this.database
+			.insert(workflowTriggers)
+			.values({
+				workflowId: input.workflowId,
+				userId: input.userId,
+				projectId: input.projectId,
+				kind: input.kind,
+				config: input.config,
+				triggerData: input.triggerData ?? null,
+				dedupSalt: input.dedupSalt,
+				status: input.status ?? "inactive",
+			})
+			.returning();
+		if (!row) throw new Error("Failed to create workflow trigger");
+		return mapTrigger(row);
+	}
+
+	async getForWorkflow(input: {
+		workflowId: string;
+		triggerId: string;
+	}): Promise<WorkflowTriggerRecord | null> {
+		const [row] = await this.database
+			.select()
+			.from(workflowTriggers)
+			.where(
+				and(
+					eq(workflowTriggers.id, input.triggerId),
+					eq(workflowTriggers.workflowId, input.workflowId),
+				),
+			)
+			.limit(1);
+		return row ? mapTrigger(row) : null;
+	}
+
+	async delete(triggerId: string): Promise<void> {
+		await this.database.delete(workflowTriggers).where(eq(workflowTriggers.id, triggerId));
+	}
+}
+
+export class PostgresApiKeyStore implements ApiKeyStore {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async getByKeyHash(keyHash: string): Promise<ApiKeyRecord | null> {
+		const [row] = await this.database
+			.select({ id: apiKeys.id, userId: apiKeys.userId })
+			.from(apiKeys)
+			.where(eq(apiKeys.keyHash, keyHash))
+			.limit(1);
+		return row ?? null;
+	}
+
+	async markUsed(apiKeyId: string, usedAt: Date): Promise<void> {
+		await this.database
+			.update(apiKeys)
+			.set({ lastUsedAt: usedAt })
+			.where(eq(apiKeys.id, apiKeyId));
+	}
+
+	listByUserId(userId: string) {
+		return this.database
+			.select({
+				id: apiKeys.id,
+				name: apiKeys.name,
+				keyPrefix: apiKeys.keyPrefix,
+				createdAt: apiKeys.createdAt,
+				lastUsedAt: apiKeys.lastUsedAt,
+			})
+			.from(apiKeys)
+			.where(eq(apiKeys.userId, userId))
+			.orderBy(desc(apiKeys.createdAt));
+	}
+
+	async createUserApiKey(input: {
+		id: string;
+		userId: string;
+		name: string;
+		keyHash: string;
+		keyPrefix: string;
+	}) {
+		const [created] = await this.database
+			.insert(apiKeys)
+			.values({
+				id: input.id,
+				userId: input.userId,
+				name: input.name,
+				keyHash: input.keyHash,
+				keyPrefix: input.keyPrefix,
+			})
+			.returning({
+				id: apiKeys.id,
+				name: apiKeys.name,
+				keyPrefix: apiKeys.keyPrefix,
+				createdAt: apiKeys.createdAt,
+				lastUsedAt: apiKeys.lastUsedAt,
+			});
+		if (!created) throw new Error("Failed to create API key");
+		return created;
+	}
+
+	async deleteForUser(input: { id: string; userId: string }): Promise<boolean> {
+		const deleted = await this.database
+			.delete(apiKeys)
+			.where(and(eq(apiKeys.id, input.id), eq(apiKeys.userId, input.userId)))
+			.returning({ id: apiKeys.id });
+		return deleted.length > 0;
+	}
+
+	async updateSecretForUser(input: {
+		id: string;
+		userId: string;
+		keyHash: string;
+		keyPrefix: string;
+	}) {
+		const [rotated] = await this.database
+			.update(apiKeys)
+			.set({
+				keyHash: input.keyHash,
+				keyPrefix: input.keyPrefix,
+				lastUsedAt: null,
+			})
+			.where(and(eq(apiKeys.id, input.id), eq(apiKeys.userId, input.userId)))
+			.returning({
+				id: apiKeys.id,
+				name: apiKeys.name,
+				keyPrefix: apiKeys.keyPrefix,
+				createdAt: apiKeys.createdAt,
+				lastUsedAt: apiKeys.lastUsedAt,
+			});
+		return rotated ?? null;
 	}
 }
 
@@ -264,6 +2173,475 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			.where(eq(workflowExecutions.daprInstanceId, instanceId))
 			.limit(1);
 		return row ? mapExecution(row) : null;
+	}
+
+	async getRunningByWorkflowId(workflowId: string): Promise<{ id: string; status: string } | null> {
+		const [row] = await this.database
+			.select({ id: workflowExecutions.id, status: workflowExecutions.status })
+			.from(workflowExecutions)
+			.where(
+				and(
+					eq(workflowExecutions.workflowId, workflowId),
+					eq(workflowExecutions.status, "running"),
+				),
+			)
+			.limit(1);
+		return row ?? null;
+	}
+
+	async getLineage(executionId: string): Promise<WorkflowExecutionLineage | null> {
+		const [self] = await this.database
+			.select({
+				id: workflowExecutions.id,
+				rerunOfExecutionId: workflowExecutions.rerunOfExecutionId,
+			})
+			.from(workflowExecutions)
+			.where(eq(workflowExecutions.id, executionId))
+			.limit(1);
+		if (!self) return null;
+
+		let rootId = self.id;
+		let cursor: string | null = self.rerunOfExecutionId ?? null;
+		for (let hops = 0; hops < 50 && cursor; hops++) {
+			const [parent]: Array<{ id: string; parent: string | null }> = await this.database
+				.select({ id: workflowExecutions.id, parent: workflowExecutions.rerunOfExecutionId })
+				.from(workflowExecutions)
+				.where(eq(workflowExecutions.id, cursor))
+				.limit(1);
+			if (!parent) break;
+			rootId = parent.id;
+			cursor = parent.parent ?? null;
+		}
+
+		const collected = new Map<
+			string,
+			{
+				id: string;
+				status: string | null;
+				resumeFromNode: string | null;
+				rerunOfExecutionId: string | null;
+				startedAt: Date | null;
+				completedAt: Date | null;
+				duration: string | null;
+			}
+		>();
+		let frontier: string[] = [rootId];
+		for (let depth = 0; depth < 50 && frontier.length > 0; depth++) {
+			const rows = await this.database
+				.select({
+					id: workflowExecutions.id,
+					status: workflowExecutions.status,
+					resumeFromNode: workflowExecutions.resumeFromNode,
+					rerunOfExecutionId: workflowExecutions.rerunOfExecutionId,
+					startedAt: workflowExecutions.startedAt,
+					completedAt: workflowExecutions.completedAt,
+					duration: workflowExecutions.duration,
+				})
+				.from(workflowExecutions)
+				.where(inArray(workflowExecutions.id, frontier));
+			const next: string[] = [];
+			for (const row of rows) {
+				if (collected.has(row.id)) continue;
+				collected.set(row.id, row);
+				next.push(row.id);
+			}
+			if (next.length === 0) break;
+
+			const children = await this.database
+				.select({ id: workflowExecutions.id })
+				.from(workflowExecutions)
+				.where(inArray(workflowExecutions.rerunOfExecutionId, next));
+			frontier = children.map((child) => child.id).filter((id) => !collected.has(id));
+		}
+
+		return {
+			rootId,
+			currentId: executionId,
+			nodes: [...collected.values()].map((row) => {
+				const durationMs =
+					row.duration != null && row.duration !== ""
+						? Number(row.duration)
+						: row.completedAt && row.startedAt
+							? row.completedAt.getTime() - row.startedAt.getTime()
+							: null;
+				return {
+					id: row.id,
+					status: row.status,
+					fromNodeId: row.resumeFromNode ?? null,
+					parentId: row.rerunOfExecutionId ?? null,
+					startedAt: row.startedAt?.toISOString() ?? null,
+					completedAt: row.completedAt?.toISOString() ?? null,
+					durationMs: Number.isFinite(durationMs as number) ? (durationMs as number) : null,
+					isCurrent: row.id === executionId,
+				};
+			}),
+		};
+	}
+
+	async listByWorkflowId(input: {
+		workflowId: string;
+		limit: number;
+		include?: "summary" | "full";
+	}): Promise<WorkflowExecutionListItem[]> {
+		const limit = Number.isFinite(input.limit) ? Math.max(1, input.limit) : 20;
+		const includeFull = input.include === "full";
+		const summaryColumns = {
+			id: workflowExecutions.id,
+			workflowId: workflowExecutions.workflowId,
+			status: workflowExecutions.status,
+			daprInstanceId: workflowExecutions.daprInstanceId,
+			startedAt: workflowExecutions.startedAt,
+			completedAt: workflowExecutions.completedAt,
+			duration: workflowExecutions.duration,
+		};
+		const rows = await this.database
+			.select(
+				includeFull
+					? {
+							...summaryColumns,
+							input: workflowExecutions.input,
+							output: workflowExecutions.output,
+						}
+					: summaryColumns,
+			)
+			.from(workflowExecutions)
+			.where(eq(workflowExecutions.workflowId, input.workflowId))
+			.orderBy(desc(workflowExecutions.startedAt))
+			.limit(limit);
+
+		return rows.map((row) => ({
+			id: row.id,
+			workflowId: row.workflowId,
+			status: row.status,
+			daprInstanceId: row.daprInstanceId,
+			startedAt: row.startedAt,
+			completedAt: row.completedAt,
+			duration: row.duration,
+			...(includeFull
+				? {
+						input: "input" in row ? row.input ?? null : null,
+						output: "output" in row ? row.output : null,
+					}
+				: {}),
+		}));
+	}
+
+	async listRunSummariesByWorkflowId(input: {
+		workflowId: string;
+		limit: number;
+	}): Promise<WorkflowExecutionRunSummary[]> {
+		const limit = Number.isFinite(input.limit) ? Math.max(1, input.limit) : 20;
+		const execRows = await this.database
+			.select({
+				id: workflowExecutions.id,
+				workflowId: workflowExecutions.workflowId,
+				status: workflowExecutions.status,
+				startedAt: workflowExecutions.startedAt,
+				completedAt: workflowExecutions.completedAt,
+				duration: workflowExecutions.duration,
+			})
+			.from(workflowExecutions)
+			.where(eq(workflowExecutions.workflowId, input.workflowId))
+			.orderBy(desc(workflowExecutions.startedAt))
+			.limit(limit);
+
+		const execIds = execRows.map((row) => row.id).filter(Boolean);
+		if (execIds.length === 0) return [];
+
+		const sessionRows = await this.database
+			.select({
+				id: sessions.id,
+				workflowExecutionId: sessions.workflowExecutionId,
+				agentId: sessions.agentId,
+			})
+			.from(sessions)
+			.where(inArray(sessions.workflowExecutionId, execIds));
+
+		const agentIds = Array.from(
+			new Set(sessionRows.map((session) => session.agentId).filter((id): id is string => !!id)),
+		);
+		const agentNameById = new Map<string, string>();
+		if (agentIds.length > 0) {
+			const agentRows = await this.database
+				.select({ id: agents.id, name: agents.name })
+				.from(agents)
+				.where(inArray(agents.id, agentIds));
+			for (const agent of agentRows) agentNameById.set(agent.id, agent.name);
+		}
+
+		const byExecution = new Map<
+			string,
+			{ sessionIds: string[]; agents: { id: string; name: string }[] }
+		>();
+		for (const session of sessionRows) {
+			const execId = session.workflowExecutionId;
+			if (!execId) continue;
+			const bucket = byExecution.get(execId) ?? { sessionIds: [], agents: [] };
+			bucket.sessionIds.push(session.id);
+			if (session.agentId && !bucket.agents.find((agent) => agent.id === session.agentId)) {
+				bucket.agents.push({
+					id: session.agentId,
+					name: agentNameById.get(session.agentId) ?? session.agentId,
+				});
+			}
+			byExecution.set(execId, bucket);
+		}
+
+		return execRows.map((execution) => {
+			const extras = byExecution.get(execution.id) ?? { sessionIds: [], agents: [] };
+			return {
+				id: execution.id,
+				workflowId: execution.workflowId,
+				status: execution.status,
+				startedAt: execution.startedAt,
+				completedAt: execution.completedAt,
+				duration: execution.duration,
+				sessionIds: extras.sessionIds,
+				agents: extras.agents,
+			};
+		});
+	}
+
+	async countForksByWorkflowIds(
+		workflowIds: string[],
+	): Promise<WorkflowExecutionForkCountRecord[]> {
+		if (workflowIds.length === 0) return [];
+		const rows = await this.database
+			.select({
+				workflowId: workflowExecutions.workflowId,
+				count: sql<number>`count(*)::int`,
+			})
+			.from(workflowExecutions)
+			.where(
+				and(
+					inArray(workflowExecutions.workflowId, workflowIds),
+					isNotNull(workflowExecutions.rerunOfExecutionId),
+				),
+			)
+			.groupBy(workflowExecutions.workflowId);
+		return rows.map((row) => ({
+			workflowId: row.workflowId,
+			count: Number(row.count) || 0,
+		}));
+	}
+
+	async listRecentRunsByWorkflowIds(input: {
+		workflowIds: string[];
+		limitPerWorkflow: number;
+	}): Promise<WorkflowExecutionRecentRunRecord[]> {
+		if (input.workflowIds.length === 0) return [];
+		const limitPerWorkflow = Number.isFinite(input.limitPerWorkflow)
+			? Math.max(1, input.limitPerWorkflow)
+			: 3;
+		const runs: WorkflowExecutionRecentRunRecord[] = [];
+		for (const workflowId of input.workflowIds) {
+			const rows = await this.database
+				.select({
+					workflowId: workflowExecutions.workflowId,
+					id: workflowExecutions.id,
+					status: workflowExecutions.status,
+					startedAt: workflowExecutions.startedAt,
+					completedAt: workflowExecutions.completedAt,
+				})
+				.from(workflowExecutions)
+				.where(eq(workflowExecutions.workflowId, workflowId))
+				.orderBy(desc(workflowExecutions.startedAt))
+				.limit(limitPerWorkflow);
+			runs.push(...rows);
+		}
+		return runs;
+	}
+
+	async listRecentExecutionPickerRecords(input: {
+		userId: string;
+		projectId?: string | null;
+		limit: number;
+	}): Promise<WorkflowExecutionPickerRecord[]> {
+		const limit = Number.isFinite(input.limit) ? Math.max(1, input.limit) : 50;
+		return this.database
+			.select({
+				id: workflowExecutions.id,
+				status: workflowExecutions.status,
+				startedAt: workflowExecutions.startedAt,
+				workflowId: workflowExecutions.workflowId,
+			})
+			.from(workflowExecutions)
+			.where(
+				input.projectId
+					? or(
+							eq(workflowExecutions.projectId, input.projectId),
+							and(
+								isNull(workflowExecutions.projectId),
+								eq(workflowExecutions.userId, input.userId),
+							),
+						)
+					: eq(workflowExecutions.userId, input.userId),
+			)
+			.orderBy(desc(workflowExecutions.startedAt))
+			.limit(limit);
+	}
+
+	async listSessionsForExecutionLineage(input: {
+		executionId: string;
+		projectId?: string | null;
+		maxAncestors?: number;
+	}): Promise<WorkflowExecutionSessionSummary[]> {
+		const execIds: string[] = [input.executionId];
+		let cursor: string | null = input.executionId;
+		const maxAncestors = Math.max(0, input.maxAncestors ?? 20);
+		for (let hops = 0; hops < maxAncestors && cursor; hops++) {
+			const rows: Array<{ parent: string | null }> = await this.database
+				.select({ parent: workflowExecutions.rerunOfExecutionId })
+				.from(workflowExecutions)
+				.where(eq(workflowExecutions.id, cursor))
+				.limit(1);
+			const parent: string | null = rows[0]?.parent ?? null;
+			if (parent && !execIds.includes(parent)) {
+				execIds.push(parent);
+				cursor = parent;
+			} else {
+				cursor = null;
+			}
+		}
+
+		const conditions = [inArray(sessions.workflowExecutionId, execIds)];
+		if (input.projectId) {
+			conditions.push(eq(sessions.projectId, input.projectId));
+		}
+
+		return this.database
+			.select({
+				id: sessions.id,
+				title: sessions.title,
+				status: sessions.status,
+				agentId: sessions.agentId,
+				workflowExecutionId: sessions.workflowExecutionId,
+				createdAt: sessions.createdAt,
+				completedAt: sessions.completedAt,
+			})
+			.from(sessions)
+			.where(and(...conditions))
+			.orderBy(asc(sessions.createdAt));
+	}
+
+	async listOutputFilesByExecutionId(
+		executionId: string,
+	): Promise<WorkflowExecutionOutputFiles> {
+		const sessionRows = await this.database
+			.select({
+				id: sessions.id,
+				status: sessions.status,
+				sandboxName: sessions.sandboxName,
+				workspaceSandboxName: sessions.workspaceSandboxName,
+				runtimeAppId: sessions.runtimeAppId,
+				updatedAt: sessions.updatedAt,
+			})
+			.from(sessions)
+			.where(eq(sessions.workflowExecutionId, executionId))
+			.orderBy(desc(sessions.updatedAt));
+
+		const scopeIds = [executionId, ...sessionRows.map((session) => session.id)];
+		const fileRows = await this.database
+			.select({
+				id: files.id,
+				name: files.name,
+				contentType: files.contentType,
+				sizeBytes: files.sizeBytes,
+				createdAt: files.createdAt,
+			})
+			.from(files)
+			.where(
+				and(
+					inArray(files.scopeId, scopeIds),
+					eq(files.purpose, "output"),
+					isNull(files.archivedAt),
+				),
+			)
+			.orderBy(desc(files.createdAt))
+			.limit(500);
+
+		const cliSlugs = new Set(["claude-code-cli", "codex-cli", "agy-cli"]);
+		const cliWorkspace = sessionRows.some(
+			(session) =>
+				cliSlugs.has(String(session.sandboxName ?? "")) ||
+				String(session.runtimeAppId ?? "").startsWith("agent-session-"),
+		);
+
+		const nonTerminalStatuses = new Set([
+			"running",
+			"active",
+			"provisioning",
+			"rescheduling",
+			"starting",
+			"paused",
+			"idle",
+		]);
+		let liveSandbox: { name: string } | null = null;
+		if (!cliWorkspace) {
+			for (const session of sessionRows) {
+				if (!nonTerminalStatuses.has(String(session.status ?? "").toLowerCase())) continue;
+				if (session.workspaceSandboxName) {
+					liveSandbox = { name: session.workspaceSandboxName };
+					break;
+				}
+			}
+		}
+
+		return { files: fileRows, liveSandbox, cliWorkspace };
+	}
+
+	async aggregateUsageMetricsForExecutionLineage(input: {
+		executionId: string;
+		projectId?: string | null;
+		maxAncestors?: number;
+	}): Promise<WorkflowExecutionUsageMetricsRow[]> {
+		const execIds: string[] = [input.executionId];
+		let cursor: string | null = input.executionId;
+		const maxAncestors = Math.max(0, input.maxAncestors ?? 20);
+		for (let hops = 0; hops < maxAncestors && cursor; hops++) {
+			const rows: Array<{ parent: string | null }> = await this.database
+				.select({ parent: workflowExecutions.rerunOfExecutionId })
+				.from(workflowExecutions)
+				.where(eq(workflowExecutions.id, cursor))
+				.limit(1);
+			const parent: string | null = rows[0]?.parent ?? null;
+			if (parent && !execIds.includes(parent)) {
+				execIds.push(parent);
+				cursor = parent;
+			} else {
+				cursor = null;
+			}
+		}
+
+		type Row = {
+			model_spec: string | null;
+			input_tokens: number;
+			output_tokens: number;
+			cache_read: number;
+			cache_create: number;
+		};
+		const rows = await this.database.execute<Row>(sql`
+			SELECT
+				coalesce(se.data->>'model', se.data->>'providerModel', 'unknown') AS model_spec,
+				coalesce(sum((se.data->>'input_tokens')::bigint), 0) AS input_tokens,
+				coalesce(sum((se.data->>'output_tokens')::bigint), 0) AS output_tokens,
+				coalesce(sum((se.data->>'cache_read_input_tokens')::bigint), 0) AS cache_read,
+				coalesce(sum((se.data->>'cache_creation_input_tokens')::bigint), 0) AS cache_create
+			FROM session_events se
+			JOIN sessions s ON s.id = se.session_id
+			WHERE s.workflow_execution_id = ANY(${execIds})
+				AND se.type = 'agent.llm_usage'
+				${input.projectId ? sql`AND s.project_id = ${input.projectId}` : sql``}
+			GROUP BY coalesce(se.data->>'model', se.data->>'providerModel', 'unknown')
+		`);
+
+		return rows.map((row) => ({
+			modelSpec: row.model_spec,
+			inputTokens: Number(row.input_tokens),
+			outputTokens: Number(row.output_tokens),
+			cacheReadTokens: Number(row.cache_read),
+			cacheCreateTokens: Number(row.cache_create),
+		}));
 	}
 
 	async create(input: CreateWorkflowExecutionInput): Promise<{ id: string }> {
@@ -401,6 +2779,63 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			.returning();
 		return row ? mapExecutionLog(row) : null;
 	}
+
+	async listLogsByExecutionId(executionId: string): Promise<WorkflowExecutionLogRecord[]> {
+		const rows = await this.database
+			.select()
+			.from(workflowExecutionLogs)
+			.where(eq(workflowExecutionLogs.executionId, executionId))
+			.orderBy(workflowExecutionLogs.startedAt);
+		return rows.map(mapExecutionLog);
+	}
+
+	async listSessionIdsByExecutionId(executionId: string): Promise<string[]> {
+		const rows = await this.database
+			.select({ id: sessions.id })
+			.from(sessions)
+			.where(eq(sessions.workflowExecutionId, executionId));
+		return rows.map((row) => row.id);
+	}
+
+	async listAgentEventsByExecutionId(executionId: string) {
+		return this.database
+			.select({
+				id: sessionEvents.sequence,
+				sessionId: sessionEvents.sessionId,
+				type: sessionEvents.type,
+				sourceEventId: sessionEvents.sourceEventId,
+				data: sessionEvents.data,
+				createdAt: sessionEvents.createdAt,
+			})
+			.from(sessionEvents)
+			.innerJoin(sessions, eq(sessions.id, sessionEvents.sessionId))
+			.where(eq(sessions.workflowExecutionId, executionId))
+			.orderBy(asc(sessionEvents.sequence));
+	}
+
+	async listAgentEventsByExecutionIdAfter(input: {
+		executionId: string;
+		afterEventId: number;
+	}) {
+		return this.database
+			.select({
+				id: sessionEvents.sequence,
+				sessionId: sessionEvents.sessionId,
+				type: sessionEvents.type,
+				sourceEventId: sessionEvents.sourceEventId,
+				data: sessionEvents.data,
+				createdAt: sessionEvents.createdAt,
+			})
+			.from(sessionEvents)
+			.innerJoin(sessions, eq(sessions.id, sessionEvents.sessionId))
+			.where(
+				and(
+					eq(sessions.workflowExecutionId, input.executionId),
+					gt(sessionEvents.sequence, input.afterEventId),
+				),
+			)
+			.orderBy(asc(sessionEvents.sequence));
+	}
 }
 
 export class PostgresArtifactStore implements ArtifactStore {
@@ -455,6 +2890,63 @@ export class PostgresArtifactStore implements ArtifactStore {
 			.where(eq(workflowArtifacts.workflowExecutionId, executionId))
 			.orderBy(SLOT_RANK, asc(workflowArtifacts.createdAt));
 		return rows.map(mapArtifact);
+	}
+
+	async listSourceBundleArtifactsByWorkflowId(workflowId: string): Promise<WorkflowArtifactRecord[]> {
+		const executions = await this.database
+			.select({ id: workflowExecutions.id })
+			.from(workflowExecutions)
+			.where(eq(workflowExecutions.workflowId, workflowId));
+		if (executions.length === 0) return [];
+		const rows = await this.database
+			.select()
+			.from(workflowArtifacts)
+			.where(
+				and(
+					inArray(
+						workflowArtifacts.workflowExecutionId,
+						executions.map((execution) => execution.id),
+					),
+					eq(workflowArtifacts.kind, SOURCE_BUNDLE_KIND),
+				),
+			)
+			.orderBy(desc(workflowArtifacts.createdAt));
+		return rows.map(mapArtifact);
+	}
+
+	async getWorkflowArtifactForExecution(input: {
+		executionId: string;
+		artifactId: string;
+	}): Promise<WorkflowArtifactRecord | null> {
+		const [row] = await this.database
+			.select()
+			.from(workflowArtifacts)
+			.where(
+				and(
+					eq(workflowArtifacts.id, input.artifactId),
+					eq(workflowArtifacts.workflowExecutionId, input.executionId),
+				),
+			)
+			.limit(1);
+		return row ? mapArtifact(row) : null;
+	}
+
+	async updateWorkflowArtifactMetadata(input: {
+		executionId: string;
+		artifactId: string;
+		metadata: Record<string, unknown> | null;
+	}): Promise<WorkflowArtifactRecord | null> {
+		const [row] = await this.database
+			.update(workflowArtifacts)
+			.set({ metadata: input.metadata })
+			.where(
+				and(
+					eq(workflowArtifacts.id, input.artifactId),
+					eq(workflowArtifacts.workflowExecutionId, input.executionId),
+				),
+			)
+			.returning();
+		return row ? mapArtifact(row) : null;
 	}
 }
 
@@ -642,6 +3134,15 @@ export class PostgresWorkflowPlanArtifactStore implements WorkflowPlanArtifactSt
 			artifactType,
 			status,
 		};
+	}
+
+	async listPlanArtifactsByExecutionId(executionId: string): Promise<WorkflowPlanArtifactRecord[]> {
+		const rows = await this.database
+			.select()
+			.from(workflowPlanArtifacts)
+			.where(eq(workflowPlanArtifacts.workflowExecutionId, executionId))
+			.orderBy(desc(workflowPlanArtifacts.createdAt));
+		return rows.map(mapPlanArtifact);
 	}
 
 	async updatePlanArtifactStatus(input: {

@@ -1,8 +1,5 @@
-import { and, asc, eq } from "drizzle-orm";
 import { env } from "$env/dynamic/private";
-import { db } from "$lib/server/db";
-import { getPopulatedMcpServerByProjectId } from "$lib/server/db/mcp";
-import { mcpConnections, type McpConnectionSourceType } from "$lib/server/db/schema";
+import type { McpConnectionSourceType } from "$lib/server/application/ports";
 import {
 	appendToolsQueryParam,
 	narrowToolsToIntersection,
@@ -11,7 +8,7 @@ import {
 import type { McpServerProfileConfig } from "$lib/server/agent-profiles";
 import type { AgentConfig } from "$lib/types/agents";
 
-type AgentMcpConnectionRow = {
+export type AgentMcpConnectionRow = {
 	id: string;
 	projectId: string;
 	sourceType: McpConnectionSourceType;
@@ -426,79 +423,4 @@ export function resolveMcpServerConfigsFromRows(params: {
 	}
 
 	return { mcpServers: servers, warnings };
-}
-
-export async function resolveAgentMcpServersForProject(params: {
-	projectId?: string | null;
-	requestedServers?: McpServerProfileConfig[];
-	includeProjectConnections?: boolean;
-}): Promise<AgentMcpResolutionResult> {
-	const requestedServers = params.requestedServers ?? [];
-	const projectId = params.projectId?.trim();
-	if (!projectId || !db) {
-		return {
-			mcpServers: requestedServers.filter(isRecord).filter(hasDirectEndpoint).map(sanitizeRequestedServer),
-			warnings: [],
-		};
-	}
-
-	const rows = await db
-		.select({
-			id: mcpConnections.id,
-			projectId: mcpConnections.projectId,
-			sourceType: mcpConnections.sourceType,
-			pieceName: mcpConnections.pieceName,
-			serverKey: mcpConnections.serverKey,
-			connectionExternalId: mcpConnections.connectionExternalId,
-			displayName: mcpConnections.displayName,
-			registryRef: mcpConnections.registryRef,
-			serverUrl: mcpConnections.serverUrl,
-			metadata: mcpConnections.metadata,
-		})
-		.from(mcpConnections)
-		.where(and(eq(mcpConnections.projectId, projectId), eq(mcpConnections.status, "ENABLED")))
-		.orderBy(asc(mcpConnections.displayName), asc(mcpConnections.createdAt));
-
-	let hostedToken: string | null = null;
-	if (rows.some((row) => row.sourceType === "hosted_workflow")) {
-		try {
-			hostedToken = (await getPopulatedMcpServerByProjectId(projectId)).token;
-		} catch (err) {
-			hostedToken = null;
-		}
-	}
-
-	return resolveMcpServerConfigsFromRows({
-		rows,
-		requestedServers,
-		includeProjectConnections: params.includeProjectConnections,
-		hostedToken,
-	});
-}
-
-export async function resolveAgentConfigMcpForProject(
-	config: AgentConfig,
-	projectId?: string | null,
-	options: AgentMcpResolutionOptions = {},
-): Promise<AgentConfig> {
-	const requestedServers = Array.isArray(config.mcpServers) ? config.mcpServers : [];
-	const includeProjectConnections =
-		shouldIncludeProjectConnectionsForMcpResolution(config, options);
-	const hasUnresolvedServers = requestedServers.some((server) => !hasDirectEndpoint(server));
-	if (!includeProjectConnections && requestedServers.length === 0 && !hasUnresolvedServers) {
-		return config;
-	}
-
-	const resolved = await resolveAgentMcpServersForProject({
-		projectId,
-		requestedServers,
-		includeProjectConnections,
-	});
-	return {
-		...config,
-		mcpServers: resolved.mcpServers,
-		...(resolved.warnings.length > 0
-			? { mcpConnectionWarnings: resolved.warnings } as Partial<AgentConfig>
-			: {}),
-	};
 }

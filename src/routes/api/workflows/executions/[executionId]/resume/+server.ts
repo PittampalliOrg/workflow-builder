@@ -1,27 +1,23 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { workflows, workflowExecutions } from '$lib/server/db/schema';
+import { getApplicationAdapters } from '$lib/server/application';
+import type { WorkflowDataService, WorkflowExecutionRecord } from '$lib/server/application/ports';
 import { startWorkflowRun } from '$lib/server/workflows/start-run';
 import { isResourceInScope } from '$lib/server/workflows/project-scope';
 import { ownsBenchmarkOrEvalRun } from '$lib/server/lifecycle/ownership';
-
-type ExecutionRow = typeof workflowExecutions.$inferSelect;
 
 /**
  * The shared /sandbox/work workspace is keyed on `workspaceExecutionId`, which on a
  * normal run equals the run's Dapr instance id. A resume/fork must re-mount the
  * ORIGINAL run's workspace, so we thread the ROOT run's instance id (walk lineage).
  */
-async function resolveWorkspaceExecutionId(source: ExecutionRow): Promise<string | null> {
+async function resolveWorkspaceExecutionId(
+	workflowData: WorkflowDataService,
+	source: WorkflowExecutionRecord,
+): Promise<string | null> {
 	let current = source;
 	for (let hops = 0; hops < 20 && current?.rerunOfExecutionId; hops++) {
-		const [parent] = await db!
-			.select()
-			.from(workflowExecutions)
-			.where(eq(workflowExecutions.id, current.rerunOfExecutionId))
-			.limit(1);
+		const parent = await workflowData.getExecutionById(current.rerunOfExecutionId);
 		if (!parent) break;
 		current = parent;
 	}
@@ -59,7 +55,6 @@ function topLevelNodeIds(spec: unknown): string[] {
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (!locals.session?.userId) return error(401, 'Authentication required');
-	if (!db) return error(503, 'Database not configured');
 
 	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
 	let fromNodeId =
@@ -71,11 +66,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	}
 
 	// 1. Source run + scope.
-	const [source] = await db
-		.select()
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, params.executionId))
-		.limit(1);
+	const workflowData = getApplicationAdapters().workflowData;
+	const source = await workflowData.getExecutionById(params.executionId);
 	if (!source) return error(404, 'Execution not found');
 	if (!isResourceInScope(source, locals.session)) return error(404, 'Execution not found');
 	if (!source.daprInstanceId) return error(409, 'Run has no Dapr instance id to resume from');
@@ -96,13 +88,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	}
 
 	// 2. Current (possibly edited) workflow spec → validate the resume node exists.
-	const [workflow] = await db
-		.select()
-		.from(workflows)
-		.where(eq(workflows.id, source.workflowId))
-		.limit(1);
+	const workflow = await workflowData.getWorkflowByRef({ workflowId: source.workflowId, lookup: 'id' });
 	if (!workflow) return error(404, 'Workflow not found');
-	const nodeIds = topLevelNodeIds((workflow as Record<string, unknown>).spec);
+	const nodeIds = topLevelNodeIds(workflow.spec);
 
 	// Auto-locate: the node in-flight when the source run stopped.
 	if (!fromNodeId) fromNodeId = source.currentNodeId ?? undefined;
@@ -113,7 +101,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
 	// 3. Hermetic fork: the new run uses its OWN fresh workspace, SEEDED (copied) from
 	// the source run's retained /sandbox/work — so repeated forks are isolated (no drift).
-	const seedWorkspaceFrom = await resolveWorkspaceExecutionId(source);
+	const seedWorkspaceFrom = await resolveWorkspaceExecutionId(workflowData, source);
 
 	// 4. Fresh execution of the CURRENT spec, skipping the prefix + seeding the workspace.
 	const result = await startWorkflowRun({

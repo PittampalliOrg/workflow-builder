@@ -1,8 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { db } from '$lib/server/db';
-import { workflowPlanArtifacts } from '$lib/server/db/schema';
-import { desc, eq } from 'drizzle-orm';
+import { getApplicationAdapters } from '$lib/server/application';
 import { daprFetch, getDaprSidecarUrl } from '$lib/server/dapr-client';
 
 /**
@@ -16,19 +14,11 @@ export const GET: RequestHandler = async ({ params }) => {
 	const { executionId } = params;
 
 	try {
-		if (db) {
-			const [artifact] = await db
-				.select({
-					planMarkdown: workflowPlanArtifacts.planMarkdown
-				})
-				.from(workflowPlanArtifacts)
-				.where(eq(workflowPlanArtifacts.workflowExecutionId, executionId))
-				.orderBy(desc(workflowPlanArtifacts.createdAt))
-				.limit(1);
+		const [artifact] =
+			await getApplicationAdapters().workflowData.listPlanArtifactsByExecutionId(executionId);
 
-			if (artifact?.planMarkdown) {
-				return json({ plan: artifact.planMarkdown });
-			}
+		if (artifact?.planMarkdown) {
+			return json({ plan: artifact.planMarkdown });
 		}
 
 		// Use Dapr service invocation to call dapr-agent-py's /plan endpoint

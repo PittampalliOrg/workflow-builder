@@ -25,7 +25,7 @@ import {
 	resolveBundleProvenance,
 	type BundleProvenanceEntry,
 } from "$lib/server/capabilities/flatten";
-import { resolveAgentConfigMcpForProject } from "./mcp-resolution";
+import { resolveAgentConfigMcpForProject } from "./mcp-resolution-application";
 import { getRuntimeDescriptor, type RuntimeDescriptor } from "./runtime-registry";
 import { evaluateSwap, type SwapVerdict } from "./swap-safety";
 import { redactSecrets } from "$lib/server/observability/content";

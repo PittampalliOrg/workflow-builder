@@ -17,7 +17,7 @@ vi.mock("$lib/server/agents/registry", () => ({
 	resolveAgentRef: (...args: unknown[]) => resolveAgentRefMock(...args),
 }));
 
-vi.mock("$lib/server/agents/mcp-resolution", () => ({
+vi.mock("$lib/server/agents/mcp-resolution-application", () => ({
 	resolveAgentConfigMcpForProject: (...args: unknown[]) =>
 		resolveAgentConfigMcpForProjectMock(...args),
 }));

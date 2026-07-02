@@ -1,13 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { db } from '$lib/server/db';
-import {
-	sessionEvents,
-	sessions,
-	workflowExecutions,
-	workflowExecutionLogs
-} from '$lib/server/db/schema';
-import { eq, asc } from 'drizzle-orm';
+import { getApplicationAdapters } from '$lib/server/application';
 import { extractExecutionTraceIds } from '$lib/server/otel/clickhouse';
 import { isResourceInScope } from '$lib/server/workflows/project-scope';
 
@@ -30,17 +23,10 @@ export interface NormalizedLog {
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	const { executionId } = params;
-
-	if (!db) {
-		return error(500, 'Database not available');
-	}
+	const workflowData = getApplicationAdapters().workflowData;
 
 	// Fetch the execution record
-	const [execution] = await db
-		.select()
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, executionId))
-		.limit(1);
+	const execution = await workflowData.getExecutionById(executionId);
 
 	if (!execution) {
 		return error(404, 'Execution not found');
@@ -59,11 +45,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	}
 
 	// Try workflowExecutionLogs table first
-	const dbLogs = await db
-		.select()
-		.from(workflowExecutionLogs)
-		.where(eq(workflowExecutionLogs.executionId, executionId))
-		.orderBy(workflowExecutionLogs.startedAt);
+	const dbLogs = await workflowData.listExecutionLogs(executionId);
 
 	let logs: NormalizedLog[];
 
@@ -127,19 +109,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	// sessions.workflow_execution_id join. `durable/run` nodes now spawn a
 	// session per node and that session's event stream is the authoritative
 	// agent log.
-	const agentEvents = await db
-		.select({
-			id: sessionEvents.sequence,
-			sessionId: sessionEvents.sessionId,
-			type: sessionEvents.type,
-			sourceEventId: sessionEvents.sourceEventId,
-			data: sessionEvents.data,
-			createdAt: sessionEvents.createdAt
-		})
-		.from(sessionEvents)
-		.innerJoin(sessions, eq(sessions.id, sessionEvents.sessionId))
-		.where(eq(sessions.workflowExecutionId, executionId))
-		.orderBy(asc(sessionEvents.sequence));
+	const agentEvents = await workflowData.listExecutionAgentEvents(executionId);
 
 	function pickString(source: Record<string, unknown>, ...keys: string[]): string | null {
 		for (const k of keys) {

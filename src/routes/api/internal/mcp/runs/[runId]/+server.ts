@@ -1,7 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { getApplicationAdapters } from '$lib/server/application';
 import { validateInternalToken } from '$lib/server/internal-auth';
-import { getMcpRun } from '$lib/server/db/mcp';
 
 /**
  * GET /api/internal/mcp/runs/[runId]
@@ -18,7 +18,7 @@ export const GET: RequestHandler = async ({ request, params }) => {
 	}
 
 	const { runId } = params;
-	const run = await getMcpRun(runId);
+	const run = await getApplicationAdapters().workflowData.getMcpRun(runId);
 	if (!run) {
 		return error(404, 'Not found');
 	}

@@ -1,8 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { db } from '$lib/server/db';
-import { workflows } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
+import { getApplicationAdapters } from '$lib/server/application';
 
 interface Revision {
 	version: string;
@@ -14,13 +12,10 @@ interface Revision {
 }
 
 export const GET: RequestHandler = async ({ params }) => {
-	if (!db) return error(503, 'Database not configured');
-
-	const [workflow] = await db
-		.select()
-		.from(workflows)
-		.where(eq(workflows.id, params.workflowId))
-		.limit(1);
+	const workflow = await getApplicationAdapters().workflowData.getWorkflowByRef({
+		workflowId: params.workflowId,
+		lookup: 'id'
+	});
 
 	if (!workflow) {
 		return error(404, 'Workflow not found');

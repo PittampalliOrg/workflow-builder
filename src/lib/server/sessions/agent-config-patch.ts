@@ -2,7 +2,7 @@ import {
 	AGENT_MODEL_OPTIONS,
 	canonicalAgentModelSpec,
 } from "$lib/agents/model-options";
-import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution";
+import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution-application";
 import { resolveAgentRef } from "$lib/server/agents/registry";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { getSession } from "$lib/server/sessions/registry";

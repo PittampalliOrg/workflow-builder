@@ -1,9 +1,7 @@
 import type { PageServerLoad } from "./$types";
+import { getApplicationAdapters } from "$lib/server/application";
 import { listSessions } from "$lib/server/sessions/registry";
 import { listRecentRuns } from "$lib/server/workflows/runs";
-import { db } from "$lib/server/db";
-import { users } from "$lib/server/db/schema";
-import { eq } from "drizzle-orm";
 
 /**
  * Dashboard home. Greets the user by name + surfaces their five most
@@ -16,16 +14,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 		return { user: null, recentSessions: [], recentRuns: [] };
 	}
 
-	const [userRow] = db
-		? await db
-				.select({
-					name: users.name,
-					email: users.email,
-				})
-				.from(users)
-				.where(eq(users.id, locals.session.userId))
-				.limit(1)
-		: [];
+	const userRow = await getApplicationAdapters()
+		.workflowData.getUserProfile(locals.session.userId)
+		.catch(() => null);
 
 	const [sessions, runs] = await Promise.all([
 		listSessions({

@@ -1,4 +1,4 @@
-import type { McpConnectionSourceType } from '$lib/server/db/schema';
+import type { McpConnectionSourceType } from '$lib/server/application/ports';
 import {
 	humanizePieceName,
 	normalizePieceName,

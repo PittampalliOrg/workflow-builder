@@ -1,11 +1,4 @@
 import { error } from '@sveltejs/kit';
-import { and, eq, inArray } from 'drizzle-orm';
-import { appConnections } from '$lib/server/db/schema';
-import { AppConnectionStatus } from '$lib/server/types/app-connection';
-import type { db } from '$lib/server/db';
-import { connectionBelongsToProject } from '$lib/server/app-connection-scope';
-
-type Database = NonNullable<typeof db>;
 
 export function normalizePieceName(value: string | null | undefined): string {
 	return (value || '')
@@ -68,33 +61,4 @@ export function requireSessionProjectId(locals: App.Locals): string {
 	if (!locals.session?.userId) throw error(401, 'Unauthorized');
 	if (!projectId) throw error(400, 'Current session does not include a project');
 	return projectId;
-}
-
-export async function validateMcpCredentialBinding(
-	database: Database,
-	projectId: string,
-	pieceName: string | null | undefined,
-	externalId: unknown
-): Promise<string | null> {
-	const value = typeof externalId === 'string' ? externalId.trim() : '';
-	if (!value) return null;
-	const candidates = pieceCandidates(pieceName);
-	if (candidates.length === 0) {
-		throw error(400, 'connectionExternalId can only be set for a piece MCP connection');
-	}
-	const [connection] = await database
-		.select({ externalId: appConnections.externalId, projectIds: appConnections.projectIds })
-		.from(appConnections)
-		.where(
-			and(
-				eq(appConnections.externalId, value),
-				eq(appConnections.status, AppConnectionStatus.ACTIVE),
-				inArray(appConnections.pieceName, candidates)
-			)
-		)
-		.limit(1);
-	if (!connection || !connectionBelongsToProject(connection.projectIds, projectId)) {
-		throw error(400, 'connectionExternalId must reference an active app connection for the same piece');
-	}
-	return value;
 }

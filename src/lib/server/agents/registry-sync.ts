@@ -6,7 +6,7 @@ import { daprFetch, getDaprSidecarUrl } from "$lib/server/dapr-client";
 import type { AgentConfig, AgentDetail } from "$lib/types/agents";
 import { lookupBuiltinTool } from "./builtin-tool-catalog";
 import { rewriteMcpForBrowserSidecar } from "./mcp-sidecar";
-import { resolveAgentConfigMcpForProject } from "./mcp-resolution";
+import { resolveAgentConfigMcpForProject } from "./mcp-resolution-application";
 import {
 	agentRuntimeDedicatedAppId,
 	resolveAgentRuntimeRoute,

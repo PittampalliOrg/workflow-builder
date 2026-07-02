@@ -1,24 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { db } from '$lib/server/db';
-import { workflowExecutions } from '$lib/server/db/schema';
-import { eq, desc } from 'drizzle-orm';
-
-const SUMMARY_COLUMNS = {
-	id: workflowExecutions.id,
-	workflowId: workflowExecutions.workflowId,
-	status: workflowExecutions.status,
-	daprInstanceId: workflowExecutions.daprInstanceId,
-	startedAt: workflowExecutions.startedAt,
-	completedAt: workflowExecutions.completedAt,
-	duration: workflowExecutions.duration
-};
-
-const FULL_COLUMNS = {
-	...SUMMARY_COLUMNS,
-	input: workflowExecutions.input,
-	output: workflowExecutions.output
-};
+import { getApplicationAdapters } from '$lib/server/application';
 
 /**
  * GET /api/workflows/[workflowId]/executions
@@ -34,16 +16,12 @@ export const GET: RequestHandler = async ({ params, url }) => {
 	const limit = parseInt(url.searchParams.get('limit') || '20');
 	const include = url.searchParams.get('include') === 'full' ? 'full' : 'summary';
 
-	if (!db) return json([]);
-
 	try {
-		const executions = await db
-			.select(include === 'full' ? FULL_COLUMNS : SUMMARY_COLUMNS)
-			.from(workflowExecutions)
-			.where(eq(workflowExecutions.workflowId, workflowId))
-			.orderBy(desc(workflowExecutions.startedAt))
-			.limit(limit);
-
+		const executions = await getApplicationAdapters().workflowData.listWorkflowExecutions({
+			workflowId,
+			limit,
+			include,
+		});
 		return json(executions);
 	} catch (err) {
 		console.error(`[Executions API] Error listing executions for ${workflowId}:`, err);

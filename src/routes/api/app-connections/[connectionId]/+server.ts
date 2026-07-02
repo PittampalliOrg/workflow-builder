@@ -1,88 +1,36 @@
-import { json, error } from '@sveltejs/kit';
+import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { db } from '$lib/server/db';
-import { appConnections } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
-import { connectionBelongsToProject } from '$lib/server/app-connection-scope';
-import { requireSessionProjectId } from '$lib/server/mcp-connections';
+import { getApplicationAdapters } from '$lib/server/application';
 
-/**
- * PUT /api/app-connections/[connectionId]
- *
- * Update a connection (currently supports renaming via displayName).
- */
+function requireProjectId(locals: App.Locals): string {
+	const projectId = locals.session?.projectId?.trim();
+	if (!locals.session?.userId) throw error(401, 'Unauthorized');
+	if (!projectId) throw error(400, 'Current session does not include a project');
+	return projectId;
+}
+
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
-	const projectId = requireSessionProjectId(locals);
-	if (!db) return error(503, 'Database not configured');
+	const projectId = requireProjectId(locals);
+	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
 
-	const { connectionId } = params;
-	const body = await request.json();
-	const { displayName } = body;
+	const result = await getApplicationAdapters().workflowData.updateProjectAppConnection({
+		id: params.connectionId,
+		projectId,
+		displayName: body.displayName
+	});
 
-	if (!displayName || typeof displayName !== 'string' || displayName.trim().length === 0) {
-		return error(400, { message: 'displayName is required' });
-	}
-
-	const [existing] = await db
-		.select({ id: appConnections.id, projectIds: appConnections.projectIds })
-		.from(appConnections)
-		.where(eq(appConnections.id, connectionId))
-		.limit(1);
-
-	if (!existing || !connectionBelongsToProject(existing.projectIds, projectId)) {
-		return error(404, { message: 'Connection not found' });
-	}
-
-	const updated = await db
-		.update(appConnections)
-		.set({ displayName: displayName.trim() })
-		.where(eq(appConnections.id, connectionId))
-		.returning({
-			id: appConnections.id,
-			externalId: appConnections.externalId,
-			pieceName: appConnections.pieceName,
-			displayName: appConnections.displayName,
-			type: appConnections.type,
-			status: appConnections.status,
-			createdAt: appConnections.createdAt
-		});
-
-	if (updated.length === 0) {
-		return error(404, { message: 'Connection not found' });
-	}
-
-	return json(updated[0]);
+	if (!result.ok) return error(result.status, { message: result.message });
+	return json(result.connection);
 };
 
-/**
- * DELETE /api/app-connections/[connectionId]
- *
- * Delete a connection by ID.
- */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
-	const projectId = requireSessionProjectId(locals);
-	if (!db) return error(503, 'Database not configured');
+	const projectId = requireProjectId(locals);
 
-	const { connectionId } = params;
+	const result = await getApplicationAdapters().workflowData.deleteProjectAppConnection({
+		id: params.connectionId,
+		projectId
+	});
 
-	const [existing] = await db
-		.select({ id: appConnections.id, projectIds: appConnections.projectIds })
-		.from(appConnections)
-		.where(eq(appConnections.id, connectionId))
-		.limit(1);
-
-	if (!existing || !connectionBelongsToProject(existing.projectIds, projectId)) {
-		return error(404, { message: 'Connection not found' });
-	}
-
-	const deleted = await db
-		.delete(appConnections)
-		.where(eq(appConnections.id, connectionId))
-		.returning({ id: appConnections.id });
-
-	if (deleted.length === 0) {
-		return error(404, { message: 'Connection not found' });
-	}
-
+	if (!result.ok) return error(result.status, { message: result.message });
 	return json({ success: true });
 };

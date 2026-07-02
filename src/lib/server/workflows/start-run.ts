@@ -17,6 +17,7 @@ import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-m
 import { getOrchestratorUrl } from '$lib/server/dapr-client';
 import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
 import { getRemovedSw10AgentCallsError } from '$lib/server/workflows/sw10-agent-validation';
+import { validateTriggerModel } from '$lib/server/workflows/model-validation';
 import { AgentRefResolutionError, resolveSpecAgentRefs } from '$lib/server/agents/resolver';
 import { getApplicationAdapters } from '$lib/server/application';
 import type { WorkflowDefinition } from '$lib/server/application/ports';
@@ -30,6 +31,7 @@ import {
 	ensureWorkflowTraceparentHeader,
 	injectWorkflowSessionHeaders
 } from '$lib/server/observability/workflow-session';
+import { prewarmWorkflowEntrySessions } from '$lib/server/sessions/prewarm';
 
 export function isSWWorkflow(spec: unknown): boolean {
 	if (typeof spec !== 'object' || spec === null) return false;
@@ -70,6 +72,8 @@ export interface StartWorkflowOptions {
 	/** Set for event-driven runs (the firing trigger's id) → stamped on the
 	 *  execution row for the concurrency gate + capacity lens. */
 	triggerSource?: string;
+	/** Interactive caller to stamp on the execution row; defaults to workflow owner. */
+	userId?: string;
 	/** Resume/fork: skip every top-level node before this one (the interpreter
 	 *  reuses the retained workspace and runs only from here onward). */
 	resumeFromNode?: string;
@@ -145,6 +149,8 @@ export async function startWorkflowRun(
 		if (missing.length > 0) {
 			return { ok: false, status: 400, error: `Missing required workflow input fields: ${missing.join(', ')}` };
 		}
+		const modelError = await validateTriggerModel(spec, triggerData);
+		if (modelError) return { ok: false, status: 400, error: modelError };
 		try {
 			spec = await resolveSpecAgentRefs(spec, { triggerData });
 		} catch (resolveErr) {
@@ -172,7 +178,7 @@ export async function startWorkflowRun(
 	const execution = await app.workflowExecutions.create({
 		...(opts.executionId ? { id: opts.executionId } : {}),
 		workflowId: workflow.id,
-		userId: workflow.userId,
+		userId: opts.userId ?? workflow.userId,
 		// Scope the run to the workflow's project so event/trigger-started runs
 		// (which have no user session context) still appear under the correct
 		// workspace in the UI — the workspace-scoped run pages filter by projectId,
@@ -216,6 +222,12 @@ export async function startWorkflowRun(
 			tracestate: headers.tracestate,
 			baggage: headers.baggage
 		};
+		void prewarmWorkflowEntrySessions({
+			spec,
+			executionId: execution.id,
+			userId: opts.userId ?? workflow.userId,
+			traceContext,
+		}).catch(() => {});
 		const result = await app.workflowScheduler.startSwWorkflow({
 			orchestratorUrl,
 			headers,

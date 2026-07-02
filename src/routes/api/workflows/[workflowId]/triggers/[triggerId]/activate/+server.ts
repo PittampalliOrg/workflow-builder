@@ -1,29 +1,22 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { and, eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { workflows, workflowTriggers } from '$lib/server/db/schema';
+import { getApplicationAdapters } from '$lib/server/application';
 import { isResourceInScope } from '$lib/server/workflows/project-scope';
 import { activateWorkflowTrigger } from '$lib/server/lifecycle/trigger-reconciler';
 
 // POST — activate a trigger: provision its backing (Argo EventSource+Sensor, …)
 // so the workflow fires whenever the signal arrives.
 export const POST: RequestHandler = async ({ params, locals }) => {
-	if (!db) return error(503, 'Database not configured');
 	if (!locals.session?.userId) return error(401, 'Authentication required');
-	const [wf] = await db
-		.select({ projectId: workflows.projectId, userId: workflows.userId })
-		.from(workflows)
-		.where(eq(workflows.id, params.workflowId!))
-		.limit(1);
-	if (!wf || !isResourceInScope({ projectId: wf.projectId, userId: wf.userId }, locals.session)) {
+	const workflowData = getApplicationAdapters().workflowData;
+	const wf = await workflowData.getWorkflowByRef({ workflowId: params.workflowId!, lookup: 'id' });
+	if (!wf || !isResourceInScope(wf, locals.session)) {
 		return error(404, 'Workflow not found');
 	}
-	const [trigger] = await db
-		.select({ id: workflowTriggers.id })
-		.from(workflowTriggers)
-		.where(and(eq(workflowTriggers.id, params.triggerId!), eq(workflowTriggers.workflowId, params.workflowId!)))
-		.limit(1);
+	const trigger = await workflowData.getWorkflowTrigger({
+		workflowId: params.workflowId!,
+		triggerId: params.triggerId!,
+	});
 	if (!trigger) return error(404, 'Trigger not found');
 
 	const result = await activateWorkflowTrigger(params.triggerId!);
