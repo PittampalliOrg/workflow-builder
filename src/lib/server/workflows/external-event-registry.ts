@@ -1,7 +1,5 @@
-import { desc, eq } from 'drizzle-orm';
 import { env } from '$env/dynamic/private';
-import { db } from '$lib/server/db';
-import { workflowExecutions } from '$lib/server/db/schema';
+import type { WorkflowExecutionListItem } from '$lib/server/application/ports';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -298,19 +296,12 @@ function getExecutionPrUrl(output: unknown): string {
  * Check recent executions for the given workflow to see whether a run for the
  * same issue is already in progress or has already produced a PR.
  */
-export async function findDuplicateSupportedWorkflowExecution(
-	workflowId: string,
+export function findDuplicateSupportedWorkflowExecution(
+	recentExecutions: Array<
+		Pick<WorkflowExecutionListItem, 'id' | 'status' | 'input' | 'output'>
+	>,
 	input: SupportedWorkflowTriggerInput
-): Promise<{ reason: string; executionId: string } | null> {
-	if (!db) return null;
-
-	const recentExecutions = await db
-		.select()
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.workflowId, workflowId))
-		.orderBy(desc(workflowExecutions.startedAt))
-		.limit(25);
-
+): { reason: string; executionId: string } | null {
 	for (const execution of recentExecutions) {
 		const issueKey = getExecutionIssueKey(execution.input);
 		if (

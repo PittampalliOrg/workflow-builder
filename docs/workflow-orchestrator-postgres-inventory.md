@@ -14,7 +14,7 @@ route slices, the project members API route family, and the usage/cost/live
 limits reporting route family, plus sandbox executions/stats, catalog
 pieces/functions, workflow execution read/status APIs, internal
 run-diff/source-bundle artifact ingest APIs, and internal session-ingest utility
-routes.
+routes, plus the external events ingest route.
 
 ## Strict HTTP Runtime Paths
 
@@ -426,14 +426,22 @@ The first UI-facing route has also moved behind the application service:
   `session.provisioning_*` rows through `workflowData.appendSessionEvent`. It
   preserves the previous no-retry `200` skip behavior for malformed, unmatched,
   and no-DB observer events.
+- `src/routes/api/events/ingest/+server.ts` now performs read-model readiness,
+  supported workflow lookup, duplicate scan inputs, execution creation,
+  scheduler attach, and failed-start status updates through workflow-data
+  application ports. The route still owns internal auth, external event parsing,
+  trigger normalization, Dapr orchestrator invocation, and trace-header
+  forwarding. Duplicate detection in
+  `src/lib/server/workflows/external-event-registry.ts` is now a pure helper over
+  execution DTOs instead of a direct `workflow_executions` query.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
 workspace/root UI, settings, connections, admin-pieces, project-members, and
 usage/cost/live-limits route subset is also clean. The scanned sandbox
 executions/stats, catalog pieces/functions, execution read/status, internal
-run-diff/source-bundle ingest, and internal session-ingest route subsets are
-also clean.
+run-diff/source-bundle ingest, internal session-ingest, and external
+events-ingest route subsets are also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:

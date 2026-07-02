@@ -1,9 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
-import { workflows, workflowExecutions } from '$lib/server/db/schema';
+import { getApplicationAdapters } from '$lib/server/application';
 import { validateInternalToken } from '$lib/server/internal-auth';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
 import {
@@ -63,11 +60,10 @@ export const POST: RequestHandler = async ({ request, url }) => {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
 
-	if (!db) {
-		return json({ error: 'Database not configured' }, { status: 503 });
-	}
+	let workflowData: ReturnType<typeof getApplicationAdapters>['workflowData'];
 	try {
-		await assertExecutionReadModelColumns();
+		({ workflowData } = getApplicationAdapters());
+		await workflowData.assertExecutionReadModelReady();
 	} catch (schemaError) {
 		console.error('[EventIngest] execution read-model schema check failed:', schemaError);
 		return json(
@@ -125,21 +121,22 @@ export const POST: RequestHandler = async ({ request, url }) => {
 		return json({ error: 'SUPPORTED_WORKFLOW_ID not configured' }, { status: 500 });
 	}
 
-	const [workflow] = await db
-		.select()
-		.from(workflows)
-		.where(eq(workflows.id, supportedWorkflowId))
-		.limit(1);
+	const workflow = await workflowData.getWorkflowByRef({
+		workflowId: supportedWorkflowId,
+		lookup: 'id'
+	});
 
 	if (!workflow) {
 		return json({ error: 'Workflow not found' }, { status: 404 });
 	}
 
 	// 6. Check for duplicate execution (same issue already running or PR created)
-	const duplicate = await findDuplicateSupportedWorkflowExecution(
-		workflow.id,
-		resolved.input
-	);
+	const recentExecutions = await workflowData.listWorkflowExecutions({
+		workflowId: workflow.id,
+		limit: 25,
+		include: 'full'
+	});
+	const duplicate = findDuplicateSupportedWorkflowExecution(recentExecutions, resolved.input);
 	if (duplicate) {
 		return json({ status: 'ignored', ...duplicate }, { status: 202 });
 	}
@@ -156,20 +153,18 @@ export const POST: RequestHandler = async ({ request, url }) => {
 	// 8. Create execution record
 	let execution;
 	try {
-		[execution] = await db
-			.insert(workflowExecutions)
-			.values({
-				workflowId: workflow.id,
-				userId: workflow.userId,
-				status: 'running',
-				phase: 'running',
-				progress: 0,
-				input: resolved.input,
-				executionIrVersion: 'sw-1.0.0'
-			})
-			.returning({ id: workflowExecutions.id });
+		execution = await workflowData.createWorkflowExecution({
+			workflowId: workflow.id,
+			userId: workflow.userId,
+			projectId: workflow.projectId,
+			status: 'running',
+			phase: 'running',
+			progress: 0,
+			input: resolved.input,
+			executionIrVersion: 'sw-1.0.0'
+		});
 	} catch (dbErr) {
-		console.error('[EventIngest] DB insert failed:', dbErr);
+		console.error('[EventIngest] execution creation failed:', dbErr);
 		return json({ error: 'Failed to create execution record' }, { status: 500 });
 	}
 
@@ -194,14 +189,11 @@ export const POST: RequestHandler = async ({ request, url }) => {
 		if (!res.ok) {
 			const errText = await res.text().catch(() => 'Unknown error');
 			console.error(`[EventIngest] Orchestrator ${res.status}: ${errText}`);
-			await db
-				.update(workflowExecutions)
-				.set({
-					status: 'error',
-					error: `SW workflow failed: ${res.status} ${errText}`.slice(0, 500),
-					completedAt: new Date()
-				})
-				.where(eq(workflowExecutions.id, execution.id));
+			await workflowData.updateExecutionReadModel(execution.id, {
+				status: 'error',
+				error: `SW workflow failed: ${res.status} ${errText}`.slice(0, 500),
+				completedAt: new Date()
+			});
 
 			return json(
 				{ error: `SW workflow failed: ${res.status} ${errText}` },
@@ -209,21 +201,21 @@ export const POST: RequestHandler = async ({ request, url }) => {
 			);
 		}
 
-		const result = await res.json();
+		const result = (await res.json()) as { instanceId?: unknown };
+		const instanceId = typeof result.instanceId === 'string' ? result.instanceId : '';
+		if (!instanceId) {
+			throw new Error('Orchestrator response missing instanceId');
+		}
 
 		// 10. Update execution with Dapr instance ID
-		await db
-			.update(workflowExecutions)
-			.set({
-				daprInstanceId: result.instanceId,
-				phase: 'running',
-				progress: 0,
-				workflowSessionId: execution.id
-			})
-			.where(eq(workflowExecutions.id, execution.id));
+		await workflowData.attachExecutionSchedulerInstance({
+			executionId: execution.id,
+			instanceId,
+			workflowSessionId: execution.id
+		});
 
 		console.log(
-			`[EventIngest] SW 1.0 workflow started: ${result.instanceId} (execution ${execution.id})`
+			`[EventIngest] SW 1.0 workflow started: ${instanceId} (execution ${execution.id})`
 		);
 
 		return json(
@@ -233,21 +225,18 @@ export const POST: RequestHandler = async ({ request, url }) => {
 				eventType,
 				workflowId: workflow.id,
 				executionId: execution.id,
-				instanceId: result.instanceId,
+				instanceId,
 				eventId: envelope.eventId
 			},
 			{ status: 202 }
 		);
 	} catch (err) {
 		console.error('[EventIngest] Orchestrator request failed:', err);
-		await db
-			.update(workflowExecutions)
-			.set({
-				status: 'error',
-				error: err instanceof Error ? err.message : 'Failed to start SW workflow',
-				completedAt: new Date()
-			})
-			.where(eq(workflowExecutions.id, execution.id));
+		await workflowData.updateExecutionReadModel(execution.id, {
+			status: 'error',
+			error: err instanceof Error ? err.message : 'Failed to start SW workflow',
+			completedAt: new Date()
+		});
 
 		return json(
 			{
