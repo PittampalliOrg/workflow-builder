@@ -138,6 +138,7 @@ import type {
 	PieceExecutionRepository,
 	SessionBrowserTarget,
 	SaveWorkflowBrowserArtifactInput,
+	SessionProvisioningReader,
 	WorkflowBrowserBlobPayload,
 	WorkflowBrowserArtifactRecord,
 	WorkflowBrowserArtifactStore,
@@ -751,6 +752,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			benchmarkRuns?: BenchmarkRunRepository;
 			workflowExecutions: WorkflowExecutionRepository;
 			sessions?: SessionRepository;
+			sessionProvisioning?: SessionProvisioningReader;
 			sessionEvents?: SessionEventLog;
 			codeCheckpoints?: WorkflowCodeCheckpointStore;
 			evaluationArtifacts?: EvaluationArtifactStore;
@@ -797,6 +799,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Session event log not configured");
 		}
 		return this.deps.sessionEvents;
+	}
+
+	private requireSessionProvisioning(): SessionProvisioningReader {
+		if (!this.deps.sessionProvisioning) {
+			throw new Error("Session provisioning reader not configured");
+		}
+		return this.deps.sessionProvisioning;
 	}
 
 	private requireCodeCheckpoints(): WorkflowCodeCheckpointStore {
@@ -3368,6 +3377,44 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Piece execution repository is not configured");
 		}
 		return this.deps.pieceExecutions.getByIdempotencyKey(idempotencyKey);
+	}
+
+	async getSessionProvisioningReadModel(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}) {
+		const context = await this.requireSessions().getSessionProvisioningContext(input);
+		if (!context) return { status: "not_found" as const };
+		if (
+			context.status === "running" ||
+			context.status === "idle" ||
+			context.status === "terminated"
+		) {
+			return {
+				status: "ok" as const,
+				data: {
+					phase: "running" as const,
+					label: context.status === "terminated" ? "Ended" : "Sandbox ready",
+					detail: null,
+					podName: null,
+					podPhase: null,
+				},
+			};
+		}
+		return {
+			status: "ok" as const,
+			data: await this.requireSessionProvisioning().getSessionProvisioning({
+				sessionId: context.id,
+				runtimeAppId: context.runtimeAppId,
+			}),
+		};
+	}
+
+	getSessionContextUsage(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}) {
+		return this.requireSessions().getSessionContextUsage(input);
 	}
 
 	getSessionBrowserTarget(input: {

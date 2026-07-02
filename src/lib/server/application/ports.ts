@@ -2227,6 +2227,14 @@ export interface CredentialStore {
 
 export interface SessionRepository {
 	getSession(id: string): Promise<SessionDetail | null>;
+	getSessionProvisioningContext(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionProvisioningContext | null>;
+	getSessionContextUsage(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionContextUsageReadModel | null>;
 	getBrowserSessionTarget(input: {
 		sessionId: string;
 		projectId?: string | null;
@@ -2259,6 +2267,65 @@ export interface SessionRepository {
 		input: UpdateSessionStatusUnlessTerminatedInput,
 	): Promise<void>;
 }
+
+export type SessionProvisioningPhase =
+	| "queued"
+	| "admitted"
+	| "scheduling"
+	| "pulling"
+	| "initializing"
+	| "starting"
+	| "running"
+	| "failed"
+	| "unknown";
+
+export type SessionProvisioningMark = {
+	phase: string;
+	at: string;
+	durationMs: number | null;
+};
+
+export type SessionProvisioningReadModel = {
+	phase: SessionProvisioningPhase;
+	label: string;
+	detail: string | null;
+	podName: string | null;
+	podPhase: string | null;
+	timeline?: SessionProvisioningMark[];
+	source?: "observer" | "pod";
+};
+
+export type SessionProvisioningContext = {
+	id: string;
+	status: SessionStatus;
+	runtimeAppId: string | null;
+	projectId: string | null;
+};
+
+export type SessionProvisioningResult =
+	| { status: "ok"; data: SessionProvisioningReadModel }
+	| { status: "not_found" };
+
+export interface SessionProvisioningReader {
+	getSessionProvisioning(input: {
+		sessionId: string;
+		runtimeAppId?: string | null;
+	}): Promise<SessionProvisioningReadModel>;
+}
+
+export type SessionContextUsageEventStats = {
+	total: number;
+	totalBytes: number;
+	llmTurns: number;
+};
+
+export type SessionContextUsageReadModel = {
+	sessionId: string;
+	usage: SessionUsage;
+	activeContext: Record<string, unknown> | null;
+	lastProviderContext: Record<string, unknown> | null;
+	events: SessionContextUsageEventStats;
+};
 
 export type SessionBrowserTarget = {
 	sessionId: string;
@@ -2785,6 +2852,14 @@ export interface WorkflowDataService {
 	getPieceExecutionByIdempotencyKey(
 		idempotencyKey: string,
 	): Promise<PieceExecutionReadModel | null>;
+	getSessionProvisioningReadModel(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionProvisioningResult>;
+	getSessionContextUsage(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionContextUsageReadModel | null>;
 	getSessionBrowserTarget(input: {
 		sessionId: string;
 		projectId?: string | null;

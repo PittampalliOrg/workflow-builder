@@ -19,6 +19,7 @@ import type {
 	SandboxRuntimeInventory,
 	CodeFunctionCatalogRepository,
 	SessionEventLog,
+	SessionProvisioningReader,
 	SessionRepository,
 	SessionTraceLifecycleStore,
 	WorkflowDefinition,
@@ -476,6 +477,19 @@ function fakeSessionEventNotifications(): WorkflowSessionEventNotificationSource
 function fakeSessions(): SessionRepository {
 	return {
 		getSession: vi.fn(async () => null),
+		getSessionProvisioningContext: vi.fn(async () => ({
+			id: "session-1",
+			status: "rescheduling" as const,
+			runtimeAppId: "agent-session-1",
+			projectId: "project-1",
+		})),
+		getSessionContextUsage: vi.fn(async () => ({
+			sessionId: "session-1",
+			usage: { input_tokens: 100 },
+			activeContext: { context_used_percentage: 10 },
+			lastProviderContext: { model: "openai/gpt-5.5" },
+			events: { total: 3, totalBytes: 1024, llmTurns: 1 },
+		})),
 		getBrowserSessionTarget: vi.fn(async () => ({
 			sessionId: "session-1",
 			agentSlug: "browser-agent",
@@ -521,6 +535,19 @@ function fakeSessions(): SessionRepository {
 		})),
 		updateSessionStatus: vi.fn(async () => undefined),
 		updateSessionStatusUnlessTerminated: vi.fn(async () => undefined),
+	};
+}
+
+function fakeSessionProvisioning(): SessionProvisioningReader {
+	return {
+		getSessionProvisioning: vi.fn(async () => ({
+			phase: "starting" as const,
+			label: "Starting containers",
+			detail: null,
+			podName: "agent-host-session-1",
+			podPhase: "Running",
+			source: "observer" as const,
+		})),
 	};
 }
 
@@ -825,6 +852,7 @@ function makeService(options: {
 	pieceExecutions?: PieceExecutionRepository;
 	browserArtifacts?: WorkflowBrowserArtifactStore;
 	sessions?: SessionRepository;
+	sessionProvisioning?: SessionProvisioningReader;
 	sessionEvents?: SessionEventLog;
 	codeCheckpoints?: WorkflowCodeCheckpointStore;
 	evaluationArtifacts?: EvaluationArtifactStore;
@@ -867,6 +895,7 @@ function makeService(options: {
 		benchmarkRuns: options.benchmarkRuns ?? fakeBenchmarkRuns(),
 		workflowExecutions,
 		sessionEvents: options.sessionEvents,
+		sessionProvisioning: options.sessionProvisioning,
 		codeCheckpoints: options.codeCheckpoints,
 		evaluationArtifacts: options.evaluationArtifacts,
 		sessionTraceLifecycle: options.sessionTraceLifecycle,
@@ -1752,6 +1781,98 @@ describe("ApplicationWorkflowDataService", () => {
 			agentSlug: "browser-agent",
 		});
 		expect(sessions.getBrowserSessionTarget).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			projectId: "project-1",
+		});
+	});
+
+	it("loads provisioning state through session and provisioning ports", async () => {
+		const sessions = {
+			...fakeSessions(),
+			getSessionProvisioningContext: vi.fn(async () => ({
+				id: "session-1",
+				status: "rescheduling" as const,
+				runtimeAppId: "agent-session-1",
+				projectId: "project-1",
+			})),
+		} satisfies SessionRepository;
+		const sessionProvisioning = fakeSessionProvisioning();
+		const { service } = makeService({ sessions, sessionProvisioning });
+
+		await expect(
+			service.getSessionProvisioningReadModel({
+				sessionId: "session-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual({
+			status: "ok",
+			data: expect.objectContaining({
+				phase: "starting",
+				podName: "agent-host-session-1",
+			}),
+		});
+		expect(sessions.getSessionProvisioningContext).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			projectId: "project-1",
+		});
+		expect(sessionProvisioning.getSessionProvisioning).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			runtimeAppId: "agent-session-1",
+		});
+	});
+
+	it("short-circuits provisioning for live or terminal sessions", async () => {
+		const sessions = {
+			...fakeSessions(),
+			getSessionProvisioningContext: vi.fn(async () => ({
+				id: "session-1",
+				status: "terminated" as const,
+				runtimeAppId: "agent-session-1",
+				projectId: "project-1",
+			})),
+		} satisfies SessionRepository;
+		const sessionProvisioning = fakeSessionProvisioning();
+		const { service } = makeService({ sessions, sessionProvisioning });
+
+		await expect(
+			service.getSessionProvisioningReadModel({
+				sessionId: "session-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual({
+			status: "ok",
+			data: {
+				phase: "running",
+				label: "Ended",
+				detail: null,
+				podName: null,
+				podPhase: null,
+			},
+		});
+		expect(sessionProvisioning.getSessionProvisioning).not.toHaveBeenCalled();
+	});
+
+	it("delegates session context usage reads through the session repository", async () => {
+		const usage = {
+			sessionId: "session-1",
+			usage: { input_tokens: 100 },
+			activeContext: { context_used_percentage: 10 },
+			lastProviderContext: { model: "openai/gpt-5.5" },
+			events: { total: 3, totalBytes: 1024, llmTurns: 1 },
+		};
+		const sessions = {
+			...fakeSessions(),
+			getSessionContextUsage: vi.fn(async () => usage),
+		} satisfies SessionRepository;
+		const { service } = makeService({ sessions });
+
+		await expect(
+			service.getSessionContextUsage({
+				sessionId: "session-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual(usage);
+		expect(sessions.getSessionContextUsage).toHaveBeenCalledWith({
 			sessionId: "session-1",
 			projectId: "project-1",
 		});

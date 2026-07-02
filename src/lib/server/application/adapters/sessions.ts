@@ -5,7 +5,10 @@ import type {
 	CreateWorkflowEnsureSessionInput,
 	PeerSessionRecord,
 	SessionBrowserTarget,
+	SessionContextUsageReadModel,
 	SessionEventLog,
+	SessionProvisioningContext,
+	SessionProvisioningReader,
 	SessionRepository,
 	SessionTraceLifecycleStore,
 	SessionWorkflowContext,
@@ -17,13 +20,14 @@ import type {
 } from "$lib/server/application/ports";
 import { and, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
-import { agents, sessions, type Session } from "$lib/server/db/schema";
+import { agents, sessionEvents, sessions, type Session } from "$lib/server/db/schema";
 import {
 	safeFinishMlflowRun,
 	safePatchInteractiveSessionMlflowTraces,
 } from "$lib/server/observability/mlflow-lifecycle";
 import { appendEvent } from "$lib/server/sessions/events";
 import { createSession, getSession } from "$lib/server/sessions/registry";
+import { getSessionProvisioningPreferObserver } from "$lib/server/sessions/provisioning";
 import type { SessionDetail, SessionEventEnvelope } from "$lib/types/sessions";
 
 type Database = typeof defaultDb;
@@ -66,6 +70,100 @@ export class CurrentSessionRepository implements SessionRepository {
 
 	getSession(id: string): Promise<SessionDetail | null> {
 		return getSession(id);
+	}
+
+	async getSessionProvisioningContext(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionProvisioningContext | null> {
+		const database = requireDb(this.database);
+		const [row] = await database
+			.select({
+				id: sessions.id,
+				status: sessions.status,
+				runtimeAppId: sessions.runtimeAppId,
+				projectId: sessions.projectId,
+			})
+			.from(sessions)
+			.where(
+				and(
+					eq(sessions.id, input.sessionId),
+					input.projectId ? eq(sessions.projectId, input.projectId) : undefined,
+				),
+			)
+			.limit(1);
+		return row
+			? {
+					id: row.id,
+					status: row.status as SessionProvisioningContext["status"],
+					runtimeAppId: row.runtimeAppId ?? null,
+					projectId: row.projectId ?? null,
+				}
+			: null;
+	}
+
+	async getSessionContextUsage(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionContextUsageReadModel | null> {
+		const database = requireDb(this.database);
+		const [session] = await database
+			.select({
+				id: sessions.id,
+				usage: sessions.usage,
+			})
+			.from(sessions)
+			.where(
+				and(
+					eq(sessions.id, input.sessionId),
+					input.projectId ? eq(sessions.projectId, input.projectId) : undefined,
+				),
+			)
+			.limit(1);
+		if (!session) return null;
+
+		const [{ eventCount, totalBytes, turns }] = await database
+			.select({
+				eventCount: sql<number>`count(*)`,
+				totalBytes: sql<number>`coalesce(sum(length(data::text)), 0)`,
+				turns: sql<number>`coalesce(nullif(count(*) filter (where type = 'agent.llm_usage'), 0), count(*) filter (where type = 'span.model_request_end'))`,
+			})
+			.from(sessionEvents)
+			.where(eq(sessionEvents.sessionId, input.sessionId));
+		const [activeContext] = await database
+			.select({ data: sessionEvents.data })
+			.from(sessionEvents)
+			.where(
+				and(
+					eq(sessionEvents.sessionId, input.sessionId),
+					eq(sessionEvents.type, "agent.context_usage"),
+				),
+			)
+			.orderBy(desc(sessionEvents.sequence))
+			.limit(1);
+		const [lastProviderContext] = await database
+			.select({ data: sessionEvents.data })
+			.from(sessionEvents)
+			.where(
+				and(
+					eq(sessionEvents.sessionId, input.sessionId),
+					eq(sessionEvents.type, "agent.llm_usage"),
+				),
+			)
+			.orderBy(desc(sessionEvents.sequence))
+			.limit(1);
+
+		return {
+			sessionId: session.id,
+			usage: (session.usage as SessionContextUsageReadModel["usage"]) ?? {},
+			activeContext: recordOrNull(activeContext?.data),
+			lastProviderContext: recordOrNull(lastProviderContext?.data),
+			events: {
+				total: Number(eventCount ?? 0),
+				totalBytes: Number(totalBytes ?? 0),
+				llmTurns: Number(turns ?? 0),
+			},
+		};
 	}
 
 	async getBrowserSessionTarget(input: {
@@ -321,6 +419,21 @@ export class CurrentSessionRepository implements SessionRepository {
 			.update(sessions)
 			.set(patch)
 			.where(and(eq(sessions.id, input.id), sql`${sessions.status} <> 'terminated'`));
+	}
+}
+
+function recordOrNull(value: unknown): Record<string, unknown> | null {
+	return value && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: null;
+}
+
+export class KubernetesSessionProvisioningReader implements SessionProvisioningReader {
+	getSessionProvisioning(input: {
+		sessionId: string;
+		runtimeAppId?: string | null;
+	}) {
+		return getSessionProvisioningPreferObserver(input.sessionId, input.runtimeAppId);
 	}
 }
 

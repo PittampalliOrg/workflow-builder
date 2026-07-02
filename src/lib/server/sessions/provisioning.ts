@@ -12,46 +12,24 @@
  * Running, not all ready → starting
  * Running, ready → running
  */
-import { eq } from 'drizzle-orm';
 import { kubeApiFetch, getOwnNamespace, type KubePod } from '$lib/server/kube/client';
-import { db } from '$lib/server/db';
-import { sessions } from '$lib/server/db/schema';
 import {
 	fetchProvisioningByAppId,
 	type ObserverSessionProvisioning
 } from '$lib/server/capacity/observer';
+import type {
+	SessionProvisioningMark,
+	SessionProvisioningPhase,
+	SessionProvisioningReadModel
+} from '$lib/server/application/ports';
 
 export const SESSION_ID_LABEL = 'workflow-builder.cnoe.io/session-id';
 
-export type ProvisioningPhase =
-	| 'queued'
-	| 'admitted'
-	| 'scheduling'
-	| 'pulling'
-	| 'initializing'
-	| 'starting'
-	| 'running'
-	| 'failed'
-	| 'unknown';
+export type ProvisioningPhase = SessionProvisioningPhase;
+export type { SessionProvisioningMark };
+export type SessionProvisioning = SessionProvisioningReadModel;
 
-export interface SessionProvisioningMark {
-	phase: string;
-	at: string;
-	durationMs: number | null;
-}
-
-export interface SessionProvisioning {
-	phase: ProvisioningPhase;
-	label: string;
-	detail: string | null;
-	podName: string | null;
-	podPhase: string | null;
-	/** Ordered phase timeline w/ authoritative timestamps + durations (observer). */
-	timeline?: SessionProvisioningMark[];
-	source?: 'observer' | 'pod';
-}
-
-const PHASE_LABEL: Record<ProvisioningPhase, string> = {
+const PHASE_LABEL: Record<SessionProvisioningPhase, string> = {
 	queued: 'Waiting for admission',
 	admitted: 'Admitted — scheduling',
 	scheduling: 'Scheduling pod',
@@ -63,14 +41,16 @@ const PHASE_LABEL: Record<ProvisioningPhase, string> = {
 	unknown: 'Provisioning…'
 };
 
-function coercePhase(p: string): ProvisioningPhase {
-	return (Object.keys(PHASE_LABEL) as ProvisioningPhase[]).includes(p as ProvisioningPhase)
-		? (p as ProvisioningPhase)
+function coercePhase(p: string): SessionProvisioningPhase {
+	return (Object.keys(PHASE_LABEL) as SessionProvisioningPhase[]).includes(
+		p as SessionProvisioningPhase
+	)
+		? (p as SessionProvisioningPhase)
 		: 'unknown';
 }
 
 /** Map the observer's richer projection into the BFF SessionProvisioning shape. */
-function fromObserver(o: ObserverSessionProvisioning): SessionProvisioning {
+function fromObserver(o: ObserverSessionProvisioning): SessionProvisioningReadModel {
 	const phase = coercePhase(o.phase);
 	return {
 		phase,
@@ -83,7 +63,7 @@ function fromObserver(o: ObserverSessionProvisioning): SessionProvisioning {
 	};
 }
 
-function derive(pod: KubePod | null): SessionProvisioning {
+function derive(pod: KubePod | null): SessionProvisioningReadModel {
 	if (!pod) {
 		return {
 			phase: 'queued',
@@ -130,7 +110,9 @@ function derive(pod: KubePod | null): SessionProvisioning {
 }
 
 /** Read the session's sandbox pod (by session-id label) and project its phase. */
-export async function getSessionProvisioning(sessionId: string): Promise<SessionProvisioning> {
+export async function getSessionProvisioning(
+	sessionId: string
+): Promise<SessionProvisioningReadModel> {
 	try {
 		const ns = await getOwnNamespace();
 		const selector = encodeURIComponent(`${SESSION_ID_LABEL}=${sessionId}`);
@@ -158,21 +140,13 @@ export async function getSessionProvisioning(sessionId: string): Promise<Session
  *
  * The observer keys its map by the per-session sandbox app-id (the only stable
  * per-session identifier on the pod — the `cnoe.io/session-id` label is the
- * sanitized parent instance, shared across a run's node pods). So we look up the
- * session's `runtime_app_id` and query the observer by that.
+ * sanitized parent instance, shared across a run's node pods). The application
+ * layer resolves the session's runtime app id and passes it in.
  */
 export async function getSessionProvisioningPreferObserver(
-	sessionId: string
-): Promise<SessionProvisioning> {
-	let runtimeAppId: string | null = null;
-	if (db) {
-		const [row] = await db
-			.select({ runtimeAppId: sessions.runtimeAppId })
-			.from(sessions)
-			.where(eq(sessions.id, sessionId))
-			.limit(1);
-		runtimeAppId = row?.runtimeAppId ?? null;
-	}
+	sessionId: string,
+	runtimeAppId?: string | null
+): Promise<SessionProvisioningReadModel> {
 	if (runtimeAppId) {
 		const observed = await fetchProvisioningByAppId(runtimeAppId);
 		if (observed) return fromObserver(observed);

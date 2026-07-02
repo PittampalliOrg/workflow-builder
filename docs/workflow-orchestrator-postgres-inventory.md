@@ -504,6 +504,15 @@ The first UI-facing route has also moved behind the application service:
   through `workflowData.saveWorkflowBrowserArtifact`. The route still owns the
   cli-agent-py command transport, chunked file reads, and helper-pod
   adoption/provisioning behavior.
+- `src/routes/api/v1/sessions/[id]/provisioning/+server.ts` now loads the
+  session-scoped provisioning read model through
+  `workflowData.getSessionProvisioningReadModel`. Session ownership/runtime app
+  lookup is confined to the session repository adapter, and live Kubernetes
+  provisioning reads stay behind the application provisioning reader port.
+- `src/routes/api/v1/sessions/[id]/control/context-usage/+server.ts` now loads
+  session context usage through `workflowData.getSessionContextUsage`. Session
+  ownership, event aggregation, and agent-context JSON extraction are confined
+  to the session repository adapter.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
@@ -515,7 +524,8 @@ events-ingest route subsets, plus the agent-trigger route membership check and
 the CLI credential capture session-owner lookup and ActivePieces resume
 execution lookup, and the GitHub trigger ingress/gate subset, are also clean.
 The internal piece-execution artifact readback and CLI workspace command routes
-are also clean.
+are also clean. The scanned session provisioning and context-usage routes are
+also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:

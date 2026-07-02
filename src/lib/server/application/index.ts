@@ -50,6 +50,7 @@ import {
 } from "$lib/server/application/adapters/sandbox";
 import {
 	CurrentSessionRepository,
+	KubernetesSessionProvisioningReader,
 	LegacyMlflowSessionTraceLifecycle,
 	PostgresSessionEventLog,
 } from "$lib/server/application/adapters/sessions";
@@ -104,6 +105,7 @@ export function getApplicationAdapters(
 	let traceLineage: PostgresTraceLineageStore | undefined;
 	let usageReporting: PostgresUsageReportingRepository | undefined;
 	let sessions: CurrentSessionRepository | undefined;
+	let sessionProvisioning: KubernetesSessionProvisioningReader | undefined;
 	let sessionEvents: PostgresSessionEventLog | undefined;
 	let sessionTraceLifecycle: LegacyMlflowSessionTraceLifecycle | undefined;
 	let peerAgentResolver: RegistryPeerAgentResolver | undefined;
@@ -166,6 +168,8 @@ export function getApplicationAdapters(
 	const getUsageReporting = () =>
 		(usageReporting ??= new PostgresUsageReportingRepository(getDatabase()));
 	const getSessions = () => (sessions ??= new CurrentSessionRepository(getDatabase()));
+	const getSessionProvisioning = () =>
+		(sessionProvisioning ??= new KubernetesSessionProvisioningReader());
 	const getSessionEvents = () => (sessionEvents ??= new PostgresSessionEventLog());
 	const getSessionTraceLifecycle = () =>
 		(sessionTraceLifecycle ??= new LegacyMlflowSessionTraceLifecycle());
@@ -203,6 +207,7 @@ export function getApplicationAdapters(
 			benchmarkRuns: getBenchmarkRuns(),
 			workflowExecutions: getWorkflowExecutions(),
 			sessions: getSessions(),
+			sessionProvisioning: getSessionProvisioning(),
 			sessionEvents: getSessionEvents(),
 			sessionTraceLifecycle: getSessionTraceLifecycle(),
 			peerAgentResolver: getPeerAgentResolver(),
