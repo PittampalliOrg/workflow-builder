@@ -20,7 +20,6 @@ import json
 import logging
 from typing import Any
 
-import psycopg2
 import requests
 
 from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
@@ -207,6 +206,8 @@ def persist_workspace_session(ctx, input_data: dict[str, Any]) -> dict[str, Any]
                         workspace_ref,
                         exc_info=True,
                     )
+
+            import psycopg2
 
             db_url = _get_database_url()
             conn = psycopg2.connect(db_url, connect_timeout=3)

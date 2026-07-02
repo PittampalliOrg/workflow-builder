@@ -1,11 +1,13 @@
 """
-Persist Results to DB Activity
+Persist Results Activity
 
-Writes the final workflow output to the workflow_executions table in PostgreSQL.
-This is the belt-and-suspenders approach: even if the UI never polls (e.g., user
-closes browser), results are saved directly by the orchestrator.
+Persists the final workflow output through the workflow-data API so orchestration
+persistence stays behind the workflow-builder application boundary. In strict
+WORKFLOW_DATA_API_MODE=http, workflow-data failures do not fall back to DB.
 
-Fetches DATABASE_URL from the Dapr kubernetes-secrets store.
+Direct Postgres writes remain only for WORKFLOW_DATA_API_MODE=postgres or
+http-fallback-db rollback. The legacy MLflow browser-artifact projection is
+disabled unless WORKFLOW_ORCHESTRATOR_LEGACY_MLFLOW_ENABLED is set.
 """
 
 from __future__ import annotations
@@ -18,7 +20,6 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Any
 
-import psycopg2
 import requests
 from dapr.clients import DaprClient
 
@@ -214,6 +215,8 @@ def _fetch_browser_artifacts(db_url: str, db_execution_id: str) -> list[dict[str
     artifacts: list[dict[str, Any]] = []
     conn = None
     try:
+        import psycopg2
+
         conn = psycopg2.connect(db_url)
         with conn.cursor() as cur:
             cur.execute(
@@ -652,6 +655,8 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                         db_execution_id,
                         exc,
                     )
+
+            import psycopg2
 
             db_url = _get_database_url()
             conn = psycopg2.connect(db_url)

@@ -1,12 +1,12 @@
 """
 Log Node Execution Activity
 
-Writes execution logs for agent nodes directly to the workflow_execution_logs
-table in PostgreSQL. Regular action nodes are already logged by function-router;
-this activity fills the gap for agent nodes that bypass function-router.
+Persists execution logs for agent nodes through the workflow-data API. Regular
+action nodes are already logged by function-router; this activity fills the gap
+for agent nodes that bypass function-router.
 
-Fetches DATABASE_URL from the Dapr kubernetes-secrets store (reading from the
-workflow-builder-secrets K8s secret).
+Direct Postgres writes are retained only for WORKFLOW_DATA_API_MODE=postgres or
+http-fallback-db rollback.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-import psycopg2
 import requests
 
 from core.config import config
@@ -146,6 +145,8 @@ def log_node_start(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             logger.info(f"[Log Node Execution] Inserted running log via workflow-data: {log_id}")
             return {"success": True, "logId": log_id}
 
+        import psycopg2
+
         db_url = _get_database_url()
         conn = psycopg2.connect(db_url)
         try:
@@ -233,6 +234,8 @@ def update_execution_node(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             )
             return {"success": True}
 
+        import psycopg2
+
         db_url = _get_database_url()
         conn = psycopg2.connect(db_url)
         try:
@@ -318,6 +321,8 @@ def log_node_complete(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             )
             logger.info(f"[Log Node Execution] Updated log via workflow-data to {status}: {log_id}")
             return {"success": True}
+
+        import psycopg2
 
         db_url = _get_database_url()
         conn = psycopg2.connect(db_url)

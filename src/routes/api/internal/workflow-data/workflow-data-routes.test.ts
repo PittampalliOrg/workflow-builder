@@ -2,6 +2,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
 	const workflowData = {
+		getExecutionById: vi.fn(async (id: string) => ({ id })),
+		updateExecutionReadModel: vi.fn(async () => undefined),
+		appendExecutionLog: vi.fn(async () => ({
+			id: "log-1",
+			executionId: "exec-1",
+		})),
+		updateExecutionLog: vi.fn(async () => ({
+			id: "log-1",
+			executionId: "exec-1",
+			status: "success",
+		})),
+		upsertWorkflowWorkspaceSession: vi.fn(async () => ({
+			workspaceRef: "workspace-1",
+		})),
 		upsertScheduledAgentRun: vi.fn(async () => ({ id: "agent-run-1" })),
 		updateAgentRunLifecycle: vi.fn(async () => ({
 			id: "agent-run-1",
@@ -48,10 +62,14 @@ vi.mock("$lib/server/internal-auth", () => ({
 
 import { POST as postAgentRun } from "./agent-runs/+server";
 import { PATCH as patchAgentRun } from "./agent-runs/[runId]/+server";
+import { PATCH as patchExecution } from "./executions/[executionId]/+server";
+import { POST as postExecutionLog } from "./executions/[executionId]/logs/+server";
+import { PATCH as patchExecutionLog } from "./executions/[executionId]/logs/[logId]/+server";
 import { POST as postPlanArtifact } from "./plan-artifacts/+server";
 import { PATCH as patchPlanArtifact } from "./plan-artifacts/[artifactRef]/+server";
 import { GET as getTraceTargets } from "./traces/executions/[executionId]/targets/+server";
 import { POST as postTraceLineage } from "./traces/lineage/+server";
+import { POST as postWorkspaceSession } from "./workspace-sessions/+server";
 
 function jsonRequest(body?: unknown) {
 	return new Request("http://workflow-builder.internal/test", {
@@ -98,6 +116,93 @@ describe("internal workflow-data routes", () => {
 			error: null,
 			workspaceRef: null,
 			eventPublished: true,
+		});
+	});
+
+	it("updates execution read models and logs through the workflow-data service", async () => {
+		await patchExecution({
+			params: { executionId: "exec-1" },
+			request: jsonRequest({
+				phase: "running",
+				progress: 50,
+				currentNodeId: "agent",
+				currentNodeName: "Agent",
+			}),
+		} as never);
+		await postExecutionLog({
+			params: { executionId: "exec-1" },
+			request: jsonRequest({
+				id: "log-1",
+				nodeId: "agent",
+				nodeName: "Agent",
+				nodeType: "action",
+				activityName: "durable/run",
+				status: "running",
+				input: { prompt: "ship it" },
+				startedAt: "2026-01-01T00:00:00.000Z",
+			}),
+		} as never);
+		await patchExecutionLog({
+			params: { executionId: "exec-1", logId: "log-1" },
+			request: jsonRequest({
+				status: "success",
+				output: { content: "done" },
+				completedAt: "2026-01-01T00:00:42.000Z",
+				duration: "42",
+			}),
+		} as never);
+
+		expect(mocks.workflowData.updateExecutionReadModel).toHaveBeenCalledWith("exec-1", {
+			phase: "running",
+			progress: 50,
+			currentNodeId: "agent",
+			currentNodeName: "Agent",
+		});
+		expect(mocks.workflowData.appendExecutionLog).toHaveBeenCalledWith(
+			expect.objectContaining({
+				id: "log-1",
+				executionId: "exec-1",
+				nodeId: "agent",
+				activityName: "durable/run",
+				status: "running",
+			}),
+		);
+		expect(mocks.workflowData.updateExecutionLog).toHaveBeenCalledWith(
+			"exec-1",
+			"log-1",
+			expect.objectContaining({
+				status: "success",
+				output: { content: "done" },
+				duration: "42",
+			}),
+		);
+	});
+
+	it("upserts workspace sessions through the workflow-data service", async () => {
+		await postWorkspaceSession({
+			request: jsonRequest({
+				workspaceRef: "workspace-1",
+				workflowExecutionId: "exec-1",
+				name: "workspace_profile",
+				rootPath: "/sandbox",
+				backend: "openshell",
+				enabledTools: ["shell"],
+				status: "active",
+				sandboxState: { keepAfterRun: true },
+			}),
+		} as never);
+
+		expect(mocks.workflowData.upsertWorkflowWorkspaceSession).toHaveBeenCalledWith({
+			workspaceRef: "workspace-1",
+			workflowExecutionId: "exec-1",
+			durableInstanceId: null,
+			name: "workspace_profile",
+			rootPath: "/sandbox",
+			clonePath: null,
+			backend: "openshell",
+			enabledTools: ["shell"],
+			status: "active",
+			sandboxState: { keepAfterRun: true },
 		});
 	});
 

@@ -2866,8 +2866,13 @@ def _build_goal_plan_artifact_input(
     if not tc.db_execution_id or not isinstance(result, dict) or not result.get("success", True):
         return None
 
-    data = result.get("data") if isinstance(result.get("data"), dict) else {}
-    goal_spec = data.get("goalSpec") or result.get("goalSpec")
+    data_envelope = result.get("data") if isinstance(result.get("data"), dict) else {}
+    data = (
+        data_envelope.get("data")
+        if isinstance(data_envelope.get("data"), dict)
+        else data_envelope
+    )
+    goal_spec = data.get("goalSpec") or data_envelope.get("goalSpec") or result.get("goalSpec")
     if not isinstance(goal_spec, dict):
         return None
 
@@ -2903,7 +2908,11 @@ def _build_goal_plan_artifact_input(
             "rationale": data.get("rationale"),
             "lint": data.get("lint"),
         },
-        "planMarkdown": result.get("content") if isinstance(result.get("content"), str) else None,
+        "planMarkdown": (
+            result.get("content")
+            if isinstance(result.get("content"), str)
+            else data.get("content") if isinstance(data.get("content"), str) else None
+        ),
         "artifactType": "goal_spec_v1",
         "status": "draft",
         "workspaceRef": task_input_dict.get("workspaceRef"),

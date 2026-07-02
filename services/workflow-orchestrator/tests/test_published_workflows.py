@@ -1367,7 +1367,39 @@ def test_sw_workflow_dispatches_task_activity_otel_context(monkeypatch):
     assert "workflow.node.action_type=workspace/profile" in otel["baggage"]
 
 
-def test_sw_workflow_goal_plan_persists_plan_artifact(monkeypatch):
+@pytest.mark.parametrize(
+    "goal_plan_result",
+    [
+        {
+            "success": True,
+            "data": {
+                "goalSpec": {
+                    "objective": "ship workflow-data",
+                    "acceptanceCriteria": ["strict mode passes"],
+                    "evidence": [],
+                },
+                "rationale": "parsed from planner output",
+                "lint": {"warnings": []},
+            },
+        },
+        {
+            "success": True,
+            "data": {
+                "success": True,
+                "data": {
+                    "goalSpec": {
+                        "objective": "ship workflow-data",
+                        "acceptanceCriteria": ["strict mode passes"],
+                        "evidence": [],
+                    },
+                    "rationale": "parsed from planner output",
+                    "lint": {"warnings": []},
+                },
+            },
+        },
+    ],
+)
+def test_sw_workflow_goal_plan_persists_plan_artifact(monkeypatch, goal_plan_result):
     _install_terminal_workflow_model_fakes(monkeypatch)
     ctx = _FakeTerminalWorkflowCtx()
     workflow_gen = SW_WORKFLOW.sw_workflow(
@@ -1398,20 +1430,7 @@ def test_sw_workflow_goal_plan_persists_plan_artifact(monkeypatch):
     execution = workflow_gen.send({"success": True})
     assert execution["activity"] == "execute_action"
 
-    persisted = workflow_gen.send(
-        {
-            "success": True,
-            "data": {
-                "goalSpec": {
-                    "objective": "ship workflow-data",
-                    "acceptanceCriteria": ["strict mode passes"],
-                    "evidence": [],
-                },
-                "rationale": "parsed from planner output",
-                "lint": {"warnings": []},
-            },
-        }
-    )
+    persisted = workflow_gen.send(goal_plan_result)
     assert persisted["activity"] == "persist_plan_artifact"
     assert persisted["input"]["artifactRef"] == "plan_db_exec_123_plan_finalize"
     assert persisted["input"]["workflowId"] == "wf_test"

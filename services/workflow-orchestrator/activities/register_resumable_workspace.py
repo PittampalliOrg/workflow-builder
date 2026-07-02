@@ -16,8 +16,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import psycopg2
-
 from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
 from activities.persist_workspace_session import _get_database_url
 from tracing import start_activity_span
@@ -79,6 +77,8 @@ def register_resumable_workspace(ctx, input_data: dict[str, Any]) -> dict[str, A
                         workspace_ref,
                         exc_info=True,
                     )
+            import psycopg2
+
             conn = psycopg2.connect(_get_database_url(), connect_timeout=3)
             try:
                 with conn.cursor() as cur:

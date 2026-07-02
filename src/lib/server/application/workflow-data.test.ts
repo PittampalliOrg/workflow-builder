@@ -196,4 +196,95 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(planArtifacts.updatePlanArtifactStatus).toHaveBeenCalledTimes(1);
 		expect(traceLineage.upsertTraceLineageLinks).toHaveBeenCalledTimes(1);
 	});
+
+	it("delegates execution, artifact, and workspace persistence to their ports", async () => {
+		const executionLog = {
+			id: "log-1",
+			executionId: "exec-1",
+			nodeId: "agent",
+			nodeName: "Agent",
+			nodeType: "action",
+			activityName: "durable/run",
+			status: "running" as const,
+			input: {},
+			output: null,
+			error: null,
+			startedAt: new Date("2026-01-01T00:00:00.000Z"),
+			completedAt: null,
+			duration: null,
+			timestamp: new Date("2026-01-01T00:00:00.000Z"),
+			credentialFetchMs: null,
+			routingMs: null,
+			coldStartMs: null,
+			executionMs: null,
+			routedTo: null,
+			wasColdStart: null,
+		};
+		const workflowExecutions = {
+			getById: vi.fn(async () => null),
+			create: vi.fn(async () => ({ id: "exec-1" })),
+			attachSchedulerInstance: vi.fn(async () => undefined),
+			markStartFailed: vi.fn(async () => undefined),
+			updateReadModel: vi.fn(async () => undefined),
+			appendLog: vi.fn(async () => executionLog),
+			updateLog: vi.fn(async () => ({ ...executionLog, status: "success" as const })),
+		} satisfies WorkflowExecutionRepository;
+		const artifactStore = {
+			upsertWorkflowArtifact: vi.fn(async () => ({ id: "artifact-1" })),
+			listWorkflowArtifactsByExecutionId: vi.fn(async () => []),
+		} satisfies ArtifactStore;
+		const workspaceSessions = {
+			upsertWorkflowWorkspaceSession: vi.fn(async () => ({
+				workspaceRef: "workspace-1",
+			})),
+		} satisfies WorkspaceSessionStore;
+		const service = new ApplicationWorkflowDataService({
+			workflowDefinitions: makeService({}).workflowDefinitions,
+			workflowExecutions,
+			artifactStore,
+			workspaceSessions,
+			agentRuns: {} as WorkflowAgentRunStore,
+			planArtifacts: {} as WorkflowPlanArtifactStore,
+			traceLineage: {} as TraceLineageStore,
+		});
+
+		await service.updateExecutionReadModel("exec-1", { phase: "running" });
+		await service.appendExecutionLog({
+			executionId: "exec-1",
+			nodeId: "agent",
+			nodeName: "Agent",
+			nodeType: "action",
+			status: "running",
+		});
+		await service.updateExecutionLog("exec-1", "log-1", { status: "success" });
+		await service.upsertWorkflowArtifact({
+			id: "artifact-1",
+			workflowExecutionId: "exec-1",
+			kind: "markdown",
+			title: "Summary",
+		});
+		await service.upsertWorkflowWorkspaceSession({
+			workspaceRef: "workspace-1",
+			workflowExecutionId: "exec-1",
+			name: "workspace_profile",
+			rootPath: "/sandbox",
+			backend: "openshell",
+		});
+
+		expect(workflowExecutions.updateReadModel).toHaveBeenCalledWith("exec-1", {
+			phase: "running",
+		});
+		expect(workflowExecutions.appendLog).toHaveBeenCalledWith(
+			expect.objectContaining({ executionId: "exec-1", nodeId: "agent" }),
+		);
+		expect(workflowExecutions.updateLog).toHaveBeenCalledWith("exec-1", "log-1", {
+			status: "success",
+		});
+		expect(artifactStore.upsertWorkflowArtifact).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "artifact-1", kind: "markdown" }),
+		);
+		expect(workspaceSessions.upsertWorkflowWorkspaceSession).toHaveBeenCalledWith(
+			expect.objectContaining({ workspaceRef: "workspace-1", backend: "openshell" }),
+		);
+	});
 });

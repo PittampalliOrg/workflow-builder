@@ -12,7 +12,6 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-import psycopg2
 from dapr.clients import DaprClient
 
 from content_tracing import io_attributes
@@ -172,6 +171,8 @@ def _persist_execution_phase(
             logger.exception(
                 "[Publish Event] workflow-data phase update failed; falling back to Postgres"
             )
+
+    import psycopg2
 
     db_url = _get_database_url()
     conn = psycopg2.connect(db_url)

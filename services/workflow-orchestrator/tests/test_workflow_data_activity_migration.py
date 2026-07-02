@@ -50,12 +50,19 @@ def _load_activity(name: str):
 track_agent_run = _load_activity("track_agent_run")
 persist_plan_artifact = _load_activity("persist_plan_artifact")
 finalizer = _load_activity("finalize_otel_trace_root")
+log_node_execution = _load_activity("log_node_execution")
+persist_workspace_session = _load_activity("persist_workspace_session")
+register_resumable_workspace = _load_activity("register_resumable_workspace")
 
 
 class FailingPsycopg2:
     @staticmethod
     def connect(*_args, **_kwargs):
         raise AssertionError("psycopg2.connect should not be called in strict http mode")
+
+
+def _fail_database_url():
+    raise AssertionError("database URL should not be fetched")
 
 
 def test_track_agent_run_strict_http_uses_workflow_data_client(monkeypatch):
@@ -72,7 +79,7 @@ def test_track_agent_run_strict_http_uses_workflow_data_client(monkeypatch):
     monkeypatch.setattr(
         track_agent_run,
         "_get_database_url",
-        lambda: (_ for _ in ()).throw(AssertionError("database URL should not be fetched")),
+        _fail_database_url,
     )
 
     result = track_agent_run.track_agent_run_scheduled(
@@ -125,7 +132,7 @@ def test_persist_plan_artifact_strict_http_uses_workflow_data_client(monkeypatch
     monkeypatch.setattr(
         persist_plan_artifact,
         "_get_database_url",
-        lambda: (_ for _ in ()).throw(AssertionError("database URL should not be fetched")),
+        _fail_database_url,
     )
 
     result = persist_plan_artifact.persist_plan_artifact(
@@ -151,6 +158,201 @@ def test_persist_plan_artifact_strict_http_uses_workflow_data_client(monkeypatch
     }
     assert calls[0]["workflowExecutionId"] == "exec-1"
     assert calls[0]["planJson"] == {"steps": []}
+
+
+def test_log_node_execution_strict_http_uses_workflow_data_client(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    class FakeWorkflowDataClient:
+        def append_execution_log(self, execution_id, payload):
+            calls.append((f"append:{execution_id}", payload))
+            return {"log": {"id": payload["id"]}}
+
+        def patch_execution(self, execution_id, payload):
+            calls.append((f"patch:{execution_id}", payload))
+            return {"ok": True}
+
+        def update_execution_log(self, execution_id, log_id, payload):
+            calls.append((f"update:{execution_id}:{log_id}", payload))
+            return {"log": {"id": log_id}}
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
+    monkeypatch.setattr(log_node_execution, "workflow_data_client", FakeWorkflowDataClient())
+    monkeypatch.setattr(log_node_execution, "_get_database_url", _fail_database_url)
+
+    start = log_node_execution.log_node_start(
+        None,
+        {
+            "executionId": "exec-1",
+            "nodeId": "agent",
+            "nodeName": "Agent",
+            "nodeType": "action",
+            "actionType": "durable/run",
+            "input": {"prompt": "ship it"},
+        },
+    )
+    update = log_node_execution.update_execution_node(
+        None,
+        {"executionId": "exec-1", "nodeId": "agent", "nodeName": "Agent"},
+    )
+    complete = log_node_execution.log_node_complete(
+        None,
+        {
+            "executionId": "exec-1",
+            "logId": start["logId"],
+            "status": "success",
+            "output": {"content": "done"},
+            "durationMs": 42,
+        },
+    )
+
+    assert start["success"] is True
+    assert update == {"success": True}
+    assert complete == {"success": True}
+    assert [name for name, _payload in calls] == [
+        "append:exec-1",
+        "patch:exec-1",
+        f"update:exec-1:{start['logId']}",
+    ]
+    assert calls[0][1]["activityName"] == "durable/run"
+    assert calls[1][1] == {"currentNodeId": "agent", "currentNodeName": "Agent"}
+    assert calls[2][1]["duration"] == "42"
+
+
+def test_log_node_execution_strict_http_failure_does_not_fallback(monkeypatch):
+    class FailingWorkflowDataClient:
+        def append_execution_log(self, *_args, **_kwargs):
+            raise RuntimeError("workflow-data unavailable")
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
+    monkeypatch.setattr(log_node_execution, "workflow_data_client", FailingWorkflowDataClient())
+    monkeypatch.setattr(log_node_execution, "_get_database_url", _fail_database_url)
+
+    result = log_node_execution.log_node_start(
+        None,
+        {
+            "executionId": "exec-1",
+            "nodeId": "agent",
+            "nodeName": "Agent",
+            "nodeType": "action",
+            "actionType": "durable/run",
+        },
+    )
+
+    assert result["success"] is False
+    assert "workflow-data unavailable" in result["error"]
+
+
+def test_persist_workspace_session_strict_http_uses_workflow_data_client(monkeypatch):
+    calls: list[dict] = []
+
+    class FakeWorkflowDataClient:
+        def upsert_workspace_session(self, payload):
+            calls.append(payload)
+            return {"ok": True}
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
+    monkeypatch.setattr(
+        persist_workspace_session,
+        "workflow_data_client",
+        FakeWorkflowDataClient(),
+    )
+    monkeypatch.setattr(persist_workspace_session, "_get_database_url", _fail_database_url)
+
+    result = persist_workspace_session.persist_workspace_session(
+        None,
+        {
+            "workflowExecutionId": "exec-1",
+            "actionType": "workspace/profile",
+            "keepAfterRun": True,
+            "taskName": "workspace_profile",
+            "result": {
+                "success": True,
+                "data": {
+                    "workspaceRef": "ws-1",
+                    "rootPath": "/sandbox",
+                    "backend": "openshell",
+                    "enabledTools": ["shell"],
+                    "sandbox": {
+                        "details": {
+                            "sandboxName": "ws-1",
+                            "executionId": "exec-1",
+                            "template": "dapr-agent",
+                        }
+                    },
+                },
+            },
+        },
+    )
+
+    assert result == {"success": True, "workspace_ref": "ws-1"}
+    assert calls == [
+        {
+            "workspaceRef": "ws-1",
+            "workflowExecutionId": "exec-1",
+            "name": "workspace_profile",
+            "rootPath": "/sandbox",
+            "backend": "openshell",
+            "enabledTools": ["shell"],
+            "status": "active",
+            "sandboxState": {
+                "backend": "openshell",
+                "details": {
+                    "template": "dapr-agent",
+                    "sandboxId": None,
+                    "sandboxName": "ws-1",
+                    "executionId": "exec-1",
+                    "rootPath": "/sandbox",
+                    "workspaceRef": "ws-1",
+                    "image": None,
+                    "provider": None,
+                },
+                "rootPath": "/sandbox",
+                "workingDirectory": "/sandbox",
+                "keepAfterRun": True,
+            },
+        }
+    ]
+
+
+def test_register_resumable_workspace_strict_http_uses_workflow_data_client(monkeypatch):
+    calls: list[dict] = []
+
+    class FakeWorkflowDataClient:
+        def upsert_workspace_session(self, payload):
+            calls.append(payload)
+            return {"ok": True}
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
+    monkeypatch.setattr(
+        register_resumable_workspace,
+        "workflow_data_client",
+        FakeWorkflowDataClient(),
+    )
+    monkeypatch.setattr(register_resumable_workspace, "_get_database_url", _fail_database_url)
+
+    result = register_resumable_workspace.register_resumable_workspace(
+        None,
+        {"workspaceRef": "resumable-1", "dbExecutionId": "exec-1"},
+    )
+
+    assert result == {"success": True, "workspace_ref": "resumable-1"}
+    assert calls == [
+        {
+            "workspaceRef": "resumable-1",
+            "workflowExecutionId": "exec-1",
+            "name": "exec-1",
+            "rootPath": "/sandbox/work",
+            "backend": "juicefs",
+            "enabledTools": [],
+            "status": "active",
+            "sandboxState": {},
+        }
+    ]
 
 
 def test_trace_lineage_strict_http_uses_workflow_data_client(monkeypatch):
