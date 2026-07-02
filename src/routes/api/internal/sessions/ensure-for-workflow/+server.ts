@@ -9,8 +9,6 @@ import { db } from "$lib/server/db";
 import {
 	agents,
 	agentVersions,
-	benchmarkRunInstances,
-	benchmarkRuns,
 } from "$lib/server/db/schema";
 import {
 	addResource,
@@ -63,10 +61,6 @@ type PublishedWorkflowAgent = {
 	mlflowModelName: string | null;
 	mlflowModelVersion: string | null;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * Internal endpoint called by the workflow-orchestrator `spawn_session_for_workflow`
@@ -140,66 +134,13 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 	}
 	if (benchmarkRunId) {
-		const [runState] = await db
-			.select({
-				runStatus: benchmarkRuns.status,
-				summary: benchmarkRuns.summary,
-				instanceStatus: benchmarkRunInstances.status,
-				inferenceStatus: benchmarkRunInstances.inferenceStatus,
-			})
-			.from(benchmarkRuns)
-			.leftJoin(
-				benchmarkRunInstances,
-				and(
-					eq(benchmarkRunInstances.runId, benchmarkRuns.id),
-					benchmarkInstanceId
-						? eq(benchmarkRunInstances.instanceId, benchmarkInstanceId)
-						: eq(benchmarkRunInstances.runId, benchmarkRuns.id),
-				),
-			)
-			.where(eq(benchmarkRuns.id, benchmarkRunId))
-			.limit(1);
-		if (!runState) {
-			return error(404, "Benchmark run not found");
-		}
-		if (
-			runState.runStatus !== "queued" &&
-			runState.runStatus !== "inferencing"
-		) {
-			return error(
-				409,
-				`Benchmark run ${benchmarkRunId} is ${runState.runStatus}; refusing to provision session host`,
-			);
-		}
-		if (
-			benchmarkInstanceId &&
-			runState.instanceStatus &&
-			runState.instanceStatus !== "queued" &&
-			runState.instanceStatus !== "inferencing"
-		) {
-			return error(
-				409,
-				`Benchmark instance ${benchmarkInstanceId} is ${runState.instanceStatus}; refusing to provision session host`,
-			);
-		}
-		if (
-			benchmarkInstanceId &&
-			runState.inferenceStatus &&
-			runState.inferenceStatus !== "queued" &&
-			runState.inferenceStatus !== "inferencing"
-		) {
-				return error(
-					409,
-					`Benchmark instance ${benchmarkInstanceId} inference is ${runState.inferenceStatus}; refusing to provision session host`,
-				);
-		}
+		const gate = await workflowData.checkBenchmarkSessionProvisioningGate({
+			runId: benchmarkRunId,
+			instanceId: benchmarkInstanceId,
+		});
+		if (!gate.ok) return error(gate.status, gate.message);
 		if (!benchmarkExecutionClass) {
-			const summary = isRecord(runState.summary) ? runState.summary : {};
-			const execution = isRecord(summary.execution) ? summary.execution : {};
-			benchmarkExecutionClass =
-				typeof execution.class === "string" && execution.class.trim()
-					? execution.class.trim()
-					: null;
+			benchmarkExecutionClass = gate.benchmarkExecutionClass;
 		}
 	}
 	const rawAgentConfig =

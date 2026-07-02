@@ -14,6 +14,7 @@ vi.mock("$lib/server/application/adapters/postgres", () => ({
 	PostgresWorkspaceProjectRepository: vi.fn(),
 	PostgresPieceCatalogRepository: vi.fn(),
 	PostgresBenchmarkBrowserRepository: vi.fn(),
+	PostgresBenchmarkRunRepository: vi.fn(),
 	PostgresMcpConnectionRepository: vi.fn(),
 	PostgresHostedMcpServerRepository: vi.fn(),
 	PostgresMcpRunRepository: vi.fn(),

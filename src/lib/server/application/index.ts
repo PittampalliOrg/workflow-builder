@@ -8,6 +8,7 @@ import {
 	PostgresAppConnectionRepository,
 	PostgresApiKeyStore,
 	PostgresBenchmarkBrowserRepository,
+	PostgresBenchmarkRunRepository,
 	PostgresCodeFunctionCatalogRepository,
 	PostgresEvaluationArtifactStore,
 	PostgresHostedMcpServerRepository,
@@ -90,6 +91,7 @@ export function getApplicationAdapters(
 	let browserArtifacts: PostgresWorkflowBrowserArtifactStore | undefined;
 	let codeFunctionCatalog: PostgresCodeFunctionCatalogRepository | undefined;
 	let benchmarkBrowser: PostgresBenchmarkBrowserRepository | undefined;
+	let benchmarkRuns: PostgresBenchmarkRunRepository | undefined;
 	let workflowExecutions: PostgresWorkflowExecutionRepository | undefined;
 	let workflowFiles: PostgresWorkflowFileStore | undefined;
 	let sandboxInventory: PostgresSandboxInventoryRepository | undefined;
@@ -140,6 +142,8 @@ export function getApplicationAdapters(
 		(codeFunctionCatalog ??= new PostgresCodeFunctionCatalogRepository(getDatabase()));
 	const getBenchmarkBrowser = () =>
 		(benchmarkBrowser ??= new PostgresBenchmarkBrowserRepository(getDatabase()));
+	const getBenchmarkRuns = () =>
+		(benchmarkRuns ??= new PostgresBenchmarkRunRepository(getDatabase()));
 	const getWorkflowExecutions = () =>
 		(workflowExecutions ??= new PostgresWorkflowExecutionRepository(getDatabase()));
 	const getWorkflowFiles = () =>
@@ -204,6 +208,7 @@ export function getApplicationAdapters(
 				browserArtifacts: getBrowserArtifacts(),
 				codeFunctionCatalog: getCodeFunctionCatalog(),
 				benchmarkBrowser: getBenchmarkBrowser(),
+				benchmarkRuns: getBenchmarkRuns(),
 				workflowExecutions: getWorkflowExecutions(),
 				sessions: getSessions(),
 				sessionEvents: getSessionEvents(),

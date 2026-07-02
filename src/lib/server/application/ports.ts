@@ -1348,6 +1348,20 @@ export interface BenchmarkBrowserRepository {
 	}): Promise<BenchmarkBrowserAgentRecord[]>;
 }
 
+export type BenchmarkSessionProvisioningGateRecord = {
+	runStatus: string;
+	summary: Record<string, unknown> | null;
+	instanceStatus: string | null;
+	inferenceStatus: string | null;
+};
+
+export interface BenchmarkRunRepository {
+	getSessionProvisioningGate(input: {
+		runId: string;
+		instanceId?: string | null;
+	}): Promise<BenchmarkSessionProvisioningGateRecord | null>;
+}
+
 export interface WorkflowDefinitionRepository {
 	getById(id: string): Promise<WorkflowDefinition | null>;
 	getLatestByName(name: string): Promise<WorkflowDefinition | null>;
@@ -1525,6 +1539,17 @@ export type WorkflowExecutionSessionOwnerContext = {
 	workflowId: string;
 	projectId: string | null;
 };
+
+export type BenchmarkSessionProvisioningGateResult =
+	| {
+			ok: true;
+			benchmarkExecutionClass: string | null;
+	  }
+	| {
+			ok: false;
+			status: 404 | 409;
+			message: string;
+	  };
 
 export type UsageReportingScope = {
 	userId: string;
@@ -2690,6 +2715,10 @@ export interface WorkflowDataService {
 	listTerminalWorkflowSessionRuntimeHosts(input: {
 		workflowExecutionId: string;
 	}): Promise<WorkflowSessionRuntimeHostRecord[]>;
+	checkBenchmarkSessionProvisioningGate(input: {
+		runId: string;
+		instanceId?: string | null;
+	}): Promise<BenchmarkSessionProvisioningGateResult>;
 	ensurePeerSession(input: EnsurePeerSessionInput): Promise<EnsurePeerSessionResult>;
 	resolvePeerAgentDispatchContext(input: {
 		agentId: string;

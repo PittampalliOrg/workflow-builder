@@ -5,6 +5,7 @@ import type {
 	AppConnectionRepository,
 	ArtifactStore,
 	BenchmarkBrowserRepository,
+	BenchmarkRunRepository,
 	EvaluationArtifactStore,
 	HostedMcpServerRepository,
 	McpConnectionRepository,
@@ -689,6 +690,17 @@ function fakeBenchmarkBrowser(): BenchmarkBrowserRepository {
 	};
 }
 
+function fakeBenchmarkRuns(): BenchmarkRunRepository {
+	return {
+		getSessionProvisioningGate: vi.fn(async () => ({
+			runStatus: "inferencing",
+			summary: { execution: { class: "gpu-large" } },
+			instanceStatus: "queued",
+			inferenceStatus: "inferencing",
+		})),
+	};
+}
+
 function fakeUsageReporting(): UsageReportingRepository {
 	return {
 		getUsageAnalytics: vi.fn(async () => ({
@@ -776,6 +788,7 @@ function makeService(options: {
 	byId?: WorkflowDefinition | null;
 	byName?: WorkflowDefinition | null;
 	workflowExecutions?: Partial<WorkflowExecutionRepository>;
+	benchmarkRuns?: BenchmarkRunRepository;
 	pieceExecutions?: PieceExecutionRepository;
 	browserArtifacts?: WorkflowBrowserArtifactStore;
 	sessions?: SessionRepository;
@@ -817,6 +830,7 @@ function makeService(options: {
 		sessions: options.sessions,
 		browserArtifacts: options.browserArtifacts,
 		benchmarkBrowser: fakeBenchmarkBrowser(),
+		benchmarkRuns: options.benchmarkRuns ?? fakeBenchmarkRuns(),
 		workflowExecutions,
 		sessionEvents: options.sessionEvents,
 		codeCheckpoints: options.codeCheckpoints,
@@ -1347,6 +1361,102 @@ describe("ApplicationWorkflowDataService", () => {
 		]);
 		expect(sessions.listTerminalWorkflowSessionRuntimeHosts).toHaveBeenCalledWith({
 			workflowExecutionId: "exec-1",
+		});
+	});
+
+	it("checks benchmark provisioning gate through the benchmark run port", async () => {
+		const benchmarkRuns = fakeBenchmarkRuns();
+		const { service } = makeService({ benchmarkRuns });
+
+		await expect(
+			service.checkBenchmarkSessionProvisioningGate({
+				runId: "bench-1",
+				instanceId: "inst-1",
+			}),
+		).resolves.toEqual({
+			ok: true,
+			benchmarkExecutionClass: "gpu-large",
+		});
+		expect(benchmarkRuns.getSessionProvisioningGate).toHaveBeenCalledWith({
+			runId: "bench-1",
+			instanceId: "inst-1",
+		});
+	});
+
+	it("preserves benchmark provisioning gate failure semantics", async () => {
+		const missingRuns = {
+			getSessionProvisioningGate: vi.fn(async () => null),
+		} satisfies BenchmarkRunRepository;
+		await expect(
+			makeService({ benchmarkRuns: missingRuns }).service.checkBenchmarkSessionProvisioningGate({
+				runId: "bench-missing",
+				instanceId: "inst-1",
+			}),
+		).resolves.toEqual({
+			ok: false,
+			status: 404,
+			message: "Benchmark run not found",
+		});
+
+		for (const [field, value, message] of [
+			[
+				"runStatus",
+				"completed",
+				"Benchmark run bench-1 is completed; refusing to provision session host",
+			],
+			[
+				"instanceStatus",
+				"resolved",
+				"Benchmark instance inst-1 is resolved; refusing to provision session host",
+			],
+			[
+				"inferenceStatus",
+				"inferred",
+				"Benchmark instance inst-1 inference is inferred; refusing to provision session host",
+			],
+		] as const) {
+			const benchmarkRuns = {
+				getSessionProvisioningGate: vi.fn(async () => ({
+					runStatus: "inferencing",
+					summary: {},
+					instanceStatus: "queued",
+					inferenceStatus: "inferencing",
+					[field]: value,
+				})),
+			} satisfies BenchmarkRunRepository;
+			await expect(
+				makeService({
+					benchmarkRuns,
+				}).service.checkBenchmarkSessionProvisioningGate({
+					runId: "bench-1",
+					instanceId: "inst-1",
+				}),
+			).resolves.toEqual({
+				ok: false,
+				status: 409,
+				message,
+			});
+		}
+	});
+
+	it("returns no benchmark execution class for malformed summaries", async () => {
+		const benchmarkRuns = {
+			getSessionProvisioningGate: vi.fn(async () => ({
+				runStatus: "queued",
+				summary: { execution: { class: " " } },
+				instanceStatus: null,
+				inferenceStatus: null,
+			})),
+		} satisfies BenchmarkRunRepository;
+		const { service } = makeService({ benchmarkRuns });
+
+		await expect(
+			service.checkBenchmarkSessionProvisioningGate({
+				runId: "bench-1",
+			}),
+		).resolves.toEqual({
+			ok: true,
+			benchmarkExecutionClass: null,
 		});
 	});
 

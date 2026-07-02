@@ -37,6 +37,8 @@ import {
 	agents,
 	agentVersions,
 	benchmarkInstances,
+	benchmarkRunInstances,
+	benchmarkRuns,
 	benchmarkSuites,
 	environmentImageBuilds,
 	evaluationArtifacts,
@@ -91,6 +93,8 @@ import type {
 	ApiKeyStore,
 	ArtifactStore,
 	BenchmarkBrowserRepository,
+	BenchmarkRunRepository,
+	BenchmarkSessionProvisioningGateRecord,
 	SandboxExecutionRecord,
 	SandboxInventoryRepository,
 	CatalogFunctionSummary,
@@ -209,6 +213,10 @@ export function requirePostgresDb(database: Database = defaultDb): Database {
 function requirePostgresSql(sqlClient: PostgresSqlClient = defaultSql): PostgresSqlClient {
 	if (!sqlClient) throw new Error("Database not configured");
 	return sqlClient;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseSessionEventNotification(payload: string): { sessionId: string | null } {
@@ -2303,6 +2311,42 @@ export class PostgresCodeFunctionCatalogRepository implements CodeFunctionCatalo
 			entrypoint: row.entrypoint,
 			language: row.language,
 		}));
+	}
+}
+
+export class PostgresBenchmarkRunRepository implements BenchmarkRunRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async getSessionProvisioningGate(input: {
+		runId: string;
+		instanceId?: string | null;
+	}): Promise<BenchmarkSessionProvisioningGateRecord | null> {
+		const [row] = await this.database
+			.select({
+				runStatus: benchmarkRuns.status,
+				summary: benchmarkRuns.summary,
+				instanceStatus: benchmarkRunInstances.status,
+				inferenceStatus: benchmarkRunInstances.inferenceStatus,
+			})
+			.from(benchmarkRuns)
+			.leftJoin(
+				benchmarkRunInstances,
+				and(
+					eq(benchmarkRunInstances.runId, benchmarkRuns.id),
+					input.instanceId
+						? eq(benchmarkRunInstances.instanceId, input.instanceId)
+						: eq(benchmarkRunInstances.runId, benchmarkRuns.id),
+				),
+			)
+			.where(eq(benchmarkRuns.id, input.runId))
+			.limit(1);
+		if (!row) return null;
+		return {
+			runStatus: row.runStatus,
+			summary: isRecord(row.summary) ? row.summary : null,
+			instanceStatus: row.instanceStatus ?? null,
+			inferenceStatus: row.inferenceStatus ?? null,
+		};
 	}
 }
 

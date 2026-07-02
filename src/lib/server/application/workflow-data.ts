@@ -65,6 +65,8 @@ import type {
 	BenchmarkBrowserEnvironmentBuildRecord,
 	BenchmarkBrowserReadModel,
 	BenchmarkBrowserRepository,
+	BenchmarkRunRepository,
+	BenchmarkSessionProvisioningGateResult,
 	CreateProjectMcpConnectionInput,
 	CreateWorkflowEnsureSessionInput,
 	CreateWorkflowDefinitionInput,
@@ -733,6 +735,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			browserArtifacts?: WorkflowBrowserArtifactStore;
 			codeFunctionCatalog?: CodeFunctionCatalogRepository;
 			benchmarkBrowser: BenchmarkBrowserRepository;
+			benchmarkRuns?: BenchmarkRunRepository;
 			workflowExecutions: WorkflowExecutionRepository;
 			sessions?: SessionRepository;
 			sessionEvents?: SessionEventLog;
@@ -766,6 +769,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Session repository not configured");
 		}
 		return this.deps.sessions;
+	}
+
+	private requireBenchmarkRuns(): BenchmarkRunRepository {
+		if (!this.deps.benchmarkRuns) {
+			throw new Error("Benchmark run repository not configured");
+		}
+		return this.deps.benchmarkRuns;
 	}
 
 	private requireSessionEvents(): SessionEventLog {
@@ -3438,6 +3448,54 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	listTerminalWorkflowSessionRuntimeHosts(input: { workflowExecutionId: string }) {
 		return this.requireSessions().listTerminalWorkflowSessionRuntimeHosts(input);
+	}
+
+	async checkBenchmarkSessionProvisioningGate(input: {
+		runId: string;
+		instanceId?: string | null;
+	}): Promise<BenchmarkSessionProvisioningGateResult> {
+		const row = await this.requireBenchmarkRuns().getSessionProvisioningGate(input);
+		if (!row) {
+			return { ok: false, status: 404, message: "Benchmark run not found" };
+		}
+		if (row.runStatus !== "queued" && row.runStatus !== "inferencing") {
+			return {
+				ok: false,
+				status: 409,
+				message: `Benchmark run ${input.runId} is ${row.runStatus}; refusing to provision session host`,
+			};
+		}
+		if (
+			input.instanceId &&
+			row.instanceStatus &&
+			row.instanceStatus !== "queued" &&
+			row.instanceStatus !== "inferencing"
+		) {
+			return {
+				ok: false,
+				status: 409,
+				message: `Benchmark instance ${input.instanceId} is ${row.instanceStatus}; refusing to provision session host`,
+			};
+		}
+		if (
+			input.instanceId &&
+			row.inferenceStatus &&
+			row.inferenceStatus !== "queued" &&
+			row.inferenceStatus !== "inferencing"
+		) {
+			return {
+				ok: false,
+				status: 409,
+				message: `Benchmark instance ${input.instanceId} inference is ${row.inferenceStatus}; refusing to provision session host`,
+			};
+		}
+		const summary = isRecord(row.summary) ? row.summary : {};
+		const execution = isRecord(summary.execution) ? summary.execution : {};
+		const benchmarkExecutionClass =
+			typeof execution.class === "string" && execution.class.trim()
+				? execution.class.trim()
+				: null;
+		return { ok: true, benchmarkExecutionClass };
 	}
 
 	async ensurePeerSession(
