@@ -572,6 +572,10 @@ The first UI-facing route has also moved behind the application service:
   ports. `session_resources` SQL and row-to-DTO mapping are confined to the
   session repository adapter. The route still owns request validation and the
   best-effort mid-session live repository mount side effect.
+- `src/routes/api/v1/sessions/[id]/sandbox/+server.ts` now keeps its existing
+  Lifecycle Controller active-run guard and sandbox delete commands, but reads
+  the post-guard session sandbox names through
+  `workflowData.getSessionDetail` instead of the legacy session registry.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
@@ -587,6 +591,8 @@ are also clean. The scanned session provisioning, context-usage, control
 settings/MCP status, session detail/title/archive/delete, fork, goal,
 goal-flow, event list/append/detail, runtime-config, config patch commands,
 runtime debug target routes, resources, and event-stream routes are also clean.
+The sandbox-delete route's session read is also clean, while its lifecycle and
+Kubernetes/OpenShell deletion behavior intentionally remain in the route.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:

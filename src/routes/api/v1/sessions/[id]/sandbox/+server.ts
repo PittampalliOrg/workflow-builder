@@ -2,7 +2,7 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { openshellRuntimeFetch } from "$lib/server/openshell-runtime";
 import { deleteKubernetesSandbox } from "$lib/server/kube/client";
-import { getSession } from "$lib/server/sessions/registry";
+import { getApplicationAdapters } from "$lib/server/application";
 import { inspectDurableRun } from "$lib/server/lifecycle";
 import { isResourceInScope } from "$lib/server/workflows/project-scope";
 
@@ -87,7 +87,11 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 		);
 	}
 
-	const session = await getSession(params.id);
+	const session = await getApplicationAdapters().workflowData.getSessionDetail({
+		sessionId: params.id,
+		projectId: locals.session.projectId ?? null,
+		userId: locals.session.userId,
+	});
 	if (!session) return error(404, "Session not found");
 
 	const targets: Array<{ name: string; kind: DeleteResult["kind"] }> = [];
