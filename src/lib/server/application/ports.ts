@@ -2239,6 +2239,12 @@ export type CreateSessionForkInput = {
 
 export interface SessionRepository {
 	getSession(id: string): Promise<SessionDetail | null>;
+	updateSessionTitle(input: {
+		id: string;
+		title: string;
+	}): Promise<SessionDetail | null>;
+	archiveSession(id: string): Promise<boolean>;
+	deleteSession(id: string): Promise<boolean>;
 	getSessionProvisioningContext(input: {
 		sessionId: string;
 		projectId?: string | null;
@@ -3045,6 +3051,27 @@ export interface WorkflowDataService {
 		projectId?: string | null;
 		userId?: string | null;
 	}): Promise<SessionDetail | null>;
+	getSessionDetail(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}): Promise<SessionDetail | null>;
+	updateSessionTitle(input: {
+		sessionId: string;
+		title: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}): Promise<SessionDetail | null>;
+	archiveSession(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}): Promise<boolean>;
+	deleteSession(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}): Promise<boolean>;
 	listSessionEvents(
 		sessionId: string,
 		input?: ListSessionEventsInput,

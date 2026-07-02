@@ -165,7 +165,7 @@ import type {
 } from "$lib/server/application/ports";
 import type { AgentConfig } from "$lib/types/agents";
 import type { BenchmarkInstanceRow } from "$lib/types/benchmark-instance";
-import type { SessionStopReason, UserEvent } from "$lib/types/sessions";
+import type { SessionDetail, SessionStopReason, UserEvent } from "$lib/types/sessions";
 import {
 	applyWorkflowInputDefaults,
 	getPromptExpansionConfig,
@@ -791,6 +791,21 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Session repository not configured");
 		}
 		return this.deps.sessions;
+	}
+
+	private async getScopedSession(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}): Promise<SessionDetail | null> {
+		const sessions = this.requireSessions();
+		const owner = await sessions.getSessionFileOwner(input.sessionId);
+		if (!owner) return null;
+		if (input.projectId && owner.projectId !== input.projectId) return null;
+		if (!input.projectId && input.userId && owner.userId !== input.userId) {
+			return null;
+		}
+		return sessions.getSession(input.sessionId);
 	}
 
 	private requireBenchmarkRuns(): BenchmarkRunRepository {
@@ -3870,16 +3885,49 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		projectId?: string | null;
 		userId?: string | null;
 	}) {
-		const sessions = this.requireSessions();
-		const owner = await sessions.getSessionFileOwner(input.sessionId);
-		if (!owner) return null;
-		if (input.projectId && owner.projectId !== input.projectId) return null;
-		if (!input.projectId && input.userId && owner.userId !== input.userId) {
-			return null;
-		}
-		const session = await sessions.getSession(input.sessionId);
+		return this.getScopedSession(input);
+	}
+
+	getSessionDetail(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}) {
+		return this.getScopedSession(input);
+	}
+
+	async updateSessionTitle(input: {
+		sessionId: string;
+		title: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}) {
+		const session = await this.getScopedSession(input);
 		if (!session) return null;
-		return session;
+		return this.requireSessions().updateSessionTitle({
+			id: input.sessionId,
+			title: input.title,
+		});
+	}
+
+	async archiveSession(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}) {
+		const session = await this.getScopedSession(input);
+		if (!session) return false;
+		return this.requireSessions().archiveSession(input.sessionId);
+	}
+
+	async deleteSession(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}) {
+		const session = await this.getScopedSession(input);
+		if (!session) return false;
+		return this.requireSessions().deleteSession(input.sessionId);
 	}
 
 	listSessionEvents(sessionId: string, input?: ListSessionEventsInput) {

@@ -526,6 +526,11 @@ The first UI-facing route has also moved behind the application service:
   session events through workflow-data application ports. User-event appends
   still wake the Dapr session workflow best-effort, but that runtime transport
   is behind `SessionRuntimeEventRaiser` instead of a route-level session helper.
+- `src/routes/api/v1/sessions/[id]/+server.ts` now reads session detail and
+  mutates title/archive/delete state through scoped workflow-data application
+  ports. The route still owns HTTP response shaping and preserves the existing
+  Lifecycle Controller active-run guard before destructive archive/delete
+  commands.
 - `src/routes/api/v1/sessions/[id]/goal/+server.ts` now scopes session reads
   and native CLI `/goal` command injection through workflow-data ports. Goal
   repository mutations and lifecycle ownership checks remain in their existing
@@ -549,8 +554,8 @@ the CLI credential capture session-owner lookup and ActivePieces resume
 execution lookup, and the GitHub trigger ingress/gate subset, are also clean.
 The internal piece-execution artifact readback and CLI workspace command routes
 are also clean. The scanned session provisioning, context-usage, control
-settings/MCP status, fork, goal, goal-flow, event list/append, and event-stream
-routes are also clean.
+settings/MCP status, session detail/title/archive/delete, fork, goal,
+goal-flow, event list/append, and event-stream routes are also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:

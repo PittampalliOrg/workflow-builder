@@ -479,6 +479,9 @@ function fakeSessionEventNotifications(): WorkflowSessionEventNotificationSource
 function fakeSessions(): SessionRepository {
 	return {
 		getSession: vi.fn(async () => null),
+		updateSessionTitle: vi.fn(async () => null),
+		archiveSession: vi.fn(async () => false),
+		deleteSession: vi.fn(async () => false),
 		getSessionProvisioningContext: vi.fn(async () => ({
 			id: "session-1",
 			status: "rescheduling" as const,
@@ -1945,6 +1948,112 @@ describe("ApplicationWorkflowDataService", () => {
 			}),
 		).resolves.toBeNull();
 		expect(sessions.getSession).toHaveBeenCalledWith("session-1");
+	});
+
+	it("loads session details through the scoped session repository", async () => {
+		const sourceSession = {
+			id: "session-1",
+			projectId: "project-1",
+		} as Awaited<ReturnType<SessionRepository["getSession"]>>;
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => sourceSession),
+		} satisfies SessionRepository;
+		const { service } = makeService({ sessions });
+
+		await expect(
+			service.getSessionDetail({
+				sessionId: "session-1",
+				projectId: "project-1",
+			}),
+		).resolves.toBe(sourceSession);
+		await expect(
+			service.getSessionDetail({
+				sessionId: "session-1",
+				projectId: "other-project",
+			}),
+		).resolves.toBeNull();
+	});
+
+	it("updates session titles through the scoped session repository", async () => {
+		const updatedSession = {
+			id: "session-1",
+			title: "Renamed session",
+			projectId: "project-1",
+		} as Awaited<ReturnType<SessionRepository["getSession"]>>;
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => ({
+				id: "session-1",
+				projectId: "project-1",
+			}) as Awaited<ReturnType<SessionRepository["getSession"]>>),
+			updateSessionTitle: vi.fn(async () => updatedSession),
+		} satisfies SessionRepository;
+		const { service } = makeService({ sessions });
+
+		await expect(
+			service.updateSessionTitle({
+				sessionId: "session-1",
+				title: "Renamed session",
+				projectId: "project-1",
+			}),
+		).resolves.toBe(updatedSession);
+		expect(sessions.updateSessionTitle).toHaveBeenCalledWith({
+			id: "session-1",
+			title: "Renamed session",
+		});
+
+		await expect(
+			service.updateSessionTitle({
+				sessionId: "session-1",
+				title: "Blocked rename",
+				projectId: "other-project",
+			}),
+		).resolves.toBeNull();
+		expect(sessions.updateSessionTitle).toHaveBeenCalledTimes(1);
+	});
+
+	it("archives and deletes sessions through scoped repository commands", async () => {
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => ({
+				id: "session-1",
+				projectId: "project-1",
+			}) as Awaited<ReturnType<SessionRepository["getSession"]>>),
+			archiveSession: vi.fn(async () => true),
+			deleteSession: vi.fn(async () => true),
+		} satisfies SessionRepository;
+		const { service } = makeService({ sessions });
+
+		await expect(
+			service.archiveSession({
+				sessionId: "session-1",
+				projectId: "project-1",
+			}),
+		).resolves.toBe(true);
+		await expect(
+			service.deleteSession({
+				sessionId: "session-1",
+				projectId: "project-1",
+			}),
+		).resolves.toBe(true);
+		expect(sessions.archiveSession).toHaveBeenCalledWith("session-1");
+		expect(sessions.deleteSession).toHaveBeenCalledWith("session-1");
+
+		await expect(
+			service.archiveSession({
+				sessionId: "session-1",
+				projectId: "other-project",
+			}),
+		).resolves.toBe(false);
+		await expect(
+			service.deleteSession({
+				sessionId: "session-1",
+				projectId: "other-project",
+			}),
+		).resolves.toBe(false);
+		expect(sessions.archiveSession).toHaveBeenCalledTimes(1);
+		expect(sessions.deleteSession).toHaveBeenCalledTimes(1);
 	});
 
 	it("forks a session by replaying event envelopes through session ports", async () => {

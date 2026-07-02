@@ -76,6 +76,46 @@ export class CurrentSessionRepository implements SessionRepository {
 		return getSession(id);
 	}
 
+	async updateSessionTitle(input: {
+		id: string;
+		title: string;
+	}): Promise<SessionDetail | null> {
+		const database = requireDb(this.database);
+		const [row] = await database
+			.update(sessions)
+			.set({ title: input.title, updatedAt: new Date() })
+			.where(eq(sessions.id, input.id))
+			.returning({ id: sessions.id });
+		return row ? this.getSession(row.id) : null;
+	}
+
+	async archiveSession(id: string): Promise<boolean> {
+		const database = requireDb(this.database);
+		const archivedAt = new Date();
+		const [row] = await database
+			.update(sessions)
+			.set({ archivedAt, updatedAt: archivedAt })
+			.where(eq(sessions.id, id))
+			.returning({ id: sessions.id, mlflowRunId: sessions.mlflowRunId });
+		if (row?.mlflowRunId) {
+			void safeFinishMlflowRun({
+				runId: row.mlflowRunId,
+				status: "KILLED",
+				endTime: archivedAt,
+			});
+		}
+		return Boolean(row);
+	}
+
+	async deleteSession(id: string): Promise<boolean> {
+		const database = requireDb(this.database);
+		const [row] = await database
+			.delete(sessions)
+			.where(eq(sessions.id, id))
+			.returning({ id: sessions.id });
+		return Boolean(row);
+	}
+
 	async getSessionProvisioningContext(input: {
 		sessionId: string;
 		projectId?: string | null;
