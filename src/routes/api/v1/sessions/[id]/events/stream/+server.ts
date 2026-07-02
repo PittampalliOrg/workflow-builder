@@ -1,24 +1,18 @@
 import type { RequestHandler } from "./$types";
-import { listEvents } from "$lib/server/sessions/events";
-import { getSession } from "$lib/server/sessions/registry";
-import { sql } from "$lib/server/db";
+import { getApplicationAdapters } from "$lib/server/application";
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const TERMINAL_STATUSES = new Set(["terminated"]);
 
 /**
- * SSE stream of session events. Backed by Postgres LISTEN/NOTIFY via
- * `postgres-js`'s `sql.listen()`. Migration 0042 installed a trigger on
- * `session_events` that fires `pg_notify('session_events', {...})` on each
- * insert; we subscribe once per open SSE connection, filter by session id,
- * and call `listEvents(sessionId, { afterSequence })` to pull the new row(s).
+ * SSE stream of session events. Backed by the workflow-data application port:
+ * notifications are only a wake-up signal, and the durable source of truth is
+ * the sequence-ordered session event log.
  *
  * Replay-on-reconnect is preserved via the standard `Last-Event-ID` header
- * — clients resume from their last sequence without loss. The listen socket
- * is owned by the postgres-js client pool, not this connection, so it
- * survives BFF restarts differently from an EventSource: the SSE socket
- * drops, the browser reconnects with Last-Event-ID, and we gap-fill via the
- * initial backfill poll below.
+ * — clients resume from their last sequence without loss. The notification
+ * subscription is owned by the workflow-data adapter; browser reconnects
+ * gap-fill from the durable event log via the initial backfill poll below.
  *
  * When the session reaches a terminal status, the stream emits a
  * `session.terminated` synthetic and closes.
@@ -35,8 +29,13 @@ export const GET: RequestHandler = async ({ params, request, locals }) => {
 	const startSequence = Number.isFinite(lastEventId) && lastEventId >= 0
 		? lastEventId
 		: 0;
+	const projectId = locals.session.projectId ?? null;
+	const { workflowData } = getApplicationAdapters();
 
-	const session = await getSession(sessionId);
+	const session = await workflowData.getSessionEventStreamSnapshot({
+		sessionId,
+		projectId,
+	});
 	if (!session) {
 		return new Response("Session not found", { status: 404 });
 	}
@@ -88,7 +87,7 @@ export const GET: RequestHandler = async ({ params, request, locals }) => {
 				try {
 					do {
 						drainAgain = false;
-						const events = await listEvents(sessionId, {
+						const events = await workflowData.listSessionEvents(sessionId, {
 							afterSequence: lastSequence,
 							preview: true,
 						});
@@ -97,7 +96,10 @@ export const GET: RequestHandler = async ({ params, request, locals }) => {
 							lastSequence = event.sequence;
 						}
 						// Re-read session to detect terminal transitions emitted out-of-band.
-						const current = await getSession(sessionId);
+						const current = await workflowData.getSessionEventStreamSnapshot({
+							sessionId,
+							projectId,
+						});
 						if (current && TERMINAL_STATUSES.has(current.status)) {
 							write("session.terminated", { session: current });
 							cleanup();
@@ -111,21 +113,6 @@ export const GET: RequestHandler = async ({ params, request, locals }) => {
 					});
 				} finally {
 					draining = false;
-				}
-			}
-
-			function onNotify(payloadStr: string) {
-				if (cancelled) return;
-				try {
-					const payload = JSON.parse(payloadStr) as {
-						sessionId?: string;
-						sequence?: number;
-					};
-					if (payload.sessionId !== sessionId) return;
-					void drain();
-				} catch {
-					// Malformed payload — fall back to a drain anyway; cheap enough.
-					void drain();
 				}
 			}
 
@@ -145,21 +132,25 @@ export const GET: RequestHandler = async ({ params, request, locals }) => {
 			comment(" ".repeat(2048));
 			write("session.snapshot", { session });
 
-			// Initial backfill: drain anything that landed before LISTEN was armed.
+			// Initial backfill: drain anything that landed before the subscription
+			// was armed.
 			await drain();
 
-			// Arm LISTEN only after the backfill so notifications that fire during
-			// backfill don't race with the cursor. The listen call itself resolves
-			// once the server has acknowledged the LISTEN command.
-			if (sql && !cancelled) {
+			// Arm notifications only after the backfill so wake-ups that fire
+			// during backfill don't race with the cursor.
+			if (!cancelled) {
 				try {
-					const meta = await sql.listen("session_events", onNotify);
-					unlisten = () => meta.unlisten();
-					// One more drain in case rows landed between backfill and LISTEN arm.
+					const subscription =
+						await workflowData.listenSessionEventNotifications(({ sessionId: notifiedSessionId }) => {
+							if (notifiedSessionId !== sessionId) return;
+							void drain();
+						});
+					unlisten = () => subscription.unlisten();
+					// One more drain in case rows landed between backfill and subscription arm.
 					void drain();
 				} catch (err) {
 					write("error", {
-						message: `LISTEN arm failed: ${err instanceof Error ? err.message : String(err)}`,
+						message: `event subscription failed: ${err instanceof Error ? err.message : String(err)}`,
 					});
 				}
 			}

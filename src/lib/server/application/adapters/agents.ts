@@ -3,6 +3,8 @@ import type {
 	PeerAgentDispatchContext,
 	PeerAgentOwner,
 	PeerAgentResolver,
+	SessionExperimentAgentStore,
+	SessionForkBaseAgent,
 	WorkflowAgentReadRepository,
 	WorkflowAgentRuntimeIdentity,
 	WorkflowPublishedAgentResolutionResult,
@@ -13,9 +15,11 @@ import {
 	resolveAgentRef,
 	resolveCallableAgents,
 } from "$lib/server/agents/registry";
+import { findOrCreateExperimentAgent } from "$lib/server/agents/ephemeral";
 import { agentRegistryKey } from "$lib/server/agents/registry-sync";
 import { resolveEnvironmentRef } from "$lib/server/environments/registry";
 import { agentRuntimeDedicatedAppId } from "$lib/server/agents/runtime-routing";
+import type { AgentConfig } from "$lib/types/agents";
 
 type Database = typeof defaultDb;
 
@@ -25,7 +29,10 @@ function requireDb(database: Database = defaultDb): Database {
 }
 
 export class RegistryPeerAgentResolver
-	implements PeerAgentResolver, WorkflowAgentReadRepository
+	implements
+		PeerAgentResolver,
+		WorkflowAgentReadRepository,
+		SessionExperimentAgentStore
 {
 	constructor(private readonly database: Database = requireDb()) {}
 
@@ -86,6 +93,35 @@ export class RegistryPeerAgentResolver
 			callableAgents,
 			registryTeam: resolved.projectId ?? null,
 		};
+	}
+
+	async resolveSessionForkBaseAgent(input: {
+		agentId: string;
+		agentVersion?: number | null;
+	}): Promise<SessionForkBaseAgent | null> {
+		const resolved = await resolveAgentRef({
+			id: input.agentId,
+			version: input.agentVersion ?? undefined,
+		});
+		return resolved
+			? {
+					id: resolved.id,
+					slug: resolved.slug,
+					name: resolved.name,
+					config: resolved.config,
+				}
+			: null;
+	}
+
+	findOrCreateSessionExperimentAgent(input: {
+		baseAgentId: string;
+		baseAgentSlug: string;
+		baseAgentName: string;
+		agentConfig: AgentConfig;
+		userId: string;
+		projectId?: string | null;
+	}): Promise<{ agentId: string; agentVersion: number }> {
+		return findOrCreateExperimentAgent(input);
 	}
 
 	async getWorkflowAgentRuntimeIdentity(

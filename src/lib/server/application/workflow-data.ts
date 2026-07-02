@@ -57,6 +57,7 @@ import {
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { expandGreenfieldPromptInput } from "$lib/server/workflows/greenfield-prompt";
 import { getMissingRequiredTriggerFields } from "$lib/server/workflows/trigger-validation";
+import { isAgentConfigEquivalent } from "$lib/utils/agent-config-diff";
 import type {
 	AppendWorkflowExecutionLogInput,
 	AdminPiecesReadModel,
@@ -98,6 +99,7 @@ import type {
 	CliWorkspaceCommandCandidate,
 	IngestSessionEventInput,
 	IngestSessionEventResult,
+	ListSessionEventsInput,
 	PersistWorkflowRunDiffInput,
 	PersistWorkflowSourceBundleInput,
 	WorkflowDataService,
@@ -122,6 +124,7 @@ import type {
 	SandboxInventoryRepository,
 	SandboxRuntimeInventory,
 	SessionEventLog,
+	SessionExperimentAgentStore,
 	SessionRepository,
 	SessionTraceLifecycleStore,
 	TraceLineageStore,
@@ -759,6 +762,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			sessionTraceLifecycle?: SessionTraceLifecycleStore;
 			peerAgentResolver?: PeerAgentResolver;
 			workflowAgentReads?: WorkflowAgentReadRepository;
+			sessionExperimentAgents?: SessionExperimentAgentStore;
 			sessionEventNotifications: WorkflowSessionEventNotificationSource;
 			artifactStore: ArtifactStore;
 			workflowFiles?: WorkflowFileStore;
@@ -834,6 +838,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Workflow agent read repository not configured");
 		}
 		return this.deps.workflowAgentReads;
+	}
+
+	private requireSessionExperimentAgents(): SessionExperimentAgentStore {
+		if (!this.deps.sessionExperimentAgents) {
+			throw new Error("Session experiment agent store not configured");
+		}
+		return this.deps.sessionExperimentAgents;
 	}
 
 	getUserProfile(userId: string) {
@@ -3845,6 +3856,20 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.workflowExecutions.listAgentEventsByExecutionIdAfter(input);
 	}
 
+	async getSessionEventStreamSnapshot(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}) {
+		const session = await this.requireSessions().getSession(input.sessionId);
+		if (!session) return null;
+		if (input.projectId && session.projectId !== input.projectId) return null;
+		return session;
+	}
+
+	listSessionEvents(sessionId: string, input?: ListSessionEventsInput) {
+		return this.requireSessionEvents().listSessionEvents(sessionId, input);
+	}
+
 	listenSessionEventNotifications(
 		onNotification: (notification: WorkflowSessionEventNotification) => void,
 	) {
@@ -3868,6 +3893,101 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	appendSessionEvent(sessionId: string, event: AppendSessionEventInput) {
 		return this.requireSessionEvents().appendSessionEvent(sessionId, event);
+	}
+
+	async forkSessionFromEvent(input: {
+		sourceSessionId: string;
+		fromSequence: number;
+		title?: string | null;
+		agentConfig?: AgentConfig | null;
+		userId: string;
+		projectId?: string | null;
+	}): Promise<
+		| {
+				status: "created";
+				sessionId: string;
+				sourceSessionId: string;
+				replayed: number;
+		  }
+		| { status: "not_found" }
+		| { status: "bad_request"; message: string }
+	> {
+		const source = await this.requireSessions().getSession(input.sourceSessionId);
+		if (!source) return { status: "not_found" };
+		if (input.projectId && source.projectId !== input.projectId) {
+			return { status: "not_found" };
+		}
+
+		let forkAgentId = source.agentId;
+		let forkAgentVersion = source.agentVersion ?? undefined;
+
+		if (input.agentConfig) {
+			const experiments = this.requireSessionExperimentAgents();
+			const baseAgent = await experiments.resolveSessionForkBaseAgent({
+				agentId: source.agentId,
+				agentVersion: source.agentVersion ?? undefined,
+			});
+			if (
+				baseAgent &&
+				!isAgentConfigEquivalent(baseAgent.config, input.agentConfig)
+			) {
+				try {
+					const experiment = await experiments.findOrCreateSessionExperimentAgent({
+						baseAgentId: baseAgent.id,
+						baseAgentSlug: baseAgent.slug,
+						baseAgentName: baseAgent.name,
+						agentConfig: input.agentConfig,
+						userId: input.userId,
+						projectId: input.projectId ?? source.projectId ?? null,
+					});
+					forkAgentId = experiment.agentId;
+					forkAgentVersion = experiment.agentVersion;
+				} catch (err) {
+					return {
+						status: "bad_request",
+						message:
+							err instanceof Error
+								? err.message
+								: "Experiment agent create failed",
+					};
+				}
+			}
+		}
+
+		const title =
+			input.title && input.title.trim()
+				? input.title.trim()
+				: `Fork of ${source.title ?? source.id} @ seq ${input.fromSequence}`;
+		const forked = await this.requireSessions().createSessionFork({
+			agentId: forkAgentId,
+			agentVersion: forkAgentVersion,
+			environmentId: source.environmentId ?? null,
+			environmentVersion: source.environmentVersion ?? null,
+			vaultIds: source.vaultIds,
+			title,
+			userId: input.userId,
+			projectId: input.projectId ?? source.projectId ?? null,
+		});
+
+		const rows = await this.requireSessionEvents().listSessionEvents(
+			input.sourceSessionId,
+			{ atOrBeforeSequence: input.fromSequence },
+		);
+		for (const row of rows) {
+			await this.requireSessionEvents().appendSessionEvent(forked.id, {
+				type: row.type,
+				data: row.data,
+				processedAt: row.processedAt ? new Date(row.processedAt) : null,
+				sourceEventId: `fork:${row.id}`,
+			});
+		}
+
+		return {
+			status: "created",
+			sessionId: forked.id,
+			sourceSessionId: input.sourceSessionId,
+			replayed: rows.length,
+		};
 	}
 
 	async ingestSessionEvent(input: IngestSessionEventInput): Promise<IngestSessionEventResult> {

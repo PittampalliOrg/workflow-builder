@@ -19,6 +19,7 @@ import type {
 	SandboxRuntimeInventory,
 	CodeFunctionCatalogRepository,
 	SessionEventLog,
+	SessionExperimentAgentStore,
 	SessionProvisioningReader,
 	SessionRepository,
 	SessionTraceLifecycleStore,
@@ -510,6 +511,7 @@ function fakeSessions(): SessionRepository {
 		listTerminalWorkflowSessionRuntimeHosts: vi.fn(async () => [
 			{ sessionId: "session-old", runtimeAppId: "agent-session-old" },
 		]),
+		createSessionFork: vi.fn(async () => ({ id: "fork-session-1" })),
 		getPeerSession: vi.fn(async () => null),
 		createPeerSession: vi.fn(async (input) => ({
 			id: input.id,
@@ -565,6 +567,22 @@ function fakeSessionEvents(): SessionEventLog {
 			producerEpoch: event.producerEpoch ?? null,
 			createdAt: "2026-01-01T00:00:00.000Z",
 			timestamp: "2026-01-01T00:00:00.000Z",
+		})),
+		listSessionEvents: vi.fn(async () => []),
+	};
+}
+
+function fakeSessionExperimentAgents(): SessionExperimentAgentStore {
+	return {
+		resolveSessionForkBaseAgent: vi.fn(async () => ({
+			id: "agent-1",
+			slug: "base-agent",
+			name: "Base Agent",
+			config: createDefaultAgentConfig(),
+		})),
+		findOrCreateSessionExperimentAgent: vi.fn(async () => ({
+			agentId: "experiment-agent-1",
+			agentVersion: 1,
 		})),
 	};
 }
@@ -859,6 +877,7 @@ function makeService(options: {
 	sessionTraceLifecycle?: SessionTraceLifecycleStore;
 	peerAgentResolver?: PeerAgentResolver;
 	workflowAgentReads?: WorkflowAgentReadRepository;
+	sessionExperimentAgents?: SessionExperimentAgentStore;
 }) {
 	const workflowDefinitions = {
 		getById: vi.fn(async () => options.byId ?? null),
@@ -901,6 +920,8 @@ function makeService(options: {
 		sessionTraceLifecycle: options.sessionTraceLifecycle,
 		peerAgentResolver: options.peerAgentResolver,
 		workflowAgentReads: options.workflowAgentReads ?? fakeWorkflowAgentReads(),
+		sessionExperimentAgents:
+			options.sessionExperimentAgents ?? fakeSessionExperimentAgents(),
 		sessionEventNotifications: fakeSessionEventNotifications(),
 		artifactStore: {} as ArtifactStore,
 		workspaceSessions: {} as WorkspaceSessionStore,
@@ -1876,6 +1897,204 @@ describe("ApplicationWorkflowDataService", () => {
 			sessionId: "session-1",
 			projectId: "project-1",
 		});
+	});
+
+	it("loads session event stream snapshots through the scoped session repository", async () => {
+		const sourceSession = {
+			id: "session-1",
+			projectId: "project-1",
+		} as Awaited<ReturnType<SessionRepository["getSession"]>>;
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => sourceSession),
+		} satisfies SessionRepository;
+		const { service } = makeService({ sessions });
+
+		await expect(
+			service.getSessionEventStreamSnapshot({
+				sessionId: "session-1",
+				projectId: "project-1",
+			}),
+		).resolves.toBe(sourceSession);
+		await expect(
+			service.getSessionEventStreamSnapshot({
+				sessionId: "session-1",
+				projectId: "other-project",
+			}),
+		).resolves.toBeNull();
+		expect(sessions.getSession).toHaveBeenCalledWith("session-1");
+	});
+
+	it("forks a session by replaying event envelopes through session ports", async () => {
+		const sourceSession = {
+			id: "session-1",
+			title: "Source session",
+			agentId: "agent-1",
+			agentVersion: 2,
+			environmentId: "env-1",
+			environmentVersion: 3,
+			vaultIds: ["vault-1"],
+			projectId: "project-1",
+		} as Awaited<ReturnType<SessionRepository["getSession"]>>;
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => sourceSession),
+			createSessionFork: vi.fn(async () => ({ id: "fork-session-1" })),
+		} satisfies SessionRepository;
+		const sessionEvents = {
+			...fakeSessionEvents(),
+			listSessionEvents: vi.fn(async () => [
+				{
+					id: "source-event-1",
+					sessionId: "session-1",
+					sequence: 1,
+					type: "user.message",
+					data: { content: "hello" },
+					processedAt: "2026-01-01T00:01:00.000Z",
+					sourceEventId: null,
+					producerId: null,
+					producerEpoch: null,
+					createdAt: "2026-01-01T00:00:00.000Z",
+					timestamp: "2026-01-01T00:00:00.000Z",
+				},
+				{
+					id: "source-event-2",
+					sessionId: "session-1",
+					sequence: 2,
+					type: "agent.llm_usage",
+					data: { input_tokens: 10 },
+					processedAt: null,
+					sourceEventId: "runtime-event-2",
+					producerId: "agent",
+					producerEpoch: "epoch-1",
+					createdAt: "2026-01-01T00:02:00.000Z",
+					timestamp: "2026-01-01T00:02:00.000Z",
+				},
+			]),
+			appendSessionEvent: vi.fn(async (sessionId, event) => ({
+				id: `${sessionId}:${event.sourceEventId ?? event.type}`,
+				sessionId,
+				sequence: 1,
+				type: event.type,
+				data: event.data ?? {},
+				processedAt: event.processedAt?.toISOString() ?? null,
+				sourceEventId: event.sourceEventId ?? null,
+				producerId: event.producerId ?? null,
+				producerEpoch: event.producerEpoch ?? null,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				timestamp: "2026-01-01T00:00:00.000Z",
+			})),
+		} satisfies SessionEventLog;
+		const { service } = makeService({ sessions, sessionEvents });
+
+		await expect(
+			service.forkSessionFromEvent({
+				sourceSessionId: "session-1",
+				fromSequence: 2,
+				userId: "user-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual({
+			status: "created",
+			sessionId: "fork-session-1",
+			sourceSessionId: "session-1",
+			replayed: 2,
+		});
+		expect(sessions.createSessionFork).toHaveBeenCalledWith({
+			agentId: "agent-1",
+			agentVersion: 2,
+			environmentId: "env-1",
+			environmentVersion: 3,
+			vaultIds: ["vault-1"],
+			title: "Fork of Source session @ seq 2",
+			userId: "user-1",
+			projectId: "project-1",
+		});
+		expect(sessionEvents.listSessionEvents).toHaveBeenCalledWith("session-1", {
+			atOrBeforeSequence: 2,
+		});
+		expect(sessionEvents.appendSessionEvent).toHaveBeenNthCalledWith(
+			1,
+			"fork-session-1",
+			{
+				type: "user.message",
+				data: { content: "hello" },
+				processedAt: new Date("2026-01-01T00:01:00.000Z"),
+				sourceEventId: "fork:source-event-1",
+			},
+		);
+		expect(sessionEvents.appendSessionEvent).toHaveBeenNthCalledWith(
+			2,
+			"fork-session-1",
+			{
+				type: "agent.llm_usage",
+				data: { input_tokens: 10 },
+				processedAt: null,
+				sourceEventId: "fork:source-event-2",
+			},
+		);
+	});
+
+	it("creates a session experiment agent when fork config differs", async () => {
+		const sourceSession = {
+			id: "session-1",
+			title: "Source session",
+			agentId: "agent-1",
+			agentVersion: 2,
+			environmentId: "env-1",
+			environmentVersion: 3,
+			vaultIds: ["vault-1"],
+			projectId: "project-1",
+		} as Awaited<ReturnType<SessionRepository["getSession"]>>;
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => sourceSession),
+			createSessionFork: vi.fn(async () => ({ id: "fork-session-1" })),
+		} satisfies SessionRepository;
+		const sessionEvents = fakeSessionEvents();
+		const sessionExperimentAgents = fakeSessionExperimentAgents();
+		const tweakedConfig = {
+			...createDefaultAgentConfig(),
+			systemPrompt: "Tweaked prompt",
+		};
+		const { service } = makeService({
+			sessions,
+			sessionEvents,
+			sessionExperimentAgents,
+		});
+
+		await expect(
+			service.forkSessionFromEvent({
+				sourceSessionId: "session-1",
+				fromSequence: 1,
+				agentConfig: tweakedConfig,
+				userId: "user-1",
+				projectId: "project-1",
+			}),
+		).resolves.toMatchObject({
+			status: "created",
+			sessionId: "fork-session-1",
+		});
+		expect(sessionExperimentAgents.resolveSessionForkBaseAgent).toHaveBeenCalledWith({
+			agentId: "agent-1",
+			agentVersion: 2,
+		});
+		expect(
+			sessionExperimentAgents.findOrCreateSessionExperimentAgent,
+		).toHaveBeenCalledWith({
+			baseAgentId: "agent-1",
+			baseAgentSlug: "base-agent",
+			baseAgentName: "Base Agent",
+			agentConfig: tweakedConfig,
+			userId: "user-1",
+			projectId: "project-1",
+		});
+		expect(sessions.createSessionFork).toHaveBeenCalledWith(
+			expect.objectContaining({
+				agentId: "experiment-agent-1",
+				agentVersion: 1,
+			}),
+		);
 	});
 
 	it("delegates browser artifact reads to the browser artifact store", async () => {

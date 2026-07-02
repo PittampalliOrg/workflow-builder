@@ -2225,6 +2225,17 @@ export interface CredentialStore {
 	): Promise<Record<string, unknown>>;
 }
 
+export type CreateSessionForkInput = {
+	agentId: string;
+	agentVersion?: number | null;
+	environmentId?: string | null;
+	environmentVersion?: number | null;
+	vaultIds: string[];
+	title: string;
+	userId: string;
+	projectId?: string | null;
+};
+
 export interface SessionRepository {
 	getSession(id: string): Promise<SessionDetail | null>;
 	getSessionProvisioningContext(input: {
@@ -2251,6 +2262,7 @@ export interface SessionRepository {
 	listTerminalWorkflowSessionRuntimeHosts(input: {
 		workflowExecutionId: string;
 	}): Promise<WorkflowSessionRuntimeHostRecord[]>;
+	createSessionFork(input: CreateSessionForkInput): Promise<{ id: string }>;
 	getPeerSession(sessionId: string): Promise<PeerSessionRecord | null>;
 	createPeerSession(input: CreatePeerSessionInput): Promise<PeerSessionRecord>;
 	findSessionIdByDaprInstanceId(instanceId: string): Promise<string | null>;
@@ -2543,6 +2555,28 @@ export interface WorkflowAgentReadRepository {
 	}): Promise<WorkflowPublishedAgentResolutionResult | null>;
 }
 
+export type SessionForkBaseAgent = {
+	id: string;
+	slug: string;
+	name: string;
+	config: AgentConfig;
+};
+
+export interface SessionExperimentAgentStore {
+	resolveSessionForkBaseAgent(input: {
+		agentId: string;
+		agentVersion?: number | null;
+	}): Promise<SessionForkBaseAgent | null>;
+	findOrCreateSessionExperimentAgent(input: {
+		baseAgentId: string;
+		baseAgentSlug: string;
+		baseAgentName: string;
+		agentConfig: AgentConfig;
+		userId: string;
+		projectId?: string | null;
+	}): Promise<{ agentId: string; agentVersion: number }>;
+}
+
 export type EnsurePeerSessionInput = {
 	sessionId: string;
 	peerAgentId: string;
@@ -2573,11 +2607,22 @@ export type AppendSessionEventInput = {
 	producerEpoch?: string | null;
 };
 
+export type ListSessionEventsInput = {
+	afterSequence?: number;
+	atOrBeforeSequence?: number;
+	limit?: number;
+	preview?: boolean;
+};
+
 export interface SessionEventLog {
 	appendSessionEvent(
 		sessionId: string,
 		event: AppendSessionEventInput,
 	): Promise<SessionEventEnvelope>;
+	listSessionEvents(
+		sessionId: string,
+		input?: ListSessionEventsInput,
+	): Promise<SessionEventEnvelope[]>;
 }
 
 export type PersistCodeCheckpointInput = {
@@ -2990,6 +3035,14 @@ export interface WorkflowDataService {
 		executionId: string;
 		afterEventId: number;
 	}): Promise<WorkflowExecutionAgentEventRecord[]>;
+	getSessionEventStreamSnapshot(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionDetail | null>;
+	listSessionEvents(
+		sessionId: string,
+		input?: ListSessionEventsInput,
+	): Promise<SessionEventEnvelope[]>;
 	listenSessionEventNotifications(
 		onNotification: (notification: WorkflowSessionEventNotification) => void,
 	): Promise<WorkflowSessionEventSubscription>;
@@ -3006,6 +3059,23 @@ export interface WorkflowDataService {
 		event: AppendSessionEventInput,
 	): Promise<SessionEventEnvelope>;
 	ingestSessionEvent(input: IngestSessionEventInput): Promise<IngestSessionEventResult>;
+	forkSessionFromEvent(input: {
+		sourceSessionId: string;
+		fromSequence: number;
+		title?: string | null;
+		agentConfig?: AgentConfig | null;
+		userId: string;
+		projectId?: string | null;
+	}): Promise<
+		| {
+				status: "created";
+				sessionId: string;
+				sourceSessionId: string;
+				replayed: number;
+		  }
+		| { status: "not_found" }
+		| { status: "bad_request"; message: string }
+	>;
 	upsertWorkflowArtifact(input: WorkflowArtifactInput): Promise<{ id: string }>;
 	listWorkflowArtifactsByExecutionId(
 		executionId: string,

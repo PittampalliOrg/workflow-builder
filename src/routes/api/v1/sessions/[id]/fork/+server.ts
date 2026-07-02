@@ -1,13 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { and, eq, lte, asc } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import { sessionEvents } from "$lib/server/db/schema";
-import { getSession, createSession } from "$lib/server/sessions/registry";
-import { appendEvent } from "$lib/server/sessions/events";
-import { resolveAgentRef } from "$lib/server/agents/registry";
-import { findOrCreateExperimentAgent } from "$lib/server/agents/ephemeral";
-import { isAgentConfigEquivalent } from "$lib/utils/agent-config-diff";
+import { getApplicationAdapters } from "$lib/server/application";
 import type { AgentConfig } from "$lib/types/agents";
 
 /**
@@ -25,13 +18,11 @@ import type { AgentConfig } from "$lib/types/agents";
  *
  * If `agentConfig` is present AND it differs from the resolved source
  * session's agent config, the fork is pointed at a `session-experiment`
- * ephemeral agent (see `findOrCreateExperimentAgent`) instead of inheriting
- * the source's agent. The event-replay logic is unchanged — only the new
- * session row's agentId/agentVersion swap.
+ * ephemeral agent instead of inheriting the source's agent. The event-replay
+ * logic is unchanged; only the new session row's agentId/agentVersion swap.
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	if (!db) return error(503, "Database not configured");
 
 	const body = (await request.json().catch(() => ({}))) as Record<
 		string,
@@ -46,84 +37,26 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			? body.title.trim()
 			: null;
 
-	const source = await getSession(params.id);
-	if (!source) return error(404, "Session not found");
-
-	let forkAgentId = source.agentId;
-	let forkAgentVersion = source.agentVersion ?? undefined;
-
 	const tweakedConfig = isAgentConfigShape(body.agentConfig)
 		? (body.agentConfig as AgentConfig)
 		: null;
-
-	if (tweakedConfig) {
-		const baseAgent = await resolveAgentRef({
-			id: source.agentId,
-			version: source.agentVersion ?? undefined,
-		});
-		if (baseAgent && !isAgentConfigEquivalent(baseAgent.config, tweakedConfig)) {
-			try {
-				const experiment = await findOrCreateExperimentAgent({
-					baseAgentId: baseAgent.id,
-					baseAgentSlug: baseAgent.slug,
-					baseAgentName: baseAgent.name,
-					agentConfig: tweakedConfig,
-					userId: locals.session.userId,
-					projectId: locals.session.projectId ?? null,
-				});
-				forkAgentId = experiment.agentId;
-				forkAgentVersion = experiment.agentVersion;
-			} catch (err) {
-				return error(
-					400,
-					err instanceof Error ? err.message : "Experiment agent create failed",
-				);
-			}
-		}
-	}
-
-	// Create the forked session against the chosen agent (same as source by
-	// default, or the experiment when agentConfig was provided + diverged).
-	const forked = await createSession({
-		agentId: forkAgentId,
-		agentVersion: forkAgentVersion,
-		environmentId: source.environmentId ?? undefined,
-		environmentVersion: source.environmentVersion ?? undefined,
-		vaultIds: source.vaultIds,
-		title: title ?? `Fork of ${source.title ?? source.id} @ seq ${fromSequence}`,
+	const { workflowData } = getApplicationAdapters();
+	const result = await workflowData.forkSessionFromEvent({
+		sourceSessionId: params.id,
+		fromSequence,
+		title,
+		agentConfig: tweakedConfig,
 		userId: locals.session.userId,
+		projectId: locals.session.projectId ?? null,
 	});
-
-	// Replay events up to fromSequence inclusive. appendEvent reassigns the
-	// sequence number in the new session (starts from 1), so the order is
-	// preserved even though the numeric values differ from the source.
-	const rows = await db
-		.select()
-		.from(sessionEvents)
-		.where(
-			and(
-				eq(sessionEvents.sessionId, params.id),
-				lte(sessionEvents.sequence, fromSequence),
-			),
-		)
-		.orderBy(asc(sessionEvents.sequence));
-
-	for (const row of rows) {
-		await appendEvent(forked.id, {
-			type: row.type,
-			data: (row.data as Record<string, unknown>) ?? {},
-			processedAt: row.processedAt ?? null,
-			// Prefix source event id so replayed events don't collide with
-			// freshly-produced events on the forked session.
-			sourceEventId: `fork:${row.id}`,
-		});
-	}
+	if (result.status === "not_found") return error(404, "Session not found");
+	if (result.status === "bad_request") return error(400, result.message);
 
 	return json(
 		{
-			sessionId: forked.id,
-			sourceSessionId: params.id,
-			replayed: rows.length,
+			sessionId: result.sessionId,
+			sourceSessionId: result.sourceSessionId,
+			replayed: result.replayed,
 		},
 		{ status: 201 },
 	);

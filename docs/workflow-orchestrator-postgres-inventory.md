@@ -513,6 +513,15 @@ The first UI-facing route has also moved behind the application service:
   session context usage through `workflowData.getSessionContextUsage`. Session
   ownership, event aggregation, and agent-context JSON extraction are confined
   to the session repository adapter.
+- `src/routes/api/v1/sessions/[id]/fork/+server.ts` now delegates fork-session
+  creation and event replay to `workflowData.forkSessionFromEvent`. Source
+  session lookup, optional experiment-agent creation, forked session creation,
+  and ordered replay through `SessionEventLog.appendSessionEvent` are confined
+  to application ports/adapters.
+- `src/routes/api/v1/sessions/[id]/events/stream/+server.ts` now streams from
+  workflow-data application ports. The route still owns the SSE wire contract,
+  but snapshot reads, durable event-log drains, and session-event notification
+  subscription are no longer direct Postgres or legacy session-helper imports.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
@@ -524,8 +533,8 @@ events-ingest route subsets, plus the agent-trigger route membership check and
 the CLI credential capture session-owner lookup and ActivePieces resume
 execution lookup, and the GitHub trigger ingress/gate subset, are also clean.
 The internal piece-execution artifact readback and CLI workspace command routes
-are also clean. The scanned session provisioning and context-usage routes are
-also clean.
+are also clean. The scanned session provisioning, context-usage, fork, and
+event-stream routes are also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:
