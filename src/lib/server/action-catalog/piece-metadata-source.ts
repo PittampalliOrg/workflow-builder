@@ -39,6 +39,20 @@ type PieceCatalogSource = {
 	service: ActionCatalogServiceSnapshot;
 };
 
+export type PieceMetadataActionSourceRow = {
+	name: string;
+	displayName: string;
+	logoUrl: string | null;
+	description: string | null;
+	version: string;
+	auth: unknown;
+	actions: unknown;
+	categories: string[] | null;
+	catalogDigest: string | null;
+	catalogSourceImage: string | null;
+	availableOnly: boolean | null;
+};
+
 let cachedSource: { expiresAt: number; value: PieceCatalogSource } | null = null;
 
 /** AP property type → JSON Schema type (display fallback when the stored inputSchema lacks the prop). */
@@ -340,6 +354,53 @@ function buildActionDetail(input: {
 	};
 }
 
+function pieceCatalogActionsFromRows(rows: PieceMetadataActionSourceRow[]): ActionCatalogDetail[] {
+	const actions: ActionCatalogDetail[] = [];
+	for (const row of rows) {
+		if (!isRecord(row.actions)) continue;
+		for (const [actionName, action] of Object.entries(row.actions)) {
+			if (!isRecord(action)) continue;
+			actions.push(
+				buildActionDetail({
+					pieceName: row.name,
+					actionName,
+					action,
+					row: {
+						displayName: row.displayName,
+						logoUrl: row.logoUrl ?? '',
+						description: row.description,
+						version: row.version,
+						auth: row.auth,
+						categories: row.categories ?? [],
+						catalogDigest: row.catalogDigest,
+						catalogSourceImage: row.catalogSourceImage,
+						availableOnly: row.availableOnly === true,
+					},
+				}),
+			);
+		}
+	}
+	return actions;
+}
+
+export function pieceCatalogFunctionsFromRows(
+	rows: PieceMetadataActionSourceRow[],
+): PieceCatalogFunctionSummary[] {
+	return pieceCatalogActionsFromRows(rows).map((action) => ({
+		name: action.name,
+		version: action.version || '1.0.0',
+		displayName: action.displayName,
+		description: action.description,
+		pieceName: action.providerId || action.group,
+		actionName: action.entrypoint || action.slug,
+		providerId: action.providerId || action.group,
+		providerLabel: action.providerLabel || action.group,
+		providerIconUrl: action.providerIconUrl ?? null,
+		category: action.category ?? null,
+		entrypoint: action.entrypoint || action.slug,
+	}));
+}
+
 /**
  * Load AP catalog actions from piece_metadata (latest synced row per piece,
  * canonical catalog schema only). Throwing is fine — loadRemoteActionCache
@@ -381,31 +442,7 @@ export async function loadPieceMetadataActionSource(): Promise<PieceCatalogSourc
 		)
 		.orderBy(pieceMetadata.name, desc(pieceMetadata.catalogSyncedAt));
 
-	const actions: ActionCatalogDetail[] = [];
-	for (const row of rows) {
-		if (!isRecord(row.actions)) continue;
-		for (const [actionName, action] of Object.entries(row.actions)) {
-			if (!isRecord(action)) continue;
-			actions.push(
-				buildActionDetail({
-					pieceName: row.name,
-					actionName,
-					action,
-					row: {
-						displayName: row.displayName,
-						logoUrl: row.logoUrl,
-						description: row.description,
-						version: row.version,
-						auth: row.auth,
-						categories: row.categories ?? [],
-						catalogDigest: row.catalogDigest,
-						catalogSourceImage: row.catalogSourceImage,
-						availableOnly: row.availableOnly === true,
-					},
-				}),
-			);
-		}
-	}
+	const actions = pieceCatalogActionsFromRows(rows);
 
 	const value: PieceCatalogSource = {
 		actions,

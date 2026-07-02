@@ -14,6 +14,7 @@ import type {
 	UsageReportingRepository,
 	SandboxInventoryRepository,
 	SandboxRuntimeInventory,
+	CodeFunctionCatalogRepository,
 	WorkflowDefinition,
 	WorkflowDefinitionRepository,
 	WorkflowTriggerStore,
@@ -451,8 +452,48 @@ function fakeWorkspaceProjects(): WorkspaceProjectRepository {
 function fakePieceCatalog(): PieceCatalogRepository {
 	return {
 		getLatestPieceMetadata: vi.fn(async () => null),
+		listConnectablePieces: vi.fn(async () => [
+			{
+				name: "github",
+				displayName: "GitHub",
+				logoUrl: "https://example.test/github.svg",
+				authType: "OAUTH2",
+			},
+		]),
+		listPieceCatalogFunctions: vi.fn(async () => [
+			{
+				name: "github-create_issue",
+				version: "1.0.0",
+				displayName: "Create Issue",
+				description: "Create a GitHub issue",
+				pieceName: "github",
+				actionName: "create_issue",
+				providerId: "github",
+				providerLabel: "GitHub",
+				providerIconUrl: "https://example.test/github.svg",
+				category: "developer-tools",
+				entrypoint: "create_issue",
+			},
+		]),
 		listMcpCatalogPieces: vi.fn(async () => []),
 		listConnectionUsageByPieceNames: vi.fn(async () => []),
+	};
+}
+
+function fakeCodeFunctionCatalog(): CodeFunctionCatalogRepository {
+	return {
+		listEnabledForCatalog: vi.fn(async () => [
+			{
+				id: "code-1",
+				name: "Summarize",
+				slug: "summarize",
+				description: "Summarize text",
+				version: "1",
+				latestPublishedVersion: "2",
+				entrypoint: "main",
+				language: "typescript",
+			},
+		]),
 	};
 }
 
@@ -622,6 +663,7 @@ function makeServiceWithPieceCatalog(
 	pieceCatalog: PieceCatalogRepository,
 	mcpConnections: McpConnectionRepository = fakeMcpConnections(),
 	appConnections: AppConnectionRepository = fakeAppConnections(),
+	codeFunctionCatalog: CodeFunctionCatalogRepository = fakeCodeFunctionCatalog(),
 ) {
 	return new ApplicationWorkflowDataService({
 		workflowDefinitions: makeService({}).workflowDefinitions,
@@ -636,6 +678,7 @@ function makeServiceWithPieceCatalog(
 		apiKeys: fakeApiKeys(),
 		workspaceProjects: fakeWorkspaceProjects(),
 		pieceCatalog,
+		codeFunctionCatalog,
 		benchmarkBrowser: fakeBenchmarkBrowser(),
 		workflowExecutions: {} as WorkflowExecutionRepository,
 		sessionEventNotifications: fakeSessionEventNotifications(),
@@ -1283,6 +1326,88 @@ describe("ApplicationWorkflowDataService", () => {
 		vi.unstubAllGlobals();
 	});
 
+	it("lists connectable pieces through the piece catalog port", async () => {
+		const pieceCatalog = fakePieceCatalog();
+		const service = makeServiceWithPieceCatalog(pieceCatalog);
+
+		await expect(service.listConnectablePieces({ authOnly: true })).resolves.toEqual([
+			{
+				name: "@activepieces/piece-github",
+				displayName: "GitHub",
+				logoUrl: "https://example.test/github.svg",
+				authType: "OAUTH2",
+			},
+		]);
+		expect(pieceCatalog.listConnectablePieces).toHaveBeenCalledWith({ authOnly: true });
+	});
+
+	it("composes catalog functions with code functions before ActivePieces functions", async () => {
+		const pieceCatalog = fakePieceCatalog();
+		const codeFunctionCatalog = fakeCodeFunctionCatalog();
+		const service = makeServiceWithPieceCatalog(
+			pieceCatalog,
+			fakeMcpConnections(),
+			fakeAppConnections(),
+			codeFunctionCatalog,
+		);
+
+		await expect(service.listCatalogFunctions({ userId: "user-1" })).resolves.toEqual({
+			functions: [
+				{
+					name: "summarize",
+					version: "2",
+					displayName: "Summarize",
+					description: "Summarize text",
+					pieceName: "code-functions",
+					actionName: "main",
+					sourceKind: "code",
+					codeFunctionId: "code-1",
+					language: "typescript",
+				},
+				{
+					name: "github-create_issue",
+					version: "1.0.0",
+					displayName: "Create Issue",
+					description: "Create a GitHub issue",
+					pieceName: "github",
+					actionName: "create_issue",
+					providerId: "github",
+					providerLabel: "GitHub",
+					providerIconUrl: "https://example.test/github.svg",
+					category: "developer-tools",
+					entrypoint: "create_issue",
+				},
+			],
+			count: 2,
+			error: null,
+		});
+		expect(codeFunctionCatalog.listEnabledForCatalog).toHaveBeenCalledWith("user-1");
+		expect(pieceCatalog.listPieceCatalogFunctions).toHaveBeenCalled();
+	});
+
+	it("preserves catalog partial failure and anonymous code-function omission", async () => {
+		const pieceCatalog = {
+			...fakePieceCatalog(),
+			listPieceCatalogFunctions: vi.fn(async () => {
+				throw new Error("catalog unavailable");
+			}),
+		} satisfies PieceCatalogRepository;
+		const codeFunctionCatalog = fakeCodeFunctionCatalog();
+		const service = makeServiceWithPieceCatalog(
+			pieceCatalog,
+			fakeMcpConnections(),
+			fakeAppConnections(),
+			codeFunctionCatalog,
+		);
+
+		await expect(service.listCatalogFunctions({ userId: null })).resolves.toEqual({
+			functions: [],
+			count: 0,
+			error: "Error: catalog unavailable",
+		});
+		expect(codeFunctionCatalog.listEnabledForCatalog).not.toHaveBeenCalled();
+	});
+
 	it("loads MCP catalog piece actions through the piece catalog port", async () => {
 		const pieceCatalog = {
 			getLatestPieceMetadata: vi.fn(async () => ({
@@ -1307,6 +1432,8 @@ describe("ApplicationWorkflowDataService", () => {
 				catalogSyncedAt: null,
 				updatedAt: new Date("2026-01-01T00:00:00.000Z"),
 			})),
+			listConnectablePieces: vi.fn(async () => []),
+			listPieceCatalogFunctions: vi.fn(async () => []),
 			listMcpCatalogPieces: vi.fn(async () => []),
 			listConnectionUsageByPieceNames: vi.fn(async () => []),
 		} satisfies PieceCatalogRepository;
@@ -1339,6 +1466,8 @@ describe("ApplicationWorkflowDataService", () => {
 	it("composes MCP connection catalog entries through application ports", async () => {
 		const pieceCatalog = {
 			getLatestPieceMetadata: vi.fn(async () => null),
+			listConnectablePieces: vi.fn(async () => []),
+			listPieceCatalogFunctions: vi.fn(async () => []),
 			listMcpCatalogPieces: vi.fn(async () => [
 				{
 					name: "@activepieces/piece-github",
@@ -3285,6 +3414,8 @@ describe("ApplicationWorkflowDataService", () => {
 				catalogSyncedAt: new Date("2026-01-01T00:00:00.000Z"),
 				updatedAt: new Date("2026-01-02T00:00:00.000Z"),
 			})),
+			listConnectablePieces: vi.fn(async () => []),
+			listPieceCatalogFunctions: vi.fn(async () => []),
 			listMcpCatalogPieces: vi.fn(async () => []),
 			listConnectionUsageByPieceNames: vi.fn(async () => [
 				{ connectionExternalId: "conn-1", refCount: 3, workflowCount: 2 },

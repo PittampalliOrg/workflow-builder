@@ -107,6 +107,9 @@ import type {
 	SettingsRepository,
 	UpsertWorkspaceSessionInput,
 	WorkflowScheduler,
+	CodeFunctionCatalogRepository,
+	CodeCatalogFunctionRecord,
+	CatalogFunctionSummary,
 } from "$lib/server/application/ports";
 import type { AgentConfig } from "$lib/types/agents";
 import type { BenchmarkInstanceRow } from "$lib/types/benchmark-instance";
@@ -623,6 +626,20 @@ function usageMonthStart(now: Date): Date {
 	return new Date(now.getFullYear(), now.getMonth(), 1);
 }
 
+function toCodeCatalogFunction(record: CodeCatalogFunctionRecord) {
+	return {
+		name: record.slug,
+		version: record.latestPublishedVersion || record.version,
+		displayName: record.name,
+		description: record.description || "",
+		pieceName: "code-functions",
+		actionName: record.entrypoint,
+		sourceKind: "code" as const,
+		codeFunctionId: record.id,
+		language: record.language,
+	};
+}
+
 export class ApplicationWorkflowDataService implements WorkflowDataService {
 	constructor(
 		private readonly deps: {
@@ -638,6 +655,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			apiKeys: ApiKeyStore;
 			workspaceProjects: WorkspaceProjectRepository;
 			pieceCatalog: PieceCatalogRepository;
+			codeFunctionCatalog?: CodeFunctionCatalogRepository;
 			benchmarkBrowser: BenchmarkBrowserRepository;
 			workflowExecutions: WorkflowExecutionRepository;
 			sessionEventNotifications: WorkflowSessionEventNotificationSource;
@@ -2830,6 +2848,41 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			};
 		}
 		return { piece, usageByConnection };
+	}
+
+	async listConnectablePieces(input: { authOnly?: boolean }) {
+		const pieces = await this.deps.pieceCatalog.listConnectablePieces({
+			authOnly: input.authOnly === true,
+		});
+		return pieces.map((piece) => ({
+			name: `@activepieces/piece-${piece.name}`,
+			displayName: piece.displayName,
+			logoUrl: piece.logoUrl,
+			authType: piece.authType,
+		}));
+	}
+
+	async listCatalogFunctions(input: { userId?: string | null }) {
+		let apFunctions: CatalogFunctionSummary[] = [];
+		let apError: string | null = null;
+		try {
+			apFunctions = await this.deps.pieceCatalog.listPieceCatalogFunctions();
+		} catch (err) {
+			apError = String(err);
+		}
+
+		const codeFunctions =
+			input.userId && this.deps.codeFunctionCatalog
+				? (await this.deps.codeFunctionCatalog.listEnabledForCatalog(input.userId)).map(
+						toCodeCatalogFunction,
+					)
+				: [];
+		const functions = [...codeFunctions, ...apFunctions];
+		return {
+			functions,
+			count: functions.length,
+			error: apError,
+		};
 	}
 
 	async getBenchmarkBrowserReadModel(input: {

@@ -11,7 +11,8 @@ workspace workflow, service graph, connections, benchmark, top-level
 connections redirect, settings OAuth/profile, settings members, admin pieces,
 root UI-facing route, MCP connection, and app-connection CRUD/OAuth/decrypt
 route slices, the project members API route family, and the usage/cost/live
-limits reporting route family, plus sandbox executions/stats read APIs.
+limits reporting route family, plus sandbox executions/stats and catalog
+pieces/functions read APIs.
 
 ## Strict HTTP Runtime Paths
 
@@ -377,12 +378,21 @@ The first UI-facing route has also moved behind the application service:
   the `SandboxRuntimeInventory` adapter. The routes preserve the legacy
   best-effort behavior by returning empty execution/stat payloads when the
   Postgres adapter is unavailable.
+- `src/routes/api/pieces/+server.ts` and
+  `src/routes/api/catalog/functions/+server.ts` now read connectable pieces and
+  function catalog summaries through workflow-data application ports. Connectable
+  piece filtering, code-function-first catalog composition, ActivePieces catalog
+  partial-failure reporting, and anonymous code-function omission are
+  application service behavior. `piece_metadata` and `code_functions` SQL is
+  confined to `PostgresPieceCatalogRepository` and
+  `PostgresCodeFunctionCatalogRepository`; the routes import no direct DB,
+  schema, Drizzle, or catalog DB helpers.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
 workspace/root UI, settings, connections, admin-pieces, project-members, and
 usage/cost/live-limits route subset is also clean. The scanned sandbox
-executions/stats route subset is also clean.
+executions/stats and catalog pieces/functions route subsets are also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:

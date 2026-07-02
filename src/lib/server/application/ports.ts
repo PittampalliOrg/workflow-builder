@@ -121,6 +121,54 @@ export type PieceCatalogDetail = {
 	>;
 };
 
+export type ConnectablePieceRecord = {
+	name: string;
+	displayName: string | null;
+	logoUrl: string | null;
+	authType: string | null;
+};
+
+export type ConnectablePieceReadModel = {
+	name: string;
+	displayName: string | null;
+	logoUrl: string | null;
+	authType: string | null;
+};
+
+export type CatalogFunctionSummary = {
+	name: string;
+	version: string;
+	displayName: string;
+	description: string;
+	pieceName: string;
+	actionName: string;
+	providerId?: string;
+	providerLabel?: string;
+	providerIconUrl?: string | null;
+	category?: string | null;
+	entrypoint?: string;
+	sourceKind?: "code";
+	codeFunctionId?: string;
+	language?: string;
+};
+
+export type CodeCatalogFunctionRecord = {
+	id: string;
+	name: string;
+	slug: string;
+	description: string | null;
+	version: string;
+	latestPublishedVersion: string | null;
+	entrypoint: string;
+	language: string;
+};
+
+export type CatalogFunctionsReadModel = {
+	functions: CatalogFunctionSummary[];
+	count: number;
+	error: string | null;
+};
+
 export type BenchmarkBrowserInstanceRecord = {
 	id: string;
 	instanceId: string;
@@ -1188,11 +1236,19 @@ export interface PieceCatalogRepository {
 	getLatestPieceMetadata(
 		pieceNameCandidates: string[],
 	): Promise<PieceMetadataDetailRecord | null>;
+	listConnectablePieces(input: {
+		authOnly: boolean;
+	}): Promise<ConnectablePieceRecord[]>;
+	listPieceCatalogFunctions(): Promise<CatalogFunctionSummary[]>;
 	listMcpCatalogPieces(): Promise<McpCatalogPieceRecord[]>;
 	listConnectionUsageByPieceNames(input: {
 		pieceNameCandidates: string[];
 		projectId: string;
 	}): Promise<PieceConnectionUsageRecord[]>;
+}
+
+export interface CodeFunctionCatalogRepository {
+	listEnabledForCatalog(userId: string): Promise<CodeCatalogFunctionRecord[]>;
 }
 
 export interface BenchmarkBrowserRepository {
@@ -2042,6 +2098,12 @@ export interface WorkflowDataService {
 		pieceNameCandidates: string[];
 		projectId: string;
 	}): Promise<PieceCatalogDetail>;
+	listConnectablePieces(input: {
+		authOnly?: boolean;
+	}): Promise<ConnectablePieceReadModel[]>;
+	listCatalogFunctions(input: {
+		userId?: string | null;
+	}): Promise<CatalogFunctionsReadModel>;
 	getSettingsPageReadModel(input: {
 		userId: string;
 		sessionPlatformId?: string | null;

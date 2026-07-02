@@ -16,6 +16,7 @@ import {
 } from "drizzle-orm";
 import { db as defaultDb, sql as defaultSql } from "$lib/server/db";
 import { BENCHMARK_AGENT_RUNTIMES } from "$lib/benchmarks/agent-runtimes";
+import { pieceCatalogFunctionsFromRows } from "$lib/server/action-catalog/piece-metadata-source";
 import { connectionBelongsToProject } from "$lib/server/app-connection-scope";
 import { SWEBENCH_SUITES } from "$lib/server/benchmarks/swebench";
 import { generateId } from "$lib/server/utils/id";
@@ -28,6 +29,7 @@ import {
 	files,
 	apiKeys,
 	appConnections,
+	codeFunctions,
 	mlflowLineageLinks,
 	agents,
 	agentVersions,
@@ -80,6 +82,10 @@ import type {
 	BenchmarkBrowserRepository,
 	SandboxExecutionRecord,
 	SandboxInventoryRepository,
+	CatalogFunctionSummary,
+	CodeCatalogFunctionRecord,
+	CodeFunctionCatalogRepository,
+	ConnectablePieceRecord,
 	CreateWorkflowDefinitionInput,
 	CreateWorkflowTriggerInput,
 	CreateWorkflowExecutionInput,
@@ -1987,6 +1993,56 @@ export class PostgresPieceCatalogRepository implements PieceCatalogRepository {
 		return row ?? null;
 	}
 
+	async listConnectablePieces(input: {
+		authOnly: boolean;
+	}): Promise<ConnectablePieceRecord[]> {
+		const whereClause = input.authOnly
+			? sql`${pieceMetadata.availableOnly} = false AND ${pieceMetadata.auth} IS NOT NULL AND ${pieceMetadata.auth}->>'type' != 'NONE'`
+			: sql`${pieceMetadata.availableOnly} = false`;
+		const rows = await this.database
+			.selectDistinctOn([pieceMetadata.name], {
+				name: pieceMetadata.name,
+				displayName: pieceMetadata.displayName,
+				logoUrl: pieceMetadata.logoUrl,
+				authType: sql<string | null>`${pieceMetadata.auth}->>'type'`,
+			})
+			.from(pieceMetadata)
+			.where(whereClause)
+			.orderBy(pieceMetadata.name, pieceMetadata.displayName);
+		return rows.map((row) => ({
+			name: row.name,
+			displayName: row.displayName,
+			logoUrl: row.logoUrl,
+			authType: row.authType ?? null,
+		}));
+	}
+
+	async listPieceCatalogFunctions(): Promise<CatalogFunctionSummary[]> {
+		const rows = await this.database
+			.selectDistinctOn([pieceMetadata.name], {
+				name: pieceMetadata.name,
+				displayName: pieceMetadata.displayName,
+				logoUrl: pieceMetadata.logoUrl,
+				description: pieceMetadata.description,
+				version: pieceMetadata.version,
+				auth: pieceMetadata.auth,
+				actions: pieceMetadata.actions,
+				categories: pieceMetadata.categories,
+				catalogDigest: pieceMetadata.catalogDigest,
+				catalogSourceImage: pieceMetadata.catalogSourceImage,
+				availableOnly: pieceMetadata.availableOnly,
+			})
+			.from(pieceMetadata)
+			.where(
+				and(
+					eq(pieceMetadata.catalogSchemaVersion, 1),
+					eq(pieceMetadata.availableOnly, false),
+				),
+			)
+			.orderBy(pieceMetadata.name, desc(pieceMetadata.catalogSyncedAt));
+		return pieceCatalogFunctionsFromRows(rows);
+	}
+
 	listMcpCatalogPieces() {
 		return this.database
 			.selectDistinctOn([pieceMetadata.name], {
@@ -2028,6 +2084,36 @@ export class PostgresPieceCatalogRepository implements PieceCatalogRepository {
 			connectionExternalId: row.connectionExternalId,
 			refCount: Number(row.refCount) || 0,
 			workflowCount: Number(row.workflowCount) || 0,
+		}));
+	}
+}
+
+export class PostgresCodeFunctionCatalogRepository implements CodeFunctionCatalogRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async listEnabledForCatalog(userId: string): Promise<CodeCatalogFunctionRecord[]> {
+		const rows = await this.database
+			.select({
+				id: codeFunctions.id,
+				name: codeFunctions.name,
+				slug: codeFunctions.slug,
+				description: codeFunctions.description,
+				version: codeFunctions.version,
+				latestPublishedVersion: codeFunctions.latestPublishedVersion,
+				entrypoint: codeFunctions.entrypoint,
+				language: codeFunctions.language,
+			})
+			.from(codeFunctions)
+			.where(and(eq(codeFunctions.isEnabled, true), eq(codeFunctions.createdBy, userId)));
+		return rows.map((row) => ({
+			id: row.id,
+			name: row.name,
+			slug: row.slug,
+			description: row.description,
+			version: row.version,
+			latestPublishedVersion: row.latestPublishedVersion,
+			entrypoint: row.entrypoint,
+			language: row.language,
 		}));
 	}
 }
