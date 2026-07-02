@@ -14,7 +14,8 @@ route slices, the project members API route family, and the usage/cost/live
 limits reporting route family, plus sandbox executions/stats, catalog
 pieces/functions, workflow execution read/status APIs, internal
 run-diff/source-bundle artifact ingest APIs, and internal session-ingest utility
-routes, plus the external events ingest route.
+routes, the external events ingest route, and the agent-trigger membership
+check.
 
 ## Strict HTTP Runtime Paths
 
@@ -434,6 +435,12 @@ The first UI-facing route has also moved behind the application service:
   forwarding. Duplicate detection in
   `src/lib/server/workflows/external-event-registry.ts` is now a pure helper over
   execution DTOs instead of a direct `workflow_executions` query.
+- `src/routes/api/internal/dapr/agent-trigger/+server.ts` now checks acting-user
+  project membership through `workflowData.getWorkspaceProjectMembershipDetail`
+  instead of querying `project_members` directly. The broader command path still
+  delegates agent resolution, session creation, initial user event append, and
+  session workflow spawn to the existing lower-level services pending a future
+  session-command application slice.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
@@ -441,7 +448,8 @@ workspace/root UI, settings, connections, admin-pieces, project-members, and
 usage/cost/live-limits route subset is also clean. The scanned sandbox
 executions/stats, catalog pieces/functions, execution read/status, internal
 run-diff/source-bundle ingest, internal session-ingest, and external
-events-ingest route subsets are also clean.
+events-ingest route subsets, plus the agent-trigger route membership check, are
+also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:

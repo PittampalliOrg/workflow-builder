@@ -1,9 +1,7 @@
 import { json } from "@sveltejs/kit";
 import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
 import type { RequestHandler } from "./$types";
-import { db } from "$lib/server/db";
-import { projectMembers } from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
 import {
 	createSession,
 	getSession,
@@ -16,7 +14,7 @@ import { getAgentBySlug, resolveAgentRef } from "$lib/server/agents/registry";
 /**
  * Event-driven agent invocation (P1/P2).
  *
- * A Dapr pub/sub message on topic `agent.trigger` (NATS JetStream `pubsub`
+ * A Dapr pub/sub message on topic `workflow.agent-trigger` (NATS JetStream `pubsub`
  * component, delivered via `Subscription-agent-trigger.yaml`) starts a
  * `session_workflow` run through the EXISTING runtime-agnostic direct-session
  * dispatcher (`spawnSessionWorkflow` → `spawn.ts`). The runtime (CLI vs
@@ -63,18 +61,12 @@ async function isProjectMember(
 	projectId: string,
 	userId: string,
 ): Promise<boolean> {
-	if (!db) return false;
-	const [row] = await db
-		.select({ projectId: projectMembers.projectId })
-		.from(projectMembers)
-		.where(
-			and(
-				eq(projectMembers.projectId, projectId),
-				eq(projectMembers.userId, userId),
-			),
-		)
-		.limit(1);
-	return !!row;
+	const { workflowData } = getApplicationAdapters();
+	const membership = await workflowData.getWorkspaceProjectMembershipDetail({
+		projectId,
+		userId,
+	});
+	return !!membership?.selfRole;
 }
 
 export const POST: RequestHandler = async ({ request }) => {
@@ -90,11 +82,6 @@ export const POST: RequestHandler = async ({ request }) => {
 	) as TriggerPayload;
 
 	try {
-		if (!db) {
-			console.warn("[agent-trigger] DB not configured — dropping event");
-			return json({ status: "SUCCESS" });
-		}
-
 		const agentIdRaw =
 			typeof data.agentId === "string" ? data.agentId.trim() : "";
 		const agentSlugRaw =
