@@ -2700,6 +2700,28 @@ export type SessionControlSettingsReadModel = {
 	environment: SessionControlSettingsEnvironment | null;
 };
 
+export type SessionRuntimeCliAuthCredentialKind =
+	| "env_token"
+	| "file"
+	| "file_bundle"
+	| "device_login";
+
+export type SessionRuntimeCliAuthReadModel = {
+	provider: string;
+	credentialKind: SessionRuntimeCliAuthCredentialKind;
+	setupCommand: string | null;
+};
+
+export type NewSessionPageReadModel = {
+	cliAuthByRuntime: Record<string, SessionRuntimeCliAuthReadModel>;
+};
+
+export interface RuntimeRegistryReader {
+	listSessionRuntimeCliAuth(): Promise<
+		Record<string, SessionRuntimeCliAuthReadModel>
+	>;
+}
+
 export interface PeerAgentResolver {
 	resolvePeerAgentOwner(peerAgentId: string): Promise<PeerAgentOwner | null>;
 	resolvePeerAgentDispatchContext(input: {
@@ -3099,6 +3121,7 @@ export interface WorkflowDataService {
 		projectId?: string | null;
 		userId?: string | null;
 	}): Promise<SessionRuntimeDebugTarget | null>;
+	getNewSessionPageReadModel(): Promise<NewSessionPageReadModel>;
 	getSessionControlSettings(input: {
 		sessionId: string;
 		projectId?: string | null;

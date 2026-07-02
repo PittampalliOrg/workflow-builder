@@ -1,5 +1,5 @@
 import type { PageServerLoad } from "./$types";
-import { listRuntimes } from "$lib/server/agents/runtime-registry";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * Exposes the runtime-registry's per-runtime `cliAuth` contract to the
@@ -8,25 +8,5 @@ import { listRuntimes } from "$lib/server/agents/runtime-registry";
  * subscription token. Only metadata — never tokens.
  */
 export const load: PageServerLoad = async () => {
-	return {
-		cliAuthByRuntime: Object.fromEntries(
-			listRuntimes()
-				.filter((d) => d.cliAuth)
-				.map((d) => [
-					d.id,
-					{
-						provider: d.cliAuth!.provider,
-						credentialKind: d.cliAuth!.credentialKind,
-						setupCommand: d.cliAuth!.setupCommand ?? null,
-					},
-				]),
-		) as Record<
-			string,
-			{
-				provider: string;
-				credentialKind: "env_token" | "file" | "device_login";
-				setupCommand: string | null;
-			}
-		>,
-	};
+	return getApplicationAdapters().workflowData.getNewSessionPageReadModel();
 };

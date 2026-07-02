@@ -138,6 +138,7 @@ import type {
 	UpdateWorkflowDefinitionInput,
 	UpdateWorkflowEnsureSessionRuntimeInput,
 	UpsertTraceLineageLinksInput,
+	RuntimeRegistryReader,
 	WorkspaceSessionStore,
 	ServiceGraphPickerOptions,
 	WorkspaceWorkflowListItem,
@@ -772,6 +773,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			sessionTraceLifecycle?: SessionTraceLifecycleStore;
 			peerAgentResolver?: PeerAgentResolver;
 			workflowAgentReads?: WorkflowAgentReadRepository;
+			runtimeRegistry?: RuntimeRegistryReader;
 			sessionExperimentAgents?: SessionExperimentAgentStore;
 			goalFlow?: GoalFlowReadStore;
 			sessionEventNotifications: WorkflowSessionEventNotificationSource;
@@ -892,6 +894,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Workflow agent read repository not configured");
 		}
 		return this.deps.workflowAgentReads;
+	}
+
+	private requireRuntimeRegistry(): RuntimeRegistryReader {
+		if (!this.deps.runtimeRegistry) {
+			throw new Error("Runtime registry reader not configured");
+		}
+		return this.deps.runtimeRegistry;
 	}
 
 	private requireSessionExperimentAgents(): SessionExperimentAgentStore {
@@ -4027,6 +4036,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			sessionId: input.sessionId,
 			projectId: input.projectId ?? session.projectId ?? null,
 		});
+	}
+
+	async getNewSessionPageReadModel() {
+		return {
+			cliAuthByRuntime:
+				await this.requireRuntimeRegistry().listSessionRuntimeCliAuth(),
+		};
 	}
 
 	async getSessionControlSettings(input: {

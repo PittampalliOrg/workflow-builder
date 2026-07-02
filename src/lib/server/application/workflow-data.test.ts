@@ -13,6 +13,7 @@ import type {
 	McpConnectionRecord,
 	McpRunRepository,
 	PeerAgentResolver,
+	RuntimeRegistryReader,
 	SettingsRepository,
 	TraceLineageStore,
 	UsageReportingRepository,
@@ -38,6 +39,7 @@ import type {
 	WorkflowCodeCheckpointStore,
 	WorkflowExecutionRepository,
 	PieceCatalogRepository,
+	SessionRuntimeCliAuthReadModel,
 	UserProfileRepository,
 	WorkflowPlanArtifactStore,
 	WorkflowSessionEventNotificationSource,
@@ -814,6 +816,24 @@ function fakeWorkflowAgentReads(): WorkflowAgentReadRepository {
 	};
 }
 
+function fakeRuntimeRegistry(): RuntimeRegistryReader {
+	const cliAuthByRuntime = {
+		"codex-cli": {
+			provider: "openai",
+			credentialKind: "file",
+			setupCommand: "codex login",
+		},
+		"agy-cli": {
+			provider: "google",
+			credentialKind: "file_bundle",
+			setupCommand: "agy login",
+		},
+	} satisfies Record<string, SessionRuntimeCliAuthReadModel>;
+	return {
+		listSessionRuntimeCliAuth: vi.fn(async () => cliAuthByRuntime),
+	};
+}
+
 function fakeWorkspaceProjects(): WorkspaceProjectRepository {
 	const createdAt = new Date("2026-01-01T00:00:00.000Z");
 	const updatedAt = new Date("2026-01-01T00:00:00.000Z");
@@ -1036,6 +1056,7 @@ function makeService(options: {
 	sessionTraceLifecycle?: SessionTraceLifecycleStore;
 	peerAgentResolver?: PeerAgentResolver;
 	workflowAgentReads?: WorkflowAgentReadRepository;
+	runtimeRegistry?: RuntimeRegistryReader;
 	sessionExperimentAgents?: SessionExperimentAgentStore;
 	goalFlow?: GoalFlowReadStore;
 }) {
@@ -1086,6 +1107,7 @@ function makeService(options: {
 		sessionTraceLifecycle: options.sessionTraceLifecycle,
 		peerAgentResolver: options.peerAgentResolver,
 		workflowAgentReads: options.workflowAgentReads ?? fakeWorkflowAgentReads(),
+		runtimeRegistry: options.runtimeRegistry ?? fakeRuntimeRegistry(),
 		sessionExperimentAgents:
 			options.sessionExperimentAgents ?? fakeSessionExperimentAgents(),
 		goalFlow: options.goalFlow ?? fakeGoalFlow(),
@@ -2103,6 +2125,27 @@ describe("ApplicationWorkflowDataService", () => {
 			}),
 		).resolves.toBeNull();
 		expect(sessions.getSessionRuntimeDebugTarget).toHaveBeenCalledTimes(1);
+	});
+
+	it("loads new-session page metadata through runtime registry ports", async () => {
+		const runtimeRegistry = fakeRuntimeRegistry();
+		const { service } = makeService({ runtimeRegistry });
+
+		await expect(service.getNewSessionPageReadModel()).resolves.toEqual({
+			cliAuthByRuntime: {
+				"codex-cli": {
+					provider: "openai",
+					credentialKind: "file",
+					setupCommand: "codex login",
+				},
+				"agy-cli": {
+					provider: "google",
+					credentialKind: "file_bundle",
+					setupCommand: "agy login",
+				},
+			},
+		});
+		expect(runtimeRegistry.listSessionRuntimeCliAuth).toHaveBeenCalledOnce();
 	});
 
 	it("loads session control settings through scoped agent read ports", async () => {

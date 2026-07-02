@@ -556,6 +556,10 @@ The first UI-facing route has also moved behind the application service:
   session through workflow-data before using existing agent and vault credential
   read services. Moving credential status behind ports remains a dedicated
   MCP/auth slice.
+- `src/routes/workspaces/[slug]/sessions/new/+page.server.ts` now loads
+  runtime CLI-auth metadata through workflow-data and a runtime-registry reader
+  port. The file-backed runtime registry remains the adapter-side source of
+  truth; the page loader no longer imports the runtime registry directly.
 - `src/routes/api/v1/sessions/[id]/compute/+server.ts`,
   `src/routes/api/v1/sessions/[id]/runtime-flags/+server.ts`,
   `src/routes/api/v1/sessions/[id]/shell/resolve/+server.ts`, and

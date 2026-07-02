@@ -49,6 +49,7 @@ import {
 	OpenShellSandboxRuntimeInventory,
 	WorkspaceRuntimeSandboxProvisioner,
 } from "$lib/server/application/adapters/sandbox";
+import { LocalRuntimeRegistryReader } from "$lib/server/application/adapters/runtime-registry";
 import {
 	CurrentSessionRepository,
 	DaprSessionRuntimeEventRaiser,
@@ -231,6 +232,7 @@ export function getApplicationAdapters(
 			sessionTraceLifecycle: getSessionTraceLifecycle(),
 			peerAgentResolver: getPeerAgentResolver(),
 			workflowAgentReads: getPeerAgentResolver(),
+			runtimeRegistry: new LocalRuntimeRegistryReader(),
 			sessionExperimentAgents: getPeerAgentResolver(),
 			codeCheckpoints: getCodeCheckpoints(),
 			evaluationArtifacts: getEvaluationArtifacts(),

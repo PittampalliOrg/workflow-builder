@@ -28,7 +28,7 @@
 				string,
 				{
 					provider: string;
-					credentialKind: 'env_token' | 'file' | 'device_login';
+					credentialKind: 'env_token' | 'file' | 'file_bundle' | 'device_login';
 					setupCommand: string | null;
 				}
 			>;
