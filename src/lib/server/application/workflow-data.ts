@@ -2719,6 +2719,20 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			: null;
 	}
 
+	listActiveWorkflowExecutionsForUser(userId: string) {
+		return this.deps.workflowExecutions.listActiveForUser(userId);
+	}
+
+	listInternalAgentWorkflowExecutions(input: {
+		workflowId?: string | null;
+		workflowName?: string | null;
+		status?: "pending" | "running" | "success" | "error" | "cancelled" | null;
+		limit: number;
+		offset: number;
+	}) {
+		return this.deps.workflowExecutions.listForInternalAgent(input);
+	}
+
 	listWorkflows(input: { limit: number; projectId?: string | null }) {
 		return this.deps.workflowDefinitions.list(input);
 	}

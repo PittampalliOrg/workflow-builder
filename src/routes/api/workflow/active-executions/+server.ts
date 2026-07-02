@@ -1,9 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getSession } from '$lib/server/auth';
-import { db } from '$lib/server/db';
-import { workflowExecutions, workflows } from '$lib/server/db/schema';
-import { and, eq, inArray } from 'drizzle-orm';
+import { getApplicationAdapters } from '$lib/server/application';
 
 /**
  * GET /api/workflow/active-executions
@@ -18,41 +16,15 @@ export const GET: RequestHandler = async ({ request, cookies }) => {
 			return error(401, 'Unauthorized');
 		}
 
-		if (!db) {
+		return json(
+			await getApplicationAdapters().workflowData.listActiveWorkflowExecutionsForUser(
+				session.user.id
+			)
+		);
+	} catch (err) {
+		if (err instanceof Error && err.message === 'Database not configured') {
 			return error(503, 'Database not configured');
 		}
-
-		const activeStatuses = ['pending', 'running'] as const;
-
-		const executions = await db
-			.select({
-				id: workflowExecutions.id,
-				workflowId: workflowExecutions.workflowId,
-				workflowName: workflows.name,
-				status: workflowExecutions.status,
-				phase: workflowExecutions.phase
-			})
-			.from(workflowExecutions)
-			.innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
-			.where(
-				and(
-					eq(workflowExecutions.userId, session.user.id),
-					inArray(workflowExecutions.status, [...activeStatuses])
-				)
-			)
-			.limit(50);
-
-		const result = executions.map((e) => ({
-			id: e.id,
-			workflowId: e.workflowId,
-			workflowName: e.workflowName,
-			status: e.status,
-			phase: e.phase,
-			approvalEventName: null
-		}));
-
-		return json(result);
-	} catch (err) {
 		console.error('Failed to fetch active executions:', err);
 		return json({ error: 'Internal server error' }, { status: 500 });
 	}

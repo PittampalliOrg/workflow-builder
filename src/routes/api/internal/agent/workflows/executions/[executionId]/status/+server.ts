@@ -1,9 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { validateInternalToken } from '$lib/server/internal-auth';
-import { db } from '$lib/server/db';
-import { workflowExecutions, workflows } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
+import { getApplicationAdapters } from '$lib/server/application';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
 
 /**
@@ -17,33 +15,27 @@ export const GET: RequestHandler = async ({ request, params }) => {
 		return error(401, 'Unauthorized');
 	}
 
-	if (!db) {
-		return error(503, 'Database not configured');
-	}
-
 	const { executionId } = params;
+	const workflowData = getApplicationAdapters().workflowData;
 
-	const [execution] = await db
-		.select()
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, executionId))
-		.limit(1);
+	let execution: Awaited<ReturnType<typeof workflowData.getExecutionById>>;
+	try {
+		execution = await workflowData.getExecutionById(executionId);
+	} catch (err) {
+		if (err instanceof Error && err.message === 'Database not configured') {
+			return error(503, 'Database not configured');
+		}
+		throw err;
+	}
 
 	if (!execution) {
 		return error(404, 'Execution not found');
 	}
 
-	// Load associated workflow for orchestrator URL
-	const [workflow] = await db
-		.select({
-			id: workflows.id,
-			name: workflows.name,
-			daprOrchestratorUrl: workflows.daprOrchestratorUrl,
-			engineType: workflows.engineType
-		})
-		.from(workflows)
-		.where(eq(workflows.id, execution.workflowId))
-		.limit(1);
+	const workflow = await workflowData.getWorkflowByRef({
+		workflowId: execution.workflowId,
+		lookup: 'id'
+	});
 
 	// Query orchestrator for live runtime status
 	let runtime: Record<string, unknown> | null = null;
@@ -85,20 +77,16 @@ export const GET: RequestHandler = async ({ request, params }) => {
 			(runtime.phase as string | null) !== execution.phase ||
 			(runtime.progress as number | null) !== execution.progress
 		) {
-			await db
-				.update(workflowExecutions)
-				.set({
-					status: effectiveStatus,
-					phase: (runtime.phase as string) ?? execution.phase,
-					progress: (runtime.progress as number) ?? execution.progress,
-					output:
-						(runtime.outputs as Record<string, unknown>) ?? execution.output,
-					error: effectiveError,
-					...(shouldComplete && !execution.completedAt
-						? { completedAt: new Date() }
-						: {})
-				})
-				.where(eq(workflowExecutions.id, execution.id));
+			await workflowData.updateExecutionReadModel(execution.id, {
+				status: effectiveStatus,
+				phase: (runtime.phase as string) ?? execution.phase,
+				progress: (runtime.progress as number) ?? execution.progress,
+				output: (runtime.outputs as Record<string, unknown>) ?? execution.output,
+				error: effectiveError,
+				...(shouldComplete && !execution.completedAt
+					? { completedAt: new Date() }
+					: {})
+			});
 		}
 	}
 

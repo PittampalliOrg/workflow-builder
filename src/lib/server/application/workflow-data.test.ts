@@ -301,6 +301,37 @@ function fakeWorkflowExecutions(): WorkflowExecutionRepository {
 			currentId: "exec-1",
 			nodes: [],
 		})),
+		listActiveForUser: vi.fn(async () => [
+			{
+				id: "exec-1",
+				workflowId: "wf-1",
+				workflowName: "Example",
+				status: "running" as const,
+				phase: "agent",
+				approvalEventName: null,
+			},
+		]),
+		listForInternalAgent: vi.fn(async () => ({
+			success: true as const,
+			executions: [
+				{
+					id: "exec-1",
+					workflowId: "wf-1",
+					status: "running" as const,
+					phase: "agent",
+					progress: 50,
+					error: null,
+					startedAt: new Date("2026-01-01T00:00:00.000Z"),
+					completedAt: null,
+					workflow: {
+						id: "wf-1",
+						name: "Example",
+						description: null,
+					},
+				},
+			],
+			total: 1,
+		})),
 		listByWorkflowId: vi.fn(async () => []),
 		listRunSummariesByWorkflowId: vi.fn(async () => []),
 		countForksByWorkflowIds: vi.fn(async () => []),
@@ -3856,6 +3887,12 @@ describe("ApplicationWorkflowDataService", () => {
 				currentId: "exec-1",
 				nodes: [],
 			})),
+			listActiveForUser: vi.fn(async () => []),
+			listForInternalAgent: vi.fn(async () => ({
+				success: true as const,
+				executions: [],
+				total: 0,
+			})),
 			listByWorkflowId: vi.fn(async () => []),
 			listRunSummariesByWorkflowId: vi.fn(async () => []),
 			countForksByWorkflowIds: vi.fn(async () => []),
@@ -3937,6 +3974,14 @@ describe("ApplicationWorkflowDataService", () => {
 		await service.getExecutionByDaprInstanceId("sw-example-exec-exec-1");
 		await service.getRunningWorkflowExecution("wf-1");
 		await service.getExecutionLineage("exec-1");
+		await service.listActiveWorkflowExecutionsForUser("user-1");
+		await service.listInternalAgentWorkflowExecutions({
+			workflowId: "wf-1",
+			workflowName: "Example",
+			status: "running",
+			limit: 25,
+			offset: 5,
+		});
 		await service.listWorkflowExecutions({
 			workflowId: "wf-1",
 			limit: 20,
@@ -4017,6 +4062,14 @@ describe("ApplicationWorkflowDataService", () => {
 		);
 		expect(workflowExecutions.getRunningByWorkflowId).toHaveBeenCalledWith("wf-1");
 		expect(workflowExecutions.getLineage).toHaveBeenCalledWith("exec-1");
+		expect(workflowExecutions.listActiveForUser).toHaveBeenCalledWith("user-1");
+		expect(workflowExecutions.listForInternalAgent).toHaveBeenCalledWith({
+			workflowId: "wf-1",
+			workflowName: "Example",
+			status: "running",
+			limit: 25,
+			offset: 5,
+		});
 		expect(workflowExecutions.listByWorkflowId).toHaveBeenCalledWith({
 			workflowId: "wf-1",
 			limit: 20,

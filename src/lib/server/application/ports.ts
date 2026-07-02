@@ -1556,6 +1556,45 @@ export type SandboxStatsReadModel = {
 	avgAgeMinutes: number;
 };
 
+export type ActiveWorkflowExecutionReadModel = {
+	id: string;
+	workflowId: string;
+	workflowName: string | null;
+	status: WorkflowExecutionStatus;
+	phase: string | null;
+	approvalEventName: null;
+};
+
+export type InternalAgentWorkflowExecutionListItem = {
+	id: string;
+	workflowId: string;
+	status: WorkflowExecutionStatus;
+	phase: string | null;
+	progress: number | null;
+	error: string | null;
+	startedAt: Date;
+	completedAt: Date | null;
+	workflow: {
+		id: string;
+		name: string;
+		description: string | null;
+	};
+};
+
+export type InternalAgentWorkflowExecutionListReadModel = {
+	success: true;
+	executions: InternalAgentWorkflowExecutionListItem[];
+	total: number;
+};
+
+export type InternalAgentWorkflowExecutionListInput = {
+	workflowId?: string | null;
+	workflowName?: string | null;
+	status?: WorkflowExecutionStatus | null;
+	limit: number;
+	offset: number;
+};
+
 export interface SandboxInventoryRepository {
 	listRecentExecutionsForSandbox(sandboxName: string): Promise<SandboxExecutionRecord[]>;
 	countExecutionsSince(cutoff: Date): Promise<number>;
@@ -1679,6 +1718,10 @@ export interface WorkflowExecutionRepository {
 	getByDaprInstanceId(instanceId: string): Promise<WorkflowExecutionRecord | null>;
 	getRunningByWorkflowId(workflowId: string): Promise<{ id: string; status: string } | null>;
 	getLineage(executionId: string): Promise<WorkflowExecutionLineage | null>;
+	listActiveForUser(userId: string): Promise<ActiveWorkflowExecutionReadModel[]>;
+	listForInternalAgent(
+		input: InternalAgentWorkflowExecutionListInput,
+	): Promise<InternalAgentWorkflowExecutionListReadModel>;
 	listByWorkflowId(input: {
 		workflowId: string;
 		limit: number;
@@ -2074,6 +2117,12 @@ export interface WorkflowDataService {
 	getWorkflowByRef(
 		ref: WorkflowRef & { lookup?: "id" | "name" | "auto" },
 	): Promise<WorkflowDefinition | null>;
+	listActiveWorkflowExecutionsForUser(
+		userId: string,
+	): Promise<ActiveWorkflowExecutionReadModel[]>;
+	listInternalAgentWorkflowExecutions(
+		input: InternalAgentWorkflowExecutionListInput,
+	): Promise<InternalAgentWorkflowExecutionListReadModel>;
 	listWorkflows(input: {
 		limit: number;
 		projectId?: string | null;

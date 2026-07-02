@@ -126,6 +126,9 @@ import type {
 	WorkflowTriggerRecord,
 	WorkflowTriggerStore,
 	WorkflowExecutionRecord,
+	ActiveWorkflowExecutionReadModel,
+	InternalAgentWorkflowExecutionListInput,
+	InternalAgentWorkflowExecutionListReadModel,
 	WorkflowExecutionForkCountRecord,
 	WorkflowExecutionLogPatch,
 	WorkflowExecutionPickerRecord,
@@ -2677,6 +2680,87 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 					isCurrent: row.id === executionId,
 				};
 			}),
+		};
+	}
+
+	async listActiveForUser(userId: string): Promise<ActiveWorkflowExecutionReadModel[]> {
+		const rows = await this.database
+			.select({
+				id: workflowExecutions.id,
+				workflowId: workflowExecutions.workflowId,
+				workflowName: workflows.name,
+				status: workflowExecutions.status,
+				phase: workflowExecutions.phase,
+			})
+			.from(workflowExecutions)
+			.innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
+			.where(
+				and(
+					eq(workflowExecutions.userId, userId),
+					inArray(workflowExecutions.status, ["pending", "running"]),
+				),
+			)
+			.limit(50);
+
+		return rows.map((row) => ({
+			...row,
+			approvalEventName: null,
+		}));
+	}
+
+	async listForInternalAgent(
+		input: InternalAgentWorkflowExecutionListInput,
+	): Promise<InternalAgentWorkflowExecutionListReadModel> {
+		const filters = [];
+		const workflowId = input.workflowId?.trim();
+		const workflowName = input.workflowName?.trim();
+		if (workflowId) {
+			filters.push(eq(workflowExecutions.workflowId, workflowId));
+		}
+		if (workflowName) {
+			filters.push(eq(workflows.name, workflowName));
+		}
+		if (input.status) {
+			filters.push(eq(workflowExecutions.status, input.status));
+		}
+		const whereClause = filters.length > 0 ? and(...filters) : undefined;
+		const limit = Math.max(1, Math.min(Number.isFinite(input.limit) ? input.limit : 100, 500));
+		const offset = Math.max(0, Number.isFinite(input.offset) ? input.offset : 0);
+
+		const [executions, totalRows] = await Promise.all([
+			this.database
+				.select({
+					id: workflowExecutions.id,
+					workflowId: workflowExecutions.workflowId,
+					status: workflowExecutions.status,
+					phase: workflowExecutions.phase,
+					progress: workflowExecutions.progress,
+					error: workflowExecutions.error,
+					startedAt: workflowExecutions.startedAt,
+					completedAt: workflowExecutions.completedAt,
+					workflow: {
+						id: workflows.id,
+						name: workflows.name,
+						description: workflows.description,
+					},
+				})
+				.from(workflowExecutions)
+				.innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
+				.where(whereClause)
+				.orderBy(desc(workflowExecutions.startedAt))
+				.limit(limit)
+				.offset(offset),
+			this.database
+				.select({ value: count() })
+				.from(workflowExecutions)
+				.innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
+				.where(whereClause),
+		]);
+
+		return {
+			success: true,
+			executions,
+			total: totalRows[0]?.value ?? 0,
 		};
 	}
 

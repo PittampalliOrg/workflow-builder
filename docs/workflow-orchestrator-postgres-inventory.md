@@ -11,8 +11,8 @@ workspace workflow, service graph, connections, benchmark, top-level
 connections redirect, settings OAuth/profile, settings members, admin pieces,
 root UI-facing route, MCP connection, and app-connection CRUD/OAuth/decrypt
 route slices, the project members API route family, and the usage/cost/live
-limits reporting route family, plus sandbox executions/stats and catalog
-pieces/functions read APIs.
+limits reporting route family, plus sandbox executions/stats, catalog
+pieces/functions, and workflow execution read/status APIs.
 
 ## Strict HTTP Runtime Paths
 
@@ -387,12 +387,22 @@ The first UI-facing route has also moved behind the application service:
   confined to `PostgresPieceCatalogRepository` and
   `PostgresCodeFunctionCatalogRepository`; the routes import no direct DB,
   schema, Drizzle, or catalog DB helpers.
+- `src/routes/api/workflow/active-executions/+server.ts`,
+  `src/routes/api/internal/agent/workflows/executions/+server.ts`, and
+  `src/routes/api/internal/agent/workflows/executions/[executionId]/status/+server.ts`
+  now read active execution lists, internal-agent execution lists, execution
+  rows, workflow metadata, and read-model status updates through workflow-data
+  application ports. `workflow_executions`/`workflows` joins and filtered counts
+  are confined to `PostgresWorkflowExecutionRepository`; the status route still
+  owns the Dapr runtime probe and runtime-status mapping, then persists the
+  synchronized read-model patch through `workflowData.updateExecutionReadModel`.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
 workspace/root UI, settings, connections, admin-pieces, project-members, and
 usage/cost/live-limits route subset is also clean. The scanned sandbox
-executions/stats and catalog pieces/functions route subsets are also clean.
+executions/stats, catalog pieces/functions, and execution read/status route
+subsets are also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:
