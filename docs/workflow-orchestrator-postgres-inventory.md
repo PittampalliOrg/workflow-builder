@@ -533,6 +533,10 @@ The first UI-facing route has also moved behind the application service:
 - `src/routes/api/v1/sessions/[id]/goal-flow/+server.ts` now scopes the session
   through workflow-data before building the existing observability goal-flow
   read model.
+- `src/routes/api/v1/sessions/[id]/control/settings/+server.ts` and
+  `src/routes/api/v1/sessions/[id]/control/mcp-status/+server.ts` now scope
+  the session through workflow-data before using existing agent/environment and
+  vault credential read services.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
@@ -544,8 +548,9 @@ events-ingest route subsets, plus the agent-trigger route membership check and
 the CLI credential capture session-owner lookup and ActivePieces resume
 execution lookup, and the GitHub trigger ingress/gate subset, are also clean.
 The internal piece-execution artifact readback and CLI workspace command routes
-are also clean. The scanned session provisioning, context-usage, fork, goal,
-goal-flow, event list/append, and event-stream routes are also clean.
+are also clean. The scanned session provisioning, context-usage, control
+settings/MCP status, fork, goal, goal-flow, event list/append, and event-stream
+routes are also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:

@@ -1,7 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { assertSessionInScope } from "$lib/server/sessions/scope";
-import { getSession } from "$lib/server/sessions/registry";
+import { getApplicationAdapters } from "$lib/server/application";
 import { resolveAgentRef } from "$lib/server/agents/registry";
 import { findCredentialForMcpServer } from "$lib/server/vaults/credentials";
 import type { AgentConfig } from "$lib/types/agents";
@@ -23,8 +22,11 @@ type McpServerHealth = {
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	await assertSessionInScope(params.id, locals.session);
-	const session = await getSession(params.id);
+	const session = await getApplicationAdapters().workflowData.getSessionEventStreamSnapshot({
+		sessionId: params.id,
+		projectId: locals.session.projectId ?? null,
+		userId: locals.session.userId,
+	});
 	if (!session) return error(404, "Session not found");
 	const agent = await resolveAgentRef({
 		id: session.agentId,
