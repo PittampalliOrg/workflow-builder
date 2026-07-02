@@ -1,14 +1,12 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
+import { getApplicationAdapters } from "$lib/server/application";
 import { inspectDurableRun } from "$lib/server/lifecycle";
 import { isResourceInScope } from "$lib/server/workflows/project-scope";
-import { getSession } from "$lib/server/sessions/registry";
 import {
 	decideGoalHarness,
 	sessionHasNativeGoalHarness,
 } from "$lib/server/sessions/runtime-target";
-import { appendEvent } from "$lib/server/sessions/events";
-import { raiseSessionUserEvents } from "$lib/server/sessions/spawn";
 import {
 	createOrReplaceGoal,
 	getCurrentGoal,
@@ -16,6 +14,7 @@ import {
 	pauseGoal,
 } from "$lib/server/goals/repo";
 import { kickGoalLoop } from "$lib/server/goals/goal-loop";
+import type { UserEvent } from "$lib/types/sessions";
 
 /**
  * Type the given text into the live CLI TUI composer. Interactive-cli runtimes
@@ -30,6 +29,7 @@ import { kickGoalLoop } from "$lib/server/goals/goal-loop";
 async function injectCliCommand(
 	sessionId: string,
 	text: string,
+	projectId?: string | null,
 ): Promise<void> {
 	const userMessage = {
 		type: "user.message",
@@ -37,13 +37,14 @@ async function injectCliCommand(
 		// Lets the UI style/hide it like the legacy hidden continuation turns.
 		origin: "goal-native",
 	};
-	await appendEvent(sessionId, {
-		type: "user.message",
-		data: userMessage,
-		processedAt: null,
-		sourceEventId: `goal-native:${sessionId}:${Date.now()}`,
+	const result = await getApplicationAdapters().workflowData.appendSessionUserEvents({
+		sessionId,
+		projectId,
+		events: [userMessage as UserEvent],
 	});
-	await raiseSessionUserEvents(sessionId, [userMessage]);
+	if (result.status === "not_found") {
+		throw error(404, "Session not found");
+	}
 }
 
 /** Parse a JSON value into a clean string[] (one entry per non-empty string). */
@@ -64,7 +65,10 @@ function parseStringArray(value: unknown): string[] | null {
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const session = await getSession(params.id);
+	const session = await getApplicationAdapters().workflowData.getSessionEventStreamSnapshot({
+		sessionId: params.id,
+		projectId: locals.session.projectId ?? null,
+	});
 	if (!session) return error(404, "Session not found");
 	const goal = await getCurrentGoal(params.id);
 	const nativeGoalAvailable = await sessionHasNativeGoalHarness(params.id);
@@ -112,11 +116,19 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	);
 	if (native) {
 		// Hand the loop to the vendor CLI's native /goal harness — no BFF row.
-		await injectCliCommand(params.id, `/goal ${objective}`);
+		await injectCliCommand(
+			params.id,
+			`/goal ${objective}`,
+			locals.session.projectId ?? null,
+		);
 		return json({ native: true, objective });
 	}
 
-	const session = await getSession(params.id);
+	const session = await getApplicationAdapters().workflowData.getSessionEventStreamSnapshot({
+		sessionId: params.id,
+		projectId: locals.session.projectId ?? null,
+	});
+	if (!session) return error(404, "Session not found");
 	const goal = await createOrReplaceGoal({
 		sessionId: params.id,
 		objective,
@@ -166,7 +178,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	// No BFF row: this may be an opt-in native `/goal` run on a CLI — clear it by
 	// typing `/goal clear` into the terminal (aliases: stop/off/reset/cancel).
 	if (await sessionHasNativeGoalHarness(params.id)) {
-		await injectCliCommand(params.id, "/goal clear");
+		await injectCliCommand(params.id, "/goal clear", locals.session.projectId ?? null);
 		return json({ native: true });
 	}
 	return error(404, "No active goal for this session");

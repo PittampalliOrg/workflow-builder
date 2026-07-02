@@ -526,6 +526,10 @@ The first UI-facing route has also moved behind the application service:
   session events through workflow-data application ports. User-event appends
   still wake the Dapr session workflow best-effort, but that runtime transport
   is behind `SessionRuntimeEventRaiser` instead of a route-level session helper.
+- `src/routes/api/v1/sessions/[id]/goal/+server.ts` now scopes session reads
+  and native CLI `/goal` command injection through workflow-data ports. Goal
+  repository mutations and lifecycle ownership checks remain in their existing
+  service boundaries pending a dedicated goal-management slice.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
@@ -537,8 +541,8 @@ events-ingest route subsets, plus the agent-trigger route membership check and
 the CLI credential capture session-owner lookup and ActivePieces resume
 execution lookup, and the GitHub trigger ingress/gate subset, are also clean.
 The internal piece-execution artifact readback and CLI workspace command routes
-are also clean. The scanned session provisioning, context-usage, fork, event
-list/append, and event-stream routes are also clean.
+are also clean. The scanned session provisioning, context-usage, fork, goal,
+event list/append, and event-stream routes are also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:
