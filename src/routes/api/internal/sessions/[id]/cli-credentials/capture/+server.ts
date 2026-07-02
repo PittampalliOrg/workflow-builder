@@ -11,20 +11,21 @@
  */
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { eq } from "drizzle-orm";
+import { getApplicationAdapters } from "$lib/server/application";
 import { validateInternalToken } from "$lib/server/internal-auth";
-import { db } from "$lib/server/db";
-import { sessions } from "$lib/server/db/schema";
 import {
 	upsertUserCliCredential,
 	releaseCliBootLease,
 } from "$lib/server/users/cli-credentials";
 
+function isDatabaseNotConfigured(err: unknown): boolean {
+	return err instanceof Error && err.message.includes("Database not configured");
+}
+
 export const POST: RequestHandler = async ({ params, request }) => {
 	if (!validateInternalToken(request)) return error(401, "Unauthorized");
 	const sessionId = params.id;
 	if (!sessionId) return error(400, "Missing session id");
-	if (!db) return error(503, "Database not configured");
 
 	let body: { provider?: unknown; bundle?: unknown };
 	try {
@@ -36,12 +37,15 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	const bundle = typeof body.bundle === "string" ? body.bundle.trim() : "";
 	if (!provider || !bundle) return error(400, "provider and bundle are required");
 
-	const [row] = await db
-		.select({ userId: sessions.userId })
-		.from(sessions)
-		.where(eq(sessions.id, sessionId))
-		.limit(1);
-	const userId = row?.userId ?? null;
+	let userId: string | null;
+	try {
+		const { workflowData } = getApplicationAdapters();
+		const owner = await workflowData.getSessionFileOwner(sessionId);
+		userId = owner?.userId ?? null;
+	} catch (err) {
+		if (isDatabaseNotConfigured(err)) return error(503, "Database not configured");
+		throw err;
+	}
 	if (!userId) return error(404, "Session owner not found");
 
 	try {

@@ -14,8 +14,8 @@ route slices, the project members API route family, and the usage/cost/live
 limits reporting route family, plus sandbox executions/stats, catalog
 pieces/functions, workflow execution read/status APIs, internal
 run-diff/source-bundle artifact ingest APIs, and internal session-ingest utility
-routes, the external events ingest route, and the agent-trigger membership
-check.
+routes, the external events ingest route, the agent-trigger membership check,
+and the CLI credential capture session-owner lookup.
 
 ## Strict HTTP Runtime Paths
 
@@ -441,6 +441,12 @@ The first UI-facing route has also moved behind the application service:
   delegates agent resolution, session creation, initial user event append, and
   session workflow spawn to the existing lower-level services pending a future
   session-command application slice.
+- `src/routes/api/internal/sessions/[id]/cli-credentials/capture/+server.ts`
+  now resolves the session owner through `workflowData.getSessionFileOwner`
+  instead of querying `sessions.user_id` directly. Credential bundle validation,
+  encrypted storage, and boot-lease release remain behind the existing
+  `users/cli-credentials` service seam pending a later user credential store
+  slice.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
@@ -448,8 +454,8 @@ workspace/root UI, settings, connections, admin-pieces, project-members, and
 usage/cost/live-limits route subset is also clean. The scanned sandbox
 executions/stats, catalog pieces/functions, execution read/status, internal
 run-diff/source-bundle ingest, internal session-ingest, and external
-events-ingest route subsets, plus the agent-trigger route membership check, are
-also clean.
+events-ingest route subsets, plus the agent-trigger route membership check and
+the CLI credential capture session-owner lookup, are also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:
