@@ -1,7 +1,6 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { db } from '$lib/server/db';
-import { getMcpAvailability } from '$lib/server/mcp-availability';
+import { getApplicationAdapters } from '$lib/server/application';
 import { requireSessionProjectId } from '$lib/server/mcp-connections';
 
 /**
@@ -14,7 +13,11 @@ import { requireSessionProjectId } from '$lib/server/mcp-connections';
 export const GET: RequestHandler = async ({ locals }) => {
 	const projectId = requireSessionProjectId(locals);
 	if (!locals.session?.userId) return error(401, 'Unauthorized');
-	if (!db) return json({ entries: [], projectConnections: [], customConnections: [] });
 
-	return json(await getMcpAvailability(db, projectId, locals.session.platformId));
+	return json(
+		await getApplicationAdapters().workflowData.getMcpAvailability({
+			projectId,
+			platformId: locals.session.platformId
+		})
+	);
 };

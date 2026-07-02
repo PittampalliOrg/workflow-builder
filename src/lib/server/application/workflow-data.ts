@@ -28,6 +28,12 @@ import {
 	type OAuth2AuthorizationMethod,
 } from "$lib/server/app-connections/oauth2";
 import { getOrchestratorUrl } from "$lib/server/dapr-client";
+import {
+	buildMcpAvailability,
+	getMcpAvailabilityOAuthPieceNames,
+	getMcpAvailabilityWantedPieceNames,
+	loadRegisteredPieceMcpCatalog,
+} from "$lib/server/mcp-availability";
 import { costFor, MODEL_PRICING } from "$lib/server/pricing/model-pricing";
 import { persistRunDiff } from "$lib/server/workflows/run-diff";
 import { persistSourceBundle } from "$lib/server/workflows/source-bundle";
@@ -81,6 +87,8 @@ import type {
 	HostedMcpServerRepository,
 	HostedMcpServerStatus,
 	HostedMcpWorkflow,
+	McpAvailabilityReadModel,
+	McpCatalogConfiguredConnectionSummary,
 	McpRunRepository,
 	ProjectMembershipRole,
 	StartHostedMcpWorkflowToolInput,
@@ -1326,6 +1334,57 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			.sort((a, b) => a.displayName.localeCompare(b.displayName));
 
 		return { entries };
+	}
+
+	async getMcpAvailability(input: {
+		projectId: string;
+		platformId?: string | null;
+	}): Promise<McpAvailabilityReadModel> {
+		const [
+			{ entries: registeredEntries, path: catalogPath },
+			pieces,
+			appConnections,
+			projectConnectionRows,
+		] = await Promise.all([
+			loadRegisteredPieceMcpCatalog(),
+			this.deps.pieceCatalog.listMcpCatalogPieces(),
+			this.deps.mcpConnections.listActiveAppConnectionCatalogSummaries(input.projectId),
+			this.deps.mcpConnections.listProjectConnections(input.projectId),
+		]);
+
+		const projectConnections: McpCatalogConfiguredConnectionSummary[] =
+			projectConnectionRows.map((row) => ({
+				id: row.id,
+				displayName: row.displayName,
+				sourceType: row.sourceType,
+				pieceName: row.pieceName,
+				serverKey: row.serverKey,
+				connectionExternalId: row.connectionExternalId,
+				serverUrl: row.serverUrl,
+				status: row.status,
+				metadata: row.metadata,
+			}));
+		const wantedPieceNames = getMcpAvailabilityWantedPieceNames({
+			registeredEntries,
+			projectConnections,
+		});
+		const oauthPieceNames = getMcpAvailabilityOAuthPieceNames(wantedPieceNames);
+		const oauthConfiguredPieceNames =
+			oauthPieceNames.length > 0
+				? await this.deps.mcpConnections.listPlatformOAuthAppPieceNames({
+						pieceNames: oauthPieceNames,
+						platformId: input.platformId,
+					})
+				: [];
+
+		return buildMcpAvailability({
+			registeredEntries,
+			catalogPath,
+			pieces,
+			appConnections,
+			projectConnections,
+			oauthConfiguredPieceNames,
+		});
 	}
 
 	private async getOrCreateHostedMcpServer(

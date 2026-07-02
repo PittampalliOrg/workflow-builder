@@ -1,4 +1,5 @@
 import type { AgentMcpResolutionResult } from "$lib/server/agents/mcp-resolution";
+import type { McpServerAvailabilityEntry } from "$lib/server/mcp-catalog";
 import type { AgentConfig } from "$lib/types/agents";
 import type {
 	SandboxProvisionInput,
@@ -742,6 +743,16 @@ export type McpCatalogEntry = {
 
 export type McpConnectionCatalogReadModel = {
 	entries: McpCatalogEntry[];
+};
+
+export type McpAvailabilityReadModel = {
+	entries: McpServerAvailabilityEntry[];
+	projectConnections: McpCatalogConfiguredConnectionSummary[];
+	customConnections: McpCatalogConfiguredConnectionSummary[];
+	source: {
+		catalogPath: string | null;
+		registeredCount: number;
+	};
 };
 
 export type ProjectMembershipRole = "ADMIN" | "EDITOR" | "OPERATOR" | "VIEWER";
@@ -2635,6 +2646,10 @@ export interface WorkflowDataService {
 		authOnly?: boolean;
 		configuredOnly?: boolean;
 	}): Promise<McpConnectionCatalogReadModel>;
+	getMcpAvailability(input: {
+		projectId: string;
+		platformId?: string | null;
+	}): Promise<McpAvailabilityReadModel>;
 	getProjectHostedMcpServer(input: {
 		projectId: string;
 		userId: string;

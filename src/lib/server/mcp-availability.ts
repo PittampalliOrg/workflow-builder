@@ -1,36 +1,18 @@
 import { readFile } from 'node:fs/promises';
 import { env } from '$env/dynamic/private';
-import { desc, eq, inArray } from 'drizzle-orm';
-import { connectionBelongsToProject } from '$lib/server/app-connection-scope';
-import type { db } from '$lib/server/db';
-import {
-	appConnections,
-	mcpConnections,
-	pieceMetadata,
-	platformOauthApps
-} from '$lib/server/db/schema';
+import type {
+	McpAvailabilityReadModel,
+	McpCatalogAppConnectionSummary,
+	McpCatalogConfiguredConnectionSummary,
+	McpCatalogPieceRecord
+} from '$lib/server/application/ports';
 import {
 	buildMcpServerAvailabilityEntry,
 	parseRegisteredPieceMcpCatalog,
-	type AppConnectionCatalogSummary,
-	type ConfiguredMcpConnectionSummary,
 	type McpServerAvailabilityEntry,
 	type RegisteredPieceMcpCatalogEntry
 } from '$lib/server/mcp-catalog';
 import { normalizePieceName } from '$lib/server/mcp-connections';
-import { AppConnectionStatus } from '$lib/server/types/app-connection';
-
-type Database = NonNullable<typeof db>;
-
-export type McpAvailabilityResult = {
-	entries: McpServerAvailabilityEntry[];
-	projectConnections: ConfiguredMcpConnectionSummary[];
-	customConnections: ConfiguredMcpConnectionSummary[];
-	source: {
-		catalogPath: string | null;
-		registeredCount: number;
-	};
-};
 
 type PieceMetadataSummary = {
 	name: string;
@@ -41,6 +23,15 @@ type PieceMetadataSummary = {
 	auth: unknown;
 	actions: unknown;
 	availableOnly: boolean;
+};
+
+export type BuildMcpAvailabilityInput = {
+	registeredEntries: RegisteredPieceMcpCatalogEntry[];
+	catalogPath: string | null;
+	pieces: McpCatalogPieceRecord[];
+	appConnections: McpCatalogAppConnectionSummary[];
+	projectConnections: McpCatalogConfiguredConnectionSummary[];
+	oauthConfiguredPieceNames: string[];
 };
 
 function catalogPath(): string | null {
@@ -101,124 +92,79 @@ function fallbackPieceSummary(
 	};
 }
 
-export async function getMcpAvailability(
-	database: Database,
-	projectId: string,
-	platformId?: string | null
-): Promise<McpAvailabilityResult> {
-	const { entries: registeredEntries, path } = await loadRegisteredPieceMcpCatalog();
+export function getMcpAvailabilityWantedPieceNames(input: {
+	registeredEntries: RegisteredPieceMcpCatalogEntry[];
+	projectConnections: McpCatalogConfiguredConnectionSummary[];
+}): string[] {
+	const wantedPieces = new Set(input.registeredEntries.map((entry) => entry.pieceName));
+	for (const row of input.projectConnections) {
+		if (row.sourceType !== 'nimble_piece') continue;
+		const pieceName = normalizePieceName(row.pieceName);
+		if (pieceName) wantedPieces.add(pieceName);
+	}
+	return Array.from(wantedPieces);
+}
+
+export function getMcpAvailabilityOAuthPieceNames(pieceNames: string[]): string[] {
+	return Array.from(new Set(pieceNames.flatMap((piece) => pieceSearchNames(piece))));
+}
+
+export function buildMcpAvailability(
+	input: BuildMcpAvailabilityInput
+): McpAvailabilityReadModel {
 	const registeredByPiece = new Map(
-		registeredEntries.map((entry) => [entry.pieceName, entry] as const)
+		input.registeredEntries.map((entry) => [entry.pieceName, entry] as const)
 	);
 
-	const [pieces, connectionRows, mcpRows] = await Promise.all([
-		database
-			.selectDistinctOn([pieceMetadata.name], {
-				name: pieceMetadata.name,
-				displayName: pieceMetadata.displayName,
-				description: pieceMetadata.description,
-				logoUrl: pieceMetadata.logoUrl,
-				categories: pieceMetadata.categories,
-				auth: pieceMetadata.auth,
-				actions: pieceMetadata.actions,
-				availableOnly: pieceMetadata.availableOnly,
-				updatedAt: pieceMetadata.updatedAt
-			})
-			.from(pieceMetadata)
-			.orderBy(pieceMetadata.name, desc(pieceMetadata.updatedAt)),
-		database
-			.select({
-				id: appConnections.id,
-				externalId: appConnections.externalId,
-				displayName: appConnections.displayName,
-				pieceName: appConnections.pieceName,
-				type: appConnections.type,
-				status: appConnections.status,
-				projectIds: appConnections.projectIds
-			})
-			.from(appConnections)
-			.where(eq(appConnections.status, AppConnectionStatus.ACTIVE))
-			.orderBy(desc(appConnections.createdAt)),
-		database
-			.select({
-				id: mcpConnections.id,
-				displayName: mcpConnections.displayName,
-				sourceType: mcpConnections.sourceType,
-				pieceName: mcpConnections.pieceName,
-				serverKey: mcpConnections.serverKey,
-				connectionExternalId: mcpConnections.connectionExternalId,
-				serverUrl: mcpConnections.serverUrl,
-				status: mcpConnections.status,
-				metadata: mcpConnections.metadata
-			})
-			.from(mcpConnections)
-			.where(eq(mcpConnections.projectId, projectId))
-	]);
-
 	const piecesByName = new Map<string, PieceMetadataSummary>();
-	for (const piece of pieces) {
+	for (const piece of input.pieces) {
 		const normalized = normalizePieceName(piece.name);
 		if (!normalized || piecesByName.has(normalized)) continue;
 		piecesByName.set(normalized, piece);
 	}
 
-	const wantedPieces = new Set(registeredByPiece.keys());
-	for (const row of mcpRows) {
-		if (row.sourceType !== 'nimble_piece') continue;
-		const pieceName = normalizePieceName(row.pieceName);
-		if (pieceName) wantedPieces.add(pieceName);
-	}
+	const wantedPieces = getMcpAvailabilityWantedPieceNames({
+		registeredEntries: input.registeredEntries,
+		projectConnections: input.projectConnections
+	});
 	// NOTE: available-only pieces are intentionally NOT added here. The MCP
 	// availability list is about registered/connectable servers; discovery of the
 	// (hundreds of) catalog-only pieces lives in the connections HUB browse
 	// (/api/mcp-connections/catalog), which already has search + category filters.
-
-	const oauthPieceNames = Array.from(
-		new Set(Array.from(wantedPieces).flatMap((piece) => pieceSearchNames(piece)))
-	);
-	const oauthApps =
-		oauthPieceNames.length > 0
-			? await database
-					.select({
-						pieceName: platformOauthApps.pieceName,
-						platformId: platformOauthApps.platformId
-					})
-					.from(platformOauthApps)
-					.where(inArray(platformOauthApps.pieceName, oauthPieceNames))
-			: [];
 	const oauthConfigured = new Set(
-		oauthApps
-			.filter((app) => !platformId || app.platformId === platformId)
-			.map((app) => normalizePieceName(app.pieceName))
+		input.oauthConfiguredPieceNames.map((pieceName) => normalizePieceName(pieceName))
 	);
 
-	const appConnectionsByPiece = new Map<string, AppConnectionCatalogSummary[]>();
-	for (const row of connectionRows) {
-		if (!connectionBelongsToProject(row.projectIds, projectId)) continue;
+	const appConnectionsByPiece = new Map<
+		string,
+		Omit<McpCatalogAppConnectionSummary, 'pieceName'>[]
+	>();
+	for (const row of input.appConnections) {
 		const key = normalizePieceName(row.pieceName);
 		if (!key) continue;
 		const list = appConnectionsByPiece.get(key) ?? [];
+		const { pieceName: _pieceName, ...summary } = row;
 		list.push({
-			id: row.id,
-			externalId: row.externalId,
-			displayName: row.displayName,
-			type: row.type,
-			status: row.status
+			id: summary.id,
+			externalId: summary.externalId,
+			displayName: summary.displayName,
+			type: summary.type,
+			status: summary.status
 		});
 		appConnectionsByPiece.set(key, list);
 	}
 
-	const projectConnections: ConfiguredMcpConnectionSummary[] = mcpRows;
+	const projectConnections = input.projectConnections;
 	const customConnections = projectConnections.filter((row) => row.sourceType !== 'nimble_piece');
 
-	const mcpByPiece = new Map<string, ConfiguredMcpConnectionSummary>();
-	for (const row of mcpRows) {
+	const mcpByPiece = new Map<string, McpCatalogConfiguredConnectionSummary>();
+	for (const row of input.projectConnections) {
 		if (row.sourceType !== 'nimble_piece') continue;
 		const key = normalizePieceName(row.pieceName);
 		if (key) mcpByPiece.set(key, row);
 	}
 
-	const entries = Array.from(wantedPieces)
+	const entries: McpServerAvailabilityEntry[] = wantedPieces
 		.map((pieceName) => {
 			const registered = registeredByPiece.get(pieceName) ?? null;
 			const piece = piecesByName.get(pieceName) ?? fallbackPieceSummary(pieceName, registered);
@@ -249,8 +195,8 @@ export async function getMcpAvailability(
 		projectConnections,
 		customConnections,
 		source: {
-			catalogPath: path,
-			registeredCount: registeredEntries.length
+			catalogPath: input.catalogPath,
+			registeredCount: input.registeredEntries.length
 		}
 	};
 }

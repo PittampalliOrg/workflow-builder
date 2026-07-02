@@ -42,6 +42,8 @@ import type {
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 import { createDefaultAgentConfig } from "$lib/types/agents";
 
+const dynamicPrivateEnv = vi.hoisted(() => ({} as Record<string, string | undefined>));
+
 vi.mock("$lib/server/security/encryption", () => ({
 	encryptString: (plaintext: string) => ({
 		iv: "test-iv",
@@ -60,7 +62,7 @@ vi.mock("$lib/server/security/encryption", () => ({
 }));
 
 vi.mock("$env/dynamic/private", () => ({
-	env: {},
+	env: dynamicPrivateEnv,
 }));
 
 vi.mock("$lib/server/observability/mlflow-lifecycle", () => ({
@@ -2397,6 +2399,111 @@ describe("ApplicationWorkflowDataService", () => {
 			],
 			platformId: "platform-1",
 			});
+	});
+
+	it("composes MCP availability through application ports", async () => {
+		dynamicPrivateEnv.ACTIVEPIECES_MCP_CATALOG_JSON = JSON.stringify({
+			github: {
+				pieceName: "github",
+				serviceName: "ap-github-service",
+				serverUrl: "http://ap-github-service/mcp",
+				categories: ["devtools"],
+			},
+		});
+		const pieceCatalog = {
+			getLatestPieceMetadata: vi.fn(async () => null),
+			listConnectablePieces: vi.fn(async () => []),
+			listPieceCatalogFunctions: vi.fn(async () => []),
+			listMcpCatalogPieces: vi.fn(async () => [
+				{
+					name: "@activepieces/piece-github",
+					displayName: "GitHub",
+					description: "Source control",
+					logoUrl: "https://example.test/github.svg",
+					categories: ["devtools"],
+					auth: { type: "OAUTH2", displayName: "OAuth" },
+					actions: { create_issue: {} },
+					availableOnly: false,
+					updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+				},
+			]),
+			listConnectionUsageByPieceNames: vi.fn(async () => []),
+		} satisfies PieceCatalogRepository;
+		const mcpConnections = {
+			...fakeMcpConnections(),
+			listProjectConnections: vi.fn(async () => [
+				mcpConnection({
+					id: "mcp-github",
+					sourceType: "nimble_piece",
+					pieceName: "github",
+					connectionExternalId: "app-github",
+					displayName: "GitHub MCP",
+				}),
+				mcpConnection({
+					id: "mcp-custom",
+					sourceType: "custom_url",
+					pieceName: null,
+					serverKey: "custom",
+					connectionExternalId: null,
+					displayName: "Custom MCP",
+					registryRef: null,
+					serverUrl: "https://mcp.example.test/mcp",
+				}),
+			]),
+			listActiveAppConnectionCatalogSummaries: vi.fn(async () => [
+				{
+					id: "app-1",
+					externalId: "app-github",
+					displayName: "GitHub OAuth",
+					pieceName: "@activepieces/piece-github",
+					type: "OAUTH2",
+					status: "ACTIVE",
+				},
+			]),
+			listPlatformOAuthAppPieceNames: vi.fn(async () => [
+				"@activepieces/piece-github",
+			]),
+		} satisfies McpConnectionRepository;
+		const service = makeServiceWithPieceCatalog(pieceCatalog, mcpConnections);
+
+		await expect(
+			service.getMcpAvailability({
+				projectId: "project-1",
+				platformId: "platform-1",
+			}),
+		).resolves.toMatchObject({
+			source: { catalogPath: null, registeredCount: 1 },
+			customConnections: [{ id: "mcp-custom", sourceType: "custom_url" }],
+			entries: [
+				{
+					pieceName: "github",
+					registered: true,
+					enabled: true,
+					ready: true,
+					authStatus: "READY",
+					oauthAppConfigured: true,
+					selectedAppConnection: {
+						id: "app-1",
+						externalId: "app-github",
+						displayName: "GitHub OAuth",
+					},
+					mcpConnection: {
+						id: "mcp-github",
+						connectionExternalId: "app-github",
+					},
+				},
+			],
+		});
+		expect(pieceCatalog.listMcpCatalogPieces).toHaveBeenCalled();
+		expect(mcpConnections.listProjectConnections).toHaveBeenCalledWith("project-1");
+		expect(mcpConnections.listActiveAppConnectionCatalogSummaries).toHaveBeenCalledWith(
+			"project-1",
+		);
+		expect(mcpConnections.listPlatformOAuthAppPieceNames).toHaveBeenCalledWith({
+			pieceNames: ["github", "@activepieces/piece-github"],
+			platformId: "platform-1",
+		});
+		delete dynamicPrivateEnv.ACTIVEPIECES_MCP_CATALOG_JSON;
 	});
 
 	it("returns a hosted MCP server read model and syncs the hosted connection through ports", async () => {
