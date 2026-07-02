@@ -50,9 +50,7 @@ import {
 	buildWorkflowSessionId,
 	ensureWorkflowTraceparentHeader,
 	injectWorkflowSessionHeaders,
-	workflowTraceIdFromTraceparent,
 } from "$lib/server/observability/workflow-session";
-import { safePrecreateMlflowTrace } from "$lib/server/observability/mlflow-lifecycle";
 import { isAgentRuntimeSandboxName } from "$lib/server/agent-runtime-sandboxes";
 import { openshellRuntimeFetch } from "$lib/server/openshell-runtime";
 import { kubeApiFetch } from "$lib/server/kube/client";
@@ -225,14 +223,6 @@ function ensureBenchmarkInstanceMlflowRunInBackground(params: {
 			err instanceof Error ? err.message : err,
 		);
 	});
-}
-
-function modelIdFromMlflowUri(value: string | null | undefined): string | null {
-	if (!value?.trim()) return null;
-	return value
-		.trim()
-		.replace(/^models:\//, "")
-		.replace(/^\//, "") || null;
 }
 
 async function syncBenchmarkInstanceMlflowAndTraceBundle(params: {
@@ -4027,48 +4017,7 @@ export async function startBenchmarkInstanceWorkflow(params: {
 			executionIr,
 		})
 		.returning({ id: workflowExecutions.id });
-	const parentMlflowRunId = await ensureBenchmarkMlflowRun(row.run.id);
-	const [mlflowRunState] = parentMlflowRunId
-		? await database
-				.select({
-					mlflowExperimentId: benchmarkRuns.mlflowExperimentId,
-					agentMlflowUri: agentVersions.mlflowUri,
-					agentMlflowModelName: agentVersions.mlflowModelName,
-				})
-				.from(benchmarkRuns)
-				.leftJoin(
-					agentVersions,
-					and(
-						eq(agentVersions.agentId, benchmarkRuns.agentId),
-						eq(agentVersions.version, benchmarkRuns.agentVersion),
-					),
-				)
-				.where(eq(benchmarkRuns.id, row.run.id))
-				.limit(1)
-		: [];
-	const activeModelUri =
-		mlflowRunState?.agentMlflowUri ?? row.agentVersionRow?.mlflowUri ?? null;
-	const activeModelId = modelIdFromMlflowUri(activeModelUri);
 	const workflowSessionId = buildWorkflowSessionId(execution.id);
-	const mlflowContext = parentMlflowRunId
-		? {
-				experimentId:
-					mlflowRunState?.mlflowExperimentId ?? row.run.mlflowExperimentId ?? undefined,
-				traceExperimentId:
-					mlflowRunState?.mlflowExperimentId ?? row.run.mlflowExperimentId ?? undefined,
-				runId: parentMlflowRunId,
-				parentRunId: null,
-				activeModelId,
-				activeModelName:
-					mlflowRunState?.agentMlflowModelName ??
-					row.agentVersionRow?.mlflowModelName ??
-					null,
-				activeModelUri,
-				traceGroupId: execution.id,
-				applicationKind: "agent",
-				applicationId: row.run.agentId,
-			}
-		: null;
 	const workflowHeaders = injectWorkflowSessionHeaders(
 		ensureWorkflowTraceparentHeader({ "Content-Type": "application/json" }),
 		{
@@ -4076,11 +4025,6 @@ export async function startBenchmarkInstanceWorkflow(params: {
 			workflowExecutionId: execution.id,
 			workflowId: workflow.id,
 			traceGroupId: execution.id,
-			mlflowExperimentId: mlflowContext?.traceExperimentId ?? mlflowContext?.experimentId,
-			mlflowRunId: parentMlflowRunId,
-			mlflowParentRunId: null,
-			mlflowModelId: activeModelId,
-			mlflowModelUri: activeModelUri,
 		},
 	);
 	const traceContext = {
@@ -4088,28 +4032,6 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		tracestate: workflowHeaders.tracestate,
 		baggage: workflowHeaders.baggage,
 	};
-	await safePrecreateMlflowTrace({
-		traceId: workflowTraceIdFromTraceparent(workflowHeaders.traceparent),
-		experimentId: mlflowContext?.traceExperimentId ?? mlflowContext?.experimentId,
-		name: `swebench/${row.runInstance.instanceId}/${execution.id}`,
-			metadata: {
-				"mlflow.sourceRun": parentMlflowRunId,
-				"mlflow.modelId": activeModelId,
-			},
-		tags: {
-			"workflow_builder.kind": "swebench_instance",
-			"workflow_builder.benchmark_run_id": row.run.id,
-			"workflow_builder.benchmark_run_instance_id": row.runInstance.id,
-			"workflow_builder.workflow_execution_id": execution.id,
-			"workflow.execution.id": execution.id,
-			"swebench.instance_id": row.runInstance.instanceId,
-			"agent.id": row.run.agentId,
-			"agent.version": row.run.agentVersion,
-			"agent.mlflow_uri": activeModelUri,
-			"mlflow.run_id": parentMlflowRunId,
-			"mlflow.modelId": activeModelId,
-		},
-	});
 
 	if (dispatchBackend === "host") {
 		let hostResult: Awaited<
@@ -4121,14 +4043,13 @@ export async function startBenchmarkInstanceWorkflow(params: {
 				instanceId: row.runInstance.instanceId,
 				workflowId: workflow.id,
 				workflowExecutionId: execution.id,
-				executionClass,
-				timeoutSeconds: row.run.timeoutSeconds,
-				workflow: spec,
-				triggerData,
-				mlflowContext,
-				traceContext,
-				inferenceEnvironment:
-					inferenceEnvironment as unknown as Record<string, unknown>,
+					executionClass,
+					timeoutSeconds: row.run.timeoutSeconds,
+					workflow: spec,
+					triggerData,
+					traceContext,
+					inferenceEnvironment:
+						inferenceEnvironment as unknown as Record<string, unknown>,
 			});
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
@@ -4304,12 +4225,11 @@ export async function startBenchmarkInstanceWorkflow(params: {
 				headers: workflowHeaders,
 			body: JSON.stringify({
 				workflow: spec,
-				workflowId: workflow.id,
-				triggerData,
-				dbExecutionId: execution.id,
-				mlflowContext,
-				traceContext,
-			}),
+					workflowId: workflow.id,
+					triggerData,
+					dbExecutionId: execution.id,
+					traceContext,
+				}),
 			maxRetries: 0,
 			signal: AbortSignal.timeout(ORCHESTRATOR_START_TIMEOUT_MS),
 		});

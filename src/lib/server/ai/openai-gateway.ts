@@ -44,7 +44,7 @@ function completionTokenLimit(model: string, maxTokens: number) {
 }
 
 export function openAICompatibleGatewayBaseUrl(): string | null {
-	return normalizeBaseUrl(env.MLFLOW_AI_GATEWAY_OPENAI_BASE_URL);
+	return normalizeBaseUrl(env.LLM_GATEWAY_OPENAI_BASE_URL ?? env.OPENAI_COMPATIBLE_GATEWAY_BASE_URL);
 }
 
 export function openAICompatibleTrafficAvailable(): boolean {
@@ -57,8 +57,8 @@ export function workflowOpenAIModel(model: string | undefined | null) {
 	if (!gatewayBaseUrl) return openai(normalizedModel);
 	return createOpenAI({
 		baseURL: gatewayBaseUrl,
-		apiKey: env.MLFLOW_AI_GATEWAY_API_KEY || env.AI_GATEWAY_API_KEY || env.OPENAI_API_KEY || 'unused',
-		name: 'mlflow-ai-gateway'
+		apiKey: env.LLM_GATEWAY_API_KEY || env.AI_GATEWAY_API_KEY || env.OPENAI_API_KEY || 'unused',
+		name: 'llm-gateway'
 	})(normalizedModel);
 }
 
@@ -71,7 +71,7 @@ export async function callOpenAICompatibleChatCompletion(params: {
 	const gatewayBaseUrl = openAICompatibleGatewayBaseUrl();
 	const baseUrl = gatewayBaseUrl ?? 'https://api.openai.com/v1';
 	const apiKey = gatewayBaseUrl
-		? env.MLFLOW_AI_GATEWAY_API_KEY || env.AI_GATEWAY_API_KEY || env.OPENAI_API_KEY || 'unused'
+		? env.LLM_GATEWAY_API_KEY || env.AI_GATEWAY_API_KEY || env.OPENAI_API_KEY || 'unused'
 		: env.OPENAI_API_KEY;
 	if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
 	const model = normalizeModel(params.model);

@@ -1168,7 +1168,7 @@ def test_mlflow_workflow_run_enrichment_logs_completion_projection(monkeypatch):
     assert metric_values["browser_assets_logged"] == 2.0
 
 
-def test_sw_workflow_success_schedules_mlflow_finalizer_after_persist_and_cleanup(monkeypatch):
+def test_sw_workflow_success_schedules_otel_finalizer_after_persist_and_cleanup(monkeypatch):
     _install_terminal_workflow_model_fakes(monkeypatch)
     ctx = _FakeTerminalWorkflowCtx()
     workflow_gen = SW_WORKFLOW.sw_workflow(ctx, _terminal_workflow_input())
@@ -1181,7 +1181,7 @@ def test_sw_workflow_success_schedules_mlflow_finalizer_after_persist_and_cleanu
     assert cleanup["activity"] == "cleanup_execution_workspaces"
 
     finalized = workflow_gen.send({"success": True})
-    assert finalized["activity"] == "finalize_mlflow_trace_root"
+    assert finalized["activity"] == "finalize_otel_trace_root"
     assert finalized["input"]["status"] == "OK"
     assert finalized["input"]["traceId"] == "1234567890abcdef1234567890abcdef"
     assert finalized["input"]["traceName"] == "wf_test/db_exec_123"
@@ -1192,7 +1192,7 @@ def test_sw_workflow_success_schedules_mlflow_finalizer_after_persist_and_cleanu
     assert stop.value.value["success"] is True
 
 
-def test_sw_workflow_failure_schedules_mlflow_finalizer_with_error_after_cleanup(monkeypatch):
+def test_sw_workflow_failure_schedules_otel_finalizer_with_error_after_cleanup(monkeypatch):
     _install_terminal_workflow_model_fakes(monkeypatch)
     ctx = _FakeTerminalWorkflowCtx()
     workflow_gen = SW_WORKFLOW.sw_workflow(
@@ -1224,7 +1224,7 @@ def test_sw_workflow_failure_schedules_mlflow_finalizer_with_error_after_cleanup
     assert cleanup["activity"] == "cleanup_execution_workspaces"
 
     finalized = workflow_gen.send({"success": True})
-    assert finalized["activity"] == "finalize_mlflow_trace_root"
+    assert finalized["activity"] == "finalize_otel_trace_root"
     assert finalized["input"]["status"] == "ERROR"
     assert finalized["input"]["error"] == "forced failure"
 
@@ -1435,7 +1435,7 @@ def test_sw_workflow_parse_failure_schedules_error_finalizer_when_trace_exists(m
     )
 
     finalized = next(workflow_gen)
-    assert finalized["activity"] == "finalize_mlflow_trace_root"
+    assert finalized["activity"] == "finalize_otel_trace_root"
     assert finalized["input"]["status"] == "ERROR"
     assert finalized["input"]["workflowId"] == "wf_broken"
     assert finalized["input"]["workflowName"] == "broken-workflow"
@@ -1447,7 +1447,7 @@ def test_sw_workflow_parse_failure_schedules_error_finalizer_when_trace_exists(m
     assert stop.value.value["phase"] == "failed"
 
 
-def test_sw_workflow_schedules_node_span_only_when_input_feature_enabled(monkeypatch):
+def test_sw_workflow_ignores_retired_node_span_feature(monkeypatch):
     _install_terminal_workflow_model_fakes(monkeypatch)
     task = {"assign": {"set": {"foo": "bar"}}}
 
@@ -1463,15 +1463,11 @@ def test_sw_workflow_schedules_node_span_only_when_input_feature_enabled(monkeyp
     enabled_input["features"] = {"mlflowNodeSpans": True}
     enabled_ctx = _FakeTerminalWorkflowCtx()
     enabled_gen = SW_WORKFLOW.sw_workflow(enabled_ctx, enabled_input)
-    node_span = next(enabled_gen)
-
-    assert node_span["activity"] == "emit_mlflow_node_span"
-    assert node_span["input"]["status"] == "OK"
-    assert node_span["input"]["nodeId"] == "assign"
-    assert node_span["input"]["traceId"] == "1234567890abcdef1234567890abcdef"
+    enabled_first = next(enabled_gen)
+    assert enabled_first["activity"] != "emit_mlflow_node_span"
 
 
-def test_benchmark_sw_workflow_suppresses_parent_mlflow_finalizer_by_default(monkeypatch):
+def test_benchmark_sw_workflow_suppresses_parent_otel_finalizer_by_default(monkeypatch):
     _install_terminal_workflow_model_fakes(monkeypatch)
     ctx = _FakeTerminalWorkflowCtx()
     workflow_input = _terminal_workflow_input()
@@ -1491,9 +1487,9 @@ def test_benchmark_sw_workflow_suppresses_parent_mlflow_finalizer_by_default(mon
     assert stop.value.value["success"] is True
 
 
-def test_benchmark_sw_workflow_can_enable_parent_mlflow_finalizer(monkeypatch):
+def test_benchmark_sw_workflow_can_enable_parent_otel_finalizer(monkeypatch):
     _install_terminal_workflow_model_fakes(monkeypatch)
-    monkeypatch.setenv("WORKFLOW_ORCHESTRATOR_BENCHMARK_MLFLOW_FINALIZE_ENABLED", "true")
+    monkeypatch.setenv("WORKFLOW_ORCHESTRATOR_BENCHMARK_TRACE_FINALIZE_ENABLED", "true")
     ctx = _FakeTerminalWorkflowCtx()
     workflow_input = _terminal_workflow_input()
     workflow_input["triggerData"] = {
@@ -1506,7 +1502,7 @@ def test_benchmark_sw_workflow_can_enable_parent_mlflow_finalizer(monkeypatch):
     finalized = workflow_gen.send({"success": True})
 
     assert persisted["activity"] == "persist_results_to_db"
-    assert finalized["activity"] == "finalize_mlflow_trace_root"
+    assert finalized["activity"] == "finalize_otel_trace_root"
     assert finalized["input"]["status"] == "OK"
 
 
@@ -1527,7 +1523,7 @@ def test_benchmark_sw_workflow_suppresses_parent_node_spans_by_default(monkeypat
     assert stop.value.value["success"] is True
 
 
-def test_benchmark_sw_workflow_preserves_requested_node_span_schedule(monkeypatch):
+def test_benchmark_sw_workflow_ignores_retired_node_span_feature(monkeypatch):
     _install_terminal_workflow_model_fakes(monkeypatch)
     workflow_input = _terminal_workflow_input([{"assign": {"set": {"foo": "bar"}}}])
     workflow_input["dbExecutionId"] = None
@@ -1538,11 +1534,11 @@ def test_benchmark_sw_workflow_preserves_requested_node_span_schedule(monkeypatc
     }
 
     workflow_gen = SW_WORKFLOW.sw_workflow(_FakeTerminalWorkflowCtx(), workflow_input)
-    node_span = next(workflow_gen)
 
-    assert node_span["activity"] == "emit_mlflow_node_span"
-    assert node_span["input"]["status"] == "OK"
-    assert node_span["input"]["nodeId"] == "assign"
+    with pytest.raises(StopIteration) as stop:
+        next(workflow_gen)
+
+    assert stop.value.value["success"] is True
 
 
 def test_rerun_workflow_passes_new_instance_without_input_override(monkeypatch):

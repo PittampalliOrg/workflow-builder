@@ -13,7 +13,6 @@ export type HostExecutionPlaneSubmitInput = {
 	workflow: unknown;
 	triggerData: Record<string, unknown>;
 	inferenceEnvironment: Record<string, unknown>;
-	mlflowContext?: Record<string, unknown> | null;
 	traceContext?: Record<string, string | undefined> | null;
 };
 
@@ -124,19 +123,19 @@ export async function submitBenchmarkInstanceToHostExecutionPlane(
 			"SANDBOX_EXECUTION_API_URL or HOST_EXECUTION_API_URL is required when BENCHMARK_EXECUTION_BACKEND=host",
 		);
 	}
-		const headers: Record<string, string> = {
-			"Content-Type": "application/json",
-		};
-		for (const key of ["traceparent", "tracestate", "baggage"] as const) {
-			const value = input.traceContext?.[key]?.trim();
-			if (value) headers[key] = value;
-		}
+	const headers: Record<string, string> = {
+		"Content-Type": "application/json",
+	};
+	for (const key of ["traceparent", "tracestate", "baggage"] as const) {
+		const value = input.traceContext?.[key]?.trim();
+		if (value) headers[key] = value;
+	}
 	const token = hostExecutionPlaneToken();
 	if (token) headers.Authorization = `Bearer ${token}`;
 	const res = await fetch(`${baseUrl}/api/v1/executions`, {
 		method: "POST",
 		headers,
-			body: JSON.stringify({
+		body: JSON.stringify({
 			kind: "swebench-instance",
 			runId: input.runId,
 			instanceId: input.instanceId,
@@ -145,10 +144,9 @@ export async function submitBenchmarkInstanceToHostExecutionPlane(
 			executionClass: input.executionClass,
 			timeoutSeconds: input.timeoutSeconds,
 			workflow: input.workflow,
-				triggerData: input.triggerData,
-				mlflowContext: input.mlflowContext ?? null,
-				traceContext: input.traceContext ?? null,
-				inferenceEnvironment: input.inferenceEnvironment,
+			triggerData: input.triggerData,
+			traceContext: input.traceContext ?? null,
+			inferenceEnvironment: input.inferenceEnvironment,
 			callback: {
 				path: `/api/internal/benchmarks/runs/${encodeURIComponent(input.runId)}/instances/${encodeURIComponent(input.instanceId)}/execution`,
 			},

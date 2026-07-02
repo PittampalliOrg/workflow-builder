@@ -81,10 +81,11 @@ beforeEach(() => {
 	dbMock.deleteFn.mockClear();
 	dbMock.conflictUpdate.mockClear();
 	dbMock.insertValues.mockClear();
-	dbMock.insert.mockClear();
-	dbMock.transaction.mockClear();
-	vi.stubEnv("MLFLOW_ENABLED", "true");
-	vi.stubEnv("MLFLOW_TRACKING_URI", "http://mlflow.test");
+		dbMock.insert.mockClear();
+		dbMock.transaction.mockClear();
+		vi.stubEnv("MLFLOW_ENABLED", "true");
+		vi.stubEnv("WORKFLOW_BUILDER_LEGACY_MLFLOW_ENABLED", "true");
+		vi.stubEnv("MLFLOW_TRACKING_URI", "http://mlflow.test");
 	vi.stubEnv("PUBLIC_MLFLOW_URL", "https://mlflow.example");
 	vi.stubEnv("WORKFLOW_BUILDER_ENV", "ryzen");
 	dbMock.setWorkflowRow({

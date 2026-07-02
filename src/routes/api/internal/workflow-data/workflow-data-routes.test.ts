@@ -18,16 +18,16 @@ const mocks = vi.hoisted(() => {
 			status: "approved",
 		})),
 		getPlanArtifact: vi.fn(async () => ({ artifactRef: "plan-1" })),
-		getMlflowRunTargetsForExecution: vi.fn(async () => [
+		getTraceTargetsForExecution: vi.fn(async () => [
 			{
 				entityType: "workflow_execution",
 				entityId: "exec-1",
 				projectId: "project-1",
-				experimentId: "exp-1",
-				runId: "run-1",
+				externalExperimentId: "exp-1",
+				externalRunId: "run-1",
 			},
 		]),
-		upsertMlflowTraceLineageLinks: vi.fn(async () => ({
+		upsertTraceLineageLinks: vi.fn(async () => ({
 			recorded: 1,
 			sourceKeys: ["source-key"],
 		})),
@@ -50,8 +50,8 @@ import { POST as postAgentRun } from "./agent-runs/+server";
 import { PATCH as patchAgentRun } from "./agent-runs/[runId]/+server";
 import { POST as postPlanArtifact } from "./plan-artifacts/+server";
 import { PATCH as patchPlanArtifact } from "./plan-artifacts/[artifactRef]/+server";
-import { GET as getMlflowRunTargets } from "./mlflow/executions/[executionId]/run-targets/+server";
-import { POST as postMlflowTraceLineage } from "./mlflow/trace-lineage/+server";
+import { GET as getTraceTargets } from "./traces/executions/[executionId]/targets/+server";
+import { POST as postTraceLineage } from "./traces/lineage/+server";
 
 function jsonRequest(body?: unknown) {
 	return new Request("http://workflow-builder.internal/test", {
@@ -128,8 +128,8 @@ describe("internal workflow-data routes", () => {
 		});
 	});
 
-	it("reads MLflow targets and records trace lineage through the workflow-data service", async () => {
-		const getResponse = await getMlflowRunTargets({
+	it("reads trace targets and records trace lineage through the workflow-data service", async () => {
+		const getResponse = await getTraceTargets({
 			params: { executionId: "exec-1" },
 			request: jsonRequest(),
 		} as never);
@@ -139,13 +139,13 @@ describe("internal workflow-data routes", () => {
 					entityType: "workflow_execution",
 					entityId: "exec-1",
 					projectId: "project-1",
-					experimentId: "exp-1",
-					runId: "run-1",
+					externalExperimentId: "exp-1",
+					externalRunId: "run-1",
 				},
 			],
 		});
 
-		await postMlflowTraceLineage({
+		await postTraceLineage({
 			request: jsonRequest({
 				traceId: "tr-1234567890abcdef1234567890abcdef",
 				targets: [
@@ -153,8 +153,8 @@ describe("internal workflow-data routes", () => {
 						entityType: "workflow_execution",
 						entityId: "exec-1",
 						projectId: "project-1",
-						experimentId: "exp-1",
-						runId: "run-1",
+						externalExperimentId: "exp-1",
+						externalRunId: "run-1",
 					},
 				],
 				source: "primary",
@@ -162,16 +162,16 @@ describe("internal workflow-data routes", () => {
 			}),
 		} as never);
 
-		expect(mocks.workflowData.getMlflowRunTargetsForExecution).toHaveBeenCalledWith("exec-1");
-		expect(mocks.workflowData.upsertMlflowTraceLineageLinks).toHaveBeenCalledWith({
+		expect(mocks.workflowData.getTraceTargetsForExecution).toHaveBeenCalledWith("exec-1");
+		expect(mocks.workflowData.upsertTraceLineageLinks).toHaveBeenCalledWith({
 			traceId: "tr-1234567890abcdef1234567890abcdef",
 			targets: [
 				{
 					entityType: "workflow_execution",
 					entityId: "exec-1",
 					projectId: "project-1",
-					experimentId: "exp-1",
-					runId: "run-1",
+					externalExperimentId: "exp-1",
+					externalRunId: "run-1",
 				},
 			],
 			source: "primary",

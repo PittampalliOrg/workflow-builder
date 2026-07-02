@@ -15,18 +15,12 @@ import {
   buildWorkflowSessionId,
   ensureWorkflowTraceparentHeader,
   injectWorkflowSessionHeaders,
-  workflowTraceIdFromTraceparent,
 } from "$lib/server/observability/workflow-session";
 import {
   resolveSpecAgentRefs,
   AgentRefResolutionError,
 } from "$lib/server/agents/resolver";
 import { prewarmWorkflowEntrySessions } from "$lib/server/sessions/prewarm";
-import {
-  safeCreateWorkflowExecutionMlflowRun,
-  safeFinishMlflowRun,
-  safePrecreateMlflowTrace,
-} from "$lib/server/observability/mlflow-lifecycle";
 
 /**
  * POST /api/workflows/[workflowId]/execute
@@ -179,13 +173,6 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   // Send to orchestrator's SW 1.0 endpoint
   const orchestratorUrl = getOrchestratorUrl();
   const sessionId = buildWorkflowSessionId(execution.id);
-  const mlflowContext = await safeCreateWorkflowExecutionMlflowRun({
-    executionId: execution.id,
-    workflowId,
-    workflowName: workflow.name,
-    projectId: workflow.projectId ?? null,
-    userId,
-  });
 
   try {
     const headers = sessionId
@@ -196,10 +183,6 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             workflowExecutionId: execution.id,
             workflowId,
             traceGroupId: execution.id,
-            mlflowExperimentId:
-              mlflowContext?.traceExperimentId ?? mlflowContext?.experimentId,
-            mlflowRunId: mlflowContext?.runId,
-            mlflowParentRunId: mlflowContext?.parentRunId,
           },
         )
       : { "Content-Type": "application/json" };
@@ -220,33 +203,17 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
       userId,
       traceContext,
     }).catch(() => {});
-    await safePrecreateMlflowTrace({
-      traceId: workflowTraceIdFromTraceparent(headers.traceparent),
-      experimentId: mlflowContext?.traceExperimentId ?? mlflowContext?.experimentId,
-      name: `${workflow.id}/${execution.id}`,
-      metadata: {
-        "mlflow.sourceRun": mlflowContext?.runId,
-      },
-      tags: {
-        "workflow_builder.kind": "workflow_execution",
-        "workflow_builder.workflow_id": workflowId,
-        "workflow_builder.workflow_execution_id": execution.id,
-        "workflow.execution.id": execution.id,
-        "mlflow.run_id": mlflowContext?.runId,
-      },
-    });
 
     const res = await daprFetch(`${orchestratorUrl}/api/v2/sw-workflows`, {
       method: "POST",
       headers,
       body: JSON.stringify({
         workflow: spec,
-        workflowId,
-        triggerData,
-        dbExecutionId: execution.id,
-        mlflowContext,
-        traceContext,
-      }),
+	        workflowId,
+	        triggerData,
+	        dbExecutionId: execution.id,
+	        traceContext,
+	      }),
     });
 
     if (!res.ok) {
@@ -258,10 +225,6 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         .update(workflowExecutions)
         .set({ status: "error", error: JSON.stringify(errBody).slice(0, 500) })
         .where(eq(workflowExecutions.id, execution.id));
-      void safeFinishMlflowRun({
-        runId: mlflowContext?.runId,
-        status: "FAILED",
-      });
       return error(
         res.status,
         errBody.error ??
@@ -295,7 +258,6 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
       .update(workflowExecutions)
       .set({ status: "error", error: String(err) })
       .where(eq(workflowExecutions.id, execution.id));
-    void safeFinishMlflowRun({ runId: mlflowContext?.runId, status: "FAILED" });
     return error(502, "Workflow orchestrator unavailable");
   }
 };

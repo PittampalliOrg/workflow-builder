@@ -31,6 +31,7 @@ export type WorkflowDefinition = {
 	engineType: WorkflowEngineType | null;
 	daprWorkflowName: string | null;
 	daprOrchestratorUrl: string | null;
+	/** Legacy storage fields; do not use for new trace persistence. */
 	mlflowExperimentId: string | null;
 	mlflowExperimentName: string | null;
 	createdAt: Date;
@@ -81,6 +82,7 @@ export type WorkflowExecutionRecord = {
 	currentNodeName: string | null;
 	primaryTraceId: string | null;
 	workflowSessionId: string | null;
+	/** Legacy storage fields retained for old rows only. */
 	mlflowExperimentId: string | null;
 	mlflowRunId: string | null;
 	summaryOutput: Record<string, unknown> | null;
@@ -359,25 +361,25 @@ export interface WorkflowPlanArtifactStore {
 	getPlanArtifact(artifactRef: string): Promise<WorkflowPlanArtifactRecord | null>;
 }
 
-export type MlflowRunTarget = {
+export type TraceLinkTarget = {
 	entityType: "workflow_execution" | "session";
 	entityId: string;
 	projectId: string | null;
-	experimentId: string | null;
-	runId: string;
+	externalRunId?: string | null;
+	externalExperimentId?: string | null;
 };
 
-export type UpsertMlflowTraceLineageLinksInput = {
+export type UpsertTraceLineageLinksInput = {
 	traceId: string;
-	targets: MlflowRunTarget[];
+	targets: TraceLinkTarget[];
 	source?: string;
 	attrs?: Record<string, string>;
 };
 
-export interface MlflowTraceLineageStore {
-	getRunTargetsForExecution(executionId: string): Promise<MlflowRunTarget[]>;
+export interface TraceLineageStore {
+	getTraceTargetsForExecution(executionId: string): Promise<TraceLinkTarget[]>;
 	upsertTraceLineageLinks(
-		input: UpsertMlflowTraceLineageLinksInput,
+		input: UpsertTraceLineageLinksInput,
 	): Promise<{ recorded: number; sourceKeys: string[] }>;
 }
 
@@ -388,7 +390,6 @@ export type WorkflowStartRequest = {
 	triggerData: Record<string, unknown>;
 	dbExecutionId: string;
 	headers: HeadersInit;
-	mlflowContext?: unknown;
 	traceContext?: Record<string, string | undefined>;
 	resumeFromNode?: string;
 	workspaceExecutionId?: string;
@@ -486,9 +487,9 @@ export interface WorkflowDataService {
 		metadata?: Record<string, unknown> | null;
 	}): Promise<{ artifactRef: string; status: WorkflowPlanArtifactStatus }>;
 	getPlanArtifact(artifactRef: string): Promise<WorkflowPlanArtifactRecord | null>;
-	getMlflowRunTargetsForExecution(executionId: string): Promise<MlflowRunTarget[]>;
-	upsertMlflowTraceLineageLinks(
-		input: UpsertMlflowTraceLineageLinksInput,
+	getTraceTargetsForExecution(executionId: string): Promise<TraceLinkTarget[]>;
+	upsertTraceLineageLinks(
+		input: UpsertTraceLineageLinksInput,
 	): Promise<{ recorded: number; sourceKeys: string[] }>;
 	resolveMcpConfig(input: {
 		workflowId?: string | null;

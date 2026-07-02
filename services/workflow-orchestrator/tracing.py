@@ -190,12 +190,10 @@ def _otel_signal_export_enabled(signal: str) -> bool:
 
 
 def _mlflow_enabled() -> bool:
-    raw = (os.getenv("MLFLOW_ENABLED") or "").strip().lower()
-    if raw in {"0", "false", "no", "n", "off"}:
-        return False
-    if raw in {"1", "true", "yes", "y", "on"}:
-        return bool((os.getenv("MLFLOW_TRACKING_URI") or "").strip())
-    return bool((os.getenv("MLFLOW_TRACKING_URI") or "").strip())
+    raw = (os.getenv("WORKFLOW_ORCHESTRATOR_LEGACY_MLFLOW_ENABLED") or "").strip().lower()
+    return raw in {"1", "true", "yes", "y", "on"} and bool(
+        (os.getenv("MLFLOW_TRACKING_URI") or "").strip()
+    )
 
 
 def _parse_resource_attributes(value: str | None) -> dict[str, str]:
@@ -882,16 +880,6 @@ def setup_tracing(service_name: str, app: Any | None = None) -> bool:
         )
         trace.set_tracer_provider(tracer_provider)
 
-        # Add MLflow as an ADDITIONAL span destination on the same TP. The
-        # OTEL Collector path (BatchSpanProcessor above) keeps sending to
-        # ClickHouse + Tempo; MLflow's `set_destination()` adds a processor
-        # that writes trace_request_metadata so traces are searchable via
-        # mlflow.search_traces() and visible in the MLflow UI. The
-        # otlphttp/mlflow collector exporter alone doesn't write that
-        # metadata — see project_mlflow_otlp_search_gap.md memory.
-        os.environ.setdefault("MLFLOW_USE_DEFAULT_TRACER_PROVIDER", "false")
-        _init_mlflow_destination()
-
     if metrics_enabled:
         metric_reader = PeriodicExportingMetricReader(
             OTLPMetricExporter(
@@ -1009,18 +997,6 @@ def attach_workflow_session(span: Any, session_id: str | None) -> None:
         span.set_attribute(WORKFLOW_EXECUTION_ATTRIBUTE, session_id)
     except Exception:
         pass
-    # Promote to MLflow trace tags so search filters work
-    # (Phase 1 of research-the-most-popular-stateful-hinton.md).
-    # `update_current_trace` is a no-op when MLflow SDK isn't initialised
-    # (e.g. unit-test contexts), so the call is best-effort and never
-    # raises.
-    set_mlflow_trace_tags({
-        SESSION_ID_ATTRIBUTE: session_id,
-        WORKFLOW_EXECUTION_ATTRIBUTE: session_id,
-        "dapr.workflow.instance_id": session_id,
-    })
-
-
 def set_mlflow_trace_tags(
     tags: dict[str, Any],
     *,

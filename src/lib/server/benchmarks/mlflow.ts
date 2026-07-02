@@ -73,11 +73,10 @@ const terminalInstanceStatuses = new Set([
 const terminalMlflowStatuses = new Set(["FINISHED", "FAILED", "KILLED"]);
 
 function mlflowEnabled(): boolean {
-	const enabled = (env.MLFLOW_ENABLED ?? "").trim().toLowerCase();
-	if (enabled === "0" || enabled === "false" || enabled === "no" || enabled === "off") {
-		return false;
-	}
-	return Boolean(trackingUri());
+	const legacyEnabled = (env.WORKFLOW_BUILDER_LEGACY_MLFLOW_ENABLED ?? "")
+		.trim()
+		.toLowerCase();
+	return ["1", "true", "yes", "on"].includes(legacyEnabled) && Boolean(trackingUri());
 }
 
 function trackingUri(): string | null {

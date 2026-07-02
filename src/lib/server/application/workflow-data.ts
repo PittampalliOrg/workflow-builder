@@ -16,8 +16,8 @@ import type {
 	WorkflowPlanArtifactStatus,
 	WorkflowPlanArtifactStore,
 	WorkflowRef,
-	MlflowTraceLineageStore,
-	UpsertMlflowTraceLineageLinksInput,
+	TraceLineageStore,
+	UpsertTraceLineageLinksInput,
 	WorkspaceSessionStore,
 	UpsertWorkspaceSessionInput,
 } from "$lib/server/application/ports";
@@ -31,7 +31,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			workspaceSessions: WorkspaceSessionStore;
 			agentRuns: WorkflowAgentRunStore;
 			planArtifacts: WorkflowPlanArtifactStore;
-			mlflowTraceLineage: MlflowTraceLineageStore;
+			traceLineage: TraceLineageStore;
 		},
 	) {}
 
@@ -116,12 +116,12 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.planArtifacts.getPlanArtifact(artifactRef);
 	}
 
-	getMlflowRunTargetsForExecution(executionId: string) {
-		return this.deps.mlflowTraceLineage.getRunTargetsForExecution(executionId);
+	getTraceTargetsForExecution(executionId: string) {
+		return this.deps.traceLineage.getTraceTargetsForExecution(executionId);
 	}
 
-	upsertMlflowTraceLineageLinks(input: UpsertMlflowTraceLineageLinksInput) {
-		return this.deps.mlflowTraceLineage.upsertTraceLineageLinks(input);
+	upsertTraceLineageLinks(input: UpsertTraceLineageLinksInput) {
+		return this.deps.traceLineage.upsertTraceLineageLinks(input);
 	}
 
 	async resolveMcpConfig(input: {

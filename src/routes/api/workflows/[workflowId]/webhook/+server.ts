@@ -15,15 +15,8 @@ import { expandGreenfieldPromptInput } from '$lib/server/workflows/greenfield-pr
 import {
 	buildWorkflowSessionId,
 	ensureWorkflowTraceparentHeader,
-	injectWorkflowSessionHeaders,
-	workflowTraceIdFromTraceparent
+	injectWorkflowSessionHeaders
 } from '$lib/server/observability/workflow-session';
-import {
-	type MlflowRunContext,
-	safeCreateWorkflowExecutionMlflowRun,
-	safeFinishMlflowRun,
-	safePrecreateMlflowTrace
-} from '$lib/server/observability/mlflow-lifecycle';
 
 // ---------------------------------------------------------------------------
 // CORS headers — webhook callers may be cross-origin
@@ -246,14 +239,6 @@ export const POST: RequestHandler = async ({ params, request }) => {
 
 		console.log('[Webhook] Created execution:', execution.id);
 
-		const mlflowContext = await safeCreateWorkflowExecutionMlflowRun({
-			executionId: execution.id,
-			workflowId,
-			workflowName: workflow.name,
-			projectId: workflow.projectId ?? null,
-			userId: workflow.userId
-		});
-
 		// 8. Start workflow via orchestrator (fire-and-forget — return immediately)
 		const orchestratorUrl = getOrchestratorUrl();
 
@@ -262,8 +247,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			workflowId,
 			execution.id,
 			spec,
-			triggerData,
-			mlflowContext
+			triggerData
 		);
 
 		return corsJson({
@@ -288,8 +272,7 @@ function startWorkflowInBackground(
 	workflowId: string,
 	executionId: string,
 	spec: Record<string, unknown>,
-	triggerData: Record<string, unknown>,
-	mlflowContext: MlflowRunContext | null
+	triggerData: Record<string, unknown>
 ) {
 	(async () => {
 		try {
@@ -300,11 +283,7 @@ function startWorkflowInBackground(
 					sessionId,
 					workflowExecutionId: executionId,
 					workflowId,
-					traceGroupId: executionId,
-					mlflowExperimentId:
-						mlflowContext?.traceExperimentId ?? mlflowContext?.experimentId,
-					mlflowRunId: mlflowContext?.runId,
-					mlflowParentRunId: mlflowContext?.parentRunId
+					traceGroupId: executionId
 				}
 			);
 			const traceContext = {
@@ -312,33 +291,17 @@ function startWorkflowInBackground(
 				tracestate: headers.tracestate,
 				baggage: headers.baggage
 			};
-			await safePrecreateMlflowTrace({
-				traceId: workflowTraceIdFromTraceparent(headers.traceparent),
-				experimentId: mlflowContext?.traceExperimentId ?? mlflowContext?.experimentId,
-					name: `${workflowId}/${executionId}`,
-					metadata: {
-						'mlflow.sourceRun': mlflowContext?.runId
-					},
-				tags: {
-					'workflow_builder.kind': 'workflow_execution',
-					'workflow_builder.workflow_id': workflowId,
-					'workflow_builder.workflow_execution_id': executionId,
-					'workflow.execution.id': executionId,
-					'mlflow.run_id': mlflowContext?.runId
-				}
-			});
 			const res = await daprFetch(`${orchestratorUrl}/api/v2/sw-workflows`, {
 				method: 'POST',
 				headers,
 				body: JSON.stringify({
 					workflow: spec,
-					workflowId,
-					triggerData,
-					dbExecutionId: executionId,
-					mlflowContext,
-					traceContext
-				})
-			});
+						workflowId,
+						triggerData,
+						dbExecutionId: executionId,
+						traceContext
+					})
+				});
 
 			if (!res.ok) {
 				const errText = await res.text().catch(() => 'Unknown error');
@@ -367,7 +330,6 @@ function startWorkflowInBackground(
 					completedAt: new Date()
 				})
 				.where(eq(workflowExecutions.id, executionId));
-			void safeFinishMlflowRun({ runId: mlflowContext?.runId, status: 'FAILED' });
 		}
 	})();
 }

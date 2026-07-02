@@ -4,7 +4,7 @@ import {
 } from "$lib/server/application/config";
 import {
 	PostgresArtifactStore,
-	PostgresMlflowTraceLineageStore,
+	PostgresTraceLineageStore,
 	PostgresWorkflowAgentRunStore,
 	PostgresWorkspaceSessionStore,
 	PostgresWorkflowPlanArtifactStore,
@@ -54,7 +54,7 @@ export function getApplicationAdapters(
 	let workspaceSessions: PostgresWorkspaceSessionStore | undefined;
 	let agentRuns: PostgresWorkflowAgentRunStore | undefined;
 	let planArtifacts: PostgresWorkflowPlanArtifactStore | undefined;
-	let mlflowTraceLineage: PostgresMlflowTraceLineageStore | undefined;
+	let traceLineage: PostgresTraceLineageStore | undefined;
 	let workflowData: ApplicationWorkflowDataService | undefined;
 	const getDatabase = () => (database ??= requirePostgresDb());
 	const getWorkflowDefinitions = () =>
@@ -69,8 +69,8 @@ export function getApplicationAdapters(
 		(agentRuns ??= new PostgresWorkflowAgentRunStore(getDatabase()));
 	const getPlanArtifacts = () =>
 		(planArtifacts ??= new PostgresWorkflowPlanArtifactStore(getDatabase()));
-	const getMlflowTraceLineage = () =>
-		(mlflowTraceLineage ??= new PostgresMlflowTraceLineageStore(getDatabase()));
+	const getTraceLineage = () =>
+		(traceLineage ??= new PostgresTraceLineageStore(getDatabase()));
 	const previewEnvironmentProvisioner =
 		config.previewProvisionerAdapter === "kro"
 			? new KroPreviewEnvironmentProvisioner()
@@ -94,7 +94,7 @@ export function getApplicationAdapters(
 				workspaceSessions: getWorkspaceSessions(),
 				agentRuns: getAgentRuns(),
 				planArtifacts: getPlanArtifacts(),
-				mlflowTraceLineage: getMlflowTraceLineage(),
+				traceLineage: getTraceLineage(),
 			}));
 		},
 		workflowScheduler: new DaprWorkflowScheduler(),

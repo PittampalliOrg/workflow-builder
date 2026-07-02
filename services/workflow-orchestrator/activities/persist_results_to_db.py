@@ -37,9 +37,9 @@ _database_url: str | None = None
 
 
 def _mlflow_enabled() -> bool:
-    raw = os.environ.get("MLFLOW_ENABLED", "").strip().lower()
+    raw = os.environ.get("WORKFLOW_ORCHESTRATOR_LEGACY_MLFLOW_ENABLED", "").strip().lower()
     tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
-    return raw not in {"", "0", "false", "no", "off"} and bool(tracking_uri)
+    return raw in {"1", "true", "yes", "on"} and bool(tracking_uri)
 
 
 def _finish_mlflow_run(run_id: str | None, status: str) -> None:
@@ -634,39 +634,6 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                         },
                     )
 
-                    persisted_trace_id = execution_row.get("primaryTraceId")
-                    final_trace_id = trace_id or (
-                        str(persisted_trace_id).removeprefix("tr-")
-                        if persisted_trace_id
-                        else None
-                    )
-                    mlflow_run_id = execution_row.get("mlflowRunId")
-                    _enrich_mlflow_workflow_run(
-                        run_id=mlflow_run_id if isinstance(mlflow_run_id, str) else None,
-                        db_url=None,
-                        db_execution_id=str(db_execution_id),
-                        workflow_id=(
-                            str(execution_row.get("workflowId"))
-                            if execution_row.get("workflowId") is not None
-                            else None
-                        ),
-                        project_id=(
-                            str(execution_row.get("projectId"))
-                            if execution_row.get("projectId") is not None
-                            else None
-                        ),
-                        workflow_input=execution_row.get("input"),
-                        trace_id=final_trace_id,
-                        final_output=final_output,
-                        summary_fields=summary_fields,
-                        status=status,
-                        duration_ms=persisted_duration_ms,
-                        outputs_size_chars=outputs_size_chars,
-                    )
-                    _finish_mlflow_run(
-                        mlflow_run_id if isinstance(mlflow_run_id, str) else None,
-                        "FINISHED" if success else "FAILED",
-                    )
                     logger.info(
                         "[Persist Results] Successfully persisted output via workflow-data for: %s",
                         db_execution_id,
@@ -693,8 +660,7 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                     # Prefer wall-clock duration based on DB started_at to avoid replay artifacts.
                     cur.execute(
                         """
-                        SELECT started_at, mlflow_run_id, workflow_id, project_id, input,
-                               primary_trace_id, mlflow_experiment_id
+                        SELECT started_at
                         FROM workflow_executions
                         WHERE id = %s
                         LIMIT 1
@@ -703,11 +669,6 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                     )
                     row = cur.fetchone()
                     started_at = row[0] if row else None
-                    mlflow_run_id = row[1] if row and len(row) > 1 else None
-                    workflow_id = row[2] if row and len(row) > 2 else None
-                    project_id = row[3] if row and len(row) > 3 else None
-                    workflow_input = row[4] if row and len(row) > 4 else None
-                    persisted_trace_id = row[5] if row and len(row) > 5 else None
                     if started_at and getattr(started_at, "tzinfo", None) is None:
                         started_at = started_at.replace(tzinfo=timezone.utc)
                     computed_duration_ms = None
@@ -755,30 +716,6 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 conn.commit()
             finally:
                 conn.close()
-
-            final_trace_id = trace_id or (
-                str(persisted_trace_id).removeprefix("tr-")
-                if persisted_trace_id
-                else None
-            )
-            _enrich_mlflow_workflow_run(
-                run_id=mlflow_run_id if isinstance(mlflow_run_id, str) else None,
-                db_url=db_url,
-                db_execution_id=str(db_execution_id),
-                workflow_id=str(workflow_id) if workflow_id is not None else None,
-                project_id=str(project_id) if project_id is not None else None,
-                workflow_input=workflow_input,
-                trace_id=final_trace_id,
-                final_output=final_output,
-                summary_fields=summary_fields,
-                status=status,
-                duration_ms=persisted_duration_ms,
-                outputs_size_chars=outputs_size_chars,
-            )
-            _finish_mlflow_run(
-                mlflow_run_id if isinstance(mlflow_run_id, str) else None,
-                "FINISHED" if success else "FAILED",
-            )
 
             logger.info(
                 f"[Persist Results] Successfully persisted output for: {db_execution_id}"

@@ -2823,6 +2823,7 @@ export type MlflowLineageMlflowEntityType =
 	| "run"
 	| "session"
 	| "trace"
+	| "otel_trace"
 	| "dataset"
 	| "dataset_record"
 	| "logged_model"

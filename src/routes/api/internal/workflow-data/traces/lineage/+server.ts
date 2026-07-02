@@ -1,12 +1,12 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
-import type { MlflowRunTarget } from "$lib/server/application/ports";
+import type { TraceLinkTarget } from "$lib/server/application/ports";
 import { requireInternal } from "$lib/server/internal-auth";
 
 type TraceLineageBody = {
 	traceId?: string;
-	targets?: MlflowRunTarget[];
+	targets?: TraceLinkTarget[];
 	source?: string;
 	attrs?: Record<string, string>;
 };
@@ -15,13 +15,12 @@ function normalizeString(value: unknown): string | null {
 	return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function isRunTarget(value: unknown): value is MlflowRunTarget {
+function isTraceTarget(value: unknown): value is TraceLinkTarget {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-	const target = value as Partial<MlflowRunTarget>;
+	const target = value as Partial<TraceLinkTarget>;
 	return (
 		(target.entityType === "workflow_execution" || target.entityType === "session") &&
-		typeof target.entityId === "string" &&
-		typeof target.runId === "string"
+		typeof target.entityId === "string"
 	);
 }
 
@@ -44,10 +43,10 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 	const traceId = normalizeString(body.traceId);
 	if (!traceId) return error(400, "traceId is required");
-	const targets = Array.isArray(body.targets) ? body.targets.filter(isRunTarget) : [];
+	const targets = Array.isArray(body.targets) ? body.targets.filter(isTraceTarget) : [];
 	if (targets.length === 0) return error(400, "at least one valid target is required");
 
-	const result = await getApplicationAdapters().workflowData.upsertMlflowTraceLineageLinks({
+	const result = await getApplicationAdapters().workflowData.upsertTraceLineageLinks({
 		traceId,
 		targets,
 		source: normalizeString(body.source) ?? "primary",

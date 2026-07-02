@@ -28,14 +28,8 @@ import { expandGreenfieldPromptInput } from '$lib/server/workflows/greenfield-pr
 import {
 	buildWorkflowSessionId,
 	ensureWorkflowTraceparentHeader,
-	injectWorkflowSessionHeaders,
-	workflowTraceIdFromTraceparent
+	injectWorkflowSessionHeaders
 } from '$lib/server/observability/workflow-session';
-import {
-	safeCreateWorkflowExecutionMlflowRun,
-	safeFinishMlflowRun,
-	safePrecreateMlflowTrace
-} from '$lib/server/observability/mlflow-lifecycle';
 
 export function isSWWorkflow(spec: unknown): boolean {
 	if (typeof spec !== 'object' || spec === null) return false;
@@ -205,13 +199,6 @@ export async function startWorkflowRun(
 
 	const orchestratorUrl = workflow.daprOrchestratorUrl || getOrchestratorUrl();
 	const sessionId = buildWorkflowSessionId(execution.id);
-	const mlflowContext = await safeCreateWorkflowExecutionMlflowRun({
-		executionId: execution.id,
-		workflowId: workflow.id,
-		workflowName: workflow.name,
-		projectId: workflow.projectId ?? null,
-		userId: workflow.userId ?? null
-	});
 
 	let instanceId: string | undefined;
 	try {
@@ -221,10 +208,7 @@ export async function startWorkflowRun(
 				sessionId,
 				workflowExecutionId: execution.id,
 				workflowId: workflow.id,
-				traceGroupId: execution.id,
-				mlflowExperimentId: mlflowContext?.traceExperimentId ?? mlflowContext?.experimentId,
-				mlflowRunId: mlflowContext?.runId,
-				mlflowParentRunId: mlflowContext?.parentRunId
+				traceGroupId: execution.id
 			}
 		);
 		const traceContext = {
@@ -232,29 +216,15 @@ export async function startWorkflowRun(
 			tracestate: headers.tracestate,
 			baggage: headers.baggage
 		};
-		await safePrecreateMlflowTrace({
-			traceId: workflowTraceIdFromTraceparent(headers.traceparent),
-			experimentId: mlflowContext?.traceExperimentId ?? mlflowContext?.experimentId,
-			name: `${workflow.id}/${execution.id}`,
-			metadata: { 'mlflow.sourceRun': mlflowContext?.runId },
-			tags: {
-				'workflow_builder.kind': 'workflow_execution',
-				'workflow_builder.workflow_id': workflow.id,
-				'workflow_builder.workflow_execution_id': execution.id,
-				'workflow.execution.id': execution.id,
-				'mlflow.run_id': mlflowContext?.runId
-			}
-		});
 		const result = await app.workflowScheduler.startSwWorkflow({
 			orchestratorUrl,
 			headers,
 			workflow: spec,
-			workflowId: workflow.id,
-			triggerData,
-			dbExecutionId: execution.id,
-			mlflowContext,
-			traceContext,
-			// Resume/fork: skip the prefix + reuse the source workspace. Omitted
+				workflowId: workflow.id,
+				triggerData,
+				dbExecutionId: execution.id,
+				traceContext,
+				// Resume/fork: skip the prefix + reuse the source workspace. Omitted
 			// (undefined) for normal runs → interpreter defaults apply.
 			...(opts.resumeFromNode ? { resumeFromNode: opts.resumeFromNode } : {}),
 			...(opts.workspaceExecutionId
@@ -264,7 +234,6 @@ export async function startWorkflowRun(
 		});
 		instanceId = result.instanceId;
 	} catch (err) {
-		void safeFinishMlflowRun({ runId: mlflowContext?.runId, status: 'FAILED' });
 		await app.workflowExecutions.markStartFailed({
 			executionId: execution.id,
 			error: err instanceof Error ? err.message : 'Failed to start workflow execution'

@@ -410,11 +410,6 @@ def _merge_otel_context(
         "workflow.execution.id",
         "workflow.id",
         "dapr.workflow.instance_id",
-        "mlflow.experiment_id",
-        "mlflow.run_id",
-        "mlflow.parent_run_id",
-        "mlflow.modelId",
-        "mlflow.model.uri",
         "workflow_builder.trace_group_id",
     ):
         value = baggage.get(key)
@@ -3232,7 +3227,6 @@ class ExecuteSWWorkflowRequest(BaseModel):
     triggerData: dict = Field(default_factory=dict)
     integrations: dict | None = None
     dbExecutionId: str | None = None
-    mlflowContext: dict | None = None
     traceContext: dict | None = None
     # Resume/fork: skip every top-level node before this one + reuse the source
     # run's /sandbox/work via the stable workspace key. Omitted for normal runs.
@@ -3329,16 +3323,10 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
             "triggerData": request.triggerData,
             "integrations": request.integrations,
             "dbExecutionId": db_execution_id,
-            "mlflowContext": request.mlflowContext,
             "resumeFromNode": request.resumeFromNode,
             "workspaceExecutionId": request.workspaceExecutionId,
             "seedWorkspaceFrom": request.seedWorkspaceFrom,
-            "features": {
-                "mlflowNodeSpans": _env_bool(
-                    "WORKFLOW_ORCHESTRATOR_MLFLOW_NODE_SPANS",
-                    _env_bool("MLFLOW_ENABLED", False),
-                ),
-            },
+            "features": {},
             "_otel": otel_ctx,
         }
 
@@ -3996,7 +3984,7 @@ def resume_workflow(instance_id: str):
 class ObservabilityFeedbackRequest(BaseModel):
     """POST /api/v2/observability/feedback body."""
 
-    trace_id: str = Field(..., description="MLflow trace_id like 'tr-<hex>'")
+    trace_id: str = Field(..., description="Trace id")
     name: str = Field(default="user_rating")
     value: float | int | str | bool | None = None
     rationale: str | None = None
@@ -4011,71 +3999,21 @@ class ObservabilityFeedbackRequest(BaseModel):
 
 @app.post("/api/v2/observability/feedback")
 def post_observability_feedback(request: ObservabilityFeedbackRequest):
-    """
-    Record a feedback assessment against an MLflow trace.
-
-    POST /api/v2/observability/feedback
-
-    Phase 3b of plan research-the-most-popular-stateful-hinton.md.
-    The BFF resolves a workflow execution id → trace_id, then calls
-    this endpoint which wraps `mlflow.log_feedback(...)`. Returns the
-    persisted assessment_id so the caller can correlate with future
-    reads of the trace's Assessments tab.
-    """
-    try:
-        import mlflow  # type: ignore[import-not-found]
-        from mlflow.entities.assessment_source import AssessmentSource  # type: ignore[import-not-found]
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "mlflow_sdk_unavailable", "error": str(exc)},
-        )
-
-    tracking_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip()
-    if not tracking_uri:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "mlflow_tracking_uri_unset"},
-        )
-
-    try:
-        mlflow.set_tracking_uri(tracking_uri)
-        assessment = mlflow.log_feedback(
-            trace_id=request.trace_id,
-            name=request.name,
-            value=request.value,
-            source=AssessmentSource(
-                source_type=request.source_type,
-                source_id=request.source_id,
-            ),
-            rationale=request.rationale,
-            metadata=request.metadata,
-            span_id=request.span_id,
-        )
-        return {
-            "success": True,
-            "assessment_id": getattr(assessment, "assessment_id", None),
-            "trace_id": request.trace_id,
-            "name": request.name,
-        }
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[observability/feedback] log_feedback failed: %s", exc)
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "code": "mlflow_log_feedback_failed",
-                "error": str(exc),
-                "trace_id": request.trace_id,
-            },
-        )
+    """Feedback persistence moved out of the orchestrator runtime."""
+    _ = request
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "observability_feedback_removed",
+            "message": "Trace feedback now belongs behind workflow-data/OpenTelemetry services.",
+        },
+    )
 
 
 class ObservabilityJudgeRequest(BaseModel):
     """POST /api/v2/observability/judge body.
 
-    Phase 3c of plan research-the-most-popular-stateful-hinton.md.
-    Used by the BFF's mlflow_judge grader runner to invoke
-    `mlflow.genai.judges.llm_judge(...)` against a prompt + model.
+    Invokes a provider-neutral OpenAI-compatible LLM gateway against a prompt + model.
     """
 
     model: str = Field(..., description="LiteLLM-style model spec, e.g. 'anthropic:claude-opus-4-7'")
@@ -4091,31 +4029,27 @@ def post_observability_judge(request: ObservabilityJudgeRequest):
 
     POST /api/v2/observability/judge
 
-    Phase 3c routes through the MLflow AI Gateway (Phase 2c v1) instead
-    of `mlflow.genai.judges.make_judge` — which requires pandas/numpy
-    that our skinny image doesn't carry. The Gateway is configured with
-    all our providers (Anthropic/OpenAI/DeepSeek/NVIDIA/Kimi/Alibaba/
-    Together/Foundry/Gemini), so the same `model` string the caller
-    sends maps to a Gateway route.
-
     Returns {score, rationale, raw}: score is parsed from the assistant
     response (numeric, or a GOOD/PASS=1.0 / BAD/FAIL=0.0 verdict word);
-    raw carries the full Gateway response payload for debugging.
+    raw carries the full gateway response payload for debugging.
     """
     import re as _re
     import urllib.request
     import urllib.error
 
-    gateway_base = (os.environ.get("MLFLOW_AI_GATEWAY_BASE_URL") or "").strip().rstrip("/")
+    gateway_base = (
+        os.environ.get("LLM_GATEWAY_BASE_URL")
+        or os.environ.get("OPENAI_COMPATIBLE_GATEWAY_BASE_URL")
+        or ""
+    ).strip().rstrip("/")
     if not gateway_base:
         raise HTTPException(
             status_code=503,
-            detail={"code": "mlflow_ai_gateway_base_url_unset"},
+            detail={"code": "llm_gateway_base_url_unset"},
         )
 
-    # The Gateway exposes an OpenAI-compatible shim at /v1/chat/completions.
-    # The `model` value selects the Gateway route (anthropic-opus,
-    # deepseek-v4-pro, etc.). Caller can pass a bare route name OR
+    # The gateway exposes an OpenAI-compatible shim at /v1/chat/completions.
+    # The `model` value selects the gateway route. Caller can pass a bare route name OR
     # `provider:/model-id` and we'll extract the route from the suffix.
     route = request.model
     if ":" in route:
@@ -4153,7 +4087,7 @@ def post_observability_judge(request: ObservabilityJudgeRequest):
         raise HTTPException(
             status_code=502,
             detail={
-                "code": "mlflow_gateway_http_error",
+                "code": "llm_gateway_http_error",
                 "status": exc.code,
                 "body": body_text[:500],
                 "model": request.model,
@@ -4163,7 +4097,7 @@ def post_observability_judge(request: ObservabilityJudgeRequest):
         logger.warning("[observability/judge] gateway request failed: %s", exc)
         raise HTTPException(
             status_code=502,
-            detail={"code": "mlflow_gateway_failed", "error": str(exc), "model": request.model},
+            detail={"code": "llm_gateway_failed", "error": str(exc), "model": request.model},
         )
 
     try:
@@ -4171,7 +4105,7 @@ def post_observability_judge(request: ObservabilityJudgeRequest):
     except json.JSONDecodeError as exc:
         raise HTTPException(
             status_code=502,
-            detail={"code": "mlflow_gateway_invalid_json", "error": str(exc), "body": raw_text[:300]},
+            detail={"code": "llm_gateway_invalid_json", "error": str(exc), "body": raw_text[:300]},
         )
 
     content = ""
@@ -4201,33 +4135,6 @@ def post_observability_judge(request: ObservabilityJudgeRequest):
     else:
         rationale = content.strip() or None
 
-    # Record the judge's verdict as an MLflow assessment if a trace_id
-    # is present in metadata — useful when this judge is called from an
-    # evaluation tied to a specific trace.
-    trace_id_for_assessment: str | None = None
-    if request.metadata and isinstance(request.metadata, dict):
-        tid = request.metadata.get("trace_id")
-        if isinstance(tid, str) and tid.strip():
-            trace_id_for_assessment = tid.strip()
-    if trace_id_for_assessment and score is not None:
-        try:
-            import mlflow as _mlflow  # type: ignore[import-not-found]
-            from mlflow.entities.assessment_source import AssessmentSource as _AS  # type: ignore[import-not-found]
-
-            tracking_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip()
-            if tracking_uri:
-                _mlflow.set_tracking_uri(tracking_uri)
-                _mlflow.log_feedback(
-                    trace_id=trace_id_for_assessment,
-                    name=request.name or "mlflow_judge",
-                    value=score,
-                    source=_AS(source_type="LLM_JUDGE", source_id=request.model),
-                    rationale=rationale,
-                    metadata=request.metadata,
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[observability/judge] log_feedback side-effect failed: %s", exc)
-
     return {
         "score": score,
         "rationale": rationale,
@@ -4238,13 +4145,10 @@ def post_observability_judge(request: ObservabilityJudgeRequest):
 class ObservabilityPromptRegisterRequest(BaseModel):
     """POST /api/v2/observability/prompts/register body.
 
-    Phase 3a of plan research-the-most-popular-stateful-hinton.md.
-    BFF calls this fire-and-forget after every prompt-preset
-    save/update; orchestrator wraps `mlflow.register_prompt(...)` so
-    the preset version lands in MLflow's Prompt Registry.
+    Retained for compatibility while prompt registry persistence moves to workflow-data.
     """
 
-    name: str = Field(..., description="Prompt name in MLflow's registry (e.g. preset.id)")
+    name: str = Field(..., description="Prompt name")
     template: str = Field(..., description="The prompt template body")
     commit_message: str | None = None
     tags: dict[str, str] | None = None
@@ -4252,54 +4156,15 @@ class ObservabilityPromptRegisterRequest(BaseModel):
 
 @app.post("/api/v2/observability/prompts/register")
 def post_observability_prompt_register(request: ObservabilityPromptRegisterRequest):
-    """
-    Register a prompt version in MLflow's Prompt Registry.
-
-    POST /api/v2/observability/prompts/register
-
-    Wraps `mlflow.register_prompt(name, template, commit_message, tags)`.
-    Returns the resulting PromptVersion's name + version + uri so the
-    BFF can stash the uri back into resource_prompt_versions when the
-    follow-up migration adds the column (Phase 3a v2).
-    """
-    try:
-        import mlflow  # type: ignore[import-not-found]
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "mlflow_sdk_unavailable", "error": str(exc)},
-        )
-    tracking_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip()
-    if not tracking_uri:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "mlflow_tracking_uri_unset"},
-        )
-
-    try:
-        mlflow.set_tracking_uri(tracking_uri)
-        pv = mlflow.register_prompt(
-            name=request.name,
-            template=request.template,
-            commit_message=request.commit_message,
-            tags=request.tags or None,
-        )
-        return {
-            "success": True,
-            "name": pv.name,
-            "version": pv.version,
-            "uri": pv.uri,
-        }
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[observability/prompts/register] failed: %s", exc)
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "code": "mlflow_register_prompt_failed",
-                "error": str(exc),
-                "name": request.name,
-            },
-        )
+    """Prompt registry writes no longer happen in the orchestrator process."""
+    _ = request
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "prompt_registry_removed",
+            "message": "Prompt registry writes now belong behind workflow-data services.",
+        },
+    )
 
 
 # --- Pub/Sub Subscription Routes ---

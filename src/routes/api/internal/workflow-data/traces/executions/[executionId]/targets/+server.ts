@@ -9,7 +9,7 @@ export const GET: RequestHandler = async ({ params, request }) => {
 	if (!executionId) return error(400, "executionId required");
 
 	const targets =
-		await getApplicationAdapters().workflowData.getMlflowRunTargetsForExecution(
+		await getApplicationAdapters().workflowData.getTraceTargetsForExecution(
 			executionId,
 		);
 	return json({ targets });

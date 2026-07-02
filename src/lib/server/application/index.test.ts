@@ -5,7 +5,7 @@ vi.mock("$lib/server/application/adapters/postgres", () => ({
 		throw new Error("Database should be initialized lazily");
 	}),
 	PostgresArtifactStore: vi.fn(),
-	PostgresMlflowTraceLineageStore: vi.fn(),
+	PostgresTraceLineageStore: vi.fn(),
 	PostgresWorkflowAgentRunStore: vi.fn(),
 	PostgresWorkspaceSessionStore: vi.fn(),
 	PostgresWorkflowPlanArtifactStore: vi.fn(),

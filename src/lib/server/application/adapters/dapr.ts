@@ -18,7 +18,6 @@ export class DaprWorkflowScheduler implements WorkflowScheduler {
 				workflowId: input.workflowId,
 				triggerData: input.triggerData,
 				dbExecutionId: input.dbExecutionId,
-				mlflowContext: input.mlflowContext,
 				traceContext: input.traceContext,
 				...(input.resumeFromNode ? { resumeFromNode: input.resumeFromNode } : {}),
 				...(input.workspaceExecutionId ? { workspaceExecutionId: input.workspaceExecutionId } : {}),

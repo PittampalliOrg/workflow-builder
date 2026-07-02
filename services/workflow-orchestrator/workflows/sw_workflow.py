@@ -65,8 +65,7 @@ from activities.log_node_execution import (
     update_execution_node,
 )
 from activities.persist_results_to_db import persist_results_to_db
-from activities.finalize_mlflow_trace_root import finalize_mlflow_trace_root
-from activities.emit_mlflow_node_span import emit_mlflow_node_span
+from activities.finalize_otel_trace_root import finalize_otel_trace_root
 from tracing import merge_workflow_activity_context
 
 logger = logging.getLogger(__name__)
@@ -340,19 +339,19 @@ def _should_cleanup_workspaces(tc: "TaskContext") -> bool:
     return not keep_sandbox
 
 
-def _benchmark_mlflow_finalization_enabled() -> bool:
+def _benchmark_trace_finalization_enabled() -> bool:
     return _as_bool(
-        os.environ.get("WORKFLOW_ORCHESTRATOR_BENCHMARK_MLFLOW_FINALIZE_ENABLED"),
+        os.environ.get("WORKFLOW_ORCHESTRATOR_BENCHMARK_TRACE_FINALIZE_ENABLED"),
         False,
     )
 
 
-def _should_finalize_mlflow_trace_for_trigger(trigger_data: Any) -> bool:
+def _should_finalize_otel_trace_for_trigger(trigger_data: Any) -> bool:
     if _is_benchmark_trigger(trigger_data):
-        # Benchmark terminal state must not depend on MLflow egress or trace
-        # reconciliation. The per-agent/session traces remain best-effort, but
-        # parent SWE-bench workflows should finish as soon as their work is done.
-        return _benchmark_mlflow_finalization_enabled()
+        # Benchmark terminal state must not depend on trace reconciliation.
+        # The per-agent/session traces remain best-effort, but parent SWE-bench
+        # workflows should finish as soon as their work is done.
+        return _benchmark_trace_finalization_enabled()
     return True
 
 
@@ -420,7 +419,7 @@ def _workflow_trace_name(
     return f"{normalized_workflow_id}/{short_exec}" if short_exec else normalized_workflow_id
 
 
-def _mlflow_finalizer_input(
+def _otel_finalizer_input(
     *,
     status: str,
     trace_id: str | None,
@@ -432,7 +431,6 @@ def _mlflow_finalizer_input(
     duration_ms: int | None = None,
     start_time_ms: int | None = None,
     error: str | None = None,
-    mlflow_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     end_time_ms = (
         start_time_ms + duration_ms
@@ -452,7 +450,6 @@ def _mlflow_finalizer_input(
         "endTimeMs": end_time_ms,
         "error": error,
         "traceName": _workflow_trace_name(workflow_id, execution_id, db_execution_id),
-        "mlflowContext": mlflow_context or None,
         "_otel": otel_ctx,
     }
 
@@ -604,71 +601,16 @@ def _canonical_agent_context(
     }
 
 
-def _mlflow_node_span_input(
-    *,
-    status: str,
-    task_name: str,
-    task_type: TaskType,
-    task_data: dict[str, Any],
-    workflow_name: str | None,
-    tc: "TaskContext",
-    result: Any = None,
-    error: str | None = None,
-    duration_ms: int | None = None,
-    task_sequence: int | None = None,
-) -> dict[str, Any]:
-    action_type = _action_type_for_task(task_type, task_data, tc)
-
-    return {
-        "status": status,
-        "traceId": tc.trace_id,
-        "workflowId": tc.workflow_id,
-        "workflowName": workflow_name,
-        "executionId": tc.execution_id,
-        "dbExecutionId": tc.db_execution_id,
-        "daprInstanceId": tc.execution_id,
-        "nodeId": task_name,
-        "nodeName": task_name,
-        "nodeType": task_type.value,
-        "actionType": action_type,
-        "activityCorrelationId": (
-            f"{tc.db_execution_id or tc.execution_id}:{task_name}:{task_sequence}"
-            if task_sequence is not None
-            else None
-        ),
-        "taskSequence": task_sequence,
-        "durationMs": duration_ms,
-        "resultSizeChars": _json_size_chars(result) if error is None else None,
-        "error": error,
-        "mlflowContext": tc.mlflow_context or None,
-        "_otel": tc.otel_ctx,
-    }
-
-
-def _finalize_mlflow_trace(ctx: wf.DaprWorkflowContext, payload: dict[str, Any]):
+def _finalize_otel_trace(ctx: wf.DaprWorkflowContext, payload: dict[str, Any]):
     try:
         yield ctx.call_activity(
-            finalize_mlflow_trace_root,
+            finalize_otel_trace_root,
             input=_freeze(payload),
         )
     except Exception as exc:  # noqa: BLE001
         _log_info(
             ctx,
-            "[SW Workflow] MLflow trace finalization failed (non-fatal): %s",
-            exc,
-        )
-
-
-def _emit_mlflow_node_span(ctx: wf.DaprWorkflowContext, payload: dict[str, Any]):
-    try:
-        yield ctx.call_activity(
-            emit_mlflow_node_span,
-            input=_freeze(payload),
-        )
-    except Exception as exc:  # noqa: BLE001
-        _log_info(
-            ctx,
-            "[SW Workflow] MLflow node span emission failed (non-fatal): %s",
+            "[SW Workflow] OTel trace finalization failed (non-fatal): %s",
             exc,
         )
 
@@ -942,8 +884,6 @@ class TaskContext:
         self.otel_ctx: dict[str, str] = {}
         self.workflow_otel_ctx: dict[str, str] = {}
         self.trace_id: str | None = None
-        self.mlflow_node_spans_enabled = False
-        self.mlflow_context: dict[str, Any] = {}
 
         # Runtime state - NodeOutputs format for resolve_templates compatibility
         # Each entry: {label: str, actionType: str, data: Any}
@@ -1904,7 +1844,6 @@ def _run_native_durable_agent_child_workflow(
         "agentSlug": canonical_context["agentSlug"],
         "agentAppId": canonical_context["agentAppId"],
         "agentRunId": child_instance_id,
-        "mlflowContext": tc.mlflow_context or None,
         "workspaceRef": canonical_context["workspaceRef"],
         "sandboxName": canonical_context["sandboxName"],
         "agentRuntime": canonical_context["agentRuntime"],
@@ -1942,11 +1881,6 @@ def _run_native_durable_agent_child_workflow(
             "agentSlug": canonical_context["agentSlug"],
             "agentAppId": canonical_context["agentAppId"],
             "agentRunId": child_instance_id,
-            "mlflowRunId": (tc.mlflow_context or {}).get("runId"),
-            "mlflowParentRunId": (tc.mlflow_context or {}).get("parentRunId"),
-            "mlflowExperimentId": (tc.mlflow_context or {}).get("experimentId"),
-            "mlflowTraceExperimentId": (tc.mlflow_context or {}).get("traceExperimentId")
-            or (tc.mlflow_context or {}).get("experimentId"),
             "agentRuntime": canonical_context["agentRuntime"],
             "workflowHistoryPropagation": {
                 "requestedScope": history_propagation_label,
@@ -2112,7 +2046,6 @@ def _run_native_durable_agent_child_workflow(
             # Goal-driven mode (optional). The BFF bridge creates the goal +
             # runs the session multi-turn when this is present.
             "goal": goal_spec,
-            "mlflowContext": child_input.get("mlflowContext"),
             "_otel": tc.otel_ctx,
         }
         bridge_result = yield ctx.call_activity(
@@ -2179,8 +2112,6 @@ def _run_native_durable_agent_child_workflow(
             or canonical_context["sandboxName"],
             "workspaceRef": bridge_child_input.get("workspaceRef")
             or canonical_context["workspaceRef"],
-            "mlflowContext": bridge_child_input.get("mlflowContext")
-            or child_input.get("mlflowContext"),
             "_otel_span_context": tc.otel_ctx,
             "_otel": tc.otel_ctx,
             "_message_metadata": {
@@ -2190,8 +2121,6 @@ def _run_native_durable_agent_child_workflow(
                     else {}
                 ),
                 **child_input["_message_metadata"],
-                "mlflowContext": bridge_child_input.get("mlflowContext")
-                or child_input.get("mlflowContext"),
                 "runtimeSandboxName": bridge_runtime_sandbox_name,
                 "workflowActivityCorrelationId": tc.otel_ctx.get(
                     "workflow.activity.correlation_id"
@@ -3843,36 +3772,22 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     )
     integrations = input_data.get("integrations")
     db_execution_id = input_data.get("dbExecutionId")
-    mlflow_context = (
-        input_data.get("mlflowContext")
-        if isinstance(input_data.get("mlflowContext"), dict)
-        else {}
-    )
     otel_ctx = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else {}
     trace_id = _trace_id_from_otel(otel_ctx)
-    features = input_data.get("features") if isinstance(input_data.get("features"), dict) else {}
-    # Dapr workflow replay requires this scheduling decision to be derived only
-    # from immutable workflow input. Runtime/export flags are handled inside the
-    # activity so a rollout can turn exports into no-ops without changing the
-    # replayed task sequence for already-running workflows.
-    mlflow_node_spans_enabled = _as_bool(
-        features.get("mlflowNodeSpans", input_data.get("mlflowNodeSpans")),
-        False,
-    )
 
     try:
         workflow = Workflow.model_validate(workflow_data)
     except Exception as e:
         logger.error("[SW Workflow] Failed to parse workflow: %s", e)
-        if trace_id and _should_finalize_mlflow_trace_for_trigger(trigger_data):
+        if trace_id and _should_finalize_otel_trace_for_trigger(trigger_data):
             workflow_name_for_trace = None
             if isinstance(workflow_data, dict):
                 document = workflow_data.get("document")
                 if isinstance(document, dict):
                     workflow_name_for_trace = document.get("name")
-            yield from _finalize_mlflow_trace(
+            yield from _finalize_otel_trace(
                 ctx,
-                _mlflow_finalizer_input(
+                _otel_finalizer_input(
                     status="ERROR",
                     trace_id=trace_id,
                     otel_ctx=otel_ctx,
@@ -3883,7 +3798,6 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     duration_ms=_elapsed_ms(ctx, start_time_ms),
                     start_time_ms=start_time_ms,
                     error=f"Invalid workflow document: {e}",
-                    mlflow_context=mlflow_context,
                 ),
             )
         return SWWorkflowOutput(
@@ -3907,8 +3821,6 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     tc.otel_ctx = otel_ctx
     tc.workflow_otel_ctx = otel_ctx
     tc.trace_id = trace_id
-    tc.mlflow_node_spans_enabled = mlflow_node_spans_enabled
-    tc.mlflow_context = mlflow_context
     # Resume support: a stable workspace key threaded by the resume caller (defaults to
     # this run's id) + the resumable flag from the spec's x-workflow-builder extension.
     resume_workspace_id = input_data.get("workspaceExecutionId")
@@ -3931,29 +3843,11 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         tc.trigger_data = {"value": tc.trigger_data}
     tc.task_outputs["trigger"]["data"] = tc.trigger_data
 
-    # Phase 4 of plan research-the-most-popular-stateful-hinton.md:
-    # set a human-meaningful MLflow trace name + workflow-level trace
-    # tags once per workflow start (not on replay). Lands the trace's
-    # display name in MLflow's Traces tab as e.g.
-    # `wf_async_coding_task_v1/<db-execution-id>` instead of the
-    # default Dapr span name like `create_orchestration||sw_workflow_v1`.
-    # Helper calls `MlflowClient().set_trace_tag(trace_id, ...)` against
-    # the OTel-derived trace_id (no MLflow tracing context required).
     if not _is_replaying(ctx):
         try:
-            from tracing import set_mlflow_trace_tags, start_activity_span
+            from tracing import start_activity_span
+
             short_exec = (db_execution_id or execution_id or "").strip()
-            display_name = _workflow_trace_name(tc.workflow_id, execution_id, db_execution_id)
-            # 1) Emit + flush a tiny OTel "workflow.init" span first.
-            #    MLflow's destination processor exports it; that creates
-            #    the `trace_info` row (FK target for `set_trace_tag`).
-            # 2) After the span ends, call set_mlflow_trace_tags — its
-            #    set_trace_tag fallback now finds the trace row and
-            #    persists `mlflow.traceName` + Phase 4 tags.
-            # The `update_current_trace` path inside the helper still
-            # no-ops here ("No active trace found") because our OTel
-            # spans are not MLflow-managed spans — that's expected and
-            # logged at DEBUG; set_trace_tag is the real persistence path.
             with start_activity_span(
                 "workflow.init",
                 otel_ctx,
@@ -3971,32 +3865,13 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     tp.force_flush(timeout_millis=2000)
             except Exception as flush_exc:  # noqa: BLE001
                 logger.debug("[SW Workflow] tracer force_flush failed: %s", flush_exc)
-            set_mlflow_trace_tags(
-                {
-                    "workflow.id": tc.workflow_id,
-                    "workflow.name": workflow_name,
-                    "workflow.execution.id": short_exec,
-                    "dapr.workflow.instance_id": execution_id,
-                    "dapr.workflow.name": workflow_name,
-                    "session.id": short_exec,
-                    "workflow_builder.trace_group_id": short_exec,
-                    "mlflow.experiment_id": (tc.mlflow_context or {}).get("traceExperimentId")
-                    or (tc.mlflow_context or {}).get("experimentId"),
-                    "mlflow.run_id": (tc.mlflow_context or {}).get("runId"),
-                    "mlflow.parent_run_id": (tc.mlflow_context or {}).get("parentRunId"),
-                    "mlflow.modelId": (tc.mlflow_context or {}).get("activeModelId"),
-                    "mlflow.model.uri": (tc.mlflow_context or {}).get("activeModelUri"),
-                },
-                trace_name=display_name,
-                trace_id_hex=tc.trace_id,
-            )
             logger.info(
-                "[SW Workflow] MLflow trace tags requested: trace_id=%s name=%s",
+                "[SW Workflow] OTel workflow.init span recorded: trace_id=%s execution=%s",
                 tc.trace_id or "<none>",
-                display_name,
+                short_exec,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[SW Workflow] set_mlflow_trace_tags at start failed: %s", exc)
+            logger.warning("[SW Workflow] workflow.init trace span failed: %s", exc)
     if code_checkpoint_restore:
         tc.task_outputs["codeCheckpointRestore"] = {
             "label": "Code checkpoint restore",
@@ -4142,21 +4017,6 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                             "_otel": tc.otel_ctx,
                         }),
                     )
-                if tc.mlflow_node_spans_enabled and tc.trace_id:
-                    yield from _emit_mlflow_node_span(
-                        ctx,
-                        _mlflow_node_span_input(
-                            status="ERROR",
-                            task_name=task_name,
-                            task_type=task_type,
-                            task_data=task_data,
-                            error=str(task_err),
-                            duration_ms=task_duration_ms,
-                            task_sequence=task_index,
-                            workflow_name=workflow_name,
-                            tc=tc,
-                        ),
-                    )
                 raise
 
             # Log task completion
@@ -4185,27 +4045,6 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 task_success = result.get("success", True)
             else:
                 task_success = True
-            if tc.mlflow_node_spans_enabled and tc.trace_id:
-                yield from _emit_mlflow_node_span(
-                    ctx,
-                    _mlflow_node_span_input(
-                        status="OK" if task_success else "ERROR",
-                        task_name=task_name,
-                        task_type=task_type,
-                        task_data=task_data,
-                        result=result,
-                        error=(
-                            result.get("error")
-                            if isinstance(result, dict) and result.get("error")
-                            else None
-                        ),
-                        duration_ms=task_duration_ms,
-                        task_sequence=task_index,
-                        workflow_name=workflow_name,
-                        tc=tc,
-                    ),
-                )
-
             # Handle `then` flow directive
             then_directive = task_data.get("then")
 
@@ -4306,10 +4145,10 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 "[SW Workflow] Skipping workspace cleanup because keepSandbox was requested",
             )
 
-        if _should_finalize_mlflow_trace_for_trigger(tc.trigger_data):
-            yield from _finalize_mlflow_trace(
+        if _should_finalize_otel_trace_for_trigger(tc.trigger_data):
+            yield from _finalize_otel_trace(
                 ctx,
-                _mlflow_finalizer_input(
+                _otel_finalizer_input(
                     status="OK",
                     trace_id=trace_id,
                     otel_ctx=tc.otel_ctx,
@@ -4319,7 +4158,6 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     db_execution_id=db_execution_id,
                     duration_ms=duration_ms,
                     start_time_ms=start_time_ms,
-                    mlflow_context=tc.mlflow_context,
                 ),
             )
 
@@ -4400,10 +4238,10 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     cleanup_err,
                 )
 
-        if _should_finalize_mlflow_trace_for_trigger(tc.trigger_data):
-            yield from _finalize_mlflow_trace(
+        if _should_finalize_otel_trace_for_trigger(tc.trigger_data):
+            yield from _finalize_otel_trace(
                 ctx,
-                _mlflow_finalizer_input(
+                _otel_finalizer_input(
                     status="ERROR",
                     trace_id=trace_id,
                     otel_ctx=tc.otel_ctx,
@@ -4414,7 +4252,6 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     duration_ms=duration_ms,
                     start_time_ms=start_time_ms,
                     error=error_msg,
-                    mlflow_context=tc.mlflow_context,
                 ),
             )
 

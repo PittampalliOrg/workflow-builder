@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
 	ArtifactStore,
-	MlflowTraceLineageStore,
+	TraceLineageStore,
 	WorkflowDefinition,
 	WorkflowDefinitionRepository,
 	WorkflowAgentRunStore,
@@ -48,7 +48,7 @@ function makeService(options: {
 		workspaceSessions: {} as WorkspaceSessionStore,
 		agentRuns: {} as WorkflowAgentRunStore,
 		planArtifacts: {} as WorkflowPlanArtifactStore,
-		mlflowTraceLineage: {} as MlflowTraceLineageStore,
+		traceLineage: {} as TraceLineageStore,
 	});
 
 	return { service, workflowDefinitions };
@@ -107,7 +107,7 @@ describe("ApplicationWorkflowDataService", () => {
 			workspaceSessions: {} as WorkspaceSessionStore,
 			agentRuns,
 			planArtifacts: {} as WorkflowPlanArtifactStore,
-			mlflowTraceLineage: {} as MlflowTraceLineageStore,
+			traceLineage: {} as TraceLineageStore,
 		});
 
 		await expect(
@@ -136,7 +136,7 @@ describe("ApplicationWorkflowDataService", () => {
 		});
 	});
 
-	it("delegates plan artifacts and MLflow trace lineage to their ports", async () => {
+	it("delegates plan artifacts and OTel trace lineage to their ports", async () => {
 		const planArtifacts = {
 			upsertPlanArtifact: vi.fn(async () => ({
 				artifactRef: "plan-1",
@@ -150,13 +150,13 @@ describe("ApplicationWorkflowDataService", () => {
 			})),
 			getPlanArtifact: vi.fn(async () => null),
 		} satisfies WorkflowPlanArtifactStore;
-		const mlflowTraceLineage = {
-			getRunTargetsForExecution: vi.fn(async () => []),
+		const traceLineage = {
+			getTraceTargetsForExecution: vi.fn(async () => []),
 			upsertTraceLineageLinks: vi.fn(async () => ({
 				recorded: 1,
 				sourceKeys: ["source-key"],
 			})),
-		} satisfies MlflowTraceLineageStore;
+		} satisfies TraceLineageStore;
 		const service = new ApplicationWorkflowDataService({
 			workflowDefinitions: makeService({}).workflowDefinitions,
 			workflowExecutions: {} as WorkflowExecutionRepository,
@@ -164,7 +164,7 @@ describe("ApplicationWorkflowDataService", () => {
 			workspaceSessions: {} as WorkspaceSessionStore,
 			agentRuns: {} as WorkflowAgentRunStore,
 			planArtifacts,
-			mlflowTraceLineage,
+			traceLineage,
 		});
 
 		await service.upsertPlanArtifact({
@@ -179,21 +179,21 @@ describe("ApplicationWorkflowDataService", () => {
 			artifactRef: "plan-1",
 			status: "approved",
 		});
-		await service.upsertMlflowTraceLineageLinks({
+		await service.upsertTraceLineageLinks({
 			traceId: "tr-1234567890abcdef1234567890abcdef",
 			targets: [
 				{
 					entityType: "workflow_execution",
 					entityId: "exec-1",
 					projectId: "project-1",
-					experimentId: "exp-1",
-					runId: "run-1",
+					externalExperimentId: "exp-1",
+					externalRunId: "run-1",
 				},
 			],
 		});
 
 		expect(planArtifacts.upsertPlanArtifact).toHaveBeenCalledTimes(1);
 		expect(planArtifacts.updatePlanArtifactStatus).toHaveBeenCalledTimes(1);
-		expect(mlflowTraceLineage.upsertTraceLineageLinks).toHaveBeenCalledTimes(1);
+		expect(traceLineage.upsertTraceLineageLinks).toHaveBeenCalledTimes(1);
 	});
 });

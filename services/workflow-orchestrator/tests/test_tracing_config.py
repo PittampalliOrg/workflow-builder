@@ -23,15 +23,19 @@ def test_otel_signal_export_enabled_respects_none(monkeypatch):
     assert tracing._otel_signal_export_enabled("logs") is True
 
 
-def test_mlflow_enabled_respects_disabled_flag(monkeypatch):
+def test_legacy_mlflow_gate_ignores_old_enabled_flag(monkeypatch):
     monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
-    monkeypatch.setenv("MLFLOW_ENABLED", "false")
+    monkeypatch.setenv("MLFLOW_ENABLED", "true")
+    monkeypatch.delenv("WORKFLOW_ORCHESTRATOR_LEGACY_MLFLOW_ENABLED", raising=False)
 
     assert tracing._mlflow_enabled() is False
 
 
-def test_mlflow_enabled_requires_tracking_uri(monkeypatch):
-    monkeypatch.setenv("MLFLOW_ENABLED", "true")
+def test_legacy_mlflow_gate_requires_explicit_flag_and_tracking_uri(monkeypatch):
+    monkeypatch.setenv("WORKFLOW_ORCHESTRATOR_LEGACY_MLFLOW_ENABLED", "true")
     monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
 
     assert tracing._mlflow_enabled() is False
+
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+    assert tracing._mlflow_enabled() is True

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
 import {
 	mlflowLineageLinks,
@@ -20,9 +20,9 @@ import type {
 	AppendWorkflowExecutionLogInput,
 	ArtifactStore,
 	CreateWorkflowExecutionInput,
-	MlflowRunTarget,
-	MlflowTraceLineageStore,
-	UpsertMlflowTraceLineageLinksInput,
+	TraceLinkTarget,
+	TraceLineageStore,
+	UpsertTraceLineageLinksInput,
 	UpdateWorkflowAgentRunLifecycleInput,
 	UpsertWorkflowAgentRunScheduledInput,
 	WorkflowArtifactRecord,
@@ -607,28 +607,28 @@ export class PostgresWorkflowPlanArtifactStore implements WorkflowPlanArtifactSt
 	}
 }
 
-export class PostgresMlflowTraceLineageStore implements MlflowTraceLineageStore {
+export class PostgresTraceLineageStore implements TraceLineageStore {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
-	async getRunTargetsForExecution(executionId: string): Promise<MlflowRunTarget[]> {
-		const targets: MlflowRunTarget[] = [];
+	async getTraceTargetsForExecution(executionId: string): Promise<TraceLinkTarget[]> {
+		const targets: TraceLinkTarget[] = [];
 		const [execution] = await this.database
 			.select({
 				id: workflowExecutions.id,
 				projectId: workflowExecutions.projectId,
-				experimentId: workflowExecutions.mlflowExperimentId,
-				runId: workflowExecutions.mlflowRunId,
+				externalExperimentId: workflowExecutions.mlflowExperimentId,
+				externalRunId: workflowExecutions.mlflowRunId,
 			})
 			.from(workflowExecutions)
 			.where(eq(workflowExecutions.id, executionId))
 			.limit(1);
-		if (execution?.runId) {
+		if (execution) {
 			targets.push({
 				entityType: "workflow_execution",
 				entityId: execution.id,
 				projectId: execution.projectId,
-				experimentId: execution.experimentId,
-				runId: execution.runId,
+				externalExperimentId: execution.externalExperimentId,
+				externalRunId: execution.externalRunId,
 			});
 		}
 
@@ -636,41 +636,38 @@ export class PostgresMlflowTraceLineageStore implements MlflowTraceLineageStore 
 			.select({
 				id: sessions.id,
 				projectId: sessions.projectId,
-				experimentId: sessions.mlflowExperimentId,
-				runId: sessions.mlflowRunId,
+				externalExperimentId: sessions.mlflowExperimentId,
+				externalRunId: sessions.mlflowRunId,
 			})
 			.from(sessions)
-			.where(and(
-				eq(sessions.workflowExecutionId, executionId),
-				isNotNull(sessions.mlflowRunId),
-			));
+			.where(eq(sessions.workflowExecutionId, executionId));
 		for (const row of sessionRows) {
-			if (!row.runId) continue;
 			targets.push({
 				entityType: "session",
 				entityId: row.id,
 				projectId: row.projectId,
-				experimentId: row.experimentId,
-				runId: row.runId,
+				externalExperimentId: row.externalExperimentId,
+				externalRunId: row.externalRunId,
 			});
 		}
 
 		const seen = new Set<string>();
 		return targets.filter((target) => {
-			if (seen.has(target.runId)) return false;
-			seen.add(target.runId);
+			const key = `${target.entityType}:${target.entityId}`;
+			if (seen.has(key)) return false;
+			seen.add(key);
 			return true;
 		});
 	}
 
 	async upsertTraceLineageLinks(
-		input: UpsertMlflowTraceLineageLinksInput,
+		input: UpsertTraceLineageLinksInput,
 	): Promise<{ recorded: number; sourceKeys: string[] }> {
 		const source = input.source?.trim() || "primary";
 		const sourceKeys: string[] = [];
 		for (const target of input.targets) {
-			if (!target.entityType || !target.entityId || !target.runId) continue;
-			const sourceKey = `${target.entityType}:${target.entityId}:mlflow_trace:${input.traceId}:run:${target.runId}:source:${source}`;
+			if (!target.entityType || !target.entityId) continue;
+			const sourceKey = `${target.entityType}:${target.entityId}:otel_trace:${input.traceId}:source:${source}`;
 			await this.database
 				.insert(mlflowLineageLinks)
 				.values({
@@ -678,22 +675,22 @@ export class PostgresMlflowTraceLineageStore implements MlflowTraceLineageStore 
 					entityType: target.entityType,
 					entityId: target.entityId,
 					projectId: target.projectId ?? null,
-					mlflowEntityType: "trace",
-					mlflowExperimentId: target.experimentId ?? null,
-					mlflowRunId: target.runId,
+					mlflowEntityType: "otel_trace",
+					mlflowExperimentId: target.externalExperimentId ?? null,
+					mlflowRunId: target.externalRunId ?? null,
 					mlflowTraceId: input.traceId,
 					tags: input.attrs ?? {},
-					metadata: { source },
+					metadata: { source, telemetrySystem: "opentelemetry" },
 				})
 				.onConflictDoUpdate({
 					target: mlflowLineageLinks.sourceKey,
 					set: {
 						projectId: target.projectId ?? null,
-						mlflowExperimentId: target.experimentId ?? null,
-						mlflowRunId: target.runId,
+						mlflowExperimentId: target.externalExperimentId ?? null,
+						mlflowRunId: target.externalRunId ?? null,
 						mlflowTraceId: input.traceId,
 						tags: input.attrs ?? {},
-						metadata: { source },
+						metadata: { source, telemetrySystem: "opentelemetry" },
 						updatedAt: new Date(),
 					},
 				});

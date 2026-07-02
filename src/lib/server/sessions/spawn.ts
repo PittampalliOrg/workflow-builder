@@ -31,12 +31,6 @@ import {
 } from "$lib/server/users/cli-credentials";
 import { mountSessionRepositoriesViaHost } from "$lib/server/sessions/repositories";
 
-function modelIdFromMlflowUri(value: string | null | undefined): string | null {
-	const text = value?.trim() ?? "";
-	const match = text.match(/^models:\/([^/]+)$/);
-	return match?.[1] ?? null;
-}
-
 /** Session owner (sessions.userId) — not part of the public SessionDetail
  * shape, so read it directly for the CLI-token gate. */
 async function resolveSessionOwnerUserId(
@@ -476,33 +470,10 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		}
 	}
 
-		const mlflowSessionId = session.mlflowSessionId ?? session.id;
-		const activeModelUri = agent.mlflowUri ?? null;
-		const activeModelId = agent.mlflowModelVersion ?? modelIdFromMlflowUri(activeModelUri);
-		const mlflowContext = session.mlflowRunId
-			? {
-					experimentId: session.mlflowExperimentId ?? undefined,
-					traceExperimentId:
-						process.env.MLFLOW_TRACE_EXPERIMENT_ID ??
-						session.mlflowExperimentId ??
-						undefined,
-					traceExperimentName:
-						process.env.MLFLOW_TRACE_EXPERIMENT_NAME ?? undefined,
-					runId: session.mlflowRunId,
-					parentRunId: session.mlflowParentRunId ?? null,
-					mlflowSessionId,
-					activeModelId,
-					activeModelName: agent.mlflowModelName ?? null,
-					activeModelUri,
-					traceGroupId: session.id,
-					applicationKind: "agent",
-					applicationId: agent.id,
-				}
-			: null;
-		const payload = {
-			sessionId,
-			agentId: agent.id,
-			agentVersion: session.agentVersion ?? agent.version ?? null,
+	const payload = {
+		sessionId,
+		agentId: agent.id,
+		agentVersion: session.agentVersion ?? agent.version ?? null,
 		agentSlug: agent.slug,
 		agentAppId: targetAppId,
 		agentRuntimeClass: runtimeRoute.runtimeClass,
@@ -521,11 +492,9 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		// OpenShellRuntime.set_sandbox_name(...) fires before tool execution.
 		// Workflow-driven sessions leave this null — the preceding
 		// workspace_profile node provides its own sandboxName.
-			sandboxName: session.workspaceSandboxName ?? null,
-			mlflowSessionId,
-			mlflowContext,
-			initialEvents,
-		};
+		sandboxName: session.workspaceSandboxName ?? null,
+		initialEvents,
+	};
 
 	const instanceId = sessionId;
 	const daprEndpoint = getDaprSidecarUrl();

@@ -68,16 +68,8 @@ function publicMlflowUrl(): string | null {
 }
 
 export function mlflowLifecycleEnabled(): boolean {
-  const enabled = (env.MLFLOW_ENABLED ?? "").trim().toLowerCase();
-  if (
-    enabled === "0" ||
-    enabled === "false" ||
-    enabled === "no" ||
-    enabled === "off"
-  ) {
-    return false;
-  }
-  return Boolean(trackingUri());
+  const enabled = (env.WORKFLOW_BUILDER_LEGACY_MLFLOW_ENABLED ?? "").trim().toLowerCase();
+  return ["1", "true", "yes", "on"].includes(enabled) && Boolean(trackingUri());
 }
 
 function clusterName(): string {

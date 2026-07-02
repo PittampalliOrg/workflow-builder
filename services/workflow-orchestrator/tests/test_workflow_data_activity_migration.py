@@ -49,7 +49,7 @@ def _load_activity(name: str):
 
 track_agent_run = _load_activity("track_agent_run")
 persist_plan_artifact = _load_activity("persist_plan_artifact")
-finalizer = _load_activity("finalize_mlflow_trace_root")
+finalizer = _load_activity("finalize_otel_trace_root")
 
 
 class FailingPsycopg2:
@@ -153,23 +153,23 @@ def test_persist_plan_artifact_strict_http_uses_workflow_data_client(monkeypatch
     assert calls[0]["planJson"] == {"steps": []}
 
 
-def test_mlflow_lineage_strict_http_uses_workflow_data_client(monkeypatch):
+def test_trace_lineage_strict_http_uses_workflow_data_client(monkeypatch):
     recorded: list[dict] = []
 
     class FakeWorkflowDataClient:
-        def get_mlflow_run_targets(self, execution_id):
+        def get_trace_targets(self, execution_id):
             assert execution_id == "exec-1"
             return [
                 {
                     "entityType": "workflow_execution",
                     "entityId": "exec-1",
                     "projectId": "project-1",
-                    "experimentId": "exp-1",
-                    "runId": "run-1",
+                    "externalExperimentId": "exp-1",
+                    "externalRunId": "run-1",
                 }
             ]
 
-        def upsert_mlflow_trace_lineage(self, payload):
+        def upsert_trace_lineage(self, payload):
             recorded.append(payload)
             return {"recorded": 1}
 
@@ -177,9 +177,9 @@ def test_mlflow_lineage_strict_http_uses_workflow_data_client(monkeypatch):
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(finalizer, "workflow_data_client", FakeWorkflowDataClient())
 
-    targets = finalizer._fetch_mlflow_run_targets("exec-1")
+    targets = finalizer._fetch_trace_targets("exec-1")
     finalizer._record_lineage_links(
-        trace_id="tr-1234567890abcdef1234567890abcdef",
+        trace_id="1234567890abcdef1234567890abcdef",
         targets=targets,
         source="primary",
         attrs={"service.name": "workflow-orchestrator"},
@@ -190,20 +190,20 @@ def test_mlflow_lineage_strict_http_uses_workflow_data_client(monkeypatch):
             "entity_type": "workflow_execution",
             "entity_id": "exec-1",
             "project_id": "project-1",
-            "experiment_id": "exp-1",
-            "run_id": "run-1",
+            "external_experiment_id": "exp-1",
+            "external_run_id": "run-1",
         }
     ]
     assert recorded == [
         {
-            "traceId": "tr-1234567890abcdef1234567890abcdef",
+            "traceId": "1234567890abcdef1234567890abcdef",
             "targets": [
                 {
                     "entityType": "workflow_execution",
                     "entityId": "exec-1",
                     "projectId": "project-1",
-                    "experimentId": "exp-1",
-                    "runId": "run-1",
+                    "externalExperimentId": "exp-1",
+                    "externalRunId": "run-1",
                 }
             ],
             "source": "primary",
@@ -212,9 +212,9 @@ def test_mlflow_lineage_strict_http_uses_workflow_data_client(monkeypatch):
     ]
 
 
-def test_mlflow_target_fetch_falls_back_to_postgres_in_fallback_mode(monkeypatch):
+def test_trace_target_fetch_falls_back_to_postgres_in_fallback_mode(monkeypatch):
     class FailingWorkflowDataClient:
-        def get_mlflow_run_targets(self, _execution_id):
+        def get_trace_targets(self, _execution_id):
             raise RuntimeError("workflow-data unavailable")
 
     class FakeCursor:
@@ -256,19 +256,19 @@ def test_mlflow_target_fetch_falls_back_to_postgres_in_fallback_mode(monkeypatch
     )
     monkeypatch.setattr(finalizer, "_database_url", None)
 
-    assert finalizer._fetch_mlflow_run_targets("exec-1") == [
+    assert finalizer._fetch_trace_targets("exec-1") == [
         {
             "entity_type": "workflow_execution",
             "entity_id": "exec-1",
             "project_id": "project-1",
-            "experiment_id": "exp-1",
-            "run_id": "run-1",
+            "external_experiment_id": "exp-1",
+            "external_run_id": "run-1",
         },
         {
             "entity_type": "session",
             "entity_id": "session-1",
             "project_id": "project-1",
-            "experiment_id": "exp-2",
-            "run_id": "run-2",
+            "external_experiment_id": "exp-2",
+            "external_run_id": "run-2",
         },
     ]

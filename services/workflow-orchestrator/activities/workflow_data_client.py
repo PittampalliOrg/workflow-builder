@@ -227,19 +227,19 @@ class WorkflowDataClient:
         artifact = payload.get("artifact")
         return artifact if isinstance(artifact, dict) else None
 
-    def get_mlflow_run_targets(self, execution_id: str) -> list[dict[str, Any]]:
+    def get_trace_targets(self, execution_id: str) -> list[dict[str, Any]]:
         payload = self._request(
             "GET",
-            "/api/internal/workflow-data/mlflow/executions/"
-            f"{quote(execution_id, safe='')}/run-targets",
+            "/api/internal/workflow-data/traces/executions/"
+            f"{quote(execution_id, safe='')}/targets",
         )
         targets = payload.get("targets")
         return [item for item in targets if isinstance(item, dict)] if isinstance(targets, list) else []
 
-    def upsert_mlflow_trace_lineage(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def upsert_trace_lineage(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request(
             "POST",
-            "/api/internal/workflow-data/mlflow/trace-lineage",
+            "/api/internal/workflow-data/traces/lineage",
             json_body=payload,
         )
 

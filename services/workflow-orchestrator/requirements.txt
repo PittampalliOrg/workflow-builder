@@ -17,10 +17,3 @@ opentelemetry-instrumentation-fastapi>=0.41b0
 opentelemetry-instrumentation-requests>=0.41b0
 opentelemetry-instrumentation-httpx>=0.41b0
 opentelemetry-instrumentation-logging>=0.41b0
-
-# MLflow tracing destination (P7 of the cutover, 2026-05-11). Powers
-# mlflow.tracing.set_destination() in tracing.py so workflow spans land
-# in MLflow with the trace_request_metadata rows that mlflow.search_traces()
-# requires. mlflow-skinny excludes scikit-learn / pandas / etc.; we only
-# need the tracing module + OTEL bridge.
-mlflow-skinny>=3.6
