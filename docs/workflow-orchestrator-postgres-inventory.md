@@ -18,6 +18,9 @@ routes, the external events ingest route, the agent-trigger membership check,
 the CLI credential capture session-owner lookup, and the ActivePieces resume
 execution lookup, plus the GitHub trigger ingress and event-trigger admission
 gate, and the internal piece-execution artifact readback route.
+The internal CLI workspace command route now routes execution lookup,
+CLI-session candidate lookup, file creation, and browser artifact persistence
+through workflow-data.
 
 ## Strict HTTP Runtime Paths
 
@@ -470,6 +473,14 @@ The first UI-facing route has also moved behind the application service:
   `workflowData.getPieceExecutionByIdempotencyKey` instead of querying
   `piece_execution` directly. The route keeps internal-token auth and the
   existing 404/503/read-model response contract.
+- `src/routes/api/internal/workflows/executions/[executionId]/cli-workspace-command/+server.ts`
+  now resolves live CLI session candidates through
+  `workflowData.listCliWorkspaceCommandCandidates`, reads execution context
+  through `workflowData.getExecutionById`, persists image readbacks through
+  `workflowData.createWorkflowFile`, and persists browser walkthrough videos
+  through `workflowData.saveWorkflowBrowserArtifact`. The route still owns the
+  cli-agent-py command transport, chunked file reads, and helper-pod
+  adoption/provisioning behavior.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
@@ -480,7 +491,8 @@ run-diff/source-bundle ingest, internal session-ingest, and external
 events-ingest route subsets, plus the agent-trigger route membership check and
 the CLI credential capture session-owner lookup and ActivePieces resume
 execution lookup, and the GitHub trigger ingress/gate subset, are also clean.
-The internal piece-execution artifact readback route is also clean.
+The internal piece-execution artifact readback and CLI workspace command routes
+are also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:

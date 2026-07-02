@@ -44,6 +44,11 @@ import {
 	AppConnectionType,
 } from "$lib/server/types/app-connection";
 import { generateId } from "$lib/server/utils/id";
+import {
+	agentRuntimeDedicatedAppId,
+	agentRuntimeInvokeTarget,
+} from "$lib/server/agents/runtime-routing";
+import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { expandGreenfieldPromptInput } from "$lib/server/workflows/greenfield-prompt";
 import { getMissingRequiredTriggerFields } from "$lib/server/workflows/trigger-validation";
 import type {
@@ -76,6 +81,7 @@ import type {
 	StartHostedMcpWorkflowToolResult,
 	WorkflowArtifactInput,
 	CreateWorkflowFileInput,
+	CliWorkspaceCommandCandidate,
 	PersistWorkflowRunDiffInput,
 	PersistWorkflowSourceBundleInput,
 	WorkflowDataService,
@@ -111,6 +117,9 @@ import type {
 	PieceCatalogRepository,
 	PieceExecutionReadModel,
 	PieceExecutionRepository,
+	SaveWorkflowBrowserArtifactInput,
+	WorkflowBrowserArtifactRecord,
+	WorkflowBrowserArtifactStore,
 	McpConnectionRepository,
 	UpdateProjectMcpConnectionInput,
 	SavePlatformOAuthAppInput,
@@ -668,6 +677,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			workspaceProjects: WorkspaceProjectRepository;
 			pieceCatalog: PieceCatalogRepository;
 			pieceExecutions?: PieceExecutionRepository;
+			browserArtifacts?: WorkflowBrowserArtifactStore;
 			codeFunctionCatalog?: CodeFunctionCatalogRepository;
 			benchmarkBrowser: BenchmarkBrowserRepository;
 			workflowExecutions: WorkflowExecutionRepository;
@@ -3200,6 +3210,15 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.pieceExecutions.getByIdempotencyKey(idempotencyKey);
 	}
 
+	saveWorkflowBrowserArtifact(
+		input: SaveWorkflowBrowserArtifactInput,
+	): Promise<WorkflowBrowserArtifactRecord> {
+		if (!this.deps.browserArtifacts) {
+			throw new Error("Workflow browser artifact store is not configured");
+		}
+		return this.deps.browserArtifacts.save(input);
+	}
+
 	async validateApiKeyForUser(input: {
 		authorizationHeader: string | null;
 		userId: string;
@@ -3293,6 +3312,34 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	getRunningWorkflowExecution(workflowId: string) {
 		return this.deps.workflowExecutions.getRunningByWorkflowId(workflowId);
+	}
+
+	async listCliWorkspaceCommandCandidates(input: {
+		executionId: string;
+		limit: number;
+	}): Promise<CliWorkspaceCommandCandidate[]> {
+		const rows = await this.requireSessions().listCliWorkspaceSessionCandidates(input);
+		const candidates: CliWorkspaceCommandCandidate[] = [];
+		for (const row of rows) {
+			if (getRuntimeDescriptor(row.agentRuntime)?.family !== "interactive-cli") continue;
+			const runtimeAppId = row.runtimeAppId?.trim() || "";
+			const appId =
+				runtimeAppId ||
+				row.agentRuntimeAppId?.trim() ||
+				agentRuntimeDedicatedAppId(row.agentSlug);
+			candidates.push({
+				sessionId: row.id,
+				userId: row.userId,
+				projectId: row.projectId,
+				appId,
+				invokeTarget: agentRuntimeInvokeTarget(appId),
+				runtimeSandboxName: row.runtimeSandboxName ?? null,
+				source: runtimeAppId ? "persisted" : "agent",
+				agentSlug: row.agentSlug,
+				agentRuntime: row.agentRuntime,
+			});
+		}
+		return candidates;
 	}
 
 	countActiveTriggeredWorkflowRuns(input: { statuses: WorkflowExecutionStatus[] }) {

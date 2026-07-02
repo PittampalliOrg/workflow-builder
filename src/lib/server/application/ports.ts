@@ -303,6 +303,67 @@ export interface PieceExecutionRepository {
 	getByIdempotencyKey(idempotencyKey: string): Promise<PieceExecutionReadModel | null>;
 }
 
+export type WorkflowBrowserArtifactStatus = "pending" | "completed" | "partial" | "failed";
+
+export type WorkflowBrowserCaptureStepInput = {
+	id?: string;
+	label?: string;
+	url?: string;
+	action?: string;
+	goal?: string;
+	title?: string;
+	waitForSelector?: string;
+	waitForText?: string;
+	delayMs?: number;
+	pauseMs?: number;
+	successCriteria?: string;
+	capturedAt?: string;
+	status?: "completed" | "failed";
+	screenshotStorageRef?: string;
+	error?: string;
+};
+
+export type WorkflowBrowserArtifactAssetInput = {
+	kind: "screenshot" | "trace" | "video" | "video-annotated" | "caption";
+	label: string;
+	payloadBase64: string;
+	contentType?: string;
+	fileName?: string;
+	stepId?: string;
+	storageRef?: string;
+};
+
+export type SaveWorkflowBrowserArtifactInput = {
+	workflowExecutionId: string;
+	workflowId: string;
+	nodeId: string;
+	workspaceRef?: string | null;
+	baseUrl: string;
+	status: WorkflowBrowserArtifactStatus;
+	metadata?: Record<string, unknown> | null;
+	steps: WorkflowBrowserCaptureStepInput[];
+	screenshots?: Omit<WorkflowBrowserArtifactAssetInput, "kind">[];
+	assets?: WorkflowBrowserArtifactAssetInput[];
+};
+
+export type WorkflowBrowserArtifactRecord = {
+	id: string;
+	workflowExecutionId: string;
+	workflowId: string;
+	nodeId: string;
+	workspaceRef: string | null;
+	artifactType: "capture_flow_v1";
+	artifactVersion: number;
+	status: WorkflowBrowserArtifactStatus;
+	manifestJson: Record<string, unknown>;
+	createdAt: Date;
+	updatedAt: Date;
+};
+
+export interface WorkflowBrowserArtifactStore {
+	save(input: SaveWorkflowBrowserArtifactInput): Promise<WorkflowBrowserArtifactRecord>;
+}
+
 export type ApiKeyRecord = {
 	id: string;
 	userId: string;
@@ -2107,6 +2168,10 @@ export interface CredentialStore {
 
 export interface SessionRepository {
 	getSession(id: string): Promise<SessionDetail | null>;
+	listCliWorkspaceSessionCandidates(input: {
+		executionId: string;
+		limit: number;
+	}): Promise<CliWorkspaceSessionCandidateRecord[]>;
 	findSessionIdByDaprInstanceId(instanceId: string): Promise<string | null>;
 	resolveSessionIdForProvisioningEvent(input: {
 		runtimeAppId?: string | null;
@@ -2116,6 +2181,29 @@ export interface SessionRepository {
 		sessionId: string,
 	): Promise<{ id: string; userId: string; projectId: string | null } | null>;
 }
+
+export type CliWorkspaceSessionCandidateRecord = {
+	id: string;
+	userId: string | null;
+	projectId: string | null;
+	runtimeAppId: string | null;
+	runtimeSandboxName: string | null;
+	agentSlug: string;
+	agentRuntime: string | null;
+	agentRuntimeAppId: string | null;
+};
+
+export type CliWorkspaceCommandCandidate = {
+	sessionId: string;
+	userId: string | null;
+	projectId: string | null;
+	appId: string;
+	invokeTarget: string;
+	runtimeSandboxName: string | null;
+	source: "persisted" | "agent";
+	agentSlug: string;
+	agentRuntime: string | null;
+};
 
 export type AppendSessionEventInput = {
 	type: string;
@@ -2361,6 +2449,9 @@ export interface WorkflowDataService {
 	getPieceExecutionByIdempotencyKey(
 		idempotencyKey: string,
 	): Promise<PieceExecutionReadModel | null>;
+	saveWorkflowBrowserArtifact(
+		input: SaveWorkflowBrowserArtifactInput,
+	): Promise<WorkflowBrowserArtifactRecord>;
 	validateApiKeyForUser(input: {
 		authorizationHeader: string | null;
 		userId: string;
@@ -2381,6 +2472,10 @@ export interface WorkflowDataService {
 		instanceId: string,
 	): Promise<WorkflowExecutionRecord | null>;
 	getRunningWorkflowExecution(workflowId: string): Promise<{ id: string; status: string } | null>;
+	listCliWorkspaceCommandCandidates(input: {
+		executionId: string;
+		limit: number;
+	}): Promise<CliWorkspaceCommandCandidate[]>;
 	countActiveTriggeredWorkflowRuns(input: {
 		statuses: WorkflowExecutionStatus[];
 	}): Promise<number>;

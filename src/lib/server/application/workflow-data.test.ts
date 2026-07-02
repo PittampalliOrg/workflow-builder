@@ -18,6 +18,7 @@ import type {
 	SessionEventLog,
 	SessionRepository,
 	WorkflowDefinition,
+	WorkflowBrowserArtifactStore,
 	WorkflowDefinitionRepository,
 	WorkflowFileStore,
 	PieceExecutionRepository,
@@ -457,6 +458,7 @@ function fakeSessionEventNotifications(): WorkflowSessionEventNotificationSource
 function fakeSessions(): SessionRepository {
 	return {
 		getSession: vi.fn(async () => null),
+		listCliWorkspaceSessionCandidates: vi.fn(async () => []),
 		findSessionIdByDaprInstanceId: vi.fn(async () => "session-1"),
 		resolveSessionIdForProvisioningEvent: vi.fn(async () => "session-1"),
 		getSessionFileOwner: vi.fn(async () => ({
@@ -683,6 +685,8 @@ function makeService(options: {
 	byName?: WorkflowDefinition | null;
 	workflowExecutions?: Partial<WorkflowExecutionRepository>;
 	pieceExecutions?: PieceExecutionRepository;
+	browserArtifacts?: WorkflowBrowserArtifactStore;
+	sessions?: SessionRepository;
 }) {
 	const workflowDefinitions = {
 		getById: vi.fn(async () => options.byId ?? null),
@@ -713,6 +717,8 @@ function makeService(options: {
 		workspaceProjects: fakeWorkspaceProjects(),
 		pieceCatalog: fakePieceCatalog(),
 		pieceExecutions: options.pieceExecutions,
+		sessions: options.sessions,
+		browserArtifacts: options.browserArtifacts,
 		benchmarkBrowser: fakeBenchmarkBrowser(),
 		workflowExecutions,
 		sessionEventNotifications: fakeSessionEventNotifications(),
@@ -1049,6 +1055,93 @@ describe("ApplicationWorkflowDataService", () => {
 			pieceExecution,
 		);
 		expect(pieceExecutions.getByIdempotencyKey).toHaveBeenCalledWith("wf:exec:task");
+	});
+
+	it("resolves interactive CLI workspace command candidates through session ports", async () => {
+		const sessions = {
+			...fakeSessions(),
+			listCliWorkspaceSessionCandidates: vi.fn(async () => [
+				{
+					id: "session-codex",
+					userId: "user-1",
+					projectId: "project-1",
+					runtimeAppId: "agent-session-codex",
+					runtimeSandboxName: "agent-host-agent-session-codex",
+					agentSlug: "codex",
+					agentRuntime: "codex-cli",
+					agentRuntimeAppId: null,
+				},
+				{
+					id: "session-durable",
+					userId: "user-1",
+					projectId: "project-1",
+					runtimeAppId: "agent-session-durable",
+					runtimeSandboxName: "agent-host-agent-session-durable",
+					agentSlug: "durable",
+					agentRuntime: "dapr-agent-py",
+					agentRuntimeAppId: null,
+				},
+			]),
+		} satisfies SessionRepository;
+		const { service } = makeService({ sessions });
+
+		await expect(
+			service.listCliWorkspaceCommandCandidates({ executionId: "exec-1", limit: 8 }),
+		).resolves.toEqual([
+			{
+				sessionId: "session-codex",
+				userId: "user-1",
+				projectId: "project-1",
+				appId: "agent-session-codex",
+				invokeTarget: "agent-session-codex",
+				runtimeSandboxName: "agent-host-agent-session-codex",
+				source: "persisted",
+				agentSlug: "codex",
+				agentRuntime: "codex-cli",
+			},
+		]);
+		expect(sessions.listCliWorkspaceSessionCandidates).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			limit: 8,
+		});
+	});
+
+	it("delegates browser artifact saves to the browser artifact store", async () => {
+		const saved = {
+			id: "bwf_1",
+			workflowExecutionId: "exec-1",
+			workflowId: "wf-1",
+			nodeId: "publish_shot",
+			workspaceRef: null,
+			artifactType: "capture_flow_v1" as const,
+			artifactVersion: 1,
+			status: "completed" as const,
+			manifestJson: {},
+			createdAt: new Date("2026-01-01T00:00:00.000Z"),
+			updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+		};
+		const browserArtifacts = {
+			save: vi.fn(async () => saved),
+		} satisfies WorkflowBrowserArtifactStore;
+		const { service } = makeService({ browserArtifacts });
+		const input = {
+			workflowExecutionId: "exec-1",
+			workflowId: "wf-1",
+			nodeId: "publish_shot",
+			baseUrl: "",
+			status: "completed" as const,
+			steps: [],
+			assets: [
+				{
+					kind: "video" as const,
+					label: "Dashboard walkthrough",
+					payloadBase64: "AAAA",
+				},
+			],
+		};
+
+		await expect(service.saveWorkflowBrowserArtifact(input)).resolves.toEqual(saved);
+		expect(browserArtifacts.save).toHaveBeenCalledWith(input);
 	});
 
 	it("loads user profile data through the user profile port", async () => {

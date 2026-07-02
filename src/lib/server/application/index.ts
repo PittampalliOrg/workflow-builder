@@ -20,6 +20,7 @@ import {
 	PostgresUsageReportingRepository,
 	PostgresUserProfileRepository,
 	PostgresWorkflowAgentRunStore,
+	PostgresWorkflowBrowserArtifactStore,
 	PostgresWorkspaceSessionStore,
 	PostgresWorkflowPlanArtifactStore,
 	PostgresWorkflowDefinitionRepository,
@@ -82,6 +83,7 @@ export function getApplicationAdapters(
 	let workspaceProjects: PostgresWorkspaceProjectRepository | undefined;
 	let pieceCatalog: PostgresPieceCatalogRepository | undefined;
 	let pieceExecutions: PostgresPieceExecutionRepository | undefined;
+	let browserArtifacts: PostgresWorkflowBrowserArtifactStore | undefined;
 	let codeFunctionCatalog: PostgresCodeFunctionCatalogRepository | undefined;
 	let benchmarkBrowser: PostgresBenchmarkBrowserRepository | undefined;
 	let workflowExecutions: PostgresWorkflowExecutionRepository | undefined;
@@ -124,6 +126,8 @@ export function getApplicationAdapters(
 		(pieceCatalog ??= new PostgresPieceCatalogRepository(getDatabase()));
 	const getPieceExecutions = () =>
 		(pieceExecutions ??= new PostgresPieceExecutionRepository(getDatabase()));
+	const getBrowserArtifacts = () =>
+		(browserArtifacts ??= new PostgresWorkflowBrowserArtifactStore(getDatabase()));
 	const getCodeFunctionCatalog = () =>
 		(codeFunctionCatalog ??= new PostgresCodeFunctionCatalogRepository(getDatabase()));
 	const getBenchmarkBrowser = () =>
@@ -181,6 +185,7 @@ export function getApplicationAdapters(
 				workspaceProjects: getWorkspaceProjects(),
 				pieceCatalog: getPieceCatalog(),
 				pieceExecutions: getPieceExecutions(),
+				browserArtifacts: getBrowserArtifacts(),
 				codeFunctionCatalog: getCodeFunctionCatalog(),
 				benchmarkBrowser: getBenchmarkBrowser(),
 				workflowExecutions: getWorkflowExecutions(),

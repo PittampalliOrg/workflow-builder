@@ -1,11 +1,12 @@
 import type {
 	AppendSessionEventInput,
+	CliWorkspaceSessionCandidateRecord,
 	SessionEventLog,
 	SessionRepository,
 } from "$lib/server/application/ports";
-import { eq, or } from "drizzle-orm";
+import { and, desc, eq, isNotNull, or } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
-import { sessions } from "$lib/server/db/schema";
+import { agents, sessions } from "$lib/server/db/schema";
 import { appendEvent } from "$lib/server/sessions/events";
 import { getSession } from "$lib/server/sessions/registry";
 import type { SessionDetail, SessionEventEnvelope } from "$lib/types/sessions";
@@ -22,6 +23,37 @@ export class CurrentSessionRepository implements SessionRepository {
 
 	getSession(id: string): Promise<SessionDetail | null> {
 		return getSession(id);
+	}
+
+	async listCliWorkspaceSessionCandidates(input: {
+		executionId: string;
+		limit: number;
+	}): Promise<CliWorkspaceSessionCandidateRecord[]> {
+		const executionId = input.executionId.trim();
+		if (!executionId) return [];
+		const limit = Math.max(1, Math.min(Math.trunc(input.limit || 8), 50));
+		const database = requireDb(this.database);
+		return database
+			.select({
+				id: sessions.id,
+				userId: sessions.userId,
+				projectId: sessions.projectId,
+				runtimeAppId: sessions.runtimeAppId,
+				runtimeSandboxName: sessions.runtimeSandboxName,
+				agentSlug: agents.slug,
+				agentRuntime: agents.runtime,
+				agentRuntimeAppId: agents.runtimeAppId,
+			})
+			.from(sessions)
+			.innerJoin(agents, eq(agents.id, sessions.agentId))
+			.where(
+				and(
+					eq(sessions.workflowExecutionId, executionId),
+					isNotNull(sessions.runtimeAppId),
+				),
+			)
+			.orderBy(desc(sessions.createdAt))
+			.limit(limit);
 	}
 
 	async findSessionIdByDaprInstanceId(instanceId: string): Promise<string | null> {

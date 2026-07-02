@@ -28,22 +28,14 @@ import { json, error } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import http from "node:http";
 import https from "node:https";
-import { and, desc, eq, isNotNull } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import { sessions, workflowExecutions } from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
 import { requireInternal } from "$lib/server/internal-auth";
-import {
-	isInteractiveCliSession,
-	resolveSessionRuntimeTarget,
-} from "$lib/server/sessions/runtime-target";
 import {
 	waitForAgentWorkflowHostAppReady,
 	maybeProvisionAgentWorkflowHost,
 	sessionHostAppId,
 } from "$lib/server/sessions/agent-workflow-host";
 import { resolveWorkflowGithubToken } from "$lib/server/workflows/github-token";
-import { createFile } from "$lib/server/files/registry";
-import { saveBrowserArtifact } from "$lib/server/browser-artifacts";
 import type { AgentConfig } from "$lib/types/agents";
 import { env } from "$env/dynamic/private";
 
@@ -78,6 +70,10 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 600_000;
 // Slack added to the socket idle timeout above the subprocess budget, so the
 // cli-agent-py subprocess timeout (clean result) fires before the HTTP socket.
 const HTTP_TIMEOUT_SLACK_MS = 60_000;
+
+function isDatabaseNotConfigured(err: unknown): boolean {
+	return err instanceof Error && err.message.includes("Database not configured");
+}
 
 // POST to cli-agent-py over node http(s) with a long socket-idle timeout. We do
 // NOT use the global undici fetch here: cli-agent-py holds the connection IDLE
@@ -203,8 +199,8 @@ async function readFileBytes(
 
 export const POST: RequestHandler = async ({ params, request }) => {
 	requireInternal(request);
-	if (!db) return error(503, "Database not configured");
 	const executionId = params.executionId;
+	const { workflowData } = getApplicationAdapters();
 
 	let body: {
 		command?: unknown;
@@ -247,27 +243,37 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	const artifactNodeId =
 		typeof body.nodeId === "string" && body.nodeId.trim() ? body.nodeId.trim() : "publish_shot";
 
+	let execution:
+		| Awaited<ReturnType<typeof workflowData.getExecutionById>>
+		| undefined;
+	async function loadExecution() {
+		if (execution !== undefined) return execution;
+		try {
+			execution = await workflowData.getExecutionById(executionId);
+		} catch (err) {
+			if (isDatabaseNotConfigured(err)) throw error(503, "Database not configured");
+			throw err;
+		}
+		return execution;
+	}
+
 	// Resolve the execution's most-recent interactive-cli session with a live pod.
-	const rows = await db
-		.select({ id: sessions.id, userId: sessions.userId })
-		.from(sessions)
-		.where(
-			and(
-				eq(sessions.workflowExecutionId, executionId),
-				isNotNull(sessions.runtimeAppId),
-			),
-		)
-		.orderBy(desc(sessions.createdAt))
-		.limit(8);
+	let rows;
+	try {
+		rows = await workflowData.listCliWorkspaceCommandCandidates({
+			executionId,
+			limit: 8,
+		});
+	} catch (err) {
+		if (isDatabaseNotConfigured(err)) return error(503, "Database not configured");
+		throw err;
+	}
 
 	let baseUrl: string | null = null;
 	let ownerUserId: string | null = null;
 	for (const row of rows) {
-		if (!(await isInteractiveCliSession(row.id))) continue;
-		const rt = await resolveSessionRuntimeTarget(row.id);
-		if (!rt?.appId) continue;
 		try {
-			const ready = await waitForAgentWorkflowHostAppReady({ agentAppId: rt.appId });
+			const ready = await waitForAgentWorkflowHostAppReady({ agentAppId: row.appId });
 			if (ready?.baseUrl) {
 				baseUrl = ready.baseUrl;
 				ownerUserId = row.userId ?? null;
@@ -287,17 +293,13 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	// recreated) on repeat calls so gate/read_verdict/pr reuse one pod.
 	if (!baseUrl) {
 		// The shared JuiceFS subtree is keyed by the CANONICAL orchestrator
-		// instance id (workflowExecutions.daprInstanceId = `sw-<name>-exec-<id>`) —
+		// instance id (`sw-<name>-exec-<id>`) —
 		// the SAME key durable/run agents (workspaceRef `${ .runtime.executionId }`)
 		// and the Files-tab webdav reader use. Keying the helper by the bare
 		// executionId would land it on a DIFFERENT subtree than the agents
 		// (clone/gate/read_contract couldn't see agent files; the Files tab would be
 		// empty). Fall back to the bare id only if the instance id isn't stamped.
-		const [execRow] = await db
-			.select({ daprInstanceId: workflowExecutions.daprInstanceId })
-			.from(workflowExecutions)
-			.where(eq(workflowExecutions.id, executionId))
-			.limit(1);
+		const execRow = await loadExecution();
 		const sharedWorkspaceKey = execRow?.daprInstanceId ?? executionId;
 		const helperSessionId = `${executionId}__cliws`;
 		const helperAppId = sessionHostAppId(helperSessionId);
@@ -359,15 +361,11 @@ export const POST: RequestHandler = async ({ params, request }) => {
 						? body.workflowId.trim()
 						: "";
 				if (!workflowId) {
-					const row = await db
-						.select({ workflowId: workflowExecutions.workflowId })
-						.from(workflowExecutions)
-						.where(eq(workflowExecutions.id, executionId))
-						.limit(1);
-					workflowId = row[0]?.workflowId ?? "";
+					const row = await loadExecution();
+					workflowId = row?.workflowId ?? "";
 				}
 				if (workflowId) {
-					await saveBrowserArtifact({
+					await workflowData.saveWorkflowBrowserArtifact({
 						workflowExecutionId: executionId,
 						workflowId,
 						nodeId: artifactNodeId,
@@ -406,7 +404,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		if (img.ok) {
 			try {
 				const name = readFile.split("/").pop() || "screenshot.png";
-				const created = await createFile({
+				const created = await workflowData.createWorkflowFile({
 					userId: ownerUserId ?? "system",
 					purpose: "output",
 					scopeId: executionId,

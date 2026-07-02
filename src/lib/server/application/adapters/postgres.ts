@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { nanoid } from "nanoid";
 import {
 	and,
 	asc,
@@ -53,6 +54,8 @@ import {
 	sessions,
 	workflowConnectionRefs,
 	workflowArtifacts,
+	workflowBrowserArtifacts,
+	workflowBrowserArtifactBlobPayloads,
 	workflowAgentRuns,
 	workflowExecutionLogs,
 	workflowExecutions,
@@ -152,6 +155,11 @@ import type {
 	WorkflowExecutionUsageMetricsRow,
 	WorkflowExecutionLogRecord,
 	WorkflowSessionEventNotificationSource,
+	SaveWorkflowBrowserArtifactInput,
+	WorkflowBrowserArtifactAssetInput,
+	WorkflowBrowserArtifactRecord,
+	WorkflowBrowserArtifactStore,
+	WorkflowBrowserCaptureStepInput,
 	WorkflowPlanArtifactInput,
 	WorkflowPlanArtifactRecord,
 	WorkflowPlanArtifactStore,
@@ -2510,6 +2518,180 @@ export class PostgresPieceExecutionRepository implements PieceExecutionRepositor
 				row.status === "completed" || row.status === "failed"
 					? row.updatedAt
 					: null,
+		};
+	}
+}
+
+const BROWSER_ARTIFACT_BLOB_PREFIX = "workflow-browser-artifacts";
+
+function browserArtifactContentType(asset: WorkflowBrowserArtifactAssetInput): string {
+	if (asset.contentType?.trim()) return asset.contentType.trim();
+	if (asset.kind === "trace") return "application/zip";
+	if (asset.kind === "video" || asset.kind === "video-annotated") return "video/webm";
+	if (asset.kind === "caption") return "text/vtt; charset=utf-8";
+	return "image/png";
+}
+
+function browserArtifactExtension(contentType: string, fileName?: string): string {
+	if (fileName?.includes(".")) return fileName.split(".").pop() || "bin";
+	if (contentType === "application/zip") return "zip";
+	if (contentType.startsWith("text/vtt")) return "vtt";
+	if (contentType.startsWith("video/")) return "webm";
+	if (contentType === "image/jpeg") return "jpg";
+	return "png";
+}
+
+function browserArtifactStorageRef(input: {
+	workflowExecutionId: string;
+	artifactId: string;
+	kind: string;
+	index: number;
+	contentType: string;
+	fileName?: string;
+}): string {
+	const safeExecution = input.workflowExecutionId.replace(/[^a-zA-Z0-9._-]/g, "-");
+	const ext = browserArtifactExtension(input.contentType, input.fileName);
+	return `${BROWSER_ARTIFACT_BLOB_PREFIX}/${safeExecution}/${input.artifactId}/${input.kind}-${input.index + 1}.${ext}`;
+}
+
+function browserArtifactStep(input: WorkflowBrowserCaptureStepInput, index: number) {
+	return {
+		id: typeof input.id === "string" && input.id.trim() ? input.id.trim() : `step-${index + 1}`,
+		label:
+			typeof input.label === "string" && input.label.trim()
+				? input.label.trim()
+				: `Step ${index + 1}`,
+		url: typeof input.url === "string" ? input.url : "",
+		...(typeof input.action === "string" && input.action.trim()
+			? { action: input.action.trim() }
+			: {}),
+		...(typeof input.goal === "string" && input.goal.trim()
+			? { goal: input.goal.trim() }
+			: {}),
+		...(typeof input.title === "string" && input.title.trim()
+			? { title: input.title.trim() }
+			: {}),
+		...(typeof input.waitForSelector === "string" && input.waitForSelector.trim()
+			? { waitForSelector: input.waitForSelector.trim() }
+			: {}),
+		...(typeof input.waitForText === "string" && input.waitForText.trim()
+			? { waitForText: input.waitForText.trim() }
+			: {}),
+		...(typeof input.delayMs === "number" && Number.isFinite(input.delayMs)
+			? { delayMs: input.delayMs }
+			: {}),
+		...(typeof input.pauseMs === "number" && Number.isFinite(input.pauseMs)
+			? { pauseMs: input.pauseMs }
+			: {}),
+		...(typeof input.successCriteria === "string" && input.successCriteria.trim()
+			? { successCriteria: input.successCriteria.trim() }
+			: {}),
+		...(typeof input.capturedAt === "string" && input.capturedAt.trim()
+			? { capturedAt: input.capturedAt.trim() }
+			: {}),
+		status: input.status === "failed" ? "failed" : "completed",
+		...(typeof input.screenshotStorageRef === "string" && input.screenshotStorageRef.trim()
+			? { screenshotStorageRef: input.screenshotStorageRef.trim() }
+			: {}),
+		...(typeof input.error === "string" && input.error.trim()
+			? { error: input.error.trim() }
+			: {}),
+	};
+}
+
+export class PostgresWorkflowBrowserArtifactStore implements WorkflowBrowserArtifactStore {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async save(input: SaveWorkflowBrowserArtifactInput): Promise<WorkflowBrowserArtifactRecord> {
+		const artifactId = `bwf_${nanoid(12)}`;
+		const now = new Date().toISOString();
+		const steps = input.steps.map((step, index) => browserArtifactStep(step, index));
+		const manifest: Record<string, unknown> = {
+			baseUrl: input.baseUrl,
+			startedAt: now,
+			completedAt: new Date().toISOString(),
+			status: input.status,
+			steps,
+			assets: [],
+			metadata: input.metadata ?? null,
+		};
+		const screenshotAssets = (input.screenshots ?? []).map((asset) => ({
+			...asset,
+			kind: "screenshot" as const,
+		}));
+		const allAssets: WorkflowBrowserArtifactAssetInput[] = [
+			...screenshotAssets,
+			...(input.assets ?? []),
+		];
+		const manifestAssets = manifest.assets as Array<Record<string, unknown>>;
+		for (const [index, asset] of allAssets.entries()) {
+			const contentType = browserArtifactContentType(asset);
+			const storageRef =
+				asset.storageRef ||
+				browserArtifactStorageRef({
+					workflowExecutionId: input.workflowExecutionId,
+					artifactId,
+					kind: asset.kind,
+					index,
+					contentType,
+					fileName: asset.fileName,
+				});
+			await this.database
+				.insert(workflowBrowserArtifactBlobPayloads)
+				.values({
+					storageRef,
+					payloadText: asset.payloadBase64,
+					contentType,
+				})
+				.onConflictDoUpdate({
+					target: workflowBrowserArtifactBlobPayloads.storageRef,
+					set: {
+						payloadText: asset.payloadBase64,
+						contentType,
+					},
+				});
+			if (asset.kind === "screenshot") {
+				const stepIndex = steps.findIndex((step) => step.id === asset.stepId);
+				if (stepIndex >= 0 && !("screenshotStorageRef" in steps[stepIndex])) {
+					steps[stepIndex].screenshotStorageRef = storageRef;
+				}
+			}
+			manifestAssets.push({
+				kind: asset.kind,
+				label: asset.label,
+				storageRef,
+				contentType,
+				...(asset.fileName ? { fileName: asset.fileName } : {}),
+				...(asset.stepId ? { stepId: asset.stepId } : {}),
+			});
+		}
+		const [row] = await this.database
+			.insert(workflowBrowserArtifacts)
+			.values({
+				id: artifactId,
+				workflowExecutionId: input.workflowExecutionId,
+				workflowId: input.workflowId,
+				nodeId: input.nodeId,
+				workspaceRef: input.workspaceRef ?? null,
+				artifactType: "capture_flow_v1",
+				artifactVersion: 1,
+				status: input.status,
+				manifestJson: manifest,
+			})
+			.returning();
+		if (!row) throw new Error("Failed to save workflow browser artifact");
+		return {
+			id: row.id,
+			workflowExecutionId: row.workflowExecutionId,
+			workflowId: row.workflowId,
+			nodeId: row.nodeId,
+			workspaceRef: row.workspaceRef,
+			artifactType: row.artifactType,
+			artifactVersion: row.artifactVersion,
+			status: row.status,
+			manifestJson: row.manifestJson,
+			createdAt: row.createdAt,
+			updatedAt: row.updatedAt,
 		};
 	}
 }
