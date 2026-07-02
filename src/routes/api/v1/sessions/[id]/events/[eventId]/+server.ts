@@ -1,6 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { getEvent } from "$lib/server/sessions/events";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * Fetch a single session event with the full (un-stripped) payload. The list
@@ -9,7 +9,12 @@ import { getEvent } from "$lib/server/sessions/events";
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const envelope = await getEvent(params.id, params.eventId);
+	const envelope = await getApplicationAdapters().workflowData.getSessionEvent({
+		sessionId: params.id,
+		eventId: params.eventId,
+		projectId: locals.session.projectId ?? null,
+		userId: locals.session.userId,
+	});
 	if (!envelope) return error(404, "Event not found");
 	return json({ event: envelope });
 };

@@ -12,6 +12,7 @@ import type {
 	SessionProvisioningContext,
 	SessionProvisioningReader,
 	SessionRepository,
+	SessionRuntimeConfigReader,
 	SessionRuntimeEventRaiser,
 	SessionTraceLifecycleStore,
 	SessionWorkflowContext,
@@ -31,6 +32,7 @@ import {
 import { appendEvent, rowToEnvelope } from "$lib/server/sessions/events";
 import { createSession, getSession } from "$lib/server/sessions/registry";
 import { getSessionProvisioningPreferObserver } from "$lib/server/sessions/provisioning";
+import { getSessionRuntimeConfig } from "$lib/server/sessions/runtime-config";
 import { raiseSessionUserEvents } from "$lib/server/sessions/spawn";
 import type { SessionDetail, SessionEventEnvelope, UserEvent } from "$lib/types/sessions";
 
@@ -495,12 +497,41 @@ export class KubernetesSessionProvisioningReader implements SessionProvisioningR
 	}
 }
 
+export class DefaultSessionRuntimeConfigReader implements SessionRuntimeConfigReader {
+	getSessionRuntimeConfig(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}) {
+		return getSessionRuntimeConfig(input.sessionId, {
+			projectId: input.projectId ?? null,
+		});
+	}
+}
+
 export class PostgresSessionEventLog implements SessionEventLog {
 	appendSessionEvent(
 		sessionId: string,
 		event: AppendSessionEventInput,
 	): Promise<SessionEventEnvelope> {
 		return appendEvent(sessionId, event);
+	}
+
+	async getSessionEvent(input: {
+		sessionId: string;
+		eventId: string;
+	}): Promise<SessionEventEnvelope | null> {
+		const database = requireDb();
+		const [row] = await database
+			.select()
+			.from(sessionEvents)
+			.where(
+				and(
+					eq(sessionEvents.sessionId, input.sessionId),
+					eq(sessionEvents.id, input.eventId),
+				),
+			)
+			.limit(1);
+		return row ? rowToEnvelope(row, { preview: false }) : null;
 	}
 
 	async listSessionEvents(

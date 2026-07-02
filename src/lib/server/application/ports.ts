@@ -9,6 +9,7 @@ import type {
 	DevPreviewInfo,
 	ProvisionDevPreviewParams,
 } from "$lib/server/workflows/dev-preview";
+import type { RuntimeConfigCloudEvent } from "$lib/server/sessions/runtime-config";
 import type {
 	BenchmarkInstanceRow,
 	RepoFacet,
@@ -2332,6 +2333,13 @@ export interface SessionProvisioningReader {
 	}): Promise<SessionProvisioningReadModel>;
 }
 
+export interface SessionRuntimeConfigReader {
+	getSessionRuntimeConfig(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<RuntimeConfigCloudEvent | null>;
+}
+
 export type SessionContextUsageEventStats = {
 	total: number;
 	totalBytes: number;
@@ -2626,6 +2634,10 @@ export interface SessionEventLog {
 		sessionId: string,
 		event: AppendSessionEventInput,
 	): Promise<SessionEventEnvelope>;
+	getSessionEvent(input: {
+		sessionId: string;
+		eventId: string;
+	}): Promise<SessionEventEnvelope | null>;
 	listSessionEvents(
 		sessionId: string,
 		input?: ListSessionEventsInput,
@@ -2920,6 +2932,11 @@ export interface WorkflowDataService {
 		sessionId: string;
 		projectId?: string | null;
 	}): Promise<SessionBrowserTarget | null>;
+	getSessionRuntimeConfig(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}): Promise<RuntimeConfigCloudEvent | null>;
 	saveWorkflowBrowserArtifact(
 		input: SaveWorkflowBrowserArtifactInput,
 	): Promise<WorkflowBrowserArtifactRecord>;
@@ -3091,6 +3108,12 @@ export interface WorkflowDataService {
 		sessionId: string,
 		event: AppendSessionEventInput,
 	): Promise<SessionEventEnvelope>;
+	getSessionEvent(input: {
+		sessionId: string;
+		eventId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}): Promise<SessionEventEnvelope | null>;
 	appendSessionUserEvents(input: {
 		sessionId: string;
 		projectId?: string | null;

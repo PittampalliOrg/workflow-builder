@@ -51,6 +51,7 @@ import {
 import {
 	CurrentSessionRepository,
 	DaprSessionRuntimeEventRaiser,
+	DefaultSessionRuntimeConfigReader,
 	KubernetesSessionProvisioningReader,
 	LegacyMlflowSessionTraceLifecycle,
 	PostgresSessionEventLog,
@@ -108,6 +109,7 @@ export function getApplicationAdapters(
 	let sessions: CurrentSessionRepository | undefined;
 	let sessionProvisioning: KubernetesSessionProvisioningReader | undefined;
 	let sessionEvents: PostgresSessionEventLog | undefined;
+	let sessionRuntimeConfigs: DefaultSessionRuntimeConfigReader | undefined;
 	let sessionRuntimeEvents: DaprSessionRuntimeEventRaiser | undefined;
 	let sessionTraceLifecycle: LegacyMlflowSessionTraceLifecycle | undefined;
 	let peerAgentResolver: RegistryPeerAgentResolver | undefined;
@@ -173,6 +175,8 @@ export function getApplicationAdapters(
 	const getSessionProvisioning = () =>
 		(sessionProvisioning ??= new KubernetesSessionProvisioningReader());
 	const getSessionEvents = () => (sessionEvents ??= new PostgresSessionEventLog());
+	const getSessionRuntimeConfigs = () =>
+		(sessionRuntimeConfigs ??= new DefaultSessionRuntimeConfigReader());
 	const getSessionRuntimeEvents = () =>
 		(sessionRuntimeEvents ??= new DaprSessionRuntimeEventRaiser());
 	const getSessionTraceLifecycle = () =>
@@ -213,6 +217,7 @@ export function getApplicationAdapters(
 			sessions: getSessions(),
 			sessionProvisioning: getSessionProvisioning(),
 			sessionEvents: getSessionEvents(),
+			sessionRuntimeConfigs: getSessionRuntimeConfigs(),
 			sessionRuntimeEvents: getSessionRuntimeEvents(),
 			sessionTraceLifecycle: getSessionTraceLifecycle(),
 			peerAgentResolver: getPeerAgentResolver(),

@@ -126,6 +126,7 @@ import type {
 	SessionEventLog,
 	SessionExperimentAgentStore,
 	SessionRepository,
+	SessionRuntimeConfigReader,
 	SessionRuntimeEventRaiser,
 	SessionTraceLifecycleStore,
 	TraceLineageStore,
@@ -758,6 +759,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			sessions?: SessionRepository;
 			sessionProvisioning?: SessionProvisioningReader;
 			sessionEvents?: SessionEventLog;
+			sessionRuntimeConfigs?: SessionRuntimeConfigReader;
 			sessionRuntimeEvents?: SessionRuntimeEventRaiser;
 			codeCheckpoints?: WorkflowCodeCheckpointStore;
 			evaluationArtifacts?: EvaluationArtifactStore;
@@ -820,6 +822,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Session event log not configured");
 		}
 		return this.deps.sessionEvents;
+	}
+
+	private requireSessionRuntimeConfigs(): SessionRuntimeConfigReader {
+		if (!this.deps.sessionRuntimeConfigs) {
+			throw new Error("Session runtime config reader not configured");
+		}
+		return this.deps.sessionRuntimeConfigs;
 	}
 
 	private requireSessionRuntimeEvents(): SessionRuntimeEventRaiser {
@@ -3459,6 +3468,19 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.requireSessions().getBrowserSessionTarget(input);
 	}
 
+	async getSessionRuntimeConfig(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}) {
+		const session = await this.getScopedSession(input);
+		if (!session) return null;
+		return this.requireSessionRuntimeConfigs().getSessionRuntimeConfig({
+			sessionId: input.sessionId,
+			projectId: input.projectId ?? session.projectId ?? null,
+		});
+	}
+
 	saveWorkflowBrowserArtifact(
 		input: SaveWorkflowBrowserArtifactInput,
 	): Promise<WorkflowBrowserArtifactRecord> {
@@ -3932,6 +3954,20 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	listSessionEvents(sessionId: string, input?: ListSessionEventsInput) {
 		return this.requireSessionEvents().listSessionEvents(sessionId, input);
+	}
+
+	async getSessionEvent(input: {
+		sessionId: string;
+		eventId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}) {
+		const session = await this.getScopedSession(input);
+		if (!session) return null;
+		return this.requireSessionEvents().getSessionEvent({
+			sessionId: input.sessionId,
+			eventId: input.eventId,
+		});
 	}
 
 	listenSessionEventNotifications(

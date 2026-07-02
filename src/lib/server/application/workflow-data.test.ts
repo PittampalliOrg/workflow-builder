@@ -22,6 +22,7 @@ import type {
 	SessionExperimentAgentStore,
 	SessionProvisioningReader,
 	SessionRepository,
+	SessionRuntimeConfigReader,
 	SessionRuntimeEventRaiser,
 	SessionTraceLifecycleStore,
 	WorkflowDefinition,
@@ -43,6 +44,7 @@ import type {
 	WorkspaceSessionStore,
 } from "$lib/server/application/ports";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
+import type { RuntimeConfigCloudEvent } from "$lib/server/sessions/runtime-config";
 import { createDefaultAgentConfig } from "$lib/types/agents";
 
 const dynamicPrivateEnv = vi.hoisted(() => ({} as Record<string, string | undefined>));
@@ -572,7 +574,55 @@ function fakeSessionEvents(): SessionEventLog {
 			createdAt: "2026-01-01T00:00:00.000Z",
 			timestamp: "2026-01-01T00:00:00.000Z",
 		})),
+		getSessionEvent: vi.fn(async (input) => ({
+			id: input.eventId,
+			sessionId: input.sessionId,
+			sequence: 1,
+			type: "user.message",
+			data: { content: "full payload" },
+			processedAt: null,
+			sourceEventId: null,
+			producerId: null,
+			producerEpoch: null,
+			createdAt: "2026-01-01T00:00:00.000Z",
+			timestamp: "2026-01-01T00:00:00.000Z",
+		})),
 		listSessionEvents: vi.fn(async () => []),
+	};
+}
+
+function fakeSessionRuntimeConfigs(): SessionRuntimeConfigReader {
+	return {
+		getSessionRuntimeConfig: vi.fn(async (input) => {
+			const event = {
+				specversion: "1.0",
+				id: `runtime-config:${input.sessionId}`,
+				source: "urn:test",
+				type: "io.workflow-builder.session.runtime_config.v1",
+				subject: `sessions/${input.sessionId}/turns/0`,
+				datacontenttype: "application/json",
+				data: {
+					schemaVersion: "workflow-builder.agent_runtime_config.v1",
+					source: "settings",
+					sessionId: input.sessionId,
+					instanceId: input.sessionId,
+					turn: 0,
+					configRevision: 0,
+					configHash: "config-hash",
+					agent: {},
+					llm: {},
+					execution: {},
+					tools: {},
+					mcp: {},
+					skills: [],
+					instructions: {},
+					mlflow: {},
+					dapr: {},
+					attributes: {},
+				},
+			} satisfies RuntimeConfigCloudEvent;
+			return event;
+		}),
 	};
 }
 
@@ -882,6 +932,7 @@ function makeService(options: {
 	sessions?: SessionRepository;
 	sessionProvisioning?: SessionProvisioningReader;
 	sessionEvents?: SessionEventLog;
+	sessionRuntimeConfigs?: SessionRuntimeConfigReader;
 	sessionRuntimeEvents?: SessionRuntimeEventRaiser;
 	codeCheckpoints?: WorkflowCodeCheckpointStore;
 	evaluationArtifacts?: EvaluationArtifactStore;
@@ -925,6 +976,8 @@ function makeService(options: {
 		benchmarkRuns: options.benchmarkRuns ?? fakeBenchmarkRuns(),
 		workflowExecutions,
 		sessionEvents: options.sessionEvents,
+		sessionRuntimeConfigs:
+			options.sessionRuntimeConfigs ?? fakeSessionRuntimeConfigs(),
 		sessionRuntimeEvents:
 			options.sessionRuntimeEvents ?? fakeSessionRuntimeEvents(),
 		sessionProvisioning: options.sessionProvisioning,
@@ -2054,6 +2107,81 @@ describe("ApplicationWorkflowDataService", () => {
 		).resolves.toBe(false);
 		expect(sessions.archiveSession).toHaveBeenCalledTimes(1);
 		expect(sessions.deleteSession).toHaveBeenCalledTimes(1);
+	});
+
+	it("loads a full session event through scoped event-log ports", async () => {
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => ({
+				id: "session-1",
+				projectId: "project-1",
+			}) as Awaited<ReturnType<SessionRepository["getSession"]>>),
+		} satisfies SessionRepository;
+		const sessionEvents = fakeSessionEvents();
+		const { service } = makeService({ sessions, sessionEvents });
+
+		await expect(
+			service.getSessionEvent({
+				sessionId: "session-1",
+				eventId: "event-full",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual(
+			expect.objectContaining({
+				id: "event-full",
+				sessionId: "session-1",
+				data: { content: "full payload" },
+			}),
+		);
+		expect(sessionEvents.getSessionEvent).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			eventId: "event-full",
+		});
+
+		await expect(
+			service.getSessionEvent({
+				sessionId: "session-1",
+				eventId: "event-blocked",
+				projectId: "other-project",
+			}),
+		).resolves.toBeNull();
+		expect(sessionEvents.getSessionEvent).toHaveBeenCalledTimes(1);
+	});
+
+	it("loads session runtime config through a scoped runtime-config reader", async () => {
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => ({
+				id: "session-1",
+				projectId: "project-1",
+			}) as Awaited<ReturnType<SessionRepository["getSession"]>>),
+		} satisfies SessionRepository;
+		const sessionRuntimeConfigs = fakeSessionRuntimeConfigs();
+		const { service } = makeService({ sessions, sessionRuntimeConfigs });
+
+		await expect(
+			service.getSessionRuntimeConfig({
+				sessionId: "session-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual(
+			expect.objectContaining({
+				id: "runtime-config:session-1",
+				type: "io.workflow-builder.session.runtime_config.v1",
+			}),
+		);
+		expect(sessionRuntimeConfigs.getSessionRuntimeConfig).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			projectId: "project-1",
+		});
+
+		await expect(
+			service.getSessionRuntimeConfig({
+				sessionId: "session-1",
+				projectId: "other-project",
+			}),
+		).resolves.toBeNull();
+		expect(sessionRuntimeConfigs.getSessionRuntimeConfig).toHaveBeenCalledTimes(1);
 	});
 
 	it("forks a session by replaying event envelopes through session ports", async () => {
