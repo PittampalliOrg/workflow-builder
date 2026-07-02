@@ -11,25 +11,28 @@
  */
 
 import { error, json } from "@sveltejs/kit";
-import { eq } from "drizzle-orm";
 import type { RequestHandler } from "./$types";
-import { db } from "$lib/server/db";
-import { pieceExecution } from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
 import { requireInternal } from "$lib/server/internal-auth";
+
+function isDatabaseNotConfigured(err: unknown): boolean {
+	return err instanceof Error && err.message.includes("Database not configured");
+}
 
 export const GET: RequestHandler = async ({ params, request }) => {
 	requireInternal(request);
-	if (!db) return error(503, "Database not configured");
 
 	const idempotencyKey = params.idempotencyKey?.trim();
 	if (!idempotencyKey) return error(400, "idempotencyKey required");
 
-	const rows = await db
-		.select()
-		.from(pieceExecution)
-		.where(eq(pieceExecution.idempotencyKey, idempotencyKey))
-		.limit(1);
-	const row = rows[0];
+	let row;
+	try {
+		const { workflowData } = getApplicationAdapters();
+		row = await workflowData.getPieceExecutionByIdempotencyKey(idempotencyKey);
+	} catch (err) {
+		if (isDatabaseNotConfigured(err)) return error(503, "Database not configured");
+		throw err;
+	}
 	if (!row) return error(404, `piece execution ${idempotencyKey} not found`);
 
 	return json({
@@ -38,11 +41,6 @@ export const GET: RequestHandler = async ({ params, request }) => {
 		error: row.error,
 		pieceName: row.pieceName,
 		actionName: row.actionName,
-		// No dedicated completed_at column — updated_at is the terminal-write
-		// timestamp once the row reaches completed/failed.
-		completedAt:
-			row.status === "completed" || row.status === "failed"
-				? row.updatedAt
-				: null,
+		completedAt: row.completedAt,
 	});
 };

@@ -12,6 +12,7 @@ import {
 	PostgresHostedMcpServerRepository,
 	PostgresMcpConnectionRepository,
 	PostgresMcpRunRepository,
+	PostgresPieceExecutionRepository,
 	PostgresPieceCatalogRepository,
 	PostgresSandboxInventoryRepository,
 	PostgresSettingsRepository,
@@ -80,6 +81,7 @@ export function getApplicationAdapters(
 	let apiKeys: PostgresApiKeyStore | undefined;
 	let workspaceProjects: PostgresWorkspaceProjectRepository | undefined;
 	let pieceCatalog: PostgresPieceCatalogRepository | undefined;
+	let pieceExecutions: PostgresPieceExecutionRepository | undefined;
 	let codeFunctionCatalog: PostgresCodeFunctionCatalogRepository | undefined;
 	let benchmarkBrowser: PostgresBenchmarkBrowserRepository | undefined;
 	let workflowExecutions: PostgresWorkflowExecutionRepository | undefined;
@@ -120,6 +122,8 @@ export function getApplicationAdapters(
 		(workspaceProjects ??= new PostgresWorkspaceProjectRepository(getDatabase()));
 	const getPieceCatalog = () =>
 		(pieceCatalog ??= new PostgresPieceCatalogRepository(getDatabase()));
+	const getPieceExecutions = () =>
+		(pieceExecutions ??= new PostgresPieceExecutionRepository(getDatabase()));
 	const getCodeFunctionCatalog = () =>
 		(codeFunctionCatalog ??= new PostgresCodeFunctionCatalogRepository(getDatabase()));
 	const getBenchmarkBrowser = () =>
@@ -176,6 +180,7 @@ export function getApplicationAdapters(
 				apiKeys: getApiKeys(),
 				workspaceProjects: getWorkspaceProjects(),
 				pieceCatalog: getPieceCatalog(),
+				pieceExecutions: getPieceExecutions(),
 				codeFunctionCatalog: getCodeFunctionCatalog(),
 				benchmarkBrowser: getBenchmarkBrowser(),
 				workflowExecutions: getWorkflowExecutions(),

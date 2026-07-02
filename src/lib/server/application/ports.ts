@@ -287,6 +287,22 @@ export interface WorkflowTriggerStore {
 	delete(triggerId: string): Promise<void>;
 }
 
+export type PieceExecutionStatus = "running" | "paused" | "completed" | "failed";
+
+export type PieceExecutionReadModel = {
+	idempotencyKey: string;
+	status: PieceExecutionStatus;
+	result: unknown;
+	error: string | null;
+	pieceName: string;
+	actionName: string;
+	completedAt: Date | null;
+};
+
+export interface PieceExecutionRepository {
+	getByIdempotencyKey(idempotencyKey: string): Promise<PieceExecutionReadModel | null>;
+}
+
 export type ApiKeyRecord = {
 	id: string;
 	userId: string;
@@ -2342,6 +2358,9 @@ export interface WorkflowDataService {
 	getWorkflowTriggerById(triggerId: string): Promise<WorkflowTriggerRecord | null>;
 	markWorkflowTriggerFired(input: { triggerId: string; firedAt?: Date }): Promise<void>;
 	deleteWorkflowTrigger(triggerId: string): Promise<void>;
+	getPieceExecutionByIdempotencyKey(
+		idempotencyKey: string,
+	): Promise<PieceExecutionReadModel | null>;
 	validateApiKeyForUser(input: {
 		authorizationHeader: string | null;
 		userId: string;

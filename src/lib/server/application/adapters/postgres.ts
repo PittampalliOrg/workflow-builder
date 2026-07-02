@@ -40,6 +40,7 @@ import {
 	environmentImageBuilds,
 	projects,
 	projectMembers,
+	pieceExecution,
 	pieceMetadata,
 	pieceImages,
 	platformOauthApps,
@@ -117,6 +118,8 @@ import type {
 	McpRunRecord,
 	McpRunRepository,
 	McpCatalogAppConnectionSummary,
+	PieceExecutionReadModel,
+	PieceExecutionRepository,
 	ProjectMemberListItem,
 	ProjectMemberRecord,
 	ProjectMembershipRole,
@@ -2483,6 +2486,31 @@ export class PostgresWorkflowTriggerStore implements WorkflowTriggerStore {
 
 	async delete(triggerId: string): Promise<void> {
 		await this.database.delete(workflowTriggers).where(eq(workflowTriggers.id, triggerId));
+	}
+}
+
+export class PostgresPieceExecutionRepository implements PieceExecutionRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async getByIdempotencyKey(idempotencyKey: string): Promise<PieceExecutionReadModel | null> {
+		const [row] = await this.database
+			.select()
+			.from(pieceExecution)
+			.where(eq(pieceExecution.idempotencyKey, idempotencyKey))
+			.limit(1);
+		if (!row) return null;
+		return {
+			idempotencyKey: row.idempotencyKey,
+			status: row.status,
+			result: row.result,
+			error: row.error,
+			pieceName: row.pieceName,
+			actionName: row.actionName,
+			completedAt:
+				row.status === "completed" || row.status === "failed"
+					? row.updatedAt
+					: null,
+		};
 	}
 }
 

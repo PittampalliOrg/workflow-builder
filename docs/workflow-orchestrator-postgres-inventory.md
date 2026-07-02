@@ -17,7 +17,7 @@ run-diff/source-bundle artifact ingest APIs, and internal session-ingest utility
 routes, the external events ingest route, the agent-trigger membership check,
 the CLI credential capture session-owner lookup, and the ActivePieces resume
 execution lookup, plus the GitHub trigger ingress and event-trigger admission
-gate.
+gate, and the internal piece-execution artifact readback route.
 
 ## Strict HTTP Runtime Paths
 
@@ -465,6 +465,11 @@ The first UI-facing route has also moved behind the application service:
   `workflow_executions` directly. The gate still admits below cap, defers at
   cap through the existing Dapr pub/sub retry response, and fails open when the
   count path throws.
+- `src/routes/api/internal/piece-executions/[idempotencyKey]/+server.ts` now
+  reads piece-runtime idempotency/result-offload rows through
+  `workflowData.getPieceExecutionByIdempotencyKey` instead of querying
+  `piece_execution` directly. The route keeps internal-token auth and the
+  existing 404/503/read-model response contract.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
@@ -475,6 +480,7 @@ run-diff/source-bundle ingest, internal session-ingest, and external
 events-ingest route subsets, plus the agent-trigger route membership check and
 the CLI credential capture session-owner lookup and ActivePieces resume
 execution lookup, and the GitHub trigger ingress/gate subset, are also clean.
+The internal piece-execution artifact readback route is also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:

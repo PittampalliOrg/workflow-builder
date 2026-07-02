@@ -109,6 +109,8 @@ import type {
 	WorkspaceProjectRepository,
 	PieceCatalogDetail,
 	PieceCatalogRepository,
+	PieceExecutionReadModel,
+	PieceExecutionRepository,
 	McpConnectionRepository,
 	UpdateProjectMcpConnectionInput,
 	SavePlatformOAuthAppInput,
@@ -665,6 +667,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			apiKeys: ApiKeyStore;
 			workspaceProjects: WorkspaceProjectRepository;
 			pieceCatalog: PieceCatalogRepository;
+			pieceExecutions?: PieceExecutionRepository;
 			codeFunctionCatalog?: CodeFunctionCatalogRepository;
 			benchmarkBrowser: BenchmarkBrowserRepository;
 			workflowExecutions: WorkflowExecutionRepository;
@@ -3186,6 +3189,15 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	deleteWorkflowTrigger(triggerId: string) {
 		return this.deps.workflowTriggers.delete(triggerId);
+	}
+
+	getPieceExecutionByIdempotencyKey(
+		idempotencyKey: string,
+	): Promise<PieceExecutionReadModel | null> {
+		if (!this.deps.pieceExecutions) {
+			throw new Error("Piece execution repository is not configured");
+		}
+		return this.deps.pieceExecutions.getByIdempotencyKey(idempotencyKey);
 	}
 
 	async validateApiKeyForUser(input: {

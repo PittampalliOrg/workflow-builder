@@ -20,6 +20,7 @@ import type {
 	WorkflowDefinition,
 	WorkflowDefinitionRepository,
 	WorkflowFileStore,
+	PieceExecutionRepository,
 	WorkflowTriggerStore,
 	WorkflowAgentRunStore,
 	WorkflowExecutionRepository,
@@ -681,6 +682,7 @@ function makeService(options: {
 	byId?: WorkflowDefinition | null;
 	byName?: WorkflowDefinition | null;
 	workflowExecutions?: Partial<WorkflowExecutionRepository>;
+	pieceExecutions?: PieceExecutionRepository;
 }) {
 	const workflowDefinitions = {
 		getById: vi.fn(async () => options.byId ?? null),
@@ -710,6 +712,7 @@ function makeService(options: {
 		apiKeys: fakeApiKeys(),
 		workspaceProjects: fakeWorkspaceProjects(),
 		pieceCatalog: fakePieceCatalog(),
+		pieceExecutions: options.pieceExecutions,
 		benchmarkBrowser: fakeBenchmarkBrowser(),
 		workflowExecutions,
 		sessionEventNotifications: fakeSessionEventNotifications(),
@@ -1025,6 +1028,27 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(workflowExecutions.countActiveTriggeredRuns).toHaveBeenCalledWith({
 			statuses: ["pending", "running"],
 		});
+	});
+
+	it("delegates piece execution artifact reads to the piece execution port", async () => {
+		const pieceExecution = {
+			idempotencyKey: "wf:exec:task",
+			status: "completed" as const,
+			result: { ok: true },
+			error: null,
+			pieceName: "@activepieces/piece-github",
+			actionName: "create_issue",
+			completedAt: new Date("2026-01-01T00:00:00.000Z"),
+		};
+		const pieceExecutions = {
+			getByIdempotencyKey: vi.fn(async () => pieceExecution),
+		} satisfies PieceExecutionRepository;
+		const { service } = makeService({ byId: baseWorkflow, pieceExecutions });
+
+		await expect(service.getPieceExecutionByIdempotencyKey("wf:exec:task")).resolves.toEqual(
+			pieceExecution,
+		);
+		expect(pieceExecutions.getByIdempotencyKey).toHaveBeenCalledWith("wf:exec:task");
 	});
 
 	it("loads user profile data through the user profile port", async () => {
