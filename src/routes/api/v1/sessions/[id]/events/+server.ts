@@ -19,6 +19,7 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 	const session = await workflowData.getSessionEventStreamSnapshot({
 		sessionId: params.id,
 		projectId: locals.session.projectId ?? null,
+		userId: locals.session.userId,
 	});
 	if (!session) return error(404, "Session not found");
 	const events = await workflowData.listSessionEvents(params.id, {
@@ -57,6 +58,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const result = await workflowData.appendSessionUserEvents({
 		sessionId: params.id,
 		projectId: locals.session.projectId ?? null,
+		userId: locals.session.userId,
 		events,
 	});
 	if (result.status === "not_found") return error(404, "Session not found");

@@ -3043,6 +3043,7 @@ export interface WorkflowDataService {
 	getSessionEventStreamSnapshot(input: {
 		sessionId: string;
 		projectId?: string | null;
+		userId?: string | null;
 	}): Promise<SessionDetail | null>;
 	listSessionEvents(
 		sessionId: string,
@@ -3066,6 +3067,7 @@ export interface WorkflowDataService {
 	appendSessionUserEvents(input: {
 		sessionId: string;
 		projectId?: string | null;
+		userId?: string | null;
 		events: UserEvent[];
 	}): Promise<
 		| {

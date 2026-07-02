@@ -3868,10 +3868,17 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	async getSessionEventStreamSnapshot(input: {
 		sessionId: string;
 		projectId?: string | null;
+		userId?: string | null;
 	}) {
-		const session = await this.requireSessions().getSession(input.sessionId);
+		const sessions = this.requireSessions();
+		const owner = await sessions.getSessionFileOwner(input.sessionId);
+		if (!owner) return null;
+		if (input.projectId && owner.projectId !== input.projectId) return null;
+		if (!input.projectId && input.userId && owner.userId !== input.userId) {
+			return null;
+		}
+		const session = await sessions.getSession(input.sessionId);
 		if (!session) return null;
-		if (input.projectId && session.projectId !== input.projectId) return null;
 		return session;
 	}
 
@@ -3907,6 +3914,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	async appendSessionUserEvents(input: {
 		sessionId: string;
 		projectId?: string | null;
+		userId?: string | null;
 		events: UserEvent[];
 	}): Promise<
 		| {
@@ -3918,6 +3926,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		const session = await this.getSessionEventStreamSnapshot({
 			sessionId: input.sessionId,
 			projectId: input.projectId ?? null,
+			userId: input.userId ?? null,
 		});
 		if (!session) return { status: "not_found" };
 
@@ -3961,11 +3970,17 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		| { status: "not_found" }
 		| { status: "bad_request"; message: string }
 	> {
-		const source = await this.requireSessions().getSession(input.sourceSessionId);
-		if (!source) return { status: "not_found" };
-		if (input.projectId && source.projectId !== input.projectId) {
+		const sessions = this.requireSessions();
+		const owner = await sessions.getSessionFileOwner(input.sourceSessionId);
+		if (!owner) return { status: "not_found" };
+		if (input.projectId && owner.projectId !== input.projectId) {
 			return { status: "not_found" };
 		}
+		if (!input.projectId && owner.userId !== input.userId) {
+			return { status: "not_found" };
+		}
+		const source = await sessions.getSession(input.sourceSessionId);
+		if (!source) return { status: "not_found" };
 
 		let forkAgentId = source.agentId;
 		let forkAgentVersion = source.agentVersion ?? undefined;

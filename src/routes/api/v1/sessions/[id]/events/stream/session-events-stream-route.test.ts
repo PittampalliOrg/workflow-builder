@@ -83,6 +83,7 @@ describe("session events stream route", () => {
 		expect(mocks.workflowData.getSessionEventStreamSnapshot).toHaveBeenCalledWith({
 			sessionId: "session-1",
 			projectId: "project-1",
+			userId: "user-1",
 		});
 		expect(mocks.workflowData.listSessionEvents).not.toHaveBeenCalled();
 		expect(mocks.workflowData.listenSessionEventNotifications).not.toHaveBeenCalled();

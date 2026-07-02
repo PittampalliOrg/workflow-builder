@@ -141,6 +141,7 @@ describe("session events route", () => {
 		expect(mocks.workflowData.getSessionEventStreamSnapshot).toHaveBeenCalledWith({
 			sessionId: "session-1",
 			projectId: "project-1",
+			userId: "user-1",
 		});
 		expect(mocks.workflowData.listSessionEvents).toHaveBeenCalledWith("session-1", {
 			afterSequence: 7,
@@ -165,6 +166,7 @@ describe("session events route", () => {
 		expect(mocks.workflowData.appendSessionUserEvents).toHaveBeenCalledWith({
 			sessionId: "session-1",
 			projectId: "project-1",
+			userId: "user-1",
 			events: [userEvent],
 		});
 	});

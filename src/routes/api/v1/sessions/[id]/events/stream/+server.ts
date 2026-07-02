@@ -30,11 +30,13 @@ export const GET: RequestHandler = async ({ params, request, locals }) => {
 		? lastEventId
 		: 0;
 	const projectId = locals.session.projectId ?? null;
+	const userId = locals.session.userId;
 	const { workflowData } = getApplicationAdapters();
 
 	const session = await workflowData.getSessionEventStreamSnapshot({
 		sessionId,
 		projectId,
+		userId,
 	});
 	if (!session) {
 		return new Response("Session not found", { status: 404 });
@@ -99,6 +101,7 @@ export const GET: RequestHandler = async ({ params, request, locals }) => {
 						const current = await workflowData.getSessionEventStreamSnapshot({
 							sessionId,
 							projectId,
+							userId,
 						});
 						if (current && TERMINAL_STATUSES.has(current.status)) {
 							write("session.terminated", { session: current });

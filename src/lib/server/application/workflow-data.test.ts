@@ -1932,6 +1932,18 @@ describe("ApplicationWorkflowDataService", () => {
 				projectId: "other-project",
 			}),
 		).resolves.toBeNull();
+		await expect(
+			service.getSessionEventStreamSnapshot({
+				sessionId: "session-1",
+				userId: "user-1",
+			}),
+		).resolves.toBe(sourceSession);
+		await expect(
+			service.getSessionEventStreamSnapshot({
+				sessionId: "session-1",
+				userId: "other-user",
+			}),
+		).resolves.toBeNull();
 		expect(sessions.getSession).toHaveBeenCalledWith("session-1");
 	});
 
@@ -2072,6 +2084,7 @@ describe("ApplicationWorkflowDataService", () => {
 			service.appendSessionUserEvents({
 				sessionId: "session-1",
 				projectId: "project-1",
+				userId: "user-1",
 				events: userEvents,
 			}),
 		).resolves.toEqual({
@@ -2115,6 +2128,7 @@ describe("ApplicationWorkflowDataService", () => {
 			service.appendSessionUserEvents({
 				sessionId: "session-1",
 				projectId: "other-project",
+				userId: "user-1",
 				events: [
 					{
 						type: "user.message",

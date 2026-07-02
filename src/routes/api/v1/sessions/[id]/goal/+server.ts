@@ -30,6 +30,7 @@ async function injectCliCommand(
 	sessionId: string,
 	text: string,
 	projectId?: string | null,
+	userId?: string | null,
 ): Promise<void> {
 	const userMessage = {
 		type: "user.message",
@@ -40,6 +41,7 @@ async function injectCliCommand(
 	const result = await getApplicationAdapters().workflowData.appendSessionUserEvents({
 		sessionId,
 		projectId,
+		userId,
 		events: [userMessage as UserEvent],
 	});
 	if (result.status === "not_found") {
@@ -68,6 +70,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const session = await getApplicationAdapters().workflowData.getSessionEventStreamSnapshot({
 		sessionId: params.id,
 		projectId: locals.session.projectId ?? null,
+		userId: locals.session.userId,
 	});
 	if (!session) return error(404, "Session not found");
 	const goal = await getCurrentGoal(params.id);
@@ -120,6 +123,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			params.id,
 			`/goal ${objective}`,
 			locals.session.projectId ?? null,
+			locals.session.userId,
 		);
 		return json({ native: true, objective });
 	}
@@ -127,6 +131,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const session = await getApplicationAdapters().workflowData.getSessionEventStreamSnapshot({
 		sessionId: params.id,
 		projectId: locals.session.projectId ?? null,
+		userId: locals.session.userId,
 	});
 	if (!session) return error(404, "Session not found");
 	const goal = await createOrReplaceGoal({
@@ -178,7 +183,12 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	// No BFF row: this may be an opt-in native `/goal` run on a CLI — clear it by
 	// typing `/goal clear` into the terminal (aliases: stop/off/reset/cancel).
 	if (await sessionHasNativeGoalHarness(params.id)) {
-		await injectCliCommand(params.id, "/goal clear", locals.session.projectId ?? null);
+		await injectCliCommand(
+			params.id,
+			"/goal clear",
+			locals.session.projectId ?? null,
+			locals.session.userId,
+		);
 		return json({ native: true });
 	}
 	return error(404, "No active goal for this session");
