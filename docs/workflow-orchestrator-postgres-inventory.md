@@ -550,6 +550,12 @@ The first UI-facing route has also moved behind the application service:
   `src/routes/api/v1/sessions/[id]/control/mcp-status/+server.ts` now scope
   the session through workflow-data before using existing agent/environment and
   vault credential read services.
+- `src/routes/api/v1/sessions/[id]/control/set-model/+server.ts`,
+  `src/routes/api/v1/sessions/[id]/control/set-permission-mode/+server.ts`,
+  and `src/routes/api/v1/sessions/[id]/control/update-agent-config/+server.ts`
+  now scope and raise session agent-config patches through workflow-data
+  application ports. Patch normalization, runtime MCP resolution, and Dapr
+  control-event raising stay behind the session agent-config command adapter.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
@@ -563,8 +569,8 @@ execution lookup, and the GitHub trigger ingress/gate subset, are also clean.
 The internal piece-execution artifact readback and CLI workspace command routes
 are also clean. The scanned session provisioning, context-usage, control
 settings/MCP status, session detail/title/archive/delete, fork, goal,
-goal-flow, event list/append/detail, runtime-config, and event-stream routes
-are also clean.
+goal-flow, event list/append/detail, runtime-config, config patch commands,
+and event-stream routes are also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:

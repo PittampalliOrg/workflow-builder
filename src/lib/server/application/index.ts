@@ -55,6 +55,7 @@ import {
 	KubernetesSessionProvisioningReader,
 	LegacyMlflowSessionTraceLifecycle,
 	PostgresSessionEventLog,
+	SessionAgentConfigCommandAdapter,
 } from "$lib/server/application/adapters/sessions";
 import { PlaywrightMcpBrowserRuntimeClient } from "$lib/server/application/adapters/browser-runtime";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
@@ -111,6 +112,7 @@ export function getApplicationAdapters(
 	let sessionEvents: PostgresSessionEventLog | undefined;
 	let sessionRuntimeConfigs: DefaultSessionRuntimeConfigReader | undefined;
 	let sessionRuntimeEvents: DaprSessionRuntimeEventRaiser | undefined;
+	let sessionAgentConfigCommands: SessionAgentConfigCommandAdapter | undefined;
 	let sessionTraceLifecycle: LegacyMlflowSessionTraceLifecycle | undefined;
 	let peerAgentResolver: RegistryPeerAgentResolver | undefined;
 	let sessionEventNotifications:
@@ -179,6 +181,8 @@ export function getApplicationAdapters(
 		(sessionRuntimeConfigs ??= new DefaultSessionRuntimeConfigReader());
 	const getSessionRuntimeEvents = () =>
 		(sessionRuntimeEvents ??= new DaprSessionRuntimeEventRaiser());
+	const getSessionAgentConfigCommands = () =>
+		(sessionAgentConfigCommands ??= new SessionAgentConfigCommandAdapter());
 	const getSessionTraceLifecycle = () =>
 		(sessionTraceLifecycle ??= new LegacyMlflowSessionTraceLifecycle());
 	const getPeerAgentResolver = () =>
@@ -219,6 +223,7 @@ export function getApplicationAdapters(
 			sessionEvents: getSessionEvents(),
 			sessionRuntimeConfigs: getSessionRuntimeConfigs(),
 			sessionRuntimeEvents: getSessionRuntimeEvents(),
+			sessionAgentConfigCommands: getSessionAgentConfigCommands(),
 			sessionTraceLifecycle: getSessionTraceLifecycle(),
 			peerAgentResolver: getPeerAgentResolver(),
 			workflowAgentReads: getPeerAgentResolver(),

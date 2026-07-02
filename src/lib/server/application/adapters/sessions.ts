@@ -6,6 +6,8 @@ import type {
 	CreateWorkflowEnsureSessionInput,
 	ListSessionEventsInput,
 	PeerSessionRecord,
+	SessionAgentConfigCommandPort,
+	SessionAgentConfigPatchResult,
 	SessionBrowserTarget,
 	SessionContextUsageReadModel,
 	SessionEventLog,
@@ -31,6 +33,7 @@ import {
 } from "$lib/server/observability/mlflow-lifecycle";
 import { appendEvent, rowToEnvelope } from "$lib/server/sessions/events";
 import { createSession, getSession } from "$lib/server/sessions/registry";
+import { raiseSessionAgentConfigPatch as raiseSessionAgentConfigPatchForRuntime } from "$lib/server/sessions/agent-config-patch";
 import { getSessionProvisioningPreferObserver } from "$lib/server/sessions/provisioning";
 import { getSessionRuntimeConfig } from "$lib/server/sessions/runtime-config";
 import { raiseSessionUserEvents } from "$lib/server/sessions/spawn";
@@ -505,6 +508,33 @@ export class DefaultSessionRuntimeConfigReader implements SessionRuntimeConfigRe
 		return getSessionRuntimeConfig(input.sessionId, {
 			projectId: input.projectId ?? null,
 		});
+	}
+}
+
+export class SessionAgentConfigCommandAdapter
+	implements SessionAgentConfigCommandPort
+{
+	raiseSessionAgentConfigPatch(input: {
+		sessionId: string;
+		patch: unknown;
+	}): Promise<SessionAgentConfigPatchResult> {
+		return raiseSessionAgentConfigPatchForRuntime(
+			input.sessionId,
+			input.patch,
+		).then((result) =>
+			result.ok
+				? {
+						ok: true,
+						status: result.status,
+						patch: result.patch ?? {},
+					}
+				: {
+						ok: false,
+						status: result.status,
+						error: result.error,
+						patch: result.patch,
+					},
+		);
 	}
 }
 

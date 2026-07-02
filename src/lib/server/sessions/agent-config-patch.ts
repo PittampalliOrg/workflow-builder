@@ -8,35 +8,11 @@ import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { getSession } from "$lib/server/sessions/registry";
 import type { AgentSkillConfig } from "$lib/agent-skill-presets";
 import type { McpServerProfileConfig } from "$lib/server/agent-profiles";
-import type { AgentConfig, AgentToolChoice } from "$lib/types/agents";
+import type { SessionAgentConfigPatch } from "$lib/server/application/ports";
+import type { AgentConfig } from "$lib/types/agents";
 import { raiseSessionEvent } from "./control";
 
 export const SESSION_AGENT_CONFIG_PATCH_EVENT = "session.control.update_agent_config";
-
-export type SessionPermissionMode = "bypass" | "default";
-
-export type SessionAgentConfigPatch = {
-	modelSpec?: string;
-	role?: string;
-	goal?: string;
-	systemPrompt?: string;
-	instructions?: string[];
-	styleGuidelines?: string[];
-	toolChoice?: AgentToolChoice;
-	permissionMode?: SessionPermissionMode;
-	builtinTools?: string[];
-	tools?: string[];
-	allowedTools?: string[];
-	mcpConnectionMode?: AgentConfig["mcpConnectionMode"];
-	mcpServers?: McpServerProfileConfig[];
-	mcpConnectionWarnings?: string[];
-	skills?: AgentSkillConfig[];
-	plugins?: string[];
-	maxTurns?: number;
-	maxIterations?: number;
-	timeoutMinutes?: number;
-	temperature?: number;
-};
 
 type PatchResult =
 	| { ok: true; patch: SessionAgentConfigPatch }

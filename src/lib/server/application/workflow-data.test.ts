@@ -18,6 +18,7 @@ import type {
 	SandboxInventoryRepository,
 	SandboxRuntimeInventory,
 	CodeFunctionCatalogRepository,
+	SessionAgentConfigCommandPort,
 	SessionEventLog,
 	SessionExperimentAgentStore,
 	SessionProvisioningReader,
@@ -647,6 +648,21 @@ function fakeSessionRuntimeEvents(): SessionRuntimeEventRaiser {
 	};
 }
 
+function fakeSessionAgentConfigCommands(): SessionAgentConfigCommandPort {
+	return {
+		raiseSessionAgentConfigPatch: vi.fn(async (input) => ({
+			ok: true,
+			status: 200,
+			patch:
+				typeof input.patch === "object" &&
+				input.patch !== null &&
+				!Array.isArray(input.patch)
+					? { ...(input.patch as Record<string, unknown>) }
+					: {},
+		})),
+	};
+}
+
 function fakeCodeCheckpoints(): WorkflowCodeCheckpointStore {
 	return {
 		persistFromAgentEvent: vi.fn(async () => undefined),
@@ -934,6 +950,7 @@ function makeService(options: {
 	sessionEvents?: SessionEventLog;
 	sessionRuntimeConfigs?: SessionRuntimeConfigReader;
 	sessionRuntimeEvents?: SessionRuntimeEventRaiser;
+	sessionAgentConfigCommands?: SessionAgentConfigCommandPort;
 	codeCheckpoints?: WorkflowCodeCheckpointStore;
 	evaluationArtifacts?: EvaluationArtifactStore;
 	sessionTraceLifecycle?: SessionTraceLifecycleStore;
@@ -980,6 +997,8 @@ function makeService(options: {
 			options.sessionRuntimeConfigs ?? fakeSessionRuntimeConfigs(),
 		sessionRuntimeEvents:
 			options.sessionRuntimeEvents ?? fakeSessionRuntimeEvents(),
+		sessionAgentConfigCommands:
+			options.sessionAgentConfigCommands ?? fakeSessionAgentConfigCommands(),
 		sessionProvisioning: options.sessionProvisioning,
 		codeCheckpoints: options.codeCheckpoints,
 		evaluationArtifacts: options.evaluationArtifacts,
@@ -2182,6 +2201,51 @@ describe("ApplicationWorkflowDataService", () => {
 			}),
 		).resolves.toBeNull();
 		expect(sessionRuntimeConfigs.getSessionRuntimeConfig).toHaveBeenCalledTimes(1);
+	});
+
+	it("raises session agent config patches through scoped command ports", async () => {
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => ({
+				id: "session-1",
+				projectId: "project-1",
+			}) as Awaited<ReturnType<SessionRepository["getSession"]>>),
+		} satisfies SessionRepository;
+		const sessionAgentConfigCommands = fakeSessionAgentConfigCommands();
+		const { service } = makeService({ sessions, sessionAgentConfigCommands });
+
+		await expect(
+			service.raiseSessionAgentConfigPatch({
+				sessionId: "session-1",
+				projectId: "project-1",
+				patch: { modelSpec: "openai/gpt-5.5" },
+			}),
+		).resolves.toEqual({
+			ok: true,
+			status: 200,
+			patch: { modelSpec: "openai/gpt-5.5" },
+		});
+		expect(
+			sessionAgentConfigCommands.raiseSessionAgentConfigPatch,
+		).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			patch: { modelSpec: "openai/gpt-5.5" },
+		});
+
+		await expect(
+			service.raiseSessionAgentConfigPatch({
+				sessionId: "session-1",
+				projectId: "other-project",
+				patch: { modelSpec: "openai/gpt-5.5" },
+			}),
+		).resolves.toEqual({
+			ok: false,
+			status: 404,
+			error: "Session not found",
+		});
+		expect(
+			sessionAgentConfigCommands.raiseSessionAgentConfigPatch,
+		).toHaveBeenCalledTimes(1);
 	});
 
 	it("forks a session by replaying event envelopes through session ports", async () => {

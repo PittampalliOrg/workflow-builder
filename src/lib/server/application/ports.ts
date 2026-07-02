@@ -1,6 +1,8 @@
 import type { AgentMcpResolutionResult } from "$lib/server/agents/mcp-resolution";
+import type { McpServerProfileConfig } from "$lib/server/agent-profiles";
 import type { McpServerAvailabilityEntry } from "$lib/server/mcp-catalog";
-import type { AgentConfig } from "$lib/types/agents";
+import type { AgentSkillConfig } from "$lib/agent-skill-presets";
+import type { AgentConfig, AgentToolChoice } from "$lib/types/agents";
 import type {
 	SandboxProvisionInput,
 	SandboxProvisionResult,
@@ -2340,6 +2342,51 @@ export interface SessionRuntimeConfigReader {
 	}): Promise<RuntimeConfigCloudEvent | null>;
 }
 
+export type SessionPermissionMode = "bypass" | "default";
+
+export type SessionAgentConfigPatch = {
+	modelSpec?: string;
+	role?: string;
+	goal?: string;
+	systemPrompt?: string;
+	instructions?: string[];
+	styleGuidelines?: string[];
+	toolChoice?: AgentToolChoice;
+	permissionMode?: SessionPermissionMode;
+	builtinTools?: string[];
+	tools?: string[];
+	allowedTools?: string[];
+	mcpConnectionMode?: AgentConfig["mcpConnectionMode"];
+	mcpServers?: McpServerProfileConfig[];
+	mcpConnectionWarnings?: string[];
+	skills?: AgentSkillConfig[];
+	plugins?: string[];
+	maxTurns?: number;
+	maxIterations?: number;
+	timeoutMinutes?: number;
+	temperature?: number;
+};
+
+export type SessionAgentConfigPatchResult =
+	| {
+			ok: true;
+			status: number;
+			patch: SessionAgentConfigPatch;
+	  }
+	| {
+			ok: false;
+			status: number;
+			error?: string;
+			patch?: SessionAgentConfigPatch;
+	  };
+
+export interface SessionAgentConfigCommandPort {
+	raiseSessionAgentConfigPatch(input: {
+		sessionId: string;
+		patch: unknown;
+	}): Promise<SessionAgentConfigPatchResult>;
+}
+
 export type SessionContextUsageEventStats = {
 	total: number;
 	totalBytes: number;
@@ -3089,6 +3136,12 @@ export interface WorkflowDataService {
 		projectId?: string | null;
 		userId?: string | null;
 	}): Promise<boolean>;
+	raiseSessionAgentConfigPatch(input: {
+		sessionId: string;
+		patch: unknown;
+		projectId?: string | null;
+		userId?: string | null;
+	}): Promise<SessionAgentConfigPatchResult>;
 	listSessionEvents(
 		sessionId: string,
 		input?: ListSessionEventsInput,

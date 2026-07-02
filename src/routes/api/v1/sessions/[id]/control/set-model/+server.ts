@@ -1,7 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { assertSessionInScope } from "$lib/server/sessions/scope";
-import { raiseSessionAgentConfigPatch } from "$lib/server/sessions/agent-config-patch";
+import { getApplicationAdapters } from "$lib/server/application";
 import {
 	AGENT_MODEL_OPTIONS,
 	canonicalAgentModelSpec,
@@ -13,7 +12,6 @@ import {
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	await assertSessionInScope(params.id, locals.session);
 	const body = (await request.json().catch(() => ({}))) as Record<
 		string,
 		unknown
@@ -28,7 +26,12 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			`Unsupported modelSpec. Allowed: ${AGENT_MODEL_OPTIONS.map((m) => m.value).join(", ")}`,
 		);
 	}
-	const result = await raiseSessionAgentConfigPatch(params.id, { modelSpec });
+	const result = await getApplicationAdapters().workflowData.raiseSessionAgentConfigPatch({
+		sessionId: params.id,
+		patch: { modelSpec },
+		projectId: locals.session.projectId ?? null,
+		userId: locals.session.userId,
+	});
 	if (!result.ok) return error(result.status, result.error ?? "set-model failed");
 	return json({ modelSpec });
 };

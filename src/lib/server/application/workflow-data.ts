@@ -123,6 +123,8 @@ import type {
 	UsageReportingRepository,
 	SandboxInventoryRepository,
 	SandboxRuntimeInventory,
+	SessionAgentConfigCommandPort,
+	SessionAgentConfigPatchResult,
 	SessionEventLog,
 	SessionExperimentAgentStore,
 	SessionRepository,
@@ -761,6 +763,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			sessionEvents?: SessionEventLog;
 			sessionRuntimeConfigs?: SessionRuntimeConfigReader;
 			sessionRuntimeEvents?: SessionRuntimeEventRaiser;
+			sessionAgentConfigCommands?: SessionAgentConfigCommandPort;
 			codeCheckpoints?: WorkflowCodeCheckpointStore;
 			evaluationArtifacts?: EvaluationArtifactStore;
 			sessionTraceLifecycle?: SessionTraceLifecycleStore;
@@ -836,6 +839,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Session runtime event raiser not configured");
 		}
 		return this.deps.sessionRuntimeEvents;
+	}
+
+	private requireSessionAgentConfigCommands(): SessionAgentConfigCommandPort {
+		if (!this.deps.sessionAgentConfigCommands) {
+			throw new Error("Session agent config command port not configured");
+		}
+		return this.deps.sessionAgentConfigCommands;
 	}
 
 	private requireSessionProvisioning(): SessionProvisioningReader {
@@ -3950,6 +3960,22 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		const session = await this.getScopedSession(input);
 		if (!session) return false;
 		return this.requireSessions().deleteSession(input.sessionId);
+	}
+
+	async raiseSessionAgentConfigPatch(input: {
+		sessionId: string;
+		patch: unknown;
+		projectId?: string | null;
+		userId?: string | null;
+	}): Promise<SessionAgentConfigPatchResult> {
+		const session = await this.getScopedSession(input);
+		if (!session) {
+			return { ok: false, status: 404, error: "Session not found" };
+		}
+		return this.requireSessionAgentConfigCommands().raiseSessionAgentConfigPatch({
+			sessionId: input.sessionId,
+			patch: input.patch,
+		});
 	}
 
 	listSessionEvents(sessionId: string, input?: ListSessionEventsInput) {
