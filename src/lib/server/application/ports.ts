@@ -1,4 +1,5 @@
 import type { AgentMcpResolutionResult } from "$lib/server/agents/mcp-resolution";
+import type { AgentConfig } from "$lib/types/agents";
 import type {
 	SandboxProvisionInput,
 	SandboxProvisionResult,
@@ -2178,6 +2179,8 @@ export interface SessionRepository {
 		executionId: string;
 		limit: number;
 	}): Promise<CliWorkspaceSessionCandidateRecord[]>;
+	getPeerSession(sessionId: string): Promise<PeerSessionRecord | null>;
+	createPeerSession(input: CreatePeerSessionInput): Promise<PeerSessionRecord>;
 	findSessionIdByDaprInstanceId(instanceId: string): Promise<string | null>;
 	resolveSessionIdForProvisioningEvent(input: {
 		runtimeAppId?: string | null;
@@ -2238,6 +2241,78 @@ export type CliWorkspaceCommandCandidate = {
 	agentSlug: string;
 	agentRuntime: string | null;
 };
+
+export type PeerSessionRecord = {
+	id: string;
+	agentId: string;
+	agentVersion: number | null;
+	environmentId: string | null;
+	environmentVersion: number | null;
+	vaultIds: string[];
+	daprInstanceId: string | null;
+	natsSubject: string | null;
+};
+
+export type CreatePeerSessionInput = {
+	id: string;
+	agentId: string;
+	title: string;
+	userId: string;
+	projectId: string | null;
+	parentExecutionId: string | null;
+};
+
+export type PeerAgentOwner = {
+	userId: string | null;
+	projectId: string | null;
+};
+
+export type PeerCallableAgent = {
+	slug: string;
+	agentId: string;
+	version: number;
+	appId: string;
+	team: string;
+	registryKey: string;
+};
+
+export type PeerAgentDispatchContext = {
+	agentConfig: AgentConfig;
+	environmentConfig: Record<string, unknown> | null;
+	callableAgents: PeerCallableAgent[];
+	registryTeam: string | null;
+};
+
+export interface PeerAgentResolver {
+	resolvePeerAgentOwner(peerAgentId: string): Promise<PeerAgentOwner | null>;
+	resolvePeerAgentDispatchContext(input: {
+		agentId: string;
+		agentVersion?: number | null;
+		environmentId?: string | null;
+		environmentVersion?: number | null;
+	}): Promise<PeerAgentDispatchContext | null>;
+}
+
+export type EnsurePeerSessionInput = {
+	sessionId: string;
+	peerAgentId: string;
+	prompt: string;
+	parentSessionId?: string | null;
+	parentInstanceId?: string | null;
+	title?: string | null;
+};
+
+export type EnsurePeerSessionResult =
+	| {
+			ok: true;
+			session: PeerSessionRecord;
+			reused: boolean;
+	  }
+	| {
+			ok: false;
+			status: 404 | 500;
+			message: string;
+	  };
 
 export type AppendSessionEventInput = {
 	type: string;
@@ -2550,6 +2625,13 @@ export interface WorkflowDataService {
 		executionId: string;
 		limit: number;
 	}): Promise<CliWorkspaceCommandCandidate[]>;
+	ensurePeerSession(input: EnsurePeerSessionInput): Promise<EnsurePeerSessionResult>;
+	resolvePeerAgentDispatchContext(input: {
+		agentId: string;
+		agentVersion?: number | null;
+		environmentId?: string | null;
+		environmentVersion?: number | null;
+	}): Promise<PeerAgentDispatchContext | null>;
 	countActiveTriggeredWorkflowRuns(input: {
 		statuses: WorkflowExecutionStatus[];
 	}): Promise<number>;

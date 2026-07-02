@@ -452,6 +452,12 @@ The first UI-facing route has also moved behind the application service:
   delegates agent resolution, session creation, initial user event append, and
   session workflow spawn to the existing lower-level services pending a future
   session-command application slice.
+- `src/routes/api/internal/sessions/spawn-peer/+server.ts` now delegates
+  idempotent peer session lookup/creation, parent/peer owner resolution, initial
+  user event append, and skip-spawn dispatch metadata resolution to
+  workflow-data ports. The route retains token validation, request/response
+  shaping, and `spawnSessionWorkflow` as the runtime command that starts the
+  Dapr session workflow.
 - `src/routes/api/internal/sessions/[id]/cli-credentials/capture/+server.ts`
   now resolves the session owner through `workflowData.getSessionFileOwner`
   instead of querying `sessions.user_id` directly. Credential bundle validation,

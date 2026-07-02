@@ -70,6 +70,8 @@ import type {
 	CreateWorkflowTriggerInput,
 	CreateWorkflowExecutionInput,
 	EvaluationArtifactStore,
+	EnsurePeerSessionInput,
+	EnsurePeerSessionResult,
 	HostedMcpInputProperty,
 	HostedMcpServerReadModel,
 	HostedMcpServerRecord,
@@ -126,6 +128,8 @@ import type {
 	WorkflowBrowserArtifactRecord,
 	WorkflowBrowserArtifactStore,
 	McpConnectionRepository,
+	PeerAgentDispatchContext,
+	PeerAgentResolver,
 	UpdateProjectMcpConnectionInput,
 	SavePlatformOAuthAppInput,
 	SettingsPageReadModel,
@@ -733,6 +737,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			codeCheckpoints?: WorkflowCodeCheckpointStore;
 			evaluationArtifacts?: EvaluationArtifactStore;
 			sessionTraceLifecycle?: SessionTraceLifecycleStore;
+			peerAgentResolver?: PeerAgentResolver;
 			sessionEventNotifications: WorkflowSessionEventNotificationSource;
 			artifactStore: ArtifactStore;
 			workflowFiles?: WorkflowFileStore;
@@ -780,6 +785,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Evaluation artifact store not configured");
 		}
 		return this.deps.evaluationArtifacts;
+	}
+
+	private requirePeerAgentResolver(): PeerAgentResolver {
+		if (!this.deps.peerAgentResolver) {
+			throw new Error("Peer agent resolver not configured");
+		}
+		return this.deps.peerAgentResolver;
 	}
 
 	getUserProfile(userId: string) {
@@ -3404,6 +3416,75 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			});
 		}
 		return candidates;
+	}
+
+	async ensurePeerSession(
+		input: EnsurePeerSessionInput,
+	): Promise<EnsurePeerSessionResult> {
+		const sessions = this.requireSessions();
+		const existing = await sessions.getPeerSession(input.sessionId);
+		if (existing) return { ok: true, session: existing, reused: true };
+
+		let userId = "";
+		let projectId: string | null = null;
+		if (input.parentSessionId) {
+			const parentOwner = await sessions.getSessionFileOwner(input.parentSessionId);
+			if (parentOwner) {
+				userId = parentOwner.userId;
+				projectId = parentOwner.projectId;
+			}
+		}
+		if (!userId) {
+			const peerOwner = await this
+				.requirePeerAgentResolver()
+				.resolvePeerAgentOwner(input.peerAgentId);
+			if (!peerOwner) {
+				return {
+					ok: false,
+					status: 404,
+					message: `Peer agent ${input.peerAgentId} not found`,
+				};
+			}
+			userId = peerOwner.userId ?? "";
+			projectId = projectId ?? peerOwner.projectId;
+		}
+		if (!userId) {
+			return {
+				ok: false,
+				status: 500,
+				message: "could not resolve userId for peer session",
+			};
+		}
+
+		const session = await sessions.createPeerSession({
+			id: input.sessionId,
+			agentId: input.peerAgentId,
+			title: input.title ?? `Delegated: ${input.prompt.slice(0, 40)}`,
+			userId,
+			projectId,
+			parentExecutionId: input.parentInstanceId ?? input.parentSessionId ?? null,
+		});
+		if (input.prompt.trim()) {
+			await this.requireSessionEvents().appendSessionEvent(session.id, {
+				type: "user.message",
+				data: {
+					type: "user.message",
+					content: [{ type: "text", text: input.prompt }],
+				},
+				processedAt: null,
+			});
+		}
+
+		return { ok: true, session, reused: false };
+	}
+
+	resolvePeerAgentDispatchContext(input: {
+		agentId: string;
+		agentVersion?: number | null;
+		environmentId?: string | null;
+		environmentVersion?: number | null;
+	}): Promise<PeerAgentDispatchContext | null> {
+		return this.requirePeerAgentResolver().resolvePeerAgentDispatchContext(input);
 	}
 
 	countActiveTriggeredWorkflowRuns(input: { statuses: WorkflowExecutionStatus[] }) {

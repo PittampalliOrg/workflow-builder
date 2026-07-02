@@ -1,6 +1,8 @@
 import type {
 	AppendSessionEventInput,
 	CliWorkspaceSessionCandidateRecord,
+	CreatePeerSessionInput,
+	PeerSessionRecord,
 	SessionEventLog,
 	SessionRepository,
 	SessionTraceLifecycleStore,
@@ -16,7 +18,7 @@ import {
 	safePatchInteractiveSessionMlflowTraces,
 } from "$lib/server/observability/mlflow-lifecycle";
 import { appendEvent } from "$lib/server/sessions/events";
-import { getSession } from "$lib/server/sessions/registry";
+import { createSession, getSession } from "$lib/server/sessions/registry";
 import type { SessionDetail, SessionEventEnvelope } from "$lib/types/sessions";
 
 type Database = typeof defaultDb;
@@ -24,6 +26,19 @@ type Database = typeof defaultDb;
 function requireDb(database: Database = defaultDb): Database {
 	if (!database) throw new Error("Database not configured");
 	return database;
+}
+
+function toPeerSessionRecord(session: SessionDetail): PeerSessionRecord {
+	return {
+		id: session.id,
+		agentId: session.agentId,
+		agentVersion: session.agentVersion,
+		environmentId: session.environmentId,
+		environmentVersion: session.environmentVersion,
+		vaultIds: session.vaultIds,
+		daprInstanceId: session.daprInstanceId,
+		natsSubject: session.natsSubject,
+	};
 }
 
 export class CurrentSessionRepository implements SessionRepository {
@@ -62,6 +77,23 @@ export class CurrentSessionRepository implements SessionRepository {
 			)
 			.orderBy(desc(sessions.createdAt))
 			.limit(limit);
+	}
+
+	async getPeerSession(sessionId: string): Promise<PeerSessionRecord | null> {
+		const session = await getSession(sessionId);
+		return session ? toPeerSessionRecord(session) : null;
+	}
+
+	async createPeerSession(input: CreatePeerSessionInput): Promise<PeerSessionRecord> {
+		const session = await createSession({
+			id: input.id,
+			agentId: input.agentId,
+			title: input.title,
+			userId: input.userId,
+			projectId: input.projectId,
+			parentExecutionId: input.parentExecutionId,
+		});
+		return toPeerSessionRecord(session);
 	}
 
 	async findSessionIdByDaprInstanceId(instanceId: string): Promise<string | null> {

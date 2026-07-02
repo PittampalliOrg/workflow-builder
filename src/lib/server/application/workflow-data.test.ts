@@ -10,6 +10,7 @@ import type {
 	McpConnectionRepository,
 	McpConnectionRecord,
 	McpRunRepository,
+	PeerAgentResolver,
 	SettingsRepository,
 	TraceLineageStore,
 	UsageReportingRepository,
@@ -37,6 +38,7 @@ import type {
 	WorkspaceSessionStore,
 } from "$lib/server/application/ports";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
+import { createDefaultAgentConfig } from "$lib/types/agents";
 
 vi.mock("$lib/server/security/encryption", () => ({
 	encryptString: (plaintext: string) => ({
@@ -466,6 +468,17 @@ function fakeSessions(): SessionRepository {
 	return {
 		getSession: vi.fn(async () => null),
 		listCliWorkspaceSessionCandidates: vi.fn(async () => []),
+		getPeerSession: vi.fn(async () => null),
+		createPeerSession: vi.fn(async (input) => ({
+			id: input.id,
+			agentId: input.agentId,
+			agentVersion: 3,
+			environmentId: "env-1",
+			environmentVersion: 4,
+			vaultIds: ["vault-1"],
+			daprInstanceId: null,
+			natsSubject: null,
+		})),
 		findSessionIdByDaprInstanceId: vi.fn(async () => "session-1"),
 		resolveSessionIdForProvisioningEvent: vi.fn(async () => "session-1"),
 		getSessionFileOwner: vi.fn(async () => ({
@@ -516,6 +529,33 @@ function fakeEvaluationArtifacts(): EvaluationArtifactStore {
 function fakeSessionTraceLifecycle(): SessionTraceLifecycleStore {
 	return {
 		patchInteractiveSessionTraces: vi.fn(async () => undefined),
+	};
+}
+
+function fakePeerAgentResolver(): PeerAgentResolver {
+	return {
+		resolvePeerAgentOwner: vi.fn(async () => ({
+			userId: "peer-owner-1",
+			projectId: "peer-project-1",
+		})),
+		resolvePeerAgentDispatchContext: vi.fn(async () => ({
+			agentConfig: {
+				...createDefaultAgentConfig(),
+				systemPrompt: "You are a peer",
+			},
+			environmentConfig: { image: "env-image" },
+			callableAgents: [
+				{
+					slug: "reviewer",
+					agentId: "agent-reviewer",
+					version: 2,
+					appId: "dapr-agent-py",
+					team: "project-1",
+					registryKey: "project-1/reviewer",
+				},
+			],
+			registryTeam: "project-1",
+		})),
 	};
 }
 
@@ -723,6 +763,7 @@ function makeService(options: {
 	codeCheckpoints?: WorkflowCodeCheckpointStore;
 	evaluationArtifacts?: EvaluationArtifactStore;
 	sessionTraceLifecycle?: SessionTraceLifecycleStore;
+	peerAgentResolver?: PeerAgentResolver;
 }) {
 	const workflowDefinitions = {
 		getById: vi.fn(async () => options.byId ?? null),
@@ -761,6 +802,7 @@ function makeService(options: {
 		codeCheckpoints: options.codeCheckpoints,
 		evaluationArtifacts: options.evaluationArtifacts,
 		sessionTraceLifecycle: options.sessionTraceLifecycle,
+		peerAgentResolver: options.peerAgentResolver,
 		sessionEventNotifications: fakeSessionEventNotifications(),
 		artifactStore: {} as ArtifactStore,
 		workspaceSessions: {} as WorkspaceSessionStore,
@@ -1220,6 +1262,155 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(sessions.listCliWorkspaceSessionCandidates).toHaveBeenCalledWith({
 			executionId: "exec-1",
 			limit: 8,
+		});
+	});
+
+	it("ensures peer sessions through session and peer-agent ports", async () => {
+		const sessions = fakeSessions();
+		const sessionEvents = fakeSessionEvents();
+		const peerAgentResolver = fakePeerAgentResolver();
+		const { service } = makeService({
+			sessions,
+			sessionEvents,
+			peerAgentResolver,
+		});
+
+		const result = await service.ensurePeerSession({
+			sessionId: "ca-session-1",
+			peerAgentId: "agent-peer",
+			prompt: "Review this change",
+			parentSessionId: "parent-session-1",
+			parentInstanceId: "parent-instance-1",
+			title: null,
+		});
+
+		expect(result).toEqual({
+			ok: true,
+			reused: false,
+			session: {
+				id: "ca-session-1",
+				agentId: "agent-peer",
+				agentVersion: 3,
+				environmentId: "env-1",
+				environmentVersion: 4,
+				vaultIds: ["vault-1"],
+				daprInstanceId: null,
+				natsSubject: null,
+			},
+		});
+		expect(sessions.getSessionFileOwner).toHaveBeenCalledWith("parent-session-1");
+		expect(peerAgentResolver.resolvePeerAgentOwner).not.toHaveBeenCalled();
+		expect(sessions.createPeerSession).toHaveBeenCalledWith({
+			id: "ca-session-1",
+			agentId: "agent-peer",
+			title: "Delegated: Review this change",
+			userId: "user-1",
+			projectId: "project-1",
+			parentExecutionId: "parent-instance-1",
+		});
+		expect(sessionEvents.appendSessionEvent).toHaveBeenCalledWith("ca-session-1", {
+			type: "user.message",
+			data: {
+				type: "user.message",
+				content: [{ type: "text", text: "Review this change" }],
+			},
+			processedAt: null,
+		});
+	});
+
+	it("returns reused peer sessions without appending another prompt", async () => {
+		const existingSession = {
+			id: "ca-existing",
+			agentId: "agent-peer",
+			agentVersion: 2,
+			environmentId: null,
+			environmentVersion: null,
+			vaultIds: [],
+			daprInstanceId: "ca-existing",
+			natsSubject: "session.events.ca-existing",
+		};
+		const sessions = {
+			...fakeSessions(),
+			getPeerSession: vi.fn(async () => existingSession),
+			createPeerSession: vi.fn(),
+		} satisfies SessionRepository;
+		const sessionEvents = fakeSessionEvents();
+		const { service } = makeService({
+			sessions,
+			sessionEvents,
+			peerAgentResolver: fakePeerAgentResolver(),
+		});
+
+		await expect(
+			service.ensurePeerSession({
+				sessionId: "ca-existing",
+				peerAgentId: "agent-peer",
+				prompt: "again",
+			}),
+		).resolves.toEqual({ ok: true, session: existingSession, reused: true });
+		expect(sessions.createPeerSession).not.toHaveBeenCalled();
+		expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
+	});
+
+	it("falls back to peer ownership when no parent owner is available", async () => {
+		const sessions = {
+			...fakeSessions(),
+			getSessionFileOwner: vi.fn(async () => null),
+		} satisfies SessionRepository;
+		const peerAgentResolver = fakePeerAgentResolver();
+		const { service } = makeService({
+			sessions,
+			sessionEvents: fakeSessionEvents(),
+			peerAgentResolver,
+		});
+
+		await service.ensurePeerSession({
+			sessionId: "ca-session-2",
+			peerAgentId: "agent-peer",
+			prompt: "",
+			parentSessionId: "missing-parent",
+		});
+
+		expect(peerAgentResolver.resolvePeerAgentOwner).toHaveBeenCalledWith("agent-peer");
+		expect(sessions.createPeerSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userId: "peer-owner-1",
+				projectId: "peer-project-1",
+			}),
+		);
+	});
+
+	it("delegates peer dispatch context resolution to the peer-agent port", async () => {
+		const peerAgentResolver = fakePeerAgentResolver();
+		const { service } = makeService({ peerAgentResolver });
+
+		await expect(
+			service.resolvePeerAgentDispatchContext({
+				agentId: "agent-peer",
+				agentVersion: 3,
+				environmentId: "env-1",
+				environmentVersion: 4,
+			}),
+		).resolves.toEqual({
+			agentConfig: expect.objectContaining({ systemPrompt: "You are a peer" }),
+			environmentConfig: { image: "env-image" },
+			callableAgents: [
+				{
+					slug: "reviewer",
+					agentId: "agent-reviewer",
+					version: 2,
+					appId: "dapr-agent-py",
+					team: "project-1",
+					registryKey: "project-1/reviewer",
+				},
+			],
+			registryTeam: "project-1",
+		});
+		expect(peerAgentResolver.resolvePeerAgentDispatchContext).toHaveBeenCalledWith({
+			agentId: "agent-peer",
+			agentVersion: 3,
+			environmentId: "env-1",
+			environmentVersion: 4,
 		});
 	});
 

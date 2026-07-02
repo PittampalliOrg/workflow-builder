@@ -33,6 +33,7 @@ import {
 	PostgresWorkspaceProjectRepository,
 	requirePostgresDb,
 } from "$lib/server/application/adapters/postgres";
+import { RegistryPeerAgentResolver } from "$lib/server/application/adapters/agents";
 import {
 	DaprCredentialStore,
 	DaprEventBus,
@@ -101,6 +102,7 @@ export function getApplicationAdapters(
 	let sessions: CurrentSessionRepository | undefined;
 	let sessionEvents: PostgresSessionEventLog | undefined;
 	let sessionTraceLifecycle: LegacyMlflowSessionTraceLifecycle | undefined;
+	let peerAgentResolver: RegistryPeerAgentResolver | undefined;
 	let sessionEventNotifications:
 		| PostgresWorkflowSessionEventNotificationSource
 		| undefined;
@@ -160,6 +162,8 @@ export function getApplicationAdapters(
 	const getSessionEvents = () => (sessionEvents ??= new PostgresSessionEventLog());
 	const getSessionTraceLifecycle = () =>
 		(sessionTraceLifecycle ??= new LegacyMlflowSessionTraceLifecycle());
+	const getPeerAgentResolver = () =>
+		(peerAgentResolver ??= new RegistryPeerAgentResolver(getDatabase()));
 	const getSessionEventNotifications = () =>
 		(sessionEventNotifications ??= new PostgresWorkflowSessionEventNotificationSource());
 	const getCodeCheckpoints = () =>
@@ -204,6 +208,7 @@ export function getApplicationAdapters(
 				sessions: getSessions(),
 				sessionEvents: getSessionEvents(),
 				sessionTraceLifecycle: getSessionTraceLifecycle(),
+				peerAgentResolver: getPeerAgentResolver(),
 				codeCheckpoints: getCodeCheckpoints(),
 				evaluationArtifacts: getEvaluationArtifacts(),
 				workflowFiles: getWorkflowFiles(),
