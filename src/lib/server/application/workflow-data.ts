@@ -136,7 +136,9 @@ import type {
 	PieceCatalogRepository,
 	PieceExecutionReadModel,
 	PieceExecutionRepository,
+	SessionBrowserTarget,
 	SaveWorkflowBrowserArtifactInput,
+	WorkflowBrowserBlobPayload,
 	WorkflowBrowserArtifactRecord,
 	WorkflowBrowserArtifactStore,
 	McpConnectionRepository,
@@ -3368,6 +3370,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.pieceExecutions.getByIdempotencyKey(idempotencyKey);
 	}
 
+	getSessionBrowserTarget(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionBrowserTarget | null> {
+		return this.requireSessions().getBrowserSessionTarget(input);
+	}
+
 	saveWorkflowBrowserArtifact(
 		input: SaveWorkflowBrowserArtifactInput,
 	): Promise<WorkflowBrowserArtifactRecord> {
@@ -3375,6 +3384,24 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Workflow browser artifact store is not configured");
 		}
 		return this.deps.browserArtifacts.save(input);
+	}
+
+	listWorkflowBrowserArtifactsByExecutionId(
+		workflowExecutionId: string,
+	): Promise<WorkflowBrowserArtifactRecord[]> {
+		if (!this.deps.browserArtifacts) {
+			throw new Error("Workflow browser artifact store is not configured");
+		}
+		return this.deps.browserArtifacts.listByExecutionId(workflowExecutionId);
+	}
+
+	getWorkflowBrowserBlobPayload(
+		storageRef: string,
+	): Promise<WorkflowBrowserBlobPayload | null> {
+		if (!this.deps.browserArtifacts) {
+			throw new Error("Workflow browser artifact store is not configured");
+		}
+		return this.deps.browserArtifacts.getBlobPayload(storageRef);
 	}
 
 	async validateApiKeyForUser(input: {

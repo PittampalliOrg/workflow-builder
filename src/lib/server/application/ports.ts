@@ -368,8 +368,15 @@ export type WorkflowBrowserArtifactRecord = {
 	updatedAt: Date;
 };
 
+export type WorkflowBrowserBlobPayload = {
+	payloadBase64: string;
+	contentType: string;
+};
+
 export interface WorkflowBrowserArtifactStore {
 	save(input: SaveWorkflowBrowserArtifactInput): Promise<WorkflowBrowserArtifactRecord>;
+	listByExecutionId(workflowExecutionId: string): Promise<WorkflowBrowserArtifactRecord[]>;
+	getBlobPayload(storageRef: string): Promise<WorkflowBrowserBlobPayload | null>;
 }
 
 export type ApiKeyRecord = {
@@ -2220,6 +2227,10 @@ export interface CredentialStore {
 
 export interface SessionRepository {
 	getSession(id: string): Promise<SessionDetail | null>;
+	getBrowserSessionTarget(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionBrowserTarget | null>;
 	listCliWorkspaceSessionCandidates(input: {
 		executionId: string;
 		limit: number;
@@ -2247,6 +2258,51 @@ export interface SessionRepository {
 	updateSessionStatusUnlessTerminated(
 		input: UpdateSessionStatusUnlessTerminatedInput,
 	): Promise<void>;
+}
+
+export type SessionBrowserTarget = {
+	sessionId: string;
+	agentSlug: string;
+};
+
+export type SessionBrowserConsoleEntry = {
+	level: string;
+	text: string;
+};
+
+export type SessionBrowserState = {
+	pageUrl: string | null;
+	pageTitle: string | null;
+	consoleTail: SessionBrowserConsoleEntry[];
+	lastUpdatedAt: string;
+};
+
+export type SessionBrowserScreenshot = {
+	jpeg: Uint8Array;
+	contentType: "image/jpeg";
+};
+
+export type SessionBrowserResult<T> =
+	| { status: "ok"; data: T }
+	| { status: "not_found" }
+	| { status: "not_ready" };
+
+export interface BrowserRuntimeClient {
+	getState(input: {
+		agentSlug: string;
+	}): Promise<Omit<SessionBrowserState, "lastUpdatedAt"> | null>;
+	takeScreenshot(input: { agentSlug: string }): Promise<{ jpeg: Uint8Array } | null>;
+}
+
+export interface SessionBrowserService {
+	getState(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionBrowserResult<SessionBrowserState>>;
+	takeScreenshot(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionBrowserResult<SessionBrowserScreenshot>>;
 }
 
 export type SessionWorkflowContext = {
@@ -2729,9 +2785,17 @@ export interface WorkflowDataService {
 	getPieceExecutionByIdempotencyKey(
 		idempotencyKey: string,
 	): Promise<PieceExecutionReadModel | null>;
+	getSessionBrowserTarget(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionBrowserTarget | null>;
 	saveWorkflowBrowserArtifact(
 		input: SaveWorkflowBrowserArtifactInput,
 	): Promise<WorkflowBrowserArtifactRecord>;
+	listWorkflowBrowserArtifactsByExecutionId(
+		workflowExecutionId: string,
+	): Promise<WorkflowBrowserArtifactRecord[]>;
+	getWorkflowBrowserBlobPayload(storageRef: string): Promise<WorkflowBrowserBlobPayload | null>;
 	validateApiKeyForUser(input: {
 		authorizationHeader: string | null;
 		userId: string;

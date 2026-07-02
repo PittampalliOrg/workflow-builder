@@ -1,6 +1,6 @@
 import { error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getBrowserBlobPayload } from '$lib/server/browser-artifacts';
+import { getApplicationAdapters } from '$lib/server/application';
 
 export const GET: RequestHandler = async ({ url }) => {
 	const storageRef = url.searchParams.get('storageRef')?.trim();
@@ -8,7 +8,9 @@ export const GET: RequestHandler = async ({ url }) => {
 		throw error(400, 'storageRef is required');
 	}
 
-	const payload = await getBrowserBlobPayload(storageRef);
+	const payload = await getApplicationAdapters().workflowData.getWorkflowBrowserBlobPayload(
+		storageRef
+	);
 	if (!payload) {
 		throw error(404, 'Blob not found');
 	}

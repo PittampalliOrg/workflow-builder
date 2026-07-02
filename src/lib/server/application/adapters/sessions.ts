@@ -4,6 +4,7 @@ import type {
 	CreatePeerSessionInput,
 	CreateWorkflowEnsureSessionInput,
 	PeerSessionRecord,
+	SessionBrowserTarget,
 	SessionEventLog,
 	SessionRepository,
 	SessionTraceLifecycleStore,
@@ -65,6 +66,28 @@ export class CurrentSessionRepository implements SessionRepository {
 
 	getSession(id: string): Promise<SessionDetail | null> {
 		return getSession(id);
+	}
+
+	async getBrowserSessionTarget(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionBrowserTarget | null> {
+		const database = requireDb(this.database);
+		const [row] = await database
+			.select({
+				sessionId: sessions.id,
+				agentSlug: agents.slug,
+			})
+			.from(sessions)
+			.innerJoin(agents, eq(agents.id, sessions.agentId))
+			.where(
+				and(
+					eq(sessions.id, input.sessionId),
+					input.projectId ? eq(agents.projectId, input.projectId) : undefined,
+				),
+			)
+			.limit(1);
+		return row ?? null;
 	}
 
 	async listCliWorkspaceSessionCandidates(input: {

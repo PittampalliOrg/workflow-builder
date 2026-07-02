@@ -1,7 +1,8 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { getApplicationAdapters } from '$lib/server/application';
+import type { WorkflowBrowserCaptureStepInput } from '$lib/server/application/ports';
 import { validateInternalToken } from '$lib/server/internal-auth';
-import { saveBrowserArtifact, type WorkflowBrowserCaptureStep } from '$lib/server/browser-artifacts';
 
 type ArtifactBody = {
 	workflowExecutionId?: string;
@@ -11,7 +12,7 @@ type ArtifactBody = {
 	baseUrl?: string;
 	status?: 'pending' | 'completed' | 'partial' | 'failed';
 	metadata?: Record<string, unknown> | null;
-	steps?: WorkflowBrowserCaptureStep[];
+	steps?: WorkflowBrowserCaptureStepInput[];
 	screenshots?: Array<{
 		payloadBase64: string;
 		contentType?: string;
@@ -63,7 +64,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	try {
-		const artifact = await saveBrowserArtifact({
+		const artifact = await getApplicationAdapters().workflowData.saveWorkflowBrowserArtifact({
 			workflowExecutionId: body.workflowExecutionId,
 			workflowId: body.workflowId,
 			nodeId: body.nodeId,
@@ -73,7 +74,6 @@ export const POST: RequestHandler = async ({ request }) => {
 			metadata: body.metadata ?? null,
 			steps: Array.isArray(body.steps) ? body.steps : [],
 			screenshots: (body.screenshots ?? []).map((entry, index) => ({
-				kind: 'screenshot',
 				label: entry.label ?? `Screenshot ${index + 1}`,
 				payloadBase64: entry.payloadBase64,
 				contentType: entry.contentType,

@@ -1,8 +1,7 @@
 /**
  * Workflow artifacts read helpers.
  *
- * Mirrors `browser-artifacts.ts:listBrowserArtifactsByExecutionId` but for the
- * generic `workflow_artifacts` table — feeds the run-detail UI's snapshot.
+ * Reads the generic `workflow_artifacts` table for the run-detail UI snapshot.
  */
 import { getApplicationAdapters } from '$lib/server/application';
 import type { WorkflowArtifactRecord as ApplicationWorkflowArtifactRecord } from '$lib/server/application/ports';

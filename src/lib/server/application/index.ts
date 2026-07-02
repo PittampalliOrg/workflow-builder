@@ -53,7 +53,9 @@ import {
 	LegacyMlflowSessionTraceLifecycle,
 	PostgresSessionEventLog,
 } from "$lib/server/application/adapters/sessions";
+import { PlaywrightMcpBrowserRuntimeClient } from "$lib/server/application/adapters/browser-runtime";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
+import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 
 export { getEventBusAdapter } from "$lib/server/application/event-bus";
@@ -111,6 +113,7 @@ export function getApplicationAdapters(
 	let codeCheckpoints: PostgresWorkflowCodeCheckpointStore | undefined;
 	let evaluationArtifacts: PostgresEvaluationArtifactStore | undefined;
 	let workflowData: ApplicationWorkflowDataService | undefined;
+	let sessionBrowser: ApplicationSessionBrowserService | undefined;
 	const getDatabase = () => (database ??= requirePostgresDb());
 	const getWorkflowDefinitions = () =>
 		(workflowDefinitions ??= new PostgresWorkflowDefinitionRepository(getDatabase()));
@@ -179,6 +182,45 @@ export function getApplicationAdapters(
 			? new KroPreviewEnvironmentProvisioner()
 			: new SandboxExecutionPreviewEnvironmentProvisioner();
 	const workflowScheduler = new DaprWorkflowScheduler();
+	const getWorkflowData = () =>
+		(workflowData ??= new ApplicationWorkflowDataService({
+			workflowDefinitions: getWorkflowDefinitions(),
+			workflowTriggers: getWorkflowTriggers(),
+			userProfiles: getUserProfiles(),
+			settings: getSettings(),
+			mcpConnections: getMcpConnections(),
+			hostedMcpServers: getHostedMcpServers(),
+			mcpRuns: getMcpRuns(),
+			appConnections: getAppConnections(),
+			adminPieces: getAdminPieces(),
+			apiKeys: getApiKeys(),
+			workspaceProjects: getWorkspaceProjects(),
+			pieceCatalog: getPieceCatalog(),
+			pieceExecutions: getPieceExecutions(),
+			browserArtifacts: getBrowserArtifacts(),
+			codeFunctionCatalog: getCodeFunctionCatalog(),
+			benchmarkBrowser: getBenchmarkBrowser(),
+			benchmarkRuns: getBenchmarkRuns(),
+			workflowExecutions: getWorkflowExecutions(),
+			sessions: getSessions(),
+			sessionEvents: getSessionEvents(),
+			sessionTraceLifecycle: getSessionTraceLifecycle(),
+			peerAgentResolver: getPeerAgentResolver(),
+			workflowAgentReads: getPeerAgentResolver(),
+			codeCheckpoints: getCodeCheckpoints(),
+			evaluationArtifacts: getEvaluationArtifacts(),
+			workflowFiles: getWorkflowFiles(),
+			sandboxInventory: getSandboxInventory(),
+			sandboxRuntimeInventory: new OpenShellSandboxRuntimeInventory(),
+			sessionEventNotifications: getSessionEventNotifications(),
+			artifactStore: getArtifactStore(),
+			workspaceSessions: getWorkspaceSessions(),
+			agentRuns: getAgentRuns(),
+			planArtifacts: getPlanArtifacts(),
+			traceLineage: getTraceLineage(),
+			usageReporting: getUsageReporting(),
+			workflowScheduler,
+		}));
 	return {
 		config,
 		get workflowDefinitions() {
@@ -191,43 +233,12 @@ export function getApplicationAdapters(
 			return getArtifactStore();
 		},
 		get workflowData() {
-			return (workflowData ??= new ApplicationWorkflowDataService({
-				workflowDefinitions: getWorkflowDefinitions(),
-				workflowTriggers: getWorkflowTriggers(),
-				userProfiles: getUserProfiles(),
-				settings: getSettings(),
-				mcpConnections: getMcpConnections(),
-				hostedMcpServers: getHostedMcpServers(),
-				mcpRuns: getMcpRuns(),
-				appConnections: getAppConnections(),
-				adminPieces: getAdminPieces(),
-				apiKeys: getApiKeys(),
-				workspaceProjects: getWorkspaceProjects(),
-				pieceCatalog: getPieceCatalog(),
-				pieceExecutions: getPieceExecutions(),
-				browserArtifacts: getBrowserArtifacts(),
-				codeFunctionCatalog: getCodeFunctionCatalog(),
-				benchmarkBrowser: getBenchmarkBrowser(),
-				benchmarkRuns: getBenchmarkRuns(),
-				workflowExecutions: getWorkflowExecutions(),
-				sessions: getSessions(),
-				sessionEvents: getSessionEvents(),
-				sessionTraceLifecycle: getSessionTraceLifecycle(),
-				peerAgentResolver: getPeerAgentResolver(),
-				workflowAgentReads: getPeerAgentResolver(),
-				codeCheckpoints: getCodeCheckpoints(),
-				evaluationArtifacts: getEvaluationArtifacts(),
-				workflowFiles: getWorkflowFiles(),
-				sandboxInventory: getSandboxInventory(),
-				sandboxRuntimeInventory: new OpenShellSandboxRuntimeInventory(),
-				sessionEventNotifications: getSessionEventNotifications(),
-				artifactStore: getArtifactStore(),
-				workspaceSessions: getWorkspaceSessions(),
-				agentRuns: getAgentRuns(),
-				planArtifacts: getPlanArtifacts(),
-				traceLineage: getTraceLineage(),
-				usageReporting: getUsageReporting(),
-				workflowScheduler,
+			return getWorkflowData();
+		},
+		get sessionBrowser() {
+			return (sessionBrowser ??= new ApplicationSessionBrowserService({
+				workflowData: getWorkflowData(),
+				browserRuntime: new PlaywrightMcpBrowserRuntimeClient(),
 			}));
 		},
 		workflowScheduler,

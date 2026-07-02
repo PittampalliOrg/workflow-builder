@@ -476,6 +476,10 @@ function fakeSessionEventNotifications(): WorkflowSessionEventNotificationSource
 function fakeSessions(): SessionRepository {
 	return {
 		getSession: vi.fn(async () => null),
+		getBrowserSessionTarget: vi.fn(async () => ({
+			sessionId: "session-1",
+			agentSlug: "browser-agent",
+		})),
 		listCliWorkspaceSessionCandidates: vi.fn(async () => []),
 		getWorkflowEnsureSession: vi.fn(async () => ({
 			id: "session-1",
@@ -1704,6 +1708,8 @@ describe("ApplicationWorkflowDataService", () => {
 		};
 		const browserArtifacts = {
 			save: vi.fn(async () => saved),
+			listByExecutionId: vi.fn(async () => []),
+			getBlobPayload: vi.fn(async () => null),
 		} satisfies WorkflowBrowserArtifactStore;
 		const { service } = makeService({ browserArtifacts });
 		const input = {
@@ -1724,6 +1730,70 @@ describe("ApplicationWorkflowDataService", () => {
 
 		await expect(service.saveWorkflowBrowserArtifact(input)).resolves.toEqual(saved);
 		expect(browserArtifacts.save).toHaveBeenCalledWith(input);
+	});
+
+	it("delegates browser session target resolution through the session repository", async () => {
+		const sessions = {
+			...fakeSessions(),
+			getBrowserSessionTarget: vi.fn(async () => ({
+				sessionId: "session-1",
+				agentSlug: "browser-agent",
+			})),
+		} satisfies SessionRepository;
+		const { service } = makeService({ sessions });
+
+		await expect(
+			service.getSessionBrowserTarget({
+				sessionId: "session-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual({
+			sessionId: "session-1",
+			agentSlug: "browser-agent",
+		});
+		expect(sessions.getBrowserSessionTarget).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			projectId: "project-1",
+		});
+	});
+
+	it("delegates browser artifact reads to the browser artifact store", async () => {
+		const saved = {
+			id: "bwf_1",
+			workflowExecutionId: "exec-1",
+			workflowId: "wf-1",
+			nodeId: "publish_shot",
+			workspaceRef: null,
+			artifactType: "capture_flow_v1" as const,
+			artifactVersion: 1,
+			status: "completed" as const,
+			manifestJson: {},
+			createdAt: new Date("2026-01-01T00:00:00.000Z"),
+			updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+		};
+		const browserArtifacts = {
+			save: vi.fn(async () => saved),
+			listByExecutionId: vi.fn(async () => [saved]),
+			getBlobPayload: vi.fn(async () => ({
+				payloadBase64: "aGVsbG8=",
+				contentType: "image/png",
+			})),
+		} satisfies WorkflowBrowserArtifactStore;
+		const { service } = makeService({ browserArtifacts });
+
+		await expect(
+			service.listWorkflowBrowserArtifactsByExecutionId("exec-1"),
+		).resolves.toEqual([saved]);
+		await expect(
+			service.getWorkflowBrowserBlobPayload("workflow-browser-artifacts/exec-1/bwf_1/shot.png"),
+		).resolves.toEqual({
+			payloadBase64: "aGVsbG8=",
+			contentType: "image/png",
+		});
+		expect(browserArtifacts.listByExecutionId).toHaveBeenCalledWith("exec-1");
+		expect(browserArtifacts.getBlobPayload).toHaveBeenCalledWith(
+			"workflow-browser-artifacts/exec-1/bwf_1/shot.png",
+		);
 	});
 
 	it("loads user profile data through the user profile port", async () => {

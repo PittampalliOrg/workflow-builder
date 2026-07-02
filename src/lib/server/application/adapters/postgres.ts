@@ -2796,6 +2796,24 @@ function browserArtifactStep(input: WorkflowBrowserCaptureStepInput, index: numb
 	};
 }
 
+function toWorkflowBrowserArtifactRecord(
+	row: typeof workflowBrowserArtifacts.$inferSelect,
+): WorkflowBrowserArtifactRecord {
+	return {
+		id: row.id,
+		workflowExecutionId: row.workflowExecutionId,
+		workflowId: row.workflowId,
+		nodeId: row.nodeId,
+		workspaceRef: row.workspaceRef,
+		artifactType: row.artifactType,
+		artifactVersion: row.artifactVersion,
+		status: row.status,
+		manifestJson: (row.manifestJson ?? {}) as Record<string, unknown>,
+		createdAt: row.createdAt,
+		updatedAt: row.updatedAt,
+	};
+}
+
 export class PostgresWorkflowBrowserArtifactStore implements WorkflowBrowserArtifactStore {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
@@ -2877,19 +2895,31 @@ export class PostgresWorkflowBrowserArtifactStore implements WorkflowBrowserArti
 			})
 			.returning();
 		if (!row) throw new Error("Failed to save workflow browser artifact");
-		return {
-			id: row.id,
-			workflowExecutionId: row.workflowExecutionId,
-			workflowId: row.workflowId,
-			nodeId: row.nodeId,
-			workspaceRef: row.workspaceRef,
-			artifactType: row.artifactType,
-			artifactVersion: row.artifactVersion,
-			status: row.status,
-			manifestJson: row.manifestJson,
-			createdAt: row.createdAt,
-			updatedAt: row.updatedAt,
-		};
+		return toWorkflowBrowserArtifactRecord(row);
+	}
+
+	async listByExecutionId(
+		workflowExecutionId: string,
+	): Promise<WorkflowBrowserArtifactRecord[]> {
+		const rows = await this.database
+			.select()
+			.from(workflowBrowserArtifacts)
+			.where(eq(workflowBrowserArtifacts.workflowExecutionId, workflowExecutionId))
+			.orderBy(desc(workflowBrowserArtifacts.createdAt));
+		return rows.map((row) => toWorkflowBrowserArtifactRecord(row));
+	}
+
+	async getBlobPayload(
+		storageRef: string,
+	): Promise<{ payloadBase64: string; contentType: string } | null> {
+		const [row] = await this.database
+			.select()
+			.from(workflowBrowserArtifactBlobPayloads)
+			.where(eq(workflowBrowserArtifactBlobPayloads.storageRef, storageRef))
+			.limit(1);
+		return row
+			? { payloadBase64: row.payloadText, contentType: row.contentType }
+			: null;
 	}
 }
 

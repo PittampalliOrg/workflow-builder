@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gt } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
+import { getApplicationAdapters } from '$lib/server/application';
 import {
 	sessionEvents,
 	sessions,
@@ -9,7 +10,6 @@ import {
 	workflowExecutions,
 	workflowWorkspaceSessions
 } from '$lib/server/db/schema';
-import { listBrowserArtifactsByExecutionId } from '$lib/server/browser-artifacts';
 import {
 	listWorkflowArtifactsByExecutionId,
 	type WorkflowArtifactRecord
@@ -519,7 +519,7 @@ export async function loadExecutionReadModel(
 
 	const [steps, browserArtifacts, agentRuns, workspaces, agentEvents, traceIds, artifacts] = await Promise.all([
 		readExecutionSteps(executionId),
-		listBrowserArtifactsByExecutionId(executionId),
+		getApplicationAdapters().workflowData.listWorkflowBrowserArtifactsByExecutionId(executionId),
 		readExecutionAgentRuns(executionId),
 		readExecutionWorkspaces(executionId),
 		options?.includeAgentEvents === false ? Promise.resolve([]) : fetchRecentAgentEvents(executionId),
