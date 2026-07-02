@@ -1469,6 +1469,46 @@ export type LiveLimitReadModel = LiveLimitSnapshot & {
 	asOf: string;
 };
 
+export type SandboxExecutionRecord = {
+	executionId: string;
+	workflowId: string | null;
+	workflowName: string | null;
+	status: string;
+	startedAt: Date | null;
+	completedAt: Date | null;
+};
+
+export type SandboxExecutionReadModel = {
+	executionId: string;
+	workflowId: string | null;
+	workflowName: string;
+	status: string;
+	startedAt: string | null;
+	completedAt: string | null;
+};
+
+export type SandboxRuntimeRecord = {
+	name: string;
+	phase: string;
+	createdAt?: string | null;
+};
+
+export type SandboxStatsReadModel = {
+	total: number;
+	byPhase: Record<string, number>;
+	executions24h: number;
+	avgAgeMinutes: number;
+};
+
+export interface SandboxInventoryRepository {
+	listRecentExecutionsForSandbox(sandboxName: string): Promise<SandboxExecutionRecord[]>;
+	countExecutionsSince(cutoff: Date): Promise<number>;
+}
+
+export interface SandboxRuntimeInventory {
+	listSandboxes(): Promise<SandboxRuntimeRecord[]>;
+}
+
 export interface UsageReportingRepository {
 	getUsageAnalytics(input: {
 		scope: UsageReportingScope;
@@ -1973,6 +2013,8 @@ export interface WorkflowDataService {
 		projectId?: string | null;
 		now?: Date;
 	}): Promise<LiveLimitReadModel>;
+	listSandboxExecutions(sandboxName: string): Promise<SandboxExecutionReadModel[]>;
+	getSandboxStats(input?: { now?: Date }): Promise<SandboxStatsReadModel>;
 	getWorkflowByRef(
 		ref: WorkflowRef & { lookup?: "id" | "name" | "auto" },
 	): Promise<WorkflowDefinition | null>;

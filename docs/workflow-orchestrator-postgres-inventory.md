@@ -11,7 +11,7 @@ workspace workflow, service graph, connections, benchmark, top-level
 connections redirect, settings OAuth/profile, settings members, admin pieces,
 root UI-facing route, MCP connection, and app-connection CRUD/OAuth/decrypt
 route slices, the project members API route family, and the usage/cost/live
-limits reporting route family.
+limits reporting route family, plus sandbox executions/stats read APIs.
 
 ## Strict HTTP Runtime Paths
 
@@ -369,11 +369,20 @@ The first UI-facing route has also moved behind the application service:
   `agents` SQL is confined to `PostgresUsageReportingRepository`. Live limit
   token windows now use `agent.llm_usage` session events instead of the legacy
   `sessions.usage` JSON field.
+- `src/routes/api/sandboxes/[name]/executions/+server.ts` and
+  `src/routes/api/sandboxes/stats/+server.ts` now read sandbox execution
+  inventory and aggregate stats through workflow-data application ports. Recent
+  execution lookup and 24-hour execution counting SQL is confined to
+  `PostgresSandboxInventoryRepository`; live OpenShell sandbox listing is behind
+  the `SandboxRuntimeInventory` adapter. The routes preserve the legacy
+  best-effort behavior by returning empty execution/stat payloads when the
+  Postgres adapter is unavailable.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
 workspace/root UI, settings, connections, admin-pieces, project-members, and
-usage/cost/live-limits route subset is also clean.
+usage/cost/live-limits route subset is also clean. The scanned sandbox
+executions/stats route subset is also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:

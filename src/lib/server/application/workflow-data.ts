@@ -89,6 +89,8 @@ import type {
 	WorkflowPlanArtifactStore,
 	WorkflowRef,
 	UsageReportingRepository,
+	SandboxInventoryRepository,
+	SandboxRuntimeInventory,
 	TraceLineageStore,
 	UpdateWorkflowDefinitionInput,
 	UpsertTraceLineageLinksInput,
@@ -645,6 +647,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			planArtifacts: WorkflowPlanArtifactStore;
 			traceLineage: TraceLineageStore;
 			usageReporting?: UsageReportingRepository;
+			sandboxInventory?: SandboxInventoryRepository;
+			sandboxRuntimeInventory?: SandboxRuntimeInventory;
 			workflowScheduler?: WorkflowScheduler;
 		},
 	) {}
@@ -2318,6 +2322,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.usageReporting;
 	}
 
+	private requireSandboxInventory(): SandboxInventoryRepository {
+		if (!this.deps.sandboxInventory) {
+			throw new Error("Sandbox inventory repository not configured");
+		}
+		return this.deps.sandboxInventory;
+	}
+
 	private async requireProjectAdmin(input: {
 		projectId: string;
 		userId: string;
@@ -2617,6 +2628,54 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			activeSessions: snapshot.activeSessions,
 			byModel: snapshot.byModel,
 			asOf: now.toISOString(),
+		};
+	}
+
+	async listSandboxExecutions(sandboxName: string) {
+		const rows = await this.requireSandboxInventory().listRecentExecutionsForSandbox(sandboxName);
+		return rows.map((row) => ({
+			executionId: row.executionId,
+			workflowId: row.workflowId,
+			workflowName: row.workflowName ?? "Unknown",
+			status: row.status,
+			startedAt: row.startedAt?.toISOString() ?? null,
+			completedAt: row.completedAt?.toISOString() ?? null,
+		}));
+	}
+
+	async getSandboxStats(input: { now?: Date } = {}) {
+		const sandboxes = await this.deps.sandboxRuntimeInventory
+			?.listSandboxes()
+			.catch(() => []);
+		const sandboxRows = sandboxes ?? [];
+		const byPhase: Record<string, number> = {};
+		for (const sandbox of sandboxRows) {
+			const phase = String(sandbox.phase ?? "UNKNOWN");
+			byPhase[phase] = (byPhase[phase] ?? 0) + 1;
+		}
+
+		const now = input.now ?? new Date();
+		const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+		const executions24h = await this.requireSandboxInventory()
+			.countExecutionsSince(cutoff)
+			.catch(() => 0);
+
+		const ages = sandboxRows
+			.map((sandbox) => {
+				const created = sandbox.createdAt ? new Date(String(sandbox.createdAt)).getTime() : 0;
+				return created > 0 ? (now.getTime() - created) / 60000 : 0;
+			})
+			.filter((age) => age > 0);
+		const avgAgeMinutes =
+			ages.length > 0
+				? Math.round(ages.reduce((total, age) => total + age, 0) / ages.length)
+				: 0;
+
+		return {
+			total: sandboxRows.length,
+			byPhase,
+			executions24h,
+			avgAgeMinutes,
 		};
 	}
 

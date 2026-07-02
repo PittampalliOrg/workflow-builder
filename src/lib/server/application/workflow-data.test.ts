@@ -12,6 +12,8 @@ import type {
 	SettingsRepository,
 	TraceLineageStore,
 	UsageReportingRepository,
+	SandboxInventoryRepository,
+	SandboxRuntimeInventory,
 	WorkflowDefinition,
 	WorkflowDefinitionRepository,
 	WorkflowTriggerStore,
@@ -515,6 +517,39 @@ function fakeUsageReporting(): UsageReportingRepository {
 	};
 }
 
+function fakeSandboxInventory(): SandboxInventoryRepository {
+	return {
+		listRecentExecutionsForSandbox: vi.fn(async () => [
+			{
+				executionId: "exec-1",
+				workflowId: "wf-1",
+				workflowName: null,
+				status: "completed",
+				startedAt: new Date("2026-07-01T00:00:00.000Z"),
+				completedAt: null,
+			},
+		]),
+		countExecutionsSince: vi.fn(async () => 7),
+	};
+}
+
+function fakeSandboxRuntimeInventory(): SandboxRuntimeInventory {
+	return {
+		listSandboxes: vi.fn(async () => [
+			{
+				name: "sandbox-ready",
+				phase: "READY",
+				createdAt: "2026-07-02T11:30:00.000Z",
+			},
+			{
+				name: "sandbox-provisioning",
+				phase: "PROVISIONING",
+				createdAt: "2026-07-02T11:00:00.000Z",
+			},
+		]),
+	};
+}
+
 function makeService(options: {
 	byId?: WorkflowDefinition | null;
 	byName?: WorkflowDefinition | null;
@@ -696,6 +731,36 @@ function makeServiceWithUsageReporting(usageReporting: UsageReportingRepository)
 		planArtifacts: {} as WorkflowPlanArtifactStore,
 		traceLineage: {} as TraceLineageStore,
 		usageReporting,
+	});
+}
+
+function makeServiceWithSandboxInventory(
+	sandboxInventory: SandboxInventoryRepository,
+	sandboxRuntimeInventory: SandboxRuntimeInventory = fakeSandboxRuntimeInventory(),
+) {
+	return new ApplicationWorkflowDataService({
+		workflowDefinitions: makeService({}).workflowDefinitions,
+		workflowTriggers: fakeWorkflowTriggers(),
+		userProfiles: fakeUserProfiles(),
+		settings: fakeSettings(),
+		mcpConnections: fakeMcpConnections(),
+		hostedMcpServers: fakeHostedMcpServers(),
+		mcpRuns: fakeMcpRuns(),
+		appConnections: fakeAppConnections(),
+		adminPieces: fakeAdminPieces(),
+		apiKeys: fakeApiKeys(),
+		workspaceProjects: fakeWorkspaceProjects(),
+		pieceCatalog: fakePieceCatalog(),
+		benchmarkBrowser: fakeBenchmarkBrowser(),
+		workflowExecutions: {} as WorkflowExecutionRepository,
+		sessionEventNotifications: fakeSessionEventNotifications(),
+		artifactStore: {} as ArtifactStore,
+		workspaceSessions: {} as WorkspaceSessionStore,
+		agentRuns: {} as WorkflowAgentRunStore,
+		planArtifacts: {} as WorkflowPlanArtifactStore,
+		traceLineage: {} as TraceLineageStore,
+		sandboxInventory,
+		sandboxRuntimeInventory,
 	});
 }
 
@@ -2990,6 +3055,49 @@ describe("ApplicationWorkflowDataService", () => {
 			scope: { userId: "user-1", projectId: "project-1" },
 			now,
 		});
+	});
+
+	it("lists recent sandbox executions through sandbox inventory ports", async () => {
+		const sandboxInventory = fakeSandboxInventory();
+		const service = makeServiceWithSandboxInventory(sandboxInventory);
+
+		await expect(service.listSandboxExecutions("dapr-agent-py")).resolves.toEqual([
+			{
+				executionId: "exec-1",
+				workflowId: "wf-1",
+				workflowName: "Unknown",
+				status: "completed",
+				startedAt: "2026-07-01T00:00:00.000Z",
+				completedAt: null,
+			},
+		]);
+		expect(sandboxInventory.listRecentExecutionsForSandbox).toHaveBeenCalledWith(
+			"dapr-agent-py",
+		);
+	});
+
+	it("builds sandbox stats from runtime inventory and execution counts", async () => {
+		const sandboxInventory = fakeSandboxInventory();
+		const sandboxRuntimeInventory = fakeSandboxRuntimeInventory();
+		const service = makeServiceWithSandboxInventory(
+			sandboxInventory,
+			sandboxRuntimeInventory,
+		);
+		const now = new Date("2026-07-02T12:00:00.000Z");
+
+		await expect(service.getSandboxStats({ now })).resolves.toEqual({
+			total: 2,
+			byPhase: {
+				READY: 1,
+				PROVISIONING: 1,
+			},
+			executions24h: 7,
+			avgAgeMinutes: 45,
+		});
+		expect(sandboxRuntimeInventory.listSandboxes).toHaveBeenCalled();
+		expect(sandboxInventory.countExecutionsSince).toHaveBeenCalledWith(
+			new Date("2026-07-01T12:00:00.000Z"),
+		);
 	});
 
 	it("composes workspace workflow summaries through application ports", async () => {

@@ -4,6 +4,7 @@ import {
 	count,
 	desc,
 	eq,
+	gte,
 	gt,
 	inArray,
 	isNotNull,
@@ -77,6 +78,8 @@ import type {
 	ApiKeyStore,
 	ArtifactStore,
 	BenchmarkBrowserRepository,
+	SandboxExecutionRecord,
+	SandboxInventoryRepository,
 	CreateWorkflowDefinitionInput,
 	CreateWorkflowTriggerInput,
 	CreateWorkflowExecutionInput,
@@ -444,6 +447,70 @@ export class PostgresUsageReportingRepository implements UsageReportingRepositor
 				tokensOutLastMinute: Number(row.tokens_out_last_minute),
 			})),
 		};
+	}
+}
+
+export class PostgresSandboxInventoryRepository implements SandboxInventoryRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async listRecentExecutionsForSandbox(sandboxName: string): Promise<SandboxExecutionRecord[]> {
+		const runtimeName = sandboxName.trim();
+		if (!runtimeName) return [];
+		let executionIds: string[] | null = null;
+		if (runtimeName === "dapr-agent-py" || runtimeName === "dapr-agent-py-testing") {
+			const sessionRows = await this.database
+				.select({ workflowExecutionId: sessions.workflowExecutionId })
+				.from(sessions)
+				.where(
+					sql`${sessions.sandboxName} = ${runtimeName} AND ${sessions.workflowExecutionId} IS NOT NULL`,
+				)
+				.orderBy(desc(sessions.createdAt))
+				.limit(50);
+			executionIds = [
+				...new Set(
+					sessionRows
+						.map((row) => row.workflowExecutionId)
+						.filter((id): id is string => typeof id === "string" && id.length > 0),
+				),
+			].slice(0, 10);
+			if (executionIds.length === 0) return [];
+		}
+
+		const rows = await this.database
+			.select({
+				id: workflowExecutions.id,
+				workflowId: workflowExecutions.workflowId,
+				workflowName: workflows.name,
+				status: workflowExecutions.status,
+				startedAt: workflowExecutions.startedAt,
+				completedAt: workflowExecutions.completedAt,
+			})
+			.from(workflowExecutions)
+			.leftJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
+			.where(
+				executionIds && executionIds.length > 0
+					? inArray(workflowExecutions.id, executionIds)
+					: sql`${workflowExecutions.output}::text LIKE ${`%${runtimeName}%`}`,
+			)
+			.orderBy(desc(workflowExecutions.startedAt))
+			.limit(10);
+
+		return rows.map((row) => ({
+			executionId: row.id,
+			workflowId: row.workflowId,
+			workflowName: row.workflowName ?? null,
+			status: row.status,
+			startedAt: row.startedAt ?? null,
+			completedAt: row.completedAt ?? null,
+		}));
+	}
+
+	async countExecutionsSince(cutoff: Date): Promise<number> {
+		const [row] = await this.database
+			.select({ count: sql<number>`count(*)` })
+			.from(workflowExecutions)
+			.where(gte(workflowExecutions.startedAt, cutoff));
+		return Number(row?.count ?? 0);
 	}
 }
 

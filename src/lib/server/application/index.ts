@@ -12,6 +12,7 @@ import {
 	PostgresMcpConnectionRepository,
 	PostgresMcpRunRepository,
 	PostgresPieceCatalogRepository,
+	PostgresSandboxInventoryRepository,
 	PostgresSettingsRepository,
 	PostgresTraceLineageStore,
 	PostgresUsageReportingRepository,
@@ -35,7 +36,10 @@ import {
 	KroPreviewEnvironmentProvisioner,
 	SandboxExecutionPreviewEnvironmentProvisioner,
 } from "$lib/server/application/adapters/preview";
-import { WorkspaceRuntimeSandboxProvisioner } from "$lib/server/application/adapters/sandbox";
+import {
+	OpenShellSandboxRuntimeInventory,
+	WorkspaceRuntimeSandboxProvisioner,
+} from "$lib/server/application/adapters/sandbox";
 import {
 	CurrentSessionRepository,
 	PostgresSessionEventLog,
@@ -76,6 +80,7 @@ export function getApplicationAdapters(
 	let pieceCatalog: PostgresPieceCatalogRepository | undefined;
 	let benchmarkBrowser: PostgresBenchmarkBrowserRepository | undefined;
 	let workflowExecutions: PostgresWorkflowExecutionRepository | undefined;
+	let sandboxInventory: PostgresSandboxInventoryRepository | undefined;
 	let artifactStore: PostgresArtifactStore | undefined;
 	let workspaceSessions: PostgresWorkspaceSessionStore | undefined;
 	let agentRuns: PostgresWorkflowAgentRunStore | undefined;
@@ -113,6 +118,8 @@ export function getApplicationAdapters(
 		(benchmarkBrowser ??= new PostgresBenchmarkBrowserRepository(getDatabase()));
 	const getWorkflowExecutions = () =>
 		(workflowExecutions ??= new PostgresWorkflowExecutionRepository(getDatabase()));
+	const getSandboxInventory = () =>
+		(sandboxInventory ??= new PostgresSandboxInventoryRepository(getDatabase()));
 	const getArtifactStore = () =>
 		(artifactStore ??= new PostgresArtifactStore(getDatabase()));
 	const getWorkspaceSessions = () =>
@@ -159,6 +166,8 @@ export function getApplicationAdapters(
 				pieceCatalog: getPieceCatalog(),
 				benchmarkBrowser: getBenchmarkBrowser(),
 				workflowExecutions: getWorkflowExecutions(),
+				sandboxInventory: getSandboxInventory(),
+				sandboxRuntimeInventory: new OpenShellSandboxRuntimeInventory(),
 				sessionEventNotifications: getSessionEventNotifications(),
 				artifactStore: getArtifactStore(),
 				workspaceSessions: getWorkspaceSessions(),
