@@ -28,6 +28,7 @@ import type {
 	PieceExecutionRepository,
 	WorkflowTriggerStore,
 	WorkflowAgentRunStore,
+	WorkflowAgentReadRepository,
 	WorkflowCodeCheckpointStore,
 	WorkflowExecutionRepository,
 	PieceCatalogRepository,
@@ -580,6 +581,17 @@ function fakePeerAgentResolver(): PeerAgentResolver {
 	};
 }
 
+function fakeWorkflowAgentReads(): WorkflowAgentReadRepository {
+	return {
+		getWorkflowAgentRuntimeIdentity: vi.fn(async (agentId) => ({
+			agentId,
+			slug: "test-agent",
+			runtimeAppId: "agent-runtime-test-agent",
+			appId: "agent-runtime-test-agent",
+		})),
+	};
+}
+
 function fakeWorkspaceProjects(): WorkspaceProjectRepository {
 	const createdAt = new Date("2026-01-01T00:00:00.000Z");
 	const updatedAt = new Date("2026-01-01T00:00:00.000Z");
@@ -797,6 +809,7 @@ function makeService(options: {
 	evaluationArtifacts?: EvaluationArtifactStore;
 	sessionTraceLifecycle?: SessionTraceLifecycleStore;
 	peerAgentResolver?: PeerAgentResolver;
+	workflowAgentReads?: WorkflowAgentReadRepository;
 }) {
 	const workflowDefinitions = {
 		getById: vi.fn(async () => options.byId ?? null),
@@ -837,6 +850,7 @@ function makeService(options: {
 		evaluationArtifacts: options.evaluationArtifacts,
 		sessionTraceLifecycle: options.sessionTraceLifecycle,
 		peerAgentResolver: options.peerAgentResolver,
+		workflowAgentReads: options.workflowAgentReads ?? fakeWorkflowAgentReads(),
 		sessionEventNotifications: fakeSessionEventNotifications(),
 		artifactStore: {} as ArtifactStore,
 		workspaceSessions: {} as WorkspaceSessionStore,
@@ -1458,6 +1472,23 @@ describe("ApplicationWorkflowDataService", () => {
 			ok: true,
 			benchmarkExecutionClass: null,
 		});
+	});
+
+	it("resolves workflow agent runtime identity through the agent read port", async () => {
+		const workflowAgentReads = fakeWorkflowAgentReads();
+		const { service } = makeService({ workflowAgentReads });
+
+		await expect(
+			service.getWorkflowAgentRuntimeIdentity("agent-1"),
+		).resolves.toEqual({
+			agentId: "agent-1",
+			slug: "test-agent",
+			runtimeAppId: "agent-runtime-test-agent",
+			appId: "agent-runtime-test-agent",
+		});
+		expect(workflowAgentReads.getWorkflowAgentRuntimeIdentity).toHaveBeenCalledWith(
+			"agent-1",
+		);
 	});
 
 	it("ensures peer sessions through session and peer-agent ports", async () => {

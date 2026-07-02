@@ -214,6 +214,7 @@ export function getApplicationAdapters(
 				sessionEvents: getSessionEvents(),
 				sessionTraceLifecycle: getSessionTraceLifecycle(),
 				peerAgentResolver: getPeerAgentResolver(),
+				workflowAgentReads: getPeerAgentResolver(),
 				codeCheckpoints: getCodeCheckpoints(),
 				evaluationArtifacts: getEvaluationArtifacts(),
 				workflowFiles: getWorkflowFiles(),

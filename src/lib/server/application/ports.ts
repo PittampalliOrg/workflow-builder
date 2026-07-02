@@ -2344,6 +2344,13 @@ export type PeerAgentOwner = {
 	projectId: string | null;
 };
 
+export type WorkflowAgentRuntimeIdentity = {
+	agentId: string;
+	slug: string;
+	runtimeAppId: string | null;
+	appId: string;
+};
+
 export type PeerCallableAgent = {
 	slug: string;
 	agentId: string;
@@ -2368,6 +2375,12 @@ export interface PeerAgentResolver {
 		environmentId?: string | null;
 		environmentVersion?: number | null;
 	}): Promise<PeerAgentDispatchContext | null>;
+}
+
+export interface WorkflowAgentReadRepository {
+	getWorkflowAgentRuntimeIdentity(
+		agentId: string,
+	): Promise<WorkflowAgentRuntimeIdentity | null>;
 }
 
 export type EnsurePeerSessionInput = {
@@ -2726,6 +2739,9 @@ export interface WorkflowDataService {
 		environmentId?: string | null;
 		environmentVersion?: number | null;
 	}): Promise<PeerAgentDispatchContext | null>;
+	getWorkflowAgentRuntimeIdentity(
+		agentId: string,
+	): Promise<WorkflowAgentRuntimeIdentity | null>;
 	countActiveTriggeredWorkflowRuns(input: {
 		statuses: WorkflowExecutionStatus[];
 	}): Promise<number>;

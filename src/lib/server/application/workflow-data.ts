@@ -134,6 +134,8 @@ import type {
 	McpConnectionRepository,
 	PeerAgentDispatchContext,
 	PeerAgentResolver,
+	WorkflowAgentReadRepository,
+	WorkflowAgentRuntimeIdentity,
 	UpdateProjectMcpConnectionInput,
 	SavePlatformOAuthAppInput,
 	SettingsPageReadModel,
@@ -743,6 +745,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			evaluationArtifacts?: EvaluationArtifactStore;
 			sessionTraceLifecycle?: SessionTraceLifecycleStore;
 			peerAgentResolver?: PeerAgentResolver;
+			workflowAgentReads?: WorkflowAgentReadRepository;
 			sessionEventNotifications: WorkflowSessionEventNotificationSource;
 			artifactStore: ArtifactStore;
 			workflowFiles?: WorkflowFileStore;
@@ -804,6 +807,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Peer agent resolver not configured");
 		}
 		return this.deps.peerAgentResolver;
+	}
+
+	private requireWorkflowAgentReads(): WorkflowAgentReadRepository {
+		if (!this.deps.workflowAgentReads) {
+			throw new Error("Workflow agent read repository not configured");
+		}
+		return this.deps.workflowAgentReads;
 	}
 
 	getUserProfile(userId: string) {
@@ -3565,6 +3575,12 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		environmentVersion?: number | null;
 	}): Promise<PeerAgentDispatchContext | null> {
 		return this.requirePeerAgentResolver().resolvePeerAgentDispatchContext(input);
+	}
+
+	getWorkflowAgentRuntimeIdentity(
+		agentId: string,
+	): Promise<WorkflowAgentRuntimeIdentity | null> {
+		return this.requireWorkflowAgentReads().getWorkflowAgentRuntimeIdentity(agentId);
 	}
 
 	countActiveTriggeredWorkflowRuns(input: { statuses: WorkflowExecutionStatus[] }) {

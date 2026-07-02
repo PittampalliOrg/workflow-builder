@@ -3,6 +3,8 @@ import type {
 	PeerAgentDispatchContext,
 	PeerAgentOwner,
 	PeerAgentResolver,
+	WorkflowAgentReadRepository,
+	WorkflowAgentRuntimeIdentity,
 } from "$lib/server/application/ports";
 import { db as defaultDb } from "$lib/server/db";
 import { agents, users } from "$lib/server/db/schema";
@@ -12,6 +14,7 @@ import {
 } from "$lib/server/agents/registry";
 import { agentRegistryKey } from "$lib/server/agents/registry-sync";
 import { resolveEnvironmentRef } from "$lib/server/environments/registry";
+import { agentRuntimeDedicatedAppId } from "$lib/server/agents/runtime-routing";
 
 type Database = typeof defaultDb;
 
@@ -20,7 +23,9 @@ function requireDb(database: Database = defaultDb): Database {
 	return database;
 }
 
-export class RegistryPeerAgentResolver implements PeerAgentResolver {
+export class RegistryPeerAgentResolver
+	implements PeerAgentResolver, WorkflowAgentReadRepository
+{
 	constructor(private readonly database: Database = requireDb()) {}
 
 	async resolvePeerAgentOwner(peerAgentId: string): Promise<PeerAgentOwner | null> {
@@ -79,6 +84,23 @@ export class RegistryPeerAgentResolver implements PeerAgentResolver {
 			environmentConfig: (environment?.config as Record<string, unknown> | undefined) ?? null,
 			callableAgents,
 			registryTeam: resolved.projectId ?? null,
+		};
+	}
+
+	async getWorkflowAgentRuntimeIdentity(
+		agentId: string,
+	): Promise<WorkflowAgentRuntimeIdentity | null> {
+		const [row] = await this.database
+			.select({ slug: agents.slug, runtimeAppId: agents.runtimeAppId })
+			.from(agents)
+			.where(eq(agents.id, agentId))
+			.limit(1);
+		if (!row?.slug) return null;
+		return {
+			agentId,
+			slug: row.slug,
+			runtimeAppId: row.runtimeAppId ?? null,
+			appId: row.runtimeAppId ?? agentRuntimeDedicatedAppId(row.slug),
 		};
 	}
 }

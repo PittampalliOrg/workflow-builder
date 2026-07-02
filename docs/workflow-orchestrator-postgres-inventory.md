@@ -461,11 +461,12 @@ The first UI-facing route has also moved behind the application service:
 - `src/routes/api/internal/sessions/ensure-for-workflow/+server.ts` now delegates
   workflow-execution owner/project fallback, benchmark session provisioning
   gating, the deterministic workflow-session row lookup/create/update path, and
-  terminal per-run host listing to workflow-data ports. The route still owns
-  runtime command ordering, sandbox provisioning/wake, repository mounting,
-  child-input assembly, published-agent/version resolution, and the legacy
-  MLflow registration helper; those remaining direct DB reads are the next
-  slices before this route is fully hexagonal.
+  terminal per-run host listing, plus agent runtime identity and final wake-slug
+  fallback, to workflow-data ports. The route still owns runtime command
+  ordering, sandbox provisioning/wake, repository mounting, child-input
+  assembly, published-agent/version resolution, and the legacy MLflow
+  registration helper; those remaining direct DB reads are the next slices
+  before this route is fully hexagonal.
 - `src/routes/api/internal/sessions/[id]/cli-credentials/capture/+server.ts`
   now resolves the session owner through `workflowData.getSessionFileOwner`
   instead of querying `sessions.user_id` directly. Credential bundle validation,

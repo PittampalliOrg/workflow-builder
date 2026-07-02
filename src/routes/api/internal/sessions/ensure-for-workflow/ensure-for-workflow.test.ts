@@ -71,6 +71,12 @@ const mocks = vi.hoisted(() => {
 				ok: true,
 				benchmarkExecutionClass: "benchmark-class",
 			})),
+			getWorkflowAgentRuntimeIdentity: vi.fn(async (agentId: string) => ({
+				agentId,
+				slug: "test-agent",
+				runtimeAppId: "agent-runtime-test-agent",
+				appId: "agent-runtime-test-agent",
+			})),
 			getWorkflowEnsureSession: vi.fn(async () => null),
 			createWorkflowEnsureSession: vi.fn(async (input: unknown) => {
 				state.inserted.push(input);
@@ -217,6 +223,7 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 
 		expect(source).toContain("workflowData.getWorkflowExecutionSessionOwnerContext");
 		expect(source).toContain("workflowData.checkBenchmarkSessionProvisioningGate");
+		expect(source).toContain("workflowData.getWorkflowAgentRuntimeIdentity");
 		expect(source).toContain("workflowData.getWorkflowEnsureSession");
 		expect(source).toContain("workflowData.createWorkflowEnsureSession");
 		expect(source).toContain("workflowData.updateWorkflowEnsureSessionRuntime");
@@ -226,6 +233,7 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 		expect(source).not.toContain("from(workflows)");
 		expect(source).not.toContain("benchmarkRuns");
 		expect(source).not.toContain("benchmarkRunInstances");
+		expect(source).not.toContain("select({ slug: agents.slug");
 		expect(source).not.toContain("db.insert(sessions)");
 		expect(source).not.toContain("db.update(sessions)");
 		expect(source).not.toContain("from(sessions)");

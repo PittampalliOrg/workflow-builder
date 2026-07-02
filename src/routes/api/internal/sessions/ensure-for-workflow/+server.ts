@@ -463,12 +463,16 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 		// Also wake on replay/idempotent hits — the orchestrator's
 		// `ctx.call_child_workflow` still needs the target pod live.
-		const reuseRuntime = await resolveRuntimeIdentity(existing.agentId);
+		const reuseRuntime = await resolveRuntimeIdentity(
+			workflowData,
+			existing.agentId,
+		);
 		const reuseAgentAppId =
 			reuseRuntime?.appId ??
 			bodyAgentAppId ??
 			(bodyAgentSlug ? agentRuntimeDedicatedAppId(bodyAgentSlug) : null);
 		const reuseWakeSlug = await resolveWakeSlug({
+			workflowData,
 			bodyAgentSlug,
 			bodyAgentAppId: reuseAgentAppId,
 			agentConfig: dispatchAgentConfig,
@@ -592,7 +596,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		);
 		await syncAgentRuntimeCR(agentId);
 	})();
-	const runtimeIdentity = await resolveRuntimeIdentity(agentId);
+	const runtimeIdentity = await resolveRuntimeIdentity(workflowData, agentId);
 
 	// Create the session row with the deterministic id. We bypass createSession's
 	// auto-id generation by inserting directly, then reuse createSession's
@@ -693,6 +697,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		});
 	}
 	const wakeSlug = await resolveWakeSlug({
+		workflowData,
 		bodyAgentSlug,
 		bodyAgentAppId: childAgentAppId,
 		agentConfig: dispatchAgentConfig,
@@ -1041,19 +1046,12 @@ async function ensureWorkflowGoal(
 void createSession;
 
 async function resolveRuntimeIdentity(
+	workflowData: WorkflowDataService,
 	agentId: string | null,
 ): Promise<{ slug: string; appId: string } | null> {
-	if (!agentId || !db) return null;
-	const [row] = await db
-		.select({ slug: agents.slug, runtimeAppId: agents.runtimeAppId })
-		.from(agents)
-		.where(eq(agents.id, agentId))
-		.limit(1);
-	if (!row?.slug) return null;
-	return {
-		slug: row.slug,
-		appId: row.runtimeAppId ?? agentRuntimeDedicatedAppId(row.slug),
-	};
+	if (!agentId) return null;
+	const identity = await workflowData.getWorkflowAgentRuntimeIdentity(agentId);
+	return identity ? { slug: identity.slug, appId: identity.appId } : null;
 }
 
 async function resolvePublishedWorkflowAgent(params: {
@@ -1184,6 +1182,7 @@ async function ensureAgentVersionMlflowIdentity(
  * Returns null when no slug can be derived; the caller skips wake + logs.
  */
 async function resolveWakeSlug(params: {
+	workflowData: WorkflowDataService;
 	bodyAgentSlug: string | null;
 	bodyAgentAppId: string | null;
 	agentConfig: AgentConfig | null;
@@ -1204,13 +1203,11 @@ async function resolveWakeSlug(params: {
 	const inlineSlug =
 		typeof cfg?.slug === "string" && cfg.slug.trim() ? cfg.slug.trim() : null;
 	if (inlineSlug) return inlineSlug;
-	if (params.agentId && db) {
-		const [row] = await db
-			.select({ slug: agents.slug })
-			.from(agents)
-			.where(eq(agents.id, params.agentId))
-			.limit(1);
-		if (row?.slug) return row.slug;
+	if (params.agentId) {
+		const identity = await params.workflowData.getWorkflowAgentRuntimeIdentity(
+			params.agentId,
+		);
+		if (identity?.slug) return identity.slug;
 	}
 	return null;
 }
