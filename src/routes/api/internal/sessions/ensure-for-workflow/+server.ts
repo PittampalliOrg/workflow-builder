@@ -1,7 +1,9 @@
 import { error, json } from "@sveltejs/kit";
-import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { deleteSandbox } from "$lib/server/kube/client";
 import type { RequestHandler } from "./$types";
+import { getApplicationAdapters } from "$lib/server/application";
+import type { WorkflowDataService } from "$lib/server/application/ports";
 import { validateInternalToken } from "$lib/server/internal-auth";
 import { db } from "$lib/server/db";
 import {
@@ -9,8 +11,6 @@ import {
 	agentVersions,
 	benchmarkRunInstances,
 	benchmarkRuns,
-	sessions,
-	type Session,
 	workflowExecutions,
 	workflows,
 } from "$lib/server/db/schema";
@@ -90,6 +90,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export const POST: RequestHandler = async ({ request }) => {
 	if (!validateInternalToken(request)) return error(401, "Unauthorized");
 	if (!db) return error(503, "Database not configured");
+	const { workflowData } = getApplicationAdapters();
 
 	const traceContext = extractTraceContext(request);
 	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
@@ -514,11 +515,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	});
 
 	// Idempotent: if a session with this deterministic id already exists, return it.
-	const [existing] = await db
-		.select()
-		.from(sessions)
-		.where(eq(sessions.id, sessionId))
-		.limit(1);
+	const existing = await workflowData.getWorkflowEnsureSession(sessionId);
 	if (existing) {
 		try {
 			const { syncAgentRuntimeCR } = await import(
@@ -575,14 +572,11 @@ export const POST: RequestHandler = async ({ request }) => {
 		const reuseRuntimeSandboxName =
 			reuseHost?.sandboxName ?? existing.runtimeSandboxName ?? null;
 		if (reuseChildAppId) {
-			await db
-				.update(sessions)
-				.set({
-					runtimeAppId: reuseChildAppId,
-					runtimeSandboxName: reuseRuntimeSandboxName,
-					updatedAt: new Date(),
-				})
-				.where(eq(sessions.id, existing.id));
+			await workflowData.updateWorkflowEnsureSessionRuntime({
+				sessionId: existing.id,
+				runtimeAppId: reuseChildAppId,
+				runtimeSandboxName: reuseRuntimeSandboxName,
+			});
 		}
 		if (!reuseHost && reuseWakeSlug) {
 			try {
@@ -673,28 +667,17 @@ export const POST: RequestHandler = async ({ request }) => {
 	// direct insert here since createSession doesn't accept a pre-computed id.
 	const incomingSandboxName =
 		bridgeSandboxName ?? dispatchAgentConfig.runtime ?? "dapr-agent-py";
-	await db.insert(sessions).values({
+	await workflowData.createWorkflowEnsureSession({
 		id: sessionId,
 		title,
-		status: "rescheduling",
 		agentId,
 		agentVersion,
-		environmentId: null,
-		environmentVersion: null,
 		vaultIds,
 		userId,
 		projectId: projectId ?? null,
 		sandboxName: incomingSandboxName,
 		workflowExecutionId,
 		parentExecutionId,
-		mlflowSessionId: sessionId,
-		// The session_workflow is dispatched by the orchestrator under a
-		// DETERMINISTIC Dapr instance id == this sessionId (child_instance_id).
-		// Persist it so the BFF can raise events INTO the running session —
-		// goal-loop continuations + the goal-complete terminate both go through
-		// raiseSessionUserEvents/raiseSessionEvent, which require daprInstanceId
-		// (without it they 409 / no-op and goal-mode runs can't advance or end).
-		daprInstanceId: sessionId,
 	});
 	// Now that the session row exists, surface a degraded swap (computed above)
 	// as a runtime.swap_degraded event — the durable/run half of the WARN-phase
@@ -770,14 +753,11 @@ export const POST: RequestHandler = async ({ request }) => {
 	const childAgentAppId = sessionHost?.agentAppId ?? targetAgentAppId;
 	const childRuntimeSandboxName = sessionHost?.sandboxName ?? null;
 	if (childAgentAppId) {
-		await db
-			.update(sessions)
-			.set({
-				runtimeAppId: childAgentAppId,
-				runtimeSandboxName: childRuntimeSandboxName,
-				updatedAt: new Date(),
-			})
-			.where(eq(sessions.id, sessionId));
+		await workflowData.updateWorkflowEnsureSessionRuntime({
+			sessionId,
+			runtimeAppId: childAgentAppId,
+			runtimeSandboxName: childRuntimeSandboxName,
+		});
 	}
 	const wakeSlug = await resolveWakeSlug({
 		bodyAgentSlug,
@@ -887,7 +867,11 @@ export const POST: RequestHandler = async ({ request }) => {
 	// sessions' host sandboxes (their per-node diff was captured at session end).
 	// Best-effort, fully detached — never blocks or fails the spawn.
 	if (workflowExecutionId) {
-		void reapTerminatedRunHosts(workflowExecutionId, sessionId).catch(() => {});
+		void reapTerminatedRunHosts({
+			workflowData,
+			workflowExecutionId,
+			exceptSessionId: sessionId,
+		}).catch(() => {});
 	}
 
 	return json({
@@ -1306,23 +1290,16 @@ async function resolveWakeSlug(params: {
  * small cluster. Each terminal session's per-node workspace diff is captured at
  * session end, so deleting its host after terminal status is safe. Best-effort.
  */
-async function reapTerminatedRunHosts(
-	workflowExecutionId: string,
-	exceptSessionId: string,
-): Promise<void> {
-	if (!db) return;
-	const rows = await db
-		.select({ id: sessions.id, runtimeAppId: sessions.runtimeAppId })
-		.from(sessions)
-		.where(
-			and(
-				eq(sessions.workflowExecutionId, workflowExecutionId),
-				inArray(sessions.status, ["terminated", "failed"]),
-				isNotNull(sessions.runtimeAppId),
-			),
-		);
+async function reapTerminatedRunHosts(input: {
+	workflowData: WorkflowDataService;
+	workflowExecutionId: string;
+	exceptSessionId: string;
+}): Promise<void> {
+	const rows = await input.workflowData.listTerminalWorkflowSessionRuntimeHosts({
+		workflowExecutionId: input.workflowExecutionId,
+	});
 	for (const row of rows) {
-		if (!row.runtimeAppId || row.id === exceptSessionId) continue;
+		if (row.sessionId === input.exceptSessionId) continue;
 		try {
 			await deleteSandbox(`agent-host-${row.runtimeAppId}`);
 		} catch (err) {

@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentConfig } from "$lib/types/agents";
 
 const mocks = vi.hoisted(() => {
@@ -62,6 +65,16 @@ const mocks = vi.hoisted(() => {
 				status: "ready",
 			};
 		}),
+		workflowData: {
+			getWorkflowEnsureSession: vi.fn(async () => null),
+			createWorkflowEnsureSession: vi.fn(async (input: unknown) => {
+				state.inserted.push(input);
+			}),
+			updateWorkflowEnsureSessionRuntime: vi.fn(async (input: unknown) => {
+				state.updates.push(input);
+			}),
+			listTerminalWorkflowSessionRuntimeHosts: vi.fn(async () => []),
+		},
 	};
 });
 
@@ -71,6 +84,12 @@ vi.mock("$lib/server/internal-auth", () => ({
 
 vi.mock("$lib/server/db", () => ({
 	db: mocks.db,
+}));
+
+vi.mock("$lib/server/application", () => ({
+	getApplicationAdapters: () => ({
+		workflowData: mocks.workflowData,
+	}),
 }));
 
 vi.mock("$lib/server/agents/ephemeral", () => ({
@@ -151,7 +170,6 @@ async function callEnsureForWorkflow(params: {
 	token: string;
 }) {
 	mocks.state.selectRows = [
-		[],
 		[{ slug: "test-agent", runtimeAppId: "agent-runtime-test-agent" }],
 	];
 	mocks.state.credentials = {
@@ -184,6 +202,20 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 		mocks.state.hostCalls = [];
 		mocks.state.credentials = {};
 		vi.clearAllMocks();
+	});
+
+	it("keeps ensure session row persistence behind workflow-data ports", () => {
+		const source = readFileSync(
+			join(dirname(fileURLToPath(import.meta.url)), "+server.ts"),
+			"utf8",
+		);
+
+		expect(source).toContain("workflowData.getWorkflowEnsureSession");
+		expect(source).toContain("workflowData.createWorkflowEnsureSession");
+		expect(source).toContain("workflowData.updateWorkflowEnsureSessionRuntime");
+		expect(source).not.toContain("db.insert(sessions)");
+		expect(source).not.toContain("db.update(sessions)");
+		expect(source).not.toContain("from(sessions)");
 	});
 
 	it.each([

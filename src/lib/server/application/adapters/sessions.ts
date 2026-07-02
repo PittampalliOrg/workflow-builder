@@ -2,6 +2,7 @@ import type {
 	AppendSessionEventInput,
 	CliWorkspaceSessionCandidateRecord,
 	CreatePeerSessionInput,
+	CreateWorkflowEnsureSessionInput,
 	PeerSessionRecord,
 	SessionEventLog,
 	SessionRepository,
@@ -9,8 +10,11 @@ import type {
 	SessionWorkflowContext,
 	UpdateSessionStatusInput,
 	UpdateSessionStatusUnlessTerminatedInput,
+	UpdateWorkflowEnsureSessionRuntimeInput,
+	WorkflowEnsureSessionRecord,
+	WorkflowSessionRuntimeHostRecord,
 } from "$lib/server/application/ports";
-import { and, desc, eq, isNotNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
 import { agents, sessions, type Session } from "$lib/server/db/schema";
 import {
@@ -38,6 +42,21 @@ function toPeerSessionRecord(session: SessionDetail): PeerSessionRecord {
 		vaultIds: session.vaultIds,
 		daprInstanceId: session.daprInstanceId,
 		natsSubject: session.natsSubject,
+	};
+}
+
+function toWorkflowEnsureSessionRecord(
+	session: SessionDetail,
+): WorkflowEnsureSessionRecord {
+	return {
+		id: session.id,
+		agentId: session.agentId,
+		agentVersion: session.agentVersion,
+		vaultIds: session.vaultIds,
+		workflowExecutionId: session.workflowExecutionId,
+		sandboxName: session.sandboxName,
+		runtimeAppId: session.runtimeAppId,
+		runtimeSandboxName: session.runtimeSandboxName,
 	};
 }
 
@@ -77,6 +96,69 @@ export class CurrentSessionRepository implements SessionRepository {
 			)
 			.orderBy(desc(sessions.createdAt))
 			.limit(limit);
+	}
+
+	async getWorkflowEnsureSession(
+		sessionId: string,
+	): Promise<WorkflowEnsureSessionRecord | null> {
+		const session = await getSession(sessionId);
+		return session ? toWorkflowEnsureSessionRecord(session) : null;
+	}
+
+	async createWorkflowEnsureSession(input: CreateWorkflowEnsureSessionInput): Promise<void> {
+		const database = requireDb(this.database);
+		await database.insert(sessions).values({
+			id: input.id,
+			title: input.title,
+			status: "rescheduling",
+			agentId: input.agentId,
+			agentVersion: input.agentVersion,
+			environmentId: null,
+			environmentVersion: null,
+			vaultIds: input.vaultIds,
+			userId: input.userId,
+			projectId: input.projectId,
+			sandboxName: input.sandboxName,
+			workflowExecutionId: input.workflowExecutionId,
+			parentExecutionId: input.parentExecutionId,
+			mlflowSessionId: input.id,
+			daprInstanceId: input.id,
+		});
+	}
+
+	async updateWorkflowEnsureSessionRuntime(
+		input: UpdateWorkflowEnsureSessionRuntimeInput,
+	): Promise<void> {
+		const database = requireDb(this.database);
+		await database
+			.update(sessions)
+			.set({
+				runtimeAppId: input.runtimeAppId,
+				runtimeSandboxName: input.runtimeSandboxName,
+				updatedAt: new Date(),
+			})
+			.where(eq(sessions.id, input.sessionId));
+	}
+
+	async listTerminalWorkflowSessionRuntimeHosts(input: {
+		workflowExecutionId: string;
+	}): Promise<WorkflowSessionRuntimeHostRecord[]> {
+		const database = requireDb(this.database);
+		const rows = await database
+			.select({ id: sessions.id, runtimeAppId: sessions.runtimeAppId })
+			.from(sessions)
+			.where(
+				and(
+					eq(sessions.workflowExecutionId, input.workflowExecutionId),
+					inArray(sessions.status, ["terminated", "failed"]),
+					isNotNull(sessions.runtimeAppId),
+				),
+			);
+		return rows.flatMap((row) =>
+			row.runtimeAppId
+				? [{ sessionId: row.id, runtimeAppId: row.runtimeAppId }]
+				: [],
+		);
 	}
 
 	async getPeerSession(sessionId: string): Promise<PeerSessionRecord | null> {

@@ -468,6 +468,21 @@ function fakeSessions(): SessionRepository {
 	return {
 		getSession: vi.fn(async () => null),
 		listCliWorkspaceSessionCandidates: vi.fn(async () => []),
+		getWorkflowEnsureSession: vi.fn(async () => ({
+			id: "session-1",
+			agentId: "agent-1",
+			agentVersion: 2,
+			vaultIds: ["vault-1"],
+			workflowExecutionId: "exec-1",
+			sandboxName: "sandbox-1",
+			runtimeAppId: "agent-session-1",
+			runtimeSandboxName: "agent-host-agent-session-1",
+		})),
+		createWorkflowEnsureSession: vi.fn(async () => undefined),
+		updateWorkflowEnsureSessionRuntime: vi.fn(async () => undefined),
+		listTerminalWorkflowSessionRuntimeHosts: vi.fn(async () => [
+			{ sessionId: "session-old", runtimeAppId: "agent-session-old" },
+		]),
 		getPeerSession: vi.fn(async () => null),
 		createPeerSession: vi.fn(async (input) => ({
 			id: input.id,
@@ -1262,6 +1277,71 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(sessions.listCliWorkspaceSessionCandidates).toHaveBeenCalledWith({
 			executionId: "exec-1",
 			limit: 8,
+		});
+	});
+
+	it("delegates workflow ensure session persistence to the session port", async () => {
+		const sessions = fakeSessions();
+		const { service } = makeService({ sessions });
+
+		await expect(
+			service.getWorkflowEnsureSession("session-1"),
+		).resolves.toMatchObject({
+			id: "session-1",
+			agentId: "agent-1",
+			workflowExecutionId: "exec-1",
+		});
+		await service.createWorkflowEnsureSession({
+			id: "session-2",
+			title: "Workflow run",
+			agentId: "agent-2",
+			agentVersion: 7,
+			vaultIds: ["vault-1"],
+			userId: "user-1",
+			projectId: "project-1",
+			sandboxName: "dapr-agent-py",
+			workflowExecutionId: "exec-1",
+			parentExecutionId: "parent-1",
+		});
+		await service.updateWorkflowEnsureSessionRuntime({
+			sessionId: "session-2",
+			runtimeAppId: "agent-session-2",
+			runtimeSandboxName: "agent-host-agent-session-2",
+		});
+
+		expect(sessions.getWorkflowEnsureSession).toHaveBeenCalledWith("session-1");
+		expect(sessions.createWorkflowEnsureSession).toHaveBeenCalledWith({
+			id: "session-2",
+			title: "Workflow run",
+			agentId: "agent-2",
+			agentVersion: 7,
+			vaultIds: ["vault-1"],
+			userId: "user-1",
+			projectId: "project-1",
+			sandboxName: "dapr-agent-py",
+			workflowExecutionId: "exec-1",
+			parentExecutionId: "parent-1",
+		});
+		expect(sessions.updateWorkflowEnsureSessionRuntime).toHaveBeenCalledWith({
+			sessionId: "session-2",
+			runtimeAppId: "agent-session-2",
+			runtimeSandboxName: "agent-host-agent-session-2",
+		});
+	});
+
+	it("lists terminal workflow session runtime hosts through the session port", async () => {
+		const sessions = fakeSessions();
+		const { service } = makeService({ sessions });
+
+		await expect(
+			service.listTerminalWorkflowSessionRuntimeHosts({
+				workflowExecutionId: "exec-1",
+			}),
+		).resolves.toEqual([
+			{ sessionId: "session-old", runtimeAppId: "agent-session-old" },
+		]);
+		expect(sessions.listTerminalWorkflowSessionRuntimeHosts).toHaveBeenCalledWith({
+			workflowExecutionId: "exec-1",
 		});
 	});
 

@@ -66,6 +66,7 @@ import type {
 	BenchmarkBrowserReadModel,
 	BenchmarkBrowserRepository,
 	CreateProjectMcpConnectionInput,
+	CreateWorkflowEnsureSessionInput,
 	CreateWorkflowDefinitionInput,
 	CreateWorkflowTriggerInput,
 	CreateWorkflowExecutionInput,
@@ -115,6 +116,7 @@ import type {
 	SessionTraceLifecycleStore,
 	TraceLineageStore,
 	UpdateWorkflowDefinitionInput,
+	UpdateWorkflowEnsureSessionRuntimeInput,
 	UpsertTraceLineageLinksInput,
 	WorkspaceSessionStore,
 	ServiceGraphPickerOptions,
@@ -3416,6 +3418,22 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			});
 		}
 		return candidates;
+	}
+
+	getWorkflowEnsureSession(sessionId: string) {
+		return this.requireSessions().getWorkflowEnsureSession(sessionId);
+	}
+
+	createWorkflowEnsureSession(input: CreateWorkflowEnsureSessionInput) {
+		return this.requireSessions().createWorkflowEnsureSession(input);
+	}
+
+	updateWorkflowEnsureSessionRuntime(input: UpdateWorkflowEnsureSessionRuntimeInput) {
+		return this.requireSessions().updateWorkflowEnsureSessionRuntime(input);
+	}
+
+	listTerminalWorkflowSessionRuntimeHosts(input: { workflowExecutionId: string }) {
+		return this.requireSessions().listTerminalWorkflowSessionRuntimeHosts(input);
 	}
 
 	async ensurePeerSession(

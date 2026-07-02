@@ -2179,6 +2179,14 @@ export interface SessionRepository {
 		executionId: string;
 		limit: number;
 	}): Promise<CliWorkspaceSessionCandidateRecord[]>;
+	getWorkflowEnsureSession(sessionId: string): Promise<WorkflowEnsureSessionRecord | null>;
+	createWorkflowEnsureSession(input: CreateWorkflowEnsureSessionInput): Promise<void>;
+	updateWorkflowEnsureSessionRuntime(
+		input: UpdateWorkflowEnsureSessionRuntimeInput,
+	): Promise<void>;
+	listTerminalWorkflowSessionRuntimeHosts(input: {
+		workflowExecutionId: string;
+	}): Promise<WorkflowSessionRuntimeHostRecord[]>;
 	getPeerSession(sessionId: string): Promise<PeerSessionRecord | null>;
 	createPeerSession(input: CreatePeerSessionInput): Promise<PeerSessionRecord>;
 	findSessionIdByDaprInstanceId(instanceId: string): Promise<string | null>;
@@ -2240,6 +2248,41 @@ export type CliWorkspaceCommandCandidate = {
 	source: "persisted" | "agent";
 	agentSlug: string;
 	agentRuntime: string | null;
+};
+
+export type WorkflowEnsureSessionRecord = {
+	id: string;
+	agentId: string;
+	agentVersion: number | null;
+	vaultIds: string[];
+	workflowExecutionId: string | null;
+	sandboxName: string | null;
+	runtimeAppId: string | null;
+	runtimeSandboxName: string | null;
+};
+
+export type CreateWorkflowEnsureSessionInput = {
+	id: string;
+	title: string;
+	agentId: string;
+	agentVersion: number | null;
+	vaultIds: string[];
+	userId: string;
+	projectId: string | null;
+	sandboxName: string;
+	workflowExecutionId: string | null;
+	parentExecutionId: string | null;
+};
+
+export type UpdateWorkflowEnsureSessionRuntimeInput = {
+	sessionId: string;
+	runtimeAppId: string;
+	runtimeSandboxName: string | null;
+};
+
+export type WorkflowSessionRuntimeHostRecord = {
+	sessionId: string;
+	runtimeAppId: string;
 };
 
 export type PeerSessionRecord = {
@@ -2625,6 +2668,16 @@ export interface WorkflowDataService {
 		executionId: string;
 		limit: number;
 	}): Promise<CliWorkspaceCommandCandidate[]>;
+	getWorkflowEnsureSession(
+		sessionId: string,
+	): Promise<WorkflowEnsureSessionRecord | null>;
+	createWorkflowEnsureSession(input: CreateWorkflowEnsureSessionInput): Promise<void>;
+	updateWorkflowEnsureSessionRuntime(
+		input: UpdateWorkflowEnsureSessionRuntimeInput,
+	): Promise<void>;
+	listTerminalWorkflowSessionRuntimeHosts(input: {
+		workflowExecutionId: string;
+	}): Promise<WorkflowSessionRuntimeHostRecord[]>;
 	ensurePeerSession(input: EnsurePeerSessionInput): Promise<EnsurePeerSessionResult>;
 	resolvePeerAgentDispatchContext(input: {
 		agentId: string;
