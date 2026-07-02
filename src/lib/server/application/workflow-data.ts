@@ -136,6 +136,7 @@ import type {
 	PeerAgentResolver,
 	WorkflowAgentReadRepository,
 	WorkflowAgentRuntimeIdentity,
+	WorkflowPublishedAgentResolutionResult,
 	UpdateProjectMcpConnectionInput,
 	SavePlatformOAuthAppInput,
 	SettingsPageReadModel,
@@ -3581,6 +3582,16 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		agentId: string,
 	): Promise<WorkflowAgentRuntimeIdentity | null> {
 		return this.requireWorkflowAgentReads().getWorkflowAgentRuntimeIdentity(agentId);
+	}
+
+	resolvePublishedWorkflowAgentForEnsure(input: {
+		agentId: string | null;
+		agentVersion?: number | null;
+		projectId?: string | null;
+	}): Promise<WorkflowPublishedAgentResolutionResult | null> {
+		return this.requireWorkflowAgentReads().resolvePublishedWorkflowAgentForEnsure(
+			input,
+		);
 	}
 
 	countActiveTriggeredWorkflowRuns(input: { statuses: WorkflowExecutionStatus[] }) {

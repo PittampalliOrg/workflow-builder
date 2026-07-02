@@ -1,15 +1,12 @@
 import { error, json } from "@sveltejs/kit";
-import { and, eq } from "drizzle-orm";
 import { deleteSandbox } from "$lib/server/kube/client";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
-import type { WorkflowDataService } from "$lib/server/application/ports";
+import type {
+	WorkflowDataService,
+	WorkflowPublishedAgent,
+} from "$lib/server/application/ports";
 import { validateInternalToken } from "$lib/server/internal-auth";
-import { db } from "$lib/server/db";
-import {
-	agents,
-	agentVersions,
-} from "$lib/server/db/schema";
 import {
 	addResource,
 	createSession,
@@ -34,9 +31,6 @@ import {
 	extractTraceContext,
 	maybeProvisionAgentWorkflowHost,
 } from "$lib/server/sessions/agent-workflow-host";
-import {
-	registerAgentVersionInMlflow,
-} from "$lib/server/observability/mlflow-lifecycle";
 import { resolveWorkflowSessionSecretEnv } from "$lib/server/sessions/session-secret-env";
 import {
 	provisionSessionSandboxWithRetry,
@@ -51,16 +45,6 @@ import {
 	ensureGoalMcpServer,
 	stampGoalMcpSessionHeader,
 } from "$lib/server/goals/mcp-wiring";
-
-type PublishedWorkflowAgent = {
-	agentId: string;
-	agentVersion: number;
-	agentSlug: string | null;
-	agentAppId: string | null;
-	mlflowUri: string | null;
-	mlflowModelName: string | null;
-	mlflowModelVersion: string | null;
-};
 
 /**
  * Internal endpoint called by the workflow-orchestrator `spawn_session_for_workflow`
@@ -81,7 +65,6 @@ type PublishedWorkflowAgent = {
  */
 export const POST: RequestHandler = async ({ request }) => {
 	if (!validateInternalToken(request)) return error(401, "Unauthorized");
-	if (!db) return error(503, "Database not configured");
 	const { workflowData } = getApplicationAdapters();
 
 	const traceContext = extractTraceContext(request);
@@ -576,7 +559,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	// Use it when present so workflow-driven sessions execute in the published
 	// agent-runtime-<slug> pod. Specs without that identity are older inline
 	// configs and still get a workflow-scoped ephemeral agent.
-	const publishedAgent = await resolvePublishedWorkflowAgent({
+	const publishedAgent = await resolvePublishedWorkflowAgent(workflowData, {
 		agentId: bodyAgentId,
 		agentVersion: bodyAgentVersion,
 		projectId,
@@ -936,6 +919,9 @@ function buildChildInput(params: {
 		cwd: params.cwd ?? null,
 		timeoutMinutes: params.timeoutMinutes ?? null,
 		maxIterations: params.maxIterations ?? null,
+		activeModelId: params.activeModelId ?? null,
+		activeModelName: params.activeModelName ?? null,
+		activeModelUri: params.activeModelUri ?? null,
 		_message_metadata: {
 			executionId: params.workflowExecutionId,
 			workflowExecutionId: params.workflowExecutionId,
@@ -950,6 +936,9 @@ function buildChildInput(params: {
 			runtimeSandboxName: params.runtimeSandboxName ?? null,
 			workspaceRef: params.workspaceRef ?? null,
 			cwd: params.cwd ?? null,
+			activeModelId: params.activeModelId ?? null,
+			activeModelName: params.activeModelName ?? null,
+			activeModelUri: params.activeModelUri ?? null,
 			source: "durable/run",
 		},
 		initialEvents: params.initialMessage
@@ -1054,114 +1043,20 @@ async function resolveRuntimeIdentity(
 	return identity ? { slug: identity.slug, appId: identity.appId } : null;
 }
 
-async function resolvePublishedWorkflowAgent(params: {
+async function resolvePublishedWorkflowAgent(
+	workflowData: WorkflowDataService,
+	params: {
 	agentId: string | null;
 	agentVersion: number | null;
 	projectId: string | null;
-}): Promise<PublishedWorkflowAgent | null> {
-	if (!params.agentId || !db) return null;
-	const [agent] = await db
-		.select()
-		.from(agents)
-		.where(eq(agents.id, params.agentId))
-		.limit(1);
-	if (!agent || agent.isArchived) {
-		throw error(400, `agent ${params.agentId} is not available`);
+	},
+): Promise<WorkflowPublishedAgent | null> {
+	const result = await workflowData.resolvePublishedWorkflowAgentForEnsure(params);
+	if (!result) return null;
+	if (!result.ok) {
+		throw error(result.status, result.message);
 	}
-	if (params.projectId && agent.projectId !== params.projectId) {
-		throw error(403, `agent ${params.agentId} is not in this project`);
-	}
-	const requestedVersion = params.agentVersion;
-	if (
-		Number.isInteger(requestedVersion) &&
-		requestedVersion !== null &&
-		requestedVersion > 0
-	) {
-		const [version] = await db
-			.select()
-			.from(agentVersions)
-			.where(
-				and(
-					eq(agentVersions.agentId, agent.id),
-					eq(agentVersions.version, requestedVersion),
-				),
-			)
-			.limit(1);
-		if (!version) {
-			throw error(
-				400,
-					`agent ${params.agentId} version ${requestedVersion} is not available`,
-				);
-		}
-		const mlflowIdentity = await ensureAgentVersionMlflowIdentity(agent, version);
-		return {
-			agentId: agent.id,
-			agentVersion: version.version,
-			agentSlug: agent.slug,
-			agentAppId: agent.runtimeAppId ?? agentRuntimeDedicatedAppId(agent.slug),
-			mlflowUri: mlflowIdentity.mlflowUri,
-			mlflowModelName: mlflowIdentity.mlflowModelName,
-			mlflowModelVersion: mlflowIdentity.mlflowModelVersion,
-		};
-	}
-	if (!agent.currentVersionId) {
-		throw error(400, `agent ${params.agentId} has no current version`);
-	}
-	const [current] = await db
-		.select()
-		.from(agentVersions)
-		.where(eq(agentVersions.id, agent.currentVersionId))
-		.limit(1);
-	if (!current) {
-		throw error(400, `agent ${params.agentId} current version is not available`);
-	}
-	const mlflowIdentity = await ensureAgentVersionMlflowIdentity(agent, current);
-	return {
-		agentId: agent.id,
-		agentVersion: current.version,
-		agentSlug: agent.slug,
-		agentAppId: agent.runtimeAppId ?? agentRuntimeDedicatedAppId(agent.slug),
-		mlflowUri: mlflowIdentity.mlflowUri,
-		mlflowModelName: mlflowIdentity.mlflowModelName,
-		mlflowModelVersion: mlflowIdentity.mlflowModelVersion,
-	};
-}
-
-async function ensureAgentVersionMlflowIdentity(
-	agent: typeof agents.$inferSelect,
-	version: typeof agentVersions.$inferSelect,
-): Promise<{
-	mlflowUri: string | null;
-	mlflowModelName: string | null;
-	mlflowModelVersion: string | null;
-}> {
-	if (version.mlflowUri?.trim()) {
-		return {
-			mlflowUri: version.mlflowUri,
-			mlflowModelName: version.mlflowModelName ?? null,
-			mlflowModelVersion: version.mlflowModelVersion ?? null,
-		};
-	}
-	try {
-		const registered = await registerAgentVersionInMlflow({ agent, version });
-		if (registered) {
-			return {
-				mlflowUri: registered.modelUri,
-				mlflowModelName: registered.modelName,
-				mlflowModelVersion: registered.modelId,
-			};
-		}
-	} catch (err) {
-		console.warn(
-			`[ensure-for-workflow] MLflow agent version registration failed for ${agent.id}@${version.version}:`,
-			err instanceof Error ? err.message : err,
-		);
-	}
-	return {
-		mlflowUri: version.mlflowUri ?? null,
-		mlflowModelName: version.mlflowModelName ?? null,
-		mlflowModelVersion: version.mlflowModelVersion ?? null,
-	};
+	return result.agent;
 }
 
 /**

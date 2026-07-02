@@ -2351,6 +2351,27 @@ export type WorkflowAgentRuntimeIdentity = {
 	appId: string;
 };
 
+export type WorkflowPublishedAgent = {
+	agentId: string;
+	agentVersion: number;
+	agentSlug: string | null;
+	agentAppId: string | null;
+	mlflowUri: string | null;
+	mlflowModelName: string | null;
+	mlflowModelVersion: string | null;
+};
+
+export type WorkflowPublishedAgentResolutionResult =
+	| {
+			ok: true;
+			agent: WorkflowPublishedAgent;
+	  }
+	| {
+			ok: false;
+			status: 400 | 403;
+			message: string;
+	  };
+
 export type PeerCallableAgent = {
 	slug: string;
 	agentId: string;
@@ -2381,6 +2402,11 @@ export interface WorkflowAgentReadRepository {
 	getWorkflowAgentRuntimeIdentity(
 		agentId: string,
 	): Promise<WorkflowAgentRuntimeIdentity | null>;
+	resolvePublishedWorkflowAgentForEnsure(input: {
+		agentId: string | null;
+		agentVersion?: number | null;
+		projectId?: string | null;
+	}): Promise<WorkflowPublishedAgentResolutionResult | null>;
 }
 
 export type EnsurePeerSessionInput = {
@@ -2742,6 +2768,11 @@ export interface WorkflowDataService {
 	getWorkflowAgentRuntimeIdentity(
 		agentId: string,
 	): Promise<WorkflowAgentRuntimeIdentity | null>;
+	resolvePublishedWorkflowAgentForEnsure(input: {
+		agentId: string | null;
+		agentVersion?: number | null;
+		projectId?: string | null;
+	}): Promise<WorkflowPublishedAgentResolutionResult | null>;
 	countActiveTriggeredWorkflowRuns(input: {
 		statuses: WorkflowExecutionStatus[];
 	}): Promise<number>;

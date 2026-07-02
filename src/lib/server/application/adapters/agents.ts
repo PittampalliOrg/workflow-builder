@@ -1,13 +1,14 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type {
 	PeerAgentDispatchContext,
 	PeerAgentOwner,
 	PeerAgentResolver,
 	WorkflowAgentReadRepository,
 	WorkflowAgentRuntimeIdentity,
+	WorkflowPublishedAgentResolutionResult,
 } from "$lib/server/application/ports";
 import { db as defaultDb } from "$lib/server/db";
-import { agents, users } from "$lib/server/db/schema";
+import { agents, agentVersions, users } from "$lib/server/db/schema";
 import {
 	resolveAgentRef,
 	resolveCallableAgents,
@@ -101,6 +102,103 @@ export class RegistryPeerAgentResolver
 			slug: row.slug,
 			runtimeAppId: row.runtimeAppId ?? null,
 			appId: row.runtimeAppId ?? agentRuntimeDedicatedAppId(row.slug),
+		};
+	}
+
+	async resolvePublishedWorkflowAgentForEnsure(input: {
+		agentId: string | null;
+		agentVersion?: number | null;
+		projectId?: string | null;
+	}): Promise<WorkflowPublishedAgentResolutionResult | null> {
+		if (!input.agentId) return null;
+		const [agent] = await this.database
+			.select()
+			.from(agents)
+			.where(eq(agents.id, input.agentId))
+			.limit(1);
+		if (!agent || agent.isArchived) {
+			return {
+				ok: false,
+				status: 400,
+				message: `agent ${input.agentId} is not available`,
+			};
+		}
+		if (input.projectId && agent.projectId !== input.projectId) {
+			return {
+				ok: false,
+				status: 403,
+				message: `agent ${input.agentId} is not in this project`,
+			};
+		}
+
+		const requestedVersion = input.agentVersion;
+		if (
+			Number.isInteger(requestedVersion) &&
+			requestedVersion !== null &&
+			requestedVersion !== undefined &&
+			requestedVersion > 0
+		) {
+			const [version] = await this.database
+				.select()
+				.from(agentVersions)
+				.where(
+					and(
+						eq(agentVersions.agentId, agent.id),
+						eq(agentVersions.version, requestedVersion),
+					),
+				)
+				.limit(1);
+			if (!version) {
+				return {
+					ok: false,
+					status: 400,
+					message: `agent ${input.agentId} version ${requestedVersion} is not available`,
+				};
+			}
+			return {
+				ok: true,
+				agent: {
+					agentId: agent.id,
+					agentVersion: version.version,
+					agentSlug: agent.slug,
+					agentAppId: agent.runtimeAppId ?? agentRuntimeDedicatedAppId(agent.slug),
+					mlflowUri: version.mlflowUri ?? null,
+					mlflowModelName: version.mlflowModelName ?? null,
+					mlflowModelVersion: version.mlflowModelVersion ?? null,
+				},
+			};
+		}
+
+		if (!agent.currentVersionId) {
+			return {
+				ok: false,
+				status: 400,
+				message: `agent ${input.agentId} has no current version`,
+			};
+		}
+		const [current] = await this.database
+			.select()
+			.from(agentVersions)
+			.where(eq(agentVersions.id, agent.currentVersionId))
+			.limit(1);
+		if (!current) {
+			return {
+				ok: false,
+				status: 400,
+				message: `agent ${input.agentId} current version is not available`,
+			};
+		}
+		return {
+			ok: true,
+			agent: {
+				agentId: agent.id,
+				agentVersion: current.version,
+				agentSlug: agent.slug,
+				agentAppId: agent.runtimeAppId ?? agentRuntimeDedicatedAppId(agent.slug),
+				mlflowUri: current.mlflowUri ?? null,
+				mlflowModelName: current.mlflowModelName ?? null,
+				mlflowModelVersion: current.mlflowModelVersion ?? null,
+			},
 		};
 	}
 }

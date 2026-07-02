@@ -6,42 +6,14 @@ import type { AgentConfig } from "$lib/types/agents";
 
 const mocks = vi.hoisted(() => {
 	const state = {
-		selectRows: [] as unknown[][],
 		inserted: [] as unknown[],
 		updates: [] as unknown[],
 		hostCalls: [] as unknown[],
 		credentials: {} as Record<string, { token: string; expiresAt: Date | null }>,
 	};
 
-	function selectChain(rows: unknown[]) {
-		const chain = {
-			from: vi.fn(() => chain),
-			leftJoin: vi.fn(() => chain),
-			where: vi.fn(() => chain),
-			limit: vi.fn(async () => rows),
-		};
-		return chain;
-	}
-
-	const db = {
-		select: vi.fn(() => selectChain(state.selectRows.shift() ?? [])),
-		insert: vi.fn(() => ({
-			values: vi.fn(async (value: unknown) => {
-				state.inserted.push(value);
-				return [];
-			}),
-		})),
-		update: vi.fn(() => ({
-			set: vi.fn((value: unknown) => {
-				state.updates.push(value);
-				return { where: vi.fn(async () => []) };
-			}),
-		})),
-	};
-
 	return {
 		state,
-		db,
 		validateInternalToken: vi.fn(() => true),
 		findOrCreateEphemeralAgent: vi.fn(async () => ({
 			agentId: "agent-test",
@@ -71,12 +43,35 @@ const mocks = vi.hoisted(() => {
 				ok: true,
 				benchmarkExecutionClass: "benchmark-class",
 			})),
-			getWorkflowAgentRuntimeIdentity: vi.fn(async (agentId: string) => ({
-				agentId,
-				slug: "test-agent",
-				runtimeAppId: "agent-runtime-test-agent",
-				appId: "agent-runtime-test-agent",
-			})),
+			getWorkflowAgentRuntimeIdentity: vi.fn(async (agentId: string) => {
+				const slug =
+					agentId === "agent-published" ? "published-agent" : "test-agent";
+				return {
+					agentId,
+					slug,
+					runtimeAppId: `agent-runtime-${slug}`,
+					appId: `agent-runtime-${slug}`,
+				};
+			}),
+			resolvePublishedWorkflowAgentForEnsure: vi.fn(async (input: {
+				agentId: string | null;
+				agentVersion?: number | null;
+				projectId?: string | null;
+			}) => {
+				if (!input.agentId) return null;
+				return {
+					ok: true as const,
+					agent: {
+						agentId: input.agentId,
+						agentVersion: input.agentVersion ?? 3,
+						agentSlug: "published-agent",
+						agentAppId: "agent-runtime-published-agent",
+						mlflowUri: "models:/published-agent/3",
+						mlflowModelName: "published-agent",
+						mlflowModelVersion: "model-3",
+					},
+				};
+			}),
 			getWorkflowEnsureSession: vi.fn(async () => null),
 			createWorkflowEnsureSession: vi.fn(async (input: unknown) => {
 				state.inserted.push(input);
@@ -91,10 +86,6 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("$lib/server/internal-auth", () => ({
 	validateInternalToken: mocks.validateInternalToken,
-}));
-
-vi.mock("$lib/server/db", () => ({
-	db: mocks.db,
 }));
 
 vi.mock("$lib/server/application", () => ({
@@ -179,10 +170,8 @@ async function callEnsureForWorkflow(params: {
 	modelSpec: string;
 	provider: string;
 	token: string;
+	body?: Record<string, unknown>;
 }) {
-	mocks.state.selectRows = [
-		[{ slug: "test-agent", runtimeAppId: "agent-runtime-test-agent" }],
-	];
 	mocks.state.credentials = {
 		[params.provider]: { token: params.token, expiresAt: null },
 	};
@@ -195,6 +184,7 @@ async function callEnsureForWorkflow(params: {
 		projectId: "project-1",
 		agentSlug: "test-agent",
 		agentConfig: agentConfig(params.runtime, params.modelSpec),
+		...params.body,
 	};
 	const request = new Request("http://workflow-builder/internal", {
 		method: "POST",
@@ -207,7 +197,6 @@ async function callEnsureForWorkflow(params: {
 
 describe("ensure-for-workflow interactive CLI dispatch", () => {
 	beforeEach(() => {
-		mocks.state.selectRows = [];
 		mocks.state.inserted = [];
 		mocks.state.updates = [];
 		mocks.state.hostCalls = [];
@@ -224,19 +213,74 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 		expect(source).toContain("workflowData.getWorkflowExecutionSessionOwnerContext");
 		expect(source).toContain("workflowData.checkBenchmarkSessionProvisioningGate");
 		expect(source).toContain("workflowData.getWorkflowAgentRuntimeIdentity");
+		expect(source).toContain("workflowData.resolvePublishedWorkflowAgentForEnsure");
 		expect(source).toContain("workflowData.getWorkflowEnsureSession");
 		expect(source).toContain("workflowData.createWorkflowEnsureSession");
 		expect(source).toContain("workflowData.updateWorkflowEnsureSessionRuntime");
+		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("workflowExecutions,");
 		expect(source).not.toContain("from(workflowExecutions)");
 		expect(source).not.toContain("workflows,");
 		expect(source).not.toContain("from(workflows)");
+		expect(source).not.toContain("agentVersions");
+		expect(source).not.toContain("from(agents)");
+		expect(source).not.toContain("from(agentVersions)");
+		expect(source).not.toContain("registerAgentVersionInMlflow");
 		expect(source).not.toContain("benchmarkRuns");
 		expect(source).not.toContain("benchmarkRunInstances");
 		expect(source).not.toContain("select({ slug: agents.slug");
 		expect(source).not.toContain("db.insert(sessions)");
 		expect(source).not.toContain("db.update(sessions)");
 		expect(source).not.toContain("from(sessions)");
+	});
+
+	it("uses published agent resolution from workflow-data when provided", async () => {
+		const payload = await callEnsureForWorkflow({
+			runtime: "codex-cli",
+			modelSpec: "openai/gpt-5.5",
+			provider: "openai",
+			token: '{"tokens":{"refresh_token":"codex"}}',
+			body: {
+				agentId: "agent-published",
+				agentVersion: 9,
+				agentSlug: "published-agent",
+			},
+		});
+
+		expect(mocks.workflowData.resolvePublishedWorkflowAgentForEnsure).toHaveBeenCalledWith({
+			agentId: "agent-published",
+			agentVersion: 9,
+			projectId: "project-1",
+		});
+		expect(mocks.findOrCreateEphemeralAgent).not.toHaveBeenCalled();
+		expect(payload.agentId).toBe("agent-published");
+		expect(payload.agentVersion).toBe(9);
+		expect(payload.agentSlug).toBe("published-agent");
+		expect(payload.agentAppId).toBe("agent-session-test");
+
+		const childInput = payload.childInput as Record<string, unknown>;
+		expect(childInput.agentId).toBe("agent-published");
+		expect(childInput.agentVersion).toBe(9);
+		expect(childInput.agentSlug).toBe("published-agent");
+		expect(childInput.activeModelId).toBe("model-3");
+		expect(childInput.activeModelName).toBe("published-agent");
+		expect(childInput.activeModelUri).toBe("models:/published-agent/3");
+	});
+
+	it("falls back to ephemeral workflow agents when no published agent id is supplied", async () => {
+		await callEnsureForWorkflow({
+			runtime: "codex-cli",
+			modelSpec: "openai/gpt-5.5",
+			provider: "openai",
+			token: '{"tokens":{"refresh_token":"codex"}}',
+		});
+
+		expect(mocks.workflowData.resolvePublishedWorkflowAgentForEnsure).toHaveBeenCalledWith({
+			agentId: null,
+			agentVersion: null,
+			projectId: "project-1",
+		});
+		expect(mocks.findOrCreateEphemeralAgent).toHaveBeenCalled();
 	});
 
 	it.each([

@@ -589,6 +589,21 @@ function fakeWorkflowAgentReads(): WorkflowAgentReadRepository {
 			runtimeAppId: "agent-runtime-test-agent",
 			appId: "agent-runtime-test-agent",
 		})),
+		resolvePublishedWorkflowAgentForEnsure: vi.fn(async (input) => {
+			if (!input.agentId) return null;
+			return {
+				ok: true as const,
+				agent: {
+					agentId: input.agentId,
+					agentVersion: input.agentVersion ?? 3,
+					agentSlug: "published-agent",
+					agentAppId: "agent-runtime-published-agent",
+					mlflowUri: "models:/published-agent/3",
+					mlflowModelName: "published-agent",
+					mlflowModelVersion: "model-3",
+				},
+			};
+		}),
 	};
 }
 
@@ -1489,6 +1504,37 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(workflowAgentReads.getWorkflowAgentRuntimeIdentity).toHaveBeenCalledWith(
 			"agent-1",
 		);
+	});
+
+	it("resolves published workflow agents through the agent read port", async () => {
+		const workflowAgentReads = fakeWorkflowAgentReads();
+		const { service } = makeService({ workflowAgentReads });
+
+		await expect(
+			service.resolvePublishedWorkflowAgentForEnsure({
+				agentId: "agent-1",
+				agentVersion: 4,
+				projectId: "project-1",
+			}),
+		).resolves.toEqual({
+			ok: true,
+			agent: {
+				agentId: "agent-1",
+				agentVersion: 4,
+				agentSlug: "published-agent",
+				agentAppId: "agent-runtime-published-agent",
+				mlflowUri: "models:/published-agent/3",
+				mlflowModelName: "published-agent",
+				mlflowModelVersion: "model-3",
+			},
+		});
+		expect(
+			workflowAgentReads.resolvePublishedWorkflowAgentForEnsure,
+		).toHaveBeenCalledWith({
+			agentId: "agent-1",
+			agentVersion: 4,
+			projectId: "project-1",
+		});
 	});
 
 	it("ensures peer sessions through session and peer-agent ports", async () => {
