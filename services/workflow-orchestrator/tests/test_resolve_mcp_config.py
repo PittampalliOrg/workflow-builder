@@ -25,14 +25,6 @@ if "requests" not in sys.modules:
     requests_module.exceptions = types.SimpleNamespace(RequestException=Exception)
     sys.modules["requests"] = requests_module
 
-if "psycopg2" not in sys.modules:
-    psycopg2_module = types.ModuleType("psycopg2")
-    psycopg2_module.connect = lambda *_args, **_kwargs: None
-    extras_module = types.ModuleType("psycopg2.extras")
-    extras_module.RealDictCursor = object
-    sys.modules["psycopg2"] = psycopg2_module
-    sys.modules["psycopg2.extras"] = extras_module
-
 MODULE_PATH = ROOT / "activities" / "resolve_mcp_config.py"
 SPEC = importlib.util.spec_from_file_location("resolve_mcp_config", MODULE_PATH)
 if SPEC is None or SPEC.loader is None:
@@ -110,7 +102,7 @@ def test_prefers_workflow_data_api_when_configured(monkeypatch):
 
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
     monkeypatch.setattr(resolve_mcp_config, "workflow_data_client", FakeWorkflowDataClient())
-    monkeypatch.setattr(resolve_mcp_config.psycopg2, "connect", fail_connect)
+    monkeypatch.setattr(resolve_mcp_config, "_connect_postgres", fail_connect)
 
     result = resolve_mcp_config.resolve_agent_mcp_servers(
         None,
@@ -169,8 +161,8 @@ def test_workflow_data_api_falls_back_to_postgres_by_default(monkeypatch):
     )
     monkeypatch.setattr(resolve_mcp_config, "_get_database_url", lambda: "postgres://test")
     monkeypatch.setattr(
-        resolve_mcp_config.psycopg2,
-        "connect",
+        resolve_mcp_config,
+        "_connect_postgres",
         lambda _url: FakeConnection(rows),
     )
 
@@ -207,8 +199,8 @@ def test_resolves_logical_profile_server_to_project_connection(monkeypatch):
     ]
     monkeypatch.setattr(resolve_mcp_config, "_get_database_url", lambda: "postgres://test")
     monkeypatch.setattr(
-        resolve_mcp_config.psycopg2,
-        "connect",
+        resolve_mcp_config,
+        "_connect_postgres",
         lambda _url: FakeConnection(rows),
     )
 
@@ -264,7 +256,7 @@ def test_narrows_piece_tools_to_project_ceiling_agent_intersection(monkeypatch):
     ]
     monkeypatch.setattr(resolve_mcp_config, "_get_database_url", lambda: "postgres://test")
     monkeypatch.setattr(
-        resolve_mcp_config.psycopg2, "connect", lambda _url: FakeConnection(rows)
+        resolve_mcp_config, "_connect_postgres", lambda _url: FakeConnection(rows)
     )
 
     # agent narrows to two; delete_branch is outside the ceiling -> dropped
@@ -306,7 +298,7 @@ def test_carries_project_ceiling_when_agent_does_not_narrow(monkeypatch):
     ]
     monkeypatch.setattr(resolve_mcp_config, "_get_database_url", lambda: "postgres://test")
     monkeypatch.setattr(
-        resolve_mcp_config.psycopg2, "connect", lambda _url: FakeConnection(rows)
+        resolve_mcp_config, "_connect_postgres", lambda _url: FakeConnection(rows)
     )
 
     # project mode, no per-agent narrowing -> full ceiling on the URL
@@ -351,8 +343,8 @@ def test_matches_piece_descriptor_by_piece_name_not_source_type(monkeypatch):
     ]
     monkeypatch.setattr(resolve_mcp_config, "_get_database_url", lambda: "postgres://test")
     monkeypatch.setattr(
-        resolve_mcp_config.psycopg2,
-        "connect",
+        resolve_mcp_config,
+        "_connect_postgres",
         lambda _url: FakeConnection(rows),
     )
 
@@ -463,8 +455,8 @@ def test_resolves_hosted_workflow_connection_with_project_token(monkeypatch):
     monkeypatch.setattr(resolve_mcp_config, "_get_database_url", lambda: "postgres://test")
     monkeypatch.setattr(resolve_mcp_config, "_hosted_mcp_token", lambda project_id: f"token:{project_id}")
     monkeypatch.setattr(
-        resolve_mcp_config.psycopg2,
-        "connect",
+        resolve_mcp_config,
+        "_connect_postgres",
         lambda _url: FakeConnection(rows),
     )
 

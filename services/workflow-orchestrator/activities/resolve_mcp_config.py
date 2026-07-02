@@ -9,13 +9,7 @@ import re
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
-import psycopg2
 import requests
-
-try:
-    from psycopg2.extras import RealDictCursor
-except Exception:  # pragma: no cover - test harness may provide a lightweight stub.
-    RealDictCursor = None
 
 from core.config import config
 from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
@@ -29,6 +23,20 @@ SECRET_NAME = "workflow-builder-secrets"
 
 _database_url: str | None = None
 _hosted_mcp_tokens: dict[str, str] = {}
+
+
+def _connect_postgres(database_url: str):
+    import psycopg2
+
+    return psycopg2.connect(database_url)
+
+
+def _real_dict_cursor():
+    try:
+        from psycopg2.extras import RealDictCursor
+    except Exception:  # pragma: no cover - test harness may provide a lightweight stub.
+        return None
+    return RealDictCursor
 
 
 def _get_database_url() -> str:
@@ -520,9 +528,10 @@ def resolve_agent_mcp_servers(ctx, input_data: dict[str, Any]) -> dict[str, Any]
     servers: list[dict[str, Any]] = []
     seen_names: set[str] = set()
 
-    conn = psycopg2.connect(_get_database_url())
+    conn = _connect_postgres(_get_database_url())
     try:
-        cursor_kwargs = {"cursor_factory": RealDictCursor} if RealDictCursor else {}
+        cursor_type = _real_dict_cursor()
+        cursor_kwargs = {"cursor_factory": cursor_type} if cursor_type else {}
         with conn.cursor(**cursor_kwargs) as cur:
             if not project_id and workflow_id:
                 cur.execute(

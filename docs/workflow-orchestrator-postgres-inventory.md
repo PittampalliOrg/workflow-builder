@@ -64,8 +64,8 @@ branches for `WORKFLOW_DATA_API_MODE=postgres` and
 `WORKFLOW_DATA_API_MODE=http-fallback-db`. Those branches are rollback-only.
 They should import `psycopg2` lazily inside the Postgres branch where practical
 so import-time coupling does not affect strict HTTP mode.
-`resolve_mcp_config.py` intentionally keeps a top-level import today because its
-fallback tests patch that module object directly.
+`resolve_mcp_config.py` now uses a lazy `_connect_postgres` helper for the
+rollback branch, and its fallback tests patch that helper directly.
 
 `app.py` still contains `_get_database_url` and lazy `psycopg2` imports in the
 fallback bodies for:
