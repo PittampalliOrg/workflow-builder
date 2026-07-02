@@ -1,5 +1,5 @@
 import { existsSync, statSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { build } from "esbuild";
 
@@ -39,6 +39,23 @@ const aliasPlugin = {
 	},
 };
 
+const rawFilePlugin = {
+	name: "workflow-builder-raw-file",
+	setup(build) {
+		build.onResolve({ filter: /\?raw$/ }, (args) => {
+			const filePath = args.path.replace(/\?raw$/, "");
+			const resolvedPath = filePath.startsWith(".")
+				? resolve(dirname(args.importer), filePath)
+				: resolve(root, filePath);
+			return { path: resolvedPath, namespace: "raw-file" };
+		});
+		build.onLoad({ filter: /.*/, namespace: "raw-file" }, async (args) => ({
+			contents: `export default ${JSON.stringify(await readFile(args.path, "utf8"))};`,
+			loader: "js",
+		}));
+	},
+};
+
 function resolveAlias(path) {
 	const base = resolve(root, "src/lib", path.slice("$lib/".length));
 	for (const candidate of [base, `${base}.ts`, `${base}.js`, `${base}.svelte`]) {
@@ -66,7 +83,7 @@ for (const entry of entries) {
 		format: "esm",
 		target: "node22",
 		sourcemap: false,
-		plugins: [aliasPlugin],
+		plugins: [aliasPlugin, rawFilePlugin],
 		logLevel: "info",
 	});
 }
