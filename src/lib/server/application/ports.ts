@@ -62,6 +62,7 @@ export type CreateWorkflowExecutionInput = {
 	rerunOfExecutionId?: string;
 	rerunSourceInstanceId?: string;
 	resumeFromNode?: string;
+	workflowSessionId?: string | null;
 };
 
 export type WorkflowExecutionRecord = {
@@ -182,14 +183,20 @@ export type WorkflowExecutionLogPatch = Partial<
 >;
 
 export interface WorkflowExecutionRepository {
+	assertReadModelReady(): Promise<void>;
 	getById(id: string): Promise<WorkflowExecutionRecord | null>;
+	getByDaprInstanceId(instanceId: string): Promise<WorkflowExecutionRecord | null>;
 	create(input: CreateWorkflowExecutionInput): Promise<{ id: string }>;
 	attachSchedulerInstance(input: {
 		executionId: string;
 		instanceId: string;
 		workflowSessionId?: string | null;
+		primaryTraceId?: string | null;
 	}): Promise<void>;
 	markStartFailed(input: { executionId: string; error: string }): Promise<void>;
+	listStaleRunningExecutions(input: {
+		olderThanMinutes: number;
+	}): Promise<Pick<WorkflowExecutionRecord, "id" | "daprInstanceId" | "input">[]>;
 	updateReadModel(
 		executionId: string,
 		patch: WorkflowExecutionReadModelPatch,
@@ -449,7 +456,27 @@ export interface WorkflowDataService {
 	getWorkflowByRef(
 		ref: WorkflowRef & { lookup?: "id" | "name" | "auto" },
 	): Promise<WorkflowDefinition | null>;
+	assertExecutionReadModelReady(): Promise<void>;
 	getExecutionById(id: string): Promise<WorkflowExecutionRecord | null>;
+	getExecutionByDaprInstanceId(
+		instanceId: string,
+	): Promise<WorkflowExecutionRecord | null>;
+	createWorkflowExecution(
+		input: CreateWorkflowExecutionInput,
+	): Promise<{ id: string }>;
+	getLiveExecutionInstance(
+		executionId: string,
+	): Promise<{ instanceId: string; status: string } | null>;
+	attachExecutionSchedulerInstance(input: {
+		executionId: string;
+		instanceId: string;
+		workflowSessionId?: string | null;
+		primaryTraceId?: string | null;
+	}): Promise<void>;
+	markExecutionStartFailed(input: { executionId: string; error: string }): Promise<void>;
+	listStaleRunningExecutions(input: {
+		olderThanMinutes: number;
+	}): Promise<Pick<WorkflowExecutionRecord, "id" | "daprInstanceId" | "input">[]>;
 	updateExecutionReadModel(
 		executionId: string,
 		patch: WorkflowExecutionReadModelPatch,

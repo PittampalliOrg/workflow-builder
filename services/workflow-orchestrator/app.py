@@ -51,6 +51,7 @@ from core.resume_event_resolver import (
 from workflows.sw_workflow import sw_workflow
 from workflows.sw_workflow import wfr
 from activities.metadata import get_activity_metadata
+from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
 from content_tracing import io_attributes
 
 REQUESTS_TIMEOUT = getattr(requests, "Timeout", TimeoutError)
@@ -1750,8 +1751,34 @@ def _get_database_url() -> str:
     ) from last_error
 
 
+def _use_workflow_data_api() -> bool:
+    return workflow_data_api_mode() != "postgres"
+
+
+def _strict_workflow_data_api() -> bool:
+    return workflow_data_api_mode() == "http"
+
+
+def _log_workflow_data_fallback(operation: str, exc: Exception) -> None:
+    logger.warning(
+        "[Workflow Data] %s via workflow-data failed in %s mode; falling back to Postgres: %s",
+        operation,
+        workflow_data_api_mode(),
+        exc,
+    )
+
+
 def _assert_execution_read_model_columns() -> None:
     """Fail startup unless the execution read-model cutover migration is applied."""
+    if _use_workflow_data_api():
+        try:
+            workflow_data_client.assert_execution_read_model_ready()
+            return
+        except Exception as exc:
+            if _strict_workflow_data_api():
+                raise
+            _log_workflow_data_fallback("read-model readiness check", exc)
+
     import psycopg2
 
     required_columns = {
@@ -1792,6 +1819,19 @@ def _assert_execution_read_model_columns() -> None:
 
 def _fetch_workflow_from_db(workflow_id: str) -> dict[str, Any]:
     """Fetch a workflow definition from the database by ID."""
+    if _use_workflow_data_api():
+        try:
+            workflow = workflow_data_client.get_workflow(workflow_id, by="id")
+            if not workflow:
+                raise HTTPException(status_code=404, detail=f"Workflow {workflow_id} not found")
+            return workflow
+        except HTTPException:
+            raise
+        except Exception as exc:
+            if _strict_workflow_data_api():
+                raise
+            _log_workflow_data_fallback("workflow lookup", exc)
+
     import psycopg2
 
     db_url = _get_database_url()
@@ -1863,9 +1903,32 @@ def _create_workflow_execution(
     column was added in migration 0035 and is backfilled for historical
     rows; callers should pass workflow_record["projectId"] when available.
     """
+    execution_id = _generate_execution_id()
+
+    if _use_workflow_data_api():
+        try:
+            result = workflow_data_client.create_execution(
+                {
+                    "id": execution_id,
+                    "workflowId": workflow_id,
+                    "userId": user_id,
+                    "projectId": project_id,
+                    "status": "running",
+                    "phase": "running",
+                    "progress": 0,
+                    "input": trigger_data or {},
+                    "workflowSessionId": execution_id,
+                }
+            )
+            result_id = str(result.get("id") or execution_id).strip()
+            return result_id or execution_id
+        except Exception as exc:
+            if _strict_workflow_data_api():
+                raise
+            _log_workflow_data_fallback("workflow execution create", exc)
+
     import psycopg2
 
-    execution_id = _generate_execution_id()
     db_url = _get_database_url()
     conn = psycopg2.connect(db_url)
     try:
@@ -1901,6 +1964,22 @@ def _mark_workflow_execution_started(
     primary_trace_id: str | None = None,
 ) -> None:
     """Attach dapr instance correlation to an execution row."""
+    if _use_workflow_data_api():
+        try:
+            workflow_data_client.attach_execution_scheduler_instance(
+                execution_id,
+                {
+                    "instanceId": dapr_instance_id,
+                    "workflowSessionId": execution_id,
+                    "primaryTraceId": primary_trace_id,
+                },
+            )
+            return
+        except Exception as exc:
+            if _strict_workflow_data_api():
+                raise
+            _log_workflow_data_fallback("execution scheduler attach", exc)
+
     import psycopg2
 
     db_url = _get_database_url()
@@ -1935,6 +2014,18 @@ def _existing_live_execution_instance(execution_id: str) -> str | None:
     """Return the existing Dapr instance for a non-terminal DB execution row."""
     if not execution_id:
         return None
+
+    if _use_workflow_data_api():
+        try:
+            instance = workflow_data_client.get_live_execution_instance(execution_id)
+            if not instance:
+                return None
+            instance_id = str(instance.get("instanceId") or "").strip()
+            return instance_id or None
+        except Exception as exc:
+            if _strict_workflow_data_api():
+                raise
+            _log_workflow_data_fallback("live execution lookup", exc)
 
     import psycopg2
 
@@ -1976,6 +2067,22 @@ def _db_execution_status_for_instance(instance_id: str) -> str | None:
     """
     if not instance_id:
         return None
+
+    if _use_workflow_data_api():
+        try:
+            execution = workflow_data_client.get_execution_by_instance(instance_id)
+            status = str((execution or {}).get("status") or "").strip().lower()
+            return status or None
+        except Exception as exc:
+            if _strict_workflow_data_api():
+                logger.warning(
+                    "[Idempotent Schedule] workflow-data status lookup failed for %s: %s",
+                    instance_id,
+                    exc,
+                )
+                return None
+            _log_workflow_data_fallback("execution status lookup by Dapr instance", exc)
+
     import psycopg2
 
     try:
@@ -2039,6 +2146,15 @@ def _terminate_and_purge_for_reuse(client: DaprWorkflowClient, instance_id: str)
 
 def _mark_workflow_execution_failed_to_start(execution_id: str, error: str) -> None:
     """Set failure state when workflow scheduling fails before execution starts."""
+    if _use_workflow_data_api():
+        try:
+            workflow_data_client.mark_execution_start_failed(execution_id, error)
+            return
+        except Exception as exc:
+            if _strict_workflow_data_api():
+                raise
+            _log_workflow_data_fallback("execution failed-to-start update", exc)
+
     import psycopg2
     from datetime import datetime, timezone
 
@@ -2089,6 +2205,49 @@ def _is_benchmark_workflow_execution(
     return False
 
 
+def _list_stale_running_execution_rows(
+    stale_threshold_minutes: int,
+) -> list[tuple[str, str | None, Any]]:
+    if _use_workflow_data_api():
+        try:
+            rows = workflow_data_client.list_stale_running_executions(
+                stale_threshold_minutes
+            )
+            normalized_rows: list[tuple[str, str | None, Any]] = []
+            for row in rows:
+                execution_id = str(row.get("id") or "").strip()
+                if not execution_id:
+                    continue
+                dapr_instance_id = str(row.get("daprInstanceId") or "").strip() or None
+                normalized_rows.append(
+                    (execution_id, dapr_instance_id, row.get("input"))
+                )
+            return normalized_rows
+        except Exception as exc:
+            if _strict_workflow_data_api():
+                raise
+            _log_workflow_data_fallback("stale running execution lookup", exc)
+
+    import psycopg2
+
+    db_url = _get_database_url()
+    conn = psycopg2.connect(db_url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, dapr_instance_id, input
+                FROM workflow_executions
+                WHERE status = 'running'
+                  AND started_at < NOW() - INTERVAL '%s minutes'
+                """,
+                (stale_threshold_minutes,),
+            )
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
 def _cleanup_stale_instances_on_startup() -> None:
     """Terminate stale Dapr workflow instances and mark DB records on startup.
 
@@ -2110,24 +2269,7 @@ def _cleanup_stale_instances_on_startup() -> None:
     )
 
     try:
-        import psycopg2
-
-        db_url = _get_database_url()
-        conn = psycopg2.connect(db_url)
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, dapr_instance_id, input
-                    FROM workflow_executions
-                    WHERE status = 'running'
-                      AND started_at < NOW() - INTERVAL '%s minutes'
-                    """,
-                    (stale_threshold_minutes,),
-                )
-                stale_rows = cur.fetchall()
-        finally:
-            conn.close()
+        stale_rows = _list_stale_running_execution_rows(stale_threshold_minutes)
 
         if not stale_rows:
             logger.info("[Startup Cleanup] No stale instances found")

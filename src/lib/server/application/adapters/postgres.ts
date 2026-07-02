@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, lt, sql } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
 import {
 	mlflowLineageLinks,
@@ -50,6 +50,19 @@ const SLOT_RANK = sql<number>`CASE ${workflowArtifacts.slot}
 	WHEN 'aux' THEN 2
 	ELSE 3
 END`;
+
+const EXECUTION_READ_MODEL_COLUMNS = [
+	"current_node_id",
+	"current_node_name",
+	"primary_trace_id",
+	"workflow_session_id",
+	"summary_output",
+] as const;
+
+const EXECUTION_READ_MODEL_MIGRATIONS = [
+	"atlas/migrations/20260408120000_add_execution_read_model_columns.sql",
+	"drizzle/0024_execution_read_model.sql",
+] as const;
 
 export function requirePostgresDb(database: Database = defaultDb): Database {
 	if (!database) throw new Error("Database not configured");
@@ -218,11 +231,37 @@ export class PostgresWorkflowDefinitionRepository implements WorkflowDefinitionR
 export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
+	async assertReadModelReady(): Promise<void> {
+		const rows = await this.database.execute<{ column_name: string }>(sql`
+			select column_name
+			from information_schema.columns
+			where table_schema = 'public'
+				and table_name = 'workflow_executions'
+		`);
+		const existing = new Set(rows.map((row) => row.column_name));
+		const missing = EXECUTION_READ_MODEL_COLUMNS.filter((column) => !existing.has(column));
+		if (missing.length > 0) {
+			throw new Error(
+				`Execution read-model schema is missing required workflow_executions columns: ${missing.join(", ")}. ` +
+					`Apply ${EXECUTION_READ_MODEL_MIGRATIONS.join(" or ")} before starting workflow-builder.`,
+			);
+		}
+	}
+
 	async getById(id: string): Promise<WorkflowExecutionRecord | null> {
 		const [row] = await this.database
 			.select()
 			.from(workflowExecutions)
 			.where(eq(workflowExecutions.id, id))
+			.limit(1);
+		return row ? mapExecution(row) : null;
+	}
+
+	async getByDaprInstanceId(instanceId: string): Promise<WorkflowExecutionRecord | null> {
+		const [row] = await this.database
+			.select()
+			.from(workflowExecutions)
+			.where(eq(workflowExecutions.daprInstanceId, instanceId))
 			.limit(1);
 		return row ? mapExecution(row) : null;
 	}
@@ -242,6 +281,7 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 				output: input.output,
 				executionIr: input.executionIr,
 				executionIrVersion: input.executionIrVersion ?? null,
+				workflowSessionId: input.workflowSessionId ?? input.id ?? null,
 				...(input.triggerSource ? { triggerSource: input.triggerSource } : {}),
 				...(input.rerunOfExecutionId ? { rerunOfExecutionId: input.rerunOfExecutionId } : {}),
 				...(input.rerunSourceInstanceId
@@ -258,6 +298,7 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 		executionId: string;
 		instanceId: string;
 		workflowSessionId?: string | null;
+		primaryTraceId?: string | null;
 	}): Promise<void> {
 		await this.database
 			.update(workflowExecutions)
@@ -265,7 +306,8 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 				daprInstanceId: input.instanceId,
 				phase: "running",
 				progress: 0,
-				workflowSessionId: input.workflowSessionId ?? input.executionId,
+				workflowSessionId: sql`coalesce(${workflowExecutions.workflowSessionId}, ${input.workflowSessionId ?? input.executionId})`,
+				primaryTraceId: sql`coalesce(${workflowExecutions.primaryTraceId}, ${input.primaryTraceId ?? null})`,
 			})
 			.where(eq(workflowExecutions.id, input.executionId));
 	}
@@ -276,10 +318,33 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			.set({
 				status: "error",
 				phase: "failed",
+				progress: 100,
 				error: input.error,
 				completedAt: new Date(),
 			})
 			.where(eq(workflowExecutions.id, input.executionId));
+	}
+
+	async listStaleRunningExecutions(input: {
+		olderThanMinutes: number;
+	}): Promise<Pick<WorkflowExecutionRecord, "id" | "daprInstanceId" | "input">[]> {
+		const cutoff = new Date(Date.now() - Math.max(0, input.olderThanMinutes) * 60_000);
+		const rows = await this.database
+			.select({
+				id: workflowExecutions.id,
+				daprInstanceId: workflowExecutions.daprInstanceId,
+				input: workflowExecutions.input,
+			})
+			.from(workflowExecutions)
+			.where(and(
+				eq(workflowExecutions.status, "running"),
+				lt(workflowExecutions.startedAt, cutoff),
+			));
+		return rows.map((row) => ({
+			id: row.id,
+			daprInstanceId: row.daprInstanceId,
+			input: row.input ?? null,
+		}));
 	}
 
 	async updateReadModel(

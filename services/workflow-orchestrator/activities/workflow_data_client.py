@@ -135,6 +135,77 @@ class WorkflowDataClient:
         execution = payload.get("execution")
         return execution if isinstance(execution, dict) else None
 
+    def assert_execution_read_model_ready(self) -> None:
+        self._request(
+            "GET",
+            "/api/internal/workflow-data/executions/read-model-ready",
+        )
+
+    def get_execution_by_instance(self, instance_id: str) -> dict[str, Any] | None:
+        payload = self._request(
+            "GET",
+            "/api/internal/workflow-data/executions/by-instance/"
+            f"{quote(instance_id, safe='')}",
+        )
+        execution = payload.get("execution")
+        return execution if isinstance(execution, dict) else None
+
+    def create_execution(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/internal/workflow-data/executions",
+            json_body=payload,
+        )
+
+    def get_live_execution_instance(self, execution_id: str) -> dict[str, Any] | None:
+        payload = self._request(
+            "GET",
+            "/api/internal/workflow-data/executions/"
+            f"{quote(execution_id, safe='')}/live-instance",
+        )
+        instance = payload.get("instance")
+        return instance if isinstance(instance, dict) else None
+
+    def attach_execution_scheduler_instance(
+        self,
+        execution_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/internal/workflow-data/executions/"
+            f"{quote(execution_id, safe='')}/scheduler-instance",
+            json_body=payload,
+        )
+
+    def mark_execution_start_failed(
+        self,
+        execution_id: str,
+        error: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/internal/workflow-data/executions/"
+            f"{quote(execution_id, safe='')}/start-failed",
+            json_body={"error": error},
+        )
+
+    def list_stale_running_executions(
+        self,
+        older_than_minutes: int,
+    ) -> list[dict[str, Any]]:
+        payload = self._request(
+            "GET",
+            "/api/internal/workflow-data/executions?"
+            f"{urlencode({'staleOlderThanMinutes': str(older_than_minutes)})}",
+        )
+        executions = payload.get("executions")
+        return (
+            [item for item in executions if isinstance(item, dict)]
+            if isinstance(executions, list)
+            else []
+        )
+
     def patch_execution(self, execution_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         return self._request(
             "PATCH",

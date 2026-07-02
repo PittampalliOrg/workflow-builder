@@ -3,6 +3,7 @@ import { resolveAgentMcpServersForProject } from "$lib/server/agents/mcp-resolut
 import type {
 	AppendWorkflowExecutionLogInput,
 	ArtifactStore,
+	CreateWorkflowExecutionInput,
 	WorkflowArtifactInput,
 	WorkflowDataService,
 	WorkflowDefinitionRepository,
@@ -57,8 +58,48 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			: null;
 	}
 
+	assertExecutionReadModelReady() {
+		return this.deps.workflowExecutions.assertReadModelReady();
+	}
+
 	getExecutionById(id: string) {
 		return this.deps.workflowExecutions.getById(id);
+	}
+
+	getExecutionByDaprInstanceId(instanceId: string) {
+		return this.deps.workflowExecutions.getByDaprInstanceId(instanceId);
+	}
+
+	createWorkflowExecution(input: CreateWorkflowExecutionInput) {
+		return this.deps.workflowExecutions.create(input);
+	}
+
+	async getLiveExecutionInstance(executionId: string) {
+		const execution = await this.deps.workflowExecutions.getById(executionId);
+		const instanceId = execution?.daprInstanceId?.trim();
+		if (!execution || !instanceId) return null;
+		const status = String(execution.status || "").trim().toLowerCase();
+		if (["completed", "failed", "success", "error", "cancelled", "terminated"].includes(status)) {
+			return null;
+		}
+		return { instanceId, status };
+	}
+
+	attachExecutionSchedulerInstance(input: {
+		executionId: string;
+		instanceId: string;
+		workflowSessionId?: string | null;
+		primaryTraceId?: string | null;
+	}) {
+		return this.deps.workflowExecutions.attachSchedulerInstance(input);
+	}
+
+	markExecutionStartFailed(input: { executionId: string; error: string }) {
+		return this.deps.workflowExecutions.markStartFailed(input);
+	}
+
+	listStaleRunningExecutions(input: { olderThanMinutes: number }) {
+		return this.deps.workflowExecutions.listStaleRunningExecutions(input);
 	}
 
 	updateExecutionReadModel(

@@ -221,10 +221,13 @@ describe("ApplicationWorkflowDataService", () => {
 			wasColdStart: null,
 		};
 		const workflowExecutions = {
+			assertReadModelReady: vi.fn(async () => undefined),
 			getById: vi.fn(async () => null),
+			getByDaprInstanceId: vi.fn(async () => null),
 			create: vi.fn(async () => ({ id: "exec-1" })),
 			attachSchedulerInstance: vi.fn(async () => undefined),
 			markStartFailed: vi.fn(async () => undefined),
+			listStaleRunningExecutions: vi.fn(async () => []),
 			updateReadModel: vi.fn(async () => undefined),
 			appendLog: vi.fn(async () => executionLog),
 			updateLog: vi.fn(async () => ({ ...executionLog, status: "success" as const })),
@@ -249,6 +252,25 @@ describe("ApplicationWorkflowDataService", () => {
 		});
 
 		await service.updateExecutionReadModel("exec-1", { phase: "running" });
+		await service.assertExecutionReadModelReady();
+		await service.createWorkflowExecution({
+			id: "exec-1",
+			workflowId: "wf-1",
+			userId: "user-1",
+			status: "running",
+			workflowSessionId: "exec-1",
+		});
+		await service.attachExecutionSchedulerInstance({
+			executionId: "exec-1",
+			instanceId: "sw-example-exec-exec-1",
+			primaryTraceId: "trace-1",
+		});
+		await service.markExecutionStartFailed({
+			executionId: "exec-1",
+			error: "failed to start",
+		});
+		await service.getExecutionByDaprInstanceId("sw-example-exec-exec-1");
+		await service.listStaleRunningExecutions({ olderThanMinutes: 60 });
 		await service.appendExecutionLog({
 			executionId: "exec-1",
 			nodeId: "agent",
@@ -273,6 +295,25 @@ describe("ApplicationWorkflowDataService", () => {
 
 		expect(workflowExecutions.updateReadModel).toHaveBeenCalledWith("exec-1", {
 			phase: "running",
+		});
+		expect(workflowExecutions.assertReadModelReady).toHaveBeenCalledTimes(1);
+		expect(workflowExecutions.create).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "exec-1", workflowSessionId: "exec-1" }),
+		);
+		expect(workflowExecutions.attachSchedulerInstance).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			instanceId: "sw-example-exec-exec-1",
+			primaryTraceId: "trace-1",
+		});
+		expect(workflowExecutions.markStartFailed).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			error: "failed to start",
+		});
+		expect(workflowExecutions.getByDaprInstanceId).toHaveBeenCalledWith(
+			"sw-example-exec-exec-1",
+		);
+		expect(workflowExecutions.listStaleRunningExecutions).toHaveBeenCalledWith({
+			olderThanMinutes: 60,
 		});
 		expect(workflowExecutions.appendLog).toHaveBeenCalledWith(
 			expect.objectContaining({ executionId: "exec-1", nodeId: "agent" }),

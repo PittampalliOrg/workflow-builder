@@ -773,6 +773,210 @@ def test_existing_live_execution_instance_ignores_terminal_rows(monkeypatch):
     assert APP._existing_live_execution_instance("exec-1") is None
 
 
+def test_app_start_control_strict_http_uses_workflow_data_client(monkeypatch):
+    calls = []
+
+    class FakeWorkflowDataClient:
+        def assert_execution_read_model_ready(self):
+            calls.append(("assert_ready", None))
+
+        def get_workflow(self, workflow_ref, *, by=None):
+            calls.append(("get_workflow", workflow_ref, by))
+            return {
+                "id": workflow_ref,
+                "name": "Example",
+                "userId": "user-1",
+                "projectId": "project-1",
+                "spec": {"document": {"name": "Example"}, "do": []},
+                "nodes": [],
+                "edges": [],
+            }
+
+        def create_execution(self, payload):
+            calls.append(("create_execution", payload))
+            return {"id": payload["id"]}
+
+        def attach_execution_scheduler_instance(self, execution_id, payload):
+            calls.append(("attach_scheduler", execution_id, payload))
+            return {"ok": True}
+
+        def get_live_execution_instance(self, execution_id):
+            calls.append(("get_live", execution_id))
+            return {"instanceId": "sw-example-exec-exec-http-1", "status": "running"}
+
+        def get_execution_by_instance(self, instance_id):
+            calls.append(("get_by_instance", instance_id))
+            return {"id": "exec-http-1", "status": "error", "daprInstanceId": instance_id}
+
+        def mark_execution_start_failed(self, execution_id, error):
+            calls.append(("mark_failed", execution_id, error))
+            return {"ok": True}
+
+        def list_stale_running_executions(self, older_than_minutes):
+            calls.append(("list_stale", older_than_minutes))
+            return [
+                {
+                    "id": "exec-http-1",
+                    "daprInstanceId": "sw-example-exec-exec-http-1",
+                    "input": {"prompt": "ship it"},
+                }
+            ]
+
+    def fail_connect(*_args, **_kwargs):
+        raise AssertionError("psycopg2.connect should not be called in strict http mode")
+
+    def fail_database_url():
+        raise AssertionError("DATABASE_URL should not be fetched in strict http mode")
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    monkeypatch.setattr(APP, "workflow_data_client", FakeWorkflowDataClient())
+    monkeypatch.setattr(APP, "_get_database_url", fail_database_url)
+    monkeypatch.setitem(
+        sys.modules,
+        "psycopg2",
+        types.SimpleNamespace(connect=fail_connect),
+    )
+    monkeypatch.setattr(APP, "_generate_execution_id", lambda: "exec-http-1")
+
+    APP._assert_execution_read_model_columns()
+    workflow = APP._fetch_workflow_from_db("wf-1")
+    execution_id = APP._create_workflow_execution(
+        "wf-1",
+        "user-1",
+        {"prompt": "ship it"},
+        "project-1",
+    )
+    APP._mark_workflow_execution_started(
+        execution_id,
+        "sw-example-exec-exec-http-1",
+        "1234567890abcdef1234567890abcdef",
+    )
+    live_instance = APP._existing_live_execution_instance(execution_id)
+    db_status = APP._db_execution_status_for_instance("sw-example-exec-exec-http-1")
+    APP._mark_workflow_execution_failed_to_start(execution_id, "failed to start")
+    stale_rows = APP._list_stale_running_execution_rows(45)
+
+    assert workflow["id"] == "wf-1"
+    assert execution_id == "exec-http-1"
+    assert live_instance == "sw-example-exec-exec-http-1"
+    assert db_status == "error"
+    assert stale_rows == [
+        ("exec-http-1", "sw-example-exec-exec-http-1", {"prompt": "ship it"})
+    ]
+    assert calls == [
+        ("assert_ready", None),
+        ("get_workflow", "wf-1", "id"),
+        (
+            "create_execution",
+            {
+                "id": "exec-http-1",
+                "workflowId": "wf-1",
+                "userId": "user-1",
+                "projectId": "project-1",
+                "status": "running",
+                "phase": "running",
+                "progress": 0,
+                "input": {"prompt": "ship it"},
+                "workflowSessionId": "exec-http-1",
+            },
+        ),
+        (
+            "attach_scheduler",
+            "exec-http-1",
+            {
+                "instanceId": "sw-example-exec-exec-http-1",
+                "workflowSessionId": "exec-http-1",
+                "primaryTraceId": "1234567890abcdef1234567890abcdef",
+            },
+        ),
+        ("get_live", "exec-http-1"),
+        ("get_by_instance", "sw-example-exec-exec-http-1"),
+        ("mark_failed", "exec-http-1", "failed to start"),
+        ("list_stale", 45),
+    ]
+
+
+def test_app_strict_http_status_lookup_failure_does_not_fallback_to_db(monkeypatch):
+    class FailingWorkflowDataClient:
+        def get_execution_by_instance(self, _instance_id):
+            raise RuntimeError("workflow-data unavailable")
+
+    def fail_connect(*_args, **_kwargs):
+        raise AssertionError("psycopg2.connect should not be called in strict http mode")
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    monkeypatch.setattr(APP, "workflow_data_client", FailingWorkflowDataClient())
+    monkeypatch.setitem(
+        sys.modules,
+        "psycopg2",
+        types.SimpleNamespace(connect=fail_connect),
+    )
+
+    assert APP._db_execution_status_for_instance("sw-example-exec-exec-http-1") is None
+
+
+def test_app_start_control_fallback_mode_uses_postgres_when_workflow_data_fails(monkeypatch):
+    executed = {}
+
+    class FailingWorkflowDataClient:
+        def create_execution(self, _payload):
+            raise RuntimeError("workflow-data unavailable")
+
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, sql, params):
+            executed["sql"] = sql
+            executed["params"] = params
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            executed["committed"] = True
+
+        def close(self):
+            executed["closed"] = True
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http-fallback-db")
+    monkeypatch.setattr(APP, "workflow_data_client", FailingWorkflowDataClient())
+    monkeypatch.setattr(APP, "_generate_execution_id", lambda: "exec-fallback-1")
+    monkeypatch.setattr(APP, "_get_database_url", lambda: "postgres://test")
+    monkeypatch.setitem(
+        sys.modules,
+        "psycopg2",
+        types.SimpleNamespace(connect=lambda *_args, **_kwargs: FakeConnection()),
+    )
+
+    result = APP._create_workflow_execution(
+        "wf-1",
+        "user-1",
+        {"prompt": "ship it"},
+        "project-1",
+    )
+
+    assert result == "exec-fallback-1"
+    assert "INSERT INTO workflow_executions" in executed["sql"]
+    assert executed["params"] == (
+        "exec-fallback-1",
+        "wf-1",
+        "user-1",
+        "project-1",
+        "running",
+        json.dumps({"prompt": "ship it"}),
+        "running",
+        0,
+        "exec-fallback-1",
+    )
+    assert executed["committed"] is True
+    assert executed["closed"] is True
+
+
 def test_readiness_requires_taskhub_and_metadata_worker_count(monkeypatch):
     observed_kwargs = {}
 

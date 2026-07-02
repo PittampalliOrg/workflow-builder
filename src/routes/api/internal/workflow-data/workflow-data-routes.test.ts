@@ -1,8 +1,30 @@
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
 	const workflowData = {
+		assertExecutionReadModelReady: vi.fn(async () => undefined),
 		getExecutionById: vi.fn(async (id: string) => ({ id })),
+		getExecutionByDaprInstanceId: vi.fn(async (instanceId: string) => ({
+			id: "exec-1",
+			daprInstanceId: instanceId,
+			status: "running",
+		})),
+		createWorkflowExecution: vi.fn(async () => ({ id: "exec-1" })),
+		getLiveExecutionInstance: vi.fn(async () => ({
+			instanceId: "sw-example-exec-exec-1",
+			status: "running",
+		})),
+		attachExecutionSchedulerInstance: vi.fn(async () => undefined),
+		markExecutionStartFailed: vi.fn(async () => undefined),
+		listStaleRunningExecutions: vi.fn(async () => [
+			{
+				id: "exec-1",
+				daprInstanceId: "sw-example-exec-exec-1",
+				input: { prompt: "ship it" },
+			},
+		]),
 		updateExecutionReadModel: vi.fn(async () => undefined),
 		appendExecutionLog: vi.fn(async () => ({
 			id: "log-1",
@@ -13,6 +35,7 @@ const mocks = vi.hoisted(() => {
 			executionId: "exec-1",
 			status: "success",
 		})),
+		upsertWorkflowArtifact: vi.fn(async () => ({ id: "artifact-1" })),
 		upsertWorkflowWorkspaceSession: vi.fn(async () => ({
 			workspaceRef: "workspace-1",
 		})),
@@ -62,9 +85,16 @@ vi.mock("$lib/server/internal-auth", () => ({
 
 import { POST as postAgentRun } from "./agent-runs/+server";
 import { PATCH as patchAgentRun } from "./agent-runs/[runId]/+server";
+import { GET as getStaleExecutions, POST as postExecution } from "./executions/+server";
 import { PATCH as patchExecution } from "./executions/[executionId]/+server";
+import { GET as getExecutionByInstance } from "./executions/by-instance/[instanceId]/+server";
+import { GET as getLiveExecutionInstance } from "./executions/[executionId]/live-instance/+server";
+import { POST as postWorkflowArtifact } from "./executions/[executionId]/artifacts/+server";
 import { POST as postExecutionLog } from "./executions/[executionId]/logs/+server";
 import { PATCH as patchExecutionLog } from "./executions/[executionId]/logs/[logId]/+server";
+import { GET as getReadModelReady } from "./executions/read-model-ready/+server";
+import { POST as postSchedulerInstance } from "./executions/[executionId]/scheduler-instance/+server";
+import { POST as postStartFailed } from "./executions/[executionId]/start-failed/+server";
 import { POST as postPlanArtifact } from "./plan-artifacts/+server";
 import { PATCH as patchPlanArtifact } from "./plan-artifacts/[artifactRef]/+server";
 import { GET as getTraceTargets } from "./traces/executions/[executionId]/targets/+server";
@@ -79,9 +109,30 @@ function jsonRequest(body?: unknown) {
 	});
 }
 
+function routeServerFiles(dir: string): string[] {
+	return readdirSync(dir).flatMap((entry) => {
+		const fullPath = join(dir, entry);
+		if (statSync(fullPath).isDirectory()) return routeServerFiles(fullPath);
+		return entry === "+server.ts" ? [fullPath] : [];
+	});
+}
+
 describe("internal workflow-data routes", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+	});
+
+	it("keeps workflow-data routes behind application services", () => {
+		const routeRoot = join(process.cwd(), "src/routes/api/internal/workflow-data");
+		for (const file of routeServerFiles(routeRoot)) {
+			const source = readFileSync(file, "utf8");
+			if (source.trimStart().startsWith("export {")) {
+				expect(source, file).toContain("../../../../workflows/executions");
+			} else {
+				expect(source, file).toContain("getApplicationAdapters");
+			}
+			expect(source, file).not.toContain("$lib/server/db");
+		}
 	});
 
 	it("schedules and updates agent runs through the workflow-data service", async () => {
@@ -120,6 +171,46 @@ describe("internal workflow-data routes", () => {
 	});
 
 	it("updates execution read models and logs through the workflow-data service", async () => {
+		await getReadModelReady({
+			request: jsonRequest(),
+		} as never);
+		await postExecution({
+			request: jsonRequest({
+				id: "exec-1",
+				workflowId: "wf-1",
+				userId: "user-1",
+				projectId: "project-1",
+				status: "running",
+				phase: "running",
+				progress: 0,
+				input: { prompt: "ship it" },
+				workflowSessionId: "exec-1",
+			}),
+		} as never);
+		await getStaleExecutions({
+			request: jsonRequest(),
+			url: new URL("http://workflow-builder.internal/test?staleOlderThanMinutes=60"),
+		} as never);
+		await getExecutionByInstance({
+			params: { instanceId: "sw-example-exec-exec-1" },
+			request: jsonRequest(),
+		} as never);
+		await getLiveExecutionInstance({
+			params: { executionId: "exec-1" },
+			request: jsonRequest(),
+		} as never);
+		await postSchedulerInstance({
+			params: { executionId: "exec-1" },
+			request: jsonRequest({
+				instanceId: "sw-example-exec-exec-1",
+				workflowSessionId: "exec-1",
+				primaryTraceId: "trace-1",
+			}),
+		} as never);
+		await postStartFailed({
+			params: { executionId: "exec-1" },
+			request: jsonRequest({ error: "failed to start" }),
+		} as never);
 		await patchExecution({
 			params: { executionId: "exec-1" },
 			request: jsonRequest({
@@ -151,12 +242,49 @@ describe("internal workflow-data routes", () => {
 				duration: "42",
 			}),
 		} as never);
+		await postWorkflowArtifact({
+			params: { executionId: "exec-1" },
+			request: jsonRequest({
+				id: "artifact-1",
+				nodeId: "agent",
+				slot: "primary",
+				kind: "markdown",
+				title: "Agent output",
+				inlinePayload: { content: "done" },
+			}),
+		} as never);
 
 		expect(mocks.workflowData.updateExecutionReadModel).toHaveBeenCalledWith("exec-1", {
 			phase: "running",
 			progress: 50,
 			currentNodeId: "agent",
 			currentNodeName: "Agent",
+		});
+		expect(mocks.workflowData.assertExecutionReadModelReady).toHaveBeenCalledTimes(1);
+		expect(mocks.workflowData.createWorkflowExecution).toHaveBeenCalledWith(
+			expect.objectContaining({
+				id: "exec-1",
+				workflowId: "wf-1",
+				userId: "user-1",
+				workflowSessionId: "exec-1",
+			}),
+		);
+		expect(mocks.workflowData.listStaleRunningExecutions).toHaveBeenCalledWith({
+			olderThanMinutes: 60,
+		});
+		expect(mocks.workflowData.getExecutionByDaprInstanceId).toHaveBeenCalledWith(
+			"sw-example-exec-exec-1",
+		);
+		expect(mocks.workflowData.getLiveExecutionInstance).toHaveBeenCalledWith("exec-1");
+		expect(mocks.workflowData.attachExecutionSchedulerInstance).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			instanceId: "sw-example-exec-exec-1",
+			workflowSessionId: "exec-1",
+			primaryTraceId: "trace-1",
+		});
+		expect(mocks.workflowData.markExecutionStartFailed).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			error: "failed to start",
 		});
 		expect(mocks.workflowData.appendExecutionLog).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -176,6 +304,20 @@ describe("internal workflow-data routes", () => {
 				duration: "42",
 			}),
 		);
+		expect(mocks.workflowData.upsertWorkflowArtifact).toHaveBeenCalledWith({
+			id: "artifact-1",
+			workflowExecutionId: "exec-1",
+			nodeId: "agent",
+			slot: "primary",
+			kind: "markdown",
+			title: "Agent output",
+			description: null,
+			inlinePayload: { content: "done" },
+			fileId: null,
+			contentType: null,
+			sizeBytes: null,
+			metadata: null,
+		});
 	});
 
 	it("upserts workspace sessions through the workflow-data service", async () => {
