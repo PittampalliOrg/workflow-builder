@@ -2320,6 +2320,10 @@ export interface SessionRepository {
 		sessionId: string;
 		projectId?: string | null;
 	}): Promise<SessionContextUsageReadModel | null>;
+	getSessionRuntimeDebugTarget(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionRuntimeDebugTarget | null>;
 	getBrowserSessionTarget(input: {
 		sessionId: string;
 		projectId?: string | null;
@@ -2553,6 +2557,17 @@ export type CliWorkspaceCommandCandidate = {
 	runtimeSandboxName: string | null;
 	source: "persisted" | "agent";
 	agentSlug: string;
+	agentRuntime: string | null;
+};
+
+export type SessionRuntimeTargetSource = "persisted" | "agent" | "legacy";
+
+export type SessionRuntimeDebugTarget = {
+	appId: string;
+	invokeTarget: string;
+	runtimeSandboxName: string | null;
+	source: SessionRuntimeTargetSource;
+	agentSlug: string | null;
 	agentRuntime: string | null;
 };
 
@@ -3048,6 +3063,11 @@ export interface WorkflowDataService {
 		projectId?: string | null;
 		userId?: string | null;
 	}): Promise<RuntimeConfigCloudEvent | null>;
+	getSessionRuntimeDebugTarget(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}): Promise<SessionRuntimeDebugTarget | null>;
 	saveWorkflowBrowserArtifact(
 		input: SaveWorkflowBrowserArtifactInput,
 	): Promise<WorkflowBrowserArtifactRecord>;

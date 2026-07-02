@@ -6,10 +6,7 @@ import {
 	getSessionRuntimePod,
 	getSandboxWarmPool,
 } from '$lib/server/kube/client';
-import {
-	resolveSessionRuntimeDebugTarget,
-	runtimeHasNativeGoalHarness,
-} from '$lib/server/sessions/runtime-target';
+import { getApplicationAdapters } from '$lib/server/application';
 import {
 	getRuntimeDescriptor,
 	shellableContainers,
@@ -20,6 +17,17 @@ import {
 // previously hand-synced here, in ws-kube-exec-proxy.ts, and shell/resolve).
 // daprd is excluded by construction — it is the Dapr sidecar, not user code.
 const SHELLABLE_CONTAINERS = shellableContainers();
+const NATIVE_GOAL_CLI_ADAPTERS = new Set(['claude-code', 'codex']);
+
+function runtimeHasNativeGoalHarness(
+	descriptor: { family?: string; cliAdapter?: string } | null | undefined,
+): boolean {
+	return (
+		descriptor?.family === 'interactive-cli' &&
+		!!descriptor.cliAdapter &&
+		NATIVE_GOAL_CLI_ADAPTERS.has(descriptor.cliAdapter)
+	);
+}
 
 /**
  * Compact runtime-flags read for the session detail page. Tells the UI
@@ -38,10 +46,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, 'Authentication required');
 
 	const sessionId = params.id!;
-	const target = await resolveSessionRuntimeDebugTarget(
+	const target = await getApplicationAdapters().workflowData.getSessionRuntimeDebugTarget({
 		sessionId,
-		locals.session.projectId,
-	);
+		projectId: locals.session.projectId ?? null,
+		userId: locals.session.userId,
+	});
 	if (!target) return error(404, 'Session not found in workspace');
 
 	const pool = target.agentSlug

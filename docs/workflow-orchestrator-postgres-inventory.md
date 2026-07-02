@@ -552,6 +552,14 @@ The first UI-facing route has also moved behind the application service:
   `src/routes/api/v1/sessions/[id]/control/mcp-status/+server.ts` now scope
   the session through workflow-data before using existing agent/environment and
   vault credential read services.
+- `src/routes/api/v1/sessions/[id]/compute/+server.ts`,
+  `src/routes/api/v1/sessions/[id]/runtime-flags/+server.ts`,
+  `src/routes/api/v1/sessions/[id]/shell/resolve/+server.ts`, and
+  `src/routes/api/v1/sessions/[id]/cli-terminal/resolve/+server.ts` now resolve
+  runtime debug targets through workflow-data session ports. The
+  `sessions`/`agents` join and runtime app-id fallback are confined to the
+  session repository adapter; live Kubernetes pod, metrics, and registry
+  capability shaping remain route-local.
 - `src/routes/api/v1/sessions/[id]/control/set-model/+server.ts`,
   `src/routes/api/v1/sessions/[id]/control/set-permission-mode/+server.ts`,
   and `src/routes/api/v1/sessions/[id]/control/update-agent-config/+server.ts`
@@ -578,7 +586,7 @@ The internal piece-execution artifact readback and CLI workspace command routes
 are also clean. The scanned session provisioning, context-usage, control
 settings/MCP status, session detail/title/archive/delete, fork, goal,
 goal-flow, event list/append/detail, runtime-config, config patch commands,
-resources, and event-stream routes are also clean.
+runtime debug target routes, resources, and event-stream routes are also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:

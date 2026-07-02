@@ -2,7 +2,7 @@ import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 
 import { getSessionRuntimePod } from '$lib/server/kube/client';
-import { resolveSessionRuntimeDebugTarget } from '$lib/server/sessions/runtime-target';
+import { getApplicationAdapters } from '$lib/server/application';
 import { shellableContainers } from '$lib/server/agents/runtime-registry';
 
 // Runtime-registry-derived (every runtime's main container + browser sidecars).
@@ -25,10 +25,11 @@ export const POST: RequestHandler = async ({ params, url, locals }) => {
 	if (!ALLOWED_CONTAINERS.has(container)) return error(400, 'Invalid container');
 
 	const sessionId = params.id!;
-	const target = await resolveSessionRuntimeDebugTarget(
+	const target = await getApplicationAdapters().workflowData.getSessionRuntimeDebugTarget({
 		sessionId,
-		locals.session.projectId,
-	);
+		projectId: locals.session.projectId ?? null,
+		userId: locals.session.userId,
+	});
 	if (!target) return error(404, 'Session not found in workspace');
 
 	const pod = await getSessionRuntimePod({

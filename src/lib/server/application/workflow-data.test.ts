@@ -514,6 +514,14 @@ function fakeSessions(): SessionRepository {
 			lastProviderContext: { model: "openai/gpt-5.5" },
 			events: { total: 3, totalBytes: 1024, llmTurns: 1 },
 		})),
+		getSessionRuntimeDebugTarget: vi.fn(async () => ({
+			appId: "agent-session-1",
+			invokeTarget: "agent-session-1",
+			runtimeSandboxName: "agent-host-agent-session-1",
+			source: "persisted" as const,
+			agentSlug: "codex-agent",
+			agentRuntime: "codex-cli",
+		})),
 		getBrowserSessionTarget: vi.fn(async () => ({
 			sessionId: "session-1",
 			agentSlug: "browser-agent",
@@ -2040,6 +2048,45 @@ describe("ApplicationWorkflowDataService", () => {
 			sessionId: "session-1",
 			projectId: "project-1",
 		});
+	});
+
+	it("loads session runtime debug targets through scoped session ports", async () => {
+		const target = {
+			appId: "agent-session-1",
+			invokeTarget: "agent-session-1",
+			runtimeSandboxName: "agent-host-agent-session-1",
+			source: "persisted" as const,
+			agentSlug: "codex-agent",
+			agentRuntime: "codex-cli",
+		};
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => ({
+				id: "session-1",
+				projectId: "project-1",
+			}) as Awaited<ReturnType<SessionRepository["getSession"]>>),
+			getSessionRuntimeDebugTarget: vi.fn(async () => target),
+		} satisfies SessionRepository;
+		const { service } = makeService({ sessions });
+
+		await expect(
+			service.getSessionRuntimeDebugTarget({
+				sessionId: "session-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual(target);
+		expect(sessions.getSessionRuntimeDebugTarget).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			projectId: "project-1",
+		});
+
+		await expect(
+			service.getSessionRuntimeDebugTarget({
+				sessionId: "session-1",
+				projectId: "other-project",
+			}),
+		).resolves.toBeNull();
+		expect(sessions.getSessionRuntimeDebugTarget).toHaveBeenCalledTimes(1);
 	});
 
 	it("loads session event stream snapshots through the scoped session repository", async () => {

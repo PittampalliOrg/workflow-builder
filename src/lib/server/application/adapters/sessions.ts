@@ -15,6 +15,7 @@ import type {
 	SessionProvisioningContext,
 	SessionProvisioningReader,
 	SessionRepository,
+	SessionRuntimeDebugTarget,
 	SessionRuntimeConfigReader,
 	SessionRuntimeEventRaiser,
 	SessionTraceLifecycleStore,
@@ -45,6 +46,10 @@ import { raiseSessionAgentConfigPatch as raiseSessionAgentConfigPatchForRuntime 
 import { getSessionProvisioningPreferObserver } from "$lib/server/sessions/provisioning";
 import { getSessionRuntimeConfig } from "$lib/server/sessions/runtime-config";
 import { raiseSessionUserEvents } from "$lib/server/sessions/spawn";
+import {
+	agentRuntimeDedicatedAppId,
+	agentRuntimeInvokeTarget,
+} from "$lib/server/agents/runtime-routing";
 import type {
 	SessionDetail,
 	SessionEventEnvelope,
@@ -290,6 +295,40 @@ export class CurrentSessionRepository implements SessionRepository {
 				totalBytes: Number(totalBytes ?? 0),
 				llmTurns: Number(turns ?? 0),
 			},
+		};
+	}
+
+	async getSessionRuntimeDebugTarget(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionRuntimeDebugTarget | null> {
+		const database = requireDb(this.database);
+		const conditions = [eq(sessions.id, input.sessionId)];
+		if (input.projectId) conditions.push(eq(agents.projectId, input.projectId));
+		const [row] = await database
+			.select({
+				runtimeAppId: sessions.runtimeAppId,
+				runtimeSandboxName: sessions.runtimeSandboxName,
+				agentSlug: agents.slug,
+				agentRuntime: agents.runtime,
+				agentRuntimeAppId: agents.runtimeAppId,
+			})
+			.from(sessions)
+			.innerJoin(agents, eq(agents.id, sessions.agentId))
+			.where(and(...conditions))
+			.limit(1);
+		if (!row) return null;
+		const appId =
+			row.runtimeAppId?.trim() ||
+			row.agentRuntimeAppId?.trim() ||
+			agentRuntimeDedicatedAppId(row.agentSlug);
+		return {
+			appId,
+			invokeTarget: agentRuntimeInvokeTarget(appId),
+			runtimeSandboxName: row.runtimeSandboxName ?? null,
+			source: row.runtimeAppId?.trim() ? "persisted" : "agent",
+			agentSlug: row.agentSlug,
+			agentRuntime: row.agentRuntime ?? null,
 		};
 	}
 

@@ -4,7 +4,7 @@ import {
 	getSessionRuntimePod,
 	kubeApiFetch,
 } from "$lib/server/kube/client";
-import { resolveSessionRuntimeDebugTarget } from "$lib/server/sessions/runtime-target";
+import { getApplicationAdapters } from "$lib/server/application";
 import {
 	getPodResourceUsage,
 	parseCpuToMillicores,
@@ -24,10 +24,11 @@ import {
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	const sessionId = params.id!;
-	const target = await resolveSessionRuntimeDebugTarget(
+	const target = await getApplicationAdapters().workflowData.getSessionRuntimeDebugTarget({
 		sessionId,
-		locals.session.projectId,
-	);
+		projectId: locals.session.projectId ?? null,
+		userId: locals.session.userId,
+	});
 	if (!target) return error(404, "Session not found in workspace");
 
 	const pod = await getSessionRuntimePod({
