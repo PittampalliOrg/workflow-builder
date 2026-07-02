@@ -13,7 +13,6 @@
 import {
 	getCurrentGoalForSessions,
 	listGoalFlowEvents,
-	type GoalFlowEventRow,
 } from '$lib/server/goals/repo';
 import type {
 	GoalFlow,
@@ -22,6 +21,29 @@ import type {
 	GoalFlowStatus,
 	ObservabilityAgentDecisionTurn,
 } from '$lib/types/observability';
+
+export type GoalFlowGoalSource = {
+	sessionId: string;
+	goalId: string;
+	objective: string;
+	status: string;
+	iterations: number;
+	maxIterations: number;
+	tokensUsed: number;
+	tokenBudget: number | null;
+	stopReason: string | null;
+	acceptanceCriteria: string[] | null;
+	evidencePlan: { commands?: string[] } | null;
+	createdAt: Date | string | null;
+	completedAt: Date | string | null;
+};
+
+export type GoalFlowEventSource = {
+	sequence: number;
+	type: string;
+	data: Record<string, unknown>;
+	createdAt: Date | string | null;
+};
 
 const GOAL_MCP_TOOLS = new Set(['wfb_goal_update_goal', 'wfb_goal_get_goal']);
 
@@ -41,7 +63,7 @@ function usageDelta(data: Record<string, unknown>): number {
 	);
 }
 
-function eventToolName(ev: GoalFlowEventRow): string | null {
+function eventToolName(ev: GoalFlowEventSource): string | null {
 	const d = ev.data ?? {};
 	return str(d.name) ?? str((d.tool as Record<string, unknown> | undefined)?.name) ?? null;
 }
@@ -97,6 +119,14 @@ export async function buildGoalFlow(
 	if (!goal) return null;
 
 	const events = await listGoalFlowEvents(goal.sessionId);
+	return buildGoalFlowFromRecords(goal, events, agentDecisions);
+}
+
+export function buildGoalFlowFromRecords(
+	goal: GoalFlowGoalSource,
+	events: GoalFlowEventSource[],
+	agentDecisions: ObservabilityAgentDecisionTurn[] = [],
+): GoalFlow {
 	const evidenceCommands = goal.evidencePlan?.commands ?? [];
 	const startedAt = goal.createdAt ? new Date(goal.createdAt).toISOString() : null;
 
@@ -104,7 +134,7 @@ export async function buildGoalFlow(
 	// fall back to the injected `goal-evidence-reject` user.message when no
 	// structured event exists (avoids double-counting the paired emission).
 	const hasGoalRejected = events.some((e) => e.type === 'session.goal_rejected');
-	const isRejectSignal = (e: GoalFlowEventRow): boolean => {
+	const isRejectSignal = (e: GoalFlowEventSource): boolean => {
 		if (e.type === 'session.goal_rejected') return true;
 		if (!hasGoalRejected && e.type === 'user.message' && str(e.data.origin) === 'goal-evidence-reject')
 			return true;
@@ -249,7 +279,7 @@ export async function buildGoalFlow(
 	};
 }
 
-function extractRejectFeedback(ev: GoalFlowEventRow): string | null {
+function extractRejectFeedback(ev: GoalFlowEventSource): string | null {
 	// goal-evidence-reject user.message: text lives in content[0].text
 	const content = ev.data.content;
 	if (Array.isArray(content)) {

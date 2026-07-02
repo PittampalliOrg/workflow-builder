@@ -544,8 +544,10 @@ The first UI-facing route has also moved behind the application service:
   repository mutations and lifecycle ownership checks remain in their existing
   service boundaries pending a dedicated goal-management slice.
 - `src/routes/api/v1/sessions/[id]/goal-flow/+server.ts` now scopes the session
-  through workflow-data before building the existing observability goal-flow
-  read model.
+  and builds the observability goal-flow read model through workflow-data
+  application ports. The current-goal lookup and bounded goal-flow event read
+  over `thread_goals`/`session_events` are confined to the Postgres goal-flow
+  read-store adapter; the route owns only auth and response shaping.
 - `src/routes/api/v1/sessions/[id]/control/settings/+server.ts` and
   `src/routes/api/v1/sessions/[id]/control/mcp-status/+server.ts` now scope
   the session through workflow-data before using existing agent/environment and

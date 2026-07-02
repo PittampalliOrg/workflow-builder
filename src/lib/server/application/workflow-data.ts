@@ -58,6 +58,7 @@ import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { expandGreenfieldPromptInput } from "$lib/server/workflows/greenfield-prompt";
 import { getMissingRequiredTriggerFields } from "$lib/server/workflows/trigger-validation";
 import { isAgentConfigEquivalent } from "$lib/utils/agent-config-diff";
+import { buildGoalFlowFromRecords } from "$lib/server/observability/goal-flow";
 import type {
 	AppendWorkflowExecutionLogInput,
 	AdminPiecesReadModel,
@@ -83,6 +84,7 @@ import type {
 	EvaluationArtifactStore,
 	EnsurePeerSessionInput,
 	EnsurePeerSessionResult,
+	GoalFlowReadStore,
 	HostedMcpInputProperty,
 	HostedMcpServerReadModel,
 	HostedMcpServerRecord,
@@ -771,6 +773,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			peerAgentResolver?: PeerAgentResolver;
 			workflowAgentReads?: WorkflowAgentReadRepository;
 			sessionExperimentAgents?: SessionExperimentAgentStore;
+			goalFlow?: GoalFlowReadStore;
 			sessionEventNotifications: WorkflowSessionEventNotificationSource;
 			artifactStore: ArtifactStore;
 			workflowFiles?: WorkflowFileStore;
@@ -826,6 +829,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Session event log not configured");
 		}
 		return this.deps.sessionEvents;
+	}
+
+	private requireGoalFlow(): GoalFlowReadStore {
+		if (!this.deps.goalFlow) {
+			throw new Error("Goal flow read store not configured");
+		}
+		return this.deps.goalFlow;
 	}
 
 	private requireSessionRuntimeConfigs(): SessionRuntimeConfigReader {
@@ -3927,6 +3937,30 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		userId?: string | null;
 	}) {
 		return this.getScopedSession(input);
+	}
+
+	async getSessionGoalFlow(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+		agentDecisions?: Parameters<typeof buildGoalFlowFromRecords>[2];
+	}) {
+		const session = await this.getScopedSession(input);
+		if (!session) return { status: "not_found" as const };
+		const goalFlow = this.requireGoalFlow();
+		const goal = await goalFlow.getCurrentGoalForSessions([input.sessionId]);
+		if (!goal) return { status: "ok" as const, goalFlow: null };
+		const events = await goalFlow.listGoalFlowEvents({
+			sessionId: goal.sessionId,
+		});
+		return {
+			status: "ok" as const,
+			goalFlow: buildGoalFlowFromRecords(
+				goal,
+				events,
+				input.agentDecisions ?? [],
+			),
+		};
 	}
 
 	async listSessionResources(input: {

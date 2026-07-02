@@ -7,6 +7,7 @@ import type {
 	BenchmarkBrowserRepository,
 	BenchmarkRunRepository,
 	EvaluationArtifactStore,
+	GoalFlowReadStore,
 	HostedMcpServerRepository,
 	McpConnectionRepository,
 	McpConnectionRecord,
@@ -607,6 +608,46 @@ function fakeSessionEvents(): SessionEventLog {
 	};
 }
 
+function fakeGoalFlow(): GoalFlowReadStore {
+	return {
+		getCurrentGoalForSessions: vi.fn(async (sessionIds) => ({
+			sessionId: sessionIds[0] ?? "session-1",
+			goalId: "goal-1",
+			objective: "Ship the migration",
+			status: "complete",
+			iterations: 1,
+			maxIterations: 5,
+			tokensUsed: 42,
+			tokenBudget: null,
+			stopReason: "complete",
+			acceptanceCriteria: ["tests pass"],
+			evidencePlan: { commands: ["pnpm check"] },
+			createdAt: new Date("2026-01-01T00:00:00.000Z"),
+			completedAt: new Date("2026-01-01T00:05:00.000Z"),
+		})),
+		listGoalFlowEvents: vi.fn(async () => [
+			{
+				sequence: 1,
+				type: "agent.message",
+				data: { content: "working" },
+				createdAt: new Date("2026-01-01T00:01:00.000Z"),
+			},
+			{
+				sequence: 2,
+				type: "agent.llm_usage",
+				data: { input_tokens: 10, output_tokens: 20 },
+				createdAt: new Date("2026-01-01T00:02:00.000Z"),
+			},
+			{
+				sequence: 3,
+				type: "session.goal_completed",
+				data: { completionSource: "evidence" },
+				createdAt: new Date("2026-01-01T00:05:00.000Z"),
+			},
+		]),
+	};
+}
+
 function fakeSessionRuntimeConfigs(): SessionRuntimeConfigReader {
 	return {
 		getSessionRuntimeConfig: vi.fn(async (input) => {
@@ -972,6 +1013,7 @@ function makeService(options: {
 	peerAgentResolver?: PeerAgentResolver;
 	workflowAgentReads?: WorkflowAgentReadRepository;
 	sessionExperimentAgents?: SessionExperimentAgentStore;
+	goalFlow?: GoalFlowReadStore;
 }) {
 	const workflowDefinitions = {
 		getById: vi.fn(async () => options.byId ?? null),
@@ -1022,6 +1064,7 @@ function makeService(options: {
 		workflowAgentReads: options.workflowAgentReads ?? fakeWorkflowAgentReads(),
 		sessionExperimentAgents:
 			options.sessionExperimentAgents ?? fakeSessionExperimentAgents(),
+		goalFlow: options.goalFlow ?? fakeGoalFlow(),
 		sessionEventNotifications: fakeSessionEventNotifications(),
 		artifactStore: {} as ArtifactStore,
 		workspaceSessions: {} as WorkspaceSessionStore,
@@ -2060,6 +2103,57 @@ describe("ApplicationWorkflowDataService", () => {
 				projectId: "other-project",
 			}),
 		).resolves.toBeNull();
+	});
+
+	it("builds session goal-flow read models through scoped goal-flow ports", async () => {
+		const sourceSession = {
+			id: "session-1",
+			projectId: "project-1",
+		} as Awaited<ReturnType<SessionRepository["getSession"]>>;
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => sourceSession),
+		} satisfies SessionRepository;
+		const goalFlow = fakeGoalFlow();
+		const { service } = makeService({ sessions, goalFlow });
+
+		await expect(
+			service.getSessionGoalFlow({
+				sessionId: "session-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual({
+			status: "ok",
+			goalFlow: expect.objectContaining({
+				sessionId: "session-1",
+				goalId: "goal-1",
+				objective: "Ship the migration",
+				status: "complete",
+				outcome: expect.objectContaining({ verdict: "pass" }),
+			}),
+		});
+		expect(goalFlow.getCurrentGoalForSessions).toHaveBeenCalledWith([
+			"session-1",
+		]);
+		expect(goalFlow.listGoalFlowEvents).toHaveBeenCalledWith({
+			sessionId: "session-1",
+		});
+
+		vi.mocked(goalFlow.getCurrentGoalForSessions).mockResolvedValueOnce(null);
+		await expect(
+			service.getSessionGoalFlow({
+				sessionId: "session-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual({ status: "ok", goalFlow: null });
+
+		await expect(
+			service.getSessionGoalFlow({
+				sessionId: "session-1",
+				projectId: "other-project",
+			}),
+		).resolves.toEqual({ status: "not_found" });
+		expect(goalFlow.listGoalFlowEvents).toHaveBeenCalledTimes(1);
 	});
 
 	it("manages session resources through scoped repository ports", async () => {

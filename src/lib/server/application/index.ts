@@ -11,6 +11,7 @@ import {
 	PostgresBenchmarkRunRepository,
 	PostgresCodeFunctionCatalogRepository,
 	PostgresEvaluationArtifactStore,
+	PostgresGoalFlowReadStore,
 	PostgresHostedMcpServerRepository,
 	PostgresMcpConnectionRepository,
 	PostgresMcpRunRepository,
@@ -107,6 +108,7 @@ export function getApplicationAdapters(
 	let planArtifacts: PostgresWorkflowPlanArtifactStore | undefined;
 	let traceLineage: PostgresTraceLineageStore | undefined;
 	let usageReporting: PostgresUsageReportingRepository | undefined;
+	let goalFlow: PostgresGoalFlowReadStore | undefined;
 	let sessions: CurrentSessionRepository | undefined;
 	let sessionProvisioning: KubernetesSessionProvisioningReader | undefined;
 	let sessionEvents: PostgresSessionEventLog | undefined;
@@ -173,6 +175,8 @@ export function getApplicationAdapters(
 		(traceLineage ??= new PostgresTraceLineageStore(getDatabase()));
 	const getUsageReporting = () =>
 		(usageReporting ??= new PostgresUsageReportingRepository(getDatabase()));
+	const getGoalFlow = () =>
+		(goalFlow ??= new PostgresGoalFlowReadStore(getDatabase()));
 	const getSessions = () => (sessions ??= new CurrentSessionRepository(getDatabase()));
 	const getSessionProvisioning = () =>
 		(sessionProvisioning ??= new KubernetesSessionProvisioningReader());
@@ -240,6 +244,7 @@ export function getApplicationAdapters(
 			planArtifacts: getPlanArtifacts(),
 			traceLineage: getTraceLineage(),
 			usageReporting: getUsageReporting(),
+			goalFlow: getGoalFlow(),
 			workflowScheduler,
 		}));
 	return {

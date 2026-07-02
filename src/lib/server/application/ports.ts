@@ -28,6 +28,10 @@ import type {
 	SessionUsage,
 	UserEvent,
 } from "$lib/types/sessions";
+import type {
+	GoalFlow,
+	ObservabilityAgentDecisionTurn,
+} from "$lib/types/observability";
 
 export type WorkflowRef = {
 	workflowId?: string | null;
@@ -2218,6 +2222,37 @@ export interface EventBus {
 	publish(topic: string, payload: unknown): Promise<void>;
 }
 
+export type GoalFlowGoalRecord = {
+	sessionId: string;
+	goalId: string;
+	objective: string;
+	status: string;
+	iterations: number;
+	maxIterations: number;
+	tokensUsed: number;
+	tokenBudget: number | null;
+	stopReason: string | null;
+	acceptanceCriteria: string[] | null;
+	evidencePlan: { commands?: string[] } | null;
+	createdAt: Date;
+	completedAt: Date | null;
+};
+
+export type GoalFlowEventRecord = {
+	sequence: number;
+	type: string;
+	data: Record<string, unknown>;
+	createdAt: Date;
+};
+
+export interface GoalFlowReadStore {
+	getCurrentGoalForSessions(sessionIds: string[]): Promise<GoalFlowGoalRecord | null>;
+	listGoalFlowEvents(input: {
+		sessionId: string;
+		limit?: number;
+	}): Promise<GoalFlowEventRecord[]>;
+}
+
 export type ResolveSecretOptions = {
 	store?: string;
 	timeoutMs?: number;
@@ -3149,6 +3184,12 @@ export interface WorkflowDataService {
 		projectId?: string | null;
 		userId?: string | null;
 	}): Promise<SessionDetail | null>;
+	getSessionGoalFlow(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+		agentDecisions?: ObservabilityAgentDecisionTurn[];
+	}): Promise<{ status: "ok"; goalFlow: GoalFlow | null } | { status: "not_found" }>;
 	listSessionResources(input: {
 		sessionId: string;
 		projectId?: string | null;

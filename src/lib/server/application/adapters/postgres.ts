@@ -56,6 +56,7 @@ import {
 	mcpRuns,
 	sessionEvents,
 	sessions,
+	threadGoals,
 	workflowConnectionRefs,
 	workflowArtifacts,
 	workflowBrowserArtifacts,
@@ -76,6 +77,7 @@ import {
 	type WorkflowExecution,
 	type WorkflowExecutionLog,
 	type WorkflowPlanArtifact,
+	type ThreadGoalRow,
 } from "$lib/server/db/schema";
 import type {
 	AppendWorkflowExecutionLogInput,
@@ -105,6 +107,9 @@ import type {
 	CreateWorkflowTriggerInput,
 	CreateWorkflowExecutionInput,
 	EvaluationArtifactStore,
+	GoalFlowEventRecord,
+	GoalFlowGoalRecord,
+	GoalFlowReadStore,
 	TraceLinkTarget,
 	TraceLineageStore,
 	PersistCodeCheckpointInput,
@@ -247,6 +252,88 @@ export class PostgresWorkflowSessionEventNotificationSource
 		return {
 			unlisten: () => listener.unlisten(),
 		};
+	}
+}
+
+const GOAL_FLOW_EVENT_TYPES = [
+	"user.message",
+	"session.goal_rejected",
+	"session.goal_completed",
+	"session.status_idle",
+	"agent.message",
+	"agent.tool_use",
+	"mcp.tool_call",
+	"agent.llm_usage",
+] as const;
+
+function toGoalFlowGoalRecord(row: ThreadGoalRow): GoalFlowGoalRecord {
+	return {
+		sessionId: row.sessionId,
+		goalId: row.goalId,
+		objective: row.objective,
+		status: row.status,
+		iterations: row.iterations,
+		maxIterations: row.maxIterations,
+		tokensUsed: row.tokensUsed,
+		tokenBudget: row.tokenBudget,
+		stopReason: row.stopReason,
+		acceptanceCriteria: row.acceptanceCriteria,
+		evidencePlan: row.evidencePlan,
+		createdAt: row.createdAt,
+		completedAt: row.completedAt,
+	};
+}
+
+export class PostgresGoalFlowReadStore implements GoalFlowReadStore {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async getCurrentGoalForSessions(
+		sessionIds: string[],
+	): Promise<GoalFlowGoalRecord | null> {
+		const ids = [...new Set(sessionIds.filter(Boolean))];
+		if (ids.length === 0) return null;
+		const [row] = await this.database
+			.select()
+			.from(threadGoals)
+			.where(inArray(threadGoals.sessionId, ids))
+			.orderBy(
+				sql`case when ${threadGoals.sessionId} like '%__durable__solve__run__%' then 0 else 1 end`,
+				desc(threadGoals.createdAt),
+			)
+			.limit(1);
+		return row ? toGoalFlowGoalRecord(row) : null;
+	}
+
+	async listGoalFlowEvents(input: {
+		sessionId: string;
+		limit?: number;
+	}): Promise<GoalFlowEventRecord[]> {
+		const rows = await this.database
+			.select({
+				sequence: sessionEvents.sequence,
+				type: sessionEvents.type,
+				data: sessionEvents.data,
+				createdAt: sessionEvents.createdAt,
+			})
+			.from(sessionEvents)
+			.where(
+				and(
+					eq(sessionEvents.sessionId, input.sessionId),
+					inArray(sessionEvents.type, GOAL_FLOW_EVENT_TYPES),
+				),
+			)
+			.orderBy(asc(sessionEvents.sequence))
+			.limit(
+				typeof input.limit === "number"
+					? Math.max(1, Math.trunc(input.limit))
+					: 5000,
+			);
+		return rows.map((row) => ({
+			sequence: row.sequence,
+			type: row.type,
+			data: (row.data ?? {}) as Record<string, unknown>,
+			createdAt: row.createdAt,
+		}));
 	}
 }
 
