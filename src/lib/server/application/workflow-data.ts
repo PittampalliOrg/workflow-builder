@@ -4029,6 +4029,27 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		});
 	}
 
+	async getSessionControlSettings(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}) {
+		const session = await this.getScopedSession(input);
+		if (!session) return null;
+		const refs =
+			await this.requireWorkflowAgentReads().resolveSessionControlSettingsReferences({
+				agentId: session.agentId,
+				agentVersion: session.agentVersion ?? null,
+				environmentId: session.environmentId ?? null,
+				environmentVersion: session.environmentVersion ?? null,
+			});
+		return {
+			session,
+			agent: refs.agent,
+			environment: refs.environment,
+		};
+	}
+
 	async archiveSession(input: {
 		sessionId: string;
 		projectId?: string | null;

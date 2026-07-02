@@ -548,10 +548,14 @@ The first UI-facing route has also moved behind the application service:
   application ports. The current-goal lookup and bounded goal-flow event read
   over `thread_goals`/`session_events` are confined to the Postgres goal-flow
   read-store adapter; the route owns only auth and response shaping.
-- `src/routes/api/v1/sessions/[id]/control/settings/+server.ts` and
-  `src/routes/api/v1/sessions/[id]/control/mcp-status/+server.ts` now scope
-  the session through workflow-data before using existing agent/environment and
-  vault credential read services.
+- `src/routes/api/v1/sessions/[id]/control/settings/+server.ts` now reads the
+  composed settings drawer model through workflow-data. Session scope is enforced
+  before agent/environment registry reads, which are confined to the workflow
+  agent read adapter.
+- `src/routes/api/v1/sessions/[id]/control/mcp-status/+server.ts` now scopes the
+  session through workflow-data before using existing agent and vault credential
+  read services. Moving credential status behind ports remains a dedicated
+  MCP/auth slice.
 - `src/routes/api/v1/sessions/[id]/compute/+server.ts`,
   `src/routes/api/v1/sessions/[id]/runtime-flags/+server.ts`,
   `src/routes/api/v1/sessions/[id]/shell/resolve/+server.ts`, and

@@ -2675,6 +2675,31 @@ export type PeerAgentDispatchContext = {
 	registryTeam: string | null;
 };
 
+export type SessionControlSettingsAgent = {
+	id: string;
+	slug: string;
+	version: number;
+	config: AgentConfig;
+};
+
+export type SessionControlSettingsEnvironment = {
+	id: string;
+	slug: string;
+	version: number;
+	config: Record<string, unknown>;
+};
+
+export type SessionControlSettingsReferences = {
+	agent: SessionControlSettingsAgent | null;
+	environment: SessionControlSettingsEnvironment | null;
+};
+
+export type SessionControlSettingsReadModel = {
+	session: SessionDetail;
+	agent: SessionControlSettingsAgent | null;
+	environment: SessionControlSettingsEnvironment | null;
+};
+
 export interface PeerAgentResolver {
 	resolvePeerAgentOwner(peerAgentId: string): Promise<PeerAgentOwner | null>;
 	resolvePeerAgentDispatchContext(input: {
@@ -2694,6 +2719,12 @@ export interface WorkflowAgentReadRepository {
 		agentVersion?: number | null;
 		projectId?: string | null;
 	}): Promise<WorkflowPublishedAgentResolutionResult | null>;
+	resolveSessionControlSettingsReferences(input: {
+		agentId: string;
+		agentVersion?: number | null;
+		environmentId?: string | null;
+		environmentVersion?: number | null;
+	}): Promise<SessionControlSettingsReferences>;
 }
 
 export type SessionForkBaseAgent = {
@@ -3068,6 +3099,11 @@ export interface WorkflowDataService {
 		projectId?: string | null;
 		userId?: string | null;
 	}): Promise<SessionRuntimeDebugTarget | null>;
+	getSessionControlSettings(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}): Promise<SessionControlSettingsReadModel | null>;
 	saveWorkflowBrowserArtifact(
 		input: SaveWorkflowBrowserArtifactInput,
 	): Promise<WorkflowBrowserArtifactRecord>;

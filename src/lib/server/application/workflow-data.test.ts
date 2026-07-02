@@ -795,6 +795,22 @@ function fakeWorkflowAgentReads(): WorkflowAgentReadRepository {
 				},
 			};
 		}),
+		resolveSessionControlSettingsReferences: vi.fn(async (input) => ({
+			agent: {
+				id: input.agentId,
+				slug: "settings-agent",
+				version: input.agentVersion ?? 1,
+				config: createDefaultAgentConfig(),
+			},
+			environment: input.environmentId
+				? {
+						id: input.environmentId,
+						slug: "settings-environment",
+						version: input.environmentVersion ?? 1,
+						config: { image: "sandbox:latest" },
+					}
+				: null,
+		})),
 	};
 }
 
@@ -2087,6 +2103,60 @@ describe("ApplicationWorkflowDataService", () => {
 			}),
 		).resolves.toBeNull();
 		expect(sessions.getSessionRuntimeDebugTarget).toHaveBeenCalledTimes(1);
+	});
+
+	it("loads session control settings through scoped agent read ports", async () => {
+		const sourceSession = {
+			id: "session-1",
+			projectId: "project-1",
+			agentId: "agent-1",
+			agentVersion: 7,
+			environmentId: "environment-1",
+			environmentVersion: 2,
+		} as Awaited<ReturnType<SessionRepository["getSession"]>>;
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => sourceSession),
+		} satisfies SessionRepository;
+		const workflowAgentReads = fakeWorkflowAgentReads();
+		const { service } = makeService({ sessions, workflowAgentReads });
+
+		await expect(
+			service.getSessionControlSettings({
+				sessionId: "session-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual({
+			session: sourceSession,
+			agent: expect.objectContaining({
+				id: "agent-1",
+				slug: "settings-agent",
+				version: 7,
+			}),
+			environment: expect.objectContaining({
+				id: "environment-1",
+				slug: "settings-environment",
+				version: 2,
+			}),
+		});
+		expect(
+			workflowAgentReads.resolveSessionControlSettingsReferences,
+		).toHaveBeenCalledWith({
+			agentId: "agent-1",
+			agentVersion: 7,
+			environmentId: "environment-1",
+			environmentVersion: 2,
+		});
+
+		await expect(
+			service.getSessionControlSettings({
+				sessionId: "session-1",
+				projectId: "other-project",
+			}),
+		).resolves.toBeNull();
+		expect(
+			workflowAgentReads.resolveSessionControlSettingsReferences,
+		).toHaveBeenCalledTimes(1);
 	});
 
 	it("loads session event stream snapshots through the scoped session repository", async () => {

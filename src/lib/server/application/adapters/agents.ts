@@ -3,6 +3,7 @@ import type {
 	PeerAgentDispatchContext,
 	PeerAgentOwner,
 	PeerAgentResolver,
+	SessionControlSettingsReferences,
 	SessionExperimentAgentStore,
 	SessionForkBaseAgent,
 	WorkflowAgentReadRepository,
@@ -235,6 +236,43 @@ export class RegistryPeerAgentResolver
 				mlflowModelName: current.mlflowModelName ?? null,
 				mlflowModelVersion: current.mlflowModelVersion ?? null,
 			},
+		};
+	}
+
+	async resolveSessionControlSettingsReferences(input: {
+		agentId: string;
+		agentVersion?: number | null;
+		environmentId?: string | null;
+		environmentVersion?: number | null;
+	}): Promise<SessionControlSettingsReferences> {
+		const agent = await resolveAgentRef({
+			id: input.agentId,
+			version: input.agentVersion ?? undefined,
+		});
+		const environment = input.environmentId
+			? await resolveEnvironmentRef({
+					id: input.environmentId,
+					version: input.environmentVersion ?? undefined,
+				})
+			: null;
+
+		return {
+			agent: agent
+				? {
+						id: agent.id,
+						slug: agent.slug,
+						version: agent.version,
+						config: agent.config,
+					}
+				: null,
+			environment: environment
+				? {
+						id: environment.id,
+						slug: environment.slug,
+						version: environment.version,
+						config: environment.config as Record<string, unknown>,
+					}
+				: null,
 		};
 	}
 }
