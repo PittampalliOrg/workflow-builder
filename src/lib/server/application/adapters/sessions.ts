@@ -12,6 +12,7 @@ import type {
 	SessionProvisioningContext,
 	SessionProvisioningReader,
 	SessionRepository,
+	SessionRuntimeEventRaiser,
 	SessionTraceLifecycleStore,
 	SessionWorkflowContext,
 	UpdateSessionStatusInput,
@@ -30,7 +31,8 @@ import {
 import { appendEvent, rowToEnvelope } from "$lib/server/sessions/events";
 import { createSession, getSession } from "$lib/server/sessions/registry";
 import { getSessionProvisioningPreferObserver } from "$lib/server/sessions/provisioning";
-import type { SessionDetail, SessionEventEnvelope } from "$lib/types/sessions";
+import { raiseSessionUserEvents } from "$lib/server/sessions/spawn";
+import type { SessionDetail, SessionEventEnvelope, UserEvent } from "$lib/types/sessions";
 
 type Database = typeof defaultDb;
 
@@ -484,6 +486,12 @@ export class PostgresSessionEventLog implements SessionEventLog {
 				? await query.limit(Math.max(1, Math.trunc(input.limit)))
 				: await query;
 		return rows.map((row) => rowToEnvelope(row, { preview: input.preview }));
+	}
+}
+
+export class DaprSessionRuntimeEventRaiser implements SessionRuntimeEventRaiser {
+	raiseSessionUserEvents(sessionId: string, events: UserEvent[]): Promise<void> {
+		return raiseSessionUserEvents(sessionId, events);
 	}
 }
 

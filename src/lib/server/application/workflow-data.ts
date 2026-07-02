@@ -126,6 +126,7 @@ import type {
 	SessionEventLog,
 	SessionExperimentAgentStore,
 	SessionRepository,
+	SessionRuntimeEventRaiser,
 	SessionTraceLifecycleStore,
 	TraceLineageStore,
 	UpdateWorkflowDefinitionInput,
@@ -164,7 +165,7 @@ import type {
 } from "$lib/server/application/ports";
 import type { AgentConfig } from "$lib/types/agents";
 import type { BenchmarkInstanceRow } from "$lib/types/benchmark-instance";
-import type { SessionStopReason } from "$lib/types/sessions";
+import type { SessionStopReason, UserEvent } from "$lib/types/sessions";
 import {
 	applyWorkflowInputDefaults,
 	getPromptExpansionConfig,
@@ -757,6 +758,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			sessions?: SessionRepository;
 			sessionProvisioning?: SessionProvisioningReader;
 			sessionEvents?: SessionEventLog;
+			sessionRuntimeEvents?: SessionRuntimeEventRaiser;
 			codeCheckpoints?: WorkflowCodeCheckpointStore;
 			evaluationArtifacts?: EvaluationArtifactStore;
 			sessionTraceLifecycle?: SessionTraceLifecycleStore;
@@ -803,6 +805,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Session event log not configured");
 		}
 		return this.deps.sessionEvents;
+	}
+
+	private requireSessionRuntimeEvents(): SessionRuntimeEventRaiser {
+		if (!this.deps.sessionRuntimeEvents) {
+			throw new Error("Session runtime event raiser not configured");
+		}
+		return this.deps.sessionRuntimeEvents;
 	}
 
 	private requireSessionProvisioning(): SessionProvisioningReader {
@@ -3893,6 +3902,46 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	appendSessionEvent(sessionId: string, event: AppendSessionEventInput) {
 		return this.requireSessionEvents().appendSessionEvent(sessionId, event);
+	}
+
+	async appendSessionUserEvents(input: {
+		sessionId: string;
+		projectId?: string | null;
+		events: UserEvent[];
+	}): Promise<
+		| {
+				status: "ok";
+				events: Awaited<ReturnType<SessionEventLog["appendSessionEvent"]>>[];
+		  }
+		| { status: "not_found" }
+	> {
+		const session = await this.getSessionEventStreamSnapshot({
+			sessionId: input.sessionId,
+			projectId: input.projectId ?? null,
+		});
+		if (!session) return { status: "not_found" };
+
+		const appended = [];
+		for (const event of input.events) {
+			appended.push(
+				await this.requireSessionEvents().appendSessionEvent(input.sessionId, {
+					type: event.type,
+					data: event as unknown as Record<string, unknown>,
+					processedAt: null,
+				}),
+			);
+		}
+
+		try {
+			await this.requireSessionRuntimeEvents().raiseSessionUserEvents(
+				input.sessionId,
+				input.events,
+			);
+		} catch (err) {
+			console.warn("[sessions] raiseSessionUserEvents failed:", err);
+		}
+
+		return { status: "ok", events: appended };
 	}
 
 	async forkSessionFromEvent(input: {

@@ -50,6 +50,7 @@ import {
 } from "$lib/server/application/adapters/sandbox";
 import {
 	CurrentSessionRepository,
+	DaprSessionRuntimeEventRaiser,
 	KubernetesSessionProvisioningReader,
 	LegacyMlflowSessionTraceLifecycle,
 	PostgresSessionEventLog,
@@ -107,6 +108,7 @@ export function getApplicationAdapters(
 	let sessions: CurrentSessionRepository | undefined;
 	let sessionProvisioning: KubernetesSessionProvisioningReader | undefined;
 	let sessionEvents: PostgresSessionEventLog | undefined;
+	let sessionRuntimeEvents: DaprSessionRuntimeEventRaiser | undefined;
 	let sessionTraceLifecycle: LegacyMlflowSessionTraceLifecycle | undefined;
 	let peerAgentResolver: RegistryPeerAgentResolver | undefined;
 	let sessionEventNotifications:
@@ -171,6 +173,8 @@ export function getApplicationAdapters(
 	const getSessionProvisioning = () =>
 		(sessionProvisioning ??= new KubernetesSessionProvisioningReader());
 	const getSessionEvents = () => (sessionEvents ??= new PostgresSessionEventLog());
+	const getSessionRuntimeEvents = () =>
+		(sessionRuntimeEvents ??= new DaprSessionRuntimeEventRaiser());
 	const getSessionTraceLifecycle = () =>
 		(sessionTraceLifecycle ??= new LegacyMlflowSessionTraceLifecycle());
 	const getPeerAgentResolver = () =>
@@ -209,6 +213,7 @@ export function getApplicationAdapters(
 			sessions: getSessions(),
 			sessionProvisioning: getSessionProvisioning(),
 			sessionEvents: getSessionEvents(),
+			sessionRuntimeEvents: getSessionRuntimeEvents(),
 			sessionTraceLifecycle: getSessionTraceLifecycle(),
 			peerAgentResolver: getPeerAgentResolver(),
 			workflowAgentReads: getPeerAgentResolver(),

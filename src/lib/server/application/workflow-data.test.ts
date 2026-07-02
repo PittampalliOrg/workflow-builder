@@ -22,6 +22,7 @@ import type {
 	SessionExperimentAgentStore,
 	SessionProvisioningReader,
 	SessionRepository,
+	SessionRuntimeEventRaiser,
 	SessionTraceLifecycleStore,
 	WorkflowDefinition,
 	WorkflowBrowserArtifactStore,
@@ -587,6 +588,12 @@ function fakeSessionExperimentAgents(): SessionExperimentAgentStore {
 	};
 }
 
+function fakeSessionRuntimeEvents(): SessionRuntimeEventRaiser {
+	return {
+		raiseSessionUserEvents: vi.fn(async () => undefined),
+	};
+}
+
 function fakeCodeCheckpoints(): WorkflowCodeCheckpointStore {
 	return {
 		persistFromAgentEvent: vi.fn(async () => undefined),
@@ -872,6 +879,7 @@ function makeService(options: {
 	sessions?: SessionRepository;
 	sessionProvisioning?: SessionProvisioningReader;
 	sessionEvents?: SessionEventLog;
+	sessionRuntimeEvents?: SessionRuntimeEventRaiser;
 	codeCheckpoints?: WorkflowCodeCheckpointStore;
 	evaluationArtifacts?: EvaluationArtifactStore;
 	sessionTraceLifecycle?: SessionTraceLifecycleStore;
@@ -914,6 +922,8 @@ function makeService(options: {
 		benchmarkRuns: options.benchmarkRuns ?? fakeBenchmarkRuns(),
 		workflowExecutions,
 		sessionEvents: options.sessionEvents,
+		sessionRuntimeEvents:
+			options.sessionRuntimeEvents ?? fakeSessionRuntimeEvents(),
 		sessionProvisioning: options.sessionProvisioning,
 		codeCheckpoints: options.codeCheckpoints,
 		evaluationArtifacts: options.evaluationArtifacts,
@@ -2033,6 +2043,88 @@ describe("ApplicationWorkflowDataService", () => {
 				sourceEventId: "fork:source-event-2",
 			},
 		);
+	});
+
+	it("appends user events and wakes the session runtime through ports", async () => {
+		const sourceSession = {
+			id: "session-1",
+			projectId: "project-1",
+		} as Awaited<ReturnType<SessionRepository["getSession"]>>;
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => sourceSession),
+		} satisfies SessionRepository;
+		const sessionEvents = fakeSessionEvents();
+		const sessionRuntimeEvents = fakeSessionRuntimeEvents();
+		const userEvents = [
+			{
+				type: "user.message" as const,
+				content: [{ type: "text" as const, text: "hello" }],
+			},
+		];
+		const { service } = makeService({
+			sessions,
+			sessionEvents,
+			sessionRuntimeEvents,
+		});
+
+		await expect(
+			service.appendSessionUserEvents({
+				sessionId: "session-1",
+				projectId: "project-1",
+				events: userEvents,
+			}),
+		).resolves.toEqual({
+			status: "ok",
+			events: [
+				expect.objectContaining({
+					sessionId: "session-1",
+					type: "user.message",
+					data: userEvents[0],
+				}),
+			],
+		});
+		expect(sessionEvents.appendSessionEvent).toHaveBeenCalledWith("session-1", {
+			type: "user.message",
+			data: userEvents[0],
+			processedAt: null,
+		});
+		expect(sessionRuntimeEvents.raiseSessionUserEvents).toHaveBeenCalledWith(
+			"session-1",
+			userEvents,
+		);
+	});
+
+	it("does not append user events for sessions outside scope", async () => {
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => ({
+				id: "session-1",
+				projectId: "project-1",
+			}) as Awaited<ReturnType<SessionRepository["getSession"]>>),
+		} satisfies SessionRepository;
+		const sessionEvents = fakeSessionEvents();
+		const sessionRuntimeEvents = fakeSessionRuntimeEvents();
+		const { service } = makeService({
+			sessions,
+			sessionEvents,
+			sessionRuntimeEvents,
+		});
+
+		await expect(
+			service.appendSessionUserEvents({
+				sessionId: "session-1",
+				projectId: "other-project",
+				events: [
+					{
+						type: "user.message",
+						content: [{ type: "text", text: "hello" }],
+					},
+				],
+			}),
+		).resolves.toEqual({ status: "not_found" });
+		expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
+		expect(sessionRuntimeEvents.raiseSessionUserEvents).not.toHaveBeenCalled();
 	});
 
 	it("creates a session experiment agent when fork config differs", async () => {

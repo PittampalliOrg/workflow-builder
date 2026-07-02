@@ -21,6 +21,7 @@ import type {
 	SessionStatus,
 	SessionStopReason,
 	SessionUsage,
+	UserEvent,
 } from "$lib/types/sessions";
 
 export type WorkflowRef = {
@@ -2625,6 +2626,10 @@ export interface SessionEventLog {
 	): Promise<SessionEventEnvelope[]>;
 }
 
+export interface SessionRuntimeEventRaiser {
+	raiseSessionUserEvents(sessionId: string, events: UserEvent[]): Promise<void>;
+}
+
 export type PersistCodeCheckpointInput = {
 	workflowExecutionId: string;
 	workflowAgentRunId?: string | null;
@@ -3058,6 +3063,17 @@ export interface WorkflowDataService {
 		sessionId: string,
 		event: AppendSessionEventInput,
 	): Promise<SessionEventEnvelope>;
+	appendSessionUserEvents(input: {
+		sessionId: string;
+		projectId?: string | null;
+		events: UserEvent[];
+	}): Promise<
+		| {
+				status: "ok";
+				events: SessionEventEnvelope[];
+		  }
+		| { status: "not_found" }
+	>;
 	ingestSessionEvent(input: IngestSessionEventInput): Promise<IngestSessionEventResult>;
 	forkSessionFromEvent(input: {
 		sourceSessionId: string;

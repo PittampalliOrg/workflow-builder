@@ -1,8 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { listEvents, sendUserEvent } from "$lib/server/sessions/events";
-import { getSession } from "$lib/server/sessions/registry";
-import { raiseSessionUserEvents } from "$lib/server/sessions/spawn";
+import { getApplicationAdapters } from "$lib/server/application";
 import type { UserEvent } from "$lib/types/sessions";
 
 export const GET: RequestHandler = async ({ params, url, locals }) => {
@@ -17,7 +15,13 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 	// The single-event route (GET /events/[eventId]) always returns full.
 	const previewParam = url.searchParams.get("preview");
 	const preview = previewParam === "0" || previewParam === "false" ? false : true;
-	const events = await listEvents(params.id, {
+	const { workflowData } = getApplicationAdapters();
+	const session = await workflowData.getSessionEventStreamSnapshot({
+		sessionId: params.id,
+		projectId: locals.session.projectId ?? null,
+	});
+	if (!session) return error(404, "Session not found");
+	const events = await workflowData.listSessionEvents(params.id, {
 		afterSequence: Number.isFinite(afterSequence) ? afterSequence : undefined,
 		limit: Number.isFinite(limit) ? limit : undefined,
 		preview,
@@ -35,8 +39,6 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const session = await getSession(params.id);
-	if (!session) return error(404, "Session not found");
 
 	const body = (await request.json().catch(() => ({}))) as Record<
 		string,
@@ -50,17 +52,15 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		if (!isUserEvent(event)) {
 			return error(400, `unknown event type: ${(event as { type?: string }).type ?? ""}`);
 		}
-		appended.push(await sendUserEvent(params.id, event));
 	}
-	// Raise the Dapr external event that unblocks session_workflow's
-	// `wait_for_external_event("session.user_events")`. Failure is non-fatal:
-	// the DB append already succeeded, and a subsequent reconnect + new
-	// message will re-deliver via the next external event.
-	try {
-		await raiseSessionUserEvents(params.id, events);
-	} catch (err) {
-		console.warn("[sessions] raiseSessionUserEvents failed:", err);
-	}
+	const { workflowData } = getApplicationAdapters();
+	const result = await workflowData.appendSessionUserEvents({
+		sessionId: params.id,
+		projectId: locals.session.projectId ?? null,
+		events,
+	});
+	if (result.status === "not_found") return error(404, "Session not found");
+	appended.push(...result.events);
 	return json({ events: appended });
 };
 
