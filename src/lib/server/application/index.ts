@@ -23,6 +23,7 @@ import {
 	PostgresWorkflowPlanArtifactStore,
 	PostgresWorkflowDefinitionRepository,
 	PostgresWorkflowExecutionRepository,
+	PostgresWorkflowFileStore,
 	PostgresWorkflowSessionEventNotificationSource,
 	PostgresWorkflowTriggerStore,
 	PostgresWorkspaceProjectRepository,
@@ -82,6 +83,7 @@ export function getApplicationAdapters(
 	let codeFunctionCatalog: PostgresCodeFunctionCatalogRepository | undefined;
 	let benchmarkBrowser: PostgresBenchmarkBrowserRepository | undefined;
 	let workflowExecutions: PostgresWorkflowExecutionRepository | undefined;
+	let workflowFiles: PostgresWorkflowFileStore | undefined;
 	let sandboxInventory: PostgresSandboxInventoryRepository | undefined;
 	let artifactStore: PostgresArtifactStore | undefined;
 	let workspaceSessions: PostgresWorkspaceSessionStore | undefined;
@@ -122,6 +124,8 @@ export function getApplicationAdapters(
 		(benchmarkBrowser ??= new PostgresBenchmarkBrowserRepository(getDatabase()));
 	const getWorkflowExecutions = () =>
 		(workflowExecutions ??= new PostgresWorkflowExecutionRepository(getDatabase()));
+	const getWorkflowFiles = () =>
+		(workflowFiles ??= new PostgresWorkflowFileStore(getDatabase()));
 	const getSandboxInventory = () =>
 		(sandboxInventory ??= new PostgresSandboxInventoryRepository(getDatabase()));
 	const getArtifactStore = () =>
@@ -171,6 +175,7 @@ export function getApplicationAdapters(
 				codeFunctionCatalog: getCodeFunctionCatalog(),
 				benchmarkBrowser: getBenchmarkBrowser(),
 				workflowExecutions: getWorkflowExecutions(),
+				workflowFiles: getWorkflowFiles(),
 				sandboxInventory: getSandboxInventory(),
 				sandboxRuntimeInventory: new OpenShellSandboxRuntimeInventory(),
 				sessionEventNotifications: getSessionEventNotifications(),

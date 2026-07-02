@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
 	and,
 	asc,
@@ -27,6 +28,7 @@ import {
 } from "$lib/server/types/app-connection";
 import {
 	files,
+	filePayloads,
 	apiKeys,
 	appConnections,
 	codeFunctions,
@@ -97,6 +99,9 @@ import type {
 	UpsertWorkflowAgentRunScheduledInput,
 	WorkflowArtifactRecord,
 	WorkflowArtifactInput,
+	CreateWorkflowFileInput,
+	WorkflowFileRecord,
+	WorkflowFileStore,
 	WorkflowAgentRunStore,
 	UsageAnalyticsSnapshot,
 	UsageCostRow,
@@ -173,6 +178,7 @@ const EXECUTION_READ_MODEL_MIGRATIONS = [
 	"atlas/migrations/20260408120000_add_execution_read_model_columns.sql",
 	"drizzle/0024_execution_read_model.sql",
 ] as const;
+const MAX_WORKFLOW_FILE_BYTES = 25 * 1024 * 1024;
 
 export function requirePostgresDb(database: Database = defaultDb): Database {
 	if (!database) throw new Error("Database not configured");
@@ -603,6 +609,20 @@ function mapExecutionLog(row: WorkflowExecutionLog): WorkflowExecutionLogRecord 
 		executionMs: row.executionMs,
 		routedTo: row.routedTo,
 		wasColdStart: row.wasColdStart,
+	};
+}
+
+function mapWorkflowFile(row: typeof files.$inferSelect): WorkflowFileRecord {
+	return {
+		id: row.id,
+		name: row.name,
+		purpose: row.purpose,
+		scopeId: row.scopeId ?? null,
+		contentType: row.contentType ?? null,
+		sizeBytes: row.sizeBytes,
+		sha1: row.sha1 ?? null,
+		createdAt: row.createdAt.toISOString(),
+		archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
 	};
 }
 
@@ -3321,6 +3341,76 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 				),
 			)
 			.orderBy(asc(sessionEvents.sequence));
+	}
+}
+
+export class PostgresWorkflowFileStore implements WorkflowFileStore {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async createFile(input: CreateWorkflowFileInput): Promise<{
+		file: WorkflowFileRecord;
+		deduplicated: boolean;
+	}> {
+		if (input.bytes.byteLength > MAX_WORKFLOW_FILE_BYTES) {
+			throw new Error(
+				`file exceeds ${MAX_WORKFLOW_FILE_BYTES} byte limit (${input.bytes.byteLength})`,
+			);
+		}
+		const sha1 = createHash("sha1").update(input.bytes).digest("hex");
+		if (input.scopeId) {
+			const [existing] = await this.database
+				.select()
+				.from(files)
+				.where(
+					and(
+						eq(files.userId, input.userId),
+						eq(files.scopeId, input.scopeId),
+						eq(files.name, input.name),
+						eq(files.sha1, sha1),
+						isNull(files.archivedAt),
+					),
+				)
+				.limit(1);
+			if (existing) {
+				return { file: mapWorkflowFile(existing), deduplicated: true };
+			}
+		}
+
+		const storageRef = `file_${generateId()}`;
+		await this.database.insert(filePayloads).values({
+			storageRef,
+			payloadBytes: input.bytes,
+		});
+
+		const [row] = await this.database
+			.insert(files)
+			.values({
+				userId: input.userId,
+				projectId: input.projectId ?? null,
+				name: input.name,
+				purpose: input.purpose,
+				scopeId: input.scopeId ?? null,
+				contentType: input.contentType ?? null,
+				sizeBytes: input.bytes.byteLength,
+				storageRef,
+				sha1,
+			})
+			.returning();
+		return { file: mapWorkflowFile(row), deduplicated: false };
+	}
+
+	async getFileContent(
+		id: string,
+	): Promise<{ summary: WorkflowFileRecord; bytes: Buffer } | null> {
+		const [row] = await this.database.select().from(files).where(eq(files.id, id)).limit(1);
+		if (!row) return null;
+		const [payload] = await this.database
+			.select({ bytes: filePayloads.payloadBytes })
+			.from(filePayloads)
+			.where(eq(filePayloads.storageRef, row.storageRef))
+			.limit(1);
+		if (!payload) return null;
+		return { summary: mapWorkflowFile(row), bytes: payload.bytes };
 	}
 }
 

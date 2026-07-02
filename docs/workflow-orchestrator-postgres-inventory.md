@@ -12,7 +12,8 @@ connections redirect, settings OAuth/profile, settings members, admin pieces,
 root UI-facing route, MCP connection, and app-connection CRUD/OAuth/decrypt
 route slices, the project members API route family, and the usage/cost/live
 limits reporting route family, plus sandbox executions/stats, catalog
-pieces/functions, and workflow execution read/status APIs.
+pieces/functions, workflow execution read/status APIs, and internal
+run-diff/source-bundle artifact ingest APIs.
 
 ## Strict HTTP Runtime Paths
 
@@ -396,13 +397,25 @@ The first UI-facing route has also moved behind the application service:
   are confined to `PostgresWorkflowExecutionRepository`; the status route still
   owns the Dapr runtime probe and runtime-status mapping, then persists the
   synchronized read-model patch through `workflowData.updateExecutionReadModel`.
+- `src/routes/api/internal/workflows/executions/[executionId]/run-diff/+server.ts`
+  and
+  `src/routes/api/internal/workflows/executions/[executionId]/source-bundle/+server.ts`
+  now fetch execution ownership and persist durable diff/source-bundle artifacts
+  through workflow-data application ports. `persistRunDiff`,
+  `resolveRunDiffPatch`, and `persistSourceBundle` are now persistence-agnostic
+  helper functions over artifact/file ports; route handlers no longer import DB,
+  schema, Drizzle, file registry helpers, or workflow artifact tables. The
+  Postgres adapter owns file metadata/payload storage through
+  `PostgresWorkflowFileStore`, while `PostgresArtifactStore` owns
+  `workflow_artifacts` upserts. The artifact diff readback route resolves
+  offloaded diff blobs through `workflowData.getWorkflowFileContent`.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
 workspace/root UI, settings, connections, admin-pieces, project-members, and
 usage/cost/live-limits route subset is also clean. The scanned sandbox
-executions/stats, catalog pieces/functions, and execution read/status route
-subsets are also clean.
+executions/stats, catalog pieces/functions, execution read/status, and internal
+run-diff/source-bundle ingest route subsets are also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:
@@ -411,6 +424,9 @@ categories include:
 - session/runtime/workspace helpers under `src/lib/server/sessions/**`,
   `src/lib/server/openshell-sessions.ts`, `src/lib/server/sandbox-sessions.ts`,
   and related API routes.
+- dev-preview helpers under `src/lib/server/workflows/dev-preview.ts`, which
+  still own DB-backed preview session lookup/teardown and a local
+  source-bundle persistence adapter pending a dedicated dev-preview slice.
 - benchmark/evaluation/admin/reporting API surfaces outside the workspace
   benchmark browser loader.
 - startup/migration/bootstrap and remaining non-migrated API route handlers.

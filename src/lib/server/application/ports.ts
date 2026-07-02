@@ -1819,6 +1819,76 @@ export type WorkflowArtifactRecord = {
 	createdAt: Date;
 };
 
+export type WorkflowFileRecord = {
+	id: string;
+	name: string;
+	purpose: "agent" | "output";
+	scopeId: string | null;
+	contentType: string | null;
+	sizeBytes: number;
+	sha1: string | null;
+	createdAt: string;
+	archivedAt: string | null;
+};
+
+export type CreateWorkflowFileInput = {
+	userId: string;
+	projectId?: string | null;
+	name: string;
+	purpose: "agent" | "output";
+	scopeId?: string | null;
+	contentType?: string | null;
+	bytes: Buffer;
+};
+
+export type WorkflowRunDiffStats = {
+	files: number;
+	additions: number;
+	deletions: number;
+};
+
+export type PersistWorkflowRunDiffInput = {
+	executionId: string;
+	userId: string;
+	projectId?: string | null;
+	nodeId?: string | null;
+	title?: string;
+	patch: string;
+	baseRef?: string | null;
+	headRef?: string | null;
+	stats?: Partial<WorkflowRunDiffStats> | null;
+};
+
+export type PersistWorkflowSourceBundleInput = {
+	executionId: string;
+	userId: string;
+	projectId?: string | null;
+	nodeId?: string | null;
+	iteration?: number | null;
+	fileName?: string;
+	bytes: Buffer;
+	contentType?: string;
+	meta?: {
+		base?: string | null;
+		head?: string | null;
+		tier?: string | null;
+		clonePath?: string | null;
+		fileCount?: number | null;
+		repoUrl?: string | null;
+		repoSubdir?: string | null;
+		syncPaths?: string[] | null;
+		iteration?: number | null;
+	};
+};
+
+export interface WorkflowFileStore {
+	createFile(input: CreateWorkflowFileInput): Promise<{
+		file: WorkflowFileRecord;
+		deduplicated: boolean;
+	}>;
+	getFileContent(id: string): Promise<{ summary: WorkflowFileRecord; bytes: Buffer } | null>;
+}
+
 export type WorkflowMcpResolutionResult = AgentMcpResolutionResult & {
 	projectId: string | null;
 };
@@ -2358,6 +2428,24 @@ export interface WorkflowDataService {
 		artifactId: string;
 		metadata: Record<string, unknown> | null;
 	}): Promise<WorkflowArtifactRecord | null>;
+	createWorkflowFile(input: CreateWorkflowFileInput): Promise<{
+		file: WorkflowFileRecord;
+		deduplicated: boolean;
+	}>;
+	getWorkflowFileContent(
+		id: string,
+	): Promise<{ summary: WorkflowFileRecord; bytes: Buffer } | null>;
+	persistRunDiffArtifact(input: PersistWorkflowRunDiffInput): Promise<{
+		id: string;
+		fileId: string | null;
+		bytes: number;
+		truncated: boolean;
+	}>;
+	persistSourceBundleArtifact(input: PersistWorkflowSourceBundleInput): Promise<{
+		id: string;
+		fileId: string;
+		bytes: number;
+	}>;
 	upsertWorkflowWorkspaceSession(
 		input: UpsertWorkspaceSessionInput,
 	): Promise<{ workspaceRef: string }>;

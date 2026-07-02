@@ -29,6 +29,8 @@ import {
 } from "$lib/server/app-connections/oauth2";
 import { getOrchestratorUrl } from "$lib/server/dapr-client";
 import { costFor, MODEL_PRICING } from "$lib/server/pricing/model-pricing";
+import { persistRunDiff } from "$lib/server/workflows/run-diff";
+import { persistSourceBundle } from "$lib/server/workflows/source-bundle";
 import {
 	decryptObject,
 	decryptString,
@@ -72,6 +74,9 @@ import type {
 	StartHostedMcpWorkflowToolInput,
 	StartHostedMcpWorkflowToolResult,
 	WorkflowArtifactInput,
+	CreateWorkflowFileInput,
+	PersistWorkflowRunDiffInput,
+	PersistWorkflowSourceBundleInput,
 	WorkflowDataService,
 	WorkflowDefinitionRepository,
 	WorkflowTriggerStore,
@@ -107,6 +112,7 @@ import type {
 	SettingsRepository,
 	UpsertWorkspaceSessionInput,
 	WorkflowScheduler,
+	WorkflowFileStore,
 	CodeFunctionCatalogRepository,
 	CodeCatalogFunctionRecord,
 	CatalogFunctionSummary,
@@ -660,6 +666,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			workflowExecutions: WorkflowExecutionRepository;
 			sessionEventNotifications: WorkflowSessionEventNotificationSource;
 			artifactStore: ArtifactStore;
+			workflowFiles?: WorkflowFileStore;
 			workspaceSessions: WorkspaceSessionStore;
 			agentRuns: WorkflowAgentRunStore;
 			planArtifacts: WorkflowPlanArtifactStore;
@@ -670,6 +677,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			workflowScheduler?: WorkflowScheduler;
 		},
 	) {}
+
+	private requireWorkflowFiles(): WorkflowFileStore {
+		if (!this.deps.workflowFiles) {
+			throw new Error("Workflow file store not configured");
+		}
+		return this.deps.workflowFiles;
+	}
 
 	getUserProfile(userId: string) {
 		return this.deps.userProfiles.getUserProfile(userId);
@@ -3380,6 +3394,35 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		metadata: Record<string, unknown> | null;
 	}) {
 		return this.deps.artifactStore.updateWorkflowArtifactMetadata(input);
+	}
+
+	createWorkflowFile(input: CreateWorkflowFileInput) {
+		return this.requireWorkflowFiles().createFile(input);
+	}
+
+	getWorkflowFileContent(id: string) {
+		return this.requireWorkflowFiles().getFileContent(id);
+	}
+
+	persistRunDiffArtifact(input: PersistWorkflowRunDiffInput) {
+		const workflowFiles = this.requireWorkflowFiles();
+		return persistRunDiff(input, {
+			createFile: workflowFiles.createFile.bind(workflowFiles),
+			getFileContent: workflowFiles.getFileContent.bind(workflowFiles),
+			upsertWorkflowArtifact: this.deps.artifactStore.upsertWorkflowArtifact.bind(
+				this.deps.artifactStore,
+			),
+		});
+	}
+
+	persistSourceBundleArtifact(input: PersistWorkflowSourceBundleInput) {
+		const workflowFiles = this.requireWorkflowFiles();
+		return persistSourceBundle(input, {
+			createFile: workflowFiles.createFile.bind(workflowFiles),
+			upsertWorkflowArtifact: this.deps.artifactStore.upsertWorkflowArtifact.bind(
+				this.deps.artifactStore,
+			),
+		});
 	}
 
 	upsertWorkflowWorkspaceSession(input: UpsertWorkspaceSessionInput) {

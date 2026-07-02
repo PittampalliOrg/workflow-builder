@@ -29,14 +29,31 @@ const mocks = vi.hoisted(() => {
 	const workflowData = {
 		getExecutionById: vi.fn(async () => execution),
 		getWorkflowArtifactForExecution: vi.fn(async () => artifact),
+		getWorkflowFileContent: vi.fn(async () => ({
+			summary: {
+				id: "file-1",
+				name: "diff.patch.gz",
+				purpose: "output",
+				scopeId: "exec-1",
+				contentType: "application/gzip",
+				sizeBytes: 12,
+				sha1: "sha1",
+				createdAt: "2026-01-01T00:00:00.000Z",
+				archivedAt: null,
+			},
+			bytes: Buffer.from("diff --git a/a b/a\n"),
+		})),
 	};
-	const resolveRunDiffPatch = vi.fn(async () => ({
-		patch: "diff --git a/a b/a\n",
-		baseRef: null,
-		headRef: null,
-		stats: { files: 1, additions: 1, deletions: 0 },
-		truncated: false,
-	}));
+	const resolveRunDiffPatch = vi.fn(async (_artifact, options) => {
+		await options.getFileContent("file-1");
+		return {
+			patch: "diff --git a/a b/a\n",
+			baseRef: null,
+			headRef: null,
+			stats: { files: 1, additions: 1, deletions: 0 },
+			truncated: false,
+		};
+	});
 	return { execution, artifact, workflowData, resolveRunDiffPatch };
 });
 
@@ -73,12 +90,29 @@ describe("workflow execution artifact diff route", () => {
 		vi.clearAllMocks();
 		mocks.workflowData.getExecutionById.mockResolvedValue(mocks.execution);
 		mocks.workflowData.getWorkflowArtifactForExecution.mockResolvedValue(mocks.artifact);
-		mocks.resolveRunDiffPatch.mockResolvedValue({
-			patch: "diff --git a/a b/a\n",
-			baseRef: null,
-			headRef: null,
-			stats: { files: 1, additions: 1, deletions: 0 },
-			truncated: false,
+		mocks.workflowData.getWorkflowFileContent.mockResolvedValue({
+			summary: {
+				id: "file-1",
+				name: "diff.patch.gz",
+				purpose: "output",
+				scopeId: "exec-1",
+				contentType: "application/gzip",
+				sizeBytes: 12,
+				sha1: "sha1",
+				createdAt: "2026-01-01T00:00:00.000Z",
+				archivedAt: null,
+			},
+			bytes: Buffer.from("diff --git a/a b/a\n"),
+		});
+		mocks.resolveRunDiffPatch.mockImplementation(async (_artifact, options) => {
+			await options.getFileContent("file-1");
+			return {
+				patch: "diff --git a/a b/a\n",
+				baseRef: null,
+				headRef: null,
+				stats: { files: 1, additions: 1, deletions: 0 },
+				truncated: false,
+			};
 		});
 	});
 
@@ -88,7 +122,9 @@ describe("workflow execution artifact diff route", () => {
 			"utf8",
 		);
 		expect(source).toContain("getApplicationAdapters");
+		expect(source).toContain("workflowData.getWorkflowFileContent.bind(workflowData)");
 		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");
 	});
 
@@ -108,7 +144,11 @@ describe("workflow execution artifact diff route", () => {
 			executionId: "exec-1",
 			artifactId: "artifact-1",
 		});
-		expect(mocks.resolveRunDiffPatch).toHaveBeenCalledWith(mocks.artifact);
+		expect(mocks.resolveRunDiffPatch).toHaveBeenCalledWith(
+			mocks.artifact,
+			expect.objectContaining({ getFileContent: expect.any(Function) }),
+		);
+		expect(mocks.workflowData.getWorkflowFileContent).toHaveBeenCalledWith("file-1");
 	});
 
 	it("hides executions outside the active workspace before loading artifact data", async () => {

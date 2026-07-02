@@ -11,10 +11,10 @@
  */
 
 import { createHash } from "node:crypto";
-import { and, desc, eq, inArray } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import { workflowArtifacts, workflowExecutions } from "$lib/server/db/schema";
-import { createFile } from "$lib/server/files/registry";
+import type {
+	ArtifactStore,
+	WorkflowFileStore,
+} from "$lib/server/application/ports";
 
 export const SOURCE_BUNDLE_KIND = "source-bundle";
 const DEFAULT_TITLE = "Source bundle";
@@ -47,6 +47,9 @@ export type PersistSourceBundleInput = {
 	meta?: SourceBundleMeta;
 };
 
+export type SourceBundlePersistence = Pick<WorkflowFileStore, "createFile"> &
+	Pick<ArtifactStore, "upsertWorkflowArtifact">;
+
 /**
  * Deterministic id so a node re-capture UPSERTs the same version row. When an
  * `iteration` is supplied (dev-pod-as-source per-iteration snapshots), it is part
@@ -67,14 +70,14 @@ function sourceBundleArtifactId(
 
 export async function persistSourceBundle(
 	input: PersistSourceBundleInput,
+	persistence: SourceBundlePersistence,
 ): Promise<{ id: string; fileId: string; bytes: number }> {
-	if (!db) throw new Error("Database not configured");
 	const iteration = input.iteration ?? input.meta?.iteration ?? null;
 	const id = sourceBundleArtifactId(input.executionId, input.nodeId ?? null, iteration);
 	const sizeBytes = input.bytes.byteLength;
 	const contentType = input.contentType?.trim() || "application/x-git-bundle";
 
-	const { file } = await createFile({
+	const { file } = await persistence.createFile({
 		userId: input.userId,
 		projectId: input.projectId ?? null,
 		name: input.fileName?.trim() || `source-${input.executionId}.bundle`,
@@ -88,7 +91,7 @@ export async function persistSourceBundle(
 	const title = input.nodeId
 		? `${DEFAULT_TITLE} (${input.nodeId}${iterLabel})`
 		: DEFAULT_TITLE;
-	const values = {
+	await persistence.upsertWorkflowArtifact({
 		id,
 		workflowExecutionId: input.executionId,
 		nodeId: input.nodeId ?? null,
@@ -111,50 +114,7 @@ export async function persistSourceBundle(
 		contentType,
 		sizeBytes,
 		metadata: { createdBy: "source-bundle", capturedAt: new Date().toISOString() },
-	};
-	await db
-		.insert(workflowArtifacts)
-		.values(values)
-		.onConflictDoUpdate({ target: workflowArtifacts.id, set: values });
+	});
 
 	return { id, fileId: file.id, bytes: sizeBytes };
-}
-
-/** All source-bundle versions for one execution, newest node first. */
-export async function listSourceBundlesForExecution(executionId: string) {
-	if (!db) return [];
-	return db
-		.select()
-		.from(workflowArtifacts)
-		.where(
-			and(
-				eq(workflowArtifacts.workflowExecutionId, executionId),
-				eq(workflowArtifacts.kind, SOURCE_BUNDLE_KIND),
-			),
-		)
-		.orderBy(desc(workflowArtifacts.createdAt));
-}
-
-/** Source-bundle versions across ALL executions of a workflow (cross-run). */
-export async function listSourceBundlesForWorkflow(workflowId: string) {
-	if (!db) return [];
-	const execs = await db
-		.select({ id: workflowExecutions.id })
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.workflowId, workflowId));
-	if (execs.length === 0) return [];
-	const rows = await db
-		.select()
-		.from(workflowArtifacts)
-		.where(
-			and(
-				inArray(
-					workflowArtifacts.workflowExecutionId,
-					execs.map((e) => e.id),
-				),
-				eq(workflowArtifacts.kind, SOURCE_BUNDLE_KIND),
-			),
-		)
-		.orderBy(desc(workflowArtifacts.createdAt));
-	return rows;
 }

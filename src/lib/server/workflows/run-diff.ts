@@ -17,13 +17,11 @@
 
 import { createHash } from "node:crypto";
 import { gzipSync, gunzipSync } from "node:zlib";
-import { eq } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import {
-	workflowArtifacts,
-	type WorkflowArtifactRow,
-} from "$lib/server/db/schema";
-import { createFile, getFileContent } from "$lib/server/files/registry";
+import type {
+	ArtifactStore,
+	WorkflowArtifactRecord,
+	WorkflowFileStore,
+} from "$lib/server/application/ports";
 
 /** Patch payloads at/under this size are stored inline; larger ones offload. */
 export const RUN_DIFF_INLINE_MAX_BYTES = 256 * 1024;
@@ -63,6 +61,9 @@ export type PersistRunDiffInput = {
 	stats?: Partial<RunDiffStats> | null;
 };
 
+export type RunDiffPersistence = Pick<WorkflowFileStore, "createFile" | "getFileContent"> &
+	Pick<ArtifactStore, "upsertWorkflowArtifact">;
+
 /** Deterministic id so retries / re-captures UPSERT the same row. */
 function runDiffArtifactId(executionId: string, nodeId: string | null, title: string): string {
 	return createHash("sha256")
@@ -90,9 +91,8 @@ export function computeDiffStats(patch: string): RunDiffStats {
  */
 export async function persistRunDiff(
 	input: PersistRunDiffInput,
+	persistence: RunDiffPersistence,
 ): Promise<{ id: string; fileId: string | null; bytes: number; truncated: boolean }> {
-	if (!db) throw new Error("Database not configured");
-
 	const title = input.title?.trim() || DEFAULT_TITLE;
 	const id = runDiffArtifactId(input.executionId, input.nodeId ?? null, title);
 
@@ -124,7 +124,7 @@ export async function persistRunDiff(
 
 	if (patchBytes > RUN_DIFF_INLINE_MAX_BYTES) {
 		const gz = gzipSync(Buffer.from(patch, "utf8"));
-		const { file } = await createFile({
+		const { file } = await persistence.createFile({
 			userId: input.userId,
 			projectId: input.projectId ?? null,
 			name: `run-diff-${input.executionId}.patch.gz`,
@@ -139,7 +139,7 @@ export async function persistRunDiff(
 		payload = { patch, baseRef: input.baseRef ?? null, headRef: input.headRef ?? null, stats, truncated };
 	}
 
-	const values = {
+	await persistence.upsertWorkflowArtifact({
 		id,
 		workflowExecutionId: input.executionId,
 		nodeId: input.nodeId ?? null,
@@ -152,11 +152,7 @@ export async function persistRunDiff(
 		contentType: "text/x-diff",
 		sizeBytes: patchBytes,
 		metadata: { createdBy: "run-diff", capturedAt: new Date().toISOString() },
-	};
-	await db
-		.insert(workflowArtifacts)
-		.values(values)
-		.onConflictDoUpdate({ target: workflowArtifacts.id, set: values });
+	});
 
 	return { id, fileId, bytes: patchBytes, truncated };
 }
@@ -166,13 +162,14 @@ export async function persistRunDiff(
  * offloaded, gunzip the referenced file. Returns null for non-diff artifacts.
  */
 export async function resolveRunDiffPatch(
-	artifact: Pick<WorkflowArtifactRow, "kind" | "inlinePayload" | "fileId">,
+	artifact: Pick<WorkflowArtifactRecord, "kind" | "inlinePayload" | "fileId">,
+	fileStore: Pick<WorkflowFileStore, "getFileContent">,
 ): Promise<{ patch: string; baseRef: string | null; headRef: string | null; stats: RunDiffStats; truncated: boolean } | null> {
 	if (artifact.kind !== RUN_DIFF_KIND) return null;
 	const payload = (artifact.inlinePayload ?? {}) as RunDiffInlinePayload;
 	let patch = typeof payload.patch === "string" ? payload.patch : "";
 	if (!patch && artifact.fileId) {
-		const content = await getFileContent(artifact.fileId);
+		const content = await fileStore.getFileContent(artifact.fileId);
 		if (content) {
 			try {
 				patch = gunzipSync(content.bytes).toString("utf8");

@@ -29,7 +29,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		return error(404, "Diff artifact not found");
 	}
 
-	const resolved = await resolveRunDiffPatch(artifact);
+	const resolved = await resolveRunDiffPatch(artifact, {
+		getFileContent: workflowData.getWorkflowFileContent.bind(workflowData),
+	});
 	if (!resolved) return error(404, "Diff artifact not found");
 
 	return json(resolved);

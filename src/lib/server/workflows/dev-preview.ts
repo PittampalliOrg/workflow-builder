@@ -1,7 +1,12 @@
 import { env } from "$env/dynamic/private";
 import { desc, eq } from "drizzle-orm";
 import { db } from "$lib/server/db";
-import { workflowExecutions, workflowWorkspaceSessions } from "$lib/server/db/schema";
+import {
+	workflowArtifacts,
+	workflowExecutions,
+	workflowWorkspaceSessions,
+} from "$lib/server/db/schema";
+import { createFile } from "$lib/server/files/registry";
 import {
 	resolveDevPreviewDescriptor,
 	resolveDevPreviewImage,
@@ -455,6 +460,29 @@ export async function captureDevPreviewSource(
 				repoSubdir: descriptor.repoSubdir,
 				syncPaths,
 				iteration: opts.iteration ?? null,
+			},
+		}, {
+			createFile,
+			upsertWorkflowArtifact: async (artifact) => {
+				const values = {
+					id: artifact.id,
+					workflowExecutionId: artifact.workflowExecutionId,
+					nodeId: artifact.nodeId ?? null,
+					slot: artifact.slot ?? null,
+					kind: artifact.kind,
+					title: artifact.title,
+					description: artifact.description ?? null,
+					inlinePayload: artifact.inlinePayload ?? null,
+					fileId: artifact.fileId ?? null,
+					contentType: artifact.contentType ?? null,
+					sizeBytes: artifact.sizeBytes ?? null,
+					metadata: artifact.metadata ?? null,
+				};
+				await db
+					.insert(workflowArtifacts)
+					.values(values)
+					.onConflictDoUpdate({ target: workflowArtifacts.id, set: values });
+				return { id: artifact.id };
 			},
 		});
 		console.info(`${label} captured ${result.bytes}B → artifact ${result.id}`);

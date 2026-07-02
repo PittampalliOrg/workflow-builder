@@ -17,6 +17,7 @@ import type {
 	CodeFunctionCatalogRepository,
 	WorkflowDefinition,
 	WorkflowDefinitionRepository,
+	WorkflowFileStore,
 	WorkflowTriggerStore,
 	WorkflowAgentRunStore,
 	WorkflowExecutionRepository,
@@ -363,6 +364,24 @@ function fakeWorkflowScheduler(): WorkflowScheduler {
 		startSwWorkflow: vi.fn(async () => ({
 			instanceId: "sw-example-exec-exec-1",
 		})),
+	};
+}
+
+function fakeWorkflowFiles(): WorkflowFileStore {
+	const file = {
+		id: "file-1",
+		name: "artifact.bin",
+		purpose: "output" as const,
+		scopeId: "exec-1",
+		contentType: "application/octet-stream",
+		sizeBytes: 12,
+		sha1: "sha1",
+		createdAt: "2026-01-01T00:00:00.000Z",
+		archivedAt: null,
+	};
+	return {
+		createFile: vi.fn(async () => ({ file, deduplicated: false })),
+		getFileContent: vi.fn(async () => ({ summary: file, bytes: Buffer.from("payload") })),
 	};
 }
 
@@ -3924,6 +3943,7 @@ describe("ApplicationWorkflowDataService", () => {
 			getWorkflowArtifactForExecution: vi.fn(async () => null),
 			updateWorkflowArtifactMetadata: vi.fn(async () => null),
 		} satisfies ArtifactStore;
+		const workflowFiles = fakeWorkflowFiles();
 		const workspaceSessions = {
 			upsertWorkflowWorkspaceSession: vi.fn(async () => ({
 				workspaceRef: "workspace-1",
@@ -3947,6 +3967,7 @@ describe("ApplicationWorkflowDataService", () => {
 			workflowExecutions,
 			sessionEventNotifications,
 			artifactStore,
+			workflowFiles,
 			workspaceSessions,
 			agentRuns: {} as WorkflowAgentRunStore,
 			planArtifacts: {} as WorkflowPlanArtifactStore,
@@ -4033,6 +4054,30 @@ describe("ApplicationWorkflowDataService", () => {
 			metadata: { promotion: { branch: "wfb-promote-1" } },
 		});
 		await service.listSourceBundleArtifactsByWorkflowId("wf-1");
+		await service.createWorkflowFile({
+			userId: "user-1",
+			projectId: "project-1",
+			name: "artifact.bin",
+			purpose: "output",
+			scopeId: "exec-1",
+			bytes: Buffer.from("payload"),
+		});
+		await service.getWorkflowFileContent("file-1");
+		await service.persistRunDiffArtifact({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+			nodeId: "agent",
+			patch: "diff --git a/file b/file\n+hello\n",
+		});
+		await service.persistSourceBundleArtifact({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+			nodeId: "agent",
+			bytes: Buffer.from("bundle"),
+			meta: { base: "main", head: "HEAD" },
+		});
 		await service.upsertWorkflowWorkspaceSession({
 			workspaceRef: "workspace-1",
 			workflowExecutionId: "exec-1",
@@ -4120,6 +4165,30 @@ describe("ApplicationWorkflowDataService", () => {
 			metadata: { promotion: { branch: "wfb-promote-1" } },
 		});
 		expect(artifactStore.listSourceBundleArtifactsByWorkflowId).toHaveBeenCalledWith("wf-1");
+		expect(workflowFiles.createFile).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userId: "user-1",
+				projectId: "project-1",
+				name: "artifact.bin",
+				scopeId: "exec-1",
+			}),
+		);
+		expect(workflowFiles.getFileContent).toHaveBeenCalledWith("file-1");
+		expect(artifactStore.upsertWorkflowArtifact).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workflowExecutionId: "exec-1",
+				kind: "diff",
+				slot: "secondary",
+			}),
+		);
+		expect(artifactStore.upsertWorkflowArtifact).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workflowExecutionId: "exec-1",
+				kind: "source-bundle",
+				slot: "aux",
+				fileId: "file-1",
+			}),
+		);
 		expect(workspaceSessions.upsertWorkflowWorkspaceSession).toHaveBeenCalledWith(
 			expect.objectContaining({ workspaceRef: "workspace-1", backend: "openshell" }),
 		);

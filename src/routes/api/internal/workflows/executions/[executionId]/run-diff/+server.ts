@@ -11,12 +11,10 @@
  */
 
 import { error, json } from "@sveltejs/kit";
-import { eq } from "drizzle-orm";
 import type { RequestHandler } from "./$types";
-import { db } from "$lib/server/db";
-import { workflowExecutions } from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
 import { requireInternal } from "$lib/server/internal-auth";
-import { persistRunDiff, type RunDiffStats } from "$lib/server/workflows/run-diff";
+import type { RunDiffStats } from "$lib/server/workflows/run-diff";
 
 type IncomingRunDiff = {
 	patch?: string;
@@ -29,7 +27,6 @@ type IncomingRunDiff = {
 
 export const POST: RequestHandler = async ({ params, request }) => {
 	requireInternal(request);
-	if (!db) return error(503, "Database not configured");
 
 	const { executionId } = params;
 	if (!executionId) return error(400, "executionId required");
@@ -44,11 +41,16 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		return error(400, "patch (string) is required");
 	}
 
-	const [exec] = await db
-		.select({ id: workflowExecutions.id, userId: workflowExecutions.userId, projectId: workflowExecutions.projectId })
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, executionId))
-		.limit(1);
+	const workflowData = getApplicationAdapters().workflowData;
+	let exec: Awaited<ReturnType<typeof workflowData.getExecutionById>>;
+	try {
+		exec = await workflowData.getExecutionById(executionId);
+	} catch (err) {
+		if (err instanceof Error && err.message === "Database not configured") {
+			return error(503, "Database not configured");
+		}
+		throw err;
+	}
 	if (!exec) return error(404, `execution ${executionId} not found`);
 
 	// Empty patch = no changes; record nothing (keeps the UI clean).
@@ -56,7 +58,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		return json({ ok: true, empty: true });
 	}
 
-	const result = await persistRunDiff({
+	const result = await workflowData.persistRunDiffArtifact({
 		executionId,
 		userId: exec.userId,
 		projectId: exec.projectId ?? null,
