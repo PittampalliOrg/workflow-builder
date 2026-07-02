@@ -16,7 +16,8 @@ pieces/functions, workflow execution read/status APIs, internal
 run-diff/source-bundle artifact ingest APIs, and internal session-ingest utility
 routes, the external events ingest route, the agent-trigger membership check,
 the CLI credential capture session-owner lookup, and the ActivePieces resume
-execution lookup.
+execution lookup, plus the GitHub trigger ingress and event-trigger admission
+gate.
 
 ## Strict HTTP Runtime Paths
 
@@ -453,6 +454,17 @@ The first UI-facing route has also moved behind the application service:
   instead of querying `workflow_executions` directly. The route remains the
   public ActivePieces callback adapter: it parses callback payloads and raises
   the existing Dapr external event to the orchestrator.
+- `src/routes/api/internal/workflows/triggers/github/[triggerId]/+server.ts`
+  now loads trigger rows and stamps successful deliveries through workflow-data
+  trigger ports instead of querying/updating `workflow_triggers` directly. The
+  public webhook behavior is unchanged: HMAC validation remains fail-closed,
+  ignored events and pings are acknowledged, publish failures return `502`, and
+  `last_fired_at` remains best-effort after successful publish.
+- `src/lib/server/workflows/trigger-gate.ts` now counts active triggered runs
+  through `workflowData.countActiveTriggeredWorkflowRuns` instead of querying
+  `workflow_executions` directly. The gate still admits below cap, defers at
+  cap through the existing Dapr pub/sub retry response, and fails open when the
+  count path throws.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
@@ -462,7 +474,7 @@ executions/stats, catalog pieces/functions, execution read/status, internal
 run-diff/source-bundle ingest, internal session-ingest, and external
 events-ingest route subsets, plus the agent-trigger route membership check and
 the CLI credential capture session-owner lookup and ActivePieces resume
-execution lookup, are also clean.
+execution lookup, and the GitHub trigger ingress/gate subset, are also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:

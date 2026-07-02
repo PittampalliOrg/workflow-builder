@@ -10,13 +10,16 @@
  * trigger (`workflow_executions.trigger_source IS NOT NULL`) and, over the cap,
  * tells the trigger handler to DEFER (NACK → JetStream redelivers later).
  */
-import { and, isNotNull, inArray, sql } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { workflowExecutions } from '$lib/server/db/schema';
 import { env } from '$env/dynamic/private';
+import { getApplicationAdapters } from '$lib/server/application';
+import type { WorkflowExecutionStatus } from '$lib/server/application/ports';
 
 /** Statuses that count as a live/active triggered run holding a concurrency slot. */
-const ACTIVE_STATUSES = ['running', 'pending'] as const;
+const ACTIVE_STATUSES: WorkflowExecutionStatus[] = ['running', 'pending'];
+
+function isDatabaseNotConfigured(err: unknown): boolean {
+	return err instanceof Error && err.message.includes('Database not configured');
+}
 
 export function triggerConcurrencyCap(): number {
 	const raw = Number(
@@ -27,17 +30,13 @@ export function triggerConcurrencyCap(): number {
 
 /** Count currently-active runs that were started by a trigger. */
 export async function countActiveTriggeredRuns(): Promise<number> {
-	if (!db) return 0;
-	const [row] = await db
-		.select({ n: sql<number>`count(*)::int` })
-		.from(workflowExecutions)
-		.where(
-			and(
-				isNotNull(workflowExecutions.triggerSource),
-				inArray(workflowExecutions.status, ACTIVE_STATUSES)
-			)
-		);
-	return row?.n ?? 0;
+	try {
+		const { workflowData } = getApplicationAdapters();
+		return await workflowData.countActiveTriggeredWorkflowRuns({ statuses: ACTIVE_STATUSES });
+	} catch (err) {
+		if (isDatabaseNotConfigured(err)) return 0;
+		throw err;
+	}
 }
 
 /**

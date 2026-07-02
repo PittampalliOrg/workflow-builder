@@ -85,6 +85,7 @@ import type {
 	WorkflowExecutionLogPatch,
 	WorkflowExecutionReadModelPatch,
 	WorkflowExecutionRepository,
+	WorkflowExecutionStatus,
 	WorkflowSessionEventNotification,
 	WorkflowSessionEventNotificationSource,
 	WorkflowAgentRunStore,
@@ -3172,6 +3173,17 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.workflowTriggers.getForWorkflow(input);
 	}
 
+	getWorkflowTriggerById(triggerId: string) {
+		return this.deps.workflowTriggers.getById(triggerId);
+	}
+
+	markWorkflowTriggerFired(input: { triggerId: string; firedAt?: Date }) {
+		return this.deps.workflowTriggers.markFired({
+			triggerId: input.triggerId,
+			firedAt: input.firedAt ?? new Date(),
+		});
+	}
+
 	deleteWorkflowTrigger(triggerId: string) {
 		return this.deps.workflowTriggers.delete(triggerId);
 	}
@@ -3269,6 +3281,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	getRunningWorkflowExecution(workflowId: string) {
 		return this.deps.workflowExecutions.getRunningByWorkflowId(workflowId);
+	}
+
+	countActiveTriggeredWorkflowRuns(input: { statuses: WorkflowExecutionStatus[] }) {
+		return this.deps.workflowExecutions.countActiveTriggeredRuns(input);
 	}
 
 	getExecutionLineage(executionId: string) {

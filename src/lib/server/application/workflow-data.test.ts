@@ -93,7 +93,9 @@ function fakeWorkflowTriggers(): WorkflowTriggerStore {
 			createdAt: new Date("2026-01-01T00:00:00.000Z"),
 			updatedAt: new Date("2026-01-01T00:00:00.000Z"),
 		})),
+		getById: vi.fn(async () => null),
 		getForWorkflow: vi.fn(async () => null),
+		markFired: vi.fn(async () => undefined),
 		delete: vi.fn(async () => undefined),
 	};
 }
@@ -356,6 +358,7 @@ function fakeWorkflowExecutions(): WorkflowExecutionRepository {
 		updateLog: vi.fn(async () => ({ ...executionLog, status: "success" as const })),
 		listLogsByExecutionId: vi.fn(async () => [executionLog]),
 		listSessionIdsByExecutionId: vi.fn(async () => ["session-1"]),
+		countActiveTriggeredRuns: vi.fn(async () => 0),
 		listAgentEventsByExecutionId: vi.fn(async () => []),
 		listAgentEventsByExecutionIdAfter: vi.fn(async () => []),
 	};
@@ -677,6 +680,7 @@ function fakeSandboxRuntimeInventory(): SandboxRuntimeInventory {
 function makeService(options: {
 	byId?: WorkflowDefinition | null;
 	byName?: WorkflowDefinition | null;
+	workflowExecutions?: Partial<WorkflowExecutionRepository>;
 }) {
 	const workflowDefinitions = {
 		getById: vi.fn(async () => options.byId ?? null),
@@ -690,10 +694,12 @@ function makeService(options: {
 		hasActiveExecutions: vi.fn(async () => false),
 		delete: vi.fn(async () => undefined),
 	} satisfies WorkflowDefinitionRepository;
+	const workflowTriggers = fakeWorkflowTriggers();
+	const workflowExecutions = (options.workflowExecutions ?? {}) as WorkflowExecutionRepository;
 
 	const service = new ApplicationWorkflowDataService({
 		workflowDefinitions,
-		workflowTriggers: fakeWorkflowTriggers(),
+		workflowTriggers,
 		userProfiles: fakeUserProfiles(),
 		settings: fakeSettings(),
 		mcpConnections: fakeMcpConnections(),
@@ -705,7 +711,7 @@ function makeService(options: {
 		workspaceProjects: fakeWorkspaceProjects(),
 		pieceCatalog: fakePieceCatalog(),
 		benchmarkBrowser: fakeBenchmarkBrowser(),
-		workflowExecutions: {} as WorkflowExecutionRepository,
+		workflowExecutions,
 		sessionEventNotifications: fakeSessionEventNotifications(),
 		artifactStore: {} as ArtifactStore,
 		workspaceSessions: {} as WorkspaceSessionStore,
@@ -714,7 +720,7 @@ function makeService(options: {
 		traceLineage: {} as TraceLineageStore,
 	});
 
-	return { service, workflowDefinitions };
+	return { service, workflowDefinitions, workflowTriggers, workflowExecutions };
 }
 
 function makeServiceWithMcp(mcpConnections: McpConnectionRepository) {
@@ -974,6 +980,51 @@ describe("ApplicationWorkflowDataService", () => {
 		});
 		expect(workflowDefinitions.hasActiveExecutions).toHaveBeenCalledWith("wf-id");
 		expect(workflowDefinitions.delete).toHaveBeenCalledWith("wf-id");
+	});
+
+	it("delegates public trigger webhook reads and fired stamps to trigger ports", async () => {
+		const { service, workflowTriggers } = makeService({ byId: baseWorkflow });
+		const trigger = {
+			id: "trigger-1",
+			workflowId: "wf-id",
+			userId: "user-1",
+			projectId: "project-1",
+			kind: "github",
+			config: { events: "push" },
+			triggerData: { source: "github" },
+			dedupSalt: "salt",
+			backingRef: null,
+			status: "active" as const,
+			lastError: null,
+			lastFiredAt: null,
+			createdAt: new Date("2026-01-01T00:00:00.000Z"),
+			updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+		};
+		vi.mocked(workflowTriggers.getById).mockResolvedValueOnce(trigger);
+
+		await expect(service.getWorkflowTriggerById("trigger-1")).resolves.toEqual(trigger);
+		const firedAt = new Date("2026-02-01T00:00:00.000Z");
+		await service.markWorkflowTriggerFired({ triggerId: "trigger-1", firedAt });
+
+		expect(workflowTriggers.getById).toHaveBeenCalledWith("trigger-1");
+		expect(workflowTriggers.markFired).toHaveBeenCalledWith({
+			triggerId: "trigger-1",
+			firedAt,
+		});
+	});
+
+	it("delegates triggered-run admission counts to execution ports", async () => {
+		const workflowExecutions = {
+			countActiveTriggeredRuns: vi.fn(async () => 7),
+		};
+		const { service } = makeService({ workflowExecutions });
+
+		await expect(
+			service.countActiveTriggeredWorkflowRuns({ statuses: ["pending", "running"] }),
+		).resolves.toBe(7);
+		expect(workflowExecutions.countActiveTriggeredRuns).toHaveBeenCalledWith({
+			statuses: ["pending", "running"],
+		});
 	});
 
 	it("loads user profile data through the user profile port", async () => {
@@ -3966,6 +4017,7 @@ describe("ApplicationWorkflowDataService", () => {
 			updateLog: vi.fn(async () => ({ ...executionLog, status: "success" as const })),
 			listLogsByExecutionId: vi.fn(async () => [executionLog]),
 			listSessionIdsByExecutionId: vi.fn(async () => ["session-1"]),
+			countActiveTriggeredRuns: vi.fn(async () => 0),
 			listAgentEventsByExecutionId: vi.fn(async () => []),
 			listAgentEventsByExecutionIdAfter: vi.fn(async () => []),
 		} satisfies WorkflowExecutionRepository;

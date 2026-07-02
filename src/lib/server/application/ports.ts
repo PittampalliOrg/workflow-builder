@@ -278,10 +278,12 @@ export type CreateWorkflowTriggerInput = {
 export interface WorkflowTriggerStore {
 	listByWorkflowId(workflowId: string): Promise<WorkflowTriggerRecord[]>;
 	create(input: CreateWorkflowTriggerInput): Promise<WorkflowTriggerRecord>;
+	getById(triggerId: string): Promise<WorkflowTriggerRecord | null>;
 	getForWorkflow(input: {
 		workflowId: string;
 		triggerId: string;
 	}): Promise<WorkflowTriggerRecord | null>;
+	markFired(input: { triggerId: string; firedAt: Date }): Promise<void>;
 	delete(triggerId: string): Promise<void>;
 }
 
@@ -1779,6 +1781,7 @@ export interface WorkflowExecutionRepository {
 	): Promise<WorkflowExecutionLogRecord | null>;
 	listLogsByExecutionId(executionId: string): Promise<WorkflowExecutionLogRecord[]>;
 	listSessionIdsByExecutionId(executionId: string): Promise<string[]>;
+	countActiveTriggeredRuns(input: { statuses: WorkflowExecutionStatus[] }): Promise<number>;
 	listAgentEventsByExecutionId(
 		executionId: string,
 	): Promise<WorkflowExecutionAgentEventRecord[]>;
@@ -2336,6 +2339,8 @@ export interface WorkflowDataService {
 		workflowId: string;
 		triggerId: string;
 	}): Promise<WorkflowTriggerRecord | null>;
+	getWorkflowTriggerById(triggerId: string): Promise<WorkflowTriggerRecord | null>;
+	markWorkflowTriggerFired(input: { triggerId: string; firedAt?: Date }): Promise<void>;
 	deleteWorkflowTrigger(triggerId: string): Promise<void>;
 	validateApiKeyForUser(input: {
 		authorizationHeader: string | null;
@@ -2357,6 +2362,9 @@ export interface WorkflowDataService {
 		instanceId: string,
 	): Promise<WorkflowExecutionRecord | null>;
 	getRunningWorkflowExecution(workflowId: string): Promise<{ id: string; status: string } | null>;
+	countActiveTriggeredWorkflowRuns(input: {
+		statuses: WorkflowExecutionStatus[];
+	}): Promise<number>;
 	getExecutionLineage(executionId: string): Promise<WorkflowExecutionLineage | null>;
 	listWorkflowExecutions(input: {
 		workflowId: string;

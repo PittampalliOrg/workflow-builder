@@ -140,6 +140,7 @@ import type {
 	WorkflowExecutionReadModelPatch,
 	WorkflowExecutionRecentRunRecord,
 	WorkflowExecutionRepository,
+	WorkflowExecutionStatus,
 	WorkflowExecutionLineage,
 	WorkflowExecutionListItem,
 	WorkflowExecutionRunSummary,
@@ -2447,6 +2448,15 @@ export class PostgresWorkflowTriggerStore implements WorkflowTriggerStore {
 		return mapTrigger(row);
 	}
 
+	async getById(triggerId: string): Promise<WorkflowTriggerRecord | null> {
+		const [row] = await this.database
+			.select()
+			.from(workflowTriggers)
+			.where(eq(workflowTriggers.id, triggerId))
+			.limit(1);
+		return row ? mapTrigger(row) : null;
+	}
+
 	async getForWorkflow(input: {
 		workflowId: string;
 		triggerId: string;
@@ -2462,6 +2472,13 @@ export class PostgresWorkflowTriggerStore implements WorkflowTriggerStore {
 			)
 			.limit(1);
 		return row ? mapTrigger(row) : null;
+	}
+
+	async markFired(input: { triggerId: string; firedAt: Date }): Promise<void> {
+		await this.database
+			.update(workflowTriggers)
+			.set({ lastFiredAt: input.firedAt })
+			.where(eq(workflowTriggers.id, input.triggerId));
 	}
 
 	async delete(triggerId: string): Promise<void> {
@@ -2612,6 +2629,20 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			)
 			.limit(1);
 		return row ?? null;
+	}
+
+	async countActiveTriggeredRuns(input: { statuses: WorkflowExecutionStatus[] }): Promise<number> {
+		if (input.statuses.length === 0) return 0;
+		const [row] = await this.database
+			.select({ n: sql<number>`count(*)::int` })
+			.from(workflowExecutions)
+			.where(
+				and(
+					isNotNull(workflowExecutions.triggerSource),
+					inArray(workflowExecutions.status, input.statuses),
+				),
+			);
+		return row?.n ?? 0;
 	}
 
 	async getLineage(executionId: string): Promise<WorkflowExecutionLineage | null> {

@@ -1,9 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import crypto from 'node:crypto';
-import { eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { workflowTriggers } from '$lib/server/db/schema';
+import { getApplicationAdapters } from '$lib/server/application';
 import { getEventBusAdapter } from '$lib/server/application/event-bus';
 import { getGithubTriggerSecret } from '$lib/server/lifecycle/github-webhook';
 
@@ -32,19 +30,25 @@ function asRecord(v: unknown): Record<string, unknown> {
 	return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
+function isDatabaseNotConfigured(err: unknown): boolean {
+	return err instanceof Error && err.message.includes('Database not configured');
+}
+
 export const POST: RequestHandler = async ({ request, params }) => {
 	const triggerId = params.triggerId;
-	if (!db) return json({ error: 'db unavailable' }, { status: 503 });
 	if (!triggerId) return json({ error: 'not found' }, { status: 404 });
 
 	// Raw body is required for HMAC — read once.
 	const raw = await request.text();
 
-	const [row] = await db
-		.select()
-		.from(workflowTriggers)
-		.where(eq(workflowTriggers.id, triggerId))
-		.limit(1);
+	let row;
+	try {
+		const { workflowData } = getApplicationAdapters();
+		row = await workflowData.getWorkflowTriggerById(triggerId);
+	} catch (err) {
+		if (isDatabaseNotConfigured(err)) return json({ error: 'db unavailable' }, { status: 503 });
+		throw err;
+	}
 	if (!row || row.kind !== 'github') return json({ error: 'not found' }, { status: 404 });
 	if (row.status !== 'active') return json({ error: 'inactive' }, { status: 409 });
 
@@ -129,10 +133,8 @@ export const POST: RequestHandler = async ({ request, params }) => {
 
 	// Best-effort last-fired stamp (don't fail the delivery on a write error).
 	try {
-		await db
-			.update(workflowTriggers)
-			.set({ lastFiredAt: new Date() })
-			.where(eq(workflowTriggers.id, triggerId));
+		const { workflowData } = getApplicationAdapters();
+		await workflowData.markWorkflowTriggerFired({ triggerId, firedAt: new Date() });
 	} catch {
 		/* ignore */
 	}
