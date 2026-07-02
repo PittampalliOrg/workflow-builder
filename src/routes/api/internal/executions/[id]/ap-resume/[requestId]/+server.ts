@@ -18,9 +18,7 @@
  */
 
 import { error, json, type RequestHandler } from "@sveltejs/kit";
-import { eq } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import { workflowExecutions } from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
 import { daprFetch, getOrchestratorUrl } from "$lib/server/dapr-client";
 
 // Loose plausibility check (UUIDs and orchestrator-minted ids fit); blocks
@@ -51,6 +49,10 @@ async function parseBody(request: Request): Promise<unknown> {
 	}
 }
 
+function isDatabaseNotConfigured(err: unknown): boolean {
+	return err instanceof Error && err.message.includes("Database not configured");
+}
+
 async function handleResume(
 	params: { id?: string; requestId?: string },
 	url: URL,
@@ -62,18 +64,15 @@ async function handleResume(
 	if (!requestId || !REQUEST_ID_RE.test(requestId)) {
 		throw error(400, "invalid resume requestId");
 	}
-	if (!db) throw error(503, "Database not configured");
 
-	const rows = await db
-		.select({
-			id: workflowExecutions.id,
-			status: workflowExecutions.status,
-			daprInstanceId: workflowExecutions.daprInstanceId,
-		})
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, executionId))
-		.limit(1);
-	const execution = rows[0];
+	let execution;
+	try {
+		const { workflowData } = getApplicationAdapters();
+		execution = await workflowData.getExecutionById(executionId);
+	} catch (err) {
+		if (isDatabaseNotConfigured(err)) throw error(503, "Database not configured");
+		throw err;
+	}
 	if (!execution) throw error(404, "execution not found");
 	if (execution.status !== "running") {
 		throw error(409, `execution is ${execution.status}, not running`);
