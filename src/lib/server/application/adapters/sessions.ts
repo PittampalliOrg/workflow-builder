@@ -3,10 +3,18 @@ import type {
 	CliWorkspaceSessionCandidateRecord,
 	SessionEventLog,
 	SessionRepository,
+	SessionTraceLifecycleStore,
+	SessionWorkflowContext,
+	UpdateSessionStatusInput,
+	UpdateSessionStatusUnlessTerminatedInput,
 } from "$lib/server/application/ports";
-import { and, desc, eq, isNotNull, or } from "drizzle-orm";
+import { and, desc, eq, isNotNull, or, sql } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
-import { agents, sessions } from "$lib/server/db/schema";
+import { agents, sessions, type Session } from "$lib/server/db/schema";
+import {
+	safeFinishMlflowRun,
+	safePatchInteractiveSessionMlflowTraces,
+} from "$lib/server/observability/mlflow-lifecycle";
 import { appendEvent } from "$lib/server/sessions/events";
 import { getSession } from "$lib/server/sessions/registry";
 import type { SessionDetail, SessionEventEnvelope } from "$lib/types/sessions";
@@ -104,6 +112,79 @@ export class CurrentSessionRepository implements SessionRepository {
 			.limit(1);
 		return row ?? null;
 	}
+
+	async getSessionWorkflowContext(
+		sessionId: string,
+	): Promise<SessionWorkflowContext | null> {
+		const database = requireDb(this.database);
+		const [row] = await database
+			.select({
+				workflowExecutionId: sessions.workflowExecutionId,
+				parentExecutionId: sessions.parentExecutionId,
+				daprInstanceId: sessions.daprInstanceId,
+			})
+			.from(sessions)
+			.where(eq(sessions.id, sessionId))
+			.limit(1);
+		return row ?? null;
+	}
+
+	async updateSessionStatus(input: UpdateSessionStatusInput): Promise<void> {
+		const database = requireDb(this.database);
+		const updatedAt = new Date();
+		const patch: Partial<Session> & { updatedAt: Date } = {
+			status: input.status,
+			updatedAt,
+		};
+		if (input.stopReason !== undefined) {
+			patch.stopReason = input.stopReason as Record<string, unknown> | null;
+		}
+		if (input.usage !== undefined) {
+			patch.usage = input.usage as Record<string, unknown>;
+		}
+		if (input.errorMessage !== undefined) {
+			patch.errorMessage = input.errorMessage ?? null;
+		}
+		if (input.pauseRequestedAt !== undefined) {
+			patch.pauseRequestedAt = input.pauseRequestedAt;
+		}
+		if (input.markCompleted) patch.completedAt = updatedAt;
+		const [row] = await database
+			.update(sessions)
+			.set(patch)
+			.where(eq(sessions.id, input.id))
+			.returning({ mlflowRunId: sessions.mlflowRunId });
+		if (input.markCompleted && row?.mlflowRunId) {
+			void safeFinishMlflowRun({
+				runId: row.mlflowRunId,
+				status: input.status === "terminated" ? "FINISHED" : "FAILED",
+				endTime: patch.completedAt ?? patch.updatedAt,
+			});
+		}
+	}
+
+	async updateSessionStatusUnlessTerminated(
+		input: UpdateSessionStatusUnlessTerminatedInput,
+	): Promise<void> {
+		const database = requireDb(this.database);
+		const patch: Partial<Session> & { updatedAt: Date } = {
+			status: input.status,
+			updatedAt: new Date(),
+		};
+		if (input.stopReason !== undefined) {
+			patch.stopReason = input.stopReason as Record<string, unknown> | null;
+		}
+		if (input.usage !== undefined) {
+			patch.usage = input.usage as Record<string, unknown>;
+		}
+		if (input.errorMessage !== undefined) {
+			patch.errorMessage = input.errorMessage ?? null;
+		}
+		await database
+			.update(sessions)
+			.set(patch)
+			.where(and(eq(sessions.id, input.id), sql`${sessions.status} <> 'terminated'`));
+	}
 }
 
 export class PostgresSessionEventLog implements SessionEventLog {
@@ -112,5 +193,14 @@ export class PostgresSessionEventLog implements SessionEventLog {
 		event: AppendSessionEventInput,
 	): Promise<SessionEventEnvelope> {
 		return appendEvent(sessionId, event);
+	}
+}
+
+export class LegacyMlflowSessionTraceLifecycle implements SessionTraceLifecycleStore {
+	async patchInteractiveSessionTraces(input: {
+		sessionId: string;
+		status: "OK" | "ERROR";
+	}): Promise<void> {
+		await safePatchInteractiveSessionMlflowTraces(input);
 	}
 }

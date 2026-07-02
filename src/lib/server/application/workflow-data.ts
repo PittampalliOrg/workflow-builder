@@ -69,6 +69,7 @@ import type {
 	CreateWorkflowDefinitionInput,
 	CreateWorkflowTriggerInput,
 	CreateWorkflowExecutionInput,
+	EvaluationArtifactStore,
 	HostedMcpInputProperty,
 	HostedMcpServerReadModel,
 	HostedMcpServerRecord,
@@ -82,6 +83,8 @@ import type {
 	WorkflowArtifactInput,
 	CreateWorkflowFileInput,
 	CliWorkspaceCommandCandidate,
+	IngestSessionEventInput,
+	IngestSessionEventResult,
 	PersistWorkflowRunDiffInput,
 	PersistWorkflowSourceBundleInput,
 	WorkflowDataService,
@@ -95,6 +98,7 @@ import type {
 	WorkflowSessionEventNotification,
 	WorkflowSessionEventNotificationSource,
 	WorkflowAgentRunStore,
+	WorkflowCodeCheckpointStore,
 	UpdateWorkflowAgentRunLifecycleInput,
 	UpsertWorkflowAgentRunScheduledInput,
 	WorkflowPlanArtifactInput,
@@ -106,6 +110,7 @@ import type {
 	SandboxRuntimeInventory,
 	SessionEventLog,
 	SessionRepository,
+	SessionTraceLifecycleStore,
 	TraceLineageStore,
 	UpdateWorkflowDefinitionInput,
 	UpsertTraceLineageLinksInput,
@@ -134,6 +139,7 @@ import type {
 } from "$lib/server/application/ports";
 import type { AgentConfig } from "$lib/types/agents";
 import type { BenchmarkInstanceRow } from "$lib/types/benchmark-instance";
+import type { SessionStopReason } from "$lib/types/sessions";
 import {
 	applyWorkflowInputDefaults,
 	getPromptExpansionConfig,
@@ -416,6 +422,47 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+function stringOrNull(value: unknown): string | null {
+	return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizeSessionStopReason(value: unknown): SessionStopReason | null {
+	const stopReasonData = isRecord(value) ? value : null;
+	if (!stopReasonData) return null;
+	const t = String(stopReasonData.type ?? "end_turn");
+	const normalizedType =
+		t === "end_turn" ||
+		t === "requires_action" ||
+		t === "retries_exhausted" ||
+		t === "interrupted" ||
+		t === "terminated"
+			? t
+			: "end_turn";
+	return {
+		type: normalizedType,
+		event_ids: Array.isArray(stopReasonData.event_ids)
+			? stopReasonData.event_ids.filter(
+					(v): v is string => typeof v === "string",
+				)
+			: undefined,
+	};
+}
+
+function checkpointRemoteWarning(value: unknown): Record<string, unknown> | null {
+	if (!isRecord(value)) return null;
+	const remoteStatus = stringOrNull(value.remoteStatus);
+	const remoteError = stringOrNull(value.remoteError);
+	if (!remoteError) return null;
+	if (remoteStatus !== "error" && remoteStatus !== "skipped") return null;
+	return {
+		remoteStatus,
+		remoteError,
+		remoteRef: stringOrNull(value.remoteRef),
+		toolCallId: stringOrNull(value.toolCallId),
+		toolName: stringOrNull(value.toolName),
+	};
+}
+
 function isServerlessWorkflow10Spec(value: unknown): value is Record<string, unknown> {
 	if (!isRecord(value)) return false;
 	const document = value.document;
@@ -683,6 +730,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			workflowExecutions: WorkflowExecutionRepository;
 			sessions?: SessionRepository;
 			sessionEvents?: SessionEventLog;
+			codeCheckpoints?: WorkflowCodeCheckpointStore;
+			evaluationArtifacts?: EvaluationArtifactStore;
+			sessionTraceLifecycle?: SessionTraceLifecycleStore;
 			sessionEventNotifications: WorkflowSessionEventNotificationSource;
 			artifactStore: ArtifactStore;
 			workflowFiles?: WorkflowFileStore;
@@ -716,6 +766,20 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Session event log not configured");
 		}
 		return this.deps.sessionEvents;
+	}
+
+	private requireCodeCheckpoints(): WorkflowCodeCheckpointStore {
+		if (!this.deps.codeCheckpoints) {
+			throw new Error("Workflow code checkpoint store not configured");
+		}
+		return this.deps.codeCheckpoints;
+	}
+
+	private requireEvaluationArtifacts(): EvaluationArtifactStore {
+		if (!this.deps.evaluationArtifacts) {
+			throw new Error("Evaluation artifact store not configured");
+		}
+		return this.deps.evaluationArtifacts;
 	}
 
 	getUserProfile(userId: string) {
@@ -3483,6 +3547,91 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	appendSessionEvent(sessionId: string, event: AppendSessionEventInput) {
 		return this.requireSessionEvents().appendSessionEvent(sessionId, event);
+	}
+
+	async ingestSessionEvent(input: IngestSessionEventInput): Promise<IngestSessionEventResult> {
+		const sessions = this.requireSessions();
+		const eventLog = this.requireSessionEvents();
+		const envelope = await eventLog.appendSessionEvent(input.sessionId, {
+			type: input.type,
+			data: input.data,
+			processedAt: input.processedAt,
+			sourceEventId: input.sourceEventId,
+			producerId: input.producerId,
+			producerEpoch: input.producerEpoch,
+		});
+
+		let cleanupSessionSandbox = false;
+		if (input.type === "session.status_starting" || input.type === "session.status_running") {
+			await sessions.updateSessionStatusUnlessTerminated({
+				id: input.sessionId,
+				status: "running",
+			});
+		} else if (input.type === "session.status_idle") {
+			await sessions.updateSessionStatusUnlessTerminated({
+				id: input.sessionId,
+				status: "idle",
+				stopReason: normalizeSessionStopReason(input.data?.stop_reason),
+			});
+			void this.deps.sessionTraceLifecycle?.patchInteractiveSessionTraces({
+				sessionId: input.sessionId,
+				status: "OK",
+			});
+		} else if (input.type === "session.status_terminated") {
+			await sessions.updateSessionStatus({
+				id: input.sessionId,
+				status: "terminated",
+				stopReason: normalizeSessionStopReason(input.data?.stop_reason),
+				markCompleted: true,
+			});
+			void this.deps.sessionTraceLifecycle?.patchInteractiveSessionTraces({
+				sessionId: input.sessionId,
+				status: "OK",
+			});
+			cleanupSessionSandbox = true;
+		} else if (input.type === "session.status_rescheduled") {
+			await sessions.updateSessionStatusUnlessTerminated({
+				id: input.sessionId,
+				status: "rescheduling",
+			});
+		}
+
+		if (isRecord(input.data) && isRecord(input.data.codeCheckpoint)) {
+			try {
+				const sessionContext = await sessions.getSessionWorkflowContext(input.sessionId);
+				const workflowExecutionId = sessionContext?.workflowExecutionId ?? null;
+				if (workflowExecutionId) {
+					const eventId = input.sourceEventId ?? envelope.id;
+					const parentExecutionId = sessionContext?.parentExecutionId ?? null;
+					const daprInstanceId = sessionContext?.daprInstanceId ?? input.sessionId;
+					await this.requireCodeCheckpoints().persistFromAgentEvent({
+						workflowExecutionId,
+						workflowAgentRunId: null,
+						parentExecutionId,
+						daprInstanceId,
+						sourceEventId: eventId,
+						toolName:
+							stringOrNull(input.data.tool_name) ??
+							stringOrNull(input.data.toolName) ??
+							input.type,
+						nodeId: null,
+						payload: input.data.codeCheckpoint,
+					});
+					const checkpointWarning = checkpointRemoteWarning(input.data.codeCheckpoint);
+					if (checkpointWarning) {
+						await this.requireEvaluationArtifacts().recordCodeCheckpointWarning({
+							workflowExecutionId,
+							sourceEventId: eventId,
+							checkpoint: checkpointWarning,
+						});
+					}
+				}
+			} catch (err) {
+				console.warn("[session-ingest] code checkpoint persist failed:", err);
+			}
+		}
+
+		return { event: envelope, cleanupSessionSandbox };
 	}
 
 	upsertWorkflowArtifact(input: WorkflowArtifactInput) {

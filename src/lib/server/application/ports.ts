@@ -13,7 +13,13 @@ import type {
 	RunnableAgent,
 	SuiteFacet,
 } from "$lib/types/benchmark-instance";
-import type { SessionDetail, SessionEventEnvelope } from "$lib/types/sessions";
+import type {
+	SessionDetail,
+	SessionEventEnvelope,
+	SessionStatus,
+	SessionStopReason,
+	SessionUsage,
+} from "$lib/types/sessions";
 
 export type WorkflowRef = {
 	workflowId?: string | null;
@@ -2180,7 +2186,35 @@ export interface SessionRepository {
 	getSessionFileOwner(
 		sessionId: string,
 	): Promise<{ id: string; userId: string; projectId: string | null } | null>;
+	getSessionWorkflowContext(sessionId: string): Promise<SessionWorkflowContext | null>;
+	updateSessionStatus(input: UpdateSessionStatusInput): Promise<void>;
+	updateSessionStatusUnlessTerminated(
+		input: UpdateSessionStatusUnlessTerminatedInput,
+	): Promise<void>;
 }
+
+export type SessionWorkflowContext = {
+	workflowExecutionId: string | null;
+	parentExecutionId: string | null;
+	daprInstanceId: string | null;
+};
+
+export type UpdateSessionStatusInput = {
+	id: string;
+	status: SessionStatus;
+	stopReason?: SessionStopReason | null;
+	usage?: SessionUsage;
+	errorMessage?: string | null;
+	markCompleted?: boolean;
+	pauseRequestedAt?: Date | null;
+};
+
+export type UpdateSessionStatusUnlessTerminatedInput = Omit<
+	UpdateSessionStatusInput,
+	"status" | "markCompleted" | "pauseRequestedAt"
+> & {
+	status: Exclude<SessionStatus, "terminated" | "paused">;
+};
 
 export type CliWorkspaceSessionCandidateRecord = {
 	id: string;
@@ -2220,6 +2254,46 @@ export interface SessionEventLog {
 		event: AppendSessionEventInput,
 	): Promise<SessionEventEnvelope>;
 }
+
+export type PersistCodeCheckpointInput = {
+	workflowExecutionId: string;
+	workflowAgentRunId?: string | null;
+	parentExecutionId?: string | null;
+	daprInstanceId: string;
+	sourceEventId: string;
+	seq?: number | null;
+	toolName: string;
+	nodeId?: string | null;
+	payload: unknown;
+};
+
+export interface WorkflowCodeCheckpointStore {
+	persistFromAgentEvent(input: PersistCodeCheckpointInput): Promise<void>;
+}
+
+export interface EvaluationArtifactStore {
+	recordCodeCheckpointWarning(input: {
+		workflowExecutionId: string;
+		sourceEventId: string;
+		checkpoint: Record<string, unknown>;
+	}): Promise<void>;
+}
+
+export interface SessionTraceLifecycleStore {
+	patchInteractiveSessionTraces(input: {
+		sessionId: string;
+		status: "OK" | "ERROR";
+	}): Promise<void>;
+}
+
+export type IngestSessionEventInput = AppendSessionEventInput & {
+	sessionId: string;
+};
+
+export type IngestSessionEventResult = {
+	event: SessionEventEnvelope;
+	cleanupSessionSandbox: boolean;
+};
 
 export type WorkflowSessionEventNotification = {
 	sessionId: string | null;
@@ -2554,6 +2628,7 @@ export interface WorkflowDataService {
 		sessionId: string,
 		event: AppendSessionEventInput,
 	): Promise<SessionEventEnvelope>;
+	ingestSessionEvent(input: IngestSessionEventInput): Promise<IngestSessionEventResult>;
 	upsertWorkflowArtifact(input: WorkflowArtifactInput): Promise<{ id: string }>;
 	listWorkflowArtifactsByExecutionId(
 		executionId: string,

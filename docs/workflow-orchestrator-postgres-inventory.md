@@ -426,6 +426,12 @@ The first UI-facing route has also moved behind the application service:
   session file ownership through `workflowData.getSessionFileOwner` and
   persists agent-written output files through `workflowData.createWorkflowFile`.
   Per-file validation and partial-success response shaping remain route-local.
+- `src/routes/api/internal/sessions/[id]/events/ingest/+server.ts` now delegates
+  session-event append, status mirroring, workflow-session context lookup, code
+  checkpoint upsert, and evaluation warning artifact recording to
+  `workflowData.ingestSessionEvent`. The route remains the internal HTTP
+  adapter for token validation, envelope parsing, and fire-and-forget sandbox
+  cleanup when the application service reports a terminal session event.
 - `src/routes/api/internal/sessions/provisioning/ingest/+server.ts` now resolves
   provisioning events through
   `workflowData.resolveSessionIdForProvisioningEvent` and appends

@@ -39,6 +39,8 @@ import {
 	benchmarkInstances,
 	benchmarkSuites,
 	environmentImageBuilds,
+	evaluationArtifacts,
+	evaluationRunItems,
 	projects,
 	projectMembers,
 	pieceExecution,
@@ -57,6 +59,7 @@ import {
 	workflowBrowserArtifacts,
 	workflowBrowserArtifactBlobPayloads,
 	workflowAgentRuns,
+	workflowCodeCheckpoints,
 	workflowExecutionLogs,
 	workflowExecutions,
 	workflowPlanArtifacts,
@@ -66,6 +69,8 @@ import {
 	users,
 	type Workflow,
 	type WorkflowArtifactRow,
+	type WorkflowCodeCheckpointStatus,
+	type EvaluationArtifactKind,
 	type WorkflowExecution,
 	type WorkflowExecutionLog,
 	type WorkflowPlanArtifact,
@@ -95,12 +100,15 @@ import type {
 	CreateWorkflowDefinitionInput,
 	CreateWorkflowTriggerInput,
 	CreateWorkflowExecutionInput,
+	EvaluationArtifactStore,
 	TraceLinkTarget,
 	TraceLineageStore,
+	PersistCodeCheckpointInput,
 	UpsertTraceLineageLinksInput,
 	UpdateWorkflowDefinitionInput,
 	UpdateWorkflowAgentRunLifecycleInput,
 	UpsertWorkflowAgentRunScheduledInput,
+	WorkflowCodeCheckpointStore,
 	WorkflowArtifactRecord,
 	WorkflowArtifactInput,
 	CreateWorkflowFileInput,
@@ -230,6 +238,150 @@ export class PostgresWorkflowSessionEventNotificationSource
 		return {
 			unlisten: () => listener.unlisten(),
 		};
+	}
+}
+
+const CODE_CHECKPOINT_STATUSES = new Set<WorkflowCodeCheckpointStatus>([
+	"created",
+	"no_changes",
+	"skipped",
+	"error",
+]);
+
+function adapterRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function adapterString(value: unknown): string | null {
+	return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function adapterNumber(value: unknown): number | null {
+	if (typeof value === "number" && Number.isFinite(value)) return value;
+	if (typeof value === "string" && value.trim()) {
+		const parsed = Number(value);
+		if (Number.isFinite(parsed)) return parsed;
+	}
+	return null;
+}
+
+function normalizeCodeCheckpointStatus(value: unknown): WorkflowCodeCheckpointStatus {
+	const text = adapterString(value);
+	if (text && CODE_CHECKPOINT_STATUSES.has(text as WorkflowCodeCheckpointStatus)) {
+		return text as WorkflowCodeCheckpointStatus;
+	}
+	return "skipped";
+}
+
+function normalizeChangedFiles(value: unknown): Array<Record<string, unknown>> {
+	if (!Array.isArray(value)) return [];
+	return value.filter(adapterRecord).map((item) => ({ ...item }));
+}
+
+function parseCheckpointTimestamp(value: unknown): Date | null {
+	const text = adapterString(value);
+	if (!text) return null;
+	const parsed = new Date(text);
+	return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function sha256Utf8(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
+export class PostgresWorkflowCodeCheckpointStore implements WorkflowCodeCheckpointStore {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async persistFromAgentEvent(input: PersistCodeCheckpointInput): Promise<void> {
+		if (!adapterRecord(input.payload)) return;
+
+		const changedFiles = normalizeChangedFiles(input.payload.changedFiles);
+		const sourceEventId =
+			adapterString(input.payload.sourceEventId) ?? input.sourceEventId;
+		const fileCount = adapterNumber(input.payload.fileCount) ?? changedFiles.length;
+
+		await this.database
+			.insert(workflowCodeCheckpoints)
+			.values({
+				workflowExecutionId: input.workflowExecutionId,
+				workflowAgentRunId: input.workflowAgentRunId ?? null,
+				parentExecutionId:
+					input.parentExecutionId ?? adapterString(input.payload.parentExecutionId),
+				daprInstanceId: input.daprInstanceId,
+				workspaceRef: adapterString(input.payload.workspaceRef),
+				sandboxName: adapterString(input.payload.sandboxName),
+				repoPath: adapterString(input.payload.repoPath) ?? "/sandbox",
+				nodeId: input.nodeId ?? adapterString(input.payload.nodeId),
+				sourceEventId,
+				seq: input.seq ?? adapterNumber(input.payload.seq),
+				toolName: adapterString(input.payload.toolName) ?? input.toolName,
+				checkpointKind: "tool_mutation",
+				beforeSha: adapterString(input.payload.beforeSha),
+				afterSha: adapterString(input.payload.afterSha),
+				remoteUrl: adapterString(input.payload.remoteUrl),
+				remoteRef: adapterString(input.payload.remoteRef),
+				remoteStatus: adapterString(input.payload.remoteStatus),
+				remoteError: adapterString(input.payload.remoteError),
+				remotePushedAt: parseCheckpointTimestamp(input.payload.remotePushedAt),
+				changedFiles,
+				fileCount,
+				status: normalizeCodeCheckpointStatus(input.payload.status),
+				error: adapterString(input.payload.error),
+				metadata: adapterRecord(input.payload.metadata)
+					? input.payload.metadata
+					: {
+							toolCallId: adapterString(input.payload.toolCallId),
+							createdBy: "dapr-agent-py",
+						},
+			})
+			.onConflictDoNothing({
+				target: [
+					workflowCodeCheckpoints.workflowExecutionId,
+					workflowCodeCheckpoints.daprInstanceId,
+					workflowCodeCheckpoints.sourceEventId,
+					workflowCodeCheckpoints.checkpointKind,
+				],
+			});
+	}
+}
+
+export class PostgresEvaluationArtifactStore implements EvaluationArtifactStore {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async recordCodeCheckpointWarning(input: {
+		workflowExecutionId: string;
+		sourceEventId: string;
+		checkpoint: Record<string, unknown>;
+	}): Promise<void> {
+		const [evalItem] = await this.database
+			.select({
+				id: evaluationRunItems.id,
+				runId: evaluationRunItems.runId,
+			})
+			.from(evaluationRunItems)
+			.where(eq(evaluationRunItems.workflowExecutionId, input.workflowExecutionId))
+			.limit(1);
+		if (!evalItem) return;
+
+		const content = {
+			warning: "Code checkpoint remote push failed",
+			checkpoint: input.checkpoint,
+		};
+		const body = JSON.stringify(content);
+		await this.database.insert(evaluationArtifacts).values({
+			runId: evalItem.runId,
+			runItemId: evalItem.id,
+			kind: "logs" as EvaluationArtifactKind,
+			path: `warnings/code-checkpoint/${input.sourceEventId}.json`,
+			content,
+			contentType: "application/json",
+			sizeBytes: Buffer.byteLength(body, "utf8"),
+			sha256: sha256Utf8(body),
+			metadata: {
+				artifactWarning: true,
+				source: "code_checkpoint",
+			},
+		});
 	}
 }
 

@@ -9,6 +9,7 @@ import {
 	PostgresApiKeyStore,
 	PostgresBenchmarkBrowserRepository,
 	PostgresCodeFunctionCatalogRepository,
+	PostgresEvaluationArtifactStore,
 	PostgresHostedMcpServerRepository,
 	PostgresMcpConnectionRepository,
 	PostgresMcpRunRepository,
@@ -21,6 +22,7 @@ import {
 	PostgresUserProfileRepository,
 	PostgresWorkflowAgentRunStore,
 	PostgresWorkflowBrowserArtifactStore,
+	PostgresWorkflowCodeCheckpointStore,
 	PostgresWorkspaceSessionStore,
 	PostgresWorkflowPlanArtifactStore,
 	PostgresWorkflowDefinitionRepository,
@@ -46,6 +48,7 @@ import {
 } from "$lib/server/application/adapters/sandbox";
 import {
 	CurrentSessionRepository,
+	LegacyMlflowSessionTraceLifecycle,
 	PostgresSessionEventLog,
 } from "$lib/server/application/adapters/sessions";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
@@ -97,9 +100,12 @@ export function getApplicationAdapters(
 	let usageReporting: PostgresUsageReportingRepository | undefined;
 	let sessions: CurrentSessionRepository | undefined;
 	let sessionEvents: PostgresSessionEventLog | undefined;
+	let sessionTraceLifecycle: LegacyMlflowSessionTraceLifecycle | undefined;
 	let sessionEventNotifications:
 		| PostgresWorkflowSessionEventNotificationSource
 		| undefined;
+	let codeCheckpoints: PostgresWorkflowCodeCheckpointStore | undefined;
+	let evaluationArtifacts: PostgresEvaluationArtifactStore | undefined;
 	let workflowData: ApplicationWorkflowDataService | undefined;
 	const getDatabase = () => (database ??= requirePostgresDb());
 	const getWorkflowDefinitions = () =>
@@ -152,8 +158,14 @@ export function getApplicationAdapters(
 		(usageReporting ??= new PostgresUsageReportingRepository(getDatabase()));
 	const getSessions = () => (sessions ??= new CurrentSessionRepository(getDatabase()));
 	const getSessionEvents = () => (sessionEvents ??= new PostgresSessionEventLog());
+	const getSessionTraceLifecycle = () =>
+		(sessionTraceLifecycle ??= new LegacyMlflowSessionTraceLifecycle());
 	const getSessionEventNotifications = () =>
 		(sessionEventNotifications ??= new PostgresWorkflowSessionEventNotificationSource());
+	const getCodeCheckpoints = () =>
+		(codeCheckpoints ??= new PostgresWorkflowCodeCheckpointStore(getDatabase()));
+	const getEvaluationArtifacts = () =>
+		(evaluationArtifacts ??= new PostgresEvaluationArtifactStore(getDatabase()));
 	const previewEnvironmentProvisioner =
 		config.previewProvisionerAdapter === "kro"
 			? new KroPreviewEnvironmentProvisioner()
@@ -191,6 +203,9 @@ export function getApplicationAdapters(
 				workflowExecutions: getWorkflowExecutions(),
 				sessions: getSessions(),
 				sessionEvents: getSessionEvents(),
+				sessionTraceLifecycle: getSessionTraceLifecycle(),
+				codeCheckpoints: getCodeCheckpoints(),
+				evaluationArtifacts: getEvaluationArtifacts(),
 				workflowFiles: getWorkflowFiles(),
 				sandboxInventory: getSandboxInventory(),
 				sandboxRuntimeInventory: new OpenShellSandboxRuntimeInventory(),

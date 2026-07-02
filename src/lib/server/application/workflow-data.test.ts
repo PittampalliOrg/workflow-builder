@@ -5,6 +5,7 @@ import type {
 	AppConnectionRepository,
 	ArtifactStore,
 	BenchmarkBrowserRepository,
+	EvaluationArtifactStore,
 	HostedMcpServerRepository,
 	McpConnectionRepository,
 	McpConnectionRecord,
@@ -17,6 +18,7 @@ import type {
 	CodeFunctionCatalogRepository,
 	SessionEventLog,
 	SessionRepository,
+	SessionTraceLifecycleStore,
 	WorkflowDefinition,
 	WorkflowBrowserArtifactStore,
 	WorkflowDefinitionRepository,
@@ -24,6 +26,7 @@ import type {
 	PieceExecutionRepository,
 	WorkflowTriggerStore,
 	WorkflowAgentRunStore,
+	WorkflowCodeCheckpointStore,
 	WorkflowExecutionRepository,
 	PieceCatalogRepository,
 	UserProfileRepository,
@@ -54,6 +57,10 @@ vi.mock("$lib/server/security/encryption", () => ({
 
 vi.mock("$env/dynamic/private", () => ({
 	env: {},
+}));
+
+vi.mock("$lib/server/observability/mlflow-lifecycle", () => ({
+	safePatchInteractiveSessionMlflowTraces: vi.fn(async () => undefined),
 }));
 
 const baseWorkflow: WorkflowDefinition = {
@@ -466,6 +473,13 @@ function fakeSessions(): SessionRepository {
 			userId: "user-1",
 			projectId: "project-1",
 		})),
+		getSessionWorkflowContext: vi.fn(async () => ({
+			workflowExecutionId: "exec-1",
+			parentExecutionId: "parent-exec-1",
+			daprInstanceId: "dapr-session-1",
+		})),
+		updateSessionStatus: vi.fn(async () => undefined),
+		updateSessionStatusUnlessTerminated: vi.fn(async () => undefined),
 	};
 }
 
@@ -484,6 +498,24 @@ function fakeSessionEvents(): SessionEventLog {
 			createdAt: "2026-01-01T00:00:00.000Z",
 			timestamp: "2026-01-01T00:00:00.000Z",
 		})),
+	};
+}
+
+function fakeCodeCheckpoints(): WorkflowCodeCheckpointStore {
+	return {
+		persistFromAgentEvent: vi.fn(async () => undefined),
+	};
+}
+
+function fakeEvaluationArtifacts(): EvaluationArtifactStore {
+	return {
+		recordCodeCheckpointWarning: vi.fn(async () => undefined),
+	};
+}
+
+function fakeSessionTraceLifecycle(): SessionTraceLifecycleStore {
+	return {
+		patchInteractiveSessionTraces: vi.fn(async () => undefined),
 	};
 }
 
@@ -687,6 +719,10 @@ function makeService(options: {
 	pieceExecutions?: PieceExecutionRepository;
 	browserArtifacts?: WorkflowBrowserArtifactStore;
 	sessions?: SessionRepository;
+	sessionEvents?: SessionEventLog;
+	codeCheckpoints?: WorkflowCodeCheckpointStore;
+	evaluationArtifacts?: EvaluationArtifactStore;
+	sessionTraceLifecycle?: SessionTraceLifecycleStore;
 }) {
 	const workflowDefinitions = {
 		getById: vi.fn(async () => options.byId ?? null),
@@ -721,6 +757,10 @@ function makeService(options: {
 		browserArtifacts: options.browserArtifacts,
 		benchmarkBrowser: fakeBenchmarkBrowser(),
 		workflowExecutions,
+		sessionEvents: options.sessionEvents,
+		codeCheckpoints: options.codeCheckpoints,
+		evaluationArtifacts: options.evaluationArtifacts,
+		sessionTraceLifecycle: options.sessionTraceLifecycle,
 		sessionEventNotifications: fakeSessionEventNotifications(),
 		artifactStore: {} as ArtifactStore,
 		workspaceSessions: {} as WorkspaceSessionStore,
@@ -1055,6 +1095,83 @@ describe("ApplicationWorkflowDataService", () => {
 			pieceExecution,
 		);
 		expect(pieceExecutions.getByIdempotencyKey).toHaveBeenCalledWith("wf:exec:task");
+	});
+
+	it("ingests session events through session and checkpoint ports", async () => {
+		const sessions = fakeSessions();
+		const sessionEvents = fakeSessionEvents();
+		const codeCheckpoints = fakeCodeCheckpoints();
+		const evaluationArtifacts = fakeEvaluationArtifacts();
+		const sessionTraceLifecycle = fakeSessionTraceLifecycle();
+		const { service } = makeService({
+			sessions,
+			sessionEvents,
+			codeCheckpoints,
+			evaluationArtifacts,
+			sessionTraceLifecycle,
+		});
+
+		const result = await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "session.status_terminated",
+			data: {
+				stop_reason: { type: "terminated", event_ids: ["event-a"] },
+				toolName: "edit_file",
+				codeCheckpoint: {
+					status: "created",
+					remoteStatus: "error",
+					remoteError: "push failed",
+					remoteRef: "refs/heads/checkpoint",
+					changedFiles: [{ path: "src/app.ts" }],
+				},
+			},
+			sourceEventId: "agent-event-1",
+			producerId: "runtime-1",
+			producerEpoch: "epoch-1",
+		});
+
+		expect(result.cleanupSessionSandbox).toBe(true);
+		expect(result.event.id).toBe("event-1");
+		expect(sessionEvents.appendSessionEvent).toHaveBeenCalledWith("session-1", {
+			type: "session.status_terminated",
+			data: expect.objectContaining({ toolName: "edit_file" }),
+			processedAt: undefined,
+			sourceEventId: "agent-event-1",
+			producerId: "runtime-1",
+			producerEpoch: "epoch-1",
+		});
+		expect(sessions.updateSessionStatus).toHaveBeenCalledWith({
+			id: "session-1",
+			status: "terminated",
+			stopReason: { type: "terminated", event_ids: ["event-a"] },
+			markCompleted: true,
+		});
+		expect(sessionTraceLifecycle.patchInteractiveSessionTraces).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			status: "OK",
+		});
+		expect(sessions.getSessionWorkflowContext).toHaveBeenCalledWith("session-1");
+		expect(codeCheckpoints.persistFromAgentEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workflowExecutionId: "exec-1",
+				parentExecutionId: "parent-exec-1",
+				daprInstanceId: "dapr-session-1",
+				sourceEventId: "agent-event-1",
+				toolName: "edit_file",
+				payload: expect.objectContaining({ remoteError: "push failed" }),
+			}),
+		);
+		expect(evaluationArtifacts.recordCodeCheckpointWarning).toHaveBeenCalledWith({
+			workflowExecutionId: "exec-1",
+			sourceEventId: "agent-event-1",
+			checkpoint: {
+				remoteStatus: "error",
+				remoteError: "push failed",
+				remoteRef: "refs/heads/checkpoint",
+				toolCallId: null,
+				toolName: null,
+			},
+		});
 	});
 
 	it("resolves interactive CLI workspace command candidates through session ports", async () => {
