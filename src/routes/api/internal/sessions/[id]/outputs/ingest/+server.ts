@@ -1,10 +1,13 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { eq } from "drizzle-orm";
+import { getApplicationAdapters } from "$lib/server/application";
 import { validateInternalToken } from "$lib/server/internal-auth";
-import { db } from "$lib/server/db";
-import { sessions } from "$lib/server/db/schema";
-import { createFile, MAX_UPLOAD_BYTES } from "$lib/server/files/registry";
+
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
+function isDatabaseNotConfigured(err: unknown): boolean {
+	return err instanceof Error && err.message.includes("Database not configured");
+}
 
 /**
  * Internal ingestion endpoint for agent-written outputs. `dapr-agent-py`'s
@@ -15,14 +18,13 @@ import { createFile, MAX_UPLOAD_BYTES } from "$lib/server/files/registry";
  * Wire shape:
  *   { files: [{ name: string, contentType?: string | null, base64: string }, ...] }
  *
- * Files larger than the global 10 MB cap are rejected individually; the
+ * Files larger than the global upload cap are rejected individually; the
  * rest still land. Per-file errors come back in the `errors` array so the
  * caller can surface which artifacts failed without losing the ones that
  * worked.
  */
 export const POST: RequestHandler = async ({ params, request }) => {
 	if (!validateInternalToken(request)) return error(401, "Unauthorized");
-	if (!db) return error(503, "Database not configured");
 
 	const body = (await request.json().catch(() => ({}))) as Record<
 		string,
@@ -33,16 +35,15 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		return json({ created: [], errors: [] });
 	}
 
-	const [sessionRow] = await db
-		.select({
-			id: sessions.id,
-			userId: sessions.userId,
-			projectId: sessions.projectId,
-		})
-		.from(sessions)
-		.where(eq(sessions.id, params.id))
-		.limit(1);
-	if (!sessionRow) return error(404, "Session not found");
+	let sessionOwner: { id: string; userId: string; projectId: string | null } | null;
+	try {
+		const { workflowData } = getApplicationAdapters();
+		sessionOwner = await workflowData.getSessionFileOwner(params.id);
+	} catch (err) {
+		if (isDatabaseNotConfigured(err)) return error(503, "Database not configured");
+		throw err;
+	}
+	if (!sessionOwner) return error(404, "Session not found");
 
 	const created: string[] = [];
 	const deduplicated: string[] = [];
@@ -78,12 +79,13 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			continue;
 		}
 		try {
-			const { file: fileRow, deduplicated: isDup } = await createFile({
-				userId: sessionRow.userId,
-				projectId: sessionRow.projectId ?? null,
+			const { workflowData } = getApplicationAdapters();
+			const { file: fileRow, deduplicated: isDup } = await workflowData.createWorkflowFile({
+				userId: sessionOwner.userId,
+				projectId: sessionOwner.projectId ?? null,
 				name,
 				purpose: "output",
-				scopeId: sessionRow.id,
+				scopeId: sessionOwner.id,
 				contentType,
 				bytes,
 			});

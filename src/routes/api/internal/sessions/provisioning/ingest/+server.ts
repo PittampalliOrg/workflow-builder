@@ -1,10 +1,11 @@
 import { json } from '@sveltejs/kit';
-import { eq, or } from 'drizzle-orm';
 import type { RequestHandler } from './$types';
+import { getApplicationAdapters } from '$lib/server/application';
 import { requireInternal } from '$lib/server/internal-auth';
-import { db } from '$lib/server/db';
-import { sessions } from '$lib/server/db/schema';
-import { appendEvent } from '$lib/server/sessions/events';
+
+function isDatabaseNotConfigured(err: unknown): boolean {
+	return err instanceof Error && err.message.includes('Database not configured');
+}
 
 /**
  * POST /api/internal/sessions/provisioning/ingest
@@ -48,23 +49,24 @@ export const POST: RequestHandler = async ({ request }) => {
 	const phase = typeof b.phase === 'string' ? b.phase.trim() : '';
 	if ((!runtimeAppId && !rawSessionId) || !phase)
 		return json({ ok: false, skipped: 'missing_fields' });
-	if (!db) return json({ ok: false, skipped: 'no_db' });
 
 	// Resolve to a real session row by runtime_app_id (primary), else by id /
 	// dapr_instance_id. Skip (200) when none matches (e.g. benchmark-coordinator
 	// pods with no sessions row) so the observer marks it done instead of looping
 	// on an FK failure.
-	const matchers = [];
-	if (runtimeAppId) matchers.push(eq(sessions.runtimeAppId, runtimeAppId));
-	if (rawSessionId)
-		matchers.push(eq(sessions.id, rawSessionId), eq(sessions.daprInstanceId, rawSessionId));
-	const [row] = await db
-		.select({ id: sessions.id })
-		.from(sessions)
-		.where(or(...matchers))
-		.limit(1);
-	if (!row) return json({ ok: false, skipped: 'no_session' });
-	const sessionId = row.id;
+	let sessionId: string | null;
+	let workflowData: ReturnType<typeof getApplicationAdapters>['workflowData'];
+	try {
+		({ workflowData } = getApplicationAdapters());
+		sessionId = await workflowData.resolveSessionIdForProvisioningEvent({
+			runtimeAppId,
+			sessionId: rawSessionId
+		});
+	} catch (err) {
+		if (isDatabaseNotConfigured(err)) return json({ ok: false, skipped: 'no_db' });
+		throw err;
+	}
+	if (!sessionId) return json({ ok: false, skipped: 'no_session' });
 
 	const at = typeof b.at === 'string' ? b.at : null;
 	const durationMs =
@@ -73,7 +75,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	const namespace = typeof b.namespace === 'string' ? b.namespace : null;
 	const reason = typeof b.reason === 'string' ? b.reason : null;
 
-	const event = await appendEvent(sessionId, {
+	const event = await workflowData.appendSessionEvent(sessionId, {
 		type: `session.provisioning_${phase}`,
 		data: { phase, at, durationMs, podName, namespace, reason },
 		sourceEventId: `prov:${sessionId}:${phase}`,

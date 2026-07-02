@@ -55,6 +55,7 @@ import type {
 	AppConnectionRepository,
 	AppConnectionSummary,
 	ApiKeyStore,
+	AppendSessionEventInput,
 	ArtifactStore,
 	BenchmarkBrowserEnvironmentBuildRecord,
 	BenchmarkBrowserReadModel,
@@ -96,6 +97,8 @@ import type {
 	UsageReportingRepository,
 	SandboxInventoryRepository,
 	SandboxRuntimeInventory,
+	SessionEventLog,
+	SessionRepository,
 	TraceLineageStore,
 	UpdateWorkflowDefinitionInput,
 	UpsertTraceLineageLinksInput,
@@ -664,6 +667,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			codeFunctionCatalog?: CodeFunctionCatalogRepository;
 			benchmarkBrowser: BenchmarkBrowserRepository;
 			workflowExecutions: WorkflowExecutionRepository;
+			sessions?: SessionRepository;
+			sessionEvents?: SessionEventLog;
 			sessionEventNotifications: WorkflowSessionEventNotificationSource;
 			artifactStore: ArtifactStore;
 			workflowFiles?: WorkflowFileStore;
@@ -683,6 +688,20 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Workflow file store not configured");
 		}
 		return this.deps.workflowFiles;
+	}
+
+	private requireSessions(): SessionRepository {
+		if (!this.deps.sessions) {
+			throw new Error("Session repository not configured");
+		}
+		return this.deps.sessions;
+	}
+
+	private requireSessionEvents(): SessionEventLog {
+		if (!this.deps.sessionEvents) {
+			throw new Error("Session event log not configured");
+		}
+		return this.deps.sessionEvents;
 	}
 
 	getUserProfile(userId: string) {
@@ -3370,6 +3389,25 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		onNotification: (notification: WorkflowSessionEventNotification) => void,
 	) {
 		return this.deps.sessionEventNotifications.listenSessionEvents(onNotification);
+	}
+
+	findSessionIdByDaprInstanceId(instanceId: string) {
+		return this.requireSessions().findSessionIdByDaprInstanceId(instanceId);
+	}
+
+	resolveSessionIdForProvisioningEvent(input: {
+		runtimeAppId?: string | null;
+		sessionId?: string | null;
+	}) {
+		return this.requireSessions().resolveSessionIdForProvisioningEvent(input);
+	}
+
+	getSessionFileOwner(sessionId: string) {
+		return this.requireSessions().getSessionFileOwner(sessionId);
+	}
+
+	appendSessionEvent(sessionId: string, event: AppendSessionEventInput) {
+		return this.requireSessionEvents().appendSessionEvent(sessionId, event);
 	}
 
 	upsertWorkflowArtifact(input: WorkflowArtifactInput) {

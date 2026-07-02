@@ -1,10 +1,7 @@
 import { json } from '@sveltejs/kit';
-import { eq } from 'drizzle-orm';
 import type { RequestHandler } from './$types';
+import { getApplicationAdapters } from '$lib/server/application';
 import { daprEventStream } from '$lib/server/dapr-event-stream';
-import { db } from '$lib/server/db';
-import { sessions } from '$lib/server/db/schema';
-import { appendEvent } from '$lib/server/sessions/events';
 
 /**
  * Dapr pub/sub catch-all event handler.
@@ -38,7 +35,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	daprEventStream.push(topic, type, source, dataObj);
 
-	if (topic === 'workflow-state-events' && db) {
+	if (topic === 'workflow-state-events') {
 		// Best-effort bridge: failures must not NACK the Dapr message
 		try {
 			const instanceId =
@@ -46,14 +43,11 @@ export const POST: RequestHandler = async ({ request }) => {
 				(dataObj.instanceId as string | undefined) ??
 				(dataObj.workflow_instance_id as string | undefined);
 			if (instanceId) {
-				const [sessionRow] = await db
-					.select({ id: sessions.id })
-					.from(sessions)
-					.where(eq(sessions.daprInstanceId, instanceId))
-					.limit(1);
-				if (sessionRow?.id) {
+				const { workflowData } = getApplicationAdapters();
+				const sessionId = await workflowData.findSessionIdByDaprInstanceId(instanceId);
+				if (sessionId) {
 					const eventId = (body.id as string | undefined) ?? (dataObj.event_id as string | undefined) ?? null;
-					await appendEvent(sessionRow.id, {
+					await workflowData.appendSessionEvent(sessionId, {
 						type: 'workflow.state',
 						data: dataObj,
 						sourceEventId: eventId ? `dapr-wf-state:${instanceId}:${eventId}` : null

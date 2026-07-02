@@ -15,6 +15,8 @@ import type {
 	SandboxInventoryRepository,
 	SandboxRuntimeInventory,
 	CodeFunctionCatalogRepository,
+	SessionEventLog,
+	SessionRepository,
 	WorkflowDefinition,
 	WorkflowDefinitionRepository,
 	WorkflowFileStore,
@@ -444,6 +446,37 @@ function fakeSessionEventNotifications(): WorkflowSessionEventNotificationSource
 	return {
 		listenSessionEvents: vi.fn(async () => ({
 			unlisten: vi.fn(async () => undefined),
+		})),
+	};
+}
+
+function fakeSessions(): SessionRepository {
+	return {
+		getSession: vi.fn(async () => null),
+		findSessionIdByDaprInstanceId: vi.fn(async () => "session-1"),
+		resolveSessionIdForProvisioningEvent: vi.fn(async () => "session-1"),
+		getSessionFileOwner: vi.fn(async () => ({
+			id: "session-1",
+			userId: "user-1",
+			projectId: "project-1",
+		})),
+	};
+}
+
+function fakeSessionEvents(): SessionEventLog {
+	return {
+		appendSessionEvent: vi.fn(async (sessionId, event) => ({
+			id: "event-1",
+			sessionId,
+			sequence: 1,
+			type: event.type,
+			data: event.data ?? {},
+			processedAt: event.processedAt?.toISOString() ?? null,
+			sourceEventId: event.sourceEventId ?? null,
+			producerId: event.producerId ?? null,
+			producerEpoch: event.producerEpoch ?? null,
+			createdAt: "2026-01-01T00:00:00.000Z",
+			timestamp: "2026-01-01T00:00:00.000Z",
 		})),
 	};
 }
@@ -3936,6 +3969,8 @@ describe("ApplicationWorkflowDataService", () => {
 			listAgentEventsByExecutionId: vi.fn(async () => []),
 			listAgentEventsByExecutionIdAfter: vi.fn(async () => []),
 		} satisfies WorkflowExecutionRepository;
+		const sessions = fakeSessions();
+		const sessionEvents = fakeSessionEvents();
 		const artifactStore = {
 			upsertWorkflowArtifact: vi.fn(async () => ({ id: "artifact-1" })),
 			listWorkflowArtifactsByExecutionId: vi.fn(async () => []),
@@ -3965,6 +4000,8 @@ describe("ApplicationWorkflowDataService", () => {
 			pieceCatalog: fakePieceCatalog(),
 			benchmarkBrowser: fakeBenchmarkBrowser(),
 			workflowExecutions,
+			sessions,
+			sessionEvents,
 			sessionEventNotifications,
 			artifactStore,
 			workflowFiles,
@@ -4038,6 +4075,17 @@ describe("ApplicationWorkflowDataService", () => {
 			afterEventId: 7,
 		});
 		await service.listenSessionEventNotifications(() => undefined);
+		await service.findSessionIdByDaprInstanceId("dapr-instance-1");
+		await service.resolveSessionIdForProvisioningEvent({
+			runtimeAppId: "runtime-app-1",
+			sessionId: "label-session-1",
+		});
+		await service.getSessionFileOwner("session-1");
+		await service.appendSessionEvent("session-1", {
+			type: "workflow.state",
+			data: { status: "COMPLETED" },
+			sourceEventId: "dapr-wf-state:dapr-instance-1:event-1",
+		});
 		await service.upsertWorkflowArtifact({
 			id: "artifact-1",
 			workflowExecutionId: "exec-1",
@@ -4152,6 +4200,19 @@ describe("ApplicationWorkflowDataService", () => {
 			afterEventId: 7,
 		});
 		expect(sessionEventNotifications.listenSessionEvents).toHaveBeenCalledTimes(1);
+		expect(sessions.findSessionIdByDaprInstanceId).toHaveBeenCalledWith(
+			"dapr-instance-1",
+		);
+		expect(sessions.resolveSessionIdForProvisioningEvent).toHaveBeenCalledWith({
+			runtimeAppId: "runtime-app-1",
+			sessionId: "label-session-1",
+		});
+		expect(sessions.getSessionFileOwner).toHaveBeenCalledWith("session-1");
+		expect(sessionEvents.appendSessionEvent).toHaveBeenCalledWith("session-1", {
+			type: "workflow.state",
+			data: { status: "COMPLETED" },
+			sourceEventId: "dapr-wf-state:dapr-instance-1:event-1",
+		});
 		expect(artifactStore.upsertWorkflowArtifact).toHaveBeenCalledWith(
 			expect.objectContaining({ id: "artifact-1", kind: "markdown" }),
 		);

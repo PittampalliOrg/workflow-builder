@@ -2088,6 +2088,14 @@ export interface CredentialStore {
 
 export interface SessionRepository {
 	getSession(id: string): Promise<SessionDetail | null>;
+	findSessionIdByDaprInstanceId(instanceId: string): Promise<string | null>;
+	resolveSessionIdForProvisioningEvent(input: {
+		runtimeAppId?: string | null;
+		sessionId?: string | null;
+	}): Promise<string | null>;
+	getSessionFileOwner(
+		sessionId: string,
+	): Promise<{ id: string; userId: string; projectId: string | null } | null>;
 }
 
 export type AppendSessionEventInput = {
@@ -2412,6 +2420,18 @@ export interface WorkflowDataService {
 	listenSessionEventNotifications(
 		onNotification: (notification: WorkflowSessionEventNotification) => void,
 	): Promise<WorkflowSessionEventSubscription>;
+	findSessionIdByDaprInstanceId(instanceId: string): Promise<string | null>;
+	resolveSessionIdForProvisioningEvent(input: {
+		runtimeAppId?: string | null;
+		sessionId?: string | null;
+	}): Promise<string | null>;
+	getSessionFileOwner(
+		sessionId: string,
+	): Promise<{ id: string; userId: string; projectId: string | null } | null>;
+	appendSessionEvent(
+		sessionId: string,
+		event: AppendSessionEventInput,
+	): Promise<SessionEventEnvelope>;
 	upsertWorkflowArtifact(input: WorkflowArtifactInput): Promise<{ id: string }>;
 	listWorkflowArtifactsByExecutionId(
 		executionId: string,

@@ -12,8 +12,9 @@ connections redirect, settings OAuth/profile, settings members, admin pieces,
 root UI-facing route, MCP connection, and app-connection CRUD/OAuth/decrypt
 route slices, the project members API route family, and the usage/cost/live
 limits reporting route family, plus sandbox executions/stats, catalog
-pieces/functions, workflow execution read/status APIs, and internal
-run-diff/source-bundle artifact ingest APIs.
+pieces/functions, workflow execution read/status APIs, internal
+run-diff/source-bundle artifact ingest APIs, and internal session-ingest utility
+routes.
 
 ## Strict HTTP Runtime Paths
 
@@ -409,13 +410,30 @@ The first UI-facing route has also moved behind the application service:
   `PostgresWorkflowFileStore`, while `PostgresArtifactStore` owns
   `workflow_artifacts` upserts. The artifact diff readback route resolves
   offloaded diff blobs through `workflowData.getWorkflowFileContent`.
+- `src/routes/api/internal/dapr/system-events/+server.ts` keeps Dapr System
+  dashboard fan-out route-local, while workflow-state event correlation and
+  session timeline appends now go through
+  `workflowData.findSessionIdByDaprInstanceId` and
+  `workflowData.appendSessionEvent`. The best-effort Dapr pub/sub ACK behavior
+  is preserved when the bridge fails.
+- `src/routes/api/internal/sessions/[id]/outputs/ingest/+server.ts` now resolves
+  session file ownership through `workflowData.getSessionFileOwner` and
+  persists agent-written output files through `workflowData.createWorkflowFile`.
+  Per-file validation and partial-success response shaping remain route-local.
+- `src/routes/api/internal/sessions/provisioning/ingest/+server.ts` now resolves
+  provisioning events through
+  `workflowData.resolveSessionIdForProvisioningEvent` and appends
+  `session.provisioning_*` rows through `workflowData.appendSessionEvent`. It
+  preserves the previous no-retry `200` skip behavior for malformed, unmatched,
+  and no-DB observer events.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
 workspace/root UI, settings, connections, admin-pieces, project-members, and
 usage/cost/live-limits route subset is also clean. The scanned sandbox
-executions/stats, catalog pieces/functions, execution read/status, and internal
-run-diff/source-bundle ingest route subsets are also clean.
+executions/stats, catalog pieces/functions, execution read/status, internal
+run-diff/source-bundle ingest, and internal session-ingest route subsets are
+also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:

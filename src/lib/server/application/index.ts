@@ -91,6 +91,8 @@ export function getApplicationAdapters(
 	let planArtifacts: PostgresWorkflowPlanArtifactStore | undefined;
 	let traceLineage: PostgresTraceLineageStore | undefined;
 	let usageReporting: PostgresUsageReportingRepository | undefined;
+	let sessions: CurrentSessionRepository | undefined;
+	let sessionEvents: PostgresSessionEventLog | undefined;
 	let sessionEventNotifications:
 		| PostgresWorkflowSessionEventNotificationSource
 		| undefined;
@@ -140,6 +142,8 @@ export function getApplicationAdapters(
 		(traceLineage ??= new PostgresTraceLineageStore(getDatabase()));
 	const getUsageReporting = () =>
 		(usageReporting ??= new PostgresUsageReportingRepository(getDatabase()));
+	const getSessions = () => (sessions ??= new CurrentSessionRepository(getDatabase()));
+	const getSessionEvents = () => (sessionEvents ??= new PostgresSessionEventLog());
 	const getSessionEventNotifications = () =>
 		(sessionEventNotifications ??= new PostgresWorkflowSessionEventNotificationSource());
 	const previewEnvironmentProvisioner =
@@ -175,6 +179,8 @@ export function getApplicationAdapters(
 				codeFunctionCatalog: getCodeFunctionCatalog(),
 				benchmarkBrowser: getBenchmarkBrowser(),
 				workflowExecutions: getWorkflowExecutions(),
+				sessions: getSessions(),
+				sessionEvents: getSessionEvents(),
 				workflowFiles: getWorkflowFiles(),
 				sandboxInventory: getSandboxInventory(),
 				sandboxRuntimeInventory: new OpenShellSandboxRuntimeInventory(),
@@ -191,8 +197,12 @@ export function getApplicationAdapters(
 		workflowScheduler,
 		eventBus: getEventBusAdapter(config),
 		credentialStore: new DaprCredentialStore(),
-		sessions: new CurrentSessionRepository(),
-		sessionEvents: new PostgresSessionEventLog(),
+		get sessions() {
+			return getSessions();
+		},
+		get sessionEvents() {
+			return getSessionEvents();
+		},
 		sandboxProvisioner: new WorkspaceRuntimeSandboxProvisioner(),
 		previewEnvironmentProvisioner,
 	};
