@@ -1,4 +1,5 @@
 import type {
+	AddSessionResourceInput,
 	AppendSessionEventInput,
 	CliWorkspaceSessionCandidateRecord,
 	CreateSessionForkInput,
@@ -26,7 +27,14 @@ import type {
 } from "$lib/server/application/ports";
 import { and, asc, desc, eq, gt, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
-import { agents, sessionEvents, sessions, type Session } from "$lib/server/db/schema";
+import {
+	agents,
+	sessionEvents,
+	sessionResources,
+	sessions,
+	type Session,
+	type SessionResource as SessionResourceRow,
+} from "$lib/server/db/schema";
 import {
 	safeFinishMlflowRun,
 	safePatchInteractiveSessionMlflowTraces,
@@ -37,7 +45,13 @@ import { raiseSessionAgentConfigPatch as raiseSessionAgentConfigPatchForRuntime 
 import { getSessionProvisioningPreferObserver } from "$lib/server/sessions/provisioning";
 import { getSessionRuntimeConfig } from "$lib/server/sessions/runtime-config";
 import { raiseSessionUserEvents } from "$lib/server/sessions/spawn";
-import type { SessionDetail, SessionEventEnvelope, UserEvent } from "$lib/types/sessions";
+import type {
+	SessionDetail,
+	SessionEventEnvelope,
+	SessionResource,
+	SessionResourceType,
+	UserEvent,
+} from "$lib/types/sessions";
 
 type Database = typeof defaultDb;
 
@@ -71,6 +85,22 @@ function toWorkflowEnsureSessionRecord(
 		sandboxName: session.sandboxName,
 		runtimeAppId: session.runtimeAppId,
 		runtimeSandboxName: session.runtimeSandboxName,
+	};
+}
+
+function toSessionResource(row: SessionResourceRow): SessionResource {
+	return {
+		id: row.id,
+		sessionId: row.sessionId,
+		type: row.type as SessionResourceType,
+		fileId: row.fileId ?? null,
+		mountPath: row.mountPath ?? null,
+		repoUrl: row.repoUrl ?? null,
+		checkoutRef: row.checkoutRef ?? null,
+		authTokenCredentialId: row.authTokenCredentialId ?? null,
+		appConnectionExternalId: row.appConnectionExternalId ?? null,
+		mountedAt: row.mountedAt ? row.mountedAt.toISOString() : null,
+		removedAt: row.removedAt ? row.removedAt.toISOString() : null,
 	};
 }
 
@@ -118,6 +148,54 @@ export class CurrentSessionRepository implements SessionRepository {
 			.delete(sessions)
 			.where(eq(sessions.id, id))
 			.returning({ id: sessions.id });
+		return Boolean(row);
+	}
+
+	async listSessionResources(sessionId: string): Promise<SessionResource[]> {
+		const database = requireDb(this.database);
+		const rows = await database
+			.select()
+			.from(sessionResources)
+			.where(eq(sessionResources.sessionId, sessionId))
+			.orderBy(asc(sessionResources.mountPath));
+		return rows.map(toSessionResource);
+	}
+
+	async addSessionResource(input: {
+		sessionId: string;
+		resource: AddSessionResourceInput;
+	}): Promise<SessionResource> {
+		const database = requireDb(this.database);
+		const [row] = await database
+			.insert(sessionResources)
+			.values({
+				sessionId: input.sessionId,
+				type: input.resource.type,
+				fileId: input.resource.fileId ?? null,
+				mountPath: input.resource.mountPath ?? null,
+				repoUrl: input.resource.repoUrl ?? null,
+				checkoutRef: input.resource.checkoutRef ?? null,
+				authTokenCredentialId: input.resource.authTokenCredentialId ?? null,
+				appConnectionExternalId: input.resource.appConnectionExternalId ?? null,
+			})
+			.returning();
+		return toSessionResource(row);
+	}
+
+	async removeSessionResource(input: {
+		sessionId: string;
+		resourceId: string;
+	}): Promise<boolean> {
+		const database = requireDb(this.database);
+		const [row] = await database
+			.delete(sessionResources)
+			.where(
+				and(
+					eq(sessionResources.sessionId, input.sessionId),
+					eq(sessionResources.id, input.resourceId),
+				),
+			)
+			.returning({ id: sessionResources.id });
 		return Boolean(row);
 	}
 

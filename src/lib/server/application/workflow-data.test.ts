@@ -485,6 +485,21 @@ function fakeSessions(): SessionRepository {
 		updateSessionTitle: vi.fn(async () => null),
 		archiveSession: vi.fn(async () => false),
 		deleteSession: vi.fn(async () => false),
+		listSessionResources: vi.fn(async () => []),
+		addSessionResource: vi.fn(async (input) => ({
+			id: "resource-1",
+			sessionId: input.sessionId,
+			type: input.resource.type,
+			fileId: input.resource.fileId ?? null,
+			mountPath: input.resource.mountPath ?? null,
+			repoUrl: input.resource.repoUrl ?? null,
+			checkoutRef: input.resource.checkoutRef ?? null,
+			authTokenCredentialId: input.resource.authTokenCredentialId ?? null,
+			appConnectionExternalId: input.resource.appConnectionExternalId ?? null,
+			mountedAt: null,
+			removedAt: null,
+		})),
+		removeSessionResource: vi.fn(async () => false),
 		getSessionProvisioningContext: vi.fn(async () => ({
 			id: "session-1",
 			status: "rescheduling" as const,
@@ -2045,6 +2060,106 @@ describe("ApplicationWorkflowDataService", () => {
 				projectId: "other-project",
 			}),
 		).resolves.toBeNull();
+	});
+
+	it("manages session resources through scoped repository ports", async () => {
+		const sourceSession = {
+			id: "session-1",
+			projectId: "project-1",
+		} as Awaited<ReturnType<SessionRepository["getSession"]>>;
+		const repoResource = {
+			id: "resource-1",
+			sessionId: "session-1",
+			type: "github_repository" as const,
+			fileId: null,
+			mountPath: "/workspace/repo",
+			repoUrl: "https://github.com/example/repo",
+			checkoutRef: "main",
+			authTokenCredentialId: null,
+			appConnectionExternalId: "conn-1",
+			mountedAt: null,
+			removedAt: null,
+		};
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => sourceSession),
+			listSessionResources: vi.fn(async () => [repoResource]),
+			addSessionResource: vi.fn(async () => repoResource),
+			removeSessionResource: vi.fn(async () => true),
+		} satisfies SessionRepository;
+		const { service } = makeService({ sessions });
+
+		await expect(
+			service.listSessionResources({
+				sessionId: "session-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual([repoResource]);
+		expect(sessions.listSessionResources).toHaveBeenCalledWith("session-1");
+
+		await expect(
+			service.addSessionResource({
+				sessionId: "session-1",
+				projectId: "project-1",
+				resource: {
+					type: "github_repository",
+					repoUrl: "https://github.com/example/repo",
+					checkoutRef: "main",
+					mountPath: "/workspace/repo",
+					appConnectionExternalId: "conn-1",
+				},
+			}),
+		).resolves.toEqual({
+			status: "created",
+			resource: repoResource,
+			session: sourceSession,
+		});
+		expect(sessions.addSessionResource).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			resource: {
+				type: "github_repository",
+				repoUrl: "https://github.com/example/repo",
+				checkoutRef: "main",
+				mountPath: "/workspace/repo",
+				appConnectionExternalId: "conn-1",
+			},
+		});
+
+		await expect(
+			service.removeSessionResource({
+				sessionId: "session-1",
+				resourceId: "resource-1",
+				projectId: "project-1",
+			}),
+		).resolves.toBe(true);
+		expect(sessions.removeSessionResource).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			resourceId: "resource-1",
+		});
+
+		await expect(
+			service.listSessionResources({
+				sessionId: "session-1",
+				projectId: "other-project",
+			}),
+		).resolves.toBeNull();
+		await expect(
+			service.addSessionResource({
+				sessionId: "session-1",
+				projectId: "other-project",
+				resource: { type: "file", fileId: "file-1" },
+			}),
+		).resolves.toEqual({ status: "not_found" });
+		await expect(
+			service.removeSessionResource({
+				sessionId: "session-1",
+				resourceId: "resource-2",
+				projectId: "other-project",
+			}),
+		).resolves.toBe(false);
+		expect(sessions.listSessionResources).toHaveBeenCalledTimes(1);
+		expect(sessions.addSessionResource).toHaveBeenCalledTimes(1);
+		expect(sessions.removeSessionResource).toHaveBeenCalledTimes(1);
 	});
 
 	it("updates session titles through the scoped session repository", async () => {

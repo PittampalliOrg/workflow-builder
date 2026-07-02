@@ -62,6 +62,7 @@ import type {
 	AppendWorkflowExecutionLogInput,
 	AdminPiecesReadModel,
 	AdminPieceRepository,
+	AddSessionResourceInput,
 	AppConnectionCreateInput,
 	AppConnectionListItem,
 	AppConnectionRepository,
@@ -3926,6 +3927,45 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		userId?: string | null;
 	}) {
 		return this.getScopedSession(input);
+	}
+
+	async listSessionResources(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}) {
+		const session = await this.getScopedSession(input);
+		if (!session) return null;
+		return this.requireSessions().listSessionResources(input.sessionId);
+	}
+
+	async addSessionResource(input: {
+		sessionId: string;
+		resource: AddSessionResourceInput;
+		projectId?: string | null;
+		userId?: string | null;
+	}) {
+		const session = await this.getScopedSession(input);
+		if (!session) return { status: "not_found" as const };
+		const resource = await this.requireSessions().addSessionResource({
+			sessionId: input.sessionId,
+			resource: input.resource,
+		});
+		return { status: "created" as const, resource, session };
+	}
+
+	async removeSessionResource(input: {
+		sessionId: string;
+		resourceId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}) {
+		const session = await this.getScopedSession(input);
+		if (!session) return false;
+		return this.requireSessions().removeSessionResource({
+			sessionId: input.sessionId,
+			resourceId: input.resourceId,
+		});
 	}
 
 	async updateSessionTitle(input: {

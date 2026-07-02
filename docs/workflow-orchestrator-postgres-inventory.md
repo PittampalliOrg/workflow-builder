@@ -556,6 +556,12 @@ The first UI-facing route has also moved behind the application service:
   now scope and raise session agent-config patches through workflow-data
   application ports. Patch normalization, runtime MCP resolution, and Dapr
   control-event raising stay behind the session agent-config command adapter.
+- `src/routes/api/v1/sessions/[id]/resources/+server.ts` and
+  `src/routes/api/v1/sessions/[id]/resources/[resourceId]/+server.ts` now list,
+  create, and remove session resources through scoped workflow-data application
+  ports. `session_resources` SQL and row-to-DTO mapping are confined to the
+  session repository adapter. The route still owns request validation and the
+  best-effort mid-session live repository mount side effect.
 
 All `+page.server.ts` files are now free of direct `$lib/server/db`,
 `$lib/server/db/schema`, and `drizzle-orm` imports. The scanned workflow API,
@@ -570,7 +576,7 @@ The internal piece-execution artifact readback and CLI workspace command routes
 are also clean. The scanned session provisioning, context-usage, control
 settings/MCP status, session detail/title/archive/delete, fork, goal,
 goal-flow, event list/append/detail, runtime-config, config patch commands,
-and event-stream routes are also clean.
+resources, and event-stream routes are also clean.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:

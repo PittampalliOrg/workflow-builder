@@ -21,6 +21,8 @@ import type {
 import type {
 	SessionDetail,
 	SessionEventEnvelope,
+	SessionResource,
+	SessionResourceType,
 	SessionStatus,
 	SessionStopReason,
 	SessionUsage,
@@ -2240,6 +2242,24 @@ export type CreateSessionForkInput = {
 	projectId?: string | null;
 };
 
+export type AddSessionResourceInput = {
+	type: SessionResourceType;
+	fileId?: string;
+	mountPath?: string;
+	repoUrl?: string;
+	checkoutRef?: string;
+	authTokenCredentialId?: string;
+	appConnectionExternalId?: string;
+};
+
+export type AddSessionResourceResult =
+	| {
+			status: "created";
+			resource: SessionResource;
+			session: SessionDetail;
+	  }
+	| { status: "not_found" };
+
 export interface SessionRepository {
 	getSession(id: string): Promise<SessionDetail | null>;
 	updateSessionTitle(input: {
@@ -2248,6 +2268,15 @@ export interface SessionRepository {
 	}): Promise<SessionDetail | null>;
 	archiveSession(id: string): Promise<boolean>;
 	deleteSession(id: string): Promise<boolean>;
+	listSessionResources(sessionId: string): Promise<SessionResource[]>;
+	addSessionResource(input: {
+		sessionId: string;
+		resource: AddSessionResourceInput;
+	}): Promise<SessionResource>;
+	removeSessionResource(input: {
+		sessionId: string;
+		resourceId: string;
+	}): Promise<boolean>;
 	getSessionProvisioningContext(input: {
 		sessionId: string;
 		projectId?: string | null;
@@ -3120,6 +3149,23 @@ export interface WorkflowDataService {
 		projectId?: string | null;
 		userId?: string | null;
 	}): Promise<SessionDetail | null>;
+	listSessionResources(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}): Promise<SessionResource[] | null>;
+	addSessionResource(input: {
+		sessionId: string;
+		resource: AddSessionResourceInput;
+		projectId?: string | null;
+		userId?: string | null;
+	}): Promise<AddSessionResourceResult>;
+	removeSessionResource(input: {
+		sessionId: string;
+		resourceId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}): Promise<boolean>;
 	updateSessionTitle(input: {
 		sessionId: string;
 		title: string;
