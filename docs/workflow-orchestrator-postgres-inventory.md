@@ -551,6 +551,13 @@ services:
   remain in the route for the later telemetry adapter slice, but route-local
   Drizzle/schema access to `sessions`, `workflow_executions`, and `thread_goals`
   was removed.
+- `src/routes/api/observability/traces/[traceId]/**` now scope-checks per-trace
+  detail/log/LLM/tool/investigation reads through
+  `ApplicationObservabilityTraceAccessService`. ClickHouse trace-owner
+  extraction is behind `ClickHouseTraceOwnerResolver`, and `sessions` /
+  `workflow_executions` owner authorization is confined to
+  `PostgresObservabilityTraceRepository`; the old DB-backed
+  `observability/trace-scope.ts` helper was removed.
 - The obsolete `/api/monitor` route family was retired with the old admin
   workflow-instance diagnostic page.
 - The admin-gated routes `src/routes/api/metrics/aggregate/+server.ts`,

@@ -7250,6 +7250,7 @@ describe("ApplicationWorkflowDataService", () => {
 				executionIds: ["exec-1"],
 				sessionIdFilter: "session-1",
 			})),
+			hasAnyTraceOwnerInScope: vi.fn(async () => true),
 			listTraceGoalChips: vi.fn(async () => [
 				{
 					sessionId: "session-1",

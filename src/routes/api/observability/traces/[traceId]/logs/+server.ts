@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getTraceLogs } from '$lib/server/otel/clickhouse';
-import { assertTraceInScope } from '$lib/server/observability/trace-scope';
+import { assertTraceInScope } from '../trace-access';
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	await assertTraceInScope(params.traceId, locals.session);

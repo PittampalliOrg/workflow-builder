@@ -565,6 +565,12 @@ export interface ObservabilityTraceRepository {
 		sessionLimit?: number;
 		executionLimit?: number;
 	}): Promise<ObservabilityTraceScopeReadModel | null>;
+	hasAnyTraceOwnerInScope(input: {
+		userId: string;
+		projectId?: string | null;
+		sessionIds: string[];
+		executionIds: string[];
+	}): Promise<boolean>;
 	listTraceGoalChips(input: {
 		sessionIds: string[];
 	}): Promise<ObservabilityTraceGoalChipReadModel[]>;

@@ -82,6 +82,7 @@ import {
 	PostgresAgentSkillHydrationRepository,
 	RegistryPeerAgentResolver,
 } from "$lib/server/application/adapters/agents";
+import { ClickHouseTraceOwnerResolver } from "$lib/server/application/adapters/observability-trace-access";
 import { LegacyAgentImportExportReferenceRepository } from "$lib/server/application/adapters/agent-import-export";
 import {
 	DaprCredentialStore,
@@ -234,6 +235,7 @@ import { ApplicationAgentImportExportService } from "$lib/server/application/age
 import { ApplicationAgentProfileService } from "$lib/server/application/agent-profiles";
 import { ApplicationAgentRegistryBrowserService } from "$lib/server/application/agent-registry-browser";
 import { DaprAgentRegistryStateReaderAdapter } from "$lib/server/application/adapters/agent-registry-browser";
+import { ApplicationObservabilityTraceAccessService } from "$lib/server/application/observability-trace-access";
 import { ApplicationCliPreviewService } from "$lib/server/application/cli-preview";
 import { ApplicationSandboxPreviewService } from "$lib/server/application/sandbox-preview";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
@@ -399,6 +401,9 @@ export function getApplicationAdapters(
 		| PostgresWorkflowActivityRateTargetRepository
 		| undefined;
 	let observabilityTraces: PostgresObservabilityTraceRepository | undefined;
+	let observabilityTraceAccess:
+		| ApplicationObservabilityTraceAccessService
+		| undefined;
 	let workflowMonitorReads: PostgresWorkflowMonitorReadRepository | undefined;
 	let resourceUsages: PostgresResourceUsageReadRepository | undefined;
 	let aiAssistantMessages:
@@ -658,6 +663,11 @@ export function getApplicationAdapters(
 		(observabilityTraces ??= new PostgresObservabilityTraceRepository(
 			getDatabase(),
 		));
+	const getObservabilityTraceAccess = () =>
+		(observabilityTraceAccess ??= new ApplicationObservabilityTraceAccessService({
+			owners: new ClickHouseTraceOwnerResolver(),
+			access: getObservabilityTraces(),
+		}));
 	const getWorkflowMonitorReads = () =>
 		(workflowMonitorReads ??= new PostgresWorkflowMonitorReadRepository(
 			getDatabase(),
@@ -1380,6 +1390,9 @@ export function getApplicationAdapters(
 		},
 		get actionCatalogTest() {
 			return getActionCatalogTest();
+		},
+		get observabilityTraceAccess() {
+			return getObservabilityTraceAccess();
 		},
 		get codeFunctionManagement() {
 			return getCodeFunctionManagement();

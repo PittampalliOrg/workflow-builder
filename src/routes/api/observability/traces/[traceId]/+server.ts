@@ -1,7 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { queryClickHouse, CLICKHOUSE_DB } from '$lib/server/otel/clickhouse';
-import { assertTraceInScope } from '$lib/server/observability/trace-scope';
+import { assertTraceInScope } from './trace-access';
 
 /**
  * GET /api/observability/traces/[traceId]

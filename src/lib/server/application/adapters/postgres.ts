@@ -4372,6 +4372,63 @@ export class PostgresObservabilityTraceRepository implements ObservabilityTraceR
 		};
 	}
 
+	async hasAnyTraceOwnerInScope(input: {
+		userId: string;
+		projectId?: string | null;
+		sessionIds: string[];
+		executionIds: string[];
+	}): Promise<boolean> {
+		const userId = input.userId.trim();
+		if (!userId) return false;
+		const projectId = input.projectId ?? null;
+		const sessionIds = [
+			...new Set(input.sessionIds.map((id) => id.trim()).filter(Boolean)),
+		];
+		const executionIds = [
+			...new Set(input.executionIds.map((id) => id.trim()).filter(Boolean)),
+		];
+
+		const sessionScopeWhere = projectId
+			? or(
+					eq(sessions.projectId, projectId),
+					and(isNull(sessions.projectId), eq(sessions.userId, userId)),
+				)
+			: eq(sessions.userId, userId);
+		const executionScopeWhere = projectId
+			? or(
+					eq(workflowExecutions.projectId, projectId),
+					and(
+						isNull(workflowExecutions.projectId),
+						eq(workflowExecutions.userId, userId),
+					),
+				)
+			: eq(workflowExecutions.userId, userId);
+
+		const [sessionRows, executionRows] = await Promise.all([
+			sessionIds.length
+				? this.database
+						.select({ id: sessions.id })
+						.from(sessions)
+						.where(and(inArray(sessions.id, sessionIds), sessionScopeWhere))
+						.limit(1)
+				: Promise.resolve([]),
+			executionIds.length
+				? this.database
+						.select({ id: workflowExecutions.id })
+						.from(workflowExecutions)
+						.where(
+							and(
+								inArray(workflowExecutions.id, executionIds),
+								executionScopeWhere,
+							),
+						)
+						.limit(1)
+				: Promise.resolve([]),
+		]);
+
+		return sessionRows.length > 0 || executionRows.length > 0;
+	}
+
 	async listTraceGoalChips(input: {
 		sessionIds: string[];
 	}): Promise<ObservabilityTraceGoalChipReadModel[]> {
