@@ -4,7 +4,7 @@ import {
 	listAgentSkills,
 	parseSkillSearchOutput,
 	skillsCliEnv
-} from './agent-skills';
+} from './application/adapters/agent-skills';
 
 describe('agent skill registry', () => {
 	it('does not expose code-defined default skills when the database is unavailable', async () => {

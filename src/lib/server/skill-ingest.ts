@@ -2,10 +2,10 @@
  * Pure skill-bundle ingestion + validation helpers. No DB import — this
  * module is safe for `pnpm tsx` scripts + integration tests to import
  * directly (the $env/dynamic/private resolution trap in $lib/server/db
- * only bites code that imports from `./agent-skills.ts`).
+ * only bites code that imports from the DB-backed agent-skills adapter).
  *
  * Keep this file free of Svelte-app concerns. DB writes live in
- * `./agent-skills.ts` and re-export these types for back-compat.
+ * `application/adapters/agent-skills.ts`.
  */
 
 import { createHash } from 'node:crypto';

@@ -21,6 +21,7 @@ import {
 	type SkillPackageFile,
 	type SkillSource
 } from '$lib/server/skill-ingest';
+import type { AgentSkillRepository } from '$lib/server/application/agent-skills';
 
 // Re-export for back-compat with callers that already imported these from
 // `agent-skills`. New code should import directly from `skill-ingest`.
@@ -717,4 +718,16 @@ export async function canManageAgentSkills(userId: string, projectId?: string): 
 		.where(and(eq(projectMembers.userId, userId), eq(projectMembers.role, 'ADMIN')))
 		.limit(1);
 	return adminMembership?.role === 'ADMIN';
+}
+
+export class LegacyAgentSkillRepository implements AgentSkillRepository {
+	listAgentSkills = listAgentSkills;
+	createCustomSkill = createCustomSkill;
+	updateCustomSkill = updateCustomSkill;
+	deleteCustomSkill = deleteCustomSkill;
+	upsertAgentSkillMetadata = upsertAgentSkillMetadata;
+	upsertCustomSkillFromZip = upsertCustomSkillFromZip;
+	setAgentSkillStatus = setAgentSkillStatus;
+	searchSkills = searchSkills;
+	canManageAgentSkills = canManageAgentSkills;
 }

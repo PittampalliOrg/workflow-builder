@@ -84,6 +84,7 @@ import {
 } from "$lib/server/application/adapters/agents";
 import { ClickHouseTraceOwnerResolver } from "$lib/server/application/adapters/observability-trace-access";
 import { PostgresCapabilityBundleRepository } from "$lib/server/application/adapters/capability-bundles";
+import { LegacyAgentSkillRepository } from "$lib/server/application/adapters/agent-skills";
 import { LegacyAgentImportExportReferenceRepository } from "$lib/server/application/adapters/agent-import-export";
 import {
 	DaprCredentialStore,
@@ -238,6 +239,7 @@ import { ApplicationAgentRegistryBrowserService } from "$lib/server/application/
 import { DaprAgentRegistryStateReaderAdapter } from "$lib/server/application/adapters/agent-registry-browser";
 import { ApplicationObservabilityTraceAccessService } from "$lib/server/application/observability-trace-access";
 import { ApplicationCapabilityBundleService } from "$lib/server/application/capability-bundles";
+import { ApplicationAgentSkillService } from "$lib/server/application/agent-skills";
 import { ApplicationCliPreviewService } from "$lib/server/application/cli-preview";
 import { ApplicationSandboxPreviewService } from "$lib/server/application/sandbox-preview";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
@@ -407,6 +409,7 @@ export function getApplicationAdapters(
 		| ApplicationObservabilityTraceAccessService
 		| undefined;
 	let capabilityBundles: ApplicationCapabilityBundleService | undefined;
+	let agentSkills: ApplicationAgentSkillService | undefined;
 	let workflowMonitorReads: PostgresWorkflowMonitorReadRepository | undefined;
 	let resourceUsages: PostgresResourceUsageReadRepository | undefined;
 	let aiAssistantMessages:
@@ -674,6 +677,10 @@ export function getApplicationAdapters(
 	const getCapabilityBundles = () =>
 		(capabilityBundles ??= new ApplicationCapabilityBundleService(
 			new PostgresCapabilityBundleRepository(getDatabase()),
+		));
+	const getAgentSkills = () =>
+		(agentSkills ??= new ApplicationAgentSkillService(
+			new LegacyAgentSkillRepository(),
 		));
 	const getWorkflowMonitorReads = () =>
 		(workflowMonitorReads ??= new PostgresWorkflowMonitorReadRepository(
@@ -1403,6 +1410,9 @@ export function getApplicationAdapters(
 		},
 		get capabilityBundles() {
 			return getCapabilityBundles();
+		},
+		get agentSkills() {
+			return getAgentSkills();
 		},
 		get codeFunctionManagement() {
 			return getCodeFunctionManagement();

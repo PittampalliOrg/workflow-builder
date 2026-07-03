@@ -580,6 +580,12 @@ services:
   usage models through workflow-data resource usage ports. Preset binding scans,
   skill attachment JSONB queries, and vault/session JSONB containment queries
   are confined to the Postgres resource-usage adapter.
+- `src/routes/api/agent-skills/**` and
+  `src/routes/api/admin/agent-skills/**` now delegate list/create/update/delete,
+  registry import, zip import, search, status changes, and manage-permission
+  checks to `ApplicationAgentSkillService`. The legacy DB-backed agent skill
+  implementation moved to `LegacyAgentSkillRepository` under the adapter layer;
+  pure bundle parsing/validation remains in `src/lib/server/skill-ingest.ts`.
 - `src/routes/api/ai-assistant/messages/[workflowId]/+server.ts` now lists and
   deletes workflow AI chat history through workflow-data. `workflow_ai_messages`
   reads/deletes and row-to-message mapping are confined to the Postgres AI

@@ -1,10 +1,8 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import {
-	canManageAgentSkills,
-	upsertCustomSkillFromZip,
-	SkillBundleValidationError
-} from '$lib/server/agent-skills';
+import { getApplicationAdapters } from '$lib/server/application';
+import { AgentSkillServiceError } from '$lib/server/application/agent-skills';
+import { SkillBundleValidationError } from '$lib/server/skill-ingest';
 
 // Matches the 4 MiB cap the plan commits to. If the cluster's ingress body
 // limit is lower, that kicks in first — bump the nginx proxy-body-size
@@ -15,8 +13,6 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	if (!locals.session?.userId) return error(401, 'Unauthorized');
 	const projectId = locals.session.projectId;
 	if (!projectId) return error(400, 'Active workspace is required');
-	if (!(await canManageAgentSkills(locals.session.userId, projectId)))
-		return error(403, 'Forbidden');
 
 	let form: FormData;
 	try {
@@ -43,7 +39,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 	const buffer = Buffer.from(await file.arrayBuffer());
 	try {
-		const skill = await upsertCustomSkillFromZip({
+		const skill = await getApplicationAdapters().agentSkills.importZip({
 			zipBuffer: buffer,
 			skillName,
 			slug,
@@ -54,6 +50,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		});
 		return json({ skill });
 	} catch (err) {
+		if (err instanceof AgentSkillServiceError) return error(err.status, err.message);
 		if (err instanceof SkillBundleValidationError) return error(400, err.message);
 		return error(400, err instanceof Error ? err.message : 'Failed to ingest zip bundle');
 	}
