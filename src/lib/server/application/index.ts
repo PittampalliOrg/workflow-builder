@@ -98,6 +98,7 @@ import {
 	LegacyBenchmarkRunLaunchAdapter,
 	LegacyEvaluationRunLaunchAdapter,
 } from "$lib/server/application/adapters/run-launch";
+import { LegacyEvaluationRunDetailReadAdapter } from "$lib/server/application/adapters/evaluation-run-detail";
 import {
 	KroPreviewEnvironmentProvisioner,
 	SandboxExecutionPreviewEnvironmentProvisioner,
@@ -173,6 +174,7 @@ import {
 	ApplicationEvaluationRunLaunchService,
 } from "$lib/server/application/run-launch";
 import { ApplicationRunCancellationService } from "$lib/server/application/run-cancellation";
+import { ApplicationEvaluationRunDetailService } from "$lib/server/application/evaluation-run-detail";
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
 import { ApplicationWorkflowBrowserArtifactsService } from "$lib/server/application/workflow-browser-artifacts";
 import { ApplicationWorkflowExecutionArtifactDiffService } from "$lib/server/application/workflow-execution-artifact-diff";
@@ -313,6 +315,7 @@ export function getApplicationAdapters(
 	let runCancellation: ApplicationRunCancellationService | undefined;
 	let benchmarkRunLaunch: ApplicationBenchmarkRunLaunchService | undefined;
 	let evaluationRunLaunch: ApplicationEvaluationRunLaunchService | undefined;
+	let evaluationRunDetail: ApplicationEvaluationRunDetailService | undefined;
 	let benchmarkRunDetail:
 		| ApplicationBenchmarkRunDetailPageService
 		| undefined;
@@ -530,6 +533,10 @@ export function getApplicationAdapters(
 	const getEvaluationRunLaunch = () =>
 		(evaluationRunLaunch ??= new ApplicationEvaluationRunLaunchService(
 			new LegacyEvaluationRunLaunchAdapter(),
+		));
+	const getEvaluationRunDetail = () =>
+		(evaluationRunDetail ??= new ApplicationEvaluationRunDetailService(
+			new LegacyEvaluationRunDetailReadAdapter(),
 		));
 	const getBenchmarkRunDetail = () =>
 		(benchmarkRunDetail ??= new ApplicationBenchmarkRunDetailPageService(
@@ -831,6 +838,9 @@ export function getApplicationAdapters(
 		},
 		get evaluationRunLaunch() {
 			return getEvaluationRunLaunch();
+		},
+		get evaluationRunDetail() {
+			return getEvaluationRunDetail();
 		},
 		get benchmarkRunDetail() {
 			return getBenchmarkRunDetail();
