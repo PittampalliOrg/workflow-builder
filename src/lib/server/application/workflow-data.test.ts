@@ -3303,14 +3303,14 @@ describe("ApplicationWorkflowDataService", () => {
 	});
 
 	it("loads user profile data through the user profile port", async () => {
-		const userProfiles = {
+		const userProfiles: UserProfileRepository = {
 			getUserProfile: vi.fn(async () => ({
 				name: "Ada",
 				email: "ada@example.test",
 				image: null,
 				platformRole: "ADMIN" as const,
 			})),
-		} satisfies UserProfileRepository;
+		};
 		const service = new ApplicationWorkflowDataService({
 			workflowDefinitions: makeService({}).workflowDefinitions,
 			workflowTriggers: fakeWorkflowTriggers(),
@@ -3340,7 +3340,16 @@ describe("ApplicationWorkflowDataService", () => {
 			image: null,
 			platformRole: "ADMIN",
 		});
+		await expect(service.isPlatformAdmin("user-1")).resolves.toBe(true);
+		vi.mocked(userProfiles.getUserProfile).mockResolvedValueOnce({
+			name: "Grace",
+			email: "grace@example.test",
+			image: null,
+			platformRole: "MEMBER",
+		});
+		await expect(service.isPlatformAdmin("user-2")).resolves.toBe(false);
 		expect(userProfiles.getUserProfile).toHaveBeenCalledWith("user-1");
+		expect(userProfiles.getUserProfile).toHaveBeenCalledWith("user-2");
 	});
 
 	it("composes settings profile and OAuth app rows through settings ports", async () => {

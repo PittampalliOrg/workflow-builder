@@ -3208,6 +3208,7 @@ export interface PreviewEnvironmentProvisioner {
 
 export interface WorkflowDataService {
 	getUserProfile(userId: string): Promise<UserProfileRecord | null>;
+	isPlatformAdmin(userId: string): Promise<boolean>;
 	resolveWorkspaceProjectId(input: {
 		slug?: string | null;
 		userId: string;

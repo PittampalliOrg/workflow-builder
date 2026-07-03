@@ -1,9 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { eq } from "drizzle-orm";
 
-import { db } from "$lib/server/db";
-import { users } from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
 import {
 	enrichLiveCommits,
 	getDeploymentMetadata,
@@ -11,14 +9,17 @@ import {
 
 export const GET: RequestHandler = async ({ locals, url }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	if (!db) return error(500, "Database not configured");
-
-	const [user] = await db
-		.select({ platformRole: users.platformRole })
-		.from(users)
-		.where(eq(users.id, locals.session.userId))
-		.limit(1);
-	if (user?.platformRole !== "ADMIN") return error(403, "Admin access required");
+	try {
+		const isAdmin = await getApplicationAdapters().workflowData.isPlatformAdmin(
+			locals.session.userId,
+		);
+		if (!isAdmin) return error(403, "Admin access required");
+	} catch (err) {
+		if (err instanceof Error && err.message.includes("Database not configured")) {
+			return error(500, "Database not configured");
+		}
+		throw err;
+	}
 
 	const fresh = url.searchParams.get("fresh") === "1" || url.searchParams.get("fresh") === "true";
 	const metadata = await enrichLiveCommits(await getDeploymentMetadata({ fresh }));

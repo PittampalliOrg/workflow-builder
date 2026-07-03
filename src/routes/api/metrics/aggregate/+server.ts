@@ -1,8 +1,6 @@
 import { error, json } from "@sveltejs/kit";
-import { eq } from "drizzle-orm";
 import type { RequestHandler } from "./$types";
-import { db } from "$lib/server/db";
-import { users } from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
 import { getAggregateMetrics } from "$lib/server/metrics/aggregate";
 
 /**
@@ -16,13 +14,17 @@ import { getAggregateMetrics } from "$lib/server/metrics/aggregate";
  */
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	if (!db) return error(503, "Database not configured");
-	const [row] = await db
-		.select({ platformRole: users.platformRole })
-		.from(users)
-		.where(eq(users.id, locals.session.userId))
-		.limit(1);
-	if (row?.platformRole !== "ADMIN") return error(403, "Admin access required");
+	try {
+		const isAdmin = await getApplicationAdapters().workflowData.isPlatformAdmin(
+			locals.session.userId,
+		);
+		if (!isAdmin) return error(403, "Admin access required");
+	} catch (err) {
+		if (err instanceof Error && err.message.includes("Database not configured")) {
+			return error(503, "Database not configured");
+		}
+		throw err;
+	}
 	const snapshot = await getAggregateMetrics();
 	return json(snapshot);
 };

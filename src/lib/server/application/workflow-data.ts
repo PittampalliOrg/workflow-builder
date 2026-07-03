@@ -986,6 +986,11 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.userProfiles.getUserProfile(userId);
 	}
 
+	async isPlatformAdmin(userId: string) {
+		const profile = await this.deps.userProfiles.getUserProfile(userId);
+		return profile?.platformRole === "ADMIN";
+	}
+
 	async getSettingsPageReadModel(input: {
 		userId: string;
 		sessionPlatformId?: string | null;

@@ -1,8 +1,6 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { users } from '$lib/server/db/schema';
+import { getApplicationAdapters } from '$lib/server/application';
 import { getAppUrl } from '$lib/server/app-url';
 import { enablePiece, isValidPieceSlug } from '$lib/server/pieces/piece-images';
 
@@ -16,13 +14,14 @@ import { enablePiece, isValidPieceSlug } from '$lib/server/pieces/piece-images';
  * toggle" limitation on the admin pieces page.
  */
 async function requireAdmin(userId: string | undefined | null): Promise<void> {
-	if (!db || !userId) throw error(403, 'Admin access required');
-	const [row] = await db
-		.select({ role: users.platformRole })
-		.from(users)
-		.where(eq(users.id, userId))
-		.limit(1);
-	if (row?.role !== 'ADMIN') throw error(403, 'Admin access required');
+	if (!userId) throw error(403, 'Admin access required');
+	try {
+		const isAdmin = await getApplicationAdapters().workflowData.isPlatformAdmin(userId);
+		if (!isAdmin) throw error(403, 'Admin access required');
+	} catch (err) {
+		if (err && typeof err === 'object' && 'status' in err) throw err;
+		throw error(403, 'Admin access required');
+	}
 }
 
 export const POST: RequestHandler = async ({ params, locals, request, url }) => {

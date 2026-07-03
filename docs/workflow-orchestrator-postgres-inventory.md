@@ -251,6 +251,12 @@ The first UI-facing route has also moved behind the application service:
 - `src/routes/api/monitor/+server.ts` still queries the orchestrator first, but
   its database fallback now reads workflow execution summaries through
   workflow-data instead of importing `db`, Drizzle, or schema objects directly.
+- The admin-gated routes `src/routes/api/metrics/aggregate/+server.ts`,
+  `src/routes/api/v1/gitops/deployment-metadata/+server.ts`,
+  `src/routes/api/v1/gitops/promotions/+server.ts`, and
+  `src/routes/api/admin/pieces/[pieceName]/enable/+server.ts` now resolve
+  platform-admin status through the workflow-data user profile port instead of
+  querying `users.platform_role` directly in route code.
 - `src/routes/workspaces/[slug]/dev/+page.server.ts`,
   `src/routes/workspaces/[slug]/dev/[executionId]/+page.server.ts`, and the
   public `src/routes/api/dev-environments/**` GET routes now load dev-preview
