@@ -1,8 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { validateTriggerModel } from './model-validation';
-
-// The DB fallback path is not exercised here — when the spec declares
-// options we short-circuit before touching the DB.
 
 describe('validateTriggerModel (inline spec options)', () => {
 	const makeSpec = (values: string[]) => ({
@@ -58,9 +58,60 @@ describe('validateTriggerModel (inline spec options)', () => {
 			{ document: { 'x-workflow-builder': { input: { fields: {} } } } },
 			{ model: 'anything' }
 		);
-		// No inline options + no DB configured in this test → returns null.
-		// The real server path runs against a connected DB; this test documents
-		// the no-op case where the workflow does not advertise options.
 		expect(err === null || typeof err === 'string').toBe(true);
+	});
+
+	it('falls back to the injected model catalog when inline options are absent', async () => {
+		const modelCatalog = {
+			listEnabledModelIds: vi.fn(async () => ['openai/gpt-5.5', 'anthropic/claude-opus-4-8'])
+		};
+
+		const err = await validateTriggerModel(
+			{ document: { 'x-workflow-builder': { input: { fields: {} } } } },
+			{ model: 'openai/gpt-5.5' },
+			{ modelCatalog }
+		);
+
+		expect(err).toBeNull();
+		expect(modelCatalog.listEnabledModelIds).toHaveBeenCalledTimes(1);
+	});
+
+	it('rejects a model missing from the injected model catalog', async () => {
+		const modelCatalog = {
+			listEnabledModelIds: vi.fn(async () => ['openai/gpt-5.5'])
+		};
+
+		const err = await validateTriggerModel(
+			{ document: { 'x-workflow-builder': { input: { fields: {} } } } },
+			{ model: 'openai/not-real' },
+			{ modelCatalog }
+		);
+
+		expect(err).toBe("Invalid model 'openai/not-real'. Allowed: openai/gpt-5.5");
+	});
+
+	it('keeps model validation free of direct DB imports', () => {
+		const source = readFileSync(
+			join(dirname(fileURLToPath(import.meta.url)), 'model-validation.ts'),
+			'utf8'
+		);
+
+		expect(source).toContain('listEnabledModelIds');
+		expect(source).not.toContain('$lib/server/db');
+		expect(source).not.toContain('$lib/server/db/schema');
+		expect(source).not.toContain('drizzle-orm');
+		expect(source).not.toContain('modelCatalog } from');
+	});
+
+	it('keeps workflow start readiness behind workflow-data', () => {
+		const source = readFileSync(
+			join(dirname(fileURLToPath(import.meta.url)), 'start-run.ts'),
+			'utf8'
+		);
+
+		expect(source).toContain('workflowData.assertExecutionReadModelReady');
+		expect(source).toContain('modelCatalog: app.workflowData');
+		expect(source).not.toContain('assertExecutionReadModelColumns');
+		expect(source).not.toContain('$lib/server/db/execution-read-model-support');
 	});
 });

@@ -38,6 +38,7 @@ import {
 	environments,
 	environmentVersions,
 	mlflowLineageLinks,
+	modelCatalog,
 	agents,
 	agentVersions,
 	benchmarkArtifacts,
@@ -169,6 +170,7 @@ import type {
 	McpConnectionRepository,
 	McpRunRecord,
 	McpRunRepository,
+	ModelCatalogRepository,
 	McpCatalogAppConnectionSummary,
 	PieceExecutionReadModel,
 	PieceExecutionRepository,
@@ -3536,6 +3538,18 @@ export class PostgresWorkflowDefinitionRepository implements WorkflowDefinitionR
 
 	async delete(id: string): Promise<void> {
 		await this.database.delete(workflows).where(eq(workflows.id, id));
+	}
+}
+
+export class PostgresModelCatalogRepository implements ModelCatalogRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async listEnabledModelIds(): Promise<string[]> {
+		const rows = await this.database
+			.select({ id: modelCatalog.id })
+			.from(modelCatalog)
+			.where(eq(modelCatalog.isEnabled, true));
+		return rows.map((row) => row.id);
 	}
 }
 

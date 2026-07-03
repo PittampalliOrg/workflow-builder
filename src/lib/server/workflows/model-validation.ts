@@ -1,6 +1,12 @@
-import { eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { modelCatalog } from '$lib/server/db/schema';
+import { getApplicationAdapters } from '$lib/server/application';
+
+export type TriggerModelCatalogReader = {
+	listEnabledModelIds(): Promise<string[]>;
+};
+
+export type ValidateTriggerModelOptions = {
+	modelCatalog?: TriggerModelCatalogReader;
+};
 
 /**
  * Validate that trigger input's `model` field matches a known value.
@@ -22,7 +28,8 @@ import { modelCatalog } from '$lib/server/db/schema';
  */
 export async function validateTriggerModel(
 	spec: Record<string, unknown>,
-	triggerData: Record<string, unknown>
+	triggerData: Record<string, unknown>,
+	options: ValidateTriggerModelOptions = {}
 ): Promise<string | null> {
 	const declared = collectDeclaredModelOptions(spec);
 	const submitted = triggerData.model;
@@ -37,12 +44,16 @@ export async function validateTriggerModel(
 	}
 
 	// No inline options — fall back to model_catalog.
-	if (!db) return null;
-	const rows = await db
-		.select({ id: modelCatalog.id })
-		.from(modelCatalog)
-		.where(eq(modelCatalog.isEnabled, true));
-	const allowed = rows.map((r) => r.id);
+	let allowed: string[];
+	try {
+		const catalog = options.modelCatalog ?? getApplicationAdapters().workflowData;
+		allowed = await catalog.listEnabledModelIds();
+	} catch (err) {
+		if (err instanceof Error && err.message === 'Database not configured') {
+			return null;
+		}
+		throw err;
+	}
 	if (allowed.includes(submitted)) return null;
 	return `Invalid model '${submitted}'. Allowed: ${allowed.sort().join(', ')}`;
 }

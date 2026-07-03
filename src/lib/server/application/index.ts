@@ -26,6 +26,7 @@ import {
 	PostgresHostedMcpServerRepository,
 	PostgresMcpConnectionRepository,
 	PostgresMcpRunRepository,
+	PostgresModelCatalogRepository,
 	PostgresObservabilityTraceRepository,
 	PostgresPieceExecutionRepository,
 	PostgresPieceCatalogRepository,
@@ -162,6 +163,7 @@ export function getApplicationAdapters(
 	let securityAudit: PostgresSecurityAuditReadRepository | undefined;
 	let dashboard: PostgresDashboardReadRepository | undefined;
 	let homePageReads: PostgresHomePageReadRepository | undefined;
+	let modelCatalog: PostgresModelCatalogRepository | undefined;
 	let workflowExecutions: PostgresWorkflowExecutionRepository | undefined;
 	let workflowFiles: PostgresWorkflowFileStore | undefined;
 	let sandboxInventory: PostgresSandboxInventoryRepository | undefined;
@@ -260,6 +262,8 @@ export function getApplicationAdapters(
 		(dashboard ??= new PostgresDashboardReadRepository(getDatabase()));
 	const getHomePageReads = () =>
 		(homePageReads ??= new PostgresHomePageReadRepository(getDatabase()));
+	const getModelCatalog = () =>
+		(modelCatalog ??= new PostgresModelCatalogRepository(getDatabase()));
 	const getWorkflowExecutions = () =>
 		(workflowExecutions ??= new PostgresWorkflowExecutionRepository(getDatabase()));
 	const getWorkflowFiles = () =>
@@ -353,6 +357,7 @@ export function getApplicationAdapters(
 			securityAudit: getSecurityAudit(),
 			dashboard: getDashboard(),
 			homePageReads: getHomePageReads(),
+			modelCatalog: getModelCatalog(),
 			workflowExecutions: getWorkflowExecutions(),
 			sessions: getSessions(),
 			sessionProvisioning: getSessionProvisioning(),

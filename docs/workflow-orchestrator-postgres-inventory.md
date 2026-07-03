@@ -531,6 +531,11 @@ The first UI-facing route has also moved behind the application service:
   `EvaluationRunItemStatusInput`, `EvaluationArtifactKindInput`, and
   `BenchmarkResourceLeaseTypeInput` are route-facing application unions exported
   from the owning service modules.
+- `src/lib/server/workflows/start-run.ts` no longer imports the direct
+  execution read-model schema probe. Workflow start readiness now calls
+  `workflowData.assertExecutionReadModelReady`, and trigger model-catalog
+  fallback validation reads enabled models through a workflow-data model catalog
+  port instead of importing Drizzle/model schema from `model-validation.ts`.
 - `src/routes/workspaces/[slug]/benchmarks/+page.server.ts`,
   `src/routes/workspaces/[slug]/benchmarks/runs/+page.server.ts`, and
   `src/routes/workspaces/[slug]/benchmarks/compare/+page.server.ts` now delegate

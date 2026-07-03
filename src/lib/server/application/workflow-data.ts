@@ -114,6 +114,7 @@ import type {
 	McpAvailabilityReadModel,
 	McpCatalogConfiguredConnectionSummary,
 	McpRunRepository,
+	ModelCatalogRepository,
 	ObservabilityTraceGoalChipReadModel,
 	ObservabilityTraceRepository,
 	ObservabilityTraceScopeReadModel,
@@ -829,6 +830,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			securityAudit?: SecurityAuditReadRepository;
 			dashboard?: DashboardReadRepository;
 			homePageReads?: HomePageReadRepository;
+			modelCatalog?: ModelCatalogRepository;
 			workflowExecutions: WorkflowExecutionRepository;
 			sessions?: SessionRepository;
 			sessionProvisioning?: SessionProvisioningReader;
@@ -4299,6 +4301,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 					key: secret.plaintextKey,
 				}
 			: null;
+	}
+
+	async listEnabledModelIds(): Promise<string[]> {
+		return this.deps.modelCatalog?.listEnabledModelIds() ?? [];
 	}
 
 	assertExecutionReadModelReady() {

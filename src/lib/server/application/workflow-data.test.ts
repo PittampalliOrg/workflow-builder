@@ -7730,6 +7730,9 @@ describe("ApplicationWorkflowDataService", () => {
 				workspaceRef: "workspace-1",
 			})),
 		} satisfies WorkspaceSessionStore;
+		const modelCatalog = {
+			listEnabledModelIds: vi.fn(async () => ["openai/gpt-5.5"]),
+		};
 		const sessionEventNotifications = fakeSessionEventNotifications();
 		const service = new ApplicationWorkflowDataService({
 			workflowDefinitions: makeService({}).workflowDefinitions,
@@ -7746,6 +7749,7 @@ describe("ApplicationWorkflowDataService", () => {
 			pieceCatalog: fakePieceCatalog(),
 			benchmarkBrowser: fakeBenchmarkBrowser(),
 			workflowExecutions,
+			modelCatalog,
 			sessions,
 			sessionEvents,
 			sessionEventNotifications,
@@ -7759,6 +7763,7 @@ describe("ApplicationWorkflowDataService", () => {
 
 		await service.updateExecutionReadModel("exec-1", { phase: "running" });
 		await service.assertExecutionReadModelReady();
+		await service.listEnabledModelIds();
 		await service.createWorkflowExecution({
 			id: "exec-1",
 			workflowId: "wf-1",
@@ -7885,6 +7890,7 @@ describe("ApplicationWorkflowDataService", () => {
 			phase: "running",
 		});
 		expect(workflowExecutions.assertReadModelReady).toHaveBeenCalledTimes(1);
+		expect(modelCatalog.listEnabledModelIds).toHaveBeenCalledTimes(1);
 		expect(workflowExecutions.create).toHaveBeenCalledWith(
 			expect.objectContaining({ id: "exec-1", workflowSessionId: "exec-1" }),
 		);

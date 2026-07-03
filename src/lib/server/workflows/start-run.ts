@@ -13,7 +13,6 @@
  * orchestrator stamps the Dapr instance id as `sw-<name>-exec-<executionId>`, the
  * instance id is deterministic too, so Dapr also dedups the start.
  */
-import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
 import { getOrchestratorUrl } from '$lib/server/dapr-client';
 import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
 import { getRemovedSw10AgentCallsError } from '$lib/server/workflows/sw10-agent-validation';
@@ -102,7 +101,7 @@ export async function startWorkflowRun(
 		};
 	}
 	try {
-		await assertExecutionReadModelColumns();
+		await app.workflowData.assertExecutionReadModelReady();
 	} catch (schemaError) {
 		return {
 			ok: false,
@@ -149,7 +148,9 @@ export async function startWorkflowRun(
 		if (missing.length > 0) {
 			return { ok: false, status: 400, error: `Missing required workflow input fields: ${missing.join(', ')}` };
 		}
-		const modelError = await validateTriggerModel(spec, triggerData);
+		const modelError = await validateTriggerModel(spec, triggerData, {
+			modelCatalog: app.workflowData
+		});
 		if (modelError) return { ok: false, status: 400, error: modelError };
 		try {
 			spec = await resolveSpecAgentRefs(spec, { triggerData });

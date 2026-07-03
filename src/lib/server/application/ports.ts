@@ -2271,6 +2271,10 @@ export interface WorkflowDefinitionRepository {
 	delete(id: string): Promise<void>;
 }
 
+export interface ModelCatalogRepository {
+	listEnabledModelIds(): Promise<string[]>;
+}
+
 export type WorkflowExecutionStatus = "pending" | "running" | "success" | "error" | "cancelled";
 
 export type WorkflowExecutionRecentRunRecord = {
@@ -3894,6 +3898,7 @@ export interface WorkflowDataService {
 		projectId?: string | null;
 		now?: Date;
 	}): Promise<LiveLimitReadModel>;
+	listEnabledModelIds(): Promise<string[]>;
 	listSandboxExecutions(sandboxName: string): Promise<SandboxExecutionReadModel[]>;
 	getSandboxStats(input?: { now?: Date }): Promise<SandboxStatsReadModel>;
 	getWorkflowByRef(
