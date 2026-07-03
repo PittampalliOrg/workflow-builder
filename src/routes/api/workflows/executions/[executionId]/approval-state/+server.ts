@@ -7,57 +7,32 @@
  * is a SW `listen` task. The awaited event type comes from the node's
  * `listen.to.one.with.type` (defaults to the node id).
  *
- * Workspace-scoped via `assertInScope`.
+ * Workspace-scoped by the application service.
  */
 
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
-import { assertInScope } from "$lib/server/workflows/project-scope";
-
-const ACTIVE_STATUSES = new Set(["running", "pending", "paused"]);
-
-function findListenGate(
-  spec: unknown,
-  nodeId: string | null,
-): { eventType: string } | null {
-  if (!nodeId || typeof spec !== "object" || spec === null) return null;
-  const doList = (spec as Record<string, unknown>).do;
-  if (!Array.isArray(doList)) return null;
-  for (const entry of doList) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const key = Object.keys(entry as Record<string, unknown>)[0];
-    if (key !== nodeId) continue;
-    const node = (entry as Record<string, unknown>)[key] as Record<string, unknown>;
-    const listen = node?.listen as Record<string, unknown> | undefined;
-    if (!listen) return null;
-    const withType = (((listen.to as Record<string, unknown>)?.one as Record<string, unknown>)
-      ?.with as Record<string, unknown>)?.type;
-    return { eventType: typeof withType === "string" && withType ? withType : nodeId };
-  }
-  return null;
-}
+import type { WorkflowExecutionControlResult } from "$lib/server/application/workflow-execution-control";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
   if (!locals.session?.userId) return error(401, "Authentication required");
   const { executionId } = params;
   if (!executionId) return error(400, "executionId required");
 
-  const workflowData = getApplicationAdapters().workflowData;
-  const exec = await workflowData.getExecutionById(executionId);
-  assertInScope(exec, locals.session, "Execution not found");
-
-  if (!ACTIVE_STATUSES.has(String(exec.status ?? "").toLowerCase())) {
-    return json({ awaiting: false });
-  }
-
-  const wf = await workflowData.getWorkflowByRef({ workflowId: exec.workflowId, lookup: "id" });
-  const gate = findListenGate(wf?.spec, exec.currentNodeId);
-  if (!gate) return json({ awaiting: false });
-
-  return json({
-    awaiting: true,
-    nodeId: exec.currentNodeId,
-    eventType: gate.eventType,
-  });
+  return workflowExecutionControlResponse(
+    await getApplicationAdapters().workflowExecutionControl.getApprovalState({
+      executionId,
+      projectId: locals.session.projectId ?? null,
+      userId: locals.session.userId,
+    }),
+  );
 };
+
+function workflowExecutionControlResponse(
+  result: WorkflowExecutionControlResult,
+) {
+  if (result.status === "error")
+    return error(result.httpStatus, result.message);
+  return json(result.body);
+}

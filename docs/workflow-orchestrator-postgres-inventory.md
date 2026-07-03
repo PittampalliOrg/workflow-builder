@@ -156,7 +156,8 @@ application services; `rg` shows the new
 `$lib/server/db`. Direct DB imports for those domains are confined to
 `src/lib/server/application/adapters/postgres.ts`.
 
-The first UI-facing route has also moved behind the application service:
+UI-facing workflow execution routes continue to move behind application
+services:
 
 - `src/routes/api/workflows/executions/[executionId]/artifacts/+server.ts`
   now loads the parent execution and artifact list through
@@ -199,8 +200,10 @@ The first UI-facing route has also moved behind the application service:
   reaches the shared execution read-model loader through an application port;
   the route imports no workflow-data, read-model, or project-scope helpers.
 - `src/routes/api/workflows/executions/[executionId]/approval-state/+server.ts`
-  now resolves both execution and workflow spec through `workflowData` before
-  detecting an approval listen gate.
+  now delegates scope checking, active-status policy, workflow-spec loading,
+  and approval listen-gate detection to
+  `ApplicationWorkflowExecutionControlService.getApprovalState`. The route only
+  performs auth, parameter validation, and response mapping.
 - `src/routes/api/workflows/executions/[executionId]/approve/+server.ts` now
   resolves the execution and Dapr instance through `workflowData` before raising
   the approval event through Dapr service invocation.
@@ -222,10 +225,10 @@ The first UI-facing route has also moved behind the application service:
   `workflowData.getWorkflowArtifactForExecution`; diff patch resolution remains
   route-local readback over the artifact DTO.
 - `src/routes/api/workflows/executions/[executionId]/versions/+server.ts` now
-  scope-checks the execution through `workflowData.getExecutionById` and derives
-  source-bundle versions from `workflowData.listWorkflowArtifactsByExecutionId`.
-  Promotion-gate evaluation remains route-local response shaping over execution
-  and artifact DTOs.
+  delegates scoped execution lookup, source-bundle filtering, version DTO
+  shaping, promotion metadata extraction, promotion-gate evaluation, and
+  outstanding-work policy to `ApplicationWorkflowCodeVersionService`. The route
+  only performs auth, parameter validation, and response mapping.
 - `src/routes/api/workflows/executions/[executionId]/versions/[artifactId]/promote/+server.ts`
   now delegates source-bundle promotion to
   `ApplicationWorkflowCodeVersionPromotionService`. The service scope-checks the

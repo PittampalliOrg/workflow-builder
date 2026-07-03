@@ -16,6 +16,7 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 	let workflowData: Pick<
 		WorkflowDataService,
 		| "getExecutionById"
+		| "getScopedExecutionById"
 		| "getWorkflowByRef"
 		| "getRunningWorkflowExecution"
 		| "validateApiKeyForUser"
@@ -31,6 +32,7 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 	beforeEach(() => {
 		workflowData = {
 			getExecutionById: vi.fn(async () => executionRecord()),
+			getScopedExecutionById: vi.fn(async () => executionRecord()),
 			getWorkflowByRef: vi.fn(async () => workflowDefinition()),
 			getRunningWorkflowExecution: vi.fn(async () => null),
 			validateApiKeyForUser: vi.fn(async () => ({
@@ -352,7 +354,9 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 		});
 
 		expect(workflowData.getExecutionById).toHaveBeenCalledWith("exec-1");
-		expect(coordinatorOwners.getCoordinatorOwner).toHaveBeenCalledWith("exec-1");
+		expect(coordinatorOwners.getCoordinatorOwner).toHaveBeenCalledWith(
+			"exec-1",
+		);
 		expect(result).toMatchObject({
 			status: "ok",
 			body: {
@@ -409,10 +413,12 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 			refreshRuntime: true,
 			includeAgentEvents: true,
 		});
-		expect(executionReadModels.serializeExecutionReadModel).toHaveBeenCalledWith(
-			expect.objectContaining({ id: "exec-1" }),
-			{ compact: false, includeAgentEvents: true },
-		);
+		expect(
+			executionReadModels.serializeExecutionReadModel,
+		).toHaveBeenCalledWith(expect.objectContaining({ id: "exec-1" }), {
+			compact: false,
+			includeAgentEvents: true,
+		});
 		expect(result).toEqual({
 			status: "ok",
 			body: {
@@ -572,6 +578,120 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 			status: "error",
 			httpStatus: 502,
 			message: "Failed to raise approval event",
+		});
+	});
+
+	it("reports approval-state for an active execution parked at a listen gate", async () => {
+		vi.mocked(workflowData.getScopedExecutionById).mockResolvedValue(
+			executionRecord({ currentNodeId: "goal_spec_approval" }),
+		);
+		vi.mocked(workflowData.getWorkflowByRef).mockResolvedValue(
+			workflowDefinition({
+				spec: {
+					do: [
+						{
+							goal_spec_approval: {
+								listen: {
+									to: { one: { with: { type: "goal_spec_approval" } } },
+								},
+							},
+						},
+					],
+				},
+			}),
+		);
+
+		const result = await service.getApprovalState({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
+
+		expect(workflowData.getScopedExecutionById).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
+		expect(workflowData.getWorkflowByRef).toHaveBeenCalledWith({
+			workflowId: "workflow-1",
+			lookup: "id",
+		});
+		expect(result).toEqual({
+			status: "ok",
+			body: {
+				awaiting: true,
+				nodeId: "goal_spec_approval",
+				eventType: "goal_spec_approval",
+			},
+		});
+	});
+
+	it("does not load workflow specs for terminal approval-state requests", async () => {
+		vi.mocked(workflowData.getScopedExecutionById).mockResolvedValue(
+			executionRecord({
+				status: "success",
+				currentNodeId: "goal_spec_approval",
+			}),
+		);
+
+		const result = await service.getApprovalState(commandInput());
+
+		expect(result).toEqual({ status: "ok", body: { awaiting: false } });
+		expect(workflowData.getWorkflowByRef).not.toHaveBeenCalled();
+	});
+
+	it("hides out-of-scope approval-state requests before loading workflow specs", async () => {
+		vi.mocked(workflowData.getScopedExecutionById).mockResolvedValue(null);
+
+		const result = await service.getApprovalState(commandInput());
+
+		expect(result).toEqual({
+			status: "error",
+			httpStatus: 404,
+			message: "Execution not found",
+		});
+		expect(workflowData.getWorkflowByRef).not.toHaveBeenCalled();
+	});
+
+	it("uses the listen node id as the approval event type fallback", async () => {
+		vi.mocked(workflowData.getScopedExecutionById).mockResolvedValue(
+			executionRecord({ currentNodeId: "manual_review" }),
+		);
+		vi.mocked(workflowData.getWorkflowByRef).mockResolvedValue(
+			workflowDefinition({
+				spec: { do: [{ manual_review: { listen: { to: { one: {} } } } }] },
+			}),
+		);
+
+		const result = await service.getApprovalState(commandInput());
+
+		expect(result).toEqual({
+			status: "ok",
+			body: {
+				awaiting: true,
+				nodeId: "manual_review",
+				eventType: "manual_review",
+			},
+		});
+	});
+
+	it("returns non-awaiting approval-state for missing workflow specs or non-listen nodes", async () => {
+		vi.mocked(workflowData.getScopedExecutionById).mockResolvedValue(
+			executionRecord({ currentNodeId: "plan" }),
+		);
+		vi.mocked(workflowData.getWorkflowByRef).mockResolvedValue(
+			workflowDefinition({ spec: { do: [{ plan: { call: "agent.run" } }] } }),
+		);
+
+		await expect(service.getApprovalState(commandInput())).resolves.toEqual({
+			status: "ok",
+			body: { awaiting: false },
+		});
+
+		vi.mocked(workflowData.getWorkflowByRef).mockResolvedValueOnce(null);
+		await expect(service.getApprovalState(commandInput())).resolves.toEqual({
+			status: "ok",
+			body: { awaiting: false },
 		});
 	});
 

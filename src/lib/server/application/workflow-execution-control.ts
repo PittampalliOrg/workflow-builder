@@ -41,6 +41,12 @@ export type WorkflowExecutionStatusInput = WorkflowExecutionDetailInput & {
 	includeAgentEvents: boolean;
 };
 
+export type WorkflowExecutionApprovalStateInput = {
+	executionId: string;
+	userId: string;
+	projectId?: string | null;
+};
+
 const STOP_MODES = new Set<WorkflowExecutionLifecycleStopMode>([
 	"interrupt",
 	"terminate",
@@ -66,6 +72,7 @@ export class ApplicationWorkflowExecutionControlService {
 			workflowData: Pick<
 				WorkflowDataService,
 				| "getExecutionById"
+				| "getScopedExecutionById"
 				| "getWorkflowByRef"
 				| "getRunningWorkflowExecution"
 				| "validateApiKeyForUser"
@@ -261,7 +268,9 @@ export class ApplicationWorkflowExecutionControlService {
 			{
 				mode: parseStopMode(input.body?.mode),
 				reason:
-					typeof input.body?.reason === "string" ? input.body.reason : undefined,
+					typeof input.body?.reason === "string"
+						? input.body.reason
+						: undefined,
 				graceMs:
 					typeof input.body?.graceMs === "number"
 						? input.body.graceMs
@@ -362,6 +371,43 @@ export class ApplicationWorkflowExecutionControlService {
 		};
 	}
 
+	async getApprovalState(
+		input: WorkflowExecutionApprovalStateInput,
+	): Promise<WorkflowExecutionControlResult> {
+		const execution = await this.deps.workflowData.getScopedExecutionById({
+			executionId: input.executionId,
+			userId: input.userId,
+			projectId: input.projectId ?? null,
+		});
+		if (!execution) {
+			return workflowControlError(404, "Execution not found");
+		}
+
+		if (
+			!ACTIVE_APPROVAL_STATUSES.has(
+				String(execution.status ?? "").toLowerCase(),
+			)
+		) {
+			return { status: "ok", body: { awaiting: false } };
+		}
+
+		const workflow = await this.deps.workflowData.getWorkflowByRef({
+			workflowId: execution.workflowId,
+			lookup: "id",
+		});
+		const gate = findListenGate(workflow?.spec, execution.currentNodeId);
+		if (!gate) return { status: "ok", body: { awaiting: false } };
+
+		return {
+			status: "ok",
+			body: {
+				awaiting: true,
+				nodeId: execution.currentNodeId,
+				eventType: gate.eventType,
+			},
+		};
+	}
+
 	async resumeExecution(
 		input: WorkflowExecutionControlInput,
 	): Promise<WorkflowExecutionControlResult> {
@@ -458,6 +504,36 @@ export class ApplicationWorkflowExecutionControlService {
 		}
 		return current.daprInstanceId;
 	}
+}
+
+const ACTIVE_APPROVAL_STATUSES = new Set(["running", "pending", "paused"]);
+
+function findListenGate(
+	spec: unknown,
+	nodeId: string | null,
+): { eventType: string } | null {
+	if (!nodeId || typeof spec !== "object" || spec === null) return null;
+	const doList = (spec as Record<string, unknown>).do;
+	if (!Array.isArray(doList)) return null;
+	for (const entry of doList) {
+		if (typeof entry !== "object" || entry === null) continue;
+		const key = Object.keys(entry as Record<string, unknown>)[0];
+		if (key !== nodeId) continue;
+		const node = (entry as Record<string, unknown>)[key] as Record<
+			string,
+			unknown
+		>;
+		const listen = node.listen as Record<string, unknown> | undefined;
+		if (!listen) return null;
+		const withType = (
+			((listen.to as Record<string, unknown>)?.one as Record<string, unknown>)
+				?.with as Record<string, unknown>
+		)?.type;
+		return {
+			eventType: typeof withType === "string" && withType ? withType : nodeId,
+		};
+	}
+	return null;
 }
 
 function resumeNodeId(body: Record<string, unknown> | undefined): string | undefined {

@@ -152,6 +152,7 @@ import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/applica
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
 import { ApplicationWorkflowExecutionStreamService } from "$lib/server/application/workflow-execution-stream";
 import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/application/workflow-code-checkpoints";
+import { ApplicationWorkflowCodeVersionService } from "$lib/server/application/workflow-code-versions";
 import { ApplicationWorkflowCodeVersionPromotionService } from "$lib/server/application/workflow-code-version-promotion";
 import { ApplicationWorkflowTriggerManagementService } from "$lib/server/application/workflow-trigger-management";
 import { ApplicationWorkflowTriggerLifecycleService } from "$lib/server/application/workflow-trigger-lifecycle";
@@ -283,6 +284,7 @@ export function getApplicationAdapters(
 	let workflowCodeCheckpoints:
 		| ApplicationWorkflowCodeCheckpointService
 		| undefined;
+	let workflowCodeVersions: ApplicationWorkflowCodeVersionService | undefined;
 	let workflowCodeVersionPromotion:
 		| ApplicationWorkflowCodeVersionPromotionService
 		| undefined;
@@ -509,6 +511,11 @@ export function getApplicationAdapters(
 			checkpoints: getCodeCheckpoints(),
 			workspace: new LegacyWorkflowCodeCheckpointWorkspacePort(),
 		}));
+	const getWorkflowCodeVersions = () =>
+		(workflowCodeVersions ??= new ApplicationWorkflowCodeVersionService({
+			workflowData: getWorkflowData(),
+			promotionGate: new WorkflowPromotionGateAdapter(),
+		}));
 	const getWorkflowCodeVersionPromotion = () =>
 		(workflowCodeVersionPromotion ??= new ApplicationWorkflowCodeVersionPromotionService({
 			workflowData: getWorkflowData(),
@@ -689,6 +696,9 @@ export function getApplicationAdapters(
 		},
 		get workflowCodeCheckpoints() {
 			return getWorkflowCodeCheckpoints();
+		},
+		get workflowCodeVersions() {
+			return getWorkflowCodeVersions();
 		},
 		get workflowCodeVersionPromotion() {
 			return getWorkflowCodeVersionPromotion();
