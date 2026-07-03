@@ -49,6 +49,9 @@ CLI-session candidate lookup, file creation, and browser artifact persistence
 through workflow-data.
 The internal session-events read route now uses `workflowData.listSessionEvents`
 instead of importing the DB-backed `sessions/events` helper directly.
+The observability goal-flow read model now asks workflow-data for session goal
+flows instead of importing `goals/repo` directly; `goal-flow.ts` keeps only the
+pure attempt assembly helper.
 The prompt preset, agent skill, and vault "used by/usages" reverse-lookup
 routes now load their read models through workflow-data resource usage ports.
 The AI assistant message-history route now lists and deletes persisted chat

@@ -10,10 +10,6 @@
  * no per-command results (only `session.goal_completed`); only REJECT carries
  * `results[]`, so PASS shows a verified count, never fabricated check rows.
  */
-import {
-	getCurrentGoalForSessions,
-	listGoalFlowEvents,
-} from '$lib/server/goals/repo';
 import type {
 	GoalFlow,
 	GoalFlowAttempt,
@@ -43,6 +39,13 @@ export type GoalFlowEventSource = {
 	type: string;
 	data: Record<string, unknown>;
 	createdAt: Date | string | null;
+};
+
+export type GoalFlowReader = {
+	getSessionGoalFlow(input: {
+		sessionId: string;
+		agentDecisions?: ObservabilityAgentDecisionTurn[];
+	}): Promise<{ status: 'ok'; goalFlow: GoalFlow | null } | { status: 'not_found' }>;
 };
 
 const GOAL_MCP_TOOLS = new Set(['wfb_goal_update_goal', 'wfb_goal_get_goal']);
@@ -114,12 +117,24 @@ function freshAccum(iteration: number, startedAt: string | null): Accum {
 export async function buildGoalFlow(
 	sessionIds: string[],
 	agentDecisions: ObservabilityAgentDecisionTurn[] = [],
+	reader?: GoalFlowReader,
 ): Promise<GoalFlow | null> {
-	const goal = await getCurrentGoalForSessions(sessionIds);
-	if (!goal) return null;
+	const uniqueSessionIds = [...new Set(sessionIds.map((id) => id.trim()).filter(Boolean))];
+	if (uniqueSessionIds.length === 0) return null;
+	const goalFlowReader = reader ?? await defaultGoalFlowReader();
+	for (const sessionId of uniqueSessionIds) {
+		const result = await goalFlowReader.getSessionGoalFlow({
+			sessionId,
+			agentDecisions,
+		});
+		if (result.status === 'ok' && result.goalFlow) return result.goalFlow;
+	}
+	return null;
+}
 
-	const events = await listGoalFlowEvents(goal.sessionId);
-	return buildGoalFlowFromRecords(goal, events, agentDecisions);
+async function defaultGoalFlowReader(): Promise<GoalFlowReader> {
+	const { getApplicationAdapters } = await import('$lib/server/application');
+	return getApplicationAdapters().workflowData;
 }
 
 export function buildGoalFlowFromRecords(
