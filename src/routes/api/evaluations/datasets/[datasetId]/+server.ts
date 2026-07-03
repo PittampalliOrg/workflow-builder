@@ -1,36 +1,43 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import {
-	getEvaluationDataset,
-	updateEvaluationDataset,
-} from "$lib/server/evaluations/service";
+import { getApplicationAdapters } from "$lib/server/application";
+import { ApplicationEvaluationDatasetError } from "$lib/server/application/evaluation-datasets";
 
 export const GET: RequestHandler = async ({ params, locals, url }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	if (!locals.session.projectId) return error(404, "Evaluation dataset not found");
-	const limit = Number.parseInt(url.searchParams.get("limit") ?? "500", 10);
-	const dataset = await getEvaluationDataset(
-		locals.session.projectId,
-		params.datasetId,
-		limit,
-	);
-	return json({ dataset });
+	try {
+		return json(
+			await getApplicationAdapters().evaluationDatasets.get({
+				projectId: locals.session.projectId,
+				datasetId: params.datasetId,
+				limitParam: url.searchParams.get("limit"),
+			}),
+		);
+	} catch (err) {
+		handleEvaluationDatasetError(err);
+	}
 };
 
 export const PATCH: RequestHandler = async ({ request, params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	if (!locals.session.projectId) return error(404, "Evaluation dataset not found");
-	const body = asRecord(await request.json().catch(() => ({})));
-	const dataset = await updateEvaluationDataset(
-		locals.session.projectId,
-		params.datasetId,
-		body,
-	);
-	return json({ dataset });
+	try {
+		return json(
+			await getApplicationAdapters().evaluationDatasets.update({
+				projectId: locals.session.projectId,
+				datasetId: params.datasetId,
+				body: await request.json().catch(() => ({})),
+			}),
+		);
+	} catch (err) {
+		handleEvaluationDatasetError(err);
+	}
 };
 
-function asRecord(value: unknown): Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: {};
+function handleEvaluationDatasetError(err: unknown): never {
+	if (err instanceof ApplicationEvaluationDatasetError) {
+		throw error(err.status, err.message);
+	}
+	throw err;
 }

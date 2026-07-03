@@ -98,6 +98,12 @@ import {
 	LegacyBenchmarkRunLaunchAdapter,
 	LegacyEvaluationRunLaunchAdapter,
 } from "$lib/server/application/adapters/run-launch";
+import {
+	LegacyEvaluationDatasetImportParser,
+	LegacyEvaluationDatasetRepository,
+	LegacyEvaluationTemplateRepository,
+	StaticSwebenchSuiteCatalog,
+} from "$lib/server/application/adapters/evaluations";
 import { LegacyBenchmarkCapacityDiagnosticsAdapter } from "$lib/server/application/adapters/benchmark-capacity-diagnostics";
 import { EnvBenchmarkRunInstanceMlflowLinks } from "$lib/server/application/adapters/benchmark-run-instance-detail";
 import { LegacyEvaluationRunDetailReadAdapter } from "$lib/server/application/adapters/evaluation-run-detail";
@@ -246,6 +252,8 @@ import {
 	ApplicationBenchmarkRunLaunchService,
 	ApplicationEvaluationRunLaunchService,
 } from "$lib/server/application/run-launch";
+import { ApplicationEvaluationDatasetService } from "$lib/server/application/evaluation-datasets";
+import { ApplicationEvaluationTemplateService } from "$lib/server/application/evaluation-templates";
 import { ApplicationBenchmarkCapacityDiagnosticsService } from "$lib/server/application/benchmark-capacity-diagnostics";
 import { ApplicationBenchmarkRunInstanceDetailService } from "$lib/server/application/benchmark-run-instance-detail";
 import { ApplicationRunCancellationService } from "$lib/server/application/run-cancellation";
@@ -396,6 +404,8 @@ export function getApplicationAdapters(
 	let runCancellation: ApplicationRunCancellationService | undefined;
 	let benchmarkRunLaunch: ApplicationBenchmarkRunLaunchService | undefined;
 	let evaluationRunLaunch: ApplicationEvaluationRunLaunchService | undefined;
+	let evaluationDatasets: ApplicationEvaluationDatasetService | undefined;
+	let evaluationTemplates: ApplicationEvaluationTemplateService | undefined;
 	let benchmarkCapacityDiagnostics:
 		| ApplicationBenchmarkCapacityDiagnosticsService
 		| undefined;
@@ -662,6 +672,16 @@ export function getApplicationAdapters(
 		(evaluationRunLaunch ??= new ApplicationEvaluationRunLaunchService(
 			new LegacyEvaluationRunLaunchAdapter(),
 		));
+	const getEvaluationDatasets = () =>
+		(evaluationDatasets ??= new ApplicationEvaluationDatasetService(
+			new LegacyEvaluationDatasetRepository(),
+		));
+	const getEvaluationTemplates = () =>
+		(evaluationTemplates ??= new ApplicationEvaluationTemplateService({
+			templates: new LegacyEvaluationTemplateRepository(),
+			imports: new LegacyEvaluationDatasetImportParser(),
+			swebenchSuites: new StaticSwebenchSuiteCatalog(),
+		}));
 	const getEvaluationRunDetail = () =>
 		(evaluationRunDetail ??= new ApplicationEvaluationRunDetailService(
 			new LegacyEvaluationRunDetailReadAdapter(),
@@ -1063,6 +1083,12 @@ export function getApplicationAdapters(
 		},
 		get evaluationRunLaunch() {
 			return getEvaluationRunLaunch();
+		},
+		get evaluationDatasets() {
+			return getEvaluationDatasets();
+		},
+		get evaluationTemplates() {
+			return getEvaluationTemplates();
 		},
 		get evaluationRunDetail() {
 			return getEvaluationRunDetail();

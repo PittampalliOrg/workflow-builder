@@ -1,15 +1,19 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import {
-	createEvaluationDataset,
-	listEvaluationDatasets,
-} from "$lib/server/evaluations/service";
+import { getApplicationAdapters } from "$lib/server/application";
+import { ApplicationEvaluationDatasetError } from "$lib/server/application/evaluation-datasets";
 
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	if (!locals.session.projectId) return json({ datasets: [] });
-	const datasets = await listEvaluationDatasets(locals.session.projectId);
-	return json({ datasets });
+	try {
+		return json(
+			await getApplicationAdapters().evaluationDatasets.list({
+				projectId: locals.session.projectId,
+			}),
+		);
+	} catch (err) {
+		handleEvaluationDatasetError(err);
+	}
 };
 
 export const POST: RequestHandler = async ({ request, locals }) => {
@@ -17,29 +21,23 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.session.projectId) {
 		return error(400, "No active workspace - cannot create evaluation dataset");
 	}
-	const body = asRecord(await request.json().catch(() => ({})));
-	const dataset = await createEvaluationDataset({
-		projectId: locals.session.projectId,
-		userId: locals.session.userId,
-		name: String(body.name ?? ""),
-		description: typeof body.description === "string" ? body.description : null,
-		sourceType: typeof body.sourceType === "string" ? body.sourceType : null,
-		sourceUrl: typeof body.sourceUrl === "string" ? body.sourceUrl : null,
-		schema: asOptionalRecord(body.schema),
-		metadata: asOptionalRecord(body.metadata),
-		rows: Array.isArray(body.rows) ? body.rows : [],
-	});
-	return json({ dataset }, { status: 201 });
+	try {
+		return json(
+			await getApplicationAdapters().evaluationDatasets.create({
+				projectId: locals.session.projectId,
+				userId: locals.session.userId,
+				body: await request.json().catch(() => ({})),
+			}),
+			{ status: 201 },
+		);
+	} catch (err) {
+		handleEvaluationDatasetError(err);
+	}
 };
 
-function asRecord(value: unknown): Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: {};
-}
-
-function asOptionalRecord(value: unknown): Record<string, unknown> | undefined {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: undefined;
+function handleEvaluationDatasetError(err: unknown): never {
+	if (err instanceof ApplicationEvaluationDatasetError) {
+		throw error(err.status, err.message);
+	}
+	throw err;
 }

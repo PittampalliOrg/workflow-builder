@@ -1,9 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import {
-	createCodeEvalTemplate,
-	parseDatasetImport,
-} from "$lib/server/evaluations/service";
+import { getApplicationAdapters } from "$lib/server/application";
+import { ApplicationEvaluationTemplateError } from "$lib/server/application/evaluation-templates";
 
 // HumanEval+ template route. Mirrors the SWE-bench template pattern: caller
 // fetches dataset rows from datasets-server.huggingface.co (or supplies a
@@ -16,31 +14,24 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.session.projectId) {
 		return error(400, "No active workspace - cannot create HumanEval+ evaluation");
 	}
-	const body = asRecord(await request.json().catch(() => ({})));
-	const rows =
-		typeof body.content === "string" && body.content.trim()
-			? parseDatasetImport(
-					body.content,
-					body.format === "json" || body.format === "csv" ? body.format : "jsonl",
-				)
-			: Array.isArray(body.rows)
-				? body.rows
-				: undefined;
-	const result = await createCodeEvalTemplate({
-		projectId: locals.session.projectId,
-		userId: locals.session.userId,
-		suiteSlug: "humaneval-plus",
-		name: typeof body.name === "string" ? body.name : null,
-		description: typeof body.description === "string" ? body.description : null,
-		graderAgentSlug:
-			typeof body.graderAgentSlug === "string" ? body.graderAgentSlug : null,
-		rows,
-	});
-	return json(result, { status: 201 });
+	try {
+		return json(
+			await getApplicationAdapters().evaluationTemplates.createCodeEval({
+				projectId: locals.session.projectId,
+				userId: locals.session.userId,
+				suiteSlug: "humaneval-plus",
+				body: await request.json().catch(() => ({})),
+			}),
+			{ status: 201 },
+		);
+	} catch (err) {
+		handleEvaluationTemplateError(err);
+	}
 };
 
-function asRecord(value: unknown): Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: {};
+function handleEvaluationTemplateError(err: unknown): never {
+	if (err instanceof ApplicationEvaluationTemplateError) {
+		throw error(err.status, err.message);
+	}
+	throw err;
 }
