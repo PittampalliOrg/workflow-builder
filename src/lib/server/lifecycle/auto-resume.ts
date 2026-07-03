@@ -2,7 +2,7 @@
  * Auto-resume reconciler (Phase 2a) — recover a crashed interactive-cli session
  * WITHOUT a human clicking Resume.
  *
- * The lifecycle reaper observes sessions whose DB row is still non-terminal
+ * A lifecycle reconciler can observe sessions whose DB row is still non-terminal
  * while the backing sandbox/Dapr handle is already terminal/gone — i.e. a
  * NON-graceful exit (pod death, OOM, node failure, image-pin rollout). For the
  * CLI/JuiceFS family the conversation transcript is durable on a per-session
@@ -15,7 +15,7 @@
  * crash-looping session cannot respawn forever.
  *
  * `decideAutoResume` and `resolveAutoResumePolicy` are PURE (unit-tested);
- * `maybeAutoResumeSession` is the reaper-side integration that resolves the
+ * `maybeAutoResumeSession` is the reconciler-side integration that resolves the
  * agent, counts the lineage, decides, and (if eligible) spawns the continuation.
  */
 import { isInteractiveCliRuntime } from "$lib/server/sessions/resume";
@@ -35,7 +35,7 @@ export type AutoResumeExit = {
 export type AutoResumeDecision = { shouldResume: boolean; reason: string };
 
 /**
- * Pure decision: should the lifecycle reaper auto-spawn a continuation for this
+ * Pure decision: should lifecycle reconciliation auto-spawn a continuation for this
  * dead session? Fires ONLY for an interactive-cli runtime that exited
  * non-gracefully, when the per-agent flag is on and the restart budget is not
  * yet exhausted.
@@ -106,7 +106,7 @@ export async function countResumeLineageDepth(
 	return depth;
 }
 
-// --- Integration (reaper-side; I/O) -----------------------------------------
+// --- Integration (reconciler-side; I/O) --------------------------------------
 
 export type AutoResumeSessionRow = {
 	id: string;
@@ -143,10 +143,10 @@ export type AutoResumeDeps = {
 };
 
 /**
- * Reaper-side: for a dead (sandbox-gone) session, decide + (if eligible) spawn a
+ * Reconciler-side: for a dead (sandbox-gone) session, decide + (if eligible) spawn a
  * continuation. The exit is non-graceful by construction — a gracefully ended
- * session would already be `terminated` and not reach the reaper's stuck-session
- * purge. Best-effort: never throws into the reaper loop.
+ * session would already be `terminated` and not reach this stuck-session
+ * recovery path. Best-effort: never throws into the reconciliation loop.
  */
 export async function maybeAutoResumeSession(
 	session: AutoResumeSessionRow,

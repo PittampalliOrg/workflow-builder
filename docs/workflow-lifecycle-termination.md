@@ -88,7 +88,7 @@ User-reachable "stop" surfaces. Columns: **T**erminate durable instance? **P**ur
 
 ## Part 4 — The vetted method: one **Lifecycle Controller** (AS-BUILT)
 
-A single target-agnostic server-side module that every surface calls. One contract, fail-closed, idempotent, retryable. Generalizes `cleanupBenchmarkDurableWorkflowCascade` (which is now shared with it). **Shipped** in `src/lib/server/lifecycle/{cascade,resolvers,index,reaper}.ts`.
+A single target-agnostic server-side module that every surface calls. One contract, fail-closed, idempotent, retryable. Generalizes `cleanupBenchmarkDurableWorkflowCascade` (which is now shared with it). **Shipped** in `src/lib/server/lifecycle/{cascade,resolvers,index,ownership}.ts`.
 
 ### API — `src/lib/server/lifecycle/`
 
@@ -142,11 +142,11 @@ stopDurableRun(
 The cutover landed across four PRs (wfb #62/#63/#64, stacks #2523, wfb #65). The original phasing maps to the PRs as follows:
 
 - **Phase 0 — Clean slate.** Delivered as the **guarded** `runbooks/phase0-lifecycle-clean-slate.{sh,md}` (dry-run-by-default, NOT auto-run) rather than a single destructive sweep — `reset`/purge across `workflow-orchestrator` + per-session app-ids, Sandbox CRs, and stuck DB rows, run on demand.
-- **Phase 1 — Lifecycle Controller (BFF).** ✅ `src/lib/server/lifecycle/{cascade,resolvers,index,reaper,ownership}.ts`: target-agnostic, request/confirm (202 "stopping" → confirmed; not a one-shot fail-closed 409 — see Part 7), idempotent/retryable; lifted from and now **shared with** the benchmark cascade (`cleanupBenchmarkDurableWorkflowCascade`). Explicit per-session app-id fan-out.
+- **Phase 1 — Lifecycle Controller (BFF).** ✅ `src/lib/server/lifecycle/{cascade,resolvers,index,ownership}.ts`: target-agnostic, request/confirm (202 "stopping" → confirmed; not a one-shot fail-closed 409 — see Part 7), idempotent/retryable; lifted from and now **shared with** the benchmark cascade (`cleanupBenchmarkDurableWorkflowCascade`). Explicit per-session app-id fan-out.
 - **Phase 2 — Every surface re-pointed.** ✅ `POST /api/v1/sessions/[id]/stop`, `POST /api/workflows/executions/[id]/stop`, session interrupt, workflow-execution terminate, and eval cancel all route through the controller. UI **Stop** / **Stop & Reset** buttons on the session-detail + workflow-run pages. The sessions-list "Archive" row action was relabeled **"Delete"** (it always hard-DELETEd). Delete/Archive are **BLOCKED** (409 "Stop the run first") while a run is active. Divergent/dead routes removed; `/api/workflow-ops/*` now requires platform admin. UI vocabulary: **Interrupt / Stop / Stop & Reset**.
 - **Phase 3 — Runtime + orchestrator fixes.** ✅ dapr-agent-py cancel-key write/read agreement; claude-agent-py management parity (terminate/pause/resume/purge + cooperative cancel + `TERMINAL_CONTROL_EVENT_TYPES`); guarded purge-before-reuse; sandbox-execution-api owner-run-id no-adopt; `_workflow_http_post` forwards query params + recursive/force purge. (`dapr-agent-py` needs **both** image builds — see the dual-image note in `CLAUDE.md`.)
 - **Phase 4 — GitOps safety nets (stacks #2523).** ✅ unified `stateRetentionPolicy = 168h` (parent + per-session children); `workflow-builder-sandbox-gc` CronJob. The old terminal-status reaper CronJob was later retired with the unused internal lifecycle endpoints.
-- **Phase 5 — Verified end-to-end:** Start → Stop mid-turn (both runtimes) → durable terminal + CR gone + DB terminal + re-run same node starts byte-clean; pod kill mid-run → reaper flips DB + purges within one interval (see Part 6).
+- **Phase 5 — Verified end-to-end:** Start → Stop mid-turn (both runtimes) → durable terminal + CR gone + DB terminal + re-run same node starts byte-clean; stale Sandbox cleanup is covered by the `workflow-builder-sandbox-gc` safety net.
 
 ---
 
@@ -172,7 +172,7 @@ Parts 4–5 made stop *correct*. A production incident then exposed three reliab
 **The incident** (`Ruc6rD7…`, an instance of benchmark run `5dgaXl4AaK…`): a user's Stop reported a false **409** and left the row stuck `running`, because —
 1. the BFF cascade waited a **hard-coded 45s, one-shot + fail-closed**, but a Dapr workflow blocked inside a long `solve` activity only applies `terminate` once the activity yields (here ~1m40s later — after the window expired);
 2. the run was a **benchmark instance** whose coordinator re-dispatches any non-terminal instance, and the generic per-execution "Stop run" fought it; and
-3. the reaper **skipped entirely** while any benchmark lease was active — and the run had leaked 2 active leases — so the divergence never self-healed.
+3. the then-active terminal reaper **skipped entirely** while any benchmark lease was active — and the run had leaked 2 active leases — so the divergence never self-healed. That cron-driven reaper path was later retired with the unused internal lifecycle endpoints.
 
 ### (P1, #69) Request/confirm separation — stop is a durable intent
 Fail-closed now means "not yet confirmed; will reconcile," never "failed + DB stale forever."
@@ -181,8 +181,8 @@ Fail-closed now means "not yet confirmed; will reconcile," never "failed + DB st
 - `/stop` routes map `state` → **200** confirmed · **202** stopping · 404 · 409. `workflow-ops` `stopThroughController` treats `stopping` as success (no throw).
 - The poll window is now env-tunable + raised: `LIFECYCLE_CASCADE_WAIT_SECONDS` (default **90**), `…_POLL_SECONDS`, `…_REQUEST_TIMEOUT_SECONDS` (wired in `index.ts` → `createDaprCascadeDeps`).
 
-### (P1, #69) Reaper reconciles divergence even during benchmark activity
-`reaper.ts` no longer early-returns when a benchmark is active — the **per-row "Dapr terminal/gone" guard IS the safety**, so a leaked lease can't blind it to a genuine orphan. It also:
+### (P1, #69) Historical terminal-reconciliation hardening
+The now-retired `reaper.ts` stopped early-returning when a benchmark was active — the **per-row "Dapr terminal/gone" guard IS the safety**, so a leaked lease could not blind it to a genuine orphan. It also:
 - runs a **priority stop-requested pass**: finalize rows with `stop_requested_at` the moment their Dapr handle is terminal/gone (**no age cutoff**) — closes "clicked Stop (202), then closed the tab"; and
 - checks a **session's** terminal state via the per-session **agent-runtime** handle (`getAgentRuntimeStatus`, `isSessionTerminalOrGone`), not the orchestrator hub — a `session_workflow` doesn't live on the orchestrator task hub, so the old `getParentStatus` check could over-reap a live session.
 
@@ -220,8 +220,8 @@ The fix is **BFF-only** (zero orchestrator/agent risk): treat the wedge as **DB-
 
 ### (P6, #79) Closing the cancellation-audit LOW items
 A multi-agent cancellation audit (after #77/#78) confirmed the surface is structurally sound and closed the remaining edges. All BFF-only; orchestrators unchanged.
-- **Reaper × active coordinator (#5).** The reaper's *aged stuck-execution* pass now skips an execution owned by a **still-active** benchmark/eval run (`reaper.ts::ownedByActiveCoordinatorRun`), so it can't purge an instance the coordinator is about to re-drive; it releases once the owning run is terminal. (The terminal/gone reconcile + stop-requested priority passes still run regardless — that's #69.)
-- **Null-linkage fan-out (#6).** `resolvers.ts::agentTargetForSession` only synthesizes the deterministic per-session app-id when there's **per-session-sandbox evidence** (`runtimeSandboxName` set); an unstarted/pool-hosted session with no linkage resolves to *unresolved* → the cascade reports "stopping" + the reaper retries, instead of terminating a nonexistent instance and falsely declaring the agent closed.
+- **Historical reaper × active coordinator (#5).** The retired reaper's *aged stuck-execution* pass skipped an execution owned by a **still-active** benchmark/eval run (`reaper.ts::ownedByActiveCoordinatorRun`), so it could not purge an instance the coordinator was about to re-drive; it released once the owning run became terminal. (The terminal/gone reconcile + stop-requested priority passes still ran regardless — that's #69.)
+- **Null-linkage fan-out (#6).** `resolvers.ts::agentTargetForSession` only synthesizes the deterministic per-session app-id when there's **per-session-sandbox evidence** (`runtimeSandboxName` set); an unstarted/pool-hosted session with no linkage resolves to *unresolved* → the cascade reports "stopping" instead of terminating a nonexistent instance and falsely declaring the agent closed.
 - **Single stop authority on the session route (#8).** `POST /api/v1/sessions/[id]/stop` now runs `ownsBenchmarkOrEvalRunForSession` → **409 `coordinator_owned`**, mirroring the per-execution route.
 - **Retired the orphan `/terminate` route (#9).** `POST /api/workflows/executions/[id]/terminate` (no callers; lacked the owner guard, mapped stopping→409) was removed — use `/stop`.
 - **Interrupt 503-vs-409 (#12).** A transient runtime raise failure on a live session now surfaces as a retryable **503** (`stopDurableRun` `retryable` hint), distinct from "not running yet" (**409**).

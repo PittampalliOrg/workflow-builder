@@ -11,7 +11,7 @@
  * The original gate (`src/routes/api/v1/sessions/+server.ts`) allowed resume
  * ONLY when `source.status === "terminated"`. That rejected a session that
  * crashed non-gracefully (left `failed`/`error`, or still showing
- * `running`/`idle` until the lifecycle reaper converges it ~10–75 min later) —
+ * `running`/`idle` until lifecycle reconciliation converges it) —
  * even though its transcript is safe and resumable. This module relaxes the
  * precondition: a non-graceful exit is resumable too.
  *

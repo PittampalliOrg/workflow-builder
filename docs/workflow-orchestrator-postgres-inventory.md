@@ -1033,8 +1033,8 @@ categories include:
 
 - Lifecycle Controller internals under `src/lib/server/lifecycle/**`.
 - goal-loop storage helpers under `src/lib/server/goals/**`, which still own
-  drivable-goal claiming, usage accrual, idle-event metadata, and tick-reaper
-  queries.
+  drivable-goal claiming, usage accrual, idle-event metadata, and continuation
+  claim queries.
 - session/runtime/workspace helpers under `src/lib/server/sessions/**`,
   `src/lib/server/openshell-sessions.ts`, `src/lib/server/sandbox-sessions.ts`,
   and related API routes.

@@ -138,8 +138,8 @@ def _durable_run_parent_timer_enabled() -> bool:
     fatally kills the whole multi-hour run, and its Scheduler reminder can outlive
     the child completion and leave the parent instance RUNNING — the exact reason
     the benchmark path below already omits it). We instead rely on the agent's
-    graceful self-termination + cancellation, with the lifecycle reaper as the
-    global backstop for a genuinely hung child. Set SW_DURABLE_RUN_PARENT_TIMER=true
+    graceful self-termination + cancellation; explicit stops converge through the
+    Lifecycle Controller confirmation path. Set SW_DURABLE_RUN_PARENT_TIMER=true
     to restore the old hard parent timer.
     """
     import os as _os

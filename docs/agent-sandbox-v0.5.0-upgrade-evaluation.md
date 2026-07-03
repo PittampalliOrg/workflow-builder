@@ -34,8 +34,8 @@ Related: `dapr-agent-py-sandbox-architecture.md`, `sandbox-warm-pools.md`,
   (`app.py:1485-1570`; PVCs provisioned `@1044/1859`; ownerRef bound `@2194`).
 - **Custom owner-adoption**: `OWNER_RUN_ID_ANNOTATION` + a 409 adopt-or-recreate flow
   (`app.py:1147-1178`, `2141-2162`); the existence check reads `…/v1alpha1` (`@1160`).
-- **Lifecycle Controller** (`src/lib/server/lifecycle/*`): stop/terminate/purge/reap, cross-app Dapr
-  fan-out, **cross-app wedge-finalize**, boundary-anchored state-row purge, 5-phase terminal reaper —
+- **Lifecycle Controller** (`src/lib/server/lifecycle/*`): stop/terminate/purge, cross-app Dapr
+  fan-out, **cross-app wedge-finalize**, boundary-anchored state-row purge, terminal confirmation/finalization —
   **deeply Dapr-coupled** (`call_child_workflow` placement, per-session app-id).
 - **Pause/resume** (`lifecycle/pause.ts`): Dapr `suspend_workflow`, reached via **pod-IP:8002** (per-session
   Kueue pods are not Dapr-service-invokable). **Workflow-level** — the pod stays alive and reachable.
@@ -59,7 +59,7 @@ Related: `dapr-agent-py-sandbox-architecture.md`, `sandbox-warm-pools.md`,
 | `sandbox-router` → `agent-sandbox-system` ns + NetworkPolicy scoping | **CONFIRM** | We deploy no router — likely N/A; must confirm v0.5.0's `manifest.yaml` doesn't force a router/NetworkPolicy that blocks our pod-IP:8002 / Dapr paths. |
 
 ### Keep custom — v0.5.0 cannot replace (all Dapr-coupled / out of upstream scope)
-The **Lifecycle Controller** (cross-app cascade, wedge-finalize, state-row purge), **terminal reaper**,
+The **Lifecycle Controller** (cross-app cascade, wedge-finalize, state-row purge), **terminal finalization**,
 **per-session deterministic app-id + dispatch**, **pause/resume** (workflow-level), and **PSI/Kueue
 admission** all depend on Dapr placement/task-hubs, which agent-sandbox has no notion of. These remain ours.
 

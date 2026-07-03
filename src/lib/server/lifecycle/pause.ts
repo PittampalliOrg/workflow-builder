@@ -7,7 +7,7 @@
  * `DaprWorkflowClient().suspend_workflow()/resume_workflow()`; this drives them
  * for a user-owned SESSION (resolved to its per-session runtime app-id) and
  * mirrors the hold into the DB (`status='paused'` + `pauseRequestedAt`) so the
- * UI can render it and the terminal reaper skips it.
+ * UI can render it and stop/cleanup paths treat it as an intentional hold.
  *
  * `applyPauseResume` is the deps-injected core (unit-tested); `pauseDurableRun`/
  * `resumeDurableRun` wire the real Dapr-invoke + DB-write deps. Symmetric with

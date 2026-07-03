@@ -165,7 +165,7 @@ Defensive layers prevent `durable/run` hangs:
 
 ## Lifecycle: Stop / Terminate / Purge (Lifecycle Controller)
 
-A single vetted server-side **Lifecycle Controller** in the BFF (`src/lib/server/lifecycle/{cascade,resolvers,index,reaper,ownership}.ts`) is the SSOT for stopping/terminating/purging Dapr Workflows + durable agent runs. Every user-facing "stop" routes through it. **Full detail: `docs/workflow-lifecycle-termination.md`** (IMPLEMENTED PR1–PR4, hardened wfb #69–#79).
+A single vetted server-side **Lifecycle Controller** in the BFF (`src/lib/server/lifecycle/{cascade,resolvers,index,ownership}.ts`) is the SSOT for stopping/terminating/purging Dapr Workflows + durable agent runs. Every user-facing "stop" routes through it. **Full detail: `docs/workflow-lifecycle-termination.md`** (IMPLEMENTED PR1–PR4, hardened wfb #69–#79).
 
 **Entry point**: `stopDurableRun(target, { mode })`. `target.kind ∈ workflowExecution | session | evalRun`. Modes:
 - **`interrupt`** — cooperative only (raise `session.terminate` / `user.interrupt`, bounded wait). "Pause, keep the run."
@@ -173,7 +173,7 @@ A single vetted server-side **Lifecycle Controller** in the BFF (`src/lib/server
 - **`purge`** — terminate → confirm terminal → Dapr purge (recursive; **purge-force** when worker gone) → reap Sandbox CRs → flip DB rows terminal. "Stop & clean."
 - **`reset`** (dev) — purge + delete deterministic-ID occupants so the next run starts byte-clean.
 
-**Request/confirm** (#69/#71): stop persists a `stop_requested_at` intent (migration `0071`), returns **HTTP 202 "stopping"** while the durable tree converges, and only flips DB / reaps once Dapr is confirmed terminal — finalized by `GET …/stop/status` → `confirmDurableStop` and/or the reaper. 200 confirmed · 202 stopping · 409 only on genuine non-request failure. Cascade timing env-tunable (`LIFECYCLE_CASCADE_WAIT_SECONDS` default 90; cooperative-first `LIFECYCLE_TERMINATE_GRACE_SECONDS` default 5).
+**Request/confirm** (#69/#71): stop persists a `stop_requested_at` intent (migration `0071`), returns **HTTP 202 "stopping"** while the durable tree converges, and only flips DB / reaps once Dapr is confirmed terminal — finalized by `GET …/stop/status` → `confirmDurableStop`. 200 confirmed · 202 stopping · 409 only on genuine non-request failure. Cascade timing env-tunable (`LIFECYCLE_CASCADE_WAIT_SECONDS` default 90; cooperative-first `LIFECYCLE_TERMINATE_GRACE_SECONDS` default 5).
 
 **Single stop authority** (#70/#79): a benchmark/eval **instance** is NOT stoppable via the generic per-execution **or** per-session Stop — both 409 `coordinator_owned` (`ownsBenchmarkOrEvalRun(ForSession)`); cancel the owning **run** (`/api/{benchmarks,evaluations}/runs/[id]/cancel`). Standalone runs / direct sessions keep their Stop.
 

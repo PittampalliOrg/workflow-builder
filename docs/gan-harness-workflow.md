@@ -233,7 +233,8 @@ mechanical causes, all fixed below. A post-fix codex run then converged end-to-e
   Scheduler reminders. Non-benchmark `durable/run` now uses the agent-led
   `_child_workflow_result_or_cancel_event` (the benchmark path already did, for the
   same reason): the agent self-terminates gracefully → the loop gets a partial result
-  and continues; cancellation still works; the lifecycle reaper is the global backstop.
+  and continues; cancellation still works through the Lifecycle Controller
+  confirmation path.
   Restore the old hard timer with `SW_DURABLE_RUN_PARENT_TIMER=true`.
 - **Contract size is capped.** CLI agents emit 30–40+ criteria; an oversized contract
   makes each generate/evaluate turn run for HOURS (the root driver of the per-turn

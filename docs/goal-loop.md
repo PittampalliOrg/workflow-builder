@@ -61,7 +61,7 @@ Event-driven off `appendEvent` side-effects (`src/lib/server/sessions/events.ts:
 - **Iteration hard cap** — `max_iterations` (default 50). At idle with `iterations >= max_iterations`, `claimIterationCap` flips to `budget_limited` + `stop_reason='iteration_cap'` and claims the same one-time wrap-up (it stamps `budget_steered_at`, so the budget steer can't double-fire).
 - **Stop/interrupt pauses the goal** — `POST /api/v1/sessions/[id]/stop` calls `pauseGoal` (`stop/+server.ts:71`), and the driver itself pauses an active goal when it observes `stop_requested_at` (`sessionStopState`). `status='paused'`, `stop_reason='interrupt'`.
 - **Terminal sessions halt the driver** — `driveContinuationIfIdle` returns for `terminated/completed/failed/canceled` sessions; the goal row keeps its last state.
-- **Spacing guard** — `CONTINUATION_MIN_SPACING_SECONDS = 2` collapses inline-hook ↔ tick-reaper races (real turns take far longer).
+- **Spacing guard** — `CONTINUATION_MIN_SPACING_SECONDS = 2` collapses duplicate inline kick races (real turns take far longer).
 
 ---
 

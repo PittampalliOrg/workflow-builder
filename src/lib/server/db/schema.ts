@@ -3084,9 +3084,8 @@ export const sessions = pgTable(
 		// set when a stop is requested; cleared implicitly when status→terminated.
 		stopRequestedAt: timestamp("stop_requested_at"),
 		// Lifecycle pause-intent: set when the user pauses the run (Dapr
-		// suspend_workflow); cleared on resume. The terminal reaper skips rows
-		// with this set, so a paused session is never purged even if its pod
-		// dies while the workflow is suspended.
+		// suspend_workflow); cleared on resume. Stop/cleanup paths treat rows with
+		// this set as an intentional hold rather than terminal cleanup candidates.
 		pauseRequestedAt: timestamp("pause_requested_at"),
 		agentId: text("agent_id")
 			.notNull()
