@@ -59,6 +59,7 @@ import { resolveAgentRuntimeRoute } from "$lib/server/agents/runtime-routing";
 import type { AgentConfig } from "$lib/types/agents";
 import {
 	assertDaprAgentPyBenchmarkAgent,
+	BenchmarkAgentValidationError,
 	type ValidBenchmarkAgent,
 } from "./agents";
 import { estimateBenchmarkRuntimeCapacity } from "./runtime-capacity";
@@ -1105,7 +1106,8 @@ export type CreateBenchmarkRunInput = {
 	projectId: string;
 	userId: string;
 	suiteSlug: string;
-	agentId: string;
+	agentId?: string;
+	agentSlug?: string | null;
 	agentVersion?: number;
 	instanceIds: unknown;
 	modelNameOrPath?: string;
@@ -1227,6 +1229,7 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 	const agent = await resolveBenchmarkAgent({
 		projectId: input.projectId,
 		agentId: input.agentId,
+		agentSlug: input.agentSlug,
 		version: input.agentVersion,
 		requestedModelNameOrPath:
 			input.modelNameOrPath ?? input.modelConfigLabel ?? null,
@@ -5878,15 +5881,26 @@ async function loadSwebenchDatasetRowsForRun(runId: string) {
 
 export async function resolveBenchmarkAgent(params: {
 	projectId: string;
-	agentId: string;
+	agentId?: string | null;
+	agentSlug?: string | null;
 	version?: number;
 	requestedModelNameOrPath?: string | null;
 }): Promise<ValidBenchmarkAgent & { config: AgentConfig }> {
 	const database = requireDb();
+	const agentId = params.agentId?.trim() || null;
+	const agentSlug = params.agentSlug?.trim() || null;
 	const versionCond: SQL | undefined =
 		typeof params.version === "number"
 			? eq(agentVersions.version, params.version)
 			: undefined;
+	const selector: SQL | undefined = agentId
+		? eq(agents.id, agentId)
+		: agentSlug
+			? eq(agents.slug, agentSlug)
+			: undefined;
+	if (!selector) {
+		throw new BenchmarkAgentValidationError("Selected agent was not found");
+	}
 	const rows = await database
 		.select({
 			id: agents.id,
@@ -5913,7 +5927,7 @@ export async function resolveBenchmarkAgent(params: {
 		)
 		.where(
 			and(
-				eq(agents.id, params.agentId),
+				selector,
 				eq(agents.projectId, params.projectId),
 				versionCond,
 			),

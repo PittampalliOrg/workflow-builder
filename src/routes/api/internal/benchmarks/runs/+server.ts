@@ -1,9 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { and, eq } from "drizzle-orm";
 import { requireInternal } from "$lib/server/internal-auth";
-import { db } from "$lib/server/db";
-import { agents } from "$lib/server/db/schema";
 import { BenchmarkAgentValidationError } from "$lib/server/benchmarks/agents";
 import {
 	createBenchmarkRun,
@@ -20,14 +17,12 @@ import {
 
 export const POST: RequestHandler = async ({ request }) => {
 	requireInternal(request);
-	if (!db) return error(503, "Database not configured");
 	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
 	const projectId = readRequiredString(body.projectId, "projectId");
 	const userId = readRequiredString(body.userId, "userId");
-	const agentId =
-		readOptionalString(body.agentId) ??
-		(await resolveAgentId(projectId, readOptionalString(body.agentSlug)));
-	if (!agentId) return error(400, "agentId or agentSlug is required");
+	const agentId = readOptionalString(body.agentId);
+	const agentSlug = readOptionalString(body.agentSlug);
+	if (!agentId && !agentSlug) return error(400, "agentId or agentSlug is required");
 	const suiteSlug = normalizeSwebenchSuiteSlug(
 		readOptionalString(body.suiteSlug) ?? readOptionalString(body.suite) ?? "SWE-bench_Verified",
 	);
@@ -87,7 +82,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			projectId,
 			userId,
 			suiteSlug,
-			agentId,
+			agentId: agentId ?? undefined,
+			agentSlug,
 			agentVersion: readOptionalInt(body.agentVersion) ?? undefined,
 			instanceIds: selection.selectedInstanceIds,
 			modelNameOrPath: readOptionalString(body.modelNameOrPath) ?? undefined,
@@ -160,24 +156,4 @@ function normalizeTags(value: unknown): string[] {
 		(tag): tag is string => typeof tag === "string" && !!tag.trim(),
 	);
 	return Array.from(new Set(["operator", ...tags]));
-}
-
-async function resolveAgentId(
-	projectId: string,
-	agentSlug: string | null,
-): Promise<string | null> {
-	const database = db;
-	if (!database || !agentSlug) return null;
-	const [agent] = await database
-		.select({ id: agents.id })
-		.from(agents)
-		.where(
-			and(
-				eq(agents.projectId, projectId),
-				eq(agents.slug, agentSlug),
-				eq(agents.isArchived, false),
-			),
-		)
-		.limit(1);
-	return agent?.id ?? null;
 }

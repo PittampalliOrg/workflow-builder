@@ -76,6 +76,11 @@ updates, active-row counting, lifecycle transitions, MLflow/trace sync
 scheduling, and coordinator notifications are no longer owned by the route.
 The optimized `jsonb_to_recordset` update remains intact inside
 `PostgresBenchmarkEvaluationResultRepository`.
+The internal benchmark run launch route no longer performs route-local agent
+slug lookup through Drizzle. `createBenchmarkRun` accepts `agentSlug` as an
+alternate selector and resolves it through the existing benchmark-agent
+validation path, preserving archived/published/runtime/model checks inside the
+benchmark command service.
 
 ## Strict HTTP Runtime Paths
 
@@ -489,6 +494,11 @@ The first UI-facing route has also moved behind the application service:
   application-service behavior behind ports. SQL lives in
   `PostgresBenchmarkEvaluationResultRepository`, preserving the existing
   single-statement `jsonb_to_recordset` batch update.
+- `src/routes/api/internal/benchmarks/runs/+server.ts` no longer imports
+  `$lib/server/db`, Drizzle, or the agent schema for `agentSlug -> agentId`
+  resolution. Internal callers may pass either `agentId` or `agentSlug`; the
+  slug selector is resolved inside `createBenchmarkRun` and still runs through
+  the existing SWE-bench agent validation checks before any run is created.
 - `src/routes/workspaces/[slug]/benchmarks/+page.server.ts`,
   `src/routes/workspaces/[slug]/benchmarks/runs/+page.server.ts`, and
   `src/routes/workspaces/[slug]/benchmarks/compare/+page.server.ts` now delegate
