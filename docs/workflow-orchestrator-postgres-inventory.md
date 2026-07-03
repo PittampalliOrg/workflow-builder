@@ -212,7 +212,8 @@ With `WORKFLOW_DATA_API_MODE=http`, these paths route persistence through
   was removed.
 - `register_resumable_workspace.py`: resumable workspace-session upsert. This
   activity is workflow-data only; its direct Postgres fallback was removed.
-- `resolve_mcp_config.py`: MCP config resolution.
+- `resolve_mcp_config.py`: MCP config resolution. This activity is
+  workflow-data only; its direct Postgres fallback was removed.
 - `track_agent_run.py`: agent run scheduled/running/completed/failed lifecycle.
   This activity is workflow-data only; its direct Postgres fallback was removed.
 - `finalize_otel_trace_root.py`: OTel trace target lookup and lineage upsert.
@@ -232,14 +233,13 @@ branches for `WORKFLOW_DATA_API_MODE=postgres` and
 `WORKFLOW_DATA_API_MODE=http-fallback-db`. Those branches are rollback-only.
 They should import `psycopg2` lazily inside the Postgres branch where practical
 so import-time coupling does not affect strict HTTP mode.
-`resolve_mcp_config.py` now uses a lazy `_connect_postgres` helper for the
-rollback branch, and its fallback tests patch that helper directly.
 `fetch_child_workflow.py`, `track_agent_run.py`, `log_node_execution.py`,
 `persist_plan_artifact.py`, `persist_results_to_db.py`,
 `persist_workspace_session.py`, `publish_event.py`,
-`register_resumable_workspace.py`, and `finalize_otel_trace_root.py` no longer
-have direct Postgres rollback branches for their runtime persistence paths;
-their workflow-data endpoints are the only persistence path.
+`register_resumable_workspace.py`, `resolve_mcp_config.py`, and
+`finalize_otel_trace_root.py` no longer have direct Postgres rollback branches
+for their runtime persistence paths; their workflow-data endpoints are the only
+persistence path.
 
 `app.py` still contains `_get_database_url` and lazy `psycopg2` imports in the
 fallback bodies for:
