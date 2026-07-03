@@ -1,4 +1,7 @@
-import type { WorkflowCodeCheckpointWorkspacePort } from "$lib/server/application/ports";
+import type {
+	WorkflowCodeCheckpointReadModel,
+	WorkflowCodeCheckpointWorkspacePort,
+} from "$lib/server/application/ports";
 import {
 	loadCodeCheckpointDiff,
 	restoreCodeCheckpointToSandbox,
@@ -8,26 +11,22 @@ export class LegacyWorkflowCodeCheckpointWorkspacePort
 	implements WorkflowCodeCheckpointWorkspacePort
 {
 	diffCheckpoint(input: {
-		executionId: string;
-		checkpointId: string;
+		checkpoint: WorkflowCodeCheckpointReadModel;
 		path?: string | null;
 	}) {
 		return loadCodeCheckpointDiff(
-			input.executionId,
-			input.checkpointId,
+			input.checkpoint,
 			input.path ?? null,
 		);
 	}
 
 	restoreCheckpoint(input: {
-		executionId: string;
-		checkpointId: string;
+		checkpoint: WorkflowCodeCheckpointReadModel;
 		sandboxName: string;
 		repoPath?: string | null;
 	}) {
 		return restoreCodeCheckpointToSandbox({
-			executionId: input.executionId,
-			checkpointId: input.checkpointId,
+			checkpoint: input.checkpoint,
 			sandboxName: input.sandboxName,
 			repoPath: input.repoPath ?? null,
 		});

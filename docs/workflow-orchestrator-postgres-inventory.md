@@ -19,8 +19,8 @@ the CLI credential capture session-owner lookup, and the ActivePieces resume
 execution lookup, plus the GitHub trigger ingress and event-trigger admission
 gate, and the internal piece-execution artifact readback route, plus the
 workflow trigger management/lifecycle, workflow definition command,
-code-checkpoint diff/restore, admin GitOps auth-check, and session-goal storage
-wiring slices.
+code-checkpoint list/diff/restore, admin GitOps auth-check, and session-goal
+storage wiring slices.
 The session spawn/control runtime-target helper now resolves session owner user
 ids, workflow execution workspace keys, and session runtime targets through
 workflow-data ports. Direct `sessions`/`workflow_executions` reads for those
@@ -385,11 +385,13 @@ services:
   `ApplicationWorkflowCodeCheckpointService`. The route keeps the existing
   `{ checkpoints }` response and generic 500 failure mapping but no longer
   imports the legacy checkpoint helper. The Postgres read is confined to
-  `PostgresWorkflowCodeCheckpointStore.listForExecution`. The diff and restore
-  routes now call `ApplicationWorkflowCodeCheckpointService.diffCheckpoint` and
-  `restoreCheckpoint`; mixed DB/OpenShell/Dapr/Git behavior remains behind the
-  documented `LegacyWorkflowCodeCheckpointWorkspacePort` adapter seam pending a
-  deeper workspace-port split.
+  `PostgresWorkflowCodeCheckpointStore.listForExecution` and
+  `getForExecution`. The diff and restore routes now call
+  `ApplicationWorkflowCodeCheckpointService.diffCheckpoint` and
+  `restoreCheckpoint`; checkpoint lookup happens in the application store before
+  invoking `LegacyWorkflowCodeCheckpointWorkspacePort`, so the legacy helper is
+  DB-free and only owns the remaining OpenShell/Dapr/Git transport behavior
+  pending a deeper workspace-port split.
 - `src/routes/api/workflows/executions/[executionId]/nats-stream/+server.ts`
   now delegates snapshot loading, cursor-based agent-event reads, session-event
   notifications, and terminal detection to
@@ -1132,9 +1134,10 @@ events-ingest route subsets, plus the agent-trigger route membership check and
 the CLI credential capture session-owner lookup and ActivePieces resume
 execution lookup, and the GitHub trigger ingress/gate subset, are also clean.
 The workflow code-checkpoints list, diff, and restore routes are also clean;
-diff/restore now call `ApplicationWorkflowCodeCheckpointService` and leave the
-mixed DB/OpenShell/Dapr/Git operations behind the documented
-`LegacyWorkflowCodeCheckpointWorkspacePort` adapter seam.
+diff/restore now call `ApplicationWorkflowCodeCheckpointService`, and the
+Postgres checkpoint reads are confined to `PostgresWorkflowCodeCheckpointStore`.
+The legacy workspace adapter no longer imports DB/Drizzle and only owns the
+remaining OpenShell/Dapr/Git transport behavior.
 The workflow trigger item lifecycle routes are also clean; direct trigger
 backing reconciliation remains in the legacy lifecycle adapter seam.
 The internal piece-execution artifact readback and CLI workspace command routes

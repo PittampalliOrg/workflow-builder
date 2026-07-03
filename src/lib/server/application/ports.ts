@@ -4743,19 +4743,21 @@ export interface WorkflowCodeCheckpointStore {
 	listForExecution(
 		executionId: string,
 	): Promise<WorkflowCodeCheckpointReadModel[]>;
+	getForExecution(input: {
+		executionId: string;
+		checkpointId: string;
+	}): Promise<WorkflowCodeCheckpointReadModel | null>;
 }
 
 export type WorkflowCodeCheckpointOperationResult = Record<string, unknown>;
 
 export interface WorkflowCodeCheckpointWorkspacePort {
 	diffCheckpoint(input: {
-		executionId: string;
-		checkpointId: string;
+		checkpoint: WorkflowCodeCheckpointReadModel;
 		path?: string | null;
 	}): Promise<WorkflowCodeCheckpointOperationResult>;
 	restoreCheckpoint(input: {
-		executionId: string;
-		checkpointId: string;
+		checkpoint: WorkflowCodeCheckpointReadModel;
 		sandboxName: string;
 		repoPath?: string | null;
 	}): Promise<WorkflowCodeCheckpointOperationResult>;

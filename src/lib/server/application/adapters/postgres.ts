@@ -628,6 +628,23 @@ export class PostgresWorkflowCodeCheckpointStore implements WorkflowCodeCheckpoi
 			);
 		return rows.map(codeCheckpointRowToReadModel);
 	}
+
+	async getForExecution(input: {
+		executionId: string;
+		checkpointId: string;
+	}): Promise<WorkflowCodeCheckpointReadModel | null> {
+		const [row] = await this.database
+			.select()
+			.from(workflowCodeCheckpoints)
+			.where(
+				and(
+					eq(workflowCodeCheckpoints.workflowExecutionId, input.executionId),
+					eq(workflowCodeCheckpoints.id, input.checkpointId),
+				),
+			)
+			.limit(1);
+		return row ? codeCheckpointRowToReadModel(row) : null;
+	}
 }
 
 export class PostgresEvaluationArtifactStore implements EvaluationArtifactStore {

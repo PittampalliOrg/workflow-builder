@@ -1,29 +1,16 @@
-import { and, asc, eq } from 'drizzle-orm';
 import { execFile } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { env } from '$env/dynamic/private';
-import { db } from '$lib/server/db';
-import {
-	workflowCodeCheckpoints,
-	type WorkflowCodeCheckpoint,
-	type WorkflowCodeCheckpointStatus
-} from '$lib/server/db/schema';
+import type { WorkflowCodeCheckpointReadModel } from '$lib/server/application/ports';
 import { daprFetch, getDaprSidecarUrl } from '$lib/server/dapr-client';
 import { openshellRuntimeFetch } from '$lib/server/openshell-runtime';
 
 const execFileAsync = promisify(execFile);
 let gitCredentialsPromise: Promise<{ username: string; token: string }> | null =
 	null;
-
-const CHECKPOINT_STATUSES = new Set<WorkflowCodeCheckpointStatus>([
-	'created',
-	'no_changes',
-	'skipped',
-	'error'
-]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -40,19 +27,6 @@ function numberValue(value: unknown): number | null {
 		if (Number.isFinite(parsed)) return parsed;
 	}
 	return null;
-}
-
-function normalizeStatus(value: unknown): WorkflowCodeCheckpointStatus {
-	const text = stringValue(value);
-	if (text && CHECKPOINT_STATUSES.has(text as WorkflowCodeCheckpointStatus)) {
-		return text as WorkflowCodeCheckpointStatus;
-	}
-	return 'skipped';
-}
-
-function normalizeChangedFiles(value: unknown): Array<Record<string, unknown>> {
-	if (!Array.isArray(value)) return [];
-	return value.filter(isRecord).map((item) => ({ ...item }));
 }
 
 function shellQuote(value: string): string {
@@ -76,7 +50,7 @@ function compactMessage(value: string, maxLength = 260): string {
 		: compacted;
 }
 
-function checkpointHasDurableRemote(checkpoint: WorkflowCodeCheckpoint): boolean {
+function checkpointHasDurableRemote(checkpoint: WorkflowCodeCheckpointReadModel): boolean {
 	return (
 		checkpoint.remoteStatus === 'pushed' &&
 		!!checkpoint.remoteUrl &&
@@ -85,7 +59,7 @@ function checkpointHasDurableRemote(checkpoint: WorkflowCodeCheckpoint): boolean
 }
 
 function checkpointUnavailableMessage(
-	checkpoint: WorkflowCodeCheckpoint,
+	checkpoint: WorkflowCodeCheckpointReadModel,
 	sandboxError?: string | null
 ): string {
 	const parts = [
@@ -124,12 +98,6 @@ async function sandboxHttpError(response: Response): Promise<string> {
 		// Fall through to compact raw body.
 	}
 	return `OpenShell returned ${response.status}: ${compactMessage(bodyText)}`;
-}
-
-function parseTimestamp(value: unknown): Date | null {
-	if (typeof value !== 'string' || !value.trim()) return null;
-	const parsed = new Date(value);
-	return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 async function daprConfigurationValues(keys: string[]) {
@@ -227,150 +195,13 @@ async function basicGitAuthHeader(): Promise<string | null> {
 	return `Authorization: Basic ${Buffer.from(`${username}:${token}`).toString('base64')}`;
 }
 
-function rowToDto(row: WorkflowCodeCheckpoint) {
-	return {
-		id: row.id,
-		workflowExecutionId: row.workflowExecutionId,
-		workflowAgentRunId: row.workflowAgentRunId,
-		parentExecutionId: row.parentExecutionId,
-		daprInstanceId: row.daprInstanceId,
-		workspaceRef: row.workspaceRef,
-		sandboxName: row.sandboxName,
-		repoPath: row.repoPath,
-		nodeId: row.nodeId,
-		sourceEventId: row.sourceEventId,
-		seq: row.seq,
-		toolName: row.toolName,
-		checkpointKind: row.checkpointKind,
-		beforeSha: row.beforeSha,
-		afterSha: row.afterSha,
-		remoteUrl: row.remoteUrl,
-		remoteRef: row.remoteRef,
-		remoteStatus: row.remoteStatus,
-		remoteError: row.remoteError,
-		remotePushedAt: row.remotePushedAt?.toISOString() ?? null,
-		changedFiles: row.changedFiles,
-		fileCount: row.fileCount,
-		status: row.status,
-		error: row.error,
-		metadata: row.metadata,
-		createdAt: row.createdAt.toISOString()
-	};
-}
-
-export type PersistCodeCheckpointInput = {
-	workflowExecutionId: string;
-	workflowAgentRunId?: string | null;
-	parentExecutionId?: string | null;
-	daprInstanceId: string;
-	sourceEventId: string;
-	seq?: number | null;
-	toolName: string;
-	nodeId?: string | null;
-	payload: unknown;
-};
-
-export async function persistCodeCheckpointFromAgentEvent(
-	input: PersistCodeCheckpointInput
-) {
-	if (!db || !isRecord(input.payload)) return;
-
-	const changedFiles = normalizeChangedFiles(input.payload.changedFiles);
-	const status = normalizeStatus(input.payload.status);
-	const repoPath = stringValue(input.payload.repoPath) ?? '/sandbox';
-	const checkpointKind = 'tool_mutation';
-	const sourceEventId =
-		stringValue(input.payload.sourceEventId) ?? input.sourceEventId;
-	const fileCount = numberValue(input.payload.fileCount) ?? changedFiles.length;
-	const remotePushedAt = parseTimestamp(input.payload.remotePushedAt);
-
-	await db
-		.insert(workflowCodeCheckpoints)
-		.values({
-			workflowExecutionId: input.workflowExecutionId,
-			workflowAgentRunId: input.workflowAgentRunId ?? null,
-			parentExecutionId:
-				input.parentExecutionId ?? stringValue(input.payload.parentExecutionId),
-			daprInstanceId: input.daprInstanceId,
-			workspaceRef: stringValue(input.payload.workspaceRef),
-			sandboxName: stringValue(input.payload.sandboxName),
-			repoPath,
-			nodeId: input.nodeId ?? stringValue(input.payload.nodeId),
-			sourceEventId,
-			seq: input.seq ?? numberValue(input.payload.seq),
-			toolName: stringValue(input.payload.toolName) ?? input.toolName,
-			checkpointKind,
-			beforeSha: stringValue(input.payload.beforeSha),
-			afterSha: stringValue(input.payload.afterSha),
-			remoteUrl: stringValue(input.payload.remoteUrl),
-			remoteRef: stringValue(input.payload.remoteRef),
-			remoteStatus: stringValue(input.payload.remoteStatus),
-			remoteError: stringValue(input.payload.remoteError),
-			remotePushedAt,
-			changedFiles,
-			fileCount,
-			status,
-			error: stringValue(input.payload.error),
-			metadata: isRecord(input.payload.metadata)
-				? input.payload.metadata
-				: {
-						toolCallId: stringValue(input.payload.toolCallId),
-						createdBy: 'dapr-agent-py'
-					}
-		})
-		.onConflictDoNothing({
-			target: [
-				workflowCodeCheckpoints.workflowExecutionId,
-				workflowCodeCheckpoints.daprInstanceId,
-				workflowCodeCheckpoints.sourceEventId,
-				workflowCodeCheckpoints.checkpointKind
-			]
-		});
-}
-
-export async function listCodeCheckpointsForExecution(executionId: string) {
-	if (!db) return [];
-	const rows = await db
-		.select()
-		.from(workflowCodeCheckpoints)
-		.where(eq(workflowCodeCheckpoints.workflowExecutionId, executionId))
-		.orderBy(
-			asc(workflowCodeCheckpoints.seq),
-			asc(workflowCodeCheckpoints.createdAt)
-		);
-	return rows.map(rowToDto);
-}
-
-export async function getCodeCheckpoint(
-	executionId: string,
-	checkpointId: string
-) {
-	if (!db) return null;
-	const [row] = await db
-		.select()
-		.from(workflowCodeCheckpoints)
-		.where(
-			and(
-				eq(workflowCodeCheckpoints.workflowExecutionId, executionId),
-				eq(workflowCodeCheckpoints.id, checkpointId)
-			)
-		)
-		.limit(1);
-	return row ?? null;
-}
-
 export async function loadCodeCheckpointDiff(
-	executionId: string,
-	checkpointId: string,
+	checkpoint: WorkflowCodeCheckpointReadModel,
 	filePath: string | null = null
 ) {
-	const checkpoint = await getCodeCheckpoint(executionId, checkpointId);
-	if (!checkpoint) {
-		return { error: 'Checkpoint not found', status: 404 as const };
-	}
 	if (!checkpoint.beforeSha || !checkpoint.afterSha) {
 		return {
-			checkpoint: rowToDto(checkpoint),
+			checkpoint,
 			diff: '',
 			exitCode: 0,
 			message: 'No commit range was recorded for this checkpoint'
@@ -378,7 +209,7 @@ export async function loadCodeCheckpointDiff(
 	}
 	if (checkpoint.beforeSha === checkpoint.afterSha) {
 		return {
-			checkpoint: rowToDto(checkpoint),
+			checkpoint,
 			diff: '',
 			exitCode: 0,
 			message: 'No file changes were recorded for this checkpoint'
@@ -429,7 +260,7 @@ export async function loadCodeCheckpointDiff(
 
 			if (exitCode === 0 && diff.trim()) {
 				return {
-					checkpoint: rowToDto(checkpoint),
+					checkpoint,
 					source: 'sandbox' as const,
 					filePath: pathspec,
 					diff,
@@ -443,7 +274,7 @@ export async function loadCodeCheckpointDiff(
 				(exitCode !== 0 || diff.trim())
 			) {
 				return {
-					checkpoint: rowToDto(checkpoint),
+					checkpoint,
 					source: 'sandbox' as const,
 					filePath: pathspec,
 					diff,
@@ -471,7 +302,7 @@ export async function loadCodeCheckpointDiff(
 }
 
 async function loadCodeCheckpointDiffFromRemote(
-	checkpoint: WorkflowCodeCheckpoint,
+	checkpoint: WorkflowCodeCheckpointReadModel,
 	pathspec: string | null
 ) {
 	try {
@@ -520,7 +351,7 @@ async function loadCodeCheckpointDiffFromRemote(
 			maxBuffer: 1024 * 1024 * 24
 		});
 		return {
-			checkpoint: rowToDto(checkpoint),
+			checkpoint,
 			source: 'remote' as const,
 			filePath: pathspec,
 			diff: stdout || stderr,
@@ -541,7 +372,7 @@ async function loadCodeCheckpointDiffFromRemote(
 }
 
 async function loadCodeCheckpointDiffFromGiteaApi(
-	checkpoint: WorkflowCodeCheckpoint,
+	checkpoint: WorkflowCodeCheckpointReadModel,
 	pathspec: string | null
 ) {
 	if (!checkpoint.remoteUrl || !checkpoint.afterSha) return null;
@@ -585,7 +416,7 @@ async function loadCodeCheckpointDiffFromGiteaApi(
 	}
 	const diff = await response.text();
 	return {
-		checkpoint: rowToDto(checkpoint),
+		checkpoint,
 		source: 'remote' as const,
 		filePath: pathspec,
 		diff,
@@ -595,15 +426,11 @@ async function loadCodeCheckpointDiffFromGiteaApi(
 }
 
 export async function restoreCodeCheckpointToSandbox(input: {
-	executionId: string;
-	checkpointId: string;
+	checkpoint: WorkflowCodeCheckpointReadModel;
 	sandboxName: string;
 	repoPath?: string | null;
 }) {
-	const checkpoint = await getCodeCheckpoint(input.executionId, input.checkpointId);
-	if (!checkpoint) {
-		return { error: 'Checkpoint not found', status: 404 as const };
-	}
+	const checkpoint = input.checkpoint;
 	if (!checkpoint.afterSha) {
 		return { error: 'Checkpoint has no target SHA', status: 409 as const };
 	}
@@ -669,7 +496,7 @@ export async function restoreCodeCheckpointToSandbox(input: {
 		};
 	}
 	return {
-		checkpoint: rowToDto(checkpoint),
+		checkpoint,
 		sandboxName,
 		repoPath,
 		afterSha: checkpoint.afterSha,

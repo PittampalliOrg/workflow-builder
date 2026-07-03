@@ -7,13 +7,17 @@ import type {
 } from "$lib/server/application/ports";
 
 describe("ApplicationWorkflowCodeCheckpointService", () => {
-	let checkpoints: Pick<WorkflowCodeCheckpointStore, "listForExecution">;
+	let checkpoints: Pick<
+		WorkflowCodeCheckpointStore,
+		"listForExecution" | "getForExecution"
+	>;
 	let workspace: WorkflowCodeCheckpointWorkspacePort;
 	let service: ApplicationWorkflowCodeCheckpointService;
 
 	beforeEach(() => {
 		checkpoints = {
 			listForExecution: vi.fn(async () => [checkpoint("checkpoint-1")]),
+			getForExecution: vi.fn(async () => checkpoint("checkpoint-1")),
 		};
 		workspace = {
 			diffCheckpoint: vi.fn(async () => ({
@@ -45,8 +49,7 @@ describe("ApplicationWorkflowCodeCheckpointService", () => {
 		});
 
 		expect(workspace.diffCheckpoint).toHaveBeenCalledWith({
-			executionId: "exec-1",
-			checkpointId: "checkpoint-1",
+			checkpoint: checkpoint("checkpoint-1"),
 			path: "src/app.ts",
 		});
 		expect(result).toMatchObject({
@@ -64,8 +67,7 @@ describe("ApplicationWorkflowCodeCheckpointService", () => {
 		});
 
 		expect(workspace.restoreCheckpoint).toHaveBeenCalledWith({
-			executionId: "exec-1",
-			checkpointId: "checkpoint-1",
+			checkpoint: checkpoint("checkpoint-1"),
 			sandboxName: "sandbox-1",
 			repoPath: "/repo",
 		});
@@ -73,6 +75,26 @@ describe("ApplicationWorkflowCodeCheckpointService", () => {
 			checkpoint: { id: "checkpoint-1" },
 			sandboxName: "sandbox-1",
 		});
+	});
+
+	it("returns not found before hitting workspace ports when the checkpoint is missing", async () => {
+		checkpoints.getForExecution = vi.fn(async () => null);
+
+		await expect(
+			service.diffCheckpoint({
+				executionId: "exec-1",
+				checkpointId: "missing",
+			}),
+		).resolves.toEqual({ error: "Checkpoint not found", status: 404 });
+		await expect(
+			service.restoreCheckpoint({
+				executionId: "exec-1",
+				checkpointId: "missing",
+				sandboxName: "sandbox-1",
+			}),
+		).resolves.toEqual({ error: "Checkpoint not found", status: 404 });
+		expect(workspace.diffCheckpoint).not.toHaveBeenCalled();
+		expect(workspace.restoreCheckpoint).not.toHaveBeenCalled();
 	});
 });
 

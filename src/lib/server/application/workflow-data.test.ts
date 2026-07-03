@@ -879,6 +879,7 @@ function fakeCodeCheckpoints(): WorkflowCodeCheckpointStore {
 	return {
 		persistFromAgentEvent: vi.fn(async () => undefined),
 		listForExecution: vi.fn(async () => []),
+		getForExecution: vi.fn(async () => null),
 	};
 }
 
