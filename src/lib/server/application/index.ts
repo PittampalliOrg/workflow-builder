@@ -85,6 +85,7 @@ import {
 	DaprSessionUserEventCommandAdapter,
 	DefaultSessionRuntimeConfigReader,
 	KubernetesSessionProvisioningReader,
+	LifecycleSessionController,
 	LifecycleSessionGoalScopeGuard,
 	LegacyMlflowSessionTraceLifecycle,
 	PostgresSessionEventLog,
@@ -98,6 +99,7 @@ import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
 import { ApplicationSessionGoalService } from "$lib/server/application/session-goals";
+import { ApplicationSessionLifecycleService } from "$lib/server/application/session-lifecycle";
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 
@@ -204,6 +206,7 @@ export function getApplicationAdapters(
 	let workflowSpawner: DaprSessionWorkflowSpawner | undefined;
 	let sessionCommands: ApplicationSessionCommandService | undefined;
 	let sessionGoals: ApplicationSessionGoalService | undefined;
+	let sessionLifecycle: ApplicationSessionLifecycleService | undefined;
 	let sessionBrowser: ApplicationSessionBrowserService | undefined;
 	const getDatabase = () => (database ??= requirePostgresDb());
 	const getAgentRuntimes = () =>
@@ -332,6 +335,11 @@ export function getApplicationAdapters(
 				getSessionRuntimeEvents(),
 			),
 		}));
+	const getSessionLifecycle = () =>
+		(sessionLifecycle ??= new ApplicationSessionLifecycleService({
+			sessions: getSessions(),
+			lifecycle: new LifecycleSessionController(),
+		}));
 	const getCodeCheckpoints = () =>
 		(codeCheckpoints ??= new PostgresWorkflowCodeCheckpointStore(getDatabase()));
 	const getEvaluationArtifacts = () =>
@@ -448,6 +456,9 @@ export function getApplicationAdapters(
 		},
 		get sessionGoals() {
 			return getSessionGoals();
+		},
+		get sessionLifecycle() {
+			return getSessionLifecycle();
 		},
 		get agentRuntimeControl() {
 			return getAgentRuntimeControl();

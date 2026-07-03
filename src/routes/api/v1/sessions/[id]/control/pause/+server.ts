@@ -1,8 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { inspectDurableRun } from "$lib/server/lifecycle";
-import { pauseDurableRun } from "$lib/server/lifecycle/pause";
-import { isResourceInScope } from "$lib/server/workflows/project-scope";
+import { getApplicationAdapters } from "$lib/server/application";
+import type { SessionLifecycleResult } from "$lib/server/application/session-lifecycle";
 
 /**
  * Pause a session — reversible Dapr `suspend_workflow` hold (NOT a stop). The
@@ -11,20 +10,18 @@ import { isResourceInScope } from "$lib/server/workflows/project-scope";
  */
 export const POST: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const target = { kind: "session" as const, id: params.id };
-	const inspected = await inspectDurableRun(target);
-	if (inspected.notFound) return error(404, "Session not found");
-	if (inspected.scope && !isResourceInScope(inspected.scope, locals.session)) {
-		return error(404, "Session not found");
-	}
-	const result = await pauseDurableRun(target);
-	if (result.notFound) return error(404, "Session not found");
-	if (!result.ok) {
-		if (result.reason === "not_active")
-			return error(409, "Session is not active — nothing to pause");
-		if (result.reason === "no_runtime")
-			return error(409, "Session has no running runtime to pause");
-		return error(503, "Pause could not be applied right now — please retry.");
-	}
-	return json({ paused: true });
+	return sessionLifecycleResponse(
+		await getApplicationAdapters().sessionLifecycle.pauseSession({
+			sessionId: params.id,
+			projectId: locals.session.projectId ?? null,
+			userId: locals.session.userId,
+		}),
+	);
 };
+
+function sessionLifecycleResponse(result: SessionLifecycleResult) {
+	if (result.status === "not_found") return error(404, result.message);
+	if (result.status === "conflict") return error(409, result.message);
+	if (result.status === "unavailable") return error(503, result.message);
+	return json(result.body, { status: result.httpStatus ?? 200 });
+}

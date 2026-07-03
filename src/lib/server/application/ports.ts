@@ -3842,6 +3842,70 @@ export interface SessionWorkflowSpawner {
 	}>;
 }
 
+export type SessionLifecycleAccessResult =
+	| { status: "ok"; active: boolean }
+	| { status: "not_found" };
+
+export type SessionLifecyclePauseResult =
+	| { ok: true }
+	| {
+			ok: false;
+			notFound?: boolean;
+			reason?: "not_active" | "no_runtime" | string;
+	  };
+
+export type SessionLifecycleResumeResult =
+	| { ok: true }
+	| {
+			ok: false;
+			notFound?: boolean;
+			reason?: "no_runtime" | string;
+	  };
+
+export type SessionLifecycleStopMode =
+	| "interrupt"
+	| "terminate"
+	| "purge"
+	| "reset";
+
+export type SessionLifecycleStopResult = {
+	notFound?: boolean;
+	confirmed: boolean;
+	state?: "confirmed" | "stopping" | string;
+	retryable?: boolean;
+	[key: string]: unknown;
+};
+
+export type SessionLifecycleStopStatus = {
+	state: string;
+};
+
+export type SessionCoordinatorOwner = {
+	kind: "benchmarkRun" | "evalRun";
+	runId: string;
+};
+
+export interface SessionLifecycleController {
+	checkSessionAccess(input: {
+		sessionId: string;
+		userId: string;
+		projectId?: string | null;
+	}): Promise<SessionLifecycleAccessResult>;
+	pauseSession(sessionId: string): Promise<SessionLifecyclePauseResult>;
+	resumeSession(sessionId: string): Promise<SessionLifecycleResumeResult>;
+	stopSession(
+		sessionId: string,
+		opts: {
+			mode: SessionLifecycleStopMode;
+			reason?: string;
+			graceMs?: number;
+		},
+	): Promise<SessionLifecycleStopResult>;
+	confirmSessionStop(sessionId: string): Promise<SessionLifecycleStopStatus>;
+	getCoordinatorOwner(sessionId: string): Promise<SessionCoordinatorOwner | null>;
+	pauseSessionGoal(sessionId: string): Promise<void>;
+}
+
 export type SessionGoalStatus =
 	| "active"
 	| "paused"

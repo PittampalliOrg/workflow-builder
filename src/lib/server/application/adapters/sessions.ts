@@ -18,6 +18,8 @@ import type {
 	SessionGoalRecord,
 	SessionGoalScopeGuard,
 	SessionGoalStore,
+	SessionLifecycleController,
+	SessionLifecycleStopMode,
 	SessionProvisioningContext,
 	SessionProvisioningReader,
 	SessionRepository,
@@ -71,7 +73,17 @@ import {
 	mountSessionRepositories,
 	mountSingleRepository,
 } from "$lib/server/sessions/repositories";
-import { inspectDurableRun } from "$lib/server/lifecycle";
+import {
+	confirmDurableStop,
+	inspectDurableRun,
+	stopDurableRun,
+	type StopDurableRunMode,
+} from "$lib/server/lifecycle";
+import {
+	pauseDurableRun,
+	resumeDurableRun,
+} from "$lib/server/lifecycle/pause";
+import { ownsBenchmarkOrEvalRunForSession } from "$lib/server/lifecycle/ownership";
 import { isResourceInScope } from "$lib/server/workflows/project-scope";
 import {
 	createOrReplaceGoal,
@@ -785,6 +797,64 @@ export class DaprSessionWorkflowSpawner implements SessionWorkflowSpawner {
 		natsSubject: string;
 	}> {
 		return spawnSessionWorkflow(sessionId);
+	}
+}
+
+export class LifecycleSessionController implements SessionLifecycleController {
+	async checkSessionAccess(input: {
+		sessionId: string;
+		userId: string;
+		projectId?: string | null;
+	}): Promise<{ status: "ok"; active: boolean } | { status: "not_found" }> {
+		const inspected = await inspectDurableRun({
+			kind: "session",
+			id: input.sessionId,
+		});
+		if (inspected.notFound) return { status: "not_found" };
+		if (
+			inspected.scope &&
+			!isResourceInScope(inspected.scope, {
+				userId: input.userId,
+				projectId: input.projectId ?? null,
+			})
+		) {
+			return { status: "not_found" };
+		}
+		return { status: "ok", active: Boolean(inspected.active) };
+	}
+
+	pauseSession(sessionId: string) {
+		return pauseDurableRun({ kind: "session", id: sessionId });
+	}
+
+	resumeSession(sessionId: string) {
+		return resumeDurableRun({ kind: "session", id: sessionId });
+	}
+
+	stopSession(
+		sessionId: string,
+		opts: {
+			mode: SessionLifecycleStopMode;
+			reason?: string;
+			graceMs?: number;
+		},
+	) {
+		return stopDurableRun(
+			{ kind: "session", id: sessionId },
+			{ ...opts, mode: opts.mode as StopDurableRunMode },
+		);
+	}
+
+	confirmSessionStop(sessionId: string) {
+		return confirmDurableStop({ kind: "session", id: sessionId });
+	}
+
+	getCoordinatorOwner(sessionId: string) {
+		return ownsBenchmarkOrEvalRunForSession(sessionId);
+	}
+
+	async pauseSessionGoal(sessionId: string): Promise<void> {
+		await pauseGoal(sessionId);
 	}
 }
 
