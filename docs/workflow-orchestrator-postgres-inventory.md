@@ -29,6 +29,9 @@ and `runtime-target.ts` no longer import DB or Drizzle for these lookups.
 Session workflow spawn now also loads the session row and attaches Dapr runtime
 metadata through workflow-data; the legacy `sessions/registry` `getSession` and
 `attachRuntime` calls are no longer imported by `spawn.ts`.
+Session workflow spawn now also reads initial user events and emits swap-safety
+audit events through workflow-data; `spawn.ts` no longer imports the legacy
+`sessions/events` DB helper.
 The session runtime-config helper now takes its persisted
 `session.runtime_config` fallback as an injected adapter dependency. The latest
 runtime-config event query is confined to `DefaultSessionRuntimeConfigReader`;

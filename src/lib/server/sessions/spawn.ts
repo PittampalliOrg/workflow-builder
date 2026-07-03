@@ -5,7 +5,6 @@ import {
 } from "$lib/server/goals/mcp-wiring";
 import { resolveAgentRef } from "$lib/server/agents/registry";
 import { resolveEnvironmentRef } from "$lib/server/environments/registry";
-import { appendEvent, listEvents } from "$lib/server/sessions/events";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution-application";
 import { flattenBundles } from "$lib/server/capabilities/flatten";
@@ -146,7 +145,10 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	// Seed the workflow with any events the user already posted between
 	// session.create and workflow spawn (e.g. an `initialMessage` sent via
 	// POST /api/v1/sessions).
-	const existingEvents = await listEvents(sessionId, { limit: 50 });
+	const existingEvents = await getApplicationAdapters().workflowData.listSessionEvents(
+		sessionId,
+		{ limit: 50 },
+	);
 	const initialEvents = existingEvents
 		.filter((e) => e.type.startsWith("user."))
 		.map((e) => e.data);
@@ -229,7 +231,7 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 			// session_events + visible in the UI (the WARN-phase audit dataset).
 			// Fire-and-forget with a deterministic sourceEventId (dedupes re-spawns);
 			// an event-write failure must never block the spawn.
-			void appendEvent(sessionId, {
+			void getApplicationAdapters().workflowData.appendSessionEvent(sessionId, {
 				type: "runtime.swap_degraded",
 				data: {
 					runtimeId: swapTarget.id,
