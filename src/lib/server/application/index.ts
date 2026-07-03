@@ -151,6 +151,7 @@ import { ApplicationSessionBrowserService } from "$lib/server/application/sessio
 import { ApplicationBulkLifecycleStopService } from "$lib/server/application/lifecycle-bulk-stop";
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
 import { ApplicationWorkflowBrowserArtifactsService } from "$lib/server/application/workflow-browser-artifacts";
+import { ApplicationWorkflowExecutionArtifactDiffService } from "$lib/server/application/workflow-execution-artifact-diff";
 import { ApplicationWorkflowExecutionArtifactsService } from "$lib/server/application/workflow-execution-artifacts";
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
 import { ApplicationWorkflowExecutionFilesService } from "$lib/server/application/workflow-execution-files";
@@ -167,6 +168,7 @@ import { ApplicationWorkflowTriggerLifecycleService } from "$lib/server/applicat
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 import { ApplicationWorkflowPlanService } from "$lib/server/application/workflow-plan";
 import { costFor, formatCurrency } from "$lib/server/pricing/model-pricing";
+import { resolveRunDiffPatch, RUN_DIFF_KIND } from "$lib/server/workflows/run-diff";
 
 export { getEventBusAdapter } from "$lib/server/application/event-bus";
 
@@ -286,6 +288,9 @@ export function getApplicationAdapters(
 		| undefined;
 	let workflowExecutionControl:
 		| ApplicationWorkflowExecutionControlService
+		| undefined;
+	let workflowExecutionArtifactDiff:
+		| ApplicationWorkflowExecutionArtifactDiffService
 		| undefined;
 	let workflowExecutionArtifacts:
 		| ApplicationWorkflowExecutionArtifactsService
@@ -535,6 +540,12 @@ export function getApplicationAdapters(
 		(workflowExecutionArtifacts ??= new ApplicationWorkflowExecutionArtifactsService({
 			workflowData: getWorkflowData(),
 		}));
+	const getWorkflowExecutionArtifactDiff = () =>
+		(workflowExecutionArtifactDiff ??= new ApplicationWorkflowExecutionArtifactDiffService({
+			workflowData: getWorkflowData(),
+			diffKind: RUN_DIFF_KIND,
+			resolveDiff: resolveRunDiffPatch,
+		}));
 	const getWorkflowExecutionFiles = () =>
 		(workflowExecutionFiles ??= new ApplicationWorkflowExecutionFilesService({
 			workflowData: getWorkflowData(),
@@ -753,6 +764,9 @@ export function getApplicationAdapters(
 		},
 		get workflowExecutionArtifacts() {
 			return getWorkflowExecutionArtifacts();
+		},
+		get workflowExecutionArtifactDiff() {
+			return getWorkflowExecutionArtifactDiff();
 		},
 		get workflowExecutionFiles() {
 			return getWorkflowExecutionFiles();

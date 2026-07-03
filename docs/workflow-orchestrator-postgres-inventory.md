@@ -229,9 +229,10 @@ services:
   execution repository adapter; route-local logic only normalizes response shape
   and extracts trace ids from the execution output payload.
 - `src/routes/api/workflows/executions/[executionId]/artifacts/[artifactId]/diff/+server.ts`
-  now scope-checks the execution and fetches the artifact through
-  `workflowData.getWorkflowArtifactForExecution`; diff patch resolution remains
-  route-local readback over the artifact DTO.
+  now delegates scoped execution access, artifact lookup, diff-kind validation,
+  and inline/file-backed patch resolution to
+  `ApplicationWorkflowExecutionArtifactDiffService`. The route imports no
+  workflow-data, project-scope, DB, Drizzle, or run-diff helper modules.
 - `src/routes/api/workflows/executions/[executionId]/versions/+server.ts` now
   delegates scoped execution lookup, source-bundle filtering, version DTO
   shaping, promotion metadata extraction, promotion-gate evaluation, and
