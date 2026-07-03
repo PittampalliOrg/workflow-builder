@@ -1,10 +1,7 @@
 import { error } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import {
-	CLI_PREVIEW_DEFAULT_PORT,
-	proxyCliPreview,
-	resolveExecutionCliPreviewTarget,
-} from "$lib/server/sessions/cli-preview";
+import { getApplicationAdapters } from "$lib/server/application";
+import type { CliPreviewProxyResult } from "$lib/server/application/cli-preview";
 
 /**
  * Reverse-proxy browser traffic to the post-run preview server for a CLI
@@ -22,28 +19,20 @@ async function handle({
 	url,
 }: Parameters<RequestHandler>[0]): Promise<Response> {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const executionId = params.executionId!;
-	const resolved = await resolveExecutionCliPreviewTarget(
-		executionId,
-		locals.session.projectId,
-		{ provisionIfMissing: false },
+	return cliPreviewProxyResponse(
+		await getApplicationAdapters().cliPreview.proxyExecutionPreview({
+			executionId: params.executionId!,
+			projectId: locals.session.projectId ?? null,
+			request,
+			url,
+			path: params.path,
+		}),
 	);
-	if (!resolved.ok) {
-		const status = "status" in resolved ? resolved.status : 502;
-		return error(status, "message" in resolved ? resolved.message : "Preview unavailable");
-	}
+}
 
-	const portParam = Number(url.searchParams.get("port"));
-	const port =
-		Number.isFinite(portParam) && portParam > 0 ? Math.trunc(portParam) : CLI_PREVIEW_DEFAULT_PORT;
-
-	const proxyBasePath = `/api/workflows/executions/${encodeURIComponent(executionId)}/cli-preview/view`;
-	const restPath = params.path ? `/${params.path}` : "/";
-	const fwd = new URLSearchParams(url.searchParams);
-	fwd.delete("port");
-	const search = fwd.toString() ? `?${fwd.toString()}` : "";
-
-	return proxyCliPreview(resolved.target.podIP, port, request, restPath, search, proxyBasePath);
+function cliPreviewProxyResponse(result: CliPreviewProxyResult): Response {
+	if (result.status === "error") return error(result.httpStatus, result.message);
+	return result.response;
 }
 
 export const GET: RequestHandler = handle;

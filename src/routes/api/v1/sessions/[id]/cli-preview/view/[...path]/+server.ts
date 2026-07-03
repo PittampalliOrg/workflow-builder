@@ -1,10 +1,7 @@
 import { error } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import {
-	CLI_PREVIEW_DEFAULT_PORT,
-	proxyCliPreview,
-	resolveCliPreviewTarget,
-} from "$lib/server/sessions/cli-preview";
+import { getApplicationAdapters } from "$lib/server/application";
+import type { CliPreviewProxyResult } from "$lib/server/application/cli-preview";
 
 /**
  * Reverse-proxy browser traffic to the live preview server running in an
@@ -21,21 +18,20 @@ async function handle({
 	url,
 }: Parameters<RequestHandler>[0]): Promise<Response> {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const sessionId = params.id!;
-	const resolved = await resolveCliPreviewTarget(sessionId, locals.session.projectId);
-	if (!resolved.ok) return error(resolved.status, resolved.message);
+	return cliPreviewProxyResponse(
+		await getApplicationAdapters().cliPreview.proxySessionPreview({
+			sessionId: params.id!,
+			projectId: locals.session.projectId ?? null,
+			request,
+			url,
+			path: params.path,
+		}),
+	);
+}
 
-	const portParam = Number(url.searchParams.get("port"));
-	const port = Number.isFinite(portParam) && portParam > 0 ? Math.trunc(portParam) : CLI_PREVIEW_DEFAULT_PORT;
-
-	const proxyBasePath = `/api/v1/sessions/${encodeURIComponent(sessionId)}/cli-preview/view`;
-	const restPath = params.path ? `/${params.path}` : "/";
-	// Drop our own `port` control param before forwarding.
-	const fwd = new URLSearchParams(url.searchParams);
-	fwd.delete("port");
-	const search = fwd.toString() ? `?${fwd.toString()}` : "";
-
-	return proxyCliPreview(resolved.target.podIP, port, request, restPath, search, proxyBasePath);
+function cliPreviewProxyResponse(result: CliPreviewProxyResult): Response {
+	if (result.status === "error") return error(result.httpStatus, result.message);
+	return result.response;
 }
 
 export const GET: RequestHandler = handle;

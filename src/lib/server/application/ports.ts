@@ -3187,6 +3187,52 @@ export interface WorkflowExecutionReadModelPort {
 	): Record<string, unknown>;
 }
 
+export type CliPreviewTarget = { podIP: string; runtime?: string | null };
+
+export type CliPreviewResolveResult =
+	| { ok: true; target: CliPreviewTarget }
+	| { ok: false; status: number; message: string };
+
+export type ExecutionCliPreviewTarget = {
+	podIP: string;
+	appId: string;
+	sharedWorkspaceKey: string;
+	reused: boolean;
+};
+
+export type ExecutionCliPreviewResolveResult =
+	| { ok: true; target: ExecutionCliPreviewTarget }
+	| { ok: false; status: number; message: string }
+	| { ok: false; provisioning: true; status: 202; message: string };
+
+export type ExecutionPreviewBackend = "cli" | "openshell" | null;
+
+export interface CliPreviewGatewayPort {
+	defaultPort: number;
+	resolveSessionTarget(
+		sessionId: string,
+		projectId?: string | null,
+	): Promise<CliPreviewResolveResult>;
+	resolveExecutionTarget(
+		executionId: string,
+		projectId?: string | null,
+		opts?: { readyBudgetSeconds?: number; provisionIfMissing?: boolean },
+	): Promise<ExecutionCliPreviewResolveResult>;
+	startPreview(
+		podIP: string,
+		opts: { cwd: string; port: number; previewCommand?: string },
+	): Promise<{ ready: boolean; log: string }>;
+	proxyPreview(input: {
+		podIP: string;
+		port: number;
+		request: Request;
+		restPath: string;
+		search: string;
+		proxyBasePath: string;
+	}): Promise<Response>;
+	executionPreviewBackend(executionId: string): Promise<ExecutionPreviewBackend>;
+}
+
 export interface EventBus {
 	publish(topic: string, payload: unknown): Promise<void>;
 }

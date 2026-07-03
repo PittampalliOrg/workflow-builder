@@ -108,8 +108,10 @@ import {
 	LifecycleWorkflowExecutionControllerPort,
 	LifecycleWorkflowExecutionCoordinatorOwnerPort,
 } from "$lib/server/application/adapters/workflow-control";
+import { LegacyCliPreviewGatewayPort } from "$lib/server/application/adapters/cli-preview";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
+import { ApplicationCliPreviewService } from "$lib/server/application/cli-preview";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
 import { ApplicationSessionAgentConfigService } from "$lib/server/application/session-agent-config";
 import { ApplicationSessionGoalService } from "$lib/server/application/session-goals";
@@ -233,6 +235,7 @@ export function getApplicationAdapters(
 	let workflowExecutionControl:
 		| ApplicationWorkflowExecutionControlService
 		| undefined;
+	let cliPreview: ApplicationCliPreviewService | undefined;
 	const getDatabase = () => (database ??= requirePostgresDb());
 	const getAgentRuntimes = () =>
 		(agentRuntimes ??= new PostgresAgentRuntimeRepository(getDatabase()));
@@ -409,6 +412,10 @@ export function getApplicationAdapters(
 			runStarter: new LegacyWorkflowRunStarterPort(),
 			workflowSpecs: new LegacyWorkflowSpecValidatorPort(),
 		}));
+	const getCliPreview = () =>
+		(cliPreview ??= new ApplicationCliPreviewService({
+			preview: new LegacyCliPreviewGatewayPort(),
+		}));
 	const getSessionCommands = () =>
 		(sessionCommands ??= new ApplicationSessionCommandService({
 			sessions: getSessions(),
@@ -538,6 +545,9 @@ export function getApplicationAdapters(
 		},
 		get workflowExecutionControl() {
 			return getWorkflowExecutionControl();
+		},
+		get cliPreview() {
+			return getCliPreview();
 		},
 		get sessionBrowser() {
 			return (sessionBrowser ??= new ApplicationSessionBrowserService({

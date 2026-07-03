@@ -772,6 +772,20 @@ The first UI-facing route has also moved behind the application service:
   runtime debug targets through workflow-data session ports. The live pod
   preflight and shell container selection remain route-local pending a command
   access slice.
+- `src/routes/api/v1/sessions/[id]/cli-preview/+server.ts`,
+  `src/routes/api/v1/sessions/[id]/cli-preview/view/[...path]/+server.ts`,
+  `src/routes/api/workflows/executions/[executionId]/cli-preview/+server.ts`,
+  `src/routes/api/workflows/executions/[executionId]/cli-preview/view/[...path]/+server.ts`,
+  and `src/routes/api/workflows/executions/[executionId]/preview-info/+server.ts`
+  now delegate preview target resolution, preview process start, reverse proxy
+  request shaping, and preview-backend detection to
+  `ApplicationCliPreviewService`. The SvelteKit handlers no longer import the
+  CLI preview helper, Drizzle, or `$lib/server/db` directly. The existing
+  `src/lib/server/sessions/cli-preview.ts` helper still owns DB-backed
+  execution/session lookup, Kubernetes pod/provisioning calls, and low-level
+  HTTP proxying behind `LegacyCliPreviewGatewayPort`; splitting those internals
+  into narrower workflow-data, runtime, and proxy ports remains the next
+  preview portability slice.
 - `src/routes/api/v1/sessions/[id]/control/set-model/+server.ts`,
   `src/routes/api/v1/sessions/[id]/control/set-permission-mode/+server.ts`,
   and `src/routes/api/v1/sessions/[id]/control/update-agent-config/+server.ts`
@@ -807,6 +821,9 @@ provisioning, context-usage, control settings/MCP status, session
 detail/title/archive/delete, fork, goal,
 goal-flow, event list/append/detail, runtime-config, config patch commands,
 runtime debug target routes, resources, and event-stream routes are also clean.
+The session and execution CLI preview route family is also presentation-clean;
+its remaining direct DB/Kubernetes coupling is documented inside the legacy
+preview gateway adapter.
 The dashboard route is also clean.
 The sandbox-delete route's session read is also clean, while its lifecycle and
 Kubernetes/OpenShell deletion behavior intentionally remain in the route.
