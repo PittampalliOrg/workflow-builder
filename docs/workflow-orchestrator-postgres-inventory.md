@@ -512,6 +512,11 @@ The first UI-facing route has also moved behind the application service:
   now delegate planning/submission to the benchmark environment validation
   service and map its `Database not configured` failure to the same HTTP 503
   response.
+- `src/routes/api/internal/environments/ensure/+server.ts` no longer imports
+  Drizzle, `$lib/server/db`, or benchmark suite/instance schema for SWE-bench
+  metadata lookup. It delegates request validation, server metadata merge,
+  repo/baseCommit conflict checks, and environment preparation to
+  `ensureSwebenchEnvironmentFromInternalRequest`.
 - `src/routes/workspaces/[slug]/benchmarks/+page.server.ts`,
   `src/routes/workspaces/[slug]/benchmarks/runs/+page.server.ts`, and
   `src/routes/workspaces/[slug]/benchmarks/compare/+page.server.ts` now delegate
