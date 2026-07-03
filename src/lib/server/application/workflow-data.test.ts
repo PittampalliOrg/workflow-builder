@@ -6,6 +6,7 @@ import type {
 	ArtifactStore,
 	BenchmarkInstanceDetailReadRepository,
 	BenchmarkBrowserRepository,
+	BenchmarkRunInstanceDetailReadRepository,
 	BenchmarkRunInstanceScoreReadRepository,
 	BenchmarkRunReadRepository,
 	BenchmarkRunRepository,
@@ -1329,6 +1330,7 @@ function makeService(options: {
 	benchmarkRunReads?: BenchmarkRunReadRepository;
 	benchmarkRuns?: BenchmarkRunRepository;
 	benchmarkInstanceDetails?: BenchmarkInstanceDetailReadRepository;
+	benchmarkRunInstanceDetails?: BenchmarkRunInstanceDetailReadRepository;
 	benchmarkRunInstanceScores?: BenchmarkRunInstanceScoreReadRepository;
 	activityRateTargets?: WorkflowActivityRateTargetRepository;
 	observabilityTraces?: ObservabilityTraceRepository;
@@ -1393,6 +1395,7 @@ function makeService(options: {
 		browserArtifacts: options.browserArtifacts,
 		benchmarkBrowser: fakeBenchmarkBrowser(),
 		benchmarkInstanceDetails: options.benchmarkInstanceDetails,
+		benchmarkRunInstanceDetails: options.benchmarkRunInstanceDetails,
 		benchmarkRunInstanceScores: options.benchmarkRunInstanceScores,
 		benchmarkRunReads: options.benchmarkRunReads ?? fakeBenchmarkRunReads(),
 		devEnvironments: options.devEnvironments ?? fakeDevEnvironments(),
@@ -6555,6 +6558,62 @@ describe("ApplicationWorkflowDataService", () => {
 			],
 		});
 		expect(benchmarkRunInstanceScores.listRunInstanceScores).toHaveBeenCalledWith({
+			runId: "run-1",
+			instanceId: "sympy__sympy-20590",
+			projectId: "project-1",
+		});
+	});
+
+	it("loads benchmark run-instance detail through the workflow-data port", async () => {
+		const evaluatedAt = new Date("2026-07-03T12:00:00.000Z");
+		const benchmarkRunInstanceDetails: BenchmarkRunInstanceDetailReadRepository = {
+			getRunInstanceDetail: vi.fn(async () => ({
+				status: "ok" as const,
+				mlflowExperimentId: "exp-1",
+				runInstance: {
+					id: "run-inst-1",
+					runId: "run-1",
+					instanceId: "sympy__sympy-20590",
+					evaluationStatus: "resolved",
+					evaluatedAt,
+					harnessResult: { resolved: true },
+					mlflowRunId: "mlflow-run-1",
+					traceIds: ["trace-1"],
+				},
+				instance: {
+					repo: "sympy/sympy",
+					baseCommit: "abc123",
+					problemStatement: "Fix it",
+					hintsText: "Look at Add",
+					testMetadata: { version: "1.7" },
+					metadata: { issue_url: "https://example.test/issue" },
+					goldPatch: "diff --git a/sympy/core/add.py b/sympy/core/add.py\n",
+				},
+				executionIr: { jobName: "bench-host-1" },
+				executionOutput: null,
+			})),
+		};
+		const { service } = makeService({ benchmarkRunInstanceDetails });
+
+		await expect(
+			service.getBenchmarkRunInstanceDetail({
+				runId: "run-1",
+				instanceId: "sympy__sympy-20590",
+				projectId: "project-1",
+			}),
+		).resolves.toMatchObject({
+			status: "ok",
+			mlflowExperimentId: "exp-1",
+			runInstance: {
+				id: "run-inst-1",
+				instanceId: "sympy__sympy-20590",
+			},
+			instance: {
+				repo: "sympy/sympy",
+				baseCommit: "abc123",
+			},
+		});
+		expect(benchmarkRunInstanceDetails.getRunInstanceDetail).toHaveBeenCalledWith({
 			runId: "run-1",
 			instanceId: "sympy__sympy-20590",
 			projectId: "project-1",

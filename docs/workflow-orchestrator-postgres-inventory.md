@@ -39,6 +39,10 @@ The benchmark run-instance scores API now scope-checks the run and instance and
 loads scorer rows through a workflow-data read model. The benchmark run-instance
 spans API no longer imports the DB for a route-local readiness check; the deeper
 trace-bundle service remains a later telemetry/MLflow adapter slice.
+The benchmark run-instance detail API now scope-checks the run, loads the
+selected run instance, benchmark metadata, and execution payloads through a
+workflow-data read model, while keeping response shaping, gold-patch redaction,
+host-job extraction, and MLflow URL formatting route-local.
 
 ## Strict HTTP Runtime Paths
 

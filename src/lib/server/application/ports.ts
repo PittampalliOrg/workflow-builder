@@ -653,6 +653,48 @@ export interface BenchmarkRunInstanceScoreReadRepository {
 	}): Promise<BenchmarkRunInstanceScoresReadModel>;
 }
 
+export type BenchmarkRunInstanceDetailRunRecord = {
+	[key: string]: unknown;
+	id: string;
+	runId: string;
+	instanceId: string;
+	evaluationStatus: string;
+	evaluatedAt: Date | null;
+	harnessResult: unknown;
+	mlflowRunId: string | null;
+	traceIds: string[] | null;
+};
+
+export type BenchmarkRunInstanceDetailBenchmarkRecord = {
+	repo: string | null;
+	baseCommit: string | null;
+	problemStatement: string | null;
+	hintsText: string | null;
+	testMetadata: Record<string, unknown>;
+	metadata: Record<string, unknown> | null;
+	goldPatch: string | null;
+};
+
+export type BenchmarkRunInstanceDetailReadModel =
+	| { status: "run_not_found" }
+	| { status: "instance_not_found" }
+	| {
+			status: "ok";
+			mlflowExperimentId: string | null;
+			runInstance: BenchmarkRunInstanceDetailRunRecord;
+			instance: BenchmarkRunInstanceDetailBenchmarkRecord;
+			executionIr: unknown;
+			executionOutput: unknown;
+	  };
+
+export interface BenchmarkRunInstanceDetailReadRepository {
+	getRunInstanceDetail(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+	}): Promise<BenchmarkRunInstanceDetailReadModel>;
+}
+
 export type CreateWorkflowDefinitionInput = {
 	name: string;
 	nodes: unknown[];
@@ -3667,6 +3709,11 @@ export interface WorkflowDataService {
 		instanceId: string;
 		projectId: string;
 	}): Promise<BenchmarkRunInstanceScoresReadModel>;
+	getBenchmarkRunInstanceDetail(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+	}): Promise<BenchmarkRunInstanceDetailReadModel>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;
 	}): Promise<DevPreviewHubReadModel>;

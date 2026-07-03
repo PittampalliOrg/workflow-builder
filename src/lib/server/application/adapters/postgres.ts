@@ -106,6 +106,7 @@ import type {
 	ArtifactStore,
 	BenchmarkBrowserRepository,
 	BenchmarkInstanceDetailReadRepository,
+	BenchmarkRunInstanceDetailReadRepository,
 	BenchmarkRunInstanceScoreReadRepository,
 	BenchmarkRunRepository,
 	BenchmarkSessionProvisioningGateRecord,
@@ -2692,6 +2693,95 @@ export class PostgresBenchmarkRunInstanceScoreReadRepository
 				...row,
 				metadata: isRecord(row.metadata) ? row.metadata : {},
 			})),
+		};
+	}
+}
+
+export class PostgresBenchmarkRunInstanceDetailReadRepository
+	implements BenchmarkRunInstanceDetailReadRepository
+{
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async getRunInstanceDetail(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+	}) {
+		const runId = input.runId.trim();
+		const instanceId = input.instanceId.trim();
+		const projectId = input.projectId.trim();
+		if (!runId || !instanceId || !projectId) return { status: "run_not_found" as const };
+
+		const [runRow] = await this.database
+			.select({
+				id: benchmarkRuns.id,
+				suiteId: benchmarkRuns.suiteId,
+				mlflowExperimentId: benchmarkRuns.mlflowExperimentId,
+			})
+			.from(benchmarkRuns)
+			.where(
+				and(
+					eq(benchmarkRuns.id, runId),
+					eq(benchmarkRuns.projectId, projectId),
+				),
+			)
+			.limit(1);
+		if (!runRow) return { status: "run_not_found" as const };
+
+		const [row] = await this.database
+			.select({
+				run: benchmarkRunInstances,
+				goldPatch: benchmarkInstances.goldPatch,
+				problemStatement: benchmarkInstances.problemStatement,
+				hintsText: benchmarkInstances.hintsText,
+				testMetadata: benchmarkInstances.testMetadata,
+				repo: benchmarkInstances.repo,
+				baseCommit: benchmarkInstances.baseCommit,
+				instanceMetadata: benchmarkInstances.metadata,
+				executionIr: workflowExecutions.executionIr,
+				executionOutput: workflowExecutions.output,
+			})
+			.from(benchmarkRunInstances)
+			.leftJoin(
+				benchmarkInstances,
+				and(
+					eq(benchmarkInstances.suiteId, runRow.suiteId),
+					eq(benchmarkInstances.instanceId, benchmarkRunInstances.instanceId),
+				),
+			)
+			.leftJoin(
+				workflowExecutions,
+				eq(workflowExecutions.id, benchmarkRunInstances.workflowExecutionId),
+			)
+			.where(
+				and(
+					eq(benchmarkRunInstances.runId, runId),
+					eq(benchmarkRunInstances.instanceId, instanceId),
+				),
+			)
+			.limit(1);
+		if (!row) return { status: "instance_not_found" as const };
+
+		return {
+			status: "ok" as const,
+			mlflowExperimentId: runRow.mlflowExperimentId,
+			runInstance: {
+				...row.run,
+				traceIds: Array.isArray(row.run.traceIds)
+					? row.run.traceIds.filter((item): item is string => typeof item === "string")
+					: null,
+			},
+			instance: {
+				repo: row.repo,
+				baseCommit: row.baseCommit,
+				problemStatement: row.problemStatement,
+				hintsText: row.hintsText,
+				testMetadata: isRecord(row.testMetadata) ? row.testMetadata : {},
+				metadata: isRecord(row.instanceMetadata) ? row.instanceMetadata : null,
+				goldPatch: row.goldPatch,
+			},
+			executionIr: row.executionIr,
+			executionOutput: row.executionOutput,
 		};
 	}
 }
