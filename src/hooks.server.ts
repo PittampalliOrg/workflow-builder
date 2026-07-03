@@ -1,11 +1,9 @@
 import type { Handle } from "@sveltejs/kit";
 import { sequence } from "@sveltejs/kit/hooks";
-import { and, eq } from "drizzle-orm";
 import { SpanStatusCode, trace, type Span } from "@opentelemetry/api";
-import { db } from "$lib/server/db";
-import { projectMembers } from "$lib/server/db/schema";
 import { getSession } from "$lib/server/auth";
 import { ensureStartupReady } from "$lib/server/startup";
+import { getApplicationAdapters } from "$lib/server/application";
 import { resolveWorkspaceProjectId } from "$lib/server/workspaces/resolve";
 import { setSpanValue } from "$lib/server/observability/content";
 import { activeHttpServerSpan } from "$lib/server/observability/http-server-spans";
@@ -55,30 +53,18 @@ const authHandle: Handle = async ({ event, resolve }) => {
   // The JWT itself isn't rotated here — that happens on the next
   // /api/v1/auth/refresh — but the rest of the request sees a valid
   // projectId so the user can actually use the app.
-  if (event.locals.session && db) {
+  if (event.locals.session) {
     try {
-      const [row] = await db
-        .select({ projectId: projectMembers.projectId })
-        .from(projectMembers)
-        .where(
-          and(
-            eq(projectMembers.projectId, event.locals.session.projectId),
-            eq(projectMembers.userId, event.locals.session.userId),
-          ),
-        )
-        .limit(1);
-      if (!row) {
-        const [fallback] = await db
-          .select({ projectId: projectMembers.projectId })
-          .from(projectMembers)
-          .where(eq(projectMembers.userId, event.locals.session.userId))
-          .limit(1);
-        if (fallback) {
-          event.locals.session = {
-            ...event.locals.session,
-            projectId: fallback.projectId,
-          };
-        }
+      const resolvedProjectId =
+        await getApplicationAdapters().workflowData.resolveSessionProjectId({
+          userId: event.locals.session.userId,
+          currentProjectId: event.locals.session.projectId,
+        });
+      if (resolvedProjectId && resolvedProjectId !== event.locals.session.projectId) {
+        event.locals.session = {
+          ...event.locals.session,
+          projectId: resolvedProjectId,
+        };
       }
     } catch {
       /* membership check is best-effort — never block the request */

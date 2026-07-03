@@ -2167,6 +2167,15 @@ export class PostgresWorkspaceProjectRepository implements WorkspaceProjectRepos
 		return row?.projectId ?? null;
 	}
 
+	async getFallbackMemberProjectId(userId: string): Promise<string | null> {
+		const [row] = await this.database
+			.select({ projectId: projectMembers.projectId })
+			.from(projectMembers)
+			.where(eq(projectMembers.userId, userId))
+			.limit(1);
+		return row?.projectId ?? null;
+	}
+
 	async getMemberProjectIdBySlug(input: {
 		slug: string;
 		userId: string;

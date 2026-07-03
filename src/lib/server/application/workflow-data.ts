@@ -2934,6 +2934,18 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		});
 	}
 
+	async resolveSessionProjectId(input: {
+		userId: string;
+		currentProjectId: string;
+	}): Promise<string | null> {
+		const current = await this.deps.workspaceProjects.getMemberProjectId({
+			projectId: input.currentProjectId,
+			userId: input.userId,
+		});
+		if (current) return current;
+		return this.deps.workspaceProjects.getFallbackMemberProjectId(input.userId);
+	}
+
 	getWorkspaceProjectExternalId(projectId: string) {
 		return this.deps.workspaceProjects.getProjectExternalId(projectId);
 	}

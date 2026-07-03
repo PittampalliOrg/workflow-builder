@@ -841,6 +841,7 @@ function fakeSessionExperimentAgents(): SessionExperimentAgentStore {
 function fakeWorkspaceProjects(): WorkspaceProjectRepository {
 	return {
 		getMemberProjectId: vi.fn(async () => "project-1"),
+		getFallbackMemberProjectId: vi.fn(async () => "project-1"),
 		getMemberProjectIdBySlug: vi.fn(async () => "project-1"),
 		getProjectExternalId: vi.fn(async () => "workspace-1"),
 		getProjectMembershipDetail: vi.fn(async () => ({

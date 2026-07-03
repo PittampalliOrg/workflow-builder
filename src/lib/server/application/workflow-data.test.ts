@@ -985,6 +985,7 @@ function fakeWorkspaceProjects(): WorkspaceProjectRepository {
 	const updatedAt = new Date("2026-01-01T00:00:00.000Z");
 	return {
 		getMemberProjectId: vi.fn(async () => "project-1"),
+		getFallbackMemberProjectId: vi.fn(async () => "project-1"),
 		getMemberProjectIdBySlug: vi.fn(async () => "project-1"),
 		getProjectExternalId: vi.fn(async () => "workspace-1"),
 		getProjectMembershipDetail: vi.fn(async () => null),
@@ -5703,7 +5704,8 @@ describe("ApplicationWorkflowDataService", () => {
 	it("resolves workspace project membership through the workspace project port", async () => {
 		const workspaceProjects = {
 			...fakeWorkspaceProjects(),
-			getMemberProjectId: vi.fn(async () => "project-current"),
+			getMemberProjectId: vi.fn(async (): Promise<string | null> => "project-current"),
+			getFallbackMemberProjectId: vi.fn(async () => "project-fallback"),
 			getMemberProjectIdBySlug: vi.fn(async () => "project-slug"),
 			getProjectExternalId: vi.fn(async () => "workspace-slug"),
 			getProjectMembershipDetail: vi.fn(async () => ({
@@ -5764,6 +5766,12 @@ describe("ApplicationWorkflowDataService", () => {
 			externalId: "workspace-slug",
 			selfRole: "ADMIN",
 		});
+		await expect(
+			service.resolveSessionProjectId({
+				userId: "user-1",
+				currentProjectId: "project-1",
+			}),
+		).resolves.toBe("project-current");
 
 		expect(workspaceProjects.getMemberProjectId).toHaveBeenCalledWith({
 			projectId: "project-1",
@@ -5778,6 +5786,15 @@ describe("ApplicationWorkflowDataService", () => {
 			projectId: "project-1",
 			userId: "user-1",
 		});
+		expect(workspaceProjects.getFallbackMemberProjectId).not.toHaveBeenCalled();
+		workspaceProjects.getMemberProjectId.mockResolvedValueOnce(null);
+		await expect(
+			service.resolveSessionProjectId({
+				userId: "user-1",
+				currentProjectId: "stale-project",
+			}),
+		).resolves.toBe("project-fallback");
+		expect(workspaceProjects.getFallbackMemberProjectId).toHaveBeenCalledWith("user-1");
 	});
 
 	it("lists project members for existing project members through workspace project ports", async () => {

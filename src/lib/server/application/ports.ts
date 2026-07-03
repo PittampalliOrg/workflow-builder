@@ -2206,6 +2206,7 @@ export interface WorkspaceProjectRepository {
 		projectId: string;
 		userId: string;
 	}): Promise<string | null>;
+	getFallbackMemberProjectId(userId: string): Promise<string | null>;
 	getMemberProjectIdBySlug(input: {
 		slug: string;
 		userId: string;
