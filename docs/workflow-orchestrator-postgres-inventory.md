@@ -717,6 +717,11 @@ services:
   confined to `PostgresPieceCatalogRepository` and
   `PostgresCodeFunctionCatalogRepository`; the routes import no direct DB,
   schema, Drizzle, or catalog DB helpers.
+- `src/routes/api/action-catalog/+server.ts` and
+  `src/routes/api/action-catalog/[actionId]/+server.ts` now delegate action
+  catalog snapshot/detail loading and detail response shaping to
+  `ApplicationActionCatalogService`; the legacy unified action-catalog loader is
+  confined to an application adapter.
 - `src/routes/api/action-catalog/[actionId]/options/+server.ts` now delegates
   dynamic option lookup to `ApplicationActionOptionsService`. Action catalog
   lookup, code-function option proxying, connection decrypt/provider validation,

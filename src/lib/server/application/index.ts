@@ -120,6 +120,7 @@ import {
 	LocalCodeFunctionOptionsPort,
 	WorkflowDataActionOptionsConnectionReader,
 } from "$lib/server/application/adapters/action-options";
+import { LegacyActionCatalogReader } from "$lib/server/application/adapters/action-catalog";
 import {
 	LocalSettingsCliRuntimeCatalogReader,
 	UserCliCredentialSummaryReader,
@@ -196,6 +197,7 @@ import {
 	ApplicationWorkflowTriggerKindCatalogService,
 } from "$lib/server/application/catalogs";
 import { ApplicationActionOptionsService } from "$lib/server/application/action-options";
+import { ApplicationActionCatalogService } from "$lib/server/application/action-catalog";
 import { ApplicationSettingsCliTokensService } from "$lib/server/application/settings-cli-tokens";
 import { ApplicationPromptPresetService } from "$lib/server/application/prompt-presets";
 import {
@@ -362,6 +364,7 @@ export function getApplicationAdapters(
 	let capacityOverview: ApplicationCapacityOverviewService | undefined;
 	let daprInspection: ApplicationDaprInspectionService | undefined;
 	let runtimeCatalog: ApplicationRuntimeCatalogService | undefined;
+	let actionCatalog: ApplicationActionCatalogService | undefined;
 	let workflowTriggerKindCatalog:
 		| ApplicationWorkflowTriggerKindCatalogService
 		| undefined;
@@ -622,6 +625,10 @@ export function getApplicationAdapters(
 	const getRuntimeCatalog = () =>
 		(runtimeCatalog ??= new ApplicationRuntimeCatalogService(
 			new LocalRuntimeCatalogReader(),
+		));
+	const getActionCatalog = () =>
+		(actionCatalog ??= new ApplicationActionCatalogService(
+			new LegacyActionCatalogReader(),
 		));
 	const getWorkflowTriggerKindCatalog = () =>
 		(workflowTriggerKindCatalog ??=
@@ -961,6 +968,9 @@ export function getApplicationAdapters(
 		},
 		get runtimeCatalog() {
 			return getRuntimeCatalog();
+		},
+		get actionCatalog() {
+			return getActionCatalog();
 		},
 		get workflowTriggerKindCatalog() {
 			return getWorkflowTriggerKindCatalog();
