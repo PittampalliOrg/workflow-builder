@@ -155,7 +155,7 @@ Every `durable/run` step goes through a session bridge so workflow-driven runs a
 
 Defensive layers prevent `durable/run` hangs:
 - **Empty-response circuit breaker** (`dapr-agent-py` `call_llm`): after `DAPR_AGENT_PY_EMPTY_RESPONSE_THRESHOLD` (default 3) consecutive empty/no-tool responses, raises `AgentError`. Catches Anthropic SDK #1204 (empty `end_turn`).
-- **Host-monitor thread** (`_run_session_host_monitor`, logic in `session_host_monitor.py`): out-of-band background thread polling for start/idle stalls. The old in-workflow session-turn timer (`when_any([child, timer])`) was REMOVED (commit `72154581`). Default action is `"warn"` (`DAPR_AGENT_SESSION_HOST_NONTERMINAL_TIMEOUT_ACTION`); only `terminate` kills. This is hang-detection, NOT the stop watchdog — explicit stops route through the Lifecycle Controller; stuck DB↔Dapr divergence is reconciled by the `lifecycle-terminal-reaper` CronJob.
+- **Host-monitor thread** (`_run_session_host_monitor`, logic in `session_host_monitor.py`): out-of-band background thread polling for start/idle stalls. The old in-workflow session-turn timer (`when_any([child, timer])`) was REMOVED (commit `72154581`). Default action is `"warn"` (`DAPR_AGENT_SESSION_HOST_NONTERMINAL_TIMEOUT_ACTION`); only `terminate` kills. This is hang-detection, NOT the stop watchdog — explicit stops route through the Lifecycle Controller and converge through the stop/status confirmation path.
 - **Image tool_result compaction** (`anthropic_adapter.py`): keeps last `DAPR_AGENT_PY_MAX_IMAGE_TOOL_RESULTS` (default 3) image tool_result blocks; prevents 1M-token overflow.
 
 ### Workspace session persistence
@@ -185,7 +185,7 @@ A single vetted server-side **Lifecycle Controller** in the BFF (`src/lib/server
 
 **Runtime/sandbox-side**: sandbox-execution-api stamps an owner-run-id annotation, adopting only the SAME run else delete+recreate. dapr-agent-py's cancel-key write/read AGREE for `durable/run` (check strips `__turn__N` / `:turn-N`). claude-agent-py has management parity (`POST /api/v2/agent-runs/{id}/{terminate,pause,resume}` + `DELETE` purge).
 
-**GitOps safety nets (stacks, PR4)**: `workflow-builder-sandbox-gc` CronJob (age-GC orphaned Sandbox CRs); unified Dapr `stateRetentionPolicy = 168h` across parent + per-session child Configs; `lifecycle-terminal-reaper` CronJob → `POST /api/internal/lifecycle/reap-terminal` (reconciles DB stuck non-terminal vs terminal/gone Dapr, even during benchmark activity, priority stop-requested pass); `runbooks/phase0-lifecycle-clean-slate.{sh,md}` (guarded, NOT auto-run).
+**GitOps safety nets (stacks, PR4)**: `workflow-builder-sandbox-gc` CronJob (age-GC orphaned Sandbox CRs); unified Dapr `stateRetentionPolicy = 168h` across parent + per-session child Configs; `runbooks/phase0-lifecycle-clean-slate.{sh,md}` (guarded, NOT auto-run). The old cron-driven lifecycle and goal-loop internals were retired; do not restore `/api/internal/lifecycle/reap-terminal`, `/api/internal/lifecycle/reap-resumable-workspaces`, or `/api/internal/goal-loop/tick`.
 
 ## Node Types
 
@@ -268,7 +268,7 @@ Full map: `docs/cma-parity.md`.
 - **Completion contract**: MCP tools `create_goal`/`update_goal`/`get_goal` (workflow-mcp-server), session-scoped via `X-Wfb-Session-Id` header + AsyncLocalStorage; `update_goal` accepts ONLY `"complete"`. `spawn.ts` AUTO-WIRES the goal MCP server into every MCP-capable session (opt-out `GOAL_MCP_AUTO_WIRE=false`).
 - **Budget = codex semantics**: delta = `input + output + cache_creation` — cache READS excluded. SYSTEM INVARIANT: all dapr-agent-py adapters emit `agent.llm_usage.input_tokens` NET of cache reads (openai/alibaba normalize gross→net; gross counting over-burned budgets ~20x). Goal budgets, Pulse cost, and the `context_*` window-occupancy stamp all depend on it.
 - **Guardrails**: tokenBudget → `budget_limited` + exactly ONE wrap-up turn (`budget_steered_at`); `maxIterations` hard cap (`stop_reason=iteration_cap`); stop/interrupt pauses the goal; terminal sessions halt the driver. Re-set replaces active AND budget_limited rows (re-arm): goalId rotates, accounting resets.
-- **Crash-safety**: `goal-loop-tick` CronJob (stacks, */2) → `POST /api/internal/goal-loop/tick` + lost-idle probe (`GOAL_LOOP_LOST_IDLE_GRACE_SECONDS=180`) — ingest is fire-and-forget, so a dropped idle can't freeze the loop (Dapr buffers a mid-turn raise).
+- **Crash-safety**: the inline event hook is the active driver. The old `goal-loop-tick` CronJob and `POST /api/internal/goal-loop/tick` endpoint were retired with the unused cron-driven internals; goal-set and stop-hook paths still call the same idempotent `kickGoalLoop` driver.
 - **API/UI**: `GET/POST/PATCH /api/v1/sessions/[id]/goal`; Goal card on session detail. **Session Pulse** vitals strip (`session-pulse.svelte`): tokens in/out, cache-hit %, live cost via `GET /api/v1/pricing?model=` (`MODEL_PRICING`), provider-truth Context % (the `local_advisory` heuristic undercounts 20–25%), elapsed, turns, goal tile.
 
 ## Browser Validation (In-Sandbox Screenshots)
@@ -307,7 +307,7 @@ Any SW 1.0 task can declare typed outputs via an `artifacts:` block alongside `w
 - **BFF `/execute` `ECONNREFUSED`** → orchestrator CrashLoopBackOff; common cause is image predating `activities/crawl4ai.py`
 - **Workflow-driven sessions show raw agent IDs** → ephemeral agents filtered from `/api/agents` by design
 - **Agent loops with empty responses** → Anthropic SDK #1204. Circuit breaker in `call_llm` trips after 3; look for `[call-llm] circuit-breaker tripped`
-- **Child session hangs with no LLM traffic** → host monitor defaults to `"warn"` (see Safety nets; `…TIMEOUT_ACTION=terminate` to kill); stop via the Lifecycle Controller; orphans reconciled by `lifecycle-terminal-reaper`
+- **Child session hangs with no LLM traffic** → host monitor defaults to `"warn"` (see Safety nets; `…TIMEOUT_ACTION=terminate` to kill); stop via the Lifecycle Controller and poll stop status to convergence
 - **Want to stop a running session / workflow run** → Lifecycle Controller: `POST /api/v1/sessions/[id]/stop` or `/api/workflows/executions/[id]/stop` with `{mode}`. A stop that can't confirm in-request returns **202 "stopping"** (not a hard 409). A **benchmark/eval instance** 409s `coordinator_owned` — cancel the owning run (see Lifecycle)
 - **`Could not purge … instance is not in a terminal state`** → purge requires terminal; the Controller terminates first (purge-force when worker gone). Don't reuse a deterministic ID over a stuck non-terminal instance
 - **Anthropic 400 `prompt is too long`** → too many image tool_results; `_compact_image_tool_results` keeps last `DAPR_AGENT_PY_MAX_IMAGE_TOOL_RESULTS` (default 3). **`Streaming is required`** → all calls route through `_stream_final_message`; lower `DAPR_AGENT_PY_MAX_TOKENS` (default 16384)
