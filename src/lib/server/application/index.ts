@@ -60,8 +60,10 @@ import {
 	LegacyBenchmarkRunLifecycleAdapter,
 } from "$lib/server/application/adapters/benchmark-evaluation-results";
 import {
+	LegacyAgentCompiledCapabilitiesRepository,
 	AgentRuntimeRegistrySyncAdapter,
 	LegacyAgentCatalogRepository,
+	LegacyAgentRegistryRepository,
 	LegacyWorkflowEphemeralAgentStore,
 	LocalAgentRuntimeCatalog,
 	LocalAgentTemplateCatalog,
@@ -443,6 +445,8 @@ export function getApplicationAdapters(
 	const getAgentCatalog = () =>
 		(agentCatalog ??= new ApplicationAgentCatalogService({
 			agents: new LegacyAgentCatalogRepository(),
+			capabilities: new LegacyAgentCompiledCapabilitiesRepository(),
+			registry: new LegacyAgentRegistryRepository(),
 			runtimes: new LocalAgentRuntimeCatalog(),
 			templates: new LocalAgentTemplateCatalog(),
 		}));

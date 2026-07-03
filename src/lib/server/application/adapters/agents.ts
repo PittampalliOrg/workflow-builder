@@ -5,6 +5,8 @@ import type {
 	AgentCatalogUpdateInput,
 	AgentCatalogUpdateResult,
 	AgentCatalogWriteResult,
+	AgentCompiledCapabilitiesRepository,
+	AgentRegistryRepository,
 	AgentRuntimeCatalog,
 	AgentTemplateCatalog,
 	AgentRuntimeSyncPort,
@@ -46,8 +48,12 @@ import {
 } from "$lib/server/agents/ephemeral";
 import {
 	agentRegistryKey,
+	deregisterAgent,
+	getRegistryStatus,
+	registerAgent,
 	syncAgentRuntimeCR,
 } from "$lib/server/agents/registry-sync";
+import { compileAgentCapabilities } from "$lib/server/agents/compiled-capabilities";
 import { resolveEnvironmentRef } from "$lib/server/environments/registry";
 import { agentRuntimeDedicatedAppId } from "$lib/server/agents/runtime-routing";
 import { listRuntimeIds } from "$lib/server/agents/runtime-registry";
@@ -150,6 +156,37 @@ export class LegacyAgentCatalogRepository implements AgentCatalogRepository {
 
 	findAllAgentUsageCounts() {
 		return findAllAgentUsageCounts();
+	}
+}
+
+export class LegacyAgentCompiledCapabilitiesRepository
+	implements AgentCompiledCapabilitiesRepository
+{
+	async compileAgentCapabilities(agentId: string) {
+		return (await compileAgentCapabilities(agentId)) as Awaited<
+			ReturnType<AgentCompiledCapabilitiesRepository["compileAgentCapabilities"]>
+		>;
+	}
+}
+
+export class LegacyAgentRegistryRepository implements AgentRegistryRepository {
+	getRegistryStatus(
+		agentId: string,
+		input: Parameters<AgentRegistryRepository["getRegistryStatus"]>[1],
+	) {
+		return getRegistryStatus(agentId, input);
+	}
+
+	registerAgent(agentId: string) {
+		return registerAgent(agentId);
+	}
+
+	deregisterAgent(agentId: string) {
+		return deregisterAgent(agentId);
+	}
+
+	syncAgentRuntime(agentId: string) {
+		return syncAgentRuntimeCR(agentId);
 	}
 }
 

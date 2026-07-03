@@ -1,9 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import {
-	deregisterAgent,
-	getRegistryStatus,
-} from "$lib/server/agents/registry-sync";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * GET /api/agents/{id}/registry
@@ -15,9 +12,13 @@ import {
 export const GET: RequestHandler = async ({ params, url, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	const includeMetadata = url.searchParams.get("includeMetadata") === "1";
-	const view = await getRegistryStatus(params.id, { includeMetadata });
-	if (!view) return error(404, "Agent not found");
-	return json(view);
+	const { agentCatalog } = getApplicationAdapters();
+	const result = await agentCatalog.getRegistryStatus({
+		agentId: params.id,
+		includeMetadata,
+	});
+	if (result.status === "not_found") return error(404, result.message);
+	return json(result.view);
 };
 
 /**
@@ -28,6 +29,7 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
  */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const result = await deregisterAgent(params.id);
+	const { agentCatalog } = getApplicationAdapters();
+	const result = await agentCatalog.deregisterAgentRegistry(params.id);
 	return json(result);
 };

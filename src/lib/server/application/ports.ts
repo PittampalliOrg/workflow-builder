@@ -4447,6 +4447,29 @@ export type AgentCatalogUsageCounts = Record<
 	{ workflowCount: number; nodeCount: number }
 >;
 
+export type AgentCompiledCapabilities = Record<string, unknown>;
+
+export type AgentRegistryStatus =
+	| "unregistered"
+	| "registered"
+	| "failed"
+	| "archiving"
+	| "archived";
+
+export type AgentRegistrySyncResult = {
+	status: AgentRegistryStatus;
+	syncedAt: string | null;
+	error: string | null;
+	team: string | null;
+	key: string | null;
+};
+
+export type AgentRegistryView = AgentRegistrySyncResult & {
+	store: string;
+	dualWriteEnabled: boolean;
+	metadata?: unknown | null;
+};
+
 export interface AgentCatalogRepository {
 	listAgents(input: AgentCatalogListInput): Promise<AgentSummary[]>;
 	getAgent(id: string): Promise<AgentDetail | null>;
@@ -4472,6 +4495,22 @@ export interface AgentCatalogRepository {
 	): Promise<AgentDetail | null>;
 	findAgentUsages(agentId: string): Promise<AgentCatalogUsage[]>;
 	findAllAgentUsageCounts(): Promise<AgentCatalogUsageCounts>;
+}
+
+export interface AgentCompiledCapabilitiesRepository {
+	compileAgentCapabilities(
+		agentId: string,
+	): Promise<AgentCompiledCapabilities | null>;
+}
+
+export interface AgentRegistryRepository {
+	getRegistryStatus(
+		agentId: string,
+		input: { includeMetadata?: boolean },
+	): Promise<AgentRegistryView | null>;
+	registerAgent(agentId: string): Promise<AgentRegistrySyncResult>;
+	deregisterAgent(agentId: string): Promise<AgentRegistrySyncResult>;
+	syncAgentRuntime(agentId: string): Promise<void>;
 }
 
 export interface AgentRuntimeCatalog {

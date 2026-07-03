@@ -1,7 +1,13 @@
 import { createDefaultAgentConfig } from "$lib/types/agents";
 import type { AgentConfig, AgentDetail, AgentRuntime } from "$lib/types/agents";
 import type {
+	AgentCatalogVersionDetail,
 	AgentCatalogRepository,
+	AgentCompiledCapabilities,
+	AgentCompiledCapabilitiesRepository,
+	AgentRegistryRepository,
+	AgentRegistrySyncResult,
+	AgentRegistryView,
 	AgentRuntimeCatalog,
 	AgentTemplateCatalog,
 } from "$lib/server/application/ports";
@@ -65,7 +71,7 @@ export type DuplicateAgentResult =
 	| { status: "not_found"; message: string };
 
 export type AgentVersionResult =
-	| { status: "ok"; version: Awaited<ReturnType<AgentCatalogRepository["getVersion"]>> }
+	| { status: "ok"; version: AgentCatalogVersionDetail }
 	| { status: "invalid"; message: string }
 	| { status: "not_found"; message: string };
 
@@ -74,10 +80,20 @@ export type RestoreAgentVersionResult =
 	| { status: "invalid"; message: string }
 	| { status: "not_found"; message: string };
 
+export type CompiledCapabilitiesResult =
+	| { status: "ok"; compiled: AgentCompiledCapabilities }
+	| { status: "not_found"; message: string };
+
+export type AgentRegistryStatusResult =
+	| { status: "ok"; view: AgentRegistryView }
+	| { status: "not_found"; message: string };
+
 export class ApplicationAgentCatalogService {
 	constructor(
 		private readonly deps: {
 			agents: AgentCatalogRepository;
+			capabilities: AgentCompiledCapabilitiesRepository;
+			registry: AgentRegistryRepository;
 			runtimes: AgentRuntimeCatalog;
 			templates: AgentTemplateCatalog;
 		},
@@ -238,6 +254,33 @@ export class ApplicationAgentCatalogService {
 
 	findAllAgentUsageCounts() {
 		return this.deps.agents.findAllAgentUsageCounts();
+	}
+
+	async compileCapabilities(agentId: string): Promise<CompiledCapabilitiesResult> {
+		const compiled = await this.deps.capabilities.compileAgentCapabilities(agentId);
+		if (!compiled) return { status: "not_found", message: "Agent not found" };
+		return { status: "ok", compiled };
+	}
+
+	async getRegistryStatus(input: {
+		agentId: string;
+		includeMetadata?: boolean;
+	}): Promise<AgentRegistryStatusResult> {
+		const view = await this.deps.registry.getRegistryStatus(input.agentId, {
+			includeMetadata: input.includeMetadata,
+		});
+		if (!view) return { status: "not_found", message: "Agent not found" };
+		return { status: "ok", view };
+	}
+
+	deregisterAgentRegistry(agentId: string): Promise<AgentRegistrySyncResult> {
+		return this.deps.registry.deregisterAgent(agentId);
+	}
+
+	async syncAgentRegistry(agentId: string): Promise<AgentRegistrySyncResult> {
+		const result = await this.deps.registry.registerAgent(agentId);
+		await this.deps.registry.syncAgentRuntime(agentId);
+		return result;
 	}
 
 	private pickRuntime(value: unknown): AgentRuntime | undefined {

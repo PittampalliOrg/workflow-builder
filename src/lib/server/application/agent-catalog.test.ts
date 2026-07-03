@@ -4,7 +4,9 @@ import {
 	type CreateAgentResult,
 } from "$lib/server/application/agent-catalog";
 import type {
+	AgentCompiledCapabilitiesRepository,
 	AgentCatalogRepository,
+	AgentRegistryRepository,
 	AgentRuntimeCatalog,
 	AgentTemplateCatalog,
 } from "$lib/server/application/ports";
@@ -12,12 +14,43 @@ import type { AgentConfig, AgentDetail } from "$lib/types/agents";
 
 describe("ApplicationAgentCatalogService", () => {
 	let agents: AgentCatalogRepository;
+	let capabilities: AgentCompiledCapabilitiesRepository;
+	let registry: AgentRegistryRepository;
 	let runtimes: AgentRuntimeCatalog;
 	let templates: AgentTemplateCatalog;
 	let service: ApplicationAgentCatalogService;
 
 	beforeEach(() => {
 		agents = fakeAgentCatalogRepository();
+		capabilities = {
+			compileAgentCapabilities: vi.fn(async () => ({ agent: { id: "agent-1" } })),
+		};
+		registry = {
+			getRegistryStatus: vi.fn(async () => ({
+				status: "registered" as const,
+				syncedAt: "2026-05-15T12:00:00.000Z",
+				error: null,
+				team: "project-1",
+				key: "agents:project-1:writer",
+				store: "agent-registry",
+				dualWriteEnabled: true,
+			})),
+			registerAgent: vi.fn(async () => ({
+				status: "registered" as const,
+				syncedAt: "2026-05-15T12:00:00.000Z",
+				error: null,
+				team: "project-1",
+				key: "agents:project-1:writer",
+			})),
+			deregisterAgent: vi.fn(async () => ({
+				status: "archived" as const,
+				syncedAt: "2026-05-15T12:00:00.000Z",
+				error: null,
+				team: "project-1",
+				key: "agents:project-1:writer",
+			})),
+			syncAgentRuntime: vi.fn(async () => undefined),
+		};
 		runtimes = {
 			listRuntimeIds: vi.fn(() => ["dapr-agent-py", "codex-cli", "agy-cli"]),
 		};
@@ -26,6 +59,8 @@ describe("ApplicationAgentCatalogService", () => {
 		};
 		service = new ApplicationAgentCatalogService({
 			agents,
+			capabilities,
+			registry,
 			runtimes,
 			templates,
 		});
@@ -235,6 +270,28 @@ describe("ApplicationAgentCatalogService", () => {
 
 		expect(agents.findAgentUsages).toHaveBeenCalledWith("agent-1");
 		expect(agents.findAllAgentUsageCounts).toHaveBeenCalled();
+	});
+
+	it("delegates compiled capabilities and registry operations to ports", async () => {
+		const compiled = await service.compileCapabilities("agent-1");
+		const status = await service.getRegistryStatus({
+			agentId: "agent-1",
+			includeMetadata: true,
+		});
+		const synced = await service.syncAgentRegistry("agent-1");
+		const deregistered = await service.deregisterAgentRegistry("agent-1");
+
+		expect(compiled.status).toBe("ok");
+		expect(capabilities.compileAgentCapabilities).toHaveBeenCalledWith("agent-1");
+		expect(status.status).toBe("ok");
+		expect(registry.getRegistryStatus).toHaveBeenCalledWith("agent-1", {
+			includeMetadata: true,
+		});
+		expect(synced.status).toBe("registered");
+		expect(registry.registerAgent).toHaveBeenCalledWith("agent-1");
+		expect(registry.syncAgentRuntime).toHaveBeenCalledWith("agent-1");
+		expect(deregistered.status).toBe("archived");
+		expect(registry.deregisterAgent).toHaveBeenCalledWith("agent-1");
 	});
 });
 

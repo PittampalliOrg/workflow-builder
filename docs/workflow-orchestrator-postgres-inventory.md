@@ -544,6 +544,15 @@ The first UI-facing route has also moved behind the application service:
   agent registry directly; the registry stays behind `AgentCatalogRepository`
   as the first Postgres-backed adapter. Compiled-capabilities and registry-sync
   agent subroutes remain later bounded slices.
+- `src/routes/api/agents/[id]/compiled/+server.ts`,
+  `src/routes/api/agents/[id]/registry/+server.ts`, and
+  `src/routes/api/agents/[id]/registry/sync/+server.ts` now delegate compiled
+  capability inspection, per-agent registry status/deregister, and explicit
+  registry/runtime sync to `ApplicationAgentCatalogService`. DB, Dapr
+  state-store, runtime registry, MCP resolution, and Kubernetes runtime-sync
+  details remain behind `AgentCompiledCapabilitiesRepository` and
+  `AgentRegistryRepository` adapters. The global `/api/agents/registry` Dapr
+  registry browser remains a later diagnostics/read-model slice.
 - `src/routes/api/v1/agent-runtimes/+server.ts`,
   `src/routes/api/v1/agent-runtimes/[slug]/+server.ts`,
   `src/routes/api/v1/agent-runtimes/[slug]/wake/+server.ts`,
