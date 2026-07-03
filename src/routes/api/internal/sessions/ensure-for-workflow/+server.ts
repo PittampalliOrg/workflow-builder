@@ -6,7 +6,6 @@ import type {
 	WorkflowPublishedAgent,
 } from "$lib/server/application/ports";
 import { validateInternalToken } from "$lib/server/internal-auth";
-import { appendEvent, sendUserEvent } from "$lib/server/sessions/events";
 import { findOrCreateEphemeralAgent } from "$lib/server/agents/ephemeral";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import {
@@ -602,14 +601,11 @@ export const POST: RequestHandler = async ({ request }) => {
 	// row/pod side effects), so the event is emitted here. Fire-and-forget;
 	// deterministic sourceEventId dedupes any idempotent re-ensure.
 	if (swapTarget && swapVerdict && swapVerdict.drops.length > 0) {
-		void appendEvent(sessionId, {
-			type: "runtime.swap_degraded",
-			data: {
-				runtimeId: swapTarget.id,
-				decision: swapVerdict.decision,
-				drops: swapVerdict.drops,
-			},
-			sourceEventId: `swap:${sessionId}:${swapTarget.id}`,
+		void sessionCommands.appendWorkflowSessionSwapDegradedEvent({
+			sessionId,
+			runtimeId: swapTarget.id,
+			decision: swapVerdict.decision,
+			drops: swapVerdict.drops,
 		}).catch((err) =>
 			console.warn(
 				`[swap-safety] swap_degraded event emit failed: ${err instanceof Error ? err.message : err}`,
@@ -631,12 +627,10 @@ export const POST: RequestHandler = async ({ request }) => {
 			evidencePlan: effectiveBridgeGoal.evidencePlan,
 		});
 	}
-	if (effectiveInitialMessage && effectiveInitialMessage.trim()) {
-		await sendUserEvent(sessionId, {
-			type: "user.message",
-			content: [{ type: "text", text: effectiveInitialMessage }],
-		});
-	}
+	await sessionCommands.appendWorkflowSessionInitialMessage({
+		sessionId,
+		text: effectiveInitialMessage,
+	});
 
 	// Wake the target runtime before responding. The parent workflow
 	// will yield `ctx.call_child_workflow("session_workflow", app_id=<agentAppId>)`

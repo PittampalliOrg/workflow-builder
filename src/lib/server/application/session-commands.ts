@@ -99,6 +99,18 @@ export type ReapTerminatedWorkflowSessionRuntimeHostsCommand = {
 	exceptSessionId: string;
 };
 
+export type AppendWorkflowSessionSwapDegradedEventCommand = {
+	sessionId: string;
+	runtimeId: string;
+	decision: string;
+	drops: unknown[];
+};
+
+export type AppendWorkflowSessionInitialMessageCommand = {
+	sessionId: string;
+	text: string | null | undefined;
+};
+
 export class ApplicationSessionCommandService {
 	constructor(
 		private readonly deps: {
@@ -244,6 +256,35 @@ export class ApplicationSessionCommandService {
 		} catch (mountErr) {
 			console.error("[sessions] workflow repository mount failed:", mountErr);
 		}
+	}
+
+	async appendWorkflowSessionSwapDegradedEvent(
+		input: AppendWorkflowSessionSwapDegradedEventCommand,
+	): Promise<void> {
+		await this.deps.sessionEvents.appendSessionEvent(input.sessionId, {
+			type: "runtime.swap_degraded",
+			data: {
+				runtimeId: input.runtimeId,
+				decision: input.decision,
+				drops: input.drops,
+			},
+			sourceEventId: `swap:${input.sessionId}:${input.runtimeId}`,
+		});
+	}
+
+	async appendWorkflowSessionInitialMessage(
+		input: AppendWorkflowSessionInitialMessageCommand,
+	): Promise<void> {
+		const text = typeof input.text === "string" ? input.text.trim() : "";
+		if (!text) return;
+		await this.deps.sessionEvents.appendSessionEvent(input.sessionId, {
+			type: "user.message",
+			data: {
+				type: "user.message",
+				content: [{ type: "text", text }],
+			},
+			processedAt: null,
+		});
 	}
 
 	async reapTerminatedWorkflowSessionRuntimeHosts(

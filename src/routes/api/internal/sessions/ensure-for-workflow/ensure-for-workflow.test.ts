@@ -86,6 +86,8 @@ const mocks = vi.hoisted(() => {
 		sessionCommands: {
 			materializeWorkflowSessionRepositories: vi.fn(async () => undefined),
 			reapTerminatedWorkflowSessionRuntimeHosts: vi.fn(async () => undefined),
+			appendWorkflowSessionSwapDegradedEvent: vi.fn(async () => undefined),
+			appendWorkflowSessionInitialMessage: vi.fn(async () => undefined),
 		},
 	};
 });
@@ -126,11 +128,6 @@ vi.mock("$lib/server/sessions/agent-workflow-host", () => ({
 		baggage: null,
 	}),
 	maybeProvisionAgentWorkflowHost: mocks.maybeProvisionAgentWorkflowHost,
-}));
-
-vi.mock("$lib/server/sessions/events", () => ({
-	appendEvent: vi.fn(async () => undefined),
-	sendUserEvent: vi.fn(async () => undefined),
 }));
 
 vi.mock("$lib/server/observability/mlflow-lifecycle", () => ({
@@ -218,8 +215,13 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 		expect(source).toContain("sessionGoals.ensureWorkflowEvaluatorGoal");
 		expect(source).toContain("sessionCommands.materializeWorkflowSessionRepositories");
 		expect(source).toContain("sessionCommands.reapTerminatedWorkflowSessionRuntimeHosts");
+		expect(source).toContain("sessionCommands.appendWorkflowSessionInitialMessage");
+		expect(source).toContain("sessionCommands.appendWorkflowSessionSwapDegradedEvent");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/goals/repo");
+		expect(source).not.toContain("$lib/server/sessions/events");
+		expect(source).not.toContain("appendEvent");
+		expect(source).not.toContain("sendUserEvent");
 		expect(source).not.toContain("$lib/server/sessions/registry");
 		expect(source).not.toContain("$lib/server/sessions/repositories");
 		expect(source).not.toContain("deleteSandbox");
@@ -365,6 +367,25 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 		).toHaveBeenCalledWith({
 			workflowExecutionId: "execution-1",
 			exceptSessionId: "sess-agy-cli",
+		});
+	});
+
+	it("delegates workflow initial message persistence to the session command service", async () => {
+		await callEnsureForWorkflow({
+			runtime: "codex-cli",
+			modelSpec: "openai/gpt-5.5",
+			provider: "openai",
+			token: '{"tokens":{"refresh_token":"codex"}}',
+			body: {
+				initialMessage: "hello",
+			},
+		});
+
+		expect(
+			mocks.sessionCommands.appendWorkflowSessionInitialMessage,
+		).toHaveBeenCalledWith({
+			sessionId: "sess-codex-cli",
+			text: "hello",
 		});
 	});
 

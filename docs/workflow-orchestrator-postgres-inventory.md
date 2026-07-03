@@ -701,12 +701,15 @@ The first UI-facing route has also moved behind the application service:
   now delegates to
   `ApplicationSessionCommandService.reapTerminatedWorkflowSessionRuntimeHosts`,
   so Kubernetes Sandbox deletion is behind the session sandbox-destroyer port
-  instead of the route calling `deleteSandbox` directly. The route still owns
-  runtime command ordering, sandbox provisioning/wake, child-input assembly, and
-  ephemeral workflow-agent creation through existing helper seams. It no longer
-  imports `$lib/server/db` or Drizzle schema types; published-agent SQL is
-  confined to the workflow-data agent adapter, and on-demand legacy MLflow
-  registration is no longer created from this hot path.
+  instead of the route calling `deleteSandbox` directly. Swap-degraded audit
+  events and initial workflow user messages now delegate to
+  `ApplicationSessionCommandService`, so the route no longer imports
+  `src/lib/server/sessions/events.ts`. The route still owns runtime command
+  ordering, sandbox provisioning/wake, child-input assembly, and ephemeral
+  workflow-agent creation through existing helper seams. It no longer imports
+  `$lib/server/db` or Drizzle schema types; published-agent SQL is confined to
+  the workflow-data agent adapter, and on-demand legacy MLflow registration is
+  no longer created from this hot path.
 - `src/routes/api/internal/sessions/[id]/cli-credentials/capture/+server.ts`
   now resolves the session owner through `workflowData.getSessionFileOwner`
   instead of querying `sessions.user_id` directly. Credential bundle validation,

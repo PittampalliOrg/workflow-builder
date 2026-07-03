@@ -402,6 +402,41 @@ describe("ApplicationSessionCommandService", () => {
 		);
 	});
 
+	it("appends workflow swap degradation events through the event-log port", async () => {
+		await service.appendWorkflowSessionSwapDegradedEvent({
+			sessionId: "session-1",
+			runtimeId: "agy-cli",
+			decision: "warn",
+			drops: [{ capability: "mcp", severity: "warn" }],
+		});
+
+		expect(sessionEvents.appendSessionEvent).toHaveBeenCalledWith("session-1", {
+			type: "runtime.swap_degraded",
+			data: {
+				runtimeId: "agy-cli",
+				decision: "warn",
+				drops: [{ capability: "mcp", severity: "warn" }],
+			},
+			sourceEventId: "swap:session-1:agy-cli",
+		});
+	});
+
+	it("appends workflow initial user messages through the event-log port", async () => {
+		await service.appendWorkflowSessionInitialMessage({
+			sessionId: "session-1",
+			text: " hello ",
+		});
+
+		expect(sessionEvents.appendSessionEvent).toHaveBeenCalledWith("session-1", {
+			type: "user.message",
+			data: {
+				type: "user.message",
+				content: [{ type: "text", text: "hello" }],
+			},
+			processedAt: null,
+		});
+	});
+
 	it("rejects invalid session resource payloads before touching persistence", async () => {
 		const result = await service.addSessionResource({
 			sessionId: "session-1",
