@@ -227,10 +227,13 @@ The first UI-facing route has also moved behind the application service:
   Promotion-gate evaluation remains route-local response shaping over execution
   and artifact DTOs.
 - `src/routes/api/workflows/executions/[executionId]/versions/[artifactId]/promote/+server.ts`
-  now scope-checks the execution and source-bundle artifact through
-  `workflowData`, provisions the existing helper-pod command path as route-local
-  orchestration, and records durable promotion metadata through
-  `workflowData.updateWorkflowArtifactMetadata`.
+  now delegates source-bundle promotion to
+  `ApplicationWorkflowCodeVersionPromotionService`. The service scope-checks the
+  execution through `workflowData.getScopedExecutionById`, validates the
+  source-bundle artifact, resolves repo/base/mode/title defaults, evaluates the
+  promotion gate through a policy port, records durable promotion metadata
+  through workflow-data, and hides helper-pod provisioning plus shell command
+  execution behind `SourceBundlePromotionRunnerPort`.
 - `src/routes/api/workflows/executions/[executionId]/workspace-files/+server.ts`
   and `src/routes/api/workflows/executions/[executionId]/workspace-content/+server.ts`
   now scope-check and resolve the execution's Dapr instance through

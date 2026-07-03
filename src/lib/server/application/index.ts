@@ -125,6 +125,10 @@ import {
 } from "$lib/server/application/adapters/workflow-control";
 import { LegacyWorkflowConnectionRefSyncPort } from "$lib/server/application/adapters/workflow-connections";
 import { LegacyWorkflowCodeCheckpointWorkspacePort } from "$lib/server/application/adapters/workflow-code-checkpoints";
+import {
+	HelperPodSourceBundlePromotionRunner,
+	WorkflowPromotionGateAdapter,
+} from "$lib/server/application/adapters/workflow-code-version-promotion";
 import { LegacyCliPreviewGatewayPort } from "$lib/server/application/adapters/cli-preview";
 import { LegacySandboxPreviewGatewayPort } from "$lib/server/application/adapters/sandbox-preview";
 import { LegacyWorkflowTriggerLifecyclePort } from "$lib/server/application/adapters/workflow-trigger-lifecycle";
@@ -148,6 +152,7 @@ import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/applica
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
 import { ApplicationWorkflowExecutionStreamService } from "$lib/server/application/workflow-execution-stream";
 import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/application/workflow-code-checkpoints";
+import { ApplicationWorkflowCodeVersionPromotionService } from "$lib/server/application/workflow-code-version-promotion";
 import { ApplicationWorkflowTriggerManagementService } from "$lib/server/application/workflow-trigger-management";
 import { ApplicationWorkflowTriggerLifecycleService } from "$lib/server/application/workflow-trigger-lifecycle";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
@@ -277,6 +282,9 @@ export function getApplicationAdapters(
 		| undefined;
 	let workflowCodeCheckpoints:
 		| ApplicationWorkflowCodeCheckpointService
+		| undefined;
+	let workflowCodeVersionPromotion:
+		| ApplicationWorkflowCodeVersionPromotionService
 		| undefined;
 	let workflowTriggerLifecycle:
 		| ApplicationWorkflowTriggerLifecycleService
@@ -501,6 +509,12 @@ export function getApplicationAdapters(
 			checkpoints: getCodeCheckpoints(),
 			workspace: new LegacyWorkflowCodeCheckpointWorkspacePort(),
 		}));
+	const getWorkflowCodeVersionPromotion = () =>
+		(workflowCodeVersionPromotion ??= new ApplicationWorkflowCodeVersionPromotionService({
+			workflowData: getWorkflowData(),
+			promotionGate: new WorkflowPromotionGateAdapter(),
+			runner: new HelperPodSourceBundlePromotionRunner(),
+		}));
 	const getWorkflowTriggerLifecycle = () =>
 		(workflowTriggerLifecycle ??= new ApplicationWorkflowTriggerLifecycleService({
 			workflowData: getWorkflowData(),
@@ -675,6 +689,9 @@ export function getApplicationAdapters(
 		},
 		get workflowCodeCheckpoints() {
 			return getWorkflowCodeCheckpoints();
+		},
+		get workflowCodeVersionPromotion() {
+			return getWorkflowCodeVersionPromotion();
 		},
 		get workflowTriggerLifecycle() {
 			return getWorkflowTriggerLifecycle();

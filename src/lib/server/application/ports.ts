@@ -2987,6 +2987,55 @@ export interface ArtifactStore {
 	}): Promise<WorkflowArtifactRecord | null>;
 }
 
+export type SourceBundlePromotionMode = "pr" | "branch";
+
+export type SourceBundlePromotionGateInput = {
+	mode: SourceBundlePromotionMode;
+	artifactPayload: Record<string, unknown>;
+	executionOutput: unknown;
+	summaryOutput: Record<string, unknown> | null;
+};
+
+export type SourceBundlePromotionGateResult = {
+	allowed: boolean;
+	[key: string]: unknown;
+};
+
+export interface SourceBundlePromotionGatePort {
+	evaluatePromotionGate(
+		input: SourceBundlePromotionGateInput,
+	): SourceBundlePromotionGateResult;
+}
+
+export type SourceBundlePromotionRunnerInput = {
+	executionId: string;
+	fileId: string;
+	repo: string;
+	base: string;
+	mode: SourceBundlePromotionMode;
+	title: string;
+	tier: string;
+	repoSubdir: string;
+	syncPaths: string[];
+};
+
+export type SourceBundlePromotionRunnerResult =
+	| {
+			status: "ok";
+			output: string;
+			prUrl: string | null;
+			branch: string | null;
+			prError: string | null;
+	  }
+	| { status: "command_error"; error: string; output: string }
+	| { status: "unavailable"; message: string };
+
+export interface SourceBundlePromotionRunnerPort {
+	promoteSourceBundle(
+		input: SourceBundlePromotionRunnerInput,
+	): Promise<SourceBundlePromotionRunnerResult>;
+}
+
 export type WorkspaceSessionBackend = "openshell" | "juicefs";
 export type WorkspaceSessionStatus = "active" | "cleaned" | "error";
 
