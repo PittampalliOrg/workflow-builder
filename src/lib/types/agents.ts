@@ -214,8 +214,8 @@ export type AgentConfig = {
 	 * direct sessions (session-create) and workflow `durable/run` steps that
 	 * reference this agent (the bridge forwards `agentConfig`, so no
 	 * orchestrator change is needed). Private repos reference a vault
-	 * credential via `authTokenCredentialId`. See
-	 * `src/lib/server/sessions/repositories.ts`.
+		 * credential via `authTokenCredentialId`. See
+		 * `src/lib/server/application/adapters/session-repositories.ts`.
 	 */
 	repositories?: SessionRepositoryInput[];
 

@@ -86,7 +86,7 @@ import {
 	mountSessionRepositories,
 	mountSessionRepositoriesViaHost,
 	mountSingleRepository,
-} from "$lib/server/sessions/repositories";
+} from "$lib/server/application/adapters/session-repositories";
 import { openshellRuntimeFetch } from "$lib/server/openshell-runtime";
 import { deleteKubernetesSandbox } from "$lib/server/kube/client";
 import {

@@ -34,7 +34,8 @@ audit events through workflow-data; `spawn.ts` no longer imports the legacy
 `sessions/events` DB helper.
 Interactive-CLI repository mounting during session spawn now delegates through
 the session command repository-mounter port; `spawn.ts` no longer imports the
-legacy `sessions/repositories` DB helper directly.
+repository-mounter adapter directly. The DB-backed repository mounting helper
+now lives under `src/lib/server/application/adapters/session-repositories.ts`.
 The session runtime-config helper now takes its persisted
 `session.runtime_config` fallback as an injected adapter dependency. The latest
 runtime-config event query is confined to `DefaultSessionRuntimeConfigReader`;
@@ -884,8 +885,8 @@ services:
   longer imports `src/lib/server/goals/repo.ts`. Repository resource
   materialization and best-effort pre-run mounting now delegate to
   `ApplicationSessionCommandService.materializeWorkflowSessionRepositories`, so
-  the route no longer imports `src/lib/server/sessions/registry.ts` or
-  `src/lib/server/sessions/repositories.ts`. Terminal per-run agent-host reaping
+  the route no longer imports `src/lib/server/sessions/registry.ts` or the
+  repository-mounter adapter directly. Terminal per-run agent-host reaping
   now delegates to
   `ApplicationSessionCommandService.reapTerminatedWorkflowSessionRuntimeHosts`,
   so Kubernetes Sandbox deletion is behind the session sandbox-destroyer port
