@@ -47,7 +47,7 @@ import type {
 	WorkflowExecutionSessionRuntimeRecord,
 	WorkflowSessionRuntimeHostRecord,
 } from "$lib/server/application/ports";
-import { and, asc, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
 import {
 	agents,
@@ -56,6 +56,8 @@ import {
 	sessionResources,
 	sessions,
 	threadGoals,
+	workflowExecutions,
+	workflows,
 	type Session,
 	type SessionResource as SessionResourceRow,
 } from "$lib/server/db/schema";
@@ -64,13 +66,7 @@ import {
 	safeCreateInteractiveSessionMlflowRun,
 	safePatchInteractiveSessionMlflowTraces,
 } from "$lib/server/observability/mlflow-lifecycle";
-import {
-	attachWorkspaceSandbox,
-	createSession as createSessionRecord,
-	getSession,
-	listSessions,
-	recordSessionSandboxProvisioningError,
-} from "$lib/server/sessions/registry";
+import { resolveAgentRef } from "$lib/server/agents/registry";
 import { raiseSessionAgentConfigPatch as raiseSessionAgentConfigPatchForRuntime } from "$lib/server/sessions/agent-config-patch";
 import { getSessionProvisioningPreferObserver } from "$lib/server/sessions/provisioning";
 import {
@@ -118,6 +114,10 @@ import type {
 	SessionDetail,
 	SessionResource,
 	SessionResourceType,
+	SessionStatus,
+	SessionStopReason,
+	SessionSummary,
+	SessionUsage,
 	UserEvent,
 } from "$lib/types/sessions";
 
@@ -172,22 +172,236 @@ function toSessionResource(row: SessionResourceRow): SessionResource {
 	};
 }
 
+type SessionJoinContext = {
+	workflowId: string | null;
+	workflowName: string | null;
+	agentName: string | null;
+	agentSlug: string | null;
+	agentAvatar: string | null;
+	agentTags: string[] | null;
+};
+
+const EMPTY_SESSION_CONTEXT: SessionJoinContext = {
+	workflowId: null,
+	workflowName: null,
+	agentName: null,
+	agentSlug: null,
+	agentAvatar: null,
+	agentTags: null,
+};
+
+function rowToSessionSummary(
+	row: Session,
+	ctx: SessionJoinContext = EMPTY_SESSION_CONTEXT,
+): SessionSummary {
+	const agentTags = Array.isArray(ctx.agentTags) ? ctx.agentTags : [];
+	return {
+		id: row.id,
+		title: row.title ?? null,
+		status: row.status as SessionStatus,
+		stopReason: (row.stopReason as SessionStopReason | null) ?? null,
+		agentId: row.agentId,
+		agentVersion: row.agentVersion ?? null,
+		projectId: row.projectId ?? null,
+		environmentId: row.environmentId ?? null,
+		environmentVersion: row.environmentVersion ?? null,
+		vaultIds: Array.isArray(row.vaultIds) ? row.vaultIds : [],
+		usage: (row.usage as SessionUsage) ?? {},
+		errorMessage: row.errorMessage ?? null,
+		workflowExecutionId: row.workflowExecutionId ?? null,
+		mlflowExperimentId: row.mlflowExperimentId ?? null,
+		mlflowRunId: row.mlflowRunId ?? null,
+		mlflowParentRunId: row.mlflowParentRunId ?? null,
+		mlflowSessionId: row.mlflowSessionId ?? null,
+		workflowId: ctx.workflowId,
+		workflowName: ctx.workflowName,
+		agentName: ctx.agentName,
+		agentSlug: ctx.agentSlug,
+		agentAvatar: ctx.agentAvatar,
+		agentEphemeral: agentTags.includes("workflow-ephemeral"),
+		createdAt: row.createdAt.toISOString(),
+		updatedAt: row.updatedAt.toISOString(),
+		completedAt: row.completedAt ? row.completedAt.toISOString() : null,
+		archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
+	};
+}
+
+function rowToSessionDetail(
+	row: Session,
+	ctx: SessionJoinContext = EMPTY_SESSION_CONTEXT,
+): SessionDetail {
+	return {
+		...rowToSessionSummary(row, ctx),
+		daprInstanceId: row.daprInstanceId ?? null,
+		natsSubject: row.natsSubject ?? null,
+		parentExecutionId: row.parentExecutionId ?? null,
+		resumedFromSessionId: row.resumedFromSessionId ?? null,
+		sandboxName: row.sandboxName ?? null,
+		workspaceSandboxName: row.workspaceSandboxName ?? null,
+		runtimeAppId: row.runtimeAppId ?? null,
+		runtimeSandboxName: row.runtimeSandboxName ?? null,
+		pausedAt: row.pauseRequestedAt ? row.pauseRequestedAt.toISOString() : null,
+	};
+}
+
+/**
+ * Default Dapr app that executes direct `durable/run` sessions. The sandbox
+ * detail UI filters on `sessions.sandbox_name`, so new UI-created sessions keep
+ * the historical default unless a caller overrides it.
+ */
+const DEFAULT_SANDBOX_NAME = "dapr-agent-py";
+
 export class CurrentSessionRepository implements SessionRepository {
 	constructor(private readonly database?: Database) {}
 
-	listSessions(filter: SessionListInput = {}) {
-		return listSessions({
-			...filter,
-			projectId: filter.projectId ?? undefined,
+	async listSessions(filter: SessionListInput = {}) {
+		const database = requireDb(this.database);
+		type SqlCondition = ReturnType<typeof eq>;
+		const conditions: SqlCondition[] = [];
+		if (filter.userId) conditions.push(eq(sessions.userId, filter.userId));
+		if (filter.projectId) conditions.push(eq(sessions.projectId, filter.projectId));
+		if (filter.agentId) conditions.push(eq(sessions.agentId, filter.agentId));
+		if (filter.status) conditions.push(eq(sessions.status, filter.status));
+		if (filter.source === "direct") {
+			conditions.push(
+				sql`${sessions.workflowExecutionId} IS NULL` as unknown as SqlCondition,
+			);
+		} else if (filter.source === "workflow") {
+			conditions.push(
+				sql`${sessions.workflowExecutionId} IS NOT NULL` as unknown as SqlCondition,
+			);
+		}
+		if (filter.executionId) {
+			conditions.push(eq(sessions.workflowExecutionId, filter.executionId));
+		}
+		if (filter.workflowId) {
+			conditions.push(eq(workflowExecutions.workflowId, filter.workflowId));
+		}
+		if (filter.q && filter.q.trim().length >= 2) {
+			const needle = `%${filter.q.trim()}%`;
+			const textCondition = or(
+				ilike(sessions.title, needle),
+				ilike(sessions.id, needle),
+				ilike(workflows.name, needle),
+				ilike(agents.name, needle),
+			);
+			if (textCondition) conditions.push(textCondition as SqlCondition);
+		}
+		if (!filter.includeArchived) {
+			conditions.push(sql`${sessions.archivedAt} IS NULL` as unknown as SqlCondition);
+		}
+
+		const rows = await database
+			.select({
+				session: sessions,
+				workflowId: workflowExecutions.workflowId,
+				workflowName: workflows.name,
+				agentName: agents.name,
+				agentSlug: agents.slug,
+				agentAvatar: agents.avatar,
+				agentTags: agents.tags,
+			})
+			.from(sessions)
+			.leftJoin(
+				workflowExecutions,
+				eq(workflowExecutions.id, sessions.workflowExecutionId),
+			)
+			.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+			.leftJoin(agents, eq(agents.id, sessions.agentId))
+			.where(conditions.length > 0 ? and(...conditions) : undefined)
+			.orderBy(desc(sessions.createdAt))
+			.limit(filter.limit ?? 100);
+		return rows.map((row) =>
+			rowToSessionSummary(row.session, {
+				workflowId: row.workflowId ?? null,
+				workflowName: row.workflowName ?? null,
+				agentName: row.agentName ?? null,
+				agentSlug: row.agentSlug ?? null,
+				agentAvatar: row.agentAvatar ?? null,
+				agentTags: (row.agentTags as string[] | null) ?? null,
+			}),
+		);
+	}
+
+	async getSession(id: string): Promise<SessionDetail | null> {
+		const database = requireDb(this.database);
+		const [row] = await database
+			.select({
+				session: sessions,
+				workflowId: workflowExecutions.workflowId,
+				workflowName: workflows.name,
+				agentName: agents.name,
+				agentSlug: agents.slug,
+				agentAvatar: agents.avatar,
+				agentTags: agents.tags,
+			})
+			.from(sessions)
+			.leftJoin(
+				workflowExecutions,
+				eq(workflowExecutions.id, sessions.workflowExecutionId),
+			)
+			.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+			.leftJoin(agents, eq(agents.id, sessions.agentId))
+			.where(eq(sessions.id, id))
+			.limit(1);
+		return row
+			? rowToSessionDetail(row.session, {
+					workflowId: row.workflowId ?? null,
+					workflowName: row.workflowName ?? null,
+					agentName: row.agentName ?? null,
+					agentSlug: row.agentSlug ?? null,
+					agentAvatar: row.agentAvatar ?? null,
+					agentTags: (row.agentTags as string[] | null) ?? null,
+				})
+			: null;
+	}
+
+	async createSession(input: CreateSessionRecordInput): Promise<SessionDetail> {
+		const database = requireDb(this.database);
+		const resolvedAgent = await resolveAgentRef({
+			id: input.agentId,
+			version: input.agentVersion,
 		});
-	}
+		if (!resolvedAgent) {
+			throw new Error(`Agent ${input.agentId} not found`);
+		}
 
-	getSession(id: string): Promise<SessionDetail | null> {
-		return getSession(id);
-	}
+		const environmentId = input.environmentId ?? resolvedAgent.environmentId;
+		const environmentVersion =
+			input.environmentVersion ?? resolvedAgent.environmentVersion ?? null;
+		const vaultIds =
+			input.vaultIds ??
+			(resolvedAgent.defaultVaultIds.length > 0
+				? resolvedAgent.defaultVaultIds
+				: []);
 
-	createSession(input: CreateSessionRecordInput): Promise<SessionDetail> {
-		return createSessionRecord(input);
+		const values = {
+			...(input.id ? { id: input.id } : {}),
+			title: input.title ?? null,
+			status: "rescheduling" as const,
+			agentId: resolvedAgent.id,
+			agentVersion: resolvedAgent.version,
+			environmentId: environmentId ?? null,
+			environmentVersion,
+			vaultIds,
+			userId: input.userId,
+			projectId: input.projectId ?? null,
+			sandboxName: input.sandboxName ?? DEFAULT_SANDBOX_NAME,
+			workflowExecutionId: input.workflowExecutionId ?? null,
+			parentExecutionId: input.parentExecutionId ?? null,
+			resumedFromSessionId: input.resumedFromSessionId ?? null,
+			mlflowSessionId: input.id ?? null,
+		};
+		const [row] = await database.insert(sessions).values(values).returning();
+		if (!row.mlflowSessionId) {
+			const [updated] = await database
+				.update(sessions)
+				.set({ mlflowSessionId: row.id, updatedAt: row.updatedAt })
+				.where(eq(sessions.id, row.id))
+				.returning();
+			return rowToSessionDetail(updated ?? row);
+		}
+		return rowToSessionDetail(row);
 	}
 
 	async updateSessionTitle(input: {
@@ -265,17 +479,26 @@ export class CurrentSessionRepository implements SessionRepository {
 		sessionId: string;
 		workspaceSandboxName: string;
 	}): Promise<void> {
-		await attachWorkspaceSandbox(input.sessionId, input.workspaceSandboxName);
+		const database = requireDb(this.database);
+		await database
+			.update(sessions)
+			.set({
+				workspaceSandboxName: input.workspaceSandboxName,
+				errorMessage: null,
+				updatedAt: new Date(),
+			})
+			.where(eq(sessions.id, input.sessionId));
 	}
 
 	async recordSandboxProvisioningError(input: {
 		sessionId: string;
 		errorMessage: string;
 	}): Promise<void> {
-		await recordSessionSandboxProvisioningError(
-			input.sessionId,
-			input.errorMessage,
-		);
+		const database = requireDb(this.database);
+		await database
+			.update(sessions)
+			.set({ errorMessage: input.errorMessage, updatedAt: new Date() })
+			.where(eq(sessions.id, input.sessionId));
 	}
 
 	async removeSessionResource(input: {
@@ -639,7 +862,7 @@ export class CurrentSessionRepository implements SessionRepository {
 	async getWorkflowEnsureSession(
 		sessionId: string,
 	): Promise<WorkflowEnsureSessionRecord | null> {
-		const session = await getSession(sessionId);
+		const session = await this.getSession(sessionId);
 		return session ? toWorkflowEnsureSessionRecord(session) : null;
 	}
 
@@ -700,7 +923,7 @@ export class CurrentSessionRepository implements SessionRepository {
 	}
 
 	async createSessionFork(input: CreateSessionForkInput): Promise<{ id: string }> {
-		const session = await createSessionRecord({
+		const session = await this.createSession({
 			agentId: input.agentId,
 			agentVersion: input.agentVersion ?? undefined,
 			environmentId: input.environmentId ?? undefined,
@@ -714,12 +937,12 @@ export class CurrentSessionRepository implements SessionRepository {
 	}
 
 	async getPeerSession(sessionId: string): Promise<PeerSessionRecord | null> {
-		const session = await getSession(sessionId);
+		const session = await this.getSession(sessionId);
 		return session ? toPeerSessionRecord(session) : null;
 	}
 
 	async createPeerSession(input: CreatePeerSessionInput): Promise<PeerSessionRecord> {
-		const session = await createSessionRecord({
+		const session = await this.createSession({
 			id: input.id,
 			agentId: input.agentId,
 			title: input.title,

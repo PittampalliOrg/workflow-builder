@@ -218,6 +218,15 @@ describe("ApplicationSessionGoalService", () => {
 		expect(source).not.toContain("$lib/server/goals/repo");
 		expect(source).not.toContain("RepositorySessionGoalStore");
 	});
+
+	it("keeps the session adapter off the legacy DB registry shim", () => {
+		const source = readFileSync(
+			join(process.cwd(), "src/lib/server/application/adapters/sessions.ts"),
+			"utf8",
+		);
+
+		expect(source).not.toContain("$lib/server/sessions/registry");
+	});
 });
 
 function commandInput() {

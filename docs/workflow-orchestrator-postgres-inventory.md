@@ -62,6 +62,12 @@ resolver contract in `src/lib/server/lifecycle/resolvers.ts` owns only DTOs and
 deterministic helper logic such as per-session app-id and child-node extraction;
 Drizzle row reads, stop-intent writes, and terminal DB finalizers are confined
 to the adapter.
+The main application `SessionRepository` implementation now owns session
+list/get/create and workspace-sandbox update queries directly in
+`src/lib/server/application/adapters/sessions.ts`, so workflow-data/session
+commands no longer import the legacy DB-backed `src/lib/server/sessions/registry.ts`
+shim. That shim remains only for the explicitly deferred OpenShell compatibility
+path until it gets its own adapter and focused coverage.
 Goal-loop driver persistence now uses the application `GoalLoopStore` port with
 `PostgresGoalLoopStore` as the first adapter. The event-driven loop preserves
 the existing exactly-once continuation, budget, and completion behavior, but no
