@@ -92,6 +92,7 @@ import {
 	ServiceBenchmarkRunCancellationPort,
 	ServiceEvaluationRunCancellationPort,
 } from "$lib/server/application/adapters/lifecycle-bulk-stop";
+import { DaprCoordinatorCancelAdapter } from "$lib/server/application/adapters/run-cancellation";
 import {
 	KroPreviewEnvironmentProvisioner,
 	SandboxExecutionPreviewEnvironmentProvisioner,
@@ -161,6 +162,7 @@ import { ApplicationBulkLifecycleStopService } from "$lib/server/application/lif
 import { ApplicationCapacityActiveService } from "$lib/server/application/capacity-active";
 import { ApplicationCapacityOverviewService } from "$lib/server/application/capacity-overview";
 import { ApplicationDaprInspectionService } from "$lib/server/application/dapr-inspection";
+import { ApplicationRunCancellationService } from "$lib/server/application/run-cancellation";
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
 import { ApplicationWorkflowBrowserArtifactsService } from "$lib/server/application/workflow-browser-artifacts";
 import { ApplicationWorkflowExecutionArtifactDiffService } from "$lib/server/application/workflow-execution-artifact-diff";
@@ -298,6 +300,7 @@ export function getApplicationAdapters(
 	let sessionRuntimeAccess: ApplicationSessionRuntimeAccessService | undefined;
 	let sessionBrowser: ApplicationSessionBrowserService | undefined;
 	let bulkLifecycleStop: ApplicationBulkLifecycleStopService | undefined;
+	let runCancellation: ApplicationRunCancellationService | undefined;
 	let capacityActive: ApplicationCapacityActiveService | undefined;
 	let capacityOverview: ApplicationCapacityOverviewService | undefined;
 	let daprInspection: ApplicationDaprInspectionService | undefined;
@@ -498,6 +501,12 @@ export function getApplicationAdapters(
 			benchmarkRuns: new ServiceBenchmarkRunCancellationPort(),
 			evaluationRuns: new ServiceEvaluationRunCancellationPort(),
 			coordinatorCancels: new DaprLifecycleCoordinatorCancelNotifier(),
+		}));
+	const getRunCancellation = () =>
+		(runCancellation ??= new ApplicationRunCancellationService({
+			benchmarkRuns: new ServiceBenchmarkRunCancellationPort(),
+			evaluationRuns: new ServiceEvaluationRunCancellationPort(),
+			coordinator: new DaprCoordinatorCancelAdapter(),
 		}));
 	const getCapacityActive = () =>
 		(capacityActive ??= new ApplicationCapacityActiveService({
@@ -786,6 +795,9 @@ export function getApplicationAdapters(
 		},
 		get bulkLifecycleStop() {
 			return getBulkLifecycleStop();
+		},
+		get runCancellation() {
+			return getRunCancellation();
 		},
 		get capacityActive() {
 			return getCapacityActive();
