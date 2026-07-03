@@ -560,14 +560,17 @@ The first UI-facing route has also moved behind the application service:
   runtime CLI-auth metadata through workflow-data and a runtime-registry reader
   port. The file-backed runtime registry remains the adapter-side source of
   truth; the page loader no longer imports the runtime registry directly.
-- `src/routes/api/v1/sessions/[id]/compute/+server.ts`,
-  `src/routes/api/v1/sessions/[id]/runtime-flags/+server.ts`,
-  `src/routes/api/v1/sessions/[id]/shell/resolve/+server.ts`, and
+- `src/routes/api/v1/sessions/[id]/compute/+server.ts` and
+  `src/routes/api/v1/sessions/[id]/runtime-flags/+server.ts` now load their
+  full runtime read models through workflow-data. The `sessions`/`agents` join
+  and runtime app-id fallback are confined to the session repository adapter;
+  Kubernetes pod, metrics, warm-pool, and runtime-registry reads are confined to
+  the runtime-status adapter.
+- `src/routes/api/v1/sessions/[id]/shell/resolve/+server.ts` and
   `src/routes/api/v1/sessions/[id]/cli-terminal/resolve/+server.ts` now resolve
-  runtime debug targets through workflow-data session ports. The
-  `sessions`/`agents` join and runtime app-id fallback are confined to the
-  session repository adapter; live Kubernetes pod, metrics, and registry
-  capability shaping remain route-local.
+  runtime debug targets through workflow-data session ports. The live pod
+  preflight and shell container selection remain route-local pending a command
+  access slice.
 - `src/routes/api/v1/sessions/[id]/control/set-model/+server.ts`,
   `src/routes/api/v1/sessions/[id]/control/set-permission-mode/+server.ts`,
   and `src/routes/api/v1/sessions/[id]/control/update-agent-config/+server.ts`

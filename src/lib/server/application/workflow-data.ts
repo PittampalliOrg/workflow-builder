@@ -133,6 +133,7 @@ import type {
 	SessionRepository,
 	SessionRuntimeConfigReader,
 	SessionRuntimeEventRaiser,
+	SessionRuntimeStatusReader,
 	SessionTraceLifecycleStore,
 	TraceLineageStore,
 	UpdateWorkflowDefinitionInput,
@@ -786,6 +787,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			usageReporting?: UsageReportingRepository;
 			sandboxInventory?: SandboxInventoryRepository;
 			sandboxRuntimeInventory?: SandboxRuntimeInventory;
+			sessionRuntimeStatus?: SessionRuntimeStatusReader;
 			workflowScheduler?: WorkflowScheduler;
 		},
 	) {}
@@ -845,6 +847,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Session runtime config reader not configured");
 		}
 		return this.deps.sessionRuntimeConfigs;
+	}
+
+	private requireSessionRuntimeStatus(): SessionRuntimeStatusReader {
+		if (!this.deps.sessionRuntimeStatus) {
+			throw new Error("Session runtime status reader not configured");
+		}
+		return this.deps.sessionRuntimeStatus;
 	}
 
 	private requireSessionRuntimeEvents(): SessionRuntimeEventRaiser {
@@ -4036,6 +4045,26 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			sessionId: input.sessionId,
 			projectId: input.projectId ?? session.projectId ?? null,
 		});
+	}
+
+	async getSessionRuntimeCompute(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}) {
+		const target = await this.getSessionRuntimeDebugTarget(input);
+		if (!target) return null;
+		return this.requireSessionRuntimeStatus().getSessionRuntimeCompute(target);
+	}
+
+	async getSessionRuntimeFlags(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}) {
+		const target = await this.getSessionRuntimeDebugTarget(input);
+		if (!target) return null;
+		return this.requireSessionRuntimeStatus().getSessionRuntimeFlags(target);
 	}
 
 	async getNewSessionPageReadModel() {

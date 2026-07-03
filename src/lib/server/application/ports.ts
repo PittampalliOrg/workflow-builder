@@ -2712,6 +2712,46 @@ export type SessionRuntimeCliAuthReadModel = {
 	setupCommand: string | null;
 };
 
+export type SessionRuntimeResourceUsage = {
+	name: string;
+	cpuMillicores: number;
+	memoryMiB: number;
+};
+
+export type SessionRuntimeResourceRequests = {
+	cpuMillicores: number;
+	memoryMiB: number;
+};
+
+export type SessionRuntimeComputeReadModel = {
+	podName: string | null;
+	usage: SessionRuntimeResourceUsage | null;
+	requests: SessionRuntimeResourceRequests | null;
+};
+
+export type SessionRuntimeFlagsReadModel = {
+	agentSlug: string | null;
+	runtimeAppId: string;
+	runtimeSandboxName: string | null;
+	browserSidecarEnabled: boolean;
+	browserMcpAvailable: boolean;
+	shellAvailable: boolean;
+	shellContainers: string[];
+	interactiveTerminal: boolean;
+	nativeGoalAvailable: boolean;
+	cliLabel: string | null;
+	phase: string;
+};
+
+export interface SessionRuntimeStatusReader {
+	getSessionRuntimeCompute(
+		target: SessionRuntimeDebugTarget,
+	): Promise<SessionRuntimeComputeReadModel>;
+	getSessionRuntimeFlags(
+		target: SessionRuntimeDebugTarget,
+	): Promise<SessionRuntimeFlagsReadModel>;
+}
+
 export type NewSessionPageReadModel = {
 	cliAuthByRuntime: Record<string, SessionRuntimeCliAuthReadModel>;
 };
@@ -3121,6 +3161,16 @@ export interface WorkflowDataService {
 		projectId?: string | null;
 		userId?: string | null;
 	}): Promise<SessionRuntimeDebugTarget | null>;
+	getSessionRuntimeCompute(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}): Promise<SessionRuntimeComputeReadModel | null>;
+	getSessionRuntimeFlags(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}): Promise<SessionRuntimeFlagsReadModel | null>;
 	getNewSessionPageReadModel(): Promise<NewSessionPageReadModel>;
 	getSessionControlSettings(input: {
 		sessionId: string;

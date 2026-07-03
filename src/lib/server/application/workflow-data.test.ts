@@ -42,6 +42,7 @@ import type {
 	SessionRuntimeCliAuthReadModel,
 	UserProfileRepository,
 	WorkflowPlanArtifactStore,
+	SessionRuntimeStatusReader,
 	WorkflowSessionEventNotificationSource,
 	WorkflowScheduler,
 	WorkspaceProjectRepository,
@@ -834,6 +835,36 @@ function fakeRuntimeRegistry(): RuntimeRegistryReader {
 	};
 }
 
+function fakeSessionRuntimeStatus(): SessionRuntimeStatusReader {
+	return {
+		getSessionRuntimeCompute: vi.fn(async (target) => ({
+			podName: `${target.appId}-pod`,
+			usage: {
+				name: `${target.appId}-pod`,
+				cpuMillicores: 123,
+				memoryMiB: 456,
+			},
+			requests: {
+				cpuMillicores: 1000,
+				memoryMiB: 2048,
+			},
+		})),
+		getSessionRuntimeFlags: vi.fn(async (target) => ({
+			agentSlug: target.agentSlug,
+			runtimeAppId: target.appId,
+			runtimeSandboxName: target.runtimeSandboxName,
+			browserSidecarEnabled: true,
+			browserMcpAvailable: true,
+			shellAvailable: true,
+			shellContainers: ["sandbox"],
+			interactiveTerminal: false,
+			nativeGoalAvailable: false,
+			cliLabel: null,
+			phase: "Active",
+		})),
+	};
+}
+
 function fakeWorkspaceProjects(): WorkspaceProjectRepository {
 	const createdAt = new Date("2026-01-01T00:00:00.000Z");
 	const updatedAt = new Date("2026-01-01T00:00:00.000Z");
@@ -1057,6 +1088,7 @@ function makeService(options: {
 	peerAgentResolver?: PeerAgentResolver;
 	workflowAgentReads?: WorkflowAgentReadRepository;
 	runtimeRegistry?: RuntimeRegistryReader;
+	sessionRuntimeStatus?: SessionRuntimeStatusReader;
 	sessionExperimentAgents?: SessionExperimentAgentStore;
 	goalFlow?: GoalFlowReadStore;
 }) {
@@ -1108,6 +1140,8 @@ function makeService(options: {
 		peerAgentResolver: options.peerAgentResolver,
 		workflowAgentReads: options.workflowAgentReads ?? fakeWorkflowAgentReads(),
 		runtimeRegistry: options.runtimeRegistry ?? fakeRuntimeRegistry(),
+		sessionRuntimeStatus:
+			options.sessionRuntimeStatus ?? fakeSessionRuntimeStatus(),
 		sessionExperimentAgents:
 			options.sessionExperimentAgents ?? fakeSessionExperimentAgents(),
 		goalFlow: options.goalFlow ?? fakeGoalFlow(),
@@ -2146,6 +2180,103 @@ describe("ApplicationWorkflowDataService", () => {
 			},
 		});
 		expect(runtimeRegistry.listSessionRuntimeCliAuth).toHaveBeenCalledOnce();
+	});
+
+	it("loads session runtime compute through scoped runtime status ports", async () => {
+		const sourceSession = {
+			id: "session-1",
+			projectId: "project-1",
+		} as Awaited<ReturnType<SessionRepository["getSession"]>>;
+		const target = {
+			appId: "agent-session-1",
+			invokeTarget: "agent-session-1",
+			runtimeSandboxName: "agent-host-agent-session-1",
+			source: "persisted" as const,
+			agentSlug: "codex-agent",
+			agentRuntime: "codex-cli",
+		};
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => sourceSession),
+			getSessionRuntimeDebugTarget: vi.fn(async () => target),
+		} satisfies SessionRepository;
+		const sessionRuntimeStatus = fakeSessionRuntimeStatus();
+		const { service } = makeService({ sessions, sessionRuntimeStatus });
+
+		await expect(
+			service.getSessionRuntimeCompute({
+				sessionId: "session-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual({
+			podName: "agent-session-1-pod",
+			usage: {
+				name: "agent-session-1-pod",
+				cpuMillicores: 123,
+				memoryMiB: 456,
+			},
+			requests: { cpuMillicores: 1000, memoryMiB: 2048 },
+		});
+		expect(sessionRuntimeStatus.getSessionRuntimeCompute).toHaveBeenCalledWith(
+			target,
+		);
+
+		await expect(
+			service.getSessionRuntimeCompute({
+				sessionId: "session-1",
+				projectId: "other-project",
+			}),
+		).resolves.toBeNull();
+		expect(sessionRuntimeStatus.getSessionRuntimeCompute).toHaveBeenCalledTimes(
+			1,
+		);
+	});
+
+	it("loads session runtime flags through scoped runtime status ports", async () => {
+		const sourceSession = {
+			id: "session-1",
+			projectId: "project-1",
+		} as Awaited<ReturnType<SessionRepository["getSession"]>>;
+		const target = {
+			appId: "agent-session-1",
+			invokeTarget: "agent-session-1",
+			runtimeSandboxName: "agent-host-agent-session-1",
+			source: "persisted" as const,
+			agentSlug: "codex-agent",
+			agentRuntime: "codex-cli",
+		};
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => sourceSession),
+			getSessionRuntimeDebugTarget: vi.fn(async () => target),
+		} satisfies SessionRepository;
+		const sessionRuntimeStatus = fakeSessionRuntimeStatus();
+		const { service } = makeService({ sessions, sessionRuntimeStatus });
+
+		await expect(
+			service.getSessionRuntimeFlags({
+				sessionId: "session-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual(
+			expect.objectContaining({
+				agentSlug: "codex-agent",
+				runtimeAppId: "agent-session-1",
+				phase: "Active",
+				shellAvailable: true,
+			}),
+		);
+		expect(sessionRuntimeStatus.getSessionRuntimeFlags).toHaveBeenCalledWith(
+			target,
+		);
+
+		await expect(
+			service.getSessionRuntimeFlags({
+				sessionId: "session-1",
+				projectId: "other-project",
+			}),
+		).resolves.toBeNull();
+		expect(sessionRuntimeStatus.getSessionRuntimeFlags).toHaveBeenCalledTimes(1);
 	});
 
 	it("loads session control settings through scoped agent read ports", async () => {

@@ -50,6 +50,7 @@ import {
 	WorkspaceRuntimeSandboxProvisioner,
 } from "$lib/server/application/adapters/sandbox";
 import { LocalRuntimeRegistryReader } from "$lib/server/application/adapters/runtime-registry";
+import { KubernetesSessionRuntimeStatusReader } from "$lib/server/application/adapters/runtime-status";
 import {
 	CurrentSessionRepository,
 	DaprSessionRuntimeEventRaiser,
@@ -239,6 +240,7 @@ export function getApplicationAdapters(
 			workflowFiles: getWorkflowFiles(),
 			sandboxInventory: getSandboxInventory(),
 			sandboxRuntimeInventory: new OpenShellSandboxRuntimeInventory(),
+			sessionRuntimeStatus: new KubernetesSessionRuntimeStatusReader(),
 			sessionEventNotifications: getSessionEventNotifications(),
 			artifactStore: getArtifactStore(),
 			workspaceSessions: getWorkspaceSessions(),
