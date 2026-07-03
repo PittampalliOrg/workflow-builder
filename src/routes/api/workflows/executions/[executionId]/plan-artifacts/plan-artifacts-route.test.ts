@@ -2,9 +2,14 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+	WorkflowPlanArtifactListResult,
+	WorkflowPlanArtifactResult,
+} from "$lib/server/application/workflow-plan";
+import type { WorkflowPlanArtifactRecord } from "$lib/server/application/ports";
 
 const mocks = vi.hoisted(() => {
-	const planArtifact = {
+	const planArtifact: WorkflowPlanArtifactRecord = {
 		artifactRef: "plan-1",
 		workflowExecutionId: "exec-1",
 		workflowId: "wf-1",
@@ -23,33 +28,32 @@ const mocks = vi.hoisted(() => {
 		createdAt: new Date("2026-01-01T00:00:00.000Z"),
 		updatedAt: new Date("2026-01-01T00:00:00.000Z"),
 	};
-	const workflowData = {
-		listPlanArtifactsByExecutionId: vi.fn(async () => [planArtifact]),
-		upsertPlanArtifact: vi.fn(async () => ({
-			artifactRef: "plan-generated",
-			storageBackend: "workflow_plan_artifacts",
-			artifactType: "claude_task_graph_v1",
-			status: "draft",
+	const workflowPlan = {
+		listExecutionPlanArtifacts: vi.fn(async (): Promise<WorkflowPlanArtifactListResult> => ({
+			status: "ok" as const,
+			artifacts: [planArtifact],
 		})),
-		updatePlanArtifactStatus: vi.fn(async () => ({
-			artifactRef: "plan-1",
-			status: "approved",
+		createExecutionPlanArtifact: vi.fn(async (): Promise<WorkflowPlanArtifactResult> => ({
+			status: "ok" as const,
+			artifact: {
+				...planArtifact,
+				artifactRef: "plan-generated",
+				status: "draft",
+			},
 		})),
-		getPlanArtifact: vi.fn(async (artifactRef: string) => ({
-			...planArtifact,
-			artifactRef,
-			status: artifactRef === "plan-1" ? "approved" : "draft",
+		updateExecutionPlanArtifactStatus: vi.fn(async (): Promise<WorkflowPlanArtifactResult> => ({
+			status: "ok" as const,
+			artifact: {
+				...planArtifact,
+				status: "approved",
+			},
 		})),
 	};
-	return { workflowData };
+	return { workflowPlan };
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
-}));
-
-vi.mock("$lib/server/utils/id", () => ({
-	generateId: () => "plan-generated",
+	getApplicationAdapters: () => ({ workflowPlan: mocks.workflowPlan }),
 }));
 
 import { GET, PATCH, POST } from "./+server";
@@ -66,8 +70,18 @@ function event(overrides: Record<string, unknown> = {}) {
 	return {
 		params: { executionId: "exec-1" },
 		request: jsonRequest({}),
+		locals: { session: { userId: "user-1", projectId: "project-1" } },
 		...overrides,
 	};
+}
+
+async function expectHttpStatus(promise: Promise<unknown>, status: number) {
+	try {
+		const result = await promise;
+		expect((result as { status?: number }).status).toBe(status);
+	} catch (err) {
+		expect((err as { status?: number }).status).toBe(status);
+	}
 }
 
 describe("workflow execution plan-artifacts route", () => {
@@ -81,21 +95,31 @@ describe("workflow execution plan-artifacts route", () => {
 			"utf8",
 		);
 		expect(source).toContain("getApplicationAdapters");
+		expect(source).toContain("workflowPlan.listExecutionPlanArtifacts");
+		expect(source).toContain("workflowPlan.createExecutionPlanArtifact");
+		expect(source).toContain("workflowPlan.updateExecutionPlanArtifactStatus");
+		expect(source).not.toContain("workflowData");
+		expect(source).not.toContain("$lib/server/utils/id");
+		expect(source).not.toContain("generateId");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
 	});
 
-	it("lists plan artifacts through workflowData while preserving legacy id", async () => {
+	it("lists plan artifacts through workflowPlan after passing session scope", async () => {
 		const response = (await GET(event() as never)) as Response;
 
 		expect(response.status).toBe(200);
 		await expect(response.json()).resolves.toMatchObject({
 			artifacts: [{ id: "plan-1", artifactRef: "plan-1", workflowExecutionId: "exec-1" }],
 		});
-		expect(mocks.workflowData.listPlanArtifactsByExecutionId).toHaveBeenCalledWith("exec-1");
+		expect(mocks.workflowPlan.listExecutionPlanArtifacts).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
 	});
 
-	it("creates a plan artifact through workflowData with a generated artifact ref", async () => {
+	it("creates a plan artifact through workflowPlan", async () => {
 		const response = (await POST(
 			event({
 				request: jsonRequest({
@@ -110,19 +134,22 @@ describe("workflow execution plan-artifacts route", () => {
 		)) as Response;
 
 		expect(response.status).toBe(201);
-		expect(mocks.workflowData.upsertPlanArtifact).toHaveBeenCalledWith(
-			expect.objectContaining({
-				artifactRef: "plan-generated",
-				workflowExecutionId: "exec-1",
+		expect(mocks.workflowPlan.createExecutionPlanArtifact).toHaveBeenCalledWith(
+			{
+				executionId: "exec-1",
+				userId: "user-1",
+				projectId: "project-1",
 				workflowId: "wf-1",
 				nodeId: "agent",
 				goal: "ship it",
-			}),
+				planMarkdown: "## Plan",
+				planJson: { steps: [] },
+				metadata: { source: "ui" },
+			},
 		);
-		expect(mocks.workflowData.getPlanArtifact).toHaveBeenCalledWith("plan-generated");
 	});
 
-	it("updates plan artifact status through workflowData", async () => {
+	it("updates plan artifact status through workflowPlan", async () => {
 		const response = (await PATCH(
 			event({
 				request: jsonRequest({
@@ -134,11 +161,42 @@ describe("workflow execution plan-artifacts route", () => {
 		)) as Response;
 
 		expect(response.status).toBe(200);
-		expect(mocks.workflowData.updatePlanArtifactStatus).toHaveBeenCalledWith({
-			artifactRef: "plan-1",
+		expect(mocks.workflowPlan.updateExecutionPlanArtifactStatus).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+			artifactId: "plan-1",
 			status: "approved",
 			metadata: { reviewed: true },
 		});
-		expect(mocks.workflowData.getPlanArtifact).toHaveBeenCalledWith("plan-1");
+	});
+
+	it("requires an authenticated session", async () => {
+		await expectHttpStatus(
+			Promise.resolve(GET(event({ locals: { session: null } }) as never)),
+			401,
+		);
+		expect(mocks.workflowPlan.listExecutionPlanArtifacts).not.toHaveBeenCalled();
+	});
+
+	it("maps service validation errors to HTTP 400", async () => {
+		mocks.workflowPlan.createExecutionPlanArtifact.mockResolvedValueOnce({
+			status: "bad_request",
+			message: "Missing required fields: goal, nodeId, workflowId",
+		});
+
+		await expectHttpStatus(
+			Promise.resolve(POST(event({ request: jsonRequest({}) }) as never)),
+			400,
+		);
+	});
+
+	it("maps out-of-scope service results to HTTP 404", async () => {
+		mocks.workflowPlan.listExecutionPlanArtifacts.mockResolvedValueOnce({
+			status: "not_found",
+			message: "Execution not found",
+		});
+
+		await expectHttpStatus(Promise.resolve(GET(event() as never)), 404);
 	});
 });

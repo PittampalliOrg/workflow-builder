@@ -1,25 +1,26 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getApplicationAdapters } from '$lib/server/application';
-import {
-	type WorkflowPlanArtifactRecord,
-	type WorkflowPlanArtifactStatus
-} from '$lib/server/application/ports';
-import { generateId } from '$lib/server/utils/id';
+import type { WorkflowPlanArtifactResult } from '$lib/server/application/workflow-plan';
+import type { WorkflowPlanArtifactRecord } from '$lib/server/application/ports';
 
 /**
  * GET /api/workflows/executions/[executionId]/plan-artifacts
  *
  * Returns all plan artifacts for the execution, ordered by creation time.
  */
-export const GET: RequestHandler = async ({ params }) => {
+export const GET: RequestHandler = async ({ params, locals }) => {
+	if (!locals.session?.userId) return error(401, 'Authentication required');
 	const { executionId } = params;
 
-	const artifacts = await getApplicationAdapters().workflowData.listPlanArtifactsByExecutionId(
+	const result = await getApplicationAdapters().workflowPlan.listExecutionPlanArtifacts({
 		executionId,
-	);
+		userId: locals.session.userId,
+		projectId: locals.session.projectId ?? null
+	});
 
-	return json({ artifacts: artifacts.map(serializePlanArtifact) });
+	if (result.status === 'not_found') return error(404, result.message);
+	return json({ artifacts: result.artifacts.map(serializePlanArtifact) });
 };
 
 /**
@@ -28,33 +29,20 @@ export const GET: RequestHandler = async ({ params }) => {
  * Create a new plan artifact for the execution.
  * Body: { goal, planMarkdown, planJson?, nodeId, workflowId, metadata? }
  */
-export const POST: RequestHandler = async ({ params, request }) => {
+export const POST: RequestHandler = async ({ params, request, locals }) => {
+	if (!locals.session?.userId) return error(401, 'Authentication required');
 	const { executionId } = params;
 
 	const body = await request.json();
-	const { goal, planMarkdown, planJson, nodeId, workflowId, metadata } = body;
 
-	if (!goal || !nodeId || !workflowId) {
-		return error(400, 'Missing required fields: goal, nodeId, workflowId');
-	}
-
-	const workflowData = getApplicationAdapters().workflowData;
-	const artifactRef = generateId();
-	await workflowData.upsertPlanArtifact({
-		artifactRef,
-		workflowExecutionId: executionId,
-		workflowId,
-		nodeId,
-		goal,
-		planMarkdown: planMarkdown || null,
-		planJson: planJson || { steps: [] },
-		status: 'draft' as WorkflowPlanArtifactStatus,
-		metadata: metadata || null
+	const result = await getApplicationAdapters().workflowPlan.createExecutionPlanArtifact({
+		executionId,
+		userId: locals.session.userId,
+		projectId: locals.session.projectId ?? null,
+		...(isRecord(body) ? body : {})
 	});
-	const artifact = await workflowData.getPlanArtifact(artifactRef);
-	if (!artifact) return error(500, 'Plan artifact was not created');
 
-	return json(serializePlanArtifact(artifact), { status: 201 });
+	return planArtifactResponse(result, 201);
 };
 
 /**
@@ -63,38 +51,19 @@ export const POST: RequestHandler = async ({ params, request }) => {
  * Update a plan artifact's status (approve, reject, etc.)
  * Body: { artifactId, status, metadata? }
  */
-export const PATCH: RequestHandler = async ({ request }) => {
+export const PATCH: RequestHandler = async ({ params, request, locals }) => {
+	if (!locals.session?.userId) return error(401, 'Authentication required');
+	const { executionId } = params;
 	const body = await request.json();
-	const { artifactId, status, metadata } = body;
 
-	if (!artifactId || !status) {
-		return error(400, 'Missing required fields: artifactId, status');
-	}
-
-	const validStatuses: WorkflowPlanArtifactStatus[] = [
-		'draft',
-		'approved',
-		'superseded',
-		'executed',
-		'failed'
-	];
-	if (!validStatuses.includes(status)) {
-		return error(400, `Invalid status. Must be one of: ${validStatuses.join(', ')}`);
-	}
-
-	const workflowData = getApplicationAdapters().workflowData;
-	await workflowData.updatePlanArtifactStatus({
-		artifactRef: artifactId,
-		status,
-		metadata: metadata ?? undefined
+	const result = await getApplicationAdapters().workflowPlan.updateExecutionPlanArtifactStatus({
+		executionId,
+		userId: locals.session.userId,
+		projectId: locals.session.projectId ?? null,
+		...(isRecord(body) ? body : {})
 	});
-	const updated = await workflowData.getPlanArtifact(artifactId);
 
-	if (!updated) {
-		return error(404, 'Plan artifact not found');
-	}
-
-	return json(serializePlanArtifact(updated));
+	return planArtifactResponse(result);
 };
 
 function serializePlanArtifact(artifact: WorkflowPlanArtifactRecord) {
@@ -102,4 +71,18 @@ function serializePlanArtifact(artifact: WorkflowPlanArtifactRecord) {
 		id: artifact.artifactRef,
 		...artifact,
 	};
+}
+
+function planArtifactResponse(
+	result: WorkflowPlanArtifactResult,
+	status = 200
+) {
+	if (result.status === 'bad_request') return error(400, result.message);
+	if (result.status === 'not_found') return error(404, result.message);
+	if (result.status === 'error') return error(500, result.message);
+	return json(serializePlanArtifact(result.artifact), { status });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

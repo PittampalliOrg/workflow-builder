@@ -165,12 +165,13 @@ The first UI-facing route has also moved behind the application service:
   `src/routes/api/workflows/executions/[executionId]/artifacts/artifacts-route.test.ts`
   locks both the response behavior and the no-direct-db boundary.
 - `src/routes/api/workflows/executions/[executionId]/plan-artifacts/+server.ts`
-  now lists, creates, and updates plan artifacts through `workflowData`.
-  The application port gained `listPlanArtifactsByExecutionId`, with the
+  now lists, creates, and updates plan artifacts through
+  `ApplicationWorkflowPlanService`, which scopes the parent execution before
+  touching artifact rows and owns plan-artifact validation/status policy. The
+  workflow-data port supplies the execution/artifact reads and writes, with the
   Postgres query confined to
-  `src/lib/server/application/adapters/postgres.ts`. The route keeps the
-  legacy response `id` field while using the application DTO `artifactRef`
-  internally.
+  `src/lib/server/application/adapters/postgres.ts`. The route keeps the legacy
+  response `id` field while using the application DTO `artifactRef` internally.
 - `src/routes/api/workflows/executions/[executionId]/plan/+server.ts` now reads
   the newest persisted plan through `workflowData` and retains the existing
   Dapr service-invocation fallback to `dapr-agent-py` for older runs.

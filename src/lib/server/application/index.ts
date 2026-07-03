@@ -496,7 +496,7 @@ export function getApplicationAdapters(
 		}));
 	const getWorkflowPlan = () =>
 		(workflowPlan ??= new ApplicationWorkflowPlanService({
-			planArtifacts: getPlanArtifacts(),
+			workflowData: getWorkflowData(),
 			legacyAgentPlans: new DaprLegacyAgentPlanReader(),
 		}));
 	const getCliPreview = () =>
