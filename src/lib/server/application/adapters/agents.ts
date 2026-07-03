@@ -27,11 +27,17 @@ import {
 	AgentConfigValidationError,
 	archiveAgent,
 	createAgent,
+	duplicateAgent,
+	findAgentUsages,
+	findAllAgentUsageCounts,
 	getAgentBySlug,
 	getAgent,
+	getVersion,
 	listAgents,
+	listVersions,
 	resolveAgentRef,
 	resolveCallableAgents,
+	restoreVersion,
 	updateAgent,
 } from "$lib/server/agents/registry";
 import {
@@ -117,6 +123,33 @@ export class LegacyAgentCatalogRepository implements AgentCatalogRepository {
 
 	archiveAgent(id: string): Promise<boolean> {
 		return archiveAgent(id);
+	}
+
+	duplicateAgent(
+		id: string,
+		input: Parameters<AgentCatalogRepository["duplicateAgent"]>[1],
+	) {
+		return duplicateAgent(id, input);
+	}
+
+	listVersions(agentId: string) {
+		return listVersions(agentId);
+	}
+
+	getVersion(agentId: string, version: number) {
+		return getVersion(agentId, version);
+	}
+
+	restoreVersion(agentId: string, version: number, userId?: string | null) {
+		return restoreVersion(agentId, version, userId);
+	}
+
+	findAgentUsages(agentId: string) {
+		return findAgentUsages(agentId);
+	}
+
+	findAllAgentUsageCounts() {
+		return findAllAgentUsageCounts();
 	}
 }
 

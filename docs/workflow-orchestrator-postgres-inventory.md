@@ -535,6 +535,15 @@ The first UI-facing route has also moved behind the application service:
   import the agent registry, runtime registry, template catalog, or builtin
   profile helpers. Duplicate, version, compiled-capabilities, and registry-sync
   agent subroutes remain later bounded slices.
+- `src/routes/api/agents/[id]/duplicate/+server.ts`,
+  `src/routes/api/agents/[id]/versions/**`,
+  `src/routes/api/agents/[id]/usages/+server.ts`, and
+  `src/routes/api/agents/usages-summary/+server.ts` now delegate duplicate,
+  version list/detail/restore, and agent usage read-model behavior to
+  `ApplicationAgentCatalogService`. Those routes no longer import the legacy
+  agent registry directly; the registry stays behind `AgentCatalogRepository`
+  as the first Postgres-backed adapter. Compiled-capabilities and registry-sync
+  agent subroutes remain later bounded slices.
 - `src/routes/api/v1/agent-runtimes/+server.ts`,
   `src/routes/api/v1/agent-runtimes/[slug]/+server.ts`,
   `src/routes/api/v1/agent-runtimes/[slug]/wake/+server.ts`,

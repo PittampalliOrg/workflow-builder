@@ -1,29 +1,28 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { getVersion, restoreVersion } from "$lib/server/agents/registry";
+import { getApplicationAdapters } from "$lib/server/application";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const versionNum = Number.parseInt(params.version, 10);
-	if (!Number.isFinite(versionNum) || versionNum <= 0) {
-		return error(400, "Invalid version");
-	}
-	const result = await getVersion(params.id, versionNum);
-	if (!result) return error(404, "Version not found");
-	return json(result);
+	const { agentCatalog } = getApplicationAdapters();
+	const result = await agentCatalog.getVersion({
+		agentId: params.id,
+		version: params.version,
+	});
+	if (result.status === "invalid") return error(400, result.message);
+	if (result.status === "not_found") return error(404, result.message);
+	return json(result.version);
 };
 
 export const POST: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const versionNum = Number.parseInt(params.version, 10);
-	if (!Number.isFinite(versionNum) || versionNum <= 0) {
-		return error(400, "Invalid version");
-	}
-	const agent = await restoreVersion(
-		params.id,
-		versionNum,
-		locals.session.userId,
-	);
-	if (!agent) return error(404, "Version not found");
-	return json({ agent });
+	const { agentCatalog } = getApplicationAdapters();
+	const result = await agentCatalog.restoreVersion({
+		agentId: params.id,
+		version: params.version,
+		userId: locals.session.userId,
+	});
+	if (result.status === "invalid") return error(400, result.message);
+	if (result.status === "not_found") return error(404, result.message);
+	return json({ agent: result.agent });
 };

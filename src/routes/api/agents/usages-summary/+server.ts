@@ -1,6 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { findAllAgentUsageCounts } from "$lib/server/agents/registry";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * GET /api/agents/usages-summary
@@ -11,6 +11,7 @@ import { findAllAgentUsageCounts } from "$lib/server/agents/registry";
  */
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const counts = await findAllAgentUsageCounts();
+	const { agentCatalog } = getApplicationAdapters();
+	const counts = await agentCatalog.findAllAgentUsageCounts();
 	return json({ counts });
 };

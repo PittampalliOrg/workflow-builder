@@ -30,6 +30,19 @@ export type UpdateAgentCommand = {
 	body: Record<string, unknown>;
 };
 
+export type DuplicateAgentCommand = {
+	agentId: string;
+	userId: string;
+	currentProjectId?: string | null;
+	body: Record<string, unknown>;
+};
+
+export type AgentVersionCommand = {
+	agentId: string;
+	version: string;
+	userId?: string | null;
+};
+
 export type GetAgentResult =
 	| { status: "ok"; agent: AgentDetail }
 	| { status: "not_found"; message: string };
@@ -45,6 +58,20 @@ export type UpdateAgentResult =
 
 export type ArchiveAgentResult =
 	| { status: "archived" }
+	| { status: "not_found"; message: string };
+
+export type DuplicateAgentResult =
+	| { status: "created"; agent: AgentDetail }
+	| { status: "not_found"; message: string };
+
+export type AgentVersionResult =
+	| { status: "ok"; version: Awaited<ReturnType<AgentCatalogRepository["getVersion"]>> }
+	| { status: "invalid"; message: string }
+	| { status: "not_found"; message: string };
+
+export type RestoreAgentVersionResult =
+	| { status: "restored"; agent: AgentDetail }
+	| { status: "invalid"; message: string }
 	| { status: "not_found"; message: string };
 
 export class ApplicationAgentCatalogService {
@@ -164,6 +191,55 @@ export class ApplicationAgentCatalogService {
 		return { status: "archived" };
 	}
 
+	async duplicateAgent(
+		input: DuplicateAgentCommand,
+	): Promise<DuplicateAgentResult> {
+		const body = input.body;
+		const agent = await this.deps.agents.duplicateAgent(input.agentId, {
+			name: typeof body.name === "string" ? body.name : undefined,
+			description:
+				typeof body.description === "string" ? body.description : undefined,
+			createdBy: input.userId,
+			projectId: input.currentProjectId ?? null,
+		});
+		if (!agent) return { status: "not_found", message: "Agent not found" };
+		return { status: "created", agent };
+	}
+
+	listVersions(agentId: string) {
+		return this.deps.agents.listVersions(agentId);
+	}
+
+	async getVersion(input: AgentVersionCommand): Promise<AgentVersionResult> {
+		const version = parseVersion(input.version);
+		if (version === null) return { status: "invalid", message: "Invalid version" };
+		const result = await this.deps.agents.getVersion(input.agentId, version);
+		if (!result) return { status: "not_found", message: "Version not found" };
+		return { status: "ok", version: result };
+	}
+
+	async restoreVersion(
+		input: AgentVersionCommand,
+	): Promise<RestoreAgentVersionResult> {
+		const version = parseVersion(input.version);
+		if (version === null) return { status: "invalid", message: "Invalid version" };
+		const agent = await this.deps.agents.restoreVersion(
+			input.agentId,
+			version,
+			input.userId,
+		);
+		if (!agent) return { status: "not_found", message: "Version not found" };
+		return { status: "restored", agent };
+	}
+
+	findAgentUsages(agentId: string) {
+		return this.deps.agents.findAgentUsages(agentId);
+	}
+
+	findAllAgentUsageCounts() {
+		return this.deps.agents.findAllAgentUsageCounts();
+	}
+
 	private pickRuntime(value: unknown): AgentRuntime | undefined {
 		if (typeof value === "string" && this.deps.runtimes.listRuntimeIds().includes(value)) {
 			return value as AgentRuntime;
@@ -175,4 +251,9 @@ export class ApplicationAgentCatalogService {
 function mergeConfig(base: AgentConfig, patch: unknown): AgentConfig {
 	if (!patch || typeof patch !== "object" || Array.isArray(patch)) return base;
 	return { ...base, ...(patch as Partial<AgentConfig>) };
+}
+
+function parseVersion(value: string): number | null {
+	const version = Number.parseInt(value, 10);
+	return Number.isFinite(version) && version > 0 ? version : null;
 }

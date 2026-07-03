@@ -177,6 +177,65 @@ describe("ApplicationAgentCatalogService", () => {
 		});
 		expect(invalid).toEqual({ status: "invalid", message: "bad config" });
 	});
+
+	it("duplicates agents with session ownership metadata", async () => {
+		const result = await service.duplicateAgent({
+			agentId: "agent-1",
+			userId: "user-1",
+			currentProjectId: "project-1",
+			body: {
+				name: "Copy",
+				description: "Copy description",
+			},
+		});
+
+		expect(result.status).toBe("created");
+		expect(agents.duplicateAgent).toHaveBeenCalledWith("agent-1", {
+			name: "Copy",
+			description: "Copy description",
+			createdBy: "user-1",
+			projectId: "project-1",
+		});
+	});
+
+	it("parses version numbers and maps get/restore failures", async () => {
+		vi.mocked(agents.getVersion).mockResolvedValueOnce({
+			summary: sampleVersion(),
+			config: sampleAgentConfig(),
+		});
+		vi.mocked(agents.restoreVersion).mockResolvedValueOnce(null);
+
+		const invalid = await service.getVersion({
+			agentId: "agent-1",
+			version: "nope",
+		});
+		const found = await service.getVersion({
+			agentId: "agent-1",
+			version: "2",
+		});
+		const restoreMissing = await service.restoreVersion({
+			agentId: "agent-1",
+			version: "3",
+			userId: "user-1",
+		});
+
+		expect(invalid).toEqual({ status: "invalid", message: "Invalid version" });
+		expect(found.status).toBe("ok");
+		expect(agents.getVersion).toHaveBeenCalledWith("agent-1", 2);
+		expect(restoreMissing).toEqual({
+			status: "not_found",
+			message: "Version not found",
+		});
+		expect(agents.restoreVersion).toHaveBeenCalledWith("agent-1", 3, "user-1");
+	});
+
+	it("delegates usage read models to the repository", async () => {
+		await service.findAgentUsages("agent-1");
+		await service.findAllAgentUsageCounts();
+
+		expect(agents.findAgentUsages).toHaveBeenCalledWith("agent-1");
+		expect(agents.findAllAgentUsageCounts).toHaveBeenCalled();
+	});
 });
 
 function fakeAgentCatalogRepository(): AgentCatalogRepository {
@@ -186,6 +245,19 @@ function fakeAgentCatalogRepository(): AgentCatalogRepository {
 		createAgent: vi.fn(async () => ({ ok: true as const, agent: sampleAgent() })),
 		updateAgent: vi.fn(async () => ({ ok: true as const, agent: sampleAgent() })),
 		archiveAgent: vi.fn(async () => true),
+		duplicateAgent: vi.fn(async () => sampleAgent()),
+		listVersions: vi.fn(async () => [sampleVersion()]),
+		getVersion: vi.fn(async () => ({
+			summary: sampleVersion(),
+			config: sampleAgentConfig(),
+		})),
+		restoreVersion: vi.fn(async () => sampleAgent()),
+		findAgentUsages: vi.fn(async () => [
+			{ workflowId: "workflow-1", workflowName: "Workflow", nodeIds: ["run"] },
+		]),
+		findAllAgentUsageCounts: vi.fn(async () => ({
+			"agent-1": { workflowCount: 1, nodeCount: 1 },
+		})),
 	};
 }
 
@@ -234,5 +306,22 @@ function sampleAgent(): AgentDetail {
 		config: sampleAgentConfig(),
 		sourceTemplateSlug: null,
 		sourceTemplateVersion: null,
+	};
+}
+
+function sampleVersion() {
+	return {
+		id: "version-1",
+		agentId: "agent-1",
+		version: 2,
+		configHash: "hash-2",
+		applicationStateDigest: null,
+		mlflowUri: null,
+		mlflowModelName: null,
+		mlflowModelVersion: null,
+		changelog: null,
+		publishedAt: "2026-05-15T12:00:00.000Z",
+		publishedBy: "user-1",
+		createdAt: "2026-05-15T12:00:00.000Z",
 	};
 }

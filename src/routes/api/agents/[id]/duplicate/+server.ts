@@ -1,6 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { duplicateAgent } from "$lib/server/agents/registry";
+import { getApplicationAdapters } from "$lib/server/application";
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -8,15 +8,13 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		string,
 		unknown
 	>;
-	const name = typeof body.name === "string" ? body.name : undefined;
-	const description =
-		typeof body.description === "string" ? body.description : undefined;
-	const agent = await duplicateAgent(params.id, {
-		name,
-		description,
-		createdBy: locals.session.userId,
-		projectId: locals.session.projectId ?? null,
+	const { agentCatalog } = getApplicationAdapters();
+	const result = await agentCatalog.duplicateAgent({
+		agentId: params.id,
+		userId: locals.session.userId,
+		currentProjectId: locals.session.projectId,
+		body,
 	});
-	if (!agent) return error(404, "Agent not found");
-	return json({ agent }, { status: 201 });
+	if (result.status === "not_found") return error(404, result.message);
+	return json({ agent: result.agent }, { status: 201 });
 };

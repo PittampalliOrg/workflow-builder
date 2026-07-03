@@ -8,6 +8,7 @@ import type {
 	AgentRuntime,
 	AgentSummary,
 	AgentToolChoice,
+	AgentVersionSummary,
 } from "$lib/types/agents";
 import type {
 	SandboxProvisionInput,
@@ -4423,6 +4424,29 @@ export type AgentCatalogUpdateResult =
 	| { ok: false; reason: "not_found" }
 	| { ok: false; reason: "invalid_config"; message: string };
 
+export type AgentCatalogDuplicateInput = {
+	name?: string;
+	description?: string | null;
+	createdBy?: string | null;
+	projectId?: string | null;
+};
+
+export type AgentCatalogVersionDetail = {
+	summary: AgentVersionSummary;
+	config: AgentConfig;
+};
+
+export type AgentCatalogUsage = {
+	workflowId: string;
+	workflowName: string;
+	nodeIds: string[];
+};
+
+export type AgentCatalogUsageCounts = Record<
+	string,
+	{ workflowCount: number; nodeCount: number }
+>;
+
 export interface AgentCatalogRepository {
 	listAgents(input: AgentCatalogListInput): Promise<AgentSummary[]>;
 	getAgent(id: string): Promise<AgentDetail | null>;
@@ -4432,6 +4456,22 @@ export interface AgentCatalogRepository {
 		input: AgentCatalogUpdateInput,
 	): Promise<AgentCatalogUpdateResult>;
 	archiveAgent(id: string): Promise<boolean>;
+	duplicateAgent(
+		id: string,
+		input: AgentCatalogDuplicateInput,
+	): Promise<AgentDetail | null>;
+	listVersions(agentId: string): Promise<AgentVersionSummary[]>;
+	getVersion(
+		agentId: string,
+		version: number,
+	): Promise<AgentCatalogVersionDetail | null>;
+	restoreVersion(
+		agentId: string,
+		version: number,
+		userId?: string | null,
+	): Promise<AgentDetail | null>;
+	findAgentUsages(agentId: string): Promise<AgentCatalogUsage[]>;
+	findAllAgentUsageCounts(): Promise<AgentCatalogUsageCounts>;
 }
 
 export interface AgentRuntimeCatalog {
