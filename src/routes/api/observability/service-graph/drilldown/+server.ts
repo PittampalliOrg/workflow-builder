@@ -1,9 +1,6 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { workflowExecutions } from '$lib/server/db/schema';
-import { isResourceInScope } from '$lib/server/workflows/project-scope';
+import { getApplicationAdapters } from '$lib/server/application';
 import { buildExecutionInvestigation } from '$lib/server/observability/investigation';
 import { resolveExecutionTraceIds } from '$lib/server/otel/service-graph';
 import {
@@ -20,7 +17,6 @@ import { parseSelection, type ServiceGraphMode } from '$lib/types/service-graph'
  * buildSessionInvestigation (whole run) + filterInvestigationToSelection.
  */
 export const GET: RequestHandler = async ({ url, locals }) => {
-	if (!db) return error(503, 'Database not configured');
 	if (!locals.session?.userId) return error(401, 'Authentication required');
 
 	const executionId = url.searchParams.get('executionId');
@@ -32,18 +28,17 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!selection) return error(400, 'Invalid or missing sel');
 	const mode = (url.searchParams.get('mode') as ServiceGraphMode) === 'step' ? 'step' : 'service';
 
-	// Scope-validate the execution against the caller's workspace (404, not 403).
-	const [row] = await db
-		.select()
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, executionId))
-		.limit(1);
-	if (!row || !isResourceInScope(row, locals.session)) {
+	const context = await getApplicationAdapters().workflowData.getObservabilityServiceGraphContext({
+		userId: locals.session.userId,
+		projectId: locals.session.projectId ?? null,
+		executionId
+	});
+	if (!context?.execution) {
 		return error(404, 'Execution not found');
 	}
 
 	try {
-		const traceIds = await resolveExecutionTraceIds(row);
+		const traceIds = await resolveExecutionTraceIds(context.execution);
 		const serviceScope = selectionServiceScope(selection, mode) ?? undefined;
 		const full = await buildExecutionInvestigation(executionId, traceIds, serviceScope);
 		const scoped = filterInvestigationToSelection(full, selection);

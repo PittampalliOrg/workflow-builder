@@ -40,6 +40,7 @@ import type {
 	WorkflowAgentReadRepository,
 	WorkflowCodeCheckpointStore,
 	WorkflowExecutionRepository,
+	WorkflowExecutionRecord,
 	PieceCatalogRepository,
 	SessionRuntimeCliAuthReadModel,
 	UserProfileRepository,
@@ -124,6 +125,45 @@ function fakeWorkflowTriggers(): WorkflowTriggerStore {
 		getForWorkflow: vi.fn(async () => null),
 		markFired: vi.fn(async () => undefined),
 		delete: vi.fn(async () => undefined),
+	};
+}
+
+function workflowExecutionRecord(
+	overrides: Partial<WorkflowExecutionRecord> = {},
+): WorkflowExecutionRecord {
+	return {
+		id: "exec-1",
+		workflowId: "wf-id",
+		userId: "user-1",
+		projectId: "project-1",
+		status: "running",
+		input: null,
+		output: { traceIds: ["trace-1"] },
+		executionIrVersion: null,
+		executionIr: null,
+		error: null,
+		daprInstanceId: "dapr-exec-1",
+		phase: null,
+		progress: null,
+		currentNodeId: null,
+		currentNodeName: null,
+		primaryTraceId: "trace-primary",
+		workflowSessionId: "session-1",
+		mlflowExperimentId: null,
+		mlflowRunId: null,
+		summaryOutput: null,
+		errorStackTrace: null,
+		rerunOfExecutionId: null,
+		rerunSourceInstanceId: null,
+		resumeFromNode: null,
+		triggerSource: null,
+		rerunFromEventId: null,
+		startedAt: new Date("2026-01-01T00:00:00.000Z"),
+		completedAt: null,
+		duration: null,
+		stopRequestedAt: null,
+		stopReason: null,
+		...overrides,
 	};
 }
 
@@ -5861,6 +5901,88 @@ describe("ApplicationWorkflowDataService", () => {
 			userId: "user-1",
 			projectId: "project-1",
 		});
+	});
+
+	it("resolves service-graph execution context through scoped workflow-data reads", async () => {
+		const execution = workflowExecutionRecord();
+		const { service, workflowDefinitions, workflowExecutions } = makeService({
+			byId: {
+				...baseWorkflow,
+				id: "wf-id",
+				nodes: [{ id: "node-1", data: { label: "Node 1" } }],
+				edges: [{ source: "node-1", target: "node-2" }],
+			},
+			workflowExecutions: {
+				getById: vi.fn(async () => execution),
+			},
+		});
+
+		await expect(
+			service.getObservabilityServiceGraphContext({
+				executionId: "exec-1",
+				userId: "user-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual({
+			execution,
+			workflow: {
+				id: "wf-id",
+				nodes: [{ id: "node-1", data: { label: "Node 1" } }],
+				edges: [{ source: "node-1", target: "node-2" }],
+			},
+			targetWorkflowId: "wf-id",
+		});
+		expect(workflowExecutions.getById).toHaveBeenCalledWith("exec-1");
+		expect(workflowDefinitions.getById).toHaveBeenCalledWith("wf-id");
+	});
+
+	it("hides out-of-scope service-graph executions", async () => {
+		const { service, workflowDefinitions, workflowExecutions } = makeService({
+			byId: baseWorkflow,
+			workflowExecutions: {
+				getById: vi.fn(async () =>
+					workflowExecutionRecord({ projectId: "project-2" }),
+				),
+			},
+		});
+
+		await expect(
+			service.getObservabilityServiceGraphContext({
+				executionId: "exec-1",
+				userId: "user-1",
+				projectId: "project-1",
+			}),
+		).resolves.toBeNull();
+		expect(workflowExecutions.getById).toHaveBeenCalledWith("exec-1");
+		expect(workflowDefinitions.getById).not.toHaveBeenCalled();
+	});
+
+	it("resolves service-graph window workflow context through scoped workflow-data reads", async () => {
+		const { service, workflowDefinitions } = makeService({
+			byId: {
+				...baseWorkflow,
+				id: "wf-window",
+				nodes: [{ id: "node-1" }],
+				edges: [],
+			},
+		});
+
+		await expect(
+			service.getObservabilityServiceGraphContext({
+				workflowId: "wf-window",
+				userId: "user-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual({
+			execution: null,
+			workflow: {
+				id: "wf-window",
+				nodes: [{ id: "node-1" }],
+				edges: [],
+			},
+			targetWorkflowId: "wf-window",
+		});
+		expect(workflowDefinitions.getById).toHaveBeenCalledWith("wf-window");
 	});
 
 	it("loads piece catalog detail and connection usage through application ports", async () => {

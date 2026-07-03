@@ -1,9 +1,6 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { workflowExecutions, workflows } from '$lib/server/db/schema';
-import { isResourceInScope } from '$lib/server/workflows/project-scope';
+import { getApplicationAdapters } from '$lib/server/application';
 import { buildServiceGraph } from '$lib/server/otel/service-graph';
 import {
 	SERVICE_GRAPH_WINDOWS,
@@ -28,7 +25,6 @@ import {
  * rather than an error boundary — matching the traces endpoint convention.
  */
 export const GET: RequestHandler = async ({ url, locals }) => {
-	if (!db) return error(503, 'Database not configured');
 	if (!locals.session?.userId) return error(401, 'Authentication required');
 
 	const mode = (url.searchParams.get('mode') ?? 'service') as ServiceGraphMode;
@@ -41,56 +37,36 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	if (scope !== 'execution' && scope !== 'window') return error(400, 'Invalid scope');
 	const windowSeconds = SERVICE_GRAPH_WINDOWS[windowParam] ?? SERVICE_GRAPH_WINDOWS['1h'];
 
-	// Load + scope-validate the execution (and its workflow) when scope=execution.
-	let execution: typeof workflowExecutions.$inferSelect | null = null;
-	let workflow: typeof workflows.$inferSelect | null = null;
-
 	if (scope === 'execution') {
 		if (!executionId) return error(400, 'executionId is required when scope=execution');
-		const [row] = await db
-			.select()
-			.from(workflowExecutions)
-			.where(eq(workflowExecutions.id, executionId))
-			.limit(1);
-		if (!row || !isResourceInScope(row, locals.session)) {
-			return error(404, 'Execution not found');
-		}
-		execution = row;
-		if (row.workflowId) {
-			const [wf] = await db
-				.select()
-				.from(workflows)
-				.where(eq(workflows.id, row.workflowId))
-				.limit(1);
-			if (wf && isResourceInScope(wf, locals.session)) workflow = wf;
-		}
 	}
 
 	// Resolve the workflow for step+window (and as an optional service filter).
-	const targetWorkflowId = workflowIdParam ?? workflow?.id;
-	if (mode === 'step' && scope === 'window' && !targetWorkflowId) {
+	if (mode === 'step' && scope === 'window' && !workflowIdParam) {
 		return error(400, 'workflowId is required for step + window');
 	}
-	if (!workflow && targetWorkflowId) {
-		const [wf] = await db
-			.select()
-			.from(workflows)
-			.where(eq(workflows.id, targetWorkflowId))
-			.limit(1);
-		if (!wf || !isResourceInScope(wf, locals.session)) {
-			return error(404, 'Workflow not found');
-		}
-		workflow = wf;
+	const context = await getApplicationAdapters().workflowData.getObservabilityServiceGraphContext({
+		userId: locals.session.userId,
+		projectId: locals.session.projectId ?? null,
+		executionId: scope === 'execution' ? executionId : undefined,
+		workflowId: workflowIdParam
+	});
+	if (!context) {
+		return error(404, scope === 'execution' ? 'Execution not found' : 'Workflow not found');
 	}
 
 	const query: ServiceGraphQuery = {
 		mode,
 		scope,
 		executionId: scope === 'execution' ? executionId : undefined,
-		workflowId: targetWorkflowId,
+		workflowId: context.targetWorkflowId ?? undefined,
 		windowSeconds
 	};
 
-	const payload = await buildServiceGraph({ query, execution, workflow });
+	const payload = await buildServiceGraph({
+		query,
+		execution: context.execution,
+		workflow: context.workflow
+	});
 	return json(payload);
 };

@@ -232,6 +232,13 @@ The first UI-facing route has also moved behind the application service:
   `workflowData.listServiceGraphPickerOptions`. Workflow option lookup, recent
   execution lookup, scoped legacy fallback, default execution selection, and
   selector label formatting moved out of the page loader.
+- `src/routes/api/observability/service-graph/+server.ts` and
+  `src/routes/api/observability/service-graph/drilldown/+server.ts` now
+  resolve scoped execution/workflow graph context through workflow-data before
+  invoking the existing observability graph/drilldown helpers. Route-local direct
+  `workflow_executions`/`workflows` SQL and `isResourceInScope` imports were
+  removed; ClickHouse and workflow-log aggregation remain inside observability
+  helpers pending the deeper telemetry adapter slice.
 - `src/routes/workspaces/[slug]/dev/+page.server.ts`,
   `src/routes/workspaces/[slug]/dev/[executionId]/+page.server.ts`, and the
   public `src/routes/api/dev-environments/**` GET routes now load dev-preview

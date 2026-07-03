@@ -96,6 +96,7 @@ import type {
 	McpAvailabilityReadModel,
 	McpCatalogConfiguredConnectionSummary,
 	McpRunRepository,
+	ObservabilityServiceGraphWorkflowReadModel,
 	ProjectMembershipRole,
 	StartHostedMcpWorkflowToolInput,
 	StartHostedMcpWorkflowToolResult,
@@ -114,6 +115,7 @@ import type {
 	WorkflowExecutionLogPatch,
 	WorkflowExecutionReadModelPatch,
 	WorkflowExecutionRepository,
+	WorkflowExecutionRecord,
 	WorkflowExecutionStatus,
 	WorkflowSessionEventNotification,
 	WorkflowSessionEventNotificationSource,
@@ -838,6 +840,17 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Benchmark run read repository not configured");
 		}
 		return this.deps.benchmarkRunReads;
+	}
+
+	private isResourceVisibleToCaller<T extends { userId: string; projectId: string | null }>(
+		resource: T | null | undefined,
+		caller: { userId: string; projectId?: string | null },
+	): resource is T {
+		if (!resource) return false;
+		if (resource.projectId && caller.projectId) {
+			return resource.projectId === caller.projectId;
+		}
+		return resource.userId === caller.userId;
 	}
 
 	private requireSessionEvents(): SessionEventLog {
@@ -3521,6 +3534,50 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			runIds,
 		});
 		return { compare, runIds, resolvedFromTag };
+	}
+
+	async getObservabilityServiceGraphContext(input: {
+		userId: string;
+		projectId?: string | null;
+		executionId?: string | null;
+		workflowId?: string | null;
+	}) {
+		const caller = { userId: input.userId, projectId: input.projectId ?? null };
+		let execution: WorkflowExecutionRecord | null = null;
+		let workflow: ObservabilityServiceGraphWorkflowReadModel | null = null;
+
+		if (input.executionId) {
+			const row = await this.deps.workflowExecutions.getById(input.executionId);
+			if (!this.isResourceVisibleToCaller(row, caller)) return null;
+			execution = row;
+			if (row.workflowId) {
+				const definition = await this.deps.workflowDefinitions.getById(row.workflowId);
+				if (this.isResourceVisibleToCaller(definition, caller)) {
+					workflow = {
+						id: definition.id,
+						nodes: definition.nodes,
+						edges: definition.edges,
+					};
+				}
+			}
+		}
+
+		const targetWorkflowId = input.workflowId?.trim() || workflow?.id || null;
+		if (!workflow && targetWorkflowId) {
+			const definition = await this.deps.workflowDefinitions.getById(targetWorkflowId);
+			if (!this.isResourceVisibleToCaller(definition, caller)) return null;
+			workflow = {
+				id: definition.id,
+				nodes: definition.nodes,
+				edges: definition.edges,
+			};
+		}
+
+		return {
+			execution,
+			workflow,
+			targetWorkflowId,
+		};
 	}
 
 	async getDevPreviewHubReadModel(input: { projectId?: string | null }) {

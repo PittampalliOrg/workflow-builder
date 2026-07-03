@@ -21,7 +21,7 @@
  */
 import { and, desc, eq, gte, inArray } from 'drizzle-orm';
 import { db } from '$lib/server/db';
-import { workflowExecutionLogs, workflowExecutions, workflows } from '$lib/server/db/schema';
+import { workflowExecutionLogs, workflowExecutions } from '$lib/server/db/schema';
 import type { ObservabilityLlmSpan, ObservabilityTraceSpan } from '$lib/types/observability';
 import {
 	CLICKHOUSE_DB,
@@ -52,6 +52,21 @@ const EDGE_LIMIT = 500;
 const CLIENT_KINDS = new Set(['Client', 'Producer']);
 const SERVER_KINDS = new Set(['Server', 'Consumer']);
 const ERROR_STATUS = 'Error';
+
+export type ServiceGraphExecutionContext = {
+	id: string;
+	output: unknown;
+	primaryTraceId: string | null;
+	workflowSessionId: string | null;
+	startedAt: Date;
+	completedAt: Date | null;
+};
+
+export type ServiceGraphWorkflowContext = {
+	id: string;
+	nodes: unknown[];
+	edges: unknown[];
+};
 
 export function isBenignControlPlaneError(span: ObservabilityTraceSpan): boolean {
 	if (span.statusCode !== ERROR_STATUS) return false;
@@ -197,7 +212,7 @@ class GraphBuilder {
 // trace-set resolution for single-execution service view
 // ---------------------------------------------------------------------------
 
-type ExecutionRow = typeof workflowExecutions.$inferSelect;
+type ExecutionRow = ServiceGraphExecutionContext;
 
 /** Trace ids tagged with this execution id via the `workflow.execution.id` span attr. */
 async function traceIdsByExecutionAttr(executionId: string): Promise<string[]> {
@@ -519,7 +534,7 @@ function nodeLabel(node: WorkflowNodeJson): string {
 
 async function buildStepGraphSingleExec(
 	execution: ExecutionRow,
-	workflow: typeof workflows.$inferSelect
+	workflow: ServiceGraphWorkflowContext
 ): Promise<{ nodes: ServiceGraphNode[]; edges: ServiceGraphEdge[]; logs: StepLogRow[] }> {
 	const wfNodes = (workflow.nodes ?? []) as WorkflowNodeJson[];
 	const wfEdges = (workflow.edges ?? []) as WorkflowEdgeJson[];
@@ -591,7 +606,7 @@ async function buildStepGraphSingleExec(
 // ---------------------------------------------------------------------------
 
 async function buildStepGraphWindowed(
-	workflow: typeof workflows.$inferSelect,
+	workflow: ServiceGraphWorkflowContext,
 	windowSeconds: number
 ): Promise<{ nodes: ServiceGraphNode[]; edges: ServiceGraphEdge[] }> {
 	const wfNodes = (workflow.nodes ?? []) as WorkflowNodeJson[];
@@ -913,7 +928,7 @@ export interface BuildServiceGraphInput {
 	query: ServiceGraphQuery;
 	/** Pre-loaded + scope-validated by the API route (null when not found / N/A). */
 	execution?: ExecutionRow | null;
-	workflow?: (typeof workflows.$inferSelect) | null;
+	workflow?: ServiceGraphWorkflowContext | null;
 }
 
 export async function buildServiceGraph(input: BuildServiceGraphInput): Promise<ServiceGraphPayload> {

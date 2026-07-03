@@ -381,6 +381,18 @@ export type BenchmarkComparePageReadModel = {
 	resolvedFromTag: string | null;
 };
 
+export type ObservabilityServiceGraphWorkflowReadModel = {
+	id: string;
+	nodes: unknown[];
+	edges: unknown[];
+};
+
+export type ObservabilityServiceGraphContextReadModel = {
+	execution: WorkflowExecutionRecord | null;
+	workflow: ObservabilityServiceGraphWorkflowReadModel | null;
+	targetWorkflowId: string | null;
+};
+
 export type CreateWorkflowDefinitionInput = {
 	name: string;
 	nodes: unknown[];
@@ -3330,6 +3342,12 @@ export interface WorkflowDataService {
 		runsParam?: string | null;
 		tag?: string | null;
 	}): Promise<BenchmarkComparePageReadModel>;
+	getObservabilityServiceGraphContext(input: {
+		userId: string;
+		projectId?: string | null;
+		executionId?: string | null;
+		workflowId?: string | null;
+	}): Promise<ObservabilityServiceGraphContextReadModel | null>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;
 	}): Promise<DevPreviewHubReadModel>;
