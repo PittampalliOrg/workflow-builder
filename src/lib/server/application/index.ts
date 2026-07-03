@@ -79,16 +79,19 @@ import { LocalRuntimeRegistryReader } from "$lib/server/application/adapters/run
 import { KubernetesSessionRuntimeStatusReader } from "$lib/server/application/adapters/runtime-status";
 import {
 	CurrentSessionRepository,
+	DaprSessionWorkflowSpawner,
 	DaprSessionRuntimeEventRaiser,
 	DefaultSessionRuntimeConfigReader,
 	KubernetesSessionProvisioningReader,
 	LegacyMlflowSessionTraceLifecycle,
 	PostgresSessionEventLog,
 	SessionAgentConfigCommandAdapter,
+	WorkspaceSessionRepositoryMounter,
 } from "$lib/server/application/adapters/sessions";
 import { PlaywrightMcpBrowserRuntimeClient } from "$lib/server/application/adapters/browser-runtime";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
+import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 
@@ -190,6 +193,10 @@ export function getApplicationAdapters(
 	let workflowData: ApplicationWorkflowDataService | undefined;
 	let agentRuntimeWarmPools: KubernetesAgentRuntimeWarmPoolClient | undefined;
 	let agentRuntimeControl: ApplicationAgentRuntimeControlService | undefined;
+	let sandboxProvisioner: WorkspaceRuntimeSandboxProvisioner | undefined;
+	let repositoryMounter: WorkspaceSessionRepositoryMounter | undefined;
+	let workflowSpawner: DaprSessionWorkflowSpawner | undefined;
+	let sessionCommands: ApplicationSessionCommandService | undefined;
 	let sessionBrowser: ApplicationSessionBrowserService | undefined;
 	const getDatabase = () => (database ??= requirePostgresDb());
 	const getAgentRuntimes = () =>
@@ -300,6 +307,12 @@ export function getApplicationAdapters(
 		(peerAgentResolver ??= new RegistryPeerAgentResolver(getDatabase()));
 	const getSessionEventNotifications = () =>
 		(sessionEventNotifications ??= new PostgresWorkflowSessionEventNotificationSource());
+	const getSandboxProvisioner = () =>
+		(sandboxProvisioner ??= new WorkspaceRuntimeSandboxProvisioner());
+	const getRepositoryMounter = () =>
+		(repositoryMounter ??= new WorkspaceSessionRepositoryMounter());
+	const getWorkflowSpawner = () =>
+		(workflowSpawner ??= new DaprSessionWorkflowSpawner());
 	const getCodeCheckpoints = () =>
 		(codeCheckpoints ??= new PostgresWorkflowCodeCheckpointStore(getDatabase()));
 	const getEvaluationArtifacts = () =>
@@ -311,6 +324,17 @@ export function getApplicationAdapters(
 			agentRuntimes: getAgentRuntimes(),
 			workspaceProjects: getWorkspaceProjects(),
 			warmPools: getAgentRuntimeWarmPools(),
+		}));
+	const getSessionCommands = () =>
+		(sessionCommands ??= new ApplicationSessionCommandService({
+			sessions: getSessions(),
+			sessionEvents: getSessionEvents(),
+			sessionAgents: getPeerAgentResolver(),
+			sessionExperimentAgents: getPeerAgentResolver(),
+			sandboxProvisioner: getSandboxProvisioner(),
+			repositoryMounter: getRepositoryMounter(),
+			workflowSpawner: getWorkflowSpawner(),
+			sessionTraceLifecycle: getSessionTraceLifecycle(),
 		}));
 	const previewEnvironmentProvisioner =
 		config.previewProvisionerAdapter === "kro"
@@ -400,6 +424,9 @@ export function getApplicationAdapters(
 		get workflowData() {
 			return getWorkflowData();
 		},
+		get sessionCommands() {
+			return getSessionCommands();
+		},
 		get agentRuntimeControl() {
 			return getAgentRuntimeControl();
 		},
@@ -418,7 +445,9 @@ export function getApplicationAdapters(
 		get sessionEvents() {
 			return getSessionEvents();
 		},
-		sandboxProvisioner: new WorkspaceRuntimeSandboxProvisioner(),
+		get sandboxProvisioner() {
+			return getSandboxProvisioner();
+		},
 		previewEnvironmentProvisioner,
 	};
 }

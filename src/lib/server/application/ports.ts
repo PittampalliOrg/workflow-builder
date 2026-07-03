@@ -23,6 +23,7 @@ import type {
 	SessionEventEnvelope,
 	SessionResource,
 	SessionResourceType,
+	SessionSummary,
 	SessionStatus,
 	SessionStopReason,
 	SessionUsage,
@@ -3156,8 +3157,39 @@ export type AddSessionResourceResult =
 	  }
 	| { status: "not_found" };
 
+export type SessionListInput = {
+	userId?: string;
+	projectId?: string | null;
+	agentId?: string;
+	status?: SessionStatus;
+	includeArchived?: boolean;
+	source?: "direct" | "workflow" | "api";
+	workflowId?: string;
+	executionId?: string;
+	q?: string;
+	limit?: number;
+};
+
+export type CreateSessionRecordInput = {
+	id?: string;
+	agentId: string;
+	agentVersion?: number;
+	environmentId?: string;
+	environmentVersion?: number;
+	vaultIds?: string[];
+	title?: string;
+	userId: string;
+	projectId?: string | null;
+	workflowExecutionId?: string | null;
+	parentExecutionId?: string | null;
+	sandboxName?: string | null;
+	resumedFromSessionId?: string | null;
+};
+
 export interface SessionRepository {
+	listSessions(filter?: SessionListInput): Promise<SessionSummary[]>;
 	getSession(id: string): Promise<SessionDetail | null>;
+	createSession(input: CreateSessionRecordInput): Promise<SessionDetail>;
 	updateSessionTitle(input: {
 		id: string;
 		title: string;
@@ -3169,6 +3201,14 @@ export interface SessionRepository {
 		sessionId: string;
 		resource: AddSessionResourceInput;
 	}): Promise<SessionResource>;
+	attachWorkspaceSandbox(input: {
+		sessionId: string;
+		workspaceSandboxName: string;
+	}): Promise<void>;
+	recordSandboxProvisioningError(input: {
+		sessionId: string;
+		errorMessage: string;
+	}): Promise<void>;
 	removeSessionResource(input: {
 		sessionId: string;
 		resourceId: string;
@@ -3777,6 +3817,26 @@ export interface SessionRuntimeEventRaiser {
 	raiseSessionUserEvents(sessionId: string, events: UserEvent[]): Promise<void>;
 }
 
+export type SessionRepositoryMountTarget = {
+	executionId: string;
+	workspaceRef: string | null;
+	rootPath?: string | null;
+};
+
+export interface SessionRepositoryMounter {
+	mountSessionRepositories(
+		sessionId: string,
+		target: SessionRepositoryMountTarget,
+	): Promise<void>;
+}
+
+export interface SessionWorkflowSpawner {
+	spawnSessionWorkflow(sessionId: string): Promise<{
+		instanceId: string;
+		natsSubject: string;
+	}>;
+}
+
 export type PersistCodeCheckpointInput = {
 	workflowExecutionId: string;
 	workflowAgentRunId?: string | null;
@@ -3802,10 +3862,50 @@ export interface EvaluationArtifactStore {
 }
 
 export interface SessionTraceLifecycleStore {
+	createInteractiveSessionTraceRun?(input: {
+		sessionId: string;
+		title?: string | null;
+		projectId?: string | null;
+		userId?: string | null;
+		agentId: string;
+		agentName?: string | null;
+		agentSlug?: string | null;
+		agentVersion?: number | null;
+		agentAppId?: string | null;
+		activeModelId?: string | null;
+		activeModelName?: string | null;
+		activeModelUri?: string | null;
+		existingRunId?: string | null;
+	}): Promise<{
+		experimentId: string;
+		runId: string;
+		parentRunId?: string | null;
+		mlflowSessionId?: string | null;
+	} | null>;
 	patchInteractiveSessionTraces(input: {
 		sessionId: string;
 		status: "OK" | "ERROR";
 	}): Promise<void>;
+}
+
+export type SessionCommandAgent = {
+	id: string;
+	name: string;
+	slug: string;
+	version: number;
+	config: AgentConfig;
+	runtime: string;
+	runtimeAppId: string | null;
+	mlflowModelVersion: string | null;
+	mlflowModelName: string | null;
+	mlflowUri: string | null;
+};
+
+export interface SessionAgentResolver {
+	resolveSessionAgent(input: {
+		agentId: string;
+		agentVersion?: number | null;
+	}): Promise<SessionCommandAgent | null>;
 }
 
 export type IngestSessionEventInput = AppendSessionEventInput & {

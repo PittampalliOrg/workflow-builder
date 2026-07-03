@@ -1,151 +1,121 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionDetail } from "$lib/types/sessions";
 
-const attachWorkspaceSandboxMock = vi.fn();
-const createSessionMock = vi.fn();
 const listSessionsMock = vi.fn();
-const recordSessionSandboxProvisioningErrorMock = vi.fn();
-const sendUserEventMock = vi.fn();
-const spawnSessionWorkflowMock = vi.fn();
-const provisionSessionSandboxWithRetryMock = vi.fn();
-const sandboxProvisionFailureMessageMock = vi.fn();
-const resolveAgentRefMock = vi.fn();
-const findOrCreateExperimentAgentMock = vi.fn();
-const isAgentConfigEquivalentMock = vi.fn();
-const safeCreateInteractiveSessionMlflowRunMock = vi.fn();
+const createInteractiveSessionMock = vi.fn();
 
-vi.mock("$lib/server/sessions/registry", () => ({
-	attachWorkspaceSandbox: (...args: unknown[]) =>
-		attachWorkspaceSandboxMock(...args),
-	createSession: (...args: unknown[]) => createSessionMock(...args),
-	listSessions: (...args: unknown[]) => listSessionsMock(...args),
-	recordSessionSandboxProvisioningError: (...args: unknown[]) =>
-		recordSessionSandboxProvisioningErrorMock(...args),
+vi.mock("$lib/server/application", () => ({
+	getApplicationAdapters: () => ({
+		sessionCommands: {
+			listSessions: (...args: unknown[]) => listSessionsMock(...args),
+			createInteractiveSession: (...args: unknown[]) =>
+				createInteractiveSessionMock(...args),
+		},
+	}),
 }));
 
-vi.mock("$lib/server/sessions/events", () => ({
-	sendUserEvent: (...args: unknown[]) => sendUserEventMock(...args),
-}));
+import { GET, POST } from "./+server";
 
-vi.mock("$lib/server/sessions/spawn", () => ({
-	spawnSessionWorkflow: (...args: unknown[]) => spawnSessionWorkflowMock(...args),
-}));
-
-vi.mock("$lib/server/sandboxes/provision", () => ({
-	provisionSessionSandboxWithRetry: (...args: unknown[]) =>
-		provisionSessionSandboxWithRetryMock(...args),
-	sandboxProvisionFailureMessage: (...args: unknown[]) =>
-		sandboxProvisionFailureMessageMock(...args),
-}));
-
-vi.mock("$lib/server/agents/registry", () => ({
-	resolveAgentRef: (...args: unknown[]) => resolveAgentRefMock(...args),
-}));
-
-vi.mock("$lib/server/agents/ephemeral", () => ({
-	findOrCreateExperimentAgent: (...args: unknown[]) =>
-		findOrCreateExperimentAgentMock(...args),
-}));
-
-vi.mock("$lib/utils/agent-config-diff", () => ({
-	isAgentConfigEquivalent: (...args: unknown[]) =>
-		isAgentConfigEquivalentMock(...args),
-}));
-
-vi.mock("$lib/server/observability/mlflow-lifecycle", () => ({
-	safeCreateInteractiveSessionMlflowRun: (...args: unknown[]) =>
-		safeCreateInteractiveSessionMlflowRunMock(...args),
-}));
-
-import { POST } from "./+server";
-
-describe("POST /api/v1/sessions sandbox provisioning", () => {
+describe("/api/v1/sessions route", () => {
 	beforeEach(() => {
-		attachWorkspaceSandboxMock.mockReset();
-		createSessionMock.mockReset();
 		listSessionsMock.mockReset();
-		recordSessionSandboxProvisioningErrorMock.mockReset();
-		sendUserEventMock.mockReset();
-		spawnSessionWorkflowMock.mockReset();
-		provisionSessionSandboxWithRetryMock.mockReset();
-		sandboxProvisionFailureMessageMock.mockReset();
-		resolveAgentRefMock.mockReset();
-		findOrCreateExperimentAgentMock.mockReset();
-		isAgentConfigEquivalentMock.mockReset();
-		safeCreateInteractiveSessionMlflowRunMock.mockReset();
-
-		createSessionMock.mockResolvedValue(sampleSession());
-		resolveAgentRefMock.mockResolvedValue(sampleAgent());
-		safeCreateInteractiveSessionMlflowRunMock.mockResolvedValue(null);
-		spawnSessionWorkflowMock.mockResolvedValue({
-			instanceId: "session-1",
-			natsSubject: "session.events.session-1",
+		createInteractiveSessionMock.mockReset();
+		listSessionsMock.mockResolvedValue([]);
+		createInteractiveSessionMock.mockResolvedValue({
+			status: "created",
+			session: sampleSession(),
 		});
-		sandboxProvisionFailureMessageMock.mockImplementation((err: unknown) =>
-			err instanceof Error
-				? `OpenShell sandbox provisioning failed: ${err.message}`
-				: "OpenShell sandbox provisioning failed",
-		);
 	});
 
-	it("attaches a successfully provisioned eager sandbox", async () => {
-		provisionSessionSandboxWithRetryMock.mockResolvedValue({
-			sandboxName: "ws-ready",
-			workspaceRef: "workspace/ws-ready",
-			rootPath: "/sandbox",
-		});
+	it("keeps the root route as a presentation adapter", () => {
+		const source = readFileSync(
+			join(dirname(fileURLToPath(import.meta.url)), "+server.ts"),
+			"utf8",
+		);
+		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("drizzle-orm");
+		expect(source).not.toContain("$lib/server/sessions/registry");
+		expect(source).not.toContain("$lib/server/sessions/spawn");
+		expect(source).not.toContain("$lib/server/sessions/events");
+		expect(source).not.toContain("$lib/server/sessions/repositories");
+	});
 
+	it("delegates listing to the session command service with scoped filters", async () => {
+		const response = (await GET(
+			sessionEvent("http://localhost/api/v1/sessions?status=running&limit=5"),
+		)) as Response;
+		const body = await response.json();
+
+		expect(response.status).toBe(200);
+		expect(body.sessions).toEqual([]);
+		expect(listSessionsMock).toHaveBeenCalledWith({
+			userId: "user-1",
+			projectId: "project-1",
+			agentId: undefined,
+			status: "running",
+			source: undefined,
+			workflowId: undefined,
+			executionId: undefined,
+			q: undefined,
+			includeArchived: false,
+			limit: 5,
+		});
+	});
+
+	it("maps a created interactive session to HTTP 201", async () => {
 		const response = (await POST(
-			sessionCreateEvent({ agentId: "agent-1" }),
+			sessionEvent("http://localhost/api/v1/sessions", {
+				agentId: "agent-1",
+				provisioning: "eager",
+			}),
 		)) as Response;
 		const body = await response.json();
 
 		expect(response.status).toBe(201);
-		expect(provisionSessionSandboxWithRetryMock).toHaveBeenCalledWith({
-			executionId: "session-1",
-			name: "Session 1",
-			sandboxTemplate: "base",
-			keepAfterRun: true,
+		expect(body.session.id).toBe("session-1");
+		expect(createInteractiveSessionMock).toHaveBeenCalledWith({
+			userId: "user-1",
+			projectId: "project-1",
+			body: { agentId: "agent-1", provisioning: "eager" },
 		});
-		expect(attachWorkspaceSandboxMock).toHaveBeenCalledWith(
-			"session-1",
-			"ws-ready",
-		);
-		expect(recordSessionSandboxProvisioningErrorMock).not.toHaveBeenCalled();
-		expect(body.session.workspaceSandboxName).toBe("ws-ready");
-		expect(body.session.errorMessage).toBeNull();
 	});
 
-	it("persists the final eager sandbox provisioning failure while keeping session create non-fatal", async () => {
-		const err = new Error(
-			"status: Internal, message: failed to decode Protobuf message",
-		);
-		provisionSessionSandboxWithRetryMock.mockRejectedValue(err);
+	it("preserves CLI token precondition failures as HTTP 412", async () => {
+		createInteractiveSessionMock.mockResolvedValue({
+			status: "precondition_failed",
+			code: "missing_cli_token",
+			provider: "agy",
+			settingsPath: "/settings/cli-tokens",
+			message: "AGY token is required",
+			session: sampleSession(),
+		});
 
 		const response = (await POST(
-			sessionCreateEvent({ agentId: "agent-1" }),
+			sessionEvent("http://localhost/api/v1/sessions", { agentId: "agent-1" }),
 		)) as Response;
 		const body = await response.json();
 
-		expect(response.status).toBe(201);
-		expect(recordSessionSandboxProvisioningErrorMock).toHaveBeenCalledWith(
-			"session-1",
-			"OpenShell sandbox provisioning failed: status: Internal, message: failed to decode Protobuf message",
-		);
-		expect(body.session.workspaceSandboxName).toBeNull();
-		expect(body.session.errorMessage).toBe(
-			"OpenShell sandbox provisioning failed: status: Internal, message: failed to decode Protobuf message",
-		);
-		expect(spawnSessionWorkflowMock).toHaveBeenCalledWith("session-1");
+		expect(response.status).toBe(412);
+		expect(body).toMatchObject({
+			code: "missing_cli_token",
+			provider: "agy",
+			settingsPath: "/settings/cli-tokens",
+			message: "AGY token is required",
+			session: { id: "session-1" },
+		});
 	});
 });
 
-function sessionCreateEvent(body: Record<string, unknown>): never {
+function sessionEvent(url: string, body?: Record<string, unknown>): never {
 	return {
-		request: new Request("http://localhost/api/v1/sessions", {
-			method: "POST",
+		url: new URL(url),
+		request: new Request(url, {
+			method: body ? "POST" : "GET",
 			headers: { "content-type": "application/json" },
-			body: JSON.stringify(body),
+			body: body ? JSON.stringify(body) : undefined,
 		}),
 		locals: {
 			session: {
@@ -154,20 +124,6 @@ function sessionCreateEvent(body: Record<string, unknown>): never {
 			},
 		},
 	} as never;
-}
-
-function sampleAgent() {
-	return {
-		id: "agent-1",
-		name: "Coding Agent",
-		slug: "coding-agent",
-		version: 1,
-		config: {},
-		runtimeAppId: "agent-runtime-coding-agent",
-		mlflowModelVersion: null,
-		mlflowModelName: null,
-		mlflowUri: null,
-	};
 }
 
 function sampleSession(): SessionDetail {

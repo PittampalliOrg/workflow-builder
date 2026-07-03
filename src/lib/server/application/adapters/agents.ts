@@ -3,6 +3,7 @@ import type {
 	PeerAgentDispatchContext,
 	PeerAgentOwner,
 	PeerAgentResolver,
+	SessionAgentResolver,
 	SessionControlSettingsReferences,
 	SessionExperimentAgentStore,
 	SessionForkBaseAgent,
@@ -33,9 +34,34 @@ export class RegistryPeerAgentResolver
 	implements
 		PeerAgentResolver,
 		WorkflowAgentReadRepository,
-		SessionExperimentAgentStore
+		SessionExperimentAgentStore,
+		SessionAgentResolver
 {
 	constructor(private readonly database: Database = requireDb()) {}
+
+	async resolveSessionAgent(input: {
+		agentId: string;
+		agentVersion?: number | null;
+	}) {
+		const resolved = await resolveAgentRef({
+			id: input.agentId,
+			version: input.agentVersion ?? undefined,
+		});
+		return resolved
+			? {
+					id: resolved.id,
+					name: resolved.name,
+					slug: resolved.slug,
+					version: resolved.version,
+					config: resolved.config,
+					runtime: resolved.runtime,
+					runtimeAppId: resolved.runtimeAppId,
+					mlflowModelVersion: resolved.mlflowModelVersion,
+					mlflowModelName: resolved.mlflowModelName,
+					mlflowUri: resolved.mlflowUri,
+				}
+			: null;
+	}
 
 	async resolvePeerAgentOwner(peerAgentId: string): Promise<PeerAgentOwner | null> {
 		const [peerRow] = await this.database

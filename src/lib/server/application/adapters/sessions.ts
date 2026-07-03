@@ -3,6 +3,7 @@ import type {
 	AppendSessionEventInput,
 	CliWorkspaceSessionCandidateRecord,
 	CreateSessionForkInput,
+	CreateSessionRecordInput,
 	CreatePeerSessionInput,
 	CreateWorkflowEnsureSessionInput,
 	ListSessionEventsInput,
@@ -15,10 +16,14 @@ import type {
 	SessionProvisioningContext,
 	SessionProvisioningReader,
 	SessionRepository,
+	SessionRepositoryMountTarget,
+	SessionRepositoryMounter,
 	SessionRuntimeDebugTarget,
 	SessionRuntimeConfigReader,
 	SessionRuntimeEventRaiser,
 	SessionTraceLifecycleStore,
+	SessionListInput,
+	SessionWorkflowSpawner,
 	SessionWorkflowContext,
 	UpdateSessionStatusInput,
 	UpdateSessionStatusUnlessTerminatedInput,
@@ -38,14 +43,25 @@ import {
 } from "$lib/server/db/schema";
 import {
 	safeFinishMlflowRun,
+	safeCreateInteractiveSessionMlflowRun,
 	safePatchInteractiveSessionMlflowTraces,
 } from "$lib/server/observability/mlflow-lifecycle";
 import { appendEvent, rowToEnvelope } from "$lib/server/sessions/events";
-import { createSession, getSession } from "$lib/server/sessions/registry";
+import {
+	attachWorkspaceSandbox,
+	createSession as createSessionRecord,
+	getSession,
+	listSessions,
+	recordSessionSandboxProvisioningError,
+} from "$lib/server/sessions/registry";
 import { raiseSessionAgentConfigPatch as raiseSessionAgentConfigPatchForRuntime } from "$lib/server/sessions/agent-config-patch";
 import { getSessionProvisioningPreferObserver } from "$lib/server/sessions/provisioning";
 import { getSessionRuntimeConfig } from "$lib/server/sessions/runtime-config";
-import { raiseSessionUserEvents } from "$lib/server/sessions/spawn";
+import {
+	raiseSessionUserEvents,
+	spawnSessionWorkflow,
+} from "$lib/server/sessions/spawn";
+import { mountSessionRepositories } from "$lib/server/sessions/repositories";
 import {
 	agentRuntimeDedicatedAppId,
 	agentRuntimeInvokeTarget,
@@ -112,8 +128,19 @@ function toSessionResource(row: SessionResourceRow): SessionResource {
 export class CurrentSessionRepository implements SessionRepository {
 	constructor(private readonly database?: Database) {}
 
+	listSessions(filter: SessionListInput = {}) {
+		return listSessions({
+			...filter,
+			projectId: filter.projectId ?? undefined,
+		});
+	}
+
 	getSession(id: string): Promise<SessionDetail | null> {
 		return getSession(id);
+	}
+
+	createSession(input: CreateSessionRecordInput): Promise<SessionDetail> {
+		return createSessionRecord(input);
 	}
 
 	async updateSessionTitle(input: {
@@ -185,6 +212,23 @@ export class CurrentSessionRepository implements SessionRepository {
 			})
 			.returning();
 		return toSessionResource(row);
+	}
+
+	async attachWorkspaceSandbox(input: {
+		sessionId: string;
+		workspaceSandboxName: string;
+	}): Promise<void> {
+		await attachWorkspaceSandbox(input.sessionId, input.workspaceSandboxName);
+	}
+
+	async recordSandboxProvisioningError(input: {
+		sessionId: string;
+		errorMessage: string;
+	}): Promise<void> {
+		await recordSessionSandboxProvisioningError(
+			input.sessionId,
+			input.errorMessage,
+		);
 	}
 
 	async removeSessionResource(input: {
@@ -449,7 +493,7 @@ export class CurrentSessionRepository implements SessionRepository {
 	}
 
 	async createSessionFork(input: CreateSessionForkInput): Promise<{ id: string }> {
-		const session = await createSession({
+		const session = await createSessionRecord({
 			agentId: input.agentId,
 			agentVersion: input.agentVersion ?? undefined,
 			environmentId: input.environmentId ?? undefined,
@@ -468,7 +512,7 @@ export class CurrentSessionRepository implements SessionRepository {
 	}
 
 	async createPeerSession(input: CreatePeerSessionInput): Promise<PeerSessionRecord> {
-		const session = await createSession({
+		const session = await createSessionRecord({
 			id: input.id,
 			agentId: input.agentId,
 			title: input.title,
@@ -713,7 +757,31 @@ export class DaprSessionRuntimeEventRaiser implements SessionRuntimeEventRaiser 
 	}
 }
 
+export class DaprSessionWorkflowSpawner implements SessionWorkflowSpawner {
+	spawnSessionWorkflow(sessionId: string): Promise<{
+		instanceId: string;
+		natsSubject: string;
+	}> {
+		return spawnSessionWorkflow(sessionId);
+	}
+}
+
+export class WorkspaceSessionRepositoryMounter implements SessionRepositoryMounter {
+	mountSessionRepositories(
+		sessionId: string,
+		target: SessionRepositoryMountTarget,
+	): Promise<void> {
+		return mountSessionRepositories(sessionId, target);
+	}
+}
+
 export class LegacyMlflowSessionTraceLifecycle implements SessionTraceLifecycleStore {
+	createInteractiveSessionTraceRun(
+		input: Parameters<NonNullable<SessionTraceLifecycleStore["createInteractiveSessionTraceRun"]>>[0],
+	) {
+		return safeCreateInteractiveSessionMlflowRun(input);
+	}
+
 	async patchInteractiveSessionTraces(input: {
 		sessionId: string;
 		status: "OK" | "ERROR";

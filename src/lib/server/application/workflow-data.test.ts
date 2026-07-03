@@ -73,6 +73,7 @@ import type {
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 import type { RuntimeConfigCloudEvent } from "$lib/server/sessions/runtime-config";
 import { createDefaultAgentConfig } from "$lib/types/agents";
+import type { SessionDetail } from "$lib/types/sessions";
 
 const dynamicPrivateEnv = vi.hoisted(() => ({} as Record<string, string | undefined>));
 
@@ -553,7 +554,9 @@ function fakeSessionEventNotifications(): WorkflowSessionEventNotificationSource
 
 function fakeSessions(): SessionRepository {
 	return {
+		listSessions: vi.fn(async () => []),
 		getSession: vi.fn(async () => null),
+		createSession: vi.fn(async () => sampleSessionDetail()),
 		updateSessionTitle: vi.fn(async () => null),
 		archiveSession: vi.fn(async () => false),
 		deleteSession: vi.fn(async () => false),
@@ -571,6 +574,8 @@ function fakeSessions(): SessionRepository {
 			mountedAt: null,
 			removedAt: null,
 		})),
+		attachWorkspaceSandbox: vi.fn(async () => undefined),
+		recordSandboxProvisioningError: vi.fn(async () => undefined),
 		removeSessionResource: vi.fn(async () => false),
 		getSessionProvisioningContext: vi.fn(async () => ({
 			id: "session-1",
@@ -639,6 +644,47 @@ function fakeSessions(): SessionRepository {
 		})),
 		updateSessionStatus: vi.fn(async () => undefined),
 		updateSessionStatusUnlessTerminated: vi.fn(async () => undefined),
+	};
+}
+
+function sampleSessionDetail(): SessionDetail {
+	return {
+		id: "session-1",
+		title: "Session 1",
+		status: "rescheduling",
+		stopReason: null,
+		agentId: "agent-1",
+		agentVersion: 1,
+		projectId: "project-1",
+		environmentId: null,
+		environmentVersion: null,
+		vaultIds: [],
+		usage: {},
+		errorMessage: null,
+		workflowExecutionId: null,
+		mlflowExperimentId: null,
+		mlflowRunId: null,
+		mlflowParentRunId: null,
+		mlflowSessionId: "session-1",
+		workflowId: null,
+		workflowName: null,
+		agentName: "Agent One",
+		agentSlug: "agent-one",
+		agentAvatar: null,
+		agentEphemeral: false,
+		createdAt: "2026-05-15T12:00:00.000Z",
+		updatedAt: "2026-05-15T12:00:00.000Z",
+		completedAt: null,
+		archivedAt: null,
+		daprInstanceId: null,
+		natsSubject: null,
+		parentExecutionId: null,
+		resumedFromSessionId: null,
+		sandboxName: "dapr-agent-py",
+		workspaceSandboxName: null,
+		runtimeAppId: null,
+		runtimeSandboxName: null,
+		pausedAt: null,
 	};
 }
 
