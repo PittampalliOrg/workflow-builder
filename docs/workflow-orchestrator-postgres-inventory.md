@@ -566,6 +566,12 @@ services:
   `src/routes/api/admin/pieces/[pieceName]/enable/+server.ts` now resolve
   platform-admin status through the workflow-data user profile port instead of
   querying `users.platform_role` directly in route code.
+- `src/routes/api/metrics/aggregate/+server.ts`,
+  `src/routes/api/v1/capacity/rightsizing/+server.ts`, and
+  `src/routes/api/internal/sessions/resource-sample/+server.ts` now delegate
+  aggregate metrics, rightsizing read models, and resource sample persistence to
+  `ApplicationResourceMetricsService`; Drizzle access for workflow/session
+  counts and session resource samples is confined to resource-metrics adapters.
 - `src/routes/api/prompt-presets/+server.ts` and
   `src/routes/api/prompt-presets/[id]/+server.ts` now delegate project-scoped
   prompt-preset list/create/update/archive behavior to

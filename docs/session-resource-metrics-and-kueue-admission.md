@@ -27,7 +27,7 @@ Consumed by **Session Pulse** (`src/lib/components/sessions/session-pulse.svelte
 
 Real CPU/memory **is** observed — in two places — but only cluster/class-level and **never persisted or attributed per session**:
 
-- **BFF metrics reader** `src/lib/server/metrics/resources.ts` → Kubernetes Metrics API (`metrics.k8s.io`, metrics-server) → per-pod actual CPU (millicores) + memory (MiB), bucketed by class (agent-runtime / sandbox / orchestrator / …). 15s rolling window, ephemeral. Feeds the admin dashboard via `src/lib/server/metrics/aggregate.ts`.
+- **BFF metrics reader** `src/lib/server/metrics/resources.ts` → Kubernetes Metrics API (`metrics.k8s.io`, metrics-server) → per-pod actual CPU (millicores) + memory (MiB), bucketed by class (agent-runtime / sandbox / orchestrator / …). 15s rolling window, ephemeral. Feeds the admin dashboard through `ApplicationResourceMetricsService`.
 - **capacity-observer** (stacks `kueue-capacity/manifests/capacity-observer/observer.py`) → scrapes kubelet `/stats/summary` per worker → per-pod `observedResources` (actual cpu/mem/ephemeral) **and node PSI** (memory/cpu/io pressure) **and** Kueue queue state → exposes `/snapshot` (JSON) + `/metrics` (Prometheus). The Fleet/capacity panel (`src/lib/server/capacity/business-work.ts`) shows `requestedResources` vs `observedResources` at class level.
 
 ### 1c. Trace/metric stores available

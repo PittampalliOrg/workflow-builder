@@ -85,6 +85,8 @@ import {
 import { ClickHouseTraceOwnerResolver } from "$lib/server/application/adapters/observability-trace-access";
 import { PostgresCapabilityBundleRepository } from "$lib/server/application/adapters/capability-bundles";
 import { LegacyAgentSkillRepository } from "$lib/server/application/adapters/agent-skills";
+import { PostgresResourceMetricsRepository } from "$lib/server/application/adapters/aggregate-metrics";
+import { PostgresSessionResourceUsageRepository } from "$lib/server/application/adapters/session-resource-usage";
 import { LegacyAgentImportExportReferenceRepository } from "$lib/server/application/adapters/agent-import-export";
 import {
 	DaprCredentialStore,
@@ -240,6 +242,7 @@ import { DaprAgentRegistryStateReaderAdapter } from "$lib/server/application/ada
 import { ApplicationObservabilityTraceAccessService } from "$lib/server/application/observability-trace-access";
 import { ApplicationCapabilityBundleService } from "$lib/server/application/capability-bundles";
 import { ApplicationAgentSkillService } from "$lib/server/application/agent-skills";
+import { ApplicationResourceMetricsService } from "$lib/server/application/resource-metrics";
 import { ApplicationCliPreviewService } from "$lib/server/application/cli-preview";
 import { ApplicationSandboxPreviewService } from "$lib/server/application/sandbox-preview";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
@@ -410,6 +413,7 @@ export function getApplicationAdapters(
 		| undefined;
 	let capabilityBundles: ApplicationCapabilityBundleService | undefined;
 	let agentSkills: ApplicationAgentSkillService | undefined;
+	let resourceMetrics: ApplicationResourceMetricsService | undefined;
 	let workflowMonitorReads: PostgresWorkflowMonitorReadRepository | undefined;
 	let resourceUsages: PostgresResourceUsageReadRepository | undefined;
 	let aiAssistantMessages:
@@ -682,6 +686,17 @@ export function getApplicationAdapters(
 		(agentSkills ??= new ApplicationAgentSkillService(
 			new LegacyAgentSkillRepository(),
 		));
+	const getResourceMetrics = () =>
+		(resourceMetrics ??= new ApplicationResourceMetricsService({
+			getAggregateMetrics: new PostgresResourceMetricsRepository()
+				.getAggregateMetrics,
+			computeRightsizingRecommendations:
+				new PostgresSessionResourceUsageRepository()
+					.computeRightsizingRecommendations,
+			sampleAndPersistSessionResourceUsage:
+				new PostgresSessionResourceUsageRepository()
+					.sampleAndPersistSessionResourceUsage,
+		}));
 	const getWorkflowMonitorReads = () =>
 		(workflowMonitorReads ??= new PostgresWorkflowMonitorReadRepository(
 			getDatabase(),
@@ -1413,6 +1428,9 @@ export function getApplicationAdapters(
 		},
 		get agentSkills() {
 			return getAgentSkills();
+		},
+		get resourceMetrics() {
+			return getResourceMetrics();
 		},
 		get codeFunctionManagement() {
 			return getCodeFunctionManagement();

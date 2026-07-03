@@ -1,7 +1,7 @@
 import { json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { requireInternal } from "$lib/server/internal-auth";
-import { sampleAndPersistSessionResourceUsage } from "$lib/server/metrics/session-usage";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * POST /api/internal/sessions/resource-sample — one resource-sampling tick.
@@ -12,6 +12,7 @@ import { sampleAndPersistSessionResourceUsage } from "$lib/server/metrics/sessio
  */
 export const POST: RequestHandler = async ({ request }) => {
 	requireInternal(request);
-	const result = await sampleAndPersistSessionResourceUsage();
+	const result =
+		await getApplicationAdapters().resourceMetrics.sampleAndPersistSessionResourceUsage();
 	return json({ ok: true, ...result });
 };

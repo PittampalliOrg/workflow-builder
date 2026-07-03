@@ -13,7 +13,8 @@ import { and, gte, inArray } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import { agents, sessions } from "$lib/server/db/schema";
 import { eq } from "drizzle-orm";
-import { getResourceUsage } from "./resources";
+import { getResourceUsage } from "$lib/server/metrics/resources";
+import type { ResourceMetricsPort } from "$lib/server/application/resource-metrics";
 
 export type SessionResourceUsage = {
 	peakCpuMillicores: number;
@@ -157,4 +158,16 @@ export async function computeRightsizingRecommendations(
 		});
 	}
 	return out.sort((a, b) => b.sampledSessions - a.sampledSessions);
+}
+
+export class PostgresSessionResourceUsageRepository
+	implements
+		Pick<
+			ResourceMetricsPort,
+			| "computeRightsizingRecommendations"
+			| "sampleAndPersistSessionResourceUsage"
+		>
+{
+	computeRightsizingRecommendations = computeRightsizingRecommendations;
+	sampleAndPersistSessionResourceUsage = sampleAndPersistSessionResourceUsage;
 }

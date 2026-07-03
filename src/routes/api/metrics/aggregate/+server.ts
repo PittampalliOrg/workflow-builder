@@ -1,7 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
-import { getAggregateMetrics } from "$lib/server/metrics/aggregate";
 
 /**
  * Aggregate workflow metrics for the admin dashboard.
@@ -25,6 +24,6 @@ export const GET: RequestHandler = async ({ locals }) => {
 		}
 		throw err;
 	}
-	const snapshot = await getAggregateMetrics();
+	const snapshot = await getApplicationAdapters().resourceMetrics.getAggregateMetrics();
 	return json(snapshot);
 };

@@ -14,7 +14,8 @@
 
 import { sql } from "drizzle-orm";
 import { db } from "$lib/server/db";
-import { getResourceUsage, type ResourceUsageSummary } from "./resources";
+import { getResourceUsage, type ResourceUsageSummary } from "$lib/server/metrics/resources";
+import type { ResourceMetricsPort } from "$lib/server/application/resource-metrics";
 
 export interface AggregateMetricsSnapshot {
 	/** Per-pod CPU/memory totals from metrics.k8s.io. Null if metrics-server
@@ -178,4 +179,10 @@ async function tokenWindow(interval: "1 hour" | "1 minute"): Promise<TokenWindow
 		cacheCreation,
 		total: input + output + cacheRead + cacheCreation,
 	};
+}
+
+export class PostgresResourceMetricsRepository
+	implements Pick<ResourceMetricsPort, "getAggregateMetrics">
+{
+	getAggregateMetrics = getAggregateMetrics;
 }

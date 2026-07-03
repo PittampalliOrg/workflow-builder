@@ -1,6 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { computeRightsizingRecommendations } from "$lib/server/metrics/session-usage";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * GET /api/v1/capacity/rightsizing?windowDays=14 — per-runtime recommended
@@ -12,6 +12,9 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	const raw = Number(url.searchParams.get("windowDays") ?? "14");
 	const windowDays = Number.isFinite(raw) && raw > 0 ? Math.min(raw, 90) : 14;
-	const recommendations = await computeRightsizingRecommendations(windowDays);
+	const recommendations =
+		await getApplicationAdapters().resourceMetrics.computeRightsizingRecommendations({
+			windowDays,
+		});
 	return json({ windowDays, recommendations });
 };
