@@ -62,8 +62,6 @@
 			sessionId: string | null;
 			workflowExecutionId: string | null;
 			daprInstanceId: string | null;
-			mlflowRunId: string | null;
-			mlflowUrl: string | null;
 			mlflowTracesUrl: string | null;
 			hostJobName: string | null;
 			sandboxName: string | null;
@@ -459,27 +457,13 @@
 									<ExternalLink class="h-2.5 w-2.5" />
 								</a>
 							{/if}
-							{#if detail.runInstance.mlflowUrl}
-								<a
-									href={detail.runInstance.mlflowUrl}
-									target="_blank"
-									rel="noopener noreferrer"
-									class="inline-flex items-center gap-1 rounded-md border border-border bg-muted/30 px-2 py-0.5 text-[10px] font-medium text-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
-									title="Open MLflow run"
-								>
-									MLflow
-									<ExternalLink class="h-2.5 w-2.5" />
-								</a>
-							{/if}
 							{#if detail.runInstance.mlflowTracesUrl}
 								<a
 									href={detail.runInstance.mlflowTracesUrl}
-									target="_blank"
-									rel="noopener noreferrer"
 									class="inline-flex items-center gap-1 rounded-md border border-border bg-muted/30 px-2 py-0.5 text-[10px] font-medium text-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
-									title="Open MLflow traces"
+									title="Open trace"
 								>
-									Traces
+									Trace
 									<ExternalLink class="h-2.5 w-2.5" />
 								</a>
 							{/if}
@@ -924,7 +908,7 @@
 							{/if}
 						</TabsContent>
 
-						<!-- Trace (MLflow-backed trace detail) -->
+						<!-- Trace detail -->
 						<TabsContent value="trace" class="m-0 space-y-3">
 							{#if spansLoading}
 								<div class="flex items-center gap-2 text-xs text-muted-foreground">
@@ -944,26 +928,22 @@
 								{#if detail.runInstance.mlflowTracesUrl}
 									<a
 										href={detail.runInstance.mlflowTracesUrl}
-										target="_blank"
-										rel="noopener noreferrer"
 										class="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs text-primary hover:bg-muted"
 									>
-										Open in MLflow <ExternalLink class="h-3 w-3" />
+										Open trace <ExternalLink class="h-3 w-3" />
 									</a>
 								{/if}
 							{:else if spans && runId && instanceId}
 								<div class="flex flex-wrap items-center justify-between gap-2">
 									<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
-										{spans.traceIds.length} trace{spans.traceIds.length === 1 ? '' : 's'} · {spans.backend ?? 'mlflow'} backend
+										{spans.traceIds.length} trace{spans.traceIds.length === 1 ? '' : 's'} · {spans.backend ?? 'trace'} backend
 									</div>
 									{#if spans.mlflowTracesUrl}
 										<a
 											href={spans.mlflowTracesUrl}
-											target="_blank"
-											rel="noopener noreferrer"
 											class="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs text-primary hover:bg-muted"
 										>
-											Open in MLflow <ExternalLink class="h-3 w-3" />
+											Open trace <ExternalLink class="h-3 w-3" />
 										</a>
 									{/if}
 								</div>
@@ -1177,30 +1157,14 @@
 										{detail.runInstance.logsPath ?? 'pending'}
 									</span>
 								</div>
-								{#if detail.runInstance.mlflowUrl}
-									<div>
-										<span class="text-muted-foreground">MLflow:</span>
-										<a
-											href={detail.runInstance.mlflowUrl}
-											target="_blank"
-											rel="noopener noreferrer"
-											class="ml-2 inline-flex items-center gap-1 break-all text-primary hover:underline"
-										>
-											<span class="font-mono">{detail.runInstance.mlflowRunId}</span>
-											<ExternalLink class="h-3 w-3" />
-										</a>
-									</div>
-								{/if}
 								{#if detail.runInstance.mlflowTracesUrl}
 									<div>
-										<span class="text-muted-foreground">MLflow traces:</span>
+										<span class="text-muted-foreground">Trace:</span>
 										<a
 											href={detail.runInstance.mlflowTracesUrl}
-											target="_blank"
-											rel="noopener noreferrer"
 											class="ml-2 inline-flex items-center gap-1 text-primary hover:underline"
 										>
-											Open traces <ExternalLink class="h-3 w-3" />
+											Open trace <ExternalLink class="h-3 w-3" />
 										</a>
 									</div>
 								{/if}

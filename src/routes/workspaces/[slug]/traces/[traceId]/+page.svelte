@@ -91,7 +91,7 @@
 					goalFlow={payload.goalFlow}
 				/>
 				<div class="min-h-0 flex-1">
-					<InvestigationStudio {payload} mlflowHref={null} legacyTraceHref={null} onRefresh={loadInvestigation} />
+					<InvestigationStudio {payload} legacyTraceHref={null} onRefresh={loadInvestigation} />
 				</div>
 			</div>
 		{/if}

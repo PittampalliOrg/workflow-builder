@@ -370,7 +370,7 @@
 	<div class="rounded-md border border-border bg-background px-3 py-2">
 		<div class="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
 			<Badge class="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 text-[10px]">
-				{backend === 'mlflow_artifact' ? 'mlflow artifact' : backend ?? 'trace'}
+				{backend === 'mlflow_artifact' ? 'artifact' : backend ?? 'trace'}
 			</Badge>
 			{#if artifactPath}
 				<code class="break-all font-mono text-[10px]">{artifactPath}</code>

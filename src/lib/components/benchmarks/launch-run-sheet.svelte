@@ -836,7 +836,7 @@
 								placeholder={defaultComparisonLabel()}
 							/>
 							<div class="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
-								<span>MLflow tag</span>
+								<span>Comparison tag</span>
 								<Badge variant="secondary" class="font-mono text-[10px]">#{comparisonTag}</Badge>
 								<span>applied to every parent, instance, and eval run</span>
 							</div>
@@ -935,7 +935,7 @@
 							placeholder={defaultComparisonLabel()}
 						/>
 						<div class="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
-							<span>MLflow tag</span>
+							<span>Comparison tag</span>
 							<Badge variant="secondary" class="font-mono text-[10px]">#{comparisonTag}</Badge>
 							<span>applied to every parent, instance, and eval run</span>
 						</div>

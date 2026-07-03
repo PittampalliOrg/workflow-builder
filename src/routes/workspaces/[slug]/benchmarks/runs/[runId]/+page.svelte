@@ -320,13 +320,6 @@
 							<Download class="size-3.5" /> Predictions
 						</Button>
 					</a>
-					{#if run.mlflowUrl}
-						<a href={run.mlflowUrl} target="_blank" rel="noopener noreferrer">
-							<Button variant="outline" size="sm">
-								<ExternalLink class="size-3.5" /> MLflow
-							</Button>
-						</a>
-					{/if}
 					{#if isActive}
 						<Button variant="destructive" size="sm" onclick={cancelRun} disabled={cancelling}>
 							<StopCircle class="size-3.5" /> Cancel

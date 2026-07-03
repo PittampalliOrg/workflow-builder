@@ -26,7 +26,6 @@
 		payload: ObservabilityInvestigationPayload | null;
 		isLoading?: boolean;
 		error?: string | null;
-		mlflowHref?: string | null;
 		legacyTraceHref?: string | null;
 		fullTraceHref?: string | null;
 		onRefresh?: () => void;
@@ -36,7 +35,6 @@
 		payload,
 		isLoading = false,
 		error = null,
-		mlflowHref = null,
 		legacyTraceHref = null,
 		fullTraceHref = null,
 		onRefresh = () => {}
@@ -439,11 +437,6 @@
 				{/if}
 
 				<div class="ml-auto flex items-center gap-2">
-					{#if mlflowHref}
-						<a href={mlflowHref} target="_blank" rel="noopener noreferrer" class="text-[10px] font-medium text-sky-300 hover:text-sky-200">
-							<ExternalLink size={10} class="mr-0.5 inline" /> MLflow
-						</a>
-					{/if}
 					{#if legacyExternalTraceHref}
 						<a href={legacyExternalTraceHref} target="_blank" rel="noopener noreferrer" class="text-[10px] text-zinc-500 hover:text-zinc-300">
 							<ExternalLink size={10} class="mr-0.5 inline" /> Phoenix

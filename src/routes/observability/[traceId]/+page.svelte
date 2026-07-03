@@ -62,7 +62,7 @@
 				<AlertDescription>{error}</AlertDescription>
 			</Alert>
 		{:else if payload}
-			<InvestigationStudio {payload} mlflowHref={null} legacyTraceHref={null} onRefresh={loadInvestigation} />
+			<InvestigationStudio {payload} legacyTraceHref={null} onRefresh={loadInvestigation} />
 		{/if}
 	</div>
 </div>
