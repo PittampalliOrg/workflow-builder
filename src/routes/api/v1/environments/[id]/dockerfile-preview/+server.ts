@@ -1,16 +1,20 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { previewEnvironmentDockerfile } from "$lib/server/environments/builder";
-import {
-	getBaseImageResolver,
-	getEnvironment,
-} from "$lib/server/environments/registry";
+import { getApplicationAdapters } from "$lib/server/application";
+import { ApplicationEnvironmentError } from "$lib/server/application/environment-management";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const env = await getEnvironment(params.id);
-	if (!env) return error(404, "Environment not found");
-	const resolver = await getBaseImageResolver();
-	const dockerfile = await previewEnvironmentDockerfile(env, resolver);
-	return json({ dockerfile });
+	try {
+		return json(
+			await getApplicationAdapters().environments.dockerfilePreview({
+				id: params.id,
+			}),
+		);
+	} catch (err) {
+		if (err instanceof ApplicationEnvironmentError) {
+			throw error(err.status, err.message);
+		}
+		throw err;
+	}
 };

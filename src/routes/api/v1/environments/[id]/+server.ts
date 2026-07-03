@@ -1,64 +1,44 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import {
-	EnvironmentConfigValidationError,
-	archiveEnvironment,
-	getEnvironment,
-	updateEnvironment,
-} from "$lib/server/environments/registry";
-import type { EnvironmentConfig } from "$lib/types/environments";
+import { getApplicationAdapters } from "$lib/server/application";
+import { ApplicationEnvironmentError } from "$lib/server/application/environment-management";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const environment = await getEnvironment(params.id);
-	if (!environment) return error(404, "Environment not found");
-	return json({ environment });
+	try {
+		return json(await getApplicationAdapters().environments.get({ id: params.id }));
+	} catch (err) {
+		handleEnvironmentError(err);
+	}
 };
 
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const body = (await request.json().catch(() => ({}))) as Record<
-		string,
-		unknown
-	>;
-	let environment;
 	try {
-		environment = await updateEnvironment(params.id, {
-			name: typeof body.name === "string" ? body.name : undefined,
-			description:
-				typeof body.description === "string" || body.description === null
-					? (body.description as string | null)
-					: undefined,
-			avatar:
-				typeof body.avatar === "string" || body.avatar === null
-					? (body.avatar as string | null)
-					: undefined,
-			tags: Array.isArray(body.tags)
-				? body.tags.map((t) => String(t))
-				: undefined,
-			config:
-				body.config && typeof body.config === "object"
-					? (body.config as EnvironmentConfig)
-					: undefined,
-			baseEnvSlug:
-				typeof body.baseEnvSlug === "string" || body.baseEnvSlug === null
-					? (body.baseEnvSlug as string | null)
-					: undefined,
-			changelog:
-				typeof body.changelog === "string" ? body.changelog : undefined,
-			publishedBy: locals.session.userId,
-		});
-	} catch (e) {
-		if (e instanceof EnvironmentConfigValidationError) return error(400, e.message);
-		throw e;
+		return json(
+			await getApplicationAdapters().environments.update({
+				id: params.id,
+				userId: locals.session.userId,
+				body: await request.json().catch(() => ({})),
+			}),
+		);
+	} catch (err) {
+		handleEnvironmentError(err);
 	}
-	if (!environment) return error(404, "Environment not found");
-	return json({ environment });
 };
 
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const ok = await archiveEnvironment(params.id);
-	if (!ok) return error(404, "Environment not found");
-	return json({ archived: true });
+	try {
+		return json(await getApplicationAdapters().environments.archive({ id: params.id }));
+	} catch (err) {
+		handleEnvironmentError(err);
+	}
 };
+
+function handleEnvironmentError(err: unknown): never {
+	if (err instanceof ApplicationEnvironmentError) {
+		throw error(err.status, err.message);
+	}
+	throw err;
+}

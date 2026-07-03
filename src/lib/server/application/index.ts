@@ -104,6 +104,7 @@ import {
 	LegacyEvaluationTemplateRepository,
 	StaticSwebenchSuiteCatalog,
 } from "$lib/server/application/adapters/evaluations";
+import { LegacyEnvironmentRepository } from "$lib/server/application/adapters/environments";
 import { LegacyBenchmarkCapacityDiagnosticsAdapter } from "$lib/server/application/adapters/benchmark-capacity-diagnostics";
 import { EnvBenchmarkRunInstanceMlflowLinks } from "$lib/server/application/adapters/benchmark-run-instance-detail";
 import { LegacyEvaluationRunDetailReadAdapter } from "$lib/server/application/adapters/evaluation-run-detail";
@@ -254,6 +255,7 @@ import {
 } from "$lib/server/application/run-launch";
 import { ApplicationEvaluationDatasetService } from "$lib/server/application/evaluation-datasets";
 import { ApplicationEvaluationTemplateService } from "$lib/server/application/evaluation-templates";
+import { ApplicationEnvironmentService } from "$lib/server/application/environment-management";
 import { ApplicationBenchmarkCapacityDiagnosticsService } from "$lib/server/application/benchmark-capacity-diagnostics";
 import { ApplicationBenchmarkRunInstanceDetailService } from "$lib/server/application/benchmark-run-instance-detail";
 import { ApplicationRunCancellationService } from "$lib/server/application/run-cancellation";
@@ -406,6 +408,7 @@ export function getApplicationAdapters(
 	let evaluationRunLaunch: ApplicationEvaluationRunLaunchService | undefined;
 	let evaluationDatasets: ApplicationEvaluationDatasetService | undefined;
 	let evaluationTemplates: ApplicationEvaluationTemplateService | undefined;
+	let environments: ApplicationEnvironmentService | undefined;
 	let benchmarkCapacityDiagnostics:
 		| ApplicationBenchmarkCapacityDiagnosticsService
 		| undefined;
@@ -682,6 +685,10 @@ export function getApplicationAdapters(
 			imports: new LegacyEvaluationDatasetImportParser(),
 			swebenchSuites: new StaticSwebenchSuiteCatalog(),
 		}));
+	const getEnvironments = () =>
+		(environments ??= new ApplicationEnvironmentService(
+			new LegacyEnvironmentRepository(),
+		));
 	const getEvaluationRunDetail = () =>
 		(evaluationRunDetail ??= new ApplicationEvaluationRunDetailService(
 			new LegacyEvaluationRunDetailReadAdapter(),
@@ -1089,6 +1096,9 @@ export function getApplicationAdapters(
 		},
 		get evaluationTemplates() {
 			return getEvaluationTemplates();
+		},
+		get environments() {
+			return getEnvironments();
 		},
 		get evaluationRunDetail() {
 			return getEvaluationRunDetail();

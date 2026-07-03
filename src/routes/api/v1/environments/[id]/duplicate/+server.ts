@@ -1,19 +1,24 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { duplicateEnvironment } from "$lib/server/environments/registry";
+import { getApplicationAdapters } from "$lib/server/application";
+import { ApplicationEnvironmentError } from "$lib/server/application/environment-management";
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const body = (await request.json().catch(() => ({}))) as Record<
-		string,
-		unknown
-	>;
-	const name = typeof body.name === "string" ? body.name : undefined;
-	const environment = await duplicateEnvironment(params.id, {
-		name,
-		createdBy: locals.session.userId,
-		projectId: locals.session.projectId ?? null,
-	});
-	if (!environment) return error(404, "Environment not found");
-	return json({ environment }, { status: 201 });
+	try {
+		return json(
+			await getApplicationAdapters().environments.duplicate({
+				id: params.id,
+				userId: locals.session.userId,
+				sessionProjectId: locals.session.projectId,
+				body: await request.json().catch(() => ({})),
+			}),
+			{ status: 201 },
+		);
+	} catch (err) {
+		if (err instanceof ApplicationEnvironmentError) {
+			throw error(err.status, err.message);
+		}
+		throw err;
+	}
 };

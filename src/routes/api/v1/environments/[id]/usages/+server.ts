@@ -1,9 +1,16 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { findEnvironmentUsages } from "$lib/server/environments/registry";
+import { getApplicationAdapters } from "$lib/server/application";
+import { ApplicationEnvironmentError } from "$lib/server/application/environment-management";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const usages = await findEnvironmentUsages(params.id);
-	return json({ usages, totalAgents: usages.length });
+	try {
+		return json(await getApplicationAdapters().environments.usages({ id: params.id }));
+	} catch (err) {
+		if (err instanceof ApplicationEnvironmentError) {
+			throw error(err.status, err.message);
+		}
+		throw err;
+	}
 };

@@ -1,29 +1,40 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { getVersion, restoreVersion } from "$lib/server/environments/registry";
+import { getApplicationAdapters } from "$lib/server/application";
+import { ApplicationEnvironmentError } from "$lib/server/application/environment-management";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const versionNum = Number.parseInt(params.version, 10);
-	if (!Number.isFinite(versionNum) || versionNum <= 0) {
-		return error(400, "Invalid version");
+	try {
+		return json(
+			await getApplicationAdapters().environments.getVersion({
+				id: params.id,
+				versionParam: params.version,
+			}),
+		);
+	} catch (err) {
+		handleEnvironmentError(err);
 	}
-	const result = await getVersion(params.id, versionNum);
-	if (!result) return error(404, "Version not found");
-	return json(result);
 };
 
 export const POST: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const versionNum = Number.parseInt(params.version, 10);
-	if (!Number.isFinite(versionNum) || versionNum <= 0) {
-		return error(400, "Invalid version");
+	try {
+		return json(
+			await getApplicationAdapters().environments.restoreVersion({
+				id: params.id,
+				versionParam: params.version,
+				userId: locals.session.userId,
+			}),
+		);
+	} catch (err) {
+		handleEnvironmentError(err);
 	}
-	const environment = await restoreVersion(
-		params.id,
-		versionNum,
-		locals.session.userId,
-	);
-	if (!environment) return error(404, "Version not found");
-	return json({ environment });
 };
+
+function handleEnvironmentError(err: unknown): never {
+	if (err instanceof ApplicationEnvironmentError) {
+		throw error(err.status, err.message);
+	}
+	throw err;
+}
