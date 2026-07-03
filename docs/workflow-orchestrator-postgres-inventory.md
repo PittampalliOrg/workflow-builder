@@ -30,6 +30,9 @@ The session runtime-config helper now takes its persisted
 `session.runtime_config` fallback as an injected adapter dependency. The latest
 runtime-config event query is confined to `DefaultSessionRuntimeConfigReader`;
 `runtime-config.ts` no longer imports DB, schema, or Drizzle.
+Session agent config patch commands now reuse the scoped session already loaded
+by workflow-data, with a workflow-data fallback for standalone helper use;
+`agent-config-patch.ts` no longer imports the legacy session registry.
 The workflow interactive dev-session handoff now resolves execution owner and
 project context through workflow-data execution ports instead of querying
 `workflow_executions`/`workflows` directly; `dev-session-handoff.ts` no longer
@@ -1083,9 +1086,11 @@ categories include:
 - goal-loop storage helpers under `src/lib/server/goals/**`, which still own
   drivable-goal claiming, usage accrual, idle-event metadata, and continuation
   claim queries.
-- remaining session/runtime/workspace helpers under `src/lib/server/sessions/**`,
+- remaining session/workspace helpers under `src/lib/server/sessions/**`,
   `src/lib/server/openshell-sessions.ts`, and related API routes, excluding the
-  capacity fleet-activity summary now confined to the adapter layer.
+  capacity fleet-activity summary now confined to the adapter layer, the
+  runtime-config helper's latest-event adapter seam, and session agent config
+  patch command session lookup now routed through workflow-data.
 - preview runtime/proxy helper internals, where persistence lookups have moved
   behind workflow-data but live Kubernetes/OpenShell transport still needs
   narrower runtime/proxy ports.

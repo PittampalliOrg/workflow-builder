@@ -3,7 +3,6 @@ import { env } from "$env/dynamic/private";
 import { daprFetch, getDaprSidecarUrl } from "$lib/server/dapr-client";
 import { resolveAgentRef } from "$lib/server/agents/registry";
 import { resolveSessionRuntimeTarget } from "$lib/server/sessions/runtime-target";
-import { getSession } from "$lib/server/sessions/registry";
 import { waitForAgentWorkflowHostAppReady } from "$lib/server/sessions/agent-workflow-host";
 import type { SessionDetail } from "$lib/types/sessions";
 
@@ -45,8 +44,10 @@ export type GetSessionRuntimeConfigOptions = {
 	projectId?: string | null;
 };
 
+type SessionLookup = (sessionId: string) => Promise<SessionDetail | null>;
+
 export type SessionRuntimeConfigDependencies = Partial<{
-	getSession: typeof getSession;
+	getSession: SessionLookup;
 	resolveSessionRuntimeTarget: typeof resolveSessionRuntimeTarget;
 	resolveAgentRef: typeof resolveAgentRef;
 	readLatestRuntimeConfigEvent: (
@@ -54,8 +55,15 @@ export type SessionRuntimeConfigDependencies = Partial<{
 	) => Promise<unknown | null | undefined>;
 }>;
 
+async function getSessionViaWorkflowData(
+	sessionId: string,
+): Promise<SessionDetail | null> {
+	const { getApplicationAdapters } = await import("$lib/server/application");
+	return getApplicationAdapters().workflowData.getSessionDetail({ sessionId });
+}
+
 const defaultRuntimeConfigDependencies = {
-	getSession,
+	getSession: getSessionViaWorkflowData,
 	resolveSessionRuntimeTarget,
 	resolveAgentRef,
 	readLatestRuntimeConfigEvent: async () => null,

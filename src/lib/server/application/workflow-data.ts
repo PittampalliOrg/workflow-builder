@@ -5003,6 +5003,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.requireSessionAgentConfigCommands().raiseSessionAgentConfigPatch({
 			sessionId: input.sessionId,
 			patch: input.patch,
+			session,
 		});
 	}
 

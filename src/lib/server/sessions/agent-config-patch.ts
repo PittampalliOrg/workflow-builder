@@ -5,11 +5,11 @@ import {
 import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution-application";
 import { resolveAgentRef } from "$lib/server/agents/registry";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
-import { getSession } from "$lib/server/sessions/registry";
 import type { AgentSkillConfig } from "$lib/agent-skill-presets";
 import type { McpServerProfileConfig } from "$lib/server/agent-profiles";
 import type { SessionAgentConfigPatch } from "$lib/server/application/ports";
 import type { AgentConfig } from "$lib/types/agents";
+import type { SessionDetail } from "$lib/types/sessions";
 import { raiseSessionEvent } from "./control";
 
 export const SESSION_AGENT_CONFIG_PATCH_EVENT = "session.control.update_agent_config";
@@ -17,6 +17,23 @@ export const SESSION_AGENT_CONFIG_PATCH_EVENT = "session.control.update_agent_co
 type PatchResult =
 	| { ok: true; patch: SessionAgentConfigPatch }
 	| { ok: false; status: number; error: string };
+
+type SessionLookup = (sessionId: string) => Promise<SessionDetail | null>;
+
+export type RaiseSessionAgentConfigPatchDependencies = Partial<{
+	getSession: SessionLookup;
+}>;
+
+async function getSessionViaWorkflowData(
+	sessionId: string,
+): Promise<SessionDetail | null> {
+	const { getApplicationAdapters } = await import("$lib/server/application");
+	return getApplicationAdapters().workflowData.getSessionDetail({ sessionId });
+}
+
+const defaultRaiseSessionAgentConfigPatchDependencies = {
+	getSession: getSessionViaWorkflowData,
+} satisfies Required<RaiseSessionAgentConfigPatchDependencies>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -186,11 +203,17 @@ export function normalizeSessionAgentConfigPatch(value: unknown): PatchResult {
 async function resolveRuntimeMcpPatch(
 	sessionId: string,
 	patch: SessionAgentConfigPatch,
+	dependencyOverrides: RaiseSessionAgentConfigPatchDependencies = {},
 ): Promise<PatchResult> {
 	if (!("mcpServers" in patch) && !("mcpConnectionMode" in patch)) {
 		return { ok: true, patch };
 	}
-	const session = await getSession(sessionId);
+	const deps: Required<RaiseSessionAgentConfigPatchDependencies> = {
+		getSession:
+			dependencyOverrides.getSession ??
+			defaultRaiseSessionAgentConfigPatchDependencies.getSession,
+	};
+	const session = await deps.getSession(sessionId);
 	if (!session) return { ok: false, status: 404, error: "Session not found" };
 	const agent = await resolveAgentRef({
 		id: session.agentId,
@@ -226,6 +249,7 @@ async function resolveRuntimeMcpPatch(
 export async function raiseSessionAgentConfigPatch(
 	sessionId: string,
 	input: unknown,
+	dependencyOverrides: RaiseSessionAgentConfigPatchDependencies = {},
 ): Promise<{
 	ok: boolean;
 	status: number;
@@ -235,7 +259,11 @@ export async function raiseSessionAgentConfigPatch(
 	const normalized = normalizeSessionAgentConfigPatch(input);
 	if (!normalized.ok) return normalized;
 
-	const resolved = await resolveRuntimeMcpPatch(sessionId, normalized.patch);
+	const resolved = await resolveRuntimeMcpPatch(
+		sessionId,
+		normalized.patch,
+		dependencyOverrides,
+	);
 	if (!resolved.ok) return resolved;
 
 	const result = await raiseSessionEvent(sessionId, SESSION_AGENT_CONFIG_PATCH_EVENT, {

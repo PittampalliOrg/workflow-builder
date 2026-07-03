@@ -3437,6 +3437,10 @@ describe("ApplicationWorkflowDataService", () => {
 		).toHaveBeenCalledWith({
 			sessionId: "session-1",
 			patch: { modelSpec: "openai/gpt-5.5" },
+			session: expect.objectContaining({
+				id: "session-1",
+				projectId: "project-1",
+			}),
 		});
 
 		await expect(

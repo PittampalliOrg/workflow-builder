@@ -3771,6 +3771,7 @@ export interface SessionAgentConfigCommandPort {
 	raiseSessionAgentConfigPatch(input: {
 		sessionId: string;
 		patch: unknown;
+		session?: SessionDetail | null;
 	}): Promise<SessionAgentConfigPatchResult>;
 }
 

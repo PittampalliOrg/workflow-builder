@@ -885,10 +885,14 @@ export class SessionAgentConfigCommandAdapter
 	raiseSessionAgentConfigPatch(input: {
 		sessionId: string;
 		patch: unknown;
+		session?: SessionDetail | null;
 	}): Promise<SessionAgentConfigPatchResult> {
 		return raiseSessionAgentConfigPatchForRuntime(
 			input.sessionId,
 			input.patch,
+			input.session !== undefined
+				? { getSession: async () => input.session ?? null }
+				: undefined,
 		).then((result) =>
 			result.ok
 				? {

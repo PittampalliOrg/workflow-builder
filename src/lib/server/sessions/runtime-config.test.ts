@@ -12,10 +12,6 @@ vi.mock("$env/dynamic/private", () => ({
 	env: {},
 }));
 
-vi.mock("$lib/server/sessions/registry", () => ({
-	getSession: (...args: unknown[]) => getSessionMock(...args),
-}));
-
 vi.mock("$lib/server/sessions/runtime-target", () => ({
 	resolveSessionRuntimeTarget: (...args: unknown[]) =>
 		resolveSessionRuntimeTargetMock(...args),
@@ -59,6 +55,7 @@ describe("getSessionRuntimeConfig", () => {
 
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
+		expect(source).not.toContain("$lib/server/sessions/registry");
 	});
 
 	it("prefers the live runtime endpoint", async () => {
@@ -71,7 +68,7 @@ describe("getSessionRuntimeConfig", () => {
 		});
 		daprFetchMock.mockResolvedValueOnce(Response.json(liveEvent));
 
-		const result = await getSessionRuntimeConfig("session-1");
+		const result = await runtimeConfig("session-1");
 
 		expect(result?.id).toBe(liveEvent.id);
 		expect(result?.data.source).toBe("memory");
@@ -93,7 +90,7 @@ describe("getSessionRuntimeConfig", () => {
 			.mockResolvedValueOnce(new Response("", { status: 404 }))
 			.mockResolvedValueOnce(Response.json(stateEvent));
 
-		const result = await getSessionRuntimeConfig("session-1");
+		const result = await runtimeConfig("session-1");
 
 		expect(result?.id).toBe(stateEvent.id);
 		expect(result?.data.source).toBe("state");
@@ -107,7 +104,7 @@ describe("getSessionRuntimeConfig", () => {
 		const event = runtimeEvent("event-hash");
 		const readLatestRuntimeConfigEvent = vi.fn(async () => event);
 
-		const result = await getSessionRuntimeConfig("session-1", {}, {
+		const result = await runtimeConfig("session-1", {}, {
 			readLatestRuntimeConfigEvent,
 		});
 
@@ -118,7 +115,7 @@ describe("getSessionRuntimeConfig", () => {
 	});
 
 	it("does not expose runtime config outside the scoped project", async () => {
-		const result = await getSessionRuntimeConfig("session-1", {
+		const result = await runtimeConfig("session-1", {
 			projectId: "project-2",
 		});
 
@@ -128,7 +125,7 @@ describe("getSessionRuntimeConfig", () => {
 	});
 
 	it("builds a redacted settings fallback", async () => {
-		const result = await getSessionRuntimeConfig("session-1");
+		const result = await runtimeConfig("session-1");
 		const encoded = JSON.stringify(result);
 
 		expect(result?.data.source).toBe("settings");
@@ -143,6 +140,17 @@ describe("getSessionRuntimeConfig", () => {
 		expect(encoded).not.toContain('"systemPrompt"');
 	});
 });
+
+function runtimeConfig(
+	sessionId: string,
+	options: Parameters<typeof getSessionRuntimeConfig>[1] = {},
+	dependencies: Parameters<typeof getSessionRuntimeConfig>[2] = {},
+) {
+	return getSessionRuntimeConfig(sessionId, options, {
+		getSession: (id) => getSessionMock(id),
+		...dependencies,
+	});
+}
 
 function runtimeEvent(configHash: string) {
 	return {
