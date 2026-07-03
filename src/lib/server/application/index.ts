@@ -98,6 +98,7 @@ import {
 	LegacyBenchmarkRunLaunchAdapter,
 	LegacyEvaluationRunLaunchAdapter,
 } from "$lib/server/application/adapters/run-launch";
+import { LegacyBenchmarkCapacityDiagnosticsAdapter } from "$lib/server/application/adapters/benchmark-capacity-diagnostics";
 import { LegacyEvaluationRunDetailReadAdapter } from "$lib/server/application/adapters/evaluation-run-detail";
 import {
 	KroPreviewEnvironmentProvisioner,
@@ -173,6 +174,7 @@ import {
 	ApplicationBenchmarkRunLaunchService,
 	ApplicationEvaluationRunLaunchService,
 } from "$lib/server/application/run-launch";
+import { ApplicationBenchmarkCapacityDiagnosticsService } from "$lib/server/application/benchmark-capacity-diagnostics";
 import { ApplicationRunCancellationService } from "$lib/server/application/run-cancellation";
 import { ApplicationEvaluationRunDetailService } from "$lib/server/application/evaluation-run-detail";
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
@@ -315,6 +317,9 @@ export function getApplicationAdapters(
 	let runCancellation: ApplicationRunCancellationService | undefined;
 	let benchmarkRunLaunch: ApplicationBenchmarkRunLaunchService | undefined;
 	let evaluationRunLaunch: ApplicationEvaluationRunLaunchService | undefined;
+	let benchmarkCapacityDiagnostics:
+		| ApplicationBenchmarkCapacityDiagnosticsService
+		| undefined;
 	let evaluationRunDetail: ApplicationEvaluationRunDetailService | undefined;
 	let benchmarkRunDetail:
 		| ApplicationBenchmarkRunDetailPageService
@@ -530,6 +535,11 @@ export function getApplicationAdapters(
 		(benchmarkRunLaunch ??= new ApplicationBenchmarkRunLaunchService(
 			new LegacyBenchmarkRunLaunchAdapter(),
 		));
+	const getBenchmarkCapacityDiagnostics = () =>
+		(benchmarkCapacityDiagnostics ??=
+			new ApplicationBenchmarkCapacityDiagnosticsService(
+				new LegacyBenchmarkCapacityDiagnosticsAdapter(),
+			));
 	const getEvaluationRunLaunch = () =>
 		(evaluationRunLaunch ??= new ApplicationEvaluationRunLaunchService(
 			new LegacyEvaluationRunLaunchAdapter(),
@@ -835,6 +845,9 @@ export function getApplicationAdapters(
 		},
 		get benchmarkRunLaunch() {
 			return getBenchmarkRunLaunch();
+		},
+		get benchmarkCapacityDiagnostics() {
+			return getBenchmarkCapacityDiagnostics();
 		},
 		get evaluationRunLaunch() {
 			return getEvaluationRunLaunch();

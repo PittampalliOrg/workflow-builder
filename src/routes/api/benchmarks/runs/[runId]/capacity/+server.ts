@@ -1,14 +1,14 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { getBenchmarkRunCapacityDiagnostics } from "$lib/server/benchmarks/capacity-diagnostics";
+import { getApplicationAdapters } from "$lib/server/application";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	if (!locals.session.projectId) return error(404, "Benchmark run not found");
-	const diagnostics = await getBenchmarkRunCapacityDiagnostics(
-		locals.session.projectId,
-		params.runId,
-	);
-	if (!diagnostics) return error(404, "Benchmark run not found");
-	return json({ diagnostics });
+	const result =
+		await getApplicationAdapters().benchmarkCapacityDiagnostics.getRunCapacity({
+			projectId: locals.session.projectId,
+			runId: params.runId,
+		});
+	if (result.status === "error") return error(result.httpStatus, result.message);
+	return json(result.body);
 };
