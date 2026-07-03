@@ -1,11 +1,17 @@
 import { isAgentConfigEquivalent } from "$lib/utils/agent-config-diff";
 import type { AgentConfig } from "$lib/types/agents";
-import type { SessionDetail, UserEvent } from "$lib/types/sessions";
+import type {
+	SessionDetail,
+	SessionResource,
+	SessionResourceType,
+	UserEvent,
+} from "$lib/types/sessions";
 import { canResumeCliSession, isInteractiveCliRuntime } from "$lib/server/sessions/resume";
 import { CliTokenError } from "$lib/server/users/cli-credentials";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { sandboxProvisionFailureMessage } from "$lib/server/sandboxes/provision";
 import type {
+	AddSessionResourceInput,
 	SandboxProvisioner,
 	SessionAgentResolver,
 	SessionEventLog,
@@ -66,6 +72,18 @@ export type StartSessionWorkflowResult =
 	  }
 	| { status: "not_found"; message: string }
 	| { status: "failed"; message: string };
+
+export type AddSessionResourceCommand = {
+	sessionId: string;
+	userId: string;
+	projectId?: string | null;
+	body: Record<string, unknown>;
+};
+
+export type AddSessionResourceResult =
+	| { status: "created"; resource: SessionResource }
+	| { status: "invalid"; message: string }
+	| { status: "not_found"; message: string };
 
 export class ApplicationSessionCommandService {
 	constructor(
@@ -137,6 +155,33 @@ export class ApplicationSessionCommandService {
 			}
 			return { status: "failed", message };
 		}
+	}
+
+	async addSessionResource(
+		input: AddSessionResourceCommand,
+	): Promise<AddSessionResourceResult> {
+		const parsed = parseSessionResourceInput(input.body);
+		if (parsed.status === "invalid") return parsed;
+
+		const session = await this.deps.sessions.getSession(input.sessionId);
+		if (!session || !this.isSessionInProject(session, input.projectId ?? null)) {
+			return { status: "not_found", message: "Session not found" };
+		}
+
+		const resource = await this.deps.sessions.addSessionResource({
+			sessionId: input.sessionId,
+			resource: parsed.resource,
+		});
+
+		if (resource.type === "github_repository") {
+			try {
+				await this.mountRepoIntoLiveSession(session, resource);
+			} catch (mountErr) {
+				console.warn("[sessions] mid-session repo mount failed:", mountErr);
+			}
+		}
+
+		return { status: "created", resource };
 	}
 
 	async createInteractiveSession(
@@ -474,12 +519,74 @@ export class ApplicationSessionCommandService {
 		}
 	}
 
+	private async mountRepoIntoLiveSession(
+		session: SessionDetail,
+		resource: SessionResource,
+	): Promise<void> {
+		if (!session.workspaceSandboxName) return;
+		let workspaceRef: string | null = null;
+		let rootPath = "/sandbox";
+		try {
+			const sandbox = await this.deps.sandboxProvisioner.provision({
+				executionId: session.id,
+				name: session.title ?? `session-${session.id.slice(0, 8)}`,
+				keepAfterRun: true,
+			});
+			workspaceRef = sandbox.workspaceRef;
+			rootPath = sandbox.rootPath;
+		} catch (provErr) {
+			console.warn(
+				"[sessions] could not recover sandbox workspaceRef for mid-session mount:",
+				provErr,
+			);
+		}
+		await this.deps.repositoryMounter.mountSessionRepository(session.id, resource, {
+			executionId: session.id,
+			workspaceRef,
+			rootPath,
+		});
+	}
+
 	private isSessionInProject(
 		session: SessionDetail,
 		projectId?: string | null,
 	): boolean {
 		return !projectId || session.projectId === projectId;
 	}
+}
+
+function parseSessionResourceInput(
+	body: Record<string, unknown>,
+):
+	| { status: "ok"; resource: AddSessionResourceInput }
+	| { status: "invalid"; message: string } {
+	const type = body.type as SessionResourceType | undefined;
+	if (type !== "file" && type !== "github_repository") {
+		return {
+			status: "invalid",
+			message: "type must be 'file' or 'github_repository'",
+		};
+	}
+	return {
+		status: "ok",
+		resource: {
+			type,
+			fileId: typeof body.fileId === "string" ? body.fileId : undefined,
+			mountPath:
+				typeof body.mountPath === "string" ? body.mountPath : undefined,
+			repoUrl: typeof body.repoUrl === "string" ? body.repoUrl : undefined,
+			checkoutRef:
+				typeof body.checkoutRef === "string" ? body.checkoutRef : undefined,
+			authTokenCredentialId:
+				typeof body.authTokenCredentialId === "string"
+					? body.authTokenCredentialId
+					: undefined,
+			appConnectionExternalId:
+				typeof body.appConnectionExternalId === "string"
+					? body.appConnectionExternalId
+					: undefined,
+		},
+	};
 }
 
 function isAgentConfigShape(value: unknown): boolean {

@@ -39,6 +39,7 @@ describe("ApplicationSessionCommandService", () => {
 		};
 		repositoryMounter = {
 			mountSessionRepositories: vi.fn(async () => undefined),
+			mountSessionRepository: vi.fn(async () => undefined),
 		};
 		workflowSpawner = {
 			spawnSessionWorkflow: vi.fn(async () => ({
@@ -216,6 +217,91 @@ describe("ApplicationSessionCommandService", () => {
 
 		expect(result).toEqual({ status: "not_found", message: "Session not found" });
 		expect(workflowSpawner.spawnSessionWorkflow).not.toHaveBeenCalled();
+	});
+
+	it("adds a session resource through ports without mounting when no sandbox is live", async () => {
+		vi.mocked(sessions.getSession).mockResolvedValue(sampleSession());
+
+		const result = await service.addSessionResource({
+			sessionId: "session-1",
+			userId: "user-1",
+			projectId: "project-1",
+			body: { type: "file", fileId: "file-1", mountPath: "/sandbox/file.txt" },
+		});
+
+		expect(result.status).toBe("created");
+		if (result.status !== "created") return;
+		expect(sessions.addSessionResource).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			resource: {
+				type: "file",
+				fileId: "file-1",
+				mountPath: "/sandbox/file.txt",
+				repoUrl: undefined,
+				checkoutRef: undefined,
+				authTokenCredentialId: undefined,
+				appConnectionExternalId: undefined,
+			},
+		});
+		expect(sandboxProvisioner.provision).not.toHaveBeenCalled();
+		expect(repositoryMounter.mountSessionRepository).not.toHaveBeenCalled();
+	});
+
+	it("mounts a newly added repository into an existing live sandbox", async () => {
+		vi.mocked(sessions.getSession).mockResolvedValue({
+			...sampleSession(),
+			workspaceSandboxName: "ws-ready",
+		});
+
+		const result = await service.addSessionResource({
+			sessionId: "session-1",
+			userId: "user-1",
+			projectId: "project-1",
+			body: {
+				type: "github_repository",
+				repoUrl: "https://github.com/PittampalliOrg/workflow-builder",
+				checkoutRef: "main",
+				mountPath: "/sandbox/workflow-builder",
+			},
+		});
+
+		expect(result.status).toBe("created");
+		if (result.status !== "created") return;
+		expect(sandboxProvisioner.provision).toHaveBeenCalledWith({
+			executionId: "session-1",
+			name: "Session 1",
+			keepAfterRun: true,
+		});
+		expect(repositoryMounter.mountSessionRepository).toHaveBeenCalledWith(
+			"session-1",
+			expect.objectContaining({
+				type: "github_repository",
+				repoUrl: "https://github.com/PittampalliOrg/workflow-builder",
+				checkoutRef: "main",
+				mountPath: "/sandbox/workflow-builder",
+			}),
+			{
+				executionId: "session-1",
+				workspaceRef: "workspace/ws-ready",
+				rootPath: "/sandbox",
+			},
+		);
+	});
+
+	it("rejects invalid session resource payloads before touching persistence", async () => {
+		const result = await service.addSessionResource({
+			sessionId: "session-1",
+			userId: "user-1",
+			projectId: "project-1",
+			body: { type: "unknown" },
+		});
+
+		expect(result).toEqual({
+			status: "invalid",
+			message: "type must be 'file' or 'github_repository'",
+		});
+		expect(sessions.getSession).not.toHaveBeenCalled();
+		expect(sessions.addSessionResource).not.toHaveBeenCalled();
 	});
 });
 

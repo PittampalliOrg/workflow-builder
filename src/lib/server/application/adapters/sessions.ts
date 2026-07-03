@@ -61,7 +61,10 @@ import {
 	raiseSessionUserEvents,
 	spawnSessionWorkflow,
 } from "$lib/server/sessions/spawn";
-import { mountSessionRepositories } from "$lib/server/sessions/repositories";
+import {
+	mountSessionRepositories,
+	mountSingleRepository,
+} from "$lib/server/sessions/repositories";
 import {
 	agentRuntimeDedicatedAppId,
 	agentRuntimeInvokeTarget,
@@ -772,6 +775,14 @@ export class WorkspaceSessionRepositoryMounter implements SessionRepositoryMount
 		target: SessionRepositoryMountTarget,
 	): Promise<void> {
 		return mountSessionRepositories(sessionId, target);
+	}
+
+	mountSessionRepository(
+		sessionId: string,
+		resource: SessionResource,
+		target: SessionRepositoryMountTarget,
+	): Promise<void> {
+		return mountSingleRepository(sessionId, resource, target);
 	}
 }
 

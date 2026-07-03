@@ -3828,6 +3828,11 @@ export interface SessionRepositoryMounter {
 		sessionId: string,
 		target: SessionRepositoryMountTarget,
 	): Promise<void>;
+	mountSessionRepository(
+		sessionId: string,
+		resource: SessionResource,
+		target: SessionRepositoryMountTarget,
+	): Promise<void>;
 }
 
 export interface SessionWorkflowSpawner {
