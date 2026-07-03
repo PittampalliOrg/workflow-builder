@@ -66,8 +66,10 @@ The main application `SessionRepository` implementation now owns session
 list/get/create and workspace-sandbox update queries directly in
 `src/lib/server/application/adapters/sessions.ts`, so workflow-data/session
 commands no longer import the legacy DB-backed `src/lib/server/sessions/registry.ts`
-shim. That shim remains only for the explicitly deferred OpenShell compatibility
-path until it gets its own adapter and focused coverage.
+shim; that unused shim has been removed. OpenShell session compatibility now routes through
+`src/lib/server/application/adapters/openshell-sessions.ts`, leaving
+`src/lib/server/openshell-sessions.ts` as a route-facing facade with no direct DB
+or registry-shim import.
 Goal-loop driver persistence now uses the application `GoalLoopStore` port with
 `PostgresGoalLoopStore` as the first adapter. The event-driven loop preserves
 the existing exactly-once continuation, budget, and completion behavior, but no
