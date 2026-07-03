@@ -9,6 +9,7 @@ import type {
 	BenchmarkInstanceDetailReadRepository,
 	BenchmarkBrowserRepository,
 	BenchmarkRunInstanceDetailReadRepository,
+	BenchmarkRunInstanceProgressReadRepository,
 	BenchmarkRunInstanceScoreReadRepository,
 	BenchmarkRunReadRepository,
 	BenchmarkRunRepository,
@@ -1335,6 +1336,7 @@ function makeService(options: {
 	benchmarkInstanceDetails?: BenchmarkInstanceDetailReadRepository;
 	benchmarkRunInstanceDetails?: BenchmarkRunInstanceDetailReadRepository;
 	benchmarkRunInstanceAnnotations?: BenchmarkRunInstanceAnnotationRepository;
+	benchmarkRunInstanceProgress?: BenchmarkRunInstanceProgressReadRepository;
 	benchmarkRunInstanceScores?: BenchmarkRunInstanceScoreReadRepository;
 	activityRateTargets?: WorkflowActivityRateTargetRepository;
 	observabilityTraces?: ObservabilityTraceRepository;
@@ -1402,6 +1404,7 @@ function makeService(options: {
 		benchmarkInstanceDetails: options.benchmarkInstanceDetails,
 		benchmarkRunInstanceDetails: options.benchmarkRunInstanceDetails,
 		benchmarkRunInstanceAnnotations: options.benchmarkRunInstanceAnnotations,
+		benchmarkRunInstanceProgress: options.benchmarkRunInstanceProgress,
 		benchmarkRunInstanceScores: options.benchmarkRunInstanceScores,
 		benchmarkRunReads: options.benchmarkRunReads ?? fakeBenchmarkRunReads(),
 		devEnvironments: options.devEnvironments ?? fakeDevEnvironments(),
@@ -6761,6 +6764,43 @@ describe("ApplicationWorkflowDataService", () => {
 		).resolves.toEqual({
 			status: "invalid_input",
 			message: "runId and instanceId are required",
+		});
+	});
+
+	it("loads benchmark run-instance progress through workflow-data ports", async () => {
+		const now = new Date("2026-07-03T14:00:00.000Z");
+		const latestActivityAt = new Date("2026-07-03T13:59:30.000Z");
+		const benchmarkRunInstanceProgress: BenchmarkRunInstanceProgressReadRepository = {
+			getRunInstanceProgress: vi.fn(async () => ({
+				status: "ok" as const,
+				runInstanceStatus: "running",
+				inferenceStatus: "running",
+				evaluationStatus: "pending",
+				sessionId: "session-1",
+				latestSessionEventType: "agent.llm_usage",
+				latestSessionEventSequence: 42,
+				latestActivityAt,
+				activityAgeSeconds: 30,
+				progressMarker: "running:running:pending:marker",
+			})),
+		};
+		const { service } = makeService({ benchmarkRunInstanceProgress });
+
+		await expect(
+			service.getBenchmarkRunInstanceProgress({
+				runId: "run-1",
+				instanceId: "sympy__sympy-20590",
+				now,
+			}),
+		).resolves.toMatchObject({
+			status: "ok",
+			sessionId: "session-1",
+			activityAgeSeconds: 30,
+		});
+		expect(benchmarkRunInstanceProgress.getRunInstanceProgress).toHaveBeenCalledWith({
+			runId: "run-1",
+			instanceId: "sympy__sympy-20590",
+			now,
 		});
 	});
 

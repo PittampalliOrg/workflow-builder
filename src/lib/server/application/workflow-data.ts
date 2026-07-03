@@ -79,6 +79,7 @@ import type {
 	BenchmarkBrowserRepository,
 	BenchmarkRunInstanceDetailReadRepository,
 	BenchmarkRunInstanceAnnotationRepository,
+	BenchmarkRunInstanceProgressReadRepository,
 	BenchmarkRunInstanceScoreReadRepository,
 	BenchmarkRunReadRepository,
 	BenchmarkRunRepository,
@@ -793,6 +794,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			benchmarkInstanceDetails?: BenchmarkInstanceDetailReadRepository;
 			benchmarkRunInstanceDetails?: BenchmarkRunInstanceDetailReadRepository;
 			benchmarkRunInstanceAnnotations?: BenchmarkRunInstanceAnnotationRepository;
+			benchmarkRunInstanceProgress?: BenchmarkRunInstanceProgressReadRepository;
 			benchmarkRunInstanceScores?: BenchmarkRunInstanceScoreReadRepository;
 			benchmarkRunReads?: BenchmarkRunReadRepository;
 			devEnvironments?: DevEnvironmentReadRepository;
@@ -903,6 +905,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Benchmark run instance annotation repository not configured");
 		}
 		return this.deps.benchmarkRunInstanceAnnotations;
+	}
+
+	private requireBenchmarkRunInstanceProgress(): BenchmarkRunInstanceProgressReadRepository {
+		if (!this.deps.benchmarkRunInstanceProgress) {
+			throw new Error("Benchmark run instance progress repository not configured");
+		}
+		return this.deps.benchmarkRunInstanceProgress;
 	}
 
 	private requireBenchmarkDatasetPromotions(): BenchmarkDatasetPromotionRepository {
@@ -3886,6 +3895,18 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			datasetId: input.datasetId,
 			runId,
 			instanceId,
+			now: input.now ?? new Date(),
+		});
+	}
+
+	getBenchmarkRunInstanceProgress(input: {
+		runId: string;
+		instanceId: string;
+		now?: Date;
+	}) {
+		return this.requireBenchmarkRunInstanceProgress().getRunInstanceProgress({
+			runId: input.runId,
+			instanceId: input.instanceId,
 			now: input.now ?? new Date(),
 		});
 	}

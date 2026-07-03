@@ -778,6 +778,29 @@ export interface BenchmarkDatasetPromotionRepository {
 	}): Promise<PromoteBenchmarkRunInstanceToDatasetResult>;
 }
 
+export type BenchmarkRunInstanceProgressReadModel =
+	| { status: "not_found" }
+	| {
+			status: "ok";
+			runInstanceStatus: string;
+			inferenceStatus: string;
+			evaluationStatus: string;
+			sessionId: string | null;
+			latestSessionEventType: string | null;
+			latestSessionEventSequence: number | null;
+			latestActivityAt: Date;
+			activityAgeSeconds: number;
+			progressMarker: string;
+	  };
+
+export interface BenchmarkRunInstanceProgressReadRepository {
+	getRunInstanceProgress(input: {
+		runId: string;
+		instanceId: string;
+		now: Date;
+	}): Promise<BenchmarkRunInstanceProgressReadModel>;
+}
+
 export type CreateWorkflowDefinitionInput = {
 	name: string;
 	nodes: unknown[];
@@ -3830,6 +3853,11 @@ export interface WorkflowDataService {
 		| PromoteBenchmarkRunInstanceToDatasetResult
 		| { status: "invalid_input"; message: string }
 	>;
+	getBenchmarkRunInstanceProgress(input: {
+		runId: string;
+		instanceId: string;
+		now?: Date;
+	}): Promise<BenchmarkRunInstanceProgressReadModel>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;
 	}): Promise<DevPreviewHubReadModel>;

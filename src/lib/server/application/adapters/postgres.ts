@@ -114,6 +114,7 @@ import type {
 	BenchmarkRunInstanceAnnotationCounts,
 	BenchmarkRunInstanceAnnotationRepository,
 	BenchmarkRunInstanceDetailReadRepository,
+	BenchmarkRunInstanceProgressReadRepository,
 	BenchmarkRunInstanceScoreReadRepository,
 	BenchmarkRunRepository,
 	BenchmarkSessionProvisioningGateRecord,
@@ -2809,6 +2810,75 @@ export class PostgresBenchmarkRunInstanceDetailReadRepository
 			},
 			executionIr: row.executionIr,
 			executionOutput: row.executionOutput,
+		};
+	}
+}
+
+export class PostgresBenchmarkRunInstanceProgressReadRepository
+	implements BenchmarkRunInstanceProgressReadRepository
+{
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async getRunInstanceProgress(input: {
+		runId: string;
+		instanceId: string;
+		now: Date;
+	}) {
+		const [instance] = await this.database
+			.select({
+				id: benchmarkRunInstances.id,
+				status: benchmarkRunInstances.status,
+				inferenceStatus: benchmarkRunInstances.inferenceStatus,
+				evaluationStatus: benchmarkRunInstances.evaluationStatus,
+				sessionId: benchmarkRunInstances.sessionId,
+				updatedAt: benchmarkRunInstances.updatedAt,
+			})
+			.from(benchmarkRunInstances)
+			.where(
+				and(
+					eq(benchmarkRunInstances.runId, input.runId),
+					eq(benchmarkRunInstances.instanceId, input.instanceId),
+				),
+			)
+			.limit(1);
+		if (!instance) return { status: "not_found" as const };
+
+		const [latestEvent] = instance.sessionId
+			? await this.database
+					.select({
+						sequence: sessionEvents.sequence,
+						type: sessionEvents.type,
+						createdAt: sessionEvents.createdAt,
+					})
+					.from(sessionEvents)
+					.where(eq(sessionEvents.sessionId, instance.sessionId))
+					.orderBy(desc(sessionEvents.sequence))
+					.limit(1)
+			: [];
+		const latestActivityAt = latestEvent?.createdAt ?? instance.updatedAt;
+		const activityAgeSeconds = Math.max(
+			0,
+			Math.floor((input.now.getTime() - latestActivityAt.getTime()) / 1000),
+		);
+
+		return {
+			status: "ok" as const,
+			runInstanceStatus: instance.status,
+			inferenceStatus: instance.inferenceStatus,
+			evaluationStatus: instance.evaluationStatus,
+			sessionId: instance.sessionId,
+			latestSessionEventType: latestEvent?.type ?? null,
+			latestSessionEventSequence: latestEvent?.sequence ?? null,
+			latestActivityAt,
+			activityAgeSeconds,
+			progressMarker: [
+				instance.status,
+				instance.inferenceStatus,
+				instance.evaluationStatus,
+				instance.updatedAt.toISOString(),
+				latestEvent?.sequence ?? "no-session-event",
+				latestEvent?.createdAt.toISOString() ?? "no-session-event",
+			].join(":"),
 		};
 	}
 }

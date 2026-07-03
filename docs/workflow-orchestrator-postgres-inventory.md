@@ -51,6 +51,9 @@ The benchmark-to-evaluation dataset promotion API now validates the selected
 run instance, enforces workspace scope, checks the target evaluation dataset,
 and inserts the origin-linked dataset row through a workflow-data command port
 instead of route-local Drizzle queries.
+The internal benchmark run-instance progress API now reads instance status and
+latest session activity through a workflow-data read model; the route no longer
+imports `benchmark_run_instances`, `session_events`, or Drizzle.
 
 ## Strict HTTP Runtime Paths
 

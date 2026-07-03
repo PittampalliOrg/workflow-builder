@@ -12,6 +12,7 @@ import {
 	PostgresBenchmarkInstanceDetailReadRepository,
 	PostgresBenchmarkRunInstanceAnnotationRepository,
 	PostgresBenchmarkRunInstanceDetailReadRepository,
+	PostgresBenchmarkRunInstanceProgressReadRepository,
 	PostgresBenchmarkRunInstanceScoreReadRepository,
 	PostgresBenchmarkRunRepository,
 	PostgresCodeFunctionCatalogRepository,
@@ -129,6 +130,9 @@ export function getApplicationAdapters(
 	let benchmarkRunInstanceAnnotations:
 		| PostgresBenchmarkRunInstanceAnnotationRepository
 		| undefined;
+	let benchmarkRunInstanceProgress:
+		| PostgresBenchmarkRunInstanceProgressReadRepository
+		| undefined;
 	let benchmarkRunReads: LegacyBenchmarkRunReadRepository | undefined;
 	let devEnvironments: LegacyDevEnvironmentReadRepository | undefined;
 	let benchmarkRuns: PostgresBenchmarkRunRepository | undefined;
@@ -205,6 +209,8 @@ export function getApplicationAdapters(
 		(benchmarkRunInstanceDetails ??= new PostgresBenchmarkRunInstanceDetailReadRepository(getDatabase()));
 	const getBenchmarkRunInstanceAnnotations = () =>
 		(benchmarkRunInstanceAnnotations ??= new PostgresBenchmarkRunInstanceAnnotationRepository(getDatabase()));
+	const getBenchmarkRunInstanceProgress = () =>
+		(benchmarkRunInstanceProgress ??= new PostgresBenchmarkRunInstanceProgressReadRepository(getDatabase()));
 	const getBenchmarkRunReads = () =>
 		(benchmarkRunReads ??= new LegacyBenchmarkRunReadRepository());
 	const getDevEnvironments = () =>
@@ -293,6 +299,7 @@ export function getApplicationAdapters(
 			benchmarkRunInstanceScores: getBenchmarkRunInstanceScores(),
 			benchmarkRunInstanceDetails: getBenchmarkRunInstanceDetails(),
 			benchmarkRunInstanceAnnotations: getBenchmarkRunInstanceAnnotations(),
+			benchmarkRunInstanceProgress: getBenchmarkRunInstanceProgress(),
 			benchmarkRunReads: getBenchmarkRunReads(),
 			devEnvironments: getDevEnvironments(),
 			benchmarkRuns: getBenchmarkRuns(),
