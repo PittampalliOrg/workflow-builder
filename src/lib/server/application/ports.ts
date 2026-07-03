@@ -5371,6 +5371,16 @@ export interface WorkflowDataService {
 		projectId?: string | null;
 		userId?: string | null;
 	}): Promise<SessionDetail | null>;
+	createWorkflowDevSession(input: {
+		executionId: string;
+		agentSlug: string;
+		instructions: string;
+		title?: string | null;
+	}): Promise<
+		| { status: "created"; sessionId: string; agentSlug: string }
+		| { status: "execution_not_found" }
+		| { status: "agent_not_found"; agentSlug: string }
+	>;
 	getSessionGoalFlow(input: {
 		sessionId: string;
 		projectId?: string | null;

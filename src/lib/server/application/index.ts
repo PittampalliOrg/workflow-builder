@@ -1141,6 +1141,8 @@ export function getApplicationAdapters(
 			sessionEvents: getSessionEvents(),
 			sessionRuntimeConfigs: getSessionRuntimeConfigs(),
 			sessionRuntimeEvents: getSessionRuntimeEvents(),
+			sessionAgents: getPeerAgentResolver(),
+			sessionAgentSlugs: getPeerAgentResolver(),
 			sessionAgentConfigCommands: getSessionAgentConfigCommands(),
 			sessionTraceLifecycle: getSessionTraceLifecycle(),
 			peerAgentResolver: getPeerAgentResolver(),

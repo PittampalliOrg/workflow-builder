@@ -42,7 +42,9 @@ by workflow-data, with a workflow-data fallback for standalone helper use;
 The workflow interactive dev-session handoff now resolves execution owner and
 project context through workflow-data execution ports instead of querying
 `workflow_executions`/`workflows` directly; `dev-session-handoff.ts` no longer
-imports DB, schema, or Drizzle.
+imports DB, schema, Drizzle, the legacy agent registry, or legacy session
+registry/event helpers. It delegates the bound session create plus initial
+message append to workflow-data.
 The capacity active-work fleet activity summary now lives in
 `SessionFleetActivityAdapter`; `src/lib/server/sessions/fleet-activity.ts` was
 deleted, and the bounded `sessions`/`session_events` reads are confined to the

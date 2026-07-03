@@ -38,6 +38,8 @@ import type {
 	DashboardReadRepository,
 	SecurityAuditReadRepository,
 	SessionAgentConfigCommandPort,
+	SessionAgentResolver,
+	SessionAgentSlugResolver,
 	SessionEventLog,
 	SessionExperimentAgentStore,
 	SessionProvisioningReader,
@@ -911,6 +913,30 @@ function fakePeerAgentResolver(): PeerAgentResolver {
 	};
 }
 
+function fakeSessionAgentResolver(): SessionAgentResolver {
+	return {
+		resolveSessionAgent: vi.fn(async (input) => ({
+			id: input.agentId,
+			name: "CLI Dev Agent",
+			slug: "cli-dev-agent",
+			version: input.agentVersion ?? 7,
+			projectId: "project-1",
+			config: createDefaultAgentConfig(),
+			runtime: "codex-cli",
+			runtimeAppId: "agent-runtime-cli-dev-agent",
+			mlflowModelVersion: null,
+			mlflowModelName: null,
+			mlflowUri: null,
+		})),
+	};
+}
+
+function fakeSessionAgentSlugs(): SessionAgentSlugResolver {
+	return {
+		resolveSessionAgentIdBySlug: vi.fn(async () => "agent-1"),
+	};
+}
+
 function fakeWorkflowAgentReads(): WorkflowAgentReadRepository {
 	return {
 		getWorkflowAgentRuntimeIdentity: vi.fn(async (agentId) => ({
@@ -1463,6 +1489,8 @@ function makeService(options: {
 	sessionEvents?: SessionEventLog;
 	sessionRuntimeConfigs?: SessionRuntimeConfigReader;
 	sessionRuntimeEvents?: SessionRuntimeEventRaiser;
+	sessionAgents?: SessionAgentResolver;
+	sessionAgentSlugs?: SessionAgentSlugResolver;
 	sessionAgentConfigCommands?: SessionAgentConfigCommandPort;
 	codeCheckpoints?: WorkflowCodeCheckpointStore;
 	evaluationArtifacts?: EvaluationArtifactStore;
@@ -1539,6 +1567,8 @@ function makeService(options: {
 			options.sessionRuntimeConfigs ?? fakeSessionRuntimeConfigs(),
 		sessionRuntimeEvents:
 			options.sessionRuntimeEvents ?? fakeSessionRuntimeEvents(),
+		sessionAgents: options.sessionAgents ?? fakeSessionAgentResolver(),
+		sessionAgentSlugs: options.sessionAgentSlugs ?? fakeSessionAgentSlugs(),
 		sessionAgentConfigCommands:
 			options.sessionAgentConfigCommands ?? fakeSessionAgentConfigCommands(),
 		sessionProvisioning: options.sessionProvisioning,
@@ -3676,6 +3706,125 @@ describe("ApplicationWorkflowDataService", () => {
 		).resolves.toEqual({ status: "not_found" });
 		expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
 		expect(sessionRuntimeEvents.raiseSessionUserEvents).not.toHaveBeenCalled();
+	});
+
+	it("creates workflow dev handoff sessions through session ports", async () => {
+		const sessions = {
+			...fakeSessions(),
+			createSession: vi.fn(async (input) => ({
+				...sampleSessionDetail(),
+				id: "dev-session-1",
+				agentId: input.agentId,
+				agentVersion: input.agentVersion ?? null,
+				userId: input.userId,
+				projectId: input.projectId ?? null,
+				workflowExecutionId: input.workflowExecutionId ?? null,
+				title: input.title ?? null,
+			}) as SessionDetail),
+		} satisfies SessionRepository;
+		const sessionEvents = fakeSessionEvents();
+		const sessionAgents = fakeSessionAgentResolver();
+		const sessionAgentSlugs = fakeSessionAgentSlugs();
+		const workflowExecutions = fakeWorkflowExecutions();
+		const { service } = makeService({
+			sessions,
+			sessionEvents,
+			sessionAgents,
+			sessionAgentSlugs,
+			workflowExecutions,
+		});
+
+		await expect(
+			service.createWorkflowDevSession({
+				executionId: "exec-1",
+				agentSlug: "cli-dev-agent",
+				instructions: "open repo",
+				title: "Dev handoff",
+			}),
+		).resolves.toEqual({
+			status: "created",
+			sessionId: "dev-session-1",
+			agentSlug: "cli-dev-agent",
+		});
+		expect(workflowExecutions.getSessionOwnerContext).toHaveBeenCalledWith(
+			"exec-1",
+		);
+		expect(sessionAgentSlugs.resolveSessionAgentIdBySlug).toHaveBeenCalledWith(
+			"cli-dev-agent",
+		);
+		expect(sessionAgents.resolveSessionAgent).toHaveBeenCalledWith({
+			agentId: "agent-1",
+		});
+		expect(sessions.createSession).toHaveBeenCalledWith({
+			agentId: "agent-1",
+			agentVersion: 7,
+			userId: "user-1",
+			projectId: "project-1",
+			workflowExecutionId: "exec-1",
+			title: "Dev handoff",
+		});
+		expect(sessionEvents.appendSessionEvent).toHaveBeenCalledWith(
+			"dev-session-1",
+			{
+				type: "user.message",
+				data: {
+					type: "user.message",
+					content: [{ type: "text", text: "open repo" }],
+				},
+				processedAt: null,
+			},
+		);
+	});
+
+	it("does not create workflow dev sessions without an execution owner", async () => {
+		const sessions = fakeSessions();
+		const sessionEvents = fakeSessionEvents();
+		const workflowExecutions = {
+			...fakeWorkflowExecutions(),
+			getSessionOwnerContext: vi.fn(async () => null),
+		} satisfies WorkflowExecutionRepository;
+		const { service } = makeService({
+			sessions,
+			sessionEvents,
+			workflowExecutions,
+		});
+
+		await expect(
+			service.createWorkflowDevSession({
+				executionId: "missing-exec",
+				agentSlug: "cli-dev-agent",
+				instructions: "open repo",
+			}),
+		).resolves.toEqual({ status: "execution_not_found" });
+		expect(sessions.createSession).not.toHaveBeenCalled();
+		expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
+	});
+
+	it("does not create workflow dev sessions without a resolvable agent", async () => {
+		const sessions = fakeSessions();
+		const sessionEvents = fakeSessionEvents();
+		const sessionAgentSlugs = {
+			resolveSessionAgentIdBySlug: vi.fn(async () => null),
+		} satisfies SessionAgentSlugResolver;
+		const { service } = makeService({
+			sessions,
+			sessionEvents,
+			sessionAgentSlugs,
+			workflowExecutions: fakeWorkflowExecutions(),
+		});
+
+		await expect(
+			service.createWorkflowDevSession({
+				executionId: "exec-1",
+				agentSlug: "missing-agent",
+				instructions: "open repo",
+			}),
+		).resolves.toEqual({
+			status: "agent_not_found",
+			agentSlug: "missing-agent",
+		});
+		expect(sessions.createSession).not.toHaveBeenCalled();
+		expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
 	});
 
 	it("creates a session experiment agent when fork config differs", async () => {

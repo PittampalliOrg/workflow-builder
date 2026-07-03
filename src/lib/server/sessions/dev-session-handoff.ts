@@ -1,7 +1,4 @@
 import { getApplicationAdapters } from "$lib/server/application";
-import { getAgentBySlug } from "$lib/server/agents/registry";
-import { createSession } from "$lib/server/sessions/registry";
-import { sendUserEvent } from "$lib/server/sessions/events";
 import { spawnSessionWorkflow } from "$lib/server/sessions/spawn";
 
 /**
@@ -39,43 +36,31 @@ export interface SpawnDevSessionParams {
 export async function spawnDevSession(
 	params: SpawnDevSessionParams,
 ): Promise<{ sessionId: string; url: string; agentSlug: string }> {
-	const executionOwner =
-		await getApplicationAdapters().workflowData.getWorkflowExecutionSessionOwnerContext(
-			params.executionId,
-		);
-	if (!executionOwner?.userId) {
+	const agentSlug = (params.agentSlug || DEFAULT_DEV_AGENT_SLUG).trim();
+	const created = await getApplicationAdapters().workflowData.createWorkflowDevSession({
+		executionId: params.executionId,
+		agentSlug,
+		instructions: params.instructions,
+		title: params.title,
+	});
+	if (created.status === "execution_not_found") {
 		throw new Error(
 			`execution ${params.executionId} not found or has no owner (cannot scope the dev session)`,
 		);
 	}
-	const agentSlug = (params.agentSlug || DEFAULT_DEV_AGENT_SLUG).trim();
-	const agent = await getAgentBySlug(agentSlug);
-	if (!agent) {
+	if (created.status === "agent_not_found") {
 		throw new Error(
 			`dev-session agent "${agentSlug}" not found — seed it (scripts/seed-workflows.ts)`,
 		);
 	}
 
-	// workflowExecutionId binds the session to the run AND (via spawn.ts) to the
-	// execution's shared /sandbox/work, so the agent sees the cloned repo.
-	const session = await createSession({
-		agentId: agent.id,
-		userId: executionOwner.userId,
-		projectId: executionOwner.projectId ?? null,
-		workflowExecutionId: params.executionId,
-		title: params.title ?? `Dev session (${params.executionId})`,
-	});
-
-	// Seed the kickoff BEFORE spawn so spawnSessionWorkflow's listEvents picks it
-	// up as the first turn.
-	await sendUserEvent(session.id, {
-		type: "user.message",
-		content: [{ type: "text", text: params.instructions }],
-	});
-
 	// Start the interactive session_workflow (bounded wait for the pod to be
 	// ready); does not block on the session's lifetime.
-	await spawnSessionWorkflow(session.id);
+	await spawnSessionWorkflow(created.sessionId);
 
-	return { sessionId: session.id, url: `/sessions/${session.id}`, agentSlug };
+	return {
+		sessionId: created.sessionId,
+		url: `/sessions/${created.sessionId}`,
+		agentSlug: created.agentSlug,
+	};
 }

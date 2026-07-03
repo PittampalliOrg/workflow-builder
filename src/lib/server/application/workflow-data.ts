@@ -161,6 +161,8 @@ import type {
 	SandboxRuntimeInventory,
 	SessionAgentConfigCommandPort,
 	SessionAgentConfigPatchResult,
+	SessionAgentResolver,
+	SessionAgentSlugResolver,
 	SessionEventLog,
 	SessionExperimentAgentStore,
 	SessionRepository,
@@ -884,6 +886,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			sessionEvents?: SessionEventLog;
 			sessionRuntimeConfigs?: SessionRuntimeConfigReader;
 			sessionRuntimeEvents?: SessionRuntimeEventRaiser;
+			sessionAgents?: SessionAgentResolver;
+			sessionAgentSlugs?: SessionAgentSlugResolver;
 			sessionAgentConfigCommands?: SessionAgentConfigCommandPort;
 			codeCheckpoints?: WorkflowCodeCheckpointStore;
 			evaluationArtifacts?: EvaluationArtifactStore;
@@ -920,6 +924,20 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Session repository not configured");
 		}
 		return this.deps.sessions;
+	}
+
+	private requireSessionAgents(): SessionAgentResolver {
+		if (!this.deps.sessionAgents) {
+			throw new Error("Session agent resolver not configured");
+		}
+		return this.deps.sessionAgents;
+	}
+
+	private requireSessionAgentSlugs(): SessionAgentSlugResolver {
+		if (!this.deps.sessionAgentSlugs) {
+			throw new Error("Session agent slug resolver not configured");
+		}
+		return this.deps.sessionAgentSlugs;
 	}
 
 	private async getScopedSession(input: {
@@ -4813,6 +4831,53 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		userId?: string | null;
 	}) {
 		return this.getScopedSession(input);
+	}
+
+	async createWorkflowDevSession(input: {
+		executionId: string;
+		agentSlug: string;
+		instructions: string;
+		title?: string | null;
+	}): Promise<
+		| { status: "created"; sessionId: string; agentSlug: string }
+		| { status: "execution_not_found" }
+		| { status: "agent_not_found"; agentSlug: string }
+	> {
+		const executionOwner =
+			await this.getWorkflowExecutionSessionOwnerContext(input.executionId);
+		if (!executionOwner?.userId) {
+			return { status: "execution_not_found" };
+		}
+
+		const agentSlug = input.agentSlug.trim();
+		const agentId =
+			await this.requireSessionAgentSlugs().resolveSessionAgentIdBySlug(agentSlug);
+		const agent = agentId
+			? await this.requireSessionAgents().resolveSessionAgent({ agentId })
+			: null;
+		if (!agent) {
+			return { status: "agent_not_found", agentSlug };
+		}
+
+		const session = await this.requireSessions().createSession({
+			agentId: agent.id,
+			agentVersion: agent.version ?? undefined,
+			userId: executionOwner.userId,
+			projectId: executionOwner.projectId ?? null,
+			workflowExecutionId: input.executionId,
+			title: input.title ?? `Dev session (${input.executionId})`,
+		});
+
+		await this.requireSessionEvents().appendSessionEvent(session.id, {
+			type: "user.message",
+			data: {
+				type: "user.message",
+				content: [{ type: "text", text: input.instructions }],
+			},
+			processedAt: null,
+		});
+
+		return { status: "created", sessionId: session.id, agentSlug: agent.slug };
 	}
 
 	async getSessionGoalFlow(input: {
