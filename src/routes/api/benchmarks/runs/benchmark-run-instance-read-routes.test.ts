@@ -7,9 +7,13 @@ const workflowDataMock = vi.hoisted(() => ({
 	getBenchmarkRunInstanceDetail: vi.fn(),
 	listBenchmarkRunInstanceScores: vi.fn(),
 }));
+const benchmarkRunInstanceDetailMock = vi.hoisted(() => ({
+	getDetail: vi.fn(),
+}));
 
 vi.mock("$lib/server/application", () => ({
 	getApplicationAdapters: () => ({
+		benchmarkRunInstanceDetail: benchmarkRunInstanceDetailMock,
 		workflowData: workflowDataMock,
 	}),
 }));
@@ -19,39 +23,24 @@ import { GET as getScores } from "./[runId]/instances/[instanceId]/scores/+serve
 
 describe("benchmark run-instance read routes", () => {
 	beforeEach(() => {
+		benchmarkRunInstanceDetailMock.getDetail.mockReset();
 		workflowDataMock.getBenchmarkRunInstanceDetail.mockReset();
 		workflowDataMock.listBenchmarkRunInstanceScores.mockReset();
 	});
 
-	it("loads run-instance detail through workflow-data", async () => {
-		workflowDataMock.getBenchmarkRunInstanceDetail.mockResolvedValue({
+	it("loads run-instance detail through the application service", async () => {
+		benchmarkRunInstanceDetailMock.getDetail.mockResolvedValue({
 			status: "ok",
-			mlflowExperimentId: "exp-1",
-			runInstance: {
-				id: "run-inst-1",
-				runId: "run-1",
-				instanceId: "sympy__sympy-20590",
-				evaluationStatus: "resolved",
-				evaluatedAt: new Date("2026-07-03T12:00:00.000Z"),
-				harnessResult: { resolved: true },
-				mlflowRunId: "mlflow-run-1",
-				traceIds: ["trace-1"],
-			},
-			instance: {
-				repo: "sympy/sympy",
-				baseCommit: "abc123",
-				problemStatement: "Fix it",
-				hintsText: "Look at Add",
-				testMetadata: {
-					version: "1.7",
-					test_patch: "diff --git a/sympy/tests/test_add.py b/sympy/tests/test_add.py\n",
-					FAIL_TO_PASS: ["sympy/tests/test_add.py::test_regression"],
+			body: {
+				runInstance: {
+					id: "run-inst-1",
+					hostJobName: "bench-host-1",
 				},
-				metadata: { issue_url: "https://example.test/issue" },
+				instance: {
+					testMetadata: { version: "1.7" },
+				},
 				goldPatch: "diff --git a/sympy/core/add.py b/sympy/core/add.py\n",
 			},
-			executionIr: { jobName: "bench-host-1" },
-			executionOutput: null,
 		});
 
 		const response = (await getRunInstanceDetail({
@@ -65,7 +54,7 @@ describe("benchmark run-instance read routes", () => {
 		expect(body.instance.testMetadata).toEqual({ version: "1.7" });
 		expect(body.goldPatch).toBe("diff --git a/sympy/core/add.py b/sympy/core/add.py\n");
 		expect(JSON.stringify(body.instance.testMetadata)).not.toContain("test_patch");
-		expect(workflowDataMock.getBenchmarkRunInstanceDetail).toHaveBeenCalledWith({
+		expect(benchmarkRunInstanceDetailMock.getDetail).toHaveBeenCalledWith({
 			runId: "run-1",
 			instanceId: "sympy__sympy-20590",
 			projectId: "project-1",
@@ -131,7 +120,11 @@ describe("benchmark run-instance read routes", () => {
 			"utf8",
 		);
 
-		expect(detailSource).toContain("getBenchmarkRunInstanceDetail");
+		expect(detailSource).toContain("benchmarkRunInstanceDetail.getDetail");
+		expect(detailSource).not.toContain("$lib/server/benchmarks/mlflow");
+		expect(detailSource).not.toContain("$lib/server/benchmarks/harness-result");
+		expect(detailSource).not.toContain("$lib/server/benchmarks/patch-compare");
+		expect(detailSource).not.toContain("$lib/server/benchmarks/contamination");
 		expect(detailSource).not.toContain("$lib/server/db");
 		expect(detailSource).not.toContain("$lib/server/db/schema");
 		expect(detailSource).not.toContain("drizzle-orm");

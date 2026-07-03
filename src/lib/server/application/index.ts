@@ -99,6 +99,7 @@ import {
 	LegacyEvaluationRunLaunchAdapter,
 } from "$lib/server/application/adapters/run-launch";
 import { LegacyBenchmarkCapacityDiagnosticsAdapter } from "$lib/server/application/adapters/benchmark-capacity-diagnostics";
+import { EnvBenchmarkRunInstanceMlflowLinks } from "$lib/server/application/adapters/benchmark-run-instance-detail";
 import { LegacyEvaluationRunDetailReadAdapter } from "$lib/server/application/adapters/evaluation-run-detail";
 import {
 	KroPreviewEnvironmentProvisioner,
@@ -179,6 +180,7 @@ import {
 	ApplicationEvaluationRunLaunchService,
 } from "$lib/server/application/run-launch";
 import { ApplicationBenchmarkCapacityDiagnosticsService } from "$lib/server/application/benchmark-capacity-diagnostics";
+import { ApplicationBenchmarkRunInstanceDetailService } from "$lib/server/application/benchmark-run-instance-detail";
 import { ApplicationRunCancellationService } from "$lib/server/application/run-cancellation";
 import { ApplicationEvaluationRunDetailService } from "$lib/server/application/evaluation-run-detail";
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
@@ -328,6 +330,9 @@ export function getApplicationAdapters(
 	let evaluationRunDetail: ApplicationEvaluationRunDetailService | undefined;
 	let benchmarkRunDetail:
 		| ApplicationBenchmarkRunDetailPageService
+		| undefined;
+	let benchmarkRunInstanceDetail:
+		| ApplicationBenchmarkRunInstanceDetailService
 		| undefined;
 	let capacityActive: ApplicationCapacityActiveService | undefined;
 	let capacityOverview: ApplicationCapacityOverviewService | undefined;
@@ -558,6 +563,11 @@ export function getApplicationAdapters(
 		(benchmarkRunDetail ??= new ApplicationBenchmarkRunDetailPageService(
 			new LegacyBenchmarkRunDetailReadAdapter(),
 		));
+	const getBenchmarkRunInstanceDetail = () =>
+		(benchmarkRunInstanceDetail ??= new ApplicationBenchmarkRunInstanceDetailService({
+			workflowData: getWorkflowData(),
+			mlflowLinks: new EnvBenchmarkRunInstanceMlflowLinks(),
+		}));
 	const getCapacityActive = () =>
 		(capacityActive ??= new ApplicationCapacityActiveService({
 			fleetActivity: new SessionFleetActivityAdapter(),
@@ -873,6 +883,9 @@ export function getApplicationAdapters(
 		},
 		get benchmarkRunDetail() {
 			return getBenchmarkRunDetail();
+		},
+		get benchmarkRunInstanceDetail() {
+			return getBenchmarkRunInstanceDetail();
 		},
 		get capacityActive() {
 			return getCapacityActive();
