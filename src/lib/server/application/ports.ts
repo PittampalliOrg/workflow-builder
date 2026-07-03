@@ -4888,6 +4888,9 @@ export type AgentCatalogCreateInput = {
 	avatar?: string | null;
 	tags?: string[];
 	runtime?: AgentRuntime;
+	environmentId?: string | null;
+	environmentVersion?: number | null;
+	defaultVaultIds?: string[];
 	sourceTemplateSlug?: string | null;
 	sourceTemplateVersion?: number | null;
 	createdBy?: string | null;

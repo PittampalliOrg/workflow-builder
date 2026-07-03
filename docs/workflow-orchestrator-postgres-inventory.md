@@ -760,6 +760,13 @@ services:
   state-store, runtime registry, MCP resolution, and Kubernetes runtime-sync
   details remain behind `AgentCompiledCapabilitiesRepository` and
   `AgentRegistryRepository` adapters.
+- `src/routes/api/v1/agents/import/+server.ts` and
+  `src/routes/api/v1/agents/[id]/export/+server.ts` now delegate markdown
+  import/export behavior to `ApplicationAgentImportExportService`. Markdown
+  parsing/serialization, environment/vault reference resolution, agent
+  create/read calls, and missing-reference warnings are application behavior
+  behind agent-catalog and reference ports; the routes no longer import the
+  legacy agent, environment, or vault registries directly.
 - `src/routes/api/agents/registry/+server.ts` now delegates the global Dapr
   registry browser read model to `ApplicationAgentRegistryBrowserService`.
   Registry team/store env parsing and Dapr state HTTP reads are confined to

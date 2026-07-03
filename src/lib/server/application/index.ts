@@ -82,6 +82,7 @@ import {
 	PostgresAgentSkillHydrationRepository,
 	RegistryPeerAgentResolver,
 } from "$lib/server/application/adapters/agents";
+import { LegacyAgentImportExportReferenceRepository } from "$lib/server/application/adapters/agent-import-export";
 import {
 	DaprCredentialStore,
 	DaprEventBus,
@@ -229,6 +230,7 @@ import { WorkflowTriggerLifecycleAdapter } from "$lib/server/application/adapter
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
 import { ApplicationAgentCatalogService } from "$lib/server/application/agent-catalog";
+import { ApplicationAgentImportExportService } from "$lib/server/application/agent-import-export";
 import { ApplicationAgentProfileService } from "$lib/server/application/agent-profiles";
 import { ApplicationAgentRegistryBrowserService } from "$lib/server/application/agent-registry-browser";
 import { DaprAgentRegistryStateReaderAdapter } from "$lib/server/application/adapters/agent-registry-browser";
@@ -437,6 +439,7 @@ export function getApplicationAdapters(
 	let agentRuntimeWarmPools: KubernetesAgentRuntimeWarmPoolClient | undefined;
 	let agentRuntimeControl: ApplicationAgentRuntimeControlService | undefined;
 	let agentCatalog: ApplicationAgentCatalogService | undefined;
+	let agentImportExport: ApplicationAgentImportExportService | undefined;
 	let agentProfiles: ApplicationAgentProfileService | undefined;
 	let agentRegistryBrowser: ApplicationAgentRegistryBrowserService | undefined;
 	let sandboxProvisioner: WorkspaceRuntimeSandboxProvisioner | undefined;
@@ -1009,6 +1012,11 @@ export function getApplicationAdapters(
 			runtimes: new LocalAgentRuntimeCatalog(),
 			templates: new LocalAgentTemplateCatalog(),
 		}));
+	const getAgentImportExport = () =>
+		(agentImportExport ??= new ApplicationAgentImportExportService({
+			agents: new LegacyAgentCatalogRepository(),
+			references: new LegacyAgentImportExportReferenceRepository(),
+		}));
 	const getAgentProfiles = () =>
 		(agentProfiles ??= new ApplicationAgentProfileService(
 			new PostgresAgentProfileReadRepository(),
@@ -1414,6 +1422,9 @@ export function getApplicationAdapters(
 		},
 		get agentCatalog() {
 			return getAgentCatalog();
+		},
+		get agentImportExport() {
+			return getAgentImportExport();
 		},
 		get agentSkillHydration() {
 			return getAgentSkillHydration();
