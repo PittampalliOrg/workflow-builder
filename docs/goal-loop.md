@@ -21,9 +21,9 @@ The **budget accounting convention is load-bearing system-wide** (Part 4): all r
 
 - **One ACTIVE goal per session** — partial unique index `uq_thread_goals_session_active` (`WHERE status='active'`).
 - `status ∈ active | paused | budget_limited | complete`. `stop_reason ∈ complete | interrupt | budget | iteration_cap`.
-- **Replace semantics** (`createOrReplaceGoal`, `src/lib/server/goals/repo.ts`): setting a new objective UPDATEs the existing **drivable** row (active **or** budget_limited — see re-arm, Part 8), rotates `goal_id` (`crypto.randomUUID()`), and **resets all accounting** (`tokens_used/time_used_seconds/iterations/budget_steered_at/last_continuation_at/stop_reason` → zero/null) — codex `thread/goal/set` semantics.
+- **Replace semantics** (`ApplicationSessionGoalService` + `PostgresSessionGoalStore`): setting a new objective UPDATEs the existing **drivable** row (active **or** budget_limited — see re-arm, Part 8), rotates `goal_id` (`crypto.randomUUID()`), and **resets all accounting** (`tokens_used/time_used_seconds/iterations/budget_steered_at/last_continuation_at/stop_reason` → zero/null) — codex `thread/goal/set` semantics.
 
-### Driver — `src/lib/server/goals/{goal-loop,repo,render}.ts` (BFF)
+### Driver — `src/lib/server/goals/{goal-loop,render}.ts` + `PostgresGoalLoopStore` (BFF)
 
 Event-driven off `appendEvent` side-effects (`src/lib/server/sessions/events.ts:207` — dynamic import to avoid the events↔goal-loop cycle; fire-and-forget, swallows its own errors). No in-process timer.
 

@@ -46,6 +46,11 @@ session lifecycle ports. The user-facing stop/resume/detail services still
 preserve `coordinator_owned` behavior, while direct benchmark/eval/session SQL
 is confined to the application adapter layer rather than
 `src/lib/server/lifecycle`.
+Goal-loop driver persistence now uses the application `GoalLoopStore` port with
+`PostgresGoalLoopStore` as the first adapter. The event-driven loop preserves
+the existing exactly-once continuation, budget, and completion behavior, but no
+longer imports `src/lib/server/goals/repo.ts`, `$lib/server/db`, Drizzle, or
+Drizzle schema types from `src/lib/server/goals/goal-loop.ts`.
 Session agent config patch commands now reuse the scoped session already loaded
 by workflow-data, with a workflow-data fallback for standalone helper use;
 `agent-config-patch.ts` no longer imports the legacy session registry.
@@ -65,8 +70,8 @@ through workflow-data.
 The internal session-events read route now uses `workflowData.listSessionEvents`
 instead of importing the DB-backed `sessions/events` helper directly.
 The observability goal-flow read model now asks workflow-data for session goal
-flows instead of importing `goals/repo` directly; `goal-flow.ts` keeps only the
-pure attempt assembly helper.
+flows instead of importing the legacy goal repository directly; `goal-flow.ts`
+keeps only the pure attempt assembly helper.
 The prompt preset, agent skill, and vault "used by/usages" reverse-lookup
 routes now load their read models through workflow-data resource usage ports.
 The AI assistant message-history route now lists and deletes persisted chat
@@ -814,7 +819,7 @@ services:
   goal lookup, workspace-session lookup, session-detail fallback, and
   interactive-CLI runtime targeting; `src/lib/server/goals/evaluator.ts` no
   longer imports Drizzle, `$lib/server/db`, `workflow_workspace_sessions`,
-  `src/lib/server/sessions/registry.ts`, or `src/lib/server/goals/repo.ts`.
+  or `src/lib/server/sessions/registry.ts`.
 - `src/routes/api/workflow/active-executions/+server.ts`,
   `src/routes/api/internal/agent/workflows/executions/+server.ts`, and
   `src/routes/api/internal/agent/workflows/executions/[executionId]/status/+server.ts`
@@ -888,7 +893,7 @@ services:
   fallback, and published-agent/version resolution to workflow-data ports.
   Workflow-driven evaluator-goal row persistence now delegates to
   `ApplicationSessionGoalService.ensureWorkflowEvaluatorGoal`, so the route no
-  longer imports `src/lib/server/goals/repo.ts`. Repository resource
+  longer imports a goal persistence helper. Repository resource
   materialization and best-effort pre-run mounting now delegate to
   `ApplicationSessionCommandService.materializeWorkflowSessionRepositories`, so
   the route no longer imports `src/lib/server/sessions/registry.ts` or the
@@ -988,8 +993,9 @@ services:
   workflow-data before consulting the runtime registry, instead of using the
   legacy DB-backed runtime-target helper. The deterministic evidence evaluator
   also uses the application goal store plus workflow-data ports. The remaining
-  `src/lib/server/goals/repo.ts` direct DB access belongs to the goal-loop
-  driver/tick path and remains a later loop-storage adapter slice.
+  goal-loop driver persistence now uses `GoalLoopStore` and
+  `PostgresGoalLoopStore`; the old `src/lib/server/goals/repo.ts` module has
+  been removed.
 - `src/routes/api/v1/sessions/[id]/goal-flow/+server.ts` now scopes the session
   and builds the observability goal-flow read model through workflow-data
   application ports. The current-goal lookup and bounded goal-flow event read

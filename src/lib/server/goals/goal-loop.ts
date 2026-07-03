@@ -1,21 +1,11 @@
 import { appendEvent } from "$lib/server/sessions/events";
 import { raiseSessionUserEvents } from "$lib/server/sessions/spawn";
 import { raiseSessionEvent } from "$lib/server/sessions/control";
-import type { ThreadGoalRow } from "$lib/server/db/schema";
-import {
-	accrueUsage,
-	claimBudgetSteer,
-	claimIterationCap,
-	claimNextContinuation,
-	getCurrentGoal,
-	getDrivableGoal,
-	getSessionWorkflowExecutionId,
-	hasGoalCompletedEvent,
-	latestEventMeta,
-	markGoalComplete,
-	pauseGoal,
-	sessionStopState,
-} from "./repo";
+import { PostgresGoalLoopStore } from "$lib/server/application/adapters/goal-loop-store";
+import type {
+	GoalLoopStore,
+	SessionGoalRecord,
+} from "$lib/server/application/ports";
 import { evaluateGoalCompletion } from "./evaluator";
 import {
 	renderBudgetLimitPrompt,
@@ -45,6 +35,8 @@ const TERMINAL_SESSION_STATUSES = new Set([
 	"cancelled",
 ]);
 
+const defaultGoalLoopStore = new PostgresGoalLoopStore();
+
 /**
  * Budget delta for one LLM call — codex semantics (`input - cached_input +
  * output`): cache READS are excluded. Our runtimes report `input_tokens`
@@ -67,7 +59,7 @@ function tokensFromUsage(data: Record<string, unknown> | undefined): number {
 	);
 }
 
-function toBudgetView(goal: ThreadGoalRow): GoalBudgetView {
+function toBudgetView(goal: SessionGoalRecord): GoalBudgetView {
 	return {
 		objective: goal.objective,
 		tokensUsed: goal.tokensUsed,
@@ -83,13 +75,14 @@ function toBudgetView(goal: ThreadGoalRow): GoalBudgetView {
 export async function onSessionEvent(
 	sessionId: string,
 	event: { type: string; data?: Record<string, unknown> },
+	store: GoalLoopStore = defaultGoalLoopStore,
 ): Promise<void> {
 	try {
 		if (event.type === "agent.llm_usage") {
-			const goal = await getDrivableGoal(sessionId);
+			const goal = await store.getDrivableGoal(sessionId);
 			if (!goal) return;
 			const delta = tokensFromUsage(event.data);
-			if (delta > 0) await accrueUsage(sessionId, delta);
+			if (delta > 0) await store.accrueUsage(sessionId, delta);
 			return;
 		}
 		if (event.type === "session.status_idle") {
@@ -104,11 +97,11 @@ export async function onSessionEvent(
 			// re-fire the cooperative terminate on this clean idle boundary so the
 			// parent durable/run isn't wedged. Evaluator-mode sessions (the default,
 			// which HAVE a row) are driven by driveContinuationIfIdle below instead.
-			if (await hasGoalCompletedEvent(sessionId)) {
-				await terminateWorkflowGoalSessionIfNeeded(sessionId);
+			if (await store.hasGoalCompletedEvent(sessionId)) {
+				await terminateWorkflowGoalSessionIfNeeded(sessionId, store);
 				return;
 			}
-			await driveContinuationIfIdle(sessionId);
+			await driveContinuationIfIdle(sessionId, {}, store);
 			return;
 		}
 		if (event.type === "session.goal_completed") {
@@ -117,7 +110,7 @@ export async function onSessionEvent(
 			// the idle evidence backstop), and native `/goal` emits it from the vendor
 			// CLI. Workflow-driven sessions must end so the parent durable/run resumes;
 			// direct (UI) sessions stay idle (the helper no-ops without a workflow).
-			await terminateWorkflowGoalSessionIfNeeded(sessionId);
+			await terminateWorkflowGoalSessionIfNeeded(sessionId, store);
 			return;
 		}
 	} catch (err) {
@@ -133,9 +126,10 @@ export async function onSessionEvent(
 export async function kickGoalLoop(
 	sessionId: string,
 	opts: { kickoff?: boolean; fromStopHook?: boolean } = {},
+	store: GoalLoopStore = defaultGoalLoopStore,
 ): Promise<void> {
 	try {
-		await driveContinuationIfIdle(sessionId, opts);
+		await driveContinuationIfIdle(sessionId, opts, store);
 	} catch (err) {
 		console.warn(`[goal-loop] kickGoalLoop failed:`, err);
 	}
@@ -151,14 +145,15 @@ export async function kickGoalLoop(
  */
 export async function finalizeCompletedWorkflowGoal(
 	sessionId: string,
+	store: GoalLoopStore = defaultGoalLoopStore,
 ): Promise<void> {
 	try {
 		// Emits session.goal_completed if the goal is complete (→ onSessionEvent
 		// fires terminate). The explicit terminate below is the belt-and-suspenders
 		// path when the event already exists (appendEvent dedupes, so onSessionEvent
 		// would not re-fire).
-		await emitGoalCompletedIfDone(sessionId);
-		await terminateWorkflowGoalSessionIfNeeded(sessionId);
+		await emitGoalCompletedIfDone(sessionId, store);
+		await terminateWorkflowGoalSessionIfNeeded(sessionId, store);
 	} catch (err) {
 		console.warn(`[goal-loop] finalizeCompletedWorkflowGoal failed:`, err);
 	}
@@ -171,8 +166,11 @@ export async function finalizeCompletedWorkflowGoal(
  * native CLIs' signal. No-op for native-goal CLIs (claude/codex) — they have no
  * thread_goals row and emit their own signal from the adapter/transcript.
  */
-async function emitGoalCompletedIfDone(sessionId: string): Promise<void> {
-	const goal = await getCurrentGoal(sessionId);
+async function emitGoalCompletedIfDone(
+	sessionId: string,
+	store: GoalLoopStore = defaultGoalLoopStore,
+): Promise<void> {
+	const goal = await store.getCurrentGoal(sessionId);
 	if (!goal || goal.status !== "complete") return;
 	await appendEvent(sessionId, {
 		type: "session.goal_completed",
@@ -208,9 +206,10 @@ async function emitGoalCompletedIfDone(sessionId: string): Promise<void> {
  */
 async function terminateWorkflowGoalSessionIfNeeded(
 	sessionId: string,
+	store: GoalLoopStore = defaultGoalLoopStore,
 ): Promise<void> {
 	if (process.env.WORKFLOW_GOAL_AUTO_TERMINATE === "false") return;
-	const workflowExecutionId = await getSessionWorkflowExecutionId(sessionId);
+	const workflowExecutionId = await store.getSessionWorkflowExecutionId(sessionId);
 	if (!workflowExecutionId) return; // direct UI goal session → emit-only
 	const res = await raiseSessionEvent(sessionId, "session.terminate", {
 		reason: "goal_completed",
@@ -233,7 +232,7 @@ async function terminateWorkflowGoalSessionIfNeeded(
  */
 async function postEvidenceRejection(
 	sessionId: string,
-	goal: ThreadGoalRow,
+	goal: SessionGoalRecord,
 	verdict: { feedback: string; results?: unknown[] },
 ): Promise<void> {
 	const text =
@@ -269,12 +268,13 @@ async function postEvidenceRejection(
 async function driveContinuationIfIdle(
 	sessionId: string,
 	opts: { kickoff?: boolean; fromStopHook?: boolean } = {},
+	store: GoalLoopStore = defaultGoalLoopStore,
 ): Promise<void> {
 	// Emit the completion signal before the drivable-goal gate (a completed goal
 	// is no longer "drivable", so this must run first). Idempotent.
-	await emitGoalCompletedIfDone(sessionId);
+	await emitGoalCompletedIfDone(sessionId, store);
 
-	const goal = await getDrivableGoal(sessionId);
+	const goal = await store.getDrivableGoal(sessionId);
 	if (!goal) return;
 	// A drivable thread_goals row == evaluator mode (the default for EVERY runtime,
 	// incl. codex/claude). Native `/goal` runs have no row, so they never reach
@@ -282,10 +282,10 @@ async function driveContinuationIfIdle(
 
 	// Never drive a stopping/terminal session. If a stop was requested while a
 	// goal is active, pause the goal so the loop stops re-posting.
-	const stop = await sessionStopState(sessionId);
+	const stop = await store.sessionStopState(sessionId);
 	if (!stop || stop.stopRequested || TERMINAL_SESSION_STATUSES.has(stop.status)) {
 		if (stop?.stopRequested && goal.status === "active") {
-			await pauseGoal(sessionId);
+			await store.pauseGoal(sessionId);
 		}
 		return;
 	}
@@ -293,7 +293,7 @@ async function driveContinuationIfIdle(
 	// Only post when the session is genuinely idle: the latest event must be a
 	// status_idle. This proves no turn is mid-flight AND that no newer
 	// user.message (human input or an already-posted continuation) is queued.
-	const latest = await latestEventMeta(sessionId);
+	const latest = await store.latestEventMeta(sessionId);
 	if (!latest) return;
 	const idle = latest.type === "session.status_idle";
 	// Kickoff bypass: when a goal is freshly set (iteration 0, no continuation yet)
@@ -313,7 +313,7 @@ async function driveContinuationIfIdle(
 
 	if (goal.status === "active") {
 		if (goal.iterations >= goal.maxIterations) {
-			const capped = await claimIterationCap(sessionId);
+			const capped = await store.claimIterationCap(sessionId);
 			if (capped) await postGoalMessage(sessionId, capped, "wrapup");
 			return;
 		}
@@ -328,24 +328,24 @@ async function driveContinuationIfIdle(
 		if (hasEvidence && !kickoff) {
 			const verdict = await evaluateGoalCompletion(sessionId);
 			if (verdict.met) {
-				await markGoalComplete(sessionId);
-				await emitGoalCompletedIfDone(sessionId);
-				await terminateWorkflowGoalSessionIfNeeded(sessionId);
+				await store.markGoalComplete(sessionId);
+				await emitGoalCompletedIfDone(sessionId, store);
+				await terminateWorkflowGoalSessionIfNeeded(sessionId, store);
 				return;
 			}
-			const claimed = await claimNextContinuation(sessionId);
+			const claimed = await store.claimNextContinuation(sessionId);
 			if (!claimed) return; // raced, spacing guard, or cap (next idle wraps up)
 			await postEvidenceRejection(sessionId, claimed, verdict);
 			return;
 		}
-		const claimed = await claimNextContinuation(sessionId);
+		const claimed = await store.claimNextContinuation(sessionId);
 		if (!claimed) return; // raced, spacing guard, or cap
 		await postGoalMessage(sessionId, claimed, "continuation");
 		return;
 	}
 
 	if (goal.status === "budget_limited") {
-		const steered = await claimBudgetSteer(sessionId);
+		const steered = await store.claimBudgetSteer(sessionId);
 		if (steered) {
 			await postGoalMessage(sessionId, steered, "wrapup");
 			return;
@@ -356,14 +356,14 @@ async function driveContinuationIfIdle(
 		// would idle forever and wedge its parent durable/run. Terminate it (the
 		// helper no-ops for direct UI sessions) so the parent resumes with the
 		// agent's wrap-up output instead of hanging until the reaper.
-		await terminateWorkflowGoalSessionIfNeeded(sessionId);
+		await terminateWorkflowGoalSessionIfNeeded(sessionId, store);
 		return;
 	}
 }
 
 async function postGoalMessage(
 	sessionId: string,
-	goal: ThreadGoalRow,
+	goal: SessionGoalRecord,
 	kind: "continuation" | "wrapup",
 ): Promise<void> {
 	const text =

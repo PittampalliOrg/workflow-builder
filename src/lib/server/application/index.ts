@@ -175,6 +175,7 @@ import {
 	SessionAgentConfigCommandAdapter,
 	WorkspaceSessionRepositoryMounter,
 } from "$lib/server/application/adapters/sessions";
+import { PostgresGoalLoopStore } from "$lib/server/application/adapters/goal-loop-store";
 import { PlaywrightMcpBrowserRuntimeClient } from "$lib/server/application/adapters/browser-runtime";
 import {
 	RegistrySessionMcpAgentConfigReader,
@@ -682,6 +683,7 @@ export function getApplicationAdapters(
 		(sessionTraceLifecycle ??= new LegacyMlflowSessionTraceLifecycle());
 	const getSessionGoalStore = () =>
 		(sessionGoalStore ??= new PostgresSessionGoalStore(getDatabase()));
+	const getGoalLoopStore = () => new PostgresGoalLoopStore(getDatabase);
 	const getPeerAgentResolver = () =>
 		(peerAgentResolver ??= new RegistryPeerAgentResolver(getDatabase()));
 	const getSessionEventNotifications = () =>
@@ -697,7 +699,7 @@ export function getApplicationAdapters(
 		(sessionGoals ??= new ApplicationSessionGoalService({
 			sessions: getSessions(),
 			goals: getSessionGoalStore(),
-			goalLoop: new DaprSessionGoalLoopDriver(),
+			goalLoop: new DaprSessionGoalLoopDriver(getGoalLoopStore()),
 			goalHarness: new RuntimeSessionGoalHarnessResolver(() => getWorkflowData()),
 			scopeGuard: new LifecycleSessionGoalScopeGuard(),
 			userEvents: new DaprSessionUserEventCommandAdapter(
@@ -711,9 +713,9 @@ export function getApplicationAdapters(
 				goals: getSessionGoalStore(),
 				workflowData: getWorkflowData(),
 			}),
-			finalizer: new LegacyCompletedWorkflowGoalFinalizer(),
+			finalizer: new LegacyCompletedWorkflowGoalFinalizer(getGoalLoopStore()),
 			goals: getSessionGoalStore(),
-			goalLoop: new DaprSessionGoalLoopDriver(),
+			goalLoop: new DaprSessionGoalLoopDriver(getGoalLoopStore()),
 			sessionEvents: getSessionEvents(),
 			rejectionIds: new DateGoalRejectionSourceEventIdPort(),
 		}));

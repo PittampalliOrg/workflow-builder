@@ -205,7 +205,7 @@ Not-met → `perCriterion[].feedback` for failing items becomes the continuation
 Phased; each phase independently shippable + dev-verifiable. Files are indicative.
 
 ### Phase 1 — Rubric data model + Tier 1 LLM critic (Option A) — highest value, lowest risk
-1. **Schema/types:** add `rubric` + `critic` to the goalSpec types and the goal persistence (`src/lib/types/agents.ts` goalSpec, `src/lib/server/goals/repo.ts`, a drizzle migration for the `thread_goals` columns / JSONB).
+1. **Schema/types:** add `rubric` + `critic` to the goalSpec types and the goal persistence (`src/lib/types/agents.ts` goalSpec, `PostgresSessionGoalStore` / `PostgresGoalLoopStore`, plus a drizzle migration for the `thread_goals` columns / JSONB).
 2. **Critic tier in the evaluator:** extend `evaluateGoalCompletion` (`evaluator.ts`) — after deterministic evidence passes (or when there are no `evidence.commands`), if `critic.mode==="llm"` run an isolated LLM call (reuse `openai-gateway.ts` / the planGoal isolated-call pattern) with an adversarial system prompt, the rubric, and gathered evidence (workspace summary + optional `browser/validate` screenshots). Return the uniform verdict (§5.2). Keep deterministic-only behavior when no rubric.
 3. **Feedback mapping:** map failing `perCriterion` to the continuation text in `postEvidenceRejection` (`goal-loop.ts`) — no change to the trigger/exactly-once machinery (Stop-hook + idle already verified).
 4. **Calibration + skepticism:** thread `rubric.calibration` few-shot examples and `critic.skepticism="default-reject"` into the critic prompt.

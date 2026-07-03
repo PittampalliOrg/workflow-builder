@@ -54,6 +54,8 @@ describe("getApplicationAdapters", () => {
 		);
 
 		expect(source).toContain("new PostgresSessionGoalStore(getDatabase())");
+		expect(source).toContain("new PostgresGoalLoopStore(getDatabase)");
+		expect(source).toContain("new DaprSessionGoalLoopDriver(getGoalLoopStore())");
 		expect(source).toContain("new PostgresLifecycleCoordinatorOwnerStore(getDatabase)");
 		expect(source).toContain("new LifecycleSessionController(");
 		expect(source).toContain("getLifecycleCoordinatorOwners()");

@@ -4470,6 +4470,34 @@ export interface SessionGoalStore {
 	pauseGoal(sessionId: string): Promise<SessionGoalRecord | null>;
 }
 
+export type GoalLoopEventMeta = { type: string; ageSeconds: number };
+
+export type GoalLoopSessionStopState = {
+	status: string;
+	stopRequested: boolean;
+};
+
+export interface GoalLoopStore {
+	getCurrentGoal(sessionId: string): Promise<SessionGoalRecord | null>;
+	getDrivableGoal(sessionId: string): Promise<SessionGoalRecord | null>;
+	accrueUsage(
+		sessionId: string,
+		deltaTokens: number,
+	): Promise<SessionGoalRecord | null>;
+	claimNextContinuation(
+		sessionId: string,
+		spacingSeconds?: number,
+	): Promise<SessionGoalRecord | null>;
+	claimIterationCap(sessionId: string): Promise<SessionGoalRecord | null>;
+	claimBudgetSteer(sessionId: string): Promise<SessionGoalRecord | null>;
+	markGoalComplete(sessionId: string): Promise<SessionGoalRecord | null>;
+	pauseGoal(sessionId: string): Promise<SessionGoalRecord | null>;
+	latestEventMeta(sessionId: string): Promise<GoalLoopEventMeta | null>;
+	hasGoalCompletedEvent(sessionId: string): Promise<boolean>;
+	sessionStopState(sessionId: string): Promise<GoalLoopSessionStopState | null>;
+	getSessionWorkflowExecutionId(sessionId: string): Promise<string | null>;
+}
+
 export interface SessionGoalLoopDriver {
 	kickSessionGoalLoop(
 		sessionId: string,

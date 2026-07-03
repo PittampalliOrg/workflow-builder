@@ -7,6 +7,8 @@ import {
 	type GoalCompletionEvaluatorDependencies,
 } from "$lib/server/goals/evaluator";
 import { finalizeCompletedWorkflowGoal } from "$lib/server/goals/goal-loop";
+import { PostgresGoalLoopStore } from "$lib/server/application/adapters/goal-loop-store";
+import type { GoalLoopStore } from "$lib/server/application/ports";
 
 export class LegacyGoalCompletionEvaluator
 	implements GoalCompletionEvaluatorPort
@@ -25,7 +27,11 @@ export class LegacyGoalCompletionEvaluator
 export class LegacyCompletedWorkflowGoalFinalizer
 	implements CompletedWorkflowGoalFinalizerPort
 {
+	constructor(
+		private readonly goalLoopStore: GoalLoopStore = new PostgresGoalLoopStore(),
+	) {}
+
 	finalizeCompletedWorkflowGoal(sessionId: string) {
-		return finalizeCompletedWorkflowGoal(sessionId);
+		return finalizeCompletedWorkflowGoal(sessionId, this.goalLoopStore);
 	}
 }

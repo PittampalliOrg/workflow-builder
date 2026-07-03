@@ -7,6 +7,7 @@ import type {
 	CreateSessionRecordInput,
 	CreatePeerSessionInput,
 	CreateSessionGoalInput,
+	GoalLoopStore,
 	CreateWorkflowEnsureSessionInput,
 	ListSessionEventsInput,
 	PeerSessionRecord,
@@ -100,6 +101,7 @@ import {
 	pauseDurableRun,
 	resumeDurableRun,
 } from "$lib/server/lifecycle/pause";
+import { PostgresGoalLoopStore } from "$lib/server/application/adapters/goal-loop-store";
 import { PostgresLifecycleCoordinatorOwnerStore } from "$lib/server/application/adapters/lifecycle-ownership";
 import { isResourceInScope } from "$lib/server/workflows/project-scope";
 import { kickGoalLoop } from "$lib/server/goals/goal-loop";
@@ -1201,11 +1203,15 @@ export class PostgresSessionGoalStore implements SessionGoalStore {
 }
 
 export class DaprSessionGoalLoopDriver implements SessionGoalLoopDriver {
+	constructor(
+		private readonly goalLoopStore: GoalLoopStore = new PostgresGoalLoopStore(),
+	) {}
+
 	kickSessionGoalLoop(
 		sessionId: string,
 		opts?: Parameters<SessionGoalLoopDriver["kickSessionGoalLoop"]>[1],
 	): Promise<void> {
-		return kickGoalLoop(sessionId, opts);
+		return kickGoalLoop(sessionId, opts, this.goalLoopStore);
 	}
 }
 
