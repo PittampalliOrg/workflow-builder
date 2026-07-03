@@ -571,6 +571,11 @@ The first UI-facing route has also moved behind the application service:
   policy rather than route code; the routes authenticate, call the scoped use
   case, map missing/out-of-scope executions to 404, and keep their existing
   read-model response shaping.
+- `src/routes/api/workflows/executions/[executionId]/plan/+server.ts` now
+  delegates plan lookup to `ApplicationWorkflowPlanService`. The durable
+  artifact read remains the primary source through the plan artifact port, and
+  the legacy Dapr service-invocation fallback to `dapr-agent-py` is confined to
+  `DaprLegacyAgentPlanReader` instead of route code.
 - `src/routes/api/v1/agent-runtimes/+server.ts`,
   `src/routes/api/v1/agent-runtimes/[slug]/+server.ts`,
   `src/routes/api/v1/agent-runtimes/[slug]/wake/+server.ts`,

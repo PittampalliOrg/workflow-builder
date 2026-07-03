@@ -4,45 +4,14 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
-	const workflowData = {
-		listPlanArtifactsByExecutionId: vi.fn(async () => [
-			{
-				artifactRef: "plan-1",
-				workflowExecutionId: "exec-1",
-				workflowId: "wf-1",
-				userId: "user-1",
-				nodeId: "agent",
-				workspaceRef: null,
-				clonePath: null,
-				artifactType: "claude_task_graph_v1",
-				artifactVersion: 1,
-				status: "draft",
-				goal: "ship it",
-				planJson: { steps: [] },
-				planMarkdown: "## Plan",
-				sourcePrompt: null,
-				metadata: null,
-				createdAt: new Date("2026-01-01T00:00:00.000Z"),
-				updatedAt: new Date("2026-01-01T00:00:00.000Z"),
-			},
-		]),
+	const workflowPlan = {
+		getExecutionPlan: vi.fn(async (): Promise<{ plan: string | null }> => ({ plan: "## Plan" })),
 	};
-	const daprFetch = vi.fn(async () =>
-		new Response(JSON.stringify({ plan: "legacy plan" }), {
-			status: 200,
-			headers: { "Content-Type": "application/json" },
-		}),
-	);
-	return { workflowData, daprFetch };
+	return { workflowPlan };
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
-}));
-
-vi.mock("$lib/server/dapr-client", () => ({
-	daprFetch: mocks.daprFetch,
-	getDaprSidecarUrl: () => "http://127.0.0.1:3500",
+	getApplicationAdapters: () => ({ workflowPlan: mocks.workflowPlan }),
 }));
 
 import { GET } from "./+server";
@@ -56,39 +25,37 @@ function event() {
 describe("workflow execution plan route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mocks.workflowPlan.getExecutionPlan.mockResolvedValue({ plan: "## Plan" });
 	});
 
-	it("keeps the plan table read behind workflow-data application services", () => {
+	it("keeps plan lookup behind workflow plan application services", () => {
 		const source = readFileSync(
 			join(dirname(fileURLToPath(import.meta.url)), "+server.ts"),
 			"utf8",
 		);
 		expect(source).toContain("getApplicationAdapters");
+		expect(source).toContain("workflowPlan.getExecutionPlan");
+		expect(source).not.toContain("$lib/server/dapr-client");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
 	});
 
-	it("returns the newest persisted plan from workflowData", async () => {
+	it("returns the plan read model from the application service", async () => {
 		const response = (await GET(event() as never)) as Response;
 
 		expect(response.status).toBe(200);
 		await expect(response.json()).resolves.toEqual({ plan: "## Plan" });
-		expect(mocks.workflowData.listPlanArtifactsByExecutionId).toHaveBeenCalledWith("exec-1");
-		expect(mocks.daprFetch).not.toHaveBeenCalled();
+		expect(mocks.workflowPlan.getExecutionPlan).toHaveBeenCalledWith({
+			executionId: "exec-1",
+		});
 	});
 
-	it("keeps the legacy Dapr fallback when no persisted plan exists", async () => {
-		mocks.workflowData.listPlanArtifactsByExecutionId.mockResolvedValueOnce([]);
+	it("passes null plans through from the application service", async () => {
+		mocks.workflowPlan.getExecutionPlan.mockResolvedValueOnce({ plan: null });
 
 		const response = (await GET(event() as never)) as Response;
 
 		expect(response.status).toBe(200);
-		await expect(response.json()).resolves.toEqual({ plan: "legacy plan" });
-		expect(mocks.daprFetch).toHaveBeenCalledWith(
-			"http://127.0.0.1:3500/v1.0/invoke/dapr-agent-py.openshell/method/plan/exec-1",
-			expect.objectContaining({
-				headers: { "Content-Type": "application/json" },
-			}),
-		);
+		await expect(response.json()).resolves.toEqual({ plan: null });
 	});
 });

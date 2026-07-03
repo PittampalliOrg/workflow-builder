@@ -72,6 +72,7 @@ import {
 import {
 	DaprCredentialStore,
 	DaprEventBus,
+	DaprLegacyAgentPlanReader,
 	DaprWorkflowApprovalEventPort,
 	DaprWorkflowScheduler,
 } from "$lib/server/application/adapters/dapr";
@@ -144,6 +145,7 @@ import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/applicatio
 import { ApplicationWorkflowTriggerManagementService } from "$lib/server/application/workflow-trigger-management";
 import { ApplicationWorkflowTriggerLifecycleService } from "$lib/server/application/workflow-trigger-lifecycle";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
+import { ApplicationWorkflowPlanService } from "$lib/server/application/workflow-plan";
 
 export { getEventBusAdapter } from "$lib/server/application/event-bus";
 
@@ -275,6 +277,7 @@ export function getApplicationAdapters(
 	let workflowTriggerManagement:
 		| ApplicationWorkflowTriggerManagementService
 		| undefined;
+	let workflowPlan: ApplicationWorkflowPlanService | undefined;
 	let cliPreview: ApplicationCliPreviewService | undefined;
 	let sandboxPreview: ApplicationSandboxPreviewService | undefined;
 	const getDatabase = () => (database ??= requirePostgresDb());
@@ -491,6 +494,11 @@ export function getApplicationAdapters(
 		(workflowTriggerManagement ??= new ApplicationWorkflowTriggerManagementService({
 			workflowData: getWorkflowData(),
 		}));
+	const getWorkflowPlan = () =>
+		(workflowPlan ??= new ApplicationWorkflowPlanService({
+			planArtifacts: getPlanArtifacts(),
+			legacyAgentPlans: new DaprLegacyAgentPlanReader(),
+		}));
 	const getCliPreview = () =>
 		(cliPreview ??= new ApplicationCliPreviewService({
 			preview: new LegacyCliPreviewGatewayPort(),
@@ -654,6 +662,9 @@ export function getApplicationAdapters(
 		},
 		get workflowTriggerManagement() {
 			return getWorkflowTriggerManagement();
+		},
+		get workflowPlan() {
+			return getWorkflowPlan();
 		},
 		get cliPreview() {
 			return getCliPreview();

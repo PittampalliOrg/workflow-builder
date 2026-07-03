@@ -7,6 +7,7 @@ import {
 import type {
 	CredentialStore,
 	EventBus,
+	LegacyAgentPlanReaderPort,
 	ResolveSecretOptions,
 	WorkflowApprovalEventInput,
 	WorkflowApprovalEventPort,
@@ -66,6 +67,25 @@ export class DaprWorkflowApprovalEventPort implements WorkflowApprovalEventPort 
 			status: response.status,
 			detail: await response.text().catch(() => ""),
 		};
+	}
+}
+
+export class DaprLegacyAgentPlanReader implements LegacyAgentPlanReaderPort {
+	constructor(private readonly appId = "dapr-agent-py.openshell") {}
+
+	async getPlan(executionId: string): Promise<string | null> {
+		const invokeUrl = `${getDaprSidecarUrl()}/v1.0/invoke/${encodeURIComponent(
+			this.appId,
+		)}/method/plan/${encodeURIComponent(executionId)}`;
+		const response = await daprFetch(invokeUrl, {
+			headers: { "Content-Type": "application/json" },
+		});
+		if (!response.ok) return null;
+
+		const data = (await response.json().catch(() => null)) as {
+			plan?: unknown;
+		} | null;
+		return typeof data?.plan === "string" ? data.plan : null;
 	}
 }
 

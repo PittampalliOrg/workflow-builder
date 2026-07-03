@@ -3093,6 +3093,10 @@ export interface WorkflowPlanArtifactStore {
 	getPlanArtifact(artifactRef: string): Promise<WorkflowPlanArtifactRecord | null>;
 }
 
+export interface LegacyAgentPlanReaderPort {
+	getPlan(executionId: string): Promise<string | null>;
+}
+
 export type TraceLinkTarget = {
 	entityType: "workflow_execution" | "session";
 	entityId: string;

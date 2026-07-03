@@ -1,7 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getApplicationAdapters } from '$lib/server/application';
-import { daprFetch, getDaprSidecarUrl } from '$lib/server/dapr-client';
 
 /**
  * GET /api/workflows/executions/[executionId]/plan
@@ -12,29 +11,5 @@ import { daprFetch, getDaprSidecarUrl } from '$lib/server/dapr-client';
  */
 export const GET: RequestHandler = async ({ params }) => {
 	const { executionId } = params;
-
-	try {
-		const [artifact] =
-			await getApplicationAdapters().workflowData.listPlanArtifactsByExecutionId(executionId);
-
-		if (artifact?.planMarkdown) {
-			return json({ plan: artifact.planMarkdown });
-		}
-
-		// Use Dapr service invocation to call dapr-agent-py's /plan endpoint
-		// This works regardless of state store scoping since we invoke the service directly
-		const invokeUrl = `${getDaprSidecarUrl()}/v1.0/invoke/dapr-agent-py.openshell/method/plan/${encodeURIComponent(executionId)}`;
-		const res = await daprFetch(invokeUrl, {
-			headers: { 'Content-Type': 'application/json' }
-		});
-
-		if (!res.ok) {
-			return json({ plan: null });
-		}
-
-		const data = await res.json();
-		return json({ plan: data.plan ?? null });
-	} catch {
-		return json({ plan: null });
-	}
+	return json(await getApplicationAdapters().workflowPlan.getExecutionPlan({ executionId }));
 };
