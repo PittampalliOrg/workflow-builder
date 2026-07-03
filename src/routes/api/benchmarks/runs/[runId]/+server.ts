@@ -1,37 +1,17 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { getBenchmarkRun } from "$lib/server/benchmarks/service";
-import { computeRunStats } from "$lib/server/benchmarks/stats";
-import { getBenchmarkRunCapacityDiagnostics } from "$lib/server/benchmarks/capacity-diagnostics";
+import { getApplicationAdapters } from "$lib/server/application";
 
 export const GET: RequestHandler = async ({ params, locals, url }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	if (!locals.session.projectId) return error(404, "Benchmark run not found");
 	const includeStats = url.searchParams.get("stats") !== "false";
 	const lite = url.searchParams.get("lite") === "true";
-	const run = await getBenchmarkRun(locals.session.projectId, params.runId);
-	if (!run) return error(404, "Benchmark run not found");
-
-	// Drop the heavy `harnessResult` blob from per-instance rows in the list
-	// response. Callers fetch the parsed result via the per-instance endpoint
-	// when the drawer opens. Keep the existing field on `lite=false` mode in
-	// case any caller depends on it.
-	const slimmedRun = lite
-		? {
-				...run,
-				instances: (run.instances ?? []).map((i) => ({
-					...i,
-					harnessResult: null,
-					testOutputSummary: null,
-				})),
-			}
-		: run;
-
-	const [runStats, capacityDiagnostics] = await Promise.all([
-		includeStats ? computeRunStats(params.runId) : Promise.resolve(null),
-		getBenchmarkRunCapacityDiagnostics(locals.session.projectId, params.runId).catch(
-			() => null,
-		),
-	]);
-	return json({ run: slimmedRun, runStats, capacityDiagnostics });
+	const result = await getApplicationAdapters().benchmarkRunDetail.getApiDetail({
+		projectId: locals.session.projectId,
+		runId: params.runId,
+		includeStats,
+		lite,
+	});
+	if (result.status === "not_found") return error(404, result.message);
+	return json(result.body);
 };

@@ -85,6 +85,48 @@ describe("ApplicationBenchmarkRunDetailPageService", () => {
 			service.load({ projectId: "project-1", runId: "missing" }),
 		).resolves.toEqual({ status: "not_found", message: "Run not found" });
 	});
+
+	it("serves API detail with optional stats and lite instance payloads", async () => {
+		vi.mocked(readModel.getRun).mockResolvedValueOnce({
+			id: "run-1",
+			instances: [
+				{
+					id: "instance-1",
+					harnessResult: { resolved: true },
+					testOutputSummary: "large output",
+				},
+			],
+		} as never);
+
+		await expect(
+			service.getApiDetail({
+				projectId: "project-1",
+				runId: "run-1",
+				includeStats: false,
+				lite: true,
+			}),
+		).resolves.toMatchObject({
+			status: "ok",
+			body: {
+				run: {
+					instances: [
+						{
+							harnessResult: null,
+							testOutputSummary: null,
+						},
+					],
+				},
+				runStats: null,
+				capacityDiagnostics: { ok: true },
+			},
+		});
+
+		expect(readModel.computeRunStats).not.toHaveBeenCalled();
+		expect(readModel.getCapacityDiagnostics).toHaveBeenCalledWith(
+			"project-1",
+			"run-1",
+		);
+	});
 });
 
 function runStats(): RunStats {

@@ -23,8 +23,18 @@ export type BenchmarkRunDetailPageData = {
 	headlampCluster: HeadlampCluster;
 };
 
+export type BenchmarkRunDetailApiData = {
+	run: BenchmarkRunDetailRun;
+	runStats: RunStats | null;
+	capacityDiagnostics: BenchmarkRunCapacityDiagnostics | null;
+};
+
 export type BenchmarkRunDetailLoadResult =
 	| { status: "ok"; data: BenchmarkRunDetailPageData }
+	| { status: "not_found"; message: string };
+
+export type BenchmarkRunDetailApiResult =
+	| { status: "ok"; body: BenchmarkRunDetailApiData }
 	| { status: "not_found"; message: string };
 
 export type BenchmarkRunDetailReadPort = {
@@ -78,10 +88,55 @@ export class ApplicationBenchmarkRunDetailPageService {
 			},
 		};
 	}
+
+	async getApiDetail(input: {
+		projectId?: string | null;
+		runId: string;
+		includeStats: boolean;
+		lite: boolean;
+	}): Promise<BenchmarkRunDetailApiResult> {
+		if (!input.projectId) return benchmarkRunNotFound();
+
+		const run = await this.readModel.getRun(input.projectId, input.runId);
+		if (!run) return benchmarkRunNotFound();
+
+		const [runStats, capacityDiagnostics] = await Promise.all([
+			input.includeStats
+				? this.readModel.computeRunStats(input.runId)
+				: Promise.resolve(null),
+			this.readModel
+				.getCapacityDiagnostics(input.projectId, input.runId)
+				.catch(() => null),
+		]);
+
+		return {
+			status: "ok",
+			body: {
+				run: input.lite ? slimRunForApi(run) : run,
+				runStats,
+				capacityDiagnostics,
+			},
+		};
+	}
 }
 
 function runNotFound(): BenchmarkRunDetailLoadResult {
 	return { status: "not_found", message: "Run not found" };
+}
+
+function benchmarkRunNotFound(): BenchmarkRunDetailApiResult {
+	return { status: "not_found", message: "Benchmark run not found" };
+}
+
+function slimRunForApi(run: BenchmarkRunDetailRun): BenchmarkRunDetailRun {
+	return {
+		...run,
+		instances: (run.instances ?? []).map((instance) => ({
+			...instance,
+			harnessResult: null,
+			testOutputSummary: null,
+		})),
+	} as BenchmarkRunDetailRun;
 }
 
 function emptyRunStats(): RunStats {
