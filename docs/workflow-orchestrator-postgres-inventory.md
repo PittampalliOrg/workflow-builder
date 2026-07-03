@@ -47,6 +47,10 @@ The benchmark run-instance annotations API now reads aggregate annotation
 counts, validates/upserts the caller verdict, and deletes the caller annotation
 through workflow-data ports. The Postgres adapter preserves the existing
 `(run_instance_id, user_id)` upsert target and scoped run-instance lookup.
+The benchmark-to-evaluation dataset promotion API now validates the selected
+run instance, enforces workspace scope, checks the target evaluation dataset,
+and inserts the origin-linked dataset row through a workflow-data command port
+instead of route-local Drizzle queries.
 
 ## Strict HTTP Runtime Paths
 

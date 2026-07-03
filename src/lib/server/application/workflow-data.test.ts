@@ -4,6 +4,7 @@ import type {
 	AdminPieceRepository,
 	AppConnectionRepository,
 	ArtifactStore,
+	BenchmarkDatasetPromotionRepository,
 	BenchmarkRunInstanceAnnotationRepository,
 	BenchmarkInstanceDetailReadRepository,
 	BenchmarkBrowserRepository,
@@ -1330,6 +1331,7 @@ function makeService(options: {
 	workflowExecutions?: Partial<WorkflowExecutionRepository>;
 	benchmarkRunReads?: BenchmarkRunReadRepository;
 	benchmarkRuns?: BenchmarkRunRepository;
+	benchmarkDatasetPromotions?: BenchmarkDatasetPromotionRepository;
 	benchmarkInstanceDetails?: BenchmarkInstanceDetailReadRepository;
 	benchmarkRunInstanceDetails?: BenchmarkRunInstanceDetailReadRepository;
 	benchmarkRunInstanceAnnotations?: BenchmarkRunInstanceAnnotationRepository;
@@ -1396,6 +1398,7 @@ function makeService(options: {
 		sessions: options.sessions,
 		browserArtifacts: options.browserArtifacts,
 		benchmarkBrowser: fakeBenchmarkBrowser(),
+		benchmarkDatasetPromotions: options.benchmarkDatasetPromotions,
 		benchmarkInstanceDetails: options.benchmarkInstanceDetails,
 		benchmarkRunInstanceDetails: options.benchmarkRunInstanceDetails,
 		benchmarkRunInstanceAnnotations: options.benchmarkRunInstanceAnnotations,
@@ -6697,6 +6700,68 @@ describe("ApplicationWorkflowDataService", () => {
 				userId: "user-1",
 			}),
 		).resolves.toEqual({ status: "ok" });
+	});
+
+	it("promotes benchmark run instances into evaluation datasets through workflow-data ports", async () => {
+		const now = new Date("2026-07-03T13:00:00.000Z");
+		const createdAt = new Date("2026-07-03T13:00:01.000Z");
+		const updatedAt = new Date("2026-07-03T13:00:02.000Z");
+		const benchmarkDatasetPromotions: BenchmarkDatasetPromotionRepository = {
+			promoteRunInstanceToDataset: vi.fn(async () => ({
+				status: "ok" as const,
+				rows: [
+					{
+						id: "dataset-row-1",
+						datasetId: "dataset-1",
+						externalId: "sympy__sympy-20590",
+						input: { instance_id: "sympy__sympy-20590" },
+						expectedOutput: { harness_resolved: true },
+						generatedOutput: null,
+						annotations: {},
+						rating: null,
+						feedback: null,
+						metadata: { promotedFromRunId: "run-1" },
+						originRunInstanceId: "run-instance-1",
+						originSessionId: "session-1",
+						createdAt,
+						updatedAt,
+					},
+				],
+			})),
+		};
+		const { service } = makeService({ benchmarkDatasetPromotions });
+
+		await expect(
+			service.promoteBenchmarkRunInstanceToDataset({
+				projectId: "project-1",
+				datasetId: "dataset-1",
+				runId: " run-1 ",
+				instanceId: " sympy__sympy-20590 ",
+				now,
+			}),
+		).resolves.toMatchObject({
+			status: "ok",
+			rows: [{ id: "dataset-row-1", originRunInstanceId: "run-instance-1" }],
+		});
+		expect(benchmarkDatasetPromotions.promoteRunInstanceToDataset).toHaveBeenCalledWith({
+			projectId: "project-1",
+			datasetId: "dataset-1",
+			runId: "run-1",
+			instanceId: "sympy__sympy-20590",
+			now,
+		});
+
+		await expect(
+			service.promoteBenchmarkRunInstanceToDataset({
+				projectId: "project-1",
+				datasetId: "dataset-1",
+				runId: "run-1",
+				instanceId: " ",
+			}),
+		).resolves.toEqual({
+			status: "invalid_input",
+			message: "runId and instanceId are required",
+		});
 	});
 
 	it("loads piece catalog detail and connection usage through application ports", async () => {

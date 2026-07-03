@@ -745,6 +745,39 @@ export interface BenchmarkRunInstanceAnnotationRepository {
 	}): Promise<BenchmarkRunInstanceAnnotationCommandResult>;
 }
 
+export type EvaluationDatasetRowRecord = {
+	id: string;
+	datasetId: string;
+	externalId: string | null;
+	input: Record<string, unknown>;
+	expectedOutput: unknown;
+	generatedOutput: unknown;
+	annotations: Record<string, unknown>;
+	rating: number | null;
+	feedback: string | null;
+	metadata: Record<string, unknown>;
+	originRunInstanceId: string | null;
+	originSessionId: string | null;
+	createdAt: Date;
+	updatedAt: Date;
+};
+
+export type PromoteBenchmarkRunInstanceToDatasetResult =
+	| { status: "ok"; rows: EvaluationDatasetRowRecord[] }
+	| { status: "benchmark_instance_not_found" }
+	| { status: "run_in_different_workspace" }
+	| { status: "evaluation_dataset_not_found" };
+
+export interface BenchmarkDatasetPromotionRepository {
+	promoteRunInstanceToDataset(input: {
+		projectId: string;
+		datasetId: string;
+		runId: string;
+		instanceId: string;
+		now: Date;
+	}): Promise<PromoteBenchmarkRunInstanceToDatasetResult>;
+}
+
 export type CreateWorkflowDefinitionInput = {
 	name: string;
 	nodes: unknown[];
@@ -3787,6 +3820,16 @@ export interface WorkflowDataService {
 		projectId: string;
 		userId: string;
 	}): Promise<BenchmarkRunInstanceAnnotationCommandResult>;
+	promoteBenchmarkRunInstanceToDataset(input: {
+		projectId: string;
+		datasetId: string;
+		runId?: unknown;
+		instanceId?: unknown;
+		now?: Date;
+	}): Promise<
+		| PromoteBenchmarkRunInstanceToDatasetResult
+		| { status: "invalid_input"; message: string }
+	>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;
 	}): Promise<DevPreviewHubReadModel>;

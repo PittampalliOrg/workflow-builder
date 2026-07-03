@@ -71,6 +71,7 @@ import type {
 	ApiKeyStore,
 	AppendSessionEventInput,
 	ArtifactStore,
+	BenchmarkDatasetPromotionRepository,
 	BenchmarkInstanceAnnotationVerdict,
 	BenchmarkBrowserEnvironmentBuildRecord,
 	BenchmarkInstanceDetailReadRepository,
@@ -788,6 +789,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			browserArtifacts?: WorkflowBrowserArtifactStore;
 			codeFunctionCatalog?: CodeFunctionCatalogRepository;
 			benchmarkBrowser: BenchmarkBrowserRepository;
+			benchmarkDatasetPromotions?: BenchmarkDatasetPromotionRepository;
 			benchmarkInstanceDetails?: BenchmarkInstanceDetailReadRepository;
 			benchmarkRunInstanceDetails?: BenchmarkRunInstanceDetailReadRepository;
 			benchmarkRunInstanceAnnotations?: BenchmarkRunInstanceAnnotationRepository;
@@ -901,6 +903,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Benchmark run instance annotation repository not configured");
 		}
 		return this.deps.benchmarkRunInstanceAnnotations;
+	}
+
+	private requireBenchmarkDatasetPromotions(): BenchmarkDatasetPromotionRepository {
+		if (!this.deps.benchmarkDatasetPromotions) {
+			throw new Error("Benchmark dataset promotion repository not configured");
+		}
+		return this.deps.benchmarkDatasetPromotions;
 	}
 
 	private isResourceVisibleToCaller<T extends { userId: string; projectId: string | null }>(
@@ -3854,6 +3863,31 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		userId: string;
 	}) {
 		return this.requireBenchmarkRunInstanceAnnotations().deleteRunInstanceAnnotation(input);
+	}
+
+	promoteBenchmarkRunInstanceToDataset(input: {
+		projectId: string;
+		datasetId: string;
+		runId?: unknown;
+		instanceId?: unknown;
+		now?: Date;
+	}) {
+		const runId = typeof input.runId === "string" ? input.runId.trim() : "";
+		const instanceId =
+			typeof input.instanceId === "string" ? input.instanceId.trim() : "";
+		if (!runId || !instanceId) {
+			return Promise.resolve({
+				status: "invalid_input" as const,
+				message: "runId and instanceId are required",
+			});
+		}
+		return this.requireBenchmarkDatasetPromotions().promoteRunInstanceToDataset({
+			projectId: input.projectId,
+			datasetId: input.datasetId,
+			runId,
+			instanceId,
+			now: input.now ?? new Date(),
+		});
 	}
 
 	async getDevPreviewHubReadModel(input: { projectId?: string | null }) {

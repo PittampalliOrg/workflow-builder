@@ -48,6 +48,8 @@ import {
 	benchmarkSuites,
 	environmentImageBuilds,
 	evaluationArtifacts,
+	evaluationDatasets,
+	evaluationDatasetRows,
 	evaluationRunItems,
 	projects,
 	projectMembers,
@@ -105,6 +107,7 @@ import type {
 	ApiKeyRecord,
 	ApiKeyStore,
 	ArtifactStore,
+	BenchmarkDatasetPromotionRepository,
 	BenchmarkInstanceAnnotationVerdict,
 	BenchmarkBrowserRepository,
 	BenchmarkInstanceDetailReadRepository,
@@ -2806,6 +2809,118 @@ export class PostgresBenchmarkRunInstanceDetailReadRepository
 			},
 			executionIr: row.executionIr,
 			executionOutput: row.executionOutput,
+		};
+	}
+}
+
+export class PostgresBenchmarkDatasetPromotionRepository
+	implements BenchmarkDatasetPromotionRepository
+{
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async promoteRunInstanceToDataset(input: {
+		projectId: string;
+		datasetId: string;
+		runId: string;
+		instanceId: string;
+		now: Date;
+	}) {
+		const [source] = await this.database
+			.select({
+				runInstance: benchmarkRunInstances,
+				suiteId: benchmarkRuns.suiteId,
+				projectId: benchmarkRuns.projectId,
+				problemStatement: benchmarkInstances.problemStatement,
+				repo: benchmarkInstances.repo,
+				baseCommit: benchmarkInstances.baseCommit,
+				hintsText: benchmarkInstances.hintsText,
+			})
+			.from(benchmarkRunInstances)
+			.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
+			.leftJoin(
+				benchmarkInstances,
+				and(
+					eq(benchmarkInstances.suiteId, benchmarkRuns.suiteId),
+					eq(
+						benchmarkInstances.instanceId,
+						benchmarkRunInstances.instanceId,
+					),
+				),
+			)
+			.where(
+				and(
+					eq(benchmarkRunInstances.runId, input.runId),
+					eq(benchmarkRunInstances.instanceId, input.instanceId),
+				),
+			)
+			.limit(1);
+
+		if (!source) return { status: "benchmark_instance_not_found" as const };
+		if (source.projectId !== input.projectId) {
+			return { status: "run_in_different_workspace" as const };
+		}
+
+		const [dataset] = await this.database
+			.select({ id: evaluationDatasets.id })
+			.from(evaluationDatasets)
+			.where(
+				and(
+					eq(evaluationDatasets.projectId, input.projectId),
+					eq(evaluationDatasets.id, input.datasetId),
+				),
+			)
+			.limit(1);
+		if (!dataset) return { status: "evaluation_dataset_not_found" as const };
+
+		const [inserted] = await this.database
+			.insert(evaluationDatasetRows)
+			.values({
+				datasetId: input.datasetId,
+				externalId: input.instanceId,
+				input: {
+					instance_id: input.instanceId,
+					repo: source.repo,
+					base_commit: source.baseCommit,
+					problem_statement: source.problemStatement,
+					hints_text: source.hintsText,
+				},
+				expectedOutput: {
+					harness_resolved: source.runInstance.status === "resolved",
+					patch_files_overlap_gold: source.runInstance.patchFilesOverlapGold,
+					patch_well_formed: source.runInstance.patchWellFormed,
+					patch_added_lines: source.runInstance.patchAddedLines,
+					patch_removed_lines: source.runInstance.patchRemovedLines,
+				},
+				metadata: {
+					promotedFromRunId: input.runId,
+					promotedAt: input.now.toISOString(),
+					suiteId: source.suiteId,
+				},
+				originRunInstanceId: source.runInstance.id,
+				originSessionId: source.runInstance.sessionId,
+			})
+			.returning();
+
+		return {
+			status: "ok" as const,
+			rows: [
+				{
+					id: inserted.id,
+					datasetId: inserted.datasetId,
+					externalId: inserted.externalId,
+					input: inserted.input,
+					expectedOutput: inserted.expectedOutput,
+					generatedOutput: inserted.generatedOutput,
+					annotations: inserted.annotations,
+					rating: inserted.rating,
+					feedback: inserted.feedback,
+					metadata: inserted.metadata,
+					originRunInstanceId: inserted.originRunInstanceId,
+					originSessionId: inserted.originSessionId,
+					createdAt: inserted.createdAt,
+					updatedAt: inserted.updatedAt,
+				},
+			],
 		};
 	}
 }

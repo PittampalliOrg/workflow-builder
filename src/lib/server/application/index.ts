@@ -8,6 +8,7 @@ import {
 	PostgresAppConnectionRepository,
 	PostgresApiKeyStore,
 	PostgresBenchmarkBrowserRepository,
+	PostgresBenchmarkDatasetPromotionRepository,
 	PostgresBenchmarkInstanceDetailReadRepository,
 	PostgresBenchmarkRunInstanceAnnotationRepository,
 	PostgresBenchmarkRunInstanceDetailReadRepository,
@@ -113,6 +114,9 @@ export function getApplicationAdapters(
 	let browserArtifacts: PostgresWorkflowBrowserArtifactStore | undefined;
 	let codeFunctionCatalog: PostgresCodeFunctionCatalogRepository | undefined;
 	let benchmarkBrowser: PostgresBenchmarkBrowserRepository | undefined;
+	let benchmarkDatasetPromotions:
+		| PostgresBenchmarkDatasetPromotionRepository
+		| undefined;
 	let benchmarkInstanceDetails:
 		| PostgresBenchmarkInstanceDetailReadRepository
 		| undefined;
@@ -191,6 +195,8 @@ export function getApplicationAdapters(
 		(codeFunctionCatalog ??= new PostgresCodeFunctionCatalogRepository(getDatabase()));
 	const getBenchmarkBrowser = () =>
 		(benchmarkBrowser ??= new PostgresBenchmarkBrowserRepository(getDatabase()));
+	const getBenchmarkDatasetPromotions = () =>
+		(benchmarkDatasetPromotions ??= new PostgresBenchmarkDatasetPromotionRepository(getDatabase()));
 	const getBenchmarkInstanceDetails = () =>
 		(benchmarkInstanceDetails ??= new PostgresBenchmarkInstanceDetailReadRepository(getDatabase()));
 	const getBenchmarkRunInstanceScores = () =>
@@ -282,6 +288,7 @@ export function getApplicationAdapters(
 			browserArtifacts: getBrowserArtifacts(),
 			codeFunctionCatalog: getCodeFunctionCatalog(),
 			benchmarkBrowser: getBenchmarkBrowser(),
+			benchmarkDatasetPromotions: getBenchmarkDatasetPromotions(),
 			benchmarkInstanceDetails: getBenchmarkInstanceDetails(),
 			benchmarkRunInstanceScores: getBenchmarkRunInstanceScores(),
 			benchmarkRunInstanceDetails: getBenchmarkRunInstanceDetails(),
