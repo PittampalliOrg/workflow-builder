@@ -400,13 +400,12 @@ services:
 - `src/routes/api/sandboxes/[name]/logs/+server.ts` and
   `src/routes/api/sandboxes/[name]/stream/+server.ts` now read persisted agent
   events through `ApplicationSandboxEventsService`. The shared session-event
-  query is still the legacy adapter implementation, now under
-  `src/lib/server/application/adapters/execution-read-model.ts`.
+  query is confined to `PostgresSandboxAgentEventReadPort` in the application
+  adapter layer.
 - Direct DB/Dapr/ClickHouse access for execution status/SSE snapshots is now
   confined to
   `src/lib/server/application/adapters/execution-read-model.ts` behind
-  `LegacyWorkflowExecutionReadModelPort` and
-  `LegacySandboxAgentEventReadPort`; splitting that adapter into narrower
+  `LegacyWorkflowExecutionReadModelPort`; splitting that adapter into narrower
   workflow-data, runtime-status, artifact, and trace ports remains the next
   read-model portability slice.
 - `src/routes/api/workflows/executions/[executionId]/resume/+server.ts` now

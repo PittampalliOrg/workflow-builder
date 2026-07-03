@@ -122,7 +122,7 @@ import {
 	OpenShellSandboxRuntimeInventory,
 	WorkspaceRuntimeSandboxProvisioner,
 } from "$lib/server/application/adapters/sandbox";
-import { LegacySandboxAgentEventReadPort } from "$lib/server/application/adapters/sandbox-events";
+import { PostgresSandboxAgentEventReadPort } from "$lib/server/application/adapters/sandbox-events";
 import { LocalRuntimeRegistryReader } from "$lib/server/application/adapters/runtime-registry";
 import {
 	LocalRuntimeCatalogReader,
@@ -917,7 +917,7 @@ export function getApplicationAdapters(
 		}));
 	const getSandboxEvents = () =>
 		(sandboxEvents ??= new ApplicationSandboxEventsService(
-			new LegacySandboxAgentEventReadPort(),
+			new PostgresSandboxAgentEventReadPort(),
 		));
 	const getSessionMcpStatus = () =>
 		(sessionMcpStatus ??= new ApplicationSessionMcpStatusService({
