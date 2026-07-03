@@ -74,6 +74,7 @@ import type {
 	BenchmarkBrowserEnvironmentBuildRecord,
 	BenchmarkBrowserReadModel,
 	BenchmarkBrowserRepository,
+	BenchmarkRunReadRepository,
 	BenchmarkRunRepository,
 	BenchmarkSessionProvisioningGateResult,
 	CreateProjectMcpConnectionInput,
@@ -760,11 +761,12 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			workspaceProjects: WorkspaceProjectRepository;
 			pieceCatalog: PieceCatalogRepository;
 			pieceExecutions?: PieceExecutionRepository;
-			browserArtifacts?: WorkflowBrowserArtifactStore;
-			codeFunctionCatalog?: CodeFunctionCatalogRepository;
-			benchmarkBrowser: BenchmarkBrowserRepository;
-			devEnvironments?: DevEnvironmentReadRepository;
-			benchmarkRuns?: BenchmarkRunRepository;
+				browserArtifacts?: WorkflowBrowserArtifactStore;
+				codeFunctionCatalog?: CodeFunctionCatalogRepository;
+				benchmarkBrowser: BenchmarkBrowserRepository;
+				benchmarkRunReads?: BenchmarkRunReadRepository;
+				devEnvironments?: DevEnvironmentReadRepository;
+				benchmarkRuns?: BenchmarkRunRepository;
 			workflowExecutions: WorkflowExecutionRepository;
 			sessions?: SessionRepository;
 			sessionProvisioning?: SessionProvisioningReader;
@@ -829,6 +831,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Benchmark run repository not configured");
 		}
 		return this.deps.benchmarkRuns;
+	}
+
+	private requireBenchmarkRunReads(): BenchmarkRunReadRepository {
+		if (!this.deps.benchmarkRunReads) {
+			throw new Error("Benchmark run read repository not configured");
+		}
+		return this.deps.benchmarkRunReads;
 	}
 
 	private requireSessionEvents(): SessionEventLog {
@@ -3417,7 +3426,101 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			repoFacets,
 			suiteFacets,
 			runnableAgents,
+			};
+		}
+
+	async getBenchmarkRunsPageReadModel(input: { projectId: string }) {
+		const benchmarkRunReads = this.requireBenchmarkRunReads();
+		const runs = await benchmarkRunReads.listRuns({
+			projectId: input.projectId,
+			limit: 100,
+		});
+
+		const suiteSet = new Map<
+			string,
+			{ slug: string; name: string; count: number }
+		>();
+		const agentSet = new Map<
+			string,
+			{ id: string; name: string; slug: string | null; count: number }
+		>();
+		const modelSet = new Map<string, number>();
+		const tagSet = new Map<string, number>();
+		for (const run of runs) {
+			const suite = suiteSet.get(run.suiteSlug) ?? {
+				slug: run.suiteSlug,
+				name: run.suiteName,
+				count: 0,
+			};
+			suite.count += 1;
+			suiteSet.set(run.suiteSlug, suite);
+
+			const agent = agentSet.get(run.agentName) ?? {
+				id: run.agentName,
+				name: run.agentName,
+				slug: run.agentSlug,
+				count: 0,
+			};
+			agent.count += 1;
+			agentSet.set(run.agentName, agent);
+
+			modelSet.set(
+				run.modelNameOrPath,
+				(modelSet.get(run.modelNameOrPath) ?? 0) + 1,
+			);
+			for (const tag of run.tags ?? []) {
+				tagSet.set(tag, (tagSet.get(tag) ?? 0) + 1);
+			}
+		}
+
+		return {
+			runs,
+			suiteOptions: [...suiteSet.values()].sort((a, b) => b.count - a.count),
+			agentOptions: [...agentSet.values()].sort((a, b) => b.count - a.count),
+			modelOptions: [...modelSet.entries()]
+				.map(([model, count]) => ({ model, count }))
+				.sort((a, b) => b.count - a.count),
+			tagOptions: [...tagSet.entries()]
+				.map(([tag, count]) => ({ tag, count }))
+				.sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag)),
 		};
+	}
+
+	async getBenchmarkComparePageReadModel(input: {
+		projectId: string;
+		runsParam?: string | null;
+		tag?: string | null;
+	}) {
+		const benchmarkRunReads = this.requireBenchmarkRunReads();
+		let runIds = (input.runsParam ?? "")
+			.split(",")
+			.map((value) => value.trim())
+			.filter(Boolean);
+		const tag = input.tag?.trim() || null;
+		const resolvedFromTag = tag;
+
+		if (runIds.length === 0 && tag) {
+			const tagged = await benchmarkRunReads.listRuns({
+				projectId: input.projectId,
+				limit: 100,
+				tag,
+			});
+			runIds = tagged.slice(0, 4).map((run) => run.id);
+		}
+
+		if (runIds.length < 2) {
+			return {
+				compare: null,
+				runIds,
+				resolvedFromTag,
+			};
+		}
+
+		const compare = await benchmarkRunReads.loadCompareData({
+			projectId: input.projectId,
+			runIds,
+		});
+		return { compare, runIds, resolvedFromTag };
 	}
 
 	async getDevPreviewHubReadModel(input: { projectId?: string | null }) {

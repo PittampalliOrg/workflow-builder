@@ -240,6 +240,147 @@ export type BenchmarkBrowserReadModel = {
 	runnableAgents: RunnableAgent[];
 };
 
+export type BenchmarkRunSummaryReadModel = {
+	id: string;
+	suiteId: string;
+	suiteSlug: string;
+	suiteName: string;
+	datasetName: string;
+	agentId: string;
+	agentName: string;
+	agentSlug: string | null;
+	agentVersion: number;
+	agentRuntimeAppId: string | null;
+	status: string;
+	modelNameOrPath: string;
+	modelConfigLabel: string | null;
+	selectedInstanceIds: string[];
+	concurrency: number;
+	evaluationConcurrency: number;
+	timeoutSeconds: number;
+	maxTurns: number | null;
+	evaluatorResourceClass: string;
+	coordinatorExecutionId: string | null;
+	evaluatorJobName: string | null;
+	predictionsPath: string | null;
+	mlflowExperimentId: string | null;
+	mlflowRunId: string | null;
+	mlflowDatasetId: string | null;
+	mlflowEvalRunId: string | null;
+	mlflowTraceExperimentName: string | null;
+	mlflowUrl: string | null;
+	summary: Record<string, unknown> | null;
+	tags: string[];
+	error: string | null;
+	cancelRequestedAt: string | null;
+	startedAt: string | null;
+	completedAt: string | null;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type BenchmarkRunsPageReadModel = {
+	runs: BenchmarkRunSummaryReadModel[];
+	suiteOptions: Array<{ slug: string; name: string; count: number }>;
+	agentOptions: Array<{
+		id: string;
+		name: string;
+		slug: string | null;
+		count: number;
+	}>;
+	modelOptions: Array<{ model: string; count: number }>;
+	tagOptions: Array<{ tag: string; count: number }>;
+};
+
+export type BenchmarkCompareAxisName =
+	| "agent"
+	| "agentVersion"
+	| "model"
+	| "modelLabel"
+	| "mcpServerNames"
+	| "skillNames"
+	| "hookNames"
+	| "pluginNames"
+	| "maxTurns"
+	| "concurrency"
+	| "evaluationConcurrency"
+	| "evaluatorResourceClass";
+
+export type BenchmarkCompareRunSummary = {
+	runId: string;
+	suiteSlug: string;
+	suiteName: string;
+	createdAt: string;
+	agent: { id: string; slug: string | null; name: string };
+	agentVersion: number;
+	model: string;
+	modelLabel: string | null;
+	mcpServerNames: string[];
+	skillNames: string[];
+	hookNames: string[];
+	pluginNames: string[];
+	maxTurns: number | null;
+	concurrency: number;
+	evaluationConcurrency: number;
+	evaluatorResourceClass: string;
+	resolved: number;
+	total: number;
+	resolvedRate: number;
+	status: string;
+};
+
+export type BenchmarkCompareAxisDiff = Record<
+	BenchmarkCompareAxisName,
+	{
+		differs: boolean;
+		values: unknown[];
+	}
+>;
+
+export type BenchmarkCompareInstanceCell = {
+	status: string;
+	resolved: boolean;
+	durationMs: number | null;
+	tokens: number | null;
+	error: string | null;
+	sessionId: string | null;
+};
+
+export type BenchmarkRegressionMetric =
+	| "resolved_rate"
+	| "cost_per_resolved"
+	| "turn_count_p50"
+	| "tokens_p50"
+	| "ttft_p50"
+	| "tool_call_count_p50";
+
+export type BenchmarkMetricRegressionReadModel = {
+	metric: BenchmarkRegressionMetric;
+	kind: "fisher_exact" | "welch_t";
+	baseline: { mean: number; n: number; ci95: [number, number] | null };
+	candidate: { mean: number; n: number; ci95: [number, number] | null };
+	delta: number;
+	pValue: number;
+	significant: boolean;
+	direction: "better" | "worse" | "neutral";
+};
+
+export type BenchmarkCompareReadModel = {
+	runs: BenchmarkCompareRunSummary[];
+	axisDiff: BenchmarkCompareAxisDiff;
+	grid: Record<string, Record<string, BenchmarkCompareInstanceCell>>;
+	allInstanceIds: string[];
+	sharedInstanceIds: string[];
+	disagreements: string[];
+	regression: BenchmarkMetricRegressionReadModel[][];
+};
+
+export type BenchmarkComparePageReadModel = {
+	compare: BenchmarkCompareReadModel | null;
+	runIds: string[];
+	resolvedFromTag: string | null;
+};
+
 export type CreateWorkflowDefinitionInput = {
 	name: string;
 	nodes: unknown[];
@@ -1374,6 +1515,18 @@ export interface BenchmarkBrowserRepository {
 	listRunnableAgentCandidates(input: {
 		projectId: string | null;
 	}): Promise<BenchmarkBrowserAgentRecord[]>;
+}
+
+export interface BenchmarkRunReadRepository {
+	listRuns(input: {
+		projectId: string;
+		limit?: number;
+		tag?: string | null;
+	}): Promise<BenchmarkRunSummaryReadModel[]>;
+	loadCompareData(input: {
+		projectId: string;
+		runIds: string[];
+	}): Promise<BenchmarkCompareReadModel>;
 }
 
 export type BenchmarkSessionProvisioningGateRecord = {
@@ -3169,6 +3322,14 @@ export interface WorkflowDataService {
 	getBenchmarkBrowserReadModel(input: {
 		projectId: string | null;
 	}): Promise<BenchmarkBrowserReadModel>;
+	getBenchmarkRunsPageReadModel(input: {
+		projectId: string;
+	}): Promise<BenchmarkRunsPageReadModel>;
+	getBenchmarkComparePageReadModel(input: {
+		projectId: string;
+		runsParam?: string | null;
+		tag?: string | null;
+	}): Promise<BenchmarkComparePageReadModel>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;
 	}): Promise<DevPreviewHubReadModel>;

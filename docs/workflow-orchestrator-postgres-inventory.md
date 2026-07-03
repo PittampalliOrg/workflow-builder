@@ -366,12 +366,15 @@ The first UI-facing route has also moved behind the application service:
   sidebar/dashboard user profile data through `workflowData.getUserProfile`.
   The root UI loaders no longer import `users`, Drizzle, or `$lib/server/db`
   for profile display fields.
-- `src/routes/workspaces/[slug]/benchmarks/+page.server.ts` now delegates the
-  SWE-bench instance browser read model to
-  `workflowData.getBenchmarkBrowserReadModel`. Suite bootstrap, instance/repo
-  catalog reads, environment-image status reads, runnable-agent eligibility,
-  environment coverage, and runtime capacity shaping are behind application
-  ports; Drizzle access is confined to the Postgres benchmark browser adapter.
+- `src/routes/workspaces/[slug]/benchmarks/+page.server.ts`,
+  `src/routes/workspaces/[slug]/benchmarks/runs/+page.server.ts`, and
+  `src/routes/workspaces/[slug]/benchmarks/compare/+page.server.ts` now delegate
+  benchmark browser, run-list filter, tag shortcut, and compare read models to
+  workflow-data. Suite bootstrap, instance/repo catalog reads, environment-image
+  status reads, runnable-agent eligibility, environment coverage, runtime
+  capacity shaping, run summary listing, and compare-grid loading are behind
+  application ports. Drizzle access is confined to Postgres/legacy benchmark
+  read adapters pending the deeper benchmark service extraction.
 - `src/routes/api/v1/usage/+server.ts`, `src/routes/api/v1/cost/+server.ts`,
   and `src/routes/api/v1/limits/live/+server.ts` now read reporting snapshots
   through workflow-data application ports. Default time windows, response
@@ -617,8 +620,8 @@ categories include:
 - dev-preview helpers under `src/lib/server/workflows/dev-preview.ts`, which
   still own DB-backed preview session lookup/teardown and a local
   source-bundle persistence adapter pending a dedicated dev-preview slice.
-- benchmark/evaluation/admin/reporting API surfaces outside the workspace
-  benchmark browser loader.
+- benchmark/evaluation/admin/reporting API surfaces outside the migrated
+  workspace benchmark browser/run-list/compare loaders.
 - startup/migration/bootstrap and remaining non-migrated API route handlers.
 
 Those BFF paths are not strict-orchestrator runtime fallbacks; they are product

@@ -41,6 +41,7 @@ import {
 	DaprEventBus,
 	DaprWorkflowScheduler,
 } from "$lib/server/application/adapters/dapr";
+import { LegacyBenchmarkRunReadRepository } from "$lib/server/application/adapters/benchmark-runs";
 import { LegacyDevEnvironmentReadRepository } from "$lib/server/application/adapters/dev-environments";
 import {
 	KroPreviewEnvironmentProvisioner,
@@ -101,6 +102,7 @@ export function getApplicationAdapters(
 	let browserArtifacts: PostgresWorkflowBrowserArtifactStore | undefined;
 	let codeFunctionCatalog: PostgresCodeFunctionCatalogRepository | undefined;
 	let benchmarkBrowser: PostgresBenchmarkBrowserRepository | undefined;
+	let benchmarkRunReads: LegacyBenchmarkRunReadRepository | undefined;
 	let devEnvironments: LegacyDevEnvironmentReadRepository | undefined;
 	let benchmarkRuns: PostgresBenchmarkRunRepository | undefined;
 	let workflowExecutions: PostgresWorkflowExecutionRepository | undefined;
@@ -159,6 +161,8 @@ export function getApplicationAdapters(
 		(codeFunctionCatalog ??= new PostgresCodeFunctionCatalogRepository(getDatabase()));
 	const getBenchmarkBrowser = () =>
 		(benchmarkBrowser ??= new PostgresBenchmarkBrowserRepository(getDatabase()));
+	const getBenchmarkRunReads = () =>
+		(benchmarkRunReads ??= new LegacyBenchmarkRunReadRepository());
 	const getDevEnvironments = () =>
 		(devEnvironments ??= new LegacyDevEnvironmentReadRepository());
 	const getBenchmarkRuns = () =>
@@ -223,11 +227,12 @@ export function getApplicationAdapters(
 			workspaceProjects: getWorkspaceProjects(),
 			pieceCatalog: getPieceCatalog(),
 			pieceExecutions: getPieceExecutions(),
-			browserArtifacts: getBrowserArtifacts(),
-			codeFunctionCatalog: getCodeFunctionCatalog(),
-			benchmarkBrowser: getBenchmarkBrowser(),
-			devEnvironments: getDevEnvironments(),
-			benchmarkRuns: getBenchmarkRuns(),
+				browserArtifacts: getBrowserArtifacts(),
+				codeFunctionCatalog: getCodeFunctionCatalog(),
+				benchmarkBrowser: getBenchmarkBrowser(),
+				benchmarkRunReads: getBenchmarkRunReads(),
+				devEnvironments: getDevEnvironments(),
+				benchmarkRuns: getBenchmarkRuns(),
 			workflowExecutions: getWorkflowExecutions(),
 			sessions: getSessions(),
 			sessionProvisioning: getSessionProvisioning(),

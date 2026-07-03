@@ -5,6 +5,7 @@ import type {
 	AppConnectionRepository,
 	ArtifactStore,
 	BenchmarkBrowserRepository,
+	BenchmarkRunReadRepository,
 	BenchmarkRunRepository,
 	DevEnvironmentReadRepository,
 	EvaluationArtifactStore,
@@ -1043,6 +1044,152 @@ function fakeBenchmarkRuns(): BenchmarkRunRepository {
 	};
 }
 
+function fakeBenchmarkRunReads(): BenchmarkRunReadRepository {
+	return {
+		listRuns: vi.fn<BenchmarkRunReadRepository["listRuns"]>(async (input) => {
+			const runs = [
+				{
+					id: "run-1",
+					suiteId: "suite-1",
+					suiteSlug: "SWE-bench_Verified",
+					suiteName: "SWE-bench Verified",
+					datasetName: "SWE-bench",
+					agentId: "agent-1",
+					agentName: "Agent One",
+					agentSlug: "agent-one",
+					agentVersion: 3,
+					agentRuntimeAppId: "agent-runtime-agent-one",
+					status: "completed",
+					modelNameOrPath: "model-a",
+					modelConfigLabel: "label-a",
+					selectedInstanceIds: ["inst-1"],
+					concurrency: 1,
+					evaluationConcurrency: 1,
+					timeoutSeconds: 3600,
+					maxTurns: 25,
+					evaluatorResourceClass: "standard",
+					coordinatorExecutionId: null,
+					evaluatorJobName: null,
+					predictionsPath: null,
+					mlflowExperimentId: null,
+					mlflowRunId: null,
+					mlflowDatasetId: null,
+					mlflowEvalRunId: null,
+					mlflowTraceExperimentName: null,
+					mlflowUrl: null,
+					summary: { total: 1, resolved: 1 },
+					tags: ["campaign-a"],
+					error: null,
+					cancelRequestedAt: null,
+					startedAt: "2026-07-02T00:00:00.000Z",
+					completedAt: "2026-07-02T00:30:00.000Z",
+					createdAt: "2026-07-02T00:00:00.000Z",
+					updatedAt: "2026-07-02T00:30:00.000Z",
+				},
+				{
+					id: "run-2",
+					suiteId: "suite-1",
+					suiteSlug: "SWE-bench_Verified",
+					suiteName: "SWE-bench Verified",
+					datasetName: "SWE-bench",
+					agentId: "agent-2",
+					agentName: "Agent Two",
+					agentSlug: "agent-two",
+					agentVersion: 1,
+					agentRuntimeAppId: "agent-runtime-agent-two",
+					status: "running",
+					modelNameOrPath: "model-b",
+					modelConfigLabel: null,
+					selectedInstanceIds: ["inst-1"],
+					concurrency: 2,
+					evaluationConcurrency: 1,
+					timeoutSeconds: 3600,
+					maxTurns: null,
+					evaluatorResourceClass: "standard",
+					coordinatorExecutionId: "coord-1",
+					evaluatorJobName: null,
+					predictionsPath: null,
+					mlflowExperimentId: null,
+					mlflowRunId: null,
+					mlflowDatasetId: null,
+					mlflowEvalRunId: null,
+					mlflowTraceExperimentName: null,
+					mlflowUrl: null,
+					summary: { total: 1, resolved: 0 },
+					tags: input.tag ? [input.tag] : ["campaign-a", "campaign-b"],
+					error: null,
+					cancelRequestedAt: null,
+					startedAt: "2026-07-02T01:00:00.000Z",
+					completedAt: null,
+					createdAt: "2026-07-02T01:00:00.000Z",
+					updatedAt: "2026-07-02T01:05:00.000Z",
+				},
+			];
+			return input.tag ? runs.filter((run) => run.tags.includes(input.tag!)) : runs;
+		}),
+		loadCompareData: vi.fn<BenchmarkRunReadRepository["loadCompareData"]>(
+			async (input) => ({
+			runs: input.runIds.map((runId, index) => ({
+				runId,
+				suiteSlug: "SWE-bench_Verified",
+				suiteName: "SWE-bench Verified",
+				createdAt: "2026-07-02T00:00:00.000Z",
+				agent: {
+					id: `agent-${index + 1}`,
+					slug: `agent-${index + 1}`,
+					name: `Agent ${index + 1}`,
+				},
+				agentVersion: 1,
+				model: `model-${index + 1}`,
+				modelLabel: null,
+				mcpServerNames: [],
+				skillNames: [],
+				hookNames: [],
+				pluginNames: [],
+				maxTurns: null,
+				concurrency: 1,
+				evaluationConcurrency: 1,
+				evaluatorResourceClass: "standard",
+				resolved: index === 0 ? 1 : 0,
+				total: 1,
+				resolvedRate: index === 0 ? 1 : 0,
+				status: "completed",
+			})),
+			axisDiff: {
+				agent: { differs: true, values: input.runIds },
+				agentVersion: { differs: false, values: [1, 1] },
+				model: { differs: true, values: ["model-1", "model-2"] },
+				modelLabel: { differs: false, values: [null, null] },
+				mcpServerNames: { differs: false, values: [[], []] },
+				skillNames: { differs: false, values: [[], []] },
+				hookNames: { differs: false, values: [[], []] },
+				pluginNames: { differs: false, values: [[], []] },
+				maxTurns: { differs: false, values: [null, null] },
+				concurrency: { differs: false, values: [1, 1] },
+				evaluationConcurrency: { differs: false, values: [1, 1] },
+				evaluatorResourceClass: { differs: false, values: ["standard", "standard"] },
+			},
+			grid: {
+				[input.runIds[0] ?? "run-1"]: {
+					"inst-1": {
+						status: "resolved",
+						resolved: true,
+						durationMs: 1000,
+						tokens: 10,
+						error: null,
+						sessionId: "session-1",
+					},
+				},
+			},
+			allInstanceIds: ["inst-1"],
+			sharedInstanceIds: ["inst-1"],
+			disagreements: [],
+			regression: [],
+			}),
+		),
+	};
+}
+
 function fakeUsageReporting(): UsageReportingRepository {
 	return {
 		getUsageAnalytics: vi.fn(async () => ({
@@ -1127,10 +1274,11 @@ function fakeSandboxRuntimeInventory(): SandboxRuntimeInventory {
 }
 
 function makeService(options: {
-	byId?: WorkflowDefinition | null;
-	byName?: WorkflowDefinition | null;
-	workflowExecutions?: Partial<WorkflowExecutionRepository>;
-	benchmarkRuns?: BenchmarkRunRepository;
+		byId?: WorkflowDefinition | null;
+		byName?: WorkflowDefinition | null;
+		workflowExecutions?: Partial<WorkflowExecutionRepository>;
+		benchmarkRunReads?: BenchmarkRunReadRepository;
+		benchmarkRuns?: BenchmarkRunRepository;
 	pieceExecutions?: PieceExecutionRepository;
 	browserArtifacts?: WorkflowBrowserArtifactStore;
 	sessions?: SessionRepository;
@@ -1180,12 +1328,13 @@ function makeService(options: {
 		apiKeys: fakeApiKeys(),
 		workspaceProjects: fakeWorkspaceProjects(),
 		pieceCatalog: fakePieceCatalog(),
-		pieceExecutions: options.pieceExecutions,
-		sessions: options.sessions,
-		browserArtifacts: options.browserArtifacts,
-		benchmarkBrowser: fakeBenchmarkBrowser(),
-		devEnvironments: options.devEnvironments ?? fakeDevEnvironments(),
-		benchmarkRuns: options.benchmarkRuns ?? fakeBenchmarkRuns(),
+			pieceExecutions: options.pieceExecutions,
+			sessions: options.sessions,
+			browserArtifacts: options.browserArtifacts,
+			benchmarkBrowser: fakeBenchmarkBrowser(),
+			benchmarkRunReads: options.benchmarkRunReads ?? fakeBenchmarkRunReads(),
+			devEnvironments: options.devEnvironments ?? fakeDevEnvironments(),
+			benchmarkRuns: options.benchmarkRuns ?? fakeBenchmarkRuns(),
 		workflowExecutions,
 		sessionEvents: options.sessionEvents,
 		sessionRuntimeConfigs:
@@ -5843,6 +5992,97 @@ describe("ApplicationWorkflowDataService", () => {
 			expect.objectContaining({ service: "workflow-builder" }),
 		]);
 		expect(devEnvironments.listServices).toHaveBeenCalledOnce();
+	});
+
+	it("composes benchmark runs page filters through benchmark read ports", async () => {
+		const benchmarkRunReads = fakeBenchmarkRunReads();
+		const { service } = makeService({ benchmarkRunReads });
+
+		await expect(
+			service.getBenchmarkRunsPageReadModel({ projectId: "project-1" }),
+		).resolves.toMatchObject({
+			runs: [
+				expect.objectContaining({ id: "run-1" }),
+				expect.objectContaining({ id: "run-2" }),
+			],
+			suiteOptions: [{ slug: "SWE-bench_Verified", count: 2 }],
+			agentOptions: [
+				expect.objectContaining({ name: "Agent One", count: 1 }),
+				expect.objectContaining({ name: "Agent Two", count: 1 }),
+			],
+			modelOptions: [
+				{ model: "model-a", count: 1 },
+				{ model: "model-b", count: 1 },
+			],
+			tagOptions: [
+				{ tag: "campaign-a", count: 2 },
+				{ tag: "campaign-b", count: 1 },
+			],
+		});
+		expect(benchmarkRunReads.listRuns).toHaveBeenCalledWith({
+			projectId: "project-1",
+			limit: 100,
+		});
+	});
+
+	it("resolves benchmark compare requests and tag shortcuts through benchmark read ports", async () => {
+		const benchmarkRunReads = fakeBenchmarkRunReads();
+		const { service } = makeService({ benchmarkRunReads });
+
+		await expect(
+			service.getBenchmarkComparePageReadModel({
+				projectId: "project-1",
+				runsParam: "run-1, run-2",
+			}),
+		).resolves.toMatchObject({
+			runIds: ["run-1", "run-2"],
+			resolvedFromTag: null,
+			compare: {
+				runs: [
+					expect.objectContaining({ runId: "run-1" }),
+					expect.objectContaining({ runId: "run-2" }),
+				],
+			},
+		});
+		expect(benchmarkRunReads.loadCompareData).toHaveBeenCalledWith({
+			projectId: "project-1",
+			runIds: ["run-1", "run-2"],
+		});
+
+		await expect(
+			service.getBenchmarkComparePageReadModel({
+				projectId: "project-1",
+				tag: "campaign-a",
+			}),
+		).resolves.toMatchObject({
+			runIds: ["run-1", "run-2"],
+			resolvedFromTag: "campaign-a",
+			compare: expect.objectContaining({
+				allInstanceIds: ["inst-1"],
+			}),
+		});
+		expect(benchmarkRunReads.listRuns).toHaveBeenCalledWith({
+			projectId: "project-1",
+			limit: 100,
+			tag: "campaign-a",
+		});
+	});
+
+	it("does not load compare data for fewer than two benchmark runs", async () => {
+		const benchmarkRunReads = fakeBenchmarkRunReads();
+		const { service } = makeService({ benchmarkRunReads });
+
+		await expect(
+			service.getBenchmarkComparePageReadModel({
+				projectId: "project-1",
+				runsParam: "run-1",
+			}),
+		).resolves.toEqual({
+			compare: null,
+			runIds: ["run-1"],
+			resolvedFromTag: null,
+		});
+		expect(benchmarkRunReads.loadCompareData).not.toHaveBeenCalled();
 	});
 
 	it("composes the benchmark browser read model through benchmark ports", async () => {
