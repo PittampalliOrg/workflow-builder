@@ -1,7 +1,20 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { nodeIdFromChildSessionId } from "./resolvers";
 
 describe("nodeIdFromChildSessionId", () => {
+	it("keeps lifecycle resolver contracts free of infrastructure imports", () => {
+		const source = readFileSync(
+			join(process.cwd(), "src/lib/server/lifecycle/resolvers.ts"),
+			"utf8",
+		);
+
+		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("$lib/server/db/schema");
+		expect(source).not.toContain("drizzle-orm");
+	});
+
 	// The per-runtime instance prefixes from services/shared/runtime-registry.json.
 	// The wedge gate (resolvers.terminatedChildNodes → shouldForceFinalizeCrossAppWedge)
 	// only works if the node id is extracted for EVERY runtime, not just dapr-agent-py.

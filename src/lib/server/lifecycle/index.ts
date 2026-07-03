@@ -13,6 +13,7 @@
  */
 import { env } from "$env/dynamic/private";
 import { createDaprCascadeDeps } from "$lib/server/application/adapters/lifecycle-cascade";
+import { resolveDurableTarget } from "$lib/server/application/adapters/lifecycle-resolver";
 import { deleteKubernetesSandbox } from "$lib/server/kube/client";
 import { raiseSessionEvent } from "$lib/server/sessions/control";
 import {
@@ -25,7 +26,6 @@ import {
 import {
 	type DurableRunTarget,
 	type DurableTargetScope,
-	resolveDurableTarget,
 } from "./resolvers";
 
 export type { DurableRunTarget, DurableTargetScope } from "./resolvers";

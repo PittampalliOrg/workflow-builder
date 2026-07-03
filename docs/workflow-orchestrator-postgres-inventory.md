@@ -56,6 +56,12 @@ Lifecycle cascade side effects now use the Dapr/Postgres adapter in
 engine in `src/lib/server/lifecycle/cascade.ts` remains the pure termination
 algorithm with injected `DurableCascadeDeps`; raw `wfstate_state` /
 `agent_py_state` state-row deletion is confined to the adapter.
+Lifecycle target resolution now uses the Postgres adapter in
+`src/lib/server/application/adapters/lifecycle-resolver.ts`. The lifecycle
+resolver contract in `src/lib/server/lifecycle/resolvers.ts` owns only DTOs and
+deterministic helper logic such as per-session app-id and child-node extraction;
+Drizzle row reads, stop-intent writes, and terminal DB finalizers are confined
+to the adapter.
 Goal-loop driver persistence now uses the application `GoalLoopStore` port with
 `PostgresGoalLoopStore` as the first adapter. The event-driven loop preserves
 the existing exactly-once continuation, budget, and completion behavior, but no

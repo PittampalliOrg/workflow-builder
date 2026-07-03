@@ -6,19 +6,14 @@
  * instance(s), the per-session agent-runtime workflow instances (each under its
  * own app-id), the Sandbox CR names to reap, the extra instance ids for raw
  * state-row purge, the auth scope, whether the run is still active, and a
- * `finalizeDb` that flips the owning rows terminal once the durable tree is
+ * `finalizeDb` callback that flips the owning rows terminal once the durable tree is
  * confirmed closed.
+ *
+ * This file is intentionally infrastructure-free. The production Drizzle-backed
+ * implementation lives in
+ * `src/lib/server/application/adapters/lifecycle-resolver.ts`.
  */
 import { createHash } from "node:crypto";
-import { and, eq, inArray, ne } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import {
-	evaluationRuns,
-	sessions,
-	workflowAgentRuns,
-	workflowExecutions,
-	workflowWorkspaceSessions,
-} from "$lib/server/db/schema";
 import type { AgentRuntimeTarget } from "./cascade";
 
 export type DurableRunTarget =
@@ -72,14 +67,18 @@ export type ResolvedDurableTarget = {
 	markStopRequested: (reason: string) => Promise<void>;
 };
 
+export type LifecycleTargetResolver = (
+	target: DurableRunTarget,
+) => Promise<ResolvedDurableTarget>;
+
 /** Per-session agent-runtime app-id — mirrors agent-workflow-host.ts:sessionHostAppId. */
-function sessionHostAppId(sessionId: string): string | null {
+export function sessionHostAppId(sessionId: string): string | null {
 	const normalized = sessionId.trim();
 	if (!normalized) return null;
 	return `agent-session-${createHash("sha256").update(normalized).digest("hex").slice(0, 20)}`;
 }
 
-function notFoundResult(): ResolvedDurableTarget {
+export function notFoundLifecycleTarget(): ResolvedDurableTarget {
 	return {
 		notFound: true,
 		dbActive: false,
@@ -96,7 +95,7 @@ function notFoundResult(): ResolvedDurableTarget {
 	};
 }
 
-function compact(values: Array<string | null | undefined>): string[] {
+export function compactLifecycleIds(values: Array<string | null | undefined>): string[] {
 	const out: string[] = [];
 	const seen = new Set<string>();
 	for (const v of values) {
@@ -125,7 +124,7 @@ export function nodeIdFromChildSessionId(sessionId: string): string | null {
 	return m ? m[1] : null;
 }
 
-function agentTargetForSession(row: {
+export function agentTargetForSession(row: {
 	id: string;
 	daprInstanceId: string | null;
 	runtimeAppId: string | null;
@@ -148,246 +147,4 @@ function agentTargetForSession(row: {
 	}
 	if (!instanceId || !runtimeAppId) return null;
 	return { runtimeAppId, instanceId };
-}
-
-async function resolveWorkflowExecution(id: string): Promise<ResolvedDurableTarget> {
-	const database = db;
-	if (!database) return notFoundResult();
-	const [exec] = await database
-		.select({
-			id: workflowExecutions.id,
-			daprInstanceId: workflowExecutions.daprInstanceId,
-			status: workflowExecutions.status,
-			stopRequestedAt: workflowExecutions.stopRequestedAt,
-			projectId: workflowExecutions.projectId,
-			userId: workflowExecutions.userId,
-		})
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, id))
-		.limit(1);
-	if (!exec) return notFoundResult();
-
-	const childSessions = await database
-		.select({
-			id: sessions.id,
-			status: sessions.status,
-			daprInstanceId: sessions.daprInstanceId,
-			runtimeAppId: sessions.runtimeAppId,
-			runtimeSandboxName: sessions.runtimeSandboxName,
-		})
-		.from(sessions)
-		.where(eq(sessions.workflowExecutionId, id));
-
-	// Node ids of child durable/run sessions whose agent child is really gone — the
-	// authoritative wedge-gate signal. A node qualifies ONLY when EVERY run-index
-	// child of it is DB-`terminated`: in a same-node durable/run loop, `run__0`'s
-	// child can be terminated while the parent legitimately advances to `run__1` of
-	// the SAME node, so keying on "any terminated child of the node" could
-	// false-finalize a parent parked at a still-LIVE later run. Requiring all
-	// run-index children terminated closes that edge (and is a no-op for the common
-	// single-run case).
-	const nodeChildCounts = new Map<string, { total: number; terminated: number }>();
-	for (const s of childSessions) {
-		const node = nodeIdFromChildSessionId(s.id);
-		if (!node) continue;
-		const entry = nodeChildCounts.get(node) ?? { total: 0, terminated: 0 };
-		entry.total += 1;
-		if (s.status === "terminated") entry.terminated += 1;
-		nodeChildCounts.set(node, entry);
-	}
-	const terminatedChildNodes = compact(
-		[...nodeChildCounts.entries()]
-			.filter(([, c]) => c.total > 0 && c.terminated === c.total)
-			.map(([node]) => node),
-	);
-	const activeChildNodes = compact(
-		[...nodeChildCounts.entries()]
-			.filter(([, c]) => c.total > 0 && c.terminated < c.total)
-			.map(([node]) => node),
-	);
-
-	const agentRuns = await database
-		.select({
-			daprInstanceId: workflowAgentRuns.daprInstanceId,
-			agentWorkflowId: workflowAgentRuns.agentWorkflowId,
-		})
-		.from(workflowAgentRuns)
-		.where(eq(workflowAgentRuns.workflowExecutionId, id));
-
-	const agentRuntimeTargets: AgentRuntimeTarget[] = [];
-	for (const s of childSessions) {
-		const t = agentTargetForSession(s);
-		if (t) agentRuntimeTargets.push(t);
-	}
-
-	return {
-		notFound: false,
-		dbActive: exec.status === "pending" || exec.status === "running",
-		stopRequestedAt: exec.stopRequestedAt ?? null,
-		terminatedChildNodes,
-		activeChildNodes,
-		scope: { projectId: exec.projectId ?? null, userId: exec.userId },
-		parentInstanceIds: compact([exec.daprInstanceId ?? exec.id]),
-		agentRuntimeTargets,
-		sandboxNames: compact(childSessions.map((s) => s.runtimeSandboxName)),
-		statePurgeInstanceIds: compact([
-			...childSessions.map((s) => s.daprInstanceId),
-			...agentRuns.flatMap((r) => [r.daprInstanceId, r.agentWorkflowId]),
-		]),
-		finalizeDb: async (reason: string) => {
-			const now = new Date();
-			await database.transaction(async (tx) => {
-				await tx
-					.update(workflowExecutions)
-					.set({ status: "cancelled", error: reason, completedAt: now })
-					.where(
-						and(
-							eq(workflowExecutions.id, id),
-							inArray(workflowExecutions.status, ["pending", "running"]),
-						),
-					);
-				await tx
-					.update(sessions)
-					.set({ status: "terminated", completedAt: now, updatedAt: now })
-					.where(
-						and(
-							eq(sessions.workflowExecutionId, id),
-							ne(sessions.status, "terminated"),
-						),
-					);
-				await tx
-					.update(workflowAgentRuns)
-					.set({ status: "failed", error: reason, completedAt: now, updatedAt: now })
-					.where(
-						and(
-							eq(workflowAgentRuns.workflowExecutionId, id),
-							inArray(workflowAgentRuns.status, ["scheduled", "running"]),
-						),
-					);
-				await tx
-					.update(workflowWorkspaceSessions)
-					.set({ status: "cleaned", cleanedAt: now, updatedAt: now })
-					.where(
-						and(
-							eq(workflowWorkspaceSessions.workflowExecutionId, id),
-							eq(workflowWorkspaceSessions.status, "active"),
-						),
-					);
-			});
-		},
-		markStopRequested: async (reason: string) => {
-			await database
-				.update(workflowExecutions)
-				.set({ stopRequestedAt: new Date(), stopReason: reason })
-				.where(
-					and(
-						eq(workflowExecutions.id, id),
-						inArray(workflowExecutions.status, ["pending", "running"]),
-					),
-				);
-		},
-	};
-}
-
-async function resolveSession(id: string): Promise<ResolvedDurableTarget> {
-	const database = db;
-	if (!database) return notFoundResult();
-	const [s] = await database
-		.select({
-			id: sessions.id,
-			status: sessions.status,
-			stopRequestedAt: sessions.stopRequestedAt,
-			daprInstanceId: sessions.daprInstanceId,
-			runtimeAppId: sessions.runtimeAppId,
-			runtimeSandboxName: sessions.runtimeSandboxName,
-			projectId: sessions.projectId,
-			userId: sessions.userId,
-		})
-		.from(sessions)
-		.where(eq(sessions.id, id))
-		.limit(1);
-	if (!s) return notFoundResult();
-
-	const target = agentTargetForSession(s);
-	return {
-		notFound: false,
-		dbActive: s.status !== "terminated",
-		stopRequestedAt: s.stopRequestedAt ?? null,
-		terminatedChildNodes: [],
-		activeChildNodes: [],
-		scope: { projectId: s.projectId ?? null, userId: s.userId },
-		parentInstanceIds: [],
-		agentRuntimeTargets: target ? [target] : [],
-		sandboxNames: compact([s.runtimeSandboxName]),
-		statePurgeInstanceIds: compact([s.daprInstanceId ?? s.id]),
-		finalizeDb: async (reason: string) => {
-			const now = new Date();
-			await database
-				.update(sessions)
-				.set({
-					status: "terminated",
-					stopReason: { reason, source: "lifecycle_controller" },
-					completedAt: now,
-					updatedAt: now,
-				})
-				.where(and(eq(sessions.id, id), ne(sessions.status, "terminated")));
-		},
-		markStopRequested: async () => {
-			await database
-				.update(sessions)
-				.set({ stopRequestedAt: new Date(), updatedAt: new Date() })
-				.where(and(eq(sessions.id, id), ne(sessions.status, "terminated")));
-		},
-	};
-}
-
-async function resolveEvalRun(id: string): Promise<ResolvedDurableTarget> {
-	const database = db;
-	if (!database) return notFoundResult();
-	const [run] = await database
-		.select({
-			id: evaluationRuns.id,
-			status: evaluationRuns.status,
-			cancelRequestedAt: evaluationRuns.cancelRequestedAt,
-			coordinatorExecutionId: evaluationRuns.coordinatorExecutionId,
-		})
-		.from(evaluationRuns)
-		.where(eq(evaluationRuns.id, id))
-		.limit(1);
-	if (!run) return notFoundResult();
-	// DB flip + scope are owned by evaluations/service.ts::cancelEvaluationRun;
-	// the controller only drives the durable terminate/purge of the coordinator
-	// execution here.
-	return {
-		notFound: false,
-		dbActive: !["completed", "failed", "cancelled"].includes(run.status),
-		stopRequestedAt: run.cancelRequestedAt ?? null,
-		terminatedChildNodes: [],
-		activeChildNodes: [],
-		scope: null,
-		parentInstanceIds: compact([run.coordinatorExecutionId]),
-		agentRuntimeTargets: [],
-		sandboxNames: [],
-		statePurgeInstanceIds: compact([run.coordinatorExecutionId]),
-		finalizeDb: async () => {},
-		markStopRequested: async () => {
-			await database
-				.update(evaluationRuns)
-				.set({ cancelRequestedAt: new Date() })
-				.where(eq(evaluationRuns.id, id));
-		},
-	};
-}
-
-export function resolveDurableTarget(
-	target: DurableRunTarget,
-): Promise<ResolvedDurableTarget> {
-	switch (target.kind) {
-		case "workflowExecution":
-			return resolveWorkflowExecution(target.id);
-		case "session":
-			return resolveSession(target.id);
-		case "evalRun":
-			return resolveEvalRun(target.id);
-	}
 }

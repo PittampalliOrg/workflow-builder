@@ -15,6 +15,7 @@
  * product persistence stays behind application ports.
  */
 import { env } from "$env/dynamic/private";
+import { resolveDurableTarget } from "$lib/server/application/adapters/lifecycle-resolver";
 import { getAgentWorkflowHostPod } from "$lib/server/kube/client";
 import type { SessionStatus } from "$lib/types/sessions";
 import type { AgentRuntimeTarget } from "./cascade";
@@ -22,7 +23,6 @@ import {
 	type DurableRunTarget,
 	type DurableTargetScope,
 	type ResolvedDurableTarget,
-	resolveDurableTarget,
 } from "./resolvers";
 
 export type PauseResumeResult = {
