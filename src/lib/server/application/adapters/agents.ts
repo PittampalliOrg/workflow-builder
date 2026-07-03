@@ -1,5 +1,12 @@
 import { and, eq } from "drizzle-orm";
 import type {
+	AgentCatalogCreateInput,
+	AgentCatalogRepository,
+	AgentCatalogUpdateInput,
+	AgentCatalogUpdateResult,
+	AgentCatalogWriteResult,
+	AgentRuntimeCatalog,
+	AgentTemplateCatalog,
 	AgentRuntimeSyncPort,
 	PeerAgentDispatchContext,
 	PeerAgentOwner,
@@ -17,9 +24,15 @@ import type {
 import { db as defaultDb } from "$lib/server/db";
 import { agents, agentVersions, users } from "$lib/server/db/schema";
 import {
+	AgentConfigValidationError,
+	archiveAgent,
+	createAgent,
 	getAgentBySlug,
+	getAgent,
+	listAgents,
 	resolveAgentRef,
 	resolveCallableAgents,
+	updateAgent,
 } from "$lib/server/agents/registry";
 import {
 	findOrCreateEphemeralAgent,
@@ -31,7 +44,11 @@ import {
 } from "$lib/server/agents/registry-sync";
 import { resolveEnvironmentRef } from "$lib/server/environments/registry";
 import { agentRuntimeDedicatedAppId } from "$lib/server/agents/runtime-routing";
+import { listRuntimeIds } from "$lib/server/agents/runtime-registry";
+import { BUILTIN_AGENT_PROFILES } from "$lib/server/agent-profiles";
+import { findTemplate } from "$lib/server/agent-templates/catalog";
 import type { AgentConfig } from "$lib/types/agents";
+import { createDefaultAgentConfig } from "$lib/types/agents";
 
 type Database = typeof defaultDb;
 
@@ -55,6 +72,81 @@ export class LegacyWorkflowEphemeralAgentStore
 export class AgentRuntimeRegistrySyncAdapter implements AgentRuntimeSyncPort {
 	syncAgentRuntime(agentId: string): Promise<void> {
 		return syncAgentRuntimeCR(agentId);
+	}
+}
+
+export class LegacyAgentCatalogRepository implements AgentCatalogRepository {
+	listAgents(input: Parameters<AgentCatalogRepository["listAgents"]>[0]) {
+		return listAgents(input);
+	}
+
+	getAgent(id: string) {
+		return getAgent(id);
+	}
+
+	async createAgent(
+		input: AgentCatalogCreateInput,
+	): Promise<AgentCatalogWriteResult> {
+		try {
+			const agent = await createAgent(input);
+			return { ok: true, agent };
+		} catch (err) {
+			if (err instanceof AgentConfigValidationError) {
+				return { ok: false, reason: "invalid_config", message: err.message };
+			}
+			throw err;
+		}
+	}
+
+	async updateAgent(
+		id: string,
+		input: AgentCatalogUpdateInput,
+	): Promise<AgentCatalogUpdateResult> {
+		try {
+			const agent = await updateAgent(id, input);
+			return agent
+				? { ok: true, agent }
+				: { ok: false, reason: "not_found" };
+		} catch (err) {
+			if (err instanceof AgentConfigValidationError) {
+				return { ok: false, reason: "invalid_config", message: err.message };
+			}
+			throw err;
+		}
+	}
+
+	archiveAgent(id: string): Promise<boolean> {
+		return archiveAgent(id);
+	}
+}
+
+export class LocalAgentRuntimeCatalog implements AgentRuntimeCatalog {
+	listRuntimeIds(): string[] {
+		return listRuntimeIds();
+	}
+}
+
+export class LocalAgentTemplateCatalog implements AgentTemplateCatalog {
+	resolveAgentTemplateConfig(slug: string | null): AgentConfig | null {
+		if (!slug) return null;
+		const quickstartTemplate = findTemplate(slug);
+		if (quickstartTemplate) return quickstartTemplate.config;
+		const template = BUILTIN_AGENT_PROFILES.find(
+			(p) => p.slug === slug || p.id === slug,
+		);
+		if (!template) return null;
+		const defaults = createDefaultAgentConfig();
+		return {
+			...defaults,
+			modelSpec: template.config.modelSpec,
+			maxTurns: template.config.maxTurns ?? defaults.maxTurns,
+			timeoutMinutes: template.config.timeoutMinutes ?? defaults.timeoutMinutes,
+			builtinTools: template.config.builtinTools,
+			mcpConnectionMode: template.config.mcpConnectionMode,
+			mcpServers: template.config.mcpServers,
+			skills: template.config.skills,
+			runtimeOverridePolicy: template.config.runtimeOverridePolicy,
+		};
 	}
 }
 

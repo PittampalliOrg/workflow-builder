@@ -61,7 +61,10 @@ import {
 } from "$lib/server/application/adapters/benchmark-evaluation-results";
 import {
 	AgentRuntimeRegistrySyncAdapter,
+	LegacyAgentCatalogRepository,
 	LegacyWorkflowEphemeralAgentStore,
+	LocalAgentRuntimeCatalog,
+	LocalAgentTemplateCatalog,
 	RegistryPeerAgentResolver,
 } from "$lib/server/application/adapters/agents";
 import {
@@ -119,6 +122,7 @@ import { LegacySandboxPreviewGatewayPort } from "$lib/server/application/adapter
 import { LegacyWorkflowTriggerLifecyclePort } from "$lib/server/application/adapters/workflow-trigger-lifecycle";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
+import { ApplicationAgentCatalogService } from "$lib/server/application/agent-catalog";
 import { ApplicationCliPreviewService } from "$lib/server/application/cli-preview";
 import { ApplicationSandboxPreviewService } from "$lib/server/application/sandbox-preview";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
@@ -236,6 +240,7 @@ export function getApplicationAdapters(
 	let workflowData: ApplicationWorkflowDataService | undefined;
 	let agentRuntimeWarmPools: KubernetesAgentRuntimeWarmPoolClient | undefined;
 	let agentRuntimeControl: ApplicationAgentRuntimeControlService | undefined;
+	let agentCatalog: ApplicationAgentCatalogService | undefined;
 	let sandboxProvisioner: WorkspaceRuntimeSandboxProvisioner | undefined;
 	let repositoryMounter: WorkspaceSessionRepositoryMounter | undefined;
 	let workflowSpawner: DaprSessionWorkflowSpawner | undefined;
@@ -435,6 +440,12 @@ export function getApplicationAdapters(
 			workspaceProjects: getWorkspaceProjects(),
 			warmPools: getAgentRuntimeWarmPools(),
 		}));
+	const getAgentCatalog = () =>
+		(agentCatalog ??= new ApplicationAgentCatalogService({
+			agents: new LegacyAgentCatalogRepository(),
+			runtimes: new LocalAgentRuntimeCatalog(),
+			templates: new LocalAgentTemplateCatalog(),
+		}));
 	const getWorkflowDefinitionCommands = () =>
 		(workflowDefinitionCommands ??= new ApplicationWorkflowDefinitionCommandService({
 			workflowData: getWorkflowData(),
@@ -608,6 +619,9 @@ export function getApplicationAdapters(
 		},
 		get agentRuntimeControl() {
 			return getAgentRuntimeControl();
+		},
+		get agentCatalog() {
+			return getAgentCatalog();
 		},
 		get workflowDefinitionCommands() {
 			return getWorkflowDefinitionCommands();

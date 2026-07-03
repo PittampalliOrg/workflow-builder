@@ -2,7 +2,13 @@ import type { AgentMcpResolutionResult } from "$lib/server/agents/mcp-resolution
 import type { McpServerProfileConfig } from "$lib/server/agent-profiles";
 import type { McpServerAvailabilityEntry } from "$lib/server/mcp-catalog";
 import type { AgentSkillConfig } from "$lib/agent-skill-presets";
-import type { AgentConfig, AgentToolChoice } from "$lib/types/agents";
+import type {
+	AgentConfig,
+	AgentDetail,
+	AgentRuntime,
+	AgentSummary,
+	AgentToolChoice,
+} from "$lib/types/agents";
 import type {
 	SandboxProvisionInput,
 	SandboxProvisionResult,
@@ -4370,6 +4376,70 @@ export interface SessionAgentResolver {
 
 export interface SessionAgentSlugResolver {
 	resolveSessionAgentIdBySlug(slug: string): Promise<string | null>;
+}
+
+export type AgentCatalogListInput = {
+	q?: string;
+	tag?: string;
+	includeArchived?: boolean;
+	includeEphemeral?: boolean;
+	projectId?: string;
+};
+
+export type AgentCatalogCreateInput = {
+	slug?: string;
+	name: string;
+	description?: string | null;
+	avatar?: string | null;
+	tags?: string[];
+	runtime?: AgentRuntime;
+	sourceTemplateSlug?: string | null;
+	sourceTemplateVersion?: number | null;
+	createdBy?: string | null;
+	projectId?: string | null;
+	config: AgentConfig;
+};
+
+export type AgentCatalogUpdateInput = {
+	name?: string;
+	description?: string | null;
+	avatar?: string | null;
+	tags?: string[];
+	runtime?: AgentRuntime;
+	environmentId?: string | null;
+	environmentVersion?: number | null;
+	defaultVaultIds?: string[];
+	config?: AgentConfig;
+	changelog?: string | null;
+	publishedBy?: string | null;
+};
+
+export type AgentCatalogWriteResult =
+	| { ok: true; agent: AgentDetail }
+	| { ok: false; reason: "invalid_config"; message: string };
+
+export type AgentCatalogUpdateResult =
+	| { ok: true; agent: AgentDetail }
+	| { ok: false; reason: "not_found" }
+	| { ok: false; reason: "invalid_config"; message: string };
+
+export interface AgentCatalogRepository {
+	listAgents(input: AgentCatalogListInput): Promise<AgentSummary[]>;
+	getAgent(id: string): Promise<AgentDetail | null>;
+	createAgent(input: AgentCatalogCreateInput): Promise<AgentCatalogWriteResult>;
+	updateAgent(
+		id: string,
+		input: AgentCatalogUpdateInput,
+	): Promise<AgentCatalogUpdateResult>;
+	archiveAgent(id: string): Promise<boolean>;
+}
+
+export interface AgentRuntimeCatalog {
+	listRuntimeIds(): string[];
+}
+
+export interface AgentTemplateCatalog {
+	resolveAgentTemplateConfig(slug: string | null): AgentConfig | null;
 }
 
 export type IngestSessionEventInput = AppendSessionEventInput & {

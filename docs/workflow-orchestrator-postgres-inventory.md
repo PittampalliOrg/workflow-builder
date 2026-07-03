@@ -525,6 +525,16 @@ The first UI-facing route has also moved behind the application service:
   `workflowData.getHomePageReadModel`. The root UI loaders no longer import
   `users`, legacy session/run registries, Drizzle, or `$lib/server/db` for
   dashboard display fields.
+- `src/routes/api/agents/+server.ts` and
+  `src/routes/api/agents/[id]/+server.ts` now delegate agent list/create,
+  detail/update, and archive behavior to `ApplicationAgentCatalogService`.
+  Runtime validation, quickstart/builtin template resolution, config merge,
+  request-to-command shaping, validation-error mapping, and not-found mapping
+  are application-service behavior behind `AgentCatalogRepository`,
+  `AgentRuntimeCatalog`, and `AgentTemplateCatalog` ports. The routes no longer
+  import the agent registry, runtime registry, template catalog, or builtin
+  profile helpers. Duplicate, version, compiled-capabilities, and registry-sync
+  agent subroutes remain later bounded slices.
 - `src/routes/api/v1/agent-runtimes/+server.ts`,
   `src/routes/api/v1/agent-runtimes/[slug]/+server.ts`,
   `src/routes/api/v1/agent-runtimes/[slug]/wake/+server.ts`,
