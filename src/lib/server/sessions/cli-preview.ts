@@ -25,7 +25,10 @@ import {
 	waitForAgentWorkflowHostAppReady,
 } from "$lib/server/sessions/agent-workflow-host";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
-import { getExecutionSandboxPreviewInfo } from "$lib/server/workflows/sandbox-preview";
+import {
+	getExecutionSandboxPreviewInfo,
+	type SandboxPreviewInfoDataPort,
+} from "$lib/server/workflows/sandbox-preview";
 import type { AgentConfig } from "$lib/types/agents";
 import { env } from "$env/dynamic/private";
 
@@ -333,9 +336,10 @@ export type ResolveExecutionCliPreviewResult =
 export type ExecutionPreviewBackend = "cli" | "openshell" | null;
 export async function executionPreviewBackend(
 	executionId: string,
+	sandboxPreviewData: SandboxPreviewInfoDataPort,
 ): Promise<ExecutionPreviewBackend> {
 	if (await executionIsInteractiveCli(executionId)) return "cli";
-	const info = await getExecutionSandboxPreviewInfo(executionId);
+	const info = await getExecutionSandboxPreviewInfo(executionId, sandboxPreviewData);
 	return info ? "openshell" : null;
 }
 

@@ -5954,6 +5954,7 @@ export class PostgresWorkspaceSessionStore implements WorkspaceSessionStore {
 			.select({
 				workspaceRef: workflowWorkspaceSessions.workspaceRef,
 				workflowExecutionId: workflowWorkspaceSessions.workflowExecutionId,
+				rootPath: workflowWorkspaceSessions.rootPath,
 				status: workflowWorkspaceSessions.status,
 				sandboxState: workflowWorkspaceSessions.sandboxState,
 				createdAt: workflowWorkspaceSessions.createdAt,
@@ -5966,6 +5967,7 @@ export class PostgresWorkspaceSessionStore implements WorkspaceSessionStore {
 		return rows.map((row) => ({
 			workspaceRef: row.workspaceRef,
 			workflowExecutionId: row.workflowExecutionId,
+			rootPath: row.rootPath,
 			status: row.status as WorkflowWorkspaceSessionRecord["status"],
 			sandboxState:
 				typeof row.sandboxState === "object" && row.sandboxState !== null

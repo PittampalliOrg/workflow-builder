@@ -1,6 +1,7 @@
 import type {
 	CliPreviewGatewayPort,
 	ExecutionPreviewBackend,
+	WorkflowDataService,
 } from "$lib/server/application/ports";
 import {
 	CLI_PREVIEW_DEFAULT_PORT,
@@ -13,6 +14,13 @@ import {
 
 export class LegacyCliPreviewGatewayPort implements CliPreviewGatewayPort {
 	readonly defaultPort = CLI_PREVIEW_DEFAULT_PORT;
+
+	constructor(
+		private readonly sandboxPreviewData: Pick<
+			WorkflowDataService,
+			"getExecutionById" | "listWorkflowWorkspaceSessionsByExecutionId"
+		>,
+	) {}
 
 	resolveSessionTarget(sessionId: string, projectId?: string | null) {
 		return resolveCliPreviewTarget(sessionId, projectId ?? undefined);
@@ -56,6 +64,6 @@ export class LegacyCliPreviewGatewayPort implements CliPreviewGatewayPort {
 	}
 
 	executionPreviewBackend(executionId: string): Promise<ExecutionPreviewBackend> {
-		return executionPreviewBackend(executionId);
+		return executionPreviewBackend(executionId, this.sandboxPreviewData);
 	}
 }

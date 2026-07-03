@@ -3131,6 +3131,7 @@ export type UpsertWorkspaceSessionInput = {
 export type WorkflowWorkspaceSessionRecord = {
 	workspaceRef: string;
 	workflowExecutionId: string | null;
+	rootPath: string | null;
 	status: WorkspaceSessionStatus;
 	sandboxState: Record<string, unknown> | null;
 	createdAt: Date;

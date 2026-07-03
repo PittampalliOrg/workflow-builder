@@ -34,6 +34,10 @@ The security audit API now loads its aggregated audit stream through a
 workflow-data read model.
 The dashboard API now loads its summary, active-session list, recent changes,
 and resource counts through a workflow-data dashboard read model.
+The dev-preview lifecycle now persists retained workspace rows, resolves
+canonical execution ids, marks cleaned previews, and writes source-bundle
+artifacts through workflow-data application ports; `dev-preview.ts` no longer
+imports DB, Drizzle, workflow artifact, or file-registry modules directly.
 The benchmark instance-detail API now loads SWE-bench instance details through
 a workflow-data read model, and its contamination-risk audit authorization check
 uses workflow-data user/project ports instead of the route utility reading
@@ -1034,9 +1038,9 @@ categories include:
 - session/runtime/workspace helpers under `src/lib/server/sessions/**`,
   `src/lib/server/openshell-sessions.ts`, `src/lib/server/sandbox-sessions.ts`,
   and related API routes.
-- dev-preview helpers under `src/lib/server/workflows/dev-preview.ts`, which
-  still own DB-backed preview session lookup/teardown and a local
-  source-bundle persistence adapter pending a dedicated dev-preview slice.
+- session/execution CLI preview and OpenShell sandbox-preview helper internals,
+  where live runtime transport is already adapter-owned but some lookup helpers
+  still need narrower workflow-data/runtime/proxy ports.
 - benchmark/evaluation/admin/reporting API surfaces outside the migrated
   workspace benchmark browser/run-list/compare loaders.
 - startup/migration/bootstrap and remaining non-migrated API route handlers.

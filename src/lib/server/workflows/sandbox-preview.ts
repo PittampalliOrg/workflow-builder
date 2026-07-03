@@ -1,6 +1,4 @@
-import { db } from '$lib/server/db';
-import { workflowExecutions, workflowWorkspaceSessions } from '$lib/server/db/schema';
-import { desc, eq } from 'drizzle-orm';
+import type { WorkflowDataService } from "$lib/server/application/ports";
 
 export interface ExecutionSandboxPreviewInfo {
 	executionId: string;
@@ -11,6 +9,11 @@ export interface ExecutionSandboxPreviewInfo {
 	provider: string;
 	kept: boolean;
 }
+
+export type SandboxPreviewInfoDataPort = Pick<
+	WorkflowDataService,
+	"getExecutionById" | "listWorkflowWorkspaceSessionsByExecutionId"
+>;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
 	return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
@@ -30,33 +33,16 @@ function asBoolean(value: unknown): boolean {
 }
 
 export async function getExecutionSandboxPreviewInfo(
-	executionId: string
+	executionId: string,
+	data: SandboxPreviewInfoDataPort
 ): Promise<ExecutionSandboxPreviewInfo | null> {
-	if (!db) return null;
-
-	const [execution] = await db
-		.select({
-			id: workflowExecutions.id,
-			input: workflowExecutions.input,
-			output: workflowExecutions.output
-		})
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, executionId))
-		.limit(1);
-
+	const execution = await data.getExecutionById(executionId);
 	if (!execution) return null;
 
-	const [workspace] = await db
-		.select({
-			workspaceRef: workflowWorkspaceSessions.workspaceRef,
-			rootPath: workflowWorkspaceSessions.rootPath,
-			sandboxState: workflowWorkspaceSessions.sandboxState,
-			status: workflowWorkspaceSessions.status
-		})
-		.from(workflowWorkspaceSessions)
-		.where(eq(workflowWorkspaceSessions.workflowExecutionId, executionId))
-		.orderBy(desc(workflowWorkspaceSessions.createdAt))
-		.limit(1);
+	const [workspace] = await data.listWorkflowWorkspaceSessionsByExecutionId({
+		executionId,
+		limit: 1,
+	});
 
 	const input = asRecord(execution.input);
 	const output = asRecord(execution.output);

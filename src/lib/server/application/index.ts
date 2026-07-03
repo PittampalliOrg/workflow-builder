@@ -1060,11 +1060,11 @@ export function getApplicationAdapters(
 		));
 	const getCliPreview = () =>
 		(cliPreview ??= new ApplicationCliPreviewService({
-			preview: new LegacyCliPreviewGatewayPort(),
+			preview: new LegacyCliPreviewGatewayPort(getWorkflowData()),
 		}));
 	const getSandboxPreview = () =>
 		(sandboxPreview ??= new ApplicationSandboxPreviewService({
-			preview: new LegacySandboxPreviewGatewayPort(),
+			preview: new LegacySandboxPreviewGatewayPort(getWorkflowData()),
 			workflowData: getWorkflowData(),
 		}));
 	const getSessionCommands = () =>
