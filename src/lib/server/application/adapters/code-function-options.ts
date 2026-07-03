@@ -1,23 +1,22 @@
-import {
-	getCodeFunction,
-	getCodeFunctionBySlug,
-	type CodeFunctionDetail,
-} from "$lib/server/code-functions";
+import { PostgresCodeFunctionStore } from "$lib/server/application/adapters/code-functions";
 import { daprFetch, getCodeRuntimeUrl } from "$lib/server/dapr-client";
+import type { CodeFunctionDetail } from "$lib/server/code-functions/model";
 import type {
 	CodeFunctionOptionsDetail,
 	CodeFunctionOptionsRepository,
 	CodeFunctionOptionsRuntimeClient,
 } from "$lib/server/application/code-function-options";
 
-export class LegacyCodeFunctionOptionsRepository
+export class PostgresCodeFunctionOptionsRepository
 	implements CodeFunctionOptionsRepository
 {
+	constructor(private readonly store = new PostgresCodeFunctionStore()) {}
+
 	async getById(
 		id: string,
 		userId: string,
 	): Promise<CodeFunctionOptionsDetail | null> {
-		return mapDetail(await getCodeFunction(id, userId));
+		return mapDetail(await this.store.getCodeFunction(id, userId));
 	}
 
 	async getBySlug(
@@ -25,7 +24,9 @@ export class LegacyCodeFunctionOptionsRepository
 		version: string,
 		userId: string,
 	): Promise<CodeFunctionOptionsDetail | null> {
-		return mapDetail(await getCodeFunctionBySlug(slug, version, userId));
+		return mapDetail(
+			await this.store.getCodeFunctionBySlug(slug, version, userId),
+		);
 	}
 }
 

@@ -1,5 +1,5 @@
 import { getActionCatalogDetail } from "$lib/server/action-catalog";
-import { getCodeFunction } from "$lib/server/code-functions";
+import { PostgresCodeFunctionStore } from "$lib/server/application/adapters/code-functions";
 import {
 	getDecryptedAppConnection,
 	normalizePieceName,
@@ -46,10 +46,13 @@ export class LocalActionOptionsCatalogReader
 }
 
 export class LocalCodeFunctionOptionsPort implements ActionOptionsCodeFunctionPort {
-	constructor(private readonly options: ApplicationCodeFunctionOptionsService) {}
+	constructor(
+		private readonly options: ApplicationCodeFunctionOptionsService,
+		private readonly store = new PostgresCodeFunctionStore(),
+	) {}
 
 	async getCodeFunction(codeFunctionId: string, userId: string) {
-		const detail = await getCodeFunction(codeFunctionId, userId);
+		const detail = await this.store.getCodeFunction(codeFunctionId, userId);
 		if (!detail) return null;
 		return {
 			id: detail.id,

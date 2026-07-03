@@ -1,7 +1,5 @@
-import {
-	createCodeFunction,
-	type SaveCodeFunctionInput,
-} from "$lib/server/code-functions";
+import { PostgresCodeFunctionStore } from "$lib/server/application/adapters/code-functions";
+import type { SaveCodeFunctionInput } from "$lib/server/code-functions/model";
 import {
 	emitWorkflow,
 	type EmitterLanguage,
@@ -29,14 +27,19 @@ export class LegacyWorkflowEmitterAdapter implements WorkflowEmitterPort {
 	}
 }
 
-export class LegacyWorkflowCodeFunctionAdapter
+export class PostgresWorkflowCodeFunctionAdapter
 	implements WorkflowCodeFunctionPort
 {
+	constructor(private readonly store = new PostgresCodeFunctionStore()) {}
+
 	async createWorkflowCodeFunction(
 		input: WorkflowCodeFunctionSaveInput,
 		userId: string,
 	) {
-		const saved = await createCodeFunction(input as SaveCodeFunctionInput, userId);
+		const saved = await this.store.createCodeFunction(
+			input as SaveCodeFunctionInput,
+			userId,
+		);
 		return {
 			id: saved.id,
 			slug: saved.slug,

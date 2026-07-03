@@ -135,16 +135,17 @@ import {
 } from "$lib/server/application/adapters/action-catalog-test";
 import {
 	DaprCodeFunctionOptionsRuntimeClient,
-	LegacyCodeFunctionOptionsRepository,
+	PostgresCodeFunctionOptionsRepository,
 } from "$lib/server/application/adapters/code-function-options";
 import {
-	LegacyCodeFunctionManagementRepository,
-	LegacyCodeFunctionParsePreviewPort,
+	LocalCodeFunctionParsePreviewPort,
+	PostgresCodeFunctionManagementRepository,
+	PostgresCodeFunctionStore,
 } from "$lib/server/application/adapters/code-functions";
-import { LegacyCatalogFunctionDefinitionReader } from "$lib/server/application/adapters/catalog-function-definition";
+import { PostgresCatalogFunctionDefinitionReader } from "$lib/server/application/adapters/catalog-function-definition";
 import {
 	DaprFunctionRouterExecutionPort,
-	LegacyCodeFunctionExecutionRepository,
+	PostgresCodeFunctionExecutionRepository,
 } from "$lib/server/application/adapters/code-function-execution";
 import { LegacyActionCatalogReader } from "$lib/server/application/adapters/action-catalog";
 import {
@@ -198,8 +199,8 @@ import { PostgresWorkflowConnectionRefSyncPort } from "$lib/server/application/a
 import { PostgresAgentProfileReadRepository } from "$lib/server/application/adapters/agent-profiles";
 import { LegacyWorkflowCodeCheckpointWorkspacePort } from "$lib/server/application/adapters/workflow-code-checkpoints";
 import {
-	LegacyWorkflowCodeFunctionAdapter,
 	LegacyWorkflowEmitterAdapter,
+	PostgresWorkflowCodeFunctionAdapter,
 } from "$lib/server/application/adapters/workflow-export";
 import {
 	HelperPodSourceBundlePromotionRunner,
@@ -470,6 +471,7 @@ export function getApplicationAdapters(
 	let codeFunctionExecution:
 		| ApplicationCodeFunctionExecutionService
 		| undefined;
+	let codeFunctionStore: PostgresCodeFunctionStore | undefined;
 	let settingsCliTokens: ApplicationSettingsCliTokensService | undefined;
 	let promptPresets: ApplicationPromptPresetService | undefined;
 	let promptStackCompiler: ApplicationPromptStackCompilerService | undefined;
@@ -802,10 +804,12 @@ export function getApplicationAdapters(
 		(runtimeCatalog ??= new ApplicationRuntimeCatalogService(
 			new LocalRuntimeCatalogReader(),
 		));
+	const getCodeFunctionStore = () =>
+		(codeFunctionStore ??= new PostgresCodeFunctionStore(getDatabase()));
 	const getCatalogFunctionDefinition = () =>
 		(catalogFunctionDefinition ??=
 			new ApplicationCatalogFunctionDefinitionService(
-				new LegacyCatalogFunctionDefinitionReader(),
+				new PostgresCatalogFunctionDefinitionReader(getCodeFunctionStore()),
 			));
 	const getActionCatalog = () =>
 		(actionCatalog ??= new ApplicationActionCatalogService(
@@ -819,35 +823,44 @@ export function getApplicationAdapters(
 	const getActionOptions = () =>
 		(actionOptions ??= new ApplicationActionOptionsService({
 			actions: new LocalActionOptionsCatalogReader(),
-			codeFunctions: new LocalCodeFunctionOptionsPort(getCodeFunctionOptions()),
+			codeFunctions: new LocalCodeFunctionOptionsPort(
+				getCodeFunctionOptions(),
+				getCodeFunctionStore(),
+			),
 			connections: new WorkflowDataActionOptionsConnectionReader(),
 			pieces: new DaprPieceOptionsClient(),
 		}));
 	const getActionCatalogTest = () =>
 		(actionCatalogTest ??= new ApplicationActionCatalogTestService({
 			actions: new LocalActionCatalogTestReader(),
-			codeFunctions: new LegacyCodeFunctionExecutionRepository(),
+			codeFunctions: new PostgresCodeFunctionExecutionRepository(
+				getCodeFunctionStore(),
+			),
 			functionRouter: new DaprFunctionRouterExecutionPort(),
 			http: new DaprActionCatalogHttpTestClient(),
 			ids: new DateActionCatalogTestExecutionIdGenerator(),
 		}));
 	const getCodeFunctionManagement = () =>
 		(codeFunctionManagement ??= new ApplicationCodeFunctionManagementService(
-			new LegacyCodeFunctionManagementRepository(),
+			new PostgresCodeFunctionManagementRepository(getCodeFunctionStore()),
 		));
 	const getCodeFunctionParsePreview = () =>
 		(codeFunctionParsePreview ??=
 			new ApplicationCodeFunctionParsePreviewService(
-				new LegacyCodeFunctionParsePreviewPort(),
+				new LocalCodeFunctionParsePreviewPort(),
 			));
 	const getCodeFunctionOptions = () =>
 		(codeFunctionOptions ??= new ApplicationCodeFunctionOptionsService({
-			codeFunctions: new LegacyCodeFunctionOptionsRepository(),
+			codeFunctions: new PostgresCodeFunctionOptionsRepository(
+				getCodeFunctionStore(),
+			),
 			runtime: new DaprCodeFunctionOptionsRuntimeClient(),
 		}));
 	const getCodeFunctionExecution = () =>
 		(codeFunctionExecution ??= new ApplicationCodeFunctionExecutionService({
-			codeFunctions: new LegacyCodeFunctionExecutionRepository(),
+			codeFunctions: new PostgresCodeFunctionExecutionRepository(
+				getCodeFunctionStore(),
+			),
 			functionRouter: new DaprFunctionRouterExecutionPort(),
 			ids: new DateCodeFunctionExecutionIdGenerator(),
 		}));
@@ -1149,7 +1162,9 @@ export function getApplicationAdapters(
 		(workflowExport ??= new ApplicationWorkflowExportService({
 			workflowData: getWorkflowData(),
 			emitter: new LegacyWorkflowEmitterAdapter(),
-			codeFunctions: new LegacyWorkflowCodeFunctionAdapter(),
+			codeFunctions: new PostgresWorkflowCodeFunctionAdapter(
+				getCodeFunctionStore(),
+			),
 			now: () => new Date(),
 		}));
 	return {

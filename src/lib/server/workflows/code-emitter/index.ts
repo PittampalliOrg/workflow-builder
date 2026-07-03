@@ -14,7 +14,7 @@ import { resolveInlines } from './inline-resolver';
 import { emitTypeScript } from './emit-ts';
 import { emitPython } from './emit-py';
 import { summarizeComposition, type EmitWorkflowInput } from './ir';
-import type { CodeFunctionCompositionGraph } from '$lib/server/db/schema';
+import type { CodeFunctionCompositionGraph } from '$lib/server/code-functions/model';
 
 // Vendored shim sources — loaded at build time as plain strings so the
 // emitter can embed them into each workflow's supporting_files.

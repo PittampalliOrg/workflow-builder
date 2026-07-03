@@ -1,4 +1,4 @@
-import { getCodeFunction } from "$lib/server/code-functions";
+import { PostgresCodeFunctionStore } from "$lib/server/application/adapters/code-functions";
 import { daprFetch, getFunctionRouterUrl } from "$lib/server/dapr-client";
 import type {
 	CodeFunctionExecutionRepository,
@@ -6,11 +6,13 @@ import type {
 	FunctionRouterExecutionPort,
 } from "$lib/server/application/code-function-execution";
 
-export class LegacyCodeFunctionExecutionRepository
+export class PostgresCodeFunctionExecutionRepository
 	implements CodeFunctionExecutionRepository
 {
+	constructor(private readonly store = new PostgresCodeFunctionStore()) {}
+
 	async getCodeFunction(id: string, userId: string) {
-		const detail = await getCodeFunction(id, userId);
+		const detail = await this.store.getCodeFunction(id, userId);
 		if (!detail) return null;
 		return {
 			id: detail.id,
