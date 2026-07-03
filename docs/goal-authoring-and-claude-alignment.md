@@ -15,7 +15,7 @@ Claude's `/goal` = a session-scoped completion **condition**; after each turn a 
 | Bound the loop | "stop after N turns" in the condition | `maxIterations` + `tokenBudget` | **aligned** |
 | One goal per session | yes | yes (`thread_goals` partial-unique) | **aligned** |
 | Status visibility + reason | `◎ active` + latest reason | Goal card + Goal view (pipeline/verdicts) + Pulse | **aligned** |
-| Resume | restores active goal (timers reset) | persisted `thread_goals` + `goal-loop-tick` CronJob | **aligned** |
+| Resume | restores active goal (timers reset) | persisted `thread_goals` + event-driven BFF kickoff | **aligned** |
 | **Authoring help** | strong docs: *one measurable end state + a stated check + constraints* | **none — the user hand-writes objective/criteria/evidence** | **GAP → Part C** |
 
 **The one principle we intentionally invert.** Claude: *"the evaluator doesn't run commands or read files, so write the condition as something Claude's own output can demonstrate."* Ours is the opposite — our evaluator **does** run commands against ground truth, so our conditions must be authored as **independently-runnable checks**, not transcript assertions. This is why ours can't be fooled by a persuasive-but-incomplete transcript (the "stubbed-out features presented as complete" failure Anthropic's own harness blog warns about), and it is the reason our authoring guidance differs from theirs.

@@ -1,13 +1,13 @@
 """
-Record a retained **resumable** workspace so the abandoned-workspace reaper can find
-and clean it later.
+Record a retained **resumable** workspace so the control plane can track retained
+workspace state.
 
 Resumable workflows (`x-workflow-builder.resumable: true`) skip workspace cleanup on
 ANY terminal state so a completed run can be forked. That retention is otherwise
 implicit (the cleanup-skip in sw_workflow) and leaves no DB record — unlike
 `workspace/profile` runs, which `persist_workspace_session` records. This activity
 upserts a `workflow_workspace_sessions` row (backend='juicefs') for the JuiceFS
-shared workspace so `reap-resumable-workspaces` can age it out.
+shared workspace.
 
 Best-effort: failure MUST NOT fail the workflow.
 """

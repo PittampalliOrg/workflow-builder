@@ -14,7 +14,6 @@ import {
 	latestEventMeta,
 	markGoalComplete,
 	pauseGoal,
-	rawLatestEventAgeSeconds,
 	sessionStopState,
 } from "./repo";
 import { evaluateGoalCompletion } from "./evaluator";
@@ -35,7 +34,7 @@ import {
  *
  * Exactly-once is guaranteed by `claimNextContinuation` (atomic iteration
  * bump) + the "latest event is status_idle" gate + the deterministic
- * sourceEventId — so the inline hook and the tick reaper never double-drive.
+ * sourceEventId, so inline hooks and explicit goal kicks never double-drive.
  */
 
 const TERMINAL_SESSION_STATUSES = new Set([
@@ -45,20 +44,6 @@ const TERMINAL_SESSION_STATUSES = new Set([
 	"canceled",
 	"cancelled",
 ]);
-
-/**
- * Lost-idle crash window (tick reaper only): the runtime's session-event
- * ingest is fire-and-forget, so a `session.status_idle` published while the
- * BFF is down never lands — the stored stream stays frozen at mid-turn
- * chatter and the strict idle gate would stall the loop forever. When the
- * latest stored event is at least this old, the reaper probes by posting the
- * continuation anyway: if a turn is genuinely still running, Dapr buffers the
- * raised event until the workflow's next wait_for_external_event, so the
- * probe is safe (and the atomic iteration claim still dedupes).
- */
-const LOST_IDLE_GRACE_SECONDS = Number(
-	process.env.GOAL_LOOP_LOST_IDLE_GRACE_SECONDS || 180,
-);
 
 /**
  * Budget delta for one LLM call — codex semantics (`input - cached_input +
@@ -142,13 +127,12 @@ export async function onSessionEvent(
 
 /**
  * Kick the loop outside of an idle event — used by the session goal API after
- * a human sets a goal on an already-idle session, and by the tick reaper
- * backstop (which passes allowStaleIdleProbe to recover the lost-idle crash
- * window). Safe to call repeatedly (the idle gate + atomic claim dedupe).
+ * a human sets a goal on an already-idle session and by stop-hook evaluation.
+ * Safe to call repeatedly (the idle gate + atomic claim dedupe).
  */
 export async function kickGoalLoop(
 	sessionId: string,
-	opts: { allowStaleIdleProbe?: boolean; kickoff?: boolean; fromStopHook?: boolean } = {},
+	opts: { kickoff?: boolean; fromStopHook?: boolean } = {},
 ): Promise<void> {
 	try {
 		await driveContinuationIfIdle(sessionId, opts);
@@ -159,11 +143,11 @@ export async function kickGoalLoop(
 
 /**
  * Finalize a workflow-driven session whose goal is already COMPLETE but which
- * hasn't terminated — used by the tick reaper. Covers a custom-loop agent that
- * marked the goal complete via the goal MCP and then DIDN'T idle (its TUI went
- * silent mid-turn), so the idle-gated emit→terminate never fired and the parent
- * durable/run wedged. Both calls are idempotent (emit dedupes on sourceEventId;
- * terminate raise is a no-op on an already-ending session).
+ * hasn't terminated. Covers a custom-loop agent that marked the goal complete
+ * via the goal MCP and then DIDN'T idle (its TUI went silent mid-turn), so the
+ * idle-gated emit→terminate never fired and the parent durable/run wedged. Both
+ * calls are idempotent (emit dedupes on sourceEventId; terminate raise is a
+ * no-op on an already-ending session).
  */
 export async function finalizeCompletedWorkflowGoal(
 	sessionId: string,
@@ -284,7 +268,7 @@ async function postEvidenceRejection(
 
 async function driveContinuationIfIdle(
 	sessionId: string,
-	opts: { allowStaleIdleProbe?: boolean; kickoff?: boolean; fromStopHook?: boolean } = {},
+	opts: { kickoff?: boolean; fromStopHook?: boolean } = {},
 ): Promise<void> {
 	// Emit the completion signal before the drivable-goal gate (a completed goal
 	// is no longer "drivable", so this must run first). Idempotent.
@@ -309,25 +293,9 @@ async function driveContinuationIfIdle(
 	// Only post when the session is genuinely idle: the latest event must be a
 	// status_idle. This proves no turn is mid-flight AND that no newer
 	// user.message (human input or an already-posted continuation) is queued.
-	// The tick reaper additionally probes sessions whose event stream has been
-	// frozen past the lost-idle grace — the idle event itself may have been
-	// dropped while the BFF was down (ingest is fire-and-forget).
 	const latest = await latestEventMeta(sessionId);
 	if (!latest) return;
 	const idle = latest.type === "session.status_idle";
-	// Lost-idle backstop: only probe when the stream is genuinely frozen. The
-	// telemetry-filtered `latest` can look stale during a long custom-loop turn
-	// that emits only telemetry (no status_idle) — so ALSO require the RAW latest
-	// event (any type, incl. telemetry) to be past the grace. If raw events are
-	// still arriving the agent is alive and we must NOT inject (it would duplicate
-	// the goal-continuation user.message mid-turn).
-	let staleProbe =
-		opts.allowStaleIdleProbe === true &&
-		latest.ageSeconds >= LOST_IDLE_GRACE_SECONDS;
-	if (staleProbe) {
-		const rawAge = await rawLatestEventAgeSeconds(sessionId);
-		if (rawAge !== null && rawAge < LOST_IDLE_GRACE_SECONDS) staleProbe = false;
-	}
 	// Kickoff bypass: when a goal is freshly set (iteration 0, no continuation yet)
 	// there is no turn in flight, so post continuation #1 immediately instead of
 	// waiting for a status_idle. This removes the slow first-turn start for CLIs
@@ -341,12 +309,7 @@ async function driveContinuationIfIdle(
 	// status_idle. Bypass only the idle gate; every other guard (drivable-goal,
 	// stop-state, claimNextContinuation spacing/claim, evidence backstop) still
 	// applies, and exactly-once is preserved by the atomic claim + sourceEventId.
-	if (!idle && !staleProbe && !kickoff && !opts.fromStopHook) return;
-	if (!idle && staleProbe) {
-		console.warn(
-			`[goal-loop] ${sessionId}: lost-idle probe (latest=${latest.type}, age=${Math.round(latest.ageSeconds)}s) — posting continuation; Dapr buffers it if a turn is still running`,
-		);
-	}
+	if (!idle && !kickoff && !opts.fromStopHook) return;
 
 	if (goal.status === "active") {
 		if (goal.iterations >= goal.maxIterations) {

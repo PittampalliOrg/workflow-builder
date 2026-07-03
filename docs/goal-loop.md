@@ -1,13 +1,13 @@
 # Goal Loop: Autonomous Session Goals (Codex `/goal` parity)
 
-> **Status:** ✅ IMPLEMENTED — **2026-06-09/10**. Core loop **wfb #84**, budget-accrual fix **#87**, UI + spawn-time MCP auto-wire **#88**, usage-event net-of-cache convention (dapr-agent-py) **#90**; Session Pulse **#85/#86**; stacks: `goal-loop-tick` CronJob + the workflow-mcp-server Deployment/Service (previously manifest-only). Shipped to `main`, deployed dev + ryzen. This is the **goal-loop SSOT**.
+> **Status:** ✅ IMPLEMENTED — **2026-06-09/10**. Core loop **wfb #84**, budget-accrual fix **#87**, UI + spawn-time MCP auto-wire **#88**, usage-event net-of-cache convention (dapr-agent-py) **#90**; Session Pulse **#85/#86**; stacks: workflow-mcp-server Deployment/Service. The old `goal-loop-tick` CronJob was later retired with unused cron-driven internals. Shipped to `main`, deployed dev + ryzen. This is the **goal-loop SSOT**.
 > **Scope:** A persistent per-session objective ("goal") that the platform autonomously drives across turns until the agent self-judges completion, a token budget is exhausted, or an iteration cap fires — Codex's `/goal` feature ported onto workflow-builder live sessions, with explicit divergences documented (Part 6).
 
 ---
 
 ## TL;DR
 
-A goal is a row in `thread_goals` (one ACTIVE per session). A BFF-side **driver** watches the session-event stream: each `agent.llm_usage` accrues tokens into the goal's budget; each `session.status_idle{end_turn}` injects the next **continuation turn** — a normal `user.message` carrying the verbatim Codex continuation prompt — back into the live `session_workflow`. The agent ends the loop by calling the MCP tool **`update_goal(status:"complete")`** after a completion audit; the platform ends it via budget/iteration guardrails or a user pause. Exactly-once injection = atomic DB iteration claim + "latest event is idle" gate + deterministic `sourceEventId`. A 2-minute CronJob backstop makes the loop crash-safe across BFF restarts and dropped idle events.
+A goal is a row in `thread_goals` (one ACTIVE per session). A BFF-side **driver** watches the session-event stream: each `agent.llm_usage` accrues tokens into the goal's budget; each `session.status_idle{end_turn}` injects the next **continuation turn** — a normal `user.message` carrying the verbatim Codex continuation prompt — back into the live `session_workflow`. The agent ends the loop by calling the MCP tool **`update_goal(status:"complete")`** after a completion audit; the platform ends it via budget/iteration guardrails or a user pause. Exactly-once injection = atomic DB iteration claim + "latest event is idle" gate + deterministic `sourceEventId`.
 
 The **budget accounting convention is load-bearing system-wide** (Part 4): all runtimes emit `agent.llm_usage.input_tokens` **net of cache reads**; goal budgets, Session Pulse cost, and the `context_*` stamp all depend on it.
 
@@ -34,7 +34,7 @@ Event-driven off `appendEvent` side-effects (`src/lib/server/sessions/events.ts:
   3. `active` + under cap → **`claimNextContinuation`** (atomic UPDATE: `iterations += 1`, stamp `last_continuation_at`, guarded by `status='active' AND iterations < max_iterations AND last_continuation_at` older than the 2s spacing guard). Null result = raced/capped → no post.
   4. Post the rendered **continuation prompt** as `user.message` with `origin: "goal-continuation"`, `goalKind`, `goalIteration`, and deterministic `sourceEventId = goal-continuation:<sessionId>:<iteration>` → `appendEvent` (DB, deduped on `sourceEventId`) + `raiseSessionUserEvents` (Dapr raise-event into the live `session_workflow`). Conversation history is preserved because an interactive session is ONE durable instance.
 
-**Exactly-once contract**: atomic iteration claim (3) + idle gate (2) + `sourceEventId` dedup — the inline hook, the goal-set API kick, and the tick reaper can all race safely and never double-drive.
+**Exactly-once contract**: atomic iteration claim (3) + idle gate (2) + `sourceEventId` dedup — the inline hook, goal-set API kick, and stop-hook evaluation can all race safely and never double-drive.
 
 ### Prompt templates — `src/lib/server/goals/templates/` (verbatim codex ports)
 
@@ -65,11 +65,9 @@ Event-driven off `appendEvent` side-effects (`src/lib/server/sessions/events.ts:
 
 ---
 
-## Part 3 — Crash-safety: the tick reaper + lost-idle probe
+## Part 3 — Crash-Safety Boundary
 
-The inline event hook is the fast path; the **`goal-loop-tick` CronJob** (stacks `workflow-builder/manifests/CronJob-goal-loop-tick.yaml`, schedule `*/2 * * * *`, `concurrencyPolicy: Forbid`, curl image) is the backstop → `POST /api/internal/goal-loop/tick` (internal-token gated; body `{staleSeconds:30, limit:100}`). It re-drives every drivable goal not continued within `staleSeconds` (`listStalledDrivableSessions`) — covering: a missed idle event, a goal set *after* its idle fired, a raise that failed because the runtime pod wasn't ready, and a BFF restart mid-loop. Re-driving is idempotent (Part 1 exactly-once contract).
-
-**Lost-idle crash window**: the runtime's session-event ingest is **fire-and-forget**, so a `session.status_idle` published while the BFF is down is gone for good — the stored stream stays frozen at mid-turn chatter and the strict idle gate would stall the loop **forever**. The tick passes `allowStaleIdleProbe`: when the latest stored event is older than `GOAL_LOOP_LOST_IDLE_GRACE_SECONDS` (default **180**), the driver posts the continuation anyway. This is **safe even if a turn is genuinely still running**: Dapr buffers the raised external event until the workflow's next `wait_for_external_event`, and the atomic claim still dedupes.
+The inline event hook is the active driver. The old **`goal-loop-tick` CronJob** and `POST /api/internal/goal-loop/tick` endpoint were retired with the unused cron-driven internals; the loop no longer has a timer-driven lost-idle probe. Goal-set and stop-hook paths still call the same idempotent `kickGoalLoop` driver, and exactly-once posting still comes from the DB claim + idle gate + deterministic `sourceEventId`.
 
 **Pod-reschedule survival**: a per-session sandbox pod rescheduled mid-goal (e.g. during an image-pin rollout window) preserves conversation history — the interactive session is one durable Dapr instance and replays — so the loop continues across it (verified live, 2026-06-10).
 
@@ -110,7 +108,6 @@ Session Pulse's **Context %** includes cached tokens (window occupancy — match
 | `GET /api/v1/sessions/[id]/goal` | Current goal row (any status) or null. |
 | `POST /api/v1/sessions/[id]/goal` | `{ objective, tokenBudget?, maxIterations? }` — create/replace + immediate `kickGoalLoop` (covers the already-idle session whose idle event won't re-fire). Workspace-scoped via `inspectDurableRun` + `isResourceInScope`. |
 | `PATCH /api/v1/sessions/[id]/goal` | `{ status: "complete" \| "paused" }` only — active/budget_limited transitions are agent/driver-owned. |
-| `POST /api/internal/goal-loop/tick` | Internal-token reaper endpoint (Part 3). |
 | MCP `create_goal` / `update_goal` / `get_goal` | Agent-side contract (Part 1). |
 
 **UI** — session detail (`src/routes/workspaces/[slug]/sessions/[id]/+page.svelte`):
@@ -130,7 +127,7 @@ Session Pulse's **Context %** includes cached tokens (window occupancy — match
 | Plan-mode / feature-flag gates | Present | **None** | Always-on |
 | Unpause | Accounting-preserving | **Re-set resets counters** (replace semantics) | One drivable row, rotate-and-reset keeps the model simple |
 | Iteration cap | — | **Ours adds `max_iterations`** (hard cap) | Defense against infinite loops codex relies on budget for |
-| Crash-safety | In-process | **DB-derived** (tick reaper + lost-idle probe) | The driver must survive BFF restarts |
+| Crash-safety | In-process | **DB-derived claims + event-driven retries** | Continuations remain idempotent across duplicate hooks and explicit kicks |
 
 ---
 
@@ -151,8 +148,7 @@ Run by setting the objective as a **goal on a live session** (dev agent `goal-ev
 ## Part 8 — Operational notes
 
 - **Re-arm semantics**: `createOrReplaceGoal` replaces **active AND budget_limited** rows (keeping a single drivable row per session) — re-setting after budget exhaustion re-arms the loop instead of leaving a stale steered row shadowing the new goal. `goal_id` rotates; accounting resets.
-- **Goal stuck / not continuing**: check (1) is the latest `session_events` row a `status_idle`? (the gate); (2) `last_continuation_at` + the tick CronJob logs (`kubectl logs -n workflow-builder job/goal-loop-tick-…`); (3) `stop_requested_at` on the session (a stop pauses the goal); (4) the lost-idle probe fires only after the 180s grace via the tick, never inline.
-- **Continuation posted while the agent was mid-turn**: expected with the lost-idle probe — Dapr buffers it until the next `wait_for_external_event`; the agent sees it as the next user turn.
+- **Goal stuck / not continuing**: check (1) is the latest non-telemetry `session_events` row a `status_idle`? (the gate); (2) `last_continuation_at`; (3) `stop_requested_at` on the session (a stop pauses the goal).
 - **Goal never completes on its own**: verify the session actually has the goal MCP server (auto-wire is spawn-time only — sessions spawned before #88, or with `GOAL_MCP_AUTO_WIRE=false`, lack the tools and can only end via caps/pause).
 - **Budget burned implausibly fast**: re-check the adapter invariant (Part 4) — a new/changed adapter emitting gross `input_tokens` reintroduces the 20x over-burn.
 - **drizzle raw-SQL note**: `repo.ts` raw `db.execute(sql…)` rows come back **snake_case** (no field mapping) — `mapGoalRow` normalizes; keep using it for new raw queries.
@@ -161,9 +157,9 @@ Run by setting the objective as a **goal on a live session** (dev agent `goal-ev
 
 - BFF driver: `src/lib/server/goals/goal-loop.ts` (driver), `repo.ts` (atomic claims/transitions), `render.ts` + `templates/{continuation,budget_limit}.md`
 - Event hook: `src/lib/server/sessions/events.ts:207`; spawn wiring: `src/lib/server/sessions/spawn.ts:373-424`
-- Routes: `src/routes/api/v1/sessions/[id]/goal/+server.ts`, `src/routes/api/internal/goal-loop/tick/+server.ts`
+- Routes: `src/routes/api/v1/sessions/[id]/goal/+server.ts`
 - MCP: `services/workflow-mcp-server/src/{goal-tools,goal-context,goal-db}.ts`, wired in `index.ts`
 - UI: `src/lib/components/sessions/{session-goal-badge,session-pulse}.svelte`; pricing: `src/lib/server/pricing/model-pricing.ts`, `src/routes/api/v1/pricing/+server.ts`
 - Runtime: `services/dapr-agent-py/src/{openai_adapter,alibaba_adapter}.py` (net-of-cache normalization), `event_publisher.py:405-435` (`context_*` stamp)
-- stacks: `packages/components/workloads/workflow-builder/manifests/{CronJob-goal-loop-tick,Deployment-workflow-mcp-server,Service-workflow-mcp-server}.yaml`
+- stacks: `packages/components/workloads/workflow-builder/manifests/{Deployment-workflow-mcp-server,Service-workflow-mcp-server}.yaml`
 - Schema: `drizzle/0079_thread_goals.sql`, `src/lib/server/db/schema.ts` (`threadGoals`)

@@ -4354,7 +4354,7 @@ export interface SessionGoalStore {
 export interface SessionGoalLoopDriver {
 	kickSessionGoalLoop(
 		sessionId: string,
-		opts?: { kickoff?: boolean; allowStaleIdleProbe?: boolean; fromStopHook?: boolean },
+		opts?: { kickoff?: boolean; fromStopHook?: boolean },
 	): Promise<void>;
 }
 

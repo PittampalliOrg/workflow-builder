@@ -103,7 +103,7 @@ Resume is strictly **user-initiated** and gated on `status==='terminated'`
 are safe in Postgres and the downstream resume path already works
 (`agent-workflow-host.ts:316-399` re-mounts the same CSI subPath → `claude --continue` /
 `codex resume --last`), and a SIGKILLed session **does** converge to `terminated` (in-workflow
-liveness probe `cli-agent-py/src/session_workflow.py:697-724` + `lifecycle-terminal-reaper` CronJob) —
+liveness probe `cli-agent-py/src/session_workflow.py:697-724`) —
 but only after ~10–75 min, and a human must then click Resume. **Add** an auto-resume reconciler:
 when the lifecycle controller observes a non-graceful sandbox exit for a session still active,
 auto-spawn a continuation pod with `resumeFromSessionId=self` + `continueSession=true`, behind a
@@ -256,4 +256,3 @@ Met ONLY when ALL are demonstrated in THIS conversation by actual kubectl/comman
 6. The cutover PLAN (flag-gated repoint of workflowstatestore + app DB + JuiceFS metaurl, byte-parity check, rollback) is appended to the plan doc; the existing Postgres is still Running and unmodified — show `kubectl get statefulset postgresql`.
 Report progress each turn. Stop after 60 turns and summarize what remains. This is the highest-risk phase — if any destructive step would be required, STOP and surface it instead of proceeding.
 ```
-

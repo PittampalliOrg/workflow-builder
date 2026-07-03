@@ -30,7 +30,7 @@ These were genuine, runtime-spanning defects exposed by goal-mode + sandbox-reus
 1. **Native-CLI cooperative terminate was a silent no-op.** The BFF raised the terminate with `eventName="session.lifecycle_events"` (the *channel*) while the cli-agent-py endpoint uses `eventName` *as* the event type — so it neither persisted the cancel-flag nor delivered a recognizable terminal event. Native CLI goal sessions hung after completing the goal. **Fix:** raise `eventName="session.terminate"` for both families (each endpoint re-routes to its own channel + persists the flag). *(Root cause of the multi-hour native-CLI hang.)*
 2. **`outputSync` was gated on `status=="completed"`** → skipped when a session ended via *terminate* (the normal goal-complete path) → empty workspace → `verify_app` failed. **Fix:** run outputSync on `terminated` too.
 3. **`outputSync`'s 64 MiB base64 ceiling can't carry `node_modules`.** Syncing a whole Node project blew the cap. **Fix:** redesign the workflow to a **static build** — `adapter-static` → outputSync only the small `build/` → serve statically (3b1b pattern).
-4. **Goal marked complete on a session that never idles** (custom-loop `update_goal` is a direct DB write with no event) → idle-gated terminate never fires. **Fix:** tick-reaper backstop (`listCompletedUnterminatedWorkflowGoalSessions` → `finalizeCompletedWorkflowGoal`).
+4. **Goal marked complete on a session that never idles** (custom-loop `update_goal` is a direct DB write with no event) → idle-gated terminate never fires. **Fix:** the internal goal-control path calls `finalizeCompletedWorkflowGoal` immediately after a successful completion evaluation.
 5. **Lost-idle probe false-positive** on long telemetry-only turns (the filtered "latest event" looked stale) → duplicate goal continuations mid-turn. **Fix:** raw-liveness guard (any recent event = alive).
 6. **`browser/validate` selector timeout** on client-rendered SPAs. **Fix:** require the hooks be **prerendered** into static HTML, and raise the `waitForSelector` cap 15 s → 45 s.
 7. **`autoTerminate` doesn't fire for native-CLI `/goal`** (the runtime emits no `turn.completed` the workflow keys on) — so the cooperative terminate, not autoTerminate, is the real end path for native CLI.
@@ -61,7 +61,7 @@ goalLifecycle: {
 }
 ```
 
-The goal-loop would then pick channel/trigger/backstop from the descriptor instead of `if (isInteractiveCliSession) … else …`. Net effect: a *5th* runtime is added by writing a descriptor, not by patching `terminateWorkflowGoalSessionIfNeeded`, `onSessionEvent`, the tick reaper, and the bridge. The abstraction is sound; the contract just needs to be **data, not control flow**.
+The goal-loop would then pick channel/trigger/backstop from the descriptor instead of `if (isInteractiveCliSession) … else …`. Net effect: a *5th* runtime is added by writing a descriptor, not by patching `terminateWorkflowGoalSessionIfNeeded`, `onSessionEvent`, internal goal-control finalization, and the bridge. The abstraction is sound; the contract just needs to be **data, not control flow**.
 
 ---
 

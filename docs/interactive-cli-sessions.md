@@ -202,8 +202,7 @@ Lifecycle Controller → management-parity endpoints
 `CLI_IDLE_TTL_SECONDS` AND no attached terminal clients → graceful exit).
 Hard backstops: Sandbox `shutdownTime` (spawn sets `timeoutSeconds`) + the
 fixed `workflow-builder-sandbox-gc` (now skips CRs with a future
-`spec.shutdownTime` — the fix MUST be deployed before activation) +
-`lifecycle-terminal-reaper`.
+`spec.shutdownTime` — the fix MUST be deployed before activation).
 
 ### SW 1.0 workflow auto-turn mode
 

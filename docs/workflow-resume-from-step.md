@@ -143,9 +143,11 @@ source row + its lineage stay around as usual.)
     init-container fallback) filter those files when testing emptiness and when copying.
   (Point-in-time *per-node* snapshots — state as-of *before* the node, vs the source's end state — remain
   a separate future option.)
-- **Retained workspaces are reaped** — the `resumable-workspace-gc` CronJob (every 6h) ages out abandoned
-  retained JuiceFS workspaces (terminal + >24h + no active fork) via the sandbox-execution-api
-  `purge-data` Job, so retention doesn't leak.
+- **Retained workspaces are registered** — resumable executions keep a
+  `workflow_workspace_sessions` row for the retained JuiceFS workspace. The old
+  `resumable-workspace-gc` CronJob was retired with the cron-driven lifecycle
+  internals; retained workspace cleanup should be handled through an explicit
+  lifecycle/retention policy rather than the removed internal route.
 - The forked run is a **fresh execution** with its own row + full node history (no partial-history caveat).
 
 ## Verify (dev)

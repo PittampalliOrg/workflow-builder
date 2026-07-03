@@ -51,7 +51,7 @@ export type GoalStatus = "active" | "paused" | "budget_limited" | "complete";
 /**
  * Minimum wall-clock spacing (seconds) between two continuation posts for the
  * same session. Real turns take far longer than this; the guard only collapses
- * a race between the inline event hook and the backstop tick reaper.
+ * a race between inline event hooks and explicit kickoff/stop-hook calls.
  */
 export const CONTINUATION_MIN_SPACING_SECONDS = 2;
 
@@ -329,7 +329,7 @@ export async function accrueUsage(
  * stamps `last_continuation_at` IFF the goal is active, under the iteration
  * cap, and the last continuation is older than the spacing guard. Returns the
  * updated row (with the NEW iteration number) on success, null otherwise. This
- * is the exactly-once gate shared by the inline event hook and the tick reaper.
+ * is the exactly-once gate shared by inline event hooks and explicit kicks.
  */
 export async function claimNextContinuation(
 	sessionId: string,
@@ -389,18 +389,13 @@ export async function claimBudgetSteer(
 
 /**
  * Most recent session_event (type + age) — the loop posts only when idle.
- * The age lets the tick reaper detect the lost-idle crash window: the
- * runtime's event ingest is fire-and-forget, so a `session.status_idle`
- * published while the BFF is down is gone for good and the latest stored
- * event stays frozen at mid-turn chatter.
  */
 /**
  * Intra-turn telemetry events that can land AFTER a turn-boundary
  * `session.status_idle` (esp. for workflow-driven CLI sessions, where the agy
  * adapter emits `agent.llm_usage` last). They are NOT a new turn or user input,
  * so the goal-loop idle gate must ignore them — otherwise a trailing llm_usage
- * makes "latest event is status_idle" false and the loop only advances via the
- * slow lost-idle probe (~4 min/turn instead of event-driven).
+ * makes "latest event is status_idle" false and stalls the event-driven loop.
  */
 const GOAL_IDLE_IGNORED_EVENT_TYPES = [
 	"agent.llm_usage",
@@ -435,31 +430,6 @@ export async function latestEventMeta(
 }
 
 /**
- * Age of the latest event of ANY type (including intra-turn telemetry that
- * `latestEventMeta` filters out). Used as a LIVENESS signal: a custom-loop
- * runtime (dapr-agent-py/agy) on a long turn emits only telemetry and no
- * status_idle, so the telemetry-filtered view looks "stale" even though the
- * agent is actively working. The lost-idle backstop must NOT inject a
- * continuation while raw events are still arriving (else it duplicates the
- * goal-continuation user.message mid-turn).
- */
-export async function rawLatestEventAgeSeconds(
-	sessionId: string,
-): Promise<number | null> {
-	const rows = await requireDb()
-		.select({
-			ageSeconds: sql<number>`extract(epoch from (now() - ${sessionEvents.createdAt}))`,
-		})
-		.from(sessionEvents)
-		.where(eq(sessionEvents.sessionId, sessionId))
-		.orderBy(desc(sessionEvents.sequence))
-		.limit(1);
-	const row = rows[0];
-	if (!row) return null;
-	return Number(row.ageSeconds ?? 0);
-}
-
-/**
  * Whether a `session.goal_completed` event has already been recorded for this
  * session. Used by the idle-rescue: a native-goal CLI (claude/codex) has no
  * thread_goals row, so the only durable signal that its goal finished is this
@@ -482,50 +452,6 @@ export async function hasGoalCompletedEvent(sessionId: string): Promise<boolean>
 }
 
 /**
- * Workflow-driven sessions whose goal is COMPLETE but whose session is still
- * non-terminal — the tick reaper finalizes these. A custom-loop agent can mark
- * the goal complete via the goal MCP (`update_goal`) and then NOT idle (its TUI
- * goes silent mid-turn), so the idle-gated emit→terminate never fires and the
- * parent durable/run wedges. The MCP completes the goal with a direct DB write
- * (no BFF appendEvent), so there's no inline trigger — only this poll catches it.
- */
-export async function listCompletedUnterminatedWorkflowGoalSessions(
-	limit: number,
-): Promise<string[]> {
-	const rows = await requireDb().execute<{ session_id: string }>(sql`
-		SELECT tg.session_id FROM thread_goals tg
-		JOIN sessions s ON s.id = tg.session_id
-		WHERE tg.status = 'complete'
-		  AND s.workflow_execution_id IS NOT NULL
-		  AND s.status NOT IN ('terminated','completed','failed','canceled','cancelled')
-		ORDER BY tg.updated_at ASC
-		LIMIT ${limit}
-	`);
-	return rows.map((r) => r.session_id);
-}
-
-/**
- * Sessions with a drivable goal not continued within `staleSeconds` — the tick
- * reaper re-drives these as the crash-safe backstop (covers a missed idle
- * event, a goal set after the idle fired, a raise that failed because the pod
- * wasn't ready, or a BFF restart mid-loop). The per-session idle gate + atomic
- * claim in driveContinuationIfIdle make re-driving safe and idempotent.
- */
-export async function listStalledDrivableSessions(
-	staleSeconds: number,
-	limit: number,
-): Promise<string[]> {
-	const rows = await requireDb().execute<{ session_id: string }>(sql`
-		SELECT session_id FROM thread_goals
-		WHERE status in ('active','budget_limited')
-		  AND (last_continuation_at IS NULL
-		       OR last_continuation_at < now() - (${staleSeconds}::int * interval '1 second'))
-		ORDER BY updated_at ASC
-		LIMIT ${limit}
-	`);
-	return rows.map((r) => r.session_id);
-}
-
 /** Session stop/terminal state — the loop never drives a stopping session. */
 export async function sessionStopState(
 	sessionId: string,
