@@ -196,7 +196,9 @@ With `WORKFLOW_DATA_API_MODE=http`, these paths route persistence through
   - `_list_stale_running_execution_rows` / `_cleanup_stale_instances_on_startup`:
     stale startup cleanup lookup and status update.
 - `fetch_child_workflow.py`: workflow lookup by id/name.
-- `log_node_execution.py`: node start/complete logs and current-node read model.
+- `log_node_execution.py`: node start/complete logs and current-node read
+  model. This activity is workflow-data only; its direct Postgres fallback was
+  removed.
 - `persist_artifact.py`: workflow artifact upsert.
 - `persist_plan_artifact.py`: plan artifact create/update/fetch. This activity
   is workflow-data only; its direct Postgres fallback was removed.
@@ -230,7 +232,7 @@ They should import `psycopg2` lazily inside the Postgres branch where practical
 so import-time coupling does not affect strict HTTP mode.
 `resolve_mcp_config.py` now uses a lazy `_connect_postgres` helper for the
 rollback branch, and its fallback tests patch that helper directly.
-`track_agent_run.py`, `persist_plan_artifact.py`,
+`track_agent_run.py`, `log_node_execution.py`, `persist_plan_artifact.py`,
 `persist_workspace_session.py`, `publish_event.py`,
 `register_resumable_workspace.py`, and `finalize_otel_trace_root.py` no longer
 have direct Postgres rollback branches; their workflow-data endpoints are the

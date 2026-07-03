@@ -402,7 +402,6 @@ def test_log_node_execution_strict_http_uses_workflow_data_client(monkeypatch):
     _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(log_node_execution, "workflow_data_client", FakeWorkflowDataClient())
-    monkeypatch.setattr(log_node_execution, "_get_database_url", _fail_database_url)
 
     start = log_node_execution.log_node_start(
         None,
@@ -452,7 +451,6 @@ def test_log_node_execution_strict_http_failure_does_not_fallback(monkeypatch):
     _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(log_node_execution, "workflow_data_client", FailingWorkflowDataClient())
-    monkeypatch.setattr(log_node_execution, "_get_database_url", _fail_database_url)
 
     result = log_node_execution.log_node_start(
         None,
@@ -467,6 +465,49 @@ def test_log_node_execution_strict_http_failure_does_not_fallback(monkeypatch):
 
     assert result["success"] is False
     assert "workflow-data unavailable" in result["error"]
+
+
+def test_log_node_execution_fallback_mode_does_not_call_postgres(monkeypatch):
+    class FailingWorkflowDataClient:
+        def append_execution_log(self, *_args, **_kwargs):
+            raise RuntimeError("workflow-data unavailable")
+
+        def patch_execution(self, *_args, **_kwargs):
+            raise RuntimeError("workflow-data unavailable")
+
+        def update_execution_log(self, *_args, **_kwargs):
+            raise RuntimeError("workflow-data unavailable")
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http-fallback-db")
+    _block_psycopg2_imports(monkeypatch)
+    monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
+    monkeypatch.setattr(log_node_execution, "workflow_data_client", FailingWorkflowDataClient())
+
+    start = log_node_execution.log_node_start(
+        None,
+        {
+            "executionId": "exec-1",
+            "nodeId": "agent",
+            "nodeName": "Agent",
+            "nodeType": "action",
+            "actionType": "durable/run",
+        },
+    )
+    update = log_node_execution.update_execution_node(
+        None,
+        {"executionId": "exec-1", "nodeId": "agent", "nodeName": "Agent"},
+    )
+    complete = log_node_execution.log_node_complete(
+        None,
+        {"executionId": "exec-1", "logId": "log-1", "status": "success"},
+    )
+
+    assert start["success"] is False
+    assert update["success"] is False
+    assert complete["success"] is False
+    assert "workflow-data unavailable" in start["error"]
+    assert "workflow-data unavailable" in update["error"]
+    assert "workflow-data unavailable" in complete["error"]
 
 
 def test_persist_workspace_session_strict_http_uses_workflow_data_client(monkeypatch):
