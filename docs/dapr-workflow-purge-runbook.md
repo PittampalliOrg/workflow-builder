@@ -42,7 +42,7 @@ purged` errors.
 
 First try the normal lifecycle path: explicit user-facing stop/cancel routes drive the Lifecycle Controller, and `workflow-builder-sandbox-gc` age-GCs orphaned per-session Sandbox CRs. With unified `stateRetentionPolicy = 168h` across parent + per-session child Configs, children are no longer auto-purged before the parent finishes (the old 168h-vs-30m split-brain that caused cascade-termination races is gone).
 
-Use the manual steps below only for a failed or cancelled run that is already operationally dead but Dapr keeps reporting stale non-terminal workflow state AND the reaper cannot resolve it.
+Use the manual steps below only for a failed or cancelled run that is already operationally dead but Dapr keeps reporting stale non-terminal workflow state and explicit stop/status confirmation cannot resolve it.
 
 Before deleting state directly, verify all of the following:
 

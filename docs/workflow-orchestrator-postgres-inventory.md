@@ -278,11 +278,9 @@ fallback bodies for:
 - `_mark_workflow_execution_failed_to_start`
 - `_list_stale_running_execution_rows`
 
-`persist_results_to_db.py` also has a legacy MLflow browser-artifact projection
-helper that can read browser artifact rows when called with an explicit
-database URL and when `WORKFLOW_ORCHESTRATOR_LEGACY_MLFLOW_ENABLED` and
-`MLFLOW_TRACKING_URI` are set. Active final-result persistence and trace
-lineage should use workflow-data and OTel lineage ports instead.
+The legacy `persist_results_to_db.py` MLflow browser-artifact projection was
+removed. Final-result persistence and trace lineage use workflow-data and OTel
+lineage ports instead.
 
 ## BFF / Control-Plane Runtime Seams
 

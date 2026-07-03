@@ -61,7 +61,7 @@ export type ResolvedDurableTarget = {
 	/**
 	 * Stamp the durable stop-intent (stop_requested_at) the moment a stop is
 	 * requested — BEFORE the cascade confirms closure. Keeps the row non-terminal
-	 * but marks it so the UI shows "Stopping…" and the terminal-status reaper can
+	 * but marks it so the UI shows "Stopping…" and the status confirmation path can
 	 * finalize it later if the in-request poll window expires. Idempotent.
 	 */
 	markStopRequested: (reason: string) => Promise<void>;
@@ -140,7 +140,8 @@ export function agentTargetForSession(row: {
 		// app-id), the derivation would be WRONG — terminate would hit a nonexistent
 		// instance (benign-miss → "alreadyGone") and the cascade would falsely report
 		// the agent closed. Leave it unresolved instead so the stop reports "stopping"
-		// and the reaper retries once the real linkage is written.
+		// and a later explicit status confirmation retries once the real linkage is
+		// written.
 		if ((row.runtimeSandboxName ?? "").trim()) {
 			runtimeAppId = (sessionHostAppId(row.id) ?? "").trim();
 		}

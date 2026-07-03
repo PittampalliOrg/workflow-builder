@@ -6,7 +6,8 @@
  * and — for purge/reset — leaving nothing behind that breaks the next run. It
  * is fail-closed: it only flips DB rows terminal / reaps sandboxes once the
  * durable tree is confirmed closed, and otherwise reports `confirmed:false` so
- * callers (HTTP 409) and the user can retry.
+ * callers can return HTTP 202 "stopping" while the stop/status confirmation path
+ * converges.
  *
  * Every user-facing "stop" surface should route through this. See
  * docs/workflow-lifecycle-termination.md.
@@ -69,8 +70,8 @@ export type StopDurableRunResult = {
 	/**
 	 * confirmed — durable tree terminal AND DB finalized/sandboxes reaped.
 	 * stopping — stop requested + intent persisted, converging asynchronously
-	 *   (the in-request poll window expired or finalize is pending); the reaper
-	 *   / a status poll will finalize once Dapr is terminal. Maps to HTTP 202.
+	 *   (the in-request poll window expired or finalize is pending); a status poll
+	 *   will finalize once Dapr is terminal. Maps to HTTP 202.
 	 * notFound — no such durable run.
 	 */
 	state: "confirmed" | "stopping" | "notFound";
@@ -89,8 +90,8 @@ export type StopDurableRunResult = {
 // One shared deps instance — generic Dapr-backed orchestrator + agent-runtime ops.
 // Timing is env-tunable: the in-request poll window cannot fully cover a workflow
 // blocked in a long activity (terminate applies only when the activity yields), so
-// operators can widen it; the persisted stop-intent + the terminal-status reaper
-// converge the tail regardless.
+// operators can widen it; the persisted stop-intent + explicit stop/status
+// confirmation path converge the tail.
 function envSeconds(name: string, fallbackS: number, minS: number, maxS: number): number {
 	const raw = env[name] ?? process.env[name];
 	const n = raw ? Number.parseInt(raw, 10) : Number.NaN;
@@ -214,12 +215,12 @@ export async function stopDurableRun(
 	const defaultGraceMs = envSeconds("LIFECYCLE_TERMINATE_GRACE_SECONDS", 5, 0, 120);
 	const graceMs = Math.max(0, opts.graceMs ?? defaultGraceMs);
 	// Persist the durable stop-intent up front so the row reads "Stopping…" and the
-	// terminal-status reaper can finalize it even if the in-request poll window
-	// expires (e.g. a workflow blocked in a long activity).
-	// The whole request/confirm contract (reaper priority pass + the cross-app
-	// wedge finalize) keys off stop_requested_at, so a swallowed write here can
-	// leave a wedged run permanently un-finalizable. Retry transient failures
-	// before giving up, and surface a hard failure rather than silently proceeding.
+	// status confirmation path can finalize it after the in-request poll window
+	// expires (e.g. a workflow blocked in a long activity). The whole
+	// request/confirm contract, including cross-app wedge finalize, keys off
+	// stop_requested_at, so a swallowed write here can leave a wedged run
+	// permanently un-finalizable. Retry transient failures before giving up, and
+	// surface a hard failure rather than silently proceeding.
 	let stopIntentPersisted = false;
 	let stopIntentError: string | undefined;
 	for (let attempt = 1; attempt <= 3; attempt++) {
@@ -259,8 +260,8 @@ export async function stopDurableRun(
 	// activity that only applies `terminate` once the activity yields (minutes
 	// later). We still never flip DB rows / reap sandboxes until Dapr is confirmed
 	// terminal (no lying about success), BUT the stop-intent is persisted and the
-	// cascade keeps converging; the terminal-status reaper (or a status poll)
-	// finalizes once Dapr reports terminal. Report "stopping" (HTTP 202), not a
+	// cascade keeps converging; a status poll finalizes once Dapr reports
+	// terminal. Report "stopping" (HTTP 202), not a
 	// hard 409 that leaves the row stale forever.
 	if (!cascade.allClosed) {
 		return {
@@ -310,7 +311,8 @@ export async function stopDurableRun(
 		notFound: false,
 		requested: true,
 		// reap/finalize failures are transient bookkeeping — keep "stopping" so the
-		// reaper retries the finalize rather than declaring permanent success.
+		// next status confirmation retries finalization rather than declaring
+		// permanent success.
 		state: confirmed ? "confirmed" : "stopping",
 		scope: resolved.scope,
 		cascade,
@@ -347,7 +349,7 @@ async function finalizeConfirmedStop(
  * Confirm convergence of a previously-requested stop (the "stopping" → "confirmed"
  * transition). Re-checks every durable handle (parent + per-session agent
  * runtimes); once all are terminal/gone it reaps the Sandbox CRs and flips the DB
- * terminal — idempotent, so a status poll and the reaper can both call it safely.
+ * terminal. It is idempotent, so repeated status polls can call it safely.
  * Returns "stopping" while any handle is still live (no DB flip, no lie).
  *
  * Cross-app child wedge: a `durable/run` parent awaits a per-session agent child

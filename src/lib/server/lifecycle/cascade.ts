@@ -32,7 +32,7 @@ const DEFAULT_CASCADE_CONCURRENCY = 16;
 // activity yields, which can be minutes — so this window cannot guarantee
 // in-request confirmation. Raised from the original 45s to cover the common
 // slow-apply, and paired with the persisted stop-intent (202 "stopping") + the
-// terminal-status reaper so the tail still converges. Overridable via
+// explicit stop/status confirmation path so the tail still converges. Overridable via
 // LIFECYCLE_CASCADE_WAIT_SECONDS (wired by Dapr cascade adapter callers).
 const DEFAULT_WAIT_MS = 90_000;
 const DEFAULT_WAIT_POLL_MS = 1_000;

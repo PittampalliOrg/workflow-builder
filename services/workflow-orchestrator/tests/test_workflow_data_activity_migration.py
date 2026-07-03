@@ -35,7 +35,16 @@ if dapr_workflow_spec is None:
     dapr_stub = types.ModuleType("dapr")
     dapr_ext_stub = types.ModuleType("dapr.ext")
     dapr_workflow_stub = types.ModuleType("dapr.ext.workflow")
+
+    class DaprWorkflowClient:
+        def __init__(self, *_args, **_kwargs):
+            return None
+
+        def raise_workflow_event(self, *_args, **_kwargs):
+            return None
+
     dapr_workflow_stub.WorkflowActivityContext = object
+    dapr_workflow_stub.DaprWorkflowClient = DaprWorkflowClient
     dapr_ext_stub.workflow = dapr_workflow_stub
     dapr_stub.ext = dapr_ext_stub
     sys.modules["dapr"] = dapr_stub
