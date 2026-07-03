@@ -16,7 +16,7 @@ from dapr.clients import DaprClient
 
 from content_tracing import io_attributes
 from core.config import config
-from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
+from activities.workflow_data_client import workflow_data_client
 from .metadata import (
     activity_metadata,
     schema_any_object,
@@ -31,10 +31,6 @@ logger = logging.getLogger(__name__)
 
 PUBSUB_NAME = config.PUBSUB_NAME
 WORKFLOW_EVENTS_TOPIC = "workflow.events"
-SECRET_STORE_NAME = "kubernetes-secrets"
-SECRET_NAME = "workflow-builder-secrets"
-
-_database_url: str | None = None
 
 PUBLISH_EVENT_INPUT_SCHEMA = schema_object(
     {
@@ -128,24 +124,6 @@ class WorkflowEventTypes:
     APPROVAL_RECEIVED = "workflow.approval.received"
 
 
-def _get_database_url() -> str:
-    """Fetch DATABASE_URL from Dapr secrets store (cached)."""
-    global _database_url
-    if _database_url is not None:
-        return _database_url
-
-    with DaprClient() as client:
-        secret = client.get_secret(store_name=SECRET_STORE_NAME, key=SECRET_NAME)
-        db_url = secret.secret.get("DATABASE_URL")
-    if not db_url:
-        raise RuntimeError(
-            f"DATABASE_URL not found in secret '{SECRET_NAME}' from store '{SECRET_STORE_NAME}'"
-        )
-
-    _database_url = db_url
-    return db_url
-
-
 def _persist_execution_phase(
     execution_id: str | None,
     phase: Any,
@@ -154,47 +132,13 @@ def _persist_execution_phase(
     if not execution_id:
         return
 
-    api_mode = workflow_data_api_mode()
-    if api_mode != "postgres":
-        try:
-            workflow_data_client.patch_execution(
-                execution_id,
-                {
-                    "phase": str(phase) if phase is not None else None,
-                    "progress": int(progress) if progress is not None else None,
-                },
-            )
-            return
-        except Exception:
-            if api_mode == "http":
-                raise
-            logger.exception(
-                "[Publish Event] workflow-data phase update failed; falling back to Postgres"
-            )
-
-    import psycopg2
-
-    db_url = _get_database_url()
-    conn = psycopg2.connect(db_url)
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE workflow_executions
-                SET
-                    phase = %s,
-                    progress = %s
-                WHERE id = %s
-                """,
-                (
-                    str(phase) if phase is not None else None,
-                    int(progress) if progress is not None else None,
-                    execution_id,
-                ),
-            )
-        conn.commit()
-    finally:
-        conn.close()
+    workflow_data_client.patch_execution(
+        execution_id,
+        {
+            "phase": str(phase) if phase is not None else None,
+            "progress": int(progress) if progress is not None else None,
+        },
+    )
 
 
 @activity_metadata(

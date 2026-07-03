@@ -42,6 +42,29 @@ if dapr_workflow_spec is None:
     sys.modules["dapr.ext"] = dapr_ext_stub
     sys.modules["dapr.ext.workflow"] = dapr_workflow_stub
 
+try:
+    dapr_clients_spec = importlib.util.find_spec("dapr.clients")
+except (ImportError, ModuleNotFoundError, ValueError):
+    dapr_clients_spec = None
+
+if dapr_clients_spec is None:
+    dapr_clients_stub = types.ModuleType("dapr.clients")
+
+    class DaprClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def publish_event(self, **_kwargs):
+            return None
+
+    dapr_clients_stub.DaprClient = DaprClient
+    sys.modules["dapr.clients"] = dapr_clients_stub
+    if "dapr" in sys.modules:
+        setattr(sys.modules["dapr"], "clients", dapr_clients_stub)
+
 activities_pkg = types.ModuleType("activities")
 activities_pkg.__path__ = [str(ROOT / "activities")]
 sys.modules["activities"] = activities_pkg
@@ -57,7 +80,7 @@ workflow_data_spec.loader.exec_module(workflow_data_module)
 
 def _load_activity(name: str):
     path = ROOT / "activities" / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(f"{name}_migration_tests", path)
+    spec = importlib.util.spec_from_file_location(f"activities.{name}_migration_tests", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -71,6 +94,7 @@ log_node_execution = _load_activity("log_node_execution")
 fetch_child_workflow = _load_activity("fetch_child_workflow")
 persist_workspace_session = _load_activity("persist_workspace_session")
 register_resumable_workspace = _load_activity("register_resumable_workspace")
+publish_event = _load_activity("publish_event")
 
 
 class FailingPsycopg2:
@@ -592,6 +616,42 @@ def test_workspace_session_upserts_do_not_fallback_to_postgres_in_fallback_mode(
     assert "workflow-data unavailable" in persisted["error"]
     assert registered["success"] is False
     assert "workflow-data unavailable" in registered["error"]
+
+
+def test_publish_phase_persist_uses_workflow_data_without_postgres_fallback(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    class FakeWorkflowDataClient:
+        def patch_execution(self, execution_id, payload):
+            calls.append((execution_id, payload))
+            return {"ok": True}
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http-fallback-db")
+    _block_psycopg2_imports(monkeypatch)
+    monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
+    monkeypatch.setattr(publish_event, "workflow_data_client", FakeWorkflowDataClient())
+
+    publish_event._persist_execution_phase("exec-1", "running", 42)
+
+    assert calls == [("exec-1", {"phase": "running", "progress": 42})]
+
+
+def test_publish_phase_persist_failure_does_not_fallback_to_postgres(monkeypatch):
+    class FailingWorkflowDataClient:
+        def patch_execution(self, *_args, **_kwargs):
+            raise RuntimeError("workflow-data unavailable")
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http-fallback-db")
+    _block_psycopg2_imports(monkeypatch)
+    monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
+    monkeypatch.setattr(publish_event, "workflow_data_client", FailingWorkflowDataClient())
+
+    try:
+        publish_event._persist_execution_phase("exec-1", "running", 42)
+    except RuntimeError as exc:
+        assert "workflow-data unavailable" in str(exc)
+    else:
+        raise AssertionError("workflow-data failure should surface without Postgres fallback")
 
 
 def test_trace_lineage_strict_http_uses_workflow_data_client(monkeypatch):
