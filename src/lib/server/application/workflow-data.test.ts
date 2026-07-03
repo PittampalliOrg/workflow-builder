@@ -8125,6 +8125,8 @@ describe("ApplicationWorkflowDataService", () => {
 			upsertWorkflowWorkspaceSession: vi.fn(async () => ({
 				workspaceRef: "workspace-1",
 			})),
+			listWorkflowWorkspaceSessionsByExecutionId: vi.fn(async () => []),
+			markWorkflowWorkspaceSessionCleaned: vi.fn(async () => true),
 		} satisfies WorkspaceSessionStore;
 		const modelCatalog = {
 			listEnabledModelIds: vi.fn(async () => ["openai/gpt-5.5"]),
@@ -8289,6 +8291,13 @@ describe("ApplicationWorkflowDataService", () => {
 			rootPath: "/sandbox",
 			backend: "openshell",
 		});
+		await service.listWorkflowWorkspaceSessionsByExecutionId({
+			executionId: "exec-1",
+			limit: 2,
+		});
+		await service.markWorkflowWorkspaceSessionCleaned({
+			workspaceRef: "workspace-1",
+		});
 
 		expect(workflowExecutions.updateReadModel).toHaveBeenCalledWith("exec-1", {
 			phase: "running",
@@ -8425,5 +8434,16 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(workspaceSessions.upsertWorkflowWorkspaceSession).toHaveBeenCalledWith(
 			expect.objectContaining({ workspaceRef: "workspace-1", backend: "openshell" }),
 		);
+		expect(
+			workspaceSessions.listWorkflowWorkspaceSessionsByExecutionId,
+		).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			limit: 2,
+		});
+		expect(
+			workspaceSessions.markWorkflowWorkspaceSessionCleaned,
+		).toHaveBeenCalledWith({
+			workspaceRef: "workspace-1",
+		});
 	});
 });

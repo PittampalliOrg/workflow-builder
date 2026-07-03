@@ -535,6 +535,10 @@ export function getApplicationAdapters(
 	let gitOpsActivityEvents: ApplicationGitOpsActivityEventService | undefined;
 	let cliPreview: ApplicationCliPreviewService | undefined;
 	let sandboxPreview: ApplicationSandboxPreviewService | undefined;
+	let previewEnvironmentProvisioner:
+		| KroPreviewEnvironmentProvisioner
+		| SandboxExecutionPreviewEnvironmentProvisioner
+		| undefined;
 	const getDatabase = () => (database ??= requirePostgresDb());
 	const getAgentRuntimes = () =>
 		(agentRuntimes ??= new PostgresAgentRuntimeRepository(getDatabase()));
@@ -1083,10 +1087,6 @@ export function getApplicationAdapters(
 		(sessionAgentConfig ??= new ApplicationSessionAgentConfigService({
 			patches: getWorkflowData(),
 		}));
-	const previewEnvironmentProvisioner =
-		config.previewProvisionerAdapter === "kro"
-			? new KroPreviewEnvironmentProvisioner()
-			: new SandboxExecutionPreviewEnvironmentProvisioner();
 	const workflowScheduler = new DaprWorkflowScheduler();
 	const getWorkflowData = () =>
 		(workflowData ??= new ApplicationWorkflowDataService({
@@ -1158,6 +1158,11 @@ export function getApplicationAdapters(
 			goalFlow: getGoalFlow(),
 			workflowScheduler,
 		}));
+	const getPreviewEnvironmentProvisioner = () =>
+		(previewEnvironmentProvisioner ??=
+			config.previewProvisionerAdapter === "kro"
+				? new KroPreviewEnvironmentProvisioner()
+				: new SandboxExecutionPreviewEnvironmentProvisioner(getWorkflowData));
 	const getWorkflowExport = () =>
 		(workflowExport ??= new ApplicationWorkflowExportService({
 			workflowData: getWorkflowData(),
@@ -1400,6 +1405,6 @@ export function getApplicationAdapters(
 		get sandboxProvisioner() {
 			return getSandboxProvisioner();
 		},
-		previewEnvironmentProvisioner,
+		previewEnvironmentProvisioner: getPreviewEnvironmentProvisioner(),
 	};
 }

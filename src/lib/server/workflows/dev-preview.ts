@@ -1,17 +1,8 @@
 import { env } from "$env/dynamic/private";
-import { desc, eq } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import {
-	workflowArtifacts,
-	workflowExecutions,
-	workflowWorkspaceSessions,
-} from "$lib/server/db/schema";
-import { createFile } from "$lib/server/files/registry";
 import {
 	resolveDevPreviewDescriptor,
 	resolveDevPreviewImage,
 } from "$lib/server/workflows/dev-preview-registry";
-import { persistSourceBundle } from "$lib/server/workflows/source-bundle";
 
 /**
  * Per-run ephemeral dev-server preview (P2).
@@ -47,6 +38,69 @@ export interface DevPreviewInfo {
 	needsDapr: boolean;
 	/** The isolated Dapr app-id (own task hub), when needsDapr. */
 	daprAppId: string | null;
+}
+
+type DevPreviewWorkspaceSessionRecord = {
+	workspaceRef: string;
+	sandboxState: Record<string, unknown> | null;
+};
+
+type DevPreviewPersistSourceBundleInput = {
+	executionId: string;
+	userId: string;
+	projectId?: string | null;
+	nodeId?: string | null;
+	iteration?: number | null;
+	fileName?: string;
+	bytes: Buffer;
+	contentType?: string;
+	meta?: {
+		base?: string | null;
+		head?: string | null;
+		tier?: string | null;
+		clonePath?: string | null;
+		fileCount?: number | null;
+		repoUrl?: string | null;
+		repoSubdir?: string | null;
+		syncPaths?: string[] | null;
+		iteration?: number | null;
+	};
+};
+
+export interface DevPreviewPersistence {
+	upsertWorkflowWorkspaceSession(input: {
+		workspaceRef: string;
+		workflowExecutionId?: string | null;
+		durableInstanceId?: string | null;
+		name: string;
+		rootPath: string;
+		clonePath?: string | null;
+		backend: "openshell" | "juicefs";
+		enabledTools?: string[];
+		status?: "active" | "cleaned" | "error";
+		sandboxState?: Record<string, unknown> | null;
+	}): Promise<{ workspaceRef: string }>;
+	listWorkflowWorkspaceSessionsByExecutionId(input: {
+		executionId: string;
+		limit?: number;
+	}): Promise<DevPreviewWorkspaceSessionRecord[]>;
+	markWorkflowWorkspaceSessionCleaned(input: {
+		workspaceRef: string;
+	}): Promise<boolean>;
+	getExecutionById(id: string): Promise<{
+		id: string;
+		userId: string;
+		projectId: string | null;
+	} | null>;
+	persistSourceBundleArtifact(
+		input: DevPreviewPersistSourceBundleInput,
+	): Promise<{ id: string; fileId: string; bytes: number }>;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+	return typeof value === "object" && value !== null
+		? (value as Record<string, unknown>)
+		: null;
 }
 
 function sandboxExecutionApiUrl(): string | null {
@@ -104,6 +158,7 @@ export interface ProvisionDevPreviewParams {
 
 export async function provisionDevPreview(
 	params: ProvisionDevPreviewParams,
+	persistence?: DevPreviewPersistence,
 ): Promise<DevPreviewInfo> {
 	const baseUrl = sandboxExecutionApiUrl();
 	if (!baseUrl) {
@@ -233,12 +288,15 @@ export async function provisionDevPreview(
 		needsDapr: body.needsDapr === true,
 		daprAppId: typeof body.daprAppId === "string" ? body.daprAppId : null,
 	};
-	await persistDevPreviewSession(info);
+	await persistDevPreviewSession(info, persistence);
 	return info;
 }
 
-async function persistDevPreviewSession(info: DevPreviewInfo): Promise<void> {
-	if (!db || !info.sandboxName) return;
+async function persistDevPreviewSession(
+	info: DevPreviewInfo,
+	persistence?: DevPreviewPersistence,
+): Promise<void> {
+	if (!persistence || !info.sandboxName) return;
 	const details = {
 		kind: "dev-preview",
 		sandboxName: info.sandboxName,
@@ -257,29 +315,16 @@ async function persistDevPreviewSession(info: DevPreviewInfo): Promise<void> {
 		provider: "agent-sandbox-dev-preview",
 	};
 	try {
-		await db
-			.insert(workflowWorkspaceSessions)
-			.values({
-				workspaceRef: info.sandboxName,
-				workflowExecutionId: info.executionId,
-				name: "dev-preview",
-				rootPath: "/app",
-				backend: "juicefs",
-				enabledTools: [],
-				status: "active",
-				sandboxState: { details },
-			})
-			.onConflictDoUpdate({
-				target: workflowWorkspaceSessions.workspaceRef,
-				set: {
-					workflowExecutionId: info.executionId,
-					status: "active",
-					sandboxState: { details },
-					updatedAt: new Date(),
-					lastAccessedAt: new Date(),
-					cleanedAt: null,
-				},
-			});
+		await persistence.upsertWorkflowWorkspaceSession({
+			workspaceRef: info.sandboxName,
+			workflowExecutionId: info.executionId,
+			name: "dev-preview",
+			rootPath: "/app",
+			backend: "juicefs",
+			enabledTools: [],
+			status: "active",
+			sandboxState: { details },
+		});
 	} catch (err) {
 		// Best-effort: provisioning succeeded; persistence is for discovery/reaping.
 		// Log at ERROR with the offending id — the common cause is a non-canonical
@@ -300,22 +345,17 @@ async function persistDevPreviewSession(info: DevPreviewInfo): Promise<void> {
 async function resolveDevPreviewSandboxName(
 	executionId: string,
 	explicit?: string | null,
+	persistence?: DevPreviewPersistence,
 ): Promise<string | null> {
 	if (explicit) return explicit;
-	if (db) {
-		const [row] = await db
-			.select({
-				workspaceRef: workflowWorkspaceSessions.workspaceRef,
-				sandboxState: workflowWorkspaceSessions.sandboxState,
-			})
-			.from(workflowWorkspaceSessions)
-			.where(eq(workflowWorkspaceSessions.workflowExecutionId, executionId))
-			.orderBy(desc(workflowWorkspaceSessions.createdAt))
-			.limit(1);
+	if (persistence) {
+		const [row] = await persistence.listWorkflowWorkspaceSessionsByExecutionId({
+			executionId,
+			limit: 1,
+		});
 		if (row?.workspaceRef) return row.workspaceRef;
-		const details = (row?.sandboxState as { details?: { sandboxName?: string } })
-			?.details;
-		if (details?.sandboxName) return details.sandboxName;
+		const details = asRecord(asRecord(row?.sandboxState)?.details);
+		if (typeof details?.sandboxName === "string") return details.sandboxName;
 	}
 	return null;
 }
@@ -330,8 +370,9 @@ type DevPreviewDetails = {
 /** Pull the persisted dev-preview details (pod IP/port/service) for an execution. */
 async function resolveDevPreviewDetails(
 	executionId: string,
+	persistence?: DevPreviewPersistence,
 ): Promise<DevPreviewDetails | null> {
-	if (!db) return null;
+	if (!persistence) return null;
 	type DevDetails = {
 		sandboxName?: string;
 		service?: string;
@@ -343,18 +384,13 @@ async function resolveDevPreviewDetails(
 	// newest row that actually carries a podIP+syncPort, falling back to the
 	// newest overall — newest-only would otherwise resolve to a stale podIP-null
 	// row and make capture/teardown skip `no_dev_pod`.
-	const rows = await db
-		.select({
-			workspaceRef: workflowWorkspaceSessions.workspaceRef,
-			sandboxState: workflowWorkspaceSessions.sandboxState,
-		})
-		.from(workflowWorkspaceSessions)
-		.where(eq(workflowWorkspaceSessions.workflowExecutionId, executionId))
-		.orderBy(desc(workflowWorkspaceSessions.createdAt))
-		.limit(8);
+	const rows = await persistence.listWorkflowWorkspaceSessionsByExecutionId({
+		executionId,
+		limit: 8,
+	});
 	if (rows.length === 0) return null;
 	const detailsOf = (r: (typeof rows)[number]): DevDetails | undefined =>
-		(r.sandboxState as { details?: DevDetails } | null)?.details;
+		(asRecord(r.sandboxState)?.details as DevDetails | undefined);
 	const chosen =
 		rows.find((r) => {
 			const d = detailsOf(r);
@@ -382,18 +418,19 @@ async function resolveDevPreviewDetails(
 export async function captureDevPreviewSource(
 	executionId: string,
 	opts: { nodeId?: string | null; iteration?: number | null; sandboxName?: string | null } = {},
+	persistence?: DevPreviewPersistence,
 ): Promise<{ ok: boolean; artifactId?: string; bytes?: number; skipped?: string }> {
-	if (!db) return { ok: false, skipped: "no_db" };
+	if (!persistence) return { ok: false, skipped: "no_persistence" };
 	const label = `[dev-preview] capture exec=${executionId} node=${opts.nodeId ?? "?"} iter=${opts.iteration ?? "?"}`;
 	try {
 		// The snapshot node fires right after `generate`, which can race the
 		// dev-preview session row being stamped with podIP/syncPort (the dev pod may
 		// still be reporting ready). Retry resolution briefly before giving up so a
 		// per-iteration capture isn't silently lost to a transient empty row.
-		let details = await resolveDevPreviewDetails(executionId);
+		let details = await resolveDevPreviewDetails(executionId, persistence);
 		for (let i = 0; i < 8 && (!details?.podIP || !details.syncPort); i++) {
 			await new Promise((r) => setTimeout(r, 2000));
-			details = await resolveDevPreviewDetails(executionId);
+			details = await resolveDevPreviewDetails(executionId, persistence);
 		}
 		if (!details?.podIP || !details.syncPort) {
 			console.warn(`${label} skip: no_dev_pod (podIP/syncPort unresolved after retries)`);
@@ -434,17 +471,10 @@ export async function captureDevPreviewSource(
 			return { ok: true, skipped: "export_not_gzip" };
 		}
 
-		const [exec] = await db
-			.select({
-				userId: workflowExecutions.userId,
-				projectId: workflowExecutions.projectId,
-			})
-			.from(workflowExecutions)
-			.where(eq(workflowExecutions.id, executionId))
-			.limit(1);
+		const exec = await persistence.getExecutionById(executionId);
 		if (!exec) return { ok: true, skipped: "no_execution" };
 
-		const result = await persistSourceBundle({
+		const result = await persistence.persistSourceBundleArtifact({
 			executionId,
 			userId: exec.userId,
 			projectId: exec.projectId ?? null,
@@ -461,29 +491,6 @@ export async function captureDevPreviewSource(
 				syncPaths,
 				iteration: opts.iteration ?? null,
 			},
-		}, {
-			createFile,
-			upsertWorkflowArtifact: async (artifact) => {
-				const values = {
-					id: artifact.id,
-					workflowExecutionId: artifact.workflowExecutionId,
-					nodeId: artifact.nodeId ?? null,
-					slot: artifact.slot ?? null,
-					kind: artifact.kind,
-					title: artifact.title,
-					description: artifact.description ?? null,
-					inlinePayload: artifact.inlinePayload ?? null,
-					fileId: artifact.fileId ?? null,
-					contentType: artifact.contentType ?? null,
-					sizeBytes: artifact.sizeBytes ?? null,
-					metadata: artifact.metadata ?? null,
-				};
-				await db
-					.insert(workflowArtifacts)
-					.values(values)
-					.onConflictDoUpdate({ target: workflowArtifacts.id, set: values });
-				return { id: artifact.id };
-			},
 		});
 		console.info(`${label} captured ${result.bytes}B → artifact ${result.id}`);
 		return { ok: true, artifactId: result.id, bytes: result.bytes };
@@ -493,20 +500,28 @@ export async function captureDevPreviewSource(
 	}
 }
 
-export async function teardownDevPreview(params: {
-	executionId: string;
-	sandboxName?: string | null;
-}): Promise<{ ok: boolean; sandboxName: string | null }> {
+export async function teardownDevPreview(
+	params: {
+		executionId: string;
+		sandboxName?: string | null;
+	},
+	persistence?: DevPreviewPersistence,
+): Promise<{ ok: boolean; sandboxName: string | null }> {
 	// Capture a durable, promotable version of the produced code BEFORE the dev pod
 	// is deleted (dev-pod-as-source code lives only behind /__export). Best-effort.
-	await captureDevPreviewSource(params.executionId, {
-		nodeId: "dev-preview",
-		iteration: null,
-	});
+	await captureDevPreviewSource(
+		params.executionId,
+		{
+			nodeId: "dev-preview",
+			iteration: null,
+		},
+		persistence,
+	);
 	const baseUrl = sandboxExecutionApiUrl();
 	const name = await resolveDevPreviewSandboxName(
 		params.executionId,
 		params.sandboxName,
+		persistence,
 	);
 	if (!name) return { ok: true, sandboxName: null };
 	const token = internalToken();
@@ -526,12 +541,9 @@ export async function teardownDevPreview(params: {
 			);
 		}
 	}
-	if (db) {
+	if (persistence) {
 		try {
-			await db
-				.update(workflowWorkspaceSessions)
-				.set({ status: "cleaned", cleanedAt: new Date(), updatedAt: new Date() })
-				.where(eq(workflowWorkspaceSessions.workspaceRef, name));
+			await persistence.markWorkflowWorkspaceSessionCleaned({ workspaceRef: name });
 		} catch {
 			/* best-effort */
 		}

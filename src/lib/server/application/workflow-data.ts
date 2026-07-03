@@ -5314,6 +5314,19 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.workspaceSessions.upsertWorkflowWorkspaceSession(input);
 	}
 
+	listWorkflowWorkspaceSessionsByExecutionId(input: {
+		executionId: string;
+		limit?: number;
+	}) {
+		return this.deps.workspaceSessions.listWorkflowWorkspaceSessionsByExecutionId(
+			input,
+		);
+	}
+
+	markWorkflowWorkspaceSessionCleaned(input: { workspaceRef: string }) {
+		return this.deps.workspaceSessions.markWorkflowWorkspaceSessionCleaned(input);
+	}
+
 	upsertScheduledAgentRun(input: UpsertWorkflowAgentRunScheduledInput) {
 		return this.deps.agentRuns.upsertScheduledAgentRun(input);
 	}

@@ -2,14 +2,17 @@ import type { PreviewEnvironmentProvisioner } from "$lib/server/application/port
 import {
 	provisionDevPreview,
 	type DevPreviewInfo,
+	type DevPreviewPersistence,
 	type ProvisionDevPreviewParams,
 } from "$lib/server/workflows/dev-preview";
 
 export class SandboxExecutionPreviewEnvironmentProvisioner
 	implements PreviewEnvironmentProvisioner
 {
+	constructor(private readonly persistence?: () => DevPreviewPersistence) {}
+
 	provision(input: ProvisionDevPreviewParams): Promise<DevPreviewInfo> {
-		return provisionDevPreview(input);
+		return provisionDevPreview(input, this.persistence?.());
 	}
 }
 

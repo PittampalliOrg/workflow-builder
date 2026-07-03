@@ -3128,10 +3128,25 @@ export type UpsertWorkspaceSessionInput = {
 	sandboxState?: Record<string, unknown> | null;
 };
 
+export type WorkflowWorkspaceSessionRecord = {
+	workspaceRef: string;
+	workflowExecutionId: string | null;
+	status: WorkspaceSessionStatus;
+	sandboxState: Record<string, unknown> | null;
+	createdAt: Date;
+};
+
 export interface WorkspaceSessionStore {
 	upsertWorkflowWorkspaceSession(
 		input: UpsertWorkspaceSessionInput,
 	): Promise<{ workspaceRef: string }>;
+	listWorkflowWorkspaceSessionsByExecutionId(input: {
+		executionId: string;
+		limit?: number;
+	}): Promise<WorkflowWorkspaceSessionRecord[]>;
+	markWorkflowWorkspaceSessionCleaned(input: {
+		workspaceRef: string;
+	}): Promise<boolean>;
 }
 
 export type WorkflowAgentRunMode = "run" | "plan" | "execute_plan";
@@ -5435,6 +5450,13 @@ export interface WorkflowDataService {
 	upsertWorkflowWorkspaceSession(
 		input: UpsertWorkspaceSessionInput,
 	): Promise<{ workspaceRef: string }>;
+	listWorkflowWorkspaceSessionsByExecutionId(input: {
+		executionId: string;
+		limit?: number;
+	}): Promise<WorkflowWorkspaceSessionRecord[]>;
+	markWorkflowWorkspaceSessionCleaned(input: {
+		workspaceRef: string;
+	}): Promise<boolean>;
 	upsertScheduledAgentRun(
 		input: UpsertWorkflowAgentRunScheduledInput,
 	): Promise<{ id: string }>;

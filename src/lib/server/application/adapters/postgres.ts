@@ -231,6 +231,7 @@ import type {
 	WorkflowPlanArtifactRecord,
 	WorkflowPlanArtifactStore,
 	UpsertWorkspaceSessionInput,
+	WorkflowWorkspaceSessionRecord,
 	WorkspaceProjectMembershipRecord,
 	WorkspaceSessionStore,
 } from "$lib/server/application/ports";
@@ -5910,6 +5911,20 @@ export class PostgresWorkspaceSessionStore implements WorkspaceSessionStore {
 	async upsertWorkflowWorkspaceSession(
 		input: UpsertWorkspaceSessionInput,
 	): Promise<{ workspaceRef: string }> {
+		const updateSet = {
+			workflowExecutionId: input.workflowExecutionId ?? null,
+			durableInstanceId: input.durableInstanceId ?? null,
+			name: input.name,
+			rootPath: input.rootPath,
+			clonePath: input.clonePath ?? null,
+			backend: input.backend,
+			enabledTools: input.enabledTools ?? [],
+			status: input.status ?? "active",
+			sandboxState: input.sandboxState ?? null,
+			updatedAt: new Date(),
+			lastAccessedAt: new Date(),
+			...(input.status == null || input.status === "active" ? { cleanedAt: null } : {}),
+		};
 		await this.database
 			.insert(workflowWorkspaceSessions)
 			.values({
@@ -5926,21 +5941,53 @@ export class PostgresWorkspaceSessionStore implements WorkspaceSessionStore {
 			})
 			.onConflictDoUpdate({
 				target: workflowWorkspaceSessions.workspaceRef,
-				set: {
-					workflowExecutionId: input.workflowExecutionId ?? null,
-					durableInstanceId: input.durableInstanceId ?? null,
-					name: input.name,
-					rootPath: input.rootPath,
-					clonePath: input.clonePath ?? null,
-					backend: input.backend,
-					enabledTools: input.enabledTools ?? [],
-					status: input.status ?? "active",
-					sandboxState: input.sandboxState ?? null,
-					updatedAt: new Date(),
-					lastAccessedAt: new Date(),
-				},
+				set: updateSet,
 			});
 		return { workspaceRef: input.workspaceRef };
+	}
+
+	async listWorkflowWorkspaceSessionsByExecutionId(input: {
+		executionId: string;
+		limit?: number;
+	}): Promise<WorkflowWorkspaceSessionRecord[]> {
+		const rows = await this.database
+			.select({
+				workspaceRef: workflowWorkspaceSessions.workspaceRef,
+				workflowExecutionId: workflowWorkspaceSessions.workflowExecutionId,
+				status: workflowWorkspaceSessions.status,
+				sandboxState: workflowWorkspaceSessions.sandboxState,
+				createdAt: workflowWorkspaceSessions.createdAt,
+			})
+			.from(workflowWorkspaceSessions)
+			.where(eq(workflowWorkspaceSessions.workflowExecutionId, input.executionId))
+			.orderBy(desc(workflowWorkspaceSessions.createdAt))
+			.limit(Math.max(1, Math.min(input.limit ?? 8, 50)));
+
+		return rows.map((row) => ({
+			workspaceRef: row.workspaceRef,
+			workflowExecutionId: row.workflowExecutionId,
+			status: row.status as WorkflowWorkspaceSessionRecord["status"],
+			sandboxState:
+				typeof row.sandboxState === "object" && row.sandboxState !== null
+					? (row.sandboxState as Record<string, unknown>)
+					: null,
+			createdAt: row.createdAt,
+		}));
+	}
+
+	async markWorkflowWorkspaceSessionCleaned(input: {
+		workspaceRef: string;
+	}): Promise<boolean> {
+		const rows = await this.database
+			.update(workflowWorkspaceSessions)
+			.set({
+				status: "cleaned",
+				cleanedAt: new Date(),
+				updatedAt: new Date(),
+			})
+			.where(eq(workflowWorkspaceSessions.workspaceRef, input.workspaceRef))
+			.returning({ workspaceRef: workflowWorkspaceSessions.workspaceRef });
+		return rows.length > 0;
 	}
 }
 

@@ -8,7 +8,8 @@ import { stopDurableRun } from "$lib/server/lifecycle";
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	const executionId = params.executionId!;
-	const environment = await getApplicationAdapters().workflowData.getDevEnvironmentOrPending({
+	const workflowData = getApplicationAdapters().workflowData;
+	const environment = await workflowData.getDevEnvironmentOrPending({
 		executionId,
 		projectId: locals.session.projectId,
 	});
@@ -24,17 +25,21 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	const executionId = params.executionId!;
-	const environment = await getApplicationAdapters().workflowData.getDevEnvironmentOrPending({
+	const workflowData = getApplicationAdapters().workflowData;
+	const environment = await workflowData.getDevEnvironmentOrPending({
 		executionId,
 		projectId: locals.session.projectId,
 	});
 	if (!environment) return error(404, "Dev environment not found");
 
 	const reason = "Dev environment torn down by user";
-	const preview = await teardownDevPreview({
-		executionId,
-		sandboxName: environment.sandboxName,
-	});
+	const preview = await teardownDevPreview(
+		{
+			executionId,
+			sandboxName: environment.sandboxName,
+		},
+		workflowData,
+	);
 
 	const stop = async (
 		target: { kind: "session" | "workflowExecution"; id: string },

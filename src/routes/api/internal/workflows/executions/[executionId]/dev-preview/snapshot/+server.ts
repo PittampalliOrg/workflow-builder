@@ -24,12 +24,13 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	requireInternal(request);
 	const rawId = params.executionId;
 	if (!rawId) return json({ ok: false, error: "executionId required" }, { status: 400 });
+	const workflowData = getApplicationAdapters().workflowData;
 	// The orchestrator passes the Dapr instance id (`sw-<wf>-exec-<id>`); the
 	// dev-preview session + execution rows are keyed on the canonical execution id
 	// (same normalization the ensure/teardown routes do). Without this the capture
 	// resolves no podIP and silently skips `no_dev_pod`.
 	const executionId =
-		await getApplicationAdapters().workflowData.resolveCanonicalExecutionId({
+		await workflowData.resolveCanonicalExecutionId({
 			executionId: rawId,
 		});
 
@@ -45,9 +46,13 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			? null
 			: Number.parseInt(String(iterationRaw), 10);
 
-	const result = await captureDevPreviewSource(executionId, {
-		nodeId: body.nodeId ?? "dev-preview",
-		iteration: Number.isFinite(iteration as number) ? (iteration as number) : null,
-	});
+	const result = await captureDevPreviewSource(
+		executionId,
+		{
+			nodeId: body.nodeId ?? "dev-preview",
+			iteration: Number.isFinite(iteration as number) ? (iteration as number) : null,
+		},
+		workflowData,
+	);
 	return json(result);
 };
