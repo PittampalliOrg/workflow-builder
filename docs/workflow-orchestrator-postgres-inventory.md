@@ -44,6 +44,8 @@ are confined to the Postgres session adapter for that preview lookup.
 The dev-mode shell and CLI-terminal WebSocket proxies now resolve session
 runtime targets through workflow-data before opening Kubernetes/pod WebSocket
 transport; they no longer import the legacy DB-backed runtime-target helper.
+The old `src/lib/server/sessions/scope.ts` direct DB guard had no production
+callers after the session route migrations and has been deleted.
 The benchmark instance-detail API now loads SWE-bench instance details through
 a workflow-data read model, and its contamination-risk audit authorization check
 uses workflow-data user/project ports instead of the route utility reading
