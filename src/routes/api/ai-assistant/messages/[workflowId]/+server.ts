@@ -1,7 +1,7 @@
 import { json, error, type RequestHandler } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
-import { workflowAiMessages } from '$lib/server/db/schema';
-import { eq, and, asc } from 'drizzle-orm';
+import { getApplicationAdapters } from '$lib/server/application';
+
+const MESSAGE_LIMIT = 100;
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	const userId = locals.session?.userId;
@@ -10,17 +10,20 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const workflowId = params.workflowId;
 	if (!workflowId) return error(400, 'Missing workflowId');
 
-	const rows = await db
-		.select()
-		.from(workflowAiMessages)
-		.where(
-			and(
-				eq(workflowAiMessages.workflowId, workflowId),
-				eq(workflowAiMessages.userId, userId),
-			),
-		)
-		.orderBy(asc(workflowAiMessages.createdAt))
-		.limit(100);
+	let rows;
+	try {
+		rows = await getApplicationAdapters().workflowData.listAiAssistantMessages({
+			workflowId,
+			userId,
+			limit: MESSAGE_LIMIT,
+		});
+	} catch (err) {
+		const message = err instanceof Error ? err.message : '';
+		if (/Database not configured/.test(message)) {
+			return error(503, 'Database not configured');
+		}
+		throw err;
+	}
 
 	const messages = rows.map((row) => ({
 		id: row.id,
@@ -41,14 +44,18 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 	const workflowId = params.workflowId;
 	if (!workflowId) return error(400, 'Missing workflowId');
 
-	await db
-		.delete(workflowAiMessages)
-		.where(
-			and(
-				eq(workflowAiMessages.workflowId, workflowId),
-				eq(workflowAiMessages.userId, userId),
-			),
-		);
+	try {
+		await getApplicationAdapters().workflowData.deleteAiAssistantMessages({
+			workflowId,
+			userId,
+		});
+	} catch (err) {
+		const message = err instanceof Error ? err.message : '';
+		if (/Database not configured/.test(message)) {
+			return error(503, 'Database not configured');
+		}
+		throw err;
+	}
 
 	return json({ ok: true });
 };

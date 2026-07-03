@@ -23,6 +23,8 @@ CLI-session candidate lookup, file creation, and browser artifact persistence
 through workflow-data.
 The prompt preset, agent skill, and vault "used by/usages" reverse-lookup
 routes now load their read models through workflow-data resource usage ports.
+The AI assistant message-history route now lists and deletes persisted chat
+messages through workflow-data.
 
 ## Strict HTTP Runtime Paths
 
@@ -265,6 +267,11 @@ The first UI-facing route has also moved behind the application service:
   usage models through workflow-data resource usage ports. Preset binding scans,
   skill attachment JSONB queries, and vault/session JSONB containment queries
   are confined to the Postgres resource-usage adapter.
+- `src/routes/api/ai-assistant/messages/[workflowId]/+server.ts` now lists and
+  deletes workflow AI chat history through workflow-data. `workflow_ai_messages`
+  reads/deletes and row-to-message mapping are confined to the Postgres AI
+  assistant message adapter. The streaming `build-workflow` route remains a
+  separate AI assistant command slice.
 - `src/routes/workspaces/[slug]/dev/+page.server.ts`,
   `src/routes/workspaces/[slug]/dev/[executionId]/+page.server.ts`, and the
   public `src/routes/api/dev-environments/**` GET routes now load dev-preview
@@ -637,9 +644,9 @@ the CLI credential capture session-owner lookup and ActivePieces resume
 execution lookup, and the GitHub trigger ingress/gate subset, are also clean.
 The internal piece-execution artifact readback and CLI workspace command routes
 are also clean. The prompt preset, agent skill, and vault resource-usage
-reverse-lookup routes are also clean. The scanned session provisioning,
-context-usage, control settings/MCP status, session detail/title/archive/delete,
-fork, goal,
+reverse-lookup routes are also clean. The AI assistant message-history route is
+also clean. The scanned session provisioning, context-usage, control settings/MCP
+status, session detail/title/archive/delete, fork, goal,
 goal-flow, event list/append/detail, runtime-config, config patch commands,
 runtime debug target routes, resources, and event-stream routes are also clean.
 The sandbox-delete route's session read is also clean, while its lifecycle and

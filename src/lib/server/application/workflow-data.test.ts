@@ -52,6 +52,7 @@ import type {
 	WorkspaceProjectRepository,
 	WorkspaceSessionStore,
 	WorkflowActivityRateTargetRepository,
+	WorkflowAiAssistantMessageRepository,
 	ObservabilityTraceRepository,
 	WorkflowMonitorReadRepository,
 } from "$lib/server/application/ports";
@@ -1327,6 +1328,7 @@ function makeService(options: {
 	observabilityTraces?: ObservabilityTraceRepository;
 	workflowMonitorReads?: WorkflowMonitorReadRepository;
 	resourceUsages?: ResourceUsageReadRepository;
+	aiAssistantMessages?: WorkflowAiAssistantMessageRepository;
 	pieceExecutions?: PieceExecutionRepository;
 	browserArtifacts?: WorkflowBrowserArtifactStore;
 	sessions?: SessionRepository;
@@ -1387,6 +1389,7 @@ function makeService(options: {
 		observabilityTraces: options.observabilityTraces,
 		workflowMonitorReads: options.workflowMonitorReads,
 		resourceUsages: options.resourceUsages,
+		aiAssistantMessages: options.aiAssistantMessages,
 		workflowExecutions,
 		sessionEvents: options.sessionEvents,
 		sessionRuntimeConfigs:
@@ -6236,6 +6239,55 @@ describe("ApplicationWorkflowDataService", () => {
 		});
 		expect(resourceUsages.getVaultUsages).toHaveBeenCalledWith({
 			vaultId: "vault-1",
+		});
+	});
+
+	it("lists and deletes AI assistant messages through the workflow-data port", async () => {
+		const createdAt = new Date("2026-07-01T12:00:00.000Z");
+		const aiAssistantMessages: WorkflowAiAssistantMessageRepository = {
+			listMessages: vi.fn(async () => [
+				{
+					id: "message-1",
+					role: "assistant" as const,
+					content: "Done",
+					operations: [{ op: "add_task" }],
+					createdAt,
+				},
+			]),
+			deleteMessages: vi.fn(async () => undefined),
+		};
+		const { service } = makeService({ aiAssistantMessages });
+
+		await expect(
+			service.listAiAssistantMessages({
+				workflowId: "workflow-1",
+				userId: "user-1",
+				limit: 100,
+			}),
+		).resolves.toEqual([
+			{
+				id: "message-1",
+				role: "assistant",
+				content: "Done",
+				operations: [{ op: "add_task" }],
+				createdAt,
+			},
+		]);
+		expect(aiAssistantMessages.listMessages).toHaveBeenCalledWith({
+			workflowId: "workflow-1",
+			userId: "user-1",
+			limit: 100,
+		});
+
+		await expect(
+			service.deleteAiAssistantMessages({
+				workflowId: "workflow-1",
+				userId: "user-1",
+			}),
+		).resolves.toBeUndefined();
+		expect(aiAssistantMessages.deleteMessages).toHaveBeenCalledWith({
+			workflowId: "workflow-1",
+			userId: "user-1",
 		});
 	});
 

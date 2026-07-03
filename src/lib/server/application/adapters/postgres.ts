@@ -60,6 +60,7 @@ import {
 	resourcePromptVersions,
 	resourcePrompts,
 	threadGoals,
+	workflowAiMessages,
 	workflowConnectionRefs,
 	workflowArtifacts,
 	workflowBrowserArtifacts,
@@ -156,6 +157,7 @@ import type {
 	UserProfileRecord,
 	UserProfileRepository,
 	WorkspaceProjectRepository,
+	WorkflowAiAssistantMessageRepository,
 	WorkflowDefinition,
 	WorkflowDefinitionListItem,
 	WorkflowDefinitionRepository,
@@ -3478,6 +3480,67 @@ export class PostgresResourceUsageReadRepository implements ResourceUsageReadRep
 			})),
 			sessionCount: Number(sessionCountRows[0]?.count ?? 0),
 		};
+	}
+}
+
+export class PostgresWorkflowAiAssistantMessageRepository
+	implements WorkflowAiAssistantMessageRepository
+{
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async listMessages(input: {
+		workflowId: string;
+		userId: string;
+		limit: number;
+	}) {
+		const workflowId = input.workflowId.trim();
+		const userId = input.userId.trim();
+		if (!workflowId || !userId) return [];
+		const limit = Math.max(1, Math.min(Math.trunc(input.limit || 100), 500));
+
+		const rows = await this.database
+			.select({
+				id: workflowAiMessages.id,
+				role: workflowAiMessages.role,
+				content: workflowAiMessages.content,
+				operations: workflowAiMessages.operations,
+				createdAt: workflowAiMessages.createdAt,
+			})
+			.from(workflowAiMessages)
+			.where(
+				and(
+					eq(workflowAiMessages.workflowId, workflowId),
+					eq(workflowAiMessages.userId, userId),
+				),
+			)
+			.orderBy(asc(workflowAiMessages.createdAt))
+			.limit(limit);
+
+		return rows.map((row) => ({
+			id: row.id,
+			role: row.role,
+			content: row.content,
+			operations: row.operations ?? null,
+			createdAt: row.createdAt,
+		}));
+	}
+
+	async deleteMessages(input: {
+		workflowId: string;
+		userId: string;
+	}): Promise<void> {
+		const workflowId = input.workflowId.trim();
+		const userId = input.userId.trim();
+		if (!workflowId || !userId) return;
+
+		await this.database
+			.delete(workflowAiMessages)
+			.where(
+				and(
+					eq(workflowAiMessages.workflowId, workflowId),
+					eq(workflowAiMessages.userId, userId),
+				),
+			);
 	}
 }
 

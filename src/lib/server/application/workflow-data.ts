@@ -152,6 +152,7 @@ import type {
 	UpsertTraceLineageLinksInput,
 	RuntimeRegistryReader,
 	ResourceUsageReadRepository,
+	WorkflowAiAssistantMessageRepository,
 	WorkspaceSessionStore,
 	ServiceGraphPickerOptions,
 	WorkspaceWorkflowListItem,
@@ -781,6 +782,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			observabilityTraces?: ObservabilityTraceRepository;
 			workflowMonitorReads?: WorkflowMonitorReadRepository;
 			resourceUsages?: ResourceUsageReadRepository;
+			aiAssistantMessages?: WorkflowAiAssistantMessageRepository;
 			workflowExecutions: WorkflowExecutionRepository;
 			sessions?: SessionRepository;
 			sessionProvisioning?: SessionProvisioningReader;
@@ -912,6 +914,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Resource usage read repository not configured");
 		}
 		return this.deps.resourceUsages;
+	}
+
+	private requireAiAssistantMessages(): WorkflowAiAssistantMessageRepository {
+		if (!this.deps.aiAssistantMessages) {
+			throw new Error("AI assistant message repository not configured");
+		}
+		return this.deps.aiAssistantMessages;
 	}
 
 	private requireSessionRuntimeConfigs(): SessionRuntimeConfigReader {
@@ -3670,6 +3679,18 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	getVaultUsages(input: { vaultId: string }) {
 		return this.requireResourceUsages().getVaultUsages(input);
+	}
+
+	listAiAssistantMessages(input: {
+		workflowId: string;
+		userId: string;
+		limit: number;
+	}) {
+		return this.requireAiAssistantMessages().listMessages(input);
+	}
+
+	deleteAiAssistantMessages(input: { workflowId: string; userId: string }) {
+		return this.requireAiAssistantMessages().deleteMessages(input);
 	}
 
 	async getDevPreviewHubReadModel(input: { projectId?: string | null }) {

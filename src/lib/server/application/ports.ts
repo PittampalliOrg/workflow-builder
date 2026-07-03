@@ -516,6 +516,28 @@ export interface ResourceUsageReadRepository {
 	}): Promise<VaultUsagesReadModel>;
 }
 
+export type WorkflowAiAssistantMessageRole = "user" | "assistant" | "system";
+
+export type WorkflowAiAssistantMessageReadModel = {
+	id: string;
+	role: WorkflowAiAssistantMessageRole;
+	content: string;
+	operations: Array<Record<string, unknown>> | null;
+	createdAt: Date;
+};
+
+export interface WorkflowAiAssistantMessageRepository {
+	listMessages(input: {
+		workflowId: string;
+		userId: string;
+		limit: number;
+	}): Promise<WorkflowAiAssistantMessageReadModel[]>;
+	deleteMessages(input: {
+		workflowId: string;
+		userId: string;
+	}): Promise<void>;
+}
+
 export type CreateWorkflowDefinitionInput = {
 	name: string;
 	nodes: unknown[];
@@ -3500,6 +3522,15 @@ export interface WorkflowDataService {
 	getVaultUsages(input: {
 		vaultId: string;
 	}): Promise<VaultUsagesReadModel>;
+	listAiAssistantMessages(input: {
+		workflowId: string;
+		userId: string;
+		limit: number;
+	}): Promise<WorkflowAiAssistantMessageReadModel[]>;
+	deleteAiAssistantMessages(input: {
+		workflowId: string;
+		userId: string;
+	}): Promise<void>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;
 	}): Promise<DevPreviewHubReadModel>;
