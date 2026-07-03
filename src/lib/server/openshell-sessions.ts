@@ -67,9 +67,7 @@ function toView(row: SessionRow): OpenShellSessionView {
 			workflowExecution: row.workflowExecutionId
 				? `/api/workflows/executions/${encodeURIComponent(row.workflowExecutionId)}`
 				: null,
-			trace: row.mlflowSessionId
-				? `/api/observability/mlflow/sessions/${encodeURIComponent(row.id)}`
-				: null,
+			trace: null,
 		},
 	};
 }

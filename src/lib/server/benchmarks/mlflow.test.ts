@@ -22,9 +22,9 @@ beforeEach(() => {
 });
 
 describe("publicMlflowTracesUrl", () => {
-	it("routes benchmark trace links through the trace-experiment redirect", () => {
+	it("routes benchmark trace links through the local trace viewer", () => {
 		expect(publicMlflowTracesUrl("1", "abc123")).toBe(
-			"/api/observability/mlflow/traces/abc123",
+			"/observability/abc123",
 		);
 	});
 
@@ -36,7 +36,7 @@ describe("publicMlflowTracesUrl", () => {
 		vi.stubEnv("APP_PUBLIC_URL", "https://workflow-builder-dev.example.com/");
 
 		expect(publicWorkflowBuilderTraceUrl("abc123")).toBe(
-			"https://workflow-builder-dev.example.com/api/observability/mlflow/traces/abc123",
+			"https://workflow-builder-dev.example.com/observability/abc123",
 		);
 	});
 });

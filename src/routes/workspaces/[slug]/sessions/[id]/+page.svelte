@@ -76,7 +76,6 @@
 		Code2,
 		Container,
 		Download,
-		ExternalLink,
 		FileText,
 		Filter,
 		Layers,
@@ -323,19 +322,6 @@
 	// Token cost per row, attributing each agent.llm_usage event to the
 	// content event that consumed it. Computed once per `events` change.
 	const tokenAssignments = $derived(computeTokenAssignments(events));
-	type SessionMlflowGroup = {
-		experimentId: string | null;
-		mlflowSessionId: string | null;
-		sessionUrl: string | null;
-		runUrl: string | null;
-		traceSearchUrl: string | null;
-		links: Array<{
-			mlflowEntityType?: string | null;
-			mlflowRunId?: string | null;
-			mlflowPublicUrl?: string | null;
-			source?: string | null;
-		}>;
-	};
 	type RuntimeConfigSource = 'memory' | 'state' | 'event' | 'settings';
 	type RuntimeConfigData = {
 		source?: RuntimeConfigSource;
@@ -351,7 +337,6 @@
 		mcp?: Record<string, unknown>;
 		skills?: unknown[];
 		instructions?: Record<string, unknown>;
-		mlflow?: Record<string, unknown>;
 		dapr?: Record<string, unknown>;
 		attributes?: Record<string, unknown>;
 	};
@@ -387,8 +372,6 @@
 	let streamError = $state<string | null>(null);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
-	let mlflowGroup = $state<SessionMlflowGroup | null>(null);
-	let mlflowGroupKey = $state('');
 	let runtimeConfig = $state<RuntimeConfigCloudEvent | null>(null);
 	let runtimeConfigKey = $state('');
 	let runtimeConfigLoading = $state(false);
@@ -509,11 +492,6 @@
 		if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
 		if (diff < 30 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d ago`;
 		return new Date(iso).toLocaleDateString();
-	}
-	function shortMlflowId(value: string | null | undefined): string {
-		const text = value?.trim() ?? '';
-		if (!text) return '—';
-		return text.length > 16 ? `${text.slice(0, 12)}…` : text;
 	}
 	function isRuntimeRecord(value: unknown): value is Record<string, unknown> {
 		return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -656,39 +634,6 @@
 			loading = false;
 		}
 	}
-
-	async function loadMlflowGroup(id: string) {
-		try {
-			const res = await fetch(
-				`/api/observability/mlflow/sessions/${encodeURIComponent(id)}?format=json`
-			);
-			if (!res.ok) {
-				mlflowGroup = null;
-				return;
-			}
-			mlflowGroup = (await res.json()) as SessionMlflowGroup;
-		} catch {
-			mlflowGroup = null;
-		}
-	}
-
-	$effect(() => {
-		const key = session
-			? [
-					session.id,
-					session.mlflowExperimentId ?? '',
-					session.mlflowRunId ?? '',
-					session.mlflowSessionId ?? ''
-				].join(':')
-			: '';
-		if (key === mlflowGroupKey) return;
-		mlflowGroupKey = key;
-		if (!session || (!session.mlflowExperimentId && !session.mlflowRunId)) {
-			mlflowGroup = null;
-			return;
-		}
-		void loadMlflowGroup(session.id);
-	});
 
 	// Prev/next session navigation. We cache the caller's session-id list
 	// (most recent 50) once on load so the chevrons iterate without a
@@ -2001,15 +1946,19 @@
 					<CardContent class="text-xs space-y-3">
 						<div class="grid grid-cols-2 gap-2">
 							<div>
-								<div class="text-[10px] uppercase text-muted-foreground">MLflow session</div>
-								<code class="block truncate text-[11px]" title={session.mlflowSessionId ?? session.id}>
-									{shortMlflowId(mlflowGroup?.mlflowSessionId ?? session.mlflowSessionId ?? session.id)}
+								<div class="text-[10px] uppercase text-muted-foreground">Session</div>
+								<code class="block truncate text-[11px]" title={session.id}>
+									{session.id.length > 16 ? `${session.id.slice(0, 12)}…` : session.id}
 								</code>
 							</div>
 							<div>
-								<div class="text-[10px] uppercase text-muted-foreground">Run</div>
-								<code class="block truncate text-[11px]" title={session.mlflowRunId ?? ''}>
-									{shortMlflowId(session.mlflowRunId)}
+								<div class="text-[10px] uppercase text-muted-foreground">Workflow run</div>
+								<code class="block truncate text-[11px]" title={session.workflowExecutionId ?? ''}>
+									{session.workflowExecutionId
+										? session.workflowExecutionId.length > 16
+											? `${session.workflowExecutionId.slice(0, 12)}…`
+											: session.workflowExecutionId
+										: '—'}
 								</code>
 							</div>
 						</div>
@@ -2021,31 +1970,6 @@
 							>
 								<Activity class="size-3.5" /> View trace
 							</a>
-							<span class="text-[10px] text-muted-foreground">MLflow:</span>
-							{#if session.mlflowExperimentId || session.mlflowRunId || mlflowGroup?.sessionUrl}
-								<a
-									href={mlflowGroup?.sessionUrl ??
-										`/api/observability/mlflow/sessions/${encodeURIComponent(session.id)}`}
-									target="_blank"
-									rel="noreferrer"
-									class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
-									title="Open MLflow chat session"
-								>
-									Session <ExternalLink class="size-3" />
-								</a>
-							{/if}
-							{#if session.mlflowRunId}
-								<a
-									href={mlflowGroup?.runUrl ??
-										`/api/observability/mlflow/sessions/${encodeURIComponent(session.id)}?target=run`}
-									target="_blank"
-									rel="noreferrer"
-									class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
-									title="Open MLflow run"
-								>
-									Run <ExternalLink class="size-3" />
-								</a>
-							{/if}
 						</div>
 					</CardContent>
 				</Card>
@@ -2073,7 +1997,6 @@
 							{@const llmRuntime = runtimeSection('llm')}
 							{@const toolRuntime = runtimeSection('tools')}
 							{@const mcpRuntime = runtimeSection('mcp')}
-							{@const mlflowRuntime = runtimeSection('mlflow')}
 							{@const daprRuntime = runtimeSection('dapr')}
 							<div class="grid grid-cols-2 gap-2">
 								<div>
@@ -2135,19 +2058,11 @@
 									{runtimeConfig.data.instanceId ?? '—'}
 								</code>
 							</div>
-							<div class="grid grid-cols-2 gap-2">
-								<div>
-									<div class="text-[10px] uppercase text-muted-foreground">Config hash</div>
-									<code class="block truncate text-[11px]" title={runtimeConfig.data.configHash ?? ''}>
-										{runtimeConfig.data.configHash?.slice(0, 12) ?? '—'}
-									</code>
-								</div>
-								<div>
-									<div class="text-[10px] uppercase text-muted-foreground">MLflow run</div>
-									<code class="block truncate text-[11px]" title={runtimeText(mlflowRuntime.runId) ?? ''}>
-										{shortMlflowId(runtimeText(mlflowRuntime.runId))}
-									</code>
-								</div>
+							<div>
+								<div class="text-[10px] uppercase text-muted-foreground">Config hash</div>
+								<code class="block truncate text-[11px]" title={runtimeConfig.data.configHash ?? ''}>
+									{runtimeConfig.data.configHash?.slice(0, 12) ?? '—'}
+								</code>
 							</div>
 							<details class="rounded-md border bg-background/50">
 								<summary class="cursor-pointer px-2 py-1.5 text-[11px] text-muted-foreground">

@@ -140,9 +140,9 @@ export function publicMlflowTracesUrl(
 	_experimentId: string | null | undefined,
 	traceId: string | null | undefined,
 ): string | null {
-	const trimmed = traceId?.trim();
+	const trimmed = denormalizeMlflowTraceId(traceId) ?? traceId?.trim();
 	if (!trimmed) return null;
-	return `/api/observability/mlflow/traces/${encodeURIComponent(trimmed)}`;
+	return `/observability/${encodeURIComponent(trimmed)}`;
 }
 
 function publicWorkflowBuilderUrl(): string | null {

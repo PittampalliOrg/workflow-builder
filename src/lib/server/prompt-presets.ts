@@ -110,16 +110,6 @@ export async function createPromptPreset(input: {
 			.returning();
 		return [{ prompt, version }];
 	});
-	// Phase 3a: fire-and-forget sync to MLflow's Prompt Registry. The
-	// helper swallows errors and returns null on failure — we don't
-	// want a registry blip to fail prompt-preset creation.
-	void syncPromptToMlflow({
-		promptId: created.prompt.id,
-		projectId: input.projectId,
-		name: normalized.name,
-		messages: normalized.messages,
-		version: 1,
-	});
 	return rowToSummary(created.prompt, created.version);
 }
 
@@ -215,84 +205,7 @@ export async function updatePromptPreset(input: {
 		return { prompt, version };
 	});
 
-	// Phase 3a: fire-and-forget sync to MLflow's Prompt Registry when
-	// the template changed (skipping no-op updates).
-	if (templateChanged) {
-		void syncPromptToMlflow({
-			promptId: result.prompt.id,
-			projectId: input.projectId,
-			name: result.prompt.name,
-			messages: normalized.messages,
-			version: result.prompt.version,
-		});
-	}
-
 	return rowToSummary(result.prompt, result.version);
-}
-
-/**
- * Phase 3a fire-and-forget MLflow Prompt Registry sync. Resolved
- * separately from the DB transaction so a registry blip never tears
- * down user-facing prompt-preset creation.
- *
- * Composes a single-string template from the (typically system+user)
- * messages array because MLflow's register_prompt accepts a `template`
- * string OR a list-of-dicts; the orchestrator endpoint expects the
- * string form.
- */
-async function syncPromptToMlflow(args: {
-	promptId: string;
-	projectId: string;
-	name: string;
-	messages: { role: string; content: string }[];
-	version: number;
-}): Promise<void> {
-	try {
-		const { registerPromptInMlflow } = await import('$lib/server/observability/mlflow');
-		const template = args.messages
-			.map((m) => `### ${m.role.toUpperCase()}\n${m.content}`)
-			.join('\n\n');
-		const mlflowName = `workflow-builder/prompt-presets/${args.promptId}`;
-		const registered = await registerPromptInMlflow({
-			name: mlflowName,
-			template,
-			commitMessage: `prompt-preset v${args.version} from project ${args.projectId}`,
-			tags: {
-				'workflow-builder.preset_id': args.promptId,
-				'workflow-builder.project_id': args.projectId,
-				'workflow-builder.preset_name': args.name,
-				'workflow-builder.version': String(args.version),
-			},
-		});
-		// Phase 3a v2: persist the MLflow URI back onto the version row so
-		// traces can later carry `tag.prompt_version = <uri>` and the UI
-		// can deep-link to MLflow's prompt browser. Best-effort: a missed
-		// write just leaves the column null until next preset save.
-		if (registered?.uri) {
-			try {
-				const database = requireDb();
-				await database
-					.update(resourcePromptVersions)
-					.set({ mlflowUri: registered.uri })
-					.where(
-						and(
-							eq(resourcePromptVersions.promptId, args.promptId),
-							eq(resourcePromptVersions.version, args.version),
-						),
-					);
-			} catch (writeErr) {
-				console.warn(
-					'[prompt-presets] mlflow uri persistence failed:',
-					writeErr instanceof Error ? writeErr.message : writeErr,
-				);
-			}
-		}
-	} catch (err) {
-		console.warn(
-			'[prompt-presets] mlflow sync failed:',
-			err instanceof Error ? err.message : err
-		);
-	}
 }
 
 export async function archivePromptPreset(input: {

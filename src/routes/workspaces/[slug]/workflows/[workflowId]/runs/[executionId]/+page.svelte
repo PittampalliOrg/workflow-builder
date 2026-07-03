@@ -62,7 +62,6 @@
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
 	import RunConsole from '$lib/components/workflow/execution/run-console.svelte';
 	import { Skeleton } from '$lib/components/ui/skeleton';
-	import TraceFeedback from '$lib/components/observability/trace-feedback.svelte';
 	import { Separator } from '$lib/components/ui/separator';
 	import * as Breadcrumb from '$lib/components/ui/breadcrumb';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
@@ -2310,10 +2309,6 @@
 							<ExternalLink class="size-3.5" /> View full trace
 						</DropdownMenu.Item>
 					{/if}
-					<DropdownMenu.Separator />
-					<div class="px-2 py-1.5">
-						<TraceFeedback {executionId} disabled={!traceId && isRunning} />
-					</div>
 					{#if instanceId}
 						<DropdownMenu.Separator />
 						<DropdownMenu.Label class="text-[10px] font-normal text-muted-foreground">

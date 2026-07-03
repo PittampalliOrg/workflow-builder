@@ -19,7 +19,7 @@ describe("ApplicationBenchmarkRunInstanceDetailService", () => {
 		};
 		mlflowLinks = {
 			runUrl: vi.fn(() => "https://mlflow.example/#/experiments/exp-1/runs/run-ml"),
-			tracesUrl: vi.fn(() => "/api/observability/mlflow/traces/tr-1"),
+			tracesUrl: vi.fn(() => "/observability/tr-1"),
 		};
 		service = new ApplicationBenchmarkRunInstanceDetailService({
 			workflowData,
@@ -41,7 +41,7 @@ describe("ApplicationBenchmarkRunInstanceDetailService", () => {
 					id: "bri-1",
 					hostJobName: "swebench-host-job",
 					mlflowUrl: "https://mlflow.example/#/experiments/exp-1/runs/run-ml",
-					mlflowTracesUrl: "/api/observability/mlflow/traces/tr-1",
+					mlflowTracesUrl: "/observability/tr-1",
 				},
 				instance: {
 					repo: "example/repo",

@@ -116,17 +116,5 @@
 				View Trace
 			</button>
 		{/if}
-		<a
-			href={traceId
-				? `/api/observability/mlflow/traces/${encodeURIComponent(traceId)}`
-				: `/api/observability/mlflow/executions/${encodeURIComponent(executionId)}`}
-			target="_blank"
-			rel="noopener noreferrer"
-			class="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-sky-600 transition-colors hover:bg-muted dark:text-sky-300"
-			title="View trace in MLflow"
-		>
-			<ExternalLink size={12} />
-			MLflow
-		</a>
 	</div>
 </div>

@@ -29,6 +29,6 @@ export class EnvBenchmarkRunInstanceMlflowLinks
 		void input.experimentId;
 		const traceId = input.traceId?.trim();
 		if (!traceId) return null;
-		return `/api/observability/mlflow/traces/${encodeURIComponent(traceId)}`;
+		return `/observability/${encodeURIComponent(traceId.replace(/^tr-/, ""))}`;
 	}
 }
