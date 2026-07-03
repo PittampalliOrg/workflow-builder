@@ -1,38 +1,48 @@
 /**
  * GET /api/workflows/executions/[executionId]/workspace-content?path=<rel>
  *
- * Read one file from a CLI run's shared JuiceFS workspace via juicefs-webdav.
- * Path is relative to the instance root; traversal is rejected by the helper.
+ * Read one file from a CLI run's shared durable workspace. Path is relative to
+ * the instance root; traversal is rejected by the workspace adapter.
  *
- * Workspace-scoped via `assertInScope`.
+ * Workspace-scoped by the application service.
  */
 
 import { error } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
-import { assertInScope } from "$lib/server/workflows/project-scope";
-import { readWorkspaceFile } from "$lib/server/workflows/juicefs-webdav";
 
 export const GET: RequestHandler = async ({ params, url, locals }) => {
-  if (!locals.session?.userId) return error(401, "Authentication required");
-  const { executionId } = params;
-  if (!executionId) return error(400, "executionId required");
+	if (!locals.session?.userId) return error(401, "Authentication required");
+	const { executionId } = params;
+	if (!executionId) return error(400, "executionId required");
 
-  const relPath = url.searchParams.get("path");
-  if (!relPath) return error(400, "path required");
+	const relPath = url.searchParams.get("path");
+	if (!relPath) return error(400, "path required");
 
-  const exec = await getApplicationAdapters().workflowData.getExecutionById(executionId);
-  assertInScope(exec, locals.session, "Execution not found");
+	const result =
+		await getApplicationAdapters().workflowExecutionWorkspace.readWorkspaceFile(
+			{
+				executionId,
+				path: relPath,
+				userId: locals.session.userId,
+				projectId: locals.session.projectId ?? null,
+			},
+		);
+	if (result.status === "error")
+		return error(result.httpStatus, result.message);
 
-  if (!exec.daprInstanceId) return error(404, "Run has no workspace");
-
-  const file = await readWorkspaceFile(exec.daprInstanceId, relPath);
-  if (!file) return error(404, "File not found");
-
-  return new Response(new Uint8Array(file.bytes), {
-    headers: {
-      "Content-Type": file.contentType,
-      "Cache-Control": "no-store",
-    },
-  });
+	return new Response(toArrayBuffer(result.body.bytes), {
+		headers: {
+			"Content-Type": result.body.contentType,
+			"Cache-Control": "no-store",
+		},
+	});
 };
+
+function toArrayBuffer(bytes: ArrayBuffer | Buffer): ArrayBuffer {
+	if (bytes instanceof ArrayBuffer) return bytes;
+	return bytes.buffer.slice(
+		bytes.byteOffset,
+		bytes.byteOffset + bytes.byteLength,
+	) as ArrayBuffer;
+}

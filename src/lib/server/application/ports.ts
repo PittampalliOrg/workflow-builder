@@ -2484,6 +2484,31 @@ export type WorkflowExecutionOutputFiles = {
 	cliWorkspace: boolean;
 };
 
+export type WorkflowExecutionWorkspaceEntry = {
+	path: string;
+	isDir: boolean;
+	sizeBytes: number;
+};
+
+export type WorkflowExecutionWorkspaceTree = {
+	entries: WorkflowExecutionWorkspaceEntry[];
+	truncated: boolean;
+	error?: string;
+};
+
+export type WorkflowExecutionWorkspaceFile = {
+	bytes: ArrayBuffer | Buffer;
+	contentType: string;
+};
+
+export interface WorkflowExecutionWorkspacePort {
+	listTree(instanceId: string): Promise<WorkflowExecutionWorkspaceTree>;
+	readFile(
+		instanceId: string,
+		relPath: string,
+	): Promise<WorkflowExecutionWorkspaceFile | null>;
+}
+
 export type WorkflowExecutionUsageMetricsRow = {
 	modelSpec: string | null;
 	inputTokens: number;

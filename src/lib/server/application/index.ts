@@ -129,6 +129,7 @@ import {
 	HelperPodSourceBundlePromotionRunner,
 	WorkflowPromotionGateAdapter,
 } from "$lib/server/application/adapters/workflow-code-version-promotion";
+import { JuiceFsWorkflowExecutionWorkspaceAdapter } from "$lib/server/application/adapters/workflow-execution-workspace";
 import { LegacyCliPreviewGatewayPort } from "$lib/server/application/adapters/cli-preview";
 import { LegacySandboxPreviewGatewayPort } from "$lib/server/application/adapters/sandbox-preview";
 import { LegacyWorkflowTriggerLifecyclePort } from "$lib/server/application/adapters/workflow-trigger-lifecycle";
@@ -151,6 +152,7 @@ import { ApplicationBulkLifecycleStopService } from "$lib/server/application/lif
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
 import { ApplicationWorkflowExecutionFilesService } from "$lib/server/application/workflow-execution-files";
+import { ApplicationWorkflowExecutionWorkspaceService } from "$lib/server/application/workflow-execution-workspace";
 import { ApplicationWorkflowExecutionStreamService } from "$lib/server/application/workflow-execution-stream";
 import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/application/workflow-code-checkpoints";
 import { ApplicationWorkflowCodeVersionService } from "$lib/server/application/workflow-code-versions";
@@ -281,6 +283,9 @@ export function getApplicationAdapters(
 		| undefined;
 	let workflowExecutionFiles:
 		| ApplicationWorkflowExecutionFilesService
+		| undefined;
+	let workflowExecutionWorkspace:
+		| ApplicationWorkflowExecutionWorkspaceService
 		| undefined;
 	let workflowExecutionStream:
 		| ApplicationWorkflowExecutionStreamService
@@ -509,6 +514,11 @@ export function getApplicationAdapters(
 		(workflowExecutionFiles ??= new ApplicationWorkflowExecutionFilesService({
 			workflowData: getWorkflowData(),
 		}));
+	const getWorkflowExecutionWorkspace = () =>
+		(workflowExecutionWorkspace ??= new ApplicationWorkflowExecutionWorkspaceService({
+			workflowData: getWorkflowData(),
+			workspace: new JuiceFsWorkflowExecutionWorkspaceAdapter(),
+		}));
 	const getWorkflowExecutionStream = () =>
 		(workflowExecutionStream ??= new ApplicationWorkflowExecutionStreamService({
 			workflowData: getWorkflowData(),
@@ -701,6 +711,9 @@ export function getApplicationAdapters(
 		},
 		get workflowExecutionFiles() {
 			return getWorkflowExecutionFiles();
+		},
+		get workflowExecutionWorkspace() {
+			return getWorkflowExecutionWorkspace();
 		},
 		get workflowExecutionStream() {
 			return getWorkflowExecutionStream();

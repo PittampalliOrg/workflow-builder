@@ -4,30 +4,24 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
-	const execution = {
-		id: "exec-1",
-		workflowId: "wf-1",
-		userId: "user-1",
-		projectId: "project-1",
-		status: "running",
-		daprInstanceId: "sw-example-exec-exec-1",
+	const workflowExecutionWorkspace = {
+		readWorkspaceFile: vi.fn(
+			async (): Promise<unknown> => ({
+				status: "ok" as const,
+				body: {
+					bytes: new TextEncoder().encode("hello").buffer,
+					contentType: "text/plain",
+				},
+			}),
+		),
 	};
-	const workflowData = {
-		getExecutionById: vi.fn(async () => execution),
-	};
-	const readWorkspaceFile = vi.fn(async () => ({
-		bytes: new TextEncoder().encode("hello").buffer,
-		contentType: "text/plain",
-	}));
-	return { execution, workflowData, readWorkspaceFile };
+	return { workflowExecutionWorkspace };
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
-}));
-
-vi.mock("$lib/server/workflows/juicefs-webdav", () => ({
-	readWorkspaceFile: mocks.readWorkspaceFile,
+	getApplicationAdapters: () => ({
+		workflowExecutionWorkspace: mocks.workflowExecutionWorkspace,
+	}),
 }));
 
 import { GET } from "./+server";
@@ -35,7 +29,9 @@ import { GET } from "./+server";
 function event(overrides: Record<string, unknown> = {}) {
 	return {
 		params: { executionId: "exec-1" },
-		url: new URL("http://localhost/api/workflows/executions/exec-1/workspace-content?path=src/index.ts"),
+		url: new URL(
+			"http://localhost/api/workflows/executions/exec-1/workspace-content?path=src/index.ts",
+		),
 		locals: { session: { userId: "user-1", projectId: "project-1" } },
 		...overrides,
 	};
@@ -53,11 +49,6 @@ async function expectHttpStatus(promise: Promise<unknown>, status: number) {
 describe("workflow execution workspace-content route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.workflowData.getExecutionById.mockResolvedValue(mocks.execution);
-		mocks.readWorkspaceFile.mockResolvedValue({
-			bytes: new TextEncoder().encode("hello").buffer,
-			contentType: "text/plain",
-		});
 	});
 
 	it("keeps the route behind workflow-data application services", () => {
@@ -66,8 +57,12 @@ describe("workflow execution workspace-content route", () => {
 			"utf8",
 		);
 		expect(source).toContain("getApplicationAdapters");
+		expect(source).toContain("workflowExecutionWorkspace");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
+		expect(source).not.toContain("workflowData");
+		expect(source).not.toContain("assertInScope");
+		expect(source).not.toContain("juicefs-webdav");
 	});
 
 	it("reads a scoped workspace file by Dapr instance id", async () => {
@@ -76,28 +71,34 @@ describe("workflow execution workspace-content route", () => {
 		expect(response.status).toBe(200);
 		expect(response.headers.get("Content-Type")).toBe("text/plain");
 		await expect(response.text()).resolves.toBe("hello");
-		expect(mocks.workflowData.getExecutionById).toHaveBeenCalledWith("exec-1");
-		expect(mocks.readWorkspaceFile).toHaveBeenCalledWith(
-			"sw-example-exec-exec-1",
-			"src/index.ts",
-		);
+		expect(
+			mocks.workflowExecutionWorkspace.readWorkspaceFile,
+		).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			path: "src/index.ts",
+			userId: "user-1",
+			projectId: "project-1",
+		});
 	});
 
 	it("requires a relative path before reading execution data", async () => {
-		const url = new URL("http://localhost/api/workflows/executions/exec-1/workspace-content");
+		const url = new URL(
+			"http://localhost/api/workflows/executions/exec-1/workspace-content",
+		);
 
 		await expectHttpStatus(Promise.resolve(GET(event({ url }) as never)), 400);
-		expect(mocks.workflowData.getExecutionById).not.toHaveBeenCalled();
-		expect(mocks.readWorkspaceFile).not.toHaveBeenCalled();
+		expect(
+			mocks.workflowExecutionWorkspace.readWorkspaceFile,
+		).not.toHaveBeenCalled();
 	});
 
-	it("hides executions outside the active workspace", async () => {
-		mocks.workflowData.getExecutionById.mockResolvedValueOnce({
-			...mocks.execution,
-			projectId: "project-2",
+	it("maps application-service not-found responses", async () => {
+		mocks.workflowExecutionWorkspace.readWorkspaceFile.mockResolvedValueOnce({
+			status: "error",
+			httpStatus: 404,
+			message: "Execution not found",
 		});
 
 		await expectHttpStatus(Promise.resolve(GET(event() as never)), 404);
-		expect(mocks.readWorkspaceFile).not.toHaveBeenCalled();
 	});
 });

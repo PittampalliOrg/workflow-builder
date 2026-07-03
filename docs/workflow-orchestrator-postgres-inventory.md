@@ -239,9 +239,12 @@ services:
   execution behind `SourceBundlePromotionRunnerPort`.
 - `src/routes/api/workflows/executions/[executionId]/workspace-files/+server.ts`
   and `src/routes/api/workflows/executions/[executionId]/workspace-content/+server.ts`
-  now scope-check and resolve the execution's Dapr instance through
-  `workflowData.getExecutionById`; JuiceFS/WebDAV access remains behind the
-  existing workspace helper service boundary.
+  now delegate scoped execution lookup, Dapr instance resolution, no-workspace
+  handling, workspace tree listing, and file read policy to
+  `ApplicationWorkflowExecutionWorkspaceService`. JuiceFS/WebDAV access is
+  confined to `JuiceFsWorkflowExecutionWorkspaceAdapter`; the routes only
+  perform auth, parameter validation, response mapping, and binary response
+  construction.
 - `src/routes/api/workflows/executions/[executionId]/files/+server.ts` now
   delegates scoped execution lookup and persisted output-file read-model loading
   to `ApplicationWorkflowExecutionFilesService`. Session/file joins,

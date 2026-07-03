@@ -4,30 +4,24 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
-	const execution = {
-		id: "exec-1",
-		workflowId: "wf-1",
-		userId: "user-1",
-		projectId: "project-1",
-		status: "running",
-		daprInstanceId: "sw-example-exec-exec-1" as string | null,
+	const workflowExecutionWorkspace = {
+		listWorkspaceFiles: vi.fn(
+			async (): Promise<unknown> => ({
+				status: "ok" as const,
+				body: {
+					entries: [{ path: "src/index.ts", type: "file", size: 42 }],
+					truncated: false,
+				},
+			}),
+		),
 	};
-	const workflowData = {
-		getExecutionById: vi.fn(async () => execution),
-	};
-	const listWorkspaceTree = vi.fn(async () => ({
-		entries: [{ path: "src/index.ts", type: "file", size: 42 }],
-		truncated: false,
-	}));
-	return { execution, workflowData, listWorkspaceTree };
+	return { workflowExecutionWorkspace };
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
-}));
-
-vi.mock("$lib/server/workflows/juicefs-webdav", () => ({
-	listWorkspaceTree: mocks.listWorkspaceTree,
+	getApplicationAdapters: () => ({
+		workflowExecutionWorkspace: mocks.workflowExecutionWorkspace,
+	}),
 }));
 
 import { GET } from "./+server";
@@ -52,11 +46,6 @@ async function expectHttpStatus(promise: Promise<unknown>, status: number) {
 describe("workflow execution workspace-files route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.workflowData.getExecutionById.mockResolvedValue(mocks.execution);
-		mocks.listWorkspaceTree.mockResolvedValue({
-			entries: [{ path: "src/index.ts", type: "file", size: 42 }],
-			truncated: false,
-		});
 	});
 
 	it("keeps the route behind workflow-data application services", () => {
@@ -65,8 +54,12 @@ describe("workflow execution workspace-files route", () => {
 			"utf8",
 		);
 		expect(source).toContain("getApplicationAdapters");
+		expect(source).toContain("workflowExecutionWorkspace");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
+		expect(source).not.toContain("workflowData");
+		expect(source).not.toContain("assertInScope");
+		expect(source).not.toContain("juicefs-webdav");
 	});
 
 	it("lists the scoped workspace tree by Dapr instance id", async () => {
@@ -77,30 +70,37 @@ describe("workflow execution workspace-files route", () => {
 			entries: [{ path: "src/index.ts", type: "file", size: 42 }],
 			truncated: false,
 		});
-		expect(mocks.workflowData.getExecutionById).toHaveBeenCalledWith("exec-1");
-		expect(mocks.listWorkspaceTree).toHaveBeenCalledWith("sw-example-exec-exec-1");
+		expect(
+			mocks.workflowExecutionWorkspace.listWorkspaceFiles,
+		).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
 	});
 
 	it("returns an empty tree when no workspace instance exists", async () => {
-		mocks.workflowData.getExecutionById.mockResolvedValueOnce({
-			...mocks.execution,
-			daprInstanceId: null,
+		mocks.workflowExecutionWorkspace.listWorkspaceFiles.mockResolvedValueOnce({
+			status: "ok",
+			body: { entries: [], truncated: false },
 		});
 
 		const response = (await GET(event() as never)) as Response;
 
 		expect(response.status).toBe(200);
-		await expect(response.json()).resolves.toEqual({ entries: [], truncated: false });
-		expect(mocks.listWorkspaceTree).not.toHaveBeenCalled();
+		await expect(response.json()).resolves.toEqual({
+			entries: [],
+			truncated: false,
+		});
 	});
 
-	it("hides executions outside the active workspace", async () => {
-		mocks.workflowData.getExecutionById.mockResolvedValueOnce({
-			...mocks.execution,
-			projectId: "project-2",
+	it("maps application-service not-found responses", async () => {
+		mocks.workflowExecutionWorkspace.listWorkspaceFiles.mockResolvedValueOnce({
+			status: "error",
+			httpStatus: 404,
+			message: "Execution not found",
 		});
 
 		await expectHttpStatus(Promise.resolve(GET(event() as never)), 404);
-		expect(mocks.listWorkspaceTree).not.toHaveBeenCalled();
 	});
 });
