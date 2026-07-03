@@ -9,14 +9,12 @@ import {
 	normalizeSwebenchSuiteSlug,
 	type SwebenchSuiteSlug,
 } from "$lib/server/benchmarks/swebench";
-import { db } from "$lib/server/db";
 
 const DEFAULT_VALIDATION_LIMIT = 10;
 const MAX_VALIDATION_LIMIT = 100;
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	if (!db) return error(503, "Database not configured");
 	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
 	const suiteSlug = requireSuiteSlug(body.suiteSlug ?? body.suite);
 	const requestedInstanceIds = normalizeInstanceIds(
@@ -32,7 +30,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		suiteSlug,
 		instanceIds: requestedInstanceIds,
 		limit: requestedInstanceIds.length > 0 ? null : 500,
-	});
+	}).catch(mapEnvironmentValidationError);
 	if (plan.missingInstanceIds.length > 0) {
 		return error(
 			409,
@@ -45,7 +43,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		limit,
 		targetValidatedCount,
 		allowBuild: true,
-	});
+	}).catch(mapEnvironmentValidationError);
 
 	return json({
 		suiteSlug,
@@ -114,4 +112,11 @@ function clampInt(
 				: NaN;
 	if (!Number.isFinite(parsed)) return fallback;
 	return Math.min(Math.max(Math.trunc(parsed), min), max);
+}
+
+function mapEnvironmentValidationError(err: unknown): never {
+	if (err instanceof Error && err.message === "Database not configured") {
+		throw error(503, "Database not configured");
+	}
+	throw err;
 }

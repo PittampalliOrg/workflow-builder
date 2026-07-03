@@ -5,7 +5,6 @@ import {
 	submitSwebenchEnvironmentValidationBuilds,
 } from "$lib/server/benchmarks/environment-validation";
 import { normalizeInstanceIds } from "$lib/server/benchmarks/swebench";
-import { db } from "$lib/server/db";
 import { requireInternal } from "$lib/server/internal-auth";
 
 const DEFAULT_VALIDATION_LIMIT = 10;
@@ -13,7 +12,6 @@ const MAX_VALIDATION_LIMIT = 500;
 
 export const POST: RequestHandler = async ({ request }) => {
 	requireInternal(request);
-	if (!db) return error(503, "Database not configured");
 	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
 	const suiteSlug = readRequiredString(body.suiteSlug ?? body.suite, "suiteSlug");
 	const instanceIds = normalizeInstanceIds(
@@ -31,7 +29,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		instanceIds,
 		limit: instanceIds.length > 0 ? null : Math.max(limit, targetValidatedCount ?? 0, 500),
 		syncBuildStatuses: true,
-	});
+	}).catch(mapEnvironmentValidationError);
 	if (plan.missingInstanceIds.length > 0) {
 		return json(
 			{
@@ -48,7 +46,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		limit,
 		targetValidatedCount,
 		allowBuild,
-	});
+	}).catch(mapEnvironmentValidationError);
 
 	return json({
 		suiteSlug: plan.suiteSlug,
@@ -104,4 +102,11 @@ function clampInt(
 				: NaN;
 	if (!Number.isFinite(parsed)) return fallback;
 	return Math.min(Math.max(Math.trunc(parsed), min), max);
+}
+
+function mapEnvironmentValidationError(err: unknown): never {
+	if (err instanceof Error && err.message === "Database not configured") {
+		throw error(503, "Database not configured");
+	}
+	throw err;
 }

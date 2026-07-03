@@ -506,6 +506,12 @@ The first UI-facing route has also moved behind the application service:
   internal run lookup. The route delegates read-model loading to
   `getInternalEvaluationRun` and keeps status transitions in the evaluation
   service.
+- `src/routes/api/benchmarks/environments/validate/+server.ts` and
+  `src/routes/api/internal/benchmarks/environments/validate/+server.ts` no
+  longer import `$lib/server/db` for route-local readiness guards. Both routes
+  now delegate planning/submission to the benchmark environment validation
+  service and map its `Database not configured` failure to the same HTTP 503
+  response.
 - `src/routes/workspaces/[slug]/benchmarks/+page.server.ts`,
   `src/routes/workspaces/[slug]/benchmarks/runs/+page.server.ts`, and
   `src/routes/workspaces/[slug]/benchmarks/compare/+page.server.ts` now delegate
