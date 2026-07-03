@@ -1,36 +1,34 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const dbMock = vi.hoisted(() => {
-	const limit = vi.fn();
-	const where = vi.fn(() => ({ limit }));
-	const from = vi.fn(() => ({ where }));
-	const select = vi.fn(() => ({ from }));
-	return { from, limit, select, where };
-});
+const workflowDataMock = vi.hoisted(() => ({
+	isPlatformAdmin: vi.fn(),
+}));
 
-vi.mock("$lib/server/db", () => ({
-	db: { select: dbMock.select },
+vi.mock("$lib/server/application", () => ({
+	getApplicationAdapters: () => ({
+		workflowData: workflowDataMock,
+	}),
 }));
 
 import { requirePlatformAdmin } from "./platform-admin";
 
 describe("requirePlatformAdmin", () => {
 	beforeEach(() => {
-		dbMock.limit.mockReset();
-		dbMock.where.mockClear();
-		dbMock.from.mockClear();
-		dbMock.select.mockClear();
+		workflowDataMock.isPlatformAdmin.mockReset();
 	});
 
 	it("rejects unauthenticated callers", async () => {
 		await expect(requirePlatformAdmin({ session: null })).rejects.toMatchObject({
 			status: 401,
 		});
-		expect(dbMock.select).not.toHaveBeenCalled();
+		expect(workflowDataMock.isPlatformAdmin).not.toHaveBeenCalled();
 	});
 
 	it("rejects non-admin callers", async () => {
-		dbMock.limit.mockResolvedValueOnce([{ platformRole: "MEMBER" }]);
+		workflowDataMock.isPlatformAdmin.mockResolvedValueOnce(false);
 
 		await expect(
 			requirePlatformAdmin({
@@ -42,10 +40,11 @@ describe("requirePlatformAdmin", () => {
 				},
 			}),
 		).rejects.toMatchObject({ status: 403 });
+		expect(workflowDataMock.isPlatformAdmin).toHaveBeenCalledWith("user-1");
 	});
 
 	it("allows platform admins", async () => {
-		dbMock.limit.mockResolvedValueOnce([{ platformRole: "ADMIN" }]);
+		workflowDataMock.isPlatformAdmin.mockResolvedValueOnce(true);
 
 		await expect(
 			requirePlatformAdmin({
@@ -57,5 +56,18 @@ describe("requirePlatformAdmin", () => {
 				},
 			}),
 		).resolves.toBeUndefined();
+		expect(workflowDataMock.isPlatformAdmin).toHaveBeenCalledWith("admin-1");
+	});
+
+	it("does not import direct DB infrastructure", () => {
+		const source = readFileSync(
+			join(dirname(fileURLToPath(import.meta.url)), "platform-admin.ts"),
+			"utf8",
+		);
+
+		expect(source).toContain("workflowData.isPlatformAdmin");
+		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("$lib/server/db/schema");
+		expect(source).not.toContain("drizzle-orm");
 	});
 });
