@@ -113,6 +113,10 @@ import type {
 	BenchmarkArtifactMetadataInput,
 	BenchmarkArtifactMetadataRepository,
 	BenchmarkDatasetPromotionRepository,
+	BenchmarkEvaluationPatchContext,
+	BenchmarkEvaluationResultRepository,
+	BenchmarkEvaluationResultUpdate,
+	BenchmarkEvaluationRunRecord,
 	BenchmarkInstanceAnnotationVerdict,
 	BenchmarkBrowserRepository,
 	BenchmarkInstanceDetailReadRepository,
@@ -2599,6 +2603,131 @@ export class PostgresBenchmarkArtifactMetadataRepository
 			sha256: input.sha256,
 			metadata: input.metadata,
 		});
+	}
+}
+
+export class PostgresBenchmarkEvaluationResultRepository
+	implements BenchmarkEvaluationResultRepository
+{
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async getRunForEvaluationIngestion(
+		runId: string,
+	): Promise<BenchmarkEvaluationRunRecord | null> {
+		return this.getRun(runId);
+	}
+
+	async loadPatchContexts(
+		runId: string,
+	): Promise<Map<string, BenchmarkEvaluationPatchContext>> {
+		const rows = await this.database
+			.select({
+				instanceId: benchmarkRunInstances.instanceId,
+				modelPatch: benchmarkRunInstances.modelPatch,
+				goldPatch: benchmarkInstances.goldPatch,
+			})
+			.from(benchmarkRunInstances)
+			.leftJoin(
+				benchmarkInstances,
+				eq(benchmarkInstances.id, benchmarkRunInstances.benchmarkInstanceId),
+			)
+			.where(eq(benchmarkRunInstances.runId, runId));
+		const map = new Map<string, BenchmarkEvaluationPatchContext>();
+		for (const row of rows) {
+			map.set(row.instanceId, {
+				modelPatch: row.modelPatch,
+				goldPatch: row.goldPatch,
+			});
+		}
+		return map;
+	}
+
+	async batchUpdateEvaluationResults(input: {
+		runId: string;
+		updates: BenchmarkEvaluationResultUpdate[];
+		evaluatedAt: Date;
+	}): Promise<void> {
+		if (input.updates.length === 0) return;
+		const updates = input.updates.map((update) => ({
+			instance_id: update.instanceId,
+			status: update.status,
+			evaluation_status: update.evaluationStatus,
+			error: update.error,
+			evaluation_error: update.evaluationError,
+			logs_path: update.logsPath,
+			test_output_summary: update.testOutputSummary,
+			harness_result: update.harnessResult,
+			patch_added_lines: update.patchAddedLines,
+			patch_removed_lines: update.patchRemovedLines,
+			patch_files_touched: update.patchFilesTouched,
+			patch_files_overlap_gold: update.patchFilesOverlapGold,
+			patch_well_formed: update.patchWellFormed,
+		}));
+		await this.database.execute(sql`
+			UPDATE benchmark_run_instances AS b
+			SET status = u.status,
+			    evaluation_status = u.evaluation_status,
+			    error = u.error,
+			    evaluation_error = u.evaluation_error,
+			    logs_path = u.logs_path,
+			    test_output_summary = u.test_output_summary,
+			    harness_result = u.harness_result,
+			    patch_added_lines = u.patch_added_lines,
+			    patch_removed_lines = u.patch_removed_lines,
+			    patch_files_touched = u.patch_files_touched,
+			    patch_files_overlap_gold = u.patch_files_overlap_gold,
+			    patch_well_formed = u.patch_well_formed,
+			    evaluated_at = ${input.evaluatedAt},
+			    updated_at = now()
+			FROM jsonb_to_recordset((${JSON.stringify(updates)})::text::jsonb)
+			     AS u(
+			       instance_id text,
+			       status text,
+			       evaluation_status text,
+			       error text,
+			       evaluation_error text,
+			       logs_path text,
+			       test_output_summary text,
+			       harness_result jsonb,
+			       patch_added_lines integer,
+			       patch_removed_lines integer,
+			       patch_files_touched integer,
+			       patch_files_overlap_gold integer,
+			       patch_well_formed boolean
+			     )
+			WHERE b.run_id = ${input.runId} AND b.instance_id = u.instance_id
+		`);
+	}
+
+	async countActiveEvaluationRows(runId: string): Promise<number> {
+		const [row] = await this.database
+			.select({ value: count() })
+			.from(benchmarkRunInstances)
+			.where(
+				and(
+					eq(benchmarkRunInstances.runId, runId),
+					inArray(benchmarkRunInstances.status, [
+						"queued",
+						"inferencing",
+						"inferred",
+						"evaluating",
+					]),
+				),
+			);
+		return Number(row?.value ?? 0);
+	}
+
+	async getRunForResponse(runId: string): Promise<BenchmarkEvaluationRunRecord | null> {
+		return this.getRun(runId);
+	}
+
+	private async getRun(runId: string): Promise<BenchmarkEvaluationRunRecord | null> {
+		const [row] = await this.database
+			.select()
+			.from(benchmarkRuns)
+			.where(eq(benchmarkRuns.id, runId))
+			.limit(1);
+		return (row as BenchmarkEvaluationRunRecord | undefined) ?? null;
 	}
 }
 

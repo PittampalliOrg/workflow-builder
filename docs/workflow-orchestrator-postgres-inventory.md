@@ -70,6 +70,12 @@ warm-pool phase derivation, and idle-reap decisions are no longer implemented
 inside SvelteKit route handlers. Postgres access is confined to
 `PostgresAgentRuntimeRepository`, and SandboxWarmPool access is confined to
 `KubernetesAgentRuntimeWarmPoolClient`.
+The internal benchmark evaluation-results callback now delegates callback
+ingestion to workflow-data application ports. Run lookup, batch instance-result
+updates, active-row counting, lifecycle transitions, MLflow/trace sync
+scheduling, and coordinator notifications are no longer owned by the route.
+The optimized `jsonb_to_recordset` update remains intact inside
+`PostgresBenchmarkEvaluationResultRepository`.
 
 ## Strict HTTP Runtime Paths
 
@@ -473,6 +479,16 @@ The first UI-facing route has also moved behind the application service:
   `PostgresAgentRuntimeRepository`; SandboxWarmPool reads/writes live in
   `KubernetesAgentRuntimeWarmPoolClient`; route-local code is limited to auth,
   parameter parsing, and HTTP status mapping.
+- `src/routes/api/internal/benchmarks/runs/[runId]/evaluation-results/+server.ts`
+  now delegates evaluator callback ingestion to
+  `workflowData.ingestBenchmarkEvaluationResults`. The route imports no direct
+  DB, Drizzle, benchmark-service, MLflow, or Dapr client helpers. Result status
+  mapping, patch-stat derivation, batch update payload construction, terminal
+  run skip semantics, inferencing-to-evaluating transition, completion
+  transition, coordinator notification, and MLflow sync scheduling are
+  application-service behavior behind ports. SQL lives in
+  `PostgresBenchmarkEvaluationResultRepository`, preserving the existing
+  single-statement `jsonb_to_recordset` batch update.
 - `src/routes/workspaces/[slug]/benchmarks/+page.server.ts`,
   `src/routes/workspaces/[slug]/benchmarks/runs/+page.server.ts`, and
   `src/routes/workspaces/[slug]/benchmarks/compare/+page.server.ts` now delegate

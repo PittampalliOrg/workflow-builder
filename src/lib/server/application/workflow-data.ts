@@ -59,6 +59,7 @@ import { expandGreenfieldPromptInput } from "$lib/server/workflows/greenfield-pr
 import { getMissingRequiredTriggerFields } from "$lib/server/workflows/trigger-validation";
 import { isAgentConfigEquivalent } from "$lib/utils/agent-config-diff";
 import { buildGoalFlowFromRecords } from "$lib/server/observability/goal-flow";
+import { ApplicationBenchmarkEvaluationResultsService } from "$lib/server/application/benchmark-evaluation-results";
 import type {
 	AppendWorkflowExecutionLogInput,
 	AdminPiecesReadModel,
@@ -74,6 +75,11 @@ import type {
 	BenchmarkArtifactMetadataInput,
 	BenchmarkArtifactMetadataRepository,
 	BenchmarkDatasetPromotionRepository,
+	BenchmarkEvaluationEventNotifier,
+	BenchmarkEvaluationIngestResult,
+	BenchmarkEvaluationResultRepository,
+	BenchmarkEvaluationResultsCallbackInput,
+	BenchmarkEvaluationTelemetryPort,
 	BenchmarkInstanceAnnotationVerdict,
 	BenchmarkBrowserEnvironmentBuildRecord,
 	BenchmarkInstanceDetailReadRepository,
@@ -84,6 +90,7 @@ import type {
 	BenchmarkRunInstanceProgressReadRepository,
 	BenchmarkRunInstanceScoreReadRepository,
 	BenchmarkRunReadRepository,
+	BenchmarkRunLifecyclePort,
 	BenchmarkRunRepository,
 	BenchmarkSessionProvisioningGateResult,
 	CreateProjectMcpConnectionInput,
@@ -792,6 +799,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			browserArtifacts?: WorkflowBrowserArtifactStore;
 			codeFunctionCatalog?: CodeFunctionCatalogRepository;
 			benchmarkArtifactMetadata?: BenchmarkArtifactMetadataRepository;
+			benchmarkEvaluationResults?: BenchmarkEvaluationResultRepository;
+			benchmarkRunLifecycle?: BenchmarkRunLifecyclePort;
+			benchmarkEvaluationTelemetry?: BenchmarkEvaluationTelemetryPort;
+			benchmarkEvaluationEvents?: BenchmarkEvaluationEventNotifier;
 			benchmarkBrowser: BenchmarkBrowserRepository;
 			benchmarkDatasetPromotions?: BenchmarkDatasetPromotionRepository;
 			benchmarkInstanceDetails?: BenchmarkInstanceDetailReadRepository;
@@ -887,6 +898,34 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Benchmark artifact metadata repository not configured");
 		}
 		return this.deps.benchmarkArtifactMetadata;
+	}
+
+	private requireBenchmarkEvaluationResults(): BenchmarkEvaluationResultRepository {
+		if (!this.deps.benchmarkEvaluationResults) {
+			throw new Error("Benchmark evaluation result repository not configured");
+		}
+		return this.deps.benchmarkEvaluationResults;
+	}
+
+	private requireBenchmarkRunLifecycle(): BenchmarkRunLifecyclePort {
+		if (!this.deps.benchmarkRunLifecycle) {
+			throw new Error("Benchmark run lifecycle port not configured");
+		}
+		return this.deps.benchmarkRunLifecycle;
+	}
+
+	private requireBenchmarkEvaluationTelemetry(): BenchmarkEvaluationTelemetryPort {
+		if (!this.deps.benchmarkEvaluationTelemetry) {
+			throw new Error("Benchmark evaluation telemetry port not configured");
+		}
+		return this.deps.benchmarkEvaluationTelemetry;
+	}
+
+	private requireBenchmarkEvaluationEvents(): BenchmarkEvaluationEventNotifier {
+		if (!this.deps.benchmarkEvaluationEvents) {
+			throw new Error("Benchmark evaluation event notifier not configured");
+		}
+		return this.deps.benchmarkEvaluationEvents;
 	}
 
 	private requireBenchmarkInstanceDetails(): BenchmarkInstanceDetailReadRepository {
@@ -3923,6 +3962,18 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	recordBenchmarkArtifact(input: BenchmarkArtifactMetadataInput) {
 		return this.requireBenchmarkArtifactMetadata().recordArtifact(input);
+	}
+
+	ingestBenchmarkEvaluationResults(
+		input: BenchmarkEvaluationResultsCallbackInput,
+	): Promise<BenchmarkEvaluationIngestResult> {
+		const service = new ApplicationBenchmarkEvaluationResultsService({
+			results: this.requireBenchmarkEvaluationResults(),
+			lifecycle: this.requireBenchmarkRunLifecycle(),
+			telemetry: this.requireBenchmarkEvaluationTelemetry(),
+			events: this.requireBenchmarkEvaluationEvents(),
+		});
+		return service.ingest(input);
 	}
 
 	getBenchmarkRunProjectId(runId: string) {

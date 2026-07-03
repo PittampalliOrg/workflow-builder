@@ -11,6 +11,7 @@ import {
 	PostgresBenchmarkArtifactMetadataRepository,
 	PostgresBenchmarkBrowserRepository,
 	PostgresBenchmarkDatasetPromotionRepository,
+	PostgresBenchmarkEvaluationResultRepository,
 	PostgresBenchmarkInstanceDetailReadRepository,
 	PostgresBenchmarkRunInstanceAnnotationRepository,
 	PostgresBenchmarkRunInstanceDetailReadRepository,
@@ -51,6 +52,11 @@ import {
 	requirePostgresDb,
 } from "$lib/server/application/adapters/postgres";
 import { KubernetesAgentRuntimeWarmPoolClient } from "$lib/server/application/adapters/agent-runtime-control";
+import {
+	DaprBenchmarkEvaluationEventNotifier,
+	LegacyBenchmarkEvaluationTelemetryAdapter,
+	LegacyBenchmarkRunLifecycleAdapter,
+} from "$lib/server/application/adapters/benchmark-evaluation-results";
 import { RegistryPeerAgentResolver } from "$lib/server/application/adapters/agents";
 import {
 	DaprCredentialStore,
@@ -121,6 +127,9 @@ export function getApplicationAdapters(
 	let codeFunctionCatalog: PostgresCodeFunctionCatalogRepository | undefined;
 	let benchmarkArtifactMetadata:
 		| PostgresBenchmarkArtifactMetadataRepository
+		| undefined;
+	let benchmarkEvaluationResults:
+		| PostgresBenchmarkEvaluationResultRepository
 		| undefined;
 	let benchmarkBrowser: PostgresBenchmarkBrowserRepository | undefined;
 	let benchmarkDatasetPromotions:
@@ -211,6 +220,8 @@ export function getApplicationAdapters(
 		(codeFunctionCatalog ??= new PostgresCodeFunctionCatalogRepository(getDatabase()));
 	const getBenchmarkArtifactMetadata = () =>
 		(benchmarkArtifactMetadata ??= new PostgresBenchmarkArtifactMetadataRepository(getDatabase()));
+	const getBenchmarkEvaluationResults = () =>
+		(benchmarkEvaluationResults ??= new PostgresBenchmarkEvaluationResultRepository(getDatabase()));
 	const getBenchmarkBrowser = () =>
 		(benchmarkBrowser ??= new PostgresBenchmarkBrowserRepository(getDatabase()));
 	const getBenchmarkDatasetPromotions = () =>
@@ -316,6 +327,10 @@ export function getApplicationAdapters(
 			browserArtifacts: getBrowserArtifacts(),
 			codeFunctionCatalog: getCodeFunctionCatalog(),
 			benchmarkArtifactMetadata: getBenchmarkArtifactMetadata(),
+			benchmarkEvaluationResults: getBenchmarkEvaluationResults(),
+			benchmarkRunLifecycle: new LegacyBenchmarkRunLifecycleAdapter(),
+			benchmarkEvaluationTelemetry: new LegacyBenchmarkEvaluationTelemetryAdapter(),
+			benchmarkEvaluationEvents: new DaprBenchmarkEvaluationEventNotifier(),
 			benchmarkBrowser: getBenchmarkBrowser(),
 			benchmarkDatasetPromotions: getBenchmarkDatasetPromotions(),
 			benchmarkInstanceDetails: getBenchmarkInstanceDetails(),

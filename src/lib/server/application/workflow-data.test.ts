@@ -6,6 +6,9 @@ import type {
 	ArtifactStore,
 	BenchmarkArtifactMetadataRepository,
 	BenchmarkDatasetPromotionRepository,
+	BenchmarkEvaluationEventNotifier,
+	BenchmarkEvaluationResultRepository,
+	BenchmarkEvaluationTelemetryPort,
 	BenchmarkRunInstanceAnnotationRepository,
 	BenchmarkInstanceDetailReadRepository,
 	BenchmarkBrowserRepository,
@@ -13,6 +16,7 @@ import type {
 	BenchmarkRunInstanceProgressReadRepository,
 	BenchmarkRunInstanceScoreReadRepository,
 	BenchmarkRunReadRepository,
+	BenchmarkRunLifecyclePort,
 	BenchmarkRunRepository,
 	DevEnvironmentReadRepository,
 	EvaluationArtifactStore,
@@ -1341,6 +1345,10 @@ function makeService(options: {
 	benchmarkRunInstanceProgress?: BenchmarkRunInstanceProgressReadRepository;
 	benchmarkRunInstanceScores?: BenchmarkRunInstanceScoreReadRepository;
 	benchmarkArtifactMetadata?: BenchmarkArtifactMetadataRepository;
+	benchmarkEvaluationResults?: BenchmarkEvaluationResultRepository;
+	benchmarkRunLifecycle?: BenchmarkRunLifecyclePort;
+	benchmarkEvaluationTelemetry?: BenchmarkEvaluationTelemetryPort;
+	benchmarkEvaluationEvents?: BenchmarkEvaluationEventNotifier;
 	activityRateTargets?: WorkflowActivityRateTargetRepository;
 	observabilityTraces?: ObservabilityTraceRepository;
 	workflowMonitorReads?: WorkflowMonitorReadRepository;
@@ -1404,6 +1412,10 @@ function makeService(options: {
 		browserArtifacts: options.browserArtifacts,
 		benchmarkBrowser: fakeBenchmarkBrowser(),
 		benchmarkArtifactMetadata: options.benchmarkArtifactMetadata,
+		benchmarkEvaluationResults: options.benchmarkEvaluationResults,
+		benchmarkRunLifecycle: options.benchmarkRunLifecycle,
+		benchmarkEvaluationTelemetry: options.benchmarkEvaluationTelemetry,
+		benchmarkEvaluationEvents: options.benchmarkEvaluationEvents,
 		benchmarkDatasetPromotions: options.benchmarkDatasetPromotions,
 		benchmarkInstanceDetails: options.benchmarkInstanceDetails,
 		benchmarkRunInstanceDetails: options.benchmarkRunInstanceDetails,
@@ -6844,6 +6856,73 @@ describe("ApplicationWorkflowDataService", () => {
 				objectKey: "swebench/dev/run-1/predictions.jsonl",
 			},
 		});
+	});
+
+	it("ingests benchmark evaluation callbacks through workflow-data ports", async () => {
+		const benchmarkEvaluationResults: BenchmarkEvaluationResultRepository = {
+			getRunForEvaluationIngestion: vi.fn(async () => ({
+				id: "run-1",
+				status: "evaluating" as const,
+			})),
+			loadPatchContexts: vi.fn(async () => new Map()),
+			batchUpdateEvaluationResults: vi.fn(async () => undefined),
+			countActiveEvaluationRows: vi.fn(async () => 1),
+			getRunForResponse: vi.fn(async () => ({
+				id: "run-1",
+				status: "evaluating" as const,
+			})),
+		};
+		const benchmarkRunLifecycle: BenchmarkRunLifecyclePort = {
+			markStatus: vi.fn(async (_runId, status) => ({ id: "run-1", status })),
+			recomputeSummary: vi.fn(async () => ({ resolved: 1 })),
+		};
+		const benchmarkEvaluationTelemetry: BenchmarkEvaluationTelemetryPort = {
+			syncEvaluationResults: vi.fn(),
+		};
+		const benchmarkEvaluationEvents: BenchmarkEvaluationEventNotifier = {
+			notifyEvaluationEvent: vi.fn(async () => undefined),
+		};
+		const { service } = makeService({
+			benchmarkEvaluationResults,
+			benchmarkRunLifecycle,
+			benchmarkEvaluationTelemetry,
+			benchmarkEvaluationEvents,
+		});
+
+		await expect(
+			service.ingestBenchmarkEvaluationResults({
+				runId: "run-1",
+				results: [{ instance_id: "inst-1", resolved: true }],
+				error: null,
+				jobName: "job-1",
+			}),
+		).resolves.toMatchObject({
+			status: "ok",
+			summary: { resolved: 1 },
+		});
+		expect(benchmarkEvaluationResults.batchUpdateEvaluationResults).toHaveBeenCalledWith(
+			expect.objectContaining({
+				runId: "run-1",
+				updates: [
+					expect.objectContaining({
+						instanceId: "inst-1",
+						status: "resolved",
+						evaluationStatus: "resolved",
+					}),
+				],
+			}),
+		);
+		expect(benchmarkEvaluationTelemetry.syncEvaluationResults).toHaveBeenCalledWith({
+			runId: "run-1",
+			instanceIds: ["inst-1"],
+		});
+		expect(benchmarkEvaluationEvents.notifyEvaluationEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				runId: "run-1",
+				eventType: "results",
+				jobName: "job-1",
+			}),
+		);
 	});
 
 	it("loads benchmark run project ids through workflow-data ports", async () => {

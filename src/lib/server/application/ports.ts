@@ -797,6 +797,136 @@ export interface BenchmarkArtifactMetadataRepository {
 	recordArtifact(input: BenchmarkArtifactMetadataInput): Promise<void>;
 }
 
+export type BenchmarkEvaluationRunStatus =
+	| "queued"
+	| "inferencing"
+	| "evaluating"
+	| "completed"
+	| "failed"
+	| "cancelled";
+
+export type BenchmarkEvaluationRunInstanceStatus =
+	| "queued"
+	| "inferencing"
+	| "inferred"
+	| "evaluating"
+	| "resolved"
+	| "failed"
+	| "error"
+	| "timeout"
+	| "cancelled";
+
+export type BenchmarkEvaluationStatus =
+	| "pending"
+	| "evaluating"
+	| "resolved"
+	| "unresolved"
+	| "empty_patch"
+	| "error"
+	| "timeout";
+
+export type BenchmarkEvaluationRunRecord = Record<string, unknown> & {
+	id: string;
+	status: BenchmarkEvaluationRunStatus;
+	summary?: Record<string, unknown> | null;
+};
+
+export type BenchmarkEvaluationResultInput = {
+	instance_id?: string;
+	instanceId?: string;
+	resolved?: boolean;
+	status?: string;
+	error?: string;
+	logs_path?: string;
+	logsPath?: string;
+	test_output_summary?: string;
+	testOutputSummary?: string;
+	harness_result?: Record<string, unknown>;
+	harnessResult?: Record<string, unknown>;
+};
+
+export type BenchmarkEvaluationPatchContext = {
+	modelPatch: string | null;
+	goldPatch: string | null;
+};
+
+export type BenchmarkEvaluationResultUpdate = {
+	instanceId: string;
+	status: BenchmarkEvaluationRunInstanceStatus;
+	evaluationStatus: BenchmarkEvaluationStatus;
+	error: string | null;
+	evaluationError: string | null;
+	logsPath: string | null;
+	testOutputSummary: string | null;
+	harnessResult: Record<string, unknown> | null;
+	patchAddedLines: number | null;
+	patchRemovedLines: number | null;
+	patchFilesTouched: number | null;
+	patchFilesOverlapGold: number | null;
+	patchWellFormed: boolean | null;
+};
+
+export type BenchmarkEvaluationResultsCallbackInput = {
+	runId: string;
+	results?: BenchmarkEvaluationResultInput[];
+	error?: string | null;
+	jobName?: string | null;
+	receivedAt?: Date;
+};
+
+export type BenchmarkEvaluationIngestResult =
+	| { status: "run_not_found" }
+	| { status: "skipped"; run: BenchmarkEvaluationRunRecord }
+	| {
+			status: "ok";
+			run?: BenchmarkEvaluationRunRecord | null;
+			summary?: Record<string, unknown> | null;
+			updatedInstanceIds?: string[];
+	  };
+
+export interface BenchmarkEvaluationResultRepository {
+	getRunForEvaluationIngestion(
+		runId: string,
+	): Promise<BenchmarkEvaluationRunRecord | null>;
+	loadPatchContexts(
+		runId: string,
+	): Promise<Map<string, BenchmarkEvaluationPatchContext>>;
+	batchUpdateEvaluationResults(input: {
+		runId: string;
+		updates: BenchmarkEvaluationResultUpdate[];
+		evaluatedAt: Date;
+	}): Promise<void>;
+	countActiveEvaluationRows(runId: string): Promise<number>;
+	getRunForResponse(runId: string): Promise<BenchmarkEvaluationRunRecord | null>;
+}
+
+export interface BenchmarkRunLifecyclePort {
+	markStatus(
+		runId: string,
+		status: BenchmarkEvaluationRunStatus,
+		extra?: Record<string, unknown>,
+		options?: { terminalCleanup?: "background" | "sync" },
+	): Promise<BenchmarkEvaluationRunRecord | null>;
+	recomputeSummary(runId: string): Promise<Record<string, unknown>>;
+}
+
+export interface BenchmarkEvaluationTelemetryPort {
+	syncEvaluationResults(input: {
+		runId: string;
+		instanceIds: string[];
+	}): void;
+}
+
+export interface BenchmarkEvaluationEventNotifier {
+	notifyEvaluationEvent(input: {
+		runId: string;
+		eventType: "results" | "failed";
+		jobName?: string | null;
+		error?: string | null;
+		postedAt?: Date;
+	}): Promise<void>;
+}
+
 export type BenchmarkRunInstanceAnnotationCounts = Record<
 	BenchmarkInstanceAnnotationVerdict,
 	number
@@ -3955,6 +4085,9 @@ export interface WorkflowDataService {
 		instanceId: string;
 		now?: Date;
 	}): Promise<BenchmarkRunInstanceProgressReadModel>;
+	ingestBenchmarkEvaluationResults(
+		input: BenchmarkEvaluationResultsCallbackInput,
+	): Promise<BenchmarkEvaluationIngestResult>;
 	recordBenchmarkArtifact(input: BenchmarkArtifactMetadataInput): Promise<void>;
 	getBenchmarkRunProjectId(runId: string): Promise<string | null>;
 	getDevPreviewHubReadModel(input: {
