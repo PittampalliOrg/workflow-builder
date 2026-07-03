@@ -28,6 +28,7 @@ import type {
 	SessionRepositoryMountTarget,
 	SessionRepositoryMounter,
 	SessionRuntimeDebugTarget,
+	SessionRuntimeTarget,
 	SessionRuntimeConfigReader,
 	SessionRuntimeEventRaiser,
 	SessionSandboxDeleteResult,
@@ -100,7 +101,10 @@ import {
 	decideGoalHarness,
 	runtimeHasNativeGoalHarness,
 } from "$lib/server/sessions/goal-harness";
-import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
+import {
+	DEFAULT_RUNTIME_ID,
+	getRuntimeDescriptor,
+} from "$lib/server/agents/runtime-registry";
 import {
 	agentRuntimeDedicatedAppId,
 	agentRuntimeInvokeTarget,
@@ -378,6 +382,74 @@ export class CurrentSessionRepository implements SessionRepository {
 				totalBytes: Number(totalBytes ?? 0),
 				llmTurns: Number(turns ?? 0),
 			},
+		};
+	}
+
+	async getSessionOwnerUserId(input: {
+		sessionId: string;
+	}): Promise<string | null> {
+		const database = requireDb(this.database);
+		const [row] = await database
+			.select({ userId: sessions.userId })
+			.from(sessions)
+			.where(eq(sessions.id, input.sessionId))
+			.limit(1);
+		return row?.userId ?? null;
+	}
+
+	async getSessionRuntimeTarget(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionRuntimeTarget | null> {
+		const database = requireDb(this.database);
+		const conditions = [eq(sessions.id, input.sessionId)];
+		if (input.projectId) {
+			const projectCondition = or(
+				eq(sessions.projectId, input.projectId),
+				eq(agents.projectId, input.projectId),
+			);
+			if (projectCondition) conditions.push(projectCondition);
+		}
+		const [row] = await database
+			.select({
+				runtimeAppId: sessions.runtimeAppId,
+				runtimeSandboxName: sessions.runtimeSandboxName,
+				agentSlug: agents.slug,
+				agentRuntimeAppId: agents.runtimeAppId,
+			})
+			.from(sessions)
+			.leftJoin(agents, eq(agents.id, sessions.agentId))
+			.where(and(...conditions))
+			.limit(1);
+		if (!row) return null;
+
+		const persistedAppId = row.runtimeAppId?.trim();
+		if (persistedAppId) {
+			return {
+				appId: persistedAppId,
+				invokeTarget: agentRuntimeInvokeTarget(persistedAppId),
+				runtimeSandboxName: row.runtimeSandboxName ?? null,
+				source: "persisted",
+			};
+		}
+
+		if (row.agentSlug) {
+			const appId =
+				row.agentRuntimeAppId?.trim() ||
+				agentRuntimeDedicatedAppId(row.agentSlug);
+			return {
+				appId,
+				invokeTarget: agentRuntimeInvokeTarget(appId),
+				runtimeSandboxName: null,
+				source: "agent",
+			};
+		}
+
+		return {
+			appId: DEFAULT_RUNTIME_ID,
+			invokeTarget: agentRuntimeInvokeTarget(DEFAULT_RUNTIME_ID),
+			runtimeSandboxName: null,
+			source: "legacy",
 		};
 	}
 

@@ -1,19 +1,21 @@
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const getSessionMock = vi.fn();
-const resolveAgentRefMock = vi.fn();
+const workflowDataMock = {
+	getSessionRuntimeTarget: vi.fn(),
+	getSessionRuntimeDebugTarget: vi.fn(),
+};
 
-vi.mock("$lib/server/sessions/registry", () => ({
-	getSession: (...args: unknown[]) => getSessionMock(...args),
-}));
-
-vi.mock("$lib/server/agents/registry", () => ({
-	resolveAgentRef: (...args: unknown[]) => resolveAgentRefMock(...args),
+vi.mock("$lib/server/application", () => ({
+	getApplicationAdapters: () => ({
+		workflowData: workflowDataMock,
+	}),
 }));
 
 import {
 	decideGoalHarness,
 	goalObjectiveRequestsNative,
+	resolveSessionRuntimeDebugTarget,
 	resolveSessionRuntimeTarget,
 	runtimeHasNativeGoalHarness,
 	stripNativeGoalPrefix,
@@ -49,19 +51,30 @@ describe("decideGoalHarness (evaluator default, native opt-in via /goal prefix)"
 	});
 });
 
+describe("runtime target infrastructure boundary", () => {
+	it("keeps direct database access outside the runtime-target facade", () => {
+		const source = readFileSync(
+			new URL("./runtime-target.ts", import.meta.url),
+			"utf8",
+		);
+
+		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("drizzle-orm");
+	});
+});
+
 describe("resolveSessionRuntimeTarget", () => {
 	beforeEach(() => {
-		getSessionMock.mockReset();
-		resolveAgentRefMock.mockReset();
+		workflowDataMock.getSessionRuntimeTarget.mockReset();
+		workflowDataMock.getSessionRuntimeDebugTarget.mockReset();
 	});
 
-	it("prefers the runtime app persisted on the session", async () => {
-		getSessionMock.mockResolvedValueOnce({
-			id: "s1",
-			agentId: "a1",
-			agentVersion: 1,
-			runtimeAppId: "agent-session-abc123",
+	it("resolves runtime targets through workflow-data", async () => {
+		workflowDataMock.getSessionRuntimeTarget.mockResolvedValueOnce({
+			appId: "agent-session-abc123",
+			invokeTarget: "agent-session-abc123",
 			runtimeSandboxName: "agent-host-agent-session-abc123",
+			source: "persisted",
 		});
 
 		const target = await resolveSessionRuntimeTarget("s1");
@@ -72,30 +85,34 @@ describe("resolveSessionRuntimeTarget", () => {
 			runtimeSandboxName: "agent-host-agent-session-abc123",
 			source: "persisted",
 		});
-		expect(resolveAgentRefMock).not.toHaveBeenCalled();
+		expect(workflowDataMock.getSessionRuntimeTarget).toHaveBeenCalledWith({
+			sessionId: "s1",
+		});
 	});
 
-	it("falls back to the agent runtime for legacy sessions", async () => {
-		getSessionMock.mockResolvedValueOnce({
-			id: "s1",
-			agentId: "a1",
-			agentVersion: 2,
-			runtimeAppId: null,
+	it("resolves runtime debug targets through workflow-data", async () => {
+		workflowDataMock.getSessionRuntimeDebugTarget.mockResolvedValueOnce({
+			appId: "agent-runtime-code-agent",
+			invokeTarget: "agent-runtime-code-agent",
 			runtimeSandboxName: null,
-		});
-		resolveAgentRefMock.mockResolvedValueOnce({
-			slug: "code-agent",
-			runtimeAppId: null,
+			source: "agent",
+			agentSlug: "code-agent",
+			agentRuntime: "codex-cli",
 		});
 
-		const target = await resolveSessionRuntimeTarget("s1");
+		const target = await resolveSessionRuntimeDebugTarget("s1", "project-1");
 
-		expect(resolveAgentRefMock).toHaveBeenCalledWith({ id: "a1", version: 2 });
 		expect(target).toEqual({
 			appId: "agent-runtime-code-agent",
 			invokeTarget: "agent-runtime-code-agent",
 			runtimeSandboxName: null,
 			source: "agent",
+			agentSlug: "code-agent",
+			agentRuntime: "codex-cli",
+		});
+		expect(workflowDataMock.getSessionRuntimeDebugTarget).toHaveBeenCalledWith({
+			sessionId: "s1",
+			projectId: "project-1",
 		});
 	});
 });

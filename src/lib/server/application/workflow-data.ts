@@ -4481,6 +4481,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.workflowExecutions.getByDaprInstanceId(instanceId);
 	}
 
+	getWorkflowExecutionWorkspaceKey(executionId: string) {
+		return this.deps.workflowExecutions.getExecutionWorkspaceKey(executionId);
+	}
+
 	getWorkflowExecutionSessionOwnerContext(executionId: string) {
 		return this.deps.workflowExecutions.getSessionOwnerContext(executionId);
 	}
@@ -4883,6 +4887,23 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.requireSessions().updateSessionTitle({
 			id: input.sessionId,
 			title: input.title,
+		});
+	}
+
+	getSessionOwnerUserId(sessionId: string) {
+		return this.requireSessions().getSessionOwnerUserId({ sessionId });
+	}
+
+	async getSessionRuntimeTarget(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}) {
+		const session = await this.getScopedSession(input);
+		if (!session) return null;
+		return this.requireSessions().getSessionRuntimeTarget({
+			sessionId: input.sessionId,
+			projectId: input.projectId ?? session.projectId ?? null,
 		});
 	}
 

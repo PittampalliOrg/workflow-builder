@@ -1,17 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const daprFetchMock = vi.fn();
-const getSessionMock = vi.fn();
 const resolveSessionRuntimeTargetMock = vi.fn();
 const waitForAgentWorkflowHostAppReadyMock = vi.fn();
+const workflowDataMock = {
+	getSessionDetail: vi.fn(),
+};
 
 vi.mock("$lib/server/dapr-client", () => ({
 	daprFetch: (...args: unknown[]) => daprFetchMock(...args),
 	getDaprSidecarUrl: () => "http://dapr-sidecar",
 }));
 
-vi.mock("$lib/server/sessions/registry", () => ({
-	getSession: (...args: unknown[]) => getSessionMock(...args),
+vi.mock("$lib/server/application", () => ({
+	getApplicationAdapters: () => ({
+		workflowData: workflowDataMock,
+	}),
 }));
 
 vi.mock("$lib/server/sessions/runtime-target", () => ({
@@ -29,7 +33,7 @@ import { raiseSessionEvent } from "./control";
 describe("raiseSessionEvent", () => {
 	beforeEach(() => {
 		daprFetchMock.mockReset();
-		getSessionMock.mockReset();
+		workflowDataMock.getSessionDetail.mockReset();
 		resolveSessionRuntimeTargetMock.mockReset();
 		waitForAgentWorkflowHostAppReadyMock.mockReset();
 		vi.unstubAllGlobals();
@@ -38,7 +42,7 @@ describe("raiseSessionEvent", () => {
 	});
 
 	it("returns 409 before a session is attached to a Dapr instance", async () => {
-		getSessionMock.mockResolvedValueOnce({
+		workflowDataMock.getSessionDetail.mockResolvedValueOnce({
 			id: "s1",
 			agentId: "a1",
 			agentVersion: 1,
@@ -54,7 +58,7 @@ describe("raiseSessionEvent", () => {
 	});
 
 	it("routes control events to the persisted owning runtime target", async () => {
-		getSessionMock.mockResolvedValueOnce({
+		workflowDataMock.getSessionDetail.mockResolvedValueOnce({
 			id: "s1",
 			agentId: "a1",
 			agentVersion: 2,

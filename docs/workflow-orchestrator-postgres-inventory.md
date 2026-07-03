@@ -6,7 +6,7 @@ runtime boundary is Dapr service invocation to `workflow-builder` internal
 workflow-data routes. Postgres remains the first workflow-data infrastructure
 adapter, not an orchestrator dependency.
 
-Inventory status: 2026-07-02, after the workflow start/control slice and the
+Inventory status: 2026-07-03, after the workflow start/control slice and the
 workspace workflow, service graph, connections, benchmark, top-level
 connections redirect, settings OAuth/profile, settings members, admin pieces,
 root UI-facing route, MCP connection, and app-connection CRUD/OAuth/decrypt
@@ -21,6 +21,11 @@ gate, and the internal piece-execution artifact readback route, plus the
 workflow trigger management/lifecycle, workflow definition command,
 code-checkpoint diff/restore, admin GitOps auth-check, and session-goal storage
 wiring slices.
+The session spawn/control runtime-target helper now resolves session owner user
+ids, workflow execution workspace keys, and session runtime targets through
+workflow-data ports. Direct `sessions`/`workflow_executions` reads for those
+paths are confined to Postgres application adapters; `spawn.ts`, `control.ts`,
+and `runtime-target.ts` no longer import DB or Drizzle for these lookups.
 The internal CLI workspace command route now routes execution lookup,
 CLI-session candidate lookup, file creation, and browser artifact persistence
 through workflow-data.

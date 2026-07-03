@@ -4876,6 +4876,17 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 		return row ? mapExecution(row) : null;
 	}
 
+	async getExecutionWorkspaceKey(executionId: string): Promise<string> {
+		const fallback = executionId.trim() || executionId;
+		if (!fallback) return executionId;
+		const [row] = await this.database
+			.select({ daprInstanceId: workflowExecutions.daprInstanceId })
+			.from(workflowExecutions)
+			.where(eq(workflowExecutions.id, fallback))
+			.limit(1);
+		return row?.daprInstanceId?.trim() || fallback;
+	}
+
 	async getSessionOwnerContext(
 		executionId: string,
 	): Promise<WorkflowExecutionSessionOwnerContext | null> {

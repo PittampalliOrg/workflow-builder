@@ -394,6 +394,7 @@ function fakeWorkflowExecutions(): WorkflowExecutionRepository {
 		assertReadModelReady: vi.fn(async () => undefined),
 		getById: vi.fn(async () => null),
 		getByDaprInstanceId: vi.fn(async () => null),
+		getExecutionWorkspaceKey: vi.fn(async (executionId) => executionId),
 		getSessionOwnerContext: vi.fn(async () => ({
 			userId: "user-1",
 			workflowId: "wf-1",
@@ -598,6 +599,13 @@ function fakeSessions(): SessionRepository {
 			activeContext: { context_used_percentage: 10 },
 			lastProviderContext: { model: "openai/gpt-5.5" },
 			events: { total: 3, totalBytes: 1024, llmTurns: 1 },
+		})),
+		getSessionOwnerUserId: vi.fn(async () => "user-1"),
+		getSessionRuntimeTarget: vi.fn(async () => ({
+			appId: "agent-session-1",
+			invokeTarget: "agent-session-1",
+			runtimeSandboxName: "agent-host-agent-session-1",
+			source: "persisted" as const,
 		})),
 		getSessionRuntimeDebugTarget: vi.fn(async () => ({
 			appId: "agent-session-1",
@@ -2736,6 +2744,58 @@ describe("ApplicationWorkflowDataService", () => {
 			sessionId: "session-1",
 			projectId: "project-1",
 		});
+	});
+
+	it("loads session owner user ids through session ports", async () => {
+		const sessions = {
+			...fakeSessions(),
+			getSessionOwnerUserId: vi.fn(async () => "user-owner-1"),
+		} satisfies SessionRepository;
+		const { service } = makeService({ sessions });
+
+		await expect(service.getSessionOwnerUserId("session-1")).resolves.toBe(
+			"user-owner-1",
+		);
+		expect(sessions.getSessionOwnerUserId).toHaveBeenCalledWith({
+			sessionId: "session-1",
+		});
+	});
+
+	it("loads session runtime targets through scoped session ports", async () => {
+		const target = {
+			appId: "agent-session-1",
+			invokeTarget: "agent-session-1",
+			runtimeSandboxName: "agent-host-agent-session-1",
+			source: "persisted" as const,
+		};
+		const sessions = {
+			...fakeSessions(),
+			getSession: vi.fn(async () => ({
+				id: "session-1",
+				projectId: "project-1",
+			}) as Awaited<ReturnType<SessionRepository["getSession"]>>),
+			getSessionRuntimeTarget: vi.fn(async () => target),
+		} satisfies SessionRepository;
+		const { service } = makeService({ sessions });
+
+		await expect(
+			service.getSessionRuntimeTarget({
+				sessionId: "session-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual(target);
+		expect(sessions.getSessionRuntimeTarget).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			projectId: "project-1",
+		});
+
+		await expect(
+			service.getSessionRuntimeTarget({
+				sessionId: "session-1",
+				projectId: "other-project",
+			}),
+		).resolves.toBeNull();
+		expect(sessions.getSessionRuntimeTarget).toHaveBeenCalledTimes(1);
 	});
 
 	it("loads session runtime debug targets through scoped session ports", async () => {
@@ -8122,6 +8182,7 @@ describe("ApplicationWorkflowDataService", () => {
 			assertReadModelReady: vi.fn(async () => undefined),
 			getById: vi.fn(async () => null),
 			getByDaprInstanceId: vi.fn(async () => null),
+			getExecutionWorkspaceKey: vi.fn(async (executionId) => executionId),
 			getSessionOwnerContext: vi.fn(async () => ({
 				userId: "user-1",
 				workflowId: "wf-1",
@@ -8237,6 +8298,7 @@ describe("ApplicationWorkflowDataService", () => {
 			error: "failed to start",
 		});
 		await service.getExecutionByDaprInstanceId("sw-example-exec-exec-1");
+		await service.getWorkflowExecutionWorkspaceKey("exec-1");
 		await service.getWorkflowExecutionSessionOwnerContext("exec-1");
 		await service.getRunningWorkflowExecution("wf-1");
 		await service.getExecutionLineage("exec-1");
@@ -8376,6 +8438,9 @@ describe("ApplicationWorkflowDataService", () => {
 		});
 		expect(workflowExecutions.getByDaprInstanceId).toHaveBeenCalledWith(
 			"sw-example-exec-exec-1",
+		);
+		expect(workflowExecutions.getExecutionWorkspaceKey).toHaveBeenCalledWith(
+			"exec-1",
 		);
 		expect(workflowExecutions.getSessionOwnerContext).toHaveBeenCalledWith("exec-1");
 		expect(workflowExecutions.getRunningByWorkflowId).toHaveBeenCalledWith("wf-1");

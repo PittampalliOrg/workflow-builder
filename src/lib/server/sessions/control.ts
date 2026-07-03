@@ -1,5 +1,5 @@
 import { daprFetch, getDaprSidecarUrl } from "$lib/server/dapr-client";
-import { getSession } from "$lib/server/sessions/registry";
+import { getApplicationAdapters } from "$lib/server/application";
 import { resolveSessionRuntimeTarget } from "$lib/server/sessions/runtime-target";
 import { waitForAgentWorkflowHostAppReady } from "$lib/server/sessions/agent-workflow-host";
 
@@ -14,7 +14,9 @@ export async function raiseSessionEvent(
 	eventName: string,
 	eventData: unknown,
 ): Promise<{ ok: boolean; status: number; error?: string }> {
-	const session = await getSession(sessionId);
+	const session = await getApplicationAdapters().workflowData.getSessionDetail({
+		sessionId,
+	});
 	if (!session) return { ok: false, status: 404, error: "Session not found" };
 	const instanceId = session.daprInstanceId;
 	if (!instanceId) {

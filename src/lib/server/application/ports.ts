@@ -2852,6 +2852,7 @@ export interface WorkflowExecutionRepository {
 	assertReadModelReady(): Promise<void>;
 	getById(id: string): Promise<WorkflowExecutionRecord | null>;
 	getByDaprInstanceId(instanceId: string): Promise<WorkflowExecutionRecord | null>;
+	getExecutionWorkspaceKey(executionId: string): Promise<string>;
 	getSessionOwnerContext(
 		executionId: string,
 	): Promise<WorkflowExecutionSessionOwnerContext | null>;
@@ -3616,6 +3617,11 @@ export interface SessionRepository {
 		sessionId: string;
 		projectId?: string | null;
 	}): Promise<SessionContextUsageReadModel | null>;
+	getSessionOwnerUserId(input: { sessionId: string }): Promise<string | null>;
+	getSessionRuntimeTarget(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionRuntimeTarget | null>;
 	getSessionRuntimeDebugTarget(input: {
 		sessionId: string;
 		projectId?: string | null;
@@ -3869,11 +3875,14 @@ export type CliWorkspaceCommandCandidate = {
 
 export type SessionRuntimeTargetSource = "persisted" | "agent" | "legacy";
 
-export type SessionRuntimeDebugTarget = {
+export type SessionRuntimeTarget = {
 	appId: string;
 	invokeTarget: string;
 	runtimeSandboxName: string | null;
 	source: SessionRuntimeTargetSource;
+};
+
+export type SessionRuntimeDebugTarget = SessionRuntimeTarget & {
 	agentSlug: string | null;
 	agentRuntime: string | null;
 };
@@ -5172,6 +5181,12 @@ export interface WorkflowDataService {
 		projectId?: string | null;
 		userId?: string | null;
 	}): Promise<RuntimeConfigCloudEvent | null>;
+	getSessionOwnerUserId(sessionId: string): Promise<string | null>;
+	getSessionRuntimeTarget(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+	}): Promise<SessionRuntimeTarget | null>;
 	getSessionRuntimeDebugTarget(input: {
 		sessionId: string;
 		projectId?: string | null;
@@ -5222,6 +5237,7 @@ export interface WorkflowDataService {
 	getExecutionByDaprInstanceId(
 		instanceId: string,
 	): Promise<WorkflowExecutionRecord | null>;
+	getWorkflowExecutionWorkspaceKey(executionId: string): Promise<string>;
 	getWorkflowExecutionSessionOwnerContext(
 		executionId: string,
 	): Promise<WorkflowExecutionSessionOwnerContext | null>;

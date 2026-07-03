@@ -32,20 +32,21 @@ import {
 import { mountSessionRepositoriesViaHost } from "$lib/server/sessions/repositories";
 
 /** Session owner (sessions.userId) — not part of the public SessionDetail
- * shape, so read it directly for the CLI-token gate. */
+ * shape, so resolve it through workflow-data for the CLI-token gate. */
 async function resolveSessionOwnerUserId(
 	sessionId: string,
 ): Promise<string | null> {
-	const { db } = await import("$lib/server/db");
-	if (!db) return null;
-	const { sessions } = await import("$lib/server/db/schema");
-	const { eq } = await import("drizzle-orm");
-	const [row] = await db
-		.select({ userId: sessions.userId })
-		.from(sessions)
-		.where(eq(sessions.id, sessionId))
-		.limit(1);
-	return row?.userId ?? null;
+	try {
+		return await getApplicationAdapters().workflowData.getSessionOwnerUserId(
+			sessionId,
+		);
+	} catch (err) {
+		console.warn(
+			`[session-spawn] session owner lookup failed for ${sessionId}:`,
+			err instanceof Error ? err.message : err,
+		);
+		return null;
+	}
 }
 
 /**
@@ -59,17 +60,14 @@ async function resolveSessionOwnerUserId(
  */
 async function resolveRunWorkspaceKey(executionId: string): Promise<string> {
 	try {
-		const { db } = await import("$lib/server/db");
-		if (!db) return executionId;
-		const { workflowExecutions } = await import("$lib/server/db/schema");
-		const { eq } = await import("drizzle-orm");
-		const [row] = await db
-			.select({ daprInstanceId: workflowExecutions.daprInstanceId })
-			.from(workflowExecutions)
-			.where(eq(workflowExecutions.id, executionId))
-			.limit(1);
-		return row?.daprInstanceId?.trim() || executionId;
-	} catch {
+		return await getApplicationAdapters().workflowData.getWorkflowExecutionWorkspaceKey(
+			executionId,
+		);
+	} catch (err) {
+		console.warn(
+			`[session-spawn] workflow execution workspace key lookup failed for ${executionId}:`,
+			err instanceof Error ? err.message : err,
+		);
 		return executionId;
 	}
 }
