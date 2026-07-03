@@ -467,7 +467,7 @@ describe("buildSwebenchTraceBundleFromMlflowNative", () => {
 	});
 
 	it("uses native MLflow spans as the preferred bundle source", async () => {
-		vi.mocked(getMlflowNativeTrace).mockResolvedValue({
+		const loadNativeTrace = vi.fn().mockResolvedValue({
 			trace: {
 				trace_info: { trace_id: "tr-primary123", state: "OK" },
 				spans: [
@@ -538,7 +538,7 @@ describe("buildSwebenchTraceBundleFromMlflowNative", () => {
 			mlflowExperimentId: "6",
 			mlflowRunId: "mlrun",
 			artifactPath: "traces/django__django-1/trace-bundle.json",
-		});
+		}, [], loadNativeTrace);
 
 		expect(bundle.backend).toBe("mlflow_native");
 		expect(bundle.requiredContext.rootPresent).toBe(true);
@@ -550,6 +550,7 @@ describe("buildSwebenchTraceBundleFromMlflowNative", () => {
 		expect(bundle.llmSpans[0].modelName).toBe("deepseek");
 		expect(bundle.llmSpans[0].promptTokens).toBe(11);
 		expect(bundle.toolSpans[0].toolName).toBe("bash_run");
+		expect(loadNativeTrace).toHaveBeenCalledWith("primary123");
 		expect(getMultiTraceSpans).not.toHaveBeenCalled();
 	});
 

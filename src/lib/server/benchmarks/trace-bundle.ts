@@ -705,6 +705,7 @@ export async function buildSwebenchTraceBundle(
 export async function buildSwebenchTraceBundleFromMlflowNative(
 	input: RawBuildInput,
 	warnings: string[] = [],
+	loadNativeTrace: (traceId: string) => Promise<MlflowNativeTrace | null> = getMlflowNativeTrace,
 ): Promise<SwebenchTraceBundle> {
 	const mlflowTracesUrl = publicMlflowTracesUrl(
 		input.mlflowExperimentId,
@@ -729,7 +730,7 @@ export async function buildSwebenchTraceBundleFromMlflowNative(
 	const traceSpans: ObservabilityTraceSpan[] = [];
 	for (const traceId of input.traceIds) {
 		try {
-			const native = await getMlflowNativeTrace(traceId);
+			const native = await loadNativeTrace(traceId);
 			if (!native?.trace?.spans?.length) continue;
 			traceSpans.push(...normalizeMlflowNativeTraceSpans(native, traceId));
 		} catch (err) {
