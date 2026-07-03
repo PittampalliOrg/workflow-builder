@@ -232,11 +232,13 @@ The first UI-facing route has also moved behind the application service:
   `workflowData.listServiceGraphPickerOptions`. Workflow option lookup, recent
   execution lookup, scoped legacy fallback, default execution selection, and
   selector label formatting moved out of the page loader.
-- `src/routes/workspaces/[slug]/dev/+page.server.ts` now resolves the
-  `microservice-dev-session` launch workflow through
-  `workflowData.findProjectWorkflowIdByIdOrNamePrefix`. The loader still owns
-  the UI service catalog, but the project-scoped workflow id/name-prefix lookup
-  is behind workflow-data.
+- `src/routes/workspaces/[slug]/dev/+page.server.ts`,
+  `src/routes/workspaces/[slug]/dev/[executionId]/+page.server.ts`, and the
+  public `src/routes/api/dev-environments/**` GET routes now load dev-preview
+  hub, service catalog, list, and detail read models through workflow-data and a
+  dev-environment read repository port. The existing DB reconstruction helper is
+  wrapped as a legacy adapter; teardown and internal dev-preview write/canonical
+  id paths remain a dedicated lifecycle/internal slice.
 - `src/routes/workspaces/[slug]/+layout.server.ts` and
   `src/lib/server/workspaces/resolve.ts` now validate workspace slug membership
   and stale-slug redirect targets through workflow-data workspace-project

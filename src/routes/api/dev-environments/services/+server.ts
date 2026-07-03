@@ -1,6 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { devPreviewServiceCatalog } from "$lib/server/workflows/dev-environments";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * Credential-free catalog of launchable dev-preview services. Drives the launch
@@ -8,5 +8,7 @@ import { devPreviewServiceCatalog } from "$lib/server/workflows/dev-environments
  */
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	return json({ services: devPreviewServiceCatalog() });
+	return json({
+		services: await getApplicationAdapters().workflowData.listDevPreviewServices(),
+	});
 };

@@ -77,6 +77,7 @@ import type {
 	BenchmarkRunRepository,
 	BenchmarkSessionProvisioningGateResult,
 	CreateProjectMcpConnectionInput,
+	DevEnvironmentReadRepository,
 	CreateWorkflowEnsureSessionInput,
 	CreateWorkflowDefinitionInput,
 	CreateWorkflowTriggerInput,
@@ -180,6 +181,7 @@ import {
 } from "$lib/utils/workflow-input-config";
 
 const PROBLEM_PREVIEW_LEN = 240;
+const DEV_SESSION_WORKFLOW_ID = "microservice-dev-session";
 const TOOL_CAPABLE_BENCHMARK_PROVIDERS = new Set([
 	"anthropic",
 	"openai",
@@ -761,6 +763,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			browserArtifacts?: WorkflowBrowserArtifactStore;
 			codeFunctionCatalog?: CodeFunctionCatalogRepository;
 			benchmarkBrowser: BenchmarkBrowserRepository;
+			devEnvironments?: DevEnvironmentReadRepository;
 			benchmarkRuns?: BenchmarkRunRepository;
 			workflowExecutions: WorkflowExecutionRepository;
 			sessions?: SessionRepository;
@@ -840,6 +843,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Goal flow read store not configured");
 		}
 		return this.deps.goalFlow;
+	}
+
+	private requireDevEnvironments(): DevEnvironmentReadRepository {
+		if (!this.deps.devEnvironments) {
+			throw new Error("Dev environment read repository not configured");
+		}
+		return this.deps.devEnvironments;
 	}
 
 	private requireSessionRuntimeConfigs(): SessionRuntimeConfigReader {
@@ -3408,6 +3418,43 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			suiteFacets,
 			runnableAgents,
 		};
+	}
+
+	async getDevPreviewHubReadModel(input: { projectId?: string | null }) {
+		const devEnvironments = this.requireDevEnvironments();
+		const projectId = input.projectId ?? null;
+		const devWorkflowId = projectId
+			? await this.findProjectWorkflowIdByIdOrNamePrefix({
+					projectId,
+					workflowId: DEV_SESSION_WORKFLOW_ID,
+					namePrefix: "Microservice dev-session%",
+				})
+			: null;
+		return {
+			services: devEnvironments.listServices(),
+			devWorkflowId,
+			devWorkflowName: DEV_SESSION_WORKFLOW_ID,
+		};
+	}
+
+	async listDevPreviewServices() {
+		return this.requireDevEnvironments().listServices();
+	}
+
+	async listDevEnvironments(input: { projectId?: string | null }) {
+		return this.requireDevEnvironments().listDevEnvironments(
+			input.projectId ?? null,
+		);
+	}
+
+	async getDevEnvironmentOrPending(input: {
+		executionId: string;
+		projectId?: string | null;
+	}) {
+		return this.requireDevEnvironments().getDevEnvironmentOrPending({
+			executionId: input.executionId,
+			projectId: input.projectId ?? null,
+		});
 	}
 
 	createWorkflowDefinition(input: CreateWorkflowDefinitionInput) {

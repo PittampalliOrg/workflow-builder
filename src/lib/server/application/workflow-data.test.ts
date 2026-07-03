@@ -6,6 +6,7 @@ import type {
 	ArtifactStore,
 	BenchmarkBrowserRepository,
 	BenchmarkRunRepository,
+	DevEnvironmentReadRepository,
 	EvaluationArtifactStore,
 	GoalFlowReadStore,
 	HostedMcpServerRepository,
@@ -975,6 +976,62 @@ function fakeBenchmarkBrowser(): BenchmarkBrowserRepository {
 	};
 }
 
+function fakeDevEnvironments(): DevEnvironmentReadRepository {
+	return {
+		listServices: vi.fn(() => [
+			{
+				service: "workflow-builder",
+				primaryCluster: "dev",
+				fallbackCluster: "ryzen",
+				deliveryRole: "dev-primary-ryzen-canary",
+				previewTier: "tier-1-hot-loop",
+				needsDapr: true,
+				port: 3000,
+				syncMode: "plugin",
+				repoUrl: "PittampalliOrg/workflow-builder",
+				repoSubdir: ".",
+				tailnetHost: "wfb-preview-ryzen.tail286401.ts.net",
+			},
+		]),
+		listDevEnvironments: vi.fn(async () => [
+			{
+				executionId: "exec-1",
+				workspaceRef: "workspace-1",
+				service: "workflow-builder",
+				browseUrl: "https://preview.example.test",
+				podIP: "10.0.0.10",
+				port: 3000,
+				syncUrl: null,
+				ready: true,
+				needsDapr: true,
+				daprAppId: "workflow-builder-preview",
+				sandboxName: "sandbox-1",
+				sessionId: "session-1",
+				sessionUrl: "/sessions/session-1",
+				runStatus: "running",
+				createdAt: "2026-07-02T00:00:00.000Z",
+			},
+		]),
+		getDevEnvironmentOrPending: vi.fn(async (input) => ({
+			executionId: input.executionId,
+			workspaceRef: "workspace-1",
+			service: "workflow-builder",
+			browseUrl: "https://preview.example.test",
+			podIP: null,
+			port: 3000,
+			syncUrl: null,
+			ready: false,
+			needsDapr: true,
+			daprAppId: null,
+			sandboxName: "sandbox-1",
+			sessionId: "session-1",
+			sessionUrl: "/sessions/session-1",
+			runStatus: "running",
+			createdAt: "2026-07-02T00:00:00.000Z",
+		})),
+	};
+}
+
 function fakeBenchmarkRuns(): BenchmarkRunRepository {
 	return {
 		getSessionProvisioningGate: vi.fn(async () => ({
@@ -1077,6 +1134,7 @@ function makeService(options: {
 	pieceExecutions?: PieceExecutionRepository;
 	browserArtifacts?: WorkflowBrowserArtifactStore;
 	sessions?: SessionRepository;
+	devEnvironments?: DevEnvironmentReadRepository;
 	sessionProvisioning?: SessionProvisioningReader;
 	sessionEvents?: SessionEventLog;
 	sessionRuntimeConfigs?: SessionRuntimeConfigReader;
@@ -1098,7 +1156,9 @@ function makeService(options: {
 		getByRef: vi.fn(async () => null),
 		list: vi.fn(async () => []),
 		listForWorkspace: vi.fn(async () => []),
-		findProjectWorkflowIdByIdOrNamePrefix: vi.fn(async () => null),
+		findProjectWorkflowIdByIdOrNamePrefix: vi.fn<
+			WorkflowDefinitionRepository["findProjectWorkflowIdByIdOrNamePrefix"]
+		>(async () => null),
 		create: vi.fn(async () => baseWorkflow),
 		update: vi.fn(async () => baseWorkflow),
 		hasActiveExecutions: vi.fn(async () => false),
@@ -1124,6 +1184,7 @@ function makeService(options: {
 		sessions: options.sessions,
 		browserArtifacts: options.browserArtifacts,
 		benchmarkBrowser: fakeBenchmarkBrowser(),
+		devEnvironments: options.devEnvironments ?? fakeDevEnvironments(),
 		benchmarkRuns: options.benchmarkRuns ?? fakeBenchmarkRuns(),
 		workflowExecutions,
 		sessionEvents: options.sessionEvents,
@@ -5718,6 +5779,70 @@ describe("ApplicationWorkflowDataService", () => {
 			pieceNameCandidates: ["github", "@activepieces/piece-github"],
 			projectId: "project-1",
 		});
+	});
+
+	it("composes the dev preview hub read model through workflow-data ports", async () => {
+		const devEnvironments = fakeDevEnvironments();
+		const { service, workflowDefinitions } = makeService({ devEnvironments });
+		vi.mocked(
+			workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix,
+		).mockResolvedValueOnce("workflow-dev-session");
+
+		await expect(
+			service.getDevPreviewHubReadModel({ projectId: "project-1" }),
+		).resolves.toEqual({
+			services: expect.arrayContaining([
+				expect.objectContaining({ service: "workflow-builder" }),
+			]),
+			devWorkflowId: "workflow-dev-session",
+			devWorkflowName: "microservice-dev-session",
+		});
+		expect(devEnvironments.listServices).toHaveBeenCalledOnce();
+		expect(
+			workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix,
+		).toHaveBeenCalledWith({
+			projectId: "project-1",
+			workflowId: "microservice-dev-session",
+			namePrefix: "Microservice dev-session%",
+		});
+	});
+
+	it("loads dev environment list and detail through dev environment ports", async () => {
+		const devEnvironments = fakeDevEnvironments();
+		const { service } = makeService({ devEnvironments });
+
+		await expect(
+			service.listDevEnvironments({ projectId: "project-1" }),
+		).resolves.toEqual([
+			expect.objectContaining({
+				executionId: "exec-1",
+				service: "workflow-builder",
+			}),
+		]);
+		expect(devEnvironments.listDevEnvironments).toHaveBeenCalledWith(
+			"project-1",
+		);
+
+		await expect(
+			service.getDevEnvironmentOrPending({
+				executionId: "exec-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual(
+			expect.objectContaining({
+				executionId: "exec-1",
+				sandboxName: "sandbox-1",
+			}),
+		);
+		expect(devEnvironments.getDevEnvironmentOrPending).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			projectId: "project-1",
+		});
+
+		await expect(service.listDevPreviewServices()).resolves.toEqual([
+			expect.objectContaining({ service: "workflow-builder" }),
+		]);
+		expect(devEnvironments.listServices).toHaveBeenCalledOnce();
 	});
 
 	it("composes the benchmark browser read model through benchmark ports", async () => {

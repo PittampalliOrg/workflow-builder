@@ -41,6 +41,7 @@ import {
 	DaprEventBus,
 	DaprWorkflowScheduler,
 } from "$lib/server/application/adapters/dapr";
+import { LegacyDevEnvironmentReadRepository } from "$lib/server/application/adapters/dev-environments";
 import {
 	KroPreviewEnvironmentProvisioner,
 	SandboxExecutionPreviewEnvironmentProvisioner,
@@ -100,6 +101,7 @@ export function getApplicationAdapters(
 	let browserArtifacts: PostgresWorkflowBrowserArtifactStore | undefined;
 	let codeFunctionCatalog: PostgresCodeFunctionCatalogRepository | undefined;
 	let benchmarkBrowser: PostgresBenchmarkBrowserRepository | undefined;
+	let devEnvironments: LegacyDevEnvironmentReadRepository | undefined;
 	let benchmarkRuns: PostgresBenchmarkRunRepository | undefined;
 	let workflowExecutions: PostgresWorkflowExecutionRepository | undefined;
 	let workflowFiles: PostgresWorkflowFileStore | undefined;
@@ -157,6 +159,8 @@ export function getApplicationAdapters(
 		(codeFunctionCatalog ??= new PostgresCodeFunctionCatalogRepository(getDatabase()));
 	const getBenchmarkBrowser = () =>
 		(benchmarkBrowser ??= new PostgresBenchmarkBrowserRepository(getDatabase()));
+	const getDevEnvironments = () =>
+		(devEnvironments ??= new LegacyDevEnvironmentReadRepository());
 	const getBenchmarkRuns = () =>
 		(benchmarkRuns ??= new PostgresBenchmarkRunRepository(getDatabase()));
 	const getWorkflowExecutions = () =>
@@ -222,6 +226,7 @@ export function getApplicationAdapters(
 			browserArtifacts: getBrowserArtifacts(),
 			codeFunctionCatalog: getCodeFunctionCatalog(),
 			benchmarkBrowser: getBenchmarkBrowser(),
+			devEnvironments: getDevEnvironments(),
 			benchmarkRuns: getBenchmarkRuns(),
 			workflowExecutions: getWorkflowExecutions(),
 			sessions: getSessions(),

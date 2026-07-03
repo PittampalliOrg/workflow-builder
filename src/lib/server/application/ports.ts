@@ -2762,6 +2762,55 @@ export interface RuntimeRegistryReader {
 	>;
 }
 
+export type DevPreviewServiceReadModel = {
+	service: string;
+	primaryCluster: string;
+	fallbackCluster: string;
+	deliveryRole: string;
+	previewTier: string;
+	needsDapr: boolean;
+	port: number;
+	syncMode: string;
+	repoUrl: string;
+	repoSubdir: string;
+	tailnetHost: string;
+};
+
+export type DevEnvironmentSummaryReadModel = {
+	executionId: string;
+	workspaceRef: string;
+	service: string;
+	browseUrl: string | null;
+	podIP: string | null;
+	port: number | null;
+	syncUrl: string | null;
+	ready: boolean;
+	needsDapr: boolean;
+	daprAppId: string | null;
+	sandboxName: string | null;
+	sessionId: string | null;
+	sessionUrl: string | null;
+	runStatus: string | null;
+	createdAt: string;
+};
+
+export type DevPreviewHubReadModel = {
+	services: DevPreviewServiceReadModel[];
+	devWorkflowId: string | null;
+	devWorkflowName: string;
+};
+
+export interface DevEnvironmentReadRepository {
+	listServices(): DevPreviewServiceReadModel[];
+	listDevEnvironments(
+		projectId: string | null | undefined,
+	): Promise<DevEnvironmentSummaryReadModel[]>;
+	getDevEnvironmentOrPending(input: {
+		executionId: string;
+		projectId: string | null | undefined;
+	}): Promise<DevEnvironmentSummaryReadModel | null>;
+}
+
 export interface PeerAgentResolver {
 	resolvePeerAgentOwner(peerAgentId: string): Promise<PeerAgentOwner | null>;
 	resolvePeerAgentDispatchContext(input: {
@@ -3120,6 +3169,17 @@ export interface WorkflowDataService {
 	getBenchmarkBrowserReadModel(input: {
 		projectId: string | null;
 	}): Promise<BenchmarkBrowserReadModel>;
+	getDevPreviewHubReadModel(input: {
+		projectId?: string | null;
+	}): Promise<DevPreviewHubReadModel>;
+	listDevPreviewServices(): Promise<DevPreviewServiceReadModel[]>;
+	listDevEnvironments(input: {
+		projectId?: string | null;
+	}): Promise<DevEnvironmentSummaryReadModel[]>;
+	getDevEnvironmentOrPending(input: {
+		executionId: string;
+		projectId?: string | null;
+	}): Promise<DevEnvironmentSummaryReadModel | null>;
 	createWorkflowDefinition(input: CreateWorkflowDefinitionInput): Promise<WorkflowDefinition>;
 	updateWorkflowDefinition(
 		id: string,

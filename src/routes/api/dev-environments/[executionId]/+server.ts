@@ -1,6 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { getDevEnvironmentOrPending } from "$lib/server/workflows/dev-environments";
+import { getApplicationAdapters } from "$lib/server/application";
 import { teardownDevPreview } from "$lib/server/workflows/dev-preview";
 import { stopDurableRun } from "$lib/server/lifecycle";
 
@@ -8,10 +8,10 @@ import { stopDurableRun } from "$lib/server/lifecycle";
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	const executionId = params.executionId!;
-	const environment = await getDevEnvironmentOrPending(
+	const environment = await getApplicationAdapters().workflowData.getDevEnvironmentOrPending({
 		executionId,
-		locals.session.projectId,
-	);
+		projectId: locals.session.projectId,
+	});
 	if (!environment) return error(404, "Dev environment not found");
 	return json({ environment });
 };
@@ -24,10 +24,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	const executionId = params.executionId!;
-	const environment = await getDevEnvironmentOrPending(
+	const environment = await getApplicationAdapters().workflowData.getDevEnvironmentOrPending({
 		executionId,
-		locals.session.projectId,
-	);
+		projectId: locals.session.projectId,
+	});
 	if (!environment) return error(404, "Dev environment not found");
 
 	const reason = "Dev environment torn down by user";
