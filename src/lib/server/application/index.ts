@@ -85,6 +85,7 @@ import {
 	LegacyCapacityOwnershipAdapter,
 	OtelCapacityRemoteTelemetryAdapter,
 } from "$lib/server/application/adapters/capacity-overview";
+import { LegacyBenchmarkRunDetailReadAdapter } from "$lib/server/application/adapters/benchmark-run-detail";
 import { LegacyBenchmarkRunReadRepository } from "$lib/server/application/adapters/benchmark-runs";
 import { LegacyDevEnvironmentReadRepository } from "$lib/server/application/adapters/dev-environments";
 import {
@@ -163,6 +164,7 @@ import { ApplicationSessionMcpStatusService } from "$lib/server/application/sess
 import { ApplicationSessionRuntimeAccessService } from "$lib/server/application/session-runtime-access";
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
 import { ApplicationBulkLifecycleStopService } from "$lib/server/application/lifecycle-bulk-stop";
+import { ApplicationBenchmarkRunDetailPageService } from "$lib/server/application/benchmark-run-detail";
 import { ApplicationCapacityActiveService } from "$lib/server/application/capacity-active";
 import { ApplicationCapacityOverviewService } from "$lib/server/application/capacity-overview";
 import { ApplicationDaprInspectionService } from "$lib/server/application/dapr-inspection";
@@ -311,6 +313,9 @@ export function getApplicationAdapters(
 	let runCancellation: ApplicationRunCancellationService | undefined;
 	let benchmarkRunLaunch: ApplicationBenchmarkRunLaunchService | undefined;
 	let evaluationRunLaunch: ApplicationEvaluationRunLaunchService | undefined;
+	let benchmarkRunDetail:
+		| ApplicationBenchmarkRunDetailPageService
+		| undefined;
 	let capacityActive: ApplicationCapacityActiveService | undefined;
 	let capacityOverview: ApplicationCapacityOverviewService | undefined;
 	let daprInspection: ApplicationDaprInspectionService | undefined;
@@ -525,6 +530,10 @@ export function getApplicationAdapters(
 	const getEvaluationRunLaunch = () =>
 		(evaluationRunLaunch ??= new ApplicationEvaluationRunLaunchService(
 			new LegacyEvaluationRunLaunchAdapter(),
+		));
+	const getBenchmarkRunDetail = () =>
+		(benchmarkRunDetail ??= new ApplicationBenchmarkRunDetailPageService(
+			new LegacyBenchmarkRunDetailReadAdapter(),
 		));
 	const getCapacityActive = () =>
 		(capacityActive ??= new ApplicationCapacityActiveService({
@@ -822,6 +831,9 @@ export function getApplicationAdapters(
 		},
 		get evaluationRunLaunch() {
 			return getEvaluationRunLaunch();
+		},
+		get benchmarkRunDetail() {
+			return getBenchmarkRunDetail();
 		},
 		get capacityActive() {
 			return getCapacityActive();
