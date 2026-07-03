@@ -143,6 +143,10 @@ import {
 import { LegacyWorkflowConnectionRefSyncPort } from "$lib/server/application/adapters/workflow-connections";
 import { LegacyWorkflowCodeCheckpointWorkspacePort } from "$lib/server/application/adapters/workflow-code-checkpoints";
 import {
+	LegacyWorkflowCodeFunctionAdapter,
+	LegacyWorkflowEmitterAdapter,
+} from "$lib/server/application/adapters/workflow-export";
+import {
 	HelperPodSourceBundlePromotionRunner,
 	WorkflowPromotionGateAdapter,
 } from "$lib/server/application/adapters/workflow-code-version-promotion";
@@ -178,6 +182,7 @@ import { ApplicationBenchmarkCapacityDiagnosticsService } from "$lib/server/appl
 import { ApplicationRunCancellationService } from "$lib/server/application/run-cancellation";
 import { ApplicationEvaluationRunDetailService } from "$lib/server/application/evaluation-run-detail";
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
+import { ApplicationWorkflowExportService } from "$lib/server/application/workflow-export";
 import { ApplicationWorkflowBrowserArtifactsService } from "$lib/server/application/workflow-browser-artifacts";
 import { ApplicationWorkflowExecutionArtifactDiffService } from "$lib/server/application/workflow-execution-artifact-diff";
 import { ApplicationWorkflowExecutionArtifactsService } from "$lib/server/application/workflow-execution-artifacts";
@@ -330,6 +335,7 @@ export function getApplicationAdapters(
 	let workflowDefinitionCommands:
 		| ApplicationWorkflowDefinitionCommandService
 		| undefined;
+	let workflowExport: ApplicationWorkflowExportService | undefined;
 	let workflowExecutionControl:
 		| ApplicationWorkflowExecutionControlService
 		| undefined;
@@ -811,6 +817,13 @@ export function getApplicationAdapters(
 			goalFlow: getGoalFlow(),
 			workflowScheduler,
 		}));
+	const getWorkflowExport = () =>
+		(workflowExport ??= new ApplicationWorkflowExportService({
+			workflowData: getWorkflowData(),
+			emitter: new LegacyWorkflowEmitterAdapter(),
+			codeFunctions: new LegacyWorkflowCodeFunctionAdapter(),
+			now: () => new Date(),
+		}));
 	return {
 		config,
 		get workflowDefinitions() {
@@ -824,6 +837,9 @@ export function getApplicationAdapters(
 		},
 		get workflowData() {
 			return getWorkflowData();
+		},
+		get workflowExport() {
+			return getWorkflowExport();
 		},
 		get sessionCommands() {
 			return getSessionCommands();

@@ -4,42 +4,15 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
-	const workflow = {
-		id: "wf-1",
-		name: "Example",
-		userId: "user-1",
-		projectId: "project-1",
-		spec: { document: { dsl: "1.0.0", namespace: "default", name: "example" } },
+	const workflowExport = {
+		getExport: vi.fn(),
+		saveExport: vi.fn(),
 	};
-	const workflowData = {
-		getWorkflowByRef: vi.fn(async () => workflow),
-	};
-	const emitWorkflow = vi.fn(async () => ({
-		source: "export const workflow = {};",
-		supportingFiles: [],
-		warnings: [],
-		compositionGraph: { nodes: [] },
-		workflowName: "example",
-		filename: "example.ts",
-	}));
-	const createCodeFunction = vi.fn(async () => ({
-		id: "fn-1",
-		slug: "example-workflow",
-		name: "Example (workflow)",
-	}));
-	return { workflow, workflowData, emitWorkflow, createCodeFunction };
+	return { workflowExport };
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
-}));
-
-vi.mock("$lib/server/workflows/code-emitter", () => ({
-	emitWorkflow: mocks.emitWorkflow,
-}));
-
-vi.mock("$lib/server/code-functions", () => ({
-	createCodeFunction: mocks.createCodeFunction,
+	getApplicationAdapters: () => ({ workflowExport: mocks.workflowExport }),
 }));
 
 import { GET, POST } from "./+server";
@@ -69,19 +42,25 @@ async function expectHttpStatus(promise: Promise<unknown>, status: number) {
 describe("workflow export route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.workflowData.getWorkflowByRef.mockResolvedValue(mocks.workflow);
-		mocks.emitWorkflow.mockResolvedValue({
-			source: "export const workflow = {};",
-			supportingFiles: [],
-			warnings: [],
-			compositionGraph: { nodes: [] },
-			workflowName: "example",
-			filename: "example.ts",
+		mocks.workflowExport.getExport.mockResolvedValue({
+			status: "json",
+			body: {
+				source: "export const workflow = {};",
+				supportingFiles: [],
+				warnings: [],
+				compositionGraph: { nodes: [] },
+				workflowName: "example",
+				filename: "example.ts",
+				language: "typescript",
+			},
 		});
-		mocks.createCodeFunction.mockResolvedValue({
-			id: "fn-1",
-			slug: "example-workflow",
-			name: "Example (workflow)",
+		mocks.workflowExport.saveExport.mockResolvedValue({
+			status: "ok",
+			body: {
+				codeFunctionId: "fn-1",
+				slug: "example-workflow",
+				name: "Example (workflow)",
+			},
 		});
 	});
 
@@ -91,6 +70,10 @@ describe("workflow export route", () => {
 			"utf8",
 		);
 		expect(source).toContain("getApplicationAdapters");
+		expect(source).toContain("workflowExport");
+		expect(source).not.toContain("$lib/server/workflows/project-scope");
+		expect(source).not.toContain("$lib/server/workflows/code-emitter");
+		expect(source).not.toContain("$lib/server/code-functions");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
 	});
@@ -105,9 +88,13 @@ describe("workflow export route", () => {
 			filename: "example.ts",
 			language: "typescript",
 		});
-		expect(mocks.workflowData.getWorkflowByRef).toHaveBeenCalledWith({
+		expect(mocks.workflowExport.getExport).toHaveBeenCalledWith({
 			workflowId: "wf-1",
-			lookup: "id",
+			session: { userId: "user-1", projectId: "project-1" },
+			language: null,
+			inlineFunctions: null,
+			format: "json",
+			download: null,
 		});
 	});
 
@@ -120,23 +107,22 @@ describe("workflow export route", () => {
 			slug: "example-workflow",
 			name: "Example (workflow)",
 		});
-		expect(mocks.createCodeFunction).toHaveBeenCalledWith(
-			expect.objectContaining({
-				name: "Saved workflow",
-				language: "typescript",
-				role: "workflow",
-			}),
-			"user-1",
-		);
+		expect(mocks.workflowExport.saveExport).toHaveBeenCalledWith({
+			workflowId: "wf-1",
+			session: { userId: "user-1", projectId: "project-1" },
+			language: null,
+			inlineFunctions: null,
+			body: { name: "Saved workflow" },
+		});
 	});
 
-	it("hides workflows outside the active workspace", async () => {
-		mocks.workflowData.getWorkflowByRef.mockResolvedValueOnce({
-			...mocks.workflow,
-			projectId: "project-2",
+	it("passes application service errors through as route errors", async () => {
+		mocks.workflowExport.getExport.mockResolvedValueOnce({
+			status: "error",
+			httpStatus: 404,
+			body: "Workflow not found",
 		});
 
 		await expectHttpStatus(Promise.resolve(GET(event() as never)), 404);
-		expect(mocks.emitWorkflow).not.toHaveBeenCalled();
 	});
 });
