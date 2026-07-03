@@ -3461,6 +3461,43 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return { piece, usageByConnection };
 	}
 
+	async getPieceConnectionDetailPage(input: {
+		pieceName: string;
+		projectId: string;
+	}) {
+		const pieceName = normalizeMcpPieceName(input.pieceName);
+		if (!pieceName) return null;
+
+		const { piece, usageByConnection } = await this.getPieceCatalogDetail({
+			pieceNameCandidates: mcpPieceCandidates(pieceName),
+			projectId: input.projectId,
+		});
+		if (!piece) return null;
+
+		const authType = mcpPieceAuthType(piece.auth);
+		return {
+			piece: {
+				pieceName,
+				canonicalPieceName: `@activepieces/piece-${pieceName}`,
+				displayName: piece.displayName,
+				description: piece.description,
+				logoUrl: piece.logoUrl,
+				categories: piece.categories ?? [],
+				version: piece.version,
+				authType,
+				authDisplayName: mcpPieceAuthDisplayName(piece.auth),
+				requiresAuth: mcpPieceRequiresAuth(authType),
+				isOAuth2: isOAuth2AuthType(authType),
+				availableOnly: piece.availableOnly === true,
+				catalogSourceImage: piece.catalogSourceImage,
+				catalogSyncedAt: piece.catalogSyncedAt?.toISOString() ?? null,
+				metadataUpdatedAt: piece.updatedAt?.toISOString() ?? null,
+			},
+			actions: pieceActionsFromMetadata(piece.actions),
+			usageByConnection,
+		};
+	}
+
 	async listConnectablePieces(input: { authOnly?: boolean }) {
 		const pieces = await this.deps.pieceCatalog.listConnectablePieces({
 			authOnly: input.authOnly === true,

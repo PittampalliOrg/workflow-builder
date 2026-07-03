@@ -220,6 +220,28 @@ export type PieceCatalogDetail = {
 	>;
 };
 
+export type PieceConnectionDetailPageReadModel = {
+	piece: {
+		pieceName: string;
+		canonicalPieceName: string;
+		displayName: string;
+		description: string | null;
+		logoUrl: string | null;
+		categories: string[];
+		version: string;
+		authType: string;
+		authDisplayName: string | null;
+		requiresAuth: boolean;
+		isOAuth2: boolean;
+		availableOnly: boolean;
+		catalogSourceImage: string | null;
+		catalogSyncedAt: string | null;
+		metadataUpdatedAt: string | null;
+	};
+	actions: McpCatalogPieceAction[];
+	usageByConnection: PieceCatalogDetail["usageByConnection"];
+};
+
 export type ConnectablePieceRecord = {
 	name: string;
 	displayName: string | null;
@@ -4665,6 +4687,10 @@ export interface WorkflowDataService {
 		pieceNameCandidates: string[];
 		projectId: string;
 	}): Promise<PieceCatalogDetail>;
+	getPieceConnectionDetailPage(input: {
+		pieceName: string;
+		projectId: string;
+	}): Promise<PieceConnectionDetailPageReadModel | null>;
 	listConnectablePieces(input: {
 		authOnly?: boolean;
 	}): Promise<ConnectablePieceReadModel[]>;

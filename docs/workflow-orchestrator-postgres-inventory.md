@@ -558,6 +558,13 @@ The first UI-facing route has also moved behind the application service:
   `DaprAgentRegistryStateReaderAdapter`; the service owns registry key
   normalization, agent metadata projection, and diagnostics for missing indexes
   or state entries.
+- `src/routes/workspaces/[slug]/connections/[pieceName]/+page.server.ts` now
+  delegates integration-detail read-model construction to
+  `workflowData.getPieceConnectionDetailPage`. Piece slug normalization,
+  candidate expansion, auth display projection, action projection, and
+  connection-usage mapping are no longer page-loader behavior; the loader only
+  obtains workspace context, calls the application service, and maps missing
+  pieces to 404.
 - `src/routes/api/v1/agent-runtimes/+server.ts`,
   `src/routes/api/v1/agent-runtimes/[slug]/+server.ts`,
   `src/routes/api/v1/agent-runtimes/[slug]/wake/+server.ts`,

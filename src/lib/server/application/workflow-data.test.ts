@@ -4109,6 +4109,87 @@ describe("ApplicationWorkflowDataService", () => {
 		]);
 	});
 
+	it("builds the workspace connection detail page read model", async () => {
+		const pieceCatalog = {
+			getLatestPieceMetadata: vi.fn(async () => ({
+				name: "@activepieces/piece-github",
+				displayName: "GitHub",
+				description: "Source control",
+				logoUrl: "https://example.test/github.svg",
+				categories: ["developer-tools"],
+				version: "1.0.0",
+				auth: { type: "OAUTH2", displayName: "GitHub OAuth" },
+				actions: {
+					create_issue: {
+						displayName: "Create Issue",
+						description: "Open a new issue",
+					},
+				},
+				availableOnly: false,
+				catalogSourceImage: "ghcr.io/pieces/github:1.0.0",
+				catalogSyncedAt: new Date("2026-01-02T00:00:00.000Z"),
+				updatedAt: new Date("2026-01-03T00:00:00.000Z"),
+			})),
+			listConnectablePieces: vi.fn(async () => []),
+			listPieceCatalogFunctions: vi.fn(async () => []),
+			listMcpCatalogPieces: vi.fn(async () => []),
+			listConnectionUsageByPieceNames: vi.fn(async () => [
+				{
+					connectionExternalId: "conn-ext-1",
+					refCount: 2,
+					workflowCount: 1,
+				},
+			]),
+		} satisfies PieceCatalogRepository;
+		const service = makeServiceWithPieceCatalog(pieceCatalog);
+
+		await expect(
+			service.getPieceConnectionDetailPage({
+				pieceName: "@activepieces/piece-github",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual({
+			piece: {
+				pieceName: "github",
+				canonicalPieceName: "@activepieces/piece-github",
+				displayName: "GitHub",
+				description: "Source control",
+				logoUrl: "https://example.test/github.svg",
+				categories: ["developer-tools"],
+				version: "1.0.0",
+				authType: "OAUTH2",
+				authDisplayName: "GitHub OAuth",
+				requiresAuth: true,
+				isOAuth2: true,
+				availableOnly: false,
+				catalogSourceImage: "ghcr.io/pieces/github:1.0.0",
+				catalogSyncedAt: "2026-01-02T00:00:00.000Z",
+				metadataUpdatedAt: "2026-01-03T00:00:00.000Z",
+			},
+			actions: [
+				{
+					name: "create_issue",
+					displayName: "Create Issue",
+					description: "Open a new issue",
+				},
+			],
+			usageByConnection: {
+				"conn-ext-1": {
+					refCount: 2,
+					workflowCount: 1,
+				},
+			},
+		});
+		expect(pieceCatalog.getLatestPieceMetadata).toHaveBeenCalledWith([
+			"github",
+			"@activepieces/piece-github",
+		]);
+		expect(pieceCatalog.listConnectionUsageByPieceNames).toHaveBeenCalledWith({
+			pieceNameCandidates: ["github", "@activepieces/piece-github"],
+			projectId: "project-1",
+		});
+	});
+
 	it("composes MCP connection catalog entries through application ports", async () => {
 		const pieceCatalog = {
 			getLatestPieceMetadata: vi.fn(async () => null),

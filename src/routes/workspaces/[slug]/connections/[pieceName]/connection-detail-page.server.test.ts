@@ -11,7 +11,9 @@ describe("workspace connection detail page loader", () => {
 		);
 
 		expect(source).toContain("getApplicationAdapters");
-		expect(source).toContain("workflowData.getPieceCatalogDetail");
+		expect(source).toContain("workflowData.getPieceConnectionDetailPage");
+		expect(source).not.toContain("$lib/server/mcp-catalog");
+		expect(source).not.toContain("$lib/server/mcp-connections");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");
