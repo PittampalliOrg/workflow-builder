@@ -20,9 +20,9 @@ describe("buildEmbeddedAppUpstreamRequestUrl", () => {
 	it("preserves an upstream base path when one is configured", () => {
 		expect(
 			buildEmbeddedAppUpstreamRequestUrl({
-				requestUrl: new URL("https://workflow-builder.local/mlflow/static-files/main.js"),
+				requestUrl: new URL("https://workflow-builder.local/argocd/static-files/main.js"),
 				upstreamBase: new URL("https://hub.example/observe"),
-				embedBase: "/mlflow",
+				embedBase: "/argocd",
 			}),
 		).toBe("https://hub.example/observe/static-files/main.js");
 	});

@@ -2,9 +2,6 @@ export const EMBED_CHROME_QUERY_PARAM = "wb_chrome";
 export const EMBED_CHROME_UNIFIED = "unified";
 export const EMBED_CHROME_NATIVE = "native";
 
-export const DEFAULT_MLFLOW_URL = "https://mlflow-hub.tail286401.ts.net";
-export const DEFAULT_MLFLOW_EMBED_BASE = "/mlflow";
-
 export const DEFAULT_ARGOCD_URL = "https://argocd-hub.tail286401.ts.net";
 export const DEFAULT_ARGOCD_EMBED_BASE = "/argocd";
 
@@ -109,7 +106,7 @@ export function withEmbeddedAppChrome(input: { src: string; chrome: EmbedChrome 
 
 export function embeddedWorkspaceAppUrl(input: {
 	workspaceSlug: string | null | undefined;
-	appRoute: "argocd" | "mlflow";
+	appRoute: "argocd";
 	embedBase: string;
 	path: string | null | undefined;
 }): string | null {
@@ -118,30 +115,6 @@ export function embeddedWorkspaceAppUrl(input: {
 	const path = normalizeEmbeddedAppPath({ value: input.path, embedBase: input.embedBase });
 	const params = new URLSearchParams({ path });
 	return `/workspaces/${encodeURIComponent(workspaceSlug)}/${input.appRoute}?${params.toString()}`;
-}
-
-export function mlflowEmbedSrc(input: {
-	embedBase?: string | null;
-	path: string | null | undefined;
-}): string {
-	return embeddedAppSrc({
-		embedBase: input.embedBase,
-		defaultEmbedBase: DEFAULT_MLFLOW_EMBED_BASE,
-		path: input.path,
-	});
-}
-
-export function mlflowExternalUrl(input: {
-	mlflowBase?: string | null;
-	embedBase?: string | null;
-	path: string | null | undefined;
-}): string | null {
-	return externalAppUrl({
-		externalBase: input.mlflowBase,
-		defaultExternalBase: DEFAULT_MLFLOW_URL,
-		embedBase: input.embedBase ?? DEFAULT_MLFLOW_EMBED_BASE,
-		path: input.path,
-	});
 }
 
 export function argocdEmbedSrc(input: {
