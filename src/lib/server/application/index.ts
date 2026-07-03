@@ -128,6 +128,7 @@ import {
 	DaprCodeFunctionOptionsRuntimeClient,
 	LegacyCodeFunctionOptionsRepository,
 } from "$lib/server/application/adapters/code-function-options";
+import { LegacyCatalogFunctionDefinitionReader } from "$lib/server/application/adapters/catalog-function-definition";
 import {
 	DaprFunctionRouterExecutionPort,
 	LegacyCodeFunctionExecutionRepository,
@@ -221,6 +222,7 @@ import {
 	ApplicationRuntimeCatalogService,
 	ApplicationWorkflowTriggerKindCatalogService,
 } from "$lib/server/application/catalogs";
+import { ApplicationCatalogFunctionDefinitionService } from "$lib/server/application/catalog-function-definition";
 import { ApplicationActionOptionsService } from "$lib/server/application/action-options";
 import { ApplicationActionCatalogService } from "$lib/server/application/action-catalog";
 import {
@@ -403,6 +405,9 @@ export function getApplicationAdapters(
 	let capacityOverview: ApplicationCapacityOverviewService | undefined;
 	let daprInspection: ApplicationDaprInspectionService | undefined;
 	let runtimeCatalog: ApplicationRuntimeCatalogService | undefined;
+	let catalogFunctionDefinition:
+		| ApplicationCatalogFunctionDefinitionService
+		| undefined;
 	let actionCatalog: ApplicationActionCatalogService | undefined;
 	let workflowTriggerKindCatalog:
 		| ApplicationWorkflowTriggerKindCatalogService
@@ -682,6 +687,11 @@ export function getApplicationAdapters(
 		(runtimeCatalog ??= new ApplicationRuntimeCatalogService(
 			new LocalRuntimeCatalogReader(),
 		));
+	const getCatalogFunctionDefinition = () =>
+		(catalogFunctionDefinition ??=
+			new ApplicationCatalogFunctionDefinitionService(
+				new LegacyCatalogFunctionDefinitionReader(),
+			));
 	const getActionCatalog = () =>
 		(actionCatalog ??= new ApplicationActionCatalogService(
 			new LegacyActionCatalogReader(),
@@ -1057,6 +1067,9 @@ export function getApplicationAdapters(
 		},
 		get runtimeCatalog() {
 			return getRuntimeCatalog();
+		},
+		get catalogFunctionDefinition() {
+			return getCatalogFunctionDefinition();
 		},
 		get actionCatalog() {
 			return getActionCatalog();
