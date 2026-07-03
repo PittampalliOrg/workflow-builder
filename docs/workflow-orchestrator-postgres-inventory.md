@@ -244,12 +244,16 @@ The first UI-facing route has also moved behind the application service:
   execution repository adapter; model pricing remains route-local response
   shaping.
 - `src/routes/api/workflows/executions/[executionId]/nats-stream/+server.ts`
-  now tails execution agent events through workflow-data application ports:
-  session id lookup, cursor-based agent-event reads, and session-event
-  notifications. The route keeps the legacy `/nats-stream` path and SSE
-  response contract for client compatibility, while the Postgres
-  `LISTEN/NOTIFY` implementation is confined to
+  now delegates snapshot loading, cursor-based agent-event reads, session-event
+  notifications, and terminal detection to
+  `ApplicationWorkflowExecutionStreamService`. The route keeps only the legacy
+  `/nats-stream` path and SSE response headers for client compatibility. The
+  Postgres `LISTEN/NOTIFY` implementation is confined to
   `PostgresWorkflowSessionEventNotificationSource` in the Postgres adapter.
+  Direct DB/Dapr/ClickHouse access in `src/lib/server/execution-read-model.ts`
+  remains behind `LegacyWorkflowExecutionReadModelPort`; splitting that helper
+  into narrower workflow-data, runtime-status, artifact, and trace ports remains
+  the next read-model portability slice.
 - `src/routes/api/workflows/executions/[executionId]/resume/+server.ts` now
   delegates resume/fork decisions to
   `ApplicationWorkflowExecutionControlService.resumeExecution`. The application

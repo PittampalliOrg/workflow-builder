@@ -121,6 +121,7 @@ import { ApplicationSessionMcpStatusService } from "$lib/server/application/sess
 import { ApplicationSessionRuntimeAccessService } from "$lib/server/application/session-runtime-access";
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
+import { ApplicationWorkflowExecutionStreamService } from "$lib/server/application/workflow-execution-stream";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 
 export { getEventBusAdapter } from "$lib/server/application/event-bus";
@@ -234,6 +235,9 @@ export function getApplicationAdapters(
 	let sessionBrowser: ApplicationSessionBrowserService | undefined;
 	let workflowExecutionControl:
 		| ApplicationWorkflowExecutionControlService
+		| undefined;
+	let workflowExecutionStream:
+		| ApplicationWorkflowExecutionStreamService
 		| undefined;
 	let cliPreview: ApplicationCliPreviewService | undefined;
 	const getDatabase = () => (database ??= requirePostgresDb());
@@ -412,6 +416,11 @@ export function getApplicationAdapters(
 			runStarter: new LegacyWorkflowRunStarterPort(),
 			workflowSpecs: new LegacyWorkflowSpecValidatorPort(),
 		}));
+	const getWorkflowExecutionStream = () =>
+		(workflowExecutionStream ??= new ApplicationWorkflowExecutionStreamService({
+			workflowData: getWorkflowData(),
+			executionReadModels: new LegacyWorkflowExecutionReadModelPort(),
+		}));
 	const getCliPreview = () =>
 		(cliPreview ??= new ApplicationCliPreviewService({
 			preview: new LegacyCliPreviewGatewayPort(),
@@ -545,6 +554,9 @@ export function getApplicationAdapters(
 		},
 		get workflowExecutionControl() {
 			return getWorkflowExecutionControl();
+		},
+		get workflowExecutionStream() {
+			return getWorkflowExecutionStream();
 		},
 		get cliPreview() {
 			return getCliPreview();
