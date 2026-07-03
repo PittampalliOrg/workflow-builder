@@ -42,6 +42,7 @@ import {
 	agentVersions,
 	benchmarkInstances,
 	benchmarkRunInstances,
+	benchmarkRunInstanceAnnotations,
 	benchmarkRunInstanceScores,
 	benchmarkRuns,
 	benchmarkSuites,
@@ -104,8 +105,11 @@ import type {
 	ApiKeyRecord,
 	ApiKeyStore,
 	ArtifactStore,
+	BenchmarkInstanceAnnotationVerdict,
 	BenchmarkBrowserRepository,
 	BenchmarkInstanceDetailReadRepository,
+	BenchmarkRunInstanceAnnotationCounts,
+	BenchmarkRunInstanceAnnotationRepository,
 	BenchmarkRunInstanceDetailReadRepository,
 	BenchmarkRunInstanceScoreReadRepository,
 	BenchmarkRunRepository,
@@ -247,6 +251,26 @@ function requirePostgresSql(sqlClient: PostgresSqlClient = defaultSql): Postgres
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function emptyBenchmarkAnnotationCounts(): BenchmarkRunInstanceAnnotationCounts {
+	return {
+		correct: 0,
+		incorrect: 0,
+		partial: 0,
+		unsure: 0,
+	};
+}
+
+function isBenchmarkAnnotationVerdict(
+	value: unknown,
+): value is BenchmarkInstanceAnnotationVerdict {
+	return (
+		value === "correct" ||
+		value === "incorrect" ||
+		value === "partial" ||
+		value === "unsure"
+	);
 }
 
 function parseSessionEventNotification(payload: string): { sessionId: string | null } {
@@ -2783,6 +2807,155 @@ export class PostgresBenchmarkRunInstanceDetailReadRepository
 			executionIr: row.executionIr,
 			executionOutput: row.executionOutput,
 		};
+	}
+}
+
+export class PostgresBenchmarkRunInstanceAnnotationRepository
+	implements BenchmarkRunInstanceAnnotationRepository
+{
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	private async resolveRunInstanceId(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+	}): Promise<string | null> {
+		const runId = input.runId.trim();
+		const instanceId = input.instanceId.trim();
+		const projectId = input.projectId.trim();
+		if (!runId || !instanceId || !projectId) return null;
+
+		const [runRow] = await this.database
+			.select({ id: benchmarkRuns.id })
+			.from(benchmarkRuns)
+			.where(
+				and(
+					eq(benchmarkRuns.id, runId),
+					eq(benchmarkRuns.projectId, projectId),
+				),
+			)
+			.limit(1);
+		if (!runRow) return null;
+
+		const [instance] = await this.database
+			.select({ id: benchmarkRunInstances.id })
+			.from(benchmarkRunInstances)
+			.where(
+				and(
+					eq(benchmarkRunInstances.runId, runId),
+					eq(benchmarkRunInstances.instanceId, instanceId),
+				),
+			)
+			.limit(1);
+		return instance?.id ?? null;
+	}
+
+	async getRunInstanceAnnotations(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+		userId: string;
+	}) {
+		const runInstanceId = await this.resolveRunInstanceId(input);
+		if (!runInstanceId) return { status: "not_found" as const };
+
+		const [my] = await this.database
+			.select({
+				verdict: benchmarkRunInstanceAnnotations.verdict,
+				reasoning: benchmarkRunInstanceAnnotations.reasoning,
+				updatedAt: benchmarkRunInstanceAnnotations.updatedAt,
+			})
+			.from(benchmarkRunInstanceAnnotations)
+			.where(
+				and(
+					eq(benchmarkRunInstanceAnnotations.runInstanceId, runInstanceId),
+					eq(benchmarkRunInstanceAnnotations.userId, input.userId),
+				),
+			)
+			.limit(1);
+
+		const aggregateRows = await this.database
+			.select({
+				verdict: benchmarkRunInstanceAnnotations.verdict,
+				count: sql<number>`count(*)::int`,
+			})
+			.from(benchmarkRunInstanceAnnotations)
+			.where(eq(benchmarkRunInstanceAnnotations.runInstanceId, runInstanceId))
+			.groupBy(benchmarkRunInstanceAnnotations.verdict);
+		const counts = emptyBenchmarkAnnotationCounts();
+		for (const row of aggregateRows) {
+			if (isBenchmarkAnnotationVerdict(row.verdict)) {
+				counts[row.verdict] = Number(row.count);
+			}
+		}
+
+		return {
+			status: "ok" as const,
+			mine:
+				my && isBenchmarkAnnotationVerdict(my.verdict)
+					? {
+							verdict: my.verdict,
+							reasoning: my.reasoning,
+							updatedAt: my.updatedAt,
+						}
+					: null,
+			counts,
+		};
+	}
+
+	async upsertRunInstanceAnnotation(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+		userId: string;
+		verdict: BenchmarkInstanceAnnotationVerdict;
+		reasoning: string | null;
+	}) {
+		const runInstanceId = await this.resolveRunInstanceId(input);
+		if (!runInstanceId) return { status: "not_found" as const };
+
+		await this.database
+			.insert(benchmarkRunInstanceAnnotations)
+			.values({
+				runInstanceId,
+				userId: input.userId,
+				verdict: input.verdict,
+				reasoning: input.reasoning,
+			})
+			.onConflictDoUpdate({
+				target: [
+					benchmarkRunInstanceAnnotations.runInstanceId,
+					benchmarkRunInstanceAnnotations.userId,
+				],
+				set: {
+					verdict: input.verdict,
+					reasoning: input.reasoning,
+					updatedAt: new Date(),
+				},
+			});
+
+		return { status: "ok" as const };
+	}
+
+	async deleteRunInstanceAnnotation(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+		userId: string;
+	}) {
+		const runInstanceId = await this.resolveRunInstanceId(input);
+		if (!runInstanceId) return { status: "not_found" as const };
+
+		await this.database
+			.delete(benchmarkRunInstanceAnnotations)
+			.where(
+				and(
+					eq(benchmarkRunInstanceAnnotations.runInstanceId, runInstanceId),
+					eq(benchmarkRunInstanceAnnotations.userId, input.userId),
+				),
+			);
+
+		return { status: "ok" as const };
 	}
 }
 

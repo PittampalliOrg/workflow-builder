@@ -71,11 +71,13 @@ import type {
 	ApiKeyStore,
 	AppendSessionEventInput,
 	ArtifactStore,
+	BenchmarkInstanceAnnotationVerdict,
 	BenchmarkBrowserEnvironmentBuildRecord,
 	BenchmarkInstanceDetailReadRepository,
 	BenchmarkBrowserReadModel,
 	BenchmarkBrowserRepository,
 	BenchmarkRunInstanceDetailReadRepository,
+	BenchmarkRunInstanceAnnotationRepository,
 	BenchmarkRunInstanceScoreReadRepository,
 	BenchmarkRunReadRepository,
 	BenchmarkRunRepository,
@@ -217,6 +219,12 @@ const PROJECT_MEMBERSHIP_ROLES: readonly ProjectMembershipRole[] = [
 	"EDITOR",
 	"OPERATOR",
 	"VIEWER",
+];
+const BENCHMARK_INSTANCE_ANNOTATION_VERDICTS: BenchmarkInstanceAnnotationVerdict[] = [
+	"correct",
+	"incorrect",
+	"partial",
+	"unsure",
 ];
 
 type BenchmarkInstanceEnvironmentStatus = BenchmarkInstanceRow["environmentStatus"];
@@ -782,6 +790,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			benchmarkBrowser: BenchmarkBrowserRepository;
 			benchmarkInstanceDetails?: BenchmarkInstanceDetailReadRepository;
 			benchmarkRunInstanceDetails?: BenchmarkRunInstanceDetailReadRepository;
+			benchmarkRunInstanceAnnotations?: BenchmarkRunInstanceAnnotationRepository;
 			benchmarkRunInstanceScores?: BenchmarkRunInstanceScoreReadRepository;
 			benchmarkRunReads?: BenchmarkRunReadRepository;
 			devEnvironments?: DevEnvironmentReadRepository;
@@ -885,6 +894,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Benchmark run instance detail read repository not configured");
 		}
 		return this.deps.benchmarkRunInstanceDetails;
+	}
+
+	private requireBenchmarkRunInstanceAnnotations(): BenchmarkRunInstanceAnnotationRepository {
+		if (!this.deps.benchmarkRunInstanceAnnotations) {
+			throw new Error("Benchmark run instance annotation repository not configured");
+		}
+		return this.deps.benchmarkRunInstanceAnnotations;
 	}
 
 	private isResourceVisibleToCaller<T extends { userId: string; projectId: string | null }>(
@@ -3788,6 +3804,56 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		projectId: string;
 	}) {
 		return this.requireBenchmarkRunInstanceDetails().getRunInstanceDetail(input);
+	}
+
+	getBenchmarkRunInstanceAnnotations(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+		userId: string;
+	}) {
+		return this.requireBenchmarkRunInstanceAnnotations().getRunInstanceAnnotations(input);
+	}
+
+	upsertBenchmarkRunInstanceAnnotation(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+		userId: string;
+		verdict?: unknown;
+		reasoning?: unknown;
+	}) {
+		const verdict =
+			typeof input.verdict === "string" ? input.verdict.trim() : "";
+		if (
+			!BENCHMARK_INSTANCE_ANNOTATION_VERDICTS.includes(
+				verdict as BenchmarkInstanceAnnotationVerdict,
+			)
+		) {
+			return Promise.resolve({
+				status: "invalid_verdict" as const,
+				allowed: BENCHMARK_INSTANCE_ANNOTATION_VERDICTS,
+			});
+		}
+		const reasoning =
+			typeof input.reasoning === "string" ? input.reasoning.trim() || null : null;
+		return this.requireBenchmarkRunInstanceAnnotations().upsertRunInstanceAnnotation({
+			runId: input.runId,
+			instanceId: input.instanceId,
+			projectId: input.projectId,
+			userId: input.userId,
+			verdict: verdict as BenchmarkInstanceAnnotationVerdict,
+			reasoning,
+		});
+	}
+
+	deleteBenchmarkRunInstanceAnnotation(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+		userId: string;
+	}) {
+		return this.requireBenchmarkRunInstanceAnnotations().deleteRunInstanceAnnotation(input);
 	}
 
 	async getDevPreviewHubReadModel(input: { projectId?: string | null }) {

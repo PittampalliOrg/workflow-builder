@@ -4,6 +4,7 @@ import type {
 	AdminPieceRepository,
 	AppConnectionRepository,
 	ArtifactStore,
+	BenchmarkRunInstanceAnnotationRepository,
 	BenchmarkInstanceDetailReadRepository,
 	BenchmarkBrowserRepository,
 	BenchmarkRunInstanceDetailReadRepository,
@@ -1331,6 +1332,7 @@ function makeService(options: {
 	benchmarkRuns?: BenchmarkRunRepository;
 	benchmarkInstanceDetails?: BenchmarkInstanceDetailReadRepository;
 	benchmarkRunInstanceDetails?: BenchmarkRunInstanceDetailReadRepository;
+	benchmarkRunInstanceAnnotations?: BenchmarkRunInstanceAnnotationRepository;
 	benchmarkRunInstanceScores?: BenchmarkRunInstanceScoreReadRepository;
 	activityRateTargets?: WorkflowActivityRateTargetRepository;
 	observabilityTraces?: ObservabilityTraceRepository;
@@ -1396,6 +1398,7 @@ function makeService(options: {
 		benchmarkBrowser: fakeBenchmarkBrowser(),
 		benchmarkInstanceDetails: options.benchmarkInstanceDetails,
 		benchmarkRunInstanceDetails: options.benchmarkRunInstanceDetails,
+		benchmarkRunInstanceAnnotations: options.benchmarkRunInstanceAnnotations,
 		benchmarkRunInstanceScores: options.benchmarkRunInstanceScores,
 		benchmarkRunReads: options.benchmarkRunReads ?? fakeBenchmarkRunReads(),
 		devEnvironments: options.devEnvironments ?? fakeDevEnvironments(),
@@ -6618,6 +6621,82 @@ describe("ApplicationWorkflowDataService", () => {
 			instanceId: "sympy__sympy-20590",
 			projectId: "project-1",
 		});
+	});
+
+	it("manages benchmark run-instance annotations through workflow-data ports", async () => {
+		const updatedAt = new Date("2026-07-03T12:00:00.000Z");
+		const benchmarkRunInstanceAnnotations: BenchmarkRunInstanceAnnotationRepository = {
+			getRunInstanceAnnotations: vi.fn(async () => ({
+				status: "ok" as const,
+				mine: {
+					verdict: "correct" as const,
+					reasoning: "Looks right",
+					updatedAt,
+				},
+				counts: {
+					correct: 1,
+					incorrect: 0,
+					partial: 0,
+					unsure: 0,
+				},
+			})),
+			upsertRunInstanceAnnotation: vi.fn(async () => ({ status: "ok" as const })),
+			deleteRunInstanceAnnotation: vi.fn(async () => ({ status: "ok" as const })),
+		};
+		const { service } = makeService({ benchmarkRunInstanceAnnotations });
+
+		await expect(
+			service.getBenchmarkRunInstanceAnnotations({
+				runId: "run-1",
+				instanceId: "sympy__sympy-20590",
+				projectId: "project-1",
+				userId: "user-1",
+			}),
+		).resolves.toMatchObject({
+			status: "ok",
+			mine: { verdict: "correct", reasoning: "Looks right" },
+		});
+
+		await expect(
+			service.upsertBenchmarkRunInstanceAnnotation({
+				runId: "run-1",
+				instanceId: "sympy__sympy-20590",
+				projectId: "project-1",
+				userId: "user-1",
+				verdict: " partial ",
+				reasoning: " Needs another look ",
+			}),
+		).resolves.toEqual({ status: "ok" });
+		expect(benchmarkRunInstanceAnnotations.upsertRunInstanceAnnotation).toHaveBeenCalledWith({
+			runId: "run-1",
+			instanceId: "sympy__sympy-20590",
+			projectId: "project-1",
+			userId: "user-1",
+			verdict: "partial",
+			reasoning: "Needs another look",
+		});
+
+		await expect(
+			service.upsertBenchmarkRunInstanceAnnotation({
+				runId: "run-1",
+				instanceId: "sympy__sympy-20590",
+				projectId: "project-1",
+				userId: "user-1",
+				verdict: "maybe",
+			}),
+		).resolves.toEqual({
+			status: "invalid_verdict",
+			allowed: ["correct", "incorrect", "partial", "unsure"],
+		});
+
+		await expect(
+			service.deleteBenchmarkRunInstanceAnnotation({
+				runId: "run-1",
+				instanceId: "sympy__sympy-20590",
+				projectId: "project-1",
+				userId: "user-1",
+			}),
+		).resolves.toEqual({ status: "ok" });
 	});
 
 	it("loads piece catalog detail and connection usage through application ports", async () => {

@@ -43,6 +43,10 @@ The benchmark run-instance detail API now scope-checks the run, loads the
 selected run instance, benchmark metadata, and execution payloads through a
 workflow-data read model, while keeping response shaping, gold-patch redaction,
 host-job extraction, and MLflow URL formatting route-local.
+The benchmark run-instance annotations API now reads aggregate annotation
+counts, validates/upserts the caller verdict, and deletes the caller annotation
+through workflow-data ports. The Postgres adapter preserves the existing
+`(run_instance_id, user_id)` upsert target and scoped run-instance lookup.
 
 ## Strict HTTP Runtime Paths
 

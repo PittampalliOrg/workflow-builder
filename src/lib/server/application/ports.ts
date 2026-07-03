@@ -695,6 +695,56 @@ export interface BenchmarkRunInstanceDetailReadRepository {
 	}): Promise<BenchmarkRunInstanceDetailReadModel>;
 }
 
+export type BenchmarkInstanceAnnotationVerdict =
+	| "correct"
+	| "incorrect"
+	| "partial"
+	| "unsure";
+
+export type BenchmarkRunInstanceAnnotationCounts = Record<
+	BenchmarkInstanceAnnotationVerdict,
+	number
+>;
+
+export type BenchmarkRunInstanceAnnotationsReadModel =
+	| { status: "not_found" }
+	| {
+			status: "ok";
+			mine: {
+				verdict: BenchmarkInstanceAnnotationVerdict;
+				reasoning: string | null;
+				updatedAt: Date;
+			} | null;
+			counts: BenchmarkRunInstanceAnnotationCounts;
+	  };
+
+export type BenchmarkRunInstanceAnnotationCommandResult =
+	| { status: "ok" }
+	| { status: "not_found" };
+
+export interface BenchmarkRunInstanceAnnotationRepository {
+	getRunInstanceAnnotations(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+		userId: string;
+	}): Promise<BenchmarkRunInstanceAnnotationsReadModel>;
+	upsertRunInstanceAnnotation(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+		userId: string;
+		verdict: BenchmarkInstanceAnnotationVerdict;
+		reasoning: string | null;
+	}): Promise<BenchmarkRunInstanceAnnotationCommandResult>;
+	deleteRunInstanceAnnotation(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+		userId: string;
+	}): Promise<BenchmarkRunInstanceAnnotationCommandResult>;
+}
+
 export type CreateWorkflowDefinitionInput = {
 	name: string;
 	nodes: unknown[];
@@ -3714,6 +3764,29 @@ export interface WorkflowDataService {
 		instanceId: string;
 		projectId: string;
 	}): Promise<BenchmarkRunInstanceDetailReadModel>;
+	getBenchmarkRunInstanceAnnotations(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+		userId: string;
+	}): Promise<BenchmarkRunInstanceAnnotationsReadModel>;
+	upsertBenchmarkRunInstanceAnnotation(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+		userId: string;
+		verdict?: unknown;
+		reasoning?: unknown;
+	}): Promise<
+		| BenchmarkRunInstanceAnnotationCommandResult
+		| { status: "invalid_verdict"; allowed: BenchmarkInstanceAnnotationVerdict[] }
+	>;
+	deleteBenchmarkRunInstanceAnnotation(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+		userId: string;
+	}): Promise<BenchmarkRunInstanceAnnotationCommandResult>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;
 	}): Promise<DevPreviewHubReadModel>;
