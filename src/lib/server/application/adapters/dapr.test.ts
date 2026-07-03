@@ -5,11 +5,13 @@ const daprFetchMock = vi.fn();
 vi.mock("$lib/server/dapr-client", () => ({
 	daprFetch: (...args: unknown[]) => daprFetchMock(...args),
 	getDaprSidecarUrl: () => "http://localhost:3500",
+	getOrchestratorUrl: () => "http://workflow-orchestrator",
 }));
 
 import {
 	DaprCredentialStore,
 	DaprEventBus,
+	DaprWorkflowApprovalEventPort,
 } from "$lib/server/application/adapters/dapr";
 
 describe("DaprCredentialStore", () => {
@@ -77,5 +79,58 @@ describe("DaprEventBus", () => {
 				body: JSON.stringify({ dedupKey: "k1" }),
 			},
 		);
+	});
+});
+
+describe("DaprWorkflowApprovalEventPort", () => {
+	beforeEach(() => {
+		daprFetchMock.mockReset();
+	});
+
+	it("raises approval events to the orchestrator workflow instance", async () => {
+		daprFetchMock.mockResolvedValueOnce(new Response(null, { status: 202 }));
+
+		const port = new DaprWorkflowApprovalEventPort();
+		await expect(
+			port.raiseApprovalEvent({
+				instanceId: "instance/1",
+				eventType: "goal_spec_approval",
+				approvedBy: "user-1",
+			}),
+		).resolves.toEqual({ ok: true });
+
+		expect(daprFetchMock).toHaveBeenCalledWith(
+			"http://workflow-orchestrator/api/v2/workflows/instance%2F1/events",
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					eventName: "goal_spec_approval",
+					eventData: {
+						approved: true,
+						approvedBy: "user-1",
+						source: "run-ui",
+					},
+				}),
+			},
+		);
+	});
+
+	it("returns response details for failed approval events", async () => {
+		daprFetchMock.mockResolvedValueOnce(new Response("missing", { status: 404 }));
+
+		const port = new DaprWorkflowApprovalEventPort();
+
+		await expect(
+			port.raiseApprovalEvent({
+				instanceId: "instance-1",
+				eventType: "goal_spec_approval",
+				approvedBy: "user-1",
+			}),
+		).resolves.toEqual({
+			ok: false,
+			status: 404,
+			detail: "missing",
+		});
 	});
 });

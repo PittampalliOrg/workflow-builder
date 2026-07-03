@@ -11,8 +11,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
-import { assertInScope } from "$lib/server/workflows/project-scope";
-import { daprFetch, getOrchestratorUrl } from "$lib/server/dapr-client";
+import type { WorkflowExecutionControlResult } from "$lib/server/application/workflow-execution-control";
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
   if (!locals.session?.userId) return error(401, "Authentication required");
@@ -25,40 +24,17 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   } catch {
     /* empty body ok */
   }
-  const eventType =
-    typeof body.eventType === "string" && body.eventType.trim()
-      ? body.eventType.trim()
-      : "goal_spec_approval";
-
-  const exec = await getApplicationAdapters().workflowData.getExecutionById(executionId);
-  assertInScope(exec, locals.session, "Execution not found");
-
-  if (!exec.daprInstanceId) {
-    return error(409, "Run has no Dapr instance to signal");
-  }
-
-  const orchestratorUrl = getOrchestratorUrl();
-  const res = await daprFetch(
-    `${orchestratorUrl}/api/v2/workflows/${encodeURIComponent(exec.daprInstanceId)}/events`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        eventName: eventType,
-        eventData: {
-          approved: true,
-          approvedBy: locals.session.userId,
-          source: "run-ui",
-        },
-      }),
-    },
+  return workflowExecutionControlResponse(
+    await getApplicationAdapters().workflowExecutionControl.approveExecution({
+      executionId,
+      body,
+      projectId: locals.session.projectId ?? null,
+      userId: locals.session.userId,
+    }),
   );
-
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    console.error(`[approve] orchestrator ${res.status}:`, detail.slice(0, 300));
-    return error(res.status === 404 ? 409 : 502, "Failed to raise approval event");
-  }
-
-  return json({ ok: true, eventType, instanceId: exec.daprInstanceId });
 };
+
+function workflowExecutionControlResponse(result: WorkflowExecutionControlResult) {
+  if (result.status === "error") return error(result.httpStatus, result.message);
+  return json(result.body);
+}

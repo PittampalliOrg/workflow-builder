@@ -1,9 +1,16 @@
 import { env } from "$env/dynamic/private";
-import { daprFetch, getDaprSidecarUrl } from "$lib/server/dapr-client";
+import {
+	daprFetch,
+	getDaprSidecarUrl,
+	getOrchestratorUrl,
+} from "$lib/server/dapr-client";
 import type {
 	CredentialStore,
 	EventBus,
 	ResolveSecretOptions,
+	WorkflowApprovalEventInput,
+	WorkflowApprovalEventPort,
+	WorkflowApprovalEventResult,
 	WorkflowScheduler,
 	WorkflowStartRequest,
 } from "$lib/server/application/ports";
@@ -29,6 +36,36 @@ export class DaprWorkflowScheduler implements WorkflowScheduler {
 			throw new Error(`Orchestrator error (${response.status}): ${detail}`);
 		}
 		return (await response.json()) as { instanceId?: string };
+	}
+}
+
+export class DaprWorkflowApprovalEventPort implements WorkflowApprovalEventPort {
+	async raiseApprovalEvent(
+		input: WorkflowApprovalEventInput,
+	): Promise<WorkflowApprovalEventResult> {
+		const response = await daprFetch(
+			`${getOrchestratorUrl()}/api/v2/workflows/${encodeURIComponent(
+				input.instanceId,
+			)}/events`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					eventName: input.eventType,
+					eventData: {
+						approved: true,
+						approvedBy: input.approvedBy,
+						source: "run-ui",
+					},
+				}),
+			},
+		);
+		if (response.ok) return { ok: true };
+		return {
+			ok: false,
+			status: response.status,
+			detail: await response.text().catch(() => ""),
+		};
 	}
 }
 

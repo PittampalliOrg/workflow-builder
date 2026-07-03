@@ -3080,6 +3080,22 @@ export interface WorkflowScheduler {
 	startSwWorkflow(input: WorkflowStartRequest): Promise<{ instanceId?: string }>;
 }
 
+export type WorkflowApprovalEventInput = {
+	instanceId: string;
+	eventType: string;
+	approvedBy: string;
+};
+
+export type WorkflowApprovalEventResult =
+	| { ok: true }
+	| { ok: false; status: number; detail: string };
+
+export interface WorkflowApprovalEventPort {
+	raiseApprovalEvent(
+		input: WorkflowApprovalEventInput,
+	): Promise<WorkflowApprovalEventResult>;
+}
+
 export interface EventBus {
 	publish(topic: string, payload: unknown): Promise<void>;
 }

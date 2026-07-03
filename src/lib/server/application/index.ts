@@ -63,6 +63,7 @@ import { RegistryPeerAgentResolver } from "$lib/server/application/adapters/agen
 import {
 	DaprCredentialStore,
 	DaprEventBus,
+	DaprWorkflowApprovalEventPort,
 	DaprWorkflowScheduler,
 } from "$lib/server/application/adapters/dapr";
 import { LegacyBenchmarkRunReadRepository } from "$lib/server/application/adapters/benchmark-runs";
@@ -110,6 +111,7 @@ import { ApplicationSessionSandboxService } from "$lib/server/application/sessio
 import { ApplicationSessionMcpStatusService } from "$lib/server/application/session-mcp-status";
 import { ApplicationSessionRuntimeAccessService } from "$lib/server/application/session-runtime-access";
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
+import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 
 export { getEventBusAdapter } from "$lib/server/application/event-bus";
@@ -221,6 +223,9 @@ export function getApplicationAdapters(
 	let sessionMcpStatus: ApplicationSessionMcpStatusService | undefined;
 	let sessionRuntimeAccess: ApplicationSessionRuntimeAccessService | undefined;
 	let sessionBrowser: ApplicationSessionBrowserService | undefined;
+	let workflowExecutionControl:
+		| ApplicationWorkflowExecutionControlService
+		| undefined;
 	const getDatabase = () => (database ??= requirePostgresDb());
 	const getAgentRuntimes = () =>
 		(agentRuntimes ??= new PostgresAgentRuntimeRepository(getDatabase()));
@@ -387,6 +392,11 @@ export function getApplicationAdapters(
 			workspaceProjects: getWorkspaceProjects(),
 			warmPools: getAgentRuntimeWarmPools(),
 		}));
+	const getWorkflowExecutionControl = () =>
+		(workflowExecutionControl ??= new ApplicationWorkflowExecutionControlService({
+			workflowData: getWorkflowData(),
+			approvalEvents: new DaprWorkflowApprovalEventPort(),
+		}));
 	const getSessionCommands = () =>
 		(sessionCommands ??= new ApplicationSessionCommandService({
 			sessions: getSessions(),
@@ -513,6 +523,9 @@ export function getApplicationAdapters(
 		},
 		get agentRuntimeControl() {
 			return getAgentRuntimeControl();
+		},
+		get workflowExecutionControl() {
+			return getWorkflowExecutionControl();
 		},
 		get sessionBrowser() {
 			return (sessionBrowser ??= new ApplicationSessionBrowserService({

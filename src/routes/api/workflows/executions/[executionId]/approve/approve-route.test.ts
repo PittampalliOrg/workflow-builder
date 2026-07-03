@@ -2,30 +2,26 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { WorkflowExecutionControlResult } from "$lib/server/application/workflow-execution-control";
 
 const mocks = vi.hoisted(() => {
-	const execution = {
-		id: "exec-1",
-		workflowId: "wf-1",
-		userId: "user-1",
-		projectId: "project-1",
-		status: "running",
-		daprInstanceId: "sw-example-exec-exec-1" as string | null,
+	const workflowExecutionControl = {
+		approveExecution: vi.fn(async (): Promise<WorkflowExecutionControlResult> => ({
+			status: "ok" as const,
+			body: {
+				ok: true,
+				eventType: "goal_spec_approval",
+				instanceId: "sw-example-exec-exec-1",
+			},
+		})),
 	};
-	const workflowData = {
-		getExecutionById: vi.fn(async () => execution),
-	};
-	const daprFetch = vi.fn(async () => new Response(null, { status: 202 }));
-	return { execution, workflowData, daprFetch };
+	return { workflowExecutionControl };
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
-}));
-
-vi.mock("$lib/server/dapr-client", () => ({
-	daprFetch: mocks.daprFetch,
-	getOrchestratorUrl: () => "http://orchestrator.test",
+	getApplicationAdapters: () => ({
+		workflowExecutionControl: mocks.workflowExecutionControl,
+	}),
 }));
 
 import { POST } from "./+server";
@@ -54,21 +50,31 @@ async function expectHttpStatus(promise: Promise<unknown>, status: number) {
 describe("workflow execution approve route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.workflowData.getExecutionById.mockResolvedValue(mocks.execution);
-		mocks.daprFetch.mockResolvedValue(new Response(null, { status: 202 }));
+		mocks.workflowExecutionControl.approveExecution.mockResolvedValue({
+			status: "ok",
+			body: {
+				ok: true,
+				eventType: "goal_spec_approval",
+				instanceId: "sw-example-exec-exec-1",
+			},
+		});
 	});
 
-	it("keeps the route behind workflow-data application services", () => {
+	it("delegates approval commands to the workflow execution control service", () => {
 		const source = readFileSync(
 			join(dirname(fileURLToPath(import.meta.url)), "+server.ts"),
 			"utf8",
 		);
 		expect(source).toContain("getApplicationAdapters");
+		expect(source).toContain("workflowExecutionControl.approveExecution");
+		expect(source).not.toContain("workflowData.getExecutionById");
+		expect(source).not.toContain("$lib/server/dapr-client");
+		expect(source).not.toContain("$lib/server/workflows/project-scope");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
 	});
 
-	it("raises an approval event for the scoped Dapr workflow instance", async () => {
+	it("passes the approval request to the application service", async () => {
 		const response = (await POST(event() as never)) as Response;
 
 		expect(response.status).toBe(200);
@@ -77,41 +83,38 @@ describe("workflow execution approve route", () => {
 			eventType: "goal_spec_approval",
 			instanceId: "sw-example-exec-exec-1",
 		});
-		expect(mocks.workflowData.getExecutionById).toHaveBeenCalledWith("exec-1");
-		expect(mocks.daprFetch).toHaveBeenCalledWith(
-			"http://orchestrator.test/api/v2/workflows/sw-example-exec-exec-1/events",
-			expect.objectContaining({
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					eventName: "goal_spec_approval",
-					eventData: {
-						approved: true,
-						approvedBy: "user-1",
-						source: "run-ui",
-					},
-				}),
-			}),
-		);
+		expect(mocks.workflowExecutionControl.approveExecution).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			body: { eventType: "goal_spec_approval" },
+			projectId: "project-1",
+			userId: "user-1",
+		});
 	});
 
-	it("hides executions outside the active workspace before signaling Dapr", async () => {
-		mocks.workflowData.getExecutionById.mockResolvedValueOnce({
-			...mocks.execution,
-			projectId: "project-2",
+	it("forwards route-safe application errors", async () => {
+		mocks.workflowExecutionControl.approveExecution.mockResolvedValueOnce({
+			status: "error",
+			httpStatus: 404,
+			message: "Execution not found",
 		});
 
 		await expectHttpStatus(Promise.resolve(POST(event() as never)), 404);
-		expect(mocks.daprFetch).not.toHaveBeenCalled();
 	});
 
-	it("returns a conflict when no Dapr instance is available", async () => {
-		mocks.workflowData.getExecutionById.mockResolvedValueOnce({
-			...mocks.execution,
-			daprInstanceId: null,
-		});
+	it("passes empty event type bodies through to the application service", async () => {
+		await POST(
+			event({
+				request: new Request("http://localhost", {
+					method: "POST",
+					body: JSON.stringify({ eventType: "" }),
+				}),
+			}) as never,
+		);
 
-		await expectHttpStatus(Promise.resolve(POST(event() as never)), 409);
-		expect(mocks.daprFetch).not.toHaveBeenCalled();
+		expect(mocks.workflowExecutionControl.approveExecution).toHaveBeenCalledWith(
+			expect.objectContaining({
+				body: { eventType: "" },
+			}),
+		);
 	});
 });
