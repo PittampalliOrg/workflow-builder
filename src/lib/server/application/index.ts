@@ -125,6 +125,8 @@ import { LegacyWorkflowTriggerLifecyclePort } from "$lib/server/application/adap
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
 import { ApplicationAgentCatalogService } from "$lib/server/application/agent-catalog";
+import { ApplicationAgentRegistryBrowserService } from "$lib/server/application/agent-registry-browser";
+import { DaprAgentRegistryStateReaderAdapter } from "$lib/server/application/adapters/agent-registry-browser";
 import { ApplicationCliPreviewService } from "$lib/server/application/cli-preview";
 import { ApplicationSandboxPreviewService } from "$lib/server/application/sandbox-preview";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
@@ -243,6 +245,7 @@ export function getApplicationAdapters(
 	let agentRuntimeWarmPools: KubernetesAgentRuntimeWarmPoolClient | undefined;
 	let agentRuntimeControl: ApplicationAgentRuntimeControlService | undefined;
 	let agentCatalog: ApplicationAgentCatalogService | undefined;
+	let agentRegistryBrowser: ApplicationAgentRegistryBrowserService | undefined;
 	let sandboxProvisioner: WorkspaceRuntimeSandboxProvisioner | undefined;
 	let repositoryMounter: WorkspaceSessionRepositoryMounter | undefined;
 	let workflowSpawner: DaprSessionWorkflowSpawner | undefined;
@@ -450,6 +453,10 @@ export function getApplicationAdapters(
 			runtimes: new LocalAgentRuntimeCatalog(),
 			templates: new LocalAgentTemplateCatalog(),
 		}));
+	const getAgentRegistryBrowser = () =>
+		(agentRegistryBrowser ??= new ApplicationAgentRegistryBrowserService({
+			registryState: new DaprAgentRegistryStateReaderAdapter(),
+		}));
 	const getWorkflowDefinitionCommands = () =>
 		(workflowDefinitionCommands ??= new ApplicationWorkflowDefinitionCommandService({
 			workflowData: getWorkflowData(),
@@ -626,6 +633,9 @@ export function getApplicationAdapters(
 		},
 		get agentCatalog() {
 			return getAgentCatalog();
+		},
+		get agentRegistryBrowser() {
+			return getAgentRegistryBrowser();
 		},
 		get workflowDefinitionCommands() {
 			return getWorkflowDefinitionCommands();

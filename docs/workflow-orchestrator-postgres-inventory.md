@@ -551,8 +551,13 @@ The first UI-facing route has also moved behind the application service:
   registry/runtime sync to `ApplicationAgentCatalogService`. DB, Dapr
   state-store, runtime registry, MCP resolution, and Kubernetes runtime-sync
   details remain behind `AgentCompiledCapabilitiesRepository` and
-  `AgentRegistryRepository` adapters. The global `/api/agents/registry` Dapr
-  registry browser remains a later diagnostics/read-model slice.
+  `AgentRegistryRepository` adapters.
+- `src/routes/api/agents/registry/+server.ts` now delegates the global Dapr
+  registry browser read model to `ApplicationAgentRegistryBrowserService`.
+  Registry team/store env parsing and Dapr state HTTP reads are confined to
+  `DaprAgentRegistryStateReaderAdapter`; the service owns registry key
+  normalization, agent metadata projection, and diagnostics for missing indexes
+  or state entries.
 - `src/routes/api/v1/agent-runtimes/+server.ts`,
   `src/routes/api/v1/agent-runtimes/[slug]/+server.ts`,
   `src/routes/api/v1/agent-runtimes/[slug]/wake/+server.ts`,

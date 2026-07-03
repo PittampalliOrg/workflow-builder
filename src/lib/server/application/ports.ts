@@ -4513,6 +4513,24 @@ export interface AgentRegistryRepository {
 	syncAgentRuntime(agentId: string): Promise<void>;
 }
 
+export type DaprAgentRegistryStateReadResult = {
+	found: boolean;
+	value?: unknown;
+	status?: number;
+	error?: string;
+};
+
+export interface DaprAgentRegistryStateReader {
+	getRegistryStoreName(): string;
+	getRegistryTeams(): string[];
+	readState(input: {
+		store: string;
+		key: string;
+		team: string;
+		partitionKey: string;
+	}): Promise<DaprAgentRegistryStateReadResult>;
+}
+
 export interface AgentRuntimeCatalog {
 	listRuntimeIds(): string[];
 }
