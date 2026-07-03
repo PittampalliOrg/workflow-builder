@@ -5,6 +5,8 @@ import type {
 	WorkflowDefinition,
 	WorkflowEngineType,
 } from "$lib/server/application/ports";
+import { getRemovedSw10AgentCallsError } from "$lib/server/workflows/sw10-agent-validation";
+import { nanoid } from "nanoid";
 
 type WorkflowDefinitionCommandDataPort = {
 	createWorkflowDefinition(input: CreateWorkflowDefinitionInput): Promise<WorkflowDefinition>;
@@ -133,6 +135,60 @@ export class ApplicationWorkflowDefinitionCommandService {
 		}
 
 		return { status: "ok", body: { success: true } };
+	}
+
+	async publishWorkflow(input: {
+		workflowId: string;
+	}): Promise<WorkflowDefinitionCommandResult> {
+		const workflow = await this.deps.workflowData.getWorkflowByRef({
+			workflowId: input.workflowId,
+			lookup: "id",
+		});
+		if (!workflow) {
+			return { status: "error", httpStatus: 404, body: "Workflow not found" };
+		}
+
+		const versionId = `pub_${Date.now()}_${nanoid(6).toLowerCase()}`;
+		const daprWorkflowName = workflow.daprWorkflowName || `wf_${workflow.id}`;
+		const spec = asRecord(workflow.spec);
+		const removedAgentCallsError = getRemovedSw10AgentCallsError(spec);
+		if (removedAgentCallsError) {
+			return { status: "error", httpStatus: 400, body: removedAgentCallsError };
+		}
+
+		const revision = {
+			version: versionId,
+			publishedAt: new Date().toISOString(),
+			nodes: structuredClone(workflow.nodes),
+			edges: structuredClone(workflow.edges),
+			name: workflow.name,
+			description: workflow.description,
+		};
+
+		const metadata = asRecord(spec.metadata);
+		const publishedRuntime = asRecord(metadata.publishedRuntime);
+		const existingRevisions = Array.isArray(publishedRuntime.revisions)
+			? publishedRuntime.revisions
+			: [];
+		const updated = await this.deps.workflowData.updateWorkflowDefinition(
+			input.workflowId,
+			{
+				spec: {
+					...spec,
+					metadata: {
+						...metadata,
+						publishedRuntime: {
+							...publishedRuntime,
+							latestVersion: versionId,
+							revisions: [...existingRevisions, revision],
+						},
+					},
+				},
+				daprWorkflowName,
+			},
+		);
+
+		return { status: "ok", body: updated };
 	}
 }
 

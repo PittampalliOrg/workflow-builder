@@ -146,6 +146,55 @@ describe("ApplicationWorkflowDefinitionCommandService", () => {
 			body: "This workflow has execution history and cannot be deleted; archive it instead.",
 		});
 	});
+
+	it("publishes a frozen workflow revision through workflow-data", async () => {
+		const result = await service.publishWorkflow({ workflowId: "wf-1" });
+
+		expect(result).toEqual({
+			status: "ok",
+			body: workflowDefinition(),
+		});
+		expect(workflowData.getWorkflowByRef).toHaveBeenCalledWith({
+			workflowId: "wf-1",
+			lookup: "id",
+		});
+		expect(workflowData.updateWorkflowDefinition).toHaveBeenCalledWith(
+			"wf-1",
+			expect.objectContaining({
+				daprWorkflowName: "wf_wf-1",
+				spec: expect.objectContaining({
+					metadata: expect.objectContaining({
+						publishedRuntime: expect.objectContaining({
+							latestVersion: expect.stringMatching(/^pub_/),
+							revisions: [
+								expect.objectContaining({
+									version: expect.stringMatching(/^pub_/),
+									publishedAt: expect.any(String),
+									nodes: [],
+									edges: [],
+									name: "Example",
+									description: null,
+								}),
+							],
+						}),
+					}),
+				}),
+			}),
+		);
+	});
+
+	it("returns not found for missing workflow publications", async () => {
+		workflowData.getWorkflowByRef.mockResolvedValueOnce(null);
+
+		await expect(
+			service.publishWorkflow({ workflowId: "missing" }),
+		).resolves.toEqual({
+			status: "error",
+			httpStatus: 404,
+			body: "Workflow not found",
+		});
+		expect(workflowData.updateWorkflowDefinition).not.toHaveBeenCalled();
+	});
 });
 
 function workflowDefinition(): WorkflowDefinition {
