@@ -20,40 +20,10 @@ import json
 import logging
 from typing import Any
 
-import requests
-
-from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
-from core.config import config
+from activities.workflow_data_client import workflow_data_client
 from tracing import start_activity_span
 
 logger = logging.getLogger(__name__)
-
-DAPR_HOST = config.DAPR_HOST
-DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
-SECRET_STORE_NAME = "kubernetes-secrets"
-SECRET_NAME = "workflow-builder-secrets"
-
-_database_url: str | None = None
-
-
-def _get_database_url() -> str:
-    global _database_url
-    if _database_url is not None:
-        return _database_url
-    url = (
-        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}"
-        f"/v1.0/secrets/{SECRET_STORE_NAME}/{SECRET_NAME}"
-    )
-    response = requests.get(url, timeout=10)
-    response.raise_for_status()
-    secrets = response.json()
-    db_url = secrets.get("DATABASE_URL")
-    if not db_url:
-        raise RuntimeError(
-            f"DATABASE_URL not found in secret '{SECRET_NAME}' from store '{SECRET_STORE_NAME}'"
-        )
-    _database_url = db_url
-    return db_url
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -172,91 +142,22 @@ def persist_workspace_session(ctx, input_data: dict[str, Any]) -> dict[str, Any]
     }
     with start_activity_span("activity.persist_workspace_session", otel, attrs):
         try:
-            api_mode = workflow_data_api_mode()
-            if api_mode != "postgres":
-                try:
-                    workflow_data_client.upsert_workspace_session(
-                        {
-                            "workspaceRef": workspace_ref,
-                            "workflowExecutionId": workflow_execution_id,
-                            "name": task_name,
-                            "rootPath": root_path,
-                            "backend": backend,
-                            "enabledTools": enabled_tools,
-                            "status": "active",
-                            "sandboxState": sandbox_state,
-                        }
-                    )
-                    return {"success": True, "workspace_ref": workspace_ref}
-                except Exception as exc:
-                    if api_mode == "http":
-                        logger.warning(
-                            "[Persist Workspace Session] workflow-data upsert failed for %s (exec=%s): %s",
-                            workspace_ref,
-                            workflow_execution_id,
-                            exc,
-                        )
-                        return {
-                            "success": False,
-                            "workspace_ref": workspace_ref,
-                            "error": str(exc),
-                        }
-                    logger.warning(
-                        "[Persist Workspace Session] workflow-data upsert failed for %s; falling back to Postgres",
-                        workspace_ref,
-                        exc_info=True,
-                    )
-
-            import psycopg2
-
-            db_url = _get_database_url()
-            conn = psycopg2.connect(db_url, connect_timeout=3)
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        INSERT INTO workflow_workspace_sessions (
-                            workspace_ref,
-                            workflow_execution_id,
-                            name,
-                            root_path,
-                            backend,
-                            enabled_tools,
-                            status,
-                            sandbox_state,
-                            created_at,
-                            updated_at,
-                            last_accessed_at
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'active', %s::jsonb, now(), now(), now())
-                        ON CONFLICT (workspace_ref) DO UPDATE SET
-                            workflow_execution_id = EXCLUDED.workflow_execution_id,
-                            name = EXCLUDED.name,
-                            root_path = EXCLUDED.root_path,
-                            backend = EXCLUDED.backend,
-                            enabled_tools = EXCLUDED.enabled_tools,
-                            sandbox_state = EXCLUDED.sandbox_state,
-                            status = 'active',
-                            updated_at = now(),
-                            last_accessed_at = now()
-                        """,
-                        (
-                            workspace_ref,
-                            workflow_execution_id,
-                            task_name,
-                            root_path,
-                            backend,
-                            json.dumps(enabled_tools),
-                            json.dumps(sandbox_state),
-                        ),
-                    )
-                conn.commit()
-            finally:
-                conn.close()
+            workflow_data_client.upsert_workspace_session(
+                {
+                    "workspaceRef": workspace_ref,
+                    "workflowExecutionId": workflow_execution_id,
+                    "name": task_name,
+                    "rootPath": root_path,
+                    "backend": backend,
+                    "enabledTools": enabled_tools,
+                    "status": "active",
+                    "sandboxState": sandbox_state,
+                }
+            )
             return {"success": True, "workspace_ref": workspace_ref}
         except Exception as exc:
             logger.warning(
-                "[Persist Workspace Session] Upsert failed for %s (exec=%s): %s",
+                "[Persist Workspace Session] workflow-data upsert failed for %s (exec=%s): %s",
                 workspace_ref,
                 workflow_execution_id,
                 exc,

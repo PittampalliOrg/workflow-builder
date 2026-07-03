@@ -461,7 +461,6 @@ def test_persist_workspace_session_strict_http_uses_workflow_data_client(monkeyp
         "workflow_data_client",
         FakeWorkflowDataClient(),
     )
-    monkeypatch.setattr(persist_workspace_session, "_get_database_url", _fail_database_url)
 
     result = persist_workspace_session.persist_workspace_session(
         None,
@@ -535,7 +534,6 @@ def test_register_resumable_workspace_strict_http_uses_workflow_data_client(monk
         "workflow_data_client",
         FakeWorkflowDataClient(),
     )
-    monkeypatch.setattr(register_resumable_workspace, "_get_database_url", _fail_database_url)
 
     result = register_resumable_workspace.register_resumable_workspace(
         None,
@@ -555,6 +553,45 @@ def test_register_resumable_workspace_strict_http_uses_workflow_data_client(monk
             "sandboxState": {},
         }
     ]
+
+
+def test_workspace_session_upserts_do_not_fallback_to_postgres_in_fallback_mode(monkeypatch):
+    class FailingWorkflowDataClient:
+        def upsert_workspace_session(self, *_args, **_kwargs):
+            raise RuntimeError("workflow-data unavailable")
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http-fallback-db")
+    _block_psycopg2_imports(monkeypatch)
+    monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
+    monkeypatch.setattr(
+        persist_workspace_session,
+        "workflow_data_client",
+        FailingWorkflowDataClient(),
+    )
+    monkeypatch.setattr(
+        register_resumable_workspace,
+        "workflow_data_client",
+        FailingWorkflowDataClient(),
+    )
+
+    persisted = persist_workspace_session.persist_workspace_session(
+        None,
+        {
+            "workflowExecutionId": "exec-1",
+            "actionType": "workspace/profile",
+            "keepAfterRun": True,
+            "result": {"workspaceRef": "ws-1", "rootPath": "/sandbox"},
+        },
+    )
+    registered = register_resumable_workspace.register_resumable_workspace(
+        None,
+        {"workspaceRef": "resumable-1", "dbExecutionId": "exec-1"},
+    )
+
+    assert persisted["success"] is False
+    assert "workflow-data unavailable" in persisted["error"]
+    assert registered["success"] is False
+    assert "workflow-data unavailable" in registered["error"]
 
 
 def test_trace_lineage_strict_http_uses_workflow_data_client(monkeypatch):

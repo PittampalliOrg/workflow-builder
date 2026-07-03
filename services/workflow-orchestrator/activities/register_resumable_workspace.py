@@ -16,8 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
-from activities.persist_workspace_session import _get_database_url
+from activities.workflow_data_client import workflow_data_client
 from tracing import start_activity_span
 
 logger = logging.getLogger(__name__)
@@ -43,78 +42,22 @@ def register_resumable_workspace(ctx, input_data: dict[str, Any]) -> dict[str, A
     }
     with start_activity_span("activity.register_resumable_workspace", otel, attrs):
         try:
-            api_mode = workflow_data_api_mode()
-            if api_mode != "postgres":
-                try:
-                    workflow_data_client.upsert_workspace_session(
-                        {
-                            "workspaceRef": workspace_ref,
-                            "workflowExecutionId": execution_id,
-                            "name": execution_id,
-                            "rootPath": "/sandbox/work",
-                            "backend": "juicefs",
-                            "enabledTools": [],
-                            "status": "active",
-                            "sandboxState": {},
-                        }
-                    )
-                    return {"success": True, "workspace_ref": workspace_ref}
-                except Exception as exc:  # noqa: BLE001 — best-effort, never fail the run
-                    if api_mode == "http":
-                        logger.warning(
-                            "[Register Resumable Workspace] workflow-data upsert failed for %s (exec=%s): %s",
-                            workspace_ref,
-                            execution_id,
-                            exc,
-                        )
-                        return {
-                            "success": False,
-                            "workspace_ref": workspace_ref,
-                            "error": str(exc),
-                        }
-                    logger.warning(
-                        "[Register Resumable Workspace] workflow-data upsert failed for %s; falling back to Postgres",
-                        workspace_ref,
-                        exc_info=True,
-                    )
-            import psycopg2
-
-            conn = psycopg2.connect(_get_database_url(), connect_timeout=3)
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        INSERT INTO workflow_workspace_sessions (
-                            workspace_ref,
-                            workflow_execution_id,
-                            name,
-                            root_path,
-                            backend,
-                            enabled_tools,
-                            status,
-                            sandbox_state,
-                            created_at,
-                            updated_at,
-                            last_accessed_at
-                        )
-                        VALUES (%s, %s, %s, '/sandbox/work', 'juicefs', '[]'::jsonb,
-                                'active', '{}'::jsonb, now(), now(), now())
-                        ON CONFLICT (workspace_ref) DO UPDATE SET
-                            workflow_execution_id = EXCLUDED.workflow_execution_id,
-                            backend = 'juicefs',
-                            status = 'active',
-                            updated_at = now(),
-                            last_accessed_at = now()
-                        """,
-                        (workspace_ref, execution_id, execution_id),
-                    )
-                conn.commit()
-            finally:
-                conn.close()
+            workflow_data_client.upsert_workspace_session(
+                {
+                    "workspaceRef": workspace_ref,
+                    "workflowExecutionId": execution_id,
+                    "name": execution_id,
+                    "rootPath": "/sandbox/work",
+                    "backend": "juicefs",
+                    "enabledTools": [],
+                    "status": "active",
+                    "sandboxState": {},
+                }
+            )
             return {"success": True, "workspace_ref": workspace_ref}
         except Exception as exc:  # noqa: BLE001 — best-effort, never fail the run
             logger.warning(
-                "[Register Resumable Workspace] upsert failed for %s (exec=%s): %s",
+                "[Register Resumable Workspace] workflow-data upsert failed for %s (exec=%s): %s",
                 workspace_ref,
                 execution_id,
                 exc,
