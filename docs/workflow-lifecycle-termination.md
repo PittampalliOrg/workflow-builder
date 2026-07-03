@@ -197,7 +197,9 @@ The now-retired `reaper.ts` stopped early-returning when a benchmark was active 
 | Benchmark **instance** | the benchmark **run** Cancel |
 | Eval **instance** | the eval **run** Cancel |
 
-- `lifecycle/ownership.ts` `ownsBenchmarkOrEvalRun(executionId | daprInstanceId)` maps an execution → its owning run via `benchmark_run_instances` / `evaluation_run_items`.
+- `PostgresLifecycleCoordinatorOwnerStore` implements the coordinator-owner
+  ports and maps an execution or Dapr instance id to its owning run via
+  `benchmark_run_instances` / `evaluation_run_items`.
 - `POST /api/workflows/executions/[id]/stop` **rejects** a coordinator-owned execution with a structured **409** `{ error:"coordinator_owned", ownedBy, runId }` (the reaper still reconciles a genuinely terminal/gone orphan via `stopDurableRun` directly — the guard is only on the user route). `GET /api/workflows/executions/[id]` returns `owner`; the run-detail UI **hides** the generic Stop and shows **"Managed by benchmark/evaluation run →"**.
 
 ### (P3, #71) "Stopping…" confirm UI
@@ -222,7 +224,7 @@ The fix is **BFF-only** (zero orchestrator/agent risk): treat the wedge as **DB-
 A multi-agent cancellation audit (after #77/#78) confirmed the surface is structurally sound and closed the remaining edges. All BFF-only; orchestrators unchanged.
 - **Historical reaper × active coordinator (#5).** The retired reaper's *aged stuck-execution* pass skipped an execution owned by a **still-active** benchmark/eval run (`reaper.ts::ownedByActiveCoordinatorRun`), so it could not purge an instance the coordinator was about to re-drive; it released once the owning run became terminal. (The terminal/gone reconcile + stop-requested priority passes still ran regardless — that's #69.)
 - **Null-linkage fan-out (#6).** `resolvers.ts::agentTargetForSession` only synthesizes the deterministic per-session app-id when there's **per-session-sandbox evidence** (`runtimeSandboxName` set); an unstarted/pool-hosted session with no linkage resolves to *unresolved* → the cascade reports "stopping" instead of terminating a nonexistent instance and falsely declaring the agent closed.
-- **Single stop authority on the session route (#8).** `POST /api/v1/sessions/[id]/stop` now runs `ownsBenchmarkOrEvalRunForSession` → **409 `coordinator_owned`**, mirroring the per-execution route.
+- **Single stop authority on the session route (#8).** `POST /api/v1/sessions/[id]/stop` now resolves session coordinator ownership through the lifecycle owner port → **409 `coordinator_owned`**, mirroring the per-execution route.
 - **Retired the orphan `/terminate` route (#9).** `POST /api/workflows/executions/[id]/terminate` (no callers; lacked the owner guard, mapped stopping→409) was removed — use `/stop`.
 - **Interrupt 503-vs-409 (#12).** A transient runtime raise failure on a live session now surfaces as a retryable **503** (`stopDurableRun` `retryable` hint), distinct from "not running yet" (**409**).
 - **`reset` clarified (#7).** `reset` is intentionally user-reachable (the "Stop & reset" byte-clean mode) and safe because every route runs `isResourceInScope` before `stopDurableRun` + the state purge is boundary-anchored (#78) — NOT gated to admin (that would break the button).

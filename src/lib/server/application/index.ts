@@ -187,6 +187,7 @@ import {
 	LifecycleWorkflowExecutionControllerPort,
 	LifecycleWorkflowExecutionCoordinatorOwnerPort,
 } from "$lib/server/application/adapters/workflow-control";
+import { PostgresLifecycleCoordinatorOwnerStore } from "$lib/server/application/adapters/lifecycle-ownership";
 import {
 	LegacyTriggeredRunAdmissionPort,
 	ShaTriggeredWorkflowExecutionIdPort,
@@ -716,17 +717,27 @@ export function getApplicationAdapters(
 			sessionEvents: getSessionEvents(),
 			rejectionIds: new DateGoalRejectionSourceEventIdPort(),
 		}));
+	const getLifecycleCoordinatorOwners = () =>
+		new PostgresLifecycleCoordinatorOwnerStore(getDatabase);
 	const getSessionLifecycle = () =>
 		(sessionLifecycle ??= new ApplicationSessionLifecycleService({
 			sessions: getSessions(),
-			lifecycle: new LifecycleSessionController(getSessionGoalStore()),
+			lifecycle: new LifecycleSessionController(
+				getSessionGoalStore(),
+				getLifecycleCoordinatorOwners(),
+			),
 		}));
 	const getBulkLifecycleStop = () =>
 		(bulkLifecycleStop ??= new ApplicationBulkLifecycleStopService({
-			sessionLifecycle: new LifecycleSessionController(getSessionGoalStore()),
+			sessionLifecycle: new LifecycleSessionController(
+				getSessionGoalStore(),
+				getLifecycleCoordinatorOwners(),
+			),
 			workflowLifecycle: new LifecycleWorkflowExecutionControllerPort(),
 			workflowCoordinatorOwners:
-				new LifecycleWorkflowExecutionCoordinatorOwnerPort(),
+				new LifecycleWorkflowExecutionCoordinatorOwnerPort(
+					getLifecycleCoordinatorOwners(),
+				),
 			benchmarkRuns: new ServiceBenchmarkRunCancellationPort(),
 			evaluationRuns: new ServiceEvaluationRunCancellationPort(),
 			coordinatorCancels: new DaprLifecycleCoordinatorCancelNotifier(),
@@ -889,7 +900,10 @@ export function getApplicationAdapters(
 	const getSessionSandboxes = () =>
 		(sessionSandboxes ??= new ApplicationSessionSandboxService({
 			sessions: getSessions(),
-			lifecycle: new LifecycleSessionController(getSessionGoalStore()),
+			lifecycle: new LifecycleSessionController(
+				getSessionGoalStore(),
+				getLifecycleCoordinatorOwners(),
+			),
 			sandboxes: new KubernetesSessionSandboxDestroyer(),
 		}));
 	const getSessionMcpStatus = () =>

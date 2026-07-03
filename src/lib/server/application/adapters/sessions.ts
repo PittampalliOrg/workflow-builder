@@ -21,6 +21,7 @@ import type {
 	SessionGoalScopeGuard,
 	SessionGoalStore,
 	SandboxSessionOwnerRecord,
+	SessionCoordinatorOwnerPort,
 	SessionLifecycleController,
 	SessionLifecycleStopMode,
 	SessionProvisioningContext,
@@ -99,7 +100,7 @@ import {
 	pauseDurableRun,
 	resumeDurableRun,
 } from "$lib/server/lifecycle/pause";
-import { ownsBenchmarkOrEvalRunForSession } from "$lib/server/lifecycle/ownership";
+import { PostgresLifecycleCoordinatorOwnerStore } from "$lib/server/application/adapters/lifecycle-ownership";
 import { isResourceInScope } from "$lib/server/workflows/project-scope";
 import { kickGoalLoop } from "$lib/server/goals/goal-loop";
 import {
@@ -1003,7 +1004,11 @@ export class DaprSessionWorkflowSpawner implements SessionWorkflowSpawner {
 }
 
 export class LifecycleSessionController implements SessionLifecycleController {
-	constructor(private readonly goals?: SessionGoalStore) {}
+	constructor(
+		private readonly goals?: SessionGoalStore,
+		private readonly coordinatorOwners: SessionCoordinatorOwnerPort =
+			new PostgresLifecycleCoordinatorOwnerStore(),
+	) {}
 
 	async checkSessionAccess(input: {
 		sessionId: string;
@@ -1054,7 +1059,7 @@ export class LifecycleSessionController implements SessionLifecycleController {
 	}
 
 	getCoordinatorOwner(sessionId: string) {
-		return ownsBenchmarkOrEvalRunForSession(sessionId);
+		return this.coordinatorOwners.getSessionCoordinatorOwner(sessionId);
 	}
 
 	async pauseSessionGoal(sessionId: string): Promise<void> {

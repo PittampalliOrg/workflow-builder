@@ -18,7 +18,7 @@ import {
 	stopDurableRun,
 	type StopDurableRunMode,
 } from "$lib/server/lifecycle";
-import { ownsBenchmarkOrEvalRun } from "$lib/server/lifecycle/ownership";
+import { PostgresLifecycleCoordinatorOwnerStore } from "$lib/server/application/adapters/lifecycle-ownership";
 import { isResourceInScope } from "$lib/server/workflows/project-scope";
 import { isSWWorkflow, startWorkflowRun } from "$lib/server/workflows/start-run";
 
@@ -42,8 +42,13 @@ export class LegacyWorkflowRunStarterPort implements WorkflowRunStarterPort {
 export class LifecycleWorkflowExecutionCoordinatorOwnerPort
 	implements WorkflowExecutionCoordinatorOwnerPort
 {
+	constructor(
+		private readonly owners: WorkflowExecutionCoordinatorOwnerPort =
+			new PostgresLifecycleCoordinatorOwnerStore(),
+	) {}
+
 	getCoordinatorOwner(executionIdOrInstanceId: string) {
-		return ownsBenchmarkOrEvalRun(executionIdOrInstanceId);
+		return this.owners.getCoordinatorOwner(executionIdOrInstanceId);
 	}
 }
 

@@ -40,6 +40,12 @@ The session runtime-config helper now takes its persisted
 `session.runtime_config` fallback as an injected adapter dependency. The latest
 runtime-config event query is confined to `DefaultSessionRuntimeConfigReader`;
 `runtime-config.ts` no longer imports DB, schema, or Drizzle.
+Lifecycle coordinator ownership checks now use
+`PostgresLifecycleCoordinatorOwnerStore`, injected behind workflow-execution and
+session lifecycle ports. The user-facing stop/resume/detail services still
+preserve `coordinator_owned` behavior, while direct benchmark/eval/session SQL
+is confined to the application adapter layer rather than
+`src/lib/server/lifecycle`.
 Session agent config patch commands now reuse the scoped session already loaded
 by workflow-data, with a workflow-data fallback for standalone helper use;
 `agent-config-patch.ts` no longer imports the legacy session registry.

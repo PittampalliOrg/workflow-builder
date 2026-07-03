@@ -4366,6 +4366,12 @@ export type SessionCoordinatorOwner = {
 	runId: string;
 };
 
+export interface SessionCoordinatorOwnerPort {
+	getSessionCoordinatorOwner(
+		sessionId: string,
+	): Promise<SessionCoordinatorOwner | null>;
+}
+
 export interface SessionLifecycleController {
 	checkSessionAccess(input: {
 		sessionId: string;

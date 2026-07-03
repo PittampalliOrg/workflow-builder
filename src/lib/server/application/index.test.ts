@@ -54,7 +54,9 @@ describe("getApplicationAdapters", () => {
 		);
 
 		expect(source).toContain("new PostgresSessionGoalStore(getDatabase())");
-		expect(source).toContain("new LifecycleSessionController(getSessionGoalStore())");
+		expect(source).toContain("new PostgresLifecycleCoordinatorOwnerStore(getDatabase)");
+		expect(source).toContain("new LifecycleSessionController(");
+		expect(source).toContain("getLifecycleCoordinatorOwners()");
 		expect(source).not.toContain("RepositorySessionGoalStore");
 	});
 });
