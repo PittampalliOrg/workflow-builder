@@ -1,5 +1,6 @@
 import { getActionCatalogDetail } from "$lib/server/action-catalog";
 import { PostgresCodeFunctionStore } from "$lib/server/application/adapters/code-functions";
+import { PostgresPieceMetadataActionSourceReader } from "$lib/server/application/adapters/piece-metadata-action-source";
 import { daprFetch } from "$lib/server/dapr-client";
 import type {
 	ActionCatalogHttpTestClient,
@@ -8,7 +9,10 @@ import type {
 } from "$lib/server/application/action-catalog-test";
 
 export class LocalActionCatalogTestReader implements ActionCatalogTestReader {
-	constructor(private readonly codeFunctions = new PostgresCodeFunctionStore()) {}
+	constructor(
+		private readonly codeFunctions = new PostgresCodeFunctionStore(),
+		private readonly pieceMetadataSource = new PostgresPieceMetadataActionSourceReader(),
+	) {}
 
 	async getActionDetail(
 		actionId: string,
@@ -16,6 +20,7 @@ export class LocalActionCatalogTestReader implements ActionCatalogTestReader {
 	): Promise<ActionCatalogTestAction | null> {
 		const action = await getActionCatalogDetail(actionId, userId, {
 			codeFunctions: this.codeFunctions,
+			pieceMetadataSource: this.pieceMetadataSource,
 		});
 		if (!action) return null;
 		return {

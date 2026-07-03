@@ -3,17 +3,22 @@ import {
 	loadActionCatalogSnapshot,
 } from "$lib/server/action-catalog";
 import { PostgresCodeFunctionStore } from "$lib/server/application/adapters/code-functions";
+import { PostgresPieceMetadataActionSourceReader } from "$lib/server/application/adapters/piece-metadata-action-source";
 import type {
 	ActionCatalogDetailReadModel,
 	ActionCatalogReader,
 } from "$lib/server/application/action-catalog";
 
 export class LegacyActionCatalogReader implements ActionCatalogReader {
-	constructor(private readonly codeFunctions = new PostgresCodeFunctionStore()) {}
+	constructor(
+		private readonly codeFunctions = new PostgresCodeFunctionStore(),
+		private readonly pieceMetadataSource = new PostgresPieceMetadataActionSourceReader(),
+	) {}
 
 	loadSnapshot(userId: string | null): Promise<unknown> {
 		return loadActionCatalogSnapshot(userId, {
 			codeFunctions: this.codeFunctions,
+			pieceMetadataSource: this.pieceMetadataSource,
 		});
 	}
 
@@ -23,6 +28,7 @@ export class LegacyActionCatalogReader implements ActionCatalogReader {
 	): Promise<ActionCatalogDetailReadModel | null> {
 		const action = await getActionCatalogDetail(actionId, userId, {
 			codeFunctions: this.codeFunctions,
+			pieceMetadataSource: this.pieceMetadataSource,
 		});
 		return action as ActionCatalogDetailReadModel | null;
 	}

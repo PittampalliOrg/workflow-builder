@@ -7,28 +7,12 @@ import { getRemovedSw10AgentCallsError } from "$lib/server/workflows/sw10-agent-
 import type { ActionCatalogItem } from "$lib/stores/action-catalog.svelte";
 import type { CodeFunctionDetail } from "$lib/server/code-functions/model";
 import { getActionCatalogDetail, loadActionCatalogSnapshot } from "./index";
+import type { PieceMetadataActionSourceReader } from "./piece-metadata-source";
 
 vi.mock("$lib/server/dapr-client", () => ({
   daprFetch: vi.fn(async () => new Response("offline", { status: 503 })),
   getFnSystemUrl: () => "http://fn-system",
   getOrchestratorUrl: () => "http://workflow-orchestrator",
-}));
-
-vi.mock("./piece-metadata-source", () => ({
-  AP_CATALOG_SERVICE_ID: "activepieces",
-  loadPieceMetadataActionSource: vi.fn(async () => ({
-    actions: [],
-    service: {
-      service: "activepieces",
-      version: "test",
-      runtime: "piece-metadata",
-      ready: true,
-      features: [],
-      registeredWorkflows: [],
-      registeredActivities: [],
-      additional: {},
-    },
-  })),
 }));
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -133,6 +117,63 @@ describe("action-catalog code-function boundary", () => {
       slug: "parse-user",
       sourceKind: "code",
     });
+  });
+
+  it("loads activepieces actions through an injected piece metadata source", async () => {
+    const pieceMetadataSource: PieceMetadataActionSourceReader = {
+      listLatestRunnableActionRows: vi.fn(async () => [
+        {
+          name: "github",
+          displayName: "GitHub",
+          logoUrl: null,
+          description: "GitHub integration",
+          version: "1.2.3",
+          auth: { type: "OAUTH2", displayName: "GitHub OAuth" },
+          actions: {
+            create_issue: {
+              displayName: "Create Issue",
+              description: "Create a GitHub issue",
+              requireAuth: true,
+              inputSchema: {
+                type: "object",
+                properties: {
+                  title: { type: "string" },
+                },
+              },
+              props: {
+                title: {
+                  type: "SHORT_TEXT",
+                  displayName: "Title",
+                  required: true,
+                },
+              },
+            },
+          },
+          categories: ["developer-tools"],
+          catalogDigest: "digest-1",
+          catalogSourceImage: "image-1",
+          availableOnly: false,
+        },
+      ]),
+    };
+
+    const snapshot = await loadActionCatalogSnapshot(null, {
+      pieceMetadataSource,
+    });
+
+    expect(pieceMetadataSource.listLatestRunnableActionRows).toHaveBeenCalled();
+    expect(snapshot.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "github-create_issue",
+          name: "github-create_issue",
+          service: "activepieces",
+          pieceName: "github",
+          actionName: "create_issue",
+          insertable: true,
+        }),
+      ]),
+    );
   });
 });
 

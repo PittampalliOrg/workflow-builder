@@ -1,12 +1,15 @@
 import { PostgresCodeFunctionStore } from "$lib/server/application/adapters/code-functions";
 import { toCodeFunctionDefinitionFromDetail } from "$lib/server/code-functions/model";
-import { getPieceCatalogDefinition } from "$lib/server/action-catalog/piece-metadata-source";
+import { PostgresPieceMetadataActionSourceReader } from "$lib/server/application/adapters/piece-metadata-action-source";
 import type { CatalogFunctionDefinitionReader } from "$lib/server/application/catalog-function-definition";
 
 export class PostgresCatalogFunctionDefinitionReader
 	implements CatalogFunctionDefinitionReader
 {
-	constructor(private readonly store = new PostgresCodeFunctionStore()) {}
+	constructor(
+		private readonly store = new PostgresCodeFunctionStore(),
+		private readonly pieceMetadataSource = new PostgresPieceMetadataActionSourceReader(),
+	) {}
 
 	async getCodeFunctionDefinition(input: {
 		name: string;
@@ -26,6 +29,6 @@ export class PostgresCatalogFunctionDefinitionReader
 	getPieceFunctionDefinition(
 		name: string,
 	): Promise<Record<string, unknown> | null> {
-		return getPieceCatalogDefinition(name);
+		return this.pieceMetadataSource.getPieceCatalogDefinition(name);
 	}
 }

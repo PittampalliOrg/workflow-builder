@@ -1,5 +1,6 @@
 import { getActionCatalogDetail } from "$lib/server/action-catalog";
 import { PostgresCodeFunctionStore } from "$lib/server/application/adapters/code-functions";
+import { PostgresPieceMetadataActionSourceReader } from "$lib/server/application/adapters/piece-metadata-action-source";
 import {
 	getDecryptedAppConnection,
 	normalizePieceName,
@@ -25,7 +26,10 @@ const OPTIONS_PROXY_TIMEOUT_MS = 30_000;
 export class LocalActionOptionsCatalogReader
 	implements ActionOptionsActionCatalogReader
 {
-	constructor(private readonly codeFunctions = new PostgresCodeFunctionStore()) {}
+	constructor(
+		private readonly codeFunctions = new PostgresCodeFunctionStore(),
+		private readonly pieceMetadataSource = new PostgresPieceMetadataActionSourceReader(),
+	) {}
 
 	async getActionDetail(
 		actionId: string,
@@ -33,6 +37,7 @@ export class LocalActionOptionsCatalogReader
 	): Promise<ActionOptionsCatalogDetail | null> {
 		const action = await getActionCatalogDetail(actionId, userId, {
 			codeFunctions: this.codeFunctions,
+			pieceMetadataSource: this.pieceMetadataSource,
 		});
 		if (!action) return null;
 		return {

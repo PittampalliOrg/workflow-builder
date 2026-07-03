@@ -14,9 +14,6 @@
  *   slug/call      `<pieceName>/<actionName>`   (the function-router slug)
  */
 
-import { and, desc, eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { pieceMetadata } from '$lib/server/db/schema';
 import type {
 	ActionAuthMetadata,
 	ActionCatalogDetail,
@@ -30,14 +27,16 @@ export const AP_CATALOG_SERVICE_ID = 'activepieces';
 /** Must match piece-mcp-server's CATALOG_SCHEMA_VERSION. */
 const PIECE_CATALOG_SCHEMA_VERSION = 1;
 
-const CACHE_TTL_MS = 30_000;
-
 type UnknownRecord = Record<string, unknown>;
 
-type PieceCatalogSource = {
+export type PieceCatalogSource = {
 	actions: ActionCatalogDetail[];
 	service: ActionCatalogServiceSnapshot;
 };
+
+export interface PieceMetadataActionSourceReader {
+	listLatestRunnableActionRows(): Promise<PieceMetadataActionSourceRow[]>;
+}
 
 export type PieceMetadataActionSourceRow = {
 	name: string;
@@ -52,8 +51,6 @@ export type PieceMetadataActionSourceRow = {
 	catalogSourceImage: string | null;
 	availableOnly: boolean | null;
 };
-
-let cachedSource: { expiresAt: number; value: PieceCatalogSource } | null = null;
 
 /** AP property type → JSON Schema type (display fallback when the stored inputSchema lacks the prop). */
 const PROP_SCHEMA_TYPE: Record<string, string> = {
@@ -354,7 +351,9 @@ function buildActionDetail(input: {
 	};
 }
 
-function pieceCatalogActionsFromRows(rows: PieceMetadataActionSourceRow[]): ActionCatalogDetail[] {
+export function pieceCatalogActionsFromRows(
+	rows: PieceMetadataActionSourceRow[],
+): ActionCatalogDetail[] {
 	const actions: ActionCatalogDetail[] = [];
 	for (const row of rows) {
 		if (!isRecord(row.actions)) continue;
@@ -383,6 +382,28 @@ function pieceCatalogActionsFromRows(rows: PieceMetadataActionSourceRow[]): Acti
 	return actions;
 }
 
+export function pieceCatalogSourceFromRows(
+	rows: PieceMetadataActionSourceRow[],
+): PieceCatalogSource {
+	const actions = pieceCatalogActionsFromRows(rows);
+	return {
+		actions,
+		service: {
+			service: AP_CATALOG_SERVICE_ID,
+			version: `piece-metadata-v${PIECE_CATALOG_SCHEMA_VERSION}`,
+			runtime: 'piece-runtime',
+			ready: true,
+			features: ['piece-metadata-db', 'per-piece-knative'],
+			registeredWorkflows: [],
+			registeredActivities: [],
+			additional: {
+				pieces: rows.length,
+				actions: actions.length,
+			},
+		},
+	};
+}
+
 export function pieceCatalogFunctionsFromRows(
 	rows: PieceMetadataActionSourceRow[],
 ): PieceCatalogFunctionSummary[] {
@@ -406,63 +427,10 @@ export function pieceCatalogFunctionsFromRows(
  * canonical catalog schema only). Throwing is fine — loadRemoteActionCache
  * surfaces failures as partialErrors.
  */
-export async function loadPieceMetadataActionSource(): Promise<PieceCatalogSource> {
-	if (cachedSource && cachedSource.expiresAt > Date.now()) {
-		return cachedSource.value;
-	}
-	if (!db) {
-		throw new Error('database is not configured');
-	}
-
-	const rows = await db
-		.selectDistinctOn([pieceMetadata.name], {
-			name: pieceMetadata.name,
-			displayName: pieceMetadata.displayName,
-			logoUrl: pieceMetadata.logoUrl,
-			description: pieceMetadata.description,
-			version: pieceMetadata.version,
-			auth: pieceMetadata.auth,
-			actions: pieceMetadata.actions,
-			categories: pieceMetadata.categories,
-			catalogDigest: pieceMetadata.catalogDigest,
-			catalogSourceImage: pieceMetadata.catalogSourceImage,
-			catalogSyncedAt: pieceMetadata.catalogSyncedAt,
-			availableOnly: pieceMetadata.availableOnly,
-		})
-		.from(pieceMetadata)
-		// Exclude available-only rows: their pieces have no runnable code (no
-		// ap-<piece>-service), so their actions must NOT appear in the canvas action
-		// catalog (they'd render as un-insertable clutter). Discovery of available-only
-		// pieces lives in the connections surface (mcp-availability), not here.
-		.where(
-			and(
-				eq(pieceMetadata.catalogSchemaVersion, PIECE_CATALOG_SCHEMA_VERSION),
-				eq(pieceMetadata.availableOnly, false)
-			)
-		)
-		.orderBy(pieceMetadata.name, desc(pieceMetadata.catalogSyncedAt));
-
-	const actions = pieceCatalogActionsFromRows(rows);
-
-	const value: PieceCatalogSource = {
-		actions,
-		service: {
-			service: AP_CATALOG_SERVICE_ID,
-			version: `piece-metadata-v${PIECE_CATALOG_SCHEMA_VERSION}`,
-			runtime: 'piece-runtime',
-			ready: true,
-			features: ['piece-metadata-db', 'per-piece-knative'],
-			registeredWorkflows: [],
-			registeredActivities: [],
-			additional: {
-				pieces: rows.length,
-				actions: actions.length,
-			},
-		},
-	};
-
-	cachedSource = { expiresAt: Date.now() + CACHE_TTL_MS, value };
-	return value;
+export async function loadPieceMetadataActionSource(
+	reader: PieceMetadataActionSourceReader,
+): Promise<PieceCatalogSource> {
+	return pieceCatalogSourceFromRows(await reader.listLatestRunnableActionRows());
 }
 
 export type PieceCatalogFunctionSummary = {
@@ -480,21 +448,10 @@ export type PieceCatalogFunctionSummary = {
 };
 
 /** Legacy /api/catalog/functions list shape (was served live by fn-activepieces). */
-export async function listPieceCatalogFunctions(): Promise<PieceCatalogFunctionSummary[]> {
-	const { actions } = await loadPieceMetadataActionSource();
-	return actions.map((action) => ({
-		name: action.name,
-		version: action.version || '1.0.0',
-		displayName: action.displayName,
-		description: action.description,
-		pieceName: action.providerId || action.group,
-		actionName: action.entrypoint || action.slug,
-		providerId: action.providerId || action.group,
-		providerLabel: action.providerLabel || action.group,
-		providerIconUrl: action.providerIconUrl ?? null,
-		category: action.category ?? null,
-		entrypoint: action.entrypoint || action.slug,
-	}));
+export async function listPieceCatalogFunctions(
+	reader: PieceMetadataActionSourceReader,
+): Promise<PieceCatalogFunctionSummary[]> {
+	return pieceCatalogFunctionsFromRows(await reader.listLatestRunnableActionRows());
 }
 
 /**
@@ -503,9 +460,10 @@ export async function listPieceCatalogFunctions(): Promise<PieceCatalogFunctionS
  * "1.0.0" while piece_metadata carries real piece versions.
  */
 export async function getPieceCatalogDefinition(
+	reader: PieceMetadataActionSourceReader,
 	name: string,
 ): Promise<Record<string, unknown> | null> {
-	const { actions } = await loadPieceMetadataActionSource();
+	const { actions } = await loadPieceMetadataActionSource(reader);
 	const match = actions.find((action) => action.name === name);
 	return match?.sw.definition ?? null;
 }

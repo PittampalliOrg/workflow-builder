@@ -12,6 +12,7 @@ import {
 import {
   AP_CATALOG_SERVICE_ID,
   loadPieceMetadataActionSource,
+  type PieceMetadataActionSourceReader,
 } from "./piece-metadata-source";
 import type {
   ActionAuthMetadata,
@@ -38,6 +39,7 @@ export interface ActionCatalogCodeFunctionReader {
 
 export interface ActionCatalogLoadOptions {
   codeFunctions?: ActionCatalogCodeFunctionReader;
+  pieceMetadataSource?: PieceMetadataActionSourceReader | null;
 }
 
 function getHighlighter(): Promise<Highlighter> {
@@ -88,6 +90,7 @@ type RemoteActionListResponse = {
 const CACHE_TTL_MS = 30_000;
 let cachedRemoteActions: {
   expiresAt: number;
+  pieceMetadataSource: PieceMetadataActionSourceReader | null;
   items: Array<ActionCatalogDetail>;
   services: ActionCatalogServiceSnapshot[];
   partialErrors: { serviceId: string; error: string }[];
@@ -1296,8 +1299,15 @@ async function loadCodeFunctionActions(
   }
 }
 
-async function loadRemoteActionCache(): Promise<ActionCatalogDetail[]> {
-  if (cachedRemoteActions && cachedRemoteActions.expiresAt > Date.now()) {
+async function loadRemoteActionCache(
+  options: ActionCatalogLoadOptions = {},
+): Promise<ActionCatalogDetail[]> {
+  const pieceMetadataSource = options.pieceMetadataSource ?? null;
+  if (
+    cachedRemoteActions &&
+    cachedRemoteActions.expiresAt > Date.now() &&
+    cachedRemoteActions.pieceMetadataSource === pieceMetadataSource
+  ) {
     return cachedRemoteActions.items;
   }
 
@@ -1314,10 +1324,14 @@ async function loadRemoteActionCache(): Promise<ActionCatalogDetail[]> {
       serviceId: service.serviceId as string,
       load: () => fetchRemoteService(service),
     })),
-    {
-      serviceId: AP_CATALOG_SERVICE_ID,
-      load: loadPieceMetadataActionSource,
-    },
+    ...(pieceMetadataSource
+      ? [
+          {
+            serviceId: AP_CATALOG_SERVICE_ID,
+            load: () => loadPieceMetadataActionSource(pieceMetadataSource),
+          },
+        ]
+      : []),
   ];
 
   const settled = await Promise.allSettled(
@@ -1352,6 +1366,7 @@ async function loadRemoteActionCache(): Promise<ActionCatalogDetail[]> {
 
   cachedRemoteActions = {
     expiresAt: Date.now() + CACHE_TTL_MS,
+    pieceMetadataSource,
     items: actions,
     services,
     partialErrors,
@@ -1374,7 +1389,7 @@ export async function listActionCatalog(
   options: ActionCatalogLoadOptions = {},
 ): Promise<ActionCatalogSummary[]> {
   const [remote, code] = await Promise.all([
-    loadRemoteActionCache(),
+    loadRemoteActionCache(options),
     loadCodeFunctionActions(userId, options.codeFunctions),
   ]);
   return sortActions([...code, ...remote]).map((item) => ({
@@ -1434,7 +1449,7 @@ export async function getActionCatalogDetail(
     return attachRendered(action);
   }
 
-  const remote = await loadRemoteActionCache();
+  const remote = await loadRemoteActionCache(options);
   const match = remote.find((item) => item.id === actionId);
   if (!match) return null;
   if (match.sourceCode && !match.sourceHtml) {
@@ -1449,7 +1464,7 @@ export async function loadActionCatalogSnapshot(
 ): Promise<ActionCatalogSnapshot> {
   const [code, remoteLoaded] = await Promise.all([
     loadCodeFunctionActions(userId, options.codeFunctions),
-    loadRemoteActionCache(),
+    loadRemoteActionCache(options),
   ]);
   const remote = cachedRemoteActions;
   const items = sortActions([...code, ...remoteLoaded]).map((item) => ({
