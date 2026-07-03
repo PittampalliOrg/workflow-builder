@@ -126,6 +126,7 @@ import { ApplicationSessionBrowserService } from "$lib/server/application/sessio
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
 import { ApplicationWorkflowExecutionStreamService } from "$lib/server/application/workflow-execution-stream";
 import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/application/workflow-code-checkpoints";
+import { ApplicationWorkflowTriggerManagementService } from "$lib/server/application/workflow-trigger-management";
 import { ApplicationWorkflowTriggerLifecycleService } from "$lib/server/application/workflow-trigger-lifecycle";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 
@@ -249,6 +250,9 @@ export function getApplicationAdapters(
 		| undefined;
 	let workflowTriggerLifecycle:
 		| ApplicationWorkflowTriggerLifecycleService
+		| undefined;
+	let workflowTriggerManagement:
+		| ApplicationWorkflowTriggerManagementService
 		| undefined;
 	let cliPreview: ApplicationCliPreviewService | undefined;
 	let sandboxPreview: ApplicationSandboxPreviewService | undefined;
@@ -442,6 +446,10 @@ export function getApplicationAdapters(
 			workflowData: getWorkflowData(),
 			lifecycle: new LegacyWorkflowTriggerLifecyclePort(),
 		}));
+	const getWorkflowTriggerManagement = () =>
+		(workflowTriggerManagement ??= new ApplicationWorkflowTriggerManagementService({
+			workflowData: getWorkflowData(),
+		}));
 	const getCliPreview = () =>
 		(cliPreview ??= new ApplicationCliPreviewService({
 			preview: new LegacyCliPreviewGatewayPort(),
@@ -588,6 +596,9 @@ export function getApplicationAdapters(
 		},
 		get workflowTriggerLifecycle() {
 			return getWorkflowTriggerLifecycle();
+		},
+		get workflowTriggerManagement() {
+			return getWorkflowTriggerManagement();
 		},
 		get cliPreview() {
 			return getCliPreview();

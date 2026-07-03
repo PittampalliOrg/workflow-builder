@@ -308,13 +308,16 @@ The first UI-facing route has also moved behind the application service:
 - `src/routes/api/workflows/[workflowId]/publish/+server.ts` now reads and
   updates workflow definitions through workflow-data application ports while
   preserving the existing published-runtime metadata shape.
-- `src/routes/api/workflows/[workflowId]/triggers/**` now keeps list/create
-  request shaping in the route but moves item activate/deactivate/delete
-  commands behind `ApplicationWorkflowTriggerLifecycleService`. The route no
-  longer imports workflow-data, project-scope helpers, or the trigger
-  reconciler directly; the existing direct-DB/Kubernetes/GitHub backing
-  reconciliation remains confined to the documented
-  `LegacyWorkflowTriggerLifecyclePort` rollback seam.
+- `src/routes/api/workflows/[workflowId]/triggers/**` now moves trigger
+  collection list/create scope checks, trigger-kind validation, reserved config
+  sanitization, and dedup-salt command shaping behind
+  `ApplicationWorkflowTriggerManagementService`, and item
+  activate/deactivate/delete commands behind
+  `ApplicationWorkflowTriggerLifecycleService`. The routes no longer import
+  workflow-data, project-scope helpers, trigger-registry validation, ID
+  generation, or the trigger reconciler directly; the existing
+  direct-DB/Kubernetes/GitHub backing reconciliation remains confined to the
+  documented `LegacyWorkflowTriggerLifecyclePort` rollback seam.
 - `src/routes/workspaces/[slug]/workflows/runs/[executionId]/+page.server.ts`
   now resolves the execution through `workflowData.getExecutionById` before
   redirecting to the canonical workflow run URL. The page loader keeps only URL
