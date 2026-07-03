@@ -16,9 +16,6 @@
  *
  * Mirrors `src/lib/server/sessions/spawn.ts` (lines ~138-176) — keep in sync.
  */
-import { eq } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import { agents } from "$lib/server/db/schema";
 import { getAgent } from "./registry";
 import {
 	flattenBundles,
@@ -56,15 +53,9 @@ export type CompiledCapabilities = {
 	warnings: string[];
 };
 
-async function getAgentProjectId(id: string): Promise<string | null> {
-	if (!db) return null;
-	const [row] = await db
-		.select({ projectId: agents.projectId })
-		.from(agents)
-		.where(eq(agents.id, id))
-		.limit(1);
-	return row?.projectId ?? null;
-}
+export type CompileAgentCapabilitiesOptions = {
+	projectId?: string | null;
+};
 
 function asStringArray(value: unknown): string[] {
 	return Array.isArray(value) ? value.map((v) => String(v)) : [];
@@ -76,10 +67,11 @@ function asStringArray(value: unknown): string[] {
  */
 export async function compileAgentCapabilities(
 	agentId: string,
+	options: CompileAgentCapabilitiesOptions = {},
 ): Promise<CompiledCapabilities | null> {
 	const agent = await getAgent(agentId);
 	if (!agent) return null;
-	const projectId = await getAgentProjectId(agentId);
+	const projectId = options.projectId ?? null;
 	const baseConfig = (agent.config ?? {}) as AgentConfig;
 
 	// Mirror the spawn resolve pipeline (read-only). Bundles flatten BEFORE MCP

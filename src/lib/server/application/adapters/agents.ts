@@ -168,8 +168,17 @@ export class LegacyAgentCatalogRepository implements AgentCatalogRepository {
 export class LegacyAgentCompiledCapabilitiesRepository
 	implements AgentCompiledCapabilitiesRepository
 {
+	constructor(private readonly database: Database = requireDb()) {}
+
 	async compileAgentCapabilities(agentId: string) {
-		return (await compileAgentCapabilities(agentId)) as Awaited<
+		const [row] = await this.database
+			.select({ projectId: agents.projectId })
+			.from(agents)
+			.where(eq(agents.id, agentId))
+			.limit(1);
+		return (await compileAgentCapabilities(agentId, {
+			projectId: row?.projectId ?? null,
+		})) as Awaited<
 			ReturnType<AgentCompiledCapabilitiesRepository["compileAgentCapabilities"]>
 		>;
 	}

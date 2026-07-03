@@ -467,6 +467,9 @@ services:
   `agentConfig.skills[]` entries are hydrated through
   `AgentSkillHydrationRepository`, with the Postgres query confined to
   `PostgresAgentSkillHydrationRepository`.
+- The agent compiled-capabilities debug helper no longer imports DB/Drizzle for
+  project resolution; `LegacyAgentCompiledCapabilitiesRepository` supplies the
+  project id from the Postgres adapter before invoking the read-only compiler.
 - `src/routes/api/workflows/[workflowId]/webhook/+server.ts` is now a thin CORS
   presentation adapter: it parses the body/authorization header and delegates
   workflow lookup, API-key ownership validation, webhook-trigger validation, SW
