@@ -5,6 +5,7 @@ import type {
 	PeerAgentOwner,
 	PeerAgentResolver,
 	SessionAgentResolver,
+	SessionAgentSlugResolver,
 	SessionControlSettingsReferences,
 	SessionExperimentAgentStore,
 	SessionForkBaseAgent,
@@ -16,6 +17,7 @@ import type {
 import { db as defaultDb } from "$lib/server/db";
 import { agents, agentVersions, users } from "$lib/server/db/schema";
 import {
+	getAgentBySlug,
 	resolveAgentRef,
 	resolveCallableAgents,
 } from "$lib/server/agents/registry";
@@ -61,9 +63,15 @@ export class RegistryPeerAgentResolver
 		PeerAgentResolver,
 		WorkflowAgentReadRepository,
 		SessionExperimentAgentStore,
-		SessionAgentResolver
+		SessionAgentResolver,
+		SessionAgentSlugResolver
 {
 	constructor(private readonly database: Database = requireDb()) {}
+
+	async resolveSessionAgentIdBySlug(slug: string): Promise<string | null> {
+		const agent = await getAgentBySlug(slug);
+		return agent?.id ?? null;
+	}
 
 	async resolveSessionAgent(input: {
 		agentId: string;
@@ -79,6 +87,7 @@ export class RegistryPeerAgentResolver
 					name: resolved.name,
 					slug: resolved.slug,
 					version: resolved.version,
+					projectId: resolved.projectId ?? null,
 					config: resolved.config,
 					runtime: resolved.runtime,
 					runtimeAppId: resolved.runtimeAppId,

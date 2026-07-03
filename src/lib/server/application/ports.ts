@@ -4352,6 +4352,7 @@ export type SessionCommandAgent = {
 	name: string;
 	slug: string;
 	version: number;
+	projectId?: string | null;
 	config: AgentConfig;
 	runtime: string;
 	runtimeAppId: string | null;
@@ -4365,6 +4366,10 @@ export interface SessionAgentResolver {
 		agentId: string;
 		agentVersion?: number | null;
 	}): Promise<SessionCommandAgent | null>;
+}
+
+export interface SessionAgentSlugResolver {
+	resolveSessionAgentIdBySlug(slug: string): Promise<string | null>;
 }
 
 export type IngestSessionEventInput = AppendSessionEventInput & {

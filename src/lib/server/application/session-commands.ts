@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isAgentConfigEquivalent } from "$lib/utils/agent-config-diff";
 import type { AgentConfig } from "$lib/types/agents";
 import type {
@@ -14,6 +15,7 @@ import type {
 	AddSessionResourceInput,
 	AgentRuntimeSyncPort,
 	SandboxProvisioner,
+	SessionAgentSlugResolver,
 	SessionAgentResolver,
 	SessionEventLog,
 	SessionExperimentAgentStore,
@@ -24,6 +26,7 @@ import type {
 	SessionSandboxDestroyer,
 	SessionTraceLifecycleStore,
 	SessionWorkflowSpawner,
+	WorkspaceProjectRepository,
 	WorkflowEphemeralAgentStore,
 	WorkflowPublishedAgent,
 } from "$lib/server/application/ports";
@@ -128,16 +131,56 @@ export type SyncWorkflowSessionAgentRuntimeCommand = {
 	context?: string;
 };
 
+export type DispatchAgentTriggerCommand = {
+	body: Record<string, unknown>;
+};
+
+export type DispatchAgentTriggerResult = {
+	status: "ack";
+	outcome:
+		| "missing_fields"
+		| "agent_not_found"
+		| "project_mismatch"
+		| "not_member"
+		| "duplicate"
+		| "started"
+		| "failed";
+	sessionId?: string;
+	agentId?: string;
+	message?: string;
+};
+
+type AgentTriggerPayload = {
+	agentId?: unknown;
+	agentSlug?: unknown;
+	agentVersion?: unknown;
+	projectId?: unknown;
+	userId?: unknown;
+	objective?: unknown;
+	prompt?: unknown;
+	initialMessage?: unknown;
+	dedupKey?: unknown;
+	title?: unknown;
+	vaultIds?: unknown;
+};
+
+function triggerSessionId(dedupKey: string): string {
+	const hex = createHash("sha256").update(dedupKey).digest("hex").slice(0, 40);
+	return `evt-${hex}`;
+}
+
 export class ApplicationSessionCommandService {
 	constructor(
 		private readonly deps: {
 			sessions: SessionRepository;
 			sessionEvents: SessionEventLog;
 			sessionAgents: SessionAgentResolver;
+			sessionAgentSlugs?: SessionAgentSlugResolver;
 			sessionExperimentAgents: SessionExperimentAgentStore;
 			sandboxProvisioner: SandboxProvisioner;
 			repositoryMounter: SessionRepositoryMounter;
 			workflowSpawner: SessionWorkflowSpawner;
+			workspaceProjects?: WorkspaceProjectRepository;
 			sessionTraceLifecycle?: SessionTraceLifecycleStore;
 			sandboxDestroyer?: SessionSandboxDestroyer;
 			workflowEphemeralAgents?: WorkflowEphemeralAgentStore;
@@ -147,6 +190,143 @@ export class ApplicationSessionCommandService {
 
 	listSessions(filter: SessionListInput = {}) {
 		return this.deps.sessions.listSessions(filter);
+	}
+
+	async dispatchAgentTrigger(
+		input: DispatchAgentTriggerCommand,
+	): Promise<DispatchAgentTriggerResult> {
+		try {
+			const data = (
+				input.body.data && typeof input.body.data === "object"
+					? input.body.data
+					: input.body
+			) as AgentTriggerPayload;
+			const agentIdRaw =
+				typeof data.agentId === "string" ? data.agentId.trim() : "";
+			const agentSlugRaw =
+				typeof data.agentSlug === "string" ? data.agentSlug.trim() : "";
+			const projectId =
+				typeof data.projectId === "string" ? data.projectId.trim() : "";
+			const userId = typeof data.userId === "string" ? data.userId.trim() : "";
+			const objective =
+				typeof data.objective === "string"
+					? data.objective
+					: typeof data.prompt === "string"
+						? data.prompt
+						: typeof data.initialMessage === "string"
+							? data.initialMessage
+							: "";
+			const dedupKey =
+				(typeof data.dedupKey === "string" && data.dedupKey.trim()) ||
+				(typeof input.body.id === "string" && input.body.id.trim()) ||
+				"";
+			const agentVersion =
+				typeof data.agentVersion === "number" ? data.agentVersion : undefined;
+			const vaultIds = Array.isArray(data.vaultIds)
+				? data.vaultIds.filter((v): v is string => typeof v === "string")
+				: undefined;
+			const title =
+				typeof data.title === "string" && data.title.trim()
+					? data.title
+					: undefined;
+
+			if ((!agentIdRaw && !agentSlugRaw) || !projectId || !userId || !dedupKey) {
+				console.warn(
+					"[agent-trigger] missing required fields (agentId|agentSlug, projectId, userId, dedupKey) — dropping",
+				);
+				return { status: "ack", outcome: "missing_fields" };
+			}
+
+			let resolveId = agentIdRaw;
+			if (!resolveId && agentSlugRaw && this.deps.sessionAgentSlugs) {
+				resolveId =
+					(await this.deps.sessionAgentSlugs.resolveSessionAgentIdBySlug(
+						agentSlugRaw,
+					)) ?? "";
+			}
+			const agent = resolveId
+				? await this.deps.sessionAgents.resolveSessionAgent({
+						agentId: resolveId,
+						agentVersion,
+					})
+				: null;
+			if (!agent) {
+				console.warn(
+					`[agent-trigger] agent not found (id=${agentIdRaw} slug=${agentSlugRaw}) — dropping`,
+				);
+				return { status: "ack", outcome: "agent_not_found" };
+			}
+
+			if (agent.projectId && agent.projectId !== projectId) {
+				console.warn(
+					`[agent-trigger] agent ${agent.id} not in project ${projectId} — dropping`,
+				);
+				return {
+					status: "ack",
+					outcome: "project_mismatch",
+					agentId: agent.id,
+				};
+			}
+			const membership =
+				await this.deps.workspaceProjects?.getProjectMembershipDetail({
+					projectId,
+					userId,
+				});
+			if (!membership?.selfRole) {
+				console.warn(
+					`[agent-trigger] user ${userId} is not a member of project ${projectId} — dropping`,
+				);
+				return { status: "ack", outcome: "not_member", agentId: agent.id };
+			}
+
+			const sessionId = triggerSessionId(dedupKey);
+			const existing = await this.deps.sessions.getSession(sessionId);
+			if (existing) {
+				return {
+					status: "ack",
+					outcome: "duplicate",
+					sessionId,
+					agentId: agent.id,
+				};
+			}
+
+			const session = await this.deps.sessions.createSession({
+				id: sessionId,
+				agentId: agent.id,
+				agentVersion: agent.version ?? agentVersion,
+				vaultIds,
+				title: title ?? `Triggered · ${agent.name}`,
+				userId,
+				projectId,
+			});
+
+			if (objective.trim()) {
+				const userMessage: UserEvent = {
+					type: "user.message",
+					content: [{ type: "text", text: objective }],
+				};
+				await this.deps.sessionEvents.appendSessionEvent(session.id, {
+					type: userMessage.type,
+					data: userMessage as unknown as Record<string, unknown>,
+					processedAt: null,
+				});
+			}
+
+			await this.deps.workflowSpawner.spawnSessionWorkflow(session.id);
+			console.info(
+				`[agent-trigger] started session ${session.id} for agent ${agent.slug} (project ${projectId})`,
+			);
+			return {
+				status: "ack",
+				outcome: "started",
+				sessionId: session.id,
+				agentId: agent.id,
+			};
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			console.error("[agent-trigger] dispatch failed:", message);
+			return { status: "ack", outcome: "failed", message };
+		}
 	}
 
 	async startSessionWorkflow(

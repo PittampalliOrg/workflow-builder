@@ -5,6 +5,7 @@ import type {
 	AgentRuntimeSyncPort,
 	SandboxProvisioner,
 	SessionAgentResolver,
+	SessionAgentSlugResolver,
 	SessionEventLog,
 	SessionExperimentAgentStore,
 	SessionRepository,
@@ -12,6 +13,7 @@ import type {
 	SessionSandboxDestroyer,
 	SessionTraceLifecycleStore,
 	SessionWorkflowSpawner,
+	WorkspaceProjectRepository,
 	WorkflowEphemeralAgentStore,
 	WorkflowPublishedAgent,
 } from "$lib/server/application/ports";
@@ -22,11 +24,13 @@ describe("ApplicationSessionCommandService", () => {
 	let sessions: SessionRepository;
 	let sessionEvents: SessionEventLog;
 	let sessionAgents: SessionAgentResolver;
+	let sessionAgentSlugs: SessionAgentSlugResolver;
 	let sessionExperimentAgents: SessionExperimentAgentStore;
 	let sandboxProvisioner: SandboxProvisioner;
 	let repositoryMounter: SessionRepositoryMounter;
 	let sandboxDestroyer: SessionSandboxDestroyer;
 	let workflowSpawner: SessionWorkflowSpawner;
+	let workspaceProjects: WorkspaceProjectRepository;
 	let sessionTraceLifecycle: SessionTraceLifecycleStore;
 	let workflowEphemeralAgents: WorkflowEphemeralAgentStore;
 	let agentRuntimeSync: AgentRuntimeSyncPort;
@@ -36,6 +40,9 @@ describe("ApplicationSessionCommandService", () => {
 		sessions = fakeSessions();
 		sessionEvents = fakeSessionEvents();
 		sessionAgents = fakeSessionAgents();
+		sessionAgentSlugs = {
+			resolveSessionAgentIdBySlug: vi.fn(async () => "agent-1"),
+		};
 		sessionExperimentAgents = fakeSessionExperimentAgents();
 		sandboxProvisioner = {
 			provision: vi.fn(async () => ({
@@ -66,6 +73,7 @@ describe("ApplicationSessionCommandService", () => {
 				natsSubject: "session.events.session-1",
 			})),
 		};
+		workspaceProjects = fakeWorkspaceProjects();
 		sessionTraceLifecycle = {
 			createInteractiveSessionTraceRun: vi.fn(async () => null),
 			patchInteractiveSessionTraces: vi.fn(async () => undefined),
@@ -83,10 +91,12 @@ describe("ApplicationSessionCommandService", () => {
 			sessions,
 			sessionEvents,
 			sessionAgents,
+			sessionAgentSlugs,
 			sessionExperimentAgents,
 			sandboxProvisioner,
 			repositoryMounter,
 			workflowSpawner,
+			workspaceProjects,
 			sessionTraceLifecycle,
 			sandboxDestroyer,
 			workflowEphemeralAgents,
@@ -546,6 +556,157 @@ describe("ApplicationSessionCommandService", () => {
 		warn.mockRestore();
 	});
 
+	it("drops malformed agent-trigger commands before touching adapters", async () => {
+		const result = await service.dispatchAgentTrigger({
+			body: { data: { projectId: "project-1" } },
+		});
+
+		expect(result).toEqual({ status: "ack", outcome: "missing_fields" });
+		expect(sessionAgentSlugs.resolveSessionAgentIdBySlug).not.toHaveBeenCalled();
+		expect(sessionAgents.resolveSessionAgent).not.toHaveBeenCalled();
+		expect(workspaceProjects.getProjectMembershipDetail).not.toHaveBeenCalled();
+		expect(sessions.createSession).not.toHaveBeenCalled();
+	});
+
+	it("drops agent-trigger commands when the named agent cannot be resolved", async () => {
+		vi.mocked(sessionAgentSlugs.resolveSessionAgentIdBySlug).mockResolvedValueOnce(
+			null,
+		);
+
+		const result = await service.dispatchAgentTrigger({
+			body: agentTriggerBody(),
+		});
+
+		expect(result).toEqual({ status: "ack", outcome: "agent_not_found" });
+		expect(sessionAgentSlugs.resolveSessionAgentIdBySlug).toHaveBeenCalledWith(
+			"writer",
+		);
+		expect(sessionAgents.resolveSessionAgent).not.toHaveBeenCalled();
+		expect(workspaceProjects.getProjectMembershipDetail).not.toHaveBeenCalled();
+		expect(sessions.createSession).not.toHaveBeenCalled();
+	});
+
+	it("drops agent-trigger commands when the agent belongs to another project", async () => {
+		vi.mocked(sessionAgents.resolveSessionAgent).mockResolvedValueOnce({
+			...sampleSessionAgent(),
+			projectId: "other-project",
+		});
+
+		const result = await service.dispatchAgentTrigger({
+			body: agentTriggerBody(),
+		});
+
+		expect(result).toEqual({
+			status: "ack",
+			outcome: "project_mismatch",
+			agentId: "agent-1",
+		});
+		expect(workspaceProjects.getProjectMembershipDetail).not.toHaveBeenCalled();
+		expect(sessions.createSession).not.toHaveBeenCalled();
+	});
+
+	it("drops agent-trigger commands when the user is not a project member", async () => {
+		vi.mocked(workspaceProjects.getProjectMembershipDetail).mockResolvedValueOnce(
+			null,
+		);
+
+		const result = await service.dispatchAgentTrigger({
+			body: agentTriggerBody(),
+		});
+
+		expect(result).toEqual({
+			status: "ack",
+			outcome: "not_member",
+			agentId: "agent-1",
+		});
+		expect(workspaceProjects.getProjectMembershipDetail).toHaveBeenCalledWith({
+			projectId: "project-1",
+			userId: "user-1",
+		});
+		expect(sessions.createSession).not.toHaveBeenCalled();
+	});
+
+	it("short-circuits duplicate agent-trigger sessions", async () => {
+		vi.mocked(sessions.getSession).mockResolvedValueOnce(sampleSession());
+
+		const result = await service.dispatchAgentTrigger({
+			body: agentTriggerBody(),
+		});
+
+		expect(result).toEqual({
+			status: "ack",
+			outcome: "duplicate",
+			sessionId: expect.stringMatching(/^evt-[a-f0-9]{40}$/),
+			agentId: "agent-1",
+		});
+		expect(sessions.createSession).not.toHaveBeenCalled();
+		expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
+		expect(workflowSpawner.spawnSessionWorkflow).not.toHaveBeenCalled();
+	});
+
+	it("creates deterministic agent-trigger sessions, appends the objective, and spawns", async () => {
+		const result = await service.dispatchAgentTrigger({
+			body: agentTriggerBody(),
+		});
+
+		expect(sessionAgentSlugs.resolveSessionAgentIdBySlug).toHaveBeenCalledWith(
+			"writer",
+		);
+		expect(sessionAgents.resolveSessionAgent).toHaveBeenCalledWith({
+			agentId: "agent-1",
+			agentVersion: undefined,
+		});
+		expect(sessions.createSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				id: expect.stringMatching(/^evt-[a-f0-9]{40}$/),
+				agentId: "agent-1",
+				agentVersion: 1,
+				title: "Triggered · Coding Agent",
+				userId: "user-1",
+				projectId: "project-1",
+			}),
+		);
+		expect(sessionEvents.appendSessionEvent).toHaveBeenCalledWith("session-1", {
+			type: "user.message",
+			data: {
+				type: "user.message",
+				content: [{ type: "text", text: "Draft the update" }],
+			},
+			processedAt: null,
+		});
+		expect(workflowSpawner.spawnSessionWorkflow).toHaveBeenCalledWith(
+			"session-1",
+		);
+		expect(result).toEqual({
+			status: "ack",
+			outcome: "started",
+			sessionId: "session-1",
+			agentId: "agent-1",
+		});
+	});
+
+	it("keeps agent-trigger spawn failures ack-safe", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		vi.mocked(workflowSpawner.spawnSessionWorkflow).mockRejectedValueOnce(
+			new Error("spawn failed"),
+		);
+
+		const result = await service.dispatchAgentTrigger({
+			body: agentTriggerBody(),
+		});
+
+		expect(result).toEqual({
+			status: "ack",
+			outcome: "failed",
+			message: "spawn failed",
+		});
+		expect(error).toHaveBeenCalledWith(
+			"[agent-trigger] dispatch failed:",
+			"spawn failed",
+		);
+		error.mockRestore();
+	});
+
 	it("rejects invalid session resource payloads before touching persistence", async () => {
 		const result = await service.addSessionResource({
 			sessionId: "session-1",
@@ -562,6 +723,20 @@ describe("ApplicationSessionCommandService", () => {
 		expect(sessions.addSessionResource).not.toHaveBeenCalled();
 	});
 });
+
+function agentTriggerBody(overrides: Record<string, unknown> = {}) {
+	return {
+		id: "ce-1",
+		data: {
+			agentSlug: "writer",
+			projectId: "project-1",
+			userId: "user-1",
+			objective: "Draft the update",
+			dedupKey: "source:event:1",
+			...overrides,
+		},
+	};
+}
 
 function fakeSessions(): SessionRepository {
 	return {
@@ -633,18 +808,23 @@ function fakeSessionEvents(): SessionEventLog {
 
 function fakeSessionAgents(): SessionAgentResolver {
 	return {
-		resolveSessionAgent: vi.fn(async () => ({
-			id: "agent-1",
-			name: "Coding Agent",
-			slug: "coding-agent",
-			version: 1,
-			config: {} as AgentConfig,
-			runtime: "dapr-agent-py",
-			runtimeAppId: "agent-runtime-coding-agent",
-			mlflowModelVersion: null,
-			mlflowModelName: null,
-			mlflowUri: null,
-		})),
+		resolveSessionAgent: vi.fn(async () => sampleSessionAgent()),
+	};
+}
+
+function sampleSessionAgent() {
+	return {
+		id: "agent-1",
+		name: "Coding Agent",
+		slug: "coding-agent",
+		version: 1,
+		projectId: "project-1",
+		config: {} as AgentConfig,
+		runtime: "dapr-agent-py",
+		runtimeAppId: "agent-runtime-coding-agent",
+		mlflowModelVersion: null,
+		mlflowModelName: null,
+		mlflowUri: null,
 	};
 }
 
@@ -655,6 +835,39 @@ function fakeSessionExperimentAgents(): SessionExperimentAgentStore {
 			agentId: "experiment-agent-1",
 			agentVersion: 1,
 		})),
+	};
+}
+
+function fakeWorkspaceProjects(): WorkspaceProjectRepository {
+	return {
+		getMemberProjectId: vi.fn(async () => "project-1"),
+		getMemberProjectIdBySlug: vi.fn(async () => "project-1"),
+		getProjectExternalId: vi.fn(async () => "workspace-1"),
+		getProjectMembershipDetail: vi.fn(async () => ({
+			id: "project-1",
+			displayName: "Project",
+			externalId: "workspace-1",
+			selfRole: "OPERATOR",
+		})),
+		getProjectMemberRole: vi.fn(async () => "OPERATOR" as const),
+		listProjectMembers: vi.fn(async () => []),
+		findPlatformUserForProject: vi.fn(async () => ({
+			ok: true as const,
+			userId: "user-1",
+		})),
+		getProjectMember: vi.fn(async () => null),
+		projectMemberExists: vi.fn(async () => true),
+		countProjectAdmins: vi.fn(async () => 1),
+		addProjectMember: vi.fn(async () => ({
+			id: "member-1",
+			projectId: "project-1",
+			userId: "user-1",
+			role: "OPERATOR" as const,
+			createdAt: new Date("2026-05-15T12:00:00.000Z"),
+			updatedAt: new Date("2026-05-15T12:00:00.000Z"),
+		})),
+		updateProjectMemberRole: vi.fn(async () => null),
+		deleteProjectMember: vi.fn(async () => undefined),
 	};
 }
 

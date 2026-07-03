@@ -675,11 +675,14 @@ The first UI-facing route has also moved behind the application service:
   `src/lib/server/workflows/external-event-registry.ts` is now a pure helper over
   execution DTOs instead of a direct `workflow_executions` query.
 - `src/routes/api/internal/dapr/agent-trigger/+server.ts` now checks acting-user
-  project membership through `workflowData.getWorkspaceProjectMembershipDetail`
-  instead of querying `project_members` directly. The broader command path still
-  delegates agent resolution, session creation, initial user event append, and
-  session workflow spawn to the existing lower-level services pending a future
-  session-command application slice.
+  project membership through the workspace-project application port instead of
+  querying `project_members` directly. The broader command path now delegates
+  CloudEvent data normalization, deterministic session id derivation,
+  slug/id-based agent resolution, project membership authorization, duplicate
+  session detection, session creation, initial user event append, and session
+  workflow spawn to `ApplicationSessionCommandService`. The route remains the
+  Dapr subscription HTTP adapter: parse JSON, invoke the command, and ack
+  `{status:"SUCCESS"}` so poison messages do not wedge delivery.
 - `src/routes/api/internal/sessions/spawn-peer/+server.ts` now delegates
   idempotent peer session lookup/creation, parent/peer owner resolution, initial
   user event append, and skip-spawn dispatch metadata resolution to
