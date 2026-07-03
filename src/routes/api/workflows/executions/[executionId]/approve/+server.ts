@@ -5,7 +5,7 @@
  * external event to the orchestrator (e.g. the planGoal `goal_spec_approval`
  * gate). Body: { eventType?: string }. Defaults to "goal_spec_approval".
  *
- * Workspace-scoped via `assertInScope`.
+ * Workspace-scoped by the workflow execution control application service.
  */
 
 import { error, json } from "@sveltejs/kit";

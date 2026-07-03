@@ -156,6 +156,7 @@ import { ApplicationWorkflowExecutionArtifactsService } from "$lib/server/applic
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
 import { ApplicationWorkflowExecutionFilesService } from "$lib/server/application/workflow-execution-files";
 import { ApplicationWorkflowExecutionLineageService } from "$lib/server/application/workflow-execution-lineage";
+import { ApplicationWorkflowExecutionLogsService } from "$lib/server/application/workflow-execution-logs";
 import { ApplicationWorkflowExecutionMetricsService } from "$lib/server/application/workflow-execution-metrics";
 import { ApplicationWorkflowExecutionSessionsService } from "$lib/server/application/workflow-execution-sessions";
 import { ApplicationWorkflowExecutionSpecDiffService } from "$lib/server/application/workflow-execution-spec-diff";
@@ -168,6 +169,7 @@ import { ApplicationWorkflowTriggerManagementService } from "$lib/server/applica
 import { ApplicationWorkflowTriggerLifecycleService } from "$lib/server/application/workflow-trigger-lifecycle";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 import { ApplicationWorkflowPlanService } from "$lib/server/application/workflow-plan";
+import { extractExecutionTraceIds } from "$lib/server/otel/clickhouse";
 import { costFor, formatCurrency } from "$lib/server/pricing/model-pricing";
 import { resolveRunDiffPatch, RUN_DIFF_KIND } from "$lib/server/workflows/run-diff";
 
@@ -301,6 +303,9 @@ export function getApplicationAdapters(
 		| undefined;
 	let workflowExecutionLineage:
 		| ApplicationWorkflowExecutionLineageService
+		| undefined;
+	let workflowExecutionLogs:
+		| ApplicationWorkflowExecutionLogsService
 		| undefined;
 	let workflowExecutionMetrics:
 		| ApplicationWorkflowExecutionMetricsService
@@ -558,6 +563,11 @@ export function getApplicationAdapters(
 		(workflowExecutionLineage ??= new ApplicationWorkflowExecutionLineageService({
 			workflowData: getWorkflowData(),
 		}));
+	const getWorkflowExecutionLogs = () =>
+		(workflowExecutionLogs ??= new ApplicationWorkflowExecutionLogsService({
+			workflowData: getWorkflowData(),
+			traceExtractor: extractExecutionTraceIds,
+		}));
 	const getWorkflowExecutionMetrics = () =>
 		(workflowExecutionMetrics ??= new ApplicationWorkflowExecutionMetricsService({
 			workflowData: getWorkflowData(),
@@ -781,6 +791,9 @@ export function getApplicationAdapters(
 		},
 		get workflowExecutionLineage() {
 			return getWorkflowExecutionLineage();
+		},
+		get workflowExecutionLogs() {
+			return getWorkflowExecutionLogs();
 		},
 		get workflowExecutionMetrics() {
 			return getWorkflowExecutionMetrics();
