@@ -964,6 +964,7 @@ export function getApplicationAdapters(
 	const getSandboxPreview = () =>
 		(sandboxPreview ??= new ApplicationSandboxPreviewService({
 			preview: new LegacySandboxPreviewGatewayPort(),
+			workflowData: getWorkflowData(),
 		}));
 	const getSessionCommands = () =>
 		(sessionCommands ??= new ApplicationSessionCommandService({

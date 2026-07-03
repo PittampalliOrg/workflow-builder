@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApplicationSandboxPreviewService } from "$lib/server/application/sandbox-preview";
-import type { SandboxPreviewGatewayPort } from "$lib/server/application/ports";
+import type {
+	SandboxPreviewGatewayPort,
+	WorkflowDataService,
+} from "$lib/server/application/ports";
 
 describe("ApplicationSandboxPreviewService", () => {
 	let preview: SandboxPreviewGatewayPort;
+	let workflowData: Pick<WorkflowDataService, "getExecutionWorkspaceRoute">;
 	let service: ApplicationSandboxPreviewService;
 
 	beforeEach(() => {
@@ -17,20 +21,18 @@ describe("ApplicationSandboxPreviewService", () => {
 				provider: "openshell",
 				kept: true,
 			})),
+			runtimeFetch: vi.fn(async () =>
+				Response.json({ success: true, port: 3009 }),
+			),
+		};
+		workflowData = {
 			getExecutionWorkspaceRoute: vi.fn(async () => ({
 				projectId: "project-1",
 				userId: "user-1",
 				workspaceSlug: "workspace-slug",
 			})),
-			buildRuntimePreviewPath: vi.fn(
-				(executionId, workspaceSlug, search = "") =>
-					`/workspaces/${workspaceSlug}/workflows/runtime-preview/${executionId}?${search}`,
-			),
-			runtimeFetch: vi.fn(async () =>
-				Response.json({ success: true, port: 3009 }),
-			),
 		};
-		service = new ApplicationSandboxPreviewService({ preview });
+		service = new ApplicationSandboxPreviewService({ preview, workflowData });
 	});
 
 	it("starts an execution sandbox preview through the gateway", async () => {
@@ -74,11 +76,7 @@ describe("ApplicationSandboxPreviewService", () => {
 				}),
 			}),
 		);
-		expect(preview.buildRuntimePreviewPath).toHaveBeenCalledWith(
-			"exec-1",
-			"workspace-slug",
-			expect.stringContaining("previewId=preview-1"),
-		);
+		expect(workflowData.getExecutionWorkspaceRoute).toHaveBeenCalledWith("exec-1");
 		expect(result).toMatchObject({
 			status: "ok",
 			body: {
@@ -87,6 +85,9 @@ describe("ApplicationSandboxPreviewService", () => {
 				previewId: "preview-1",
 				proxyUrl:
 					"https://workflow.example/api/workflows/executions/exec-1/sandbox-preview/preview-1/",
+				pageUrl: expect.stringContaining(
+					"https://workflow.example/workspaces/workspace-slug/workflows/runtime-preview/exec-1?previewId=preview-1",
+				),
 				runtime: { success: true, port: 3009 },
 			},
 		});

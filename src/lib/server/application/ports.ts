@@ -2855,6 +2855,9 @@ export interface WorkflowExecutionRepository {
 	getSessionOwnerContext(
 		executionId: string,
 	): Promise<WorkflowExecutionSessionOwnerContext | null>;
+	getExecutionWorkspaceRoute(
+		executionId: string,
+	): Promise<ExecutionWorkspaceRouteInfo | null>;
 	getRunningByWorkflowId(workflowId: string): Promise<{ id: string; status: string } | null>;
 	getLineage(executionId: string): Promise<WorkflowExecutionLineage | null>;
 	listActiveForUser(userId: string): Promise<ActiveWorkflowExecutionReadModel[]>;
@@ -3441,14 +3444,6 @@ export interface SandboxPreviewGatewayPort {
 	getSandboxPreviewInfo(
 		executionId: string,
 	): Promise<ExecutionSandboxPreviewInfo | null>;
-	getExecutionWorkspaceRoute(
-		executionId: string,
-	): Promise<ExecutionWorkspaceRouteInfo | null>;
-	buildRuntimePreviewPath(
-		executionId: string,
-		workspaceSlug: string,
-		search?: string,
-	): string;
 	runtimeFetch(path: string, options?: RequestInit): Promise<Response>;
 }
 
@@ -4750,6 +4745,9 @@ export interface WorkflowDataService {
 		userId: string;
 		currentProjectId: string;
 	}): Promise<string | null>;
+	getExecutionWorkspaceRoute(
+		executionId: string,
+	): Promise<ExecutionWorkspaceRouteInfo | null>;
 	listWorkspaces(input: {
 		userId: string;
 		currentProjectId: string;

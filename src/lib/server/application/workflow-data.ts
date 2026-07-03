@@ -102,6 +102,7 @@ import type {
 	EvaluationArtifactStore,
 	EnsurePeerSessionInput,
 	EnsurePeerSessionResult,
+	ExecutionWorkspaceRouteInfo,
 	GoalFlowReadStore,
 	HostedMcpInputProperty,
 	HostedMcpServerReadModel,
@@ -2972,6 +2973,12 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		});
 		if (current) return current;
 		return this.deps.workspaceProjects.getFallbackMemberProjectId(input.userId);
+	}
+
+	getExecutionWorkspaceRoute(
+		executionId: string,
+	): Promise<ExecutionWorkspaceRouteInfo | null> {
+		return this.deps.workflowExecutions.getExecutionWorkspaceRoute(executionId);
 	}
 
 	async listWorkspaces(input: {

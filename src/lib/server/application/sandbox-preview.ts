@@ -1,4 +1,8 @@
-import type { SandboxPreviewGatewayPort } from "$lib/server/application/ports";
+import type {
+	SandboxPreviewGatewayPort,
+	WorkflowDataService,
+} from "$lib/server/application/ports";
+import { buildRuntimePreviewPath } from "$lib/server/workflows/runtime-preview-url";
 
 type SandboxPreviewErrorResult = {
 	status: "error";
@@ -42,7 +46,12 @@ const JAVASCRIPT_CONTENT_TYPES = [
 ];
 
 export class ApplicationSandboxPreviewService {
-	constructor(private readonly deps: { preview: SandboxPreviewGatewayPort }) {}
+	constructor(
+		private readonly deps: {
+			preview: SandboxPreviewGatewayPort;
+			workflowData: Pick<WorkflowDataService, "getExecutionWorkspaceRoute">;
+		},
+	) {}
 
 	async startExecutionSandboxPreview(input: {
 		executionId: string;
@@ -109,12 +118,12 @@ export class ApplicationSandboxPreviewService {
 		}
 		if (payload.baseUrl) pageSearchParams.set("baseUrl", payload.baseUrl);
 		pageSearchParams.set("timeoutSeconds", String(payload.timeoutSeconds));
-		const workspaceRoute = await this.deps.preview.getExecutionWorkspaceRoute(
+		const workspaceRoute = await this.deps.workflowData.getExecutionWorkspaceRoute(
 			input.executionId,
 		);
 		const pageSearch = pageSearchParams.toString();
 		const pageBasePath = workspaceRoute
-			? this.deps.preview.buildRuntimePreviewPath(
+			? buildRuntimePreviewPath(
 					input.executionId,
 					workspaceRoute.workspaceSlug,
 					pageSearch,

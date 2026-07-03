@@ -399,6 +399,11 @@ function fakeWorkflowExecutions(): WorkflowExecutionRepository {
 			workflowId: "wf-1",
 			projectId: "project-1",
 		})),
+		getExecutionWorkspaceRoute: vi.fn(async () => ({
+			projectId: "project-1",
+			userId: "user-1",
+			workspaceSlug: "workspace-1",
+		})),
 		getRunningByWorkflowId: vi.fn(async () => null),
 		getLineage: vi.fn(async () => ({
 			rootId: "exec-1",
@@ -5936,6 +5941,20 @@ describe("ApplicationWorkflowDataService", () => {
 		});
 	});
 
+	it("resolves execution workspace routes through the workflow execution port", async () => {
+		const workflowExecutions = fakeWorkflowExecutions();
+		const { service } = makeService({ workflowExecutions });
+
+		await expect(service.getExecutionWorkspaceRoute("exec-1")).resolves.toEqual({
+			projectId: "project-1",
+			userId: "user-1",
+			workspaceSlug: "workspace-1",
+		});
+		expect(workflowExecutions.getExecutionWorkspaceRoute).toHaveBeenCalledWith(
+			"exec-1",
+		);
+	});
+
 	it("lists project members for existing project members through workspace project ports", async () => {
 		const workspaceProjects = fakeWorkspaceProjects();
 		const service = makeServiceWithWorkspaceProjects(workspaceProjects);
@@ -8043,6 +8062,11 @@ describe("ApplicationWorkflowDataService", () => {
 				success: true as const,
 				executions: [],
 				total: 0,
+			})),
+			getExecutionWorkspaceRoute: vi.fn(async () => ({
+				projectId: "project-1",
+				userId: "user-1",
+				workspaceSlug: "workspace-1",
 			})),
 			listByWorkflowId: vi.fn(async () => []),
 			listRunSummariesByWorkflowId: vi.fn(async () => []),

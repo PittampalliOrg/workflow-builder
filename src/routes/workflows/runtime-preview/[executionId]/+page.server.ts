@@ -1,14 +1,14 @@
 import { error, redirect } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
-import {
-	buildRuntimePreviewPath,
-	getExecutionWorkspaceRoute
-} from '$lib/server/workflows/runtime-preview-url';
+import { getApplicationAdapters } from '$lib/server/application';
+import { buildRuntimePreviewPath } from '$lib/server/workflows/runtime-preview-url';
 
 export const load: PageServerLoad = async ({ locals, params, url }) => {
 	if (!locals.session?.userId) throw error(401, 'Authentication required');
 
-	const route = await getExecutionWorkspaceRoute(params.executionId);
+	const route = await getApplicationAdapters().workflowData.getExecutionWorkspaceRoute(
+		params.executionId
+	);
 	if (!route) throw error(404, 'Execution not found');
 
 	const scopedByProject =

@@ -140,6 +140,7 @@ import type {
 	CreateWorkflowExecutionInput,
 	DashboardReadRepository,
 	EvaluationArtifactStore,
+	ExecutionWorkspaceRouteInfo,
 	GoalFlowEventRecord,
 	GoalFlowGoalRecord,
 	GoalFlowReadStore,
@@ -4887,6 +4888,36 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			.where(eq(workflowExecutions.id, executionId))
 			.limit(1);
 		return row ?? null;
+	}
+
+	async getExecutionWorkspaceRoute(
+		executionId: string,
+	): Promise<ExecutionWorkspaceRouteInfo | null> {
+		const [execution] = await this.database
+			.select({
+				userId: workflowExecutions.userId,
+				executionProjectId: workflowExecutions.projectId,
+				workflowProjectId: workflows.projectId,
+			})
+			.from(workflowExecutions)
+			.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+			.where(eq(workflowExecutions.id, executionId))
+			.limit(1);
+
+		const projectId = execution?.executionProjectId || execution?.workflowProjectId;
+		if (!execution || !projectId) return null;
+
+		const [project] = await this.database
+			.select({ externalId: projects.externalId })
+			.from(projects)
+			.where(eq(projects.id, projectId))
+			.limit(1);
+
+		return {
+			projectId,
+			userId: execution.userId,
+			workspaceSlug: project?.externalId || projectId,
+		};
 	}
 
 	async getRunningByWorkflowId(workflowId: string): Promise<{ id: string; status: string } | null> {
