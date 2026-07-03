@@ -84,6 +84,7 @@ import {
 	DaprSessionRuntimeEventRaiser,
 	DaprSessionUserEventCommandAdapter,
 	DefaultSessionRuntimeConfigReader,
+	KubernetesSessionSandboxDestroyer,
 	KubernetesSessionProvisioningReader,
 	LifecycleSessionController,
 	LifecycleSessionGoalScopeGuard,
@@ -100,6 +101,7 @@ import { ApplicationAgentRuntimeControlService } from "$lib/server/application/a
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
 import { ApplicationSessionGoalService } from "$lib/server/application/session-goals";
 import { ApplicationSessionLifecycleService } from "$lib/server/application/session-lifecycle";
+import { ApplicationSessionSandboxService } from "$lib/server/application/session-sandboxes";
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 
@@ -207,6 +209,7 @@ export function getApplicationAdapters(
 	let sessionCommands: ApplicationSessionCommandService | undefined;
 	let sessionGoals: ApplicationSessionGoalService | undefined;
 	let sessionLifecycle: ApplicationSessionLifecycleService | undefined;
+	let sessionSandboxes: ApplicationSessionSandboxService | undefined;
 	let sessionBrowser: ApplicationSessionBrowserService | undefined;
 	const getDatabase = () => (database ??= requirePostgresDb());
 	const getAgentRuntimes = () =>
@@ -340,6 +343,12 @@ export function getApplicationAdapters(
 			sessions: getSessions(),
 			lifecycle: new LifecycleSessionController(),
 		}));
+	const getSessionSandboxes = () =>
+		(sessionSandboxes ??= new ApplicationSessionSandboxService({
+			sessions: getSessions(),
+			lifecycle: new LifecycleSessionController(),
+			sandboxes: new KubernetesSessionSandboxDestroyer(),
+		}));
 	const getCodeCheckpoints = () =>
 		(codeCheckpoints ??= new PostgresWorkflowCodeCheckpointStore(getDatabase()));
 	const getEvaluationArtifacts = () =>
@@ -459,6 +468,9 @@ export function getApplicationAdapters(
 		},
 		get sessionLifecycle() {
 			return getSessionLifecycle();
+		},
+		get sessionSandboxes() {
+			return getSessionSandboxes();
 		},
 		get agentRuntimeControl() {
 			return getAgentRuntimeControl();

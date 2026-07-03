@@ -28,6 +28,8 @@ import type {
 	SessionRuntimeDebugTarget,
 	SessionRuntimeConfigReader,
 	SessionRuntimeEventRaiser,
+	SessionSandboxDeleteResult,
+	SessionSandboxDestroyer,
 	SessionTraceLifecycleStore,
 	SessionUserEventCommandPort,
 	SessionListInput,
@@ -73,6 +75,8 @@ import {
 	mountSessionRepositories,
 	mountSingleRepository,
 } from "$lib/server/sessions/repositories";
+import { openshellRuntimeFetch } from "$lib/server/openshell-runtime";
+import { deleteKubernetesSandbox } from "$lib/server/kube/client";
 import {
 	confirmDurableStop,
 	inspectDurableRun,
@@ -971,6 +975,61 @@ export class WorkspaceSessionRepositoryMounter implements SessionRepositoryMount
 		target: SessionRepositoryMountTarget,
 	): Promise<void> {
 		return mountSingleRepository(sessionId, resource, target);
+	}
+}
+
+export class KubernetesSessionSandboxDestroyer implements SessionSandboxDestroyer {
+	async deleteRuntimeSandbox(name: string): Promise<SessionSandboxDeleteResult> {
+		try {
+			const status = await deleteKubernetesSandbox(name);
+			return {
+				name,
+				kind: "runtime",
+				status: status === "deleted" ? "deleted" : "missing",
+			};
+		} catch (err) {
+			return {
+				name,
+				kind: "runtime",
+				status: "error",
+				error: err instanceof Error ? err.message : String(err),
+			};
+		}
+	}
+
+	async deleteWorkspaceSandbox(name: string): Promise<SessionSandboxDeleteResult> {
+		try {
+			const response = await openshellRuntimeFetch(
+				`/api/v1/sandboxes/${encodeURIComponent(name)}`,
+				{ method: "DELETE" },
+			);
+			if (response.ok) {
+				return { name, kind: "workspace", status: "deleted" };
+			}
+			const detail = await response.text().catch(() => "");
+			if (
+				response.status === 404 ||
+				detail.toLowerCase().includes("sandbox not found")
+			) {
+				return { name, kind: "workspace", status: "missing" };
+			}
+			return {
+				name,
+				kind: "workspace",
+				status: "error",
+				error:
+					detail.slice(0, 500) ||
+					response.statusText ||
+					`HTTP ${response.status}`,
+			};
+		} catch (err) {
+			return {
+				name,
+				kind: "workspace",
+				status: "error",
+				error: err instanceof Error ? err.message : String(err),
+			};
+		}
 	}
 }
 

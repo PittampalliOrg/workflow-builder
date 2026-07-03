@@ -3906,6 +3906,20 @@ export interface SessionLifecycleController {
 	pauseSessionGoal(sessionId: string): Promise<void>;
 }
 
+export type SessionSandboxDeleteKind = "runtime" | "workspace";
+
+export type SessionSandboxDeleteResult = {
+	name: string;
+	kind: SessionSandboxDeleteKind;
+	status: "deleted" | "missing" | "error";
+	error?: string;
+};
+
+export interface SessionSandboxDestroyer {
+	deleteRuntimeSandbox(name: string): Promise<SessionSandboxDeleteResult>;
+	deleteWorkspaceSandbox(name: string): Promise<SessionSandboxDeleteResult>;
+}
+
 export type SessionGoalStatus =
 	| "active"
 	| "paused"
