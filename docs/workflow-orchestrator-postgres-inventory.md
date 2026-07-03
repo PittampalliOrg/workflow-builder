@@ -242,6 +242,12 @@ The first UI-facing route has also moved behind the application service:
   `sessionHostAppId`, and `isResourceInScope` imports were removed; ClickHouse
   and workflow-log aggregation remain inside observability helpers pending the
   deeper telemetry adapter slice.
+- `src/routes/api/observability/traces/+server.ts` now resolves its in-scope
+  session/execution id sets and trace goal-chip enrichment through workflow-data
+  observability trace ports. ClickHouse trace listing and service filter queries
+  remain in the route for the later telemetry adapter slice, but route-local
+  Drizzle/schema access to `sessions`, `workflow_executions`, and `thread_goals`
+  was removed.
 - `src/routes/workspaces/[slug]/dev/+page.server.ts`,
   `src/routes/workspaces/[slug]/dev/[executionId]/+page.server.ts`, and the
   public `src/routes/api/dev-environments/**` GET routes now load dev-preview

@@ -51,6 +51,7 @@ import type {
 	WorkspaceProjectRepository,
 	WorkspaceSessionStore,
 	WorkflowActivityRateTargetRepository,
+	ObservabilityTraceRepository,
 } from "$lib/server/application/ports";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 import type { RuntimeConfigCloudEvent } from "$lib/server/sessions/runtime-config";
@@ -1321,6 +1322,7 @@ function makeService(options: {
 	benchmarkRunReads?: BenchmarkRunReadRepository;
 	benchmarkRuns?: BenchmarkRunRepository;
 	activityRateTargets?: WorkflowActivityRateTargetRepository;
+	observabilityTraces?: ObservabilityTraceRepository;
 	pieceExecutions?: PieceExecutionRepository;
 	browserArtifacts?: WorkflowBrowserArtifactStore;
 	sessions?: SessionRepository;
@@ -1378,6 +1380,7 @@ function makeService(options: {
 		devEnvironments: options.devEnvironments ?? fakeDevEnvironments(),
 		benchmarkRuns: options.benchmarkRuns ?? fakeBenchmarkRuns(),
 		activityRateTargets: options.activityRateTargets,
+		observabilityTraces: options.observabilityTraces,
 		workflowExecutions,
 		sessionEvents: options.sessionEvents,
 		sessionRuntimeConfigs:
@@ -6008,6 +6011,62 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(
 			activityRateTargets.resolveWorkflowActivityRateTarget,
 		).toHaveBeenCalledWith({ executionId: "exec-1" });
+	});
+
+	it("resolves observability trace scope and goal chips through application ports", async () => {
+		const observabilityTraces: ObservabilityTraceRepository = {
+			getTraceScope: vi.fn(async () => ({
+				sessionIds: ["session-1"],
+				executionIds: ["exec-1"],
+				sessionIdFilter: "session-1",
+			})),
+			listTraceGoalChips: vi.fn(async () => [
+				{
+					sessionId: "session-1",
+					status: "complete",
+					iterations: 3,
+					verdict: "pass" as const,
+				},
+			]),
+		};
+		const { service } = makeService({ observabilityTraces });
+
+		await expect(
+			service.getObservabilityTraceScope({
+				userId: "user-1",
+				projectId: "project-1",
+				sessionIdFilter: "session-1",
+				sessionLimit: 1000,
+				executionLimit: 1000,
+			}),
+		).resolves.toEqual({
+			sessionIds: ["session-1"],
+			executionIds: ["exec-1"],
+			sessionIdFilter: "session-1",
+		});
+		expect(observabilityTraces.getTraceScope).toHaveBeenCalledWith({
+			userId: "user-1",
+			projectId: "project-1",
+			sessionIdFilter: "session-1",
+			sessionLimit: 1000,
+			executionLimit: 1000,
+		});
+
+		await expect(
+			service.listObservabilityTraceGoalChips({
+				sessionIds: ["session-1"],
+			}),
+		).resolves.toEqual([
+			{
+				sessionId: "session-1",
+				status: "complete",
+				iterations: 3,
+				verdict: "pass",
+			},
+		]);
+		expect(observabilityTraces.listTraceGoalChips).toHaveBeenCalledWith({
+			sessionIds: ["session-1"],
+		});
 	});
 
 	it("loads piece catalog detail and connection usage through application ports", async () => {

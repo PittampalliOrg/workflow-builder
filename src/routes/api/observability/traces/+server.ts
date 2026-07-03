@@ -1,8 +1,6 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { sessions, workflowExecutions, threadGoals } from '$lib/server/db/schema';
+import { getApplicationAdapters } from '$lib/server/application';
 import { queryClickHouse, CLICKHOUSE_DB } from '$lib/server/otel/clickhouse';
 
 const chEscape = (s: string) => s.replace(/'/g, "''");
@@ -24,7 +22,6 @@ const TIME_RANGES: Record<string, string> = {
  *   sessionId (deep-link from a session; must be in scope), limit.
  */
 export const GET: RequestHandler = async ({ url, locals }) => {
-	if (!db) return error(503, 'Database not configured');
 	if (!locals.session?.userId) return error(401, 'Authentication required');
 
 	const userId = locals.session.userId;
@@ -36,40 +33,21 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const sessionIdFilter = url.searchParams.get('sessionId') || '';
 	const limit = Math.min(parseInt(url.searchParams.get('limit') || '50') || 50, 200);
 	const interval = TIME_RANGES[range] ?? TIME_RANGES['7d'];
+	const workflowData = getApplicationAdapters().workflowData;
 
 	try {
-		// Resolve the in-scope id sets (CMA: workspace match; else owner fallback).
-		const scopeWhere = projectId
-			? or(eq(sessions.projectId, projectId), and(isNull(sessions.projectId), eq(sessions.userId, userId)))
-			: eq(sessions.userId, userId);
-		const execScopeWhere = projectId
-			? or(
-					eq(workflowExecutions.projectId, projectId),
-					and(isNull(workflowExecutions.projectId), eq(workflowExecutions.userId, userId)),
-				)
-			: eq(workflowExecutions.userId, userId);
-
-		const sessionRows = await db
-			.select({ id: sessions.id })
-			.from(sessions)
-			.where(scopeWhere)
-			.orderBy(desc(sessions.createdAt))
-			.limit(1000);
-		const execRows = await db
-			.select({ id: workflowExecutions.id })
-			.from(workflowExecutions)
-			.where(execScopeWhere)
-			.orderBy(desc(workflowExecutions.startedAt))
-			.limit(1000);
-
-		const inScopeSessionIds = new Set(sessionRows.map((r) => r.id));
-		const sessionIds = sessionRows.map((r) => r.id);
-		const execIds = execRows.map((r) => r.id);
-
-		// Deep-link: a specific session must be in the caller's scope.
-		if (sessionIdFilter && !inScopeSessionIds.has(sessionIdFilter)) {
+		const traceScope = await workflowData.getObservabilityTraceScope({
+			userId,
+			projectId,
+			sessionIdFilter,
+			sessionLimit: 1000,
+			executionLimit: 1000,
+		});
+		if (!traceScope) {
 			return error(404, 'Session not found');
 		}
+		const sessionIds = traceScope.sessionIds;
+		const execIds = traceScope.executionIds;
 
 		if (sessionIds.length === 0 && execIds.length === 0) {
 			return json({ traces: [], services: [] });
@@ -147,29 +125,16 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		// chip per trace (prefer the agent `__durable__solve__run__` session).
 		const allSessionIds = [...new Set(traces.flatMap((t) => t.sessionIds))];
 		if (allSessionIds.length) {
-			const goalRows = await db
-				.select({
-					sessionId: threadGoals.sessionId,
-					status: threadGoals.status,
-					iterations: threadGoals.iterations,
-				})
-				.from(threadGoals)
-				.where(inArray(threadGoals.sessionId, allSessionIds));
-			const goalBySession = new Map(goalRows.map((g) => [g.sessionId, g]));
-			const verdictFor = (status: string): 'pass' | 'active' | 'limited' | 'paused' =>
-				status === 'complete'
-					? 'pass'
-					: status === 'budget_limited'
-						? 'limited'
-						: status === 'paused'
-							? 'paused'
-							: 'active';
+			const goalChips = await workflowData.listObservabilityTraceGoalChips({
+				sessionIds: allSessionIds,
+			});
+			const goalBySession = new Map(goalChips.map((g) => [g.sessionId, g]));
 			for (const t of traces) {
 				const candidate =
 					t.sessionIds.find((s) => s.includes('__durable__solve__run__') && goalBySession.has(s)) ??
 					t.sessionIds.find((s) => goalBySession.has(s));
 				const g = candidate ? goalBySession.get(candidate) : undefined;
-				if (g) t.goal = { status: g.status, iterations: g.iterations, verdict: verdictFor(g.status) };
+				if (g) t.goal = { status: g.status, iterations: g.iterations, verdict: g.verdict };
 			}
 		}
 
@@ -181,6 +146,9 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 		return json({ traces, services });
 	} catch (err) {
+		if (err instanceof Error && err.message.includes('Database not configured')) {
+			return error(503, 'Database not configured');
+		}
 		return json({
 			traces: [],
 			services: [],

@@ -143,6 +143,10 @@ import type {
 	ProjectMemberListItem,
 	ProjectMemberRecord,
 	ProjectMembershipRole,
+	ObservabilityTraceGoalChipReadModel,
+	ObservabilityTraceGoalVerdict,
+	ObservabilityTraceRepository,
+	ObservabilityTraceScopeReadModel,
 	PieceCatalogRepository,
 	SettingsRepository,
 	UserProfileRecord,
@@ -3147,6 +3151,95 @@ export class PostgresWorkflowActivityRateTargetRepository
 			sessionId: sessionRow.id,
 			daprAppId: workflowActivityRateSessionHostAppId(sessionRow.id),
 		};
+	}
+}
+
+function observabilityTraceGoalVerdict(
+	status: string,
+): ObservabilityTraceGoalVerdict {
+	if (status === "complete") return "pass";
+	if (status === "budget_limited") return "limited";
+	if (status === "paused") return "paused";
+	return "active";
+}
+
+export class PostgresObservabilityTraceRepository implements ObservabilityTraceRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async getTraceScope(input: {
+		userId: string;
+		projectId?: string | null;
+		sessionIdFilter?: string | null;
+		sessionLimit?: number;
+		executionLimit?: number;
+	}): Promise<ObservabilityTraceScopeReadModel | null> {
+		const userId = input.userId.trim();
+		if (!userId) return { sessionIds: [], executionIds: [], sessionIdFilter: null };
+		const projectId = input.projectId ?? null;
+		const sessionIdFilter = input.sessionIdFilter?.trim() || null;
+		const sessionLimit = Math.max(1, Math.min(Math.trunc(input.sessionLimit ?? 1000), 1000));
+		const executionLimit = Math.max(1, Math.min(Math.trunc(input.executionLimit ?? 1000), 1000));
+		const sessionScopeWhere = projectId
+			? or(
+					eq(sessions.projectId, projectId),
+					and(isNull(sessions.projectId), eq(sessions.userId, userId)),
+				)
+			: eq(sessions.userId, userId);
+		const executionScopeWhere = projectId
+			? or(
+					eq(workflowExecutions.projectId, projectId),
+					and(
+						isNull(workflowExecutions.projectId),
+						eq(workflowExecutions.userId, userId),
+					),
+				)
+			: eq(workflowExecutions.userId, userId);
+
+		const [sessionRows, executionRows] = await Promise.all([
+			this.database
+				.select({ id: sessions.id })
+				.from(sessions)
+				.where(sessionScopeWhere)
+				.orderBy(desc(sessions.createdAt))
+				.limit(sessionLimit),
+			this.database
+				.select({ id: workflowExecutions.id })
+				.from(workflowExecutions)
+				.where(executionScopeWhere)
+				.orderBy(desc(workflowExecutions.startedAt))
+				.limit(executionLimit),
+		]);
+		const sessionIds = sessionRows.map((row) => row.id);
+		if (sessionIdFilter && !new Set(sessionIds).has(sessionIdFilter)) {
+			return null;
+		}
+
+		return {
+			sessionIds,
+			executionIds: executionRows.map((row) => row.id),
+			sessionIdFilter,
+		};
+	}
+
+	async listTraceGoalChips(input: {
+		sessionIds: string[];
+	}): Promise<ObservabilityTraceGoalChipReadModel[]> {
+		const ids = [...new Set(input.sessionIds.map((id) => id.trim()).filter(Boolean))];
+		if (ids.length === 0) return [];
+		const rows = await this.database
+			.select({
+				sessionId: threadGoals.sessionId,
+				status: threadGoals.status,
+				iterations: threadGoals.iterations,
+			})
+			.from(threadGoals)
+			.where(inArray(threadGoals.sessionId, ids));
+		return rows.map((row) => ({
+			sessionId: row.sessionId,
+			status: row.status,
+			iterations: row.iterations,
+			verdict: observabilityTraceGoalVerdict(row.status),
+		}));
 	}
 }
 

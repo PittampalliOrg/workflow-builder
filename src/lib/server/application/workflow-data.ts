@@ -96,6 +96,9 @@ import type {
 	McpAvailabilityReadModel,
 	McpCatalogConfiguredConnectionSummary,
 	McpRunRepository,
+	ObservabilityTraceGoalChipReadModel,
+	ObservabilityTraceRepository,
+	ObservabilityTraceScopeReadModel,
 	ObservabilityServiceGraphWorkflowReadModel,
 	ProjectMembershipRole,
 	StartHostedMcpWorkflowToolInput,
@@ -772,6 +775,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			devEnvironments?: DevEnvironmentReadRepository;
 			benchmarkRuns?: BenchmarkRunRepository;
 			activityRateTargets?: WorkflowActivityRateTargetRepository;
+			observabilityTraces?: ObservabilityTraceRepository;
 			workflowExecutions: WorkflowExecutionRepository;
 			sessions?: SessionRepository;
 			sessionProvisioning?: SessionProvisioningReader;
@@ -882,6 +886,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Workflow activity-rate target repository not configured");
 		}
 		return this.deps.activityRateTargets;
+	}
+
+	private requireObservabilityTraces(): ObservabilityTraceRepository {
+		if (!this.deps.observabilityTraces) {
+			throw new Error("Observability trace repository not configured");
+		}
+		return this.deps.observabilityTraces;
 	}
 
 	private requireSessionRuntimeConfigs(): SessionRuntimeConfigReader {
@@ -3594,6 +3605,22 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		executionId: string;
 	}): Promise<WorkflowActivityRateTargetReadModel | null> {
 		return this.requireActivityRateTargets().resolveWorkflowActivityRateTarget(input);
+	}
+
+	getObservabilityTraceScope(input: {
+		userId: string;
+		projectId?: string | null;
+		sessionIdFilter?: string | null;
+		sessionLimit?: number;
+		executionLimit?: number;
+	}): Promise<ObservabilityTraceScopeReadModel | null> {
+		return this.requireObservabilityTraces().getTraceScope(input);
+	}
+
+	listObservabilityTraceGoalChips(input: {
+		sessionIds: string[];
+	}): Promise<ObservabilityTraceGoalChipReadModel[]> {
+		return this.requireObservabilityTraces().listTraceGoalChips(input);
 	}
 
 	async getDevPreviewHubReadModel(input: { projectId?: string | null }) {

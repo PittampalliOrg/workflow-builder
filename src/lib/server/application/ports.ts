@@ -405,6 +405,38 @@ export interface WorkflowActivityRateTargetRepository {
 	}): Promise<WorkflowActivityRateTargetReadModel | null>;
 }
 
+export type ObservabilityTraceScopeReadModel = {
+	sessionIds: string[];
+	executionIds: string[];
+	sessionIdFilter: string | null;
+};
+
+export type ObservabilityTraceGoalVerdict =
+	| "pass"
+	| "active"
+	| "limited"
+	| "paused";
+
+export type ObservabilityTraceGoalChipReadModel = {
+	sessionId: string;
+	status: string;
+	iterations: number;
+	verdict: ObservabilityTraceGoalVerdict;
+};
+
+export interface ObservabilityTraceRepository {
+	getTraceScope(input: {
+		userId: string;
+		projectId?: string | null;
+		sessionIdFilter?: string | null;
+		sessionLimit?: number;
+		executionLimit?: number;
+	}): Promise<ObservabilityTraceScopeReadModel | null>;
+	listTraceGoalChips(input: {
+		sessionIds: string[];
+	}): Promise<ObservabilityTraceGoalChipReadModel[]>;
+}
+
 export type CreateWorkflowDefinitionInput = {
 	name: string;
 	nodes: unknown[];
@@ -3363,6 +3395,16 @@ export interface WorkflowDataService {
 	resolveWorkflowActivityRateTarget(input: {
 		executionId: string;
 	}): Promise<WorkflowActivityRateTargetReadModel | null>;
+	getObservabilityTraceScope(input: {
+		userId: string;
+		projectId?: string | null;
+		sessionIdFilter?: string | null;
+		sessionLimit?: number;
+		executionLimit?: number;
+	}): Promise<ObservabilityTraceScopeReadModel | null>;
+	listObservabilityTraceGoalChips(input: {
+		sessionIds: string[];
+	}): Promise<ObservabilityTraceGoalChipReadModel[]>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;
 	}): Promise<DevPreviewHubReadModel>;
