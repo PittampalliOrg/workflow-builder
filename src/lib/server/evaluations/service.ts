@@ -1272,6 +1272,20 @@ export async function getEvaluationRun(
 	};
 }
 
+export async function getInternalEvaluationRun(
+	runId: string,
+	options: { itemMode?: EvaluationRunItemMode } = {},
+) {
+	const database = requireDb();
+	const [row] = await database
+		.select({ projectId: evaluationRuns.projectId })
+		.from(evaluationRuns)
+		.where(eq(evaluationRuns.id, runId))
+		.limit(1);
+	if (!row) return null;
+	return getEvaluationRun(row.projectId, runId, options);
+}
+
 export async function getEvaluationRunItem(
 	projectId: string,
 	runId: string,

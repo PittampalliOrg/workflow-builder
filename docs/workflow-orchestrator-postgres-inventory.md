@@ -499,6 +499,11 @@ The first UI-facing route has also moved behind the application service:
   resolution. Internal callers may pass either `agentId` or `agentSlug`; the
   slug selector is resolved inside `createBenchmarkRun` and still runs through
   the existing SWE-bench agent validation checks before any run is created.
+- `src/routes/api/internal/evaluations/runs/[runId]/status/+server.ts` no
+  longer imports `$lib/server/db`, Drizzle, or the evaluation run schema for the
+  internal run lookup. The route delegates read-model loading to
+  `getInternalEvaluationRun` and keeps status transitions in the evaluation
+  service.
 - `src/routes/workspaces/[slug]/benchmarks/+page.server.ts`,
   `src/routes/workspaces/[slug]/benchmarks/runs/+page.server.ts`, and
   `src/routes/workspaces/[slug]/benchmarks/compare/+page.server.ts` now delegate

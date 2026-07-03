@@ -1,16 +1,15 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { eq } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import { evaluationRuns, type EvaluationRunStatus } from "$lib/server/db/schema";
 import { requireInternal } from "$lib/server/internal-auth";
 import {
-	getEvaluationRun,
+	getInternalEvaluationRun,
 	markEvaluationRunStatus,
 	recomputeEvaluationRunSummary,
 } from "$lib/server/evaluations/service";
 
-const STATUSES = new Set([
+type EvaluationRunStatusInput = Parameters<typeof markEvaluationRunStatus>[1];
+
+const STATUSES = new Set<EvaluationRunStatusInput>([
 	"queued",
 	"running",
 	"grading",
@@ -21,16 +20,10 @@ const STATUSES = new Set([
 
 export const GET: RequestHandler = async ({ request, params }) => {
 	requireInternal(request);
-	if (!db) return error(503, "Database not configured");
-	const [run] = await db
-		.select({ projectId: evaluationRuns.projectId })
-		.from(evaluationRuns)
-		.where(eq(evaluationRuns.id, params.runId))
-		.limit(1);
-	if (!run) return error(404, "Evaluation run not found");
-	const fullRun = await getEvaluationRun(run.projectId, params.runId, {
+	const fullRun = await getInternalEvaluationRun(params.runId, {
 		itemMode: "summary",
 	});
+	if (!fullRun) return error(404, "Evaluation run not found");
 	return json({ run: fullRun });
 };
 
@@ -38,7 +31,7 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	requireInternal(request);
 	const body = asRecord(await request.json().catch(() => ({})));
 	const status = String(body.status ?? "");
-	if (!STATUSES.has(status)) return error(400, "Invalid evaluation run status");
+	if (!isEvaluationRunStatus(status)) return error(400, "Invalid evaluation run status");
 	const extra: Record<string, unknown> = {};
 	if (typeof body.error === "string" || body.error === null) extra.error = body.error;
 	if (typeof body.coordinatorExecutionId === "string") {
@@ -48,7 +41,7 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	if (isRecord(body.usage)) extra.usage = body.usage;
 	const run = await markEvaluationRunStatus(
 		params.runId,
-		status as EvaluationRunStatus,
+		status,
 		extra,
 	);
 	if (!run) return error(404, "Evaluation run not found");
@@ -62,4 +55,8 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isEvaluationRunStatus(status: string): status is EvaluationRunStatusInput {
+	return STATUSES.has(status as EvaluationRunStatusInput);
 }
