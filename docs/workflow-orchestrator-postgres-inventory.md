@@ -397,10 +397,18 @@ services:
   `/nats-stream` path and SSE response headers for client compatibility. The
   Postgres `LISTEN/NOTIFY` implementation is confined to
   `PostgresWorkflowSessionEventNotificationSource` in the Postgres adapter.
-  Direct DB/Dapr/ClickHouse access in `src/lib/server/execution-read-model.ts`
-  remains behind `LegacyWorkflowExecutionReadModelPort`; splitting that helper
-  into narrower workflow-data, runtime-status, artifact, and trace ports remains
-  the next read-model portability slice.
+- `src/routes/api/sandboxes/[name]/logs/+server.ts` and
+  `src/routes/api/sandboxes/[name]/stream/+server.ts` now read persisted agent
+  events through `ApplicationSandboxEventsService`. The shared session-event
+  query is still the legacy adapter implementation, now under
+  `src/lib/server/application/adapters/execution-read-model.ts`.
+- Direct DB/Dapr/ClickHouse access for execution status/SSE snapshots is now
+  confined to
+  `src/lib/server/application/adapters/execution-read-model.ts` behind
+  `LegacyWorkflowExecutionReadModelPort` and
+  `LegacySandboxAgentEventReadPort`; splitting that adapter into narrower
+  workflow-data, runtime-status, artifact, and trace ports remains the next
+  read-model portability slice.
 - `src/routes/api/workflows/executions/[executionId]/resume/+server.ts` now
   delegates resume/fork decisions to
   `ApplicationWorkflowExecutionControlService.resumeExecution`. The application

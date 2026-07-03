@@ -1,3 +1,5 @@
+// Legacy adapter implementation for execution read models. Keep infrastructure
+// access here while the application read-model service is extracted.
 import { and, asc, desc, eq, gt } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';

@@ -1,5 +1,5 @@
 import type { SandboxAgentEventReadPort } from "$lib/server/application/ports";
-import { listSandboxAgentEvents } from "$lib/server/execution-read-model";
+import { listSandboxAgentEvents } from "$lib/server/application/adapters/execution-read-model";
 
 export class LegacySandboxAgentEventReadPort implements SandboxAgentEventReadPort {
 	listSandboxAgentEvents(input: {

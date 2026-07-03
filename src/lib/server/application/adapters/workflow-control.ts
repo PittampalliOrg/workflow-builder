@@ -11,7 +11,7 @@ import type {
 import {
 	loadExecutionReadModel,
 	serializeExecutionReadModel,
-} from "$lib/server/execution-read-model";
+} from "$lib/server/application/adapters/execution-read-model";
 import {
 	confirmDurableStop,
 	inspectDurableRun,
