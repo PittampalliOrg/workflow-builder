@@ -107,6 +107,79 @@ export type ServiceGraphPickerOptions = {
 	defaultExecutionId: string;
 };
 
+export type AgentRuntimeAgentRecord = {
+	id: string;
+	projectId: string | null;
+	slug: string;
+	runtimeAppId: string | null;
+	isArchived: boolean;
+};
+
+export interface AgentRuntimeRepository {
+	listProjectAgents(projectId: string): Promise<AgentRuntimeAgentRecord[]>;
+	getAgentBySlug(input: {
+		slug: string;
+		projectId?: string | null;
+	}): Promise<AgentRuntimeAgentRecord | null>;
+	listRecentlyActiveAgentSlugs(input: {
+		slugs: string[];
+		activeStatuses: string[];
+		updatedAfter: Date;
+	}): Promise<string[]>;
+}
+
+export type AgentRuntimeWarmPoolRecord = {
+	name: string;
+	namespace: string;
+	labels: Record<string, string>;
+	annotations: Record<string, string>;
+	desiredReplicas: number;
+	replicas: number;
+	readyReplicas: number;
+	sandboxTemplateRefName: string;
+};
+
+export type AgentRuntimePodContainerReadiness = {
+	name: string;
+	ready: boolean;
+};
+
+export type AgentRuntimePodRecord = {
+	name: string;
+	namespace: string;
+	containers: AgentRuntimePodContainerReadiness[];
+};
+
+export type AgentRuntimeWakeResult = {
+	phase: string;
+	replicas: number;
+	readyReplicas: number;
+	source: string;
+};
+
+export interface AgentRuntimeWarmPoolClient {
+	listWarmPools(namespace?: string): Promise<AgentRuntimeWarmPoolRecord[]>;
+	getWarmPool(
+		name: string,
+		namespace?: string,
+	): Promise<AgentRuntimeWarmPoolRecord | null>;
+	getRuntimePod(
+		runtimeSlug: string,
+		namespace?: string,
+	): Promise<AgentRuntimePodRecord | null>;
+	wakeRuntime(
+		runtimeSlug: string,
+		timeoutMs: number,
+		namespace?: string,
+	): Promise<AgentRuntimeWakeResult>;
+	sleepRuntime(runtimeSlug: string, namespace?: string): Promise<void>;
+	setWarmPoolReplicas(
+		name: string,
+		replicas: number,
+		namespace?: string,
+	): Promise<void>;
+}
+
 export type PieceMetadataDetailRecord = {
 	name: string;
 	displayName: string;

@@ -63,6 +63,13 @@ recording is routed through a workflow-data port. Blob/local object storage
 remains in the benchmark artifact storage adapter, while the Postgres lookup of
 the source run-instance id and `benchmark_artifacts` insert are confined to the
 Postgres workflow-data adapter.
+The agent-runtime list/detail/wake/sleep routes and the internal idle-reaper
+route now use an application service with explicit Postgres and Kubernetes
+ports. Project-scoped agent lookup, admin role checks, active-session lookup,
+warm-pool phase derivation, and idle-reap decisions are no longer implemented
+inside SvelteKit route handlers. Postgres access is confined to
+`PostgresAgentRuntimeRepository`, and SandboxWarmPool access is confined to
+`KubernetesAgentRuntimeWarmPoolClient`.
 
 ## Strict HTTP Runtime Paths
 
@@ -456,6 +463,16 @@ The first UI-facing route has also moved behind the application service:
   sidebar/dashboard user profile data through `workflowData.getUserProfile`.
   The root UI loaders no longer import `users`, Drizzle, or `$lib/server/db`
   for profile display fields.
+- `src/routes/api/v1/agent-runtimes/+server.ts`,
+  `src/routes/api/v1/agent-runtimes/[slug]/+server.ts`,
+  `src/routes/api/v1/agent-runtimes/[slug]/wake/+server.ts`,
+  `src/routes/api/v1/agent-runtimes/[slug]/sleep/+server.ts`, and
+  `src/routes/api/internal/agent-runtimes/reap-idle/+server.ts` now delegate to
+  `getApplicationAdapters().agentRuntimeControl`. The route family imports no
+  Drizzle schema, `$lib/server/db`, or Kubernetes client helpers. SQL lives in
+  `PostgresAgentRuntimeRepository`; SandboxWarmPool reads/writes live in
+  `KubernetesAgentRuntimeWarmPoolClient`; route-local code is limited to auth,
+  parameter parsing, and HTTP status mapping.
 - `src/routes/workspaces/[slug]/benchmarks/+page.server.ts`,
   `src/routes/workspaces/[slug]/benchmarks/runs/+page.server.ts`, and
   `src/routes/workspaces/[slug]/benchmarks/compare/+page.server.ts` now delegate

@@ -5,6 +5,7 @@ import {
 import {
 	PostgresArtifactStore,
 	PostgresAdminPieceRepository,
+	PostgresAgentRuntimeRepository,
 	PostgresAppConnectionRepository,
 	PostgresApiKeyStore,
 	PostgresBenchmarkArtifactMetadataRepository,
@@ -49,6 +50,7 @@ import {
 	PostgresWorkspaceProjectRepository,
 	requirePostgresDb,
 } from "$lib/server/application/adapters/postgres";
+import { KubernetesAgentRuntimeWarmPoolClient } from "$lib/server/application/adapters/agent-runtime-control";
 import { RegistryPeerAgentResolver } from "$lib/server/application/adapters/agents";
 import {
 	DaprCredentialStore,
@@ -78,6 +80,7 @@ import {
 } from "$lib/server/application/adapters/sessions";
 import { PlaywrightMcpBrowserRuntimeClient } from "$lib/server/application/adapters/browser-runtime";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
+import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 
@@ -100,6 +103,7 @@ export function getApplicationAdapters(
 	}
 
 	let database: ReturnType<typeof requirePostgresDb> | undefined;
+	let agentRuntimes: PostgresAgentRuntimeRepository | undefined;
 	let workflowDefinitions: PostgresWorkflowDefinitionRepository | undefined;
 	let workflowTriggers: PostgresWorkflowTriggerStore | undefined;
 	let userProfiles: PostgresUserProfileRepository | undefined;
@@ -171,8 +175,12 @@ export function getApplicationAdapters(
 	let codeCheckpoints: PostgresWorkflowCodeCheckpointStore | undefined;
 	let evaluationArtifacts: PostgresEvaluationArtifactStore | undefined;
 	let workflowData: ApplicationWorkflowDataService | undefined;
+	let agentRuntimeWarmPools: KubernetesAgentRuntimeWarmPoolClient | undefined;
+	let agentRuntimeControl: ApplicationAgentRuntimeControlService | undefined;
 	let sessionBrowser: ApplicationSessionBrowserService | undefined;
 	const getDatabase = () => (database ??= requirePostgresDb());
+	const getAgentRuntimes = () =>
+		(agentRuntimes ??= new PostgresAgentRuntimeRepository(getDatabase()));
 	const getWorkflowDefinitions = () =>
 		(workflowDefinitions ??= new PostgresWorkflowDefinitionRepository(getDatabase()));
 	const getWorkflowTriggers = () =>
@@ -277,6 +285,14 @@ export function getApplicationAdapters(
 		(codeCheckpoints ??= new PostgresWorkflowCodeCheckpointStore(getDatabase()));
 	const getEvaluationArtifacts = () =>
 		(evaluationArtifacts ??= new PostgresEvaluationArtifactStore(getDatabase()));
+	const getAgentRuntimeWarmPools = () =>
+		(agentRuntimeWarmPools ??= new KubernetesAgentRuntimeWarmPoolClient());
+	const getAgentRuntimeControl = () =>
+		(agentRuntimeControl ??= new ApplicationAgentRuntimeControlService({
+			agentRuntimes: getAgentRuntimes(),
+			workspaceProjects: getWorkspaceProjects(),
+			warmPools: getAgentRuntimeWarmPools(),
+		}));
 	const previewEnvironmentProvisioner =
 		config.previewProvisionerAdapter === "kro"
 			? new KroPreviewEnvironmentProvisioner()
@@ -358,6 +374,9 @@ export function getApplicationAdapters(
 		},
 		get workflowData() {
 			return getWorkflowData();
+		},
+		get agentRuntimeControl() {
+			return getAgentRuntimeControl();
 		},
 		get sessionBrowser() {
 			return (sessionBrowser ??= new ApplicationSessionBrowserService({

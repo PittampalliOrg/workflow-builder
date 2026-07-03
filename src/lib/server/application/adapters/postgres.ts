@@ -96,6 +96,8 @@ import {
 import type {
 	AppendWorkflowExecutionLogInput,
 	AdminPieceRepository,
+	AgentRuntimeAgentRecord,
+	AgentRuntimeRepository,
 	AppConnectionCreatedRecord,
 	AppConnectionOAuthCompletedRecord,
 	AppConnectionOAuthPieceMetadataRecord,
@@ -223,6 +225,70 @@ import type {
 
 type Database = typeof defaultDb;
 type PostgresSqlClient = typeof defaultSql;
+
+export class PostgresAgentRuntimeRepository implements AgentRuntimeRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async listProjectAgents(projectId: string): Promise<AgentRuntimeAgentRecord[]> {
+		const rows = await this.database
+			.select({
+				id: agents.id,
+				projectId: agents.projectId,
+				slug: agents.slug,
+				runtimeAppId: agents.runtimeAppId,
+				isArchived: agents.isArchived,
+			})
+			.from(agents)
+			.where(eq(agents.projectId, projectId));
+		return rows;
+	}
+
+	async getAgentBySlug(input: {
+		slug: string;
+		projectId?: string | null;
+	}): Promise<AgentRuntimeAgentRecord | null> {
+		const [row] = await this.database
+			.select({
+				id: agents.id,
+				projectId: agents.projectId,
+				slug: agents.slug,
+				runtimeAppId: agents.runtimeAppId,
+				isArchived: agents.isArchived,
+			})
+			.from(agents)
+			.where(
+				and(
+					eq(agents.slug, input.slug),
+					input.projectId ? eq(agents.projectId, input.projectId) : undefined,
+				),
+			)
+			.limit(1);
+		return row ?? null;
+	}
+
+	async listRecentlyActiveAgentSlugs(input: {
+		slugs: string[];
+		activeStatuses: string[];
+		updatedAfter: Date;
+	}): Promise<string[]> {
+		if (input.slugs.length === 0) return [];
+		const rows = await this.database
+			.select({ slug: agents.slug })
+			.from(sessions)
+			.innerJoin(agents, eq(agents.id, sessions.agentId))
+			.where(
+				and(
+					inArray(agents.slug, input.slugs),
+					isNull(sessions.archivedAt),
+					or(
+						inArray(sessions.status, input.activeStatuses),
+						gt(sessions.updatedAt, input.updatedAfter),
+					),
+				),
+			);
+		return [...new Set(rows.map((row) => row.slug))];
+	}
+}
 
 const SLOT_RANK = sql<number>`CASE ${workflowArtifacts.slot}
 	WHEN 'primary' THEN 0
