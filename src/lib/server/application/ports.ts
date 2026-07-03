@@ -630,6 +630,29 @@ export interface BenchmarkInstanceDetailReadRepository {
 	}): Promise<BenchmarkInstanceDetailReadModel | null>;
 }
 
+export type BenchmarkRunInstanceScoreReadModel = {
+	id: string;
+	scorerName: string;
+	scorerVersion: number;
+	score: number;
+	reasoning: string | null;
+	metadata: Record<string, unknown>;
+	createdAt: Date;
+};
+
+export type BenchmarkRunInstanceScoresReadModel =
+	| { status: "run_not_found" }
+	| { status: "instance_not_found" }
+	| { status: "ok"; scores: BenchmarkRunInstanceScoreReadModel[] };
+
+export interface BenchmarkRunInstanceScoreReadRepository {
+	listRunInstanceScores(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+	}): Promise<BenchmarkRunInstanceScoresReadModel>;
+}
+
 export type CreateWorkflowDefinitionInput = {
 	name: string;
 	nodes: unknown[];
@@ -3639,6 +3662,11 @@ export interface WorkflowDataService {
 		suiteSlug: string;
 		instanceId: string;
 	}): Promise<BenchmarkInstanceDetailReadModel | null>;
+	listBenchmarkRunInstanceScores(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+	}): Promise<BenchmarkRunInstanceScoresReadModel>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;
 	}): Promise<DevPreviewHubReadModel>;

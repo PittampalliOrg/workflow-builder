@@ -6,6 +6,7 @@ import type {
 	ArtifactStore,
 	BenchmarkInstanceDetailReadRepository,
 	BenchmarkBrowserRepository,
+	BenchmarkRunInstanceScoreReadRepository,
 	BenchmarkRunReadRepository,
 	BenchmarkRunRepository,
 	DevEnvironmentReadRepository,
@@ -1328,6 +1329,7 @@ function makeService(options: {
 	benchmarkRunReads?: BenchmarkRunReadRepository;
 	benchmarkRuns?: BenchmarkRunRepository;
 	benchmarkInstanceDetails?: BenchmarkInstanceDetailReadRepository;
+	benchmarkRunInstanceScores?: BenchmarkRunInstanceScoreReadRepository;
 	activityRateTargets?: WorkflowActivityRateTargetRepository;
 	observabilityTraces?: ObservabilityTraceRepository;
 	workflowMonitorReads?: WorkflowMonitorReadRepository;
@@ -1391,6 +1393,7 @@ function makeService(options: {
 		browserArtifacts: options.browserArtifacts,
 		benchmarkBrowser: fakeBenchmarkBrowser(),
 		benchmarkInstanceDetails: options.benchmarkInstanceDetails,
+		benchmarkRunInstanceScores: options.benchmarkRunInstanceScores,
 		benchmarkRunReads: options.benchmarkRunReads ?? fakeBenchmarkRunReads(),
 		devEnvironments: options.devEnvironments ?? fakeDevEnvironments(),
 		benchmarkRuns: options.benchmarkRuns ?? fakeBenchmarkRuns(),
@@ -6508,6 +6511,53 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(benchmarkInstanceDetails.getBenchmarkInstanceDetail).toHaveBeenCalledWith({
 			suiteSlug: "SWE-bench_Lite",
 			instanceId: "sympy__sympy-20590",
+		});
+	});
+
+	it("loads benchmark run-instance scores through the workflow-data port", async () => {
+		const createdAt = new Date("2026-07-03T12:00:00.000Z");
+		const benchmarkRunInstanceScores: BenchmarkRunInstanceScoreReadRepository = {
+			listRunInstanceScores: vi.fn(async () => ({
+				status: "ok" as const,
+				scores: [
+					{
+						id: "score-1",
+						scorerName: "reasoning_quality",
+						scorerVersion: 1,
+						score: 0.9,
+						reasoning: "Clear reasoning",
+						metadata: { model: "judge" },
+						createdAt,
+					},
+				],
+			})),
+		};
+		const { service } = makeService({ benchmarkRunInstanceScores });
+
+		await expect(
+			service.listBenchmarkRunInstanceScores({
+				runId: "run-1",
+				instanceId: "sympy__sympy-20590",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual({
+			status: "ok",
+			scores: [
+				{
+					id: "score-1",
+					scorerName: "reasoning_quality",
+					scorerVersion: 1,
+					score: 0.9,
+					reasoning: "Clear reasoning",
+					metadata: { model: "judge" },
+					createdAt,
+				},
+			],
+		});
+		expect(benchmarkRunInstanceScores.listRunInstanceScores).toHaveBeenCalledWith({
+			runId: "run-1",
+			instanceId: "sympy__sympy-20590",
+			projectId: "project-1",
 		});
 	});
 

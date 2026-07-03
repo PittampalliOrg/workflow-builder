@@ -35,6 +35,10 @@ The benchmark instance-detail API now loads SWE-bench instance details through
 a workflow-data read model, and its contamination-risk audit authorization check
 uses workflow-data user/project ports instead of the route utility reading
 `users`/`project_members` directly.
+The benchmark run-instance scores API now scope-checks the run and instance and
+loads scorer rows through a workflow-data read model. The benchmark run-instance
+spans API no longer imports the DB for a route-local readiness check; the deeper
+trace-bundle service remains a later telemetry/MLflow adapter slice.
 
 ## Strict HTTP Runtime Paths
 

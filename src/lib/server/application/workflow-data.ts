@@ -75,6 +75,7 @@ import type {
 	BenchmarkInstanceDetailReadRepository,
 	BenchmarkBrowserReadModel,
 	BenchmarkBrowserRepository,
+	BenchmarkRunInstanceScoreReadRepository,
 	BenchmarkRunReadRepository,
 	BenchmarkRunRepository,
 	BenchmarkSessionProvisioningGateResult,
@@ -779,6 +780,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			codeFunctionCatalog?: CodeFunctionCatalogRepository;
 			benchmarkBrowser: BenchmarkBrowserRepository;
 			benchmarkInstanceDetails?: BenchmarkInstanceDetailReadRepository;
+			benchmarkRunInstanceScores?: BenchmarkRunInstanceScoreReadRepository;
 			benchmarkRunReads?: BenchmarkRunReadRepository;
 			devEnvironments?: DevEnvironmentReadRepository;
 			benchmarkRuns?: BenchmarkRunRepository;
@@ -867,6 +869,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Benchmark instance detail read repository not configured");
 		}
 		return this.deps.benchmarkInstanceDetails;
+	}
+
+	private requireBenchmarkRunInstanceScores(): BenchmarkRunInstanceScoreReadRepository {
+		if (!this.deps.benchmarkRunInstanceScores) {
+			throw new Error("Benchmark run instance score read repository not configured");
+		}
+		return this.deps.benchmarkRunInstanceScores;
 	}
 
 	private isResourceVisibleToCaller<T extends { userId: string; projectId: string | null }>(
@@ -3754,6 +3763,14 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	getBenchmarkInstanceDetail(input: { suiteSlug: string; instanceId: string }) {
 		return this.requireBenchmarkInstanceDetails().getBenchmarkInstanceDetail(input);
+	}
+
+	listBenchmarkRunInstanceScores(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+	}) {
+		return this.requireBenchmarkRunInstanceScores().listRunInstanceScores(input);
 	}
 
 	async getDevPreviewHubReadModel(input: { projectId?: string | null }) {

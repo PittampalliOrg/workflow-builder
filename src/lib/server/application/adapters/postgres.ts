@@ -42,6 +42,7 @@ import {
 	agentVersions,
 	benchmarkInstances,
 	benchmarkRunInstances,
+	benchmarkRunInstanceScores,
 	benchmarkRuns,
 	benchmarkSuites,
 	environmentImageBuilds,
@@ -105,6 +106,7 @@ import type {
 	ArtifactStore,
 	BenchmarkBrowserRepository,
 	BenchmarkInstanceDetailReadRepository,
+	BenchmarkRunInstanceScoreReadRepository,
 	BenchmarkRunRepository,
 	BenchmarkSessionProvisioningGateRecord,
 	SandboxExecutionRecord,
@@ -2627,6 +2629,69 @@ export class PostgresBenchmarkInstanceDetailReadRepository
 			...row,
 			testMetadata: isRecord(row.testMetadata) ? row.testMetadata : {},
 			metadata: isRecord(row.metadata) ? row.metadata : null,
+		};
+	}
+}
+
+export class PostgresBenchmarkRunInstanceScoreReadRepository
+	implements BenchmarkRunInstanceScoreReadRepository
+{
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async listRunInstanceScores(input: {
+		runId: string;
+		instanceId: string;
+		projectId: string;
+	}) {
+		const runId = input.runId.trim();
+		const instanceId = input.instanceId.trim();
+		const projectId = input.projectId.trim();
+		if (!runId || !instanceId || !projectId) return { status: "run_not_found" as const };
+
+		const [runRow] = await this.database
+			.select({ id: benchmarkRuns.id })
+			.from(benchmarkRuns)
+			.where(
+				and(
+					eq(benchmarkRuns.id, runId),
+					eq(benchmarkRuns.projectId, projectId),
+				),
+			)
+			.limit(1);
+		if (!runRow) return { status: "run_not_found" as const };
+
+		const [instance] = await this.database
+			.select({ id: benchmarkRunInstances.id })
+			.from(benchmarkRunInstances)
+			.where(
+				and(
+					eq(benchmarkRunInstances.runId, runId),
+					eq(benchmarkRunInstances.instanceId, instanceId),
+				),
+			)
+			.limit(1);
+		if (!instance) return { status: "instance_not_found" as const };
+
+		const rows = await this.database
+			.select({
+				id: benchmarkRunInstanceScores.id,
+				scorerName: benchmarkRunInstanceScores.scorerName,
+				scorerVersion: benchmarkRunInstanceScores.scorerVersion,
+				score: benchmarkRunInstanceScores.score,
+				reasoning: benchmarkRunInstanceScores.reasoning,
+				metadata: benchmarkRunInstanceScores.metadata,
+				createdAt: benchmarkRunInstanceScores.createdAt,
+			})
+			.from(benchmarkRunInstanceScores)
+			.where(eq(benchmarkRunInstanceScores.runInstanceId, instance.id))
+			.orderBy(asc(benchmarkRunInstanceScores.scorerName));
+
+		return {
+			status: "ok" as const,
+			scores: rows.map((row) => ({
+				...row,
+				metadata: isRecord(row.metadata) ? row.metadata : {},
+			})),
 		};
 	}
 }

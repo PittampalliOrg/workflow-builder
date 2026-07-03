@@ -1,6 +1,5 @@
 import { error, json } from "@sveltejs/kit";
 import { loadSwebenchTraceBundle } from "$lib/server/benchmarks/trace-bundle";
-import { db } from "$lib/server/db";
 import type { RequestHandler } from "./$types";
 
 // MLflow-first span drilldown for the run-instance drawer. ClickHouse remains
@@ -8,7 +7,6 @@ import type { RequestHandler } from "./$types";
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	if (!locals.session.projectId) return error(404, "Run not found");
-	if (!db) return error(503, "Database not configured");
 
 	const runId = params.runId;
 	const instanceId = decodeURIComponent(params.instanceId ?? "");
