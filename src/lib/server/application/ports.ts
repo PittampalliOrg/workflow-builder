@@ -2984,6 +2984,14 @@ export type CreateWorkflowFileInput = {
 	bytes: Buffer;
 };
 
+export type ListWorkflowFilesFilter = {
+	userId: string;
+	purpose?: "agent" | "output";
+	scopeId?: string;
+	limit?: number;
+	includeArchived?: boolean;
+};
+
 export type WorkflowRunDiffStats = {
 	files: number;
 	additions: number;
@@ -3029,7 +3037,11 @@ export interface WorkflowFileStore {
 		file: WorkflowFileRecord;
 		deduplicated: boolean;
 	}>;
+	listFiles(filter: ListWorkflowFilesFilter): Promise<WorkflowFileRecord[]>;
+	getFile(id: string): Promise<WorkflowFileRecord | null>;
 	getFileContent(id: string): Promise<{ summary: WorkflowFileRecord; bytes: Buffer } | null>;
+	archiveFile(input: { id: string; userId: string }): Promise<boolean>;
+	deleteFile(input: { id: string; userId: string }): Promise<boolean>;
 }
 
 export type WorkflowMcpResolutionResult = AgentMcpResolutionResult & {
@@ -5400,9 +5412,13 @@ export interface WorkflowDataService {
 		file: WorkflowFileRecord;
 		deduplicated: boolean;
 	}>;
+	listWorkflowFiles(filter: ListWorkflowFilesFilter): Promise<WorkflowFileRecord[]>;
+	getWorkflowFile(id: string): Promise<WorkflowFileRecord | null>;
 	getWorkflowFileContent(
 		id: string,
 	): Promise<{ summary: WorkflowFileRecord; bytes: Buffer } | null>;
+	archiveWorkflowFile(input: { id: string; userId: string }): Promise<boolean>;
+	deleteWorkflowFile(input: { id: string; userId: string }): Promise<boolean>;
 	persistRunDiffArtifact(input: PersistWorkflowRunDiffInput): Promise<{
 		id: string;
 		fileId: string | null;

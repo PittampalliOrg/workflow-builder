@@ -133,6 +133,7 @@ import type {
 	IngestSessionEventInput,
 	IngestSessionEventResult,
 	ListSessionEventsInput,
+	ListWorkflowFilesFilter,
 	PersistWorkflowRunDiffInput,
 	PersistWorkflowSourceBundleInput,
 	WorkflowDataService,
@@ -5264,8 +5265,24 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.requireWorkflowFiles().createFile(input);
 	}
 
+	listWorkflowFiles(filter: ListWorkflowFilesFilter) {
+		return this.requireWorkflowFiles().listFiles(filter);
+	}
+
+	getWorkflowFile(id: string) {
+		return this.requireWorkflowFiles().getFile(id);
+	}
+
 	getWorkflowFileContent(id: string) {
 		return this.requireWorkflowFiles().getFileContent(id);
+	}
+
+	archiveWorkflowFile(input: { id: string; userId: string }) {
+		return this.requireWorkflowFiles().archiveFile(input);
+	}
+
+	deleteWorkflowFile(input: { id: string; userId: string }) {
+		return this.requireWorkflowFiles().deleteFile(input);
 	}
 
 	persistRunDiffArtifact(input: PersistWorkflowRunDiffInput) {

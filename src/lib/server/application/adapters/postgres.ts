@@ -169,6 +169,7 @@ import type {
 	HostedMcpServerRepository,
 	HostedMcpWorkflowSourceRecord,
 	HomePageReadRepository,
+	ListWorkflowFilesFilter,
 	McpConnectionRecord,
 	McpConnectionRepository,
 	McpRunRecord,
@@ -5733,6 +5734,26 @@ export class PostgresWorkflowFileStore implements WorkflowFileStore {
 		return { file: mapWorkflowFile(row), deduplicated: false };
 	}
 
+	async listFiles(filter: ListWorkflowFilesFilter): Promise<WorkflowFileRecord[]> {
+		const conditions = [eq(files.userId, filter.userId)];
+		if (filter.purpose) conditions.push(eq(files.purpose, filter.purpose));
+		if (filter.scopeId) conditions.push(eq(files.scopeId, filter.scopeId));
+		if (!filter.includeArchived) conditions.push(isNull(files.archivedAt));
+
+		const rows = await this.database
+			.select()
+			.from(files)
+			.where(and(...conditions))
+			.orderBy(desc(files.createdAt))
+			.limit(filter.limit ?? 200);
+		return rows.map(mapWorkflowFile);
+	}
+
+	async getFile(id: string): Promise<WorkflowFileRecord | null> {
+		const [row] = await this.database.select().from(files).where(eq(files.id, id)).limit(1);
+		return row ? mapWorkflowFile(row) : null;
+	}
+
 	async getFileContent(
 		id: string,
 	): Promise<{ summary: WorkflowFileRecord; bytes: Buffer } | null> {
@@ -5745,6 +5766,29 @@ export class PostgresWorkflowFileStore implements WorkflowFileStore {
 			.limit(1);
 		if (!payload) return null;
 		return { summary: mapWorkflowFile(row), bytes: payload.bytes };
+	}
+
+	async archiveFile(input: { id: string; userId: string }): Promise<boolean> {
+		const [row] = await this.database
+			.update(files)
+			.set({ archivedAt: new Date() })
+			.where(and(eq(files.id, input.id), eq(files.userId, input.userId)))
+			.returning({ id: files.id });
+		return Boolean(row);
+	}
+
+	async deleteFile(input: { id: string; userId: string }): Promise<boolean> {
+		const [row] = await this.database
+			.select({ storageRef: files.storageRef })
+			.from(files)
+			.where(and(eq(files.id, input.id), eq(files.userId, input.userId)))
+			.limit(1);
+		if (!row) return false;
+		await this.database.delete(files).where(eq(files.id, input.id));
+		await this.database
+			.delete(filePayloads)
+			.where(eq(filePayloads.storageRef, row.storageRef));
+		return true;
 	}
 }
 

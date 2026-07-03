@@ -490,7 +490,11 @@ function fakeWorkflowFiles(): WorkflowFileStore {
 	};
 	return {
 		createFile: vi.fn(async () => ({ file, deduplicated: false })),
+		listFiles: vi.fn(async () => [file]),
+		getFile: vi.fn(async () => file),
 		getFileContent: vi.fn(async () => ({ summary: file, bytes: Buffer.from("payload") })),
+		archiveFile: vi.fn(async () => true),
+		deleteFile: vi.fn(async () => true),
 	};
 }
 
@@ -8240,7 +8244,15 @@ describe("ApplicationWorkflowDataService", () => {
 			scopeId: "exec-1",
 			bytes: Buffer.from("payload"),
 		});
+		await service.listWorkflowFiles({
+			userId: "user-1",
+			purpose: "output",
+			scopeId: "exec-1",
+		});
+		await service.getWorkflowFile("file-1");
 		await service.getWorkflowFileContent("file-1");
+		await service.archiveWorkflowFile({ id: "file-1", userId: "user-1" });
+		await service.deleteWorkflowFile({ id: "file-1", userId: "user-1" });
 		await service.persistRunDiffArtifact({
 			executionId: "exec-1",
 			userId: "user-1",
@@ -8366,7 +8378,21 @@ describe("ApplicationWorkflowDataService", () => {
 				scopeId: "exec-1",
 			}),
 		);
+		expect(workflowFiles.listFiles).toHaveBeenCalledWith({
+			userId: "user-1",
+			purpose: "output",
+			scopeId: "exec-1",
+		});
+		expect(workflowFiles.getFile).toHaveBeenCalledWith("file-1");
 		expect(workflowFiles.getFileContent).toHaveBeenCalledWith("file-1");
+		expect(workflowFiles.archiveFile).toHaveBeenCalledWith({
+			id: "file-1",
+			userId: "user-1",
+		});
+		expect(workflowFiles.deleteFile).toHaveBeenCalledWith({
+			id: "file-1",
+			userId: "user-1",
+		});
 		expect(artifactStore.upsertWorkflowArtifact).toHaveBeenCalledWith(
 			expect.objectContaining({
 				workflowExecutionId: "exec-1",
