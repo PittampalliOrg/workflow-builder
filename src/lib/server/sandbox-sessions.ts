@@ -1,6 +1,4 @@
-import { asc, eq, inArray, or } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import { projects, sessions } from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
 import type { Sandbox } from "$lib/types/sandbox";
 
 /**
@@ -15,36 +13,19 @@ export async function resolveSandboxSessions(
 	names: string[],
 ): Promise<Map<string, NonNullable<Sandbox["session"]>>> {
 	const out = new Map<string, NonNullable<Sandbox["session"]>>();
-	if (!db || names.length === 0) return out;
+	if (names.length === 0) return out;
 
-	const rows = await db
-		.select({
-			id: sessions.id,
-			title: sessions.title,
-			status: sessions.status,
-			workspaceSandboxName: sessions.workspaceSandboxName,
-			sandboxName: sessions.sandboxName,
-			externalId: projects.externalId,
-		})
-		.from(sessions)
-		.leftJoin(projects, eq(projects.id, sessions.projectId))
-		.where(
-			or(
-				inArray(sessions.workspaceSandboxName, names),
-				inArray(sessions.sandboxName, names),
-			),
-		)
-		.orderBy(asc(sessions.updatedAt));
-
-	for (const r of rows) {
-		const record = {
-			id: r.id,
-			title: r.title ?? null,
-			status: r.status,
-			workspaceSlug: r.externalId ?? "default",
-		};
-		if (r.workspaceSandboxName) out.set(r.workspaceSandboxName, record);
-		if (r.sandboxName) out.set(r.sandboxName, record);
+	const owners =
+		await getApplicationAdapters().workflowData.listSandboxSessionOwners({
+			sandboxNames: names,
+		});
+	for (const owner of owners) {
+		out.set(owner.sandboxName, {
+			id: owner.id,
+			title: owner.title,
+			status: owner.status,
+			workspaceSlug: owner.workspaceSlug,
+		});
 	}
 	return out;
 }

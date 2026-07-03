@@ -1038,6 +1038,9 @@ The session/execution CLI preview and OpenShell sandbox preview route families
 are also presentation-clean; their persistence lookups now flow through
 workflow-data, while remaining Kubernetes/OpenShell transport coupling is
 documented inside legacy preview gateway adapters.
+Sandbox list owner-session enrichment now resolves through workflow-data
+session-owner ports instead of importing DB/Drizzle from
+`src/lib/server/sandbox-sessions.ts`.
 The dashboard route is also clean.
 The sandbox-delete route's session read is also clean, while its lifecycle and
 Kubernetes/OpenShell deletion behavior intentionally remain in the route.
@@ -1049,9 +1052,8 @@ categories include:
 - goal-loop storage helpers under `src/lib/server/goals/**`, which still own
   drivable-goal claiming, usage accrual, idle-event metadata, and continuation
   claim queries.
-- session/runtime/workspace helpers under `src/lib/server/sessions/**`,
-  `src/lib/server/openshell-sessions.ts`, `src/lib/server/sandbox-sessions.ts`,
-  and related API routes.
+- remaining session/runtime/workspace helpers under `src/lib/server/sessions/**`,
+  `src/lib/server/openshell-sessions.ts`, and related API routes.
 - preview runtime/proxy helper internals, where persistence lookups have moved
   behind workflow-data but live Kubernetes/OpenShell transport still needs
   narrower runtime/proxy ports.

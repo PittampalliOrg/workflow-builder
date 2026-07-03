@@ -3631,6 +3631,9 @@ export interface SessionRepository {
 	listWorkflowExecutionSessionRuntimes(input: {
 		workflowExecutionId: string;
 	}): Promise<WorkflowExecutionSessionRuntimeRecord[]>;
+	listSandboxSessionOwners(input: {
+		sandboxNames: string[];
+	}): Promise<SandboxSessionOwnerRecord[]>;
 	getWorkflowEnsureSession(sessionId: string): Promise<WorkflowEnsureSessionRecord | null>;
 	createWorkflowEnsureSession(input: CreateWorkflowEnsureSessionInput): Promise<void>;
 	updateWorkflowEnsureSessionRuntime(
@@ -3873,6 +3876,14 @@ export type SessionRuntimeDebugTarget = {
 	source: SessionRuntimeTargetSource;
 	agentSlug: string | null;
 	agentRuntime: string | null;
+};
+
+export type SandboxSessionOwnerRecord = {
+	sandboxName: string;
+	id: string;
+	title: string | null;
+	status: string;
+	workspaceSlug: string;
 };
 
 export type WorkflowEnsureSessionRecord = {
@@ -4849,6 +4860,9 @@ export interface WorkflowDataService {
 	}): Promise<LiveLimitReadModel>;
 	listEnabledModelIds(): Promise<string[]>;
 	listSandboxExecutions(sandboxName: string): Promise<SandboxExecutionReadModel[]>;
+	listSandboxSessionOwners(input: {
+		sandboxNames: string[];
+	}): Promise<SandboxSessionOwnerRecord[]>;
 	getSandboxStats(input?: { now?: Date }): Promise<SandboxStatsReadModel>;
 	getWorkflowByRef(
 		ref: WorkflowRef & { lookup?: "id" | "name" | "auto" },

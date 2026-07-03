@@ -19,6 +19,7 @@ import type {
 	SessionGoalRecord,
 	SessionGoalScopeGuard,
 	SessionGoalStore,
+	SandboxSessionOwnerRecord,
 	SessionLifecycleController,
 	SessionLifecycleStopMode,
 	SessionProvisioningContext,
@@ -48,6 +49,7 @@ import { and, asc, desc, eq, gt, inArray, isNotNull, lte, or, sql } from "drizzl
 import { db as defaultDb } from "$lib/server/db";
 import {
 	agents,
+	projects,
 	sessionEvents,
 	sessionResources,
 	sessions,
@@ -484,6 +486,55 @@ export class CurrentSessionRepository implements SessionRepository {
 			sessionId: row.sessionId,
 			agentRuntime: row.agentRuntime ?? null,
 		}));
+	}
+
+	async listSandboxSessionOwners(input: {
+		sandboxNames: string[];
+	}): Promise<SandboxSessionOwnerRecord[]> {
+		const names = [...new Set(input.sandboxNames.map((name) => name.trim()).filter(Boolean))];
+		if (names.length === 0) return [];
+		const database = requireDb(this.database);
+		const rows = await database
+			.select({
+				id: sessions.id,
+				title: sessions.title,
+				status: sessions.status,
+				workspaceSandboxName: sessions.workspaceSandboxName,
+				sandboxName: sessions.sandboxName,
+				workspaceSlug: projects.externalId,
+			})
+			.from(sessions)
+			.leftJoin(projects, eq(projects.id, sessions.projectId))
+			.where(
+				or(
+					inArray(sessions.workspaceSandboxName, names),
+					inArray(sessions.sandboxName, names),
+				),
+			)
+			.orderBy(asc(sessions.updatedAt));
+
+		const owners = new Map<string, SandboxSessionOwnerRecord>();
+		for (const row of rows) {
+			const record = {
+				id: row.id,
+				title: row.title ?? null,
+				status: row.status,
+				workspaceSlug: row.workspaceSlug ?? "default",
+			};
+			if (row.workspaceSandboxName) {
+				owners.set(row.workspaceSandboxName, {
+					...record,
+					sandboxName: row.workspaceSandboxName,
+				});
+			}
+			if (row.sandboxName) {
+				owners.set(row.sandboxName, {
+					...record,
+					sandboxName: row.sandboxName,
+				});
+			}
+		}
+		return [...owners.values()];
 	}
 
 	async getWorkflowEnsureSession(

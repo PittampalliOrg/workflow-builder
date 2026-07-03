@@ -769,6 +769,7 @@ function fakeSessions(): SessionRepository {
 		getBrowserSessionTarget: vi.fn(async () => null),
 		listCliWorkspaceSessionCandidates: vi.fn(async () => []),
 		listWorkflowExecutionSessionRuntimes: vi.fn(async () => []),
+		listSandboxSessionOwners: vi.fn(async () => []),
 		getWorkflowEnsureSession: vi.fn(async () => null),
 		createWorkflowEnsureSession: vi.fn(async () => undefined),
 		updateWorkflowEnsureSessionRuntime: vi.fn(async () => undefined),

@@ -613,6 +613,7 @@ function fakeSessions(): SessionRepository {
 		})),
 		listCliWorkspaceSessionCandidates: vi.fn(async () => []),
 		listWorkflowExecutionSessionRuntimes: vi.fn(async () => []),
+		listSandboxSessionOwners: vi.fn(async () => []),
 		getWorkflowEnsureSession: vi.fn(async () => ({
 			id: "session-1",
 			agentId: "agent-1",
@@ -6315,6 +6316,37 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(sandboxInventory.listRecentExecutionsForSandbox).toHaveBeenCalledWith(
 			"dapr-agent-py",
 		);
+	});
+
+	it("lists sandbox session owners through session ports", async () => {
+		const sessions = {
+			...fakeSessions(),
+			listSandboxSessionOwners: vi.fn(async () => [
+				{
+					sandboxName: "sandbox-1",
+					id: "session-1",
+					title: "Solve task",
+					status: "running",
+					workspaceSlug: "workspace-1",
+				},
+			]),
+		} satisfies SessionRepository;
+		const { service } = makeService({ sessions });
+
+		await expect(
+			service.listSandboxSessionOwners({ sandboxNames: ["sandbox-1"] }),
+		).resolves.toEqual([
+			{
+				sandboxName: "sandbox-1",
+				id: "session-1",
+				title: "Solve task",
+				status: "running",
+				workspaceSlug: "workspace-1",
+			},
+		]);
+		expect(sessions.listSandboxSessionOwners).toHaveBeenCalledWith({
+			sandboxNames: ["sandbox-1"],
+		});
 	});
 
 	it("builds sandbox stats from runtime inventory and execution counts", async () => {

@@ -3368,6 +3368,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		}));
 	}
 
+	listSandboxSessionOwners(input: { sandboxNames: string[] }) {
+		return this.requireSessions().listSandboxSessionOwners(input);
+	}
+
 	async getSandboxStats(input: { now?: Date } = {}) {
 		const sandboxes = await this.deps.sandboxRuntimeInventory
 			?.listSandboxes()
