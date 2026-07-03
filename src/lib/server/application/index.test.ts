@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("$lib/server/application/adapters/postgres", () => ({
@@ -42,5 +45,16 @@ describe("getApplicationAdapters", () => {
 
 		expect(() => app.workflowDefinitions).toThrow("Database should be initialized lazily");
 		expect(requirePostgresDb).toHaveBeenCalledTimes(1);
+	});
+
+	it("wires session goal persistence through an injected Postgres adapter", () => {
+		const source = readFileSync(
+			join(dirname(fileURLToPath(import.meta.url)), "index.ts"),
+			"utf8",
+		);
+
+		expect(source).toContain("new PostgresSessionGoalStore(getDatabase())");
+		expect(source).toContain("new LifecycleSessionController(getSessionGoalStore())");
+		expect(source).not.toContain("RepositorySessionGoalStore");
 	});
 });

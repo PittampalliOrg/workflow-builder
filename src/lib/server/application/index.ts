@@ -90,8 +90,8 @@ import {
 	LifecycleSessionController,
 	LifecycleSessionGoalScopeGuard,
 	LegacyMlflowSessionTraceLifecycle,
+	PostgresSessionGoalStore,
 	PostgresSessionEventLog,
-	RepositorySessionGoalStore,
 	RuntimeSessionGoalHarnessResolver,
 	SessionAgentConfigCommandAdapter,
 	WorkspaceSessionRepositoryMounter,
@@ -222,6 +222,7 @@ export function getApplicationAdapters(
 	let sessionRuntimeEvents: DaprSessionRuntimeEventRaiser | undefined;
 	let sessionAgentConfigCommands: SessionAgentConfigCommandAdapter | undefined;
 	let sessionTraceLifecycle: LegacyMlflowSessionTraceLifecycle | undefined;
+	let sessionGoalStore: PostgresSessionGoalStore | undefined;
 	let peerAgentResolver: RegistryPeerAgentResolver | undefined;
 	let sessionEventNotifications:
 		| PostgresWorkflowSessionEventNotificationSource
@@ -367,6 +368,8 @@ export function getApplicationAdapters(
 		(sessionAgentConfigCommands ??= new SessionAgentConfigCommandAdapter());
 	const getSessionTraceLifecycle = () =>
 		(sessionTraceLifecycle ??= new LegacyMlflowSessionTraceLifecycle());
+	const getSessionGoalStore = () =>
+		(sessionGoalStore ??= new PostgresSessionGoalStore(getDatabase()));
 	const getPeerAgentResolver = () =>
 		(peerAgentResolver ??= new RegistryPeerAgentResolver(getDatabase()));
 	const getSessionEventNotifications = () =>
@@ -380,7 +383,7 @@ export function getApplicationAdapters(
 	const getSessionGoals = () =>
 		(sessionGoals ??= new ApplicationSessionGoalService({
 			sessions: getSessions(),
-			goals: new RepositorySessionGoalStore(),
+			goals: getSessionGoalStore(),
 			goalLoop: new DaprSessionGoalLoopDriver(),
 			goalHarness: new RuntimeSessionGoalHarnessResolver(),
 			scopeGuard: new LifecycleSessionGoalScopeGuard(),
@@ -392,12 +395,12 @@ export function getApplicationAdapters(
 	const getSessionLifecycle = () =>
 		(sessionLifecycle ??= new ApplicationSessionLifecycleService({
 			sessions: getSessions(),
-			lifecycle: new LifecycleSessionController(),
+			lifecycle: new LifecycleSessionController(getSessionGoalStore()),
 		}));
 	const getSessionSandboxes = () =>
 		(sessionSandboxes ??= new ApplicationSessionSandboxService({
 			sessions: getSessions(),
-			lifecycle: new LifecycleSessionController(),
+			lifecycle: new LifecycleSessionController(getSessionGoalStore()),
 			sandboxes: new KubernetesSessionSandboxDestroyer(),
 		}));
 	const getSessionMcpStatus = () =>

@@ -5,6 +5,7 @@ import type {
 	CreateSessionForkInput,
 	CreateSessionRecordInput,
 	CreatePeerSessionInput,
+	CreateSessionGoalInput,
 	CreateWorkflowEnsureSessionInput,
 	ListSessionEventsInput,
 	PeerSessionRecord,
@@ -48,6 +49,7 @@ import {
 	sessionEvents,
 	sessionResources,
 	sessions,
+	threadGoals,
 	type Session,
 	type SessionResource as SessionResourceRow,
 } from "$lib/server/db/schema";
@@ -89,12 +91,6 @@ import {
 } from "$lib/server/lifecycle/pause";
 import { ownsBenchmarkOrEvalRunForSession } from "$lib/server/lifecycle/ownership";
 import { isResourceInScope } from "$lib/server/workflows/project-scope";
-import {
-	createOrReplaceGoal,
-	getCurrentGoal,
-	markGoalComplete,
-	pauseGoal,
-} from "$lib/server/goals/repo";
 import { kickGoalLoop } from "$lib/server/goals/goal-loop";
 import {
 	decideGoalHarness,
@@ -805,6 +801,8 @@ export class DaprSessionWorkflowSpawner implements SessionWorkflowSpawner {
 }
 
 export class LifecycleSessionController implements SessionLifecycleController {
+	constructor(private readonly goals?: SessionGoalStore) {}
+
 	async checkSessionAccess(input: {
 		sessionId: string;
 		userId: string;
@@ -858,29 +856,140 @@ export class LifecycleSessionController implements SessionLifecycleController {
 	}
 
 	async pauseSessionGoal(sessionId: string): Promise<void> {
-		await pauseGoal(sessionId);
+		await (this.goals ?? new PostgresSessionGoalStore()).pauseGoal(sessionId);
 	}
 }
 
-export class RepositorySessionGoalStore implements SessionGoalStore {
+export class PostgresSessionGoalStore implements SessionGoalStore {
+	constructor(private readonly database: Database = requireDb()) {}
+
 	async getCurrentGoal(sessionId: string): Promise<SessionGoalRecord | null> {
-		return toSessionGoalRecord(await getCurrentGoal(sessionId));
+		const rows = await this.database
+			.select()
+			.from(threadGoals)
+			.where(eq(threadGoals.sessionId, sessionId))
+			.orderBy(desc(threadGoals.createdAt))
+			.limit(1);
+		return toSessionGoalRecord(rows[0] ?? null);
 	}
 
 	async createOrReplaceGoal(
-		input: Parameters<SessionGoalStore["createOrReplaceGoal"]>[0],
+		input: CreateSessionGoalInput,
 	): Promise<SessionGoalRecord> {
-		return toSessionGoalRecord(await createOrReplaceGoal(input))!;
+		const maxIterations =
+			typeof input.maxIterations === "number" && input.maxIterations > 0
+				? Math.floor(input.maxIterations)
+				: 50;
+		const tokenBudget =
+			typeof input.tokenBudget === "number" && input.tokenBudget > 0
+				? Math.floor(input.tokenBudget)
+				: null;
+		const acceptanceCriteria =
+			Array.isArray(input.acceptanceCriteria) && input.acceptanceCriteria.length
+				? input.acceptanceCriteria
+				: null;
+		const evidencePlan =
+			input.evidencePlan &&
+			Array.isArray(input.evidencePlan.commands) &&
+			input.evidencePlan.commands.length
+				? { commands: input.evidencePlan.commands }
+				: null;
+
+		const row = await this.database.transaction(async (tx) => {
+			const existing = await tx
+				.select()
+				.from(threadGoals)
+				.where(
+					and(
+						eq(threadGoals.sessionId, input.sessionId),
+						inArray(threadGoals.status, ["active", "budget_limited"]),
+					),
+				)
+				.orderBy(
+					sql`case when ${threadGoals.status} = 'active' then 0 else 1 end`,
+					desc(threadGoals.createdAt),
+				)
+				.limit(1);
+			if (existing[0]) {
+				const [updated] = await tx
+					.update(threadGoals)
+					.set({
+						objective: input.objective,
+						tokenBudget,
+						maxIterations,
+						acceptanceCriteria,
+						evidencePlan,
+						workflowExecutionId: input.workflowExecutionId ?? null,
+						goalId: crypto.randomUUID(),
+						status: "active",
+						tokensUsed: 0,
+						timeUsedSeconds: 0,
+						iterations: 0,
+						budgetSteeredAt: null,
+						lastContinuationAt: null,
+						stopReason: null,
+						completedAt: null,
+						createdAt: new Date(),
+						updatedAt: new Date(),
+					})
+					.where(eq(threadGoals.id, existing[0].id))
+					.returning();
+				return updated;
+			}
+			const [inserted] = await tx
+				.insert(threadGoals)
+				.values({
+					sessionId: input.sessionId,
+					objective: input.objective,
+					tokenBudget,
+					maxIterations,
+					acceptanceCriteria,
+					evidencePlan,
+					workflowExecutionId: input.workflowExecutionId ?? null,
+				})
+				.returning();
+			return inserted;
+		});
+		return toSessionGoalRecord(row)!;
 	}
 
 	async markGoalComplete(
 		sessionId: string,
 	): Promise<SessionGoalRecord | null> {
-		return toSessionGoalRecord(await markGoalComplete(sessionId));
+		const [row] = await this.database
+			.update(threadGoals)
+			.set({
+				status: "complete",
+				stopReason: "complete",
+				completedAt: new Date(),
+				updatedAt: new Date(),
+			})
+			.where(
+				and(
+					eq(threadGoals.sessionId, sessionId),
+					inArray(threadGoals.status, ["active", "budget_limited"]),
+				),
+			)
+			.returning();
+		return toSessionGoalRecord(row ?? null);
 	}
 
 	async pauseGoal(sessionId: string): Promise<SessionGoalRecord | null> {
-		return toSessionGoalRecord(await pauseGoal(sessionId));
+		const [row] = await this.database
+			.update(threadGoals)
+			.set({
+				status: "paused",
+				stopReason: "interrupt",
+				updatedAt: new Date(),
+			})
+			.where(
+				and(
+					eq(threadGoals.sessionId, sessionId),
+					eq(threadGoals.status, "active"),
+				),
+			)
+			.returning();
+		return toSessionGoalRecord(row ?? null);
 	}
 }
 

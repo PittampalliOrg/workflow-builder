@@ -17,7 +17,10 @@ run-diff/source-bundle artifact ingest APIs, and internal session-ingest utility
 routes, the external events ingest route, the agent-trigger membership check,
 the CLI credential capture session-owner lookup, and the ActivePieces resume
 execution lookup, plus the GitHub trigger ingress and event-trigger admission
-gate, and the internal piece-execution artifact readback route.
+gate, and the internal piece-execution artifact readback route, plus the
+workflow trigger management/lifecycle, workflow definition command,
+code-checkpoint diff/restore, admin GitOps auth-check, and session-goal storage
+wiring slices.
 The internal CLI workspace command route now routes execution lookup,
 CLI-session candidate lookup, file creation, and browser artifact persistence
 through workflow-data.
@@ -248,11 +251,11 @@ The first UI-facing route has also moved behind the application service:
   `ApplicationWorkflowCodeCheckpointService`. The route keeps the existing
   `{ checkpoints }` response and generic 500 failure mapping but no longer
   imports the legacy checkpoint helper. The Postgres read is confined to
-  `PostgresWorkflowCodeCheckpointStore.listForExecution`. The deeper
-  diff/restore routes still import `src/lib/server/workflows/code-checkpoints.ts`
-  and remain a later slice because that helper also owns OpenShell sandbox
-  commands, Dapr config/secret reads, Gitea API access, Git CLI fallback, and
-  restore shell-command semantics.
+  `PostgresWorkflowCodeCheckpointStore.listForExecution`. The diff and restore
+  routes now call `ApplicationWorkflowCodeCheckpointService.diffCheckpoint` and
+  `restoreCheckpoint`; mixed DB/OpenShell/Dapr/Git behavior remains behind the
+  documented `LegacyWorkflowCodeCheckpointWorkspacePort` adapter seam pending a
+  deeper workspace-port split.
 - `src/routes/api/workflows/executions/[executionId]/nats-stream/+server.ts`
   now delegates snapshot loading, cursor-based agent-event reads, session-event
   notifications, and terminal detection to
@@ -765,9 +768,12 @@ The first UI-facing route has also moved behind the application service:
   behind the runtime-config reader adapter instead of being imported by the
   presentation route.
 - `src/routes/api/v1/sessions/[id]/goal/+server.ts` now scopes session reads
-  and native CLI `/goal` command injection through workflow-data ports. Goal
-  repository mutations and lifecycle ownership checks remain in their existing
-  service boundaries pending a dedicated goal-management slice.
+  and native CLI `/goal` command injection through
+  `ApplicationSessionGoalService`. Thread-goal create/update/fetch operations
+  now use `PostgresSessionGoalStore` with an injected DB from the application
+  composition root, and lifecycle goal pausing uses the same store. The
+  remaining `src/lib/server/goals/repo.ts` direct DB access belongs to the
+  goal-loop driver/tick path and remains a later loop-storage adapter slice.
 - `src/routes/api/v1/sessions/[id]/goal-flow/+server.ts` now scopes the session
   and builds the observability goal-flow read model through workflow-data
   application ports. The current-goal lookup and bounded goal-flow event read
@@ -875,6 +881,9 @@ imports outside that subset and remains the next migration area. Current
 categories include:
 
 - Lifecycle Controller internals under `src/lib/server/lifecycle/**`.
+- goal-loop storage helpers under `src/lib/server/goals/**`, which still own
+  drivable-goal claiming, usage accrual, idle-event metadata, and tick-reaper
+  queries.
 - session/runtime/workspace helpers under `src/lib/server/sessions/**`,
   `src/lib/server/openshell-sessions.ts`, `src/lib/server/sandbox-sessions.ts`,
   and related API routes.

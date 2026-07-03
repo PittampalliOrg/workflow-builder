@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApplicationSessionGoalService } from "$lib/server/application/session-goals";
 import type {
@@ -153,6 +155,18 @@ describe("ApplicationSessionGoalService", () => {
 
 		expect(result).toEqual({ status: "not_found", message: "Session not found" });
 		expect(goals.getCurrentGoal).not.toHaveBeenCalled();
+	});
+
+	it("keeps thread goal persistence behind the sessions adapter boundary", () => {
+		const source = readFileSync(
+			join(process.cwd(), "src/lib/server/application/adapters/sessions.ts"),
+			"utf8",
+		);
+
+		expect(source).toContain("export class PostgresSessionGoalStore");
+		expect(source).toContain("from(threadGoals)");
+		expect(source).not.toContain("$lib/server/goals/repo");
+		expect(source).not.toContain("RepositorySessionGoalStore");
 	});
 });
 
