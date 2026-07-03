@@ -1416,6 +1416,34 @@ export type AdminPieceImageStatusRecord = {
 	enabled: boolean;
 };
 
+export type AdminPieceRuntimeImageStatus = "building" | "ready" | "failed";
+
+export type AdminPieceRuntimeImageEnableResult = {
+	pieceName: string;
+	version: string;
+	status: AdminPieceRuntimeImageStatus;
+	image?: string;
+	digest?: string;
+	madeRunnable: boolean;
+	build?: { triggered: boolean; status?: number; reason?: string };
+};
+
+export interface AdminPieceRuntimeImageRegistryPort {
+	imageExists(input: {
+		pieceName: string;
+		version: string;
+	}): Promise<{ exists: boolean; digest?: string }>;
+	imageRef(input: { pieceName: string; version: string }): string;
+}
+
+export interface AdminPieceRuntimeImageBuildPort {
+	triggerBuild(input: {
+		pieceName: string;
+		pieceVersion: string;
+		callbackUrl: string;
+	}): Promise<{ triggered: boolean; status?: number; reason?: string }>;
+}
+
 export type AdminProvisionedPieceRow = {
 	name: string;
 	displayName: string;
@@ -2229,12 +2257,24 @@ export interface AdminPieceRepository {
 	listLatestImageStatuses(
 		pieceNames: string[],
 	): Promise<AdminPieceImageStatusRecord[]>;
+	getLatestCatalogPieceVersion(pieceName: string): Promise<string | null>;
 	setPieceEnabled(input: {
 		pieceName: string;
 		enabled: boolean;
 		disabledBy?: string | null;
 		platformId?: string;
 	}): Promise<void>;
+	markPieceImageBuilding(input: {
+		pieceName: string;
+		version: string;
+	}): Promise<void>;
+	markPieceImageReadyEnabled(input: {
+		pieceName: string;
+		version: string;
+		image: string;
+		digest?: string | null;
+	}): Promise<void>;
+	markPieceRunnable(pieceName: string): Promise<void>;
 }
 
 export interface WorkspaceProjectRepository {
@@ -5099,6 +5139,10 @@ export interface WorkflowDataService {
 		enabled: boolean;
 		disabledBy?: string | null;
 	}): Promise<void>;
+	enableAdminPieceRuntimeImage(input: {
+		pieceName: string;
+		callbackUrl: string;
+	}): Promise<AdminPieceRuntimeImageEnableResult>;
 	getBenchmarkBrowserReadModel(input: {
 		projectId: string | null;
 	}): Promise<BenchmarkBrowserReadModel>;

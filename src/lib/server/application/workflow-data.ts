@@ -64,6 +64,9 @@ import type {
 	AppendWorkflowExecutionLogInput,
 	AdminPiecesReadModel,
 	AdminPieceRepository,
+	AdminPieceRuntimeImageBuildPort,
+	AdminPieceRuntimeImageEnableResult,
+	AdminPieceRuntimeImageRegistryPort,
 	AddSessionResourceInput,
 	AppConnectionCreateInput,
 	AppConnectionListItem,
@@ -238,6 +241,7 @@ const TOOL_CAPABLE_BENCHMARK_PROVIDERS = new Set([
 	"googleai",
 ]);
 const PINNED_ADMIN_PIECES = new Set(["github", "google-calendar", "openai"]);
+const ADMIN_PIECE_SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
 const MCP_TOKEN_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
 const PROJECT_MEMBERSHIP_ROLES: readonly ProjectMembershipRole[] = [
 	"ADMIN",
@@ -750,6 +754,12 @@ function hasAdminPieceName(piece: {
 	return typeof piece.name === "string" && piece.name.length > 0;
 }
 
+function assertValidAdminPieceSlug(pieceName: string): void {
+	if (!ADMIN_PIECE_SLUG_RE.test(pieceName)) {
+		throw new Error(`invalid piece name: ${pieceName}`);
+	}
+}
+
 function classifyEnvironmentBuild(
 	build: BenchmarkBrowserEnvironmentBuildRecord,
 ): BenchmarkInstanceEnvironmentStatus {
@@ -852,6 +862,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			mcpRuns: McpRunRepository;
 			appConnections: AppConnectionRepository;
 			adminPieces: AdminPieceRepository;
+			adminPieceRuntimeImages?: AdminPieceRuntimeImageRegistryPort;
+			adminPieceRuntimeImageBuilds?: AdminPieceRuntimeImageBuildPort;
 			apiKeys: ApiKeyStore;
 			workspaceProjects: WorkspaceProjectRepository;
 			pieceCatalog: PieceCatalogRepository;
@@ -2966,6 +2978,58 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		disabledBy?: string | null;
 	}) {
 		return this.deps.adminPieces.setPieceEnabled(input);
+	}
+
+	async enableAdminPieceRuntimeImage(input: {
+		pieceName: string;
+		callbackUrl: string;
+	}): Promise<AdminPieceRuntimeImageEnableResult> {
+		const pieceName = input.pieceName.trim();
+		assertValidAdminPieceSlug(pieceName);
+		const version = await this.deps.adminPieces.getLatestCatalogPieceVersion(pieceName);
+		if (!version) {
+			throw new Error(`piece '${pieceName}' is not in the catalog`);
+		}
+
+		const registry = this.deps.adminPieceRuntimeImages;
+		const buildTrigger = this.deps.adminPieceRuntimeImageBuilds;
+		if (!registry || !buildTrigger) {
+			throw new Error("Admin piece runtime image adapters are not configured");
+		}
+
+		const { exists, digest } = await registry.imageExists({ pieceName, version });
+		if (exists) {
+			const image = registry.imageRef({ pieceName, version });
+			await this.deps.adminPieces.markPieceImageReadyEnabled({
+				pieceName,
+				version,
+				image,
+				digest: digest ?? null,
+			});
+			await this.deps.adminPieces.markPieceRunnable(pieceName);
+			return {
+				pieceName,
+				version,
+				status: "ready",
+				image,
+				digest,
+				madeRunnable: true,
+			};
+		}
+
+		await this.deps.adminPieces.markPieceImageBuilding({ pieceName, version });
+		const build = await buildTrigger.triggerBuild({
+			pieceName,
+			pieceVersion: version,
+			callbackUrl: input.callbackUrl,
+		});
+		return {
+			pieceName,
+			version,
+			status: "building",
+			madeRunnable: false,
+			build,
+		};
 	}
 
 	resolveWorkspaceProjectId(input: {

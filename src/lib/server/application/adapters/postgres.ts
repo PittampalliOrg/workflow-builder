@@ -2141,6 +2141,21 @@ export class PostgresAdminPieceRepository implements AdminPieceRepository {
 		return [...latest.values()];
 	}
 
+	async getLatestCatalogPieceVersion(pieceName: string): Promise<string | null> {
+		const [row] = await this.database
+			.select({ version: pieceMetadata.version })
+			.from(pieceMetadata)
+			.where(
+				and(
+					eq(pieceMetadata.name, pieceName),
+					eq(pieceMetadata.catalogSchemaVersion, 1),
+				),
+			)
+			.orderBy(desc(pieceMetadata.updatedAt))
+			.limit(1);
+		return row?.version ?? null;
+	}
+
 	async setPieceEnabled(input: {
 		pieceName: string;
 		enabled: boolean;
@@ -2161,6 +2176,68 @@ export class PostgresAdminPieceRepository implements AdminPieceRepository {
 				platformId: input.platformId ?? "default-platform",
 			})
 			.onConflictDoNothing();
+	}
+
+	async markPieceImageBuilding(input: {
+		pieceName: string;
+		version: string;
+	}): Promise<void> {
+		await this.database
+			.insert(pieceImages)
+			.values({
+				pieceName: input.pieceName,
+				version: input.version,
+				status: "building",
+				enabledAt: sql`now()`,
+			})
+			.onConflictDoUpdate({
+				target: [pieceImages.pieceName, pieceImages.version],
+				set: {
+					status: "building",
+					errorMessage: null,
+					disabledAt: null,
+					enabledAt: sql`now()`,
+					updatedAt: sql`now()`,
+				},
+			});
+	}
+
+	async markPieceImageReadyEnabled(input: {
+		pieceName: string;
+		version: string;
+		image: string;
+		digest?: string | null;
+	}): Promise<void> {
+		await this.database
+			.insert(pieceImages)
+			.values({
+				pieceName: input.pieceName,
+				version: input.version,
+				image: input.image,
+				digest: input.digest ?? null,
+				status: "ready",
+				builtAt: sql`now()`,
+				enabledAt: sql`now()`,
+			})
+			.onConflictDoUpdate({
+				target: [pieceImages.pieceName, pieceImages.version],
+				set: {
+					image: input.image,
+					digest: input.digest ?? null,
+					status: "ready",
+					errorMessage: null,
+					disabledAt: null,
+					builtAt: sql`now()`,
+					enabledAt: sql`now()`,
+					updatedAt: sql`now()`,
+				},
+			});
+	}
+
+	async markPieceRunnable(pieceName: string): Promise<void> {
+		await this.database
+			.delete(platformDisabledPieces)
+			.where(eq(platformDisabledPieces.pieceName, pieceName));
 	}
 }
 

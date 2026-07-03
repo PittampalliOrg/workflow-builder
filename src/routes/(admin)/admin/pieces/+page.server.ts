@@ -2,7 +2,6 @@ import type { PageServerLoad, Actions } from "./$types";
 import { error, fail } from "@sveltejs/kit";
 import { getApplicationAdapters } from "$lib/server/application";
 import { getAppUrl } from "$lib/server/app-url";
-import { enablePiece, isValidPieceSlug } from "$lib/server/pieces/piece-images";
 
 /**
  * Re-check platform admin INSIDE the action. The (admin) layout guard only runs
@@ -41,14 +40,22 @@ export const actions: Actions = {
 		await requireAdmin(locals.session?.userId);
 		const form = await request.formData();
 		const pieceName = String(form.get("pieceName") ?? "").trim();
-		if (!pieceName || !isValidPieceSlug(pieceName)) return fail(400, { error: "valid pieceName required" });
+		if (!pieceName) return fail(400, { error: "valid pieceName required" });
 		try {
 			const callbackUrl = await getAppUrl(url, request);
-			const result = await enablePiece(pieceName, { callbackUrl });
+			const result = await getApplicationAdapters().workflowData.enableAdminPieceRuntimeImage({
+				pieceName,
+				callbackUrl,
+			});
 			return { success: true, ...result };
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : "enable failed";
-			return fail(/not in the catalog/.test(msg) ? 404 : 500, { error: msg, pieceName });
+			const status = /invalid piece name/.test(msg)
+				? 400
+				: /not in the catalog/.test(msg)
+					? 404
+					: 500;
+			return fail(status, { error: msg, pieceName });
 		}
 	},
 };

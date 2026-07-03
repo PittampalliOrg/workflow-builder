@@ -60,6 +60,10 @@ import {
 	LegacyBenchmarkRunLifecycleAdapter,
 } from "$lib/server/application/adapters/benchmark-evaluation-results";
 import {
+	LegacyAdminPieceRuntimeImageBuildPort,
+	LegacyAdminPieceRuntimeImageRegistryPort,
+} from "$lib/server/application/adapters/admin-piece-images";
+import {
 	LegacyAgentCompiledCapabilitiesRepository,
 	AgentRuntimeRegistrySyncAdapter,
 	LegacyAgentCatalogRepository,
@@ -1120,6 +1124,8 @@ export function getApplicationAdapters(
 			mcpRuns: getMcpRuns(),
 			appConnections: getAppConnections(),
 			adminPieces: getAdminPieces(),
+			adminPieceRuntimeImages: new LegacyAdminPieceRuntimeImageRegistryPort(),
+			adminPieceRuntimeImageBuilds: new LegacyAdminPieceRuntimeImageBuildPort(),
 			apiKeys: getApiKeys(),
 			workspaceProjects: getWorkspaceProjects(),
 			pieceCatalog: getPieceCatalog(),

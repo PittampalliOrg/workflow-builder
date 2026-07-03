@@ -2,7 +2,6 @@ import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getApplicationAdapters } from '$lib/server/application';
 import { getAppUrl } from '$lib/server/app-url';
-import { enablePiece, isValidPieceSlug } from '$lib/server/pieces/piece-images';
 
 /**
  * Admin-gated: enable an Activepieces piece on THIS cluster via its per-piece runtime
@@ -27,14 +26,17 @@ async function requireAdmin(userId: string | undefined | null): Promise<void> {
 export const POST: RequestHandler = async ({ params, locals, request, url }) => {
 	await requireAdmin(locals.session?.userId);
 	const pieceName = decodeURIComponent(params.pieceName);
-	if (!isValidPieceSlug(pieceName)) return error(400, 'invalid piece name');
 
 	try {
 		const callbackUrl = await getAppUrl(url, request);
-		const result = await enablePiece(pieceName, { callbackUrl });
+		const result = await getApplicationAdapters().workflowData.enableAdminPieceRuntimeImage({
+			pieceName,
+			callbackUrl,
+		});
 		return json(result);
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : 'enable failed';
+		if (/invalid piece name/.test(msg)) return error(400, msg);
 		// "not in the catalog" → 404; everything else (db, trigger) → 500.
 		if (/not in the catalog/.test(msg)) return error(404, msg);
 		return error(500, msg);

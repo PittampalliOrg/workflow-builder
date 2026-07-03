@@ -554,7 +554,11 @@ function fakeAdminPieces(): AdminPieceRepository {
 		listWorkflowReferencedPieceNames: vi.fn(async () => []),
 		listEnabledMcpPieceNames: vi.fn(async () => []),
 		listLatestImageStatuses: vi.fn(async () => []),
+		getLatestCatalogPieceVersion: vi.fn(async () => null),
 		setPieceEnabled: vi.fn(async () => undefined),
+		markPieceImageBuilding: vi.fn(async () => undefined),
+		markPieceImageReadyEnabled: vi.fn(async () => undefined),
+		markPieceRunnable: vi.fn(async () => undefined),
 	};
 }
 
@@ -5961,7 +5965,11 @@ describe("ApplicationWorkflowDataService", () => {
 					enabled: false,
 				},
 			]),
+			getLatestCatalogPieceVersion: vi.fn(async () => "1.0.0"),
 			setPieceEnabled: vi.fn(async () => undefined),
+			markPieceImageBuilding: vi.fn(async () => undefined),
+			markPieceImageReadyEnabled: vi.fn(async () => undefined),
+			markPieceRunnable: vi.fn(async () => undefined),
 		} satisfies AdminPieceRepository;
 		const service = new ApplicationWorkflowDataService({
 			workflowDefinitions: makeService({}).workflowDefinitions,
@@ -6027,6 +6035,173 @@ describe("ApplicationWorkflowDataService", () => {
 			enabled: true,
 			disabledBy: "user-1",
 		});
+	});
+
+	it("enables an admin piece runtime image immediately when the image already exists", async () => {
+		const adminPieces = fakeAdminPieces();
+		adminPieces.getLatestCatalogPieceVersion = vi.fn(async () => "2.1.0");
+		const registry = {
+			imageExists: vi.fn(async () => ({ exists: true, digest: "sha256:abc" })),
+			imageRef: vi.fn(() => "ghcr.io/example/ap-piece-slack:2.1.0"),
+		};
+		const builds = {
+			triggerBuild: vi.fn(async () => ({ triggered: true })),
+		};
+		const service = new ApplicationWorkflowDataService({
+			workflowDefinitions: makeService({}).workflowDefinitions,
+			workflowTriggers: fakeWorkflowTriggers(),
+			userProfiles: fakeUserProfiles(),
+			settings: fakeSettings(),
+			mcpConnections: fakeMcpConnections(),
+			hostedMcpServers: fakeHostedMcpServers(),
+			mcpRuns: fakeMcpRuns(),
+			appConnections: fakeAppConnections(),
+			adminPieces,
+			adminPieceRuntimeImages: registry,
+			adminPieceRuntimeImageBuilds: builds,
+			apiKeys: fakeApiKeys(),
+			workspaceProjects: fakeWorkspaceProjects(),
+			pieceCatalog: fakePieceCatalog(),
+			benchmarkBrowser: fakeBenchmarkBrowser(),
+			workflowExecutions: {} as WorkflowExecutionRepository,
+			sessionEventNotifications: fakeSessionEventNotifications(),
+			artifactStore: {} as ArtifactStore,
+			workspaceSessions: {} as WorkspaceSessionStore,
+			agentRuns: {} as WorkflowAgentRunStore,
+			planArtifacts: {} as WorkflowPlanArtifactStore,
+			traceLineage: {} as TraceLineageStore,
+		});
+
+		await expect(
+			service.enableAdminPieceRuntimeImage({
+				pieceName: "slack",
+				callbackUrl: "https://workflow-builder-dev.example.test/api/internal/pieces/slack/image-registration",
+			}),
+		).resolves.toEqual({
+			pieceName: "slack",
+			version: "2.1.0",
+			status: "ready",
+			image: "ghcr.io/example/ap-piece-slack:2.1.0",
+			digest: "sha256:abc",
+			madeRunnable: true,
+		});
+		expect(adminPieces.markPieceImageReadyEnabled).toHaveBeenCalledWith({
+			pieceName: "slack",
+			version: "2.1.0",
+			image: "ghcr.io/example/ap-piece-slack:2.1.0",
+			digest: "sha256:abc",
+		});
+		expect(adminPieces.markPieceRunnable).toHaveBeenCalledWith("slack");
+		expect(adminPieces.markPieceImageBuilding).not.toHaveBeenCalled();
+		expect(builds.triggerBuild).not.toHaveBeenCalled();
+	});
+
+	it("records building and triggers the admin piece image build when the image is missing", async () => {
+		const adminPieces = fakeAdminPieces();
+		adminPieces.getLatestCatalogPieceVersion = vi.fn(async () => "3.0.0");
+		const registry = {
+			imageExists: vi.fn(async () => ({ exists: false })),
+			imageRef: vi.fn(() => "ghcr.io/example/ap-piece-custom-tool:3.0.0"),
+		};
+		const builds = {
+			triggerBuild: vi.fn(async () => ({ triggered: false, reason: "not configured" })),
+		};
+		const service = new ApplicationWorkflowDataService({
+			workflowDefinitions: makeService({}).workflowDefinitions,
+			workflowTriggers: fakeWorkflowTriggers(),
+			userProfiles: fakeUserProfiles(),
+			settings: fakeSettings(),
+			mcpConnections: fakeMcpConnections(),
+			hostedMcpServers: fakeHostedMcpServers(),
+			mcpRuns: fakeMcpRuns(),
+			appConnections: fakeAppConnections(),
+			adminPieces,
+			adminPieceRuntimeImages: registry,
+			adminPieceRuntimeImageBuilds: builds,
+			apiKeys: fakeApiKeys(),
+			workspaceProjects: fakeWorkspaceProjects(),
+			pieceCatalog: fakePieceCatalog(),
+			benchmarkBrowser: fakeBenchmarkBrowser(),
+			workflowExecutions: {} as WorkflowExecutionRepository,
+			sessionEventNotifications: fakeSessionEventNotifications(),
+			artifactStore: {} as ArtifactStore,
+			workspaceSessions: {} as WorkspaceSessionStore,
+			agentRuns: {} as WorkflowAgentRunStore,
+			planArtifacts: {} as WorkflowPlanArtifactStore,
+			traceLineage: {} as TraceLineageStore,
+		});
+
+		await expect(
+			service.enableAdminPieceRuntimeImage({
+				pieceName: "custom-tool",
+				callbackUrl: "https://workflow-builder-dev.example.test/api/internal/pieces/custom-tool/image-registration",
+			}),
+		).resolves.toEqual({
+			pieceName: "custom-tool",
+			version: "3.0.0",
+			status: "building",
+			madeRunnable: false,
+			build: { triggered: false, reason: "not configured" },
+		});
+		expect(adminPieces.markPieceImageBuilding).toHaveBeenCalledWith({
+			pieceName: "custom-tool",
+			version: "3.0.0",
+		});
+		expect(builds.triggerBuild).toHaveBeenCalledWith({
+			pieceName: "custom-tool",
+			pieceVersion: "3.0.0",
+			callbackUrl:
+				"https://workflow-builder-dev.example.test/api/internal/pieces/custom-tool/image-registration",
+		});
+		expect(adminPieces.markPieceRunnable).not.toHaveBeenCalled();
+	});
+
+	it("rejects unknown or invalid admin piece runtime image enablement requests", async () => {
+		const adminPieces = fakeAdminPieces();
+		adminPieces.getLatestCatalogPieceVersion = vi.fn(async () => null);
+		const service = new ApplicationWorkflowDataService({
+			workflowDefinitions: makeService({}).workflowDefinitions,
+			workflowTriggers: fakeWorkflowTriggers(),
+			userProfiles: fakeUserProfiles(),
+			settings: fakeSettings(),
+			mcpConnections: fakeMcpConnections(),
+			hostedMcpServers: fakeHostedMcpServers(),
+			mcpRuns: fakeMcpRuns(),
+			appConnections: fakeAppConnections(),
+			adminPieces,
+			adminPieceRuntimeImages: {
+				imageExists: vi.fn(async () => ({ exists: false })),
+				imageRef: vi.fn(() => "unused"),
+			},
+			adminPieceRuntimeImageBuilds: {
+				triggerBuild: vi.fn(async () => ({ triggered: true })),
+			},
+			apiKeys: fakeApiKeys(),
+			workspaceProjects: fakeWorkspaceProjects(),
+			pieceCatalog: fakePieceCatalog(),
+			benchmarkBrowser: fakeBenchmarkBrowser(),
+			workflowExecutions: {} as WorkflowExecutionRepository,
+			sessionEventNotifications: fakeSessionEventNotifications(),
+			artifactStore: {} as ArtifactStore,
+			workspaceSessions: {} as WorkspaceSessionStore,
+			agentRuns: {} as WorkflowAgentRunStore,
+			planArtifacts: {} as WorkflowPlanArtifactStore,
+			traceLineage: {} as TraceLineageStore,
+		});
+
+		await expect(
+			service.enableAdminPieceRuntimeImage({
+				pieceName: "../bad",
+				callbackUrl: "https://example.test/callback",
+			}),
+		).rejects.toThrow("invalid piece name");
+		await expect(
+			service.enableAdminPieceRuntimeImage({
+				pieceName: "missing-piece",
+				callbackUrl: "https://example.test/callback",
+			}),
+		).rejects.toThrow("piece 'missing-piece' is not in the catalog");
+		expect(adminPieces.markPieceImageBuilding).not.toHaveBeenCalled();
 	});
 
 	it("resolves workspace project membership through the workspace project port", async () => {
