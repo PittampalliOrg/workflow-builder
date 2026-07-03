@@ -41,6 +41,8 @@ export type FunctionRouterExecutionPort = {
 		nodeId: string;
 		nodeName: string;
 		input: Record<string, unknown>;
+		connectionExternalId?: string | null;
+		maxRetries?: number;
 	}): Promise<{
 		ok: boolean;
 		status: number;

@@ -34,6 +34,8 @@ export class DaprFunctionRouterExecutionPort
 		nodeId: string;
 		nodeName: string;
 		input: Record<string, unknown>;
+		connectionExternalId?: string | null;
+		maxRetries?: number;
 	}): Promise<{
 		ok: boolean;
 		status: number;
@@ -49,7 +51,11 @@ export class DaprFunctionRouterExecutionPort
 				node_id: input.nodeId,
 				node_name: input.nodeName,
 				input: input.input,
+				...(input.connectionExternalId
+					? { connection_external_id: input.connectionExternalId }
+					: {}),
 			}),
+			maxRetries: input.maxRetries,
 		});
 		const payload = (await response.json().catch(() => null)) as
 			| FunctionRouterExecutionPayload

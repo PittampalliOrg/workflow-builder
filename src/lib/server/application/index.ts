@@ -121,6 +121,10 @@ import {
 	WorkflowDataActionOptionsConnectionReader,
 } from "$lib/server/application/adapters/action-options";
 import {
+	DaprActionCatalogHttpTestClient,
+	LocalActionCatalogTestReader,
+} from "$lib/server/application/adapters/action-catalog-test";
+import {
 	DaprFunctionRouterExecutionPort,
 	LegacyCodeFunctionExecutionRepository,
 } from "$lib/server/application/adapters/code-function-execution";
@@ -215,6 +219,10 @@ import {
 } from "$lib/server/application/catalogs";
 import { ApplicationActionOptionsService } from "$lib/server/application/action-options";
 import { ApplicationActionCatalogService } from "$lib/server/application/action-catalog";
+import {
+	ApplicationActionCatalogTestService,
+	DateActionCatalogTestExecutionIdGenerator,
+} from "$lib/server/application/action-catalog-test";
 import {
 	ApplicationCodeFunctionExecutionService,
 	DateCodeFunctionExecutionIdGenerator,
@@ -395,6 +403,7 @@ export function getApplicationAdapters(
 		| ApplicationWorkflowTriggerKindCatalogService
 		| undefined;
 	let actionOptions: ApplicationActionOptionsService | undefined;
+	let actionCatalogTest: ApplicationActionCatalogTestService | undefined;
 	let codeFunctionExecution:
 		| ApplicationCodeFunctionExecutionService
 		| undefined;
@@ -682,6 +691,14 @@ export function getApplicationAdapters(
 			codeFunctions: new LocalCodeFunctionOptionsPort(),
 			connections: new WorkflowDataActionOptionsConnectionReader(),
 			pieces: new DaprPieceOptionsClient(),
+		}));
+	const getActionCatalogTest = () =>
+		(actionCatalogTest ??= new ApplicationActionCatalogTestService({
+			actions: new LocalActionCatalogTestReader(),
+			codeFunctions: new LegacyCodeFunctionExecutionRepository(),
+			functionRouter: new DaprFunctionRouterExecutionPort(),
+			http: new DaprActionCatalogHttpTestClient(),
+			ids: new DateActionCatalogTestExecutionIdGenerator(),
 		}));
 	const getCodeFunctionExecution = () =>
 		(codeFunctionExecution ??= new ApplicationCodeFunctionExecutionService({
@@ -1038,6 +1055,9 @@ export function getApplicationAdapters(
 		},
 		get actionOptions() {
 			return getActionOptions();
+		},
+		get actionCatalogTest() {
+			return getActionCatalogTest();
 		},
 		get codeFunctionExecution() {
 			return getCodeFunctionExecution();
