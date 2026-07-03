@@ -1,6 +1,6 @@
-import { json, error } from '@sveltejs/kit';
-import type { RequestHandler } from './$types';
-import { getApplicationAdapters } from '$lib/server/application';
+import { error, json } from "@sveltejs/kit";
+import type { RequestHandler } from "./$types";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * GET /api/workflows/executions/[executionId]/sessions
@@ -17,34 +17,14 @@ import { getApplicationAdapters } from '$lib/server/application';
  * surface sessions the user can open.
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
-	if (!locals.session?.userId) return error(401, 'Authentication required');
-	const workflowData = getApplicationAdapters().workflowData;
-	const execution = await workflowData.getScopedExecutionById({
+	if (!locals.session?.userId) return error(401, "Authentication required");
+	const result = await getApplicationAdapters().workflowExecutionSessions.listSessions({
 		executionId: params.executionId,
 		userId: locals.session.userId,
 		projectId: locals.session.projectId,
 	});
-	if (!execution) return error(404, 'Execution not found');
-
-	const rows = await workflowData.listExecutionSessions({
-		executionId: params.executionId,
-		projectId: locals.session.projectId,
-		includeAncestors: true,
-	});
-
-	return json({
-		sessions: rows.map((r) => ({
-			id: r.id,
-			title: r.title,
-			status: r.status,
-			agentId: r.agentId,
-			// True when this session came from a source run the current run was forked
-			// from — the UI labels it as inherited/replayed activity.
-			inherited: r.workflowExecutionId !== params.executionId,
-			sourceExecutionId:
-				r.workflowExecutionId !== params.executionId ? r.workflowExecutionId : null,
-			createdAt: r.createdAt?.toISOString() ?? null,
-			completedAt: r.completedAt?.toISOString() ?? null,
-		})),
-	});
+	if (result.status === "error") {
+		return error(result.httpStatus, result.message);
+	}
+	return json(result.body);
 };

@@ -1,6 +1,6 @@
-import { json, error } from '@sveltejs/kit';
-import type { RequestHandler } from './$types';
-import { getApplicationAdapters } from '$lib/server/application';
+import { error, json } from "@sveltejs/kit";
+import type { RequestHandler } from "./$types";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * GET /api/workflows/executions/[executionId]/lineage
@@ -19,19 +19,14 @@ import { getApplicationAdapters } from '$lib/server/application';
  */
 
 export const GET: RequestHandler = async ({ params, locals }) => {
-	if (!locals.session?.userId) return error(401, 'Authentication required');
-
-	// Scope check on the requested run (404 hides cross-workspace existence).
-	const workflowData = getApplicationAdapters().workflowData;
-	const self = await workflowData.getScopedExecutionById({
+	if (!locals.session?.userId) return error(401, "Authentication required");
+	const result = await getApplicationAdapters().workflowExecutionLineage.getLineage({
 		executionId: params.executionId,
 		userId: locals.session.userId,
 		projectId: locals.session.projectId,
 	});
-	if (!self) return error(404, 'Execution not found');
-
-	const lineage = await workflowData.getExecutionLineage(params.executionId);
-	if (!lineage) return error(404, 'Execution not found');
-
-	return json(lineage);
+	if (result.status === "error") {
+		return error(result.httpStatus, result.message);
+	}
+	return json(result.body);
 };

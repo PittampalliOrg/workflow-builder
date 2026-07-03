@@ -150,8 +150,11 @@ import { ApplicationSessionRuntimeAccessService } from "$lib/server/application/
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
 import { ApplicationBulkLifecycleStopService } from "$lib/server/application/lifecycle-bulk-stop";
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
+import { ApplicationWorkflowBrowserArtifactsService } from "$lib/server/application/workflow-browser-artifacts";
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
 import { ApplicationWorkflowExecutionFilesService } from "$lib/server/application/workflow-execution-files";
+import { ApplicationWorkflowExecutionLineageService } from "$lib/server/application/workflow-execution-lineage";
+import { ApplicationWorkflowExecutionSessionsService } from "$lib/server/application/workflow-execution-sessions";
 import { ApplicationWorkflowExecutionWorkspaceService } from "$lib/server/application/workflow-execution-workspace";
 import { ApplicationWorkflowExecutionStreamService } from "$lib/server/application/workflow-execution-stream";
 import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/application/workflow-code-checkpoints";
@@ -284,11 +287,20 @@ export function getApplicationAdapters(
 	let workflowExecutionFiles:
 		| ApplicationWorkflowExecutionFilesService
 		| undefined;
+	let workflowExecutionLineage:
+		| ApplicationWorkflowExecutionLineageService
+		| undefined;
+	let workflowExecutionSessions:
+		| ApplicationWorkflowExecutionSessionsService
+		| undefined;
 	let workflowExecutionWorkspace:
 		| ApplicationWorkflowExecutionWorkspaceService
 		| undefined;
 	let workflowExecutionStream:
 		| ApplicationWorkflowExecutionStreamService
+		| undefined;
+	let workflowBrowserArtifacts:
+		| ApplicationWorkflowBrowserArtifactsService
 		| undefined;
 	let workflowCodeCheckpoints:
 		| ApplicationWorkflowCodeCheckpointService
@@ -514,6 +526,14 @@ export function getApplicationAdapters(
 		(workflowExecutionFiles ??= new ApplicationWorkflowExecutionFilesService({
 			workflowData: getWorkflowData(),
 		}));
+	const getWorkflowExecutionLineage = () =>
+		(workflowExecutionLineage ??= new ApplicationWorkflowExecutionLineageService({
+			workflowData: getWorkflowData(),
+		}));
+	const getWorkflowExecutionSessions = () =>
+		(workflowExecutionSessions ??= new ApplicationWorkflowExecutionSessionsService({
+			workflowData: getWorkflowData(),
+		}));
 	const getWorkflowExecutionWorkspace = () =>
 		(workflowExecutionWorkspace ??= new ApplicationWorkflowExecutionWorkspaceService({
 			workflowData: getWorkflowData(),
@@ -523,6 +543,10 @@ export function getApplicationAdapters(
 		(workflowExecutionStream ??= new ApplicationWorkflowExecutionStreamService({
 			workflowData: getWorkflowData(),
 			executionReadModels: new LegacyWorkflowExecutionReadModelPort(),
+		}));
+	const getWorkflowBrowserArtifacts = () =>
+		(workflowBrowserArtifacts ??= new ApplicationWorkflowBrowserArtifactsService({
+			workflowData: getWorkflowData(),
 		}));
 	const getWorkflowCodeCheckpoints = () =>
 		(workflowCodeCheckpoints ??= new ApplicationWorkflowCodeCheckpointService({
@@ -712,11 +736,20 @@ export function getApplicationAdapters(
 		get workflowExecutionFiles() {
 			return getWorkflowExecutionFiles();
 		},
+		get workflowExecutionLineage() {
+			return getWorkflowExecutionLineage();
+		},
+		get workflowExecutionSessions() {
+			return getWorkflowExecutionSessions();
+		},
 		get workflowExecutionWorkspace() {
 			return getWorkflowExecutionWorkspace();
 		},
 		get workflowExecutionStream() {
 			return getWorkflowExecutionStream();
+		},
+		get workflowBrowserArtifacts() {
+			return getWorkflowBrowserArtifacts();
 		},
 		get workflowCodeCheckpoints() {
 			return getWorkflowCodeCheckpoints();

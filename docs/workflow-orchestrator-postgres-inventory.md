@@ -177,10 +177,10 @@ services:
   the newest persisted plan through `workflowData` and retains the existing
   Dapr service-invocation fallback to `dapr-agent-py` for older runs.
 - `src/routes/api/workflows/executions/[executionId]/lineage/+server.ts` now
-  scopes the requested execution through `workflowData.getExecutionById` and
-  loads the fork lineage tree through `workflowData.getExecutionLineage`.
-  Recursive lineage traversal is confined to the Postgres execution repository
-  adapter.
+  delegates scoped execution access and fork-lineage loading to
+  `ApplicationWorkflowExecutionLineageService`. Recursive lineage traversal is
+  confined to the Postgres execution repository adapter, and the route imports
+  no workflow-data, project-scope, DB, or Drizzle modules.
 - `src/routes/api/workflows/executions/[executionId]/+server.ts` now delegates
   detail loading and coordinator-owner shaping to
   `ApplicationWorkflowExecutionControlService.getExecutionDetail`. The service
@@ -211,10 +211,17 @@ services:
   loads the forked execution and its parent through `workflowData`; spec
   comparison remains route-local presentation shaping over application DTOs.
 - `src/routes/api/workflows/executions/[executionId]/sessions/+server.ts` now
-  scope-checks the execution through `workflowData.getExecutionById` and lists
-  direct plus inherited rerun-lineage sessions through
-  `workflowData.listExecutionSessions`. Ancestor traversal and session/project
-  filtering are confined to the execution repository adapter.
+  delegates scoped execution access, direct plus inherited rerun-lineage
+  session loading, and inherited/source response shaping to
+  `ApplicationWorkflowExecutionSessionsService`. Ancestor traversal and
+  session/project filtering are confined to the execution repository adapter,
+  and the route imports no workflow-data, project-scope, DB, or Drizzle
+  modules.
+- `src/routes/api/workflows/executions/[executionId]/browser-artifacts/+server.ts`
+  now requires the caller's authenticated project scope and delegates scoped
+  execution access plus browser-artifact listing to
+  `ApplicationWorkflowBrowserArtifactsService`. Browser artifact row reads
+  remain behind the workflow-data port and Postgres adapter.
 - `src/routes/api/workflows/executions/[executionId]/logs/+server.ts` now loads
   the execution, persisted node logs, and session-backed agent events through
   `workflowData`. Node-log and session-event queries are confined to the
