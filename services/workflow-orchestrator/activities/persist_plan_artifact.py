@@ -1,47 +1,13 @@
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from typing import Any
 
-import requests
-
-from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
-from core.config import config
+from activities.workflow_data_client import workflow_data_client
 from tracing import start_activity_span
 
 logger = logging.getLogger(__name__)
-
-DAPR_HOST = config.DAPR_HOST
-DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
-SECRET_STORE_NAME = "kubernetes-secrets"
-SECRET_NAME = "workflow-builder-secrets"
-
-_database_url: str | None = None
-
-
-def _get_database_url() -> str:
-    global _database_url
-    if _database_url is not None:
-        return _database_url
-
-    url = (
-        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}"
-        f"/v1.0/secrets/{SECRET_STORE_NAME}/{SECRET_NAME}"
-    )
-    response = requests.get(url, timeout=10)
-    response.raise_for_status()
-    secrets = response.json()
-    db_url = secrets.get("DATABASE_URL")
-    if not db_url:
-        raise RuntimeError("DATABASE_URL not found in Dapr secrets")
-    _database_url = db_url
-    return db_url
-
-
-def _use_workflow_data_api() -> bool:
-    return workflow_data_api_mode() != "postgres"
 
 
 def persist_plan_artifact(_ctx, input_data: dict[str, Any]) -> dict[str, Any]:
@@ -75,125 +41,35 @@ def persist_plan_artifact(_ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         },
     ):
         try:
-            api_mode = workflow_data_api_mode()
-            if _use_workflow_data_api():
-                try:
-                    result = workflow_data_client.upsert_plan_artifact(
-                        {
-                            "artifactRef": artifact_ref,
-                            "workflowExecutionId": db_execution_id,
-                            "workflowId": workflow_id,
-                            "nodeId": node_id,
-                            "goal": goal,
-                            "planJson": plan_json,
-                            "planMarkdown": plan_markdown,
-                            "sourcePrompt": source_prompt,
-                            "artifactType": artifact_type,
-                            "status": status,
-                            "workspaceRef": workspace_ref,
-                            "clonePath": clone_path,
-                            "metadata": metadata,
-                        }
-                    )
-                    return {
-                        "success": True,
-                        "artifactRef": result.get("artifactRef", artifact_ref),
-                        "storageBackend": result.get(
-                            "storageBackend",
-                            "workflow_plan_artifacts",
-                        ),
-                        "artifactType": result.get("artifactType", artifact_type),
-                        "status": result.get("status", status),
-                    }
-                except Exception as exc:
-                    if api_mode == "http":
-                        logger.error("workflow-data failed to persist plan artifact %s: %s", artifact_ref, exc)
-                        return {"success": False, "error": str(exc)}
-                    logger.warning(
-                        "workflow-data failed to persist plan artifact %s; falling back to Postgres: %s",
-                        artifact_ref,
-                        exc,
-                    )
-
-            db_url = _get_database_url()
-            import psycopg2
-
-            conn = psycopg2.connect(db_url)
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        SELECT user_id, workflow_id
-                        FROM workflow_executions
-                        WHERE id = %s
-                        LIMIT 1
-                        """,
-                        (db_execution_id,),
-                    )
-                    execution_row = cur.fetchone()
-                    user_id = execution_row[0] if execution_row else None
-                    workflow_id_value = execution_row[1] if execution_row and execution_row[1] else workflow_id
-                    cur.execute(
-                        """
-                        INSERT INTO workflow_plan_artifacts (
-                            id,
-                            workflow_execution_id,
-                            workflow_id,
-                            user_id,
-                            node_id,
-                            workspace_ref,
-                            clone_path,
-                            artifact_type,
-                            artifact_version,
-                            status,
-                            goal,
-                            plan_json,
-                            plan_markdown,
-                            source_prompt,
-                            metadata
-                        ) VALUES (
-                            %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s, %s
-                        )
-                        ON CONFLICT (id) DO UPDATE SET
-                            status = EXCLUDED.status,
-                            goal = EXCLUDED.goal,
-                            plan_json = EXCLUDED.plan_json,
-                            plan_markdown = EXCLUDED.plan_markdown,
-                            source_prompt = EXCLUDED.source_prompt,
-                            metadata = EXCLUDED.metadata,
-                            workspace_ref = EXCLUDED.workspace_ref,
-                            clone_path = EXCLUDED.clone_path,
-                            updated_at = NOW()
-                        """,
-                        (
-                            artifact_ref,
-                            db_execution_id,
-                            workflow_id_value,
-                            user_id,
-                            node_id,
-                            workspace_ref,
-                            clone_path,
-                            artifact_type,
-                            status,
-                            goal,
-                            json.dumps(plan_json),
-                            plan_markdown,
-                            source_prompt,
-                            json.dumps(metadata) if metadata is not None else None,
-                        ),
-                    )
-                conn.commit()
-            finally:
-                conn.close()
+            result = workflow_data_client.upsert_plan_artifact(
+                {
+                    "artifactRef": artifact_ref,
+                    "workflowExecutionId": db_execution_id,
+                    "workflowId": workflow_id,
+                    "nodeId": node_id,
+                    "goal": goal,
+                    "planJson": plan_json,
+                    "planMarkdown": plan_markdown,
+                    "sourcePrompt": source_prompt,
+                    "artifactType": artifact_type,
+                    "status": status,
+                    "workspaceRef": workspace_ref,
+                    "clonePath": clone_path,
+                    "metadata": metadata,
+                }
+            )
             return {
                 "success": True,
-                "artifactRef": artifact_ref,
-                "storageBackend": "workflow_plan_artifacts",
-                "artifactType": artifact_type,
-                "status": status,
+                "artifactRef": result.get("artifactRef", artifact_ref),
+                "storageBackend": result.get(
+                    "storageBackend",
+                    "workflow_plan_artifacts",
+                ),
+                "artifactType": result.get("artifactType", artifact_type),
+                "status": result.get("status", status),
             }
         except Exception as exc:
-            logger.error("Failed to persist plan artifact %s: %s", artifact_ref, exc)
+            logger.error("workflow-data failed to persist plan artifact %s: %s", artifact_ref, exc)
             return {"success": False, "error": str(exc)}
 
 
@@ -211,57 +87,20 @@ def update_plan_artifact_status(_ctx, input_data: dict[str, Any]) -> dict[str, A
         {"artifact.ref": artifact_ref, "artifact.status": status},
     ):
         try:
-            api_mode = workflow_data_api_mode()
-            if _use_workflow_data_api():
-                try:
-                    result = workflow_data_client.update_plan_artifact(
-                        artifact_ref,
-                        {
-                            "status": status,
-                            "metadata": metadata,
-                        },
-                    )
-                    return {
-                        "success": True,
-                        "artifactRef": result.get("artifactRef", artifact_ref),
-                        "status": result.get("status", status),
-                    }
-                except Exception as exc:
-                    if api_mode == "http":
-                        logger.error("workflow-data failed to update plan artifact %s: %s", artifact_ref, exc)
-                        return {"success": False, "error": str(exc)}
-                    logger.warning(
-                        "workflow-data failed to update plan artifact %s; falling back to Postgres: %s",
-                        artifact_ref,
-                        exc,
-                    )
-
-            db_url = _get_database_url()
-            import psycopg2
-
-            conn = psycopg2.connect(db_url)
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        UPDATE workflow_plan_artifacts
-                        SET status = %s,
-                            metadata = COALESCE(%s::jsonb, metadata),
-                            updated_at = NOW()
-                        WHERE id = %s
-                        """,
-                        (
-                            status,
-                            json.dumps(metadata) if metadata is not None else None,
-                            artifact_ref,
-                        ),
-                    )
-                conn.commit()
-            finally:
-                conn.close()
-            return {"success": True, "artifactRef": artifact_ref, "status": status}
+            result = workflow_data_client.update_plan_artifact(
+                artifact_ref,
+                {
+                    "status": status,
+                    "metadata": metadata,
+                },
+            )
+            return {
+                "success": True,
+                "artifactRef": result.get("artifactRef", artifact_ref),
+                "status": result.get("status", status),
+            }
         except Exception as exc:
-            logger.error("Failed to update plan artifact %s: %s", artifact_ref, exc)
+            logger.error("workflow-data failed to update plan artifact %s: %s", artifact_ref, exc)
             return {"success": False, "error": str(exc)}
 
 
@@ -277,64 +116,20 @@ def fetch_plan_artifact(_ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         {"artifact.ref": artifact_ref},
     ):
         try:
-            api_mode = workflow_data_api_mode()
-            if _use_workflow_data_api():
-                try:
-                    artifact = workflow_data_client.get_plan_artifact(artifact_ref)
-                    if not artifact:
-                        return {"success": False, "error": f"Plan artifact not found: {artifact_ref}"}
-                    return {
-                        "success": True,
-                        "artifactRef": artifact.get("artifactRef", artifact_ref),
-                        "status": artifact.get("status"),
-                        "goal": artifact.get("goal"),
-                        "planJson": artifact.get("planJson"),
-                        "planMarkdown": artifact.get("planMarkdown"),
-                        "metadata": artifact.get("metadata"),
-                        "workspaceRef": artifact.get("workspaceRef"),
-                        "clonePath": artifact.get("clonePath"),
-                    }
-                except Exception as exc:
-                    if api_mode == "http":
-                        logger.error("workflow-data failed to fetch plan artifact %s: %s", artifact_ref, exc)
-                        return {"success": False, "error": str(exc)}
-                    logger.warning(
-                        "workflow-data failed to fetch plan artifact %s; falling back to Postgres: %s",
-                        artifact_ref,
-                        exc,
-                    )
-
-            db_url = _get_database_url()
-            import psycopg2
-
-            conn = psycopg2.connect(db_url)
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        SELECT id, status, goal, plan_json, plan_markdown, metadata, workspace_ref, clone_path
-                        FROM workflow_plan_artifacts
-                        WHERE id = %s
-                        LIMIT 1
-                        """,
-                        (artifact_ref,),
-                    )
-                    row = cur.fetchone()
-            finally:
-                conn.close()
-            if not row:
+            artifact = workflow_data_client.get_plan_artifact(artifact_ref)
+            if not artifact:
                 return {"success": False, "error": f"Plan artifact not found: {artifact_ref}"}
             return {
                 "success": True,
-                "artifactRef": row[0],
-                "status": row[1],
-                "goal": row[2],
-                "planJson": row[3],
-                "planMarkdown": row[4],
-                "metadata": row[5],
-                "workspaceRef": row[6],
-                "clonePath": row[7],
+                "artifactRef": artifact.get("artifactRef", artifact_ref),
+                "status": artifact.get("status"),
+                "goal": artifact.get("goal"),
+                "planJson": artifact.get("planJson"),
+                "planMarkdown": artifact.get("planMarkdown"),
+                "metadata": artifact.get("metadata"),
+                "workspaceRef": artifact.get("workspaceRef"),
+                "clonePath": artifact.get("clonePath"),
             }
         except Exception as exc:
-            logger.error("Failed to fetch plan artifact %s: %s", artifact_ref, exc)
+            logger.error("workflow-data failed to fetch plan artifact %s: %s", artifact_ref, exc)
             return {"success": False, "error": str(exc)}

@@ -8,44 +8,12 @@ through the normal OpenTelemetry pipeline.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
-from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
+from activities.workflow_data_client import workflow_data_client
 from tracing import set_current_span_attrs
 
 logger = logging.getLogger(__name__)
-
-SECRET_STORE_NAME = "kubernetes-secrets"
-SECRET_NAME = "workflow-builder-secrets"
-
-_database_url: str | None = None
-
-
-def _get_database_url() -> str:
-    global _database_url
-    if _database_url is not None:
-        return _database_url
-
-    env_url = os.environ.get("DATABASE_URL")
-    if env_url:
-        _database_url = env_url
-        return env_url
-
-    from dapr.clients import DaprClient
-
-    with DaprClient() as client:
-        secret = client.get_secret(store_name=SECRET_STORE_NAME, key=SECRET_NAME)
-        db_url = secret.secret.get("DATABASE_URL")
-
-    if not db_url:
-        raise RuntimeError(
-            f"DATABASE_URL not found in secret '{SECRET_NAME}' "
-            f"from store '{SECRET_STORE_NAME}'"
-        )
-
-    _database_url = db_url
-    return db_url
 
 
 def _normalize_trace_id(value: Any) -> str | None:
@@ -87,83 +55,22 @@ def _local_target_to_api(target: dict[str, str | None]) -> dict[str, str | None]
 def _fetch_trace_targets(db_execution_id: str | None) -> list[dict[str, str | None]]:
     if not db_execution_id:
         return []
-    api_mode = workflow_data_api_mode()
-    if api_mode != "postgres":
-        try:
-            return [
-                target
-                for target in (
-                    _api_target_to_local(item)
-                    for item in workflow_data_client.get_trace_targets(str(db_execution_id))
-                )
-                if target is not None
-            ]
-        except Exception as exc:  # noqa: BLE001 - trace linkage is best effort
-            logger.warning(
-                "[OTel Trace Finalize] workflow-data failed to load trace targets for %s: %s",
-                db_execution_id,
-                exc,
-            )
-            if api_mode == "http":
-                return []
-
-    return _fetch_trace_targets_from_postgres(str(db_execution_id))
-
-
-def _fetch_trace_targets_from_postgres(db_execution_id: str) -> list[dict[str, str | None]]:
-    targets: list[dict[str, str | None]] = []
-    conn = None
     try:
-        import psycopg2
-
-        conn = psycopg2.connect(_get_database_url(), connect_timeout=3)
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, project_id, mlflow_experiment_id, mlflow_run_id
-                FROM workflow_executions
-                WHERE id = %s
-                """,
-                (db_execution_id,),
+        targets = [
+            target
+            for target in (
+                _api_target_to_local(item)
+                for item in workflow_data_client.get_trace_targets(str(db_execution_id))
             )
-            row = cur.fetchone()
-            if row:
-                targets.append({
-                    "entity_type": "workflow_execution",
-                    "entity_id": str(row[0]),
-                    "project_id": row[1],
-                    "external_experiment_id": row[2],
-                    "external_run_id": row[3],
-                })
-
-            cur.execute(
-                """
-                SELECT id, project_id, mlflow_experiment_id, mlflow_run_id
-                FROM sessions
-                WHERE workflow_execution_id = %s
-                """,
-                (db_execution_id,),
-            )
-            for session_row in cur.fetchall():
-                targets.append({
-                    "entity_type": "session",
-                    "entity_id": str(session_row[0]),
-                    "project_id": session_row[1],
-                    "external_experiment_id": session_row[2],
-                    "external_run_id": session_row[3],
-                })
+            if target is not None
+        ]
     except Exception as exc:  # noqa: BLE001 - trace linkage is best effort
         logger.warning(
-            "[OTel Trace Finalize] failed to load trace targets for %s: %s",
+            "[OTel Trace Finalize] workflow-data failed to load trace targets for %s: %s",
             db_execution_id,
             exc,
         )
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        return []
 
     deduped: list[dict[str, str | None]] = []
     seen: set[tuple[str | None, str | None]] = set()
@@ -184,12 +91,6 @@ def _record_lineage_links(
     attrs: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if not targets:
-        return {"recorded": 0, "sourceKeys": []}
-    api_mode = workflow_data_api_mode()
-    if api_mode == "postgres":
-        logger.warning(
-            "[OTel Trace Finalize] Postgres mode has no direct lineage fallback"
-        )
         return {"recorded": 0, "sourceKeys": []}
     api_targets = [
         _local_target_to_api(target)

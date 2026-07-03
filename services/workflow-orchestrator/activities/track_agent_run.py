@@ -8,56 +8,13 @@ the orchestrator uses native Dapr child workflows.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
-import requests
-
-from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
-from core.config import config
+from activities.workflow_data_client import workflow_data_client
 from tracing import start_activity_span
 
 logger = logging.getLogger(__name__)
-
-DAPR_HOST = config.DAPR_HOST
-DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
-SECRET_STORE_NAME = "kubernetes-secrets"
-SECRET_NAME = "workflow-builder-secrets"
-
-_database_url: str | None = None
-
-
-def _get_database_url() -> str:
-    """Fetch DATABASE_URL from Dapr secrets store (cached)."""
-    global _database_url
-    if _database_url is not None:
-        return _database_url
-
-    url = (
-        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}"
-        f"/v1.0/secrets/{SECRET_STORE_NAME}/{SECRET_NAME}"
-    )
-    response = requests.get(url, timeout=10)
-    response.raise_for_status()
-    secrets = response.json()
-
-    db_url = secrets.get("DATABASE_URL")
-    if not db_url:
-        raise RuntimeError(
-            f"DATABASE_URL not found in secret '{SECRET_NAME}' from store '{SECRET_STORE_NAME}'"
-        )
-    _database_url = db_url
-    return db_url
-
-
-def _json_dumps_safe(value: Any) -> str | None:
-    if value is None:
-        return None
-    try:
-        return json.dumps(value)
-    except (TypeError, ValueError):
-        return json.dumps(str(value))
 
 
 def _normalize_mode(value: Any) -> str:
@@ -108,10 +65,6 @@ def _extract_workspace_ref(result: Any) -> str | None:
             return workspace_ref
 
     return None
-
-
-def _use_workflow_data_api() -> bool:
-    return workflow_data_api_mode() != "postgres"
 
 
 def track_agent_run_scheduled(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
@@ -169,112 +122,24 @@ def track_agent_run_scheduled(ctx, input_data: dict[str, Any]) -> dict[str, Any]
 
     with start_activity_span("activity.track_agent_run_scheduled", otel, attrs):
         try:
-            api_mode = workflow_data_api_mode()
-            if _use_workflow_data_api():
-                try:
-                    workflow_data_client.schedule_agent_run(
-                        {
-                            "id": run_id,
-                            "workflowExecutionId": workflow_execution_id,
-                            "workflowId": workflow_id,
-                            "nodeId": node_id,
-                            "mode": mode,
-                            "agentWorkflowId": agent_workflow_id,
-                            "daprInstanceId": dapr_instance_id,
-                            "parentExecutionId": parent_execution_id,
-                            "workspaceRef": workspace_ref,
-                            "artifactRef": artifact_ref,
-                        }
-                    )
-                    return {"success": True, "id": run_id}
-                except Exception as exc:
-                    if api_mode == "http":
-                        logger.warning(
-                            "[Track Agent Run] workflow-data scheduled row failed in strict mode %s: %s",
-                            run_id,
-                            exc,
-                        )
-                        return {"success": False, "id": run_id, "error": str(exc)}
-                    logger.warning(
-                        "[Track Agent Run] workflow-data scheduled row failed; falling back to Postgres %s: %s",
-                        run_id,
-                        exc,
-                    )
-
-            db_url = _get_database_url()
-            import psycopg2
-
-            conn = psycopg2.connect(db_url)
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        INSERT INTO workflow_agent_runs (
-                            id,
-                            workflow_execution_id,
-                            workflow_id,
-                            node_id,
-                            mode,
-                            agent_workflow_id,
-                            dapr_instance_id,
-                            parent_execution_id,
-                            workspace_ref,
-                            artifact_ref,
-                            status,
-                            created_at,
-                            updated_at
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'scheduled', now(), now())
-                        ON CONFLICT (id) DO UPDATE
-                        SET
-                            workflow_execution_id = EXCLUDED.workflow_execution_id,
-                            workflow_id = EXCLUDED.workflow_id,
-                            node_id = EXCLUDED.node_id,
-                            mode = EXCLUDED.mode,
-                            agent_workflow_id = EXCLUDED.agent_workflow_id,
-                            dapr_instance_id = EXCLUDED.dapr_instance_id,
-                            parent_execution_id = EXCLUDED.parent_execution_id,
-                            workspace_ref = EXCLUDED.workspace_ref,
-                            artifact_ref = EXCLUDED.artifact_ref,
-                            status = 'scheduled',
-                            updated_at = now()
-                        """,
-                        (
-                            run_id,
-                            workflow_execution_id,
-                            workflow_id,
-                            node_id,
-                            mode,
-                            agent_workflow_id,
-                            dapr_instance_id,
-                            parent_execution_id,
-                            workspace_ref,
-                            artifact_ref,
-                        ),
-                    )
-                    if workspace_ref:
-                        cur.execute(
-                            """
-                            UPDATE workflow_workspace_sessions
-                            SET
-                                durable_instance_id = %s,
-                                updated_at = now(),
-                                last_accessed_at = now()
-                            WHERE workspace_ref = %s
-                            """,
-                            (
-                                dapr_instance_id,
-                                workspace_ref,
-                            ),
-                        )
-                conn.commit()
-            finally:
-                conn.close()
-
+            workflow_data_client.schedule_agent_run(
+                {
+                    "id": run_id,
+                    "workflowExecutionId": workflow_execution_id,
+                    "workflowId": workflow_id,
+                    "nodeId": node_id,
+                    "mode": mode,
+                    "agentWorkflowId": agent_workflow_id,
+                    "daprInstanceId": dapr_instance_id,
+                    "parentExecutionId": parent_execution_id,
+                    "workspaceRef": workspace_ref,
+                    "artifactRef": artifact_ref,
+                }
+            )
             return {"success": True, "id": run_id}
         except Exception as exc:
             logger.warning(
-                "[Track Agent Run] Failed to persist scheduled row %s: %s",
+                "[Track Agent Run] workflow-data failed to persist scheduled row %s: %s",
                 run_id,
                 exc,
             )
@@ -300,7 +165,6 @@ def track_agent_run_completed(ctx, input_data: dict[str, Any]) -> dict[str, Any]
     run_success = _to_bool(input_data.get("success"), True)
     mark_event_published = _to_bool(input_data.get("eventPublished"), False)
     result_value = input_data.get("result")
-    result_json = _json_dumps_safe(result_value)
     workspace_ref = _extract_workspace_ref(result_value)
     error = str(input_data.get("error") or "").strip() or None
     otel = input_data.get("_otel") or {}
@@ -315,73 +179,20 @@ def track_agent_run_completed(ctx, input_data: dict[str, Any]) -> dict[str, Any]
 
     with start_activity_span("activity.track_agent_run_completed", otel, attrs):
         try:
-            api_mode = workflow_data_api_mode()
-            if _use_workflow_data_api():
-                try:
-                    workflow_data_client.update_agent_run(
-                        run_id,
-                        {
-                            "status": status,
-                            "result": result_value,
-                            "error": error,
-                            "workspaceRef": workspace_ref,
-                            "eventPublished": mark_event_published,
-                        },
-                    )
-                    return {"success": True, "id": run_id, "status": status}
-                except Exception as exc:
-                    if api_mode == "http":
-                        logger.warning(
-                            "[Track Agent Run] workflow-data completion row failed in strict mode %s: %s",
-                            run_id,
-                            exc,
-                        )
-                        return {"success": False, "id": run_id, "error": str(exc)}
-                    logger.warning(
-                        "[Track Agent Run] workflow-data completion row failed; falling back to Postgres %s: %s",
-                        run_id,
-                        exc,
-                    )
-
-            db_url = _get_database_url()
-            import psycopg2
-
-            conn = psycopg2.connect(db_url)
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        UPDATE workflow_agent_runs
-                        SET
-                            status = %s,
-                            result = %s::jsonb,
-                            error = %s,
-                            workspace_ref = COALESCE(%s, workspace_ref),
-                            completed_at = COALESCE(completed_at, now()),
-                            event_published_at = CASE
-                                WHEN %s THEN now()
-                                ELSE event_published_at
-                            END,
-                            updated_at = now()
-                        WHERE id = %s
-                        """,
-                        (
-                            status,
-                            result_json,
-                            error,
-                            workspace_ref,
-                            mark_event_published,
-                            run_id,
-                        ),
-                    )
-                conn.commit()
-            finally:
-                conn.close()
-
+            workflow_data_client.update_agent_run(
+                run_id,
+                {
+                    "status": status,
+                    "result": result_value,
+                    "error": error,
+                    "workspaceRef": workspace_ref,
+                    "eventPublished": mark_event_published,
+                },
+            )
             return {"success": True, "id": run_id, "status": status}
         except Exception as exc:
             logger.warning(
-                "[Track Agent Run] Failed to persist completion row %s: %s",
+                "[Track Agent Run] workflow-data failed to persist completion row %s: %s",
                 run_id,
                 exc,
             )
@@ -401,7 +212,6 @@ def track_agent_run_running(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     if not run_id:
         return {"success": False, "error": "id is required"}
 
-    result_json = _json_dumps_safe(input_data.get("result"))
     otel = input_data.get("_otel") or {}
 
     attrs = {
@@ -412,59 +222,17 @@ def track_agent_run_running(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
 
     with start_activity_span("activity.track_agent_run_running", otel, attrs):
         try:
-            api_mode = workflow_data_api_mode()
-            if _use_workflow_data_api():
-                try:
-                    workflow_data_client.update_agent_run(
-                        run_id,
-                        {
-                            "status": "running",
-                            "result": input_data.get("result"),
-                        },
-                    )
-                    return {"success": True, "id": run_id, "status": "running"}
-                except Exception as exc:
-                    if api_mode == "http":
-                        logger.warning(
-                            "[Track Agent Run] workflow-data running row failed in strict mode %s: %s",
-                            run_id,
-                            exc,
-                        )
-                        return {"success": False, "id": run_id, "error": str(exc)}
-                    logger.warning(
-                        "[Track Agent Run] workflow-data running row failed; falling back to Postgres %s: %s",
-                        run_id,
-                        exc,
-                    )
-
-            db_url = _get_database_url()
-            import psycopg2
-
-            conn = psycopg2.connect(db_url)
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        UPDATE workflow_agent_runs
-                        SET
-                            status = 'running',
-                            result = COALESCE(%s::jsonb, result),
-                            updated_at = now()
-                        WHERE id = %s
-                        """,
-                        (
-                            result_json,
-                            run_id,
-                        ),
-                    )
-                conn.commit()
-            finally:
-                conn.close()
-
+            workflow_data_client.update_agent_run(
+                run_id,
+                {
+                    "status": "running",
+                    "result": input_data.get("result"),
+                },
+            )
             return {"success": True, "id": run_id, "status": "running"}
         except Exception as exc:
             logger.warning(
-                "[Track Agent Run] Failed to persist running row %s: %s",
+                "[Track Agent Run] workflow-data failed to persist running row %s: %s",
                 run_id,
                 exc,
             )

@@ -108,11 +108,6 @@ def test_track_agent_run_strict_http_uses_workflow_data_client(monkeypatch):
     _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(track_agent_run, "workflow_data_client", FakeWorkflowDataClient())
-    monkeypatch.setattr(
-        track_agent_run,
-        "_get_database_url",
-        _fail_database_url,
-    )
 
     result = track_agent_run.track_agent_run_scheduled(
         None,
@@ -157,7 +152,6 @@ def test_track_agent_run_lifecycle_strict_http_uses_workflow_data_client(monkeyp
     _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(track_agent_run, "workflow_data_client", FakeWorkflowDataClient())
-    monkeypatch.setattr(track_agent_run, "_get_database_url", _fail_database_url)
 
     running = track_agent_run.track_agent_run_running(
         None,
@@ -199,7 +193,6 @@ def test_track_agent_run_lifecycle_strict_http_failure_does_not_fallback(monkeyp
     _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(track_agent_run, "workflow_data_client", FailingWorkflowDataClient())
-    monkeypatch.setattr(track_agent_run, "_get_database_url", _fail_database_url)
 
     running = track_agent_run.track_agent_run_running(
         None,
@@ -233,11 +226,6 @@ def test_persist_plan_artifact_strict_http_uses_workflow_data_client(monkeypatch
     _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(persist_plan_artifact, "workflow_data_client", FakeWorkflowDataClient())
-    monkeypatch.setattr(
-        persist_plan_artifact,
-        "_get_database_url",
-        _fail_database_url,
-    )
 
     result = persist_plan_artifact.persist_plan_artifact(
         None,
@@ -289,7 +277,6 @@ def test_plan_artifact_update_and_fetch_strict_http_use_workflow_data_client(mon
     _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(persist_plan_artifact, "workflow_data_client", FakeWorkflowDataClient())
-    monkeypatch.setattr(persist_plan_artifact, "_get_database_url", _fail_database_url)
 
     updated = persist_plan_artifact.update_plan_artifact_status(
         None,
@@ -334,7 +321,6 @@ def test_plan_artifact_update_and_fetch_strict_http_failure_does_not_fallback(mo
     _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(persist_plan_artifact, "workflow_data_client", FailingWorkflowDataClient())
-    monkeypatch.setattr(persist_plan_artifact, "_get_database_url", _fail_database_url)
 
     updated = persist_plan_artifact.update_plan_artifact_status(
         None,
@@ -631,63 +617,14 @@ def test_trace_lineage_strict_http_uses_workflow_data_client(monkeypatch):
     ]
 
 
-def test_trace_target_fetch_falls_back_to_postgres_in_fallback_mode(monkeypatch):
+def test_trace_target_fetch_does_not_fallback_to_postgres_in_fallback_mode(monkeypatch):
     class FailingWorkflowDataClient:
         def get_trace_targets(self, _execution_id):
             raise RuntimeError("workflow-data unavailable")
 
-    class FakeCursor:
-        def __init__(self):
-            self.query_count = 0
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def execute(self, *_args):
-            self.query_count += 1
-
-        def fetchone(self):
-            return ("exec-1", "project-1", "exp-1", "run-1")
-
-        def fetchall(self):
-            return [("session-1", "project-1", "exp-2", "run-2")]
-
-    class FakeConnection:
-        def __init__(self):
-            self.cursor_obj = FakeCursor()
-
-        def cursor(self):
-            return self.cursor_obj
-
-        def close(self):
-            pass
-
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http-fallback-db")
-    monkeypatch.setenv("DATABASE_URL", "postgres://unit-test")
+    _block_psycopg2_imports(monkeypatch)
     monkeypatch.setattr(finalizer, "workflow_data_client", FailingWorkflowDataClient())
-    monkeypatch.setitem(
-        sys.modules,
-        "psycopg2",
-        types.SimpleNamespace(connect=lambda *_args, **_kwargs: FakeConnection()),
-    )
-    monkeypatch.setattr(finalizer, "_database_url", None)
+    monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
 
-    assert finalizer._fetch_trace_targets("exec-1") == [
-        {
-            "entity_type": "workflow_execution",
-            "entity_id": "exec-1",
-            "project_id": "project-1",
-            "external_experiment_id": "exp-1",
-            "external_run_id": "run-1",
-        },
-        {
-            "entity_type": "session",
-            "entity_id": "session-1",
-            "project_id": "project-1",
-            "external_experiment_id": "exp-2",
-            "external_run_id": "run-2",
-        },
-    ]
+    assert finalizer._fetch_trace_targets("exec-1") == []
