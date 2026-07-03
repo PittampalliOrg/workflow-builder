@@ -87,8 +87,7 @@ describe("ApplicationActionOptionsService", () => {
 		});
 		expect(codeFunctions.getCodeFunction).toHaveBeenCalledWith("fn-1", "user-1");
 		expect(codeFunctions.fetchOptions).toHaveBeenCalledWith({
-			requestUrl: "http://localhost/api/action-catalog/code-function.fn-1/options",
-			cookie: "sid=123",
+			userId: "user-1",
 			functionRef: { id: "fn-1", slug: "hello", version: "v1" },
 			param: "choice",
 			input: { a: 1 },

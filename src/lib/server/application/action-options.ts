@@ -54,8 +54,7 @@ export type ActionOptionsCodeFunctionPort = {
 		userId: string,
 	): Promise<ActionOptionsCodeFunctionRef | null>;
 	fetchOptions(input: {
-		requestUrl: string;
-		cookie: string;
+		userId: string;
 		functionRef: ActionOptionsCodeFunctionRef;
 		param: string;
 		input: Record<string, unknown>;
@@ -112,8 +111,6 @@ export class ApplicationActionOptionsService {
 				field,
 				optionInput,
 				searchValue,
-				requestUrl: input.requestUrl,
-				cookie: input.cookie,
 			});
 		}
 
@@ -133,8 +130,6 @@ export class ApplicationActionOptionsService {
 		field: string;
 		optionInput: Record<string, unknown>;
 		searchValue?: string;
-		requestUrl: string;
-		cookie: string;
 	}): Promise<ActionOptionsHttpResult> {
 		const codeFunctionId = input.actionId.slice("code-function.".length);
 		const functionRef = await this.deps.codeFunctions.getCodeFunction(
@@ -146,8 +141,7 @@ export class ApplicationActionOptionsService {
 		}
 
 		return this.deps.codeFunctions.fetchOptions({
-			requestUrl: input.requestUrl,
-			cookie: input.cookie,
+			userId: input.userId,
 			functionRef,
 			param: input.field,
 			input: input.optionInput,

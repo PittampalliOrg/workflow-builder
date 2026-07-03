@@ -6,6 +6,10 @@ import {
 } from "$lib/server/app-connections";
 import { apPieceServiceUrl } from "$lib/server/activepieces/piece-service";
 import { daprFetch } from "$lib/server/dapr-client";
+import {
+	ApplicationCodeFunctionOptionsError,
+	ApplicationCodeFunctionOptionsService,
+} from "$lib/server/application/code-function-options";
 import type {
 	ActionOptionsActionCatalogReader,
 	ActionOptionsCatalogDetail,
@@ -42,6 +46,8 @@ export class LocalActionOptionsCatalogReader
 }
 
 export class LocalCodeFunctionOptionsPort implements ActionOptionsCodeFunctionPort {
+	constructor(private readonly options: ApplicationCodeFunctionOptionsService) {}
+
 	async getCodeFunction(codeFunctionId: string, userId: string) {
 		const detail = await getCodeFunction(codeFunctionId, userId);
 		if (!detail) return null;
@@ -53,33 +59,34 @@ export class LocalCodeFunctionOptionsPort implements ActionOptionsCodeFunctionPo
 	}
 
 	async fetchOptions(input: {
-		requestUrl: string;
-		cookie: string;
+		userId: string;
 		functionRef: { id: string; slug: string; version: string };
 		param: string;
 		input: Record<string, unknown>;
 		searchValue?: string;
 	}): Promise<ActionOptionsHttpResult> {
-		const response = await fetch(
-			new URL("/api/code-functions/options", input.requestUrl),
-			{
-				method: "POST",
-				headers: {
-					"content-type": "application/json",
-					cookie: input.cookie,
-				},
-				body: JSON.stringify({
-					functionRef: input.functionRef,
-					param: input.param,
-					input: input.input,
-					searchValue: input.searchValue,
+		try {
+			return {
+				status: 200,
+				payload: await this.options.getOptions({
+					userId: input.userId,
+					body: {
+						functionRef: input.functionRef,
+						param: input.param,
+						input: input.input,
+						searchValue: input.searchValue,
+					},
 				}),
-			},
-		);
-		return {
-			status: response.status,
-			payload: await response.json().catch(() => null),
-		};
+			};
+		} catch (err) {
+			if (err instanceof ApplicationCodeFunctionOptionsError) {
+				return {
+					status: err.status,
+					payload: { error: err.message },
+				};
+			}
+			throw err;
+		}
 	}
 }
 

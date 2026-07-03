@@ -125,6 +125,10 @@ import {
 	LocalActionCatalogTestReader,
 } from "$lib/server/application/adapters/action-catalog-test";
 import {
+	DaprCodeFunctionOptionsRuntimeClient,
+	LegacyCodeFunctionOptionsRepository,
+} from "$lib/server/application/adapters/code-function-options";
+import {
 	DaprFunctionRouterExecutionPort,
 	LegacyCodeFunctionExecutionRepository,
 } from "$lib/server/application/adapters/code-function-execution";
@@ -223,6 +227,7 @@ import {
 	ApplicationActionCatalogTestService,
 	DateActionCatalogTestExecutionIdGenerator,
 } from "$lib/server/application/action-catalog-test";
+import { ApplicationCodeFunctionOptionsService } from "$lib/server/application/code-function-options";
 import {
 	ApplicationCodeFunctionExecutionService,
 	DateCodeFunctionExecutionIdGenerator,
@@ -404,6 +409,7 @@ export function getApplicationAdapters(
 		| undefined;
 	let actionOptions: ApplicationActionOptionsService | undefined;
 	let actionCatalogTest: ApplicationActionCatalogTestService | undefined;
+	let codeFunctionOptions: ApplicationCodeFunctionOptionsService | undefined;
 	let codeFunctionExecution:
 		| ApplicationCodeFunctionExecutionService
 		| undefined;
@@ -688,7 +694,7 @@ export function getApplicationAdapters(
 	const getActionOptions = () =>
 		(actionOptions ??= new ApplicationActionOptionsService({
 			actions: new LocalActionOptionsCatalogReader(),
-			codeFunctions: new LocalCodeFunctionOptionsPort(),
+			codeFunctions: new LocalCodeFunctionOptionsPort(getCodeFunctionOptions()),
 			connections: new WorkflowDataActionOptionsConnectionReader(),
 			pieces: new DaprPieceOptionsClient(),
 		}));
@@ -699,6 +705,11 @@ export function getApplicationAdapters(
 			functionRouter: new DaprFunctionRouterExecutionPort(),
 			http: new DaprActionCatalogHttpTestClient(),
 			ids: new DateActionCatalogTestExecutionIdGenerator(),
+		}));
+	const getCodeFunctionOptions = () =>
+		(codeFunctionOptions ??= new ApplicationCodeFunctionOptionsService({
+			codeFunctions: new LegacyCodeFunctionOptionsRepository(),
+			runtime: new DaprCodeFunctionOptionsRuntimeClient(),
 		}));
 	const getCodeFunctionExecution = () =>
 		(codeFunctionExecution ??= new ApplicationCodeFunctionExecutionService({
@@ -1058,6 +1069,9 @@ export function getApplicationAdapters(
 		},
 		get actionCatalogTest() {
 			return getActionCatalogTest();
+		},
+		get codeFunctionOptions() {
+			return getCodeFunctionOptions();
 		},
 		get codeFunctionExecution() {
 			return getCodeFunctionExecution();
