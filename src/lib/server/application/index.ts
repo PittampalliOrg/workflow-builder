@@ -122,6 +122,7 @@ import {
 	OpenShellSandboxRuntimeInventory,
 	WorkspaceRuntimeSandboxProvisioner,
 } from "$lib/server/application/adapters/sandbox";
+import { LegacySandboxAgentEventReadPort } from "$lib/server/application/adapters/sandbox-events";
 import { LocalRuntimeRegistryReader } from "$lib/server/application/adapters/runtime-registry";
 import {
 	LocalRuntimeCatalogReader,
@@ -234,6 +235,7 @@ import {
 } from "$lib/server/application/internal-goal-control";
 import { ApplicationSessionLifecycleService } from "$lib/server/application/session-lifecycle";
 import { ApplicationSessionSandboxService } from "$lib/server/application/session-sandboxes";
+import { ApplicationSandboxEventsService } from "$lib/server/application/sandbox-events";
 import { ApplicationSessionMcpStatusService } from "$lib/server/application/session-mcp-status";
 import { ApplicationSessionRuntimeAccessService } from "$lib/server/application/session-runtime-access";
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
@@ -541,6 +543,7 @@ export function getApplicationAdapters(
 	let gitOpsActivityEvents: ApplicationGitOpsActivityEventService | undefined;
 	let cliPreview: ApplicationCliPreviewService | undefined;
 	let sandboxPreview: ApplicationSandboxPreviewService | undefined;
+	let sandboxEvents: ApplicationSandboxEventsService | undefined;
 	let previewEnvironmentProvisioner:
 		| KroPreviewEnvironmentProvisioner
 		| SandboxExecutionPreviewEnvironmentProvisioner
@@ -912,6 +915,10 @@ export function getApplicationAdapters(
 			),
 			sandboxes: new KubernetesSessionSandboxDestroyer(),
 		}));
+	const getSandboxEvents = () =>
+		(sandboxEvents ??= new ApplicationSandboxEventsService(
+			new LegacySandboxAgentEventReadPort(),
+		));
 	const getSessionMcpStatus = () =>
 		(sessionMcpStatus ??= new ApplicationSessionMcpStatusService({
 			workflowData: getWorkflowData(),
@@ -1418,6 +1425,9 @@ export function getApplicationAdapters(
 		},
 		get sandboxPreview() {
 			return getSandboxPreview();
+		},
+		get sandboxEvents() {
+			return getSandboxEvents();
 		},
 		get sessionBrowser() {
 			return (sessionBrowser ??= new ApplicationSessionBrowserService({

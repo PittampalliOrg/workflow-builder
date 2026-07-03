@@ -2,7 +2,7 @@ import type { RequestHandler } from './$types';
 import { openshellRuntimeFetch } from '$lib/server/openshell-runtime';
 import { normalizeSandboxResponse } from '$lib/utils/sandbox-parse';
 import { sandboxEventBus, type SandboxBusEvent } from '$lib/server/sandbox-event-bus';
-import { listSandboxAgentEvents } from '$lib/server/execution-read-model';
+import { getApplicationAdapters } from '$lib/server/application';
 import { getAgentRuntimeSandbox, isAgentRuntimeSandboxName } from '$lib/server/agent-runtime-sandboxes';
 import type { Sandbox } from '$lib/types/sandbox';
 
@@ -213,7 +213,10 @@ export const GET: RequestHandler = async ({ params, request }) => {
 			const pollAgentEvents = async () => {
 				if (closed) return;
 				try {
-					const events = await listSandboxAgentEvents(name, lastAgentEventId);
+					const events = await getApplicationAdapters().sandboxEvents.listSandboxAgentEvents({
+						sandboxName: name,
+						afterEventId: lastAgentEventId
+					});
 					for (const event of events) {
 						if (closed) break;
 						lastAgentEventId = Math.max(lastAgentEventId, event.id);

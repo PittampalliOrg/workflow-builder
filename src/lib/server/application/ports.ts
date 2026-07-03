@@ -40,6 +40,7 @@ import type {
 	GoalFlow,
 	ObservabilityAgentDecisionTurn,
 } from "$lib/types/observability";
+import type { ExecutionTimelineEvent } from "$lib/types/execution-stream";
 
 export type WorkflowRef = {
 	workflowId?: string | null;
@@ -3487,6 +3488,14 @@ export interface WorkflowExecutionReadModelPort {
 		model: unknown,
 		options: { compact: boolean; includeAgentEvents: boolean },
 	): Record<string, unknown>;
+}
+
+export interface SandboxAgentEventReadPort {
+	listSandboxAgentEvents(input: {
+		sandboxName: string;
+		afterEventId?: number;
+		limit?: number;
+	}): Promise<ExecutionTimelineEvent[]>;
 }
 
 export type CliPreviewTarget = { podIP: string; runtime?: string | null };
