@@ -47,6 +47,8 @@ application adapter layer.
 The internal CLI workspace command route now routes execution lookup,
 CLI-session candidate lookup, file creation, and browser artifact persistence
 through workflow-data.
+The internal session-events read route now uses `workflowData.listSessionEvents`
+instead of importing the DB-backed `sessions/events` helper directly.
 The prompt preset, agent skill, and vault "used by/usages" reverse-lookup
 routes now load their read models through workflow-data resource usage ports.
 The AI assistant message-history route now lists and deletes persisted chat
@@ -1068,6 +1070,7 @@ detail/title/archive/delete, fork, goal,
 goal-flow, event list/append/detail, runtime-config, config patch commands,
 runtime debug target routes, dev terminal WebSocket preflight, resources, and
 event-stream routes are also clean.
+The internal session-events positional read route is also clean.
 The session/execution CLI preview and OpenShell sandbox preview route families
 are also presentation-clean; their persistence lookups now flow through
 workflow-data, while remaining Kubernetes/OpenShell transport coupling is

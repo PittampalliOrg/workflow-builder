@@ -1,7 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { validateInternalToken } from "$lib/server/internal-auth";
-import { listEvents } from "$lib/server/sessions/events";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * Internal endpoint that returns a positional window of session events for
@@ -45,7 +45,10 @@ export const GET: RequestHandler = async ({ params, request, url }) => {
 	}
 	const limit = Math.min(limitParsed, 500);
 
-	const events = await listEvents(sessionId, { afterSequence, limit });
+	const events = await getApplicationAdapters().workflowData.listSessionEvents(
+		sessionId,
+		{ afterSequence, limit },
+	);
 
 	return json({
 		sessionId,
