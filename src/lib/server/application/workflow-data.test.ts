@@ -52,6 +52,7 @@ import type {
 	WorkspaceSessionStore,
 	WorkflowActivityRateTargetRepository,
 	ObservabilityTraceRepository,
+	WorkflowMonitorReadRepository,
 } from "$lib/server/application/ports";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 import type { RuntimeConfigCloudEvent } from "$lib/server/sessions/runtime-config";
@@ -1323,6 +1324,7 @@ function makeService(options: {
 	benchmarkRuns?: BenchmarkRunRepository;
 	activityRateTargets?: WorkflowActivityRateTargetRepository;
 	observabilityTraces?: ObservabilityTraceRepository;
+	workflowMonitorReads?: WorkflowMonitorReadRepository;
 	pieceExecutions?: PieceExecutionRepository;
 	browserArtifacts?: WorkflowBrowserArtifactStore;
 	sessions?: SessionRepository;
@@ -1381,6 +1383,7 @@ function makeService(options: {
 		benchmarkRuns: options.benchmarkRuns ?? fakeBenchmarkRuns(),
 		activityRateTargets: options.activityRateTargets,
 		observabilityTraces: options.observabilityTraces,
+		workflowMonitorReads: options.workflowMonitorReads,
 		workflowExecutions,
 		sessionEvents: options.sessionEvents,
 		sessionRuntimeConfigs:
@@ -6066,6 +6069,47 @@ describe("ApplicationWorkflowDataService", () => {
 		]);
 		expect(observabilityTraces.listTraceGoalChips).toHaveBeenCalledWith({
 			sessionIds: ["session-1"],
+		});
+	});
+
+	it("lists workflow monitor fallback executions through the read port", async () => {
+		const startedAt = new Date("2026-01-01T00:00:00.000Z");
+		const workflowMonitorReads: WorkflowMonitorReadRepository = {
+			listFallbackExecutions: vi.fn(async () => [
+				{
+					id: "exec-1",
+					instanceId: "dapr-exec-1",
+					workflowId: "wf-1",
+					workflowName: "Monitor workflow",
+					status: "running" as const,
+					phase: "executing",
+					progress: 50,
+					startedAt,
+					completedAt: null,
+					duration: null,
+				},
+			]),
+		};
+		const { service } = makeService({ workflowMonitorReads });
+
+		await expect(
+			service.listWorkflowMonitorFallbackExecutions({ limit: 50 }),
+		).resolves.toEqual([
+			{
+				id: "exec-1",
+				instanceId: "dapr-exec-1",
+				workflowId: "wf-1",
+				workflowName: "Monitor workflow",
+				status: "running",
+				phase: "executing",
+				progress: 50,
+				startedAt,
+				completedAt: null,
+				duration: null,
+			},
+		]);
+		expect(workflowMonitorReads.listFallbackExecutions).toHaveBeenCalledWith({
+			limit: 50,
 		});
 	});
 

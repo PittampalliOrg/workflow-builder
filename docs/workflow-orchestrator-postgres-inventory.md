@@ -248,6 +248,9 @@ The first UI-facing route has also moved behind the application service:
   remain in the route for the later telemetry adapter slice, but route-local
   Drizzle/schema access to `sessions`, `workflow_executions`, and `thread_goals`
   was removed.
+- `src/routes/api/monitor/+server.ts` still queries the orchestrator first, but
+  its database fallback now reads workflow execution summaries through
+  workflow-data instead of importing `db`, Drizzle, or schema objects directly.
 - `src/routes/workspaces/[slug]/dev/+page.server.ts`,
   `src/routes/workspaces/[slug]/dev/[executionId]/+page.server.ts`, and the
   public `src/routes/api/dev-environments/**` GET routes now load dev-preview

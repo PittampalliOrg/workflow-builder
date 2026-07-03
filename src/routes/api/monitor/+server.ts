@@ -1,9 +1,8 @@
-import { json, error } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
-import { db } from '$lib/server/db';
-import { workflowExecutions, workflows } from '$lib/server/db/schema';
-import { desc, eq } from 'drizzle-orm';
+import { getApplicationAdapters } from '$lib/server/application';
+import type { WorkflowMonitorFallbackExecutionReadModel } from '$lib/server/application/ports';
 
 /**
  * GET /api/monitor
@@ -34,26 +33,15 @@ export const GET: RequestHandler = async ({ url }) => {
 		// Orchestrator unavailable, fall through to DB
 	}
 
-	// Fallback: query workflowExecutions table
-	if (!db) return json([]);
-
-	const result = await db
-		.select({
-			id: workflowExecutions.id,
-			instanceId: workflowExecutions.daprInstanceId,
-			workflowId: workflowExecutions.workflowId,
-			workflowName: workflows.name,
-			status: workflowExecutions.status,
-			phase: workflowExecutions.phase,
-			progress: workflowExecutions.progress,
-			startedAt: workflowExecutions.startedAt,
-			completedAt: workflowExecutions.completedAt,
-			duration: workflowExecutions.duration
-		})
-		.from(workflowExecutions)
-		.leftJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
-		.orderBy(desc(workflowExecutions.startedAt))
-		.limit(limit);
+	// Fallback: query workflow execution read model through workflow-data.
+	let result: WorkflowMonitorFallbackExecutionReadModel[];
+	try {
+		result = await getApplicationAdapters().workflowData.listWorkflowMonitorFallbackExecutions({
+			limit,
+		});
+	} catch {
+		return json([]);
+	}
 
 	// Normalize to a consistent shape
 	const normalized = result.map((row) => ({

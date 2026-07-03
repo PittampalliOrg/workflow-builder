@@ -157,6 +157,8 @@ import type {
 	WorkflowDefinitionRepository,
 	WorkflowTriggerRecord,
 	WorkflowTriggerStore,
+	WorkflowMonitorFallbackExecutionReadModel,
+	WorkflowMonitorReadRepository,
 	WorkflowActivityRateTargetReadModel,
 	WorkflowActivityRateTargetRepository,
 	WorkflowExecutionRecord,
@@ -3240,6 +3242,33 @@ export class PostgresObservabilityTraceRepository implements ObservabilityTraceR
 			iterations: row.iterations,
 			verdict: observabilityTraceGoalVerdict(row.status),
 		}));
+	}
+}
+
+export class PostgresWorkflowMonitorReadRepository implements WorkflowMonitorReadRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async listFallbackExecutions(input: {
+		limit: number;
+	}): Promise<WorkflowMonitorFallbackExecutionReadModel[]> {
+		const limit = Math.max(1, Math.min(Math.trunc(input.limit || 50), 200));
+		return this.database
+			.select({
+				id: workflowExecutions.id,
+				instanceId: workflowExecutions.daprInstanceId,
+				workflowId: workflowExecutions.workflowId,
+				workflowName: workflows.name,
+				status: workflowExecutions.status,
+				phase: workflowExecutions.phase,
+				progress: workflowExecutions.progress,
+				startedAt: workflowExecutions.startedAt,
+				completedAt: workflowExecutions.completedAt,
+				duration: workflowExecutions.duration,
+			})
+			.from(workflowExecutions)
+			.leftJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
+			.orderBy(desc(workflowExecutions.startedAt))
+			.limit(limit);
 	}
 }
 

@@ -437,6 +437,25 @@ export interface ObservabilityTraceRepository {
 	}): Promise<ObservabilityTraceGoalChipReadModel[]>;
 }
 
+export type WorkflowMonitorFallbackExecutionReadModel = {
+	id: string;
+	instanceId: string | null;
+	workflowId: string | null;
+	workflowName: string | null;
+	status: WorkflowExecutionStatus;
+	phase: string | null;
+	progress: number | null;
+	startedAt: Date | null;
+	completedAt: Date | null;
+	duration: string | number | null;
+};
+
+export interface WorkflowMonitorReadRepository {
+	listFallbackExecutions(input: {
+		limit: number;
+	}): Promise<WorkflowMonitorFallbackExecutionReadModel[]>;
+}
+
 export type CreateWorkflowDefinitionInput = {
 	name: string;
 	nodes: unknown[];
@@ -3405,6 +3424,9 @@ export interface WorkflowDataService {
 	listObservabilityTraceGoalChips(input: {
 		sessionIds: string[];
 	}): Promise<ObservabilityTraceGoalChipReadModel[]>;
+	listWorkflowMonitorFallbackExecutions(input: {
+		limit: number;
+	}): Promise<WorkflowMonitorFallbackExecutionReadModel[]>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;
 	}): Promise<DevPreviewHubReadModel>;

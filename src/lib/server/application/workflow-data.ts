@@ -106,6 +106,8 @@ import type {
 	WorkflowArtifactInput,
 	WorkflowActivityRateTargetReadModel,
 	WorkflowActivityRateTargetRepository,
+	WorkflowMonitorFallbackExecutionReadModel,
+	WorkflowMonitorReadRepository,
 	CreateWorkflowFileInput,
 	CliWorkspaceCommandCandidate,
 	IngestSessionEventInput,
@@ -776,6 +778,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			benchmarkRuns?: BenchmarkRunRepository;
 			activityRateTargets?: WorkflowActivityRateTargetRepository;
 			observabilityTraces?: ObservabilityTraceRepository;
+			workflowMonitorReads?: WorkflowMonitorReadRepository;
 			workflowExecutions: WorkflowExecutionRepository;
 			sessions?: SessionRepository;
 			sessionProvisioning?: SessionProvisioningReader;
@@ -893,6 +896,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Observability trace repository not configured");
 		}
 		return this.deps.observabilityTraces;
+	}
+
+	private requireWorkflowMonitorReads(): WorkflowMonitorReadRepository {
+		if (!this.deps.workflowMonitorReads) {
+			throw new Error("Workflow monitor read repository not configured");
+		}
+		return this.deps.workflowMonitorReads;
 	}
 
 	private requireSessionRuntimeConfigs(): SessionRuntimeConfigReader {
@@ -3621,6 +3631,12 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		sessionIds: string[];
 	}): Promise<ObservabilityTraceGoalChipReadModel[]> {
 		return this.requireObservabilityTraces().listTraceGoalChips(input);
+	}
+
+	listWorkflowMonitorFallbackExecutions(input: {
+		limit: number;
+	}): Promise<WorkflowMonitorFallbackExecutionReadModel[]> {
+		return this.requireWorkflowMonitorReads().listFallbackExecutions(input);
 	}
 
 	async getDevPreviewHubReadModel(input: { projectId?: string | null }) {

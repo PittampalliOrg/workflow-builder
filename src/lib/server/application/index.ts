@@ -32,6 +32,7 @@ import {
 	PostgresWorkflowDefinitionRepository,
 	PostgresWorkflowExecutionRepository,
 	PostgresWorkflowFileStore,
+	PostgresWorkflowMonitorReadRepository,
 	PostgresWorkflowSessionEventNotificationSource,
 	PostgresWorkflowTriggerStore,
 	PostgresWorkspaceProjectRepository,
@@ -109,6 +110,7 @@ export function getApplicationAdapters(
 	let benchmarkRuns: PostgresBenchmarkRunRepository | undefined;
 	let activityRateTargets: PostgresWorkflowActivityRateTargetRepository | undefined;
 	let observabilityTraces: PostgresObservabilityTraceRepository | undefined;
+	let workflowMonitorReads: PostgresWorkflowMonitorReadRepository | undefined;
 	let workflowExecutions: PostgresWorkflowExecutionRepository | undefined;
 	let workflowFiles: PostgresWorkflowFileStore | undefined;
 	let sandboxInventory: PostgresSandboxInventoryRepository | undefined;
@@ -175,6 +177,8 @@ export function getApplicationAdapters(
 		(activityRateTargets ??= new PostgresWorkflowActivityRateTargetRepository(getDatabase()));
 	const getObservabilityTraces = () =>
 		(observabilityTraces ??= new PostgresObservabilityTraceRepository(getDatabase()));
+	const getWorkflowMonitorReads = () =>
+		(workflowMonitorReads ??= new PostgresWorkflowMonitorReadRepository(getDatabase()));
 	const getWorkflowExecutions = () =>
 		(workflowExecutions ??= new PostgresWorkflowExecutionRepository(getDatabase()));
 	const getWorkflowFiles = () =>
@@ -243,6 +247,7 @@ export function getApplicationAdapters(
 			benchmarkRuns: getBenchmarkRuns(),
 			activityRateTargets: getActivityRateTargets(),
 			observabilityTraces: getObservabilityTraces(),
+			workflowMonitorReads: getWorkflowMonitorReads(),
 			workflowExecutions: getWorkflowExecutions(),
 			sessions: getSessions(),
 			sessionProvisioning: getSessionProvisioning(),
