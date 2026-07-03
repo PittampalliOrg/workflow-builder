@@ -695,7 +695,7 @@ export function getApplicationAdapters(
 			sessions: getSessions(),
 			goals: getSessionGoalStore(),
 			goalLoop: new DaprSessionGoalLoopDriver(),
-			goalHarness: new RuntimeSessionGoalHarnessResolver(),
+			goalHarness: new RuntimeSessionGoalHarnessResolver(() => getWorkflowData()),
 			scopeGuard: new LifecycleSessionGoalScopeGuard(),
 			userEvents: new DaprSessionUserEventCommandAdapter(
 				getSessionEvents(),

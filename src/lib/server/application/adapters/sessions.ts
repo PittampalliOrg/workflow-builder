@@ -36,6 +36,7 @@ import type {
 	SessionListInput,
 	SessionWorkflowSpawner,
 	SessionWorkflowContext,
+	WorkflowDataService,
 	UpdateSessionStatusInput,
 	UpdateSessionStatusUnlessTerminatedInput,
 	UpdateWorkflowEnsureSessionRuntimeInput,
@@ -95,8 +96,9 @@ import { isResourceInScope } from "$lib/server/workflows/project-scope";
 import { kickGoalLoop } from "$lib/server/goals/goal-loop";
 import {
 	decideGoalHarness,
-	sessionHasNativeGoalHarness,
-} from "$lib/server/sessions/runtime-target";
+	runtimeHasNativeGoalHarness,
+} from "$lib/server/sessions/goal-harness";
+import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import {
 	agentRuntimeDedicatedAppId,
 	agentRuntimeInvokeTarget,
@@ -1026,8 +1028,21 @@ export class DaprSessionGoalLoopDriver implements SessionGoalLoopDriver {
 export class RuntimeSessionGoalHarnessResolver
 	implements SessionGoalHarnessResolver
 {
-	sessionHasNativeGoalHarness(sessionId: string): Promise<boolean> {
-		return sessionHasNativeGoalHarness(sessionId);
+	constructor(
+		private readonly workflowData: () => Pick<
+			WorkflowDataService,
+			"getSessionRuntimeDebugTarget"
+		>,
+	) {}
+
+	async sessionHasNativeGoalHarness(sessionId: string): Promise<boolean> {
+		const target = await this.workflowData().getSessionRuntimeDebugTarget({
+			sessionId,
+		});
+		if (!target) return false;
+		return runtimeHasNativeGoalHarness(
+			getRuntimeDescriptor(target.agentRuntime ?? undefined),
+		);
 	}
 
 	decideGoalHarness(rawObjective: string, hasNativeHarness: boolean) {

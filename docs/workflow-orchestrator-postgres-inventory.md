@@ -929,6 +929,9 @@ services:
   `ApplicationSessionGoalService`. Thread-goal create/update/fetch operations
   now use `PostgresSessionGoalStore` with an injected DB from the application
   composition root, and lifecycle goal pausing uses the same store. The
+  native-goal capability check now resolves session runtime metadata through
+  workflow-data before consulting the runtime registry, instead of using the
+  legacy DB-backed runtime-target helper. The
   remaining `src/lib/server/goals/repo.ts` direct DB access belongs to the
   goal-loop driver/tick path and remains a later loop-storage adapter slice.
 - `src/routes/api/v1/sessions/[id]/goal-flow/+server.ts` now scopes the session
