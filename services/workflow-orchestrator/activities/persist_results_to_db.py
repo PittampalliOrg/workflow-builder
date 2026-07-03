@@ -2,12 +2,10 @@
 Persist Results Activity
 
 Persists the final workflow output through the workflow-data API so orchestration
-persistence stays behind the workflow-builder application boundary. In strict
-WORKFLOW_DATA_API_MODE=http, workflow-data failures do not fall back to DB.
+persistence stays behind the workflow-builder application boundary.
 
-Direct Postgres writes remain only for WORKFLOW_DATA_API_MODE=postgres or
-http-fallback-db rollback. The legacy MLflow browser-artifact projection is
-disabled unless WORKFLOW_ORCHESTRATOR_LEGACY_MLFLOW_ENABLED is set.
+The legacy MLflow browser-artifact projection is disabled unless
+WORKFLOW_ORCHESTRATOR_LEGACY_MLFLOW_ENABLED is set.
 """
 
 from __future__ import annotations
@@ -21,20 +19,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 import requests
-from dapr.clients import DaprClient
 
 from core.config import config
 from core.output_summary import SUMMARY_OUTPUT_KEYS, extract_summary_fields_from_outputs
-from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
+from activities.workflow_data_client import workflow_data_client
 from tracing import extract_otel_trace_id, set_current_span_attrs, start_activity_span
 
 logger = logging.getLogger(__name__)
-
-SECRET_STORE_NAME = "kubernetes-secrets"
-SECRET_NAME = "workflow-builder-secrets"
-
-# Cached connection string (fetched once from Dapr secrets)
-_database_url: str | None = None
 
 
 def _mlflow_enabled() -> bool:
@@ -490,27 +481,6 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
     return parsed
 
 
-def _get_database_url() -> str:
-    """Fetch DATABASE_URL from the Dapr kubernetes-secrets store (cached)."""
-    global _database_url
-    if _database_url is not None:
-        return _database_url
-
-    with DaprClient() as client:
-        secret = client.get_secret(store_name=SECRET_STORE_NAME, key=SECRET_NAME)
-        db_url = secret.secret.get("DATABASE_URL")
-
-    if not db_url:
-        raise RuntimeError(
-            f"DATABASE_URL not found in secret '{SECRET_NAME}' "
-            f"from store '{SECRET_STORE_NAME}'"
-        )
-
-    _database_url = db_url
-    logger.info("[Persist Results] Fetched DATABASE_URL from Dapr secrets")
-    return db_url
-
-
 def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """
     Persist final workflow output to the workflow_executions table.
@@ -599,131 +569,44 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             progress = 100
             completed_at = datetime.now(timezone.utc)
 
-            api_mode = workflow_data_api_mode()
-            if api_mode != "postgres":
-                try:
-                    execution_row = workflow_data_client.get_execution(str(db_execution_id)) or {}
-                    started_at = _parse_iso_datetime(execution_row.get("startedAt"))
-                    computed_duration_ms = None
-                    if started_at:
-                        computed_duration_ms = max(
-                            int((completed_at - started_at).total_seconds() * 1000), 0
-                        )
-                    persisted_duration_ms = (
-                        computed_duration_ms
-                        if computed_duration_ms is not None
-                        else duration_ms
-                    )
-                    workflow_data_client.patch_execution(
-                        str(db_execution_id),
-                        {
-                            "output": final_output,
-                            "summaryOutput": summary_fields or None,
-                            "status": status,
-                            "phase": phase,
-                            "progress": progress,
-                            "error": None if success else error,
-                            "completedAt": completed_at.isoformat(),
-                            "duration": (
-                                str(persisted_duration_ms)
-                                if persisted_duration_ms is not None
-                                else None
-                            ),
-                            **(
-                                {"primaryTraceId": trace_id}
-                                if trace_id and not execution_row.get("primaryTraceId")
-                                else {}
-                            ),
-                        },
-                    )
-
-                    logger.info(
-                        "[Persist Results] Successfully persisted output via workflow-data for: %s",
-                        db_execution_id,
-                    )
-                    return {"success": True}
-                except Exception as exc:
-                    if api_mode == "http":
-                        logger.error(
-                            "[Persist Results] workflow-data persistence failed for %s: %s",
-                            db_execution_id,
-                            exc,
-                        )
-                        return {"success": False, "error": str(exc)}
-                    logger.warning(
-                        "[Persist Results] workflow-data persistence failed for %s; falling back to Postgres: %s",
-                        db_execution_id,
-                        exc,
-                    )
-
-            import psycopg2
-
-            db_url = _get_database_url()
-            conn = psycopg2.connect(db_url)
-            try:
-                with conn.cursor() as cur:
-                    # Prefer wall-clock duration based on DB started_at to avoid replay artifacts.
-                    cur.execute(
-                        """
-                        SELECT started_at
-                        FROM workflow_executions
-                        WHERE id = %s
-                        LIMIT 1
-                        """,
-                        (db_execution_id,),
-                    )
-                    row = cur.fetchone()
-                    started_at = row[0] if row else None
-                    if started_at and getattr(started_at, "tzinfo", None) is None:
-                        started_at = started_at.replace(tzinfo=timezone.utc)
-                    computed_duration_ms = None
-                    if started_at:
-                        computed_duration_ms = max(
-                            int((completed_at - started_at).total_seconds() * 1000), 0
-                        )
-                    persisted_duration_ms = (
-                        computed_duration_ms
-                        if computed_duration_ms is not None
-                        else duration_ms
-                    )
-
-                    cur.execute(
-                        """
-                        UPDATE workflow_executions
-                        SET output = %s,
-                            summary_output = %s,
-                            status = %s,
-                            phase = %s,
-                            progress = %s,
-                            error = %s,
-                            completed_at = %s,
-                            duration = %s,
-                            primary_trace_id = COALESCE(primary_trace_id, %s)
-                        WHERE id = %s
-                        """,
-                        (
-                            json.dumps(final_output),
-                            json.dumps(summary_fields) if summary_fields else None,
-                            status,
-                            phase,
-                            progress,
-                            None if success else error,
-                            completed_at,
-                            (
-                                str(persisted_duration_ms)
-                                if persisted_duration_ms is not None
-                                else None
-                            ),
-                            trace_id,
-                            db_execution_id,
-                        ),
-                    )
-                conn.commit()
-            finally:
-                conn.close()
+            execution_row = workflow_data_client.get_execution(str(db_execution_id)) or {}
+            started_at = _parse_iso_datetime(execution_row.get("startedAt"))
+            computed_duration_ms = None
+            if started_at:
+                computed_duration_ms = max(
+                    int((completed_at - started_at).total_seconds() * 1000), 0
+                )
+            persisted_duration_ms = (
+                computed_duration_ms
+                if computed_duration_ms is not None
+                else duration_ms
+            )
+            workflow_data_client.patch_execution(
+                str(db_execution_id),
+                {
+                    "output": final_output,
+                    "summaryOutput": summary_fields or None,
+                    "status": status,
+                    "phase": phase,
+                    "progress": progress,
+                    "error": None if success else error,
+                    "completedAt": completed_at.isoformat(),
+                    "duration": (
+                        str(persisted_duration_ms)
+                        if persisted_duration_ms is not None
+                        else None
+                    ),
+                    **(
+                        {"primaryTraceId": trace_id}
+                        if trace_id and not execution_row.get("primaryTraceId")
+                        else {}
+                    ),
+                },
+            )
 
             logger.info(
-                f"[Persist Results] Successfully persisted output for: {db_execution_id}"
+                "[Persist Results] Successfully persisted output via workflow-data for: %s",
+                db_execution_id,
             )
             return {"success": True}
 

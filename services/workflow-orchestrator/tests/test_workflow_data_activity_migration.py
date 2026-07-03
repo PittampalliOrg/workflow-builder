@@ -95,6 +95,7 @@ fetch_child_workflow = _load_activity("fetch_child_workflow")
 persist_workspace_session = _load_activity("persist_workspace_session")
 register_resumable_workspace = _load_activity("register_resumable_workspace")
 publish_event = _load_activity("publish_event")
+persist_results = _load_activity("persist_results_to_db")
 
 
 class FailingPsycopg2:
@@ -708,6 +709,34 @@ def test_publish_phase_persist_failure_does_not_fallback_to_postgres(monkeypatch
         assert "workflow-data unavailable" in str(exc)
     else:
         raise AssertionError("workflow-data failure should surface without Postgres fallback")
+
+
+def test_persist_results_failure_does_not_fallback_to_postgres(monkeypatch):
+    class FailingWorkflowDataClient:
+        def get_execution(self, *_args, **_kwargs):
+            raise RuntimeError("workflow-data unavailable")
+
+        def patch_execution(self, *_args, **_kwargs):
+            raise AssertionError("patch should not be called after get failure")
+
+    _block_psycopg2_imports(monkeypatch)
+    monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
+    monkeypatch.setattr(persist_results, "workflow_data_client", FailingWorkflowDataClient())
+
+    for mode in ("http-fallback-db", "postgres"):
+        monkeypatch.setenv("WORKFLOW_DATA_API_MODE", mode)
+        result = persist_results.persist_results_to_db(
+            None,
+            {
+                "dbExecutionId": f"exec-{mode}",
+                "outputs": {},
+                "success": True,
+                "durationMs": 10,
+            },
+        )
+
+        assert result["success"] is False
+        assert "workflow-data unavailable" in result["error"]
 
 
 def test_trace_lineage_strict_http_uses_workflow_data_client(monkeypatch):

@@ -203,7 +203,8 @@ With `WORKFLOW_DATA_API_MODE=http`, these paths route persistence through
 - `persist_artifact.py`: workflow artifact upsert.
 - `persist_plan_artifact.py`: plan artifact create/update/fetch. This activity
   is workflow-data only; its direct Postgres fallback was removed.
-- `persist_results_to_db.py`: final execution read-model/output update.
+- `persist_results_to_db.py`: final execution read-model/output update. This
+  activity is workflow-data only; its direct Postgres fallback was removed.
 - `persist_workspace_session.py`: retained workspace-session upsert. This
   activity is workflow-data only; its direct Postgres fallback was removed.
 - `publish_event.py`: phase/progress read-model update after Dapr pub/sub
@@ -234,10 +235,11 @@ so import-time coupling does not affect strict HTTP mode.
 `resolve_mcp_config.py` now uses a lazy `_connect_postgres` helper for the
 rollback branch, and its fallback tests patch that helper directly.
 `fetch_child_workflow.py`, `track_agent_run.py`, `log_node_execution.py`,
-`persist_plan_artifact.py`, `persist_workspace_session.py`, `publish_event.py`,
+`persist_plan_artifact.py`, `persist_results_to_db.py`,
+`persist_workspace_session.py`, `publish_event.py`,
 `register_resumable_workspace.py`, and `finalize_otel_trace_root.py` no longer
-have direct Postgres rollback branches; their workflow-data endpoints are the
-only persistence path.
+have direct Postgres rollback branches for their runtime persistence paths;
+their workflow-data endpoints are the only persistence path.
 
 `app.py` still contains `_get_database_url` and lazy `psycopg2` imports in the
 fallback bodies for:
@@ -252,10 +254,10 @@ fallback bodies for:
 - `_list_stale_running_execution_rows`
 
 `persist_results_to_db.py` also has a legacy MLflow browser-artifact projection
-that reads browser artifact rows only when
-`WORKFLOW_ORCHESTRATOR_LEGACY_MLFLOW_ENABLED` and `MLFLOW_TRACKING_URI` are set.
-Active trace lineage should use OTel fields and workflow-data trace lineage
-ports instead.
+helper that can read browser artifact rows when called with an explicit
+database URL and when `WORKFLOW_ORCHESTRATOR_LEGACY_MLFLOW_ENABLED` and
+`MLFLOW_TRACKING_URI` are set. Active final-result persistence and trace
+lineage should use workflow-data and OTel lineage ports instead.
 
 ## BFF / Control-Plane Runtime Seams
 

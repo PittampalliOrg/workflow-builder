@@ -1175,36 +1175,36 @@ def test_mark_workflow_execution_started_persists_primary_trace_id(monkeypatch):
 
 
 def test_persist_results_backfills_primary_trace_id_from_otel(monkeypatch):
-    executed = []
+    calls = []
 
-    class _Cursor:
-        def __enter__(self):
-            return self
+    class FakeWorkflowDataClient:
+        def get_execution(self, execution_id):
+            calls.append(("get", execution_id))
+            return {
+                "id": execution_id,
+                "startedAt": (
+                    datetime.now(timezone.utc) - timedelta(milliseconds=25)
+                ).isoformat(),
+                "primaryTraceId": None,
+            }
 
-        def __exit__(self, *_args):
-            return None
+        def patch_execution(self, execution_id, payload):
+            calls.append(("patch", execution_id, payload))
+            return {"ok": True}
 
-        def execute(self, sql, params):
-            executed.append((sql, params))
-
-        def fetchone(self):
-            return (datetime.now(timezone.utc),)
-
-    class _Connection:
-        def cursor(self):
-            return _Cursor()
-
-        def commit(self):
-            return None
-
-        def close(self):
-            return None
-
-    monkeypatch.setattr(PERSIST_RESULTS, "_get_database_url", lambda: "postgres://test")
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "postgres")
+    _block_psycopg2_imports(monkeypatch)
     monkeypatch.setattr(
         sys.modules["psycopg2"],
         "connect",
-        lambda *_args, **_kwargs: _Connection(),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("psycopg2.connect should not be called")
+        ),
+    )
+    monkeypatch.setattr(
+        PERSIST_RESULTS,
+        "workflow_data_client",
+        FakeWorkflowDataClient(),
     )
 
     result = PERSIST_RESULTS.persist_results_to_db(
@@ -1220,12 +1220,15 @@ def test_persist_results_backfills_primary_trace_id_from_otel(monkeypatch):
     )
 
     assert result["success"] is True
-    update_sql, update_params = executed[-1]
-    assert "primary_trace_id = COALESCE(primary_trace_id, %s)" in update_sql
-    assert update_params[-2:] == (
-        "1234567890abcdef1234567890abcdef",
-        "db_exec_123",
-    )
+    assert calls[0] == ("get", "db_exec_123")
+    patch_call = calls[1]
+    assert patch_call[0:2] == ("patch", "db_exec_123")
+    payload = patch_call[2]
+    assert payload["primaryTraceId"] == "1234567890abcdef1234567890abcdef"
+    assert payload["status"] == "success"
+    assert payload["phase"] == "completed"
+    assert payload["progress"] == 100
+    assert payload["output"]["success"] is True
 
 
 def test_mlflow_workflow_run_enrichment_logs_completion_projection(monkeypatch):
