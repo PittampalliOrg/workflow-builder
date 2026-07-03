@@ -20,6 +20,7 @@ import type {
 	SessionRepository,
 	SessionRepositoryMountTarget,
 	SessionRepositoryMounter,
+	SessionSandboxDestroyer,
 	SessionTraceLifecycleStore,
 	SessionWorkflowSpawner,
 } from "$lib/server/application/ports";
@@ -93,6 +94,11 @@ export type MaterializeWorkflowSessionRepositoriesCommand = {
 	cwd?: string | null;
 };
 
+export type ReapTerminatedWorkflowSessionRuntimeHostsCommand = {
+	workflowExecutionId: string;
+	exceptSessionId: string;
+};
+
 export class ApplicationSessionCommandService {
 	constructor(
 		private readonly deps: {
@@ -104,6 +110,7 @@ export class ApplicationSessionCommandService {
 			repositoryMounter: SessionRepositoryMounter;
 			workflowSpawner: SessionWorkflowSpawner;
 			sessionTraceLifecycle?: SessionTraceLifecycleStore;
+			sandboxDestroyer?: SessionSandboxDestroyer;
 		},
 	) {}
 
@@ -236,6 +243,27 @@ export class ApplicationSessionCommandService {
 			);
 		} catch (mountErr) {
 			console.error("[sessions] workflow repository mount failed:", mountErr);
+		}
+	}
+
+	async reapTerminatedWorkflowSessionRuntimeHosts(
+		input: ReapTerminatedWorkflowSessionRuntimeHostsCommand,
+	): Promise<void> {
+		if (!this.deps.sandboxDestroyer) return;
+		const rows = await this.deps.sessions.listTerminalWorkflowSessionRuntimeHosts({
+			workflowExecutionId: input.workflowExecutionId,
+		});
+		for (const row of rows) {
+			if (row.sessionId === input.exceptSessionId) continue;
+			try {
+				await this.deps.sandboxDestroyer.deleteRuntimeSandbox(
+					`agent-host-${row.runtimeAppId}`,
+				);
+			} catch (err) {
+				console.warn(
+					`[sessions] reap host agent-host-${row.runtimeAppId} failed (best-effort): ${String(err)}`,
+				);
+			}
 		}
 	}
 

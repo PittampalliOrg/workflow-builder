@@ -8,6 +8,7 @@ import type {
 	SessionExperimentAgentStore,
 	SessionRepository,
 	SessionRepositoryMounter,
+	SessionSandboxDestroyer,
 	SessionTraceLifecycleStore,
 	SessionWorkflowSpawner,
 } from "$lib/server/application/ports";
@@ -21,6 +22,7 @@ describe("ApplicationSessionCommandService", () => {
 	let sessionExperimentAgents: SessionExperimentAgentStore;
 	let sandboxProvisioner: SandboxProvisioner;
 	let repositoryMounter: SessionRepositoryMounter;
+	let sandboxDestroyer: SessionSandboxDestroyer;
 	let workflowSpawner: SessionWorkflowSpawner;
 	let sessionTraceLifecycle: SessionTraceLifecycleStore;
 	let service: ApplicationSessionCommandService;
@@ -41,6 +43,18 @@ describe("ApplicationSessionCommandService", () => {
 			mountSessionRepositories: vi.fn(async () => undefined),
 			mountSessionRepository: vi.fn(async () => undefined),
 		};
+		sandboxDestroyer = {
+			deleteRuntimeSandbox: vi.fn(async (name: string) => ({
+				name,
+				kind: "runtime" as const,
+				status: "deleted" as const,
+			})),
+			deleteWorkspaceSandbox: vi.fn(async (name: string) => ({
+				name,
+				kind: "workspace" as const,
+				status: "deleted" as const,
+			})),
+		};
 		workflowSpawner = {
 			spawnSessionWorkflow: vi.fn(async () => ({
 				instanceId: "session-1",
@@ -60,6 +74,7 @@ describe("ApplicationSessionCommandService", () => {
 			repositoryMounter,
 			workflowSpawner,
 			sessionTraceLifecycle,
+			sandboxDestroyer,
 		});
 	});
 
@@ -362,6 +377,28 @@ describe("ApplicationSessionCommandService", () => {
 				workspaceRef: "workspace/ws-ready",
 				rootPath: null,
 			},
+		);
+	});
+
+	it("reaps terminal workflow session hosts through the sandbox destroyer port", async () => {
+		vi.mocked(sessions.listTerminalWorkflowSessionRuntimeHosts).mockResolvedValue([
+			{ sessionId: "old-session", runtimeAppId: "agent-session-old" },
+			{ sessionId: "session-1", runtimeAppId: "agent-session-current" },
+		]);
+
+		await service.reapTerminatedWorkflowSessionRuntimeHosts({
+			workflowExecutionId: "execution-1",
+			exceptSessionId: "session-1",
+		});
+
+		expect(sessions.listTerminalWorkflowSessionRuntimeHosts).toHaveBeenCalledWith({
+			workflowExecutionId: "execution-1",
+		});
+		expect(sandboxDestroyer.deleteRuntimeSandbox).toHaveBeenCalledWith(
+			"agent-host-agent-session-old",
+		);
+		expect(sandboxDestroyer.deleteRuntimeSandbox).not.toHaveBeenCalledWith(
+			"agent-host-agent-session-current",
 		);
 	});
 

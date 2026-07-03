@@ -79,13 +79,13 @@ const mocks = vi.hoisted(() => {
 			updateWorkflowEnsureSessionRuntime: vi.fn(async (input: unknown) => {
 				state.updates.push(input);
 			}),
-			listTerminalWorkflowSessionRuntimeHosts: vi.fn(async () => []),
 		},
 		sessionGoals: {
 			ensureWorkflowEvaluatorGoal: vi.fn(async () => ({ status: "created" })),
 		},
 		sessionCommands: {
 			materializeWorkflowSessionRepositories: vi.fn(async () => undefined),
+			reapTerminatedWorkflowSessionRuntimeHosts: vi.fn(async () => undefined),
 		},
 	};
 });
@@ -217,10 +217,13 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 		expect(source).toContain("workflowData.updateWorkflowEnsureSessionRuntime");
 		expect(source).toContain("sessionGoals.ensureWorkflowEvaluatorGoal");
 		expect(source).toContain("sessionCommands.materializeWorkflowSessionRepositories");
+		expect(source).toContain("sessionCommands.reapTerminatedWorkflowSessionRuntimeHosts");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/goals/repo");
 		expect(source).not.toContain("$lib/server/sessions/registry");
 		expect(source).not.toContain("$lib/server/sessions/repositories");
+		expect(source).not.toContain("deleteSandbox");
+		expect(source).not.toContain("listTerminalWorkflowSessionRuntimeHosts");
 		expect(source).not.toContain("addResource");
 		expect(source).not.toContain("listResources");
 		expect(source).not.toContain("mountSessionRepositories");
@@ -356,6 +359,12 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 			workflowExecutionId: "execution-1",
 			workspaceRef: "workspace/ws-ready",
 			cwd: "/sandbox",
+		});
+		expect(
+			mocks.sessionCommands.reapTerminatedWorkflowSessionRuntimeHosts,
+		).toHaveBeenCalledWith({
+			workflowExecutionId: "execution-1",
+			exceptSessionId: "sess-agy-cli",
 		});
 	});
 

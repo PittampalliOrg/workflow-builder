@@ -483,6 +483,7 @@ export function getApplicationAdapters(
 			repositoryMounter: getRepositoryMounter(),
 			workflowSpawner: getWorkflowSpawner(),
 			sessionTraceLifecycle: getSessionTraceLifecycle(),
+			sandboxDestroyer: new KubernetesSessionSandboxDestroyer(),
 		}));
 	const getSessionAgentConfig = () =>
 		(sessionAgentConfig ??= new ApplicationSessionAgentConfigService({

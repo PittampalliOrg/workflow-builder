@@ -1,5 +1,4 @@
 import { error, json } from "@sveltejs/kit";
-import { deleteSandbox } from "$lib/server/kube/client";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
 import type {
@@ -739,8 +738,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	// sessions' host sandboxes (their per-node diff was captured at session end).
 	// Best-effort, fully detached — never blocks or fails the spawn.
 	if (workflowExecutionId) {
-		void reapTerminatedRunHosts({
-			workflowData,
+		void sessionCommands.reapTerminatedWorkflowSessionRuntimeHosts({
 			workflowExecutionId,
 			exceptSessionId: sessionId,
 		}).catch(() => {});
@@ -1022,32 +1020,4 @@ async function resolveWakeSlug(params: {
 		if (identity?.slug) return identity.slug;
 	}
 	return null;
-}
-
-/**
- * Reap the host Sandbox CRs of a run's already-terminal sessions (per-turn reap).
- * The per-session agent-host pod for a `durable/run` node is otherwise only
- * cleaned at run-end, so a multi-node run accumulates one pod (+ a system-critical
- * JuiceFS mount pod) per node and eventually starves/preempts the agent pods on a
- * small cluster. Each terminal session's per-node workspace diff is captured at
- * session end, so deleting its host after terminal status is safe. Best-effort.
- */
-async function reapTerminatedRunHosts(input: {
-	workflowData: WorkflowDataService;
-	workflowExecutionId: string;
-	exceptSessionId: string;
-}): Promise<void> {
-	const rows = await input.workflowData.listTerminalWorkflowSessionRuntimeHosts({
-		workflowExecutionId: input.workflowExecutionId,
-	});
-	for (const row of rows) {
-		if (row.sessionId === input.exceptSessionId) continue;
-		try {
-			await deleteSandbox(`agent-host-${row.runtimeAppId}`);
-		} catch (err) {
-			console.warn(
-				`[ensure-for-workflow] reap host agent-host-${row.runtimeAppId} failed (best-effort): ${String(err)}`,
-			);
-		}
-	}
 }
