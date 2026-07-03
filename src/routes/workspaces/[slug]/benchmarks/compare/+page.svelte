@@ -13,7 +13,7 @@
 	import RunInstanceDrawer from '$lib/components/benchmarks/run-instance-drawer.svelte';
 	import { isBenchmarkAgentRuntime } from '$lib/benchmarks/agent-runtimes';
 	import { isActiveRunStatus } from '$lib/components/benchmarks/run-status-helpers';
-	import type { AxisName, RunConfigSummary } from '$lib/server/benchmarks/comparison';
+	import type { AxisName, RunConfigSummary } from '$lib/types/benchmark-compare';
 	import type { PageData } from './$types';
 
 	const { data }: { data: PageData } = $props();

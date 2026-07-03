@@ -12,7 +12,7 @@
 	} from '@lucide/svelte';
 	import RunStatusBadge from './run-status-badge.svelte';
 	import { formatTokens, formatDuration, isActiveRunStatus } from './run-status-helpers';
-	import type { CompareData, InstanceCell, RunConfigSummary } from '$lib/server/benchmarks/comparison';
+	import type { CompareData, InstanceCell, RunConfigSummary } from '$lib/types/benchmark-compare';
 
 	type Props = {
 		data: CompareData;

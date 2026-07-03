@@ -110,6 +110,10 @@ import {
 	WorkspaceRuntimeSandboxProvisioner,
 } from "$lib/server/application/adapters/sandbox";
 import { LocalRuntimeRegistryReader } from "$lib/server/application/adapters/runtime-registry";
+import {
+	LocalRuntimeCatalogReader,
+	LocalWorkflowTriggerKindCatalogReader,
+} from "$lib/server/application/adapters/catalogs";
 import { KubernetesSessionRuntimeStatusReader } from "$lib/server/application/adapters/runtime-status";
 import {
 	CurrentSessionRepository,
@@ -176,6 +180,10 @@ import { ApplicationBenchmarkCompareService } from "$lib/server/application/benc
 import { ApplicationCapacityActiveService } from "$lib/server/application/capacity-active";
 import { ApplicationCapacityOverviewService } from "$lib/server/application/capacity-overview";
 import { ApplicationDaprInspectionService } from "$lib/server/application/dapr-inspection";
+import {
+	ApplicationRuntimeCatalogService,
+	ApplicationWorkflowTriggerKindCatalogService,
+} from "$lib/server/application/catalogs";
 import {
 	ApplicationBenchmarkRunLaunchService,
 	ApplicationEvaluationRunLaunchService,
@@ -339,6 +347,10 @@ export function getApplicationAdapters(
 	let capacityActive: ApplicationCapacityActiveService | undefined;
 	let capacityOverview: ApplicationCapacityOverviewService | undefined;
 	let daprInspection: ApplicationDaprInspectionService | undefined;
+	let runtimeCatalog: ApplicationRuntimeCatalogService | undefined;
+	let workflowTriggerKindCatalog:
+		| ApplicationWorkflowTriggerKindCatalogService
+		| undefined;
 	let workflowDefinitionCommands:
 		| ApplicationWorkflowDefinitionCommandService
 		| undefined;
@@ -590,6 +602,15 @@ export function getApplicationAdapters(
 		(daprInspection ??= new ApplicationDaprInspectionService({
 			runtime: new DaprClientInspectionRuntimeAdapter(),
 		}));
+	const getRuntimeCatalog = () =>
+		(runtimeCatalog ??= new ApplicationRuntimeCatalogService(
+			new LocalRuntimeCatalogReader(),
+		));
+	const getWorkflowTriggerKindCatalog = () =>
+		(workflowTriggerKindCatalog ??=
+			new ApplicationWorkflowTriggerKindCatalogService(
+				new LocalWorkflowTriggerKindCatalogReader(),
+			));
 	const getSessionSandboxes = () =>
 		(sessionSandboxes ??= new ApplicationSessionSandboxService({
 			sessions: getSessions(),
@@ -904,6 +925,12 @@ export function getApplicationAdapters(
 		},
 		get daprInspection() {
 			return getDaprInspection();
+		},
+		get runtimeCatalog() {
+			return getRuntimeCatalog();
+		},
+		get workflowTriggerKindCatalog() {
+			return getWorkflowTriggerKindCatalog();
 		},
 		get sessionSandboxes() {
 			return getSessionSandboxes();

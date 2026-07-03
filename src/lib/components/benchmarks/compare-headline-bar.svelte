@@ -4,7 +4,7 @@
 	import { GitFork } from '@lucide/svelte';
 	import RunStatusBadge from './run-status-badge.svelte';
 	import { suiteShortLabel, formatRelative } from './run-status-helpers';
-	import type { RunConfigSummary } from '$lib/server/benchmarks/comparison';
+	import type { RunConfigSummary } from '$lib/types/benchmark-compare';
 
 	type Props = {
 		runs: RunConfigSummary[];

@@ -1,8 +1,11 @@
 <script lang="ts">
 	import { Badge } from '$lib/components/ui/badge';
 	import { TrendingUp, TrendingDown, Minus } from '@lucide/svelte';
-	import type { RegressionTest, RegressionMetric } from '$lib/server/benchmarks/regression';
-	import type { RunConfigSummary } from '$lib/server/benchmarks/comparison';
+	import type {
+		RegressionMetric,
+		RegressionTest,
+		RunConfigSummary
+	} from '$lib/types/benchmark-compare';
 
 	type Props = {
 		// Outer index = candidate run (vs runs[0] baseline). Inner array = one
