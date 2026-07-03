@@ -151,6 +151,7 @@ import { ApplicationSessionBrowserService } from "$lib/server/application/sessio
 import { ApplicationBulkLifecycleStopService } from "$lib/server/application/lifecycle-bulk-stop";
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
 import { ApplicationWorkflowBrowserArtifactsService } from "$lib/server/application/workflow-browser-artifacts";
+import { ApplicationWorkflowExecutionArtifactsService } from "$lib/server/application/workflow-execution-artifacts";
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
 import { ApplicationWorkflowExecutionFilesService } from "$lib/server/application/workflow-execution-files";
 import { ApplicationWorkflowExecutionLineageService } from "$lib/server/application/workflow-execution-lineage";
@@ -285,6 +286,9 @@ export function getApplicationAdapters(
 		| undefined;
 	let workflowExecutionControl:
 		| ApplicationWorkflowExecutionControlService
+		| undefined;
+	let workflowExecutionArtifacts:
+		| ApplicationWorkflowExecutionArtifactsService
 		| undefined;
 	let workflowExecutionFiles:
 		| ApplicationWorkflowExecutionFilesService
@@ -527,6 +531,10 @@ export function getApplicationAdapters(
 			runStarter: new LegacyWorkflowRunStarterPort(),
 			workflowSpecs: new LegacyWorkflowSpecValidatorPort(),
 		}));
+	const getWorkflowExecutionArtifacts = () =>
+		(workflowExecutionArtifacts ??= new ApplicationWorkflowExecutionArtifactsService({
+			workflowData: getWorkflowData(),
+		}));
 	const getWorkflowExecutionFiles = () =>
 		(workflowExecutionFiles ??= new ApplicationWorkflowExecutionFilesService({
 			workflowData: getWorkflowData(),
@@ -742,6 +750,9 @@ export function getApplicationAdapters(
 		},
 		get workflowExecutionControl() {
 			return getWorkflowExecutionControl();
+		},
+		get workflowExecutionArtifacts() {
+			return getWorkflowExecutionArtifacts();
 		},
 		get workflowExecutionFiles() {
 			return getWorkflowExecutionFiles();

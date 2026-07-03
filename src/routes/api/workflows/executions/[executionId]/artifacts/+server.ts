@@ -6,7 +6,7 @@
  * creation time. The `inlinePayload` of each artifact is included
  * directly so the renderer can display it without extra round-trips.
  *
- * Workspace-scoped via `assertInScope`. Cross-workspace access 404s.
+ * Workspace-scoped through the application service. Cross-workspace access 404s.
  */
 
 import { error, json } from "@sveltejs/kit";
@@ -19,34 +19,13 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const { executionId } = params;
 	if (!executionId) return error(400, "executionId required");
 
-	const workflowData = getApplicationAdapters().workflowData;
-	let execution;
-	try {
-		execution = await workflowData.getScopedExecutionById({
-			executionId,
-			userId: locals.session.userId,
-			projectId: locals.session.projectId,
-		});
-	} catch (err) {
-		console.error("[WorkflowArtifacts] execution lookup failed:", err);
-		return error(
-			503,
-			err instanceof Error ? err.message : "Execution lookup failed",
-		);
+	const result = await getApplicationAdapters().workflowExecutionArtifacts.listArtifacts({
+		executionId,
+		userId: locals.session.userId,
+		projectId: locals.session.projectId,
+	});
+	if (result.status === "error") {
+		return error(result.httpStatus, result.message);
 	}
-
-	if (!execution) return error(404, "Execution not found");
-
-	let artifacts;
-	try {
-		artifacts = await workflowData.listWorkflowArtifactsByExecutionId(executionId);
-	} catch (err) {
-		console.error("[WorkflowArtifacts] artifact list failed:", err);
-		return error(
-			503,
-			err instanceof Error ? err.message : "Artifact lookup failed",
-		);
-	}
-
-	return json({ artifacts });
+	return json(result.body);
 };

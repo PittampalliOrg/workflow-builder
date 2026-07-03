@@ -4,14 +4,8 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
-	const execution = {
-		id: "exec-1",
-		userId: "user-1",
-		projectId: "project-1",
-	};
-	const workflowData = {
-		getScopedExecutionById: vi.fn(async (): Promise<typeof execution | null> => execution),
-		listWorkflowArtifactsByExecutionId: vi.fn(async () => [
+	const body = {
+		artifacts: [
 			{
 				id: "artifact-1",
 				workflowExecutionId: "exec-1",
@@ -27,13 +21,23 @@ const mocks = vi.hoisted(() => {
 				metadata: null,
 				createdAt: new Date("2026-01-01T00:00:00.000Z"),
 			},
-		]),
+		],
 	};
-	return { execution, workflowData };
+	type ListArtifactsResult =
+		| { status: "ok"; body: typeof body }
+		| { status: "error"; httpStatus: number; message: string };
+	const workflowExecutionArtifacts = {
+		listArtifacts: vi.fn(
+			async (): Promise<ListArtifactsResult> => ({ status: "ok", body }),
+		),
+	};
+	return { body, workflowExecutionArtifacts };
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
+	getApplicationAdapters: () => ({
+		workflowExecutionArtifacts: mocks.workflowExecutionArtifacts,
+	}),
 }));
 
 import { GET } from "./+server";
@@ -58,21 +62,26 @@ async function expectHttpStatus(promise: Promise<unknown>, status: number) {
 describe("workflow execution artifacts route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mocks.workflowExecutionArtifacts.listArtifacts.mockResolvedValue({
+			status: "ok",
+			body: mocks.body,
+		});
 	});
 
-	it("keeps the UI-facing route behind workflow-data application services", () => {
+	it("keeps the UI-facing route behind workflow execution artifact application services", () => {
 		const source = readFileSync(
 			join(dirname(fileURLToPath(import.meta.url)), "+server.ts"),
 			"utf8",
 		);
 		expect(source).toContain("getApplicationAdapters");
-		expect(source).toContain("workflowData.getScopedExecutionById");
+		expect(source).toContain("workflowExecutionArtifacts.listArtifacts");
+		expect(source).not.toContain("workflowData");
 		expect(source).not.toContain("$lib/server/workflows/project-scope");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
 	});
 
-	it("returns artifacts through workflowData after scoping the execution", async () => {
+	it("returns artifacts through the application service", async () => {
 		const response = (await GET(event() as never)) as Response;
 		expect(response.status).toBe(200);
 		await expect(response.json()).resolves.toMatchObject({
@@ -85,18 +94,20 @@ describe("workflow execution artifacts route", () => {
 				},
 			],
 		});
-		expect(mocks.workflowData.getScopedExecutionById).toHaveBeenCalledWith({
+		expect(mocks.workflowExecutionArtifacts.listArtifacts).toHaveBeenCalledWith({
 			executionId: "exec-1",
 			userId: "user-1",
 			projectId: "project-1",
 		});
-		expect(mocks.workflowData.listWorkflowArtifactsByExecutionId).toHaveBeenCalledWith("exec-1");
 	});
 
 	it("hides artifacts when the execution is outside the active workspace", async () => {
-		mocks.workflowData.getScopedExecutionById.mockResolvedValueOnce(null);
+		mocks.workflowExecutionArtifacts.listArtifacts.mockResolvedValueOnce({
+			status: "error",
+			httpStatus: 404,
+			message: "Execution not found",
+		});
 
 		await expectHttpStatus(Promise.resolve(GET(event() as never)), 404);
-		expect(mocks.workflowData.listWorkflowArtifactsByExecutionId).not.toHaveBeenCalled();
 	});
 });

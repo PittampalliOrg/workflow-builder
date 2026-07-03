@@ -160,9 +160,10 @@ UI-facing workflow execution routes continue to move behind application
 services:
 
 - `src/routes/api/workflows/executions/[executionId]/artifacts/+server.ts`
-  now loads the parent execution and artifact list through
-  `getApplicationAdapters().workflowData`; the route imports no Drizzle schema
-  or `$lib/server/db`.
+  now delegates scoped parent execution lookup, artifact list loading, and
+  lookup-failure status mapping to
+  `ApplicationWorkflowExecutionArtifactsService`; the route imports no
+  workflow-data, Drizzle schema, or `$lib/server/db`.
   `src/routes/api/workflows/executions/[executionId]/artifacts/artifacts-route.test.ts`
   locks both the response behavior and the no-direct-db boundary.
 - `src/routes/api/workflows/executions/[executionId]/plan-artifacts/+server.ts`
