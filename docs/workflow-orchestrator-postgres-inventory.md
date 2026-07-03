@@ -20,7 +20,7 @@ execution lookup, plus the GitHub trigger ingress and event-trigger admission
 gate, and the internal piece-execution artifact readback route, plus the
 workflow trigger management/lifecycle, workflow definition command,
 code-checkpoint list/diff/restore, admin GitOps auth-check, and session-goal
-storage wiring slices.
+storage wiring slices, plus dev-preview database provisioning.
 The session spawn/control runtime-target helper now resolves session owner user
 ids, workflow execution workspace keys, and session runtime targets through
 workflow-data ports. Direct `sessions`/`workflow_executions` reads for those
@@ -115,6 +115,9 @@ The dev-preview lifecycle now persists retained workspace rows, resolves
 canonical execution ids, marks cleaned previews, and writes source-bundle
 artifacts through workflow-data application ports; `dev-preview.ts` no longer
 imports DB, Drizzle, workflow artifact, or file-registry modules directly.
+Functional preview database create/drop now flows through
+`PreviewDatabaseProvisioner`; the first adapter is
+`PostgresPreviewDatabaseProvisioner`.
 The CLI preview helper now resolves session runtime targets, execution rows, and
 interactive-CLI detection through workflow-data ports; direct DB/Drizzle imports
 are confined to the Postgres session adapter for that preview lookup.
@@ -554,8 +557,9 @@ services:
   public `src/routes/api/dev-environments/**` GET routes now load dev-preview
   hub, service catalog, list, and detail read models through workflow-data and a
   dev-environment read repository port. The existing DB reconstruction helper is
-  wrapped as a legacy adapter; teardown and internal dev-preview write/canonical
-  id paths remain a dedicated lifecycle/internal slice.
+  wrapped as a legacy adapter. Dev-preview provision/teardown routes now call
+  `PreviewEnvironmentProvisioner`; per-preview database create/drop is confined
+  to `PostgresPreviewDatabaseProvisioner`.
 - `src/routes/workspaces/[slug]/+layout.server.ts` and
   `src/lib/server/workspaces/resolve.ts` now validate workspace slug membership
   and stale-slug redirect targets through workflow-data workspace-project
@@ -1179,9 +1183,9 @@ categories include:
   runtime-config helper's latest-event adapter seam, and session agent config
   patch command session lookup now routed through workflow-data, plus the
   session spawn read/attach-runtime path now routed through workflow-data.
-- preview runtime/proxy helper internals, where persistence lookups have moved
-  behind workflow-data but live Kubernetes/OpenShell transport still needs
-  narrower runtime/proxy ports.
+- preview runtime/proxy helper internals, where persistence lookups and
+  per-preview database create/drop have moved behind ports, but live
+  Kubernetes/OpenShell transport still needs narrower runtime/proxy ports.
 - benchmark/evaluation/admin/reporting API surfaces outside the migrated
   workspace benchmark browser/run-list/compare loaders.
 - startup/migration/bootstrap and remaining non-migrated API route handlers.

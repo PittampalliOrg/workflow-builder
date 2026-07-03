@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { PreviewDatabaseProvisioner } from "$lib/server/application/ports";
 import {
 	provisionDevPreview,
 	type DevPreviewPersistence,
@@ -27,6 +28,17 @@ function fakePersistence(): DevPreviewPersistence {
 	};
 }
 
+function fakePreviewDatabases(): PreviewDatabaseProvisioner {
+	return {
+		provision: vi.fn(async () => ({
+			databaseUrl: "postgres://preview-db",
+			sourceUrl: "postgres://source-db",
+			dbName: "preview_exec1",
+		})),
+		drop: vi.fn(async () => undefined),
+	};
+}
+
 describe("dev-preview portability boundary", () => {
 	afterEach(() => {
 		vi.unstubAllEnvs();
@@ -42,6 +54,8 @@ describe("dev-preview portability boundary", () => {
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");
+		expect(source).not.toContain("from \"postgres\"");
+		expect(source).not.toContain("workflows/preview-database");
 		expect(source).not.toContain("$lib/server/files/registry");
 		expect(source).not.toContain("persistSourceBundle(");
 	});
@@ -88,5 +102,48 @@ describe("dev-preview portability boundary", () => {
 				status: "active",
 			}),
 		);
+	});
+
+	it("provisions functional preview databases through the injected port", async () => {
+		vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+		const fetchMock = vi.fn(async (_url, init) => {
+			const body = JSON.parse(String((init as RequestInit).body));
+			return new Response(
+				JSON.stringify({
+					sandboxName: "dev-preview-exec-1",
+					podIP: "10.0.0.12",
+					port: 3000,
+					syncPort: 3000,
+					url: "http://10.0.0.12:3000",
+					syncUrl: "http://10.0.0.12:3000/__sync",
+					ready: true,
+					status: "running",
+					serviceSecretEnv: body.serviceSecretEnv,
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const persistence = fakePersistence();
+		const previewDatabases = fakePreviewDatabases();
+
+		await provisionDevPreview(
+			{
+				executionId: "exec-1",
+				service: "workflow-builder",
+			},
+			persistence,
+			previewDatabases,
+		);
+
+		expect(previewDatabases.provision).toHaveBeenCalledWith({
+			executionId: "exec-1",
+		});
+		const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+		const body = JSON.parse(String(request.body));
+		expect(body.serviceSecretEnv).toMatchObject({
+			DATABASE_URL: "postgres://preview-db",
+			PREVIEW_SOURCE_DATABASE_URL: "postgres://source-db",
+		});
 	});
 });

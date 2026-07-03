@@ -17,6 +17,8 @@ import type {
 import type {
 	DevPreviewInfo,
 	ProvisionDevPreviewParams,
+	TeardownDevPreviewParams,
+	TeardownDevPreviewResult,
 } from "$lib/server/workflows/dev-preview";
 import type { RuntimeConfigCloudEvent } from "$lib/server/sessions/runtime-config";
 import type {
@@ -5012,6 +5014,20 @@ export interface SandboxProvisioner {
 
 export interface PreviewEnvironmentProvisioner {
 	provision(input: ProvisionDevPreviewParams): Promise<DevPreviewInfo>;
+	teardown(input: TeardownDevPreviewParams): Promise<TeardownDevPreviewResult>;
+}
+
+export type PreviewDatabaseProvisionResult = {
+	databaseUrl: string;
+	sourceUrl: string;
+	dbName: string;
+};
+
+export interface PreviewDatabaseProvisioner {
+	provision(input: {
+		executionId: string;
+	}): Promise<PreviewDatabaseProvisionResult>;
+	drop(input: { executionId: string }): Promise<void>;
 }
 
 export interface WorkflowDataService {

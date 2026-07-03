@@ -118,6 +118,7 @@ import {
 	KroPreviewEnvironmentProvisioner,
 	SandboxExecutionPreviewEnvironmentProvisioner,
 } from "$lib/server/application/adapters/preview";
+import { PostgresPreviewDatabaseProvisioner } from "$lib/server/application/adapters/preview-database";
 import {
 	OpenShellSandboxRuntimeInventory,
 	WorkspaceRuntimeSandboxProvisioner,
@@ -1209,7 +1210,10 @@ export function getApplicationAdapters(
 		(previewEnvironmentProvisioner ??=
 			config.previewProvisionerAdapter === "kro"
 				? new KroPreviewEnvironmentProvisioner()
-				: new SandboxExecutionPreviewEnvironmentProvisioner(getWorkflowData));
+				: new SandboxExecutionPreviewEnvironmentProvisioner(
+						getWorkflowData,
+						new PostgresPreviewDatabaseProvisioner(),
+					));
 	const getWorkflowExport = () =>
 		(workflowExport ??= new ApplicationWorkflowExportService({
 			workflowData: getWorkflowData(),

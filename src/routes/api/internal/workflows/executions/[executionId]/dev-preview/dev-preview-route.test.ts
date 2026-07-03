@@ -12,6 +12,9 @@ describe("internal workflow execution dev-preview route", () => {
 
 		expect(source).toContain("getApplicationAdapters");
 		expect(source).toContain("workflowData.resolveCanonicalExecutionId");
+		expect(source).toContain("previewEnvironmentProvisioner.provision");
+		expect(source).toContain("previewEnvironmentProvisioner.teardown");
+		expect(source).not.toContain("$lib/server/workflows/dev-preview");
 		expect(source).not.toContain("$lib/server/workflows/dev-environments");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");

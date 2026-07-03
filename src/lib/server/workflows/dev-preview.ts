@@ -1,4 +1,5 @@
 import { env } from "$env/dynamic/private";
+import type { PreviewDatabaseProvisioner } from "$lib/server/application/ports";
 import {
 	resolveDevPreviewDescriptor,
 	resolveDevPreviewImage,
@@ -156,9 +157,20 @@ export interface ProvisionDevPreviewParams {
 	origin?: string;
 }
 
+export interface TeardownDevPreviewParams {
+	executionId: string;
+	sandboxName?: string | null;
+}
+
+export interface TeardownDevPreviewResult {
+	ok: boolean;
+	sandboxName: string | null;
+}
+
 export async function provisionDevPreview(
 	params: ProvisionDevPreviewParams,
 	persistence?: DevPreviewPersistence,
+	previewDatabases?: PreviewDatabaseProvisioner,
 ): Promise<DevPreviewInfo> {
 	const baseUrl = sandboxExecutionApiUrl();
 	if (!baseUrl) {
@@ -183,12 +195,12 @@ export async function provisionDevPreview(
 	if (params.origin) previewEnv.ORIGIN = params.origin;
 	const serviceSecretEnv: Record<string, string> = {};
 	if (descriptor.functional && !previewNative) {
-		const { provisionPreviewDatabase } = await import(
-			"$lib/server/workflows/preview-database"
-		);
-		const { databaseUrl, sourceUrl } = await provisionPreviewDatabase(
-			params.executionId,
-		);
+		if (!previewDatabases) {
+			throw new Error("Preview database provisioner not configured");
+		}
+		const { databaseUrl, sourceUrl } = await previewDatabases.provision({
+			executionId: params.executionId,
+		});
 		serviceSecretEnv.DATABASE_URL = databaseUrl;
 		// Source for the db-clone init container (pg_dump --schema-only | psql).
 		if (sourceUrl) serviceSecretEnv.PREVIEW_SOURCE_DATABASE_URL = sourceUrl;
@@ -501,12 +513,10 @@ export async function captureDevPreviewSource(
 }
 
 export async function teardownDevPreview(
-	params: {
-		executionId: string;
-		sandboxName?: string | null;
-	},
+	params: TeardownDevPreviewParams,
 	persistence?: DevPreviewPersistence,
-): Promise<{ ok: boolean; sandboxName: string | null }> {
+	previewDatabases?: PreviewDatabaseProvisioner,
+): Promise<TeardownDevPreviewResult> {
 	// Capture a durable, promotable version of the produced code BEFORE the dev pod
 	// is deleted (dev-pod-as-source code lives only behind /__export). Best-effort.
 	await captureDevPreviewSource(
@@ -550,16 +560,15 @@ export async function teardownDevPreview(
 	}
 	// Drop the per-preview database (functional previews). Best-effort — IF NOT
 	// EXISTS-safe, so harmless for UI-only previews that never created one.
-	try {
-		const { dropPreviewDatabase } = await import(
-			"$lib/server/workflows/preview-database"
-		);
-		await dropPreviewDatabase(params.executionId);
-	} catch (err) {
-		console.warn(
-			"[dev-preview] preview DB drop failed:",
-			err instanceof Error ? err.message : err,
-		);
+	if (previewDatabases) {
+		try {
+			await previewDatabases.drop({ executionId: params.executionId });
+		} catch (err) {
+			console.warn(
+				"[dev-preview] preview DB drop failed:",
+				err instanceof Error ? err.message : err,
+			);
+		}
 	}
 	return { ok: true, sandboxName: name };
 }
