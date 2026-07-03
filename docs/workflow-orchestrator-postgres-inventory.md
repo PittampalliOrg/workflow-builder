@@ -1222,6 +1222,12 @@ session-owner ports instead of importing DB/Drizzle from
 The dashboard and project workflow-run list routes are also clean.
 The sandbox-delete route's session read is also clean, while its lifecycle and
 Kubernetes/OpenShell deletion behavior intentionally remain in the route.
+Capability bundle CRUD is now clean: `src/routes/api/capability-bundles/**`
+delegates list/create/read/update/archive behavior to
+`ApplicationCapabilityBundleService`, with Drizzle access confined to
+`PostgresCapabilityBundleRepository`. The runtime capability-flattening helper
+is still listed below because it participates in effective agent/session config
+resolution and needs its own narrower read port before it can move.
 The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:
