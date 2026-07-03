@@ -79,6 +79,11 @@ import {
 import { LegacyBenchmarkRunReadRepository } from "$lib/server/application/adapters/benchmark-runs";
 import { LegacyDevEnvironmentReadRepository } from "$lib/server/application/adapters/dev-environments";
 import {
+	DaprLifecycleCoordinatorCancelNotifier,
+	ServiceBenchmarkRunCancellationPort,
+	ServiceEvaluationRunCancellationPort,
+} from "$lib/server/application/adapters/lifecycle-bulk-stop";
+import {
 	KroPreviewEnvironmentProvisioner,
 	SandboxExecutionPreviewEnvironmentProvisioner,
 } from "$lib/server/application/adapters/preview";
@@ -138,6 +143,7 @@ import { ApplicationSessionSandboxService } from "$lib/server/application/sessio
 import { ApplicationSessionMcpStatusService } from "$lib/server/application/session-mcp-status";
 import { ApplicationSessionRuntimeAccessService } from "$lib/server/application/session-runtime-access";
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
+import { ApplicationBulkLifecycleStopService } from "$lib/server/application/lifecycle-bulk-stop";
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
 import { ApplicationWorkflowExecutionStreamService } from "$lib/server/application/workflow-execution-stream";
@@ -259,6 +265,7 @@ export function getApplicationAdapters(
 	let sessionMcpStatus: ApplicationSessionMcpStatusService | undefined;
 	let sessionRuntimeAccess: ApplicationSessionRuntimeAccessService | undefined;
 	let sessionBrowser: ApplicationSessionBrowserService | undefined;
+	let bulkLifecycleStop: ApplicationBulkLifecycleStopService | undefined;
 	let workflowDefinitionCommands:
 		| ApplicationWorkflowDefinitionCommandService
 		| undefined;
@@ -413,6 +420,15 @@ export function getApplicationAdapters(
 		(sessionLifecycle ??= new ApplicationSessionLifecycleService({
 			sessions: getSessions(),
 			lifecycle: new LifecycleSessionController(getSessionGoalStore()),
+		}));
+	const getBulkLifecycleStop = () =>
+		(bulkLifecycleStop ??= new ApplicationBulkLifecycleStopService({
+			sessionLifecycle: new LifecycleSessionController(getSessionGoalStore()),
+			workflowLifecycle: new LifecycleWorkflowExecutionControllerPort(),
+			workflowCoordinatorOwners: new LifecycleWorkflowExecutionCoordinatorOwnerPort(),
+			benchmarkRuns: new ServiceBenchmarkRunCancellationPort(),
+			evaluationRuns: new ServiceEvaluationRunCancellationPort(),
+			coordinatorCancels: new DaprLifecycleCoordinatorCancelNotifier(),
 		}));
 	const getSessionSandboxes = () =>
 		(sessionSandboxes ??= new ApplicationSessionSandboxService({
@@ -626,6 +642,9 @@ export function getApplicationAdapters(
 		},
 		get sessionLifecycle() {
 			return getSessionLifecycle();
+		},
+		get bulkLifecycleStop() {
+			return getBulkLifecycleStop();
 		},
 		get sessionSandboxes() {
 			return getSessionSandboxes();

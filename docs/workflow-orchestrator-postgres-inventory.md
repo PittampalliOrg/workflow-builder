@@ -284,6 +284,13 @@ The first UI-facing route has also moved behind the application service:
   Controller stop/confirm calls, and existing 200/202/409 response semantics
   through lifecycle ports; the routes import no lifecycle, ownership, or
   project-scope helpers directly.
+- `src/routes/api/v1/lifecycle/bulk-stop/+server.ts` now delegates bulk stop
+  parsing, dedupe, bounded fan-out, coordinator-owned checks, interrupt goal
+  pausing, benchmark/evaluation run cancellation, coordinator cancel
+  notification, and summary calculation to
+  `ApplicationBulkLifecycleStopService`. The route imports no lifecycle,
+  ownership, Dapr client, benchmark/evaluation service, goal repo, or
+  project-scope helpers directly.
 - `src/routes/api/workflows/[workflowId]/execute/+server.ts` is now a thin
   presentation adapter: it delegates workspace scope checks, trigger-data
   normalization, execution creation, validation, prewarm, Dapr scheduling,

@@ -997,6 +997,22 @@ export interface BenchmarkRunLifecyclePort {
 	recomputeSummary(runId: string): Promise<Record<string, unknown>>;
 }
 
+export interface BenchmarkRunCancellationPort {
+	cancelBenchmarkRun(
+		projectId: string,
+		runId: string,
+		options?: { terminalCleanup?: "background" | "sync" },
+	): Promise<unknown | null>;
+}
+
+export interface EvaluationRunCancellationPort {
+	cancelEvaluationRun(projectId: string, runId: string): Promise<unknown>;
+}
+
+export interface LifecycleCoordinatorCancelNotifier {
+	scheduleCoordinatorCancel(kind: "benchmarkRun" | "evalRun", runId: string): void;
+}
+
 export interface BenchmarkEvaluationTelemetryPort {
 	syncEvaluationResults(input: {
 		runId: string;
