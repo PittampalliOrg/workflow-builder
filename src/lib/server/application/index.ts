@@ -77,6 +77,7 @@ import {
 	DaprWorkflowScheduler,
 } from "$lib/server/application/adapters/dapr";
 import { DaprClientInspectionRuntimeAdapter } from "$lib/server/application/adapters/dapr-inspection";
+import { SessionFleetActivityAdapter } from "$lib/server/application/adapters/capacity-active";
 import { LegacyBenchmarkRunReadRepository } from "$lib/server/application/adapters/benchmark-runs";
 import { LegacyDevEnvironmentReadRepository } from "$lib/server/application/adapters/dev-environments";
 import {
@@ -150,6 +151,7 @@ import { ApplicationSessionMcpStatusService } from "$lib/server/application/sess
 import { ApplicationSessionRuntimeAccessService } from "$lib/server/application/session-runtime-access";
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
 import { ApplicationBulkLifecycleStopService } from "$lib/server/application/lifecycle-bulk-stop";
+import { ApplicationCapacityActiveService } from "$lib/server/application/capacity-active";
 import { ApplicationDaprInspectionService } from "$lib/server/application/dapr-inspection";
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
 import { ApplicationWorkflowBrowserArtifactsService } from "$lib/server/application/workflow-browser-artifacts";
@@ -288,6 +290,7 @@ export function getApplicationAdapters(
 	let sessionRuntimeAccess: ApplicationSessionRuntimeAccessService | undefined;
 	let sessionBrowser: ApplicationSessionBrowserService | undefined;
 	let bulkLifecycleStop: ApplicationBulkLifecycleStopService | undefined;
+	let capacityActive: ApplicationCapacityActiveService | undefined;
 	let daprInspection: ApplicationDaprInspectionService | undefined;
 	let workflowDefinitionCommands:
 		| ApplicationWorkflowDefinitionCommandService
@@ -486,6 +489,10 @@ export function getApplicationAdapters(
 			benchmarkRuns: new ServiceBenchmarkRunCancellationPort(),
 			evaluationRuns: new ServiceEvaluationRunCancellationPort(),
 			coordinatorCancels: new DaprLifecycleCoordinatorCancelNotifier(),
+		}));
+	const getCapacityActive = () =>
+		(capacityActive ??= new ApplicationCapacityActiveService({
+			fleetActivity: new SessionFleetActivityAdapter(),
 		}));
 	const getDaprInspection = () =>
 		(daprInspection ??= new ApplicationDaprInspectionService({
@@ -762,6 +769,9 @@ export function getApplicationAdapters(
 		},
 		get bulkLifecycleStop() {
 			return getBulkLifecycleStop();
+		},
+		get capacityActive() {
+			return getCapacityActive();
 		},
 		get daprInspection() {
 			return getDaprInspection();

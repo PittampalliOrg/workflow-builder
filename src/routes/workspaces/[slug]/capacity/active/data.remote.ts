@@ -1,9 +1,9 @@
 import { getRequestEvent, query } from "$app/server";
-import {
-	summarizeFleetActivity,
-	type FleetActivity,
-	type FleetActivityItem,
-} from "$lib/server/sessions/fleet-activity";
+import { getApplicationAdapters } from "$lib/server/application";
+import type {
+	CapacityFleetActivity,
+	CapacityFleetActivityItem,
+} from "$lib/server/application/capacity-active";
 
 /**
  * Per-row activity for the Fleet "Active work" table. The page passes the
@@ -13,10 +13,13 @@ import {
  */
 export const getFleetActivity = query(
 	"unchecked",
-	async (items: FleetActivityItem[]): Promise<Record<string, FleetActivity>> => {
-		if (!Array.isArray(items) || items.length === 0) return {};
+	async (
+		items: CapacityFleetActivityItem[],
+	): Promise<Record<string, CapacityFleetActivity>> => {
 		const event = getRequestEvent();
-		const projectId = event.locals.session?.projectId;
-		return summarizeFleetActivity(items, projectId);
+		return getApplicationAdapters().capacityActive.getFleetActivity({
+			items,
+			projectId: event.locals.session?.projectId,
+		});
 	},
 );
