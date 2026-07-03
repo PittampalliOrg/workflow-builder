@@ -21,12 +21,7 @@ import {
 import { resolveSessionRuntimeTarget } from "$lib/server/sessions/runtime-target";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { evaluateSwap } from "$lib/server/agents/swap-safety";
-import {
-	CliTokenError,
-	getUserCliCredential,
-	acquireCliBootLease,
-	cliCredentialNeedsBootLease,
-} from "$lib/server/users/cli-credentials";
+import { CliTokenError } from "$lib/server/application/cli-credentials";
 
 /** Session owner (sessions.userId) — not part of the public SessionDetail
  * shape, so resolve it through workflow-data for the CLI-token gate. */
@@ -383,12 +378,13 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 			? `run \`${setupCommand}\` locally`
 			: "see the runtime docs";
 		const ownerUserId = await resolveSessionOwnerUserId(sessionId);
+		const { cliCredentials } = getApplicationAdapters();
 		// Serialize concurrent single-use-refresh boots (codex): hold the per-(user,
 		// provider) lease across spawn→capture so this session resolves the freshest
 		// token instead of racing the spent refresh token. Best-effort (proceeds on
 		// timeout); released by the cli-credentials capture route.
-		if (ownerUserId && cliCredentialNeedsBootLease(provider)) {
-			const leased = await acquireCliBootLease(
+		if (ownerUserId && cliCredentials.needsBootLease(provider)) {
+			const leased = await cliCredentials.acquireBootLease(
 				ownerUserId,
 				provider,
 				sessionId,
@@ -400,7 +396,7 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 			}
 		}
 		const credential = ownerUserId
-			? await getUserCliCredential(ownerUserId, provider)
+			? await cliCredentials.getUserCredential(ownerUserId, provider)
 			: null;
 		if (!credential) {
 			if (!optional) {

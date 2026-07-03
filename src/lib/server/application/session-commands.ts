@@ -8,7 +8,7 @@ import type {
 	UserEvent,
 } from "$lib/types/sessions";
 import { canResumeCliSession, isInteractiveCliRuntime } from "$lib/server/sessions/resume";
-import { CliTokenError } from "$lib/server/users/cli-credentials";
+import { CliTokenError } from "$lib/server/application/cli-credentials";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { sandboxProvisionFailureMessage } from "$lib/server/sandboxes/provision";
 import type {

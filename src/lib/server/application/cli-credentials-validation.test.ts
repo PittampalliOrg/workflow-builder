@@ -7,7 +7,7 @@ vi.mock("$lib/server/security/encryption", () => ({
 	encryptString: vi.fn(),
 }));
 
-import { assertPlausibleCliCredential } from "./cli-credentials";
+import { assertPlausibleCliCredential } from "$lib/server/application/cli-credentials";
 
 const BLOCK_SIZE = 512;
 

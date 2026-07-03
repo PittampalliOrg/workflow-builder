@@ -18,9 +18,6 @@ const mocks = vi.hoisted(() => {
 	return {
 		state,
 		validateInternalToken: vi.fn(() => true),
-		getUserCliCredential: vi.fn(async (_userId: string, provider: string) => {
-			return state.credentials[provider] ?? null;
-		}),
 		maybeProvisionAgentWorkflowHost: vi.fn(async (params: unknown) => {
 			state.hostCalls.push(params);
 			return {
@@ -87,6 +84,13 @@ const mocks = vi.hoisted(() => {
 		sessionGoals: {
 			ensureWorkflowEvaluatorGoal: vi.fn(async () => ({ status: "created" })),
 		},
+		cliCredentials: {
+			needsBootLease: vi.fn(() => false),
+			acquireBootLease: vi.fn(async () => true),
+			getUserCredential: vi.fn(async (_userId: string, provider: string) => {
+				return state.credentials[provider] ?? null;
+			}),
+		},
 		sessionCommands: {
 			materializeWorkflowSessionRepositories: vi.fn(async () => undefined),
 			reapTerminatedWorkflowSessionRuntimeHosts: vi.fn(async () => undefined),
@@ -124,14 +128,10 @@ vi.mock("$lib/server/application", () => ({
 	getApplicationAdapters: () => ({
 		workflowData: mocks.workflowData,
 		sessionGoals: mocks.sessionGoals,
+		cliCredentials: mocks.cliCredentials,
 		sessionCommands: mocks.sessionCommands,
 		promptStackCompiler: mocks.promptStackCompiler,
 	}),
-}));
-
-vi.mock("$lib/server/users/cli-credentials", () => ({
-	getUserCliCredential: mocks.getUserCliCredential,
-	cliCredentialNeedsBootLease: vi.fn(() => false),
 }));
 
 vi.mock("$lib/server/sessions/agent-workflow-host", () => ({

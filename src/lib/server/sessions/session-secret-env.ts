@@ -1,9 +1,5 @@
 import { error } from "@sveltejs/kit";
-import {
-	getUserCliCredential,
-	acquireCliBootLease,
-	cliCredentialNeedsBootLease,
-} from "$lib/server/users/cli-credentials";
+import { getApplicationAdapters } from "$lib/server/application";
 import { resolveWorkflowGithubToken } from "$lib/server/workflows/github-token";
 import type { RuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 
@@ -58,8 +54,9 @@ export async function resolveWorkflowSessionSecretEnv(params: {
 	}
 	// Serialize concurrent single-use-refresh boots (codex) for real sessions —
 	// best-effort; prewarm passes no sessionId so it never takes a lease.
-	if (params.sessionId && cliCredentialNeedsBootLease(provider)) {
-		const leased = await acquireCliBootLease(
+	const { cliCredentials } = getApplicationAdapters();
+	if (params.sessionId && cliCredentials.needsBootLease(provider)) {
+		const leased = await cliCredentials.acquireBootLease(
 			params.userId,
 			provider,
 			params.sessionId,
@@ -70,7 +67,10 @@ export async function resolveWorkflowSessionSecretEnv(params: {
 			);
 		}
 	}
-	const credential = await getUserCliCredential(params.userId, provider);
+	const credential = await cliCredentials.getUserCredential(
+		params.userId,
+		provider,
+	);
 	if (!credential) {
 		throw error(
 			412,

@@ -1,8 +1,5 @@
 import { listRuntimes } from "$lib/server/agents/runtime-registry";
-import { getUserCliCredentialSummary } from "$lib/server/users/cli-credentials";
 import type {
-	CliCredentialSummaryReadModel,
-	SettingsCliCredentialSummaryReader,
 	SettingsCliRuntimeCatalogReader,
 	CliRuntimeReadModel,
 } from "$lib/server/application/settings-cli-tokens";
@@ -32,16 +29,5 @@ export class LocalSettingsCliRuntimeCatalogReader
 						: {}),
 				},
 			}));
-	}
-}
-
-export class UserCliCredentialSummaryReader
-	implements SettingsCliCredentialSummaryReader
-{
-	getCredentialSummary(
-		userId: string,
-		provider: string,
-	): Promise<CliCredentialSummaryReadModel> {
-		return getUserCliCredentialSummary(userId, provider);
 	}
 }

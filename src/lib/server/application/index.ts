@@ -64,6 +64,10 @@ import {
 	LegacyAdminPieceRuntimeImageRegistryPort,
 } from "$lib/server/application/adapters/admin-piece-images";
 import {
+	PostgresUserCliCredentialStore,
+	RawPostgresHostCliCredentialStore,
+} from "$lib/server/application/adapters/cli-credentials";
+import {
 	LegacyAgentCompiledCapabilitiesRepository,
 	AgentRuntimeRegistrySyncAdapter,
 	LegacyAgentCatalogRepository,
@@ -154,10 +158,7 @@ import {
 	PostgresCodeFunctionExecutionRepository,
 } from "$lib/server/application/adapters/code-function-execution";
 import { LegacyActionCatalogReader } from "$lib/server/application/adapters/action-catalog";
-import {
-	LocalSettingsCliRuntimeCatalogReader,
-	UserCliCredentialSummaryReader,
-} from "$lib/server/application/adapters/settings-cli-tokens";
+import { LocalSettingsCliRuntimeCatalogReader } from "$lib/server/application/adapters/settings-cli-tokens";
 import {
 	PostgresPromptPresetRepository,
 	PostgresPromptStackPresetReadRepository,
@@ -265,6 +266,7 @@ import {
 	ApplicationCodeFunctionExecutionService,
 	DateCodeFunctionExecutionIdGenerator,
 } from "$lib/server/application/code-function-execution";
+import { ApplicationCliCredentialsService } from "$lib/server/application/cli-credentials";
 import { ApplicationSettingsCliTokensService } from "$lib/server/application/settings-cli-tokens";
 import {
 	ApplicationPromptPresetService,
@@ -482,6 +484,7 @@ export function getApplicationAdapters(
 		| ApplicationCodeFunctionExecutionService
 		| undefined;
 	let codeFunctionStore: PostgresCodeFunctionStore | undefined;
+	let cliCredentials: ApplicationCliCredentialsService | undefined;
 	let settingsCliTokens: ApplicationSettingsCliTokensService | undefined;
 	let promptPresets: ApplicationPromptPresetService | undefined;
 	let promptStackCompiler: ApplicationPromptStackCompilerService | undefined;
@@ -898,10 +901,15 @@ export function getApplicationAdapters(
 			functionRouter: new DaprFunctionRouterExecutionPort(),
 			ids: new DateCodeFunctionExecutionIdGenerator(),
 		}));
+	const getCliCredentials = () =>
+		(cliCredentials ??= new ApplicationCliCredentialsService({
+			userStore: new PostgresUserCliCredentialStore(),
+			hostStore: new RawPostgresHostCliCredentialStore(),
+		}));
 	const getSettingsCliTokens = () =>
 		(settingsCliTokens ??= new ApplicationSettingsCliTokensService({
 			runtimes: new LocalSettingsCliRuntimeCatalogReader(),
-			credentials: new UserCliCredentialSummaryReader(),
+			credentials: getCliCredentials(),
 		}));
 	const getPromptPresets = () =>
 		(promptPresets ??= new ApplicationPromptPresetService(
@@ -1338,6 +1346,9 @@ export function getApplicationAdapters(
 		},
 		get codeFunctionExecution() {
 			return getCodeFunctionExecution();
+		},
+		get cliCredentials() {
+			return getCliCredentials();
 		},
 		get settingsCliTokens() {
 			return getSettingsCliTokens();

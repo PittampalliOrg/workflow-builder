@@ -92,6 +92,11 @@ The capacity overview API route now delegates observer loading, ownership
 enrichment, and business-work summary construction to
 `ApplicationCapacityOverviewService`; route-local imports of capacity
 helper modules were removed.
+CLI credential persistence now lives behind `ApplicationCliCredentialsService`
+with `PostgresUserCliCredentialStore` and `RawPostgresHostCliCredentialStore`
+adapters. The user CLI-token API, internal runtime capture route, workflow
+session secret-env resolver, and session spawn helper no longer import the old
+DB-owning `users/cli-credentials` or preview host-store modules directly.
 The internal CLI workspace command route now routes execution lookup,
 CLI-session candidate lookup, file creation, and browser artifact persistence
 through workflow-data.

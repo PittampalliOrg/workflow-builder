@@ -1,11 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-
-import {
-	deleteUserCliCredential,
-	getUserCliCredentialSummary,
-	upsertUserCliCredential,
-} from "$lib/server/users/cli-credentials";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * Per-user CLI subscription-token enrollment for `interactive-cli` runtimes
@@ -19,7 +14,7 @@ import {
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	const provider = params.provider!;
-	const summary = await getUserCliCredentialSummary(
+	const summary = await getApplicationAdapters().cliCredentials.getCredentialSummary(
 		locals.session.userId,
 		provider,
 	);
@@ -44,7 +39,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		expiresAt = parsed;
 	}
 	try {
-		const summary = await upsertUserCliCredential(
+		const summary = await getApplicationAdapters().cliCredentials.upsertUserCredential(
 			locals.session.userId,
 			provider,
 			token,
@@ -59,7 +54,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	const provider = params.provider!;
-	const deleted = await deleteUserCliCredential(
+	const deleted = await getApplicationAdapters().cliCredentials.deleteUserCredential(
 		locals.session.userId,
 		provider,
 	);

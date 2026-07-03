@@ -13,10 +13,6 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
 import { validateInternalToken } from "$lib/server/internal-auth";
-import {
-	upsertUserCliCredential,
-	releaseCliBootLease,
-} from "$lib/server/users/cli-credentials";
 
 function isDatabaseNotConfigured(err: unknown): boolean {
 	return err instanceof Error && err.message.includes("Database not configured");
@@ -49,11 +45,16 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	if (!userId) return error(404, "Session owner not found");
 
 	try {
-		const summary = await upsertUserCliCredential(userId, provider, bundle);
+		const { cliCredentials } = getApplicationAdapters();
+		const summary = await cliCredentials.upsertUserCredential(
+			userId,
+			provider,
+			bundle,
+		);
 		// The rotated single-use token is now persisted — release the boot lease so
 		// the next concurrent codex session can seed the fresh token (no-op for
 		// providers that don't need serialization).
-		await releaseCliBootLease(userId, provider, sessionId);
+		await cliCredentials.releaseBootLease(userId, provider, sessionId);
 		return json({ stored: true, provider: summary.provider });
 	} catch (e) {
 		// Bundle failed the format guard — log-and-reject (don't 500).

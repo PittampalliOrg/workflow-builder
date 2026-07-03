@@ -12,29 +12,28 @@ const mocks = vi.hoisted(() => {
 	const workflowData = {
 		getSessionFileOwner: vi.fn(async (): Promise<typeof owner | null> => owner),
 	};
+	const cliCredentials = {
+		upsertUserCredential: vi.fn(async () => ({ provider: "agy" })),
+		releaseBootLease: vi.fn(async () => undefined),
+	};
 	const validateInternalToken = vi.fn(() => true);
-	const upsertUserCliCredential = vi.fn(async () => ({ provider: "agy" }));
-	const releaseCliBootLease = vi.fn(async () => undefined);
 	return {
+		cliCredentials,
 		owner,
-		releaseCliBootLease,
-		upsertUserCliCredential,
 		validateInternalToken,
 		workflowData,
 	};
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
+	getApplicationAdapters: () => ({
+		workflowData: mocks.workflowData,
+		cliCredentials: mocks.cliCredentials,
+	}),
 }));
 
 vi.mock("$lib/server/internal-auth", () => ({
 	validateInternalToken: mocks.validateInternalToken,
-}));
-
-vi.mock("$lib/server/users/cli-credentials", () => ({
-	upsertUserCliCredential: mocks.upsertUserCliCredential,
-	releaseCliBootLease: mocks.releaseCliBootLease,
 }));
 
 import { POST } from "./+server";
@@ -67,7 +66,9 @@ describe("internal CLI credential capture route", () => {
 		vi.clearAllMocks();
 		mocks.validateInternalToken.mockReturnValue(true);
 		mocks.workflowData.getSessionFileOwner.mockResolvedValue(mocks.owner);
-		mocks.upsertUserCliCredential.mockResolvedValue({ provider: "agy" });
+		mocks.cliCredentials.upsertUserCredential.mockResolvedValue({
+			provider: "agy",
+		});
 	});
 
 	it("keeps session-owner lookup behind workflow-data services", () => {
@@ -77,6 +78,9 @@ describe("internal CLI credential capture route", () => {
 		);
 
 		expect(source).toContain("workflowData.getSessionFileOwner");
+		expect(source).toContain("cliCredentials.upsertUserCredential");
+		expect(source).toContain("cliCredentials.releaseBootLease");
+		expect(source).not.toContain("$lib/server/users/cli-credentials");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");
@@ -109,7 +113,7 @@ describe("internal CLI credential capture route", () => {
 			Promise.resolve(POST(event({ provider: "agy", bundle: "bundle" }) as never)),
 			404,
 		);
-		expect(mocks.upsertUserCliCredential).not.toHaveBeenCalled();
+		expect(mocks.cliCredentials.upsertUserCredential).not.toHaveBeenCalled();
 	});
 
 	it("stores the bundle for the session owner and releases the boot lease", async () => {
@@ -120,12 +124,12 @@ describe("internal CLI credential capture route", () => {
 		expect(response.status).toBe(200);
 		await expect(response.json()).resolves.toEqual({ stored: true, provider: "agy" });
 		expect(mocks.workflowData.getSessionFileOwner).toHaveBeenCalledWith("session-1");
-		expect(mocks.upsertUserCliCredential).toHaveBeenCalledWith(
+		expect(mocks.cliCredentials.upsertUserCredential).toHaveBeenCalledWith(
 			"user-1",
 			"agy",
 			"bundle-data",
 		);
-		expect(mocks.releaseCliBootLease).toHaveBeenCalledWith(
+		expect(mocks.cliCredentials.releaseBootLease).toHaveBeenCalledWith(
 			"user-1",
 			"agy",
 			"session-1",
@@ -133,12 +137,14 @@ describe("internal CLI credential capture route", () => {
 	});
 
 	it("returns 400 for invalid credential bundles", async () => {
-		mocks.upsertUserCliCredential.mockRejectedValueOnce(new Error("bad bundle"));
+		mocks.cliCredentials.upsertUserCredential.mockRejectedValueOnce(
+			new Error("bad bundle"),
+		);
 
 		await expectHttpStatus(
 			Promise.resolve(POST(event({ provider: "agy", bundle: "bad" }) as never)),
 			400,
 		);
-		expect(mocks.releaseCliBootLease).not.toHaveBeenCalled();
+		expect(mocks.cliCredentials.releaseBootLease).not.toHaveBeenCalled();
 	});
 });

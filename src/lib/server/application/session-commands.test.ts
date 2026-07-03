@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
-import { CliTokenError } from "$lib/server/users/cli-credentials";
+import { CliTokenError } from "$lib/server/application/cli-credentials";
 import type {
 	AgentRuntimeSyncPort,
 	SandboxProvisioner,
