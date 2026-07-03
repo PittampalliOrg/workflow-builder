@@ -128,6 +128,10 @@ import {
 	DaprCodeFunctionOptionsRuntimeClient,
 	LegacyCodeFunctionOptionsRepository,
 } from "$lib/server/application/adapters/code-function-options";
+import {
+	LegacyCodeFunctionManagementRepository,
+	LegacyCodeFunctionParsePreviewPort,
+} from "$lib/server/application/adapters/code-functions";
 import { LegacyCatalogFunctionDefinitionReader } from "$lib/server/application/adapters/catalog-function-definition";
 import {
 	DaprFunctionRouterExecutionPort,
@@ -230,6 +234,8 @@ import {
 	DateActionCatalogTestExecutionIdGenerator,
 } from "$lib/server/application/action-catalog-test";
 import { ApplicationCodeFunctionOptionsService } from "$lib/server/application/code-function-options";
+import { ApplicationCodeFunctionManagementService } from "$lib/server/application/code-function-management";
+import { ApplicationCodeFunctionParsePreviewService } from "$lib/server/application/code-function-parse-preview";
 import {
 	ApplicationCodeFunctionExecutionService,
 	DateCodeFunctionExecutionIdGenerator,
@@ -414,6 +420,12 @@ export function getApplicationAdapters(
 		| undefined;
 	let actionOptions: ApplicationActionOptionsService | undefined;
 	let actionCatalogTest: ApplicationActionCatalogTestService | undefined;
+	let codeFunctionManagement:
+		| ApplicationCodeFunctionManagementService
+		| undefined;
+	let codeFunctionParsePreview:
+		| ApplicationCodeFunctionParsePreviewService
+		| undefined;
 	let codeFunctionOptions: ApplicationCodeFunctionOptionsService | undefined;
 	let codeFunctionExecution:
 		| ApplicationCodeFunctionExecutionService
@@ -716,6 +728,14 @@ export function getApplicationAdapters(
 			http: new DaprActionCatalogHttpTestClient(),
 			ids: new DateActionCatalogTestExecutionIdGenerator(),
 		}));
+	const getCodeFunctionManagement = () =>
+		(codeFunctionManagement ??= new ApplicationCodeFunctionManagementService(
+			new LegacyCodeFunctionManagementRepository(),
+		));
+	const getCodeFunctionParsePreview = () =>
+		(codeFunctionParsePreview ??= new ApplicationCodeFunctionParsePreviewService(
+			new LegacyCodeFunctionParsePreviewPort(),
+		));
 	const getCodeFunctionOptions = () =>
 		(codeFunctionOptions ??= new ApplicationCodeFunctionOptionsService({
 			codeFunctions: new LegacyCodeFunctionOptionsRepository(),
@@ -1082,6 +1102,12 @@ export function getApplicationAdapters(
 		},
 		get actionCatalogTest() {
 			return getActionCatalogTest();
+		},
+		get codeFunctionManagement() {
+			return getCodeFunctionManagement();
+		},
+		get codeFunctionParsePreview() {
+			return getCodeFunctionParsePreview();
 		},
 		get codeFunctionOptions() {
 			return getCodeFunctionOptions();

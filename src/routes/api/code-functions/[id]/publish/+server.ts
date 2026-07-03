@@ -1,5 +1,6 @@
 import { error, json, type RequestHandler } from '@sveltejs/kit';
-import { publishCodeFunction } from '$lib/server/code-functions';
+import { getApplicationAdapters } from '$lib/server/application';
+import { ApplicationCodeFunctionManagementError } from '$lib/server/application/code-function-management';
 
 export const POST: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) {
@@ -10,14 +11,15 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 	}
 
 	try {
-		const published = await publishCodeFunction(params.id, locals.session.userId);
-		if (!published) {
-			throw error(404, 'Code function not found');
-		}
+		const published = await getApplicationAdapters().codeFunctionManagement.publish({
+			id: params.id,
+			userId: locals.session.userId,
+		});
 		return json(published);
 	} catch (err) {
-		if (err && typeof err === 'object' && 'status' in err) throw err;
-		const message = err instanceof Error ? err.message : String(err);
-		throw error(message === 'Database not configured' ? 503 : 500, message);
+		if (err instanceof ApplicationCodeFunctionManagementError) {
+			throw error(err.status, err.message);
+		}
+		throw err;
 	}
 };
