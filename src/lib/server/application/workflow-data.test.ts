@@ -847,6 +847,7 @@ function fakeSessionAgentConfigCommands(): SessionAgentConfigCommandPort {
 function fakeCodeCheckpoints(): WorkflowCodeCheckpointStore {
 	return {
 		persistFromAgentEvent: vi.fn(async () => undefined),
+		listForExecution: vi.fn(async () => []),
 	};
 }
 

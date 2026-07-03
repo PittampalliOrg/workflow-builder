@@ -4230,8 +4230,40 @@ export type PersistCodeCheckpointInput = {
 	payload: unknown;
 };
 
+export type WorkflowCodeCheckpointReadModel = {
+	id: string;
+	workflowExecutionId: string;
+	workflowAgentRunId: string | null;
+	parentExecutionId: string | null;
+	daprInstanceId: string;
+	workspaceRef: string | null;
+	sandboxName: string | null;
+	repoPath: string;
+	nodeId: string | null;
+	sourceEventId: string;
+	seq: number | null;
+	toolName: string;
+	checkpointKind: "tool_mutation";
+	beforeSha: string | null;
+	afterSha: string | null;
+	remoteUrl: string | null;
+	remoteRef: string | null;
+	remoteStatus: string | null;
+	remoteError: string | null;
+	remotePushedAt: string | null;
+	changedFiles: Array<Record<string, unknown>>;
+	fileCount: number;
+	status: "created" | "no_changes" | "skipped" | "error";
+	error: string | null;
+	metadata: Record<string, unknown> | null;
+	createdAt: string;
+};
+
 export interface WorkflowCodeCheckpointStore {
 	persistFromAgentEvent(input: PersistCodeCheckpointInput): Promise<void>;
+	listForExecution(
+		executionId: string,
+	): Promise<WorkflowCodeCheckpointReadModel[]>;
 }
 
 export interface EvaluationArtifactStore {

@@ -150,6 +150,7 @@ import type {
 	UpdateWorkflowAgentRunLifecycleInput,
 	UpsertWorkflowAgentRunScheduledInput,
 	WorkflowCodeCheckpointStore,
+	WorkflowCodeCheckpointReadModel,
 	WorkflowArtifactRecord,
 	WorkflowArtifactInput,
 	CreateWorkflowFileInput,
@@ -514,6 +515,39 @@ function sha256Utf8(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
+function codeCheckpointRowToReadModel(
+	row: typeof workflowCodeCheckpoints.$inferSelect,
+): WorkflowCodeCheckpointReadModel {
+	return {
+		id: row.id,
+		workflowExecutionId: row.workflowExecutionId,
+		workflowAgentRunId: row.workflowAgentRunId,
+		parentExecutionId: row.parentExecutionId,
+		daprInstanceId: row.daprInstanceId,
+		workspaceRef: row.workspaceRef,
+		sandboxName: row.sandboxName,
+		repoPath: row.repoPath,
+		nodeId: row.nodeId,
+		sourceEventId: row.sourceEventId,
+		seq: row.seq,
+		toolName: row.toolName,
+		checkpointKind: row.checkpointKind,
+		beforeSha: row.beforeSha,
+		afterSha: row.afterSha,
+		remoteUrl: row.remoteUrl,
+		remoteRef: row.remoteRef,
+		remoteStatus: row.remoteStatus,
+		remoteError: row.remoteError,
+		remotePushedAt: row.remotePushedAt?.toISOString() ?? null,
+		changedFiles: normalizeChangedFiles(row.changedFiles),
+		fileCount: row.fileCount,
+		status: row.status,
+		error: row.error,
+		metadata: adapterRecord(row.metadata) ? row.metadata : null,
+		createdAt: row.createdAt.toISOString(),
+	};
+}
+
 export class PostgresWorkflowCodeCheckpointStore implements WorkflowCodeCheckpointStore {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
@@ -567,6 +601,20 @@ export class PostgresWorkflowCodeCheckpointStore implements WorkflowCodeCheckpoi
 					workflowCodeCheckpoints.checkpointKind,
 				],
 			});
+	}
+
+	async listForExecution(
+		executionId: string,
+	): Promise<WorkflowCodeCheckpointReadModel[]> {
+		const rows = await this.database
+			.select()
+			.from(workflowCodeCheckpoints)
+			.where(eq(workflowCodeCheckpoints.workflowExecutionId, executionId))
+			.orderBy(
+				asc(workflowCodeCheckpoints.seq),
+				asc(workflowCodeCheckpoints.createdAt),
+			);
+		return rows.map(codeCheckpointRowToReadModel);
 	}
 }
 

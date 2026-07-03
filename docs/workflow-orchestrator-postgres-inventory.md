@@ -243,6 +243,16 @@ The first UI-facing route has also moved behind the application service:
   The SQL aggregation over `session_events`/`sessions` is confined to the
   execution repository adapter; model pricing remains route-local response
   shaping.
+- `src/routes/api/workflows/executions/[executionId]/code-checkpoints/+server.ts`
+  now lists source-change checkpoints through
+  `ApplicationWorkflowCodeCheckpointService`. The route keeps the existing
+  `{ checkpoints }` response and generic 500 failure mapping but no longer
+  imports the legacy checkpoint helper. The Postgres read is confined to
+  `PostgresWorkflowCodeCheckpointStore.listForExecution`. The deeper
+  diff/restore routes still import `src/lib/server/workflows/code-checkpoints.ts`
+  and remain a later slice because that helper also owns OpenShell sandbox
+  commands, Dapr config/secret reads, Gitea API access, Git CLI fallback, and
+  restore shell-command semantics.
 - `src/routes/api/workflows/executions/[executionId]/nats-stream/+server.ts`
   now delegates snapshot loading, cursor-based agent-event reads, session-event
   notifications, and terminal detection to
@@ -828,6 +838,8 @@ run-diff/source-bundle ingest, internal session-ingest, and external
 events-ingest route subsets, plus the agent-trigger route membership check and
 the CLI credential capture session-owner lookup and ActivePieces resume
 execution lookup, and the GitHub trigger ingress/gate subset, are also clean.
+The workflow code-checkpoints list route is also clean; code-checkpoint diff
+and restore routes remain explicitly deferred.
 The internal piece-execution artifact readback and CLI workspace command routes
 are also clean. The prompt preset, agent skill, and vault resource-usage
 reverse-lookup routes are also clean. The AI assistant message-history route is

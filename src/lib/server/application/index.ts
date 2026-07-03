@@ -124,6 +124,7 @@ import { ApplicationSessionRuntimeAccessService } from "$lib/server/application/
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
 import { ApplicationWorkflowExecutionStreamService } from "$lib/server/application/workflow-execution-stream";
+import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/application/workflow-code-checkpoints";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 
 export { getEventBusAdapter } from "$lib/server/application/event-bus";
@@ -240,6 +241,9 @@ export function getApplicationAdapters(
 		| undefined;
 	let workflowExecutionStream:
 		| ApplicationWorkflowExecutionStreamService
+		| undefined;
+	let workflowCodeCheckpoints:
+		| ApplicationWorkflowCodeCheckpointService
 		| undefined;
 	let cliPreview: ApplicationCliPreviewService | undefined;
 	let sandboxPreview: ApplicationSandboxPreviewService | undefined;
@@ -424,6 +428,10 @@ export function getApplicationAdapters(
 			workflowData: getWorkflowData(),
 			executionReadModels: new LegacyWorkflowExecutionReadModelPort(),
 		}));
+	const getWorkflowCodeCheckpoints = () =>
+		(workflowCodeCheckpoints ??= new ApplicationWorkflowCodeCheckpointService({
+			checkpoints: getCodeCheckpoints(),
+		}));
 	const getCliPreview = () =>
 		(cliPreview ??= new ApplicationCliPreviewService({
 			preview: new LegacyCliPreviewGatewayPort(),
@@ -564,6 +572,9 @@ export function getApplicationAdapters(
 		},
 		get workflowExecutionStream() {
 			return getWorkflowExecutionStream();
+		},
+		get workflowCodeCheckpoints() {
+			return getWorkflowCodeCheckpoints();
 		},
 		get cliPreview() {
 			return getCliPreview();
