@@ -1,7 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { confirmDurableStop, inspectDurableRun } from "$lib/server/lifecycle";
-import { isResourceInScope } from "$lib/server/workflows/project-scope";
+import { getApplicationAdapters } from "$lib/server/application";
+import type { WorkflowExecutionControlResult } from "$lib/server/application/workflow-execution-control";
 
 /**
  * GET /api/workflows/executions/[executionId]/stop/status
@@ -12,12 +12,16 @@ import { isResourceInScope } from "$lib/server/workflows/project-scope";
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const target = { kind: "workflowExecution" as const, id: params.executionId };
-	const inspected = await inspectDurableRun(target);
-	if (inspected.notFound) return error(404, "Execution not found");
-	if (inspected.scope && !isResourceInScope(inspected.scope, locals.session)) {
-		return error(404, "Execution not found");
-	}
-	const result = await confirmDurableStop(target);
-	return json({ state: result.state });
+	return workflowExecutionControlResponse(
+		await getApplicationAdapters().workflowExecutionControl.getStopStatus({
+			executionId: params.executionId,
+			projectId: locals.session.projectId ?? null,
+			userId: locals.session.userId,
+		}),
+	);
 };
+
+function workflowExecutionControlResponse(result: WorkflowExecutionControlResult) {
+	if (result.status === "error") return error(result.httpStatus, result.message);
+	return json(result.body, { status: result.httpStatus ?? 200 });
+}

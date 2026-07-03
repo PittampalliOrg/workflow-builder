@@ -104,6 +104,7 @@ import {
 import {
 	LegacyWorkflowRunStarterPort,
 	LegacyWorkflowSpecValidatorPort,
+	LifecycleWorkflowExecutionControllerPort,
 	LifecycleWorkflowExecutionCoordinatorOwnerPort,
 } from "$lib/server/application/adapters/workflow-control";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
@@ -402,6 +403,7 @@ export function getApplicationAdapters(
 			workflowData: getWorkflowData(),
 			approvalEvents: new DaprWorkflowApprovalEventPort(),
 			coordinatorOwners: new LifecycleWorkflowExecutionCoordinatorOwnerPort(),
+			executionLifecycle: new LifecycleWorkflowExecutionControllerPort(),
 			runStarter: new LegacyWorkflowRunStarterPort(),
 			workflowSpecs: new LegacyWorkflowSpecValidatorPort(),
 		}));

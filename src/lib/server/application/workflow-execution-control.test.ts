@@ -5,6 +5,7 @@ import type {
 	WorkflowDataService,
 	WorkflowDefinition,
 	WorkflowExecutionCoordinatorOwnerPort,
+	WorkflowExecutionLifecycleControllerPort,
 	WorkflowExecutionRecord,
 	WorkflowRunStarterPort,
 	WorkflowSpecValidatorPort,
@@ -20,6 +21,7 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 	>;
 	let approvalEvents: WorkflowApprovalEventPort;
 	let coordinatorOwners: WorkflowExecutionCoordinatorOwnerPort;
+	let executionLifecycle: WorkflowExecutionLifecycleControllerPort;
 	let runStarter: WorkflowRunStarterPort;
 	let workflowSpecs: WorkflowSpecValidatorPort;
 	let service: ApplicationWorkflowExecutionControlService;
@@ -40,6 +42,22 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 		coordinatorOwners = {
 			getCoordinatorOwner: vi.fn(async () => null),
 		};
+		executionLifecycle = {
+			checkExecutionAccess: vi.fn(async () => ({
+				status: "ok" as const,
+				active: true,
+			})),
+			stopExecution: vi.fn(async () => ({
+				confirmed: true,
+				notFound: false,
+				state: "confirmed",
+				requested: true,
+				steps: [],
+			})),
+			confirmExecutionStop: vi.fn(async () => ({
+				state: "confirmed",
+			})),
+		};
 		runStarter = {
 			startWorkflowRun: vi.fn(async () => ({
 				ok: true as const,
@@ -54,6 +72,7 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 			workflowData,
 			approvalEvents,
 			coordinatorOwners,
+			executionLifecycle,
 			runStarter,
 			workflowSpecs,
 		});
@@ -186,6 +205,124 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 			},
 		});
 		expect(runStarter.startWorkflowRun).not.toHaveBeenCalled();
+	});
+
+	it("requests workflow execution stops through the lifecycle port", async () => {
+		const result = await service.stopExecution({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+			body: { mode: "purge", reason: "user requested", graceMs: 250 },
+		});
+
+		expect(executionLifecycle.checkExecutionAccess).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
+		expect(executionLifecycle.stopExecution).toHaveBeenCalledWith("exec-1", {
+			mode: "purge",
+			reason: "user requested",
+			graceMs: 250,
+		});
+		expect(result).toEqual({
+			status: "ok",
+			httpStatus: 200,
+			body: {
+				ok: true,
+				confirmed: true,
+				notFound: false,
+				state: "confirmed",
+				requested: true,
+				steps: [],
+			},
+		});
+	});
+
+	it("defaults invalid workflow stop modes to terminate", async () => {
+		await service.stopExecution({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+			body: { mode: "destroy" },
+		});
+
+		expect(executionLifecycle.stopExecution).toHaveBeenCalledWith(
+			"exec-1",
+			expect.objectContaining({ mode: "terminate" }),
+		);
+	});
+
+	it("maps converging workflow stops to accepted responses", async () => {
+		vi.mocked(executionLifecycle.stopExecution).mockResolvedValue({
+			confirmed: false,
+			notFound: false,
+			state: "stopping",
+			requested: true,
+			steps: [],
+		});
+
+		const result = await service.stopExecution(commandInput());
+
+		expect(result).toMatchObject({
+			status: "ok",
+			httpStatus: 202,
+			body: { ok: false, state: "stopping" },
+		});
+	});
+
+	it("blocks coordinator-owned workflow execution stops", async () => {
+		vi.mocked(coordinatorOwners.getCoordinatorOwner).mockResolvedValue({
+			kind: "evalRun",
+			runId: "eval-1",
+		});
+
+		const result = await service.stopExecution(commandInput());
+
+		expect(result).toEqual({
+			status: "ok",
+			httpStatus: 409,
+			body: {
+				ok: false,
+				error: "coordinator_owned",
+				ownedBy: "evalRun",
+				runId: "eval-1",
+				message:
+					"This is an evaluation instance — cancel the evaluation run instead.",
+			},
+		});
+		expect(executionLifecycle.stopExecution).not.toHaveBeenCalled();
+	});
+
+	it("hides workflow stops outside the active workspace", async () => {
+		vi.mocked(executionLifecycle.checkExecutionAccess).mockResolvedValue({
+			status: "not_found",
+		});
+
+		const result = await service.stopExecution(commandInput());
+
+		expect(result).toEqual({
+			status: "error",
+			httpStatus: 404,
+			message: "Execution not found",
+		});
+		expect(executionLifecycle.stopExecution).not.toHaveBeenCalled();
+	});
+
+	it("confirms workflow stop status through the lifecycle port", async () => {
+		const result = await service.getStopStatus({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
+
+		expect(executionLifecycle.confirmExecutionStop).toHaveBeenCalledWith(
+			"exec-1",
+		);
+		expect(result).toEqual({
+			status: "ok",
+			body: { state: "confirmed" },
+		});
 	});
 
 	it("raises the default approval event for scoped executions", async () => {

@@ -4,6 +4,8 @@ import type {
 	WorkflowDefinition,
 	WorkflowDataService,
 	WorkflowExecutionCoordinatorOwnerPort,
+	WorkflowExecutionLifecycleControllerPort,
+	WorkflowExecutionLifecycleStopMode,
 	WorkflowRunStarterPort,
 	WorkflowSpecValidatorPort,
 } from "$lib/server/application/ports";
@@ -27,6 +29,13 @@ export type WorkflowWebhookStartInput = {
 	authorizationHeader: string | null;
 	body?: Record<string, unknown>;
 };
+
+const STOP_MODES = new Set<WorkflowExecutionLifecycleStopMode>([
+	"interrupt",
+	"terminate",
+	"purge",
+	"reset",
+]);
 
 export type WorkflowExecutionControlResult =
 	| {
@@ -52,6 +61,7 @@ export class ApplicationWorkflowExecutionControlService {
 			>;
 			approvalEvents: WorkflowApprovalEventPort;
 			coordinatorOwners: WorkflowExecutionCoordinatorOwnerPort;
+			executionLifecycle: WorkflowExecutionLifecycleControllerPort;
 			runStarter: WorkflowRunStarterPort;
 			workflowSpecs: WorkflowSpecValidatorPort;
 		},
@@ -154,6 +164,79 @@ export class ApplicationWorkflowExecutionControlService {
 				status: "running",
 			},
 		};
+	}
+
+	async stopExecution(
+		input: WorkflowExecutionControlInput,
+	): Promise<WorkflowExecutionControlResult> {
+		const access = await this.deps.executionLifecycle.checkExecutionAccess({
+			executionId: input.executionId,
+			userId: input.userId,
+			projectId: input.projectId ?? null,
+		});
+		if (access.status !== "ok") {
+			return workflowControlError(404, "Execution not found");
+		}
+
+		const owner = await this.deps.coordinatorOwners.getCoordinatorOwner(
+			input.executionId,
+		);
+		if (owner) {
+			return {
+				status: "ok",
+				httpStatus: 409,
+				body: {
+					ok: false,
+					error: "coordinator_owned",
+					ownedBy: owner.kind,
+					runId: owner.runId,
+					message:
+						owner.kind === "benchmarkRun"
+							? "This is a benchmark instance — cancel the benchmark run instead."
+							: "This is an evaluation instance — cancel the evaluation run instead.",
+				},
+			};
+		}
+
+		const result = await this.deps.executionLifecycle.stopExecution(
+			input.executionId,
+			{
+				mode: parseStopMode(input.body?.mode),
+				reason:
+					typeof input.body?.reason === "string" ? input.body.reason : undefined,
+				graceMs:
+					typeof input.body?.graceMs === "number"
+						? input.body.graceMs
+						: undefined,
+			},
+		);
+		if (result.notFound) return workflowControlError(404, "Execution not found");
+
+		const httpStatus =
+			result.state === "confirmed" ? 200 : result.state === "stopping" ? 202 : 409;
+		return {
+			status: "ok",
+			httpStatus,
+			body: { ok: result.confirmed, ...result },
+		};
+	}
+
+	async getStopStatus(
+		input: WorkflowExecutionControlInput,
+	): Promise<WorkflowExecutionControlResult> {
+		const access = await this.deps.executionLifecycle.checkExecutionAccess({
+			executionId: input.executionId,
+			userId: input.userId,
+			projectId: input.projectId ?? null,
+		});
+		if (access.status !== "ok") {
+			return workflowControlError(404, "Execution not found");
+		}
+
+		const result = await this.deps.executionLifecycle.confirmExecutionStop(
+			input.executionId,
+		);
+		return { status: "ok", body: { state: result.state } };
 	}
 
 	async approveExecution(
@@ -360,6 +443,13 @@ function hasWebhookTrigger(workflow: WorkflowDefinition): boolean {
 
 function asRecord(value: unknown): Record<string, unknown> {
 	return (value ?? {}) as Record<string, unknown>;
+}
+
+function parseStopMode(value: unknown): WorkflowExecutionLifecycleStopMode {
+	return typeof value === "string" &&
+		STOP_MODES.has(value as WorkflowExecutionLifecycleStopMode)
+		? (value as WorkflowExecutionLifecycleStopMode)
+		: "terminate";
 }
 
 function workflowControlError(

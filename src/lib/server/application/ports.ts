@@ -3134,6 +3134,47 @@ export interface WorkflowExecutionCoordinatorOwnerPort {
 	): Promise<WorkflowExecutionCoordinatorOwner | null>;
 }
 
+export type WorkflowExecutionLifecycleAccessResult =
+	| { status: "ok"; active: boolean }
+	| { status: "not_found" };
+
+export type WorkflowExecutionLifecycleStopMode =
+	| "interrupt"
+	| "terminate"
+	| "purge"
+	| "reset";
+
+export type WorkflowExecutionLifecycleStopResult = {
+	notFound?: boolean;
+	confirmed: boolean;
+	state?: "confirmed" | "stopping" | string;
+	retryable?: boolean;
+	[key: string]: unknown;
+};
+
+export type WorkflowExecutionLifecycleStopStatus = {
+	state: string;
+};
+
+export interface WorkflowExecutionLifecycleControllerPort {
+	checkExecutionAccess(input: {
+		executionId: string;
+		userId: string;
+		projectId?: string | null;
+	}): Promise<WorkflowExecutionLifecycleAccessResult>;
+	stopExecution(
+		executionId: string,
+		opts: {
+			mode: WorkflowExecutionLifecycleStopMode;
+			reason?: string;
+			graceMs?: number;
+		},
+	): Promise<WorkflowExecutionLifecycleStopResult>;
+	confirmExecutionStop(
+		executionId: string,
+	): Promise<WorkflowExecutionLifecycleStopStatus>;
+}
+
 export interface EventBus {
 	publish(topic: string, payload: unknown): Promise<void>;
 }

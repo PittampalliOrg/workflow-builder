@@ -254,6 +254,14 @@ The first UI-facing route has also moved behind the application service:
   lifecycle port, and starts the fork through a narrow run-starter port. The
   first run-starter adapter still wraps the canonical `startWorkflowRun` path
   pending the deeper workflow-start service split.
+- `src/routes/api/workflows/executions/[executionId]/stop/+server.ts` and
+  `src/routes/api/workflows/executions/[executionId]/stop/status/+server.ts`
+  now delegate workflow stop request/status behavior to
+  `ApplicationWorkflowExecutionControlService`. The application service checks
+  execution access, coordinator ownership, stop-mode parsing, Lifecycle
+  Controller stop/confirm calls, and existing 200/202/409 response semantics
+  through lifecycle ports; the routes import no lifecycle, ownership, or
+  project-scope helpers directly.
 - `src/routes/api/workflows/[workflowId]/execute/+server.ts` is now a thin
   presentation adapter: it delegates workspace scope checks, trigger-data
   normalization, execution creation, validation, prewarm, Dapr scheduling,

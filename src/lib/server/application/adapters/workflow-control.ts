@@ -1,11 +1,20 @@
 import type {
 	WorkflowExecutionCoordinatorOwnerPort,
+	WorkflowExecutionLifecycleControllerPort,
+	WorkflowExecutionLifecycleStopMode,
 	WorkflowSpecValidatorPort,
 	WorkflowRunStarterPort,
 	WorkflowRunStartInput,
 	WorkflowRunStartResult,
 } from "$lib/server/application/ports";
+import {
+	confirmDurableStop,
+	inspectDurableRun,
+	stopDurableRun,
+	type StopDurableRunMode,
+} from "$lib/server/lifecycle";
 import { ownsBenchmarkOrEvalRun } from "$lib/server/lifecycle/ownership";
+import { isResourceInScope } from "$lib/server/workflows/project-scope";
 import { isSWWorkflow, startWorkflowRun } from "$lib/server/workflows/start-run";
 
 export class LegacyWorkflowRunStarterPort implements WorkflowRunStarterPort {
@@ -35,5 +44,49 @@ export class LegacyWorkflowSpecValidatorPort
 {
 	isServerlessWorkflow(spec: unknown) {
 		return isSWWorkflow(spec);
+	}
+}
+
+export class LifecycleWorkflowExecutionControllerPort
+	implements WorkflowExecutionLifecycleControllerPort
+{
+	async checkExecutionAccess(input: {
+		executionId: string;
+		userId: string;
+		projectId?: string | null;
+	}) {
+		const inspected = await inspectDurableRun({
+			kind: "workflowExecution",
+			id: input.executionId,
+		});
+		if (inspected.notFound) return { status: "not_found" as const };
+		if (
+			inspected.scope &&
+			!isResourceInScope(inspected.scope, {
+				userId: input.userId,
+				projectId: input.projectId ?? null,
+			})
+		) {
+			return { status: "not_found" as const };
+		}
+		return { status: "ok" as const, active: Boolean(inspected.active) };
+	}
+
+	stopExecution(
+		executionId: string,
+		opts: {
+			mode: WorkflowExecutionLifecycleStopMode;
+			reason?: string;
+			graceMs?: number;
+		},
+	) {
+		return stopDurableRun(
+			{ kind: "workflowExecution", id: executionId },
+			{ ...opts, mode: opts.mode as StopDurableRunMode },
+		);
+	}
+
+	confirmExecutionStop(executionId: string) {
+		return confirmDurableStop({ kind: "workflowExecution", id: executionId });
 	}
 }
