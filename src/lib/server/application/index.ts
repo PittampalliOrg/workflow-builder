@@ -706,7 +706,10 @@ export function getApplicationAdapters(
 		}));
 	const getInternalGoalControl = () =>
 		(internalGoalControl ??= new ApplicationInternalGoalControlService({
-			evaluator: new LegacyGoalCompletionEvaluator(),
+			evaluator: new LegacyGoalCompletionEvaluator({
+				goals: getSessionGoalStore(),
+				workflowData: getWorkflowData(),
+			}),
 			finalizer: new LegacyCompletedWorkflowGoalFinalizer(),
 			goals: getSessionGoalStore(),
 			goalLoop: new DaprSessionGoalLoopDriver(),
@@ -1199,6 +1202,9 @@ export function getApplicationAdapters(
 		},
 		get sessionGoals() {
 			return getSessionGoals();
+		},
+		get sessionGoalStore() {
+			return getSessionGoalStore();
 		},
 		get internalGoalControl() {
 			return getInternalGoalControl();

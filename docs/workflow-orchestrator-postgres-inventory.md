@@ -783,9 +783,12 @@ services:
   evaluator completion authority, goal row completion, completed-workflow
   finalization, rejection event emission, stop-hook goal-loop driving, and current
   goal status reporting to `ApplicationInternalGoalControlService`; the routes
-  own only internal-token auth and HTTP response mapping. The deeper deterministic
-  evidence evaluator still uses the documented legacy DB/runtime helpers behind
-  the application adapter boundary for this slice.
+  own only internal-token auth and HTTP response mapping. The deterministic
+  evidence evaluator now receives `SessionGoalStore` and workflow-data ports for
+  goal lookup, workspace-session lookup, session-detail fallback, and
+  interactive-CLI runtime targeting; `src/lib/server/goals/evaluator.ts` no
+  longer imports Drizzle, `$lib/server/db`, `workflow_workspace_sessions`,
+  `src/lib/server/sessions/registry.ts`, or `src/lib/server/goals/repo.ts`.
 - `src/routes/api/workflow/active-executions/+server.ts`,
   `src/routes/api/internal/agent/workflows/executions/+server.ts`, and
   `src/routes/api/internal/agent/workflows/executions/[executionId]/status/+server.ts`
@@ -957,9 +960,10 @@ services:
   composition root, and lifecycle goal pausing uses the same store. The
   native-goal capability check now resolves session runtime metadata through
   workflow-data before consulting the runtime registry, instead of using the
-  legacy DB-backed runtime-target helper. The
-  remaining `src/lib/server/goals/repo.ts` direct DB access belongs to the
-  goal-loop driver/tick path and remains a later loop-storage adapter slice.
+  legacy DB-backed runtime-target helper. The deterministic evidence evaluator
+  also uses the application goal store plus workflow-data ports. The remaining
+  `src/lib/server/goals/repo.ts` direct DB access belongs to the goal-loop
+  driver/tick path and remains a later loop-storage adapter slice.
 - `src/routes/api/v1/sessions/[id]/goal-flow/+server.ts` now scopes the session
   and builds the observability goal-flow read model through workflow-data
   application ports. The current-goal lookup and bounded goal-flow event read

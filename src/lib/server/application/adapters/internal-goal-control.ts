@@ -2,14 +2,23 @@ import type {
 	CompletedWorkflowGoalFinalizerPort,
 	GoalCompletionEvaluatorPort,
 } from "$lib/server/application/internal-goal-control";
-import { evaluateGoalCompletion } from "$lib/server/goals/evaluator";
+import {
+	GoalCompletionEvaluator,
+	type GoalCompletionEvaluatorDependencies,
+} from "$lib/server/goals/evaluator";
 import { finalizeCompletedWorkflowGoal } from "$lib/server/goals/goal-loop";
 
 export class LegacyGoalCompletionEvaluator
 	implements GoalCompletionEvaluatorPort
 {
+	private readonly evaluator: GoalCompletionEvaluator;
+
+	constructor(deps: GoalCompletionEvaluatorDependencies) {
+		this.evaluator = new GoalCompletionEvaluator(deps);
+	}
+
 	evaluateGoalCompletion(sessionId: string) {
-		return evaluateGoalCompletion(sessionId);
+		return this.evaluator.evaluateGoalCompletion(sessionId);
 	}
 }
 

@@ -13,17 +13,13 @@
  * See docs/goal-loop-evaluator-design.md. Phase 1 is deterministic-only (no LLM
  * critic); the function is runtime-agnostic so native-CLI/agy can call it too.
  */
-import { desc, eq } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import { workflowWorkspaceSessions } from "$lib/server/db/schema";
 import { daprFetch, getWorkspaceRuntimeUrl } from "$lib/server/dapr-client";
-import {
-	isInteractiveCliSession,
-	resolveSessionRuntimeTarget,
-} from "$lib/server/sessions/runtime-target";
+import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { waitForAgentWorkflowHostAppReady } from "$lib/server/sessions/agent-workflow-host";
-import { getSession } from "$lib/server/sessions/registry";
-import { getCurrentGoal } from "./repo";
+import type {
+	SessionGoalStore,
+	WorkflowDataService,
+} from "$lib/server/application/ports";
 
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN?.trim() ?? "";
 
@@ -65,20 +61,39 @@ type EvidenceTarget =
 	  }
 	| { kind: "cli-direct"; baseUrl: string; rootPath: string };
 
+export type GoalCompletionEvaluatorDependencies = {
+	goals: Pick<SessionGoalStore, "getCurrentGoal">;
+	workflowData: Pick<
+		WorkflowDataService,
+		| "getSessionDetail"
+		| "getSessionRuntimeDebugTarget"
+		| "listWorkflowWorkspaceSessionsByExecutionId"
+	>;
+	waitForAgentWorkflowHostAppReady?: typeof waitForAgentWorkflowHostAppReady;
+	runEvidenceCommand?: (
+		target: EvidenceTarget,
+		command: string,
+	) => Promise<CriterionResult>;
+};
+
 /** Resolve where evidence commands must run for this session. Interactive-CLI
  *  agents run in their own pod's /sandbox (reach the pod directly); everything
  *  else uses the retained openshell workspace (the same source the live-preview
  *  proxy uses: workflow_workspace_sessions keyed on the parent execution). */
 async function resolveEvidenceTarget(
+	deps: GoalCompletionEvaluatorDependencies,
 	sessionId: string,
 	workflowExecutionId: string | null,
 ): Promise<EvidenceTarget | null> {
 	// Interactive-CLI: the agent writes to the CLI pod's local /sandbox.
-	if (await isInteractiveCliSession(sessionId)) {
-		const rt = await resolveSessionRuntimeTarget(sessionId);
+	const rt = await deps.workflowData.getSessionRuntimeDebugTarget({ sessionId });
+	if (getRuntimeDescriptor(rt?.agentRuntime)?.family === "interactive-cli") {
 		if (!rt?.appId) return null;
 		try {
-			const { baseUrl } = await waitForAgentWorkflowHostAppReady({
+			const waitForHost =
+				deps.waitForAgentWorkflowHostAppReady ??
+				waitForAgentWorkflowHostAppReady;
+			const { baseUrl } = await waitForHost({
 				agentAppId: rt.appId,
 			});
 			if (!baseUrl) return null;
@@ -89,19 +104,14 @@ async function resolveEvidenceTarget(
 	}
 
 	// Non-CLI (dapr): the agent's tools execute in an openshell workspace sandbox.
-	if (!db) return null;
 	// Workflow-driven: the retained workspace/profile sandbox (the same source the
 	// live-preview proxy uses: workflow_workspace_sessions keyed on the execution).
 	if (workflowExecutionId) {
-		const rows = await db
-			.select({
-				workspaceRef: workflowWorkspaceSessions.workspaceRef,
-				rootPath: workflowWorkspaceSessions.rootPath,
-			})
-			.from(workflowWorkspaceSessions)
-			.where(eq(workflowWorkspaceSessions.workflowExecutionId, workflowExecutionId))
-			.orderBy(desc(workflowWorkspaceSessions.createdAt))
-			.limit(1);
+		const rows =
+			await deps.workflowData.listWorkflowWorkspaceSessionsByExecutionId({
+				executionId: workflowExecutionId,
+				limit: 1,
+			});
 		const row = rows[0];
 		if (row?.workspaceRef) {
 			return {
@@ -115,7 +125,7 @@ async function resolveEvidenceTarget(
 	}
 	// Direct (one-off, non-workflow) dapr session: fall back to the session's own
 	// bound sandbox so evidence verifies for one-off goals too.
-	const session = await getSession(sessionId);
+	const session = await deps.workflowData.getSessionDetail({ sessionId });
 	const sandboxRef =
 		session?.workspaceSandboxName?.trim() || session?.sandboxName?.trim() || null;
 	if (!sandboxRef) return null;
@@ -206,50 +216,91 @@ async function runEvidenceCommand(
  * Evaluate whether a goal genuinely meets its acceptance criteria by running its
  * declared evidence commands in the session workspace. Deterministic-only.
  */
+export class GoalCompletionEvaluator {
+	constructor(private readonly deps: GoalCompletionEvaluatorDependencies) {}
+
+	async evaluateGoalCompletion(sessionId: string): Promise<GoalEvaluation> {
+		const goal = await this.deps.goals.getCurrentGoal(sessionId);
+		if (!goal) {
+			return {
+				met: false,
+				skipped: false,
+				results: [],
+				feedback: "No goal found for this session.",
+			};
+		}
+		const commands = goal.evidencePlan?.commands ?? [];
+		if (!commands.length) {
+			// No declared evidence → self-judged completion (unchanged behavior).
+			return {
+				met: true,
+				skipped: true,
+				results: [],
+				feedback:
+					"No evidence commands declared; accepting self-judged completion.",
+			};
+		}
+		const target = await resolveEvidenceTarget(
+			this.deps,
+			sessionId,
+			goal.workflowExecutionId,
+		);
+		if (!target) {
+			// Can't verify → do NOT auto-pass; reject so completion isn't granted blind.
+			return {
+				met: false,
+				skipped: false,
+				results: [],
+				feedback:
+					"Evaluator could not reach the session workspace to run the evidence commands. The goal cannot be confirmed complete.",
+			};
+		}
+
+		const runner = this.deps.runEvidenceCommand ?? runEvidenceCommand;
+		const results: CriterionResult[] = [];
+		for (const command of commands) {
+			results.push(await runner(target, command));
+		}
+		const failures = results.filter((r) => !r.ok);
+		const met = failures.length === 0;
+		// IMPORTANT: the agent-facing feedback shows each failing check's OUTPUT only,
+		// NOT the command text. Echoing the command would let the doer read (and
+		// hardcode against) the evaluator's checks — defeating the evaluator-gated
+		// premise — and would reveal all hidden/incremental requirements at once. The
+		// command is still kept in `results[]` for the human-facing Goal view grid.
+		const feedback = met
+			? `All ${results.length} evidence check(s) passed.`
+			: [
+					`Completion rejected — ${failures.length}/${results.length} acceptance check(s) failed.`,
+					...failures.map(
+						(f) =>
+							`\nCheck ${results.indexOf(f) + 1} of ${results.length} [exit ${f.exitCode}]:\n${f.output || "(no output)"}`,
+					),
+					"\nFix the issues shown above and continue working before marking the goal complete.",
+				].join("\n");
+		return { met, skipped: false, results, feedback };
+	}
+}
+
+let defaultEvaluator: GoalCompletionEvaluator | null = null;
+
+async function getDefaultEvaluator(): Promise<GoalCompletionEvaluator> {
+	if (defaultEvaluator) return defaultEvaluator;
+	const { getApplicationAdapters } = await import("$lib/server/application");
+	const adapters = getApplicationAdapters();
+	defaultEvaluator = new GoalCompletionEvaluator({
+		goals: adapters.sessionGoalStore,
+		workflowData: adapters.workflowData,
+	});
+	return defaultEvaluator;
+}
+
 export async function evaluateGoalCompletion(
 	sessionId: string,
+	deps?: GoalCompletionEvaluatorDependencies,
 ): Promise<GoalEvaluation> {
-	const goal = await getCurrentGoal(sessionId);
-	if (!goal) {
-		return { met: false, skipped: false, results: [], feedback: "No goal found for this session." };
-	}
-	const commands = goal.evidencePlan?.commands ?? [];
-	if (!commands.length) {
-		// No declared evidence → self-judged completion (unchanged behavior).
-		return { met: true, skipped: true, results: [], feedback: "No evidence commands declared; accepting self-judged completion." };
-	}
-	const target = await resolveEvidenceTarget(sessionId, goal.workflowExecutionId);
-	if (!target) {
-		// Can't verify → do NOT auto-pass; reject so completion isn't granted blind.
-		return {
-			met: false,
-			skipped: false,
-			results: [],
-			feedback:
-				"Evaluator could not reach the session workspace to run the evidence commands. The goal cannot be confirmed complete.",
-		};
-	}
-
-	const results: CriterionResult[] = [];
-	for (const command of commands) {
-		results.push(await runEvidenceCommand(target, command));
-	}
-	const failures = results.filter((r) => !r.ok);
-	const met = failures.length === 0;
-	// IMPORTANT: the agent-facing feedback shows each failing check's OUTPUT only,
-	// NOT the command text. Echoing the command would let the doer read (and
-	// hardcode against) the evaluator's checks — defeating the evaluator-gated
-	// premise — and would reveal all hidden/incremental requirements at once. The
-	// command is still kept in `results[]` for the human-facing Goal view grid.
-	const feedback = met
-		? `All ${results.length} evidence check(s) passed.`
-		: [
-				`Completion rejected — ${failures.length}/${results.length} acceptance check(s) failed.`,
-				...failures.map(
-					(f) =>
-						`\nCheck ${results.indexOf(f) + 1} of ${results.length} [exit ${f.exitCode}]:\n${f.output || "(no output)"}`,
-				),
-				"\nFix the issues shown above and continue working before marking the goal complete.",
-			].join("\n");
-	return { met, skipped: false, results, feedback };
+	const evaluator = deps
+		? new GoalCompletionEvaluator(deps)
+		: await getDefaultEvaluator();
+	return evaluator.evaluateGoalCompletion(sessionId);
 }
