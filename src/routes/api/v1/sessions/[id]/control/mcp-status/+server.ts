@@ -1,17 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
-import { resolveAgentRef } from "$lib/server/agents/registry";
-import { findCredentialForMcpServer } from "$lib/server/vaults/credentials";
-import type { AgentConfig } from "$lib/types/agents";
-
-type McpServerHealth = {
-	name: string;
-	url: string | null;
-	authenticated: boolean;
-	credentialDisplayName: string | null;
-	lastUsedAt: string | null;
-};
 
 /**
  * Per-MCP-server credential health for the session. Iterates the agent's
@@ -22,47 +11,11 @@ type McpServerHealth = {
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const session = await getApplicationAdapters().workflowData.getSessionEventStreamSnapshot({
+	const result = await getApplicationAdapters().sessionMcpStatus.getStatus({
 		sessionId: params.id,
 		projectId: locals.session.projectId ?? null,
 		userId: locals.session.userId,
 	});
-	if (!session) return error(404, "Session not found");
-	const agent = await resolveAgentRef({
-		id: session.agentId,
-		version: session.agentVersion ?? undefined,
-	});
-	if (!agent) return error(404, "Agent not found");
-
-	const config = agent.config as AgentConfig;
-	const servers = Array.isArray(config.mcpServers) ? config.mcpServers : [];
-	const out: McpServerHealth[] = [];
-	for (const server of servers) {
-		const name =
-			server.server_name ??
-			server.serverName ??
-			server.name ??
-			server.displayName ??
-			"(unnamed)";
-		const url = server.url ?? server.serverUrl ?? null;
-		if (!url) {
-			out.push({
-				name,
-				url: null,
-				authenticated: false,
-				credentialDisplayName: null,
-				lastUsedAt: null,
-			});
-			continue;
-		}
-		const cred = await findCredentialForMcpServer(session.vaultIds, url);
-		out.push({
-			name,
-			url,
-			authenticated: Boolean(cred),
-			credentialDisplayName: null, // resolve returns raw; metadata hidden at this layer
-			lastUsedAt: null,
-		});
-	}
-	return json({ servers: out, vaultCount: session.vaultIds.length });
+	if (result.status === "not_found") return error(404, result.message);
+	return json(result.body);
 };

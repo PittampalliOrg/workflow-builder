@@ -3920,6 +3920,24 @@ export interface SessionSandboxDestroyer {
 	deleteWorkspaceSandbox(name: string): Promise<SessionSandboxDeleteResult>;
 }
 
+export type SessionMcpAgentConfig = {
+	mcpServers?: AgentConfig["mcpServers"];
+};
+
+export interface SessionMcpAgentConfigReader {
+	getAgentMcpConfig(input: {
+		agentId: string;
+		agentVersion?: number | null;
+	}): Promise<SessionMcpAgentConfig | null>;
+}
+
+export interface SessionMcpCredentialStatusReader {
+	hasCredentialForMcpServer(input: {
+		vaultIds: string[];
+		mcpServerUrl: string;
+	}): Promise<boolean>;
+}
+
 export type SessionGoalStatus =
 	| "active"
 	| "paused"

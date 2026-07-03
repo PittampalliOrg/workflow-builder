@@ -96,6 +96,10 @@ import {
 	WorkspaceSessionRepositoryMounter,
 } from "$lib/server/application/adapters/sessions";
 import { PlaywrightMcpBrowserRuntimeClient } from "$lib/server/application/adapters/browser-runtime";
+import {
+	RegistrySessionMcpAgentConfigReader,
+	VaultSessionMcpCredentialStatusReader,
+} from "$lib/server/application/adapters/session-mcp";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
@@ -103,6 +107,7 @@ import { ApplicationSessionAgentConfigService } from "$lib/server/application/se
 import { ApplicationSessionGoalService } from "$lib/server/application/session-goals";
 import { ApplicationSessionLifecycleService } from "$lib/server/application/session-lifecycle";
 import { ApplicationSessionSandboxService } from "$lib/server/application/session-sandboxes";
+import { ApplicationSessionMcpStatusService } from "$lib/server/application/session-mcp-status";
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 
@@ -212,6 +217,7 @@ export function getApplicationAdapters(
 	let sessionGoals: ApplicationSessionGoalService | undefined;
 	let sessionLifecycle: ApplicationSessionLifecycleService | undefined;
 	let sessionSandboxes: ApplicationSessionSandboxService | undefined;
+	let sessionMcpStatus: ApplicationSessionMcpStatusService | undefined;
 	let sessionBrowser: ApplicationSessionBrowserService | undefined;
 	const getDatabase = () => (database ??= requirePostgresDb());
 	const getAgentRuntimes = () =>
@@ -351,6 +357,12 @@ export function getApplicationAdapters(
 			lifecycle: new LifecycleSessionController(),
 			sandboxes: new KubernetesSessionSandboxDestroyer(),
 		}));
+	const getSessionMcpStatus = () =>
+		(sessionMcpStatus ??= new ApplicationSessionMcpStatusService({
+			workflowData: getWorkflowData(),
+			agentConfigs: new RegistrySessionMcpAgentConfigReader(),
+			credentials: new VaultSessionMcpCredentialStatusReader(),
+		}));
 	const getCodeCheckpoints = () =>
 		(codeCheckpoints ??= new PostgresWorkflowCodeCheckpointStore(getDatabase()));
 	const getEvaluationArtifacts = () =>
@@ -480,6 +492,9 @@ export function getApplicationAdapters(
 		},
 		get sessionSandboxes() {
 			return getSessionSandboxes();
+		},
+		get sessionMcpStatus() {
+			return getSessionMcpStatus();
 		},
 		get agentRuntimeControl() {
 			return getAgentRuntimeControl();
