@@ -259,11 +259,12 @@ services:
   execution repository adapter; the route only performs auth, parameter
   validation, and response mapping.
 - `src/routes/api/workflows/executions/[executionId]/metrics/+server.ts` now
-  scope-checks through `workflowData.getExecutionById` and loads lineage-aware
-  token aggregates through `workflowData.aggregateExecutionUsageMetrics`.
-  The SQL aggregation over `session_events`/`sessions` is confined to the
-  execution repository adapter; model pricing remains route-local response
-  shaping.
+  delegates scoped execution access, lineage-aware token aggregation, cache-hit
+  math, per-model cost calculation, and response shaping to
+  `ApplicationWorkflowExecutionMetricsService`. The SQL aggregation over
+  `session_events`/`sessions` is confined to the execution repository adapter,
+  and model pricing is injected as an application dependency rather than
+  imported by the route.
 - `src/routes/api/workflows/executions/[executionId]/code-checkpoints/+server.ts`
   now lists source-change checkpoints through
   `ApplicationWorkflowCodeCheckpointService`. The route keeps the existing

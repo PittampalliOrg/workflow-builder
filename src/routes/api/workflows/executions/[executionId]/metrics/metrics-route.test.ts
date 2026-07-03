@@ -4,38 +4,41 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
-	const execution = {
-		id: "exec-1",
-		workflowId: "wf-1",
-		userId: "user-1",
-		projectId: "project-1",
-		status: "running",
-	};
-	const rows = [
-		{
-			modelSpec: "openai/gpt-4.1-mini",
+	const body = {
+		totals: {
 			inputTokens: 100,
 			outputTokens: 40,
 			cacheReadTokens: 20,
 			cacheCreateTokens: 10,
+			totalTokens: 170,
 		},
-	];
-	const workflowData = {
-		getScopedExecutionById: vi.fn(async (): Promise<typeof execution | null> => execution),
-		aggregateExecutionUsageMetrics: vi.fn(async () => rows),
+		cacheHitPct: 17,
+		totalCost: 0.1234,
+		totalCostLabel: "$0.1234",
+		byModel: [
+			{
+				model: "openai/gpt-4.1-mini",
+				inputTokens: 100,
+				outputTokens: 40,
+				cacheReadTokens: 20,
+				cacheCreateTokens: 10,
+				cost: 0.1234,
+			},
+		],
 	};
-	const costFor = vi.fn(() => 0.1234);
-	const formatCurrency = vi.fn(() => "$0.1234");
-	return { execution, rows, workflowData, costFor, formatCurrency };
+	type GetMetricsResult =
+		| { status: "ok"; body: typeof body }
+		| { status: "error"; httpStatus: number; message: string };
+	const workflowExecutionMetrics = {
+		getMetrics: vi.fn(async (): Promise<GetMetricsResult> => ({ status: "ok", body })),
+	};
+	return { body, workflowExecutionMetrics };
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
-}));
-
-vi.mock("$lib/server/pricing/model-pricing", () => ({
-	costFor: mocks.costFor,
-	formatCurrency: mocks.formatCurrency,
+	getApplicationAdapters: () => ({
+		workflowExecutionMetrics: mocks.workflowExecutionMetrics,
+	}),
 }));
 
 import { GET } from "./+server";
@@ -60,66 +63,45 @@ async function expectHttpStatus(promise: Promise<unknown>, status: number) {
 describe("workflow execution metrics route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.workflowData.getScopedExecutionById.mockResolvedValue(mocks.execution);
-		mocks.workflowData.aggregateExecutionUsageMetrics.mockResolvedValue(mocks.rows);
-		mocks.costFor.mockReturnValue(0.1234);
-		mocks.formatCurrency.mockReturnValue("$0.1234");
+		mocks.workflowExecutionMetrics.getMetrics.mockResolvedValue({
+			status: "ok",
+			body: mocks.body,
+		});
 	});
 
-	it("keeps the route behind workflow-data application services", () => {
+	it("keeps the route behind workflow execution metrics application services", () => {
 		const source = readFileSync(
 			join(dirname(fileURLToPath(import.meta.url)), "+server.ts"),
 			"utf8",
 		);
 		expect(source).toContain("getApplicationAdapters");
-		expect(source).toContain("workflowData.getScopedExecutionById");
+		expect(source).toContain("workflowExecutionMetrics.getMetrics");
+		expect(source).not.toContain("workflowData");
+		expect(source).not.toContain("$lib/server/pricing/model-pricing");
 		expect(source).not.toContain("$lib/server/workflows/project-scope");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
 	});
 
-	it("returns aggregate usage metrics from workflow-data", async () => {
+	it("returns aggregate usage metrics from the application service", async () => {
 		const response = (await GET(event() as never)) as Response;
 
 		expect(response.status).toBe(200);
-		await expect(response.json()).resolves.toEqual({
-			totals: {
-				inputTokens: 100,
-				outputTokens: 40,
-				cacheReadTokens: 20,
-				cacheCreateTokens: 10,
-				totalTokens: 170,
-			},
-			cacheHitPct: 17,
-			totalCost: 0.1234,
-			totalCostLabel: "$0.1234",
-			byModel: [
-				{
-					model: "openai/gpt-4.1-mini",
-					inputTokens: 100,
-					outputTokens: 40,
-					cacheReadTokens: 20,
-					cacheCreateTokens: 10,
-					cost: 0.1234,
-				},
-			],
-		});
-		expect(mocks.workflowData.getScopedExecutionById).toHaveBeenCalledWith({
+		await expect(response.json()).resolves.toEqual(mocks.body);
+		expect(mocks.workflowExecutionMetrics.getMetrics).toHaveBeenCalledWith({
 			executionId: "exec-1",
 			userId: "user-1",
 			projectId: "project-1",
 		});
-		expect(mocks.workflowData.aggregateExecutionUsageMetrics).toHaveBeenCalledWith({
-			executionId: "exec-1",
-			projectId: "project-1",
-			includeAncestors: true,
-		});
 	});
 
 	it("hides executions outside the active workspace", async () => {
-		mocks.workflowData.getScopedExecutionById.mockResolvedValueOnce(null);
+		mocks.workflowExecutionMetrics.getMetrics.mockResolvedValueOnce({
+			status: "error",
+			httpStatus: 404,
+			message: "Execution not found",
+		});
 
 		await expectHttpStatus(Promise.resolve(GET(event() as never)), 404);
-		expect(mocks.workflowData.aggregateExecutionUsageMetrics).not.toHaveBeenCalled();
 	});
 });

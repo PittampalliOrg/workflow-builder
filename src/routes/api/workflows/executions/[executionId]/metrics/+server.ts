@@ -1,7 +1,6 @@
-import { error, json } from '@sveltejs/kit';
-import type { RequestHandler } from './$types';
-import { getApplicationAdapters } from '$lib/server/application';
-import { costFor, formatCurrency } from '$lib/server/pricing/model-pricing';
+import { error, json } from "@sveltejs/kit";
+import type { RequestHandler } from "./$types";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * GET /api/workflows/executions/[executionId]/metrics
@@ -17,61 +16,14 @@ import { costFor, formatCurrency } from '$lib/server/pricing/model-pricing';
  * sessions list; live tokens/sec come from the execution SSE stream.
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
-	if (!locals.session?.userId) return error(401, 'Authentication required');
-
-	const workflowData = getApplicationAdapters().workflowData;
-	const execution = await workflowData.getScopedExecutionById({
+	if (!locals.session?.userId) return error(401, "Authentication required");
+	const result = await getApplicationAdapters().workflowExecutionMetrics.getMetrics({
 		executionId: params.executionId,
 		userId: locals.session.userId,
 		projectId: locals.session.projectId,
 	});
-	if (!execution) return error(404, 'Execution not found');
-	const rows = await workflowData.aggregateExecutionUsageMetrics({
-		executionId: params.executionId,
-		projectId: locals.session.projectId,
-		includeAncestors: true
-	});
-
-	const totals = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 };
-	let totalCost = 0;
-	const byModel: Array<{
-		model: string;
-		inputTokens: number;
-		outputTokens: number;
-		cacheReadTokens: number;
-		cacheCreateTokens: number;
-		cost: number;
-	}> = [];
-
-	for (const row of rows) {
-		const usage = {
-			inputTokens: row.inputTokens,
-			outputTokens: row.outputTokens,
-			cacheReadTokens: row.cacheReadTokens,
-			cacheCreateTokens: row.cacheCreateTokens
-		};
-		const cost = costFor(row.modelSpec, usage);
-		totalCost += cost;
-		totals.inputTokens += usage.inputTokens;
-		totals.outputTokens += usage.outputTokens;
-		totals.cacheReadTokens += usage.cacheReadTokens;
-		totals.cacheCreateTokens += usage.cacheCreateTokens;
-		byModel.push({ model: row.modelSpec ?? 'unknown', ...usage, cost });
+	if (result.status === "error") {
+		return error(result.httpStatus, result.message);
 	}
-
-	byModel.sort((a, b) => b.cost - a.cost);
-
-	const totalTokens =
-		totals.inputTokens + totals.outputTokens + totals.cacheReadTokens + totals.cacheCreateTokens;
-	const cacheablePrompt = totals.inputTokens + totals.cacheReadTokens;
-	const cacheHitPct =
-		cacheablePrompt > 0 ? Math.round((totals.cacheReadTokens / cacheablePrompt) * 100) : null;
-
-	return json({
-		totals: { ...totals, totalTokens },
-		cacheHitPct,
-		totalCost,
-		totalCostLabel: formatCurrency(totalCost),
-		byModel
-	});
+	return json(result.body);
 };

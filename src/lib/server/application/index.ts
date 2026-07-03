@@ -154,6 +154,7 @@ import { ApplicationWorkflowBrowserArtifactsService } from "$lib/server/applicat
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
 import { ApplicationWorkflowExecutionFilesService } from "$lib/server/application/workflow-execution-files";
 import { ApplicationWorkflowExecutionLineageService } from "$lib/server/application/workflow-execution-lineage";
+import { ApplicationWorkflowExecutionMetricsService } from "$lib/server/application/workflow-execution-metrics";
 import { ApplicationWorkflowExecutionSessionsService } from "$lib/server/application/workflow-execution-sessions";
 import { ApplicationWorkflowExecutionWorkspaceService } from "$lib/server/application/workflow-execution-workspace";
 import { ApplicationWorkflowExecutionStreamService } from "$lib/server/application/workflow-execution-stream";
@@ -164,6 +165,7 @@ import { ApplicationWorkflowTriggerManagementService } from "$lib/server/applica
 import { ApplicationWorkflowTriggerLifecycleService } from "$lib/server/application/workflow-trigger-lifecycle";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 import { ApplicationWorkflowPlanService } from "$lib/server/application/workflow-plan";
+import { costFor, formatCurrency } from "$lib/server/pricing/model-pricing";
 
 export { getEventBusAdapter } from "$lib/server/application/event-bus";
 
@@ -289,6 +291,9 @@ export function getApplicationAdapters(
 		| undefined;
 	let workflowExecutionLineage:
 		| ApplicationWorkflowExecutionLineageService
+		| undefined;
+	let workflowExecutionMetrics:
+		| ApplicationWorkflowExecutionMetricsService
 		| undefined;
 	let workflowExecutionSessions:
 		| ApplicationWorkflowExecutionSessionsService
@@ -530,6 +535,11 @@ export function getApplicationAdapters(
 		(workflowExecutionLineage ??= new ApplicationWorkflowExecutionLineageService({
 			workflowData: getWorkflowData(),
 		}));
+	const getWorkflowExecutionMetrics = () =>
+		(workflowExecutionMetrics ??= new ApplicationWorkflowExecutionMetricsService({
+			workflowData: getWorkflowData(),
+			pricing: { costFor, formatCurrency },
+		}));
 	const getWorkflowExecutionSessions = () =>
 		(workflowExecutionSessions ??= new ApplicationWorkflowExecutionSessionsService({
 			workflowData: getWorkflowData(),
@@ -738,6 +748,9 @@ export function getApplicationAdapters(
 		},
 		get workflowExecutionLineage() {
 			return getWorkflowExecutionLineage();
+		},
+		get workflowExecutionMetrics() {
+			return getWorkflowExecutionMetrics();
 		},
 		get workflowExecutionSessions() {
 			return getWorkflowExecutionSessions();
