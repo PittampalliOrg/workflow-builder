@@ -1,14 +1,12 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { insertActionTask } from "$lib/helpers/workflow-action-spec";
 import { getRemovedSw10AgentCallsError } from "$lib/server/workflows/sw10-agent-validation";
 import type { ActionCatalogItem } from "$lib/stores/action-catalog.svelte";
-import { loadActionCatalogSnapshot } from "./index";
-
-vi.mock("$lib/server/code-functions", () => ({
-  getCodeFunction: vi.fn(),
-  listCodeFunctions: vi.fn(async () => []),
-  toCodeFunctionDefinitionFromDetail: vi.fn(() => ({})),
-}));
+import type { CodeFunctionDetail } from "$lib/server/code-functions/model";
+import { getActionCatalogDetail, loadActionCatalogSnapshot } from "./index";
 
 vi.mock("$lib/server/dapr-client", () => ({
   daprFetch: vi.fn(async () => new Response("offline", { status: 503 })),
@@ -52,6 +50,91 @@ async function loadOneShotCliAction() {
   expect(action).toBeDefined();
   return action!;
 }
+
+const codeFunctionDetail: CodeFunctionDetail = {
+  id: "fn-1",
+  name: "Parse User",
+  slug: "parse-user",
+  description: "Parse user text",
+  version: "0.1.0",
+  language: "typescript",
+  entrypoint: "main",
+  path: null,
+  updatedAt: "2026-07-03T00:00:00.000Z",
+  createdAt: "2026-07-03T00:00:00.000Z",
+  isEnabled: true,
+  hasDiagnostics: false,
+  latestPublishedVersion: "pub-1",
+  lastPublishedAt: "2026-07-03T00:00:00.000Z",
+  role: "function",
+  compositionGraph: null,
+  source: "export function main(input) { return input; }",
+  supportingFiles: {},
+  sourceHash: "abc123",
+  revisions: [],
+  model: {
+    language: "typescript",
+    entrypoint: "main",
+    is_async: false,
+    imports: [],
+    params: [],
+    dynamic_inputs: [],
+    return_type: { kind: "unknown" },
+    schema: { type: "object" },
+    diagnostics: [],
+    capabilities: {
+      has_enums: false,
+      has_nested_objects: false,
+      has_nullable_types: false,
+      has_relative_imports: false,
+      has_resource_types: false,
+      has_dynamic_inputs: false,
+    },
+  },
+};
+
+describe("action-catalog code-function boundary", () => {
+  it("keeps action-catalog free of direct code-function persistence imports", () => {
+    const actionCatalogSource = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "index.ts"),
+      "utf8",
+    );
+    expect(actionCatalogSource).not.toContain("$lib/server/code-functions\"");
+    expect(actionCatalogSource).not.toContain("$lib/server/code-functions'");
+    expect(actionCatalogSource).not.toContain("$lib/server/db");
+    expect(actionCatalogSource).not.toContain("drizzle-orm");
+  });
+
+  it("loads code-function catalog items through an injected reader", async () => {
+    const codeFunctions = {
+      listCodeFunctions: vi.fn(async () => [codeFunctionDetail]),
+      getCodeFunction: vi.fn(async () => codeFunctionDetail),
+    };
+
+    const snapshot = await loadActionCatalogSnapshot("user-1", { codeFunctions });
+
+    expect(codeFunctions.listCodeFunctions).toHaveBeenCalledWith("user-1");
+    expect(codeFunctions.getCodeFunction).toHaveBeenCalledWith("fn-1", "user-1");
+    expect(snapshot.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "code-function.fn-1",
+          name: "parse-user",
+          service: "code-functions",
+          sourceKind: "catalog",
+        }),
+      ]),
+    );
+
+    await expect(
+      getActionCatalogDetail("code-function.fn-1", "user-1", { codeFunctions }),
+    ).resolves.toMatchObject({
+      id: "code-function.fn-1",
+      slug: "parse-user",
+      sourceKind: "code",
+    });
+  });
+});
 
 describe("built-in one-shot CLI agent action", () => {
   it("is exposed as an insertable agent action backed by durable/run", async () => {

@@ -5,11 +5,10 @@ import {
   getOrchestratorUrl,
 } from "$lib/server/dapr-client";
 import {
-  getCodeFunction,
-  listCodeFunctions,
   toCodeFunctionDefinitionFromDetail,
   type CodeFunctionDetail,
-} from "$lib/server/code-functions";
+  type CodeFunctionSummary,
+} from "$lib/server/code-functions/model";
 import {
   AP_CATALOG_SERVICE_ID,
   loadPieceMetadataActionSource,
@@ -28,6 +27,18 @@ import type {
 } from "./types";
 
 let highlighterPromise: Promise<Highlighter> | null = null;
+
+export interface ActionCatalogCodeFunctionReader {
+  listCodeFunctions(userId: string): Promise<CodeFunctionSummary[]>;
+  getCodeFunction(
+    id: string,
+    userId: string,
+  ): Promise<CodeFunctionDetail | null>;
+}
+
+export interface ActionCatalogLoadOptions {
+  codeFunctions?: ActionCatalogCodeFunctionReader;
+}
 
 function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
@@ -1241,14 +1252,16 @@ function buildCodeFunctionDetail(
 
 async function loadCodeFunctionActions(
   userId?: string | null,
+  reader?: ActionCatalogCodeFunctionReader,
 ): Promise<ActionCatalogDetail[]> {
   if (!userId) return [];
+  if (!reader) return [];
   if (hasMissingCodeFunctionsTable) return [];
   try {
-    const summaries = await listCodeFunctions(userId);
+    const summaries = await reader.listCodeFunctions(userId);
     const items = await Promise.all(
       summaries.map(async (summary) => {
-        const detail = await getCodeFunction(summary.id, userId);
+        const detail = await reader.getCodeFunction(summary.id, userId);
         if (!detail) return null;
         const action = buildCodeFunctionDetail(detail);
         action.sourceHtml = await highlightCode(detail.source, detail.language);
@@ -1358,10 +1371,11 @@ function sortActions<T extends ActionCatalogSummary>(items: T[]): T[] {
 
 export async function listActionCatalog(
   userId?: string | null,
+  options: ActionCatalogLoadOptions = {},
 ): Promise<ActionCatalogSummary[]> {
   const [remote, code] = await Promise.all([
     loadRemoteActionCache(),
-    loadCodeFunctionActions(userId),
+    loadCodeFunctionActions(userId, options.codeFunctions),
   ]);
   return sortActions([...code, ...remote]).map((item) => ({
     id: item.id,
@@ -1392,6 +1406,7 @@ export async function listActionCatalog(
 export async function getActionCatalogDetail(
   actionId: string,
   userId?: string | null,
+  options: ActionCatalogLoadOptions = {},
 ): Promise<ActionCatalogDetail | null> {
   async function attachRendered(
     detail: ActionCatalogDetail,
@@ -1409,7 +1424,10 @@ export async function getActionCatalogDetail(
 
   if (actionId.startsWith("code-function.")) {
     const id = actionId.slice("code-function.".length);
-    const detail = userId ? await getCodeFunction(id, userId) : null;
+    const detail =
+      userId && options.codeFunctions
+        ? await options.codeFunctions.getCodeFunction(id, userId)
+        : null;
     if (!detail) return null;
     const action = buildCodeFunctionDetail(detail);
     action.sourceHtml = await highlightCode(detail.source, detail.language);
@@ -1427,9 +1445,10 @@ export async function getActionCatalogDetail(
 
 export async function loadActionCatalogSnapshot(
   userId?: string | null,
+  options: ActionCatalogLoadOptions = {},
 ): Promise<ActionCatalogSnapshot> {
   const [code, remoteLoaded] = await Promise.all([
-    loadCodeFunctionActions(userId),
+    loadCodeFunctionActions(userId, options.codeFunctions),
     loadRemoteActionCache(),
   ]);
   const remote = cachedRemoteActions;

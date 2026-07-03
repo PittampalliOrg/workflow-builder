@@ -6,7 +6,7 @@
 
 import { jsonSchema } from 'ai';
 
-import { loadActionCatalogSnapshot } from '$lib/server/action-catalog';
+import { getApplicationAdapters } from '$lib/server/application';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyToolSet = Record<string, any>;
@@ -17,10 +17,12 @@ type AnyToolSet = Record<string, any>;
  */
 export function createWorkflowTools(userId: string | null, skFetch: typeof fetch): AnyToolSet {
 	// Cache catalog snapshot per request
-	let catalogCache: Awaited<ReturnType<typeof loadActionCatalogSnapshot>> | null = null;
+	let catalogCache: unknown | null = null;
 	async function getCatalog() {
 		if (!catalogCache) {
-			catalogCache = await loadActionCatalogSnapshot(userId).catch(() => null);
+			catalogCache = await getApplicationAdapters()
+				.actionCatalog.loadSnapshot({ userId })
+				.catch(() => null);
 		}
 		return catalogCache;
 	}

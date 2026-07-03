@@ -11,7 +11,6 @@ import { generateText } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import yaml from 'js-yaml';
 import { getApplicationAdapters } from '$lib/server/application';
-import { loadActionCatalogSnapshot } from '$lib/server/action-catalog';
 import { buildBuildPrompt, buildFixPrompt } from '$lib/server/ai-assistant/build-prompt';
 import {
 	openAICompatibleTrafficAvailable,
@@ -25,6 +24,23 @@ import { applyWorkflowInputDefaults } from '$lib/utils/workflow-input-config';
 const MAX_ATTEMPTS = 5;
 const POLL_INTERVAL_MS = 3000;
 const POLL_TIMEOUT_MS = 120000;
+
+type ActionCatalogSnapshotLike = {
+	items?: Array<Record<string, unknown>>;
+	services?: unknown[];
+};
+
+type AssistantActionContext = {
+	name: string;
+	displayName: string;
+	description: string;
+	providerId: string | null;
+	providerLabel: string | null;
+	pieceName: string;
+	actionName: string;
+	inputSchema: Record<string, unknown> | null;
+	auth: { required: boolean; authType?: string } | null;
+};
 
 function sseEvent(event: string, data: unknown): string {
 	return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -58,7 +74,7 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 		? anthropic(env.ANTHROPIC_MODEL || 'claude-opus-4-8')
 		: workflowOpenAIModel(env.OPENAI_MODEL || 'gpt-5.5');
 
-	const userId = locals.session?.userId;
+	const userId = locals.session?.userId ?? null;
 	const encoder = new TextEncoder();
 
 	const stream = new ReadableStream({
@@ -68,16 +84,20 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 			};
 
 			try {
-				const workflowData = getApplicationAdapters().workflowData;
+				const application = getApplicationAdapters();
+				const workflowData = application.workflowData;
 				// Load context
 				emit('status', { phase: 'loading', message: 'Loading action catalog and connections...' });
 
 				const [catalogSnapshot, connectionsRes] = await Promise.all([
-					loadActionCatalogSnapshot(userId).catch(() => ({ items: [], services: [] })),
+					application.actionCatalog
+						.loadSnapshot({ userId })
+						.then((snapshot) => snapshot as ActionCatalogSnapshotLike)
+						.catch((): ActionCatalogSnapshotLike => ({ items: [], services: [] })),
 					skFetch('/api/app-connections').then(r => r.json()).catch(() => []),
 				]);
 
-				const actions = (catalogSnapshot.items || [])
+				const actions: AssistantActionContext[] = (catalogSnapshot.items || [])
 					.filter((i: Record<string, unknown>) => i.insertable)
 					.map((i: Record<string, unknown>) => ({
 						name: i.name as string,

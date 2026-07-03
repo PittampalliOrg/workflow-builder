@@ -11,14 +11,22 @@
  */
 
 import { createHash } from 'node:crypto';
-import { getCodeFunctionBySlugForUser } from '$lib/server/code-functions';
+import type { CodeFunctionDetail } from '$lib/server/code-functions/model';
 import type { EmitNode, InlinedFunction } from './ir';
+
+export interface InlineCodeFunctionReader {
+	getCodeFunctionBySlugForUser(
+		slug: string,
+		userId?: string | null,
+	): Promise<CodeFunctionDetail | null>;
+}
 
 export interface ResolveInlineArgs {
 	steps: EmitNode[];
 	language: 'typescript' | 'python';
 	userId?: string | null;
 	warnings: string[];
+	codeFunctions?: InlineCodeFunctionReader;
 }
 
 export interface ResolveInlineResult {
@@ -31,7 +39,7 @@ const CODE_PREFIX = 'code/';
 export async function resolveInlines(
 	args: ResolveInlineArgs,
 ): Promise<ResolveInlineResult> {
-	const { steps, language, userId, warnings } = args;
+	const { steps, language, userId, warnings, codeFunctions } = args;
 	const inlined = new Map<string, InlinedFunction>();
 	const usedIdentifiers = new Set<string>();
 
@@ -41,7 +49,11 @@ export async function resolveInlines(
 			if (node.kind === 'call' && node.slug.startsWith(CODE_PREFIX)) {
 				const slug = node.slug.slice(CODE_PREFIX.length);
 				try {
-					const detail = await getCodeFunctionBySlugForUser(slug, userId);
+					const detail =
+						(await codeFunctions?.getCodeFunctionBySlugForUser(
+							slug,
+							userId,
+						)) ?? null;
 					if (!detail) {
 						warnings.push(
 							`Code function "code/${slug}" not found; leaving as shim dispatch.`,

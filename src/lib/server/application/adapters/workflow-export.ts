@@ -12,6 +12,8 @@ import type {
 } from "$lib/server/application/workflow-export";
 
 export class LegacyWorkflowEmitterAdapter implements WorkflowEmitterPort {
+	constructor(private readonly store = new PostgresCodeFunctionStore()) {}
+
 	emitWorkflow(
 		spec: Record<string, unknown>,
 		options: {
@@ -23,6 +25,7 @@ export class LegacyWorkflowEmitterAdapter implements WorkflowEmitterPort {
 		return emitWorkflow(spec, {
 			...options,
 			language: options.language as EmitterLanguage,
+			codeFunctions: this.store,
 		});
 	}
 }

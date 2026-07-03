@@ -10,7 +10,7 @@
  */
 
 import { extractTriggerSchema, getWorkflowName, normalizeDoArray } from './normalize';
-import { resolveInlines } from './inline-resolver';
+import { resolveInlines, type InlineCodeFunctionReader } from './inline-resolver';
 import { emitTypeScript } from './emit-ts';
 import { emitPython } from './emit-py';
 import { summarizeComposition, type EmitWorkflowInput } from './ir';
@@ -28,6 +28,7 @@ export interface EmitWorkflowOptions {
 	userId?: string | null;
 	/** When false, every code/<slug> call stays as a shim dispatch (no inlining). */
 	inlineFunctions?: boolean;
+	codeFunctions?: InlineCodeFunctionReader;
 }
 
 export interface EmitWorkflowResult {
@@ -58,6 +59,7 @@ export async function emitWorkflow(
 					language: options.language,
 					userId: options.userId,
 					warnings,
+					codeFunctions: options.codeFunctions,
 				})
 			: { steps: baseSteps, inlinedFunctions: [] };
 

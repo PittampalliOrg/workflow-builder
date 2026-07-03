@@ -813,7 +813,7 @@ export function getApplicationAdapters(
 			));
 	const getActionCatalog = () =>
 		(actionCatalog ??= new ApplicationActionCatalogService(
-			new LegacyActionCatalogReader(),
+			new LegacyActionCatalogReader(getCodeFunctionStore()),
 		));
 	const getWorkflowTriggerKindCatalog = () =>
 		(workflowTriggerKindCatalog ??=
@@ -822,7 +822,7 @@ export function getApplicationAdapters(
 			));
 	const getActionOptions = () =>
 		(actionOptions ??= new ApplicationActionOptionsService({
-			actions: new LocalActionOptionsCatalogReader(),
+			actions: new LocalActionOptionsCatalogReader(getCodeFunctionStore()),
 			codeFunctions: new LocalCodeFunctionOptionsPort(
 				getCodeFunctionOptions(),
 				getCodeFunctionStore(),
@@ -832,7 +832,7 @@ export function getApplicationAdapters(
 		}));
 	const getActionCatalogTest = () =>
 		(actionCatalogTest ??= new ApplicationActionCatalogTestService({
-			actions: new LocalActionCatalogTestReader(),
+			actions: new LocalActionCatalogTestReader(getCodeFunctionStore()),
 			codeFunctions: new PostgresCodeFunctionExecutionRepository(
 				getCodeFunctionStore(),
 			),
@@ -1161,7 +1161,7 @@ export function getApplicationAdapters(
 	const getWorkflowExport = () =>
 		(workflowExport ??= new ApplicationWorkflowExportService({
 			workflowData: getWorkflowData(),
-			emitter: new LegacyWorkflowEmitterAdapter(),
+			emitter: new LegacyWorkflowEmitterAdapter(getCodeFunctionStore()),
 			codeFunctions: new PostgresWorkflowCodeFunctionAdapter(
 				getCodeFunctionStore(),
 			),

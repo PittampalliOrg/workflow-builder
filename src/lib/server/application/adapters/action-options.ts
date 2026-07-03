@@ -25,11 +25,15 @@ const OPTIONS_PROXY_TIMEOUT_MS = 30_000;
 export class LocalActionOptionsCatalogReader
 	implements ActionOptionsActionCatalogReader
 {
+	constructor(private readonly codeFunctions = new PostgresCodeFunctionStore()) {}
+
 	async getActionDetail(
 		actionId: string,
 		userId: string,
 	): Promise<ActionOptionsCatalogDetail | null> {
-		const action = await getActionCatalogDetail(actionId, userId);
+		const action = await getActionCatalogDetail(actionId, userId, {
+			codeFunctions: this.codeFunctions,
+		});
 		if (!action) return null;
 		return {
 			id: action.id,
