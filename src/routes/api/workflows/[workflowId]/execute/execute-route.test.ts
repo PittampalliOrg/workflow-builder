@@ -2,35 +2,27 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { WorkflowExecutionControlResult } from "$lib/server/application/workflow-execution-control";
 
 const mocks = vi.hoisted(() => {
-	const workflow = {
-		id: "wf-1",
-		name: "Example",
-		userId: "user-1",
-		projectId: "project-1",
+	const workflowExecutionControl = {
+		executeWorkflow: vi.fn(async (): Promise<WorkflowExecutionControlResult> => ({
+			status: "ok" as const,
+			body: {
+				executionId: "exec-1",
+				instanceId: "sw-example-exec-1",
+				workflowId: "wf-1",
+				status: "running",
+			},
+		})),
 	};
-	const workflowData = {
-		getWorkflowByRef: vi.fn(async () => workflow),
-	};
-	const startWorkflowRun = vi.fn(async () => ({
-		ok: true,
-		executionId: "exec-1",
-		instanceId: "sw-example-exec-1",
-		workflowId: "wf-1",
-		workflowName: "Example",
-		status: "running" as const,
-		reused: false,
-	}));
-	return { workflow, workflowData, startWorkflowRun };
+	return { workflowExecutionControl };
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
-}));
-
-vi.mock("$lib/server/workflows/start-run", () => ({
-	startWorkflowRun: mocks.startWorkflowRun,
+	getApplicationAdapters: () => ({
+		workflowExecutionControl: mocks.workflowExecutionControl,
+	}),
 }));
 
 import { POST } from "./+server";
@@ -59,30 +51,33 @@ async function expectHttpStatus(promise: Promise<unknown>, status: number) {
 describe("workflow execute route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.workflowData.getWorkflowByRef.mockResolvedValue(mocks.workflow);
-		mocks.startWorkflowRun.mockResolvedValue({
-			ok: true,
-			executionId: "exec-1",
-			instanceId: "sw-example-exec-1",
-			workflowId: "wf-1",
-			workflowName: "Example",
-			status: "running",
-			reused: false,
+		mocks.workflowExecutionControl.executeWorkflow.mockResolvedValue({
+			status: "ok",
+			body: {
+				executionId: "exec-1",
+				instanceId: "sw-example-exec-1",
+				workflowId: "wf-1",
+				status: "running",
+			},
 		});
 	});
 
-	it("keeps the route behind workflow-data and startWorkflowRun services", () => {
+	it("delegates execute commands to the workflow execution control service", () => {
 		const source = readFileSync(
 			join(dirname(fileURLToPath(import.meta.url)), "+server.ts"),
 			"utf8",
 		);
 		expect(source).toContain("getApplicationAdapters");
-		expect(source).toContain("startWorkflowRun");
+		expect(source).toContain("workflowExecutionControl.executeWorkflow");
+		expect(source).not.toContain("workflowData.getWorkflowByRef");
+		expect(source).not.toContain("startWorkflowRun");
+		expect(source).not.toContain("assertInScope");
+		expect(source).not.toContain("$lib/server/workflows/project-scope");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
 	});
 
-	it("starts a workflow through the canonical command service", async () => {
+	it("passes the execution request to the application service", async () => {
 		const response = (await POST(event() as never)) as Response;
 
 		expect(response.status).toBe(200);
@@ -92,24 +87,21 @@ describe("workflow execute route", () => {
 			workflowId: "wf-1",
 			status: "running",
 		});
-		expect(mocks.workflowData.getWorkflowByRef).toHaveBeenCalledWith({
+		expect(mocks.workflowExecutionControl.executeWorkflow).toHaveBeenCalledWith({
 			workflowId: "wf-1",
-			lookup: "id",
-		});
-		expect(mocks.startWorkflowRun).toHaveBeenCalledWith({
-			workflowId: "wf-1",
-			triggerData: { prompt: "ship it" },
+			body: { input: { prompt: "ship it" } },
+			projectId: "project-1",
 			userId: "user-1",
 		});
 	});
 
-	it("hides workflows outside the active workspace before starting", async () => {
-		mocks.workflowData.getWorkflowByRef.mockResolvedValueOnce({
-			...mocks.workflow,
-			projectId: "project-2",
+	it("forwards route-safe application errors", async () => {
+		mocks.workflowExecutionControl.executeWorkflow.mockResolvedValueOnce({
+			status: "error",
+			httpStatus: 404,
+			message: "Workflow not found",
 		});
 
 		await expectHttpStatus(Promise.resolve(POST(event() as never)), 404);
-		expect(mocks.startWorkflowRun).not.toHaveBeenCalled();
 	});
 });

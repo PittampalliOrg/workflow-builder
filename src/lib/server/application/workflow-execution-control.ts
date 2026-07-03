@@ -1,15 +1,30 @@
 import type {
 	WorkflowExecutionRecord,
 	WorkflowApprovalEventPort,
+	WorkflowDefinition,
 	WorkflowDataService,
 	WorkflowExecutionCoordinatorOwnerPort,
 	WorkflowRunStarterPort,
+	WorkflowSpecValidatorPort,
 } from "$lib/server/application/ports";
 
 export type WorkflowExecutionControlInput = {
 	executionId: string;
 	userId: string;
 	projectId?: string | null;
+	body?: Record<string, unknown>;
+};
+
+export type WorkflowExecutionStartInput = {
+	workflowId: string;
+	userId: string;
+	projectId?: string | null;
+	body?: Record<string, unknown>;
+};
+
+export type WorkflowWebhookStartInput = {
+	workflowId: string;
+	authorizationHeader: string | null;
 	body?: Record<string, unknown>;
 };
 
@@ -30,13 +45,116 @@ export class ApplicationWorkflowExecutionControlService {
 		private readonly deps: {
 			workflowData: Pick<
 				WorkflowDataService,
-				"getExecutionById" | "getWorkflowByRef"
+				| "getExecutionById"
+				| "getWorkflowByRef"
+				| "getRunningWorkflowExecution"
+				| "validateApiKeyForUser"
 			>;
 			approvalEvents: WorkflowApprovalEventPort;
 			coordinatorOwners: WorkflowExecutionCoordinatorOwnerPort;
 			runStarter: WorkflowRunStarterPort;
+			workflowSpecs: WorkflowSpecValidatorPort;
 		},
 	) {}
+
+	async executeWorkflow(
+		input: WorkflowExecutionStartInput,
+	): Promise<WorkflowExecutionControlResult> {
+		const workflow = await this.deps.workflowData.getWorkflowByRef({
+			workflowId: input.workflowId,
+			lookup: "id",
+		});
+		if (!isScopedResourceInScope(workflow, input)) {
+			return workflowControlError(404, "Workflow not found");
+		}
+
+		const result = await this.deps.runStarter.startWorkflowRun({
+			workflowId: input.workflowId,
+			triggerData: asRecord(input.body?.input),
+			userId: input.userId,
+		});
+		if (!result.ok) {
+			return workflowControlError(result.status, result.error);
+		}
+
+		return {
+			status: "ok",
+			body: {
+				executionId: result.executionId,
+				instanceId: result.instanceId,
+				workflowId: input.workflowId,
+				status: "running",
+			},
+		};
+	}
+
+	async startWebhookExecution(
+		input: WorkflowWebhookStartInput,
+	): Promise<WorkflowExecutionControlResult> {
+		const workflow = await this.deps.workflowData.getWorkflowByRef({
+			workflowId: input.workflowId,
+			lookup: "id",
+		});
+		if (!workflow) {
+			return workflowControlError(404, "Workflow not found");
+		}
+
+		const apiKeyValidation = await this.deps.workflowData.validateApiKeyForUser({
+			authorizationHeader: input.authorizationHeader,
+			userId: workflow.userId,
+		});
+		if (!apiKeyValidation.valid) {
+			return workflowControlError(
+				apiKeyValidation.statusCode || 401,
+				apiKeyValidation.error,
+			);
+		}
+
+		if (!hasWebhookTrigger(workflow)) {
+			return workflowControlError(
+				400,
+				"This workflow is not configured for webhook triggers",
+			);
+		}
+
+		if (!this.deps.workflowSpecs.isServerlessWorkflow(workflow.spec)) {
+			return workflowControlError(
+				400,
+				"Workflow does not have a valid CNCF Serverless Workflow 1.0 spec",
+			);
+		}
+
+		const runningExecution =
+			await this.deps.workflowData.getRunningWorkflowExecution(input.workflowId);
+		if (runningExecution) {
+			return {
+				status: "ok",
+				httpStatus: 409,
+				body: {
+					error: "A workflow execution is already running",
+					existingExecutionId: runningExecution.id,
+				},
+			};
+		}
+
+		const result = await this.deps.runStarter.startWorkflowRun({
+			workflowId: input.workflowId,
+			triggerData: asRecord(input.body),
+			userId: workflow.userId,
+			triggerSource: "webhook",
+		});
+		if (!result.ok) {
+			return workflowControlError(result.status, result.error);
+		}
+
+		return {
+			status: "ok",
+			body: {
+				executionId: result.executionId,
+				status: "running",
+			},
+		};
+	}
 
 	async approveExecution(
 		input: WorkflowExecutionControlInput,
@@ -203,18 +321,45 @@ function topLevelNodeIds(spec: unknown): string[] {
 	return ids;
 }
 
+type ScopedResource = {
+	userId: string;
+	projectId: string | null;
+};
+
+function isScopedResourceInScope<T extends ScopedResource>(
+	resource: T | null,
+	input: { userId: string; projectId?: string | null },
+): resource is T {
+	if (!resource) return false;
+	if (resource.projectId && input.projectId) {
+		return resource.projectId === input.projectId;
+	}
+	if (!resource.projectId) {
+		return resource.userId === input.userId;
+	}
+	return resource.userId === input.userId;
+}
+
 function isExecutionInScope(
 	execution: WorkflowExecutionRecord | null,
 	input: { userId: string; projectId?: string | null },
 ): execution is WorkflowExecutionRecord {
-	if (!execution) return false;
-	if (execution.projectId && input.projectId) {
-		return execution.projectId === input.projectId;
-	}
-	if (!execution.projectId) {
-		return execution.userId === input.userId;
-	}
-	return execution.userId === input.userId;
+	return isScopedResourceInScope(execution, input);
+}
+
+function hasWebhookTrigger(workflow: WorkflowDefinition): boolean {
+	const nodes = workflow.nodes as Array<{
+		data?: { type?: string; config?: { triggerType?: string } };
+	}>;
+	return nodes.some(
+		(node) =>
+			node.data?.type === "trigger" &&
+			node.data.config?.triggerType === "Webhook",
+	);
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+	return (value ?? {}) as Record<string, unknown>;
 }
 
 function workflowControlError(

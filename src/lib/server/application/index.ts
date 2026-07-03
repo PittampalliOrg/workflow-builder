@@ -103,6 +103,7 @@ import {
 } from "$lib/server/application/adapters/session-mcp";
 import {
 	LegacyWorkflowRunStarterPort,
+	LegacyWorkflowSpecValidatorPort,
 	LifecycleWorkflowExecutionCoordinatorOwnerPort,
 } from "$lib/server/application/adapters/workflow-control";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
@@ -402,6 +403,7 @@ export function getApplicationAdapters(
 			approvalEvents: new DaprWorkflowApprovalEventPort(),
 			coordinatorOwners: new LifecycleWorkflowExecutionCoordinatorOwnerPort(),
 			runStarter: new LegacyWorkflowRunStarterPort(),
+			workflowSpecs: new LegacyWorkflowSpecValidatorPort(),
 		}));
 	const getSessionCommands = () =>
 		(sessionCommands ??= new ApplicationSessionCommandService({

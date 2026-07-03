@@ -7,22 +7,32 @@ import type {
 	WorkflowExecutionCoordinatorOwnerPort,
 	WorkflowExecutionRecord,
 	WorkflowRunStarterPort,
+	WorkflowSpecValidatorPort,
 } from "$lib/server/application/ports";
 
 describe("ApplicationWorkflowExecutionControlService", () => {
 	let workflowData: Pick<
 		WorkflowDataService,
-		"getExecutionById" | "getWorkflowByRef"
+		| "getExecutionById"
+		| "getWorkflowByRef"
+		| "getRunningWorkflowExecution"
+		| "validateApiKeyForUser"
 	>;
 	let approvalEvents: WorkflowApprovalEventPort;
 	let coordinatorOwners: WorkflowExecutionCoordinatorOwnerPort;
 	let runStarter: WorkflowRunStarterPort;
+	let workflowSpecs: WorkflowSpecValidatorPort;
 	let service: ApplicationWorkflowExecutionControlService;
 
 	beforeEach(() => {
 		workflowData = {
 			getExecutionById: vi.fn(async () => executionRecord()),
 			getWorkflowByRef: vi.fn(async () => workflowDefinition()),
+			getRunningWorkflowExecution: vi.fn(async () => null),
+			validateApiKeyForUser: vi.fn(async () => ({
+				valid: true as const,
+				apiKeyId: "key-1",
+			})),
 		};
 		approvalEvents = {
 			raiseApprovalEvent: vi.fn(async () => ({ ok: true as const })),
@@ -37,12 +47,145 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 				instanceId: "instance-new",
 			})),
 		};
+		workflowSpecs = {
+			isServerlessWorkflow: vi.fn(() => true),
+		};
 		service = new ApplicationWorkflowExecutionControlService({
 			workflowData,
 			approvalEvents,
 			coordinatorOwners,
 			runStarter,
+			workflowSpecs,
 		});
+	});
+
+	it("starts an authenticated workflow execution after workspace scope checks", async () => {
+		const result = await service.executeWorkflow({
+			workflowId: "workflow-1",
+			userId: "user-1",
+			projectId: "project-1",
+			body: { input: { prompt: "ship it" } },
+		});
+
+		expect(workflowData.getWorkflowByRef).toHaveBeenCalledWith({
+			workflowId: "workflow-1",
+			lookup: "id",
+		});
+		expect(runStarter.startWorkflowRun).toHaveBeenCalledWith({
+			workflowId: "workflow-1",
+			triggerData: { prompt: "ship it" },
+			userId: "user-1",
+		});
+		expect(result).toEqual({
+			status: "ok",
+			body: {
+				executionId: "exec-new",
+				instanceId: "instance-new",
+				workflowId: "workflow-1",
+				status: "running",
+			},
+		});
+	});
+
+	it("hides out-of-workspace workflows before starting authenticated execution", async () => {
+		vi.mocked(workflowData.getWorkflowByRef).mockResolvedValue(
+			workflowDefinition({ projectId: "project-2" }),
+		);
+
+		const result = await service.executeWorkflow({
+			workflowId: "workflow-1",
+			userId: "user-1",
+			projectId: "project-1",
+			body: { input: { prompt: "ship it" } },
+		});
+
+		expect(result).toEqual({
+			status: "error",
+			httpStatus: 404,
+			message: "Workflow not found",
+		});
+		expect(runStarter.startWorkflowRun).not.toHaveBeenCalled();
+	});
+
+	it("starts a public webhook workflow after API key, trigger, spec, and duplicate checks", async () => {
+		const result = await service.startWebhookExecution({
+			workflowId: "workflow-1",
+			authorizationHeader: "Bearer wfb_secret",
+			body: { message: "hello" },
+		});
+
+		expect(workflowData.getWorkflowByRef).toHaveBeenCalledWith({
+			workflowId: "workflow-1",
+			lookup: "id",
+		});
+		expect(workflowData.validateApiKeyForUser).toHaveBeenCalledWith({
+			authorizationHeader: "Bearer wfb_secret",
+			userId: "user-1",
+		});
+		expect(workflowSpecs.isServerlessWorkflow).toHaveBeenCalledWith(
+			workflowDefinition().spec,
+		);
+		expect(workflowData.getRunningWorkflowExecution).toHaveBeenCalledWith(
+			"workflow-1",
+		);
+		expect(runStarter.startWorkflowRun).toHaveBeenCalledWith({
+			workflowId: "workflow-1",
+			triggerData: { message: "hello" },
+			userId: "user-1",
+			triggerSource: "webhook",
+		});
+		expect(result).toEqual({
+			status: "ok",
+			body: {
+				executionId: "exec-new",
+				status: "running",
+			},
+		});
+	});
+
+	it("rejects invalid webhook API keys before duplicate checks", async () => {
+		vi.mocked(workflowData.validateApiKeyForUser).mockResolvedValue({
+			valid: false,
+			error: "Invalid API key",
+			statusCode: 401,
+		});
+
+		const result = await service.startWebhookExecution({
+			workflowId: "workflow-1",
+			authorizationHeader: "Bearer bad",
+			body: { message: "hello" },
+		});
+
+		expect(result).toEqual({
+			status: "error",
+			httpStatus: 401,
+			message: "Invalid API key",
+		});
+		expect(workflowData.getRunningWorkflowExecution).not.toHaveBeenCalled();
+		expect(runStarter.startWorkflowRun).not.toHaveBeenCalled();
+	});
+
+	it("preserves webhook duplicate-run conflict responses", async () => {
+		vi.mocked(workflowData.getRunningWorkflowExecution).mockResolvedValue({
+			id: "exec-running",
+			status: "running",
+		});
+
+		const result = await service.startWebhookExecution({
+			workflowId: "workflow-1",
+			authorizationHeader: "Bearer wfb_secret",
+			body: { message: "hello" },
+		});
+
+		expect(result).toEqual({
+			status: "ok",
+			httpStatus: 409,
+			body: {
+				error: "A workflow execution is already running",
+				existingExecutionId: "exec-running",
+			},
+		});
+		expect(runStarter.startWorkflowRun).not.toHaveBeenCalled();
 	});
 
 	it("raises the default approval event for scoped executions", async () => {
@@ -323,7 +466,7 @@ function workflowDefinition(
 		description: null,
 		userId: "user-1",
 		projectId: "project-1",
-		nodes: [],
+		nodes: [{ data: { type: "trigger", config: { triggerType: "Webhook" } } }],
 		edges: [],
 		specVersion: null,
 		spec: {

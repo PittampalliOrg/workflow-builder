@@ -247,14 +247,24 @@ The first UI-facing route has also moved behind the application service:
   `LISTEN/NOTIFY` implementation is confined to
   `PostgresWorkflowSessionEventNotificationSource` in the Postgres adapter.
 - `src/routes/api/workflows/executions/[executionId]/resume/+server.ts` now
-  loads the source execution, root workspace execution, and current workflow spec
-  through `workflowData`; it still delegates the actual fork/start command to
-  `startWorkflowRun` and preserves Lifecycle Controller ownership checks.
+  delegates resume/fork decisions to
+  `ApplicationWorkflowExecutionControlService.resumeExecution`. The application
+  service loads the source execution, root workspace execution, and current
+  workflow spec through `workflowData`, checks coordinator ownership through a
+  lifecycle port, and starts the fork through a narrow run-starter port. The
+  first run-starter adapter still wraps the canonical `startWorkflowRun` path
+  pending the deeper workflow-start service split.
 - `src/routes/api/workflows/[workflowId]/execute/+server.ts` is now a thin
-  presentation adapter: it scope-checks the workflow through `workflowData` and
-  delegates execution creation, validation, prewarm, Dapr scheduling, scheduler
-  attachment, and start-failure marking to the canonical `startWorkflowRun`
-  command service.
+  presentation adapter: it delegates workspace scope checks, trigger-data
+  normalization, execution creation, validation, prewarm, Dapr scheduling,
+  scheduler attachment, and start-failure marking to
+  `ApplicationWorkflowExecutionControlService.executeWorkflow`, which reaches
+  workflow-data and the canonical starter only through application ports.
+- `src/routes/api/workflows/[workflowId]/webhook/+server.ts` is now a thin CORS
+  presentation adapter: it parses the body/authorization header and delegates
+  workflow lookup, API-key ownership validation, webhook-trigger validation, SW
+  1.0 spec validation, duplicate-running-run checks, and execution start to
+  `ApplicationWorkflowExecutionControlService.startWebhookExecution`.
 - `src/routes/api/workflows/[workflowId]/export/+server.ts` now loads and
   scope-checks workflow definitions through `workflowData`; code emission and
   code-function creation remain behind their existing service boundaries.

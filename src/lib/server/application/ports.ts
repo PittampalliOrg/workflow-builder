@@ -3098,6 +3098,7 @@ export interface WorkflowApprovalEventPort {
 
 export type WorkflowRunStartInput = {
 	workflowId: string;
+	userId?: string;
 	triggerData: Record<string, unknown>;
 	resumeFromNode?: string;
 	seedWorkspaceFrom?: string;
@@ -3116,6 +3117,10 @@ export type WorkflowRunStartResult =
 
 export interface WorkflowRunStarterPort {
 	startWorkflowRun(input: WorkflowRunStartInput): Promise<WorkflowRunStartResult>;
+}
+
+export interface WorkflowSpecValidatorPort {
+	isServerlessWorkflow(spec: unknown): boolean;
 }
 
 export type WorkflowExecutionCoordinatorOwner = {
