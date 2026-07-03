@@ -191,7 +191,7 @@ import {
 	LegacyCompletedWorkflowGoalFinalizer,
 	LegacyGoalCompletionEvaluator,
 } from "$lib/server/application/adapters/internal-goal-control";
-import { LegacyWorkflowConnectionRefSyncPort } from "$lib/server/application/adapters/workflow-connections";
+import { PostgresWorkflowConnectionRefSyncPort } from "$lib/server/application/adapters/workflow-connections";
 import { LegacyWorkflowCodeCheckpointWorkspacePort } from "$lib/server/application/adapters/workflow-code-checkpoints";
 import {
 	LegacyWorkflowCodeFunctionAdapter,
@@ -859,7 +859,7 @@ export function getApplicationAdapters(
 	const getWorkflowDefinitionCommands = () =>
 		(workflowDefinitionCommands ??= new ApplicationWorkflowDefinitionCommandService({
 			workflowData: getWorkflowData(),
-			connectionRefs: new LegacyWorkflowConnectionRefSyncPort(),
+			connectionRefs: new PostgresWorkflowConnectionRefSyncPort(),
 		}));
 	const getWorkflowExecutionControl = () =>
 		(workflowExecutionControl ??= new ApplicationWorkflowExecutionControlService({

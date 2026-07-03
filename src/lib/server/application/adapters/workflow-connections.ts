@@ -1,12 +1,24 @@
 import type { WorkflowConnectionRefSyncPort } from "$lib/server/application/ports";
-import { syncWorkflowConnectionRefs } from "$lib/server/workflow-connections";
+import { eq } from "drizzle-orm";
 
-export class LegacyWorkflowConnectionRefSyncPort implements WorkflowConnectionRefSyncPort {
-	syncWorkflowConnectionRefs(input: {
+import { db } from "$lib/server/db";
+import { workflowConnectionRefs } from "$lib/server/db/schema";
+import { collectWorkflowConnectionRefs } from "$lib/server/workflow-connections";
+
+export class PostgresWorkflowConnectionRefSyncPort implements WorkflowConnectionRefSyncPort {
+	async syncWorkflowConnectionRefs(input: {
 		workflowId: string;
 		nodes: unknown;
 		spec?: unknown;
-	}) {
-		return syncWorkflowConnectionRefs(input.workflowId, input.nodes, input.spec);
+	}): Promise<void> {
+		if (!db) return;
+		const refs = collectWorkflowConnectionRefs(input.workflowId, input.nodes, input.spec);
+
+		await db
+			.delete(workflowConnectionRefs)
+			.where(eq(workflowConnectionRefs.workflowId, input.workflowId));
+		if (refs.length === 0) return;
+
+		await db.insert(workflowConnectionRefs).values(refs);
 	}
 }

@@ -1,6 +1,9 @@
-import { eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { workflowConnectionRefs } from '$lib/server/db/schema';
+export type WorkflowConnectionRef = {
+	workflowId: string;
+	nodeId: string;
+	connectionExternalId: string;
+	pieceName: string;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -45,7 +48,7 @@ function normalizePieceName(value: unknown): string | null {
 }
 
 function addRef(
-	refs: Map<string, { workflowId: string; nodeId: string; connectionExternalId: string; pieceName: string }>,
+	refs: Map<string, WorkflowConnectionRef>,
 	workflowId: string,
 	nodeId: string,
 	connectionExternalId: unknown,
@@ -66,8 +69,8 @@ export function collectWorkflowConnectionRefs(
 	workflowId: string,
 	nodes: unknown,
 	spec?: unknown,
-): Array<{ workflowId: string; nodeId: string; connectionExternalId: string; pieceName: string }> {
-	const refs = new Map<string, { workflowId: string; nodeId: string; connectionExternalId: string; pieceName: string }>();
+): WorkflowConnectionRef[] {
+	const refs = new Map<string, WorkflowConnectionRef>();
 
 	if (Array.isArray(nodes)) {
 		for (const node of nodes) {
@@ -129,18 +132,4 @@ export function collectWorkflowConnectionRefs(
 	}
 
 	return Array.from(refs.values());
-}
-
-export async function syncWorkflowConnectionRefs(
-	workflowId: string,
-	nodes: unknown,
-	spec?: unknown,
-): Promise<void> {
-	if (!db) return;
-	const refs = collectWorkflowConnectionRefs(workflowId, nodes, spec);
-
-	await db.delete(workflowConnectionRefs).where(eq(workflowConnectionRefs.workflowId, workflowId));
-	if (refs.length === 0) return;
-
-	await db.insert(workflowConnectionRefs).values(refs);
 }
