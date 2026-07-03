@@ -108,6 +108,7 @@ import { ApplicationSessionGoalService } from "$lib/server/application/session-g
 import { ApplicationSessionLifecycleService } from "$lib/server/application/session-lifecycle";
 import { ApplicationSessionSandboxService } from "$lib/server/application/session-sandboxes";
 import { ApplicationSessionMcpStatusService } from "$lib/server/application/session-mcp-status";
+import { ApplicationSessionRuntimeAccessService } from "$lib/server/application/session-runtime-access";
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 
@@ -218,6 +219,7 @@ export function getApplicationAdapters(
 	let sessionLifecycle: ApplicationSessionLifecycleService | undefined;
 	let sessionSandboxes: ApplicationSessionSandboxService | undefined;
 	let sessionMcpStatus: ApplicationSessionMcpStatusService | undefined;
+	let sessionRuntimeAccess: ApplicationSessionRuntimeAccessService | undefined;
 	let sessionBrowser: ApplicationSessionBrowserService | undefined;
 	const getDatabase = () => (database ??= requirePostgresDb());
 	const getAgentRuntimes = () =>
@@ -363,6 +365,16 @@ export function getApplicationAdapters(
 			agentConfigs: new RegistrySessionMcpAgentConfigReader(),
 			credentials: new VaultSessionMcpCredentialStatusReader(),
 		}));
+	const getSessionRuntimeAccess = () => {
+		if (sessionRuntimeAccess) return sessionRuntimeAccess;
+		const runtimeStatus = new KubernetesSessionRuntimeStatusReader();
+		sessionRuntimeAccess = new ApplicationSessionRuntimeAccessService({
+			workflowData: getWorkflowData(),
+			pods: runtimeStatus,
+			capabilities: runtimeStatus,
+		});
+		return sessionRuntimeAccess;
+	};
 	const getCodeCheckpoints = () =>
 		(codeCheckpoints ??= new PostgresWorkflowCodeCheckpointStore(getDatabase()));
 	const getEvaluationArtifacts = () =>
@@ -495,6 +507,9 @@ export function getApplicationAdapters(
 		},
 		get sessionMcpStatus() {
 			return getSessionMcpStatus();
+		},
+		get sessionRuntimeAccess() {
+			return getSessionRuntimeAccess();
 		},
 		get agentRuntimeControl() {
 			return getAgentRuntimeControl();

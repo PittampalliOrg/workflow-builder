@@ -3630,6 +3630,25 @@ export type SessionRuntimeComputeReadModel = {
 	requests: SessionRuntimeResourceRequests | null;
 };
 
+export type SessionRuntimePodTarget = {
+	name: string;
+	namespace: string;
+	podIP: string | null;
+	containers: Array<{ name: string; ready: boolean }>;
+};
+
+export interface SessionRuntimePodLocator {
+	getSessionRuntimePod(
+		target: Pick<SessionRuntimeDebugTarget, "appId" | "agentSlug">,
+	): Promise<SessionRuntimePodTarget | null>;
+	getAgentWorkflowHostPod(appId: string): Promise<SessionRuntimePodTarget | null>;
+}
+
+export interface SessionRuntimeCapabilityReader {
+	isShellContainerAllowed(container: string): boolean;
+	hasInteractiveTerminal(runtime: string | null): boolean;
+}
+
 export type SessionRuntimeFlagsReadModel = {
 	agentSlug: string | null;
 	runtimeAppId: string;

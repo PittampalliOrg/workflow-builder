@@ -1,9 +1,8 @@
 import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 
-import { getAgentWorkflowHostPod } from '$lib/server/kube/client';
 import { getApplicationAdapters } from '$lib/server/application';
-import { getRuntimeDescriptor } from '$lib/server/agents/runtime-registry';
+import type { SessionRuntimeAccessResult } from '$lib/server/application/session-runtime-access';
 
 /**
  * Preflight for the CLI-terminal WS proxy (server-prod.js +
@@ -17,21 +16,16 @@ import { getRuntimeDescriptor } from '$lib/server/agents/runtime-registry';
 export const POST: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, 'Authentication required');
 
-	const sessionId = params.id!;
-	const target = await getApplicationAdapters().workflowData.getSessionRuntimeDebugTarget({
-		sessionId,
-		projectId: locals.session.projectId ?? null,
-		userId: locals.session.userId,
-	});
-	if (!target) return error(404, 'Session not found in workspace');
-
-	const descriptor = getRuntimeDescriptor(target.agentRuntime);
-	if (descriptor?.capabilities?.interactiveTerminal !== true) {
-		return error(409, 'Session runtime does not expose an interactive terminal');
-	}
-
-	const pod = await getAgentWorkflowHostPod(target.appId);
-	if (!pod?.podIP) return error(503, 'Agent pod not running');
-
-	return json({ podIp: pod.podIP, port: 8002 });
+	return sessionRuntimeAccessResponse(
+		await getApplicationAdapters().sessionRuntimeAccess.resolveCliTerminal({
+			sessionId: params.id!,
+			projectId: locals.session.projectId ?? null,
+			userId: locals.session.userId,
+		}),
+	);
 };
+
+function sessionRuntimeAccessResponse(result: SessionRuntimeAccessResult) {
+	if (result.status === 'error') return error(result.httpStatus, result.message);
+	return json(result.body);
+}

@@ -1,7 +1,8 @@
 import {
 	browserAgentSandboxWarmPoolName,
+	getAgentWorkflowHostPod as getKubernetesAgentWorkflowHostPod,
 	getSandboxWarmPool,
-	getSessionRuntimePod,
+	getSessionRuntimePod as getKubernetesSessionRuntimePod,
 	kubeApiFetch,
 } from "$lib/server/kube/client";
 import {
@@ -17,7 +18,10 @@ import type {
 	SessionRuntimeComputeReadModel,
 	SessionRuntimeDebugTarget,
 	SessionRuntimeFlagsReadModel,
+	SessionRuntimeCapabilityReader,
 	SessionRuntimeStatusReader,
+	SessionRuntimePodLocator,
+	SessionRuntimePodTarget,
 } from "$lib/server/application/ports";
 
 const SHELLABLE_CONTAINERS = shellableContainers();
@@ -62,15 +66,36 @@ async function readPodRequests(
 }
 
 export class KubernetesSessionRuntimeStatusReader
-	implements SessionRuntimeStatusReader
+	implements
+		SessionRuntimeStatusReader,
+		SessionRuntimePodLocator,
+		SessionRuntimeCapabilityReader
 {
-	async getSessionRuntimeCompute(
-		target: SessionRuntimeDebugTarget,
-	): Promise<SessionRuntimeComputeReadModel> {
-		const pod = await getSessionRuntimePod({
+	async getSessionRuntimePod(
+		target: Pick<SessionRuntimeDebugTarget, "appId" | "agentSlug">,
+	): Promise<SessionRuntimePodTarget | null> {
+		return getKubernetesSessionRuntimePod({
 			runtimeAppId: target.appId,
 			agentSlug: target.agentSlug,
 		});
+	}
+
+	getAgentWorkflowHostPod(appId: string): Promise<SessionRuntimePodTarget | null> {
+		return getKubernetesAgentWorkflowHostPod(appId);
+	}
+
+	isShellContainerAllowed(container: string): boolean {
+		return SHELLABLE_CONTAINERS.has(container);
+	}
+
+	hasInteractiveTerminal(runtime: string | null): boolean {
+		return getRuntimeDescriptor(runtime)?.capabilities?.interactiveTerminal === true;
+	}
+
+	async getSessionRuntimeCompute(
+		target: SessionRuntimeDebugTarget,
+	): Promise<SessionRuntimeComputeReadModel> {
+		const pod = await this.getSessionRuntimePod(target);
 		if (!pod?.name) {
 			return { podName: null, usage: null, requests: null };
 		}
@@ -104,10 +129,7 @@ export class KubernetesSessionRuntimeStatusReader
 		let shellContainers: string[] = [];
 		let browserSidecarEnabled = false;
 		let browserMcpAvailable = false;
-		const livePod = await getSessionRuntimePod({
-			runtimeAppId: target.appId,
-			agentSlug: target.agentSlug,
-		});
+		const livePod = await this.getSessionRuntimePod(target);
 		if (livePod) {
 			if (!pool) phase = "Active";
 			shellContainers = livePod.containers
@@ -128,8 +150,7 @@ export class KubernetesSessionRuntimeStatusReader
 		}
 		const shellAvailable = phase === "Active" && shellContainers.length > 0;
 		const descriptor = getRuntimeDescriptor(target.agentRuntime);
-		const interactiveTerminal =
-			descriptor?.capabilities?.interactiveTerminal === true;
+		const interactiveTerminal = this.hasInteractiveTerminal(target.agentRuntime);
 		const nativeGoalAvailable = runtimeHasNativeGoalHarness(descriptor);
 		const cliLabel = interactiveTerminal
 			? descriptor?.agentMetadataFramework ?? "Agent CLI"
