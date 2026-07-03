@@ -88,6 +88,10 @@ The capacity active-work fleet activity summary now lives in
 `SessionFleetActivityAdapter`; `src/lib/server/sessions/fleet-activity.ts` was
 deleted, and the bounded `sessions`/`session_events` reads are confined to the
 application adapter layer.
+The capacity overview API route now delegates observer loading, ownership
+enrichment, and business-work summary construction to
+`ApplicationCapacityOverviewService`; route-local imports of capacity
+helper modules were removed.
 The internal CLI workspace command route now routes execution lookup,
 CLI-session candidate lookup, file creation, and browser artifact persistence
 through workflow-data.
