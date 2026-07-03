@@ -1,18 +1,15 @@
 import { error, json } from "@sveltejs/kit";
-import { loadCompareData } from "$lib/server/benchmarks/comparison";
+import { getApplicationAdapters } from "$lib/server/application";
 import type { RequestHandler } from "./$types";
 
 export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!locals.session?.userId) error(401, "Authentication required");
-	if (!locals.session.projectId) error(400, "No active workspace");
 
-	const runsParam = url.searchParams.get("runs") ?? "";
-	const runIds = runsParam
-		.split(",")
-		.map((s) => s.trim())
-		.filter(Boolean);
-	if (runIds.length === 0) error(400, "Missing ?runs= parameter");
-
-	const data = await loadCompareData(locals.session.projectId, runIds);
-	return json(data);
+	const result = await getApplicationAdapters().benchmarkCompare.getApiCompare({
+		projectId: locals.session.projectId ?? null,
+		runsParam: url.searchParams.get("runs"),
+	});
+	if (result.status === "no_workspace") error(400, result.message);
+	if (result.status === "bad_request") error(400, result.message);
+	return json(result.body);
 };

@@ -172,6 +172,7 @@ import { ApplicationSessionRuntimeAccessService } from "$lib/server/application/
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
 import { ApplicationBulkLifecycleStopService } from "$lib/server/application/lifecycle-bulk-stop";
 import { ApplicationBenchmarkRunDetailPageService } from "$lib/server/application/benchmark-run-detail";
+import { ApplicationBenchmarkCompareService } from "$lib/server/application/benchmark-compare";
 import { ApplicationCapacityActiveService } from "$lib/server/application/capacity-active";
 import { ApplicationCapacityOverviewService } from "$lib/server/application/capacity-overview";
 import { ApplicationDaprInspectionService } from "$lib/server/application/dapr-inspection";
@@ -334,6 +335,7 @@ export function getApplicationAdapters(
 	let benchmarkRunInstanceDetail:
 		| ApplicationBenchmarkRunInstanceDetailService
 		| undefined;
+	let benchmarkCompare: ApplicationBenchmarkCompareService | undefined;
 	let capacityActive: ApplicationCapacityActiveService | undefined;
 	let capacityOverview: ApplicationCapacityOverviewService | undefined;
 	let daprInspection: ApplicationDaprInspectionService | undefined;
@@ -568,6 +570,10 @@ export function getApplicationAdapters(
 			workflowData: getWorkflowData(),
 			mlflowLinks: new EnvBenchmarkRunInstanceMlflowLinks(),
 		}));
+	const getBenchmarkCompare = () =>
+		(benchmarkCompare ??= new ApplicationBenchmarkCompareService(
+			getBenchmarkRunReads(),
+		));
 	const getCapacityActive = () =>
 		(capacityActive ??= new ApplicationCapacityActiveService({
 			fleetActivity: new SessionFleetActivityAdapter(),
@@ -886,6 +892,9 @@ export function getApplicationAdapters(
 		},
 		get benchmarkRunInstanceDetail() {
 			return getBenchmarkRunInstanceDetail();
+		},
+		get benchmarkCompare() {
+			return getBenchmarkCompare();
 		},
 		get capacityActive() {
 			return getCapacityActive();
