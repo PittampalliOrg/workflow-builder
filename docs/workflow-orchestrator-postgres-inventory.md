@@ -27,6 +27,8 @@ The AI assistant message-history route now lists and deletes persisted chat
 messages through workflow-data.
 The AI assistant build-workflow stream now loads and saves workflow definitions
 through existing workflow-data workflow definition ports.
+The security audit API now loads its aggregated audit stream through a
+workflow-data read model.
 
 ## Strict HTTP Runtime Paths
 
@@ -278,6 +280,10 @@ The first UI-facing route has also moved behind the application service:
   specs through `workflowData.updateWorkflowDefinition`. The route still owns
   the existing SSE generation/validation/execution feedback loop, but no longer
   imports `workflows`, Drizzle, or `$lib/server/db`.
+- `src/routes/api/v1/security/audit/+server.ts` now loads the merged
+  credential-access, project-member, and runtime-config audit stream through
+  workflow-data. The 30-day audit window and source-specific SQL are confined
+  to the application service plus Postgres security-audit adapter.
 - `src/routes/workspaces/[slug]/dev/+page.server.ts`,
   `src/routes/workspaces/[slug]/dev/[executionId]/+page.server.ts`, and the
   public `src/routes/api/dev-environments/**` GET routes now load dev-preview
@@ -652,8 +658,9 @@ The internal piece-execution artifact readback and CLI workspace command routes
 are also clean. The prompt preset, agent skill, and vault resource-usage
 reverse-lookup routes are also clean. The AI assistant message-history route is
 also clean, and the AI assistant build-workflow stream no longer imports direct
-DB modules. The scanned session provisioning, context-usage, control settings/MCP
-status, session detail/title/archive/delete, fork, goal,
+DB modules. The security audit route is also clean. The scanned session
+provisioning, context-usage, control settings/MCP status, session
+detail/title/archive/delete, fork, goal,
 goal-flow, event list/append/detail, runtime-config, config patch commands,
 runtime debug target routes, resources, and event-stream routes are also clean.
 The sandbox-delete route's session read is also clean, while its lifecycle and

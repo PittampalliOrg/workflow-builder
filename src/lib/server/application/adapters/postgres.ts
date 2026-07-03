@@ -34,6 +34,7 @@ import {
 	appConnections,
 	agentSkillRegistry,
 	codeFunctions,
+	credentialAccessLogs,
 	mlflowLineageLinks,
 	agents,
 	agentVersions,
@@ -59,6 +60,7 @@ import {
 	sessions,
 	resourcePromptVersions,
 	resourcePrompts,
+	runtimeConfigAuditLogs,
 	threadGoals,
 	workflowAiMessages,
 	workflowConnectionRefs,
@@ -145,6 +147,7 @@ import type {
 	PieceExecutionReadModel,
 	PieceExecutionRepository,
 	ResourceUsageReadRepository,
+	SecurityAuditReadRepository,
 	ProjectMemberListItem,
 	ProjectMemberRecord,
 	ProjectMembershipRole,
@@ -3541,6 +3544,106 @@ export class PostgresWorkflowAiAssistantMessageRepository
 					eq(workflowAiMessages.userId, userId),
 				),
 			);
+	}
+}
+
+export class PostgresSecurityAuditReadRepository implements SecurityAuditReadRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async getSecurityAudit(input: {
+		projectId?: string | null;
+		since: Date;
+		now: Date;
+		limit: number;
+	}) {
+		const projectId = input.projectId ?? null;
+		const limit = Math.max(1, Math.min(Math.trunc(input.limit || 100), 500));
+
+		const [creds, members, configs] = await Promise.all([
+			this.database
+				.select({
+					id: credentialAccessLogs.id,
+					at: credentialAccessLogs.accessedAt,
+					integration: credentialAccessLogs.integrationType,
+					source: credentialAccessLogs.source,
+					executionId: credentialAccessLogs.executionId,
+					fallbackAttempted: credentialAccessLogs.fallbackAttempted,
+				})
+				.from(credentialAccessLogs)
+				.where(gte(credentialAccessLogs.accessedAt, input.since))
+				.orderBy(desc(credentialAccessLogs.accessedAt))
+				.limit(limit),
+			projectId
+				? this.database
+						.select({
+							id: projectMembers.id,
+							at: projectMembers.createdAt,
+							role: projectMembers.role,
+							userId: users.id,
+							email: users.email,
+							name: users.name,
+						})
+						.from(projectMembers)
+						.innerJoin(users, eq(users.id, projectMembers.userId))
+						.where(
+							and(
+								eq(projectMembers.projectId, projectId),
+								gte(projectMembers.createdAt, input.since),
+							),
+						)
+						.orderBy(desc(projectMembers.createdAt))
+						.limit(50)
+				: Promise.resolve([]),
+			projectId
+				? this.database
+						.select({
+							id: runtimeConfigAuditLogs.id,
+							at: runtimeConfigAuditLogs.createdAt,
+							key: runtimeConfigAuditLogs.configKey,
+							status: runtimeConfigAuditLogs.status,
+							actor: runtimeConfigAuditLogs.userId,
+						})
+						.from(runtimeConfigAuditLogs)
+						.where(
+							and(
+								eq(runtimeConfigAuditLogs.projectId, projectId),
+								gte(runtimeConfigAuditLogs.createdAt, input.since),
+							),
+						)
+						.orderBy(desc(runtimeConfigAuditLogs.createdAt))
+						.limit(50)
+				: Promise.resolve([]),
+		]);
+
+		const events = [
+			...creds.map((row) => ({
+				id: `cred:${row.id}`,
+				at: row.at.toISOString(),
+				kind: "credential.access" as const,
+				summary: `${row.integration} credential resolved via ${row.source}${row.fallbackAttempted ? " (fallback)" : ""}`,
+				executionId: row.executionId,
+			})),
+			...members.map((row) => ({
+				id: `member:${row.id}`,
+				at: row.at.toISOString(),
+				kind: "member.added" as const,
+				summary: `${row.name ?? row.email ?? row.userId} joined as ${row.role}`,
+			})),
+			...configs.map((row) => ({
+				id: `config:${row.id}`,
+				at: row.at.toISOString(),
+				kind: "config.change" as const,
+				summary: `${row.key} updated (${row.status})`,
+				actor: row.actor,
+			})),
+		]
+			.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+			.slice(0, limit);
+
+		return {
+			events,
+			asOf: input.now.toISOString(),
+		};
 	}
 }
 

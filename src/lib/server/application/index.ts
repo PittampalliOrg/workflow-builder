@@ -20,6 +20,7 @@ import {
 	PostgresPieceCatalogRepository,
 	PostgresResourceUsageReadRepository,
 	PostgresSandboxInventoryRepository,
+	PostgresSecurityAuditReadRepository,
 	PostgresSettingsRepository,
 	PostgresTraceLineageStore,
 	PostgresUsageReportingRepository,
@@ -115,6 +116,7 @@ export function getApplicationAdapters(
 	let workflowMonitorReads: PostgresWorkflowMonitorReadRepository | undefined;
 	let resourceUsages: PostgresResourceUsageReadRepository | undefined;
 	let aiAssistantMessages: PostgresWorkflowAiAssistantMessageRepository | undefined;
+	let securityAudit: PostgresSecurityAuditReadRepository | undefined;
 	let workflowExecutions: PostgresWorkflowExecutionRepository | undefined;
 	let workflowFiles: PostgresWorkflowFileStore | undefined;
 	let sandboxInventory: PostgresSandboxInventoryRepository | undefined;
@@ -187,6 +189,8 @@ export function getApplicationAdapters(
 		(resourceUsages ??= new PostgresResourceUsageReadRepository(getDatabase()));
 	const getAiAssistantMessages = () =>
 		(aiAssistantMessages ??= new PostgresWorkflowAiAssistantMessageRepository(getDatabase()));
+	const getSecurityAudit = () =>
+		(securityAudit ??= new PostgresSecurityAuditReadRepository(getDatabase()));
 	const getWorkflowExecutions = () =>
 		(workflowExecutions ??= new PostgresWorkflowExecutionRepository(getDatabase()));
 	const getWorkflowFiles = () =>
@@ -258,6 +262,7 @@ export function getApplicationAdapters(
 			workflowMonitorReads: getWorkflowMonitorReads(),
 			resourceUsages: getResourceUsages(),
 			aiAssistantMessages: getAiAssistantMessages(),
+			securityAudit: getSecurityAudit(),
 			workflowExecutions: getWorkflowExecutions(),
 			sessions: getSessions(),
 			sessionProvisioning: getSessionProvisioning(),

@@ -538,6 +538,34 @@ export interface WorkflowAiAssistantMessageRepository {
 	}): Promise<void>;
 }
 
+export type SecurityAuditEventKind =
+	| "credential.access"
+	| "member.added"
+	| "config.change";
+
+export type SecurityAuditEventReadModel = {
+	id: string;
+	at: string;
+	kind: SecurityAuditEventKind;
+	summary: string;
+	executionId?: string | null;
+	actor?: string | null;
+};
+
+export type SecurityAuditReadModel = {
+	events: SecurityAuditEventReadModel[];
+	asOf: string;
+};
+
+export interface SecurityAuditReadRepository {
+	getSecurityAudit(input: {
+		projectId?: string | null;
+		since: Date;
+		now: Date;
+		limit: number;
+	}): Promise<SecurityAuditReadModel>;
+}
+
 export type CreateWorkflowDefinitionInput = {
 	name: string;
 	nodes: unknown[];
@@ -3531,6 +3559,10 @@ export interface WorkflowDataService {
 		workflowId: string;
 		userId: string;
 	}): Promise<void>;
+	getSecurityAudit(input: {
+		projectId?: string | null;
+		now?: Date;
+	}): Promise<SecurityAuditReadModel>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;
 	}): Promise<DevPreviewHubReadModel>;

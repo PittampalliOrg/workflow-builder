@@ -23,6 +23,7 @@ import type {
 	SandboxInventoryRepository,
 	SandboxRuntimeInventory,
 	CodeFunctionCatalogRepository,
+	SecurityAuditReadRepository,
 	SessionAgentConfigCommandPort,
 	SessionEventLog,
 	SessionExperimentAgentStore,
@@ -1329,6 +1330,7 @@ function makeService(options: {
 	workflowMonitorReads?: WorkflowMonitorReadRepository;
 	resourceUsages?: ResourceUsageReadRepository;
 	aiAssistantMessages?: WorkflowAiAssistantMessageRepository;
+	securityAudit?: SecurityAuditReadRepository;
 	pieceExecutions?: PieceExecutionRepository;
 	browserArtifacts?: WorkflowBrowserArtifactStore;
 	sessions?: SessionRepository;
@@ -1390,6 +1392,7 @@ function makeService(options: {
 		workflowMonitorReads: options.workflowMonitorReads,
 		resourceUsages: options.resourceUsages,
 		aiAssistantMessages: options.aiAssistantMessages,
+		securityAudit: options.securityAudit,
 		workflowExecutions,
 		sessionEvents: options.sessionEvents,
 		sessionRuntimeConfigs:
@@ -6288,6 +6291,49 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(aiAssistantMessages.deleteMessages).toHaveBeenCalledWith({
 			workflowId: "workflow-1",
 			userId: "user-1",
+		});
+	});
+
+	it("loads security audit events through the workflow-data port", async () => {
+		const now = new Date("2026-07-03T12:00:00.000Z");
+		const securityAudit: SecurityAuditReadRepository = {
+			getSecurityAudit: vi.fn(async () => ({
+				events: [
+					{
+						id: "cred:access-1",
+						at: "2026-07-03T11:00:00.000Z",
+						kind: "credential.access" as const,
+						summary: "github credential resolved via reference_forwarded",
+						executionId: "exec-1",
+					},
+				],
+				asOf: now.toISOString(),
+			})),
+		};
+		const { service } = makeService({ securityAudit });
+
+		await expect(
+			service.getSecurityAudit({
+				projectId: "project-1",
+				now,
+			}),
+		).resolves.toEqual({
+			events: [
+				{
+					id: "cred:access-1",
+					at: "2026-07-03T11:00:00.000Z",
+					kind: "credential.access",
+					summary: "github credential resolved via reference_forwarded",
+					executionId: "exec-1",
+				},
+			],
+			asOf: now.toISOString(),
+		});
+		expect(securityAudit.getSecurityAudit).toHaveBeenCalledWith({
+			projectId: "project-1",
+			since: new Date("2026-06-03T12:00:00.000Z"),
+			now,
+			limit: 100,
 		});
 	});
 

@@ -152,6 +152,7 @@ import type {
 	UpsertTraceLineageLinksInput,
 	RuntimeRegistryReader,
 	ResourceUsageReadRepository,
+	SecurityAuditReadRepository,
 	WorkflowAiAssistantMessageRepository,
 	WorkspaceSessionStore,
 	ServiceGraphPickerOptions,
@@ -783,6 +784,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			workflowMonitorReads?: WorkflowMonitorReadRepository;
 			resourceUsages?: ResourceUsageReadRepository;
 			aiAssistantMessages?: WorkflowAiAssistantMessageRepository;
+			securityAudit?: SecurityAuditReadRepository;
 			workflowExecutions: WorkflowExecutionRepository;
 			sessions?: SessionRepository;
 			sessionProvisioning?: SessionProvisioningReader;
@@ -921,6 +923,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("AI assistant message repository not configured");
 		}
 		return this.deps.aiAssistantMessages;
+	}
+
+	private requireSecurityAudit(): SecurityAuditReadRepository {
+		if (!this.deps.securityAudit) {
+			throw new Error("Security audit read repository not configured");
+		}
+		return this.deps.securityAudit;
 	}
 
 	private requireSessionRuntimeConfigs(): SessionRuntimeConfigReader {
@@ -3691,6 +3700,17 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	deleteAiAssistantMessages(input: { workflowId: string; userId: string }) {
 		return this.requireAiAssistantMessages().deleteMessages(input);
+	}
+
+	getSecurityAudit(input: { projectId?: string | null; now?: Date }) {
+		const now = input.now ?? new Date();
+		const since = new Date(now.getTime() - 30 * 86_400_000);
+		return this.requireSecurityAudit().getSecurityAudit({
+			projectId: input.projectId ?? null,
+			since,
+			now,
+			limit: 100,
+		});
 	}
 
 	async getDevPreviewHubReadModel(input: { projectId?: string | null }) {
