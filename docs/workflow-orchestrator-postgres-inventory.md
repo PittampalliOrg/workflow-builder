@@ -402,12 +402,12 @@ services:
   events through `ApplicationSandboxEventsService`. The shared session-event
   query is confined to `PostgresSandboxAgentEventReadPort` in the application
   adapter layer.
-- Direct DB/Dapr/ClickHouse access for execution status/SSE snapshots is now
-  confined to
-  `src/lib/server/application/adapters/execution-read-model.ts` behind
-  `LegacyWorkflowExecutionReadModelPort`; splitting that adapter into narrower
-  workflow-data, runtime-status, artifact, and trace ports remains the next
-  read-model portability slice.
+- Execution status/SSE snapshots are now built by
+  `ApplicationWorkflowExecutionReadModelService`. Persistence reads/writes flow
+  through workflow-data ports, Dapr runtime status is behind
+  `DaprWorkflowRuntimeStatusPort`, and trace extraction is injected as an
+  application dependency. The old mixed DB/Dapr/ClickHouse execution read-model
+  adapter has been removed.
 - `src/routes/api/workflows/executions/[executionId]/resume/+server.ts` now
   delegates resume/fork decisions to
   `ApplicationWorkflowExecutionControlService.resumeExecution`. The application

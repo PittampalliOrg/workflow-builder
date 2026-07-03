@@ -43,8 +43,16 @@ describe("getExecutionSandboxPreviewInfo", () => {
 				{
 					workspaceRef: "workspace-1",
 					workflowExecutionId: "exec-1",
+					durableInstanceId: null,
+					name: "workspace-sandbox",
 					rootPath: "/sandbox/workspaces/exec-1",
+					clonePath: null,
+					backend: "openshell" as const,
+					enabledTools: [],
+					requireReadBeforeWrite: false,
+					commandTimeoutMs: 30000,
 					status: "active" as const,
+					lastError: null,
 					sandboxState: {
 						workingDirectory: "/sandbox/workspaces/exec-1/repo",
 						details: {
@@ -53,6 +61,9 @@ describe("getExecutionSandboxPreviewInfo", () => {
 						},
 					},
 					createdAt: new Date("2026-07-03T00:00:00.000Z"),
+					updatedAt: new Date("2026-07-03T00:00:00.000Z"),
+					lastAccessedAt: new Date("2026-07-03T00:00:00.000Z"),
+					cleanedAt: null,
 				},
 			]),
 		};

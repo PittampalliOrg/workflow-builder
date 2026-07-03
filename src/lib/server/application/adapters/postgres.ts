@@ -233,6 +233,7 @@ import type {
 	WorkflowBrowserArtifactRecord,
 	WorkflowBrowserArtifactStore,
 	WorkflowBrowserCaptureStepInput,
+	WorkflowExecutionAgentRunRecord,
 	WorkflowPlanArtifactInput,
 	WorkflowPlanArtifactRecord,
 	WorkflowPlanArtifactStore,
@@ -5887,6 +5888,27 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			.orderBy(asc(sessionEvents.sequence));
 	}
 
+	async listRecentAgentEventsByExecutionId(input: {
+		executionId: string;
+		limit: number;
+	}) {
+		const rows = await this.database
+			.select({
+				id: sessionEvents.sequence,
+				sessionId: sessionEvents.sessionId,
+				type: sessionEvents.type,
+				sourceEventId: sessionEvents.sourceEventId,
+				data: sessionEvents.data,
+				createdAt: sessionEvents.createdAt,
+			})
+			.from(sessionEvents)
+			.innerJoin(sessions, eq(sessions.id, sessionEvents.sessionId))
+			.where(eq(sessions.workflowExecutionId, input.executionId))
+			.orderBy(desc(sessionEvents.sequence))
+			.limit(Math.max(1, Math.min(input.limit, 500)));
+		return rows.reverse();
+	}
+
 	async listAgentEventsByExecutionIdAfter(input: {
 		executionId: string;
 		afterEventId: number;
@@ -6181,31 +6203,58 @@ export class PostgresWorkspaceSessionStore implements WorkspaceSessionStore {
 	async listWorkflowWorkspaceSessionsByExecutionId(input: {
 		executionId: string;
 		limit?: number;
+		order?: "asc" | "desc";
 	}): Promise<WorkflowWorkspaceSessionRecord[]> {
 		const rows = await this.database
 			.select({
 				workspaceRef: workflowWorkspaceSessions.workspaceRef,
 				workflowExecutionId: workflowWorkspaceSessions.workflowExecutionId,
+				durableInstanceId: workflowWorkspaceSessions.durableInstanceId,
+				name: workflowWorkspaceSessions.name,
 				rootPath: workflowWorkspaceSessions.rootPath,
+				clonePath: workflowWorkspaceSessions.clonePath,
+				backend: workflowWorkspaceSessions.backend,
+				enabledTools: workflowWorkspaceSessions.enabledTools,
+				requireReadBeforeWrite: workflowWorkspaceSessions.requireReadBeforeWrite,
+				commandTimeoutMs: workflowWorkspaceSessions.commandTimeoutMs,
 				status: workflowWorkspaceSessions.status,
+				lastError: workflowWorkspaceSessions.lastError,
 				sandboxState: workflowWorkspaceSessions.sandboxState,
 				createdAt: workflowWorkspaceSessions.createdAt,
+				updatedAt: workflowWorkspaceSessions.updatedAt,
+				lastAccessedAt: workflowWorkspaceSessions.lastAccessedAt,
+				cleanedAt: workflowWorkspaceSessions.cleanedAt,
 			})
 			.from(workflowWorkspaceSessions)
 			.where(eq(workflowWorkspaceSessions.workflowExecutionId, input.executionId))
-			.orderBy(desc(workflowWorkspaceSessions.createdAt))
+			.orderBy(
+				input.order === "asc"
+					? asc(workflowWorkspaceSessions.createdAt)
+					: desc(workflowWorkspaceSessions.createdAt),
+			)
 			.limit(Math.max(1, Math.min(input.limit ?? 8, 50)));
 
 		return rows.map((row) => ({
 			workspaceRef: row.workspaceRef,
 			workflowExecutionId: row.workflowExecutionId,
+			durableInstanceId: row.durableInstanceId,
+			name: row.name,
 			rootPath: row.rootPath,
+			clonePath: row.clonePath,
+			backend: row.backend as WorkflowWorkspaceSessionRecord["backend"],
+			enabledTools: Array.isArray(row.enabledTools) ? row.enabledTools : [],
+			requireReadBeforeWrite: row.requireReadBeforeWrite,
+			commandTimeoutMs: row.commandTimeoutMs,
 			status: row.status as WorkflowWorkspaceSessionRecord["status"],
+			lastError: row.lastError,
 			sandboxState:
 				typeof row.sandboxState === "object" && row.sandboxState !== null
 					? (row.sandboxState as Record<string, unknown>)
 					: null,
 			createdAt: row.createdAt,
+			updatedAt: row.updatedAt,
+			lastAccessedAt: row.lastAccessedAt,
+			cleanedAt: row.cleanedAt,
 		}));
 	}
 
@@ -6305,6 +6354,34 @@ export class PostgresWorkflowAgentRunStore implements WorkflowAgentRunStore {
 		}
 
 		return { id: input.id, status: input.status };
+	}
+
+	async listByWorkflowExecutionId(
+		workflowExecutionId: string,
+	): Promise<WorkflowExecutionAgentRunRecord[]> {
+		const rows = await this.database
+			.select()
+			.from(workflowAgentRuns)
+			.where(eq(workflowAgentRuns.workflowExecutionId, workflowExecutionId))
+			.orderBy(asc(workflowAgentRuns.createdAt));
+		return rows.map((row) => ({
+			id: row.id,
+			workflowExecutionId: row.workflowExecutionId,
+			workflowId: row.workflowId,
+			nodeId: row.nodeId,
+			mode: row.mode,
+			status: row.status,
+			agentWorkflowId: row.agentWorkflowId,
+			daprInstanceId: row.daprInstanceId,
+			parentExecutionId: row.parentExecutionId,
+			workspaceRef: row.workspaceRef ?? null,
+			artifactRef: row.artifactRef ?? null,
+			result: (row.result as Record<string, unknown> | null) ?? null,
+			error: row.error ?? null,
+			createdAt: row.createdAt,
+			updatedAt: row.updatedAt,
+			completedAt: row.completedAt,
+		}));
 	}
 }
 

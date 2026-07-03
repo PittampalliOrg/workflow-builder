@@ -3009,6 +3009,10 @@ export interface WorkflowExecutionRepository {
 	listAgentEventsByExecutionId(
 		executionId: string,
 	): Promise<WorkflowExecutionAgentEventRecord[]>;
+	listRecentAgentEventsByExecutionId(input: {
+		executionId: string;
+		limit: number;
+	}): Promise<WorkflowExecutionAgentEventRecord[]>;
 	listAgentEventsByExecutionIdAfter(input: {
 		executionId: string;
 		afterEventId: number;
@@ -3215,10 +3219,21 @@ export type UpsertWorkspaceSessionInput = {
 export type WorkflowWorkspaceSessionRecord = {
 	workspaceRef: string;
 	workflowExecutionId: string | null;
+	durableInstanceId: string | null;
+	name: string;
 	rootPath: string | null;
+	clonePath: string | null;
+	backend: WorkspaceSessionBackend;
+	enabledTools: string[];
+	requireReadBeforeWrite: boolean;
+	commandTimeoutMs: number;
 	status: WorkspaceSessionStatus;
+	lastError: string | null;
 	sandboxState: Record<string, unknown> | null;
 	createdAt: Date;
+	updatedAt: Date;
+	lastAccessedAt: Date;
+	cleanedAt: Date | null;
 };
 
 export interface WorkspaceSessionStore {
@@ -3228,6 +3243,7 @@ export interface WorkspaceSessionStore {
 	listWorkflowWorkspaceSessionsByExecutionId(input: {
 		executionId: string;
 		limit?: number;
+		order?: "asc" | "desc";
 	}): Promise<WorkflowWorkspaceSessionRecord[]>;
 	markWorkflowWorkspaceSessionCleaned(input: {
 		workspaceRef: string;
@@ -3264,6 +3280,25 @@ export type UpdateWorkflowAgentRunLifecycleInput = {
 	eventPublished?: boolean;
 };
 
+export type WorkflowExecutionAgentRunRecord = {
+	id: string;
+	workflowExecutionId: string;
+	workflowId: string;
+	nodeId: string;
+	mode: WorkflowAgentRunMode;
+	status: WorkflowAgentRunStatus;
+	agentWorkflowId: string;
+	daprInstanceId: string;
+	parentExecutionId: string;
+	workspaceRef: string | null;
+	artifactRef: string | null;
+	result: Record<string, unknown> | null;
+	error: string | null;
+	createdAt: Date;
+	updatedAt: Date;
+	completedAt: Date | null;
+};
+
 export interface WorkflowAgentRunStore {
 	upsertScheduledAgentRun(
 		input: UpsertWorkflowAgentRunScheduledInput,
@@ -3271,6 +3306,9 @@ export interface WorkflowAgentRunStore {
 	updateAgentRunLifecycle(
 		input: UpdateWorkflowAgentRunLifecycleInput,
 	): Promise<{ id: string; status: WorkflowAgentRunStatus }>;
+	listByWorkflowExecutionId(
+		workflowExecutionId: string,
+	): Promise<WorkflowExecutionAgentRunRecord[]>;
 }
 
 export type WorkflowPlanArtifactStatus =
@@ -3488,6 +3526,22 @@ export interface WorkflowExecutionReadModelPort {
 		model: unknown,
 		options: { compact: boolean; includeAgentEvents: boolean },
 	): Record<string, unknown>;
+}
+
+export type WorkflowRuntimeStatusSnapshot = {
+	runtimeStatus: string | null;
+	phase: string | null;
+	progress: number | null;
+	currentNodeId: string | null;
+	currentNodeName: string | null;
+	traceId: string | null;
+	outputs: unknown;
+	error: string | null;
+	completedAt: string | null;
+};
+
+export interface WorkflowRuntimeStatusPort {
+	getWorkflowStatus(instanceId: string): Promise<WorkflowRuntimeStatusSnapshot | null>;
 }
 
 export interface SandboxAgentEventReadPort {
@@ -5482,6 +5536,10 @@ export interface WorkflowDataService {
 	listExecutionAgentEvents(
 		executionId: string,
 	): Promise<WorkflowExecutionAgentEventRecord[]>;
+	listRecentExecutionAgentEvents(input: {
+		executionId: string;
+		limit: number;
+	}): Promise<WorkflowExecutionAgentEventRecord[]>;
 	listExecutionAgentEventsAfter(input: {
 		executionId: string;
 		afterEventId: number;
@@ -5650,6 +5708,7 @@ export interface WorkflowDataService {
 	listWorkflowWorkspaceSessionsByExecutionId(input: {
 		executionId: string;
 		limit?: number;
+		order?: "asc" | "desc";
 	}): Promise<WorkflowWorkspaceSessionRecord[]>;
 	markWorkflowWorkspaceSessionCleaned(input: {
 		workspaceRef: string;
@@ -5660,6 +5719,9 @@ export interface WorkflowDataService {
 	updateAgentRunLifecycle(
 		input: UpdateWorkflowAgentRunLifecycleInput,
 	): Promise<{ id: string; status: WorkflowAgentRunStatus }>;
+	listWorkflowAgentRunsByExecutionId(
+		workflowExecutionId: string,
+	): Promise<WorkflowExecutionAgentRunRecord[]>;
 	upsertPlanArtifact(input: WorkflowPlanArtifactInput): Promise<{
 		artifactRef: string;
 		storageBackend: "workflow_plan_artifacts";

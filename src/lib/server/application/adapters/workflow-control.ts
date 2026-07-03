@@ -2,16 +2,11 @@ import type {
 	WorkflowExecutionCoordinatorOwnerPort,
 	WorkflowExecutionLifecycleControllerPort,
 	WorkflowExecutionLifecycleStopMode,
-	WorkflowExecutionReadModelPort,
 	WorkflowSpecValidatorPort,
 	WorkflowRunStarterPort,
 	WorkflowRunStartInput,
 	WorkflowRunStartResult,
 } from "$lib/server/application/ports";
-import {
-	loadExecutionReadModel,
-	serializeExecutionReadModel,
-} from "$lib/server/application/adapters/execution-read-model";
 import {
 	confirmDurableStop,
 	inspectDurableRun,
@@ -101,30 +96,5 @@ export class LifecycleWorkflowExecutionControllerPort
 
 	confirmExecutionStop(executionId: string) {
 		return confirmDurableStop({ kind: "workflowExecution", id: executionId });
-	}
-}
-
-export class LegacyWorkflowExecutionReadModelPort
-	implements WorkflowExecutionReadModelPort
-{
-	loadExecutionReadModel(input: {
-		executionId: string;
-		refreshRuntime: boolean;
-		includeAgentEvents: boolean;
-	}) {
-		return loadExecutionReadModel(input.executionId, {
-			refreshRuntime: input.refreshRuntime,
-			includeAgentEvents: input.includeAgentEvents,
-		});
-	}
-
-	serializeExecutionReadModel(
-		model: unknown,
-		options: { compact: boolean; includeAgentEvents: boolean },
-	) {
-		return serializeExecutionReadModel(model as never, options) as unknown as Record<
-			string,
-			unknown
-		>;
 	}
 }

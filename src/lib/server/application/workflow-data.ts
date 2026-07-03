@@ -4885,6 +4885,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.workflowExecutions.listAgentEventsByExecutionId(executionId);
 	}
 
+	listRecentExecutionAgentEvents(input: { executionId: string; limit: number }) {
+		return this.deps.workflowExecutions.listRecentAgentEventsByExecutionId(input);
+	}
+
 	listExecutionAgentEventsAfter(input: { executionId: string; afterEventId: number }) {
 		return this.deps.workflowExecutions.listAgentEventsByExecutionIdAfter(input);
 	}
@@ -5507,6 +5511,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	listWorkflowWorkspaceSessionsByExecutionId(input: {
 		executionId: string;
 		limit?: number;
+		order?: "asc" | "desc";
 	}) {
 		return this.deps.workspaceSessions.listWorkflowWorkspaceSessionsByExecutionId(
 			input,
@@ -5523,6 +5528,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	updateAgentRunLifecycle(input: UpdateWorkflowAgentRunLifecycleInput) {
 		return this.deps.agentRuns.updateAgentRunLifecycle(input);
+	}
+
+	listWorkflowAgentRunsByExecutionId(workflowExecutionId: string) {
+		return this.deps.agentRuns.listByWorkflowExecutionId(workflowExecutionId);
 	}
 
 	upsertPlanArtifact(input: WorkflowPlanArtifactInput) {

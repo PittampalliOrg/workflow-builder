@@ -469,6 +469,7 @@ function fakeWorkflowExecutions(): WorkflowExecutionRepository {
 		listSessionIdsByExecutionId: vi.fn(async () => ["session-1"]),
 		countActiveTriggeredRuns: vi.fn(async () => 0),
 		listAgentEventsByExecutionId: vi.fn(async () => []),
+		listRecentAgentEventsByExecutionId: vi.fn(async () => []),
 		listAgentEventsByExecutionIdAfter: vi.fn(async () => []),
 	};
 }
@@ -8413,6 +8414,7 @@ describe("ApplicationWorkflowDataService", () => {
 				id: "agent-run-1",
 				status: "completed" as const,
 			})),
+			listByWorkflowExecutionId: vi.fn(async () => []),
 		} satisfies WorkflowAgentRunStore;
 		const service = new ApplicationWorkflowDataService({
 			workflowDefinitions: makeService({}).workflowDefinitions,
@@ -8461,6 +8463,10 @@ describe("ApplicationWorkflowDataService", () => {
 			status: "completed",
 			result: { ok: true },
 		});
+		await expect(
+			service.listWorkflowAgentRunsByExecutionId("exec-1"),
+		).resolves.toEqual([]);
+		expect(agentRuns.listByWorkflowExecutionId).toHaveBeenCalledWith("exec-1");
 	});
 
 	it("delegates plan artifacts and OTel trace lineage to their ports", async () => {
@@ -8614,6 +8620,7 @@ describe("ApplicationWorkflowDataService", () => {
 			listSessionIdsByExecutionId: vi.fn(async () => ["session-1"]),
 			countActiveTriggeredRuns: vi.fn(async () => 0),
 			listAgentEventsByExecutionId: vi.fn(async () => []),
+			listRecentAgentEventsByExecutionId: vi.fn(async () => []),
 			listAgentEventsByExecutionIdAfter: vi.fn(async () => []),
 		} satisfies WorkflowExecutionRepository;
 		const sessions = fakeSessions();

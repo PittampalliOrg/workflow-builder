@@ -215,10 +215,21 @@ function sampleWorkspaceSession(
   return {
     workspaceRef: "workspace-1",
     workflowExecutionId: "exec-1",
+    durableInstanceId: null,
+    name: "workspace-sandbox",
     rootPath: "/sandbox",
+    clonePath: null,
+    backend: "openshell",
+    enabledTools: [],
+    requireReadBeforeWrite: false,
+    commandTimeoutMs: 30000,
     status: "active",
+    lastError: null,
     sandboxState: null,
     createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+    lastAccessedAt: new Date("2026-01-01T00:00:00Z"),
+    cleanedAt: null,
     ...overrides,
   };
 }

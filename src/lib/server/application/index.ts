@@ -188,11 +188,11 @@ import {
 } from "$lib/server/application/adapters/session-mcp";
 import {
 	LegacyWorkflowRunStarterPort,
-	LegacyWorkflowExecutionReadModelPort,
 	LegacyWorkflowSpecValidatorPort,
 	LifecycleWorkflowExecutionControllerPort,
 	LifecycleWorkflowExecutionCoordinatorOwnerPort,
 } from "$lib/server/application/adapters/workflow-control";
+import { DaprWorkflowRuntimeStatusPort } from "$lib/server/application/adapters/workflow-runtime-status";
 import { PostgresLifecycleCoordinatorOwnerStore } from "$lib/server/application/adapters/lifecycle-ownership";
 import {
 	LegacyTriggeredRunAdmissionPort,
@@ -297,6 +297,7 @@ import { ApplicationWorkflowExecutionSessionsService } from "$lib/server/applica
 import { ApplicationWorkflowExecutionSpecDiffService } from "$lib/server/application/workflow-execution-spec-diff";
 import { ApplicationWorkflowExecutionWorkspaceService } from "$lib/server/application/workflow-execution-workspace";
 import { ApplicationWorkflowExecutionStreamService } from "$lib/server/application/workflow-execution-stream";
+import { ApplicationWorkflowExecutionReadModelService } from "$lib/server/application/workflow-execution-read-model";
 import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/application/workflow-code-checkpoints";
 import { ApplicationWorkflowCodeVersionService } from "$lib/server/application/workflow-code-versions";
 import { ApplicationWorkflowCodeVersionPromotionService } from "$lib/server/application/workflow-code-version-promotion";
@@ -522,6 +523,9 @@ export function getApplicationAdapters(
 		| undefined;
 	let workflowExecutionStream:
 		| ApplicationWorkflowExecutionStreamService
+		| undefined;
+	let workflowExecutionReadModels:
+		| ApplicationWorkflowExecutionReadModelService
 		| undefined;
 	let workflowBrowserArtifacts:
 		| ApplicationWorkflowBrowserArtifactsService
@@ -985,7 +989,7 @@ export function getApplicationAdapters(
 				approvalEvents: new DaprWorkflowApprovalEventPort(),
 				coordinatorOwners: new LifecycleWorkflowExecutionCoordinatorOwnerPort(),
 				executionLifecycle: new LifecycleWorkflowExecutionControllerPort(),
-				executionReadModels: new LegacyWorkflowExecutionReadModelPort(),
+				executionReadModels: getWorkflowExecutionReadModels(),
 				runStarter: new LegacyWorkflowRunStarterPort(),
 				workflowSpecs: new LegacyWorkflowSpecValidatorPort(),
 			}));
@@ -1043,10 +1047,17 @@ export function getApplicationAdapters(
 				workflowData: getWorkflowData(),
 				workspace: new JuiceFsWorkflowExecutionWorkspaceAdapter(),
 			}));
+	const getWorkflowExecutionReadModels = () =>
+		(workflowExecutionReadModels ??=
+			new ApplicationWorkflowExecutionReadModelService({
+				workflowData: getWorkflowData(),
+				runtimeStatus: new DaprWorkflowRuntimeStatusPort(),
+				traceExtractor: extractExecutionTraceIds,
+			}));
 	const getWorkflowExecutionStream = () =>
 		(workflowExecutionStream ??= new ApplicationWorkflowExecutionStreamService({
 			workflowData: getWorkflowData(),
-			executionReadModels: new LegacyWorkflowExecutionReadModelPort(),
+			executionReadModels: getWorkflowExecutionReadModels(),
 		}));
 	const getWorkflowBrowserArtifacts = () =>
 		(workflowBrowserArtifacts ??=
