@@ -195,6 +195,73 @@ describe("ApplicationWorkflowDefinitionCommandService", () => {
 		});
 		expect(workflowData.updateWorkflowDefinition).not.toHaveBeenCalled();
 	});
+
+	it("returns the latest published workflow version projection", async () => {
+		workflowData.getWorkflowByRef.mockResolvedValueOnce({
+			...workflowDefinition(),
+			spec: {
+				metadata: {
+					publishedRuntime: {
+						revisions: [
+							{
+								version: "pub_1",
+								publishedAt: "2026-01-01T00:00:00.000Z",
+								nodes: [{ id: "n1" }],
+								edges: [],
+								name: "First",
+								description: "first version",
+							},
+							{
+								version: "pub_2",
+								publishedAt: "2026-01-02T00:00:00.000Z",
+								nodes: [{ id: "n2" }],
+								edges: [],
+								name: "Second",
+								description: "second version",
+							},
+						],
+					},
+				},
+			},
+		});
+
+		await expect(
+			service.getPublishedWorkflowVersion({
+				workflowId: "wf-1",
+				version: "latest",
+			}),
+		).resolves.toEqual({
+			status: "ok",
+			body: {
+				workflowId: "wf-1",
+				version: "pub_2",
+				publishedAt: "2026-01-02T00:00:00.000Z",
+				definition: {
+					name: "Second",
+					description: "second version",
+					nodes: [{ id: "n2" }],
+					edges: [],
+				},
+				revisions: [
+					{ version: "pub_1", publishedAt: "2026-01-01T00:00:00.000Z" },
+					{ version: "pub_2", publishedAt: "2026-01-02T00:00:00.000Z" },
+				],
+			},
+		});
+	});
+
+	it("returns not found when a published workflow version is missing", async () => {
+		await expect(
+			service.getPublishedWorkflowVersion({
+				workflowId: "wf-1",
+				version: "missing",
+			}),
+		).resolves.toEqual({
+			status: "error",
+			httpStatus: 404,
+			body: "No published versions found",
+		});
+	});
 });
 
 function workflowDefinition(): WorkflowDefinition {

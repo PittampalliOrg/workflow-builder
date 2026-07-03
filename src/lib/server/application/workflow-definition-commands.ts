@@ -190,6 +190,76 @@ export class ApplicationWorkflowDefinitionCommandService {
 
 		return { status: "ok", body: updated };
 	}
+
+	async getPublishedWorkflowVersion(input: {
+		workflowId: string;
+		version: string;
+	}): Promise<WorkflowDefinitionCommandResult> {
+		const workflow = await this.deps.workflowData.getWorkflowByRef({
+			workflowId: input.workflowId,
+			lookup: "id",
+		});
+		if (!workflow) {
+			return { status: "error", httpStatus: 404, body: "Workflow not found" };
+		}
+
+		const revisions = publishedRevisionsFromSpec(workflow.spec);
+		if (revisions.length === 0) {
+			return {
+				status: "error",
+				httpStatus: 404,
+				body: "No published versions found",
+			};
+		}
+
+		const revision =
+			input.version === "latest"
+				? revisions[revisions.length - 1]
+				: revisions.find((candidate) => candidate.version === input.version);
+		if (!revision) {
+			return {
+				status: "error",
+				httpStatus: 404,
+				body: `Version "${input.version}" not found`,
+			};
+		}
+
+		return {
+			status: "ok",
+			body: {
+				workflowId: workflow.id,
+				version: revision.version,
+				publishedAt: revision.publishedAt,
+				definition: {
+					name: revision.name,
+					description: revision.description,
+					nodes: revision.nodes,
+					edges: revision.edges,
+				},
+				revisions: revisions.map((item) => ({
+					version: item.version,
+					publishedAt: item.publishedAt,
+				})),
+			},
+		};
+	}
+}
+
+type PublishedWorkflowRevision = {
+	version: string;
+	publishedAt: string;
+	nodes: unknown[];
+	edges: unknown[];
+	name: string;
+	description?: string;
+};
+
+function publishedRevisionsFromSpec(spec: unknown): PublishedWorkflowRevision[] {
+	const metadata = asRecord(asRecord(spec).metadata);
+	const publishedRuntime = asRecord(metadata.publishedRuntime);
+	return Array.isArray(publishedRuntime.revisions)
+		? (publishedRuntime.revisions as PublishedWorkflowRevision[])
+		: [];
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
