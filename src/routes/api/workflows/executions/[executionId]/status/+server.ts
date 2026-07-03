@@ -1,11 +1,7 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getApplicationAdapters } from '$lib/server/application';
-import {
-	loadExecutionReadModel,
-	serializeExecutionReadModel
-} from '$lib/server/execution-read-model';
-import { isResourceInScope } from '$lib/server/workflows/project-scope';
+import type { WorkflowExecutionControlResult } from '$lib/server/application/workflow-execution-control';
 
 /**
  * GET /api/workflows/executions/[executionId]/status
@@ -18,39 +14,17 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 	const { executionId } = params;
 	const includeAgentEvents = url.searchParams.get('includeAgentEvents') === 'true';
 
-	// CMA scoping: pre-check the execution's project_id against the caller's
-	// active workspace before loading the read model. Cross-workspace
-	// mismatches return 404 so existence isn't leaked.
-	if (locals.session?.userId) {
-		const row = await getApplicationAdapters().workflowData.getExecutionById(executionId);
-		if (!isResourceInScope(row, locals.session)) {
-			return error(404, 'Execution not found');
-		}
-	}
-
-	try {
-		const model = await loadExecutionReadModel(executionId, {
-			refreshRuntime: true,
-			includeAgentEvents
-		});
-
-		if (model) {
-			return json(
-				serializeExecutionReadModel(model, {
-					compact: false,
-					includeAgentEvents
-				})
-			);
-		}
-
-		return error(404, 'Execution not found');
-	} catch (readModelError) {
-		console.error('[ExecutionStatus] execution read-model load failed:', readModelError);
-		return error(
-			503,
-			readModelError instanceof Error
-				? readModelError.message
-				: 'Execution read-model migration is required'
-		);
-	}
+	return workflowExecutionControlResponse(
+		await getApplicationAdapters().workflowExecutionControl.getExecutionStatus({
+			executionId,
+			includeAgentEvents,
+			projectId: locals.session?.projectId ?? null,
+			userId: locals.session?.userId ?? null
+		})
+	);
 };
+
+function workflowExecutionControlResponse(result: WorkflowExecutionControlResult) {
+	if (result.status === 'error') return error(result.httpStatus, result.message);
+	return json(result.body, { status: result.httpStatus ?? 200 });
+}

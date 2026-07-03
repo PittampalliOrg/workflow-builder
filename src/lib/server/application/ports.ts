@@ -3175,6 +3175,18 @@ export interface WorkflowExecutionLifecycleControllerPort {
 	): Promise<WorkflowExecutionLifecycleStopStatus>;
 }
 
+export interface WorkflowExecutionReadModelPort {
+	loadExecutionReadModel(input: {
+		executionId: string;
+		refreshRuntime: boolean;
+		includeAgentEvents: boolean;
+	}): Promise<unknown | null>;
+	serializeExecutionReadModel(
+		model: unknown,
+		options: { compact: boolean; includeAgentEvents: boolean },
+	): Record<string, unknown>;
+}
+
 export interface EventBus {
 	publish(topic: string, payload: unknown): Promise<void>;
 }

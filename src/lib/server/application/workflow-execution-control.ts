@@ -6,6 +6,7 @@ import type {
 	WorkflowExecutionCoordinatorOwnerPort,
 	WorkflowExecutionLifecycleControllerPort,
 	WorkflowExecutionLifecycleStopMode,
+	WorkflowExecutionReadModelPort,
 	WorkflowRunStarterPort,
 	WorkflowSpecValidatorPort,
 } from "$lib/server/application/ports";
@@ -34,6 +35,10 @@ export type WorkflowExecutionDetailInput = {
 	executionId: string;
 	userId?: string | null;
 	projectId?: string | null;
+};
+
+export type WorkflowExecutionStatusInput = WorkflowExecutionDetailInput & {
+	includeAgentEvents: boolean;
 };
 
 const STOP_MODES = new Set<WorkflowExecutionLifecycleStopMode>([
@@ -68,6 +73,7 @@ export class ApplicationWorkflowExecutionControlService {
 			approvalEvents: WorkflowApprovalEventPort;
 			coordinatorOwners: WorkflowExecutionCoordinatorOwnerPort;
 			executionLifecycle: WorkflowExecutionLifecycleControllerPort;
+			executionReadModels: WorkflowExecutionReadModelPort;
 			runStarter: WorkflowRunStarterPort;
 			workflowSpecs: WorkflowSpecValidatorPort;
 		},
@@ -170,6 +176,52 @@ export class ApplicationWorkflowExecutionControlService {
 				status: "running",
 			},
 		};
+	}
+
+	async getExecutionStatus(
+		input: WorkflowExecutionStatusInput,
+	): Promise<WorkflowExecutionControlResult> {
+		if (input.userId) {
+			const execution = await this.deps.workflowData.getExecutionById(
+				input.executionId,
+			);
+			if (
+				!isExecutionInScope(execution, {
+					userId: input.userId,
+					projectId: input.projectId ?? null,
+				})
+			) {
+				return workflowControlError(404, "Execution not found");
+			}
+		}
+
+		try {
+			const model = await this.deps.executionReadModels.loadExecutionReadModel({
+				executionId: input.executionId,
+				refreshRuntime: true,
+				includeAgentEvents: input.includeAgentEvents,
+			});
+			if (!model) return workflowControlError(404, "Execution not found");
+
+			return {
+				status: "ok",
+				body: this.deps.executionReadModels.serializeExecutionReadModel(model, {
+					compact: false,
+					includeAgentEvents: input.includeAgentEvents,
+				}),
+			};
+		} catch (readModelError) {
+			console.error(
+				"[ExecutionStatus] execution read-model load failed:",
+				readModelError,
+			);
+			return workflowControlError(
+				503,
+				readModelError instanceof Error
+					? readModelError.message
+					: "Execution read-model migration is required",
+			);
+		}
 	}
 
 	async stopExecution(

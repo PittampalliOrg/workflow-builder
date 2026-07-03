@@ -2,37 +2,29 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { WorkflowExecutionControlResult } from "$lib/server/application/workflow-execution-control";
 
 const mocks = vi.hoisted(() => {
-	const execution = {
-		id: "exec-1",
-		workflowId: "wf-1",
-		userId: "user-1",
-		projectId: "project-1",
-		status: "running",
-		daprInstanceId: "sw-example-exec-exec-1",
+	const workflowExecutionControl = {
+		getExecutionStatus: vi.fn(
+			async (): Promise<WorkflowExecutionControlResult> => ({
+				status: "ok" as const,
+				body: {
+					id: "exec-1",
+					status: "running",
+					phase: "running",
+					serialized: true,
+				},
+			}),
+		),
 	};
-	const workflowData = {
-		getExecutionById: vi.fn(async () => execution),
-	};
-	const readModel = {
-		id: "exec-1",
-		status: "running",
-		phase: "running",
-		progress: 50,
-	};
-	const loadExecutionReadModel = vi.fn(async () => readModel);
-	const serializeExecutionReadModel = vi.fn((model) => ({ ...model, serialized: true }));
-	return { execution, workflowData, loadExecutionReadModel, serializeExecutionReadModel };
+	return { workflowExecutionControl };
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
-}));
-
-vi.mock("$lib/server/execution-read-model", () => ({
-	loadExecutionReadModel: mocks.loadExecutionReadModel,
-	serializeExecutionReadModel: mocks.serializeExecutionReadModel,
+	getApplicationAdapters: () => ({
+		workflowExecutionControl: mocks.workflowExecutionControl,
+	}),
 }));
 
 import { GET } from "./+server";
@@ -58,65 +50,67 @@ async function expectHttpStatus(promise: Promise<unknown>, status: number) {
 describe("workflow execution status route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.workflowData.getExecutionById.mockResolvedValue(mocks.execution);
-		mocks.loadExecutionReadModel.mockResolvedValue({
-			id: "exec-1",
-			status: "running",
-			phase: "running",
-			progress: 50,
+		mocks.workflowExecutionControl.getExecutionStatus.mockResolvedValue({
+			status: "ok",
+			body: {
+				id: "exec-1",
+				status: "running",
+				phase: "running",
+				serialized: true,
+			},
 		});
 	});
 
-	it("keeps the route behind workflow-data application services", () => {
+	it("delegates execution status reads to the workflow execution control service", () => {
 		const source = readFileSync(
 			join(dirname(fileURLToPath(import.meta.url)), "+server.ts"),
 			"utf8",
 		);
 		expect(source).toContain("getApplicationAdapters");
+		expect(source).toContain("workflowExecutionControl.getExecutionStatus");
+		expect(source).not.toContain("workflowData.getExecutionById");
+		expect(source).not.toContain("$lib/server/execution-read-model");
+		expect(source).not.toContain("$lib/server/workflows/project-scope");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
 	});
 
-	it("pre-checks scope through workflow-data before loading the read model", async () => {
+	it("passes status request details to the application service", async () => {
 		const response = (await GET(event() as never)) as Response;
 
 		expect(response.status).toBe(200);
-		await expect(response.json()).resolves.toMatchObject({
+		await expect(response.json()).resolves.toEqual({
 			id: "exec-1",
 			status: "running",
+			phase: "running",
 			serialized: true,
 		});
-		expect(mocks.workflowData.getExecutionById).toHaveBeenCalledWith("exec-1");
-		expect(mocks.loadExecutionReadModel).toHaveBeenCalledWith("exec-1", {
-			refreshRuntime: true,
+		expect(mocks.workflowExecutionControl.getExecutionStatus).toHaveBeenCalledWith({
+			executionId: "exec-1",
 			includeAgentEvents: false,
+			projectId: "project-1",
+			userId: "user-1",
 		});
 	});
 
-	it("hides executions outside the active workspace before loading the model", async () => {
-		mocks.workflowData.getExecutionById.mockResolvedValueOnce({
-			...mocks.execution,
-			projectId: "project-2",
-		});
-
-		await expectHttpStatus(Promise.resolve(GET(event() as never)), 404);
-		expect(mocks.loadExecutionReadModel).not.toHaveBeenCalled();
-	});
-
-	it("passes includeAgentEvents to the read-model serializer", async () => {
+	it("passes includeAgentEvents to the application service", async () => {
 		const url = new URL("http://localhost/api/workflows/executions/exec-1/status");
 		url.searchParams.set("includeAgentEvents", "true");
 
-		const response = (await GET(event({ url }) as never)) as Response;
+		await GET(event({ url }) as never);
 
-		expect(response.status).toBe(200);
-		expect(mocks.loadExecutionReadModel).toHaveBeenCalledWith("exec-1", {
-			refreshRuntime: true,
-			includeAgentEvents: true,
+		expect(mocks.workflowExecutionControl.getExecutionStatus).toHaveBeenCalledWith(
+			expect.objectContaining({ includeAgentEvents: true }),
+		);
+	});
+
+	it("forwards route-safe application errors", async () => {
+		mocks.workflowExecutionControl.getExecutionStatus.mockResolvedValueOnce({
+			status: "error",
+			httpStatus: 404,
+			message: "Execution not found",
 		});
-		expect(mocks.serializeExecutionReadModel).toHaveBeenCalledWith(expect.anything(), {
-			compact: false,
-			includeAgentEvents: true,
-		});
+
+		await expectHttpStatus(Promise.resolve(GET(event() as never)), 404);
 	});
 });

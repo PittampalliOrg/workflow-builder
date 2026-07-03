@@ -7,6 +7,7 @@ import type {
 	WorkflowExecutionCoordinatorOwnerPort,
 	WorkflowExecutionLifecycleControllerPort,
 	WorkflowExecutionRecord,
+	WorkflowExecutionReadModelPort,
 	WorkflowRunStarterPort,
 	WorkflowSpecValidatorPort,
 } from "$lib/server/application/ports";
@@ -22,6 +23,7 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 	let approvalEvents: WorkflowApprovalEventPort;
 	let coordinatorOwners: WorkflowExecutionCoordinatorOwnerPort;
 	let executionLifecycle: WorkflowExecutionLifecycleControllerPort;
+	let executionReadModels: WorkflowExecutionReadModelPort;
 	let runStarter: WorkflowRunStarterPort;
 	let workflowSpecs: WorkflowSpecValidatorPort;
 	let service: ApplicationWorkflowExecutionControlService;
@@ -58,6 +60,17 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 				state: "confirmed",
 			})),
 		};
+		executionReadModels = {
+			loadExecutionReadModel: vi.fn(async () => ({
+				id: "exec-1",
+				status: "running",
+				phase: "running",
+			})),
+			serializeExecutionReadModel: vi.fn((model) => ({
+				...(model as Record<string, unknown>),
+				serialized: true,
+			})),
+		};
 		runStarter = {
 			startWorkflowRun: vi.fn(async () => ({
 				ok: true as const,
@@ -73,6 +86,7 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 			approvalEvents,
 			coordinatorOwners,
 			executionLifecycle,
+			executionReadModels,
 			runStarter,
 			workflowSpecs,
 		});
@@ -378,6 +392,74 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 		expect(result).toMatchObject({
 			status: "ok",
 			body: { id: "exec-1" },
+		});
+	});
+
+	it("loads execution status through the read-model port after scoped precheck", async () => {
+		const result = await service.getExecutionStatus({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+			includeAgentEvents: true,
+		});
+
+		expect(workflowData.getExecutionById).toHaveBeenCalledWith("exec-1");
+		expect(executionReadModels.loadExecutionReadModel).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			refreshRuntime: true,
+			includeAgentEvents: true,
+		});
+		expect(executionReadModels.serializeExecutionReadModel).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "exec-1" }),
+			{ compact: false, includeAgentEvents: true },
+		);
+		expect(result).toEqual({
+			status: "ok",
+			body: {
+				id: "exec-1",
+				status: "running",
+				phase: "running",
+				serialized: true,
+			},
+		});
+	});
+
+	it("hides execution status outside the active workspace before loading the model", async () => {
+		vi.mocked(workflowData.getExecutionById).mockResolvedValue(
+			executionRecord({ projectId: "project-2" }),
+		);
+
+		const result = await service.getExecutionStatus({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+			includeAgentEvents: false,
+		});
+
+		expect(result).toEqual({
+			status: "error",
+			httpStatus: 404,
+			message: "Execution not found",
+		});
+		expect(executionReadModels.loadExecutionReadModel).not.toHaveBeenCalled();
+	});
+
+	it("maps read-model migration failures to route-safe unavailable errors", async () => {
+		vi.mocked(executionReadModels.loadExecutionReadModel).mockRejectedValue(
+			new Error("Execution read-model migration is required"),
+		);
+
+		const result = await service.getExecutionStatus({
+			executionId: "exec-1",
+			userId: null,
+			projectId: null,
+			includeAgentEvents: false,
+		});
+
+		expect(result).toEqual({
+			status: "error",
+			httpStatus: 503,
+			message: "Execution read-model migration is required",
 		});
 	});
 

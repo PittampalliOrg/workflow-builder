@@ -190,8 +190,10 @@ The first UI-facing route has also moved behind the application service:
   session/agent run summary through `workflowData.listWorkflowExecutionRunSummaries`.
   Session and agent-run joins are confined to the execution repository adapter.
 - `src/routes/api/workflows/executions/[executionId]/status/+server.ts` now
-  performs its workspace-scope pre-check through `workflowData.getExecutionById`
-  before calling the shared execution read-model loader.
+  delegates workspace-scope pre-checks, read-model loading, and serialization to
+  `ApplicationWorkflowExecutionControlService.getExecutionStatus`. The service
+  reaches the shared execution read-model loader through an application port;
+  the route imports no workflow-data, read-model, or project-scope helpers.
 - `src/routes/api/workflows/executions/[executionId]/approval-state/+server.ts`
   now resolves both execution and workflow spec through `workflowData` before
   detecting an approval listen gate.

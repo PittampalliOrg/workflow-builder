@@ -103,6 +103,7 @@ import {
 } from "$lib/server/application/adapters/session-mcp";
 import {
 	LegacyWorkflowRunStarterPort,
+	LegacyWorkflowExecutionReadModelPort,
 	LegacyWorkflowSpecValidatorPort,
 	LifecycleWorkflowExecutionControllerPort,
 	LifecycleWorkflowExecutionCoordinatorOwnerPort,
@@ -404,6 +405,7 @@ export function getApplicationAdapters(
 			approvalEvents: new DaprWorkflowApprovalEventPort(),
 			coordinatorOwners: new LifecycleWorkflowExecutionCoordinatorOwnerPort(),
 			executionLifecycle: new LifecycleWorkflowExecutionControllerPort(),
+			executionReadModels: new LegacyWorkflowExecutionReadModelPort(),
 			runStarter: new LegacyWorkflowRunStarterPort(),
 			workflowSpecs: new LegacyWorkflowSpecValidatorPort(),
 		}));
