@@ -1,9 +1,9 @@
 import type { RequestHandler } from "./$types";
 
-import { sql } from "$lib/server/db";
 import {
 	getLatestGitOpsActivitySequence,
 	listGitOpsActivityEvents,
+	subscribeGitOpsActivityEvents,
 } from "$lib/server/gitops/activity-events";
 import { requirePlatformAdmin } from "$lib/server/platform-admin";
 
@@ -101,12 +101,11 @@ export const GET: RequestHandler = async ({ locals, request, url }) => {
 			send("gitops.ready", { since: lastSequence });
 			await drain();
 
-			if (sql && !cancelled) {
+			if (!cancelled) {
 				try {
-					const meta = await sql.listen("gitops_activity_events", () => {
+					unlisten = await subscribeGitOpsActivityEvents(() => {
 						void drain();
 					});
-					unlisten = () => meta.unlisten();
 					void drain();
 				} catch (err) {
 					send("error", {

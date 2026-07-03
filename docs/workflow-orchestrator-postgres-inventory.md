@@ -522,6 +522,10 @@ The first UI-facing route has also moved behind the application service:
   bcrypt/scrypt verification, platform/project resolution, and token generation
   now live in `signInWithPassword`; the route sets cookies and maps the
   service result to HTTP.
+- `src/routes/api/v1/gitops/events/stream/+server.ts` no longer imports the raw
+  Postgres client for `LISTEN`. SSE framing, heartbeat, replay, and abort
+  cleanup stay in the route; the Postgres `LISTEN gitops_activity_events`
+  implementation is behind `subscribeGitOpsActivityEvents`.
 - `src/routes/workspaces/[slug]/benchmarks/+page.server.ts`,
   `src/routes/workspaces/[slug]/benchmarks/runs/+page.server.ts`, and
   `src/routes/workspaces/[slug]/benchmarks/compare/+page.server.ts` now delegate

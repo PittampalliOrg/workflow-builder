@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, asc, desc, gt, gte, sql as drizzleSql } from "drizzle-orm";
 
-import { db } from "$lib/server/db";
+import { db, sql } from "$lib/server/db";
 import {
 	gitopsActivityEvents,
 	type GitOpsActivityType,
@@ -224,6 +224,14 @@ export async function getLatestGitOpsActivitySequence(): Promise<number> {
 		.orderBy(desc(gitopsActivityEvents.sequence))
 		.limit(1);
 	return row?.sequence ?? 0;
+}
+
+export async function subscribeGitOpsActivityEvents(
+	onEvent: () => void,
+): Promise<() => Promise<void>> {
+	if (!sql) return async () => {};
+	const listener = await sql.listen("gitops_activity_events", onEvent);
+	return () => listener.unlisten();
 }
 
 export function rowToEvent(row: typeof gitopsActivityEvents.$inferSelect): GitOpsActivityEvent {
