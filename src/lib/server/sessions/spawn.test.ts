@@ -9,8 +9,10 @@ describe("session spawn wiring", () => {
 		expect(source).toContain("workflowData.attachSessionRuntime");
 		expect(source).toContain("workflowData.listSessionEvents");
 		expect(source).toContain("workflowData.appendSessionEvent");
+		expect(source).toContain("sessionCommands.materializeSessionRepositoriesViaHost");
 		expect(source).not.toContain("$lib/server/sessions/registry");
 		expect(source).not.toContain("$lib/server/sessions/events");
+		expect(source).not.toContain("$lib/server/sessions/repositories");
 		expect(source).not.toContain("attachRuntime");
 		expect(source).not.toContain("getSession(");
 		expect(source).not.toContain("appendEvent(");

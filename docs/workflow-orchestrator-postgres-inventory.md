@@ -32,6 +32,9 @@ metadata through workflow-data; the legacy `sessions/registry` `getSession` and
 Session workflow spawn now also reads initial user events and emits swap-safety
 audit events through workflow-data; `spawn.ts` no longer imports the legacy
 `sessions/events` DB helper.
+Interactive-CLI repository mounting during session spawn now delegates through
+the session command repository-mounter port; `spawn.ts` no longer imports the
+legacy `sessions/repositories` DB helper directly.
 The session runtime-config helper now takes its persisted
 `session.runtime_config` fallback as an injected adapter dependency. The latest
 runtime-config event query is confined to `DefaultSessionRuntimeConfigReader`;

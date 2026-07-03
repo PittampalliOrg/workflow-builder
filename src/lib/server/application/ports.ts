@@ -4305,6 +4305,10 @@ export interface SessionRepositoryMounter {
 		sessionId: string,
 		target: SessionRepositoryMountTarget,
 	): Promise<void>;
+	mountSessionRepositoriesViaHost(
+		sessionId: string,
+		hostBaseUrl: string,
+	): Promise<void>;
 	mountSessionRepository(
 		sessionId: string,
 		resource: SessionResource,

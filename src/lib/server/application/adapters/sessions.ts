@@ -84,6 +84,7 @@ import {
 } from "$lib/server/sessions/spawn";
 import {
 	mountSessionRepositories,
+	mountSessionRepositoriesViaHost,
 	mountSingleRepository,
 } from "$lib/server/sessions/repositories";
 import { openshellRuntimeFetch } from "$lib/server/openshell-runtime";
@@ -1290,6 +1291,13 @@ export class WorkspaceSessionRepositoryMounter implements SessionRepositoryMount
 		target: SessionRepositoryMountTarget,
 	): Promise<void> {
 		return mountSessionRepositories(sessionId, target);
+	}
+
+	mountSessionRepositoriesViaHost(
+		sessionId: string,
+		hostBaseUrl: string,
+	): Promise<void> {
+		return mountSessionRepositoriesViaHost(sessionId, hostBaseUrl);
 	}
 
 	mountSessionRepository(

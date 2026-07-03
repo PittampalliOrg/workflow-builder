@@ -53,6 +53,7 @@ describe("ApplicationSessionCommandService", () => {
 		};
 		repositoryMounter = {
 			mountSessionRepositories: vi.fn(async () => undefined),
+			mountSessionRepositoriesViaHost: vi.fn(async () => undefined),
 			mountSessionRepository: vi.fn(async () => undefined),
 		};
 		sandboxDestroyer = {
@@ -403,6 +404,18 @@ describe("ApplicationSessionCommandService", () => {
 				workspaceRef: "workspace/ws-ready",
 				rootPath: null,
 			},
+		);
+	});
+
+	it("delegates host repository mounts through the repository mounter port", async () => {
+		await service.materializeSessionRepositoriesViaHost({
+			sessionId: "session-1",
+			hostBaseUrl: "http://agent-runtime:8002",
+		});
+
+		expect(repositoryMounter.mountSessionRepositoriesViaHost).toHaveBeenCalledWith(
+			"session-1",
+			"http://agent-runtime:8002",
 		);
 	});
 

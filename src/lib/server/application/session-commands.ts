@@ -100,6 +100,11 @@ export type MaterializeWorkflowSessionRepositoriesCommand = {
 	cwd?: string | null;
 };
 
+export type MaterializeSessionRepositoriesViaHostCommand = {
+	sessionId: string;
+	hostBaseUrl: string;
+};
+
 export type ReapTerminatedWorkflowSessionRuntimeHostsCommand = {
 	workflowExecutionId: string;
 	exceptSessionId: string;
@@ -455,6 +460,15 @@ export class ApplicationSessionCommandService {
 		} catch (mountErr) {
 			console.error("[sessions] workflow repository mount failed:", mountErr);
 		}
+	}
+
+	async materializeSessionRepositoriesViaHost(
+		input: MaterializeSessionRepositoriesViaHostCommand,
+	): Promise<void> {
+		await this.deps.repositoryMounter.mountSessionRepositoriesViaHost(
+			input.sessionId,
+			input.hostBaseUrl,
+		);
 	}
 
 	async resolveWorkflowSessionAgent(

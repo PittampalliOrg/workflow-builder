@@ -27,7 +27,6 @@ import {
 	acquireCliBootLease,
 	cliCredentialNeedsBootLease,
 } from "$lib/server/users/cli-credentials";
-import { mountSessionRepositoriesViaHost } from "$lib/server/sessions/repositories";
 
 /** Session owner (sessions.userId) — not part of the public SessionDetail
  * shape, so resolve it through workflow-data for the CLI-token gate. */
@@ -532,7 +531,10 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	// failures emit session events, never block the spawn.
 	if (directRuntimeBaseUrl && swapTarget?.capabilities?.interactiveTerminal) {
 		try {
-			await mountSessionRepositoriesViaHost(sessionId, directRuntimeBaseUrl);
+			await getApplicationAdapters().sessionCommands.materializeSessionRepositoriesViaHost({
+				sessionId,
+				hostBaseUrl: directRuntimeBaseUrl,
+			});
 		} catch (err) {
 			console.warn(
 				`[session-spawn] host repository mount failed for ${sessionId}:`,
