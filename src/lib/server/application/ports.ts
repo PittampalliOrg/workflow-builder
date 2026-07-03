@@ -566,6 +566,49 @@ export interface SecurityAuditReadRepository {
 	}): Promise<SecurityAuditReadModel>;
 }
 
+export type DashboardStatsReadModel = {
+	activeSessions: number;
+	sessionsToday: number;
+	archivedLast24h: number;
+	tokensOut7d: number;
+	tokensIn7d: number;
+	totalAgents: number;
+	totalEnvironments: number;
+	totalVaults: number;
+};
+
+export type DashboardActiveSessionReadModel = {
+	id: string;
+	title: string | null;
+	status: string;
+	agentId: string;
+	agentName: string;
+	agentAvatar: string | null;
+	updatedAt: string;
+	createdAt: string;
+};
+
+export type DashboardRecentChangeReadModel = {
+	kind: "agent" | "environment";
+	resourceId: string;
+	resourceName: string;
+	version: number;
+	publishedAt: string | null;
+};
+
+export type DashboardReadModel = {
+	stats: DashboardStatsReadModel;
+	activeSessions: DashboardActiveSessionReadModel[];
+	recentChanges: DashboardRecentChangeReadModel[];
+};
+
+export interface DashboardReadRepository {
+	getDashboard(input: {
+		userId: string;
+		now: Date;
+	}): Promise<DashboardReadModel>;
+}
+
 export type CreateWorkflowDefinitionInput = {
 	name: string;
 	nodes: unknown[];
@@ -3563,6 +3606,10 @@ export interface WorkflowDataService {
 		projectId?: string | null;
 		now?: Date;
 	}): Promise<SecurityAuditReadModel>;
+	getDashboard(input: {
+		userId: string;
+		now?: Date;
+	}): Promise<DashboardReadModel>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;
 	}): Promise<DevPreviewHubReadModel>;

@@ -10,6 +10,7 @@ import {
 	PostgresBenchmarkBrowserRepository,
 	PostgresBenchmarkRunRepository,
 	PostgresCodeFunctionCatalogRepository,
+	PostgresDashboardReadRepository,
 	PostgresEvaluationArtifactStore,
 	PostgresGoalFlowReadStore,
 	PostgresHostedMcpServerRepository,
@@ -117,6 +118,7 @@ export function getApplicationAdapters(
 	let resourceUsages: PostgresResourceUsageReadRepository | undefined;
 	let aiAssistantMessages: PostgresWorkflowAiAssistantMessageRepository | undefined;
 	let securityAudit: PostgresSecurityAuditReadRepository | undefined;
+	let dashboard: PostgresDashboardReadRepository | undefined;
 	let workflowExecutions: PostgresWorkflowExecutionRepository | undefined;
 	let workflowFiles: PostgresWorkflowFileStore | undefined;
 	let sandboxInventory: PostgresSandboxInventoryRepository | undefined;
@@ -191,6 +193,8 @@ export function getApplicationAdapters(
 		(aiAssistantMessages ??= new PostgresWorkflowAiAssistantMessageRepository(getDatabase()));
 	const getSecurityAudit = () =>
 		(securityAudit ??= new PostgresSecurityAuditReadRepository(getDatabase()));
+	const getDashboard = () =>
+		(dashboard ??= new PostgresDashboardReadRepository(getDatabase()));
 	const getWorkflowExecutions = () =>
 		(workflowExecutions ??= new PostgresWorkflowExecutionRepository(getDatabase()));
 	const getWorkflowFiles = () =>
@@ -263,6 +267,7 @@ export function getApplicationAdapters(
 			resourceUsages: getResourceUsages(),
 			aiAssistantMessages: getAiAssistantMessages(),
 			securityAudit: getSecurityAudit(),
+			dashboard: getDashboard(),
 			workflowExecutions: getWorkflowExecutions(),
 			sessions: getSessions(),
 			sessionProvisioning: getSessionProvisioning(),

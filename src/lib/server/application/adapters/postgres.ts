@@ -35,6 +35,8 @@ import {
 	agentSkillRegistry,
 	codeFunctions,
 	credentialAccessLogs,
+	environments,
+	environmentVersions,
 	mlflowLineageLinks,
 	agents,
 	agentVersions,
@@ -75,6 +77,7 @@ import {
 	workflowTriggers,
 	workflowWorkspaceSessions,
 	workflows,
+	vaults,
 	users,
 	type Workflow,
 	type WorkflowArtifactRow,
@@ -112,6 +115,7 @@ import type {
 	CreateWorkflowDefinitionInput,
 	CreateWorkflowTriggerInput,
 	CreateWorkflowExecutionInput,
+	DashboardReadRepository,
 	EvaluationArtifactStore,
 	GoalFlowEventRecord,
 	GoalFlowGoalRecord,
@@ -3643,6 +3647,195 @@ export class PostgresSecurityAuditReadRepository implements SecurityAuditReadRep
 		return {
 			events,
 			asOf: input.now.toISOString(),
+		};
+	}
+}
+
+export class PostgresDashboardReadRepository implements DashboardReadRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async getDashboard(input: { userId: string; now: Date }) {
+		const userId = input.userId.trim();
+		const dayAgo = new Date(input.now.getTime() - 24 * 60 * 60 * 1000);
+		const weekAgo = new Date(input.now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+		const [activeCount, todayCount, archivedCount, tokens, activeSessions] =
+			await Promise.all([
+				this.database
+					.select({ n: sql<number>`count(*)` })
+					.from(sessions)
+					.where(and(eq(sessions.userId, userId), eq(sessions.status, "running")))
+					.then((rows) => rows[0]),
+				this.database
+					.select({ n: sql<number>`count(*)` })
+					.from(sessions)
+					.where(and(eq(sessions.userId, userId), gte(sessions.createdAt, dayAgo)))
+					.then((rows) => rows[0]),
+				this.database
+					.select({ n: sql<number>`count(*)` })
+					.from(sessions)
+					.where(
+						and(
+							eq(sessions.userId, userId),
+							isNotNull(sessions.archivedAt),
+							gte(sessions.archivedAt, dayAgo),
+						),
+					)
+					.then((rows) => rows[0]),
+				this.database
+					.select({
+						outTokens: sql<number>`coalesce(sum((usage->>'output_tokens')::int), 0)`,
+						inTokens: sql<number>`coalesce(sum((usage->>'input_tokens')::int), 0)`,
+					})
+					.from(sessions)
+					.where(and(eq(sessions.userId, userId), gte(sessions.createdAt, weekAgo)))
+					.then((rows) => rows[0]),
+				this.database
+					.select({
+						id: sessions.id,
+						title: sessions.title,
+						status: sessions.status,
+						agentId: sessions.agentId,
+						updatedAt: sessions.updatedAt,
+						createdAt: sessions.createdAt,
+					})
+					.from(sessions)
+					.where(
+						and(
+							eq(sessions.userId, userId),
+							inArray(sessions.status, ["running", "idle"]),
+							isNull(sessions.archivedAt),
+						),
+					)
+					.orderBy(desc(sessions.updatedAt))
+					.limit(5),
+			]);
+
+		const agentIds = Array.from(
+			new Set(activeSessions.map((session) => session.agentId).filter(Boolean)),
+		);
+		const agentRows = agentIds.length
+			? await this.database
+					.select({ id: agents.id, name: agents.name, avatar: agents.avatar })
+					.from(agents)
+					.where(inArray(agents.id, agentIds))
+			: [];
+		const agentMap = new Map(agentRows.map((agent) => [agent.id, agent]));
+
+		const [recentAgentVersions, recentEnvVersions] = await Promise.all([
+			this.database
+				.select({
+					id: agentVersions.id,
+					version: agentVersions.version,
+					publishedAt: agentVersions.publishedAt,
+					agentId: agentVersions.agentId,
+				})
+				.from(agentVersions)
+				.where(isNotNull(agentVersions.publishedAt))
+				.orderBy(desc(agentVersions.publishedAt))
+				.limit(10),
+			this.database
+				.select({
+					id: environmentVersions.id,
+					version: environmentVersions.version,
+					publishedAt: environmentVersions.publishedAt,
+					environmentId: environmentVersions.environmentId,
+				})
+				.from(environmentVersions)
+				.where(isNotNull(environmentVersions.publishedAt))
+				.orderBy(desc(environmentVersions.publishedAt))
+				.limit(10),
+		]);
+
+		const agentLookup = new Map(agentRows.map((agent) => [agent.id, agent.name]));
+		const missingAgentIds = Array.from(
+			new Set(
+				recentAgentVersions
+					.map((version) => version.agentId)
+					.filter((id) => !agentLookup.has(id)),
+			),
+		);
+		if (missingAgentIds.length > 0) {
+			const rows = await this.database
+				.select({ id: agents.id, name: agents.name })
+				.from(agents)
+				.where(inArray(agents.id, missingAgentIds));
+			for (const row of rows) agentLookup.set(row.id, row.name);
+		}
+
+		const envLookup = new Map<string, string>();
+		const envIds = Array.from(
+			new Set(recentEnvVersions.map((version) => version.environmentId)),
+		);
+		if (envIds.length > 0) {
+			const rows = await this.database
+				.select({ id: environments.id, name: environments.name })
+				.from(environments)
+				.where(inArray(environments.id, envIds));
+			for (const row of rows) envLookup.set(row.id, row.name);
+		}
+
+		const recentChanges = [
+			...recentAgentVersions.map((version) => ({
+				kind: "agent" as const,
+				resourceId: version.agentId,
+				resourceName: agentLookup.get(version.agentId) ?? version.agentId,
+				version: version.version,
+				publishedAt: version.publishedAt?.toISOString() ?? null,
+			})),
+			...recentEnvVersions.map((version) => ({
+				kind: "environment" as const,
+				resourceId: version.environmentId,
+				resourceName: envLookup.get(version.environmentId) ?? version.environmentId,
+				version: version.version,
+				publishedAt: version.publishedAt?.toISOString() ?? null,
+			})),
+		]
+			.sort(
+				(a, b) =>
+					new Date(b.publishedAt ?? 0).getTime() -
+					new Date(a.publishedAt ?? 0).getTime(),
+			)
+			.slice(0, 10);
+
+		const [[{ n: totalAgents }], [{ n: totalEnvs }], [{ n: totalVaults }]] =
+			await Promise.all([
+				this.database
+					.select({ n: sql<number>`count(*)` })
+					.from(agents)
+					.where(eq(agents.isArchived, false)),
+				this.database
+					.select({ n: sql<number>`count(*)` })
+					.from(environments)
+					.where(eq(environments.isArchived, false)),
+				this.database
+					.select({ n: sql<number>`count(*)` })
+					.from(vaults)
+					.where(eq(vaults.isArchived, false)),
+			]);
+
+		return {
+			stats: {
+				activeSessions: Number(activeCount?.n ?? 0),
+				sessionsToday: Number(todayCount?.n ?? 0),
+				archivedLast24h: Number(archivedCount?.n ?? 0),
+				tokensOut7d: Number(tokens?.outTokens ?? 0),
+				tokensIn7d: Number(tokens?.inTokens ?? 0),
+				totalAgents: Number(totalAgents ?? 0),
+				totalEnvironments: Number(totalEnvs ?? 0),
+				totalVaults: Number(totalVaults ?? 0),
+			},
+			activeSessions: activeSessions.map((session) => ({
+				id: session.id,
+				title: session.title ?? null,
+				status: session.status,
+				agentId: session.agentId,
+				agentName: agentMap.get(session.agentId)?.name ?? session.agentId,
+				agentAvatar: agentMap.get(session.agentId)?.avatar ?? null,
+				updatedAt: session.updatedAt.toISOString(),
+				createdAt: session.createdAt.toISOString(),
+			})),
+			recentChanges,
 		};
 	}
 }

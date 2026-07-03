@@ -29,6 +29,8 @@ The AI assistant build-workflow stream now loads and saves workflow definitions
 through existing workflow-data workflow definition ports.
 The security audit API now loads its aggregated audit stream through a
 workflow-data read model.
+The dashboard API now loads its summary, active-session list, recent changes,
+and resource counts through a workflow-data dashboard read model.
 
 ## Strict HTTP Runtime Paths
 
@@ -284,6 +286,10 @@ The first UI-facing route has also moved behind the application service:
   credential-access, project-member, and runtime-config audit stream through
   workflow-data. The 30-day audit window and source-specific SQL are confined
   to the application service plus Postgres security-audit adapter.
+- `src/routes/api/v1/dashboard/+server.ts` now loads dashboard stats, active
+  sessions, recent agent/environment version changes, and resource counts
+  through workflow-data. Session, agent, environment, and vault SQL is confined
+  to the Postgres dashboard read adapter.
 - `src/routes/workspaces/[slug]/dev/+page.server.ts`,
   `src/routes/workspaces/[slug]/dev/[executionId]/+page.server.ts`, and the
   public `src/routes/api/dev-environments/**` GET routes now load dev-preview
@@ -663,6 +669,7 @@ provisioning, context-usage, control settings/MCP status, session
 detail/title/archive/delete, fork, goal,
 goal-flow, event list/append/detail, runtime-config, config patch commands,
 runtime debug target routes, resources, and event-stream routes are also clean.
+The dashboard route is also clean.
 The sandbox-delete route's session read is also clean, while its lifecycle and
 Kubernetes/OpenShell deletion behavior intentionally remain in the route.
 The broader BFF/control-plane still has route-level or service-level direct DB

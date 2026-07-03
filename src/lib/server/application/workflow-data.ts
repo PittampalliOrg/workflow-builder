@@ -153,6 +153,7 @@ import type {
 	RuntimeRegistryReader,
 	ResourceUsageReadRepository,
 	SecurityAuditReadRepository,
+	DashboardReadRepository,
 	WorkflowAiAssistantMessageRepository,
 	WorkspaceSessionStore,
 	ServiceGraphPickerOptions,
@@ -785,6 +786,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			resourceUsages?: ResourceUsageReadRepository;
 			aiAssistantMessages?: WorkflowAiAssistantMessageRepository;
 			securityAudit?: SecurityAuditReadRepository;
+			dashboard?: DashboardReadRepository;
 			workflowExecutions: WorkflowExecutionRepository;
 			sessions?: SessionRepository;
 			sessionProvisioning?: SessionProvisioningReader;
@@ -930,6 +932,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Security audit read repository not configured");
 		}
 		return this.deps.securityAudit;
+	}
+
+	private requireDashboard(): DashboardReadRepository {
+		if (!this.deps.dashboard) {
+			throw new Error("Dashboard read repository not configured");
+		}
+		return this.deps.dashboard;
 	}
 
 	private requireSessionRuntimeConfigs(): SessionRuntimeConfigReader {
@@ -3710,6 +3719,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			since,
 			now,
 			limit: 100,
+		});
+	}
+
+	getDashboard(input: { userId: string; now?: Date }) {
+		return this.requireDashboard().getDashboard({
+			userId: input.userId,
+			now: input.now ?? new Date(),
 		});
 	}
 

@@ -23,6 +23,7 @@ import type {
 	SandboxInventoryRepository,
 	SandboxRuntimeInventory,
 	CodeFunctionCatalogRepository,
+	DashboardReadRepository,
 	SecurityAuditReadRepository,
 	SessionAgentConfigCommandPort,
 	SessionEventLog,
@@ -1331,6 +1332,7 @@ function makeService(options: {
 	resourceUsages?: ResourceUsageReadRepository;
 	aiAssistantMessages?: WorkflowAiAssistantMessageRepository;
 	securityAudit?: SecurityAuditReadRepository;
+	dashboard?: DashboardReadRepository;
 	pieceExecutions?: PieceExecutionRepository;
 	browserArtifacts?: WorkflowBrowserArtifactStore;
 	sessions?: SessionRepository;
@@ -1393,6 +1395,7 @@ function makeService(options: {
 		resourceUsages: options.resourceUsages,
 		aiAssistantMessages: options.aiAssistantMessages,
 		securityAudit: options.securityAudit,
+		dashboard: options.dashboard,
 		workflowExecutions,
 		sessionEvents: options.sessionEvents,
 		sessionRuntimeConfigs:
@@ -6334,6 +6337,89 @@ describe("ApplicationWorkflowDataService", () => {
 			since: new Date("2026-06-03T12:00:00.000Z"),
 			now,
 			limit: 100,
+		});
+	});
+
+	it("loads the dashboard read model through the workflow-data port", async () => {
+		const now = new Date("2026-07-03T12:00:00.000Z");
+		const dashboard: DashboardReadRepository = {
+			getDashboard: vi.fn(async () => ({
+				stats: {
+					activeSessions: 1,
+					sessionsToday: 2,
+					archivedLast24h: 0,
+					tokensOut7d: 100,
+					tokensIn7d: 50,
+					totalAgents: 3,
+					totalEnvironments: 4,
+					totalVaults: 5,
+				},
+				activeSessions: [
+					{
+						id: "session-1",
+						title: "Active",
+						status: "running",
+						agentId: "agent-1",
+						agentName: "Agent One",
+						agentAvatar: null,
+						updatedAt: now.toISOString(),
+						createdAt: now.toISOString(),
+					},
+				],
+				recentChanges: [
+					{
+						kind: "agent" as const,
+						resourceId: "agent-1",
+						resourceName: "Agent One",
+						version: 2,
+						publishedAt: now.toISOString(),
+					},
+				],
+			})),
+		};
+		const { service } = makeService({ dashboard });
+
+		await expect(
+			service.getDashboard({
+				userId: "user-1",
+				now,
+			}),
+		).resolves.toEqual({
+			stats: {
+				activeSessions: 1,
+				sessionsToday: 2,
+				archivedLast24h: 0,
+				tokensOut7d: 100,
+				tokensIn7d: 50,
+				totalAgents: 3,
+				totalEnvironments: 4,
+				totalVaults: 5,
+			},
+			activeSessions: [
+				{
+					id: "session-1",
+					title: "Active",
+					status: "running",
+					agentId: "agent-1",
+					agentName: "Agent One",
+					agentAvatar: null,
+					updatedAt: now.toISOString(),
+					createdAt: now.toISOString(),
+				},
+			],
+			recentChanges: [
+				{
+					kind: "agent",
+					resourceId: "agent-1",
+					resourceName: "Agent One",
+					version: 2,
+					publishedAt: now.toISOString(),
+				},
+			],
+		});
+		expect(dashboard.getDashboard).toHaveBeenCalledWith({
+			userId: "user-1",
+			now,
 		});
 	});
 
