@@ -517,6 +517,11 @@ The first UI-facing route has also moved behind the application service:
   metadata lookup. It delegates request validation, server metadata merge,
   repo/baseCommit conflict checks, and environment preparation to
   `ensureSwebenchEnvironmentFromInternalRequest`.
+- `src/routes/api/v1/auth/sign-in/+server.ts` no longer imports Drizzle,
+  `$lib/server/db`, or auth-related schema tables. Password identity lookup,
+  bcrypt/scrypt verification, platform/project resolution, and token generation
+  now live in `signInWithPassword`; the route sets cookies and maps the
+  service result to HTTP.
 - `src/routes/workspaces/[slug]/benchmarks/+page.server.ts`,
   `src/routes/workspaces/[slug]/benchmarks/runs/+page.server.ts`, and
   `src/routes/workspaces/[slug]/benchmarks/compare/+page.server.ts` now delegate
