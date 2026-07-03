@@ -71,6 +71,8 @@ import type {
 	ApiKeyStore,
 	AppendSessionEventInput,
 	ArtifactStore,
+	BenchmarkArtifactMetadataInput,
+	BenchmarkArtifactMetadataRepository,
 	BenchmarkDatasetPromotionRepository,
 	BenchmarkInstanceAnnotationVerdict,
 	BenchmarkBrowserEnvironmentBuildRecord,
@@ -789,6 +791,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			pieceExecutions?: PieceExecutionRepository;
 			browserArtifacts?: WorkflowBrowserArtifactStore;
 			codeFunctionCatalog?: CodeFunctionCatalogRepository;
+			benchmarkArtifactMetadata?: BenchmarkArtifactMetadataRepository;
 			benchmarkBrowser: BenchmarkBrowserRepository;
 			benchmarkDatasetPromotions?: BenchmarkDatasetPromotionRepository;
 			benchmarkInstanceDetails?: BenchmarkInstanceDetailReadRepository;
@@ -877,6 +880,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Benchmark run read repository not configured");
 		}
 		return this.deps.benchmarkRunReads;
+	}
+
+	private requireBenchmarkArtifactMetadata(): BenchmarkArtifactMetadataRepository {
+		if (!this.deps.benchmarkArtifactMetadata) {
+			throw new Error("Benchmark artifact metadata repository not configured");
+		}
+		return this.deps.benchmarkArtifactMetadata;
 	}
 
 	private requireBenchmarkInstanceDetails(): BenchmarkInstanceDetailReadRepository {
@@ -3909,6 +3919,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			instanceId: input.instanceId,
 			now: input.now ?? new Date(),
 		});
+	}
+
+	recordBenchmarkArtifact(input: BenchmarkArtifactMetadataInput) {
+		return this.requireBenchmarkArtifactMetadata().recordArtifact(input);
 	}
 
 	getBenchmarkRunProjectId(runId: string) {

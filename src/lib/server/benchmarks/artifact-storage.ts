@@ -1,14 +1,9 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
-import { eq, and } from "drizzle-orm";
 import { env } from "$env/dynamic/private";
-import { db } from "$lib/server/db";
-import {
-	benchmarkArtifacts,
-	benchmarkRunInstances,
-	type BenchmarkArtifactKind,
-} from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
+import type { BenchmarkArtifactKind } from "$lib/server/application/ports";
 import { daprFetch, getDaprSidecarUrl } from "$lib/server/dapr-client";
 
 const DEFAULT_LOCAL_ROOT = "/artifacts";
@@ -211,31 +206,7 @@ async function recordBenchmarkArtifact(input: {
 	sha256: string;
 	metadata: Record<string, unknown>;
 }) {
-	if (!db) throw new Error("Database not configured");
-	let runInstanceId: string | null = null;
-	if (input.instanceId) {
-		const [row] = await db
-			.select({ id: benchmarkRunInstances.id })
-			.from(benchmarkRunInstances)
-			.where(
-				and(
-					eq(benchmarkRunInstances.runId, input.runId),
-					eq(benchmarkRunInstances.instanceId, input.instanceId),
-				),
-			)
-			.limit(1);
-		runInstanceId = row?.id ?? null;
-	}
-	await db.insert(benchmarkArtifacts).values({
-		runId: input.runId,
-		runInstanceId,
-		kind: input.kind,
-		path: input.path,
-		contentType: input.contentType,
-		sizeBytes: input.sizeBytes,
-		sha256: input.sha256,
-		metadata: input.metadata,
-	});
+	await getApplicationAdapters().workflowData.recordBenchmarkArtifact(input);
 }
 
 async function invokeDaprBlobBinding(

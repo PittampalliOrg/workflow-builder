@@ -701,6 +701,29 @@ export type BenchmarkInstanceAnnotationVerdict =
 	| "partial"
 	| "unsure";
 
+export type BenchmarkArtifactKind =
+	| "dataset_jsonl"
+	| "predictions_jsonl"
+	| "model_patch"
+	| "harness_result"
+	| "logs"
+	| "test_output";
+
+export type BenchmarkArtifactMetadataInput = {
+	runId: string;
+	instanceId: string | null;
+	kind: BenchmarkArtifactKind;
+	path: string;
+	contentType: string | null;
+	sizeBytes: number;
+	sha256: string;
+	metadata: Record<string, unknown>;
+};
+
+export interface BenchmarkArtifactMetadataRepository {
+	recordArtifact(input: BenchmarkArtifactMetadataInput): Promise<void>;
+}
+
 export type BenchmarkRunInstanceAnnotationCounts = Record<
 	BenchmarkInstanceAnnotationVerdict,
 	number
@@ -3859,6 +3882,7 @@ export interface WorkflowDataService {
 		instanceId: string;
 		now?: Date;
 	}): Promise<BenchmarkRunInstanceProgressReadModel>;
+	recordBenchmarkArtifact(input: BenchmarkArtifactMetadataInput): Promise<void>;
 	getBenchmarkRunProjectId(runId: string): Promise<string | null>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;

@@ -4,6 +4,7 @@ import type {
 	AdminPieceRepository,
 	AppConnectionRepository,
 	ArtifactStore,
+	BenchmarkArtifactMetadataRepository,
 	BenchmarkDatasetPromotionRepository,
 	BenchmarkRunInstanceAnnotationRepository,
 	BenchmarkInstanceDetailReadRepository,
@@ -1339,6 +1340,7 @@ function makeService(options: {
 	benchmarkRunInstanceAnnotations?: BenchmarkRunInstanceAnnotationRepository;
 	benchmarkRunInstanceProgress?: BenchmarkRunInstanceProgressReadRepository;
 	benchmarkRunInstanceScores?: BenchmarkRunInstanceScoreReadRepository;
+	benchmarkArtifactMetadata?: BenchmarkArtifactMetadataRepository;
 	activityRateTargets?: WorkflowActivityRateTargetRepository;
 	observabilityTraces?: ObservabilityTraceRepository;
 	workflowMonitorReads?: WorkflowMonitorReadRepository;
@@ -1401,6 +1403,7 @@ function makeService(options: {
 		sessions: options.sessions,
 		browserArtifacts: options.browserArtifacts,
 		benchmarkBrowser: fakeBenchmarkBrowser(),
+		benchmarkArtifactMetadata: options.benchmarkArtifactMetadata,
 		benchmarkDatasetPromotions: options.benchmarkDatasetPromotions,
 		benchmarkInstanceDetails: options.benchmarkInstanceDetails,
 		benchmarkRunInstanceDetails: options.benchmarkRunInstanceDetails,
@@ -6805,6 +6808,41 @@ describe("ApplicationWorkflowDataService", () => {
 			runId: "run-1",
 			instanceId: "sympy__sympy-20590",
 			now,
+		});
+	});
+
+	it("records benchmark artifact metadata through workflow-data ports", async () => {
+		const benchmarkArtifactMetadata: BenchmarkArtifactMetadataRepository = {
+			recordArtifact: vi.fn(async () => undefined),
+		};
+		const { service } = makeService({ benchmarkArtifactMetadata });
+
+		await service.recordBenchmarkArtifact({
+			runId: "run-1",
+			instanceId: "sympy__sympy-20590",
+			kind: "predictions_jsonl",
+			path: "predictions.jsonl",
+			contentType: "application/jsonl; charset=utf-8",
+			sizeBytes: 128,
+			sha256: "abc123",
+			metadata: {
+				backend: "dapr-blob",
+				objectKey: "swebench/dev/run-1/predictions.jsonl",
+			},
+		});
+
+		expect(benchmarkArtifactMetadata.recordArtifact).toHaveBeenCalledWith({
+			runId: "run-1",
+			instanceId: "sympy__sympy-20590",
+			kind: "predictions_jsonl",
+			path: "predictions.jsonl",
+			contentType: "application/jsonl; charset=utf-8",
+			sizeBytes: 128,
+			sha256: "abc123",
+			metadata: {
+				backend: "dapr-blob",
+				objectKey: "swebench/dev/run-1/predictions.jsonl",
+			},
 		});
 	});
 

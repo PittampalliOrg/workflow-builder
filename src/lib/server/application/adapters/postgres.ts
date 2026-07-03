@@ -40,6 +40,7 @@ import {
 	mlflowLineageLinks,
 	agents,
 	agentVersions,
+	benchmarkArtifacts,
 	benchmarkInstances,
 	benchmarkRunInstances,
 	benchmarkRunInstanceAnnotations,
@@ -107,6 +108,8 @@ import type {
 	ApiKeyRecord,
 	ApiKeyStore,
 	ArtifactStore,
+	BenchmarkArtifactMetadataInput,
+	BenchmarkArtifactMetadataRepository,
 	BenchmarkDatasetPromotionRepository,
 	BenchmarkInstanceAnnotationVerdict,
 	BenchmarkBrowserRepository,
@@ -2496,6 +2499,40 @@ export class PostgresBenchmarkRunRepository implements BenchmarkRunRepository {
 			instanceStatus: row.instanceStatus ?? null,
 			inferenceStatus: row.inferenceStatus ?? null,
 		};
+	}
+}
+
+export class PostgresBenchmarkArtifactMetadataRepository
+	implements BenchmarkArtifactMetadataRepository
+{
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async recordArtifact(input: BenchmarkArtifactMetadataInput): Promise<void> {
+		let runInstanceId: string | null = null;
+		if (input.instanceId) {
+			const [row] = await this.database
+				.select({ id: benchmarkRunInstances.id })
+				.from(benchmarkRunInstances)
+				.where(
+					and(
+						eq(benchmarkRunInstances.runId, input.runId),
+						eq(benchmarkRunInstances.instanceId, input.instanceId),
+					),
+				)
+				.limit(1);
+			runInstanceId = row?.id ?? null;
+		}
+
+		await this.database.insert(benchmarkArtifacts).values({
+			runId: input.runId,
+			runInstanceId,
+			kind: input.kind,
+			path: input.path,
+			contentType: input.contentType,
+			sizeBytes: input.sizeBytes,
+			sha256: input.sha256,
+			metadata: input.metadata,
+		});
 	}
 }
 

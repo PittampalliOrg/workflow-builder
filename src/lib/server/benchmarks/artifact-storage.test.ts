@@ -1,7 +1,15 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
+const recordBenchmarkArtifact = vi.hoisted(() => vi.fn());
+
 vi.mock("$env/dynamic/private", () => ({ env: process.env }));
-vi.mock("$lib/server/db", () => ({ db: null }));
+vi.mock("$lib/server/application", () => ({
+	getApplicationAdapters: () => ({
+		workflowData: {
+			recordBenchmarkArtifact,
+		},
+	}),
+}));
 
 import {
 	benchmarkArtifactObjectKey,
@@ -13,6 +21,7 @@ import {
 beforeEach(() => {
 	vi.unstubAllEnvs();
 	vi.unstubAllGlobals();
+	recordBenchmarkArtifact.mockReset();
 });
 
 describe("benchmark artifact storage", () => {
@@ -63,6 +72,41 @@ describe("benchmark artifact storage", () => {
 				}),
 			}),
 		);
+	});
+
+	it("records benchmark artifact metadata through workflow-data", async () => {
+		vi.stubEnv("SWEBENCH_ARTIFACT_STORAGE_BACKEND", "dapr-blob");
+		vi.stubEnv("SWEBENCH_ARTIFACT_DAPR_BINDING", "swebench-artifacts");
+		vi.stubEnv("DAPR_HTTP_PORT", "3500");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(new Response("", { status: 200 })),
+		);
+
+		await putBenchmarkArtifact({
+			runId: "run_1",
+			path: "predictions.jsonl",
+			body: new TextEncoder().encode("hello"),
+			contentType: "application/jsonl; charset=utf-8",
+			kind: "predictions_jsonl",
+			instanceId: "sympy__sympy-20590",
+			metadata: { source: "unit-test" },
+		});
+
+		expect(recordBenchmarkArtifact).toHaveBeenCalledWith({
+			runId: "run_1",
+			instanceId: "sympy__sympy-20590",
+			kind: "predictions_jsonl",
+			path: "predictions.jsonl",
+			contentType: "application/jsonl; charset=utf-8",
+			sizeBytes: 5,
+			sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+			metadata: {
+				source: "unit-test",
+				backend: "dapr-blob",
+				objectKey: "swebench/dev/run_1/predictions.jsonl",
+			},
+		});
 	});
 
 	it("treats Dapr blob binding not-found failures as missing artifacts", async () => {

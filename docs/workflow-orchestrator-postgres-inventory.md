@@ -57,6 +57,12 @@ imports `benchmark_run_instances`, `session_events`, or Drizzle.
 The internal benchmark run status and capacity-gate APIs now resolve the run's
 project scope through workflow-data before delegating to benchmark services,
 removing route-local `benchmark_runs`/Drizzle imports.
+The internal benchmark artifact upload/read/delete route now uses the
+application-owned `BenchmarkArtifactKind` DTO, and benchmark artifact metadata
+recording is routed through a workflow-data port. Blob/local object storage
+remains in the benchmark artifact storage adapter, while the Postgres lookup of
+the source run-instance id and `benchmark_artifacts` insert are confined to the
+Postgres workflow-data adapter.
 
 ## Strict HTTP Runtime Paths
 

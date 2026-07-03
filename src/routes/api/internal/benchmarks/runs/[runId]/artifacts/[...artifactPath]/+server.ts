@@ -7,7 +7,7 @@ import {
 	normalizeBenchmarkArtifactPath,
 	putBenchmarkArtifact,
 } from "$lib/server/benchmarks/artifact-storage";
-import type { BenchmarkArtifactKind } from "$lib/server/db/schema";
+import type { BenchmarkArtifactKind } from "$lib/server/application/ports";
 
 const VALID_ARTIFACT_KINDS = new Set<BenchmarkArtifactKind>([
 	"dataset_jsonl",
