@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import sys
 import types
 import importlib.util
@@ -31,6 +32,19 @@ if SPEC is None or SPEC.loader is None:
     raise RuntimeError(f"Unable to load module from {MODULE_PATH}")
 resolve_mcp_config = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(resolve_mcp_config)
+
+
+def _block_psycopg2_imports(monkeypatch):
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "psycopg2" or name.startswith("psycopg2."):
+            raise AssertionError(
+                "psycopg2 should not be imported in strict http mode"
+            )
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
 
 
 class FakeCursor:
@@ -101,6 +115,7 @@ def test_prefers_workflow_data_api_when_configured(monkeypatch):
         raise AssertionError("Postgres should not be used when workflow-data resolves")
 
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
     monkeypatch.setattr(resolve_mcp_config, "workflow_data_client", FakeWorkflowDataClient())
     monkeypatch.setattr(resolve_mcp_config, "_connect_postgres", fail_connect)
 

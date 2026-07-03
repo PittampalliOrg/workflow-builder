@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import importlib.util
 import sys
 import types
@@ -49,6 +50,19 @@ class FailingPsycopg2:
         raise AssertionError("psycopg2.connect should not be called in strict http mode")
 
 
+def _block_psycopg2_imports(monkeypatch):
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "psycopg2" or name.startswith("psycopg2."):
+            raise AssertionError(
+                "psycopg2 should not be imported in strict http mode"
+            )
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+
 def test_finalize_otel_trace_root_records_lineage_through_workflow_data(monkeypatch):
     recorded: list[dict] = []
 
@@ -70,6 +84,7 @@ def test_finalize_otel_trace_root_records_lineage_through_workflow_data(monkeypa
             return {"recorded": 1, "sourceKeys": ["workflow_execution:exec-1"]}
 
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(finalizer, "workflow_data_client", FakeWorkflowDataClient())
 
@@ -118,6 +133,7 @@ def test_finalize_otel_trace_root_strict_http_does_not_fallback_to_postgres(monk
             raise RuntimeError("workflow-data unavailable")
 
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(finalizer, "workflow_data_client", FailingWorkflowDataClient())
 
@@ -139,6 +155,7 @@ def test_finalize_otel_trace_root_strict_http_does_not_fallback_to_postgres(monk
 
 def test_finalize_otel_trace_root_skips_invalid_trace_id(monkeypatch):
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
 
     assert finalizer.finalize_otel_trace_root(None, {"traceId": "not-a-trace"}) == {

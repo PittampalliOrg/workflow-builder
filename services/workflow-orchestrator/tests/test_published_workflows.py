@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import builtins
 import contextlib
 import importlib.util
 import json
@@ -300,6 +301,19 @@ APP = _load_module("workflow_orchestrator_app", "app.py")
 SW_WORKFLOW = _load_module(
     "workflow_orchestrator_sw_workflow", "workflows/sw_workflow.py"
 )
+
+
+def _block_psycopg2_imports(monkeypatch):
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "psycopg2" or name.startswith("psycopg2."):
+            raise AssertionError(
+                "psycopg2 should not be imported in strict http mode"
+            )
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
 SPAWN_SESSION = _load_module(
     "workflow_orchestrator_spawn_session", "activities/spawn_session.py"
 )
@@ -829,6 +843,7 @@ def test_app_start_control_strict_http_uses_workflow_data_client(monkeypatch):
         raise AssertionError("DATABASE_URL should not be fetched in strict http mode")
 
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
     monkeypatch.setattr(APP, "workflow_data_client", FakeWorkflowDataClient())
     monkeypatch.setattr(APP, "_get_database_url", fail_database_url)
     monkeypatch.setitem(
@@ -905,6 +920,7 @@ def test_app_strict_http_status_lookup_failure_does_not_fallback_to_db(monkeypat
         raise AssertionError("psycopg2.connect should not be called in strict http mode")
 
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
     monkeypatch.setattr(APP, "workflow_data_client", FailingWorkflowDataClient())
     monkeypatch.setitem(
         sys.modules,

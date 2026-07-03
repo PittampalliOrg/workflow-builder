@@ -536,6 +536,10 @@ The first UI-facing route has also moved behind the application service:
   `workflowData.assertExecutionReadModelReady`, and trigger model-catalog
   fallback validation reads enabled models through a workflow-data model catalog
   port instead of importing Drizzle/model schema from `model-validation.ts`.
+- Orchestrator strict-mode tests now block `psycopg2` imports, not just
+  `psycopg2.connect`, for migrated app.py helpers, workflow-data activity
+  migrations, OTel trace finalization, and MCP config resolution. Fallback-mode
+  tests still keep explicit fake Postgres modules for rollback coverage.
 - `src/routes/workspaces/[slug]/benchmarks/+page.server.ts`,
   `src/routes/workspaces/[slug]/benchmarks/runs/+page.server.ts`, and
   `src/routes/workspaces/[slug]/benchmarks/compare/+page.server.ts` now delegate

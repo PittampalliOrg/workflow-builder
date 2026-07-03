@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import importlib.util
 import sys
 import types
@@ -61,6 +62,19 @@ class FailingPsycopg2:
         raise AssertionError("psycopg2.connect should not be called in strict http mode")
 
 
+def _block_psycopg2_imports(monkeypatch):
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "psycopg2" or name.startswith("psycopg2."):
+            raise AssertionError(
+                "psycopg2 should not be imported in strict http mode"
+            )
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+
 def _fail_database_url():
     raise AssertionError("database URL should not be fetched")
 
@@ -74,6 +88,7 @@ def test_track_agent_run_strict_http_uses_workflow_data_client(monkeypatch):
             return {"ok": True, "id": payload["id"]}
 
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(track_agent_run, "workflow_data_client", FakeWorkflowDataClient())
     monkeypatch.setattr(
@@ -127,6 +142,7 @@ def test_persist_plan_artifact_strict_http_uses_workflow_data_client(monkeypatch
             }
 
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(persist_plan_artifact, "workflow_data_client", FakeWorkflowDataClient())
     monkeypatch.setattr(
@@ -177,6 +193,7 @@ def test_log_node_execution_strict_http_uses_workflow_data_client(monkeypatch):
             return {"log": {"id": log_id}}
 
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(log_node_execution, "workflow_data_client", FakeWorkflowDataClient())
     monkeypatch.setattr(log_node_execution, "_get_database_url", _fail_database_url)
@@ -226,6 +243,7 @@ def test_log_node_execution_strict_http_failure_does_not_fallback(monkeypatch):
             raise RuntimeError("workflow-data unavailable")
 
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(log_node_execution, "workflow_data_client", FailingWorkflowDataClient())
     monkeypatch.setattr(log_node_execution, "_get_database_url", _fail_database_url)
@@ -254,6 +272,7 @@ def test_persist_workspace_session_strict_http_uses_workflow_data_client(monkeyp
             return {"ok": True}
 
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(
         persist_workspace_session,
@@ -327,6 +346,7 @@ def test_register_resumable_workspace_strict_http_uses_workflow_data_client(monk
             return {"ok": True}
 
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(
         register_resumable_workspace,
@@ -376,6 +396,7 @@ def test_trace_lineage_strict_http_uses_workflow_data_client(monkeypatch):
             return {"recorded": 1}
 
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(finalizer, "workflow_data_client", FakeWorkflowDataClient())
 
