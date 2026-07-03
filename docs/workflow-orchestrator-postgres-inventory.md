@@ -526,6 +526,11 @@ The first UI-facing route has also moved behind the application service:
   Postgres client for `LISTEN`. SSE framing, heartbeat, replay, and abort
   cleanup stay in the route; the Postgres `LISTEN gitops_activity_events`
   implementation is behind `subscribeGitOpsActivityEvents`.
+- Evaluation and benchmark callback routes no longer import Drizzle schema types
+  for request casts. `EvaluationSubjectTypeInput`,
+  `EvaluationRunItemStatusInput`, `EvaluationArtifactKindInput`, and
+  `BenchmarkResourceLeaseTypeInput` are route-facing application unions exported
+  from the owning service modules.
 - `src/routes/workspaces/[slug]/benchmarks/+page.server.ts`,
   `src/routes/workspaces/[slug]/benchmarks/runs/+page.server.ts`, and
   `src/routes/workspaces/[slug]/benchmarks/compare/+page.server.ts` now delegate

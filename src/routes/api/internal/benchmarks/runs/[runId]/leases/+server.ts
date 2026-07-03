@@ -5,13 +5,13 @@ import {
 	acquireBenchmarkResourceLeases,
 	benchmarkResourceLeaseSnapshot,
 	releaseBenchmarkResourceLeases,
+	type BenchmarkResourceLeaseTypeInput,
 } from "$lib/server/benchmarks/resource-leases";
-import type { BenchmarkResourceLeaseType } from "$lib/server/db/schema";
 
-function resourceTypes(value: unknown): BenchmarkResourceLeaseType[] | null {
+function resourceTypes(value: unknown): BenchmarkResourceLeaseTypeInput[] | null {
 	if (!Array.isArray(value)) return null;
 	return value.filter(
-		(v): v is BenchmarkResourceLeaseType =>
+		(v): v is BenchmarkResourceLeaseTypeInput =>
 			v === "inference_slot" ||
 			v === "openshell_sandbox" ||
 			v === "agent_runtime_slot" ||

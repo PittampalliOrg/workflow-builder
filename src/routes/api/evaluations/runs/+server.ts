@@ -5,8 +5,8 @@ import {
 	listEvaluationRuns,
 	markEvaluationRunStatus,
 	startEvaluationCoordinator,
+	type EvaluationSubjectTypeInput,
 } from "$lib/server/evaluations/service";
-import type { EvaluationSubjectType } from "$lib/server/db/schema";
 
 const SUBJECT_TYPES = new Set(["agent", "workflow", "imported_outputs", "model"]);
 
@@ -25,7 +25,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	}
 	const body = asRecord(await request.json().catch(() => ({})));
 	const subjectType = SUBJECT_TYPES.has(String(body.subjectType))
-		? (String(body.subjectType) as EvaluationSubjectType)
+		? (String(body.subjectType) as EvaluationSubjectTypeInput)
 		: "imported_outputs";
 	const run = await createEvaluationRun({
 		projectId: locals.session.projectId,

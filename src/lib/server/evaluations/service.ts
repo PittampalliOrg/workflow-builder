@@ -14,11 +14,8 @@ import {
 	sessions,
 	workflowExecutions,
 	workflows,
-	type EvaluationArtifactKind,
 	type EvaluationGraderType,
-	type EvaluationRunItemStatus,
 	type EvaluationRunStatus,
-	type EvaluationSubjectType,
 } from "$lib/server/db/schema";
 import {
 	AgentRefResolutionError,
@@ -57,6 +54,33 @@ import {
 	type GraderDefinition,
 	type GraderResult,
 } from "./graders";
+
+export type EvaluationArtifactKindInput =
+	| "dataset_import"
+	| "generated_output"
+	| "grader_result"
+	| "external_harness"
+	| "logs"
+	| "report"
+	| "predictions_jsonl";
+export type EvaluationRunItemStatusInput =
+	| "queued"
+	| "running"
+	| "grading"
+	| "passed"
+	| "failed"
+	| "error"
+	| "cancelled"
+	| "skipped";
+export type EvaluationSubjectTypeInput =
+	| "agent"
+	| "workflow"
+	| "imported_outputs"
+	| "model";
+
+type EvaluationArtifactKind = EvaluationArtifactKindInput;
+type EvaluationRunItemStatus = EvaluationRunItemStatusInput;
+type EvaluationSubjectType = EvaluationSubjectTypeInput;
 
 const HIDDEN_EVALUATION_WORKFLOW_NAME = "Evaluation item runner";
 const DEFAULT_SWEBENCH_COMMAND_TIMEOUT_MS = 900_000;

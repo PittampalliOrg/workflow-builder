@@ -110,4 +110,16 @@ describe("internal benchmark run status and capacity routes", () => {
 			expect(source).not.toContain("drizzle-orm");
 		}
 	});
+
+	it("keeps the lease route free of direct DB imports", () => {
+		const source = readFileSync(
+			join(dirname(fileURLToPath(import.meta.url)), "[runId]/leases/+server.ts"),
+			"utf8",
+		);
+
+		expect(source).toContain("$lib/server/benchmarks/resource-leases");
+		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("$lib/server/db/schema");
+		expect(source).not.toContain("drizzle-orm");
+	});
 });

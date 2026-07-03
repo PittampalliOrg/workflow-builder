@@ -2,8 +2,8 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import {
 	markEvaluationRunItemStatus,
+	type EvaluationRunItemStatusInput,
 } from "$lib/server/evaluations/service";
-import type { EvaluationRunItemStatus } from "$lib/server/db/schema";
 import { requireInternal } from "$lib/server/internal-auth";
 
 const STATUSES = new Set([
@@ -25,7 +25,7 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	const item = await markEvaluationRunItemStatus({
 		runId: params.runId,
 		itemId: params.itemId,
-		status: status as EvaluationRunItemStatus,
+		status: status as EvaluationRunItemStatusInput,
 		error:
 			typeof body.error === "string" || body.error === null
 				? body.error

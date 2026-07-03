@@ -1,8 +1,10 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import type { EvaluationRunItemStatus } from "$lib/server/db/schema";
 import { requireInternal } from "$lib/server/internal-auth";
-import { recordEvaluationRunItemGraderResults } from "$lib/server/evaluations/service";
+import {
+	recordEvaluationRunItemGraderResults,
+	type EvaluationRunItemStatusInput,
+} from "$lib/server/evaluations/service";
 
 const STATUSES = new Set([
 	"queued",
@@ -30,7 +32,7 @@ export const POST: RequestHandler = async ({ request, params }) => {
 		scores: asOptionalRecord(body.scores),
 		status:
 			rawStatus && STATUSES.has(rawStatus)
-				? (rawStatus as EvaluationRunItemStatus)
+				? (rawStatus as EvaluationRunItemStatusInput)
 				: undefined,
 		error:
 			typeof body.error === "string" || body.error === null

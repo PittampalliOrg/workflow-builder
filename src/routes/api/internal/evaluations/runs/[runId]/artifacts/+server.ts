@@ -1,8 +1,10 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { requireInternal } from "$lib/server/internal-auth";
-import { recordEvaluationArtifact } from "$lib/server/evaluations/service";
-import type { EvaluationArtifactKind } from "$lib/server/db/schema";
+import {
+	recordEvaluationArtifact,
+	type EvaluationArtifactKindInput,
+} from "$lib/server/evaluations/service";
 
 const ARTIFACT_KINDS = new Set([
 	"dataset_import",
@@ -22,7 +24,7 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	const artifact = await recordEvaluationArtifact({
 		runId: params.runId,
 		runItemId: typeof body.runItemId === "string" ? body.runItemId : null,
-		kind: kind as EvaluationArtifactKind,
+		kind: kind as EvaluationArtifactKindInput,
 		path: typeof body.path === "string" ? body.path : null,
 		content: body.content,
 		contentType: typeof body.contentType === "string" ? body.contentType : null,

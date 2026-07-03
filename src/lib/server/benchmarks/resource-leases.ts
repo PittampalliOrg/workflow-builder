@@ -5,12 +5,21 @@ import { db } from "$lib/server/db";
 import {
 	benchmarkResourceLeases,
 	benchmarkRuns,
-	type BenchmarkResourceLeaseType,
 } from "$lib/server/db/schema";
 import {
 	loadSchedulableSandboxCapacitySnapshot,
 	type BenchmarkSandboxCapacitySnapshot,
 } from "./sandbox-capacity";
+
+export type BenchmarkResourceLeaseTypeInput =
+	| "inference_slot"
+	| "openshell_sandbox"
+	| "agent_runtime_slot"
+	| "dapr_workflow_slot"
+	| "evaluator_slot"
+	| "model_slot";
+
+type BenchmarkResourceLeaseType = BenchmarkResourceLeaseTypeInput;
 
 const INFERENCE_RESOURCES = [
 	"inference_slot",

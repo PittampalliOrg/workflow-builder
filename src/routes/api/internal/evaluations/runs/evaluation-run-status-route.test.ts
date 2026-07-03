@@ -102,4 +102,22 @@ describe("internal evaluation run status route", () => {
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");
 	});
+
+	it("keeps migrated item and artifact routes free of direct DB imports", () => {
+		for (const relativePath of [
+			"[runId]/items/[itemId]/status/+server.ts",
+			"[runId]/items/[itemId]/grader-results/+server.ts",
+			"[runId]/artifacts/+server.ts",
+		]) {
+			const source = readFileSync(
+				join(dirname(fileURLToPath(import.meta.url)), relativePath),
+				"utf8",
+			);
+
+			expect(source).toContain("$lib/server/evaluations/service");
+			expect(source).not.toContain("$lib/server/db");
+			expect(source).not.toContain("$lib/server/db/schema");
+			expect(source).not.toContain("drizzle-orm");
+		}
+	});
 });
