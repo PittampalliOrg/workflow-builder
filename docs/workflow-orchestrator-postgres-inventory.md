@@ -92,6 +92,12 @@ The capacity overview API route now delegates observer loading, ownership
 enrichment, and business-work summary construction to
 `ApplicationCapacityOverviewService`; route-local imports of capacity
 helper modules were removed.
+Capacity business-work detail loading and owner resolution now run through
+`PostgresCapacityBusinessWorkRepository` and
+`PostgresCapacityOwnershipRepository` in the application adapter layer.
+`src/lib/server/capacity/business-work.ts` and
+`src/lib/server/capacity/ownership.ts` are pure aggregation/linking modules
+with injected repositories and no DB, Drizzle, or schema imports.
 CLI credential persistence now lives behind `ApplicationCliCredentialsService`
 with `PostgresUserCliCredentialStore` and `RawPostgresHostCliCredentialStore`
 adapters. The user CLI-token API, internal runtime capture route, workflow

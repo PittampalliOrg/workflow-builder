@@ -1,13 +1,3 @@
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import {
-	agents,
-	benchmarkRunInstances,
-	benchmarkRuns,
-	sessions,
-	workflowExecutions,
-	workflows
-} from '$lib/server/db/schema';
 import type {
 	CapacityBlockedWorkload,
 	CapacityBusinessWorkItem,
@@ -22,9 +12,16 @@ const RESOURCE_KEYS = ['cpu', 'memory', 'ephemeral-storage', 'pods'] as const;
 // 'idle' included: a goal-loop / interactive session sits in `idle` between turns
 // while its pod stays alive (it IS active work). Matches the activity-cell "live"
 // set so panel inclusion and the live heartbeat dot agree.
-const ACTIVE_SESSION_STATUSES = new Set(['queued', 'running', 'rescheduling', 'active', 'starting', 'idle']);
-const ACTIVE_BENCHMARK_STATUSES = new Set(['queued', 'running', 'inferencing', 'evaluating']);
-const ACTIVE_WORKFLOW_STATUSES = new Set(['pending', 'running']);
+export const ACTIVE_SESSION_STATUSES = new Set([
+	'queued',
+	'running',
+	'rescheduling',
+	'active',
+	'starting',
+	'idle'
+]);
+export const ACTIVE_BENCHMARK_STATUSES = new Set(['queued', 'running', 'inferencing', 'evaluating']);
+export const ACTIVE_WORKFLOW_STATUSES = new Set(['pending', 'running']);
 
 type ResourceKey = (typeof RESOURCE_KEYS)[number];
 type ResourceMap = Record<string, number>;
@@ -36,7 +33,7 @@ type BusinessContext = {
 
 type MutableItem = CapacityBusinessWorkItem;
 
-type SessionDetail = {
+export type CapacityBusinessWorkSessionDetail = {
 	id: string;
 	title: string | null;
 	status: string;
@@ -53,7 +50,7 @@ type SessionDetail = {
 	workflowName: string | null;
 };
 
-type WorkflowDetail = {
+export type CapacityBusinessWorkWorkflowDetail = {
 	id: string;
 	status: string;
 	startedAt: Date;
@@ -67,7 +64,7 @@ type WorkflowDetail = {
 	resumeFromNode: string | null;
 };
 
-type BenchmarkRunDetail = {
+export type CapacityBusinessWorkBenchmarkRunDetail = {
 	id: string;
 	status: string;
 	startedAt: Date | null;
@@ -80,7 +77,7 @@ type BenchmarkRunDetail = {
 	agentName: string;
 };
 
-type BenchmarkInstanceDetail = {
+export type CapacityBusinessWorkBenchmarkInstanceDetail = {
 	id: string;
 	runId: string;
 	instanceId: string;
@@ -95,21 +92,35 @@ type BenchmarkInstanceDetail = {
 	workflowExecutionId: string | null;
 };
 
-type DetailMaps = {
-	sessions: Map<string, SessionDetail>;
-	workflows: Map<string, WorkflowDetail>;
-	benchmarkRuns: Map<string, BenchmarkRunDetail>;
-	benchmarkInstances: Map<string, BenchmarkInstanceDetail>;
+export type CapacityBusinessWorkDetailMaps = {
+	sessions: Map<string, CapacityBusinessWorkSessionDetail>;
+	workflows: Map<string, CapacityBusinessWorkWorkflowDetail>;
+	benchmarkRuns: Map<string, CapacityBusinessWorkBenchmarkRunDetail>;
+	benchmarkInstances: Map<string, CapacityBusinessWorkBenchmarkInstanceDetail>;
+};
+
+export type CapacityBusinessWorkRepository = {
+	loadDetails(
+		items: CapacityBusinessWorkItem[],
+		projectId: string
+	): Promise<CapacityBusinessWorkDetailMaps>;
+	loadDbWork(
+		projectId: string,
+		workspaceSlug: string
+	): Promise<{ active: CapacityBusinessWorkItem[]; recent: CapacityBusinessWorkItem[] }>;
 };
 
 export async function buildCapacityBusinessWork(
 	snapshot: CapacityObserverSnapshot,
-	context: BusinessContext
+	context: BusinessContext,
+	repository: CapacityBusinessWorkRepository = EMPTY_BUSINESS_WORK_REPOSITORY
 ): Promise<CapacityBusinessWorkSummary> {
 	const active = aggregateActiveWork(snapshot);
-	const details = context.projectId ? await loadDetails(active, context.projectId) : emptyDetails();
+	const details = context.projectId
+		? await repository.loadDetails(active, context.projectId)
+		: emptyDetails();
 	const dbWork = context.projectId
-		? await loadDbWork(context.projectId, context.workspaceSlug)
+		? await repository.loadDbWork(context.projectId, context.workspaceSlug)
 		: { active: [] as CapacityBusinessWorkItem[], recent: [] as CapacityBusinessWorkItem[] };
 	const recent = dbWork.recent;
 
@@ -270,28 +281,16 @@ function infrastructureKey(contributor: CapacityContributorSnapshot): string {
 	return `infrastructure:${contributor.kind}:${name}`;
 }
 
-async function loadDetails(items: CapacityBusinessWorkItem[], projectId: string): Promise<DetailMaps> {
-	const idsByKind = {
-		session: idsFor(items, 'session'),
-		workflowRun: idsFor(items, 'workflowRun'),
-		benchmarkRun: idsFor(items, 'benchmarkRun'),
-		benchmarkInstance: idsFor(items, 'benchmarkInstance')
-	};
-	const [sessionRows, workflowRows, benchmarkRunRows, benchmarkInstanceRows] = await Promise.all([
-		selectSessions(projectId, idsByKind.session),
-		selectWorkflowExecutions(projectId, idsByKind.workflowRun),
-		selectBenchmarkRuns(projectId, idsByKind.benchmarkRun),
-		selectBenchmarkInstances(projectId, idsByKind.benchmarkInstance)
-	]);
-	return {
-		sessions: new Map(sessionRows.map((row) => [row.id, row])),
-		workflows: new Map(workflowRows.map((row) => [row.id, row])),
-		benchmarkRuns: new Map(benchmarkRunRows.map((row) => [row.id, row])),
-		benchmarkInstances: new Map(benchmarkInstanceRows.map((row) => [row.id, row]))
-	};
-}
+const EMPTY_BUSINESS_WORK_REPOSITORY: CapacityBusinessWorkRepository = {
+	async loadDetails() {
+		return emptyDetails();
+	},
+	async loadDbWork() {
+		return { active: [], recent: [] };
+	}
+};
 
-function emptyDetails(): DetailMaps {
+export function emptyDetails(): CapacityBusinessWorkDetailMaps {
 	return {
 		sessions: new Map(),
 		workflows: new Map(),
@@ -300,219 +299,11 @@ function emptyDetails(): DetailMaps {
 	};
 }
 
-async function selectSessions(projectId: string, ids: string[]): Promise<SessionDetail[]> {
-	if (!db || ids.length === 0) return [];
-	return (await db
-		.select({
-			id: sessions.id,
-			title: sessions.title,
-			status: sessions.status,
-			createdAt: sessions.createdAt,
-			updatedAt: sessions.updatedAt,
-			completedAt: sessions.completedAt,
-			usage: sessions.usage,
-			agentId: agents.id,
-			agentName: agents.name,
-			agentSlug: agents.slug,
-			modelSpec: sql<string | null>`${sessions.usage}->>'modelSpec'`,
-			workflowExecutionId: sessions.workflowExecutionId,
-			workflowId: workflowExecutions.workflowId,
-			workflowName: workflows.name
-		})
-		.from(sessions)
-		.innerJoin(agents, eq(agents.id, sessions.agentId))
-		.leftJoin(workflowExecutions, eq(workflowExecutions.id, sessions.workflowExecutionId))
-		.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
-		.where(and(eq(sessions.projectId, projectId), inArray(sessions.id, ids)))) as SessionDetail[];
-}
-
-async function selectWorkflowExecutions(projectId: string, ids: string[]): Promise<WorkflowDetail[]> {
-	if (!db || ids.length === 0) return [];
-	return (await db
-		.select({
-			id: workflowExecutions.id,
-			status: workflowExecutions.status,
-			startedAt: workflowExecutions.startedAt,
-			completedAt: workflowExecutions.completedAt,
-			duration: workflowExecutions.duration,
-			workflowId: workflows.id,
-			workflowName: workflows.name,
-			currentNodeName: workflowExecutions.currentNodeName,
-			progress: workflowExecutions.progress,
-			rerunOfExecutionId: workflowExecutions.rerunOfExecutionId,
-			resumeFromNode: workflowExecutions.resumeFromNode
-		})
-		.from(workflowExecutions)
-		.innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
-		.where(and(eq(workflowExecutions.projectId, projectId), inArray(workflowExecutions.id, ids)))) as WorkflowDetail[];
-}
-
-async function selectBenchmarkRuns(projectId: string, ids: string[]): Promise<BenchmarkRunDetail[]> {
-	if (!db || ids.length === 0) return [];
-	return (await db
-		.select({
-			id: benchmarkRuns.id,
-			status: benchmarkRuns.status,
-			startedAt: benchmarkRuns.startedAt,
-			completedAt: benchmarkRuns.completedAt,
-			createdAt: benchmarkRuns.createdAt,
-			updatedAt: benchmarkRuns.updatedAt,
-			modelNameOrPath: benchmarkRuns.modelNameOrPath,
-			modelConfigLabel: benchmarkRuns.modelConfigLabel,
-			agentId: agents.id,
-			agentName: agents.name
-		})
-		.from(benchmarkRuns)
-		.innerJoin(agents, eq(agents.id, benchmarkRuns.agentId))
-		.where(and(eq(benchmarkRuns.projectId, projectId), inArray(benchmarkRuns.id, ids)))) as BenchmarkRunDetail[];
-}
-
-async function selectBenchmarkInstances(
-	projectId: string,
-	ids: string[]
-): Promise<BenchmarkInstanceDetail[]> {
-	if (!db || ids.length === 0) return [];
-	return (await db
-		.select({
-			id: benchmarkRunInstances.id,
-			runId: benchmarkRunInstances.runId,
-			instanceId: benchmarkRunInstances.instanceId,
-			status: benchmarkRunInstances.status,
-			startedAt: benchmarkRunInstances.startedAt,
-			completedAt: benchmarkRunInstances.evaluatedAt,
-			createdAt: benchmarkRunInstances.createdAt,
-			updatedAt: benchmarkRunInstances.updatedAt,
-			modelNameOrPath: benchmarkRuns.modelNameOrPath,
-			modelConfigLabel: benchmarkRuns.modelConfigLabel,
-			sessionId: benchmarkRunInstances.sessionId,
-			workflowExecutionId: benchmarkRunInstances.workflowExecutionId
-		})
-		.from(benchmarkRunInstances)
-		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
-		.where(and(eq(benchmarkRuns.projectId, projectId), inArray(benchmarkRunInstances.id, ids)))) as BenchmarkInstanceDetail[];
-}
-
-async function loadDbWork(
-	projectId: string,
+function applyDetails(
+	item: CapacityBusinessWorkItem,
+	details: CapacityBusinessWorkDetailMaps,
 	workspaceSlug: string
-): Promise<{ active: CapacityBusinessWorkItem[]; recent: CapacityBusinessWorkItem[] }> {
-	if (!db) return { active: [], recent: [] };
-	const [sessionRows, workflowRows, runRows, instanceRows] = await Promise.all([
-		(await db
-			.select({
-				id: sessions.id,
-				title: sessions.title,
-				status: sessions.status,
-				createdAt: sessions.createdAt,
-				updatedAt: sessions.updatedAt,
-				completedAt: sessions.completedAt,
-				usage: sessions.usage,
-				agentId: agents.id,
-				agentName: agents.name,
-				agentSlug: agents.slug,
-				modelSpec: sql<string | null>`${sessions.usage}->>'modelSpec'`,
-				workflowExecutionId: sessions.workflowExecutionId,
-				workflowId: workflowExecutions.workflowId,
-				workflowName: workflows.name
-			})
-			.from(sessions)
-			.innerJoin(agents, eq(agents.id, sessions.agentId))
-			.leftJoin(workflowExecutions, eq(workflowExecutions.id, sessions.workflowExecutionId))
-			.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
-			.where(eq(sessions.projectId, projectId))
-			.orderBy(desc(sessions.updatedAt))
-			.limit(25)) as SessionDetail[],
-		(await db
-			.select({
-				id: workflowExecutions.id,
-				status: workflowExecutions.status,
-				startedAt: workflowExecutions.startedAt,
-				completedAt: workflowExecutions.completedAt,
-				duration: workflowExecutions.duration,
-				workflowId: workflows.id,
-				workflowName: workflows.name,
-				currentNodeName: workflowExecutions.currentNodeName,
-				progress: workflowExecutions.progress
-			})
-			.from(workflowExecutions)
-			.innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
-			.where(eq(workflowExecutions.projectId, projectId))
-			.orderBy(desc(workflowExecutions.startedAt))
-			.limit(25)) as WorkflowDetail[],
-		(await db
-			.select({
-				id: benchmarkRuns.id,
-				status: benchmarkRuns.status,
-				startedAt: benchmarkRuns.startedAt,
-				completedAt: benchmarkRuns.completedAt,
-				createdAt: benchmarkRuns.createdAt,
-				updatedAt: benchmarkRuns.updatedAt,
-				modelNameOrPath: benchmarkRuns.modelNameOrPath,
-				modelConfigLabel: benchmarkRuns.modelConfigLabel,
-				agentId: agents.id,
-				agentName: agents.name
-			})
-			.from(benchmarkRuns)
-			.innerJoin(agents, eq(agents.id, benchmarkRuns.agentId))
-			.where(eq(benchmarkRuns.projectId, projectId))
-			.orderBy(desc(benchmarkRuns.updatedAt))
-			.limit(25)) as BenchmarkRunDetail[],
-		(await db
-			.select({
-				id: benchmarkRunInstances.id,
-				runId: benchmarkRunInstances.runId,
-				instanceId: benchmarkRunInstances.instanceId,
-				status: benchmarkRunInstances.status,
-				startedAt: benchmarkRunInstances.startedAt,
-				completedAt: benchmarkRunInstances.evaluatedAt,
-				createdAt: benchmarkRunInstances.createdAt,
-				updatedAt: benchmarkRunInstances.updatedAt,
-				modelNameOrPath: benchmarkRuns.modelNameOrPath,
-				modelConfigLabel: benchmarkRuns.modelConfigLabel,
-				sessionId: benchmarkRunInstances.sessionId,
-				workflowExecutionId: benchmarkRunInstances.workflowExecutionId
-			})
-			.from(benchmarkRunInstances)
-			.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
-			.where(eq(benchmarkRuns.projectId, projectId))
-			.orderBy(desc(benchmarkRunInstances.updatedAt))
-			.limit(25)) as BenchmarkInstanceDetail[]
-	]);
-	const recent = [
-		...sessionRows.filter((row) => row.completedAt || !ACTIVE_SESSION_STATUSES.has(row.status)).map((row) => recentSession(row, workspaceSlug)),
-		...workflowRows.filter((row) => row.completedAt || !ACTIVE_WORKFLOW_STATUSES.has(row.status)).map((row) => recentWorkflow(row, workspaceSlug)),
-		...runRows.filter((row) => row.completedAt || !ACTIVE_BENCHMARK_STATUSES.has(row.status)).map((row) => recentBenchmarkRun(row, workspaceSlug)),
-		...instanceRows.filter((row) => row.completedAt || !ACTIVE_BENCHMARK_STATUSES.has(row.status)).map((row) => recentBenchmarkInstance(row, workspaceSlug))
-	];
-	// DB-authoritative ACTIVE work — the inverse of the recent filter (non-terminal
-	// rows in an active status). The recent* builders set `active=false`; flip it.
-	// buildCapacityBusinessWork unions these in so the panel reflects DB truth even
-	// when the capacity observer reports contributors with no owner attribution.
-	const markActive = (item: CapacityBusinessWorkItem) => {
-		item.active = true;
-		return item;
-	};
-	const active = [
-		...sessionRows
-			.filter((row) => !row.completedAt && ACTIVE_SESSION_STATUSES.has(row.status))
-			.map((row) => markActive(recentSession(row, workspaceSlug))),
-		...workflowRows
-			.filter((row) => !row.completedAt && ACTIVE_WORKFLOW_STATUSES.has(row.status))
-			.map((row) => markActive(recentWorkflow(row, workspaceSlug))),
-		...runRows
-			.filter((row) => !row.completedAt && ACTIVE_BENCHMARK_STATUSES.has(row.status))
-			.map((row) => markActive(recentBenchmarkRun(row, workspaceSlug))),
-		...instanceRows
-			.filter((row) => !row.completedAt && ACTIVE_BENCHMARK_STATUSES.has(row.status))
-			.map((row) => markActive(recentBenchmarkInstance(row, workspaceSlug)))
-	];
-	return {
-		active,
-		recent: recent.sort((a, b) => itemEndMs(b) - itemEndMs(a)).slice(0, 12)
-	};
-}
-
-function applyDetails(item: CapacityBusinessWorkItem, details: DetailMaps, workspaceSlug: string) {
+) {
 	if (item.kind === 'session') {
 		const row = details.sessions.get(item.id);
 		if (!row) return;
@@ -535,7 +326,11 @@ function applyDetails(item: CapacityBusinessWorkItem, details: DetailMaps, works
 	}
 }
 
-function applySessionDetail(item: CapacityBusinessWorkItem, row: SessionDetail, workspaceSlug: string) {
+function applySessionDetail(
+	item: CapacityBusinessWorkItem,
+	row: CapacityBusinessWorkSessionDetail,
+	workspaceSlug: string
+) {
 	item.title = row.title?.trim() || row.agentName || shortId(row.id);
 	item.status = row.status;
 	item.startedAt = row.createdAt.toISOString();
@@ -547,7 +342,11 @@ function applySessionDetail(item: CapacityBusinessWorkItem, row: SessionDetail, 
 	item.href = `/workspaces/${workspaceSlug}/sessions/${row.id}`;
 }
 
-function applyWorkflowDetail(item: CapacityBusinessWorkItem, row: WorkflowDetail, workspaceSlug: string) {
+function applyWorkflowDetail(
+	item: CapacityBusinessWorkItem,
+	row: CapacityBusinessWorkWorkflowDetail,
+	workspaceSlug: string
+) {
 	item.title = `${row.workflowName} run`;
 	item.status = row.status;
 	item.startedAt = row.startedAt.toISOString();
@@ -562,7 +361,11 @@ function applyWorkflowDetail(item: CapacityBusinessWorkItem, row: WorkflowDetail
 	item.href = `/workspaces/${workspaceSlug}/workflows/${row.workflowId}/runs/${row.id}`;
 }
 
-function applyBenchmarkRunDetail(item: CapacityBusinessWorkItem, row: BenchmarkRunDetail, workspaceSlug: string) {
+function applyBenchmarkRunDetail(
+	item: CapacityBusinessWorkItem,
+	row: CapacityBusinessWorkBenchmarkRunDetail,
+	workspaceSlug: string
+) {
 	item.title = `Benchmark ${shortId(row.id)}`;
 	item.status = row.status;
 	item.startedAt = row.startedAt?.toISOString() ?? row.createdAt.toISOString();
@@ -576,7 +379,7 @@ function applyBenchmarkRunDetail(item: CapacityBusinessWorkItem, row: BenchmarkR
 
 function applyBenchmarkInstanceDetail(
 	item: CapacityBusinessWorkItem,
-	row: BenchmarkInstanceDetail,
+	row: CapacityBusinessWorkBenchmarkInstanceDetail,
 	workspaceSlug: string
 ) {
 	item.title = row.instanceId;
@@ -590,28 +393,40 @@ function applyBenchmarkInstanceDetail(
 	item.href = `/workspaces/${workspaceSlug}/benchmarks/runs/${row.runId}`;
 }
 
-function recentSession(row: SessionDetail, workspaceSlug: string): CapacityBusinessWorkItem {
+export function recentSession(
+	row: CapacityBusinessWorkSessionDetail,
+	workspaceSlug: string
+): CapacityBusinessWorkItem {
 	const item = baseRecent('session', row.id, row.title?.trim() || row.agentName || shortId(row.id), `/workspaces/${workspaceSlug}/sessions/${row.id}`);
 	applySessionDetail(item, row, workspaceSlug);
 	item.active = false;
 	return item;
 }
 
-function recentWorkflow(row: WorkflowDetail, workspaceSlug: string): CapacityBusinessWorkItem {
+export function recentWorkflow(
+	row: CapacityBusinessWorkWorkflowDetail,
+	workspaceSlug: string
+): CapacityBusinessWorkItem {
 	const item = baseRecent('workflowRun', row.id, `${row.workflowName} run`, `/workspaces/${workspaceSlug}/workflows/${row.workflowId}/runs/${row.id}`);
 	applyWorkflowDetail(item, row, workspaceSlug);
 	item.active = false;
 	return item;
 }
 
-function recentBenchmarkRun(row: BenchmarkRunDetail, workspaceSlug: string): CapacityBusinessWorkItem {
+export function recentBenchmarkRun(
+	row: CapacityBusinessWorkBenchmarkRunDetail,
+	workspaceSlug: string
+): CapacityBusinessWorkItem {
 	const item = baseRecent('benchmarkRun', row.id, `Benchmark ${shortId(row.id)}`, `/workspaces/${workspaceSlug}/benchmarks/runs/${row.id}`);
 	applyBenchmarkRunDetail(item, row, workspaceSlug);
 	item.active = false;
 	return item;
 }
 
-function recentBenchmarkInstance(row: BenchmarkInstanceDetail, workspaceSlug: string): CapacityBusinessWorkItem {
+export function recentBenchmarkInstance(
+	row: CapacityBusinessWorkBenchmarkInstanceDetail,
+	workspaceSlug: string
+): CapacityBusinessWorkItem {
 	const item = baseRecent('benchmarkInstance', row.id, row.instanceId, `/workspaces/${workspaceSlug}/benchmarks/runs/${row.runId}`);
 	applyBenchmarkInstanceDetail(item, row, workspaceSlug);
 	item.active = false;
@@ -654,7 +469,7 @@ function compareActiveWork(a: CapacityBusinessWorkItem, b: CapacityBusinessWorkI
 	return resourceTotal(b.requestedResources) - resourceTotal(a.requestedResources);
 }
 
-function idsFor(items: CapacityBusinessWorkItem[], kind: CapacityBusinessWorkKind): string[] {
+export function idsFor(items: CapacityBusinessWorkItem[], kind: CapacityBusinessWorkKind): string[] {
 	return [...new Set(items.filter((item) => item.kind === kind).map((item) => item.id))];
 }
 
@@ -703,7 +518,7 @@ function secondsBetween(start: Date, end: Date): number {
 	return Math.max(0, Math.round((end.getTime() - start.getTime()) / 1000));
 }
 
-function itemEndMs(item: CapacityBusinessWorkItem): number {
+export function itemEndMs(item: CapacityBusinessWorkItem): number {
 	return new Date(item.completedAt ?? item.startedAt ?? 0).getTime() || 0;
 }
 

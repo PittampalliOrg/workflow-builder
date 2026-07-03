@@ -1,14 +1,4 @@
 import { createHash } from 'node:crypto';
-import { and, desc, eq, inArray } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import {
-	agents,
-	benchmarkRunInstances,
-	benchmarkRuns,
-	sessions,
-	workflowExecutions,
-	workflows
-} from '$lib/server/db/schema';
 import type {
 	CapacityBlockedWorkload,
 	CapacityContributorSnapshot,
@@ -17,7 +7,7 @@ import type {
 	CapacityOwnerRef
 } from '$lib/types/capacity';
 
-type SessionOwnershipRow = {
+export type SessionOwnershipRow = {
 	sessionId: string;
 	sessionTitle: string | null;
 	sessionRuntimeAppId: string | null;
@@ -29,7 +19,7 @@ type SessionOwnershipRow = {
 	workflowName: string | null;
 };
 
-type BenchmarkOwnershipRow = {
+export type BenchmarkOwnershipRow = {
 	runId: string;
 	runStatus: string;
 	runInstanceRowId: string;
@@ -44,16 +34,39 @@ type BenchmarkOwnershipRow = {
 	sessionTitle: string | null;
 };
 
-type OwnershipContext = {
+export type OwnershipContext = {
 	projectId: string | null | undefined;
 	workspaceSlug: string;
 };
 
+export type CapacityOwnershipRepository = {
+	resolveSessionRows(input: {
+		projectId: string;
+		sessionIds: string[];
+		agentAppIds: string[];
+	}): Promise<SessionOwnershipRow[]>;
+	resolveBenchmarkRows(input: {
+		projectId: string;
+		runIds: string[];
+		instanceIds: string[];
+	}): Promise<BenchmarkOwnershipRow[]>;
+};
+
+const EMPTY_OWNERSHIP_REPOSITORY: CapacityOwnershipRepository = {
+	async resolveSessionRows() {
+		return [];
+	},
+	async resolveBenchmarkRows() {
+		return [];
+	}
+};
+
 export async function enrichCapacitySnapshotOwnership(
 	snapshot: CapacityObserverSnapshot,
-	context: OwnershipContext
+	context: OwnershipContext,
+	repository: CapacityOwnershipRepository = EMPTY_OWNERSHIP_REPOSITORY
 ): Promise<CapacityObserverSnapshot> {
-	if (!db || !context.projectId) return snapshot;
+	if (!context.projectId) return snapshot;
 	const hints = collectHints(snapshot);
 	if (hints.length === 0) return snapshot;
 
@@ -63,12 +76,12 @@ export async function enrichCapacitySnapshotOwnership(
 	const benchmarkInstanceIds = uniqueNonEmpty(hints.map((hint) => hint.benchmarkInstanceId));
 
 	const [sessionRows, benchmarkRows] = await Promise.all([
-		resolveSessionRows({
+		repository.resolveSessionRows({
 			projectId: context.projectId,
 			sessionIds,
 			agentAppIds
 		}),
-		resolveBenchmarkRows({
+		repository.resolveBenchmarkRows({
 			projectId: context.projectId,
 			runIds: benchmarkRunIds,
 			instanceIds: benchmarkInstanceIds
@@ -139,128 +152,6 @@ function hasAnyHint(hint: CapacityOwnerHint): boolean {
 			hint.agentAppId?.trim() ||
 			hint.benchmarkRunId?.trim() ||
 			hint.benchmarkInstanceId?.trim()
-	);
-}
-
-async function resolveSessionRows(params: {
-	projectId: string;
-	sessionIds: string[];
-	agentAppIds: string[];
-}): Promise<SessionOwnershipRow[]> {
-	const rows = new Map<string, SessionOwnershipRow>();
-	const append = (next: SessionOwnershipRow[]) => {
-		for (const row of next) rows.set(row.sessionId, row);
-	};
-
-	if (params.sessionIds.length > 0) {
-		append(await selectSessionOwnershipRows(params.projectId, inArray(sessions.id, params.sessionIds)));
-	}
-	if (params.agentAppIds.length > 0) {
-		append(
-			await selectSessionOwnershipRows(
-				params.projectId,
-				inArray(sessions.runtimeAppId, params.agentAppIds)
-			)
-		);
-	}
-
-	const unresolvedAppIds = params.agentAppIds.filter((id) => {
-		for (const row of rows.values()) {
-			if (row.sessionRuntimeAppId === id || sessionHostAppId(row.sessionId) === id) return false;
-		}
-		return true;
-	});
-	if (unresolvedAppIds.length > 0) {
-		const recentRows = await selectRecentSessionOwnershipRows(params.projectId);
-		append(recentRows.filter((row) => unresolvedAppIds.includes(sessionHostAppId(row.sessionId))));
-	}
-
-	return [...rows.values()];
-}
-
-async function selectSessionOwnershipRows(projectId: string, condition: Parameters<typeof and>[0]) {
-	if (!db) return [];
-	return (await db
-		.select({
-			sessionId: sessions.id,
-			sessionTitle: sessions.title,
-			sessionRuntimeAppId: sessions.runtimeAppId,
-			agentId: agents.id,
-			agentName: agents.name,
-			agentSlug: agents.slug,
-			workflowExecutionId: sessions.workflowExecutionId,
-			workflowId: workflowExecutions.workflowId,
-			workflowName: workflows.name
-		})
-		.from(sessions)
-		.innerJoin(agents, eq(agents.id, sessions.agentId))
-		.leftJoin(workflowExecutions, eq(workflowExecutions.id, sessions.workflowExecutionId))
-		.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
-		.where(and(eq(sessions.projectId, projectId), condition))) as SessionOwnershipRow[];
-}
-
-async function selectRecentSessionOwnershipRows(projectId: string) {
-	if (!db) return [];
-	return (await db
-		.select({
-			sessionId: sessions.id,
-			sessionTitle: sessions.title,
-			sessionRuntimeAppId: sessions.runtimeAppId,
-			agentId: agents.id,
-			agentName: agents.name,
-			agentSlug: agents.slug,
-			workflowExecutionId: sessions.workflowExecutionId,
-			workflowId: workflowExecutions.workflowId,
-			workflowName: workflows.name
-		})
-		.from(sessions)
-		.innerJoin(agents, eq(agents.id, sessions.agentId))
-		.leftJoin(workflowExecutions, eq(workflowExecutions.id, sessions.workflowExecutionId))
-		.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
-		.where(eq(sessions.projectId, projectId))
-		.orderBy(desc(sessions.updatedAt))
-		.limit(300)) as SessionOwnershipRow[];
-}
-
-async function resolveBenchmarkRows(params: {
-	projectId: string;
-	runIds: string[];
-	instanceIds: string[];
-}): Promise<BenchmarkOwnershipRow[]> {
-	if (!db || (params.runIds.length === 0 && params.instanceIds.length === 0)) return [];
-	const rows = (await db
-		.select({
-			runId: benchmarkRuns.id,
-			runStatus: benchmarkRuns.status,
-			runInstanceRowId: benchmarkRunInstances.id,
-			instanceId: benchmarkRunInstances.instanceId,
-			agentId: agents.id,
-			agentName: agents.name,
-			agentSlug: agents.slug,
-			workflowExecutionId: benchmarkRunInstances.workflowExecutionId,
-			workflowId: workflowExecutions.workflowId,
-			workflowName: workflows.name,
-			sessionId: benchmarkRunInstances.sessionId,
-			sessionTitle: sessions.title
-		})
-		.from(benchmarkRunInstances)
-		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
-		.leftJoin(agents, eq(agents.id, benchmarkRuns.agentId))
-		.leftJoin(workflowExecutions, eq(workflowExecutions.id, benchmarkRunInstances.workflowExecutionId))
-		.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
-		.leftJoin(sessions, eq(sessions.id, benchmarkRunInstances.sessionId))
-		.where(eq(benchmarkRuns.projectId, params.projectId))
-		.orderBy(desc(benchmarkRunInstances.updatedAt))
-		.limit(500)) as BenchmarkOwnershipRow[];
-
-	const runLabels = new Set(params.runIds);
-	const instanceLabels = new Set(params.instanceIds);
-	return rows.filter(
-		(row) =>
-			runLabels.has(row.runId) ||
-			runLabels.has(normalizeHostExecutionLabelValue(row.runId)) ||
-			instanceLabels.has(row.instanceId) ||
-			instanceLabels.has(normalizeHostExecutionLabelValue(row.instanceId))
 	);
 }
 

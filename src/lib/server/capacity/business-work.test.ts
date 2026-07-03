@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { __capacityBusinessWorkForTest } from './business-work';
 import type { CapacityObserverSnapshot } from '$lib/types/capacity';
@@ -27,6 +30,17 @@ function snapshot(overrides: Partial<CapacityObserverSnapshot> = {}): CapacityOb
 }
 
 describe('capacity business work aggregation', () => {
+	it('keeps DB and Drizzle access out of the pure aggregation module', () => {
+		const source = readFileSync(
+			join(dirname(fileURLToPath(import.meta.url)), 'business-work.ts'),
+			'utf8'
+		);
+
+		expect(source).not.toContain('$lib/server/db');
+		expect(source).not.toContain('$lib/server/db/schema');
+		expect(source).not.toContain('drizzle-orm');
+	});
+
 	it('groups multiple pods into one active session item', () => {
 		const items = __capacityBusinessWorkForTest.aggregateActiveWork(
 			snapshot({

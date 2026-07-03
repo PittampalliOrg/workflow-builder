@@ -1,4 +1,5 @@
 import { SpanStatusCode, trace } from "@opentelemetry/api";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
 	CLICKHOUSE_DB,
 	escapeClickHouseString,
@@ -10,10 +11,45 @@ import {
 	type TimeSeriesPoint,
 } from "$lib/server/otel/metrics";
 import { fetchCapacityObserverSnapshot } from "$lib/server/capacity/observer";
-import { buildCapacityBusinessWork } from "$lib/server/capacity/business-work";
-import { enrichCapacitySnapshotOwnership } from "$lib/server/capacity/ownership";
+import {
+	ACTIVE_BENCHMARK_STATUSES,
+	ACTIVE_SESSION_STATUSES,
+	ACTIVE_WORKFLOW_STATUSES,
+	buildCapacityBusinessWork,
+	emptyDetails,
+	idsFor,
+	itemEndMs,
+	recentBenchmarkInstance,
+	recentBenchmarkRun,
+	recentSession,
+	recentWorkflow,
+	type CapacityBusinessWorkBenchmarkInstanceDetail,
+	type CapacityBusinessWorkBenchmarkRunDetail,
+	type CapacityBusinessWorkDetailMaps,
+	type CapacityBusinessWorkRepository,
+	type CapacityBusinessWorkSessionDetail,
+	type CapacityBusinessWorkWorkflowDetail,
+} from "$lib/server/capacity/business-work";
+import {
+	enrichCapacitySnapshotOwnership,
+	normalizeHostExecutionLabelValue,
+	sessionHostAppId,
+	type BenchmarkOwnershipRow,
+	type CapacityOwnershipRepository,
+	type SessionOwnershipRow,
+} from "$lib/server/capacity/ownership";
 import { setSpanValue } from "$lib/server/observability/content";
+import { db as defaultDb } from "$lib/server/db";
+import {
+	agents,
+	benchmarkRunInstances,
+	benchmarkRuns,
+	sessions,
+	workflowExecutions,
+	workflows,
+} from "$lib/server/db/schema";
 import type {
+	CapacityBusinessWorkItem,
 	CapacityBusinessWorkSummary,
 	CapacityObserverResult,
 	CapacityObserverSnapshot,
@@ -39,27 +75,536 @@ const TRENDS_WINDOW_SECONDS = 3600;
 const TRENDS_BUCKET_SECONDS = 30;
 const OWNER_TIMELINE_TOP_N = 8;
 
+type Database = typeof defaultDb;
+
 export class HttpCapacityObserverAdapter implements CapacityObserverPort {
 	fetchSnapshot(): Promise<CapacityObserverResult> {
 		return fetchCapacityObserverSnapshot();
 	}
 }
 
+export class PostgresCapacityBusinessWorkRepository
+	implements CapacityBusinessWorkRepository
+{
+	constructor(private readonly database: Database = defaultDb) {}
+
+	async loadDetails(
+		items: CapacityBusinessWorkItem[],
+		projectId: string,
+	): Promise<CapacityBusinessWorkDetailMaps> {
+		if (!this.database) return emptyDetails();
+		const idsByKind = {
+			session: idsFor(items, "session"),
+			workflowRun: idsFor(items, "workflowRun"),
+			benchmarkRun: idsFor(items, "benchmarkRun"),
+			benchmarkInstance: idsFor(items, "benchmarkInstance"),
+		};
+		const [sessionRows, workflowRows, benchmarkRunRows, benchmarkInstanceRows] =
+			await Promise.all([
+				this.selectSessions(projectId, idsByKind.session),
+				this.selectWorkflowExecutions(projectId, idsByKind.workflowRun),
+				this.selectBenchmarkRuns(projectId, idsByKind.benchmarkRun),
+				this.selectBenchmarkInstances(projectId, idsByKind.benchmarkInstance),
+			]);
+		return {
+			sessions: new Map(sessionRows.map((row) => [row.id, row])),
+			workflows: new Map(workflowRows.map((row) => [row.id, row])),
+			benchmarkRuns: new Map(benchmarkRunRows.map((row) => [row.id, row])),
+			benchmarkInstances: new Map(
+				benchmarkInstanceRows.map((row) => [row.id, row]),
+			),
+		};
+	}
+
+	async loadDbWork(
+		projectId: string,
+		workspaceSlug: string,
+	): Promise<{
+		active: CapacityBusinessWorkItem[];
+		recent: CapacityBusinessWorkItem[];
+	}> {
+		if (!this.database) return { active: [], recent: [] };
+		const [sessionRows, workflowRows, runRows, instanceRows] = await Promise.all([
+			this.selectRecentSessions(projectId),
+			this.selectRecentWorkflowExecutions(projectId),
+			this.selectRecentBenchmarkRuns(projectId),
+			this.selectRecentBenchmarkInstances(projectId),
+		]);
+		const recent = [
+			...sessionRows
+				.filter(
+					(row) => row.completedAt || !ACTIVE_SESSION_STATUSES.has(row.status),
+				)
+				.map((row) => recentSession(row, workspaceSlug)),
+			...workflowRows
+				.filter(
+					(row) => row.completedAt || !ACTIVE_WORKFLOW_STATUSES.has(row.status),
+				)
+				.map((row) => recentWorkflow(row, workspaceSlug)),
+			...runRows
+				.filter(
+					(row) =>
+						row.completedAt || !ACTIVE_BENCHMARK_STATUSES.has(row.status),
+				)
+				.map((row) => recentBenchmarkRun(row, workspaceSlug)),
+			...instanceRows
+				.filter(
+					(row) =>
+						row.completedAt || !ACTIVE_BENCHMARK_STATUSES.has(row.status),
+				)
+				.map((row) => recentBenchmarkInstance(row, workspaceSlug)),
+		];
+		const markActive = (item: CapacityBusinessWorkItem) => {
+			item.active = true;
+			return item;
+		};
+		const active = [
+			...sessionRows
+				.filter(
+					(row) =>
+						!row.completedAt && ACTIVE_SESSION_STATUSES.has(row.status),
+				)
+				.map((row) => markActive(recentSession(row, workspaceSlug))),
+			...workflowRows
+				.filter(
+					(row) =>
+						!row.completedAt && ACTIVE_WORKFLOW_STATUSES.has(row.status),
+				)
+				.map((row) => markActive(recentWorkflow(row, workspaceSlug))),
+			...runRows
+				.filter(
+					(row) =>
+						!row.completedAt && ACTIVE_BENCHMARK_STATUSES.has(row.status),
+				)
+				.map((row) => markActive(recentBenchmarkRun(row, workspaceSlug))),
+			...instanceRows
+				.filter(
+					(row) =>
+						!row.completedAt && ACTIVE_BENCHMARK_STATUSES.has(row.status),
+				)
+				.map((row) => markActive(recentBenchmarkInstance(row, workspaceSlug))),
+		];
+		return {
+			active,
+			recent: recent.sort((a, b) => itemEndMs(b) - itemEndMs(a)).slice(0, 12),
+		};
+	}
+
+	private async selectSessions(
+		projectId: string,
+		ids: string[],
+	): Promise<CapacityBusinessWorkSessionDetail[]> {
+		if (!this.database || ids.length === 0) return [];
+		return (await this.database
+			.select({
+				id: sessions.id,
+				title: sessions.title,
+				status: sessions.status,
+				createdAt: sessions.createdAt,
+				updatedAt: sessions.updatedAt,
+				completedAt: sessions.completedAt,
+				usage: sessions.usage,
+				agentId: agents.id,
+				agentName: agents.name,
+				agentSlug: agents.slug,
+				modelSpec: sql<string | null>`${sessions.usage}->>'modelSpec'`,
+				workflowExecutionId: sessions.workflowExecutionId,
+				workflowId: workflowExecutions.workflowId,
+				workflowName: workflows.name,
+			})
+			.from(sessions)
+			.innerJoin(agents, eq(agents.id, sessions.agentId))
+			.leftJoin(
+				workflowExecutions,
+				eq(workflowExecutions.id, sessions.workflowExecutionId),
+			)
+			.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+			.where(
+				and(eq(sessions.projectId, projectId), inArray(sessions.id, ids)),
+			)) as CapacityBusinessWorkSessionDetail[];
+	}
+
+	private async selectWorkflowExecutions(
+		projectId: string,
+		ids: string[],
+	): Promise<CapacityBusinessWorkWorkflowDetail[]> {
+		if (!this.database || ids.length === 0) return [];
+		return (await this.database
+			.select({
+				id: workflowExecutions.id,
+				status: workflowExecutions.status,
+				startedAt: workflowExecutions.startedAt,
+				completedAt: workflowExecutions.completedAt,
+				duration: workflowExecutions.duration,
+				workflowId: workflows.id,
+				workflowName: workflows.name,
+				currentNodeName: workflowExecutions.currentNodeName,
+				progress: workflowExecutions.progress,
+				rerunOfExecutionId: workflowExecutions.rerunOfExecutionId,
+				resumeFromNode: workflowExecutions.resumeFromNode,
+			})
+			.from(workflowExecutions)
+			.innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+			.where(
+				and(
+					eq(workflowExecutions.projectId, projectId),
+					inArray(workflowExecutions.id, ids),
+				),
+			)) as CapacityBusinessWorkWorkflowDetail[];
+	}
+
+	private async selectBenchmarkRuns(
+		projectId: string,
+		ids: string[],
+	): Promise<CapacityBusinessWorkBenchmarkRunDetail[]> {
+		if (!this.database || ids.length === 0) return [];
+		return (await this.database
+			.select({
+				id: benchmarkRuns.id,
+				status: benchmarkRuns.status,
+				startedAt: benchmarkRuns.startedAt,
+				completedAt: benchmarkRuns.completedAt,
+				createdAt: benchmarkRuns.createdAt,
+				updatedAt: benchmarkRuns.updatedAt,
+				modelNameOrPath: benchmarkRuns.modelNameOrPath,
+				modelConfigLabel: benchmarkRuns.modelConfigLabel,
+				agentId: agents.id,
+				agentName: agents.name,
+			})
+			.from(benchmarkRuns)
+			.innerJoin(agents, eq(agents.id, benchmarkRuns.agentId))
+			.where(
+				and(eq(benchmarkRuns.projectId, projectId), inArray(benchmarkRuns.id, ids)),
+			)) as CapacityBusinessWorkBenchmarkRunDetail[];
+	}
+
+	private async selectBenchmarkInstances(
+		projectId: string,
+		ids: string[],
+	): Promise<CapacityBusinessWorkBenchmarkInstanceDetail[]> {
+		if (!this.database || ids.length === 0) return [];
+		return (await this.database
+			.select({
+				id: benchmarkRunInstances.id,
+				runId: benchmarkRunInstances.runId,
+				instanceId: benchmarkRunInstances.instanceId,
+				status: benchmarkRunInstances.status,
+				startedAt: benchmarkRunInstances.startedAt,
+				completedAt: benchmarkRunInstances.evaluatedAt,
+				createdAt: benchmarkRunInstances.createdAt,
+				updatedAt: benchmarkRunInstances.updatedAt,
+				modelNameOrPath: benchmarkRuns.modelNameOrPath,
+				modelConfigLabel: benchmarkRuns.modelConfigLabel,
+				sessionId: benchmarkRunInstances.sessionId,
+				workflowExecutionId: benchmarkRunInstances.workflowExecutionId,
+			})
+			.from(benchmarkRunInstances)
+			.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
+			.where(
+				and(
+					eq(benchmarkRuns.projectId, projectId),
+					inArray(benchmarkRunInstances.id, ids),
+				),
+			)) as CapacityBusinessWorkBenchmarkInstanceDetail[];
+	}
+
+	private selectRecentSessions(
+		projectId: string,
+	): Promise<CapacityBusinessWorkSessionDetail[]> {
+		if (!this.database) return Promise.resolve([]);
+		return this.database
+			.select({
+				id: sessions.id,
+				title: sessions.title,
+				status: sessions.status,
+				createdAt: sessions.createdAt,
+				updatedAt: sessions.updatedAt,
+				completedAt: sessions.completedAt,
+				usage: sessions.usage,
+				agentId: agents.id,
+				agentName: agents.name,
+				agentSlug: agents.slug,
+				modelSpec: sql<string | null>`${sessions.usage}->>'modelSpec'`,
+				workflowExecutionId: sessions.workflowExecutionId,
+				workflowId: workflowExecutions.workflowId,
+				workflowName: workflows.name,
+			})
+			.from(sessions)
+			.innerJoin(agents, eq(agents.id, sessions.agentId))
+			.leftJoin(
+				workflowExecutions,
+				eq(workflowExecutions.id, sessions.workflowExecutionId),
+			)
+			.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+			.where(eq(sessions.projectId, projectId))
+			.orderBy(desc(sessions.updatedAt))
+			.limit(25) as Promise<CapacityBusinessWorkSessionDetail[]>;
+	}
+
+	private selectRecentWorkflowExecutions(
+		projectId: string,
+	): Promise<CapacityBusinessWorkWorkflowDetail[]> {
+		if (!this.database) return Promise.resolve([]);
+		return this.database
+			.select({
+				id: workflowExecutions.id,
+				status: workflowExecutions.status,
+				startedAt: workflowExecutions.startedAt,
+				completedAt: workflowExecutions.completedAt,
+				duration: workflowExecutions.duration,
+				workflowId: workflows.id,
+				workflowName: workflows.name,
+				currentNodeName: workflowExecutions.currentNodeName,
+				progress: workflowExecutions.progress,
+				rerunOfExecutionId: workflowExecutions.rerunOfExecutionId,
+				resumeFromNode: workflowExecutions.resumeFromNode,
+			})
+			.from(workflowExecutions)
+			.innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+			.where(eq(workflowExecutions.projectId, projectId))
+			.orderBy(desc(workflowExecutions.startedAt))
+			.limit(25) as Promise<CapacityBusinessWorkWorkflowDetail[]>;
+	}
+
+	private selectRecentBenchmarkRuns(
+		projectId: string,
+	): Promise<CapacityBusinessWorkBenchmarkRunDetail[]> {
+		if (!this.database) return Promise.resolve([]);
+		return this.database
+			.select({
+				id: benchmarkRuns.id,
+				status: benchmarkRuns.status,
+				startedAt: benchmarkRuns.startedAt,
+				completedAt: benchmarkRuns.completedAt,
+				createdAt: benchmarkRuns.createdAt,
+				updatedAt: benchmarkRuns.updatedAt,
+				modelNameOrPath: benchmarkRuns.modelNameOrPath,
+				modelConfigLabel: benchmarkRuns.modelConfigLabel,
+				agentId: agents.id,
+				agentName: agents.name,
+			})
+			.from(benchmarkRuns)
+			.innerJoin(agents, eq(agents.id, benchmarkRuns.agentId))
+			.where(eq(benchmarkRuns.projectId, projectId))
+			.orderBy(desc(benchmarkRuns.updatedAt))
+			.limit(25) as Promise<CapacityBusinessWorkBenchmarkRunDetail[]>;
+	}
+
+	private selectRecentBenchmarkInstances(
+		projectId: string,
+	): Promise<CapacityBusinessWorkBenchmarkInstanceDetail[]> {
+		if (!this.database) return Promise.resolve([]);
+		return this.database
+			.select({
+				id: benchmarkRunInstances.id,
+				runId: benchmarkRunInstances.runId,
+				instanceId: benchmarkRunInstances.instanceId,
+				status: benchmarkRunInstances.status,
+				startedAt: benchmarkRunInstances.startedAt,
+				completedAt: benchmarkRunInstances.evaluatedAt,
+				createdAt: benchmarkRunInstances.createdAt,
+				updatedAt: benchmarkRunInstances.updatedAt,
+				modelNameOrPath: benchmarkRuns.modelNameOrPath,
+				modelConfigLabel: benchmarkRuns.modelConfigLabel,
+				sessionId: benchmarkRunInstances.sessionId,
+				workflowExecutionId: benchmarkRunInstances.workflowExecutionId,
+			})
+			.from(benchmarkRunInstances)
+			.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
+			.where(eq(benchmarkRuns.projectId, projectId))
+			.orderBy(desc(benchmarkRunInstances.updatedAt))
+			.limit(25) as Promise<CapacityBusinessWorkBenchmarkInstanceDetail[]>;
+	}
+}
+
+export class PostgresCapacityOwnershipRepository
+	implements CapacityOwnershipRepository
+{
+	constructor(private readonly database: Database = defaultDb) {}
+
+	async resolveSessionRows(params: {
+		projectId: string;
+		sessionIds: string[];
+		agentAppIds: string[];
+	}): Promise<SessionOwnershipRow[]> {
+		const rows = new Map<string, SessionOwnershipRow>();
+		const append = (next: SessionOwnershipRow[]) => {
+			for (const row of next) rows.set(row.sessionId, row);
+		};
+
+		if (params.sessionIds.length > 0) {
+			append(
+				await this.selectSessionOwnershipRows(
+					params.projectId,
+					inArray(sessions.id, params.sessionIds),
+				),
+			);
+		}
+		if (params.agentAppIds.length > 0) {
+			append(
+				await this.selectSessionOwnershipRows(
+					params.projectId,
+					inArray(sessions.runtimeAppId, params.agentAppIds),
+				),
+			);
+		}
+
+		const unresolvedAppIds = params.agentAppIds.filter((id) => {
+			for (const row of rows.values()) {
+				if (
+					row.sessionRuntimeAppId === id ||
+					sessionHostAppId(row.sessionId) === id
+				) {
+					return false;
+				}
+			}
+			return true;
+		});
+		if (unresolvedAppIds.length > 0) {
+			const recentRows = await this.selectRecentSessionOwnershipRows(
+				params.projectId,
+			);
+			append(
+				recentRows.filter((row) =>
+					unresolvedAppIds.includes(sessionHostAppId(row.sessionId)),
+				),
+			);
+		}
+
+		return [...rows.values()];
+	}
+
+	async resolveBenchmarkRows(params: {
+		projectId: string;
+		runIds: string[];
+		instanceIds: string[];
+	}): Promise<BenchmarkOwnershipRow[]> {
+		if (
+			!this.database ||
+			(params.runIds.length === 0 && params.instanceIds.length === 0)
+		) {
+			return [];
+		}
+		const rows = (await this.database
+			.select({
+				runId: benchmarkRuns.id,
+				runStatus: benchmarkRuns.status,
+				runInstanceRowId: benchmarkRunInstances.id,
+				instanceId: benchmarkRunInstances.instanceId,
+				agentId: agents.id,
+				agentName: agents.name,
+				agentSlug: agents.slug,
+				workflowExecutionId: benchmarkRunInstances.workflowExecutionId,
+				workflowId: workflowExecutions.workflowId,
+				workflowName: workflows.name,
+				sessionId: benchmarkRunInstances.sessionId,
+				sessionTitle: sessions.title,
+			})
+			.from(benchmarkRunInstances)
+			.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
+			.leftJoin(agents, eq(agents.id, benchmarkRuns.agentId))
+			.leftJoin(
+				workflowExecutions,
+				eq(workflowExecutions.id, benchmarkRunInstances.workflowExecutionId),
+			)
+			.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+			.leftJoin(sessions, eq(sessions.id, benchmarkRunInstances.sessionId))
+			.where(eq(benchmarkRuns.projectId, params.projectId))
+			.orderBy(desc(benchmarkRunInstances.updatedAt))
+			.limit(500)) as BenchmarkOwnershipRow[];
+
+		const runLabels = new Set(params.runIds);
+		const instanceLabels = new Set(params.instanceIds);
+		return rows.filter(
+			(row) =>
+				runLabels.has(row.runId) ||
+				runLabels.has(normalizeHostExecutionLabelValue(row.runId)) ||
+				instanceLabels.has(row.instanceId) ||
+				instanceLabels.has(normalizeHostExecutionLabelValue(row.instanceId)),
+		);
+	}
+
+	private async selectSessionOwnershipRows(
+		projectId: string,
+		condition: Parameters<typeof and>[0],
+	): Promise<SessionOwnershipRow[]> {
+		if (!this.database) return [];
+		return (await this.database
+			.select({
+				sessionId: sessions.id,
+				sessionTitle: sessions.title,
+				sessionRuntimeAppId: sessions.runtimeAppId,
+				agentId: agents.id,
+				agentName: agents.name,
+				agentSlug: agents.slug,
+				workflowExecutionId: sessions.workflowExecutionId,
+				workflowId: workflowExecutions.workflowId,
+				workflowName: workflows.name,
+			})
+			.from(sessions)
+			.innerJoin(agents, eq(agents.id, sessions.agentId))
+			.leftJoin(
+				workflowExecutions,
+				eq(workflowExecutions.id, sessions.workflowExecutionId),
+			)
+			.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+			.where(
+				and(eq(sessions.projectId, projectId), condition),
+			)) as SessionOwnershipRow[];
+	}
+
+	private async selectRecentSessionOwnershipRows(
+		projectId: string,
+	): Promise<SessionOwnershipRow[]> {
+		if (!this.database) return [];
+		return (await this.database
+			.select({
+				sessionId: sessions.id,
+				sessionTitle: sessions.title,
+				sessionRuntimeAppId: sessions.runtimeAppId,
+				agentId: agents.id,
+				agentName: agents.name,
+				agentSlug: agents.slug,
+				workflowExecutionId: sessions.workflowExecutionId,
+				workflowId: workflowExecutions.workflowId,
+				workflowName: workflows.name,
+			})
+			.from(sessions)
+			.innerJoin(agents, eq(agents.id, sessions.agentId))
+			.leftJoin(
+				workflowExecutions,
+				eq(workflowExecutions.id, sessions.workflowExecutionId),
+			)
+			.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+			.where(eq(sessions.projectId, projectId))
+			.orderBy(desc(sessions.updatedAt))
+			.limit(300)) as SessionOwnershipRow[];
+	}
+}
+
 export class LegacyCapacityOwnershipAdapter implements CapacityOwnershipPort {
+	constructor(
+		private readonly repository: CapacityOwnershipRepository = new PostgresCapacityOwnershipRepository(),
+	) {}
+
 	enrich(
 		snapshot: CapacityObserverSnapshot,
 		context: CapacityOverviewContext,
 	): Promise<CapacityObserverSnapshot> {
-		return enrichCapacitySnapshotOwnership(snapshot, context);
+		return enrichCapacitySnapshotOwnership(snapshot, context, this.repository);
 	}
 }
 
 export class LegacyCapacityBusinessWorkAdapter implements CapacityBusinessWorkPort {
+	constructor(
+		private readonly repository: CapacityBusinessWorkRepository = new PostgresCapacityBusinessWorkRepository(),
+	) {}
+
 	build(
 		snapshot: CapacityObserverSnapshot,
 		context: CapacityOverviewContext,
 	): Promise<CapacityBusinessWorkSummary> {
-		return buildCapacityBusinessWork(snapshot, context);
+		return buildCapacityBusinessWork(snapshot, context, this.repository);
 	}
 }
 
