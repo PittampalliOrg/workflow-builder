@@ -10,9 +10,7 @@ import { env } from '$env/dynamic/private';
 import { generateText } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import yaml from 'js-yaml';
-import { db } from '$lib/server/db';
-import { workflows } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
+import { getApplicationAdapters } from '$lib/server/application';
 import { loadActionCatalogSnapshot } from '$lib/server/action-catalog';
 import { buildBuildPrompt, buildFixPrompt } from '$lib/server/ai-assistant/build-prompt';
 import {
@@ -70,6 +68,7 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 			};
 
 			try {
+				const workflowData = getApplicationAdapters().workflowData;
 				// Load context
 				emit('status', { phase: 'loading', message: 'Loading action catalog and connections...' });
 
@@ -101,12 +100,10 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 					}));
 
 				// Load current workflow spec
-				const [workflow] = await db
-					.select()
-					.from(workflows)
-					.where(eq(workflows.id, workflowId))
-					.limit(1);
-
+				const workflow = await workflowData.getWorkflowByRef({
+					workflowId,
+					lookup: 'id',
+				});
 				const currentSpec = (workflow?.spec as Record<string, unknown>) || null;
 
 				// Build system prompt
@@ -152,14 +149,10 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 
 					// Save spec to DB
 					emit('status', { phase: 'saving', message: 'Saving workflow...' });
-					await db
-						.update(workflows)
-						.set({
-							spec: spec,
-							name: ((spec.document as Record<string, unknown>)?.title || workflow?.name || 'Untitled') as string,
-							updatedAt: new Date(),
-						})
-						.where(eq(workflows.id, workflowId));
+					await workflowData.updateWorkflowDefinition(workflowId, {
+						spec,
+						name: ((spec.document as Record<string, unknown>)?.title || workflow?.name || 'Untitled') as string,
+					});
 
 					const missingTriggerFields = getMissingRequiredTriggerFields(
 						spec,

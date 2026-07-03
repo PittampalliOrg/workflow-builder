@@ -25,6 +25,8 @@ The prompt preset, agent skill, and vault "used by/usages" reverse-lookup
 routes now load their read models through workflow-data resource usage ports.
 The AI assistant message-history route now lists and deletes persisted chat
 messages through workflow-data.
+The AI assistant build-workflow stream now loads and saves workflow definitions
+through existing workflow-data workflow definition ports.
 
 ## Strict HTTP Runtime Paths
 
@@ -270,8 +272,12 @@ The first UI-facing route has also moved behind the application service:
 - `src/routes/api/ai-assistant/messages/[workflowId]/+server.ts` now lists and
   deletes workflow AI chat history through workflow-data. `workflow_ai_messages`
   reads/deletes and row-to-message mapping are confined to the Postgres AI
-  assistant message adapter. The streaming `build-workflow` route remains a
-  separate AI assistant command slice.
+  assistant message adapter.
+- `src/routes/api/ai-assistant/build-workflow/+server.ts` now loads the current
+  workflow spec through `workflowData.getWorkflowByRef` and saves generated
+  specs through `workflowData.updateWorkflowDefinition`. The route still owns
+  the existing SSE generation/validation/execution feedback loop, but no longer
+  imports `workflows`, Drizzle, or `$lib/server/db`.
 - `src/routes/workspaces/[slug]/dev/+page.server.ts`,
   `src/routes/workspaces/[slug]/dev/[executionId]/+page.server.ts`, and the
   public `src/routes/api/dev-environments/**` GET routes now load dev-preview
@@ -645,7 +651,8 @@ execution lookup, and the GitHub trigger ingress/gate subset, are also clean.
 The internal piece-execution artifact readback and CLI workspace command routes
 are also clean. The prompt preset, agent skill, and vault resource-usage
 reverse-lookup routes are also clean. The AI assistant message-history route is
-also clean. The scanned session provisioning, context-usage, control settings/MCP
+also clean, and the AI assistant build-workflow stream no longer imports direct
+DB modules. The scanned session provisioning, context-usage, control settings/MCP
 status, session detail/title/archive/delete, fork, goal,
 goal-flow, event list/append/detail, runtime-config, config patch commands,
 runtime debug target routes, resources, and event-stream routes are also clean.
