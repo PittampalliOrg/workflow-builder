@@ -87,7 +87,7 @@ import {
 } from "$lib/server/application/adapters/capacity-overview";
 import { LegacyBenchmarkRunDetailReadAdapter } from "$lib/server/application/adapters/benchmark-run-detail";
 import { LegacyBenchmarkRunReadRepository } from "$lib/server/application/adapters/benchmark-runs";
-import { LegacyDevEnvironmentReadRepository } from "$lib/server/application/adapters/dev-environments";
+import { PostgresDevEnvironmentReadRepository } from "$lib/server/application/adapters/dev-environments";
 import {
 	DaprLifecycleCoordinatorCancelNotifier,
 	ServiceBenchmarkRunCancellationPort,
@@ -370,7 +370,7 @@ export function getApplicationAdapters(
 		| PostgresBenchmarkRunInstanceProgressReadRepository
 		| undefined;
 	let benchmarkRunReads: LegacyBenchmarkRunReadRepository | undefined;
-	let devEnvironments: LegacyDevEnvironmentReadRepository | undefined;
+	let devEnvironments: PostgresDevEnvironmentReadRepository | undefined;
 	let benchmarkRuns: PostgresBenchmarkRunRepository | undefined;
 	let activityRateTargets:
 		| PostgresWorkflowActivityRateTargetRepository
@@ -604,7 +604,7 @@ export function getApplicationAdapters(
 	const getBenchmarkRunReads = () =>
 		(benchmarkRunReads ??= new LegacyBenchmarkRunReadRepository());
 	const getDevEnvironments = () =>
-		(devEnvironments ??= new LegacyDevEnvironmentReadRepository());
+		(devEnvironments ??= new PostgresDevEnvironmentReadRepository(getDatabase()));
 	const getBenchmarkRuns = () =>
 		(benchmarkRuns ??= new PostgresBenchmarkRunRepository(getDatabase()));
 	const getActivityRateTargets = () =>

@@ -11,9 +11,9 @@
 
 import { json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
+import { getApplicationAdapters } from "$lib/server/application";
 import { requireInternal } from "$lib/server/internal-auth";
 import { captureDevPreviewSource } from "$lib/server/workflows/dev-preview";
-import { resolveCanonicalExecutionId } from "$lib/server/workflows/dev-environments";
 
 type Body = {
 	nodeId?: string | null;
@@ -28,7 +28,10 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	// dev-preview session + execution rows are keyed on the canonical execution id
 	// (same normalization the ensure/teardown routes do). Without this the capture
 	// resolves no podIP and silently skips `no_dev_pod`.
-	const executionId = await resolveCanonicalExecutionId(rawId);
+	const executionId =
+		await getApplicationAdapters().workflowData.resolveCanonicalExecutionId({
+			executionId: rawId,
+		});
 
 	let body: Body = {};
 	try {

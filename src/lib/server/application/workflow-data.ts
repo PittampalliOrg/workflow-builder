@@ -4234,6 +4234,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		});
 	}
 
+	resolveCanonicalExecutionId(input: { executionId: string }) {
+		return this.requireDevEnvironments().resolveCanonicalExecutionId(input);
+	}
+
 	createWorkflowDefinition(input: CreateWorkflowDefinitionInput) {
 		return this.deps.workflowDefinitions.create(input);
 	}

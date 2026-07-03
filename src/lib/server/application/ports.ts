@@ -4108,6 +4108,7 @@ export interface DevEnvironmentReadRepository {
 		executionId: string;
 		projectId: string | null | undefined;
 	}): Promise<DevEnvironmentSummaryReadModel | null>;
+	resolveCanonicalExecutionId(input: { executionId: string }): Promise<string>;
 }
 
 export interface PeerAgentResolver {
@@ -5096,6 +5097,7 @@ export interface WorkflowDataService {
 		executionId: string;
 		projectId?: string | null;
 	}): Promise<DevEnvironmentSummaryReadModel | null>;
+	resolveCanonicalExecutionId(input: { executionId: string }): Promise<string>;
 	createWorkflowDefinition(input: CreateWorkflowDefinitionInput): Promise<WorkflowDefinition>;
 	updateWorkflowDefinition(
 		id: string,

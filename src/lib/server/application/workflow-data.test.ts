@@ -1170,6 +1170,11 @@ function fakeDevEnvironments(): DevEnvironmentReadRepository {
 			runStatus: "running",
 			createdAt: "2026-07-02T00:00:00.000Z",
 		})),
+		resolveCanonicalExecutionId: vi.fn(async (input) =>
+			input.executionId === "sw-wf-1-exec-exec-1"
+				? "exec-1"
+				: input.executionId,
+		),
 	};
 }
 
@@ -7566,6 +7571,15 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(devEnvironments.getDevEnvironmentOrPending).toHaveBeenCalledWith({
 			executionId: "exec-1",
 			projectId: "project-1",
+		});
+
+		await expect(
+			service.resolveCanonicalExecutionId({
+				executionId: "sw-wf-1-exec-exec-1",
+			}),
+		).resolves.toBe("exec-1");
+		expect(devEnvironments.resolveCanonicalExecutionId).toHaveBeenCalledWith({
+			executionId: "sw-wf-1-exec-exec-1",
 		});
 
 		await expect(service.listDevPreviewServices()).resolves.toEqual([

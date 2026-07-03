@@ -1,11 +1,11 @@
 import { json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { requireInternal } from "$lib/server/internal-auth";
+import { getApplicationAdapters } from "$lib/server/application";
 import {
 	provisionDevPreview,
 	teardownDevPreview,
 } from "$lib/server/workflows/dev-preview";
-import { resolveCanonicalExecutionId } from "$lib/server/workflows/dev-environments";
 
 /**
  * POST /api/internal/workflows/executions/[executionId]/dev-preview
@@ -27,7 +27,10 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	if (!rawId) return json({ error: "executionId required" }, { status: 400 });
 	// The orchestrator passes its dapr instance id; map to workflow_executions.id
 	// so the persisted dev-preview row's FK holds + the Dev hub can find it.
-	const executionId = await resolveCanonicalExecutionId(rawId);
+	const executionId =
+		await getApplicationAdapters().workflowData.resolveCanonicalExecutionId({
+			executionId: rawId,
+		});
 	const body = (await request.json().catch(() => ({}))) as Record<
 		string,
 		unknown
@@ -66,7 +69,10 @@ export const DELETE: RequestHandler = async ({ params, request, url }) => {
 	requireInternal(request);
 	const rawId = params.executionId;
 	if (!rawId) return json({ error: "executionId required" }, { status: 400 });
-	const executionId = await resolveCanonicalExecutionId(rawId);
+	const executionId =
+		await getApplicationAdapters().workflowData.resolveCanonicalExecutionId({
+			executionId: rawId,
+		});
 	const sandboxName = url.searchParams.get("sandboxName");
 	const result = await teardownDevPreview({ executionId, sandboxName });
 	return json(result);

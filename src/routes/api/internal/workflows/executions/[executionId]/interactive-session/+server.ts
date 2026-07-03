@@ -1,8 +1,8 @@
 import { json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
+import { getApplicationAdapters } from "$lib/server/application";
 import { requireInternal } from "$lib/server/internal-auth";
 import { spawnDevSession } from "$lib/server/sessions/dev-session-handoff";
-import { resolveCanonicalExecutionId } from "$lib/server/workflows/dev-environments";
 
 /**
  * POST /api/internal/workflows/executions/[executionId]/interactive-session
@@ -19,7 +19,10 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	const rawId = params.executionId;
 	if (!rawId) return json({ error: "executionId required" }, { status: 400 });
 	// The orchestrator passes its dapr instance id; map to workflow_executions.id.
-	const executionId = await resolveCanonicalExecutionId(rawId);
+	const executionId =
+		await getApplicationAdapters().workflowData.resolveCanonicalExecutionId({
+			executionId: rawId,
+		});
 	const body = (await request.json().catch(() => ({}))) as Record<
 		string,
 		unknown
