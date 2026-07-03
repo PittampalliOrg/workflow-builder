@@ -105,6 +105,7 @@ import {
 	StaticSwebenchSuiteCatalog,
 } from "$lib/server/application/adapters/evaluations";
 import { LegacyEnvironmentRepository } from "$lib/server/application/adapters/environments";
+import { LegacyVaultRepository } from "$lib/server/application/adapters/vaults";
 import { LegacyBenchmarkCapacityDiagnosticsAdapter } from "$lib/server/application/adapters/benchmark-capacity-diagnostics";
 import { EnvBenchmarkRunInstanceMlflowLinks } from "$lib/server/application/adapters/benchmark-run-instance-detail";
 import { LegacyEvaluationRunDetailReadAdapter } from "$lib/server/application/adapters/evaluation-run-detail";
@@ -256,6 +257,7 @@ import {
 import { ApplicationEvaluationDatasetService } from "$lib/server/application/evaluation-datasets";
 import { ApplicationEvaluationTemplateService } from "$lib/server/application/evaluation-templates";
 import { ApplicationEnvironmentService } from "$lib/server/application/environment-management";
+import { ApplicationVaultService } from "$lib/server/application/vault-management";
 import { ApplicationBenchmarkCapacityDiagnosticsService } from "$lib/server/application/benchmark-capacity-diagnostics";
 import { ApplicationBenchmarkRunInstanceDetailService } from "$lib/server/application/benchmark-run-instance-detail";
 import { ApplicationRunCancellationService } from "$lib/server/application/run-cancellation";
@@ -409,6 +411,7 @@ export function getApplicationAdapters(
 	let evaluationDatasets: ApplicationEvaluationDatasetService | undefined;
 	let evaluationTemplates: ApplicationEvaluationTemplateService | undefined;
 	let environments: ApplicationEnvironmentService | undefined;
+	let vaultsService: ApplicationVaultService | undefined;
 	let benchmarkCapacityDiagnostics:
 		| ApplicationBenchmarkCapacityDiagnosticsService
 		| undefined;
@@ -688,6 +691,10 @@ export function getApplicationAdapters(
 	const getEnvironments = () =>
 		(environments ??= new ApplicationEnvironmentService(
 			new LegacyEnvironmentRepository(),
+		));
+	const getVaultsService = () =>
+		(vaultsService ??= new ApplicationVaultService(
+			new LegacyVaultRepository(),
 		));
 	const getEvaluationRunDetail = () =>
 		(evaluationRunDetail ??= new ApplicationEvaluationRunDetailService(
@@ -1099,6 +1106,9 @@ export function getApplicationAdapters(
 		},
 		get environments() {
 			return getEnvironments();
+		},
+		get vaults() {
+			return getVaultsService();
 		},
 		get evaluationRunDetail() {
 			return getEvaluationRunDetail();
