@@ -693,12 +693,16 @@ The first UI-facing route has also moved behind the application service:
   fallback, and published-agent/version resolution to workflow-data ports.
   Workflow-driven evaluator-goal row persistence now delegates to
   `ApplicationSessionGoalService.ensureWorkflowEvaluatorGoal`, so the route no
-  longer imports `src/lib/server/goals/repo.ts`. The route still owns runtime
-  command ordering, sandbox provisioning/wake, repository mounting, child-input
-  assembly, and ephemeral workflow-agent creation through existing helper seams.
-  It no longer imports `$lib/server/db` or Drizzle schema types; published-agent
-  SQL is confined to the workflow-data agent adapter, and on-demand legacy
-  MLflow registration is no longer created from this hot path.
+  longer imports `src/lib/server/goals/repo.ts`. Repository resource
+  materialization and best-effort pre-run mounting now delegate to
+  `ApplicationSessionCommandService.materializeWorkflowSessionRepositories`, so
+  the route no longer imports `src/lib/server/sessions/registry.ts` or
+  `src/lib/server/sessions/repositories.ts`. The route still owns runtime
+  command ordering, sandbox provisioning/wake, child-input assembly, and
+  ephemeral workflow-agent creation through existing helper seams. It no longer
+  imports `$lib/server/db` or Drizzle schema types; published-agent SQL is
+  confined to the workflow-data agent adapter, and on-demand legacy MLflow
+  registration is no longer created from this hot path.
 - `src/routes/api/internal/sessions/[id]/cli-credentials/capture/+server.ts`
   now resolves the session owner through `workflowData.getSessionFileOwner`
   instead of querying `sessions.user_id` directly. Credential bundle validation,

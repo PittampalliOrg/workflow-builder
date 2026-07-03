@@ -84,6 +84,9 @@ const mocks = vi.hoisted(() => {
 		sessionGoals: {
 			ensureWorkflowEvaluatorGoal: vi.fn(async () => ({ status: "created" })),
 		},
+		sessionCommands: {
+			materializeWorkflowSessionRepositories: vi.fn(async () => undefined),
+		},
 	};
 });
 
@@ -95,6 +98,7 @@ vi.mock("$lib/server/application", () => ({
 	getApplicationAdapters: () => ({
 		workflowData: mocks.workflowData,
 		sessionGoals: mocks.sessionGoals,
+		sessionCommands: mocks.sessionCommands,
 	}),
 }));
 
@@ -122,16 +126,6 @@ vi.mock("$lib/server/sessions/agent-workflow-host", () => ({
 		baggage: null,
 	}),
 	maybeProvisionAgentWorkflowHost: mocks.maybeProvisionAgentWorkflowHost,
-}));
-
-vi.mock("$lib/server/sessions/registry", () => ({
-	addResource: vi.fn(async () => undefined),
-	createSession: vi.fn(),
-	listResources: vi.fn(async () => []),
-}));
-
-vi.mock("$lib/server/sessions/repositories", () => ({
-	mountSessionRepositories: vi.fn(async () => undefined),
 }));
 
 vi.mock("$lib/server/sessions/events", () => ({
@@ -222,8 +216,14 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 		expect(source).toContain("workflowData.createWorkflowEnsureSession");
 		expect(source).toContain("workflowData.updateWorkflowEnsureSessionRuntime");
 		expect(source).toContain("sessionGoals.ensureWorkflowEvaluatorGoal");
+		expect(source).toContain("sessionCommands.materializeWorkflowSessionRepositories");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/goals/repo");
+		expect(source).not.toContain("$lib/server/sessions/registry");
+		expect(source).not.toContain("$lib/server/sessions/repositories");
+		expect(source).not.toContain("addResource");
+		expect(source).not.toContain("listResources");
+		expect(source).not.toContain("mountSessionRepositories");
 		expect(source).not.toContain("createOrReplaceGoal");
 		expect(source).not.toContain("getCurrentGoal");
 		expect(source).not.toContain("workflowExecutions,");
@@ -319,6 +319,44 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 			evidencePlan: { commands: ["pnpm check"] },
 		});
 		expect((payload.childInput as Record<string, unknown>).autoTerminateAfterEndTurn).toBe(false);
+	});
+
+	it("delegates workflow repository materialization to the session command service", async () => {
+		await callEnsureForWorkflow({
+			runtime: "agy-cli",
+			modelSpec: "gemini/gemini-2.5-pro",
+			provider: "google",
+			token: "agy-bundle",
+			body: {
+				workflowExecutionId: "execution-1",
+				workspaceRef: "workspace/ws-ready",
+				cwd: "/sandbox",
+				agentConfig: {
+					...agentConfig("agy-cli", "gemini/gemini-2.5-pro"),
+					repositories: [
+						{
+							repoUrl: "https://github.com/PittampalliOrg/workflow-builder",
+							checkoutRef: "main",
+						},
+					],
+				},
+			},
+		});
+
+		expect(
+			mocks.sessionCommands.materializeWorkflowSessionRepositories,
+		).toHaveBeenCalledWith({
+			sessionId: "sess-agy-cli",
+			repositories: [
+				{
+					repoUrl: "https://github.com/PittampalliOrg/workflow-builder",
+					checkoutRef: "main",
+				},
+			],
+			workflowExecutionId: "execution-1",
+			workspaceRef: "workspace/ws-ready",
+			cwd: "/sandbox",
+		});
 	});
 
 	it.each([

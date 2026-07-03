@@ -288,6 +288,83 @@ describe("ApplicationSessionCommandService", () => {
 		);
 	});
 
+	it("materializes workflow session repositories through resource and mount ports", async () => {
+		await service.materializeWorkflowSessionRepositories({
+			sessionId: "session-1",
+			repositories: [
+				{
+					repoUrl: " https://github.com/PittampalliOrg/workflow-builder ",
+					checkoutRef: "main",
+					mountPath: "/sandbox/workflow-builder",
+					authTokenCredentialId: "credential-1",
+					appConnectionExternalId: "connection-1",
+				},
+			],
+			workflowExecutionId: "execution-1",
+			workspaceRef: "workspace/ws-ready",
+			cwd: "/sandbox",
+		});
+
+		expect(sessions.listSessionResources).toHaveBeenCalledWith("session-1");
+		expect(sessions.addSessionResource).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			resource: {
+				type: "github_repository",
+				repoUrl: "https://github.com/PittampalliOrg/workflow-builder",
+				checkoutRef: "main",
+				mountPath: "/sandbox/workflow-builder",
+				authTokenCredentialId: "credential-1",
+				appConnectionExternalId: "connection-1",
+			},
+		});
+		expect(repositoryMounter.mountSessionRepositories).toHaveBeenCalledWith(
+			"session-1",
+			{
+				executionId: "execution-1",
+				workspaceRef: "workspace/ws-ready",
+				rootPath: "/sandbox",
+			},
+		);
+	});
+
+	it("does not duplicate workflow repository resources when one already exists", async () => {
+		vi.mocked(sessions.listSessionResources).mockResolvedValue([
+			{
+				id: "resource-1",
+				sessionId: "session-1",
+				type: "github_repository",
+				fileId: null,
+				mountPath: null,
+				repoUrl: "https://github.com/PittampalliOrg/workflow-builder",
+				checkoutRef: null,
+				authTokenCredentialId: null,
+				appConnectionExternalId: null,
+				mountedAt: null,
+				removedAt: null,
+			},
+		]);
+
+		await service.materializeWorkflowSessionRepositories({
+			sessionId: "session-1",
+			repositories: [
+				{ repoUrl: "https://github.com/PittampalliOrg/workflow-builder" },
+			],
+			workflowExecutionId: "execution-1",
+			workspaceRef: "workspace/ws-ready",
+			cwd: null,
+		});
+
+		expect(sessions.addSessionResource).not.toHaveBeenCalled();
+		expect(repositoryMounter.mountSessionRepositories).toHaveBeenCalledWith(
+			"session-1",
+			{
+				executionId: "execution-1",
+				workspaceRef: "workspace/ws-ready",
+				rootPath: null,
+			},
+		);
+	});
+
 	it("rejects invalid session resource payloads before touching persistence", async () => {
 		const result = await service.addSessionResource({
 			sessionId: "session-1",

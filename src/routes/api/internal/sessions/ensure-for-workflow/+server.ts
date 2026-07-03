@@ -7,12 +7,6 @@ import type {
 	WorkflowPublishedAgent,
 } from "$lib/server/application/ports";
 import { validateInternalToken } from "$lib/server/internal-auth";
-import {
-	addResource,
-	createSession,
-	listResources,
-} from "$lib/server/sessions/registry";
-import { mountSessionRepositories } from "$lib/server/sessions/repositories";
 import { appendEvent, sendUserEvent } from "$lib/server/sessions/events";
 import { findOrCreateEphemeralAgent } from "$lib/server/agents/ephemeral";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
@@ -64,7 +58,8 @@ import {
  */
 export const POST: RequestHandler = async ({ request }) => {
 	if (!validateInternalToken(request)) return error(401, "Unauthorized");
-	const { workflowData, sessionGoals } = getApplicationAdapters();
+	const { workflowData, sessionGoals, sessionCommands } =
+		getApplicationAdapters();
 
 	const traceContext = extractTraceContext(request);
 	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
@@ -727,68 +722,13 @@ export const POST: RequestHandler = async ({ request }) => {
 		);
 	}
 
-	// Materialize the agent's repository defaults into session_resources for the
-	// bridged session so a repo-specialized agent used by a durable/run step
-	// clones its repos. Idempotent: skip if repo rows already exist (re-invoke /
-	// reused session). The agentConfig is forwarded by the orchestrator bridge,
-	// so no orchestrator change is needed.
-	const configRepositories = Array.isArray(dispatchAgentConfig.repositories)
-		? dispatchAgentConfig.repositories
-		: [];
-	if (configRepositories.length > 0) {
-		const existing = await listResources(sessionId);
-		if (!existing.some((r) => r.type === "github_repository")) {
-			for (const repo of configRepositories) {
-				const repoUrl =
-					repo && typeof repo.repoUrl === "string" ? repo.repoUrl.trim() : "";
-				if (!repoUrl) continue;
-				try {
-					await addResource(sessionId, {
-						type: "github_repository",
-						repoUrl,
-						checkoutRef:
-							typeof repo.checkoutRef === "string" ? repo.checkoutRef : undefined,
-						mountPath:
-							typeof repo.mountPath === "string" ? repo.mountPath : undefined,
-						authTokenCredentialId:
-							typeof repo.authTokenCredentialId === "string"
-								? repo.authTokenCredentialId
-								: undefined,
-						appConnectionExternalId:
-							typeof repo.appConnectionExternalId === "string"
-								? repo.appConnectionExternalId
-								: undefined,
-					});
-				} catch (resErr) {
-					console.warn(
-						"[ensure-for-workflow] failed to persist repo resource:",
-						resErr,
-					);
-				}
-			}
-		}
-	}
-
-	// Clone any github_repository resources for this bridged session before the
-	// parent yields call_child_workflow (the agent's first turn). Best-effort:
-	// failures emit a session event, never block the workflow.
-	// NOTE: workflow-driven sandboxes are addressed by (executionId, workspaceRef);
-	// the exact pairing for the per-session host needs cluster validation — see
-	// the plan's integration checkpoint. Harmless if it no-ops (no repo rows).
-	if (bridgeWorkspaceRef) {
-		try {
-			await mountSessionRepositories(sessionId, {
-				executionId: workflowExecutionId ?? sessionId,
-				workspaceRef: bridgeWorkspaceRef,
-				rootPath: bridgeCwd,
-			});
-		} catch (mountErr) {
-			console.error(
-				"[ensure-for-workflow] repository mount failed:",
-				mountErr,
-			);
-		}
-	}
+	await sessionCommands.materializeWorkflowSessionRepositories({
+		sessionId,
+		repositories: dispatchAgentConfig.repositories,
+		workflowExecutionId,
+		workspaceRef: bridgeWorkspaceRef,
+		cwd: bridgeCwd,
+	});
 
 	// Per-turn reap: a workflow run dispatches one per-session agent-host pod per
 	// durable/run node, but those pods are only cleaned at run-END — so within a
@@ -1010,10 +950,6 @@ function parseGoalSpec(value: unknown): GoalSpec | null {
 		evidencePlan: evCommands ? { commands: evCommands } : null,
 	};
 }
-
-// Silence "unused import" linter — createSession is reserved for future
-// expansion (e.g., when the caller stops pre-computing sessionId).
-void createSession;
 
 async function resolveRuntimeIdentity(
 	workflowData: WorkflowDataService,

@@ -85,6 +85,14 @@ export type AddSessionResourceResult =
 	| { status: "invalid"; message: string }
 	| { status: "not_found"; message: string };
 
+export type MaterializeWorkflowSessionRepositoriesCommand = {
+	sessionId: string;
+	repositories: unknown;
+	workflowExecutionId?: string | null;
+	workspaceRef?: string | null;
+	cwd?: string | null;
+};
+
 export class ApplicationSessionCommandService {
 	constructor(
 		private readonly deps: {
@@ -182,6 +190,53 @@ export class ApplicationSessionCommandService {
 		}
 
 		return { status: "created", resource };
+	}
+
+	async materializeWorkflowSessionRepositories(
+		input: MaterializeWorkflowSessionRepositoriesCommand,
+	): Promise<void> {
+		const repos = parseRepositoryResources(input.repositories);
+		if (repos.length === 0) return;
+
+		const existing = await this.deps.sessions.listSessionResources(
+			input.sessionId,
+		);
+		if (!existing.some((resource) => resource.type === "github_repository")) {
+			for (const repo of repos) {
+				try {
+					await this.deps.sessions.addSessionResource({
+						sessionId: input.sessionId,
+						resource: {
+							type: "github_repository",
+							repoUrl: repo.repoUrl,
+							checkoutRef: repo.checkoutRef,
+							mountPath: repo.mountPath,
+							authTokenCredentialId: repo.authTokenCredentialId,
+							appConnectionExternalId: repo.appConnectionExternalId,
+						},
+					});
+				} catch (resErr) {
+					console.warn(
+						"[sessions] failed to persist workflow repo resource:",
+						resErr,
+					);
+				}
+			}
+		}
+
+		if (!input.workspaceRef) return;
+		try {
+			await this.deps.repositoryMounter.mountSessionRepositories(
+				input.sessionId,
+				{
+					executionId: input.workflowExecutionId ?? input.sessionId,
+					workspaceRef: input.workspaceRef,
+					rootPath: input.cwd ?? null,
+				},
+			);
+		} catch (mountErr) {
+			console.error("[sessions] workflow repository mount failed:", mountErr);
+		}
 	}
 
 	async createInteractiveSession(
