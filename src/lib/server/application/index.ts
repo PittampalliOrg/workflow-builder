@@ -78,6 +78,13 @@ import {
 } from "$lib/server/application/adapters/dapr";
 import { DaprClientInspectionRuntimeAdapter } from "$lib/server/application/adapters/dapr-inspection";
 import { SessionFleetActivityAdapter } from "$lib/server/application/adapters/capacity-active";
+import {
+	ClickHouseCapacityMetricsAdapter,
+	HttpCapacityObserverAdapter,
+	LegacyCapacityBusinessWorkAdapter,
+	LegacyCapacityOwnershipAdapter,
+	OtelCapacityRemoteTelemetryAdapter,
+} from "$lib/server/application/adapters/capacity-overview";
 import { LegacyBenchmarkRunReadRepository } from "$lib/server/application/adapters/benchmark-runs";
 import { LegacyDevEnvironmentReadRepository } from "$lib/server/application/adapters/dev-environments";
 import {
@@ -152,6 +159,7 @@ import { ApplicationSessionRuntimeAccessService } from "$lib/server/application/
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
 import { ApplicationBulkLifecycleStopService } from "$lib/server/application/lifecycle-bulk-stop";
 import { ApplicationCapacityActiveService } from "$lib/server/application/capacity-active";
+import { ApplicationCapacityOverviewService } from "$lib/server/application/capacity-overview";
 import { ApplicationDaprInspectionService } from "$lib/server/application/dapr-inspection";
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
 import { ApplicationWorkflowBrowserArtifactsService } from "$lib/server/application/workflow-browser-artifacts";
@@ -291,6 +299,7 @@ export function getApplicationAdapters(
 	let sessionBrowser: ApplicationSessionBrowserService | undefined;
 	let bulkLifecycleStop: ApplicationBulkLifecycleStopService | undefined;
 	let capacityActive: ApplicationCapacityActiveService | undefined;
+	let capacityOverview: ApplicationCapacityOverviewService | undefined;
 	let daprInspection: ApplicationDaprInspectionService | undefined;
 	let workflowDefinitionCommands:
 		| ApplicationWorkflowDefinitionCommandService
@@ -493,6 +502,14 @@ export function getApplicationAdapters(
 	const getCapacityActive = () =>
 		(capacityActive ??= new ApplicationCapacityActiveService({
 			fleetActivity: new SessionFleetActivityAdapter(),
+		}));
+	const getCapacityOverview = () =>
+		(capacityOverview ??= new ApplicationCapacityOverviewService({
+			metrics: new ClickHouseCapacityMetricsAdapter(),
+			observer: new HttpCapacityObserverAdapter(),
+			ownership: new LegacyCapacityOwnershipAdapter(),
+			businessWork: new LegacyCapacityBusinessWorkAdapter(),
+			telemetry: new OtelCapacityRemoteTelemetryAdapter(),
 		}));
 	const getDaprInspection = () =>
 		(daprInspection ??= new ApplicationDaprInspectionService({
@@ -772,6 +789,9 @@ export function getApplicationAdapters(
 		},
 		get capacityActive() {
 			return getCapacityActive();
+		},
+		get capacityOverview() {
+			return getCapacityOverview();
 		},
 		get daprInspection() {
 			return getDaprInspection();
