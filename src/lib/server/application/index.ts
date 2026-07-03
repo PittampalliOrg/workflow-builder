@@ -101,6 +101,10 @@ import {
 	RegistrySessionMcpAgentConfigReader,
 	VaultSessionMcpCredentialStatusReader,
 } from "$lib/server/application/adapters/session-mcp";
+import {
+	LegacyWorkflowRunStarterPort,
+	LifecycleWorkflowExecutionCoordinatorOwnerPort,
+} from "$lib/server/application/adapters/workflow-control";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
@@ -396,6 +400,8 @@ export function getApplicationAdapters(
 		(workflowExecutionControl ??= new ApplicationWorkflowExecutionControlService({
 			workflowData: getWorkflowData(),
 			approvalEvents: new DaprWorkflowApprovalEventPort(),
+			coordinatorOwners: new LifecycleWorkflowExecutionCoordinatorOwnerPort(),
+			runStarter: new LegacyWorkflowRunStarterPort(),
 		}));
 	const getSessionCommands = () =>
 		(sessionCommands ??= new ApplicationSessionCommandService({

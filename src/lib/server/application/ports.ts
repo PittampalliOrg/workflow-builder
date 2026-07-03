@@ -3096,6 +3096,39 @@ export interface WorkflowApprovalEventPort {
 	): Promise<WorkflowApprovalEventResult>;
 }
 
+export type WorkflowRunStartInput = {
+	workflowId: string;
+	triggerData: Record<string, unknown>;
+	resumeFromNode?: string;
+	seedWorkspaceFrom?: string;
+	rerunOfExecutionId?: string;
+	rerunSourceInstanceId?: string;
+	triggerSource?: string;
+};
+
+export type WorkflowRunStartResult =
+	| {
+			ok: true;
+			executionId: string;
+			instanceId: string | null;
+	  }
+	| { ok: false; status: number; error: string };
+
+export interface WorkflowRunStarterPort {
+	startWorkflowRun(input: WorkflowRunStartInput): Promise<WorkflowRunStartResult>;
+}
+
+export type WorkflowExecutionCoordinatorOwner = {
+	kind: "benchmarkRun" | "evalRun" | string;
+	runId: string;
+};
+
+export interface WorkflowExecutionCoordinatorOwnerPort {
+	getCoordinatorOwner(
+		executionIdOrInstanceId: string,
+	): Promise<WorkflowExecutionCoordinatorOwner | null>;
+}
+
 export interface EventBus {
 	publish(topic: string, payload: unknown): Promise<void>;
 }
