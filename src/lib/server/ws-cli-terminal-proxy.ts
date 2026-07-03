@@ -4,8 +4,8 @@ import type { Duplex } from 'node:stream';
 import { env } from '$env/dynamic/private';
 
 import { ACCESS_TOKEN_COOKIE, verifyAccessToken } from '$lib/server/auth';
+import { getApplicationAdapters } from '$lib/server/application';
 import { getAgentWorkflowHostPod } from '$lib/server/kube/client';
-import { resolveSessionRuntimeDebugTarget } from '$lib/server/sessions/runtime-target';
 import { getRuntimeDescriptor } from '$lib/server/agents/runtime-registry';
 
 const CLI_TERMINAL_PATH_RE = /^\/api\/v1\/sessions\/([^/]+)\/cli-terminal\/([^/]+)$/;
@@ -87,7 +87,12 @@ export async function handleUpgrade(
 
 	let podIp: string;
 	try {
-		const target = await resolveSessionRuntimeDebugTarget(sessionId, auth.projectId);
+		const target =
+			await getApplicationAdapters().workflowData.getSessionRuntimeDebugTarget({
+				sessionId,
+				projectId: auth.projectId ?? null,
+				userId: auth.userId,
+			});
 		if (!target) {
 			socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
 			socket.destroy();

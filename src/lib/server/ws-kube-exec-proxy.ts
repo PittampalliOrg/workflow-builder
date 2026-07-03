@@ -3,9 +3,9 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 
 import { verifyAccessToken, ACCESS_TOKEN_COOKIE } from './auth';
+import { getApplicationAdapters } from './application';
 import { getSessionRuntimePod } from './kube/client';
 import { execInteractive, type InteractiveExecSession } from './kube/ws-exec-client';
-import { resolveSessionRuntimeDebugTarget } from './sessions/runtime-target';
 import { shellableContainers } from './agents/runtime-registry';
 
 const SHELL_PATH_RE = /^\/api\/v1\/sessions\/([^/]+)\/shell$/;
@@ -77,10 +77,12 @@ export async function handleUpgrade(
 		return true;
 	}
 
-	const target = await resolveSessionRuntimeDebugTarget(
-		sessionId,
-		session.projectId,
-	);
+	const target =
+		await getApplicationAdapters().workflowData.getSessionRuntimeDebugTarget({
+			sessionId,
+			projectId: session.projectId ?? null,
+			userId: session.userId,
+		});
 	if (!target) {
 		socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
 		socket.destroy();

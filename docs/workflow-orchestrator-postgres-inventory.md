@@ -41,6 +41,9 @@ imports DB, Drizzle, workflow artifact, or file-registry modules directly.
 The CLI preview helper now resolves session runtime targets, execution rows, and
 interactive-CLI detection through workflow-data ports; direct DB/Drizzle imports
 are confined to the Postgres session adapter for that preview lookup.
+The dev-mode shell and CLI-terminal WebSocket proxies now resolve session
+runtime targets through workflow-data before opening Kubernetes/pod WebSocket
+transport; they no longer import the legacy DB-backed runtime-target helper.
 The benchmark instance-detail API now loads SWE-bench instance details through
 a workflow-data read model, and its contamination-risk audit authorization check
 uses workflow-data user/project ports instead of the route utility reading
@@ -1024,7 +1027,8 @@ also clean. The scanned session
 provisioning, context-usage, control settings/MCP status, session
 detail/title/archive/delete, fork, goal,
 goal-flow, event list/append/detail, runtime-config, config patch commands,
-runtime debug target routes, resources, and event-stream routes are also clean.
+runtime debug target routes, dev terminal WebSocket preflight, resources, and
+event-stream routes are also clean.
 The session/execution CLI preview and OpenShell sandbox preview route families
 are also presentation-clean; their persistence lookups now flow through
 workflow-data, while remaining Kubernetes/OpenShell transport coupling is
