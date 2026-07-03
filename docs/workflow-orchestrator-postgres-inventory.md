@@ -386,9 +386,12 @@ services:
   activate/deactivate/delete commands behind
   `ApplicationWorkflowTriggerLifecycleService`. The routes no longer import
   workflow-data, project-scope helpers, trigger-registry validation, ID
-  generation, or the trigger reconciler directly; the existing
-  direct-DB/Kubernetes/GitHub backing reconciliation remains confined to the
-  documented `LegacyWorkflowTriggerLifecyclePort` rollback seam.
+  generation, or the trigger reconciler directly. Trigger activation
+  reconciliation now reads and writes trigger lifecycle state through
+  `WorkflowTriggerStore`; direct DB access is confined to
+  `PostgresWorkflowTriggerStore.updateLifecycleState`, while the backing
+  provision/deprovision side effects remain behind
+  `WorkflowTriggerLifecycleAdapter`.
 - `src/routes/workspaces/[slug]/workflows/runs/[executionId]/+page.server.ts`
   now resolves the execution through `workflowData.getExecutionById` before
   redirecting to the canonical workflow run URL. The page loader keeps only URL
@@ -1069,7 +1072,9 @@ The broader BFF/control-plane still has route-level or service-level direct DB
 imports outside that subset and remains the next migration area. Current
 categories include:
 
-- Lifecycle Controller internals under `src/lib/server/lifecycle/**`.
+- Lifecycle Controller internals under `src/lib/server/lifecycle/**`, excluding
+  the trigger activation reconciler's trigger-row persistence now routed through
+  `WorkflowTriggerStore`.
 - goal-loop storage helpers under `src/lib/server/goals/**`, which still own
   drivable-goal claiming, usage accrual, idle-event metadata, and continuation
   claim queries.

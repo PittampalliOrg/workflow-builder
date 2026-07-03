@@ -144,6 +144,7 @@ function fakeWorkflowTriggers(): WorkflowTriggerStore {
 		getById: vi.fn(async () => null),
 		getForWorkflow: vi.fn(async () => null),
 		markFired: vi.fn(async () => undefined),
+		updateLifecycleState: vi.fn(async () => undefined),
 		delete: vi.fn(async () => undefined),
 	};
 }

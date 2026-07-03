@@ -198,6 +198,7 @@ import type {
 	WorkflowDefinitionRepository,
 	WorkflowTriggerRecord,
 	WorkflowTriggerStore,
+	UpdateWorkflowTriggerLifecycleStateInput,
 	WorkflowMonitorFallbackExecutionReadModel,
 	WorkflowMonitorReadRepository,
 	WorkflowActivityRateTargetReadModel,
@@ -3745,6 +3746,28 @@ export class PostgresWorkflowTriggerStore implements WorkflowTriggerStore {
 		await this.database
 			.update(workflowTriggers)
 			.set({ lastFiredAt: input.firedAt })
+			.where(eq(workflowTriggers.id, input.triggerId));
+	}
+
+	async updateLifecycleState(
+		input: UpdateWorkflowTriggerLifecycleStateInput,
+	): Promise<void> {
+		const values: Partial<typeof workflowTriggers.$inferInsert> = {
+			status: input.status,
+			updatedAt: new Date(),
+		};
+		if ("backingRef" in input) {
+			values.backingRef = input.backingRef ?? null;
+		}
+		if ("lastError" in input) {
+			values.lastError = input.lastError ?? null;
+		}
+		if ("config" in input) {
+			values.config = input.config ?? {};
+		}
+		await this.database
+			.update(workflowTriggers)
+			.set(values)
 			.where(eq(workflowTriggers.id, input.triggerId));
 	}
 

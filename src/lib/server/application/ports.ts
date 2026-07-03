@@ -1191,6 +1191,14 @@ export type CreateWorkflowTriggerInput = {
 	status?: WorkflowTriggerStatus;
 };
 
+export type UpdateWorkflowTriggerLifecycleStateInput = {
+	triggerId: string;
+	status: WorkflowTriggerStatus;
+	backingRef?: string | null;
+	lastError?: string | null;
+	config?: Record<string, unknown>;
+};
+
 export interface WorkflowTriggerStore {
 	listByWorkflowId(workflowId: string): Promise<WorkflowTriggerRecord[]>;
 	create(input: CreateWorkflowTriggerInput): Promise<WorkflowTriggerRecord>;
@@ -1200,6 +1208,9 @@ export interface WorkflowTriggerStore {
 		triggerId: string;
 	}): Promise<WorkflowTriggerRecord | null>;
 	markFired(input: { triggerId: string; firedAt: Date }): Promise<void>;
+	updateLifecycleState(
+		input: UpdateWorkflowTriggerLifecycleStateInput,
+	): Promise<void>;
 	delete(triggerId: string): Promise<void>;
 }
 

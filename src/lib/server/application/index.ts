@@ -210,7 +210,7 @@ import { PostgresGitOpsActivityEventStore } from "$lib/server/application/adapte
 import { JuiceFsWorkflowExecutionWorkspaceAdapter } from "$lib/server/application/adapters/workflow-execution-workspace";
 import { LegacyCliPreviewGatewayPort } from "$lib/server/application/adapters/cli-preview";
 import { LegacySandboxPreviewGatewayPort } from "$lib/server/application/adapters/sandbox-preview";
-import { LegacyWorkflowTriggerLifecyclePort } from "$lib/server/application/adapters/workflow-trigger-lifecycle";
+import { WorkflowTriggerLifecycleAdapter } from "$lib/server/application/adapters/workflow-trigger-lifecycle";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
 import { ApplicationAgentCatalogService } from "$lib/server/application/agent-catalog";
@@ -1044,7 +1044,7 @@ export function getApplicationAdapters(
 		(workflowTriggerLifecycle ??=
 			new ApplicationWorkflowTriggerLifecycleService({
 				workflowData: getWorkflowData(),
-				lifecycle: new LegacyWorkflowTriggerLifecyclePort(),
+				lifecycle: new WorkflowTriggerLifecycleAdapter(getWorkflowTriggers()),
 			}));
 	const getWorkflowTriggerManagement = () =>
 		(workflowTriggerManagement ??=
