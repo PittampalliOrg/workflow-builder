@@ -192,6 +192,7 @@ import {
 	LegacyGoalCompletionEvaluator,
 } from "$lib/server/application/adapters/internal-goal-control";
 import { PostgresWorkflowConnectionRefSyncPort } from "$lib/server/application/adapters/workflow-connections";
+import { PostgresAgentProfileReadRepository } from "$lib/server/application/adapters/agent-profiles";
 import { LegacyWorkflowCodeCheckpointWorkspacePort } from "$lib/server/application/adapters/workflow-code-checkpoints";
 import {
 	LegacyWorkflowCodeFunctionAdapter,
@@ -208,6 +209,7 @@ import { LegacyWorkflowTriggerLifecyclePort } from "$lib/server/application/adap
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
 import { ApplicationAgentCatalogService } from "$lib/server/application/agent-catalog";
+import { ApplicationAgentProfileService } from "$lib/server/application/agent-profiles";
 import { ApplicationAgentRegistryBrowserService } from "$lib/server/application/agent-registry-browser";
 import { DaprAgentRegistryStateReaderAdapter } from "$lib/server/application/adapters/agent-registry-browser";
 import { ApplicationCliPreviewService } from "$lib/server/application/cli-preview";
@@ -390,6 +392,7 @@ export function getApplicationAdapters(
 	let agentRuntimeWarmPools: KubernetesAgentRuntimeWarmPoolClient | undefined;
 	let agentRuntimeControl: ApplicationAgentRuntimeControlService | undefined;
 	let agentCatalog: ApplicationAgentCatalogService | undefined;
+	let agentProfiles: ApplicationAgentProfileService | undefined;
 	let agentRegistryBrowser: ApplicationAgentRegistryBrowserService | undefined;
 	let sandboxProvisioner: WorkspaceRuntimeSandboxProvisioner | undefined;
 	let repositoryMounter: WorkspaceSessionRepositoryMounter | undefined;
@@ -852,6 +855,10 @@ export function getApplicationAdapters(
 			runtimes: new LocalAgentRuntimeCatalog(),
 			templates: new LocalAgentTemplateCatalog(),
 		}));
+	const getAgentProfiles = () =>
+		(agentProfiles ??= new ApplicationAgentProfileService(
+			new PostgresAgentProfileReadRepository(),
+		));
 	const getAgentRegistryBrowser = () =>
 		(agentRegistryBrowser ??= new ApplicationAgentRegistryBrowserService({
 			registryState: new DaprAgentRegistryStateReaderAdapter(),
@@ -1203,6 +1210,9 @@ export function getApplicationAdapters(
 		},
 		get agentCatalog() {
 			return getAgentCatalog();
+		},
+		get agentProfiles() {
+			return getAgentProfiles();
 		},
 		get agentRegistryBrowser() {
 			return getAgentRegistryBrowser();

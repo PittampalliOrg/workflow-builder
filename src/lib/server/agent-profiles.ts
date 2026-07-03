@@ -1,12 +1,3 @@
-import { asc, eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import {
-	agentExecutionFacetVersions,
-	agentModelFacetVersions,
-	agentProfileTemplateVersions,
-	agentProfileTemplates,
-	agentToolPolicyFacetVersions
-} from '$lib/server/db/schema';
 import type { AgentSkillConfig } from '$lib/agent-skill-presets';
 
 export type McpServerProfileConfig = {
@@ -186,6 +177,10 @@ function builtinAgentProfiles(skills: AgentSkillConfig[] = DEFAULT_PROFILE_SKILL
 
 export const BUILTIN_AGENT_PROFILES: AgentProfileSummary[] = builtinAgentProfiles();
 
+export function listBuiltInAgentProfiles(): AgentProfileSummary[] {
+	return builtinAgentProfiles();
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -279,7 +274,7 @@ function normalizeSkills(value: unknown): AgentSkillConfig[] {
 	return value.map(normalizeSkillConfig).filter((item): item is AgentSkillConfig => Boolean(item));
 }
 
-function normalizeConfig(input: {
+export function normalizeAgentProfileConfig(input: {
 	toolPolicy?: Record<string, unknown> | null;
 	model?: Record<string, unknown> | null;
 	execution?: Record<string, unknown> | null;
@@ -307,86 +302,4 @@ function normalizeConfig(input: {
 		skills,
 		runtimeOverridePolicy: runtimeOverridePolicy(toolPolicy.runtimeOverridePolicy)
 	};
-}
-
-export async function listAgentProfiles(): Promise<AgentProfileSummary[]> {
-	const builtInProfiles = builtinAgentProfiles();
-	if (!db) return builtInProfiles;
-	try {
-		const rows = await db
-			.select({
-				templateId: agentProfileTemplates.id,
-				slug: agentProfileTemplates.slug,
-				name: agentProfileTemplates.name,
-				description: agentProfileTemplates.description,
-				category: agentProfileTemplates.category,
-				version: agentProfileTemplateVersions.version,
-				isDefaultVersion: agentProfileTemplateVersions.isDefault,
-				toolPolicy: agentToolPolicyFacetVersions.config,
-				model: agentModelFacetVersions.config,
-				execution: agentExecutionFacetVersions.config
-			})
-			.from(agentProfileTemplates)
-			.leftJoin(
-				agentProfileTemplateVersions,
-				eq(agentProfileTemplateVersions.templateId, agentProfileTemplates.id)
-			)
-			.leftJoin(
-				agentToolPolicyFacetVersions,
-				eq(
-					agentToolPolicyFacetVersions.id,
-					agentProfileTemplateVersions.toolPolicyFacetVersionId
-				)
-			)
-			.leftJoin(
-				agentModelFacetVersions,
-				eq(agentModelFacetVersions.id, agentProfileTemplateVersions.modelFacetVersionId)
-			)
-			.leftJoin(
-				agentExecutionFacetVersions,
-				eq(agentExecutionFacetVersions.id, agentProfileTemplateVersions.executionFacetVersionId)
-			)
-			.where(eq(agentProfileTemplates.isEnabled, true))
-			.orderBy(asc(agentProfileTemplates.sortOrder), asc(agentProfileTemplates.name));
-
-		const byTemplate = new Map<string, (typeof rows)[number]>();
-		for (const row of rows) {
-			const existing = byTemplate.get(row.templateId);
-			if (
-				!existing ||
-				row.isDefaultVersion ||
-				(!existing.isDefaultVersion && (row.version ?? 0) > (existing.version ?? 0))
-			) {
-				byTemplate.set(row.templateId, row);
-			}
-		}
-
-		const dbProfiles = [...byTemplate.values()].map((row) => ({
-			id: row.templateId,
-			templateId: row.templateId,
-			slug: row.slug,
-			name: row.name,
-			description: row.description,
-			category: row.category,
-			version: row.version ?? 1,
-			source: 'database' as const,
-			config: normalizeConfig({
-				toolPolicy: row.toolPolicy,
-				model: row.model,
-				execution: row.execution
-			})
-		}));
-
-		const merged = new Map<string, AgentProfileSummary>();
-		for (const profile of builtInProfiles) {
-			merged.set(profile.slug, profile);
-		}
-		for (const profile of dbProfiles) {
-			merged.set(profile.slug, profile);
-		}
-		return [...merged.values()];
-	} catch (err) {
-		console.warn('[agent-profiles] Failed loading DB profiles, using built-ins:', err);
-		return builtInProfiles;
-	}
 }
