@@ -325,6 +325,62 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 		});
 	});
 
+	it("returns execution detail with coordinator ownership", async () => {
+		vi.mocked(coordinatorOwners.getCoordinatorOwner).mockResolvedValue({
+			kind: "benchmarkRun",
+			runId: "bench-1",
+		});
+
+		const result = await service.getExecutionDetail({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
+
+		expect(workflowData.getExecutionById).toHaveBeenCalledWith("exec-1");
+		expect(coordinatorOwners.getCoordinatorOwner).toHaveBeenCalledWith("exec-1");
+		expect(result).toMatchObject({
+			status: "ok",
+			body: {
+				id: "exec-1",
+				workflowId: "workflow-1",
+				owner: { kind: "benchmarkRun", runId: "bench-1" },
+			},
+		});
+	});
+
+	it("hides execution detail outside the active workspace", async () => {
+		vi.mocked(workflowData.getExecutionById).mockResolvedValue(
+			executionRecord({ projectId: "project-2" }),
+		);
+
+		const result = await service.getExecutionDetail({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
+
+		expect(result).toEqual({
+			status: "error",
+			httpStatus: 404,
+			message: "Execution not found",
+		});
+		expect(coordinatorOwners.getCoordinatorOwner).not.toHaveBeenCalled();
+	});
+
+	it("preserves unauthenticated execution detail behavior", async () => {
+		const result = await service.getExecutionDetail({
+			executionId: "exec-1",
+			userId: null,
+			projectId: null,
+		});
+
+		expect(result).toMatchObject({
+			status: "ok",
+			body: { id: "exec-1" },
+		});
+	});
+
 	it("raises the default approval event for scoped executions", async () => {
 		const result = await service.approveExecution({
 			executionId: "exec-1",

@@ -1,8 +1,7 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getApplicationAdapters } from '$lib/server/application';
-import { ownsBenchmarkOrEvalRun } from '$lib/server/lifecycle/ownership';
-import { isResourceInScope } from '$lib/server/workflows/project-scope';
+import type { WorkflowExecutionControlResult } from '$lib/server/application/workflow-execution-control';
 
 /**
  * GET /api/workflows/executions/[executionId]
@@ -14,18 +13,16 @@ import { isResourceInScope } from '$lib/server/workflows/project-scope';
 export const GET: RequestHandler = async ({ params, locals }) => {
 	const { executionId } = params;
 
-	const row = await getApplicationAdapters().workflowData.getExecutionById(executionId);
-
-	if (!row) return error(404, 'Execution not found');
-
-	if (locals.session?.userId && !isResourceInScope(row, locals.session)) {
-		return error(404, 'Execution not found');
-	}
-
-	// Surface coordinator ownership so the run UI can hide the generic Stop for a
-	// benchmark/eval instance (which is driven by its run coordinator) and link to
-	// the owning run's cancel surface instead.
-	const owner = await ownsBenchmarkOrEvalRun(executionId);
-
-	return json({ ...row, owner });
+	return workflowExecutionControlResponse(
+		await getApplicationAdapters().workflowExecutionControl.getExecutionDetail({
+			executionId,
+			projectId: locals.session?.projectId ?? null,
+			userId: locals.session?.userId ?? null,
+		})
+	);
 };
+
+function workflowExecutionControlResponse(result: WorkflowExecutionControlResult) {
+	if (result.status === 'error') return error(result.httpStatus, result.message);
+	return json(result.body, { status: result.httpStatus ?? 200 });
+}

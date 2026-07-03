@@ -30,6 +30,12 @@ export type WorkflowWebhookStartInput = {
 	body?: Record<string, unknown>;
 };
 
+export type WorkflowExecutionDetailInput = {
+	executionId: string;
+	userId?: string | null;
+	projectId?: string | null;
+};
+
 const STOP_MODES = new Set<WorkflowExecutionLifecycleStopMode>([
 	"interrupt",
 	"terminate",
@@ -237,6 +243,34 @@ export class ApplicationWorkflowExecutionControlService {
 			input.executionId,
 		);
 		return { status: "ok", body: { state: result.state } };
+	}
+
+	async getExecutionDetail(
+		input: WorkflowExecutionDetailInput,
+	): Promise<WorkflowExecutionControlResult> {
+		const execution = await this.deps.workflowData.getExecutionById(
+			input.executionId,
+		);
+		if (!execution) {
+			return workflowControlError(404, "Execution not found");
+		}
+		if (
+			input.userId &&
+			!isExecutionInScope(execution, {
+				userId: input.userId,
+				projectId: input.projectId ?? null,
+			})
+		) {
+			return workflowControlError(404, "Execution not found");
+		}
+
+		const owner = await this.deps.coordinatorOwners.getCoordinatorOwner(
+			input.executionId,
+		);
+		return {
+			status: "ok",
+			body: { ...execution, owner },
+		};
 	}
 
 	async approveExecution(

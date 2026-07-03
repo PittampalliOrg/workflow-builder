@@ -176,10 +176,12 @@ The first UI-facing route has also moved behind the application service:
   loads the fork lineage tree through `workflowData.getExecutionLineage`.
   Recursive lineage traversal is confined to the Postgres execution repository
   adapter.
-- `src/routes/api/workflows/executions/[executionId]/+server.ts` now loads the
-  execution row through `workflowData.getExecutionById`; the route still calls
-  the Lifecycle Controller ownership helper to surface coordinator ownership,
-  so lifecycle internals remain a separate service seam.
+- `src/routes/api/workflows/executions/[executionId]/+server.ts` now delegates
+  detail loading and coordinator-owner shaping to
+  `ApplicationWorkflowExecutionControlService.getExecutionDetail`. The service
+  reads the execution through workflow-data and checks ownership through the
+  lifecycle ownership port; the route imports no workflow-data, lifecycle, or
+  project-scope helpers directly.
 - `src/routes/api/workflows/[workflowId]/executions/+server.ts` now lists
   workflow executions through `workflowData.listWorkflowExecutions`, preserving
   the existing `summary`/`full` query behavior. The Postgres column selection is
