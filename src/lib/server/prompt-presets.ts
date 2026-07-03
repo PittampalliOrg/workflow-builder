@@ -1,11 +1,3 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import {
-	resourcePrompts,
-	resourcePromptVersions,
-	type ResourcePrompt,
-	type ResourcePromptVersion,
-} from "$lib/server/db/schema";
 import type {
 	PromptArgumentDefinition,
 	PromptPresetMetadata,
@@ -15,13 +7,8 @@ import type {
 	PromptTemplateMessage,
 	PromptTemplateRole,
 } from "$lib/types/prompt-presets";
-import type { AgentConfig, PromptPresetRef } from "$lib/types/agents";
+import type { PromptPresetRef } from "$lib/types/agents";
 import { templateHash } from "$lib/agents/prompt-workbench-renderer";
-
-function requireDb() {
-	if (!db) throw new Error("Database not configured");
-	return db;
-}
 
 export class PromptPresetValidationError extends Error {
 	constructor(message: string) {
@@ -39,192 +26,34 @@ export type UpsertPromptPresetInput = {
 	metadata?: unknown;
 };
 
-export async function listPromptPresets(input: {
-	projectId: string;
-	includeDisabled?: boolean;
-}): Promise<PromptPresetSummary[]> {
-	const database = requireDb();
-	const conditions = [eq(resourcePrompts.projectId, input.projectId)];
-	if (!input.includeDisabled) conditions.push(eq(resourcePrompts.isEnabled, true));
-
-	const prompts = await database
-		.select()
-		.from(resourcePrompts)
-		.where(and(...conditions))
-		.orderBy(resourcePrompts.name);
-	if (prompts.length === 0) return [];
-
-	const versions = await database
-		.select()
-		.from(resourcePromptVersions)
-		.where(
-			inArray(
-				resourcePromptVersions.promptId,
-				prompts.map((prompt) => prompt.id),
-			),
-		)
-		.orderBy(desc(resourcePromptVersions.version));
-	const latestByPrompt = new Map<string, ResourcePromptVersion>();
-	for (const version of versions) {
-		if (!latestByPrompt.has(version.promptId)) latestByPrompt.set(version.promptId, version);
-	}
-
-	return prompts.map((prompt) => rowToSummary(prompt, latestByPrompt.get(prompt.id) ?? null));
-}
-
-export async function createPromptPreset(input: {
-	projectId: string;
-	userId: string;
-	body: UpsertPromptPresetInput;
-}): Promise<PromptPresetSummary> {
-	const database = requireDb();
-	const normalized = normalizePromptPresetInput(input.body, { requireName: true });
-	const hash = templateHash(normalized);
-	const parentFields = promptParentFieldsFromMessages(normalized.messages);
-	const [created] = await database.transaction(async (tx) => {
-		const [prompt] = await tx
-			.insert(resourcePrompts)
-			.values({
-				name: normalized.name,
-				description: normalized.description,
-				...parentFields,
-				metadata: normalized.metadata,
-				version: 1,
-				isEnabled: true,
-				userId: input.userId,
-				projectId: input.projectId,
-			})
-			.returning();
-		const [version] = await tx
-			.insert(resourcePromptVersions)
-			.values({
-				promptId: prompt.id,
-				version: 1,
-				messages: normalized.messages,
-				templateArguments: normalized.arguments,
-				templateFormat: normalized.templateFormat,
-				templateHash: hash,
-				metadata: normalized.metadata,
-				createdByUserId: input.userId,
-			})
-			.returning();
-		return [{ prompt, version }];
-	});
-	return rowToSummary(created.prompt, created.version);
-}
-
-export async function updatePromptPreset(input: {
+export type PromptPresetRecord = {
 	id: string;
-	projectId: string;
+	name: string;
+	description: string | null;
+	systemPrompt: string;
+	userPrompt: string | null;
+	version: number;
+	isEnabled: boolean;
+	metadata: unknown;
 	userId: string;
-	body: UpsertPromptPresetInput;
-}): Promise<PromptPresetSummary | null> {
-	const database = requireDb();
-	const [existing] = await database
-		.select()
-		.from(resourcePrompts)
-		.where(
-			and(
-				eq(resourcePrompts.id, input.id),
-				eq(resourcePrompts.projectId, input.projectId),
-			),
-		)
-		.limit(1);
-	if (!existing) return null;
+	projectId: string | null;
+	createdAt: Date;
+	updatedAt: Date;
+};
 
-	const [currentVersion] = await database
-		.select()
-		.from(resourcePromptVersions)
-		.where(eq(resourcePromptVersions.promptId, existing.id))
-		.orderBy(desc(resourcePromptVersions.version))
-		.limit(1);
-	const normalized = normalizePromptPresetInput(input.body, {
-		requireName: false,
-		fallback: currentVersion
-			? {
-					name: existing.name,
-					description: existing.description,
-					messages: currentVersion.messages,
-					arguments: currentVersion.templateArguments,
-					templateFormat: currentVersion.templateFormat,
-					metadata: currentVersion.metadata,
-				}
-			: {
-					name: existing.name,
-					description: existing.description,
-					messages: legacyMessages(existing),
-					arguments: [],
-					templateFormat: "mustache",
-					metadata: existing.metadata,
-				},
-	});
-	const hash = templateHash(normalized);
-	const parentFields = promptParentFieldsFromMessages(normalized.messages);
-	const templateChanged =
-		!currentVersion ||
-		currentVersion.templateHash !== hash ||
-		JSON.stringify(currentVersion.messages) !== JSON.stringify(normalized.messages) ||
-		JSON.stringify(currentVersion.templateArguments) !==
-			JSON.stringify(normalized.arguments) ||
-		currentVersion.templateFormat !== normalized.templateFormat;
-
-	const result = await database.transaction(async (tx) => {
-		let version = currentVersion ?? null;
-		const nextVersionNumber = templateChanged
-			? Math.max(existing.version, currentVersion?.version ?? 0) + 1
-			: (currentVersion?.version ?? existing.version);
-		if (templateChanged) {
-			const [inserted] = await tx
-				.insert(resourcePromptVersions)
-				.values({
-					promptId: existing.id,
-					version: nextVersionNumber,
-					messages: normalized.messages,
-					templateArguments: normalized.arguments,
-					templateFormat: normalized.templateFormat,
-					templateHash: hash,
-					metadata: normalized.metadata,
-					createdByUserId: input.userId,
-				})
-				.returning();
-			version = inserted;
-		}
-
-		const [prompt] = await tx
-			.update(resourcePrompts)
-			.set({
-				name: normalized.name,
-				description: normalized.description,
-				...parentFields,
-				metadata: normalized.metadata,
-				version: nextVersionNumber,
-				updatedAt: new Date(),
-			})
-			.where(eq(resourcePrompts.id, existing.id))
-			.returning();
-		return { prompt, version };
-	});
-
-	return rowToSummary(result.prompt, result.version);
-}
-
-export async function archivePromptPreset(input: {
+export type PromptPresetVersionRecord = {
 	id: string;
-	projectId: string;
-}): Promise<boolean> {
-	const database = requireDb();
-	const [row] = await database
-		.update(resourcePrompts)
-		.set({ isEnabled: false, updatedAt: new Date() })
-		.where(
-			and(
-				eq(resourcePrompts.id, input.id),
-				eq(resourcePrompts.projectId, input.projectId),
-			),
-		)
-		.returning({ id: resourcePrompts.id });
-	return Boolean(row);
-}
+	promptId: string;
+	version: number;
+	messages: PromptTemplateMessage[];
+	templateArguments: PromptArgumentDefinition[];
+	templateFormat: PromptTemplateFormat;
+	templateHash: string;
+	metadata: unknown;
+	createdByUserId: string | null;
+	createdAt: Date;
+	mlflowUri?: string | null;
+};
 
 export function normalizePromptPresetInput(
 	input: UpsertPromptPresetInput,
@@ -279,12 +108,23 @@ export function normalizePromptPresetInput(
 		input.metadata === undefined
 			? (options.fallback?.metadata ?? null)
 			: normalizeMetadata(input.metadata);
-	return { name, description, messages, arguments: args, templateFormat, metadata };
+	return {
+		name,
+		description,
+		messages,
+		arguments: args,
+		templateFormat,
+		metadata,
+	};
 }
 
 export function promptParentFieldsFromMessages(
 	messages: PromptTemplateMessage[],
-): { systemPrompt: string; userPrompt: string | null; promptMode: "system" | "system+user" } {
+): {
+	systemPrompt: string;
+	userPrompt: string | null;
+	promptMode: "system" | "system+user";
+} {
 	const systemPrompt =
 		messageContentForRole(messages, "system") || messages[0]?.content || "";
 	const userPrompt = messageContentForRole(messages, "user") || null;
@@ -301,21 +141,28 @@ function normalizeMessages(value: unknown): PromptTemplateMessage[] {
 	}
 	return value.map((item, index) => {
 		if (!item || typeof item !== "object" || Array.isArray(item)) {
-			throw new PromptPresetValidationError(`messages[${index}] must be an object`);
+			throw new PromptPresetValidationError(
+				`messages[${index}] must be an object`,
+			);
 		}
 		const record = item as Record<string, unknown>;
 		const role = normalizeRole(record.role);
 		const content = typeof record.content === "string" ? record.content : "";
 		if (!content.trim()) {
-			throw new PromptPresetValidationError(`messages[${index}].content is required`);
+			throw new PromptPresetValidationError(
+				`messages[${index}].content is required`,
+			);
 		}
 		return { role, content };
 	});
 }
 
 function normalizeRole(value: unknown): PromptTemplateRole {
-	if (value === "system" || value === "user" || value === "assistant") return value;
-	throw new PromptPresetValidationError("message role must be system, user, or assistant");
+	if (value === "system" || value === "user" || value === "assistant")
+		return value;
+	throw new PromptPresetValidationError(
+		"message role must be system, user, or assistant",
+	);
 }
 
 function normalizeArguments(value: unknown): PromptArgumentDefinition[] {
@@ -324,7 +171,9 @@ function normalizeArguments(value: unknown): PromptArgumentDefinition[] {
 	}
 	return value.map((item, index) => {
 		if (!item || typeof item !== "object" || Array.isArray(item)) {
-			throw new PromptPresetValidationError(`arguments[${index}] must be an object`);
+			throw new PromptPresetValidationError(
+				`arguments[${index}] must be an object`,
+			);
 		}
 		const record = item as Record<string, unknown>;
 		const name = typeof record.name === "string" ? record.name.trim() : "";
@@ -338,13 +187,16 @@ function normalizeArguments(value: unknown): PromptArgumentDefinition[] {
 			...(typeof record.description === "string" && record.description.trim()
 				? { description: record.description.trim() }
 				: {}),
-			...(typeof record.required === "boolean" ? { required: record.required } : {}),
+			...(typeof record.required === "boolean"
+				? { required: record.required }
+				: {}),
 		};
 	});
 }
 
 function normalizeTemplateFormat(value: unknown): PromptTemplateFormat {
-	if (value === undefined || value === null || value === "mustache") return "mustache";
+	if (value === undefined || value === null || value === "mustache")
+		return "mustache";
 	throw new PromptPresetValidationError("templateFormat must be mustache");
 }
 
@@ -363,17 +215,20 @@ function messageContentForRole(
 	return messages.find((message) => message.role === role)?.content ?? "";
 }
 
-function legacyMessages(prompt: ResourcePrompt): PromptTemplateMessage[] {
+export function legacyPromptPresetMessages(
+	prompt: Pick<PromptPresetRecord, "systemPrompt" | "userPrompt">,
+): PromptTemplateMessage[] {
 	const messages: PromptTemplateMessage[] = [
 		{ role: "system", content: prompt.systemPrompt },
 	];
-	if (prompt.userPrompt) messages.push({ role: "user", content: prompt.userPrompt });
+	if (prompt.userPrompt)
+		messages.push({ role: "user", content: prompt.userPrompt });
 	return messages;
 }
 
-function rowToSummary(
-	prompt: ResourcePrompt,
-	version: ResourcePromptVersion | null,
+export function promptPresetRowToSummary(
+	prompt: PromptPresetRecord,
+	version: PromptPresetVersionRecord | null,
 ): PromptPresetSummary {
 	return {
 		id: prompt.id,
@@ -387,11 +242,15 @@ function rowToSummary(
 		projectId: prompt.projectId ?? null,
 		createdAt: prompt.createdAt.toISOString(),
 		updatedAt: prompt.updatedAt.toISOString(),
-		latestVersion: version ? versionToSummary(version) : legacyVersion(prompt),
+		latestVersion: version
+			? promptPresetVersionToSummary(version)
+			: legacyVersion(prompt),
 	};
 }
 
-function versionToSummary(version: ResourcePromptVersion): PromptPresetVersion {
+export function promptPresetVersionToSummary(
+	version: PromptPresetVersionRecord,
+): PromptPresetVersion {
 	return {
 		id: version.id,
 		promptId: version.promptId,
@@ -406,8 +265,8 @@ function versionToSummary(version: ResourcePromptVersion): PromptPresetVersion {
 	};
 }
 
-function legacyVersion(prompt: ResourcePrompt): PromptPresetVersion {
-	const messages = legacyMessages(prompt);
+function legacyVersion(prompt: PromptPresetRecord): PromptPresetVersion {
+	const messages = legacyPromptPresetMessages(prompt);
 	return {
 		id: `${prompt.id}:legacy`,
 		promptId: prompt.id,
@@ -415,7 +274,11 @@ function legacyVersion(prompt: ResourcePrompt): PromptPresetVersion {
 		messages,
 		arguments: [],
 		templateFormat: "mustache",
-		templateHash: templateHash({ messages, arguments: [], templateFormat: "mustache" }),
+		templateHash: templateHash({
+			messages,
+			arguments: [],
+			templateFormat: "mustache",
+		}),
 		metadata: (prompt.metadata as PromptPresetMetadata | null) ?? null,
 		createdByUserId: prompt.userId,
 		createdAt: prompt.createdAt.toISOString(),
@@ -509,7 +372,9 @@ export function resolveCompiledPromptStack(
 		return out;
 	}
 
-	function resolveManifest(refs: PromptPresetRef[]): CompiledPromptStackEntry[] {
+	function resolveManifest(
+		refs: PromptPresetRef[],
+	): CompiledPromptStackEntry[] {
 		const out: CompiledPromptStackEntry[] = [];
 		for (const ref of refs) {
 			const entry = manifestByKey.get(`${ref.id}@${ref.version}`);
@@ -524,68 +389,4 @@ export function resolveCompiledPromptStack(
 		staticManifest: resolveManifest(staticRefs),
 		dynamicManifest: resolveManifest(dynamicRefs),
 	};
-}
-
-/**
- * Resolve `agentConfig.staticPromptPresetRefs` and `dynamicPromptPresetRefs`
- * against the Prompt Workbench preset table, returning the system-text content
- * for each pinned version. Bindings are project-scoped: a preset that lives in
- * a different workspace than the agent silently resolves to nothing (with a
- * warn log), so a stale or cross-tenant ref never blocks a session spawn.
- *
- * Called once per session-spawn from `src/lib/server/sessions/spawn.ts` and
- * `src/routes/api/internal/sessions/ensure-for-workflow/+server.ts`. Single
- * SELECT joins versions to prompts so we get the projectId scope check in one
- * round-trip; client-side filtering matches `(promptId, version)` tuples.
- */
-export async function compilePromptStack(
-	agentConfig: AgentConfig | Record<string, unknown> | null | undefined,
-	opts: { projectId: string },
-): Promise<CompiledPromptStack> {
-	const empty: CompiledPromptStack = {
-		static: [],
-		dynamic: [],
-		staticManifest: [],
-		dynamicManifest: [],
-	};
-	if (!agentConfig) return empty;
-	const cfg = agentConfig as Record<string, unknown>;
-	const staticRefs = Array.isArray(cfg.staticPromptPresetRefs)
-		? (cfg.staticPromptPresetRefs as unknown[]).filter(isValidPresetRef)
-		: [];
-	const dynamicRefs = Array.isArray(cfg.dynamicPromptPresetRefs)
-		? (cfg.dynamicPromptPresetRefs as unknown[]).filter(isValidPresetRef)
-		: [];
-	if (staticRefs.length === 0 && dynamicRefs.length === 0) {
-		return empty;
-	}
-
-	const promptIds = [
-		...new Set([...staticRefs, ...dynamicRefs].map((r) => r.id)),
-	];
-
-	const database = requireDb();
-	const rows = await database
-		.select({
-			promptId: resourcePromptVersions.promptId,
-			version: resourcePromptVersions.version,
-			messages: resourcePromptVersions.messages,
-			promptVersionId: resourcePromptVersions.id,
-			mlflowUri: resourcePromptVersions.mlflowUri,
-		})
-		.from(resourcePromptVersions)
-		.innerJoin(resourcePrompts, eq(resourcePrompts.id, resourcePromptVersions.promptId))
-		.where(
-			and(
-				inArray(resourcePromptVersions.promptId, promptIds),
-				eq(resourcePrompts.projectId, opts.projectId),
-			),
-		);
-
-	return resolveCompiledPromptStack(
-		staticRefs,
-		dynamicRefs,
-		rows,
-		`projectId=${opts.projectId}`,
-	);
 }

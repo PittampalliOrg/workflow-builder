@@ -10,7 +10,7 @@ import { appendEvent, listEvents } from "$lib/server/sessions/events";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution-application";
 import { flattenBundles } from "$lib/server/capabilities/flatten";
-import { compilePromptStack } from "$lib/server/prompt-presets";
+import { getApplicationAdapters } from "$lib/server/application";
 import {
 	agentRuntimeDedicatedAppId,
 	agentRuntimeInvokeTarget,
@@ -113,18 +113,19 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		? agent.config.callableAgents
 		: [];
 	const callableAgents = await (async () => {
-		if (!agent.projectId || callableSlugs.length === 0) return [] as Array<{
-			slug: string;
-			agentId: string;
-			version: number;
-			appId: string;
-			team: string;
-			registryKey: string;
-		}>;
-		const { resolveCallableAgents } = await import("$lib/server/agents/registry");
-		const { agentRegistryKey } = await import(
-			"$lib/server/agents/registry-sync"
-		);
+		if (!agent.projectId || callableSlugs.length === 0)
+			return [] as Array<{
+				slug: string;
+				agentId: string;
+				version: number;
+				appId: string;
+				team: string;
+				registryKey: string;
+			}>;
+		const { resolveCallableAgents } =
+			await import("$lib/server/agents/registry");
+		const { agentRegistryKey } =
+			await import("$lib/server/agents/registry-sync");
 		const peers = await resolveCallableAgents(agent.projectId, callableSlugs);
 		return peers.map((p) => ({
 			slug: p.slug,
@@ -161,7 +162,10 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	// Flatten reusable capability bundles (Pillar 2) into the effective config
 	// BEFORE MCP resolution, so bundle-contributed MCP servers participate in
 	// project-connection resolution exactly like inline ones.
-	const flattenedAgentConfig = await flattenBundles(agent.config, agent.projectId);
+	const flattenedAgentConfig = await flattenBundles(
+		agent.config,
+		agent.projectId,
+	);
 	const resolutionTarget = getRuntimeDescriptor(
 		(flattenedAgentConfig as { runtime?: string }).runtime ?? agent.runtime,
 	);
@@ -182,7 +186,8 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 					useBrowserSidecar: false,
 				}
 			: rewriteMcpForBrowserSidecar(
-					(resolvedAgentConfig as { mcpServers?: unknown[] }).mcpServers as never,
+					(resolvedAgentConfig as { mcpServers?: unknown[] })
+						.mcpServers as never,
 					{ runtime: resolvedAgentConfig.runtime },
 				);
 	const runtimeRoute = resolveAgentRuntimeRoute({
@@ -219,7 +224,8 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 				`[swap-safety] session ${sessionId} \u2192 runtime "${swapTarget.id}" ${verdict.decision}: ` +
 					verdict.drops.map((d) => `${d.capability}(${d.severity})`).join(", "),
 			);
-			for (const d of verdict.drops) console.warn(`[swap-safety]   ${d.detail}`);
+			for (const d of verdict.drops)
+				console.warn(`[swap-safety]   ${d.detail}`);
 			// Surface the degraded swap as a session event so it's queryable in
 			// session_events + visible in the UI (the WARN-phase audit dataset).
 			// Fire-and-forget with a deterministic sourceEventId (dedupes re-spawns);
@@ -268,15 +274,17 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		}>,
 	};
 	const compiledPresetStack = agent.projectId
-		? await compilePromptStack(resolvedAgentConfig, {
-				projectId: agent.projectId,
-			}).catch((err) => {
-				console.warn(
-					"[session-spawn] compilePromptStack failed, continuing with empty stack:",
-					err instanceof Error ? err.message : err,
-				);
-				return emptyPresetStack;
-			})
+		? await getApplicationAdapters()
+				.promptStackCompiler.compilePromptStack(resolvedAgentConfig, {
+					projectId: agent.projectId,
+				})
+				.catch((err) => {
+					console.warn(
+						"[session-spawn] compilePromptStack failed, continuing with empty stack:",
+						err instanceof Error ? err.message : err,
+					);
+					return emptyPresetStack;
+				})
 		: emptyPresetStack;
 	const agentConfigForDispatch = {
 		...resolvedAgentConfig,
@@ -371,14 +379,20 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		// file_bundle is captured automatically post-login, so its absence is not
 		// an error — the user just logs in once in the terminal.
 		const optional = credentialKind === "file_bundle";
-		const setupHint = setupCommand ? `run \`${setupCommand}\` locally` : "see the runtime docs";
+		const setupHint = setupCommand
+			? `run \`${setupCommand}\` locally`
+			: "see the runtime docs";
 		const ownerUserId = await resolveSessionOwnerUserId(sessionId);
 		// Serialize concurrent single-use-refresh boots (codex): hold the per-(user,
 		// provider) lease across spawn→capture so this session resolves the freshest
 		// token instead of racing the spent refresh token. Best-effort (proceeds on
 		// timeout); released by the cli-credentials capture route.
 		if (ownerUserId && cliCredentialNeedsBootLease(provider)) {
-			const leased = await acquireCliBootLease(ownerUserId, provider, sessionId);
+			const leased = await acquireCliBootLease(
+				ownerUserId,
+				provider,
+				sessionId,
+			);
 			if (!leased) {
 				console.warn(
 					`[spawn] ${provider} boot-lease not acquired in time for session ${sessionId}; proceeding (may race a concurrent refresh)`,
@@ -437,7 +451,8 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		// workflowExecutionId) to mount the same JuiceFS subPath. Direct UI sessions
 		// have workflowExecutionId=null → no shared mount (unchanged).
 		sharedWorkspaceKey:
-			swapTarget?.capabilities?.interactiveTerminal && session.workflowExecutionId
+			swapTarget?.capabilities?.interactiveTerminal &&
+			session.workflowExecutionId
 				? await resolveRunWorkspaceKey(session.workflowExecutionId)
 				: null,
 		benchmarkRunId: null,
@@ -458,9 +473,7 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	const targetAppId = sessionHost?.agentAppId ?? runtimeRoute.appId;
 	if (!sessionHost) {
 		try {
-			const { wakeAgentRuntime } = await import(
-				"$lib/server/kube/client"
-			);
+			const { wakeAgentRuntime } = await import("$lib/server/kube/client");
 			await wakeAgentRuntime(runtimeRoute.slug, 30_000);
 		} catch (err) {
 			console.warn(
@@ -565,7 +578,6 @@ function getDaprSidecarUrl(): string {
 	return `http://${host}:${port}`;
 }
 
-
 /**
  * Raise a user-side event batch into the session's workflow. Used by
  * `POST /api/v1/sessions/[id]/events` after DB append.
@@ -579,7 +591,8 @@ export async function raiseSessionUserEvents(
 	// Route raise-event to the exact runtime that owns the session. New rows
 	// persist this at spawn time; older rows fall back through the agent route.
 	const target = await resolveSessionRuntimeTarget(sessionId);
-	const invokeTarget = target?.invokeTarget ?? agentRuntimeInvokeTarget("dapr-agent-py");
+	const invokeTarget =
+		target?.invokeTarget ?? agentRuntimeInvokeTarget("dapr-agent-py");
 	const daprEndpoint = getDaprSidecarUrl();
 	const body = JSON.stringify({
 		instanceId: session.daprInstanceId,

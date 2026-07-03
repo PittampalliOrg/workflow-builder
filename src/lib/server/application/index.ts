@@ -151,7 +151,10 @@ import {
 	LocalSettingsCliRuntimeCatalogReader,
 	UserCliCredentialSummaryReader,
 } from "$lib/server/application/adapters/settings-cli-tokens";
-import { LegacyPromptPresetRepository } from "$lib/server/application/adapters/prompt-presets";
+import {
+	PostgresPromptPresetRepository,
+	PostgresPromptStackPresetReadRepository,
+} from "$lib/server/application/adapters/prompt-presets";
 import { KubernetesSessionRuntimeStatusReader } from "$lib/server/application/adapters/runtime-status";
 import {
 	CurrentSessionRepository,
@@ -252,7 +255,10 @@ import {
 	DateCodeFunctionExecutionIdGenerator,
 } from "$lib/server/application/code-function-execution";
 import { ApplicationSettingsCliTokensService } from "$lib/server/application/settings-cli-tokens";
-import { ApplicationPromptPresetService } from "$lib/server/application/prompt-presets";
+import {
+	ApplicationPromptPresetService,
+	ApplicationPromptStackCompilerService,
+} from "$lib/server/application/prompt-presets";
 import {
 	ApplicationBenchmarkRunLaunchService,
 	ApplicationEvaluationRunLaunchService,
@@ -290,7 +296,10 @@ import { ApplicationWorkflowDataService } from "$lib/server/application/workflow
 import { ApplicationWorkflowPlanService } from "$lib/server/application/workflow-plan";
 import { extractExecutionTraceIds } from "$lib/server/otel/clickhouse";
 import { costFor, formatCurrency } from "$lib/server/pricing/model-pricing";
-import { resolveRunDiffPatch, RUN_DIFF_KIND } from "$lib/server/workflows/run-diff";
+import {
+	resolveRunDiffPatch,
+	RUN_DIFF_KIND,
+} from "$lib/server/workflows/run-diff";
 
 export { getEventBusAdapter } from "$lib/server/application/event-bus";
 
@@ -298,13 +307,19 @@ export function getApplicationAdapters(
 	config: ApplicationAdapterConfig = getApplicationAdapterConfig(),
 ) {
 	if (config.persistenceAdapter !== "postgres") {
-		throw new Error(`Unsupported persistence adapter: ${config.persistenceAdapter}`);
+		throw new Error(
+			`Unsupported persistence adapter: ${config.persistenceAdapter}`,
+		);
 	}
 	if (config.artifactStoreAdapter !== "postgres-metadata-object-data") {
-		throw new Error(`Unsupported artifact store adapter: ${config.artifactStoreAdapter}`);
+		throw new Error(
+			`Unsupported artifact store adapter: ${config.artifactStoreAdapter}`,
+		);
 	}
 	if (config.workflowSchedulerAdapter !== "dapr-workflow") {
-		throw new Error(`Unsupported workflow scheduler adapter: ${config.workflowSchedulerAdapter}`);
+		throw new Error(
+			`Unsupported workflow scheduler adapter: ${config.workflowSchedulerAdapter}`,
+		);
 	}
 	if (config.eventBusAdapter !== "dapr-pubsub") {
 		throw new Error(`Unsupported event bus adapter: ${config.eventBusAdapter}`);
@@ -355,11 +370,15 @@ export function getApplicationAdapters(
 	let benchmarkRunReads: LegacyBenchmarkRunReadRepository | undefined;
 	let devEnvironments: LegacyDevEnvironmentReadRepository | undefined;
 	let benchmarkRuns: PostgresBenchmarkRunRepository | undefined;
-	let activityRateTargets: PostgresWorkflowActivityRateTargetRepository | undefined;
+	let activityRateTargets:
+		| PostgresWorkflowActivityRateTargetRepository
+		| undefined;
 	let observabilityTraces: PostgresObservabilityTraceRepository | undefined;
 	let workflowMonitorReads: PostgresWorkflowMonitorReadRepository | undefined;
 	let resourceUsages: PostgresResourceUsageReadRepository | undefined;
-	let aiAssistantMessages: PostgresWorkflowAiAssistantMessageRepository | undefined;
+	let aiAssistantMessages:
+		| PostgresWorkflowAiAssistantMessageRepository
+		| undefined;
 	let securityAudit: PostgresSecurityAuditReadRepository | undefined;
 	let dashboard: PostgresDashboardReadRepository | undefined;
 	let homePageReads: PostgresHomePageReadRepository | undefined;
@@ -400,9 +419,7 @@ export function getApplicationAdapters(
 	let sessionCommands: ApplicationSessionCommandService | undefined;
 	let sessionAgentConfig: ApplicationSessionAgentConfigService | undefined;
 	let sessionGoals: ApplicationSessionGoalService | undefined;
-	let internalGoalControl:
-		| ApplicationInternalGoalControlService
-		| undefined;
+	let internalGoalControl: ApplicationInternalGoalControlService | undefined;
 	let sessionLifecycle: ApplicationSessionLifecycleService | undefined;
 	let sessionSandboxes: ApplicationSessionSandboxService | undefined;
 	let sessionMcpStatus: ApplicationSessionMcpStatusService | undefined;
@@ -417,19 +434,13 @@ export function getApplicationAdapters(
 	let evaluationTemplates: ApplicationEvaluationTemplateService | undefined;
 	let environments: ApplicationEnvironmentService | undefined;
 	let vaultsService: ApplicationVaultService | undefined;
-	let vaultCredentialRepository:
-		| PostgresVaultCredentialRepository
-		| undefined;
-	let vaultCredentialsService:
-		| ApplicationVaultCredentialService
-		| undefined;
+	let vaultCredentialRepository: PostgresVaultCredentialRepository | undefined;
+	let vaultCredentialsService: ApplicationVaultCredentialService | undefined;
 	let benchmarkCapacityDiagnostics:
 		| ApplicationBenchmarkCapacityDiagnosticsService
 		| undefined;
 	let evaluationRunDetail: ApplicationEvaluationRunDetailService | undefined;
-	let benchmarkRunDetail:
-		| ApplicationBenchmarkRunDetailPageService
-		| undefined;
+	let benchmarkRunDetail: ApplicationBenchmarkRunDetailPageService | undefined;
 	let benchmarkRunInstanceDetail:
 		| ApplicationBenchmarkRunInstanceDetailService
 		| undefined;
@@ -459,6 +470,7 @@ export function getApplicationAdapters(
 		| undefined;
 	let settingsCliTokens: ApplicationSettingsCliTokensService | undefined;
 	let promptPresets: ApplicationPromptPresetService | undefined;
+	let promptStackCompiler: ApplicationPromptStackCompilerService | undefined;
 	let workflowDefinitionCommands:
 		| ApplicationWorkflowDefinitionCommandService
 		| undefined;
@@ -522,7 +534,9 @@ export function getApplicationAdapters(
 	const getAgentRuntimes = () =>
 		(agentRuntimes ??= new PostgresAgentRuntimeRepository(getDatabase()));
 	const getWorkflowDefinitions = () =>
-		(workflowDefinitions ??= new PostgresWorkflowDefinitionRepository(getDatabase()));
+		(workflowDefinitions ??= new PostgresWorkflowDefinitionRepository(
+			getDatabase(),
+		));
 	const getWorkflowTriggers = () =>
 		(workflowTriggers ??= new PostgresWorkflowTriggerStore(getDatabase()));
 	const getUserProfiles = () =>
@@ -533,40 +547,57 @@ export function getApplicationAdapters(
 		(mcpConnections ??= new PostgresMcpConnectionRepository(getDatabase()));
 	const getHostedMcpServers = () =>
 		(hostedMcpServers ??= new PostgresHostedMcpServerRepository(getDatabase()));
-	const getMcpRuns = () => (mcpRuns ??= new PostgresMcpRunRepository(getDatabase()));
+	const getMcpRuns = () =>
+		(mcpRuns ??= new PostgresMcpRunRepository(getDatabase()));
 	const getAppConnections = () =>
 		(appConnections ??= new PostgresAppConnectionRepository(getDatabase()));
 	const getAdminPieces = () =>
 		(adminPieces ??= new PostgresAdminPieceRepository(getDatabase()));
 	const getApiKeys = () => (apiKeys ??= new PostgresApiKeyStore(getDatabase()));
 	const getWorkspaceProjects = () =>
-		(workspaceProjects ??= new PostgresWorkspaceProjectRepository(getDatabase()));
+		(workspaceProjects ??= new PostgresWorkspaceProjectRepository(
+			getDatabase(),
+		));
 	const getPieceCatalog = () =>
 		(pieceCatalog ??= new PostgresPieceCatalogRepository(getDatabase()));
 	const getPieceExecutions = () =>
 		(pieceExecutions ??= new PostgresPieceExecutionRepository(getDatabase()));
 	const getBrowserArtifacts = () =>
-		(browserArtifacts ??= new PostgresWorkflowBrowserArtifactStore(getDatabase()));
+		(browserArtifacts ??= new PostgresWorkflowBrowserArtifactStore(
+			getDatabase(),
+		));
 	const getCodeFunctionCatalog = () =>
-		(codeFunctionCatalog ??= new PostgresCodeFunctionCatalogRepository(getDatabase()));
+		(codeFunctionCatalog ??= new PostgresCodeFunctionCatalogRepository(
+			getDatabase(),
+		));
 	const getBenchmarkArtifactMetadata = () =>
-		(benchmarkArtifactMetadata ??= new PostgresBenchmarkArtifactMetadataRepository(getDatabase()));
+		(benchmarkArtifactMetadata ??=
+			new PostgresBenchmarkArtifactMetadataRepository(getDatabase()));
 	const getBenchmarkEvaluationResults = () =>
-		(benchmarkEvaluationResults ??= new PostgresBenchmarkEvaluationResultRepository(getDatabase()));
+		(benchmarkEvaluationResults ??=
+			new PostgresBenchmarkEvaluationResultRepository(getDatabase()));
 	const getBenchmarkBrowser = () =>
-		(benchmarkBrowser ??= new PostgresBenchmarkBrowserRepository(getDatabase()));
+		(benchmarkBrowser ??= new PostgresBenchmarkBrowserRepository(
+			getDatabase(),
+		));
 	const getBenchmarkDatasetPromotions = () =>
-		(benchmarkDatasetPromotions ??= new PostgresBenchmarkDatasetPromotionRepository(getDatabase()));
+		(benchmarkDatasetPromotions ??=
+			new PostgresBenchmarkDatasetPromotionRepository(getDatabase()));
 	const getBenchmarkInstanceDetails = () =>
-		(benchmarkInstanceDetails ??= new PostgresBenchmarkInstanceDetailReadRepository(getDatabase()));
+		(benchmarkInstanceDetails ??=
+			new PostgresBenchmarkInstanceDetailReadRepository(getDatabase()));
 	const getBenchmarkRunInstanceScores = () =>
-		(benchmarkRunInstanceScores ??= new PostgresBenchmarkRunInstanceScoreReadRepository(getDatabase()));
+		(benchmarkRunInstanceScores ??=
+			new PostgresBenchmarkRunInstanceScoreReadRepository(getDatabase()));
 	const getBenchmarkRunInstanceDetails = () =>
-		(benchmarkRunInstanceDetails ??= new PostgresBenchmarkRunInstanceDetailReadRepository(getDatabase()));
+		(benchmarkRunInstanceDetails ??=
+			new PostgresBenchmarkRunInstanceDetailReadRepository(getDatabase()));
 	const getBenchmarkRunInstanceAnnotations = () =>
-		(benchmarkRunInstanceAnnotations ??= new PostgresBenchmarkRunInstanceAnnotationRepository(getDatabase()));
+		(benchmarkRunInstanceAnnotations ??=
+			new PostgresBenchmarkRunInstanceAnnotationRepository(getDatabase()));
 	const getBenchmarkRunInstanceProgress = () =>
-		(benchmarkRunInstanceProgress ??= new PostgresBenchmarkRunInstanceProgressReadRepository(getDatabase()));
+		(benchmarkRunInstanceProgress ??=
+			new PostgresBenchmarkRunInstanceProgressReadRepository(getDatabase()));
 	const getBenchmarkRunReads = () =>
 		(benchmarkRunReads ??= new LegacyBenchmarkRunReadRepository());
 	const getDevEnvironments = () =>
@@ -574,15 +605,23 @@ export function getApplicationAdapters(
 	const getBenchmarkRuns = () =>
 		(benchmarkRuns ??= new PostgresBenchmarkRunRepository(getDatabase()));
 	const getActivityRateTargets = () =>
-		(activityRateTargets ??= new PostgresWorkflowActivityRateTargetRepository(getDatabase()));
+		(activityRateTargets ??= new PostgresWorkflowActivityRateTargetRepository(
+			getDatabase(),
+		));
 	const getObservabilityTraces = () =>
-		(observabilityTraces ??= new PostgresObservabilityTraceRepository(getDatabase()));
+		(observabilityTraces ??= new PostgresObservabilityTraceRepository(
+			getDatabase(),
+		));
 	const getWorkflowMonitorReads = () =>
-		(workflowMonitorReads ??= new PostgresWorkflowMonitorReadRepository(getDatabase()));
+		(workflowMonitorReads ??= new PostgresWorkflowMonitorReadRepository(
+			getDatabase(),
+		));
 	const getResourceUsages = () =>
 		(resourceUsages ??= new PostgresResourceUsageReadRepository(getDatabase()));
 	const getAiAssistantMessages = () =>
-		(aiAssistantMessages ??= new PostgresWorkflowAiAssistantMessageRepository(getDatabase()));
+		(aiAssistantMessages ??= new PostgresWorkflowAiAssistantMessageRepository(
+			getDatabase(),
+		));
 	const getSecurityAudit = () =>
 		(securityAudit ??= new PostgresSecurityAuditReadRepository(getDatabase()));
 	const getDashboard = () =>
@@ -592,11 +631,15 @@ export function getApplicationAdapters(
 	const getModelCatalog = () =>
 		(modelCatalog ??= new PostgresModelCatalogRepository(getDatabase()));
 	const getWorkflowExecutions = () =>
-		(workflowExecutions ??= new PostgresWorkflowExecutionRepository(getDatabase()));
+		(workflowExecutions ??= new PostgresWorkflowExecutionRepository(
+			getDatabase(),
+		));
 	const getWorkflowFiles = () =>
 		(workflowFiles ??= new PostgresWorkflowFileStore(getDatabase()));
 	const getSandboxInventory = () =>
-		(sandboxInventory ??= new PostgresSandboxInventoryRepository(getDatabase()));
+		(sandboxInventory ??= new PostgresSandboxInventoryRepository(
+			getDatabase(),
+		));
 	const getArtifactStore = () =>
 		(artifactStore ??= new PostgresArtifactStore(getDatabase()));
 	const getWorkspaceSessions = () =>
@@ -611,10 +654,12 @@ export function getApplicationAdapters(
 		(usageReporting ??= new PostgresUsageReportingRepository(getDatabase()));
 	const getGoalFlow = () =>
 		(goalFlow ??= new PostgresGoalFlowReadStore(getDatabase()));
-	const getSessions = () => (sessions ??= new CurrentSessionRepository(getDatabase()));
+	const getSessions = () =>
+		(sessions ??= new CurrentSessionRepository(getDatabase()));
 	const getSessionProvisioning = () =>
 		(sessionProvisioning ??= new KubernetesSessionProvisioningReader());
-	const getSessionEvents = () => (sessionEvents ??= new PostgresSessionEventLog());
+	const getSessionEvents = () =>
+		(sessionEvents ??= new PostgresSessionEventLog());
 	const getSessionRuntimeConfigs = () =>
 		(sessionRuntimeConfigs ??= new DefaultSessionRuntimeConfigReader());
 	const getSessionRuntimeEvents = () =>
@@ -628,7 +673,8 @@ export function getApplicationAdapters(
 	const getPeerAgentResolver = () =>
 		(peerAgentResolver ??= new RegistryPeerAgentResolver(getDatabase()));
 	const getSessionEventNotifications = () =>
-		(sessionEventNotifications ??= new PostgresWorkflowSessionEventNotificationSource());
+		(sessionEventNotifications ??=
+			new PostgresWorkflowSessionEventNotificationSource());
 	const getSandboxProvisioner = () =>
 		(sandboxProvisioner ??= new WorkspaceRuntimeSandboxProvisioner());
 	const getRepositoryMounter = () =>
@@ -665,7 +711,8 @@ export function getApplicationAdapters(
 		(bulkLifecycleStop ??= new ApplicationBulkLifecycleStopService({
 			sessionLifecycle: new LifecycleSessionController(getSessionGoalStore()),
 			workflowLifecycle: new LifecycleWorkflowExecutionControllerPort(),
-			workflowCoordinatorOwners: new LifecycleWorkflowExecutionCoordinatorOwnerPort(),
+			workflowCoordinatorOwners:
+				new LifecycleWorkflowExecutionCoordinatorOwnerPort(),
 			benchmarkRuns: new ServiceBenchmarkRunCancellationPort(),
 			evaluationRuns: new ServiceEvaluationRunCancellationPort(),
 			coordinatorCancels: new DaprLifecycleCoordinatorCancelNotifier(),
@@ -723,10 +770,11 @@ export function getApplicationAdapters(
 			new LegacyBenchmarkRunDetailReadAdapter(),
 		));
 	const getBenchmarkRunInstanceDetail = () =>
-		(benchmarkRunInstanceDetail ??= new ApplicationBenchmarkRunInstanceDetailService({
-			workflowData: getWorkflowData(),
-			mlflowLinks: new EnvBenchmarkRunInstanceMlflowLinks(),
-		}));
+		(benchmarkRunInstanceDetail ??=
+			new ApplicationBenchmarkRunInstanceDetailService({
+				workflowData: getWorkflowData(),
+				mlflowLinks: new EnvBenchmarkRunInstanceMlflowLinks(),
+			}));
 	const getBenchmarkCompare = () =>
 		(benchmarkCompare ??= new ApplicationBenchmarkCompareService(
 			getBenchmarkRunReads(),
@@ -785,9 +833,10 @@ export function getApplicationAdapters(
 			new LegacyCodeFunctionManagementRepository(),
 		));
 	const getCodeFunctionParsePreview = () =>
-		(codeFunctionParsePreview ??= new ApplicationCodeFunctionParsePreviewService(
-			new LegacyCodeFunctionParsePreviewPort(),
-		));
+		(codeFunctionParsePreview ??=
+			new ApplicationCodeFunctionParsePreviewService(
+				new LegacyCodeFunctionParsePreviewPort(),
+			));
 	const getCodeFunctionOptions = () =>
 		(codeFunctionOptions ??= new ApplicationCodeFunctionOptionsService({
 			codeFunctions: new LegacyCodeFunctionOptionsRepository(),
@@ -806,7 +855,11 @@ export function getApplicationAdapters(
 		}));
 	const getPromptPresets = () =>
 		(promptPresets ??= new ApplicationPromptPresetService(
-			new LegacyPromptPresetRepository(),
+			new PostgresPromptPresetRepository(),
+		));
+	const getPromptStackCompiler = () =>
+		(promptStackCompiler ??= new ApplicationPromptStackCompilerService(
+			new PostgresPromptStackPresetReadRepository(),
 		));
 	const getSessionSandboxes = () =>
 		(sessionSandboxes ??= new ApplicationSessionSandboxService({
@@ -836,9 +889,13 @@ export function getApplicationAdapters(
 			workflowSpawner: getWorkflowSpawner(),
 		}));
 	const getCodeCheckpoints = () =>
-		(codeCheckpoints ??= new PostgresWorkflowCodeCheckpointStore(getDatabase()));
+		(codeCheckpoints ??= new PostgresWorkflowCodeCheckpointStore(
+			getDatabase(),
+		));
 	const getEvaluationArtifacts = () =>
-		(evaluationArtifacts ??= new PostgresEvaluationArtifactStore(getDatabase()));
+		(evaluationArtifacts ??= new PostgresEvaluationArtifactStore(
+			getDatabase(),
+		));
 	const getAgentRuntimeWarmPools = () =>
 		(agentRuntimeWarmPools ??= new KubernetesAgentRuntimeWarmPoolClient());
 	const getAgentRuntimeControl = () =>
@@ -864,20 +921,22 @@ export function getApplicationAdapters(
 			registryState: new DaprAgentRegistryStateReaderAdapter(),
 		}));
 	const getWorkflowDefinitionCommands = () =>
-		(workflowDefinitionCommands ??= new ApplicationWorkflowDefinitionCommandService({
-			workflowData: getWorkflowData(),
-			connectionRefs: new PostgresWorkflowConnectionRefSyncPort(),
-		}));
+		(workflowDefinitionCommands ??=
+			new ApplicationWorkflowDefinitionCommandService({
+				workflowData: getWorkflowData(),
+				connectionRefs: new PostgresWorkflowConnectionRefSyncPort(),
+			}));
 	const getWorkflowExecutionControl = () =>
-		(workflowExecutionControl ??= new ApplicationWorkflowExecutionControlService({
-			workflowData: getWorkflowData(),
-			approvalEvents: new DaprWorkflowApprovalEventPort(),
-			coordinatorOwners: new LifecycleWorkflowExecutionCoordinatorOwnerPort(),
-			executionLifecycle: new LifecycleWorkflowExecutionControllerPort(),
-			executionReadModels: new LegacyWorkflowExecutionReadModelPort(),
-			runStarter: new LegacyWorkflowRunStarterPort(),
-			workflowSpecs: new LegacyWorkflowSpecValidatorPort(),
-		}));
+		(workflowExecutionControl ??=
+			new ApplicationWorkflowExecutionControlService({
+				workflowData: getWorkflowData(),
+				approvalEvents: new DaprWorkflowApprovalEventPort(),
+				coordinatorOwners: new LifecycleWorkflowExecutionCoordinatorOwnerPort(),
+				executionLifecycle: new LifecycleWorkflowExecutionControllerPort(),
+				executionReadModels: new LegacyWorkflowExecutionReadModelPort(),
+				runStarter: new LegacyWorkflowRunStarterPort(),
+				workflowSpecs: new LegacyWorkflowSpecValidatorPort(),
+			}));
 	const getTriggeredWorkflowStart = () =>
 		(triggeredWorkflowStart ??= new ApplicationTriggeredWorkflowStartService({
 			admission: new LegacyTriggeredRunAdmissionPort(),
@@ -885,55 +944,63 @@ export function getApplicationAdapters(
 			runStarter: new LegacyWorkflowRunStarterPort(),
 		}));
 	const getWorkflowExecutionArtifacts = () =>
-		(workflowExecutionArtifacts ??= new ApplicationWorkflowExecutionArtifactsService({
-			workflowData: getWorkflowData(),
-		}));
+		(workflowExecutionArtifacts ??=
+			new ApplicationWorkflowExecutionArtifactsService({
+				workflowData: getWorkflowData(),
+			}));
 	const getWorkflowExecutionArtifactDiff = () =>
-		(workflowExecutionArtifactDiff ??= new ApplicationWorkflowExecutionArtifactDiffService({
-			workflowData: getWorkflowData(),
-			diffKind: RUN_DIFF_KIND,
-			resolveDiff: resolveRunDiffPatch,
-		}));
+		(workflowExecutionArtifactDiff ??=
+			new ApplicationWorkflowExecutionArtifactDiffService({
+				workflowData: getWorkflowData(),
+				diffKind: RUN_DIFF_KIND,
+				resolveDiff: resolveRunDiffPatch,
+			}));
 	const getWorkflowExecutionFiles = () =>
 		(workflowExecutionFiles ??= new ApplicationWorkflowExecutionFilesService({
 			workflowData: getWorkflowData(),
 		}));
 	const getWorkflowExecutionLineage = () =>
-		(workflowExecutionLineage ??= new ApplicationWorkflowExecutionLineageService({
-			workflowData: getWorkflowData(),
-		}));
+		(workflowExecutionLineage ??=
+			new ApplicationWorkflowExecutionLineageService({
+				workflowData: getWorkflowData(),
+			}));
 	const getWorkflowExecutionLogs = () =>
 		(workflowExecutionLogs ??= new ApplicationWorkflowExecutionLogsService({
 			workflowData: getWorkflowData(),
 			traceExtractor: extractExecutionTraceIds,
 		}));
 	const getWorkflowExecutionMetrics = () =>
-		(workflowExecutionMetrics ??= new ApplicationWorkflowExecutionMetricsService({
-			workflowData: getWorkflowData(),
-			pricing: { costFor, formatCurrency },
-		}));
+		(workflowExecutionMetrics ??=
+			new ApplicationWorkflowExecutionMetricsService({
+				workflowData: getWorkflowData(),
+				pricing: { costFor, formatCurrency },
+			}));
 	const getWorkflowExecutionSessions = () =>
-		(workflowExecutionSessions ??= new ApplicationWorkflowExecutionSessionsService({
-			workflowData: getWorkflowData(),
-		}));
+		(workflowExecutionSessions ??=
+			new ApplicationWorkflowExecutionSessionsService({
+				workflowData: getWorkflowData(),
+			}));
 	const getWorkflowExecutionSpecDiff = () =>
-		(workflowExecutionSpecDiff ??= new ApplicationWorkflowExecutionSpecDiffService({
-			workflowData: getWorkflowData(),
-		}));
+		(workflowExecutionSpecDiff ??=
+			new ApplicationWorkflowExecutionSpecDiffService({
+				workflowData: getWorkflowData(),
+			}));
 	const getWorkflowExecutionWorkspace = () =>
-		(workflowExecutionWorkspace ??= new ApplicationWorkflowExecutionWorkspaceService({
-			workflowData: getWorkflowData(),
-			workspace: new JuiceFsWorkflowExecutionWorkspaceAdapter(),
-		}));
+		(workflowExecutionWorkspace ??=
+			new ApplicationWorkflowExecutionWorkspaceService({
+				workflowData: getWorkflowData(),
+				workspace: new JuiceFsWorkflowExecutionWorkspaceAdapter(),
+			}));
 	const getWorkflowExecutionStream = () =>
 		(workflowExecutionStream ??= new ApplicationWorkflowExecutionStreamService({
 			workflowData: getWorkflowData(),
 			executionReadModels: new LegacyWorkflowExecutionReadModelPort(),
 		}));
 	const getWorkflowBrowserArtifacts = () =>
-		(workflowBrowserArtifacts ??= new ApplicationWorkflowBrowserArtifactsService({
-			workflowData: getWorkflowData(),
-		}));
+		(workflowBrowserArtifacts ??=
+			new ApplicationWorkflowBrowserArtifactsService({
+				workflowData: getWorkflowData(),
+			}));
 	const getWorkflowCodeCheckpoints = () =>
 		(workflowCodeCheckpoints ??= new ApplicationWorkflowCodeCheckpointService({
 			checkpoints: getCodeCheckpoints(),
@@ -945,20 +1012,23 @@ export function getApplicationAdapters(
 			promotionGate: new WorkflowPromotionGateAdapter(),
 		}));
 	const getWorkflowCodeVersionPromotion = () =>
-		(workflowCodeVersionPromotion ??= new ApplicationWorkflowCodeVersionPromotionService({
-			workflowData: getWorkflowData(),
-			promotionGate: new WorkflowPromotionGateAdapter(),
-			runner: new HelperPodSourceBundlePromotionRunner(),
-		}));
+		(workflowCodeVersionPromotion ??=
+			new ApplicationWorkflowCodeVersionPromotionService({
+				workflowData: getWorkflowData(),
+				promotionGate: new WorkflowPromotionGateAdapter(),
+				runner: new HelperPodSourceBundlePromotionRunner(),
+			}));
 	const getWorkflowTriggerLifecycle = () =>
-		(workflowTriggerLifecycle ??= new ApplicationWorkflowTriggerLifecycleService({
-			workflowData: getWorkflowData(),
-			lifecycle: new LegacyWorkflowTriggerLifecyclePort(),
-		}));
+		(workflowTriggerLifecycle ??=
+			new ApplicationWorkflowTriggerLifecycleService({
+				workflowData: getWorkflowData(),
+				lifecycle: new LegacyWorkflowTriggerLifecyclePort(),
+			}));
 	const getWorkflowTriggerManagement = () =>
-		(workflowTriggerManagement ??= new ApplicationWorkflowTriggerManagementService({
-			workflowData: getWorkflowData(),
-		}));
+		(workflowTriggerManagement ??=
+			new ApplicationWorkflowTriggerManagementService({
+				workflowData: getWorkflowData(),
+			}));
 	const getWorkflowPlan = () =>
 		(workflowPlan ??= new ApplicationWorkflowPlanService({
 			workflowData: getWorkflowData(),
@@ -1018,7 +1088,8 @@ export function getApplicationAdapters(
 			benchmarkArtifactMetadata: getBenchmarkArtifactMetadata(),
 			benchmarkEvaluationResults: getBenchmarkEvaluationResults(),
 			benchmarkRunLifecycle: new LegacyBenchmarkRunLifecycleAdapter(),
-			benchmarkEvaluationTelemetry: new LegacyBenchmarkEvaluationTelemetryAdapter(),
+			benchmarkEvaluationTelemetry:
+				new LegacyBenchmarkEvaluationTelemetryAdapter(),
 			benchmarkEvaluationEvents: new DaprBenchmarkEvaluationEventNotifier(),
 			benchmarkBrowser: getBenchmarkBrowser(),
 			benchmarkDatasetPromotions: getBenchmarkDatasetPromotions(),
@@ -1192,6 +1263,9 @@ export function getApplicationAdapters(
 		},
 		get promptPresets() {
 			return getPromptPresets();
+		},
+		get promptStackCompiler() {
+			return getPromptStackCompiler();
 		},
 		get sessionSandboxes() {
 			return getSessionSandboxes();

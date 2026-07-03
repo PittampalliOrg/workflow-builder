@@ -1,9 +1,23 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
 	PromptPresetValidationError,
 	normalizePromptPresetInput,
 	promptParentFieldsFromMessages,
 } from "./prompt-presets";
+
+describe("prompt-presets module boundary", () => {
+	it("keeps persistence concerns out of the pure prompt preset helpers", () => {
+		const source = readFileSync(
+			new URL("./prompt-presets.ts", import.meta.url),
+			"utf8",
+		);
+
+		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("$lib/server/db/schema");
+		expect(source).not.toContain("drizzle-orm");
+	});
+});
 
 describe("normalizePromptPresetInput", () => {
 	it("accepts MCP-style messages, arguments, and mustache format", () => {
@@ -16,7 +30,9 @@ describe("normalizePromptPresetInput", () => {
 					{ role: "system", content: "Review {{args.ticket}}" },
 					{ role: "user", content: "{{workflow.nodePrompt}}" },
 				],
-				arguments: [{ name: "ticket", description: "Ticket id", required: true }],
+				arguments: [
+					{ name: "ticket", description: "Ticket id", required: true },
+				],
 				metadata: { scope: "agent-editor" },
 			},
 			{ requireName: true },

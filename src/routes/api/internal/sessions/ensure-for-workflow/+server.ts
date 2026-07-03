@@ -12,7 +12,6 @@ import {
 	type RuntimeDescriptor,
 } from "$lib/server/agents/runtime-registry";
 import { evaluateSwap } from "$lib/server/agents/swap-safety";
-import { compilePromptStack } from "$lib/server/prompt-presets";
 import type { AgentConfig } from "$lib/types/agents";
 import {
 	agentRuntimeDedicatedAppId,
@@ -55,24 +54,28 @@ import {
  */
 export const POST: RequestHandler = async ({ request }) => {
 	if (!validateInternalToken(request)) return error(401, "Unauthorized");
-	const { workflowData, sessionGoals, sessionCommands } =
+	const { workflowData, sessionGoals, sessionCommands, promptStackCompiler } =
 		getApplicationAdapters();
 
 	const traceContext = extractTraceContext(request);
-	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+	const body = (await request.json().catch(() => ({}))) as Record<
+		string,
+		unknown
+	>;
 	const sessionId =
 		typeof body.sessionId === "string" && body.sessionId.trim()
 			? body.sessionId.trim()
 			: null;
-	const workflowId =
-		typeof body.workflowId === "string" ? body.workflowId : "";
+	const workflowId = typeof body.workflowId === "string" ? body.workflowId : "";
 	const nodeId = typeof body.nodeId === "string" ? body.nodeId : "";
 	const nodeName =
 		typeof body.nodeName === "string" && body.nodeName.trim()
 			? body.nodeName.trim()
 			: nodeId;
 	const workflowExecutionId =
-		typeof body.workflowExecutionId === "string" ? body.workflowExecutionId : null;
+		typeof body.workflowExecutionId === "string"
+			? body.workflowExecutionId
+			: null;
 	const parentExecutionId =
 		typeof body.parentExecutionId === "string" ? body.parentExecutionId : null;
 	const benchmarkRunId =
@@ -80,7 +83,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			? body.benchmarkRunId.trim()
 			: null;
 	const benchmarkInstanceId =
-		typeof body.benchmarkInstanceId === "string" && body.benchmarkInstanceId.trim()
+		typeof body.benchmarkInstanceId === "string" &&
+		body.benchmarkInstanceId.trim()
 			? body.benchmarkInstanceId.trim()
 			: null;
 	const bodyBenchmarkExecutionClass =
@@ -146,8 +150,7 @@ export const POST: RequestHandler = async ({ request }) => {
 							(rawAgentConfig as { mcpServers?: unknown[] })
 								.mcpServers as never,
 							{
-								runtime: (rawAgentConfig as { runtime?: string })
-									.runtime,
+								runtime: (rawAgentConfig as { runtime?: string }).runtime,
 							},
 						).mcpServers,
 			} as AgentConfig)
@@ -174,15 +177,15 @@ export const POST: RequestHandler = async ({ request }) => {
 	};
 	const compiledPresetStack =
 		agentConfigAfterMcp && projectId
-			? await compilePromptStack(agentConfigAfterMcp, { projectId }).catch(
-					(err) => {
+			? await promptStackCompiler
+					.compilePromptStack(agentConfigAfterMcp, { projectId })
+					.catch((err) => {
 						console.warn(
 							"[ensure-for-workflow] compilePromptStack failed, continuing with empty stack:",
 							err instanceof Error ? err.message : err,
 						);
 						return emptyPresetStack;
-					},
-				)
+					})
 			: emptyPresetStack;
 	const agentConfig = agentConfigAfterMcp
 		? ({
@@ -280,7 +283,8 @@ export const POST: RequestHandler = async ({ request }) => {
 				: null;
 
 	if (!sessionId) return error(400, "sessionId is required");
-	if (!workflowId || !nodeId) return error(400, "workflowId and nodeId are required");
+	if (!workflowId || !nodeId)
+		return error(400, "workflowId and nodeId are required");
 	if (!userId) {
 		return error(
 			400,
@@ -331,7 +335,8 @@ export const POST: RequestHandler = async ({ request }) => {
 				...baseDispatchAgentConfig,
 				mcpServers: stampGoalMcpSessionHeader(
 					ensureGoalMcpServer(
-						(baseDispatchAgentConfig as { mcpServers?: unknown[] }).mcpServers ?? [],
+						(baseDispatchAgentConfig as { mcpServers?: unknown[] })
+							.mcpServers ?? [],
 						swapTarget?.capabilities?.supportsMcp ?? false,
 						false,
 					),
@@ -342,7 +347,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	// Goal-mode sessions run multi-turn (no auto-terminate) capped by the goal's
 	// maxIterations; native-`/goal` runs get the objective as a `/goal` kickoff.
 	const effectiveMaxIterations = goalMode
-		? bridgeGoal?.maxIterations ?? bridgeMaxIterations
+		? (bridgeGoal?.maxIterations ?? bridgeMaxIterations)
 		: bridgeMaxIterations;
 	const effectiveInitialMessage =
 		nativeGoal && effectiveBridgeGoal
@@ -379,8 +384,8 @@ export const POST: RequestHandler = async ({ request }) => {
 				executionId: sessionId,
 				name: title,
 				sandboxTemplate:
-					typeof (agentConfig as { sandboxTemplate?: unknown }).sandboxTemplate ===
-					"string"
+					typeof (agentConfig as { sandboxTemplate?: unknown })
+						.sandboxTemplate === "string"
 						? ((agentConfig as { sandboxTemplate?: string })
 								.sandboxTemplate as string)
 						: "base",
@@ -401,9 +406,12 @@ export const POST: RequestHandler = async ({ request }) => {
 	if (swapTarget && swapVerdict && swapVerdict.drops.length > 0) {
 		console.warn(
 			`[swap-safety] workflow session ${sessionId} -> runtime "${swapTarget.id}" ${swapVerdict.decision}: ` +
-				swapVerdict.drops.map((d) => `${d.capability}(${d.severity})`).join(", "),
+				swapVerdict.drops
+					.map((d) => `${d.capability}(${d.severity})`)
+					.join(", "),
 		);
-		for (const d of swapVerdict.drops) console.warn(`[swap-safety]   ${d.detail}`);
+		for (const d of swapVerdict.drops)
+			console.warn(`[swap-safety]   ${d.detail}`);
 		if (swapVerdict.decision === "reject") {
 			return error(
 				409,
@@ -471,7 +479,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				swapTarget?.capabilities?.workspaceBackend === "juicefs-shared"
 					? (bridgeWorkspaceRef ?? workflowExecutionId)
 					: null,
-				seedWorkspaceFrom: bridgeSeedWorkspaceFrom,
+			seedWorkspaceFrom: bridgeSeedWorkspaceFrom,
 		});
 		const reuseChildAppId = reuseHost?.agentAppId ?? reuseAgentAppId;
 		const reuseRuntimeSandboxName =
@@ -485,9 +493,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 		if (!reuseHost && reuseWakeSlug) {
 			try {
-				const { wakeAgentRuntime } = await import(
-					"$lib/server/kube/client"
-				);
+				const { wakeAgentRuntime } = await import("$lib/server/kube/client");
 				await wakeAgentRuntime(reuseWakeSlug, 20_000);
 			} catch (err) {
 				console.warn(
@@ -506,7 +512,8 @@ export const POST: RequestHandler = async ({ request }) => {
 				objective: effectiveBridgeGoal.objective,
 				tokenBudget: effectiveBridgeGoal.tokenBudget,
 				maxIterations: effectiveBridgeGoal.maxIterations,
-				workflowExecutionId: existing.workflowExecutionId ?? workflowExecutionId,
+				workflowExecutionId:
+					existing.workflowExecutionId ?? workflowExecutionId,
 				acceptanceCriteria: effectiveBridgeGoal.acceptanceCriteria,
 				evidencePlan: effectiveBridgeGoal.evidencePlan,
 			});
@@ -527,8 +534,11 @@ export const POST: RequestHandler = async ({ request }) => {
 				workflowId,
 				nodeId,
 				nodeName,
-				vaultIds: Array.isArray(existing.vaultIds) ? existing.vaultIds : vaultIds,
-				workflowExecutionId: existing.workflowExecutionId ?? workflowExecutionId,
+				vaultIds: Array.isArray(existing.vaultIds)
+					? existing.vaultIds
+					: vaultIds,
+				workflowExecutionId:
+					existing.workflowExecutionId ?? workflowExecutionId,
 				initialMessage: effectiveInitialMessage,
 				workspaceRef: bridgeWorkspaceRef,
 				sandboxName: bridgeSandboxName ?? existing.sandboxName,
@@ -588,16 +598,18 @@ export const POST: RequestHandler = async ({ request }) => {
 	// row/pod side effects), so the event is emitted here. Fire-and-forget;
 	// deterministic sourceEventId dedupes any idempotent re-ensure.
 	if (swapTarget && swapVerdict && swapVerdict.drops.length > 0) {
-		void sessionCommands.appendWorkflowSessionSwapDegradedEvent({
-			sessionId,
-			runtimeId: swapTarget.id,
-			decision: swapVerdict.decision,
-			drops: swapVerdict.drops,
-		}).catch((err) =>
-			console.warn(
-				`[swap-safety] swap_degraded event emit failed: ${err instanceof Error ? err.message : err}`,
-			),
-		);
+		void sessionCommands
+			.appendWorkflowSessionSwapDegradedEvent({
+				sessionId,
+				runtimeId: swapTarget.id,
+				decision: swapVerdict.decision,
+				drops: swapVerdict.drops,
+			})
+			.catch((err) =>
+				console.warn(
+					`[swap-safety] swap_degraded event emit failed: ${err instanceof Error ? err.message : err}`,
+				),
+			);
 	}
 	// Goal-driven custom-loop run: create the goal row now that the session row
 	// exists. The goal loop then drives continuations off each status_idle, and
@@ -654,7 +666,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			swapTarget?.capabilities?.workspaceBackend === "juicefs-shared"
 				? (bridgeWorkspaceRef ?? workflowExecutionId)
 				: null,
-			seedWorkspaceFrom: bridgeSeedWorkspaceFrom,
+		seedWorkspaceFrom: bridgeSeedWorkspaceFrom,
 	});
 	const childAgentAppId = sessionHost?.agentAppId ?? targetAgentAppId;
 	const childRuntimeSandboxName = sessionHost?.sandboxName ?? null;
@@ -678,9 +690,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		);
 	} else if (wakeSlug) {
 		try {
-			const { wakeAgentRuntime } = await import(
-				"$lib/server/kube/client"
-			);
+			const { wakeAgentRuntime } = await import("$lib/server/kube/client");
 			// Keep the wake budget well below the Python activity's 30s read
 			// timeout (spawn_session.py) so we return 200 before the caller
 			// abandons the request. A cold 4-container browser-sidecar pod
@@ -719,10 +729,12 @@ export const POST: RequestHandler = async ({ request }) => {
 	// sessions' host sandboxes (their per-node diff was captured at session end).
 	// Best-effort, fully detached — never blocks or fails the spawn.
 	if (workflowExecutionId) {
-		void sessionCommands.reapTerminatedWorkflowSessionRuntimeHosts({
-			workflowExecutionId,
-			exceptSessionId: sessionId,
-		}).catch(() => {});
+		void sessionCommands
+			.reapTerminatedWorkflowSessionRuntimeHosts({
+				workflowExecutionId,
+				exceptSessionId: sessionId,
+			})
+			.catch(() => {});
 	}
 
 	return json({
@@ -750,7 +762,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			cwd: bridgeCwd,
 			timeoutMinutes: bridgeTimeoutMinutes,
 			maxIterations: effectiveMaxIterations,
-				customGoal: evaluatorGoal,
+			customGoal: evaluatorGoal,
 			agentId,
 			agentVersion,
 			agentSlug: runtimeIdentity?.slug ?? bodyAgentSlug,
@@ -942,12 +954,13 @@ async function resolveRuntimeIdentity(
 async function resolvePublishedWorkflowAgent(
 	workflowData: WorkflowDataService,
 	params: {
-	agentId: string | null;
-	agentVersion: number | null;
-	projectId: string | null;
+		agentId: string | null;
+		agentVersion: number | null;
+		projectId: string | null;
 	},
 ): Promise<WorkflowPublishedAgent | null> {
-	const result = await workflowData.resolvePublishedWorkflowAgentForEnsure(params);
+	const result =
+		await workflowData.resolvePublishedWorkflowAgentForEnsure(params);
 	if (!result) return null;
 	if (!result.ok) {
 		throw error(result.status, result.message);

@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { PromptPresetSummary } from "$lib/types/prompt-presets";
 import {
 	ApplicationPromptPresetService,
+	ApplicationPromptStackCompilerService,
 	type PromptPresetRepository,
+	type PromptStackPresetReadPort,
 } from "$lib/server/application/prompt-presets";
 
 const preset: PromptPresetSummary = {
@@ -93,5 +95,92 @@ describe("ApplicationPromptPresetService", () => {
 		await expect(
 			service.archive({ id: "missing", projectId: "project-1" }),
 		).resolves.toBeNull();
+	});
+});
+
+describe("ApplicationPromptStackCompilerService", () => {
+	it("returns an empty stack without hitting the read port when no refs are configured", async () => {
+		const readPort: PromptStackPresetReadPort = {
+			listPromptStackPresetRows: vi.fn(async () => []),
+		};
+		const service = new ApplicationPromptStackCompilerService(readPort);
+
+		await expect(
+			service.compilePromptStack(
+				{ modelSpec: "openai/gpt-5.5" },
+				{ projectId: "project-1" },
+			),
+		).resolves.toEqual({
+			static: [],
+			dynamic: [],
+			staticManifest: [],
+			dynamicManifest: [],
+		});
+
+		expect(readPort.listPromptStackPresetRows).not.toHaveBeenCalled();
+	});
+
+	it("fetches unique prompt ids through the read port and resolves ordered static/dynamic stacks", async () => {
+		const readPort: PromptStackPresetReadPort = {
+			listPromptStackPresetRows: vi.fn(async () => [
+				{
+					promptId: "preset-b",
+					version: 2,
+					messages: [{ role: "system", content: "Static B" }],
+					promptVersionId: "version-b2",
+					mlflowUri: "models:/preset-b/2",
+				},
+				{
+					promptId: "preset-a",
+					version: 1,
+					messages: [{ role: "system", content: "Static A" }],
+					promptVersionId: "version-a1",
+					mlflowUri: null,
+				},
+			]),
+		};
+		const service = new ApplicationPromptStackCompilerService(readPort);
+
+		const stack = await service.compilePromptStack(
+			{
+				staticPromptPresetRefs: [
+					{ id: "preset-a", version: 1 },
+					{ id: "preset-b", version: 2 },
+				],
+				dynamicPromptPresetRefs: [{ id: "preset-a", version: 1 }],
+			},
+			{ projectId: "project-1" },
+		);
+
+		expect(readPort.listPromptStackPresetRows).toHaveBeenCalledWith({
+			projectId: "project-1",
+			promptIds: ["preset-a", "preset-b"],
+		});
+		expect(stack).toEqual({
+			static: ["Static A", "Static B"],
+			dynamic: ["Static A"],
+			staticManifest: [
+				{
+					promptId: "preset-a",
+					version: 1,
+					promptVersionId: "version-a1",
+					mlflowUri: null,
+				},
+				{
+					promptId: "preset-b",
+					version: 2,
+					promptVersionId: "version-b2",
+					mlflowUri: "models:/preset-b/2",
+				},
+			],
+			dynamicManifest: [
+				{
+					promptId: "preset-a",
+					version: 1,
+					promptVersionId: "version-a1",
+					mlflowUri: null,
+				},
+			],
+		});
 	});
 });

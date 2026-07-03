@@ -9,18 +9,15 @@ const mocks = vi.hoisted(() => {
 		inserted: [] as unknown[],
 		updates: [] as unknown[],
 		hostCalls: [] as unknown[],
-		credentials: {} as Record<string, { token: string; expiresAt: Date | null }>,
+		credentials: {} as Record<
+			string,
+			{ token: string; expiresAt: Date | null }
+		>,
 	};
 
 	return {
 		state,
 		validateInternalToken: vi.fn(() => true),
-		compilePromptStack: vi.fn(async () => ({
-			static: [],
-			dynamic: [],
-			staticManifest: [],
-			dynamicManifest: [],
-		})),
 		getUserCliCredential: vi.fn(async (_userId: string, provider: string) => {
 			return state.credentials[provider] ?? null;
 		}),
@@ -48,25 +45,27 @@ const mocks = vi.hoisted(() => {
 					appId: `agent-runtime-${slug}`,
 				};
 			}),
-			resolvePublishedWorkflowAgentForEnsure: vi.fn(async (input: {
-				agentId: string | null;
-				agentVersion?: number | null;
-				projectId?: string | null;
-			}) => {
-				if (!input.agentId) return null;
-				return {
-					ok: true as const,
-					agent: {
-						agentId: input.agentId,
-						agentVersion: input.agentVersion ?? 3,
-						agentSlug: "published-agent",
-						agentAppId: "agent-runtime-published-agent",
-						mlflowUri: "models:/published-agent/3",
-						mlflowModelName: "published-agent",
-						mlflowModelVersion: "model-3",
-					},
-				};
-			}),
+			resolvePublishedWorkflowAgentForEnsure: vi.fn(
+				async (input: {
+					agentId: string | null;
+					agentVersion?: number | null;
+					projectId?: string | null;
+				}) => {
+					if (!input.agentId) return null;
+					return {
+						ok: true as const,
+						agent: {
+							agentId: input.agentId,
+							agentVersion: input.agentVersion ?? 3,
+							agentSlug: "published-agent",
+							agentAppId: "agent-runtime-published-agent",
+							mlflowUri: "models:/published-agent/3",
+							mlflowModelName: "published-agent",
+							mlflowModelVersion: "model-3",
+						},
+					};
+				},
+			),
 			getWorkflowEnsureSession: vi.fn(
 				async (): Promise<{
 					id: string;
@@ -106,6 +105,14 @@ const mocks = vi.hoisted(() => {
 			),
 			syncWorkflowSessionAgentRuntime: vi.fn(async () => undefined),
 		},
+		promptStackCompiler: {
+			compilePromptStack: vi.fn(async () => ({
+				static: [],
+				dynamic: [],
+				staticManifest: [],
+				dynamicManifest: [],
+			})),
+		},
 	};
 });
 
@@ -118,11 +125,8 @@ vi.mock("$lib/server/application", () => ({
 		workflowData: mocks.workflowData,
 		sessionGoals: mocks.sessionGoals,
 		sessionCommands: mocks.sessionCommands,
+		promptStackCompiler: mocks.promptStackCompiler,
 	}),
-}));
-
-vi.mock("$lib/server/prompt-presets", () => ({
-	compilePromptStack: mocks.compilePromptStack,
 }));
 
 vi.mock("$lib/server/users/cli-credentials", () => ({
@@ -154,7 +158,10 @@ const RUNTIME_POLICY = {
 	allowSkillNarrowing: true,
 };
 
-function agentConfig(runtime: AgentConfig["runtime"], modelSpec: string): AgentConfig {
+function agentConfig(
+	runtime: AgentConfig["runtime"],
+	modelSpec: string,
+): AgentConfig {
 	return {
 		runtime,
 		// Deliberately wrong. The bridge must stamp from the runtime descriptor,
@@ -167,6 +174,10 @@ function agentConfig(runtime: AgentConfig["runtime"], modelSpec: string): AgentC
 		skills: [],
 		runtimeOverridePolicy: RUNTIME_POLICY,
 	};
+}
+
+function expectSourceCall(source: string, objectName: string, methodName: string) {
+	expect(source).toMatch(new RegExp(`${objectName}\\s*\\.\\s*${methodName}`));
 }
 
 async function callEnsureForWorkflow(params: {
@@ -214,21 +225,43 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 			"utf8",
 		);
 
-		expect(source).toContain("workflowData.getWorkflowExecutionSessionOwnerContext");
-		expect(source).toContain("workflowData.checkBenchmarkSessionProvisioningGate");
-		expect(source).toContain("workflowData.getWorkflowAgentRuntimeIdentity");
-		expect(source).toContain("workflowData.resolvePublishedWorkflowAgentForEnsure");
-		expect(source).toContain("workflowData.getWorkflowEnsureSession");
-		expect(source).toContain("workflowData.createWorkflowEnsureSession");
-		expect(source).toContain("workflowData.updateWorkflowEnsureSessionRuntime");
-		expect(source).toContain("sessionGoals.ensureWorkflowEvaluatorGoal");
-		expect(source).toContain("sessionCommands.materializeWorkflowSessionRepositories");
-		expect(source).toContain("sessionCommands.reapTerminatedWorkflowSessionRuntimeHosts");
-		expect(source).toContain("sessionCommands.appendWorkflowSessionInitialMessage");
-		expect(source).toContain("sessionCommands.appendWorkflowSessionSwapDegradedEvent");
-		expect(source).toContain("sessionCommands.resolveWorkflowSessionAgent");
-		expect(source).toContain("sessionCommands.syncWorkflowSessionAgentRuntime");
+		expectSourceCall(
+			source,
+			"workflowData",
+			"getWorkflowExecutionSessionOwnerContext",
+		);
+		expectSourceCall(source, "workflowData", "checkBenchmarkSessionProvisioningGate");
+		expectSourceCall(source, "workflowData", "getWorkflowAgentRuntimeIdentity");
+		expectSourceCall(source, "workflowData", "resolvePublishedWorkflowAgentForEnsure");
+		expectSourceCall(source, "workflowData", "getWorkflowEnsureSession");
+		expectSourceCall(source, "workflowData", "createWorkflowEnsureSession");
+		expectSourceCall(source, "workflowData", "updateWorkflowEnsureSessionRuntime");
+		expectSourceCall(source, "sessionGoals", "ensureWorkflowEvaluatorGoal");
+		expectSourceCall(
+			source,
+			"sessionCommands",
+			"materializeWorkflowSessionRepositories",
+		);
+		expectSourceCall(
+			source,
+			"sessionCommands",
+			"reapTerminatedWorkflowSessionRuntimeHosts",
+		);
+		expectSourceCall(
+			source,
+			"sessionCommands",
+			"appendWorkflowSessionInitialMessage",
+		);
+		expectSourceCall(
+			source,
+			"sessionCommands",
+			"appendWorkflowSessionSwapDegradedEvent",
+		);
+		expectSourceCall(source, "sessionCommands", "resolveWorkflowSessionAgent");
+		expectSourceCall(source, "sessionCommands", "syncWorkflowSessionAgentRuntime");
+		expectSourceCall(source, "promptStackCompiler", "compilePromptStack");
 		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("$lib/server/prompt-presets");
 		expect(source).not.toContain("$lib/server/agents/ephemeral");
 		expect(source).not.toContain("findOrCreateEphemeralAgent");
 		expect(source).not.toContain("$lib/server/agents/registry-sync");
@@ -275,7 +308,9 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 			},
 		});
 
-		expect(mocks.workflowData.resolvePublishedWorkflowAgentForEnsure).toHaveBeenCalledWith({
+		expect(
+			mocks.workflowData.resolvePublishedWorkflowAgentForEnsure,
+		).toHaveBeenCalledWith({
 			agentId: "agent-published",
 			agentVersion: 9,
 			projectId: "project-1",
@@ -322,7 +357,9 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 			token: '{"tokens":{"refresh_token":"codex"}}',
 		});
 
-		expect(mocks.workflowData.resolvePublishedWorkflowAgentForEnsure).toHaveBeenCalledWith({
+		expect(
+			mocks.workflowData.resolvePublishedWorkflowAgentForEnsure,
+		).toHaveBeenCalledWith({
 			agentId: null,
 			agentVersion: null,
 			projectId: "project-1",
@@ -398,16 +435,20 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 			},
 		});
 
-		expect(mocks.sessionGoals.ensureWorkflowEvaluatorGoal).toHaveBeenCalledWith({
-			sessionId: "sess-agy-cli",
-			objective: "finish the task",
-			tokenBudget: 1234,
-			maxIterations: 6,
-			workflowExecutionId: "execution-1",
-			acceptanceCriteria: ["done"],
-			evidencePlan: { commands: ["pnpm check"] },
-		});
-		expect((payload.childInput as Record<string, unknown>).autoTerminateAfterEndTurn).toBe(false);
+		expect(mocks.sessionGoals.ensureWorkflowEvaluatorGoal).toHaveBeenCalledWith(
+			{
+				sessionId: "sess-agy-cli",
+				objective: "finish the task",
+				tokenBudget: 1234,
+				maxIterations: 6,
+				workflowExecutionId: "execution-1",
+				acceptanceCriteria: ["done"],
+				evidencePlan: { commands: ["pnpm check"] },
+			},
+		);
+		expect(
+			(payload.childInput as Record<string, unknown>).autoTerminateAfterEndTurn,
+		).toBe(false);
 	});
 
 	it("delegates workflow repository materialization to the session command service", async () => {
@@ -508,7 +549,10 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 				token,
 			});
 			const childInput = payload.childInput as Record<string, unknown>;
-			const childAgentConfig = childInput.agentConfig as Record<string, unknown>;
+			const childAgentConfig = childInput.agentConfig as Record<
+				string,
+				unknown
+			>;
 			expect(childAgentConfig.runtime).toBe(runtime);
 			expect(childAgentConfig.cliAdapter).toBe(adapter);
 
