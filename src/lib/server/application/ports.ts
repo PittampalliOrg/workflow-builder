@@ -3842,6 +3842,83 @@ export interface SessionWorkflowSpawner {
 	}>;
 }
 
+export type SessionGoalStatus =
+	| "active"
+	| "paused"
+	| "budget_limited"
+	| "complete";
+
+export type SessionGoalRecord = {
+	id: string;
+	sessionId: string;
+	goalId: string;
+	objective: string;
+	status: SessionGoalStatus | string;
+	tokenBudget: number | null;
+	tokensUsed: number;
+	timeUsedSeconds: number;
+	iterations: number;
+	maxIterations: number;
+	acceptanceCriteria: string[] | null;
+	evidencePlan: { commands?: string[] } | null;
+	budgetSteeredAt: Date | null;
+	lastContinuationAt: Date | null;
+	stopReason: string | null;
+	workflowExecutionId: string | null;
+	createdAt: Date;
+	updatedAt: Date;
+	completedAt: Date | null;
+};
+
+export type CreateSessionGoalInput = {
+	sessionId: string;
+	objective: string;
+	tokenBudget?: number | null;
+	maxIterations?: number;
+	workflowExecutionId?: string | null;
+	acceptanceCriteria?: string[] | null;
+	evidencePlan?: { commands?: string[] } | null;
+};
+
+export interface SessionGoalStore {
+	getCurrentGoal(sessionId: string): Promise<SessionGoalRecord | null>;
+	createOrReplaceGoal(input: CreateSessionGoalInput): Promise<SessionGoalRecord>;
+	markGoalComplete(sessionId: string): Promise<SessionGoalRecord | null>;
+	pauseGoal(sessionId: string): Promise<SessionGoalRecord | null>;
+}
+
+export interface SessionGoalLoopDriver {
+	kickSessionGoalLoop(
+		sessionId: string,
+		opts?: { kickoff?: boolean; allowStaleIdleProbe?: boolean; fromStopHook?: boolean },
+	): Promise<void>;
+}
+
+export interface SessionGoalHarnessResolver {
+	sessionHasNativeGoalHarness(sessionId: string): Promise<boolean>;
+	decideGoalHarness(
+		rawObjective: string,
+		hasNativeHarness: boolean,
+	): { native: boolean; objective: string };
+}
+
+export interface SessionGoalScopeGuard {
+	checkSessionScope(input: {
+		sessionId: string;
+		userId: string;
+		projectId?: string | null;
+	}): Promise<"ok" | "not_found">;
+}
+
+export interface SessionUserEventCommandPort {
+	appendSessionUserEvents(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+		events: UserEvent[];
+	}): Promise<"ok" | "not_found">;
+}
+
 export type PersistCodeCheckpointInput = {
 	workflowExecutionId: string;
 	workflowAgentRunId?: string | null;

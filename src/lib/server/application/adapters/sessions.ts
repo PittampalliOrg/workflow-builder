@@ -13,6 +13,11 @@ import type {
 	SessionBrowserTarget,
 	SessionContextUsageReadModel,
 	SessionEventLog,
+	SessionGoalHarnessResolver,
+	SessionGoalLoopDriver,
+	SessionGoalRecord,
+	SessionGoalScopeGuard,
+	SessionGoalStore,
 	SessionProvisioningContext,
 	SessionProvisioningReader,
 	SessionRepository,
@@ -22,6 +27,7 @@ import type {
 	SessionRuntimeConfigReader,
 	SessionRuntimeEventRaiser,
 	SessionTraceLifecycleStore,
+	SessionUserEventCommandPort,
 	SessionListInput,
 	SessionWorkflowSpawner,
 	SessionWorkflowContext,
@@ -65,6 +71,19 @@ import {
 	mountSessionRepositories,
 	mountSingleRepository,
 } from "$lib/server/sessions/repositories";
+import { inspectDurableRun } from "$lib/server/lifecycle";
+import { isResourceInScope } from "$lib/server/workflows/project-scope";
+import {
+	createOrReplaceGoal,
+	getCurrentGoal,
+	markGoalComplete,
+	pauseGoal,
+} from "$lib/server/goals/repo";
+import { kickGoalLoop } from "$lib/server/goals/goal-loop";
+import {
+	decideGoalHarness,
+	sessionHasNativeGoalHarness,
+} from "$lib/server/sessions/runtime-target";
 import {
 	agentRuntimeDedicatedAppId,
 	agentRuntimeInvokeTarget,
@@ -769,6 +788,105 @@ export class DaprSessionWorkflowSpawner implements SessionWorkflowSpawner {
 	}
 }
 
+export class RepositorySessionGoalStore implements SessionGoalStore {
+	async getCurrentGoal(sessionId: string): Promise<SessionGoalRecord | null> {
+		return toSessionGoalRecord(await getCurrentGoal(sessionId));
+	}
+
+	async createOrReplaceGoal(
+		input: Parameters<SessionGoalStore["createOrReplaceGoal"]>[0],
+	): Promise<SessionGoalRecord> {
+		return toSessionGoalRecord(await createOrReplaceGoal(input))!;
+	}
+
+	async markGoalComplete(
+		sessionId: string,
+	): Promise<SessionGoalRecord | null> {
+		return toSessionGoalRecord(await markGoalComplete(sessionId));
+	}
+
+	async pauseGoal(sessionId: string): Promise<SessionGoalRecord | null> {
+		return toSessionGoalRecord(await pauseGoal(sessionId));
+	}
+}
+
+export class DaprSessionGoalLoopDriver implements SessionGoalLoopDriver {
+	kickSessionGoalLoop(
+		sessionId: string,
+		opts?: Parameters<SessionGoalLoopDriver["kickSessionGoalLoop"]>[1],
+	): Promise<void> {
+		return kickGoalLoop(sessionId, opts);
+	}
+}
+
+export class RuntimeSessionGoalHarnessResolver
+	implements SessionGoalHarnessResolver
+{
+	sessionHasNativeGoalHarness(sessionId: string): Promise<boolean> {
+		return sessionHasNativeGoalHarness(sessionId);
+	}
+
+	decideGoalHarness(rawObjective: string, hasNativeHarness: boolean) {
+		return decideGoalHarness(rawObjective, hasNativeHarness);
+	}
+}
+
+export class LifecycleSessionGoalScopeGuard implements SessionGoalScopeGuard {
+	async checkSessionScope(input: {
+		sessionId: string;
+		userId: string;
+		projectId?: string | null;
+	}): Promise<"ok" | "not_found"> {
+		const inspected = await inspectDurableRun({
+			kind: "session",
+			id: input.sessionId,
+		});
+		if (inspected.notFound) return "not_found";
+		if (
+			inspected.scope &&
+			!isResourceInScope(inspected.scope, {
+				userId: input.userId,
+				projectId: input.projectId ?? null,
+			})
+		) {
+			return "not_found";
+		}
+		return "ok";
+	}
+}
+
+export class DaprSessionUserEventCommandAdapter
+	implements SessionUserEventCommandPort
+{
+	constructor(
+		private readonly sessionEvents: SessionEventLog,
+		private readonly runtimeEvents: SessionRuntimeEventRaiser,
+	) {}
+
+	async appendSessionUserEvents(input: {
+		sessionId: string;
+		projectId?: string | null;
+		userId?: string | null;
+		events: UserEvent[];
+	}): Promise<"ok" | "not_found"> {
+		for (const event of input.events) {
+			await this.sessionEvents.appendSessionEvent(input.sessionId, {
+				type: event.type,
+				data: event as unknown as Record<string, unknown>,
+				processedAt: null,
+			});
+		}
+
+		try {
+			await this.runtimeEvents.raiseSessionUserEvents(input.sessionId, input.events);
+		} catch (err) {
+			console.warn("[sessions] raiseSessionUserEvents failed:", err);
+		}
+
+		return "ok";
+	}
+}
+
 export class WorkspaceSessionRepositoryMounter implements SessionRepositoryMounter {
 	mountSessionRepositories(
 		sessionId: string,
@@ -784,6 +902,32 @@ export class WorkspaceSessionRepositoryMounter implements SessionRepositoryMount
 	): Promise<void> {
 		return mountSingleRepository(sessionId, resource, target);
 	}
+}
+
+function toSessionGoalRecord(row: unknown): SessionGoalRecord | null {
+	if (!row || typeof row !== "object") return null;
+	const r = row as SessionGoalRecord;
+	return {
+		id: r.id,
+		sessionId: r.sessionId,
+		goalId: r.goalId,
+		objective: r.objective,
+		status: r.status,
+		tokenBudget: r.tokenBudget,
+		tokensUsed: r.tokensUsed,
+		timeUsedSeconds: r.timeUsedSeconds,
+		iterations: r.iterations,
+		maxIterations: r.maxIterations,
+		acceptanceCriteria: r.acceptanceCriteria,
+		evidencePlan: r.evidencePlan,
+		budgetSteeredAt: r.budgetSteeredAt,
+		lastContinuationAt: r.lastContinuationAt,
+		stopReason: r.stopReason,
+		workflowExecutionId: r.workflowExecutionId,
+		createdAt: r.createdAt,
+		updatedAt: r.updatedAt,
+		completedAt: r.completedAt,
+	};
 }
 
 export class LegacyMlflowSessionTraceLifecycle implements SessionTraceLifecycleStore {

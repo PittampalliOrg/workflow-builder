@@ -79,12 +79,17 @@ import { LocalRuntimeRegistryReader } from "$lib/server/application/adapters/run
 import { KubernetesSessionRuntimeStatusReader } from "$lib/server/application/adapters/runtime-status";
 import {
 	CurrentSessionRepository,
+	DaprSessionGoalLoopDriver,
 	DaprSessionWorkflowSpawner,
 	DaprSessionRuntimeEventRaiser,
+	DaprSessionUserEventCommandAdapter,
 	DefaultSessionRuntimeConfigReader,
 	KubernetesSessionProvisioningReader,
+	LifecycleSessionGoalScopeGuard,
 	LegacyMlflowSessionTraceLifecycle,
 	PostgresSessionEventLog,
+	RepositorySessionGoalStore,
+	RuntimeSessionGoalHarnessResolver,
 	SessionAgentConfigCommandAdapter,
 	WorkspaceSessionRepositoryMounter,
 } from "$lib/server/application/adapters/sessions";
@@ -92,6 +97,7 @@ import { PlaywrightMcpBrowserRuntimeClient } from "$lib/server/application/adapt
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
+import { ApplicationSessionGoalService } from "$lib/server/application/session-goals";
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 
@@ -197,6 +203,7 @@ export function getApplicationAdapters(
 	let repositoryMounter: WorkspaceSessionRepositoryMounter | undefined;
 	let workflowSpawner: DaprSessionWorkflowSpawner | undefined;
 	let sessionCommands: ApplicationSessionCommandService | undefined;
+	let sessionGoals: ApplicationSessionGoalService | undefined;
 	let sessionBrowser: ApplicationSessionBrowserService | undefined;
 	const getDatabase = () => (database ??= requirePostgresDb());
 	const getAgentRuntimes = () =>
@@ -313,6 +320,18 @@ export function getApplicationAdapters(
 		(repositoryMounter ??= new WorkspaceSessionRepositoryMounter());
 	const getWorkflowSpawner = () =>
 		(workflowSpawner ??= new DaprSessionWorkflowSpawner());
+	const getSessionGoals = () =>
+		(sessionGoals ??= new ApplicationSessionGoalService({
+			sessions: getSessions(),
+			goals: new RepositorySessionGoalStore(),
+			goalLoop: new DaprSessionGoalLoopDriver(),
+			goalHarness: new RuntimeSessionGoalHarnessResolver(),
+			scopeGuard: new LifecycleSessionGoalScopeGuard(),
+			userEvents: new DaprSessionUserEventCommandAdapter(
+				getSessionEvents(),
+				getSessionRuntimeEvents(),
+			),
+		}));
 	const getCodeCheckpoints = () =>
 		(codeCheckpoints ??= new PostgresWorkflowCodeCheckpointStore(getDatabase()));
 	const getEvaluationArtifacts = () =>
@@ -426,6 +445,9 @@ export function getApplicationAdapters(
 		},
 		get sessionCommands() {
 			return getSessionCommands();
+		},
+		get sessionGoals() {
+			return getSessionGoals();
 		},
 		get agentRuntimeControl() {
 			return getAgentRuntimeControl();
