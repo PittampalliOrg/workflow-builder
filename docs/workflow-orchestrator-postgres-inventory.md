@@ -26,6 +26,10 @@ ids, workflow execution workspace keys, and session runtime targets through
 workflow-data ports. Direct `sessions`/`workflow_executions` reads for those
 paths are confined to Postgres application adapters; `spawn.ts`, `control.ts`,
 and `runtime-target.ts` no longer import DB or Drizzle for these lookups.
+The session runtime-config helper now takes its persisted
+`session.runtime_config` fallback as an injected adapter dependency. The latest
+runtime-config event query is confined to `DefaultSessionRuntimeConfigReader`;
+`runtime-config.ts` no longer imports DB, schema, or Drizzle.
 The internal CLI workspace command route now routes execution lookup,
 CLI-session candidate lookup, file creation, and browser artifact persistence
 through workflow-data.

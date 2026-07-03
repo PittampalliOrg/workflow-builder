@@ -1,8 +1,5 @@
 import { createHash } from "node:crypto";
-import { desc, eq, and } from "drizzle-orm";
 import { env } from "$env/dynamic/private";
-import { db } from "$lib/server/db";
-import { sessionEvents } from "$lib/server/db/schema";
 import { daprFetch, getDaprSidecarUrl } from "$lib/server/dapr-client";
 import { resolveAgentRef } from "$lib/server/agents/registry";
 import { resolveSessionRuntimeTarget } from "$lib/server/sessions/runtime-target";
@@ -48,26 +45,57 @@ export type GetSessionRuntimeConfigOptions = {
 	projectId?: string | null;
 };
 
+export type SessionRuntimeConfigDependencies = Partial<{
+	getSession: typeof getSession;
+	resolveSessionRuntimeTarget: typeof resolveSessionRuntimeTarget;
+	resolveAgentRef: typeof resolveAgentRef;
+	readLatestRuntimeConfigEvent: (
+		sessionId: string,
+	) => Promise<unknown | null | undefined>;
+}>;
+
+const defaultRuntimeConfigDependencies = {
+	getSession,
+	resolveSessionRuntimeTarget,
+	resolveAgentRef,
+	readLatestRuntimeConfigEvent: async () => null,
+} satisfies Required<SessionRuntimeConfigDependencies>;
+
 export async function getSessionRuntimeConfig(
 	sessionId: string,
 	options: GetSessionRuntimeConfigOptions = {},
+	dependencyOverrides: SessionRuntimeConfigDependencies = {},
 ): Promise<RuntimeConfigCloudEvent | null> {
-	const session = await getSession(sessionId);
+	const deps: Required<SessionRuntimeConfigDependencies> = {
+		getSession:
+			dependencyOverrides.getSession ??
+			defaultRuntimeConfigDependencies.getSession,
+		resolveSessionRuntimeTarget:
+			dependencyOverrides.resolveSessionRuntimeTarget ??
+			defaultRuntimeConfigDependencies.resolveSessionRuntimeTarget,
+		resolveAgentRef:
+			dependencyOverrides.resolveAgentRef ??
+			defaultRuntimeConfigDependencies.resolveAgentRef,
+		readLatestRuntimeConfigEvent:
+			dependencyOverrides.readLatestRuntimeConfigEvent ??
+			defaultRuntimeConfigDependencies.readLatestRuntimeConfigEvent,
+	};
+	const session = await deps.getSession(sessionId);
 	if (!session) return null;
 	if (!sessionMatchesProject(session, options.projectId)) return null;
 	const instanceId = session.daprInstanceId ?? session.id;
 
-	const live = await readLiveRuntimeConfig(session, instanceId);
+	const live = await readLiveRuntimeConfig(session, instanceId, deps);
 	if (live) return withRuntimeConfigSource(live, "memory");
 
 	const state = await readDaprRuntimeConfigSnapshot(instanceId);
 	if (state) return withRuntimeConfigSource(state, "state");
 
-	const latestEvent = await readLatestRuntimeConfigEvent(session.id);
+	const latestEvent = await readLatestRuntimeConfigEvent(session.id, deps);
 	if (latestEvent) return withRuntimeConfigSource(latestEvent, "event");
 
 	return withRuntimeConfigSource(
-		await buildSettingsRuntimeConfigEvent(session),
+		await buildSettingsRuntimeConfigEvent(session, deps),
 		"settings",
 	);
 }
@@ -85,8 +113,9 @@ function sessionMatchesProject(
 async function readLiveRuntimeConfig(
 	session: SessionDetail,
 	instanceId: string,
+	deps: Required<SessionRuntimeConfigDependencies>,
 ): Promise<RuntimeConfigCloudEvent | null> {
-	const target = await resolveSessionRuntimeTarget(session.id);
+	const target = await deps.resolveSessionRuntimeTarget(session.id);
 	if (!target) return null;
 	const path = `/internal/runtime/instances/${encodeURIComponent(instanceId)}/config`;
 	let response: Response;
@@ -171,26 +200,18 @@ async function readDaprRuntimeConfigSnapshot(
 
 async function readLatestRuntimeConfigEvent(
 	sessionId: string,
+	deps: Required<SessionRuntimeConfigDependencies>,
 ): Promise<RuntimeConfigCloudEvent | null> {
-	if (!db) return null;
-	const [row] = await db
-		.select({ data: sessionEvents.data })
-		.from(sessionEvents)
-		.where(
-			and(
-				eq(sessionEvents.sessionId, sessionId),
-				eq(sessionEvents.type, RUNTIME_CONFIG_SESSION_EVENT_TYPE),
-			),
-		)
-		.orderBy(desc(sessionEvents.sequence))
-		.limit(1);
-	return coerceRuntimeConfigEvent(row?.data);
+	return coerceRuntimeConfigEvent(
+		await deps.readLatestRuntimeConfigEvent(sessionId),
+	);
 }
 
 async function buildSettingsRuntimeConfigEvent(
 	session: SessionDetail,
+	deps: Required<SessionRuntimeConfigDependencies>,
 ): Promise<RuntimeConfigCloudEvent> {
-	const agent = await resolveAgentRef({
+	const agent = await deps.resolveAgentRef({
 		id: session.agentId,
 		version: session.agentVersion ?? undefined,
 	});

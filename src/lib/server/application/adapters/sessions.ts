@@ -73,7 +73,10 @@ import {
 } from "$lib/server/sessions/registry";
 import { raiseSessionAgentConfigPatch as raiseSessionAgentConfigPatchForRuntime } from "$lib/server/sessions/agent-config-patch";
 import { getSessionProvisioningPreferObserver } from "$lib/server/sessions/provisioning";
-import { getSessionRuntimeConfig } from "$lib/server/sessions/runtime-config";
+import {
+	getSessionRuntimeConfig,
+	RUNTIME_CONFIG_SESSION_EVENT_TYPE,
+} from "$lib/server/sessions/runtime-config";
 import {
 	raiseSessionUserEvents,
 	spawnSessionWorkflow,
@@ -842,13 +845,37 @@ export class KubernetesSessionProvisioningReader implements SessionProvisioningR
 }
 
 export class DefaultSessionRuntimeConfigReader implements SessionRuntimeConfigReader {
+	constructor(private readonly database: Database = requireDb()) {}
+
 	getSessionRuntimeConfig(input: {
 		sessionId: string;
 		projectId?: string | null;
 	}) {
-		return getSessionRuntimeConfig(input.sessionId, {
-			projectId: input.projectId ?? null,
-		});
+		return getSessionRuntimeConfig(
+			input.sessionId,
+			{ projectId: input.projectId ?? null },
+			{
+				readLatestRuntimeConfigEvent: (sessionId) =>
+					this.readLatestRuntimeConfigEvent(sessionId),
+			},
+		);
+	}
+
+	private async readLatestRuntimeConfigEvent(
+		sessionId: string,
+	): Promise<unknown | null> {
+		const [row] = await this.database
+			.select({ data: sessionEvents.data })
+			.from(sessionEvents)
+			.where(
+				and(
+					eq(sessionEvents.sessionId, sessionId),
+					eq(sessionEvents.type, RUNTIME_CONFIG_SESSION_EVENT_TYPE),
+				),
+			)
+			.orderBy(desc(sessionEvents.sequence))
+			.limit(1);
+		return row?.data ?? null;
 	}
 }
 

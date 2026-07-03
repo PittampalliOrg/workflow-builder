@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionDetail } from "$lib/types/sessions";
 
@@ -6,16 +7,9 @@ const resolveSessionRuntimeTargetMock = vi.fn();
 const daprFetchMock = vi.fn();
 const resolveAgentRefMock = vi.fn();
 const waitForAgentWorkflowHostAppReadyMock = vi.fn();
-const dbState = vi.hoisted(() => ({ db: null as unknown }));
 
 vi.mock("$env/dynamic/private", () => ({
 	env: {},
-}));
-
-vi.mock("$lib/server/db", () => ({
-	get db() {
-		return dbState.db;
-	},
 }));
 
 vi.mock("$lib/server/sessions/registry", () => ({
@@ -50,12 +44,21 @@ describe("getSessionRuntimeConfig", () => {
 		daprFetchMock.mockReset();
 		resolveAgentRefMock.mockReset();
 		waitForAgentWorkflowHostAppReadyMock.mockReset();
-		dbState.db = null;
 
 		getSessionMock.mockResolvedValue(sampleSession());
 		resolveSessionRuntimeTargetMock.mockResolvedValue(null);
 		daprFetchMock.mockResolvedValue(new Response("", { status: 404 }));
 		resolveAgentRefMock.mockResolvedValue(sampleAgent());
+	});
+
+	it("keeps direct database access outside the runtime-config helper", () => {
+		const source = readFileSync(
+			new URL("./runtime-config.ts", import.meta.url),
+			"utf8",
+		);
+
+		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("drizzle-orm");
 	});
 
 	it("prefers the live runtime endpoint", async () => {
@@ -102,13 +105,16 @@ describe("getSessionRuntimeConfig", () => {
 
 	it("falls back from Dapr state to the latest runtime-config event", async () => {
 		const event = runtimeEvent("event-hash");
-		dbState.db = dbReturningRows([{ data: event }]);
+		const readLatestRuntimeConfigEvent = vi.fn(async () => event);
 
-		const result = await getSessionRuntimeConfig("session-1");
+		const result = await getSessionRuntimeConfig("session-1", {}, {
+			readLatestRuntimeConfigEvent,
+		});
 
 		expect(result?.id).toBe(event.id);
 		expect(result?.data.source).toBe("event");
 		expect(daprFetchMock).toHaveBeenCalledTimes(1);
+		expect(readLatestRuntimeConfigEvent).toHaveBeenCalledWith("session-1");
 	});
 
 	it("does not expose runtime config outside the scoped project", async () => {
@@ -166,18 +172,6 @@ function runtimeEvent(configHash: string) {
 			dapr: { appId: "agent-runtime-coding-agent" },
 			attributes: { "session.id": "session-1" },
 		},
-	};
-}
-
-function dbReturningRows(rows: Array<Record<string, unknown>>) {
-	const query = {
-		from: vi.fn(() => query),
-		where: vi.fn(() => query),
-		orderBy: vi.fn(() => query),
-		limit: vi.fn(async () => rows),
-	};
-	return {
-		select: vi.fn(() => query),
 	};
 }
 

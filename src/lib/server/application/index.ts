@@ -670,7 +670,9 @@ export function getApplicationAdapters(
 	const getSessionEvents = () =>
 		(sessionEvents ??= new PostgresSessionEventLog());
 	const getSessionRuntimeConfigs = () =>
-		(sessionRuntimeConfigs ??= new DefaultSessionRuntimeConfigReader());
+		(sessionRuntimeConfigs ??= new DefaultSessionRuntimeConfigReader(
+			getDatabase(),
+		));
 	const getSessionRuntimeEvents = () =>
 		(sessionRuntimeEvents ??= new DaprSessionRuntimeEventRaiser());
 	const getSessionAgentConfigCommands = () =>
