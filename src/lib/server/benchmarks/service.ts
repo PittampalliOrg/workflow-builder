@@ -18,7 +18,7 @@ import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import {
 	aggregateBenchmarkLifecycleFromSessionEvents,
 	aggregateLlmUsageFromSessionEvents,
-} from "$lib/server/sessions/events";
+} from "$lib/server/application/adapters/session-events";
 import { runScorersForRun } from "./score-runner";
 import {
 	agentVersions,

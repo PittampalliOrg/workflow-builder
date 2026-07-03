@@ -170,11 +170,11 @@ import {
 	LifecycleSessionGoalScopeGuard,
 	LegacyMlflowSessionTraceLifecycle,
 	PostgresSessionGoalStore,
-	PostgresSessionEventLog,
 	RuntimeSessionGoalHarnessResolver,
 	SessionAgentConfigCommandAdapter,
 	WorkspaceSessionRepositoryMounter,
 } from "$lib/server/application/adapters/sessions";
+import { PostgresSessionEventLog } from "$lib/server/application/adapters/session-events";
 import { PostgresGoalLoopStore } from "$lib/server/application/adapters/goal-loop-store";
 import { PlaywrightMcpBrowserRuntimeClient } from "$lib/server/application/adapters/browser-runtime";
 import {
@@ -670,7 +670,7 @@ export function getApplicationAdapters(
 	const getSessionProvisioning = () =>
 		(sessionProvisioning ??= new KubernetesSessionProvisioningReader());
 	const getSessionEvents = () =>
-		(sessionEvents ??= new PostgresSessionEventLog());
+		(sessionEvents ??= new PostgresSessionEventLog(getDatabase()));
 	const getSessionRuntimeConfigs = () =>
 		(sessionRuntimeConfigs ??= new DefaultSessionRuntimeConfigReader(
 			getDatabase(),

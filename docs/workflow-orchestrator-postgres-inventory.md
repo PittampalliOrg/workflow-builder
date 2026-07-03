@@ -31,7 +31,12 @@ metadata through workflow-data; the legacy `sessions/registry` `getSession` and
 `attachRuntime` calls are no longer imported by `spawn.ts`.
 Session workflow spawn now also reads initial user events and emits swap-safety
 audit events through workflow-data; `spawn.ts` no longer imports the legacy
-`sessions/events` DB helper.
+session event-log helper directly.
+Session event-log persistence now lives in
+`src/lib/server/application/adapters/session-events.ts` behind the
+`SessionEventLog` port. `src/lib/server/sessions/events.ts` is a pure
+compatibility export for envelope shaping/sanitization and no longer imports
+DB, Drizzle, or schema types.
 Interactive-CLI repository mounting during session spawn now delegates through
 the session command repository-mounter port; `spawn.ts` no longer imports the
 repository-mounter adapter directly. The DB-backed repository mounting helper
@@ -904,7 +909,7 @@ services:
   instead of the route calling `deleteSandbox` directly. Swap-degraded audit
   events and initial workflow user messages now delegate to
   `ApplicationSessionCommandService`, so the route no longer imports
-  `src/lib/server/sessions/events.ts`. Published-vs-ephemeral workflow session
+  the legacy session event helper directly. Published-vs-ephemeral workflow session
   agent selection and runtime-registry sync now also delegate to
   `ApplicationSessionCommandService` through the `WorkflowEphemeralAgentStore`
   and `AgentRuntimeSyncPort` ports, so the route no longer imports
@@ -973,8 +978,8 @@ services:
   is behind `SessionRuntimeEventRaiser` instead of a route-level session helper.
 - `src/routes/api/v1/sessions/[id]/events/[eventId]/+server.ts` now scope-checks
   the session through workflow-data and fetches the full event payload through
-  the session event-log port instead of importing the legacy session event
-  helper directly.
+  the session event-log port instead of importing a direct DB session event
+  helper.
 - `src/routes/api/v1/sessions/[id]/+server.ts` now reads session detail and
   mutates title/archive/delete state through scoped workflow-data application
   ports. The route still owns HTTP response shaping and preserves the existing

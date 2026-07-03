@@ -22,7 +22,7 @@ import { sessionResources } from "$lib/server/db/schema";
 import { daprFetch, getWorkspaceRuntimeUrl } from "$lib/server/dapr-client";
 import { PostgresVaultCredentialRepository } from "$lib/server/application/adapters/vault-credentials";
 import { getScmConnection } from "$lib/server/scm-connections";
-import { appendEvent } from "$lib/server/sessions/events";
+import { appendSessionEvent } from "$lib/server/application/adapters/session-events";
 
 const vaultCredentialRepository = new PostgresVaultCredentialRepository();
 
@@ -139,7 +139,7 @@ export async function mountSingleRepository(
 			return;
 		}
 		await markMounted(row.id);
-		await appendEvent(sessionId, {
+		await appendSessionEvent(sessionId, {
 			type: "session.resource_mounted",
 			data: { resourceId: row.id, repoUrl, mountPath, ref: ref || null },
 		});
@@ -320,7 +320,7 @@ export async function mountSessionRepositoriesViaHost(
 				continue;
 			}
 			await markMounted(row.id);
-			await appendEvent(sessionId, {
+			await appendSessionEvent(sessionId, {
 				type: "session.resource_mounted",
 				data: { resourceId: row.id, repoUrl, mountPath, ref: ref || null },
 			});
@@ -353,7 +353,7 @@ async function emitMountFailed(
 		`[session-repos] mount failed for ${repoUrl} (session ${sessionId}): ${error}`,
 	);
 	try {
-		await appendEvent(sessionId, {
+		await appendSessionEvent(sessionId, {
 			type: "session.resource_mount_failed",
 			data: { resourceId: row.id, repoUrl, error },
 		});

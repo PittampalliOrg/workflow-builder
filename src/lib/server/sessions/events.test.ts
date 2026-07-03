@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -39,5 +41,24 @@ describe("rowToEnvelope", () => {
 
 		expect(envelope.createdAt).toBe("2026-06-14T19:33:15.777Z");
 		expect(envelope.timestamp).toBe(envelope.createdAt);
+	});
+});
+
+describe("session event compatibility exports", () => {
+	it("remain free of direct DB and Drizzle imports", () => {
+		const eventsSource = readFileSync(
+			join(process.cwd(), "src/lib/server/sessions/events.ts"),
+			"utf8",
+		);
+		const envelopeSource = readFileSync(
+			join(process.cwd(), "src/lib/server/sessions/event-envelope.ts"),
+			"utf8",
+		);
+
+		for (const source of [eventsSource, envelopeSource]) {
+			expect(source).not.toContain("$lib/server/db");
+			expect(source).not.toContain("$lib/server/db/schema");
+			expect(source).not.toContain("drizzle-orm");
+		}
 	});
 });

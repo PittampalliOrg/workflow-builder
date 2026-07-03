@@ -1,0 +1,625 @@
+import { and, asc, eq, gt, lte, sql } from "drizzle-orm";
+import { db as defaultDb } from "$lib/server/db";
+import { sessionEvents } from "$lib/server/db/schema";
+import { aggregateBenchmarkSessionTimings } from "$lib/server/benchmarks/timings";
+import type {
+	AppendSessionEventInput,
+	ListSessionEventsInput,
+	SessionEventLog,
+} from "$lib/server/application/ports";
+import {
+	rowToEnvelope,
+	sanitizeSessionEventDataForPostgres,
+} from "$lib/server/sessions/event-envelope";
+import type { SessionEventEnvelope, UserEvent } from "$lib/types/sessions";
+
+type Database = typeof defaultDb;
+
+function requireDb(database: Database = defaultDb): Database {
+	if (!database) throw new Error("Database not configured");
+	return database;
+}
+
+function optionalDb(database: Database = defaultDb): Database | null {
+	return database || null;
+}
+
+/**
+ * Append an event to a session's log. Sequence is computed server-side via a
+ * max+1 lookup while holding a per-session advisory transaction lock. The lock
+ * keeps bursts from runtime event emitters from exhausting retries on the
+ * unique (session_id, sequence) constraint while still allowing different
+ * sessions to append concurrently.
+ */
+export async function appendSessionEvent(
+	sessionId: string,
+	event: AppendSessionEventInput,
+	database: Database = defaultDb,
+): Promise<SessionEventEnvelope> {
+	database = requireDb(database);
+	const cleanData = sanitizeSessionEventDataForPostgres(event.data ?? {});
+	// Retry loop is retained as a guard for transaction aborts and source-event
+	// duplicates delivered through more than one ingest path.
+	for (let attempt = 0; attempt < 5; attempt++) {
+		try {
+			const row = await database.transaction(async (tx) => {
+				await tx.execute(
+					sql`select pg_advisory_xact_lock(hashtext(${sessionId})::bigint)`,
+				);
+				const [{ maxSeq }] = await tx
+					.select({
+						maxSeq: sql<number>`coalesce(max(${sessionEvents.sequence}), 0)`,
+					})
+					.from(sessionEvents)
+					.where(eq(sessionEvents.sessionId, sessionId));
+				const nextSeq = Number(maxSeq ?? 0) + 1;
+				const [inserted] = await tx
+					.insert(sessionEvents)
+					.values({
+						sessionId,
+						sequence: nextSeq,
+						type: event.type,
+						data: cleanData,
+						processedAt: event.processedAt ?? null,
+						sourceEventId: event.sourceEventId ?? null,
+						producerId: event.producerId ?? null,
+						producerEpoch: event.producerEpoch ?? null,
+					})
+					.returning();
+				return inserted;
+			});
+			// Bench metrics aggregation (fire-and-forget). When dapr-agent-py
+			// emits an `agent.llm_usage` event for a session linked to a
+			// benchmark_run_instances row, atomically roll the call's tokens
+			// into that row's `usage` jsonb. The UPDATE is a no-op for
+			// non-benchmark sessions (no row matches the session_id).
+			if (event.type === "agent.llm_usage") {
+				await aggregateLlmUsageIntoBenchmarkInstance(
+					sessionId,
+					cleanData as Record<string, unknown>,
+					database,
+				);
+			}
+			if (event.type === "instance.metrics_summary") {
+				await applyInstanceMetricsSummaryToBenchmark(
+					sessionId,
+					cleanData as Record<string, unknown>,
+					database,
+				);
+			}
+			// Phase B (corrected): the metrics_summary emit from dapr-agent-py
+			// is unreliable because agent_workflow's finally block fires on every
+			// Dapr replay tick — it captures mid-flight counter snapshots and
+			// pops the dict, so peaks are never preserved. The truthful counts
+			// live in session_events itself. Prefer agent.llm_usage for rich
+			// token-aware turns, but fall back to llm_start/agent.iteration for
+			// providers that currently omit usage events.
+			//
+			// Run on each Phase-A-or-B-relevant event so the row stays current as
+			// events flow in (each call is idempotent — COUNT(*) over session_events).
+			// Also run on session.status_terminated as the canonical final pass,
+			// with a small delay to let concurrent agent.* event ingest transactions
+			// commit (we observed a race where status_terminated arrived first and
+			// my aggregator ran with 0 events visible).
+			if (
+				event.type === "agent.llm_usage" ||
+				event.type === "llm_start" ||
+				event.type === "agent.iteration" ||
+				event.type === "agent.tool_use"
+			) {
+				// Fire-and-forget — incremental updates while the run progresses.
+				void aggregateBenchmarkLifecycleFromSessionEvents(
+					sessionId,
+					{},
+					database,
+				);
+			}
+			if (
+				event.type === "agent.llm_usage" ||
+				event.type === "agent.tool_result" ||
+				event.type === "session.turn_heartbeat"
+			) {
+				// Fire-and-forget — timing rollups are advisory while the run is
+				// active and recomputeRunSummary performs the deterministic backstop.
+				void aggregateBenchmarkSessionTimings(sessionId);
+			}
+			if (event.type === "session.status_terminated") {
+				// 2s delay lets stragglers from concurrent transactions land before
+				// the canonical aggregation. recomputeRunSummary on evaluation-results
+				// is the deterministic backstop if even this misses anything.
+				setTimeout(
+					() =>
+						void aggregateBenchmarkLifecycleFromSessionEvents(
+							sessionId,
+							{
+								finalize: true,
+							},
+							database,
+						),
+					2000,
+				);
+				setTimeout(
+					() =>
+						void aggregateBenchmarkSessionTimings(sessionId, {
+							finalize: true,
+						}),
+					2000,
+				);
+			}
+			// Goal-loop driver (Codex /goal parity). On agent.llm_usage we accrue the
+			// turn's tokens into the session's goal; on an end_turn status_idle we
+			// drive the autonomous continuation. Lazy-imported to keep this hot
+			// module lean and to avoid the events<->goal-loop import cycle.
+			// Fire-and-forget; onSessionEvent swallows its own errors and is a no-op
+			// for sessions without a goal.
+			if (
+				event.type === "agent.llm_usage" ||
+				event.type === "session.status_idle" ||
+				event.type === "session.goal_completed"
+			) {
+				void import("$lib/server/goals/goal-loop")
+					.then((m) =>
+						m.onSessionEvent(sessionId, {
+							type: event.type,
+							data: cleanData as Record<string, unknown>,
+						}),
+					)
+					.catch((err) =>
+						console.warn("[goal-loop] event hook failed:", err),
+					);
+			}
+			return rowToEnvelope(row);
+		} catch (err) {
+			// Unique violation on sequence should be rare with the advisory lock,
+			// but keep retrying if the transaction raced with older app versions.
+			// Also: unique violation on (session_id, source_event_id) — same
+			// event delivered twice (e.g. Dapr replay fires publish_event again,
+			// or the direct-ingest + NATS-subscription paths both land). Swallow
+			// the duplicate silently and return the existing row.
+			const maybePgErr = err as {
+				code?: string;
+				cause?: unknown;
+				message?: string;
+			};
+			const causeErr = maybePgErr?.cause as
+				| { code?: string; message?: string }
+				| undefined;
+			const errMsg = `${maybePgErr?.message ?? ""} ${causeErr?.message ?? ""}`;
+			const isUniqueViolation =
+				maybePgErr?.code === "23505" ||
+				causeErr?.code === "23505" ||
+				errMsg.includes("uq_session_event_sequence") ||
+				errMsg.includes("uq_session_events_source");
+			if (isUniqueViolation) {
+				// Source-event dup: return the existing row rather than retry.
+				if (
+					event.sourceEventId &&
+					(errMsg.includes("uq_session_events_source") ||
+						maybePgErr?.code === "23505")
+				) {
+					const [existing] = await database
+						.select()
+						.from(sessionEvents)
+						.where(
+							and(
+								eq(sessionEvents.sessionId, sessionId),
+								eq(sessionEvents.sourceEventId, event.sourceEventId),
+							),
+						)
+						.limit(1);
+					if (existing) return rowToEnvelope(existing);
+				}
+				continue;
+			}
+			throw err;
+		}
+	}
+	throw new Error(
+		`Failed to insert event after retries for session ${sessionId}`,
+	);
+}
+
+export async function listEvents(
+	sessionId: string,
+	opts: ListSessionEventsInput = {},
+	database: Database = defaultDb,
+): Promise<SessionEventEnvelope[]> {
+	database = requireDb(database);
+	const conditions = [eq(sessionEvents.sessionId, sessionId)];
+	if (typeof opts.afterSequence === "number") {
+		conditions.push(gt(sessionEvents.sequence, opts.afterSequence));
+	}
+	if (typeof opts.atOrBeforeSequence === "number") {
+		conditions.push(lte(sessionEvents.sequence, opts.atOrBeforeSequence));
+	}
+	const query = database
+		.select()
+		.from(sessionEvents)
+		.where(and(...conditions))
+		.orderBy(asc(sessionEvents.sequence));
+	const rows =
+		typeof opts.limit === "number"
+			? await query.limit(Math.max(1, Math.trunc(opts.limit)))
+			: await query;
+	return rows.map((r) => rowToEnvelope(r, { preview: opts.preview }));
+}
+
+/**
+ * Fetch a single event by id. Returns the full (un-stripped) envelope. Used
+ * by the debug panel's "Load full payload" affordance when the SSE stream
+ * sent a preview-only shape.
+ */
+export async function getEvent(
+	sessionId: string,
+	eventId: string,
+	database: Database = defaultDb,
+): Promise<SessionEventEnvelope | null> {
+	database = requireDb(database);
+	const [row] = await database
+		.select()
+		.from(sessionEvents)
+		.where(
+			and(
+				eq(sessionEvents.sessionId, sessionId),
+				eq(sessionEvents.id, eventId),
+			),
+		)
+		.limit(1);
+	return row ? rowToEnvelope(row, { preview: false }) : null;
+}
+
+/**
+ * Roll a single dapr-agent-py `agent.llm_usage` event's tokens into the
+ * matching benchmark_run_instances row. No-op when no benchmark instance
+ * is linked to this session (UI-driven sessions, evaluation-driven sessions).
+ *
+ * The atomic SQL UPDATE keeps tokens consistent under the bursty event
+ * stream — every LLM call increments by per-call deltas without read-modify-
+ * write races between concurrent benchmark sessions.
+ */
+async function aggregateLlmUsageIntoBenchmarkInstance(
+	sessionId: string,
+	data: Record<string, unknown>,
+	database: Database = defaultDb,
+): Promise<void> {
+	// `success: false` events are emitted on circuit-breaker tripping so the UI
+	// can render the partial usage that did get spent. We still want to roll
+	// those tokens into the benchmark row for accurate cost; they were paid
+	// for either way. The agent emits `success` boolean on every call.
+	if (data.success === false) {
+		// Failures still consume tokens; record them.
+	}
+	// Tokens are integers; ttft_ms arrives as a millisecond float and must be
+	// rounded BEFORE binding because Postgres binds JS floats as numeric, and
+	// COALESCE(numeric, bigint) raises a type-mismatch error that fails the
+	// whole UPDATE. Rounding to int + binding integer side-steps the cast.
+	const inputTokens = Math.round(Number(data.input_tokens ?? 0)) || 0;
+	const outputTokens = Math.round(Number(data.output_tokens ?? 0)) || 0;
+	const cacheRead = Math.round(Number(data.cache_read_input_tokens ?? 0)) || 0;
+	const cacheCreate =
+		Math.round(Number(data.cache_creation_input_tokens ?? 0)) || 0;
+	const ttftMsRaw = Number(data.ttft_ms ?? 0);
+	const ttftMs =
+		Number.isFinite(ttftMsRaw) && ttftMsRaw > 0 ? Math.round(ttftMsRaw) : null;
+	const model = typeof data.model === "string" ? data.model : null;
+	if (inputTokens + outputTokens + cacheRead + cacheCreate <= 0) return;
+	database = requireDb(database);
+	try {
+		await database.execute(sql`
+			UPDATE benchmark_run_instances
+			SET usage = jsonb_build_object(
+				'input_tokens',
+					COALESCE((usage->>'input_tokens')::bigint, 0) + ${inputTokens}::bigint,
+				'output_tokens',
+					COALESCE((usage->>'output_tokens')::bigint, 0) + ${outputTokens}::bigint,
+				'cache_read_input_tokens',
+					COALESCE((usage->>'cache_read_input_tokens')::bigint, 0) + ${cacheRead}::bigint,
+				'cache_creation_input_tokens',
+					COALESCE((usage->>'cache_creation_input_tokens')::bigint, 0) + ${cacheCreate}::bigint,
+				'llm_call_count',
+					COALESCE((usage->>'llm_call_count')::bigint, 0) + 1,
+				'ttft_first_ms',
+					COALESCE((usage->>'ttft_first_ms')::bigint, ${ttftMs}::bigint),
+				'model',
+					COALESCE(${model}, usage->>'model'),
+				'cost_usd',
+					(usage->>'cost_usd')::float8
+			),
+			updated_at = NOW()
+			WHERE session_id = ${sessionId}
+		`);
+	} catch (err) {
+		// Don't fail the event ingestion on metric-rollup errors; log and move on.
+		console.warn(
+			"[bench-metrics] aggregateLlmUsageIntoBenchmarkInstance failed",
+			(err as Error)?.message ?? err,
+		);
+	}
+}
+
+/**
+ * Land a single dapr-agent-py `instance.metrics_summary` event onto the matching
+ * benchmark_run_instances row. Emitted exactly once per agent_workflow run from
+ * the finally-block (gated on non-replay), so this is a non-incremental UPSERT
+ * of the six counters. No-op for non-benchmark sessions.
+ */
+async function applyInstanceMetricsSummaryToBenchmark(
+	sessionId: string,
+	data: Record<string, unknown>,
+	database: Database = defaultDb,
+): Promise<void> {
+	const activeDb = optionalDb(database);
+	if (!activeDb) return;
+	try {
+		const turnCount = readNumericOrNull(data, "turn_count");
+		const toolCallCount = readNumericOrNull(data, "tool_call_count");
+		const ttftFirstMs = readNumericOrNull(data, "ttft_first_ms");
+		const ttftFirstToolMs = readNumericOrNull(data, "ttft_first_tool_ms");
+		const terminationReason = readStringOrNull(data, "termination_reason");
+		// dapr-agent-py can emit replay-time summaries before the session is
+		// terminal. Treat generic `end_turn` as final-only so active benchmark
+		// rows do not look complete while a turn is still running.
+		const specificTerminationReason =
+			terminationReason === "end_turn" ? null : terminationReason;
+		const histogramRaw = data.tool_histogram;
+		const histogram =
+			histogramRaw &&
+			typeof histogramRaw === "object" &&
+			!Array.isArray(histogramRaw)
+				? (histogramRaw as Record<string, number>)
+				: {};
+		// Phase B Python emits `instance.metrics_summary` from agent_workflow's
+		// finally block, which fires on every Dapr replay tick. Different replay
+		// ticks see different in-memory counter states (0 before call_llm activity
+		// completes write-back, then 1+ after). If we OVERWROTE the row each time,
+		// later 0-emits would clobber a real high-water mark.
+		// Fix: use GREATEST() for monotonic counters; coalesce on string/jsonb.
+		// Termination reason: accept only specific signals here. Generic
+		// `end_turn` is assigned by aggregateBenchmarkLifecycleFromSessionEvents
+		// once the session has actually finalized.
+		// Tool histogram: keep whichever has more entries (proxy for completeness).
+		await activeDb.execute(sql`
+			UPDATE benchmark_run_instances
+			SET turn_count = GREATEST(COALESCE(turn_count, 0), COALESCE(${turnCount}, 0)::int),
+				tool_call_count = GREATEST(COALESCE(tool_call_count, 0), COALESCE(${toolCallCount}, 0)::int),
+				termination_reason = CASE
+					WHEN ${specificTerminationReason}::text IS NULL THEN termination_reason
+					WHEN termination_reason IS NULL THEN ${specificTerminationReason}::text
+					WHEN termination_reason = 'end_turn' AND ${specificTerminationReason}::text != 'end_turn' THEN ${specificTerminationReason}::text
+					ELSE termination_reason
+				END,
+				ttft_first_ms = COALESCE(ttft_first_ms, ${ttftFirstMs}::int),
+				ttft_first_tool_ms = COALESCE(ttft_first_tool_ms, ${ttftFirstToolMs}::int),
+				tool_histogram = CASE
+					WHEN ${JSON.stringify(histogram)}::jsonb = '{}'::jsonb THEN tool_histogram
+					ELSE ${JSON.stringify(histogram)}::jsonb
+				END,
+				updated_at = NOW()
+			WHERE session_id = ${sessionId}
+		`);
+	} catch (err) {
+		console.warn(
+			"[bench-metrics] applyInstanceMetricsSummaryToBenchmark failed",
+			(err as Error)?.message ?? err,
+		);
+	}
+}
+
+/**
+ * Aggregate Phase B lifecycle metrics from raw session_events at
+ * session-terminal time. This is the source of truth — Python's
+ * in-memory counters are unreliable across Dapr replay ticks, but
+ * the raw events are durable and exact. Prefer agent.llm_usage for turns
+ * because it carries token/TTFT details, but fall back to llm_start and then
+ * agent.iteration so providers with missing usage events still get truthful
+ * turn counts. Each agent.tool_use = 1 tool call, grouped by name = histogram.
+ *
+ * Termination reason precedence:
+ *   1. agent.circuit_breaker_tripped → specific reason from event payload
+ *   2. session.status_errored → 'agent_error'
+ *   3. session.turn_timeout → 'session_turn_timeout'
+ *   4. session.status_idle.stop_reason.type == 'max_iters' → 'max_iters'
+ *   5. otherwise → 'end_turn' only when opts.finalize is true
+ */
+export async function aggregateBenchmarkLifecycleFromSessionEvents(
+	sessionId: string,
+	opts: { finalize?: boolean } = {},
+	database: Database = defaultDb,
+): Promise<void> {
+	const activeDb = optionalDb(database);
+	if (!activeDb) return;
+	const finalize = opts.finalize === true;
+	try {
+		await activeDb.execute(sql`
+			WITH event_counts AS (
+				SELECT
+					COUNT(*) FILTER (WHERE type = 'agent.llm_usage')::int AS usage_turns,
+					COUNT(*) FILTER (WHERE type = 'llm_start')::int AS llm_start_turns,
+					COUNT(*) FILTER (WHERE type = 'agent.iteration')::int AS iteration_turns,
+					COUNT(*) FILTER (WHERE type = 'agent.tool_use')::int AS tools,
+					MIN(created_at) FILTER (WHERE type IN ('agent.llm_usage', 'llm_start', 'agent.iteration')) AS first_llm_at
+				FROM session_events
+				WHERE session_id = ${sessionId}
+			), counts AS (
+				SELECT
+					COALESCE(NULLIF(usage_turns, 0), NULLIF(llm_start_turns, 0), iteration_turns, 0)::int AS turns,
+					tools,
+					(SELECT (data->>'ttft_ms')::float FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.llm_usage' ORDER BY id ASC LIMIT 1) AS ttft_first,
+					(SELECT EXTRACT(EPOCH FROM (e.created_at - event_counts.first_llm_at)) * 1000 FROM session_events e WHERE e.session_id = ${sessionId} AND e.type = 'agent.tool_use' AND event_counts.first_llm_at IS NOT NULL ORDER BY e.id ASC LIMIT 1) AS ttft_first_tool_seconds_ms
+				FROM event_counts
+			), histogram AS (
+				SELECT COALESCE(jsonb_object_agg(tool, n), '{}'::jsonb) AS hist
+				FROM (
+					SELECT data->>'name' AS tool, COUNT(*)::int AS n
+					FROM session_events
+					WHERE session_id = ${sessionId} AND type = 'agent.tool_use' AND data->>'name' IS NOT NULL
+					GROUP BY tool
+				) t
+			), reason AS (
+				SELECT CASE
+					WHEN EXISTS (SELECT 1 FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.circuit_breaker_tripped' AND data->>'reason' = 'empty_response_content')
+						THEN 'circuit_breaker_empty'
+					WHEN EXISTS (SELECT 1 FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.circuit_breaker_tripped' AND data->>'reason' = 'llm_exception')
+						THEN 'circuit_breaker_failure'
+					WHEN EXISTS (SELECT 1 FROM session_events WHERE session_id = ${sessionId} AND type = 'session.turn_timeout')
+						THEN 'session_turn_timeout'
+					WHEN EXISTS (SELECT 1 FROM session_events WHERE session_id = ${sessionId} AND type = 'session.status_errored')
+						THEN 'agent_error'
+					WHEN EXISTS (SELECT 1 FROM session_events WHERE session_id = ${sessionId} AND type = 'session.status_idle' AND data->'stop_reason'->>'type' = 'max_iters')
+						THEN 'max_iters'
+					WHEN ${finalize}::boolean THEN 'end_turn'
+					ELSE NULL
+				END AS r
+			)
+			UPDATE benchmark_run_instances bri
+			SET turn_count = counts.turns,
+				tool_call_count = counts.tools,
+				tool_histogram = histogram.hist,
+				termination_reason = CASE
+					WHEN reason.r IS NULL THEN bri.termination_reason
+					WHEN bri.termination_reason IS NULL THEN reason.r
+					WHEN bri.termination_reason = 'end_turn' AND reason.r != 'end_turn' THEN reason.r
+					ELSE bri.termination_reason
+				END,
+				ttft_first_ms = COALESCE(ROUND(counts.ttft_first)::int, bri.ttft_first_ms),
+				ttft_first_tool_ms = COALESCE(ROUND(counts.ttft_first_tool_seconds_ms)::int, bri.ttft_first_tool_ms),
+				updated_at = NOW()
+			FROM counts, histogram, reason
+			WHERE bri.session_id = ${sessionId}
+		`);
+	} catch (err) {
+		console.warn(
+			"[bench-metrics] aggregateBenchmarkLifecycleFromSessionEvents failed",
+			(err as Error)?.message ?? err,
+		);
+	}
+}
+
+/**
+ * Phase A backfill: aggregate token totals from session_events at run-terminal
+ * time. The in-line aggregateLlmUsageIntoBenchmarkInstance handler races with
+ * row creation — events can arrive before the benchmark row's session_id is
+ * populated. This deterministic pass recomputes from raw events when called
+ * from recomputeRunSummary (after evaluation-results lands, all events durably
+ * committed).
+ */
+export async function aggregateLlmUsageFromSessionEvents(
+	sessionId: string,
+	database: Database = defaultDb,
+): Promise<void> {
+	const activeDb = optionalDb(database);
+	if (!activeDb) return;
+	try {
+		await activeDb.execute(sql`
+			WITH usage_counts AS (
+				SELECT
+					COALESCE(SUM((data->>'input_tokens')::bigint), 0)::bigint AS in_tokens,
+					COALESCE(SUM((data->>'output_tokens')::bigint), 0)::bigint AS out_tokens,
+					COALESCE(SUM((data->>'cache_read_input_tokens')::bigint), 0)::bigint AS cache_read,
+					COALESCE(SUM((data->>'cache_creation_input_tokens')::bigint), 0)::bigint AS cache_create,
+					COUNT(*)::bigint AS usage_llm_calls,
+					(SELECT data->>'model' FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.llm_usage' ORDER BY id DESC LIMIT 1) AS model,
+					(SELECT ROUND((data->>'ttft_ms')::float)::bigint FROM session_events WHERE session_id = ${sessionId} AND type = 'agent.llm_usage' ORDER BY id ASC LIMIT 1) AS ttft_first
+				FROM session_events
+				WHERE session_id = ${sessionId} AND type = 'agent.llm_usage'
+			), start_counts AS (
+				SELECT
+					COUNT(*)::bigint AS llm_start_calls,
+					(SELECT COALESCE(data->>'modelSpec', data->>'model') FROM session_events WHERE session_id = ${sessionId} AND type = 'llm_start' ORDER BY id DESC LIMIT 1) AS model
+				FROM session_events
+				WHERE session_id = ${sessionId} AND type = 'llm_start'
+			), usage_totals AS (
+				SELECT
+					usage_counts.in_tokens,
+					usage_counts.out_tokens,
+					usage_counts.cache_read,
+					usage_counts.cache_create,
+					COALESCE(NULLIF(usage_counts.usage_llm_calls, 0), start_counts.llm_start_calls, 0)::bigint AS llm_calls,
+					COALESCE(usage_counts.model, start_counts.model) AS model,
+					usage_counts.ttft_first
+				FROM usage_counts, start_counts
+			)
+			UPDATE benchmark_run_instances bri
+			SET usage = jsonb_build_object(
+				'input_tokens', usage_totals.in_tokens,
+				'output_tokens', usage_totals.out_tokens,
+				'cache_read_input_tokens', usage_totals.cache_read,
+				'cache_creation_input_tokens', usage_totals.cache_create,
+				'llm_call_count', usage_totals.llm_calls,
+				'ttft_first_ms', usage_totals.ttft_first,
+				'model', usage_totals.model,
+				'cost_usd', (bri.usage->>'cost_usd')::float8
+			),
+			updated_at = NOW()
+			FROM usage_totals
+			WHERE bri.session_id = ${sessionId}
+				AND usage_totals.llm_calls > 0
+		`);
+	} catch (err) {
+		console.warn(
+			"[bench-metrics] aggregateLlmUsageFromSessionEvents failed",
+			(err as Error)?.message ?? err,
+		);
+	}
+}
+
+function readNumericOrNull(
+	data: Record<string, unknown>,
+	key: string,
+): number | null {
+	const raw = data[key];
+	if (raw === null || raw === undefined) return null;
+	const n = Number(raw);
+	return Number.isFinite(n) ? n : null;
+}
+
+function readStringOrNull(
+	data: Record<string, unknown>,
+	key: string,
+): string | null {
+	const raw = data[key];
+	if (typeof raw !== "string") return null;
+	const trimmed = raw.trim();
+	return trimmed ? trimmed : null;
+}
+
+/**
+ * Append a user-side event (message, interrupt, tool_confirmation, custom
+ * tool result). Returns the envelope; `processedAt` is null until the agent
+ * picks it up via `ctx.wait_for_external_event`.
+ */
+export async function sendUserEvent(
+	sessionId: string,
+	event: UserEvent,
+): Promise<SessionEventEnvelope> {
+	return appendSessionEvent(sessionId, {
+		type: event.type,
+		data: event as unknown as Record<string, unknown>,
+		processedAt: null,
+	});
+}
+
+export class PostgresSessionEventLog implements SessionEventLog {
+	constructor(private readonly database: Database = defaultDb) {}
+
+	appendSessionEvent(
+		sessionId: string,
+		event: AppendSessionEventInput,
+	): Promise<SessionEventEnvelope> {
+		return appendSessionEvent(sessionId, event, this.database);
+	}
+
+	getSessionEvent(input: {
+		sessionId: string;
+		eventId: string;
+	}): Promise<SessionEventEnvelope | null> {
+		return getEvent(input.sessionId, input.eventId, this.database);
+	}
+
+	listSessionEvents(
+		sessionId: string,
+		input: ListSessionEventsInput = {},
+	): Promise<SessionEventEnvelope[]> {
+		return listEvents(sessionId, input, this.database);
+	}
+}

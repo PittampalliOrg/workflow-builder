@@ -23,8 +23,9 @@ function isDatabaseNotConfigured(err: unknown): boolean {
  * matches** (e.g. benchmark-coordinator pods that have no `sessions` row).
  * Returning an error here would FK-500 and make the observer retry forever.
  *
- * Idempotent: `appendEvent` dedupes on `sourceEventId` (`prov:<sid>:<phase>`),
- * so observer restarts re-sending the same phase are no-ops.
+ * Idempotent: the session event-log adapter dedupes on `sourceEventId`
+ * (`prov:<sid>:<phase>`), so observer restarts re-sending the same phase are
+ * no-ops.
  *
  * Body: { sessionId, phase, at?, durationMs?, podName?, namespace?, reason? }
  */

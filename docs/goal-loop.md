@@ -25,14 +25,14 @@ The **budget accounting convention is load-bearing system-wide** (Part 4): all r
 
 ### Driver — `src/lib/server/goals/{goal-loop,render}.ts` + `PostgresGoalLoopStore` (BFF)
 
-Event-driven off `appendEvent` side-effects (`src/lib/server/sessions/events.ts:207` — dynamic import to avoid the events↔goal-loop cycle; fire-and-forget, swallows its own errors). No in-process timer.
+Event-driven off the session event-log adapter side-effects (`src/lib/server/application/adapters/session-events.ts` — dynamic import to avoid the event-log↔goal-loop cycle; fire-and-forget, swallows its own errors). No in-process timer.
 
 - **`agent.llm_usage`** → `accrueUsage`: atomic SQL `tokens_used += delta`, refresh `time_used_seconds = now() - created_at`, and flip `active → budget_limited` in the same UPDATE when `token_budget` is crossed (mirrors codex `account_thread_goal_usage`).
 - **`session.status_idle` with `stop_reason.type == "end_turn"`** (only; terminal idles ignored) → `driveContinuationIfIdle`:
   1. No drivable goal → return. Session stopping/terminal → return (and `pauseGoal` if a stop was requested on an active goal).
   2. **Idle gate**: the session's *latest* stored event must be a `session.status_idle` — proves no turn is mid-flight AND no newer `user.message` (human or already-posted continuation) is queued.
   3. `active` + under cap → **`claimNextContinuation`** (atomic UPDATE: `iterations += 1`, stamp `last_continuation_at`, guarded by `status='active' AND iterations < max_iterations AND last_continuation_at` older than the 2s spacing guard). Null result = raced/capped → no post.
-  4. Post the rendered **continuation prompt** as `user.message` with `origin: "goal-continuation"`, `goalKind`, `goalIteration`, and deterministic `sourceEventId = goal-continuation:<sessionId>:<iteration>` → `appendEvent` (DB, deduped on `sourceEventId`) + `raiseSessionUserEvents` (Dapr raise-event into the live `session_workflow`). Conversation history is preserved because an interactive session is ONE durable instance.
+  4. Post the rendered **continuation prompt** as `user.message` with `origin: "goal-continuation"`, `goalKind`, `goalIteration`, and deterministic `sourceEventId = goal-continuation:<sessionId>:<iteration>` → `SessionEventLog.appendSessionEvent` (deduped on `sourceEventId`) + `raiseSessionUserEvents` (Dapr raise-event into the live `session_workflow`). Conversation history is preserved because an interactive session is ONE durable instance.
 
 **Exactly-once contract**: atomic iteration claim (3) + idle gate (2) + `sourceEventId` dedup — the inline hook, goal-set API kick, and stop-hook evaluation can all race safely and never double-drive.
 
@@ -151,12 +151,12 @@ Run by setting the objective as a **goal on a live session** (dev agent `goal-ev
 - **Goal stuck / not continuing**: check (1) is the latest non-telemetry `session_events` row a `status_idle`? (the gate); (2) `last_continuation_at`; (3) `stop_requested_at` on the session (a stop pauses the goal).
 - **Goal never completes on its own**: verify the session actually has the goal MCP server (auto-wire is spawn-time only — sessions spawned before #88, or with `GOAL_MCP_AUTO_WIRE=false`, lack the tools and can only end via caps/pause).
 - **Budget burned implausibly fast**: re-check the adapter invariant (Part 4) — a new/changed adapter emitting gross `input_tokens` reintroduces the 20x over-burn.
-- **drizzle raw-SQL note**: `repo.ts` raw `db.execute(sql…)` rows come back **snake_case** (no field mapping) — `mapGoalRow` normalizes; keep using it for new raw queries.
+- **drizzle raw-SQL note**: `PostgresGoalLoopStore` raw `db.execute(sql...)` rows come back **snake_case** (no field mapping) — `mapGoalRow` normalizes; keep using it for new raw queries.
 
 ## Appendix — file index
 
-- BFF driver: `src/lib/server/goals/goal-loop.ts` (driver), `repo.ts` (atomic claims/transitions), `render.ts` + `templates/{continuation,budget_limit}.md`
-- Event hook: `src/lib/server/sessions/events.ts:207`; spawn wiring: `src/lib/server/sessions/spawn.ts:373-424`
+- BFF driver: `src/lib/server/goals/goal-loop.ts` (driver), `src/lib/server/application/adapters/goal-loop-store.ts` (atomic claims/transitions), `render.ts` + `templates/{continuation,budget_limit}.md`
+- Event hook: `src/lib/server/application/adapters/session-events.ts`; spawn wiring: `src/lib/server/sessions/spawn.ts:373-424`
 - Routes: `src/routes/api/v1/sessions/[id]/goal/+server.ts`
 - MCP: `services/workflow-mcp-server/src/{goal-tools,goal-context,goal-db}.ts`, wired in `index.ts`
 - UI: `src/lib/components/sessions/{session-goal-badge,session-pulse}.svelte`; pricing: `src/lib/server/pricing/model-pricing.ts`, `src/routes/api/v1/pricing/+server.ts`

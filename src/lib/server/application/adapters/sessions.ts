@@ -1,7 +1,6 @@
 import type {
 	AddSessionResourceInput,
 	AttachSessionRuntimeInput,
-	AppendSessionEventInput,
 	CliWorkspaceSessionCandidateRecord,
 	CreateSessionForkInput,
 	CreateSessionRecordInput,
@@ -9,7 +8,6 @@ import type {
 	CreateSessionGoalInput,
 	GoalLoopStore,
 	CreateWorkflowEnsureSessionInput,
-	ListSessionEventsInput,
 	PeerSessionRecord,
 	SessionAgentConfigCommandPort,
 	SessionAgentConfigPatchResult,
@@ -49,7 +47,7 @@ import type {
 	WorkflowExecutionSessionRuntimeRecord,
 	WorkflowSessionRuntimeHostRecord,
 } from "$lib/server/application/ports";
-import { and, asc, desc, eq, gt, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
 import {
 	agents,
@@ -66,7 +64,6 @@ import {
 	safeCreateInteractiveSessionMlflowRun,
 	safePatchInteractiveSessionMlflowTraces,
 } from "$lib/server/observability/mlflow-lifecycle";
-import { appendEvent, rowToEnvelope } from "$lib/server/sessions/events";
 import {
 	attachWorkspaceSandbox,
 	createSession as createSessionRecord,
@@ -119,7 +116,6 @@ import {
 } from "$lib/server/agents/runtime-routing";
 import type {
 	SessionDetail,
-	SessionEventEnvelope,
 	SessionResource,
 	SessionResourceType,
 	UserEvent,
@@ -935,58 +931,6 @@ export class SessionAgentConfigCommandAdapter
 						patch: result.patch,
 					},
 		);
-	}
-}
-
-export class PostgresSessionEventLog implements SessionEventLog {
-	appendSessionEvent(
-		sessionId: string,
-		event: AppendSessionEventInput,
-	): Promise<SessionEventEnvelope> {
-		return appendEvent(sessionId, event);
-	}
-
-	async getSessionEvent(input: {
-		sessionId: string;
-		eventId: string;
-	}): Promise<SessionEventEnvelope | null> {
-		const database = requireDb();
-		const [row] = await database
-			.select()
-			.from(sessionEvents)
-			.where(
-				and(
-					eq(sessionEvents.sessionId, input.sessionId),
-					eq(sessionEvents.id, input.eventId),
-				),
-			)
-			.limit(1);
-		return row ? rowToEnvelope(row, { preview: false }) : null;
-	}
-
-	async listSessionEvents(
-		sessionId: string,
-		input: ListSessionEventsInput = {},
-	): Promise<SessionEventEnvelope[]> {
-		const database = requireDb();
-		const conditions = [eq(sessionEvents.sessionId, sessionId)];
-		if (typeof input.afterSequence === "number") {
-			conditions.push(gt(sessionEvents.sequence, input.afterSequence));
-		}
-		if (typeof input.atOrBeforeSequence === "number") {
-			conditions.push(lte(sessionEvents.sequence, input.atOrBeforeSequence));
-		}
-
-		const query = database
-			.select()
-			.from(sessionEvents)
-			.where(and(...conditions))
-			.orderBy(asc(sessionEvents.sequence));
-		const rows =
-			typeof input.limit === "number"
-				? await query.limit(Math.max(1, Math.trunc(input.limit)))
-				: await query;
-		return rows.map((row) => rowToEnvelope(row, { preview: input.preview }));
 	}
 }
 

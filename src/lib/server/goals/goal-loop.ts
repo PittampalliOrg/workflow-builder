@@ -1,4 +1,4 @@
-import { appendEvent } from "$lib/server/sessions/events";
+import { appendSessionEvent } from "$lib/server/application/adapters/session-events";
 import { raiseSessionUserEvents } from "$lib/server/sessions/spawn";
 import { raiseSessionEvent } from "$lib/server/sessions/control";
 import { PostgresGoalLoopStore } from "$lib/server/application/adapters/goal-loop-store";
@@ -69,8 +69,9 @@ function toBudgetView(goal: SessionGoalRecord): GoalBudgetView {
 }
 
 /**
- * Entry point invoked from appendEvent's side-effect block for the event types
- * the loop cares about. Fire-and-forget; never throws into the caller.
+ * Entry point invoked from the session event-log adapter side-effect block for
+ * the event types the loop cares about. Fire-and-forget; never throws into the
+ * caller.
  */
 export async function onSessionEvent(
 	sessionId: string,
@@ -150,8 +151,8 @@ export async function finalizeCompletedWorkflowGoal(
 	try {
 		// Emits session.goal_completed if the goal is complete (→ onSessionEvent
 		// fires terminate). The explicit terminate below is the belt-and-suspenders
-		// path when the event already exists (appendEvent dedupes, so onSessionEvent
-		// would not re-fire).
+		// path when the event already exists (sourceEventId dedupe skips side
+		// effects, so onSessionEvent would not re-fire).
 		await emitGoalCompletedIfDone(sessionId, store);
 		await terminateWorkflowGoalSessionIfNeeded(sessionId, store);
 	} catch (err) {
@@ -172,7 +173,7 @@ async function emitGoalCompletedIfDone(
 ): Promise<void> {
 	const goal = await store.getCurrentGoal(sessionId);
 	if (!goal || goal.status !== "complete") return;
-	await appendEvent(sessionId, {
+	await appendSessionEvent(sessionId, {
 		type: "session.goal_completed",
 		data: {
 			completionSource: "custom_goal_loop",
@@ -246,13 +247,13 @@ async function postEvidenceRejection(
 		origin: "goal-evidence-reject",
 		goalIteration: goal.iterations,
 	};
-	await appendEvent(sessionId, {
+	await appendSessionEvent(sessionId, {
 		type: "user.message",
 		data: userMessage,
 		processedAt: null,
 		sourceEventId: `goal-evidence-reject:${sessionId}:${goal.iterations}`,
 	});
-	await appendEvent(sessionId, {
+	await appendSessionEvent(sessionId, {
 		type: "session.goal_rejected",
 		data: {
 			feedback: verdict.feedback,
@@ -384,7 +385,7 @@ async function postGoalMessage(
 		goalKind: kind,
 		goalIteration: goal.iterations,
 	};
-	await appendEvent(sessionId, {
+	await appendSessionEvent(sessionId, {
 		type: "user.message",
 		data: userMessage,
 		processedAt: null,

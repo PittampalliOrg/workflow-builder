@@ -52,7 +52,7 @@ ClickHouse `otel.otel_traces` + `obs.llm_spans` (token fields per span), Phoenix
 | **A. Attribute + persist per-session pod usage** | Join capacity-observer `observedResources` (or metrics-server) by pod name → `session_id`; periodically write peak-mem / cpu-seconds into `sessions.usage` (or a new `session_resource_samples`). Emit an `agent.resource_usage` session event. | Medium | **The data already exists** in the observer — this is plumbing, not new collection. Enables right-sizing + per-session cost-of-compute. **Recommended first step.** |
 | **B. Right-size requests from measured usage (VPA recommender)** | Run Vertical Pod Autoscaler in *recommendation-only* mode on the sandbox pods; read its recommendations to set `agentHostCpu/Memory` requests from observed P90, instead of guessing. | Medium | VPA isn't deployed today. Recommendation mode is safe (no auto-mutation of the ephemeral pods). Closes gap #2 properly. |
 | **C. Close the agy token gap** | (Already evaluated — `[[project_cli_terminal_ux]]`): only `/context` TUI has real agy tokens; an egress proxy would be vendor-agnostic but MITM-heavy. Decision was: keep estimate. | — | No change recommended. |
-| **D. Persist usage at ingest** | Update `sessions.usage` incrementally in `appendEvent` instead of re-aggregating. | Low | Perf/cleanliness, not new signal. |
+| **D. Persist usage at ingest** | Update `sessions.usage` incrementally in the session event-log adapter instead of re-aggregating. | Low | Perf/cleanliness, not new signal. |
 
 ---
 
