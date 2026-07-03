@@ -450,6 +450,11 @@ services:
   platform OAuth app, and OAuth-capable piece metadata queries are confined to
   the Postgres settings adapter; the route keeps only base URL shaping and
   unauthenticated fallback response shape.
+- `src/routes/settings/cli-tokens/+page.server.ts` now reads CLI runtime
+  enrollment metadata and per-provider credential summaries through
+  `ApplicationSettingsCliTokensService`. Runtime-registry access and user CLI
+  credential summary lookup are confined to application adapters; the page
+  loader no longer imports the runtime registry or credential helper directly.
 - `src/routes/api/settings/api-keys/**` now lists, creates, deletes, and rotates
   user API keys through workflow-data application ports. Plaintext key
   generation and hashing moved into the application service, while persisted

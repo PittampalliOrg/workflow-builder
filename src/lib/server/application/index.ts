@@ -114,6 +114,10 @@ import {
 	LocalRuntimeCatalogReader,
 	LocalWorkflowTriggerKindCatalogReader,
 } from "$lib/server/application/adapters/catalogs";
+import {
+	LocalSettingsCliRuntimeCatalogReader,
+	UserCliCredentialSummaryReader,
+} from "$lib/server/application/adapters/settings-cli-tokens";
 import { KubernetesSessionRuntimeStatusReader } from "$lib/server/application/adapters/runtime-status";
 import {
 	CurrentSessionRepository,
@@ -184,6 +188,7 @@ import {
 	ApplicationRuntimeCatalogService,
 	ApplicationWorkflowTriggerKindCatalogService,
 } from "$lib/server/application/catalogs";
+import { ApplicationSettingsCliTokensService } from "$lib/server/application/settings-cli-tokens";
 import {
 	ApplicationBenchmarkRunLaunchService,
 	ApplicationEvaluationRunLaunchService,
@@ -351,6 +356,7 @@ export function getApplicationAdapters(
 	let workflowTriggerKindCatalog:
 		| ApplicationWorkflowTriggerKindCatalogService
 		| undefined;
+	let settingsCliTokens: ApplicationSettingsCliTokensService | undefined;
 	let workflowDefinitionCommands:
 		| ApplicationWorkflowDefinitionCommandService
 		| undefined;
@@ -611,6 +617,11 @@ export function getApplicationAdapters(
 			new ApplicationWorkflowTriggerKindCatalogService(
 				new LocalWorkflowTriggerKindCatalogReader(),
 			));
+	const getSettingsCliTokens = () =>
+		(settingsCliTokens ??= new ApplicationSettingsCliTokensService({
+			runtimes: new LocalSettingsCliRuntimeCatalogReader(),
+			credentials: new UserCliCredentialSummaryReader(),
+		}));
 	const getSessionSandboxes = () =>
 		(sessionSandboxes ??= new ApplicationSessionSandboxService({
 			sessions: getSessions(),
@@ -931,6 +942,9 @@ export function getApplicationAdapters(
 		},
 		get workflowTriggerKindCatalog() {
 			return getWorkflowTriggerKindCatalog();
+		},
+		get settingsCliTokens() {
+			return getSettingsCliTokens();
 		},
 		get sessionSandboxes() {
 			return getSessionSandboxes();

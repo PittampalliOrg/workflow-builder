@@ -1,6 +1,5 @@
 import type { PageServerLoad } from "./$types";
-import { listRuntimes } from "$lib/server/agents/runtime-registry";
-import { getUserCliCredentialSummary } from "$lib/server/users/cli-credentials";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * Settings → CLI tokens. One card per runtime-registry descriptor that
@@ -8,40 +7,7 @@ import { getUserCliCredentialSummary } from "$lib/server/users/cli-credentials";
  * metadata only — the token itself never leaves the server.
  */
 export const load: PageServerLoad = async ({ locals }) => {
-	const runtimes = listRuntimes()
-		.filter((d) => d.cliAuth)
-		.map((d) => ({
-			id: d.id,
-			displayName: d.agentMetadataFramework,
-			// cliAuth carries credentialKind/loginStyle/envVar/credentialPath/
-			// setupCommand — the page renders the enrollment UX from it.
-			cliAuth: d.cliAuth!,
-		}));
-
-	const userId = locals.session?.userId ?? null;
-	const providers = [...new Set(runtimes.map((r) => r.cliAuth.provider))];
-	const tokenEntries = userId
-		? await Promise.all(
-				providers.map(async (provider) => {
-					try {
-						return await getUserCliCredentialSummary(userId, provider);
-					} catch {
-						return {
-							provider,
-							linked: false,
-							expiresAt: null,
-							lastValidatedAt: null,
-							status: null,
-						};
-					}
-				}),
-			)
-		: [];
-
-	return {
-		cliRuntimes: runtimes,
-		tokensByProvider: Object.fromEntries(
-			tokenEntries.map((t) => [t.provider, t]),
-		),
-	};
+	return getApplicationAdapters().settingsCliTokens.load({
+		userId: locals.session?.userId ?? null,
+	});
 };
