@@ -393,6 +393,18 @@ export type ObservabilityServiceGraphContextReadModel = {
 	targetWorkflowId: string | null;
 };
 
+export type WorkflowActivityRateTargetReadModel = {
+	executionId: string;
+	sessionId: string;
+	daprAppId: string;
+};
+
+export interface WorkflowActivityRateTargetRepository {
+	resolveWorkflowActivityRateTarget(input: {
+		executionId: string;
+	}): Promise<WorkflowActivityRateTargetReadModel | null>;
+}
+
 export type CreateWorkflowDefinitionInput = {
 	name: string;
 	nodes: unknown[];
@@ -3348,6 +3360,9 @@ export interface WorkflowDataService {
 		executionId?: string | null;
 		workflowId?: string | null;
 	}): Promise<ObservabilityServiceGraphContextReadModel | null>;
+	resolveWorkflowActivityRateTarget(input: {
+		executionId: string;
+	}): Promise<WorkflowActivityRateTargetReadModel | null>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;
 	}): Promise<DevPreviewHubReadModel>;

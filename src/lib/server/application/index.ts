@@ -23,6 +23,7 @@ import {
 	PostgresUsageReportingRepository,
 	PostgresUserProfileRepository,
 	PostgresWorkflowAgentRunStore,
+	PostgresWorkflowActivityRateTargetRepository,
 	PostgresWorkflowBrowserArtifactStore,
 	PostgresWorkflowCodeCheckpointStore,
 	PostgresWorkspaceSessionStore,
@@ -105,6 +106,7 @@ export function getApplicationAdapters(
 	let benchmarkRunReads: LegacyBenchmarkRunReadRepository | undefined;
 	let devEnvironments: LegacyDevEnvironmentReadRepository | undefined;
 	let benchmarkRuns: PostgresBenchmarkRunRepository | undefined;
+	let activityRateTargets: PostgresWorkflowActivityRateTargetRepository | undefined;
 	let workflowExecutions: PostgresWorkflowExecutionRepository | undefined;
 	let workflowFiles: PostgresWorkflowFileStore | undefined;
 	let sandboxInventory: PostgresSandboxInventoryRepository | undefined;
@@ -167,6 +169,8 @@ export function getApplicationAdapters(
 		(devEnvironments ??= new LegacyDevEnvironmentReadRepository());
 	const getBenchmarkRuns = () =>
 		(benchmarkRuns ??= new PostgresBenchmarkRunRepository(getDatabase()));
+	const getActivityRateTargets = () =>
+		(activityRateTargets ??= new PostgresWorkflowActivityRateTargetRepository(getDatabase()));
 	const getWorkflowExecutions = () =>
 		(workflowExecutions ??= new PostgresWorkflowExecutionRepository(getDatabase()));
 	const getWorkflowFiles = () =>
@@ -227,12 +231,13 @@ export function getApplicationAdapters(
 			workspaceProjects: getWorkspaceProjects(),
 			pieceCatalog: getPieceCatalog(),
 			pieceExecutions: getPieceExecutions(),
-				browserArtifacts: getBrowserArtifacts(),
-				codeFunctionCatalog: getCodeFunctionCatalog(),
-				benchmarkBrowser: getBenchmarkBrowser(),
-				benchmarkRunReads: getBenchmarkRunReads(),
-				devEnvironments: getDevEnvironments(),
-				benchmarkRuns: getBenchmarkRuns(),
+			browserArtifacts: getBrowserArtifacts(),
+			codeFunctionCatalog: getCodeFunctionCatalog(),
+			benchmarkBrowser: getBenchmarkBrowser(),
+			benchmarkRunReads: getBenchmarkRunReads(),
+			devEnvironments: getDevEnvironments(),
+			benchmarkRuns: getBenchmarkRuns(),
+			activityRateTargets: getActivityRateTargets(),
 			workflowExecutions: getWorkflowExecutions(),
 			sessions: getSessions(),
 			sessionProvisioning: getSessionProvisioning(),

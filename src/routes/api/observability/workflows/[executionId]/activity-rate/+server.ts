@@ -5,17 +5,14 @@
 //   → { lastMinute: { succeeded, failed, recoverable, total }, lastActivityAt }
 //
 // Driven by dapr_runtime_workflow_activity_operation_count (Counter, labeled by
-// `status` + `dapr_app_id`). We resolve `dapr_app_id` from the execution's
-// linked session via sessionHostAppId(). When no session exists (headless
-// workflow), the endpoint returns zeros so the UI can render a "—" placeholder
-// without special-casing.
+// `status` + `dapr_app_id`). We resolve `dapr_app_id` from workflow-data's
+// execution/session read model. When no session exists (headless workflow), the
+// endpoint returns zeros so the UI can render a "—" placeholder without
+// special-casing.
 
 import { error, json } from "@sveltejs/kit";
-import { desc, eq, or } from "drizzle-orm";
 import type { RequestHandler } from "./$types";
-import { db } from "$lib/server/db";
-import { workflowExecutions, sessions } from "$lib/server/db/schema";
-import { sessionHostAppId } from "$lib/server/sessions/agent-workflow-host";
+import { getApplicationAdapters } from "$lib/server/application";
 import {
 	queryCounterDelta,
 	queryCounterLatestSample,
@@ -43,64 +40,35 @@ type ActivityRatePayload = {
 	lastActivityAt: string | null;
 };
 
+function zeroPayload(): ActivityRatePayload {
+	return {
+		dapr_app_id: null,
+		windowSeconds: WINDOW_SECONDS,
+		lastMinute: { succeeded: 0, failed: 0, recoverable: 0, total: 0 },
+		lastActivityAt: null,
+	};
+}
+
+async function resolveAgentAppId(executionId: string): Promise<string | null> {
+	try {
+		const target =
+			await getApplicationAdapters().workflowData.resolveWorkflowActivityRateTarget({
+				executionId,
+			});
+		return target?.daprAppId ?? null;
+	} catch {
+		return null;
+	}
+}
+
 async function computePayload(executionId: string): Promise<ActivityRatePayload> {
-	if (!db) {
-		return {
-			dapr_app_id: null,
-			windowSeconds: WINDOW_SECONDS,
-			lastMinute: { succeeded: 0, failed: 0, recoverable: 0, total: 0 },
-			lastActivityAt: null,
-		};
-	}
-
-	// Resolve the execution → session → agent dapr_app_id.
-	//
-	// Two linkage shapes are observed in production:
-	//   1. Manual session-backed runs: workflow_executions.workflow_session_id
-	//      points at the real sessions.id (SHA-suffix-shaped) — the join hits.
-	//   2. SWE-bench instance runs: workflow_executions.workflow_session_id is
-	//      set to the *execution_id* (legacy upstream code), so the join misses
-	//      and we fall back to sessions.workflow_execution_id = exec.id.
-	// Picking the newest match preserves "the live agent" semantics when an
-	// execution has been retried.
-	const [exec] = await db
-		.select({
-			workflowSessionId: workflowExecutions.workflowSessionId,
-		})
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, executionId))
-		.limit(1);
-
-	let agentAppId: string | null = null;
-	if (exec) {
-		const conditions = exec.workflowSessionId
-			? or(
-				eq(sessions.id, exec.workflowSessionId),
-				eq(sessions.workflowExecutionId, executionId),
-			)
-			: eq(sessions.workflowExecutionId, executionId);
-		const [sessionRow] = await db
-			.select({ id: sessions.id })
-			.from(sessions)
-			.where(conditions)
-			.orderBy(desc(sessions.createdAt))
-			.limit(1);
-		if (sessionRow?.id) {
-			agentAppId = sessionHostAppId(sessionRow.id);
-		}
-	}
-
+	const agentAppId = await resolveAgentAppId(executionId);
 	const now = new Date();
 	const from = new Date(now.getTime() - WINDOW_SECONDS * 1000);
 	const range = { from, to: now };
 
 	if (!agentAppId) {
-		return {
-			dapr_app_id: null,
-			windowSeconds: WINDOW_SECONDS,
-			lastMinute: { succeeded: 0, failed: 0, recoverable: 0, total: 0 },
-			lastActivityAt: null,
-		};
+		return zeroPayload();
 	}
 
 	const filter = {

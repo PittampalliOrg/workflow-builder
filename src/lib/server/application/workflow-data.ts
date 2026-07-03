@@ -101,6 +101,8 @@ import type {
 	StartHostedMcpWorkflowToolInput,
 	StartHostedMcpWorkflowToolResult,
 	WorkflowArtifactInput,
+	WorkflowActivityRateTargetReadModel,
+	WorkflowActivityRateTargetRepository,
 	CreateWorkflowFileInput,
 	CliWorkspaceCommandCandidate,
 	IngestSessionEventInput,
@@ -763,12 +765,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			workspaceProjects: WorkspaceProjectRepository;
 			pieceCatalog: PieceCatalogRepository;
 			pieceExecutions?: PieceExecutionRepository;
-				browserArtifacts?: WorkflowBrowserArtifactStore;
-				codeFunctionCatalog?: CodeFunctionCatalogRepository;
-				benchmarkBrowser: BenchmarkBrowserRepository;
-				benchmarkRunReads?: BenchmarkRunReadRepository;
-				devEnvironments?: DevEnvironmentReadRepository;
-				benchmarkRuns?: BenchmarkRunRepository;
+			browserArtifacts?: WorkflowBrowserArtifactStore;
+			codeFunctionCatalog?: CodeFunctionCatalogRepository;
+			benchmarkBrowser: BenchmarkBrowserRepository;
+			benchmarkRunReads?: BenchmarkRunReadRepository;
+			devEnvironments?: DevEnvironmentReadRepository;
+			benchmarkRuns?: BenchmarkRunRepository;
+			activityRateTargets?: WorkflowActivityRateTargetRepository;
 			workflowExecutions: WorkflowExecutionRepository;
 			sessions?: SessionRepository;
 			sessionProvisioning?: SessionProvisioningReader;
@@ -872,6 +875,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Dev environment read repository not configured");
 		}
 		return this.deps.devEnvironments;
+	}
+
+	private requireActivityRateTargets(): WorkflowActivityRateTargetRepository {
+		if (!this.deps.activityRateTargets) {
+			throw new Error("Workflow activity-rate target repository not configured");
+		}
+		return this.deps.activityRateTargets;
 	}
 
 	private requireSessionRuntimeConfigs(): SessionRuntimeConfigReader {
@@ -3578,6 +3588,12 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			workflow,
 			targetWorkflowId,
 		};
+	}
+
+	resolveWorkflowActivityRateTarget(input: {
+		executionId: string;
+	}): Promise<WorkflowActivityRateTargetReadModel | null> {
+		return this.requireActivityRateTargets().resolveWorkflowActivityRateTarget(input);
 	}
 
 	async getDevPreviewHubReadModel(input: { projectId?: string | null }) {

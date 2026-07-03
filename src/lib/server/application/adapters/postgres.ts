@@ -153,6 +153,8 @@ import type {
 	WorkflowDefinitionRepository,
 	WorkflowTriggerRecord,
 	WorkflowTriggerStore,
+	WorkflowActivityRateTargetReadModel,
+	WorkflowActivityRateTargetRepository,
 	WorkflowExecutionRecord,
 	ActiveWorkflowExecutionReadModel,
 	InternalAgentWorkflowExecutionListInput,
@@ -3100,6 +3102,51 @@ export class PostgresApiKeyStore implements ApiKeyStore {
 				lastUsedAt: apiKeys.lastUsedAt,
 			});
 		return rotated ?? null;
+	}
+}
+
+function workflowActivityRateSessionHostAppId(sessionId: string): string {
+	const digest = createHash("sha256").update(sessionId).digest("hex").slice(0, 20);
+	return `agent-session-${digest}`;
+}
+
+export class PostgresWorkflowActivityRateTargetRepository
+	implements WorkflowActivityRateTargetRepository
+{
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async resolveWorkflowActivityRateTarget(input: {
+		executionId: string;
+	}): Promise<WorkflowActivityRateTargetReadModel | null> {
+		const executionId = input.executionId.trim();
+		if (!executionId) return null;
+
+		const [execution] = await this.database
+			.select({ workflowSessionId: workflowExecutions.workflowSessionId })
+			.from(workflowExecutions)
+			.where(eq(workflowExecutions.id, executionId))
+			.limit(1);
+		if (!execution) return null;
+
+		const sessionFilter = execution.workflowSessionId
+			? or(
+					eq(sessions.id, execution.workflowSessionId),
+					eq(sessions.workflowExecutionId, executionId),
+				)
+			: eq(sessions.workflowExecutionId, executionId);
+		const [sessionRow] = await this.database
+			.select({ id: sessions.id })
+			.from(sessions)
+			.where(sessionFilter)
+			.orderBy(desc(sessions.createdAt))
+			.limit(1);
+		if (!sessionRow?.id) return null;
+
+		return {
+			executionId,
+			sessionId: sessionRow.id,
+			daprAppId: workflowActivityRateSessionHostAppId(sessionRow.id),
+		};
 	}
 }
 

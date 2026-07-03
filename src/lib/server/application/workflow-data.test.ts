@@ -50,6 +50,7 @@ import type {
 	WorkflowScheduler,
 	WorkspaceProjectRepository,
 	WorkspaceSessionStore,
+	WorkflowActivityRateTargetRepository,
 } from "$lib/server/application/ports";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 import type { RuntimeConfigCloudEvent } from "$lib/server/sessions/runtime-config";
@@ -1314,11 +1315,12 @@ function fakeSandboxRuntimeInventory(): SandboxRuntimeInventory {
 }
 
 function makeService(options: {
-		byId?: WorkflowDefinition | null;
-		byName?: WorkflowDefinition | null;
-		workflowExecutions?: Partial<WorkflowExecutionRepository>;
-		benchmarkRunReads?: BenchmarkRunReadRepository;
-		benchmarkRuns?: BenchmarkRunRepository;
+	byId?: WorkflowDefinition | null;
+	byName?: WorkflowDefinition | null;
+	workflowExecutions?: Partial<WorkflowExecutionRepository>;
+	benchmarkRunReads?: BenchmarkRunReadRepository;
+	benchmarkRuns?: BenchmarkRunRepository;
+	activityRateTargets?: WorkflowActivityRateTargetRepository;
 	pieceExecutions?: PieceExecutionRepository;
 	browserArtifacts?: WorkflowBrowserArtifactStore;
 	sessions?: SessionRepository;
@@ -1368,13 +1370,14 @@ function makeService(options: {
 		apiKeys: fakeApiKeys(),
 		workspaceProjects: fakeWorkspaceProjects(),
 		pieceCatalog: fakePieceCatalog(),
-			pieceExecutions: options.pieceExecutions,
-			sessions: options.sessions,
-			browserArtifacts: options.browserArtifacts,
-			benchmarkBrowser: fakeBenchmarkBrowser(),
-			benchmarkRunReads: options.benchmarkRunReads ?? fakeBenchmarkRunReads(),
-			devEnvironments: options.devEnvironments ?? fakeDevEnvironments(),
-			benchmarkRuns: options.benchmarkRuns ?? fakeBenchmarkRuns(),
+		pieceExecutions: options.pieceExecutions,
+		sessions: options.sessions,
+		browserArtifacts: options.browserArtifacts,
+		benchmarkBrowser: fakeBenchmarkBrowser(),
+		benchmarkRunReads: options.benchmarkRunReads ?? fakeBenchmarkRunReads(),
+		devEnvironments: options.devEnvironments ?? fakeDevEnvironments(),
+		benchmarkRuns: options.benchmarkRuns ?? fakeBenchmarkRuns(),
+		activityRateTargets: options.activityRateTargets,
 		workflowExecutions,
 		sessionEvents: options.sessionEvents,
 		sessionRuntimeConfigs:
@@ -5983,6 +5986,28 @@ describe("ApplicationWorkflowDataService", () => {
 			targetWorkflowId: "wf-window",
 		});
 		expect(workflowDefinitions.getById).toHaveBeenCalledWith("wf-window");
+	});
+
+	it("resolves workflow activity-rate target through the application port", async () => {
+		const activityRateTargets: WorkflowActivityRateTargetRepository = {
+			resolveWorkflowActivityRateTarget: vi.fn(async () => ({
+				executionId: "exec-1",
+				sessionId: "session-1",
+				daprAppId: "agent-session-abc123",
+			})),
+		};
+		const { service } = makeService({ activityRateTargets });
+
+		await expect(
+			service.resolveWorkflowActivityRateTarget({ executionId: "exec-1" }),
+		).resolves.toEqual({
+			executionId: "exec-1",
+			sessionId: "session-1",
+			daprAppId: "agent-session-abc123",
+		});
+		expect(
+			activityRateTargets.resolveWorkflowActivityRateTarget,
+		).toHaveBeenCalledWith({ executionId: "exec-1" });
 	});
 
 	it("loads piece catalog detail and connection usage through application ports", async () => {
