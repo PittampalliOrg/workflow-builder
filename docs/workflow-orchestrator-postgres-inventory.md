@@ -848,8 +848,10 @@ run-diff/source-bundle ingest, internal session-ingest, and external
 events-ingest route subsets, plus the agent-trigger route membership check and
 the CLI credential capture session-owner lookup and ActivePieces resume
 execution lookup, and the GitHub trigger ingress/gate subset, are also clean.
-The workflow code-checkpoints list route is also clean; code-checkpoint diff
-and restore routes remain explicitly deferred.
+The workflow code-checkpoints list, diff, and restore routes are also clean;
+diff/restore now call `ApplicationWorkflowCodeCheckpointService` and leave the
+mixed DB/OpenShell/Dapr/Git operations behind the documented
+`LegacyWorkflowCodeCheckpointWorkspacePort` adapter seam.
 The workflow trigger item lifecycle routes are also clean; direct trigger
 backing reconciliation remains in the legacy lifecycle adapter seam.
 The internal piece-execution artifact readback and CLI workspace command routes

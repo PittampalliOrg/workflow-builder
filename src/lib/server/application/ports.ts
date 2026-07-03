@@ -4283,6 +4283,22 @@ export interface WorkflowCodeCheckpointStore {
 	): Promise<WorkflowCodeCheckpointReadModel[]>;
 }
 
+export type WorkflowCodeCheckpointOperationResult = Record<string, unknown>;
+
+export interface WorkflowCodeCheckpointWorkspacePort {
+	diffCheckpoint(input: {
+		executionId: string;
+		checkpointId: string;
+		path?: string | null;
+	}): Promise<WorkflowCodeCheckpointOperationResult>;
+	restoreCheckpoint(input: {
+		executionId: string;
+		checkpointId: string;
+		sandboxName: string;
+		repoPath?: string | null;
+	}): Promise<WorkflowCodeCheckpointOperationResult>;
+}
+
 export interface EvaluationArtifactStore {
 	recordCodeCheckpointWarning(input: {
 		workflowExecutionId: string;

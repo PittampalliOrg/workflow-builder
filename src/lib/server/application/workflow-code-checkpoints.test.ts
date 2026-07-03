@@ -3,17 +3,31 @@ import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/applicatio
 import type {
 	WorkflowCodeCheckpointReadModel,
 	WorkflowCodeCheckpointStore,
+	WorkflowCodeCheckpointWorkspacePort,
 } from "$lib/server/application/ports";
 
 describe("ApplicationWorkflowCodeCheckpointService", () => {
 	let checkpoints: Pick<WorkflowCodeCheckpointStore, "listForExecution">;
+	let workspace: WorkflowCodeCheckpointWorkspacePort;
 	let service: ApplicationWorkflowCodeCheckpointService;
 
 	beforeEach(() => {
 		checkpoints = {
 			listForExecution: vi.fn(async () => [checkpoint("checkpoint-1")]),
 		};
-		service = new ApplicationWorkflowCodeCheckpointService({ checkpoints });
+		workspace = {
+			diffCheckpoint: vi.fn(async () => ({
+				checkpoint: { id: "checkpoint-1" },
+				diff: "diff --git a/src/app.ts b/src/app.ts",
+				exitCode: 0,
+			})),
+			restoreCheckpoint: vi.fn(async () => ({
+				checkpoint: { id: "checkpoint-1" },
+				sandboxName: "sandbox-1",
+				repoPath: "/sandbox",
+			})),
+		};
+		service = new ApplicationWorkflowCodeCheckpointService({ checkpoints, workspace });
 	});
 
 	it("lists code checkpoints for an execution through the checkpoint port", async () => {
@@ -21,6 +35,44 @@ describe("ApplicationWorkflowCodeCheckpointService", () => {
 
 		expect(checkpoints.listForExecution).toHaveBeenCalledWith("exec-1");
 		expect(result).toEqual([checkpoint("checkpoint-1")]);
+	});
+
+	it("loads checkpoint diffs through the workspace port", async () => {
+		const result = await service.diffCheckpoint({
+			executionId: "exec-1",
+			checkpointId: "checkpoint-1",
+			path: "src/app.ts",
+		});
+
+		expect(workspace.diffCheckpoint).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			checkpointId: "checkpoint-1",
+			path: "src/app.ts",
+		});
+		expect(result).toMatchObject({
+			checkpoint: { id: "checkpoint-1" },
+			exitCode: 0,
+		});
+	});
+
+	it("restores checkpoints through the workspace port", async () => {
+		const result = await service.restoreCheckpoint({
+			executionId: "exec-1",
+			checkpointId: "checkpoint-1",
+			sandboxName: "sandbox-1",
+			repoPath: "/repo",
+		});
+
+		expect(workspace.restoreCheckpoint).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			checkpointId: "checkpoint-1",
+			sandboxName: "sandbox-1",
+			repoPath: "/repo",
+		});
+		expect(result).toMatchObject({
+			checkpoint: { id: "checkpoint-1" },
+			sandboxName: "sandbox-1",
+		});
 	});
 });
 

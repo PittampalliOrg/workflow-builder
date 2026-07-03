@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { restoreCodeCheckpointToSandbox } from '$lib/server/workflows/code-checkpoints';
+import { getApplicationAdapters } from '$lib/server/application';
 
 export const POST: RequestHandler = async ({ params, request }) => {
 	try {
@@ -8,7 +8,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			sandboxName?: unknown;
 			repoPath?: unknown;
 		};
-		const result = await restoreCodeCheckpointToSandbox({
+		const result = await getApplicationAdapters().workflowCodeCheckpoints.restoreCheckpoint({
 			executionId: params.executionId,
 			checkpointId: params.checkpointId,
 			sandboxName: typeof body.sandboxName === 'string' ? body.sandboxName : '',

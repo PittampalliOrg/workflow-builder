@@ -109,6 +109,7 @@ import {
 	LifecycleWorkflowExecutionCoordinatorOwnerPort,
 } from "$lib/server/application/adapters/workflow-control";
 import { LegacyWorkflowConnectionRefSyncPort } from "$lib/server/application/adapters/workflow-connections";
+import { LegacyWorkflowCodeCheckpointWorkspacePort } from "$lib/server/application/adapters/workflow-code-checkpoints";
 import { LegacyCliPreviewGatewayPort } from "$lib/server/application/adapters/cli-preview";
 import { LegacySandboxPreviewGatewayPort } from "$lib/server/application/adapters/sandbox-preview";
 import { LegacyWorkflowTriggerLifecyclePort } from "$lib/server/application/adapters/workflow-trigger-lifecycle";
@@ -450,6 +451,7 @@ export function getApplicationAdapters(
 	const getWorkflowCodeCheckpoints = () =>
 		(workflowCodeCheckpoints ??= new ApplicationWorkflowCodeCheckpointService({
 			checkpoints: getCodeCheckpoints(),
+			workspace: new LegacyWorkflowCodeCheckpointWorkspacePort(),
 		}));
 	const getWorkflowTriggerLifecycle = () =>
 		(workflowTriggerLifecycle ??= new ApplicationWorkflowTriggerLifecycleService({

@@ -1,14 +1,14 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { loadCodeCheckpointDiff } from '$lib/server/workflows/code-checkpoints';
+import { getApplicationAdapters } from '$lib/server/application';
 
 export const GET: RequestHandler = async ({ params, url }) => {
 	try {
-		const result = await loadCodeCheckpointDiff(
-			params.executionId,
-			params.checkpointId,
-			url.searchParams.get('path')
-		);
+		const result = await getApplicationAdapters().workflowCodeCheckpoints.diffCheckpoint({
+			executionId: params.executionId,
+			checkpointId: params.checkpointId,
+			path: url.searchParams.get('path')
+		});
 		if ('status' in result && 'error' in result) {
 			const status = typeof result.status === 'number' ? result.status : 500;
 			return json(
