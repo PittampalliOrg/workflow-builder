@@ -742,6 +742,14 @@ services:
   context resolution, Dapr `session_workflow` spawning, and accepted spawn-failure
   response shaping to `ApplicationPeerSessionSpawnService`; the route owns only
   internal-token auth, JSON parsing, and HTTP response mapping.
+- `src/routes/api/internal/goals/[sessionId]/evaluate/+server.ts` and
+  `src/routes/api/internal/goals/[sessionId]/stop-check/+server.ts` now delegate
+  evaluator completion authority, goal row completion, completed-workflow
+  finalization, rejection event emission, stop-hook goal-loop driving, and current
+  goal status reporting to `ApplicationInternalGoalControlService`; the routes
+  own only internal-token auth and HTTP response mapping. The deeper deterministic
+  evidence evaluator still uses the documented legacy DB/runtime helpers behind
+  the application adapter boundary for this slice.
 - `src/routes/api/workflow/active-executions/+server.ts`,
   `src/routes/api/internal/agent/workflows/executions/+server.ts`, and
   `src/routes/api/internal/agent/workflows/executions/[executionId]/status/+server.ts`

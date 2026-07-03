@@ -165,6 +165,10 @@ import {
 	LegacyTriggeredRunAdmissionPort,
 	ShaTriggeredWorkflowExecutionIdPort,
 } from "$lib/server/application/adapters/triggered-workflow-start";
+import {
+	LegacyCompletedWorkflowGoalFinalizer,
+	LegacyGoalCompletionEvaluator,
+} from "$lib/server/application/adapters/internal-goal-control";
 import { LegacyWorkflowConnectionRefSyncPort } from "$lib/server/application/adapters/workflow-connections";
 import { LegacyWorkflowCodeCheckpointWorkspacePort } from "$lib/server/application/adapters/workflow-code-checkpoints";
 import {
@@ -189,6 +193,10 @@ import { ApplicationSandboxPreviewService } from "$lib/server/application/sandbo
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
 import { ApplicationSessionAgentConfigService } from "$lib/server/application/session-agent-config";
 import { ApplicationSessionGoalService } from "$lib/server/application/session-goals";
+import {
+	ApplicationInternalGoalControlService,
+	DateGoalRejectionSourceEventIdPort,
+} from "$lib/server/application/internal-goal-control";
 import { ApplicationSessionLifecycleService } from "$lib/server/application/session-lifecycle";
 import { ApplicationSessionSandboxService } from "$lib/server/application/session-sandboxes";
 import { ApplicationSessionMcpStatusService } from "$lib/server/application/session-mcp-status";
@@ -354,6 +362,9 @@ export function getApplicationAdapters(
 	let sessionCommands: ApplicationSessionCommandService | undefined;
 	let sessionAgentConfig: ApplicationSessionAgentConfigService | undefined;
 	let sessionGoals: ApplicationSessionGoalService | undefined;
+	let internalGoalControl:
+		| ApplicationInternalGoalControlService
+		| undefined;
 	let sessionLifecycle: ApplicationSessionLifecycleService | undefined;
 	let sessionSandboxes: ApplicationSessionSandboxService | undefined;
 	let sessionMcpStatus: ApplicationSessionMcpStatusService | undefined;
@@ -576,6 +587,15 @@ export function getApplicationAdapters(
 				getSessionEvents(),
 				getSessionRuntimeEvents(),
 			),
+		}));
+	const getInternalGoalControl = () =>
+		(internalGoalControl ??= new ApplicationInternalGoalControlService({
+			evaluator: new LegacyGoalCompletionEvaluator(),
+			finalizer: new LegacyCompletedWorkflowGoalFinalizer(),
+			goals: getSessionGoalStore(),
+			goalLoop: new DaprSessionGoalLoopDriver(),
+			sessionEvents: getSessionEvents(),
+			rejectionIds: new DateGoalRejectionSourceEventIdPort(),
 		}));
 	const getSessionLifecycle = () =>
 		(sessionLifecycle ??= new ApplicationSessionLifecycleService({
@@ -964,6 +984,9 @@ export function getApplicationAdapters(
 		},
 		get sessionGoals() {
 			return getSessionGoals();
+		},
+		get internalGoalControl() {
+			return getInternalGoalControl();
 		},
 		get sessionLifecycle() {
 			return getSessionLifecycle();
