@@ -680,57 +680,6 @@ def test_terminate_workflow_keeps_status_unknown_when_client_fallback_times_out(
     assert result["terminationStatusUnknown"] is True
 
 
-def test_delete_workflow_actor_reminders_rejects_non_new_event_names():
-    with pytest.raises(APP.HTTPException) as exc:
-        APP.delete_workflow_actor_reminders(
-            "instance-1",
-            APP.ReminderDeleteRequest(reminderNames=["delete-all"]),
-        )
-
-    assert exc.value.status_code == 400
-
-
-def test_delete_workflow_actor_reminders_rejects_mismatched_actor_id():
-    with pytest.raises(APP.HTTPException) as exc:
-        APP.delete_workflow_actor_reminders(
-            "instance-1",
-            APP.ReminderDeleteRequest(
-                actorId="instance-2",
-                reminderNames=["new-event-abc"],
-            ),
-        )
-
-    assert exc.value.status_code == 400
-
-
-def test_delete_workflow_actor_reminders_calls_actor_reminder_delete(monkeypatch):
-    calls: list[str] = []
-
-    class FakeResponse:
-        ok = True
-        status_code = 204
-        text = ""
-
-    def fake_delete(url: str, **_kwargs):
-        calls.append(url)
-        return FakeResponse()
-
-    monkeypatch.setattr(APP.requests, "delete", fake_delete, raising=False)
-
-    result = APP.delete_workflow_actor_reminders(
-        "instance-1",
-        APP.ReminderDeleteRequest(
-            reminderNames=["new-event-abc"],
-            reason="operator recovery",
-        ),
-    )
-
-    assert result["deleted"] == ["new-event-abc"]
-    assert result["failed"] == []
-    assert "/v1.0/actors/" in calls[0]
-    assert "/instance-1/reminders/new-event-abc" in calls[0]
-
-
 def test_existing_live_execution_instance_returns_running_dapr_id(monkeypatch):
     class FakeCursor:
         def __enter__(self):

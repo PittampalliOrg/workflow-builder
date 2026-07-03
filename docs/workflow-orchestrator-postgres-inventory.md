@@ -46,6 +46,11 @@ runtime targets through workflow-data before opening Kubernetes/pod WebSocket
 transport; they no longer import the legacy DB-backed runtime-target helper.
 The old `src/lib/server/sessions/scope.ts` direct DB guard had no production
 callers after the session route migrations and has been deleted.
+The obsolete workflow-ops/admin-instances diagnostic surface, the legacy
+`/api/monitor` proxy, the unused `/api/orchestrator/workflows` proxy, and the
+orphan workflow-ops reminder recovery hook in the Python orchestrator have been
+retired instead of migrated; active workflow stop/inspection flows use the
+lifecycle controller and workflow execution read-model routes.
 The benchmark instance-detail API now loads SWE-bench instance details through
 a workflow-data read model, and its contamination-risk audit authorization check
 uses workflow-data user/project ports instead of the route utility reading
@@ -399,9 +404,8 @@ services:
   remain in the route for the later telemetry adapter slice, but route-local
   Drizzle/schema access to `sessions`, `workflow_executions`, and `thread_goals`
   was removed.
-- `src/routes/api/monitor/+server.ts` still queries the orchestrator first, but
-  its database fallback now reads workflow execution summaries through
-  workflow-data instead of importing `db`, Drizzle, or schema objects directly.
+- The obsolete `/api/monitor` route family was retired with the old admin
+  workflow-instance diagnostic page.
 - The admin-gated routes `src/routes/api/metrics/aggregate/+server.ts`,
   `src/routes/api/v1/gitops/deployment-metadata/+server.ts`,
   `src/routes/api/v1/gitops/promotions/+server.ts`, and

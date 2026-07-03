@@ -129,7 +129,6 @@
 		{ label: 'Workbench', path: '/workbench', icon: MessagesSquare, keywords: 'mcp chat prototype' },
 		{ label: 'Admin: Dapr system', path: '/admin/dapr', icon: Activity, keywords: 'admin' },
 		{ label: 'Admin: Agent runtimes', path: '/admin/runtimes', icon: Activity, keywords: 'admin pods' },
-		{ label: 'Admin: Workflow instances', path: '/admin/instances', icon: Activity, keywords: 'admin monitor' },
 		{ label: 'Admin: Activities', path: '/admin/activities', icon: Activity, keywords: 'admin dapr' },
 		{ label: 'Admin: GitOps details', path: '/admin/gitops', icon: GitBranch, keywords: 'admin promoter deployments release pins' },
 		{ label: 'Admin: GitOps pipeline', path: '/admin/gitops/system', icon: GitBranch, keywords: 'admin gitops kargo freight pipeline images skaffold ryzen dev outer loop' },

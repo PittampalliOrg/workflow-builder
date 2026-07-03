@@ -6,7 +6,7 @@ This doc captures how each CMA (Claude Managed Agents — `platform.claude.com/d
 
 1. **Session-centric first.** Session detail is where CMA users spend most of their time, so the event stream + sidebar cards came first.
 2. **Workspace scoping is the unifying invariant.** Every user-facing resource carries `project_id`; `hooks.server.ts` resolves scope from the `X-Workspace` header or URL slug into `locals.session.projectId`.
-3. **Keep divergences visible.** Workflow editor, sandboxes, observability, workflow-ops stay alongside the CMA-shape surfaces — not hidden.
+3. **Keep divergences visible.** Workflow editor, sandboxes, and observability stay alongside the CMA-shape surfaces — not hidden.
 4. **Event taxonomy is locked.** `agent.{message,thinking,tool_use,mcp_tool_use,custom_tool_use,tool_result,mcp_tool_result,custom_tool_result,thread_context_compacted}` + `session.{status_*,error}` + `span.model_request_{start,end}`. No new types without a UI mapping.
 5. **Archive semantics.** Sessions are disposable; agents, environments, vaults, skills are permanent — double-confirm archive on the persistent four.
 
@@ -39,7 +39,6 @@ These have no CMA equivalent and stay:
 - `/workflows/*` — visual DAG editor + SW 1.0 runtime
 - `/sandboxes/*` — full OpenShell terminal + file browser + lifecycle
 - `/observability/*` — ClickHouse-backed trace explorer (CMA shows only the session-scoped trace)
-- `/workflow-ops/*` — Dapr instance inspection
 - `/activities`, `/dapr-system` — operator surfaces
 
 The parity work is additive, not substitutive.

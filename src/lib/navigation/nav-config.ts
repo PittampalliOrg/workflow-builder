@@ -353,13 +353,6 @@ export const NAV_GROUPS: NavGroup[] = [
 				match: prefix("/admin/runtimes"),
 			},
 			{
-				id: "admin-instances",
-				label: "Workflow instances",
-				icon: Activity,
-				href: () => "/admin/instances",
-				match: prefix("/admin/instances"),
-			},
-			{
 				id: "admin-deployments",
 				label: "Deployments",
 				icon: Container,

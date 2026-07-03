@@ -57,7 +57,7 @@ User-reachable "stop" surfaces. Columns: **T**erminate durable instance? **P**ur
 | 8 | Benchmark instance **Terminate** | `terminateBenchmarkRunInstance` | ✓ | ~ | ✓ **(only per-session app-id fan-out)** | ✓ | ✓ | **Reference implementation**; fail-closed (409 if unconfirmed) |
 | 9 | Evaluation run **Cancel** | `cancelEvaluationRun` `evaluations/service.ts:1489` | ✗ BFF | ✗ | ✗ | ✗ | DB flip + best-effort HTTP | Weakest; trusts an out-of-band coordinator |
 | 10 | Crawl (`web/crawl.async`) | — | — | — | — | — | — | **No stop affordance**; only SQL reset |
-| 11 | Admin Workflow Ops (`/admin/instances/[id]`) | `runWorkflowOperation` | ✓ | ✓ (force/recursive) | ~legacy | ✗ | ✗ | Only terminate+purge UI — **but the API routes are UNAUTHENTICATED** |
+| 11 | Retired Admin Workflow Ops (`/admin/instances/[id]`) | removed | n/a | n/a | n/a | n/a | n/a | Obsolete diagnostic surface retired; use Lifecycle Controller stop/status routes and workflow execution read models |
 
 **Six contracts, one concept.** The *correct* cascade (row 8) is benchmark-only; the *most-used* surfaces (sessions, workflow runs) are weakest. The benchmark cancel path (`cleanupBenchmarkDurableWorkflowCascade`, `service.ts:2518`) is the model to generalize: graceful event → terminate orchestrator + per-session agent app-ids → wait terminal → purge `recursive=true` → raw state-row delete → delete Sandbox/Job/Pod/ConfigMap → release leases → flip DB.
 
@@ -79,7 +79,7 @@ User-reachable "stop" surfaces. Columns: **T**erminate durable instance? **P**ur
 
 6. **Cooperative cancel is a no-op for durable/run.** Interrupt writes `session-cancel:{session_instance}`, but in auto-terminate mode the inner `agent_workflow` reads `session-cancel:{<session>__turn__N}` (`services/dapr-agent-py/src/main.py:5253-5257`) — **keys never match**. Mid-turn interrupt silently does nothing for the most common workflow-driven case (works only for UI sessions where `agent_turn_instance_id == session_instance`).
 7. **`terminate_durable_runs_by_parent_execution` is dead code** for real runtimes — fans out only to the retired `claude-code-agent` app-id (`services/workflow-orchestrator/activities/call_agent_service.py:320`); neither active runtime implements `api/runs/terminate-by-parent`.
-8. **`/api/workflow-ops/*` operation routes have no auth gate** — only the `(admin)` *page* group is guarded, not the JSON API (`src/routes/api/workflow-ops/instances/[instanceId]/[operation]/+server.ts`, `.../agent-runs/[agentRunId]/[operation]/+server.ts`; only `reminders/delete` checks `requirePlatformAdmin`). Any authenticated caller can terminate/purge/rerun any instance by ID. The dead `DELETE /api/orchestrator/workflows/[id]` purge route is likewise unauthenticated; `api-client.ts` `orchestrator.terminate`/`raiseEvent` point at routes that don't exist (404).
+8. **Historical workflow-ops bypass.** The old `/api/workflow-ops/*` operation routes were a diagnostic bypass around the lifecycle controller. They were first admin-gated during the stop cutover and later retired with the unused admin workflow-instance surface. The dead `/api/orchestrator/workflows/[id]` purge route and dead api-client methods were also removed.
 9. **`recursive`/`force` purge flags are dropped at the orchestrator.** The BFF forwards them, but `_workflow_http_post(instance_id, "/purge")` (`app.py:611,3647`) never appends query params — `recursive` is a logged no-op; `force` only triggers the legacy single-app-id child cleanup. (Dapr's default purge is recursive anyway, so this is cosmetic — but it diverges from what the UI checkbox implies.)
 
 **Runtime asymmetry:** `dapr-agent-py` has terminate/pause/resume/purge endpoints + cooperative cancel + host-monitor (default action `"warn"`, `main.py:6343`); `claude-agent-py` has **none** of these and is un-stoppable mid-turn (its only cutoff is a 15-min per-turn `when_any` timer that then retries 3×, `services/claude-agent-py/src/session_workflow.py:239-250`). Terminate does not interrupt an in-flight activity, so claude's whole-turn-in-one-activity model can only be truly stopped by deleting the Sandbox CR.
@@ -125,7 +125,7 @@ stopDurableRun(
 - ✅ **Purge-before-reuse** — `_idempotent_schedule`'s purge-before-reuse is **GUARDED** to only the DB-terminal-but-Dapr-non-terminal divergence; it NEVER kills a legitimately running instance.
 - ✅ **Fixed the cooperative-cancel key mismatch** for durable/run — dapr-agent-py's cancel-key write/read now AGREE (the check reads candidate keys, stripping `__turn__N` / `:turn-N`), so a mid-turn `user.interrupt` / `session.terminate` actually halts.
 - ✅ **`claude-agent-py` management parity** with dapr-agent-py — `POST /api/v2/agent-runs/{id}/{terminate,pause,resume}` + `DELETE` purge (via `DaprWorkflowClient`), cancellation persistence, a between-turn cooperative-cancel check, and `TERMINAL_CONTROL_EVENT_TYPES`. **`terminate_durable_runs_by_parent_execution` was RETIRED** (it only ever fanned out to the legacy `claude-code-agent` app-id) — the BFF controller now does explicit per-session app-id fan-out; same-task-hub children rely on Dapr's native recursive cascade.
-- ✅ **Auth-gated** `/api/workflow-ops/*` (now requires platform admin); deleted the dead unauthenticated `DELETE /api/orchestrator/workflows/[id]` purge route + the dead api-client methods (`workflows.terminateExecution`, `orchestrator.terminate/raiseEvent`).
+- ✅ **Retired bypass routes.** `/api/workflow-ops/*` was admin-gated during the lifecycle cutover and later removed with the obsolete admin workflow-instance surface. The dead unauthenticated `DELETE /api/orchestrator/workflows/[id]` purge route and dead api-client methods (`workflows.terminateExecution`, `orchestrator.terminate/raiseEvent`) were removed.
 - ✅ **Forward `recursive`/`force`** — `_workflow_http_post` now forwards query params; `purge_workflow` is recursive-by-default + forwards `force` (purge-force, Dapr 1.17.9).
 
 ### GitOps safety nets (stacks, PR4) — ✅ SHIPPED
@@ -143,7 +143,7 @@ The cutover landed across four PRs (wfb #62/#63/#64, stacks #2523, wfb #65). The
 
 - **Phase 0 — Clean slate.** Delivered as the **guarded** `runbooks/phase0-lifecycle-clean-slate.{sh,md}` (dry-run-by-default, NOT auto-run) rather than a single destructive sweep — `reset`/purge across `workflow-orchestrator` + per-session app-ids, Sandbox CRs, and stuck DB rows, run on demand.
 - **Phase 1 — Lifecycle Controller (BFF).** ✅ `src/lib/server/lifecycle/{cascade,resolvers,index,ownership}.ts`: target-agnostic, request/confirm (202 "stopping" → confirmed; not a one-shot fail-closed 409 — see Part 7), idempotent/retryable; lifted from and now **shared with** the benchmark cascade (`cleanupBenchmarkDurableWorkflowCascade`). Explicit per-session app-id fan-out.
-- **Phase 2 — Every surface re-pointed.** ✅ `POST /api/v1/sessions/[id]/stop`, `POST /api/workflows/executions/[id]/stop`, session interrupt, workflow-execution terminate, and eval cancel all route through the controller. UI **Stop** / **Stop & Reset** buttons on the session-detail + workflow-run pages. The sessions-list "Archive" row action was relabeled **"Delete"** (it always hard-DELETEd). Delete/Archive are **BLOCKED** (409 "Stop the run first") while a run is active. Divergent/dead routes removed; `/api/workflow-ops/*` now requires platform admin. UI vocabulary: **Interrupt / Stop / Stop & Reset**.
+- **Phase 2 — Every surface re-pointed.** ✅ `POST /api/v1/sessions/[id]/stop`, `POST /api/workflows/executions/[id]/stop`, session interrupt, workflow-execution terminate, and eval cancel all route through the controller. UI **Stop** / **Stop & Reset** buttons on the session-detail + workflow-run pages. The sessions-list "Archive" row action was relabeled **Delete** (it always hard-DELETEd). Delete/Archive are **BLOCKED** (409 "Stop the run first") while a run is active. Divergent/dead routes were removed; the obsolete workflow-ops diagnostic surface was later retired. UI vocabulary: **Interrupt / Stop / Stop & Reset**.
 - **Phase 3 — Runtime + orchestrator fixes.** ✅ dapr-agent-py cancel-key write/read agreement; claude-agent-py management parity (terminate/pause/resume/purge + cooperative cancel + `TERMINAL_CONTROL_EVENT_TYPES`); guarded purge-before-reuse; sandbox-execution-api owner-run-id no-adopt; `_workflow_http_post` forwards query params + recursive/force purge. (`dapr-agent-py` needs **both** image builds — see the dual-image note in `CLAUDE.md`.)
 - **Phase 4 — GitOps safety nets (stacks #2523).** ✅ unified `stateRetentionPolicy = 168h` (parent + per-session children); `workflow-builder-sandbox-gc` CronJob. The old terminal-status reaper CronJob was later retired with the unused internal lifecycle endpoints.
 - **Phase 5 — Verified end-to-end:** Start → Stop mid-turn (both runtimes) → durable terminal + CR gone + DB terminal + re-run same node starts byte-clean; stale Sandbox cleanup is covered by the `workflow-builder-sandbox-gc` safety net.
@@ -160,7 +160,7 @@ These were exercised during the PR1–PR4 cutover; keep them as the regression c
 - [x] **Re-run the same workflow node** after a stop → fresh Sandbox CR (no 409-adopt; owner-run-id no-adopt), fresh durable instance (guarded purge-before-reuse), fresh crawl job.
 - [x] **Kill a sandbox pod** mid-run → lifecycle controller cleanup and sandbox GC leave no stuck `running` rows.
 - [x] **Orphaned reminders**: after purge, no `new-event-*` reminders remain (1.17 cleanup).
-- [x] **Auth**: `/api/workflow-ops/*` rejects non-admin; cross-workspace stop 404s.
+- [x] **Auth**: obsolete workflow-ops bypass routes are gone; cross-workspace stop 404s.
 - [x] **No `workflow-builder` Sandbox/Workload accumulation** after a soak of start/stop cycles (`workflow-builder-sandbox-gc` CronJob).
 
 ---
@@ -178,7 +178,7 @@ Parts 4–5 made stop *correct*. A production incident then exposed three reliab
 Fail-closed now means "not yet confirmed; will reconcile," never "failed + DB stale forever."
 - `stopDurableRun` stamps **`stop_requested_at`** (new columns on `workflow_executions` + `sessions`, migration `drizzle/0071_lifecycle_stop_requested.sql`) **before** the cascade (`resolvers.markStopRequested`).
 - Its result gained `{ requested, state: "confirmed" | "stopping" | "notFound" }`. On `!allClosed` it returns **`stopping`** (intent persisted, converging) — but it **still never flips DB / reaps until Dapr is confirmed terminal** (no lying about success).
-- `/stop` routes map `state` → **200** confirmed · **202** stopping · 404 · 409. `workflow-ops` `stopThroughController` treats `stopping` as success (no throw).
+- `/stop` routes map `state` → **200** confirmed · **202** stopping · 404 · 409.
 - The poll window is now env-tunable + raised: `LIFECYCLE_CASCADE_WAIT_SECONDS` (default **90**), `…_POLL_SECONDS`, `…_REQUEST_TIMEOUT_SECONDS` (wired in `index.ts` → `createDaprCascadeDeps`).
 
 ### (P1, #69) Historical terminal-reconciliation hardening
@@ -226,7 +226,7 @@ A multi-agent cancellation audit (after #77/#78) confirmed the surface is struct
 - **Retired the orphan `/terminate` route (#9).** `POST /api/workflows/executions/[id]/terminate` (no callers; lacked the owner guard, mapped stopping→409) was removed — use `/stop`.
 - **Interrupt 503-vs-409 (#12).** A transient runtime raise failure on a live session now surfaces as a retryable **503** (`stopDurableRun` `retryable` hint), distinct from "not running yet" (**409**).
 - **`reset` clarified (#7).** `reset` is intentionally user-reachable (the "Stop & reset" byte-clean mode) and safe because every route runs `isResourceInScope` before `stopDurableRun` + the state purge is boundary-anchored (#78) — NOT gated to admin (that would break the button).
-- **Admin workflow-ops bypass documented (#10).** The `runWorkflowOperation` raw-HTTP fallback for *uncorrelated* instances is an admin-gated diagnostic escape hatch (no fan-out/reap/DB-flip) — user-facing stops never reach it.
+- **Admin workflow-ops bypass closed (#10).** The old raw-HTTP fallback for *uncorrelated* instances was retired with the workflow-ops diagnostic surface; user-facing stops continue to route through the Lifecycle Controller.
 - **Session-detail UI parity (#11).** Stop / Stop & reset are gated on a non-terminated session; a `coordinator_owned` 409 swaps them for a "Managed by benchmark/evaluation run →" redirect; Archive shows "Stop the run before archiving" on a 409.
 
 ### Verification (exercised on ryzen, 2026-06-07; #77–#79 on both clusters 2026-06-08)
@@ -244,9 +244,7 @@ A multi-agent cancellation audit (after #77/#78) confirmed the surface is struct
 - `src/lib/server/sessions/control.ts` — `raiseSessionEvent:12` (interrupt)
 - `src/routes/api/v1/sessions/[id]/+server.ts` — GET/PUT/DELETE/PATCH; `[id]/control/interrupt/+server.ts`; `[id]/sandbox/+server.ts` (only CR-delete path)
 - `src/routes/api/workflows/executions/[executionId]/terminate/+server.ts` — 2s-swallow, no purge, dead UI caller
-- `src/lib/server/workflow-ops/index.ts` — `runWorkflowOperation:1484`, `runAgentRunOperation:1385`, `deleteWorkflowActorReminders:420`, `candidateAgentRuntimes:449`
-- `src/routes/api/workflow-ops/instances/[instanceId]/[operation]/+server.ts`, `.../agent-runs/[agentRunId]/[operation]/+server.ts` — **no auth**; `.../reminders/delete/+server.ts` — only admin-gated one
-- `src/routes/api/orchestrator/workflows/[id]/+server.ts` — dead unauthenticated DELETE purge
+- Retired during hexagonal cleanup: `src/lib/server/workflow-ops/**`, `src/routes/api/workflow-ops/**`, `src/routes/(admin)/admin/instances/**`, `src/routes/api/monitor/**`, the unused `src/routes/api/orchestrator/workflows` proxy, and the orphan workflow-ops reminder recovery hook in `services/workflow-orchestrator/app.py`.
 - `src/lib/server/benchmarks/service.ts` — `cancelBenchmarkRun:1769`, `cleanupBenchmarkDurableWorkflowCascade:2518` (**reference**), `terminateBenchmarkRunInstance:6018`, `terminateBenchmarkAgentRuntimeInstance:3129`
 - `src/lib/server/evaluations/service.ts` — `cancelEvaluationRun:1489` (weakest)
 - `src/lib/server/kube/client.ts` — `deleteKubernetesSandbox:928`; warm-pool `1078-1311`
@@ -254,7 +252,7 @@ A multi-agent cancellation audit (after #77/#78) confirmed the surface is struct
 - `src/lib/api-client.ts` — `workflows.terminateExecution:265` (uncalled), `orchestrator.terminate:312` (404)
 
 **Orchestrator (Python)**
-- `services/workflow-orchestrator/app.py` — `terminate_workflow:3405`, `purge_workflow:3613`, `pause/resume:3678/3702`, `delete_workflow_actor_reminders:3526`, `_idempotent_schedule:886`, `_workflow_http_post:611` (drops query), `_cleanup_stale_instances_on_startup:1924`, parent id `3141`
+- `services/workflow-orchestrator/app.py` — `terminate_workflow:3405`, `purge_workflow:3613`, `pause/resume:3678/3702`, `_idempotent_schedule:886`, `_workflow_http_post:611` (drops query), `_cleanup_stale_instances_on_startup:1924`, parent id `3141`
 - `services/workflow-orchestrator/workflows/sw_workflow.py` — child id `1291-1293`, exec counter `1238-1241`, child dispatch `1838-1851`
 - `services/workflow-orchestrator/activities/call_agent_service.py:298-366` — `terminate_durable_runs_by_parent_execution` (→ `claude-code-agent` only)
 - `services/workflow-orchestrator/activities/crawl4ai.py:41-52` — deterministic jobId

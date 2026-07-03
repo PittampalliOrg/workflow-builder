@@ -10,7 +10,7 @@
 		Sparkles
 	} from '@lucide/svelte';
 	import { Badge } from '$lib/components/ui/badge';
-	import InspectablePayload from '$lib/components/workflow-ops/inspectable-payload.svelte';
+	import InspectablePayload from '$lib/components/inspectable-payload.svelte';
 	import { cn } from '$lib/components/ui/utils';
 
 	// Structurally-loose view of the /api/agents/[id]/compiled response. The
