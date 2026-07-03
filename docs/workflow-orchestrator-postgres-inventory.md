@@ -34,6 +34,10 @@ The workflow interactive dev-session handoff now resolves execution owner and
 project context through workflow-data execution ports instead of querying
 `workflow_executions`/`workflows` directly; `dev-session-handoff.ts` no longer
 imports DB, schema, or Drizzle.
+The capacity active-work fleet activity summary now lives in
+`SessionFleetActivityAdapter`; `src/lib/server/sessions/fleet-activity.ts` was
+deleted, and the bounded `sessions`/`session_events` reads are confined to the
+application adapter layer.
 The internal CLI workspace command route now routes execution lookup,
 CLI-session candidate lookup, file creation, and browser artifact persistence
 through workflow-data.
@@ -1070,7 +1074,8 @@ categories include:
   drivable-goal claiming, usage accrual, idle-event metadata, and continuation
   claim queries.
 - remaining session/runtime/workspace helpers under `src/lib/server/sessions/**`,
-  `src/lib/server/openshell-sessions.ts`, and related API routes.
+  `src/lib/server/openshell-sessions.ts`, and related API routes, excluding the
+  capacity fleet-activity summary now confined to the adapter layer.
 - preview runtime/proxy helper internals, where persistence lookups have moved
   behind workflow-data but live Kubernetes/OpenShell transport still needs
   narrower runtime/proxy ports.

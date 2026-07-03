@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApplicationCapacityActiveService } from "$lib/server/application/capacity-active";
 
@@ -46,5 +49,16 @@ describe("ApplicationCapacityActiveService", () => {
 			},
 		});
 		expect(fleetActivity.summarize).toHaveBeenCalledWith(items, "project-1");
+	});
+
+	it("keeps the application service independent of DB infrastructure", () => {
+		const source = readFileSync(
+			join(dirname(fileURLToPath(import.meta.url)), "capacity-active.ts"),
+			"utf8",
+		);
+
+		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("$lib/server/db/schema");
+		expect(source).not.toContain("drizzle-orm");
 	});
 });
