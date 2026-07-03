@@ -81,6 +81,9 @@ const mocks = vi.hoisted(() => {
 			}),
 			listTerminalWorkflowSessionRuntimeHosts: vi.fn(async () => []),
 		},
+		sessionGoals: {
+			ensureWorkflowEvaluatorGoal: vi.fn(async () => ({ status: "created" })),
+		},
 	};
 });
 
@@ -91,6 +94,7 @@ vi.mock("$lib/server/internal-auth", () => ({
 vi.mock("$lib/server/application", () => ({
 	getApplicationAdapters: () => ({
 		workflowData: mocks.workflowData,
+		sessionGoals: mocks.sessionGoals,
 	}),
 }));
 
@@ -217,7 +221,11 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 		expect(source).toContain("workflowData.getWorkflowEnsureSession");
 		expect(source).toContain("workflowData.createWorkflowEnsureSession");
 		expect(source).toContain("workflowData.updateWorkflowEnsureSessionRuntime");
+		expect(source).toContain("sessionGoals.ensureWorkflowEvaluatorGoal");
 		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("$lib/server/goals/repo");
+		expect(source).not.toContain("createOrReplaceGoal");
+		expect(source).not.toContain("getCurrentGoal");
 		expect(source).not.toContain("workflowExecutions,");
 		expect(source).not.toContain("from(workflowExecutions)");
 		expect(source).not.toContain("workflows,");
@@ -281,6 +289,36 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 			projectId: "project-1",
 		});
 		expect(mocks.findOrCreateEphemeralAgent).toHaveBeenCalled();
+	});
+
+	it("delegates evaluator goal persistence to the session goal service", async () => {
+		const payload = await callEnsureForWorkflow({
+			runtime: "agy-cli",
+			modelSpec: "gemini/gemini-2.5-pro",
+			provider: "google",
+			token: "agy-bundle",
+			body: {
+				workflowExecutionId: "execution-1",
+				goal: {
+					objective: "finish the task",
+					tokenBudget: 1234,
+					maxIterations: 6,
+					acceptanceCriteria: ["done"],
+					evidence: { commands: ["pnpm check"] },
+				},
+			},
+		});
+
+		expect(mocks.sessionGoals.ensureWorkflowEvaluatorGoal).toHaveBeenCalledWith({
+			sessionId: "sess-agy-cli",
+			objective: "finish the task",
+			tokenBudget: 1234,
+			maxIterations: 6,
+			workflowExecutionId: "execution-1",
+			acceptanceCriteria: ["done"],
+			evidencePlan: { commands: ["pnpm check"] },
+		});
+		expect((payload.childInput as Record<string, unknown>).autoTerminateAfterEndTurn).toBe(false);
 	});
 
 	it.each([

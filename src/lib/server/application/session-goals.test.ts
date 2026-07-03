@@ -157,6 +157,56 @@ describe("ApplicationSessionGoalService", () => {
 		expect(goals.getCurrentGoal).not.toHaveBeenCalled();
 	});
 
+	it("creates workflow evaluator goals without route-side repository access", async () => {
+		vi.mocked(goals.getCurrentGoal).mockResolvedValue(null);
+
+		const result = await service.ensureWorkflowEvaluatorGoal({
+			sessionId: "session-1",
+			objective: "finish the workflow",
+			tokenBudget: 500,
+			maxIterations: 9,
+			workflowExecutionId: "execution-1",
+			acceptanceCriteria: ["tests pass"],
+			evidencePlan: { commands: ["pnpm check"] },
+		});
+
+		expect(result).toEqual({ status: "created", goal: sampleGoal() });
+		expect(goals.createOrReplaceGoal).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			objective: "finish the workflow",
+			tokenBudget: 500,
+			maxIterations: 9,
+			workflowExecutionId: "execution-1",
+			acceptanceCriteria: ["tests pass"],
+			evidencePlan: { commands: ["pnpm check"] },
+		});
+	});
+
+	it("does not reset an existing non-complete workflow evaluator goal", async () => {
+		const existing = sampleGoal({ objective: "already running" });
+		vi.mocked(goals.getCurrentGoal).mockResolvedValue(existing);
+
+		const result = await service.ensureWorkflowEvaluatorGoal({
+			sessionId: "session-1",
+			objective: "new objective",
+		});
+
+		expect(result).toEqual({ status: "skipped", goal: existing });
+		expect(goals.createOrReplaceGoal).not.toHaveBeenCalled();
+	});
+
+	it("keeps workflow evaluator goal persistence best-effort", async () => {
+		vi.mocked(goals.getCurrentGoal).mockRejectedValue(new Error("db offline"));
+
+		const result = await service.ensureWorkflowEvaluatorGoal({
+			sessionId: "session-1",
+			objective: "keep going",
+		});
+
+		expect(result).toEqual({ status: "failed", message: "db offline" });
+		expect(goals.createOrReplaceGoal).not.toHaveBeenCalled();
+	});
+
 	it("keeps thread goal persistence behind the sessions adapter boundary", () => {
 		const source = readFileSync(
 			join(process.cwd(), "src/lib/server/application/adapters/sessions.ts"),

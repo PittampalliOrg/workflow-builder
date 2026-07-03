@@ -43,6 +43,21 @@ export type UpdateSessionGoalStatusResult =
 	| { status: "invalid"; message: string }
 	| { status: "not_found"; message: string };
 
+export type EnsureWorkflowEvaluatorGoalInput = {
+	sessionId: string;
+	objective: string;
+	tokenBudget?: number | null;
+	maxIterations?: number | null;
+	workflowExecutionId?: string | null;
+	acceptanceCriteria?: string[] | null;
+	evidencePlan?: { commands: string[] } | null;
+};
+
+export type EnsureWorkflowEvaluatorGoalResult =
+	| { status: "created"; goal: SessionGoalRecord }
+	| { status: "skipped"; goal: SessionGoalRecord }
+	| { status: "failed"; message: string };
+
 export class ApplicationSessionGoalService {
 	constructor(
 		private readonly deps: {
@@ -150,6 +165,34 @@ export class ApplicationSessionGoalService {
 		}
 
 		return { status: "not_found", message: "No active goal for this session" };
+	}
+
+	async ensureWorkflowEvaluatorGoal(
+		input: EnsureWorkflowEvaluatorGoalInput,
+	): Promise<EnsureWorkflowEvaluatorGoalResult> {
+		try {
+			const existing = await this.deps.goals.getCurrentGoal(input.sessionId);
+			if (existing && existing.status !== "complete") {
+				return { status: "skipped", goal: existing };
+			}
+			const goal = await this.deps.goals.createOrReplaceGoal({
+				sessionId: input.sessionId,
+				objective: input.objective,
+				tokenBudget: input.tokenBudget,
+				maxIterations: input.maxIterations ?? undefined,
+				workflowExecutionId: input.workflowExecutionId ?? null,
+				acceptanceCriteria: input.acceptanceCriteria,
+				evidencePlan: input.evidencePlan,
+			});
+			return { status: "created", goal };
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			console.warn(
+				`[session-goals] ensureWorkflowEvaluatorGoal failed for ${input.sessionId}:`,
+				message,
+			);
+			return { status: "failed", message };
+		}
 	}
 
 	private async sendNativeGoalCommand(

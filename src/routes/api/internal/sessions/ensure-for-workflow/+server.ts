@@ -36,7 +36,6 @@ import {
 	provisionSessionSandboxWithRetry,
 	sandboxProvisionFailureMessage,
 } from "$lib/server/sandboxes/provision";
-import { createOrReplaceGoal, getCurrentGoal } from "$lib/server/goals/repo";
 import {
 	decideGoalHarness,
 	runtimeHasNativeGoalHarness,
@@ -65,7 +64,7 @@ import {
  */
 export const POST: RequestHandler = async ({ request }) => {
 	if (!validateInternalToken(request)) return error(401, "Unauthorized");
-	const { workflowData } = getApplicationAdapters();
+	const { workflowData, sessionGoals } = getApplicationAdapters();
 
 	const traceContext = extractTraceContext(request);
 	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
@@ -516,11 +515,15 @@ export const POST: RequestHandler = async ({ request }) => {
 		// mode (the default for every runtime) gets a row; native `/goal` (opt-in)
 		// stays row-less and is driven by the vendor CLI.
 		if (evaluatorGoal && effectiveBridgeGoal) {
-			await ensureWorkflowGoal(
-				existing.id,
-				effectiveBridgeGoal,
-				existing.workflowExecutionId ?? workflowExecutionId,
-			);
+			await sessionGoals.ensureWorkflowEvaluatorGoal({
+				sessionId: existing.id,
+				objective: effectiveBridgeGoal.objective,
+				tokenBudget: effectiveBridgeGoal.tokenBudget,
+				maxIterations: effectiveBridgeGoal.maxIterations,
+				workflowExecutionId: existing.workflowExecutionId ?? workflowExecutionId,
+				acceptanceCriteria: effectiveBridgeGoal.acceptanceCriteria,
+				evidencePlan: effectiveBridgeGoal.evidencePlan,
+			});
 		}
 		return json({
 			sessionId: existing.id,
@@ -624,7 +627,15 @@ export const POST: RequestHandler = async ({ request }) => {
 	// the agent self-completes via the auto-wired goal MCP. (Native-goal CLIs
 	// instead get the `/goal` kickoff as effectiveInitialMessage below.)
 	if (evaluatorGoal && effectiveBridgeGoal) {
-		await ensureWorkflowGoal(sessionId, effectiveBridgeGoal, workflowExecutionId);
+		await sessionGoals.ensureWorkflowEvaluatorGoal({
+			sessionId,
+			objective: effectiveBridgeGoal.objective,
+			tokenBudget: effectiveBridgeGoal.tokenBudget,
+			maxIterations: effectiveBridgeGoal.maxIterations,
+			workflowExecutionId,
+			acceptanceCriteria: effectiveBridgeGoal.acceptanceCriteria,
+			evidencePlan: effectiveBridgeGoal.evidencePlan,
+		});
 	}
 	if (effectiveInitialMessage && effectiveInitialMessage.trim()) {
 		await sendUserEvent(sessionId, {
@@ -998,36 +1009,6 @@ function parseGoalSpec(value: unknown): GoalSpec | null {
 		acceptanceCriteria: parseStringArray(g.acceptanceCriteria),
 		evidencePlan: evCommands ? { commands: evCommands } : null,
 	};
-}
-
-/** Create the thread_goals row for a workflow-driven goal session, idempotent
- *  across Dapr activity replays: skip if an active (non-complete) goal already
- *  exists so a re-ensure never resets accounting mid-run. The goal loop drives
- *  continuations off status_idle (no kick needed — turn 1 runs on the node
- *  prompt; the loop takes over once the session idles). */
-async function ensureWorkflowGoal(
-	sessionId: string,
-	goal: GoalSpec,
-	workflowExecutionId: string | null,
-): Promise<void> {
-	try {
-		const existing = await getCurrentGoal(sessionId);
-		if (existing && existing.status !== "complete") return;
-		await createOrReplaceGoal({
-			sessionId,
-			objective: goal.objective,
-			tokenBudget: goal.tokenBudget,
-			maxIterations: goal.maxIterations ?? undefined,
-			workflowExecutionId,
-			acceptanceCriteria: goal.acceptanceCriteria,
-			evidencePlan: goal.evidencePlan,
-		});
-	} catch (err) {
-		console.warn(
-			`[ensure-for-workflow] ensureWorkflowGoal failed for ${sessionId}:`,
-			err instanceof Error ? err.message : err,
-		);
-	}
 }
 
 // Silence "unused import" linter — createSession is reserved for future
