@@ -986,6 +986,23 @@ function fakeWorkspaceProjects(): WorkspaceProjectRepository {
 	return {
 		getMemberProjectId: vi.fn(async () => "project-1"),
 		getFallbackMemberProjectId: vi.fn(async () => "project-1"),
+		listWorkspaceMemberships: vi.fn(async () => [
+			{
+				id: "project-1",
+				displayName: "Project One",
+				externalId: "workspace-1",
+				role: "ADMIN" as const,
+				createdAt,
+			},
+		]),
+		createWorkspaceProject: vi.fn(async (input) => ({
+			id: "project-created",
+			displayName: input.displayName,
+			externalId: input.externalId,
+			role: "ADMIN" as const,
+			createdAt,
+		})),
+		updateWorkspaceDisplayName: vi.fn(async () => true),
 		getMemberProjectIdBySlug: vi.fn(async () => "project-1"),
 		getProjectExternalId: vi.fn(async () => "workspace-1"),
 		getProjectMembershipDetail: vi.fn(async () => null),
@@ -5795,6 +5812,128 @@ describe("ApplicationWorkflowDataService", () => {
 			}),
 		).resolves.toBe("project-fallback");
 		expect(workspaceProjects.getFallbackMemberProjectId).toHaveBeenCalledWith("user-1");
+	});
+
+	it("lists and creates workspaces through workspace project ports", async () => {
+		const createdAt = new Date("2026-06-01T12:00:00.000Z");
+		const workspaceProjects = {
+			...fakeWorkspaceProjects(),
+			listWorkspaceMemberships: vi.fn(async () => [
+				{
+					id: "project-1",
+					displayName: "Current Workspace",
+					externalId: "current-workspace",
+					role: "ADMIN" as const,
+					createdAt,
+				},
+				{
+					id: "project-2",
+					displayName: "Research Workspace",
+					externalId: "research-workspace",
+					role: "VIEWER" as const,
+					createdAt,
+				},
+			]),
+			createWorkspaceProject: vi.fn(async (input) => ({
+				id: "project-created",
+				displayName: input.displayName,
+				externalId: input.externalId,
+				role: "ADMIN" as const,
+				createdAt,
+			})),
+		} satisfies WorkspaceProjectRepository;
+		const service = makeServiceWithWorkspaceProjects(workspaceProjects);
+
+		await expect(
+			service.listWorkspaces({
+				userId: "user-1",
+				currentProjectId: "project-1",
+			}),
+		).resolves.toEqual([
+			{
+				id: "project-1",
+				displayName: "Current Workspace",
+				externalId: "current-workspace",
+				slug: "default",
+				role: "ADMIN",
+				isCurrent: true,
+				createdAt: "2026-06-01T12:00:00.000Z",
+			},
+			{
+				id: "project-2",
+				displayName: "Research Workspace",
+				externalId: "research-workspace",
+				slug: "research-workspace",
+				role: "VIEWER",
+				isCurrent: false,
+				createdAt: "2026-06-01T12:00:00.000Z",
+			},
+		]);
+
+		await expect(
+			service.createWorkspace({
+				displayName: "Research Workspace",
+				externalId: "research-workspace",
+				userId: "user-1",
+				platformId: "platform-1",
+			}),
+		).resolves.toEqual({
+			id: "project-created",
+			displayName: "Research Workspace",
+			externalId: "research-workspace",
+			slug: "research-workspace",
+			role: "ADMIN",
+			isCurrent: false,
+			createdAt: "2026-06-01T12:00:00.000Z",
+		});
+
+		expect(workspaceProjects.listWorkspaceMemberships).toHaveBeenCalledWith({
+			userId: "user-1",
+		});
+		expect(workspaceProjects.createWorkspaceProject).toHaveBeenCalledWith({
+			platformId: "platform-1",
+			ownerId: "user-1",
+			displayName: "Research Workspace",
+			externalId: "research-workspace",
+		});
+	});
+
+	it("renames workspaces only for project admins through workspace project ports", async () => {
+		const workspaceProjects = {
+			...fakeWorkspaceProjects(),
+			getProjectMemberRole: vi.fn<
+				WorkspaceProjectRepository["getProjectMemberRole"]
+			>(async () => "VIEWER" as const),
+			updateWorkspaceDisplayName: vi.fn(async () => true),
+		} satisfies WorkspaceProjectRepository;
+		const service = makeServiceWithWorkspaceProjects(workspaceProjects);
+
+		await expect(
+			service.renameWorkspace({
+				projectId: "project-1",
+				userId: "user-1",
+				displayName: "Denied Rename",
+			}),
+		).resolves.toBe(false);
+		expect(workspaceProjects.updateWorkspaceDisplayName).not.toHaveBeenCalled();
+
+		workspaceProjects.getProjectMemberRole.mockResolvedValueOnce("ADMIN");
+		await expect(
+			service.renameWorkspace({
+				projectId: "project-1",
+				userId: "user-1",
+				displayName: "Approved Rename",
+			}),
+		).resolves.toBe(true);
+
+		expect(workspaceProjects.getProjectMemberRole).toHaveBeenCalledWith({
+			projectId: "project-1",
+			userId: "user-1",
+		});
+		expect(workspaceProjects.updateWorkspaceDisplayName).toHaveBeenCalledWith({
+			projectId: "project-1",
+			displayName: "Approved Rename",
+		});
 	});
 
 	it("lists project members for existing project members through workspace project ports", async () => {

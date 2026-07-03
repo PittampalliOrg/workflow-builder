@@ -1681,6 +1681,31 @@ export type McpAvailabilityReadModel = {
 
 export type ProjectMembershipRole = "ADMIN" | "EDITOR" | "OPERATOR" | "VIEWER";
 
+export type WorkspaceSummary = {
+	id: string;
+	displayName: string;
+	externalId: string;
+	slug: string;
+	role: ProjectMembershipRole;
+	isCurrent: boolean;
+	createdAt: string;
+};
+
+export type WorkspaceProjectMembershipRecord = {
+	id: string;
+	displayName: string;
+	externalId: string;
+	role: ProjectMembershipRole;
+	createdAt: Date;
+};
+
+export type CreateWorkspaceProjectInput = {
+	platformId: string;
+	ownerId: string;
+	displayName: string;
+	externalId: string;
+};
+
 export type EncryptedSecretValue = {
 	iv: string;
 	data: string;
@@ -2207,6 +2232,16 @@ export interface WorkspaceProjectRepository {
 		userId: string;
 	}): Promise<string | null>;
 	getFallbackMemberProjectId(userId: string): Promise<string | null>;
+	listWorkspaceMemberships(input: {
+		userId: string;
+	}): Promise<WorkspaceProjectMembershipRecord[]>;
+	createWorkspaceProject(
+		input: CreateWorkspaceProjectInput,
+	): Promise<WorkspaceProjectMembershipRecord>;
+	updateWorkspaceDisplayName(input: {
+		projectId: string;
+		displayName: string;
+	}): Promise<boolean>;
 	getMemberProjectIdBySlug(input: {
 		slug: string;
 		userId: string;
@@ -4711,6 +4746,25 @@ export interface WorkflowDataService {
 		userId: string;
 		currentProjectId: string;
 	}): Promise<string | null>;
+	resolveSessionProjectId(input: {
+		userId: string;
+		currentProjectId: string;
+	}): Promise<string | null>;
+	listWorkspaces(input: {
+		userId: string;
+		currentProjectId: string;
+	}): Promise<WorkspaceSummary[]>;
+	createWorkspace(input: {
+		displayName: string;
+		externalId?: string;
+		userId: string;
+		platformId: string;
+	}): Promise<WorkspaceSummary>;
+	renameWorkspace(input: {
+		projectId: string;
+		userId: string;
+		displayName: string;
+	}): Promise<boolean>;
 	getWorkspaceProjectExternalId(projectId: string): Promise<string | null>;
 	getWorkspaceProjectMembershipDetail(input: {
 		projectId: string;

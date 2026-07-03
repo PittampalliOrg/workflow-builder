@@ -839,9 +839,27 @@ function fakeSessionExperimentAgents(): SessionExperimentAgentStore {
 }
 
 function fakeWorkspaceProjects(): WorkspaceProjectRepository {
+	const createdAt = new Date("2026-05-15T12:00:00.000Z");
 	return {
 		getMemberProjectId: vi.fn(async () => "project-1"),
 		getFallbackMemberProjectId: vi.fn(async () => "project-1"),
+		listWorkspaceMemberships: vi.fn(async () => [
+			{
+				id: "project-1",
+				displayName: "Project",
+				externalId: "workspace-1",
+				role: "OPERATOR" as const,
+				createdAt,
+			},
+		]),
+		createWorkspaceProject: vi.fn(async (input) => ({
+			id: "project-created",
+			displayName: input.displayName,
+			externalId: input.externalId,
+			role: "ADMIN" as const,
+			createdAt,
+		})),
+		updateWorkspaceDisplayName: vi.fn(async () => true),
 		getMemberProjectIdBySlug: vi.fn(async () => "project-1"),
 		getProjectExternalId: vi.fn(async () => "workspace-1"),
 		getProjectMembershipDetail: vi.fn(async () => ({
@@ -864,8 +882,8 @@ function fakeWorkspaceProjects(): WorkspaceProjectRepository {
 			projectId: "project-1",
 			userId: "user-1",
 			role: "OPERATOR" as const,
-			createdAt: new Date("2026-05-15T12:00:00.000Z"),
-			updatedAt: new Date("2026-05-15T12:00:00.000Z"),
+			createdAt,
+			updatedAt: createdAt,
 		})),
 		updateProjectMemberRole: vi.fn(async () => null),
 		deleteProjectMember: vi.fn(async () => undefined),

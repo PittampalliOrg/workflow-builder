@@ -178,6 +178,8 @@ import type {
 	WorkspaceSessionStore,
 	ServiceGraphPickerOptions,
 	WorkspaceWorkflowListItem,
+	WorkspaceSummary,
+	WorkspaceProjectMembershipRecord,
 	WorkspaceProjectRepository,
 	PieceCatalogDetail,
 	PieceCatalogRepository,
@@ -801,6 +803,32 @@ function toCodeCatalogFunction(record: CodeCatalogFunctionRecord) {
 		sourceKind: "code" as const,
 		codeFunctionId: record.id,
 		language: record.language,
+	};
+}
+
+function workspaceSlugify(name: string): string {
+	return (
+		name
+			.trim()
+			.toLowerCase()
+			.replace(/[^a-z0-9-]+/g, "-")
+			.replace(/^-+|-+$/g, "")
+			.slice(0, 40) + "-" + generateId().slice(0, 8)
+	);
+}
+
+function workspaceSummaryFromRecord(
+	record: WorkspaceProjectMembershipRecord,
+	currentProjectId: string | null,
+): WorkspaceSummary {
+	return {
+		id: record.id,
+		displayName: record.displayName,
+		externalId: record.externalId,
+		slug: record.id === currentProjectId ? "default" : record.externalId,
+		role: record.role,
+		isCurrent: record.id === currentProjectId,
+		createdAt: record.createdAt.toISOString(),
 	};
 }
 
@@ -2944,6 +2972,53 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		});
 		if (current) return current;
 		return this.deps.workspaceProjects.getFallbackMemberProjectId(input.userId);
+	}
+
+	async listWorkspaces(input: {
+		userId: string;
+		currentProjectId: string;
+	}): Promise<WorkspaceSummary[]> {
+		const rows = await this.deps.workspaceProjects.listWorkspaceMemberships({
+			userId: input.userId,
+		});
+		return rows.map((row) =>
+			workspaceSummaryFromRecord(row, input.currentProjectId),
+		);
+	}
+
+	async createWorkspace(input: {
+		displayName: string;
+		externalId?: string;
+		userId: string;
+		platformId: string;
+	}): Promise<WorkspaceSummary> {
+		const externalId = (input.externalId || workspaceSlugify(input.displayName)).slice(
+			0,
+			60,
+		);
+		const row = await this.deps.workspaceProjects.createWorkspaceProject({
+			platformId: input.platformId,
+			ownerId: input.userId,
+			displayName: input.displayName,
+			externalId,
+		});
+		return workspaceSummaryFromRecord(row, null);
+	}
+
+	async renameWorkspace(input: {
+		projectId: string;
+		userId: string;
+		displayName: string;
+	}): Promise<boolean> {
+		const role = await this.deps.workspaceProjects.getProjectMemberRole({
+			projectId: input.projectId,
+			userId: input.userId,
+		});
+		if (role !== "ADMIN") return false;
+		return this.deps.workspaceProjects.updateWorkspaceDisplayName({
+			projectId: input.projectId,
+			displayName: input.displayName,
+		});
 	}
 
 	getWorkspaceProjectExternalId(projectId: string) {

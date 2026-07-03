@@ -21,7 +21,7 @@
 		displayName: string;
 		externalId: string;
 		slug: string;
-		role: 'ADMIN' | 'MEMBER';
+		role: 'ADMIN' | 'EDITOR' | 'OPERATOR' | 'VIEWER';
 		isCurrent: boolean;
 		createdAt: string;
 	};

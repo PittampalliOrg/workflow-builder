@@ -134,6 +134,7 @@ import type {
 	CodeCatalogFunctionRecord,
 	CodeFunctionCatalogRepository,
 	ConnectablePieceRecord,
+	CreateWorkspaceProjectInput,
 	CreateWorkflowDefinitionInput,
 	CreateWorkflowTriggerInput,
 	CreateWorkflowExecutionInput,
@@ -228,6 +229,7 @@ import type {
 	WorkflowPlanArtifactRecord,
 	WorkflowPlanArtifactStore,
 	UpsertWorkspaceSessionInput,
+	WorkspaceProjectMembershipRecord,
 	WorkspaceSessionStore,
 } from "$lib/server/application/ports";
 
@@ -2174,6 +2176,76 @@ export class PostgresWorkspaceProjectRepository implements WorkspaceProjectRepos
 			.where(eq(projectMembers.userId, userId))
 			.limit(1);
 		return row?.projectId ?? null;
+	}
+
+	async listWorkspaceMemberships(input: {
+		userId: string;
+	}): Promise<WorkspaceProjectMembershipRecord[]> {
+		const rows = await this.database
+			.select({
+				id: projects.id,
+				displayName: projects.displayName,
+				externalId: projects.externalId,
+				role: projectMembers.role,
+				createdAt: projects.createdAt,
+			})
+			.from(projects)
+			.innerJoin(
+				projectMembers,
+				and(
+					eq(projectMembers.projectId, projects.id),
+					eq(projectMembers.userId, input.userId),
+				),
+			)
+			.orderBy(asc(projects.createdAt));
+		return rows.map((row) => ({
+			id: row.id,
+			displayName: row.displayName,
+			externalId: row.externalId,
+			role: row.role as ProjectMembershipRole,
+			createdAt: row.createdAt,
+		}));
+	}
+
+	async createWorkspaceProject(
+		input: CreateWorkspaceProjectInput,
+	): Promise<WorkspaceProjectMembershipRecord> {
+		const [project] = await this.database
+			.insert(projects)
+			.values({
+				platformId: input.platformId,
+				ownerId: input.ownerId,
+				displayName: input.displayName,
+				externalId: input.externalId,
+			})
+			.returning();
+		if (!project) throw new Error("Failed to create workspace");
+
+		await this.database.insert(projectMembers).values({
+			projectId: project.id,
+			userId: input.ownerId,
+			role: "ADMIN",
+		});
+
+		return {
+			id: project.id,
+			displayName: project.displayName,
+			externalId: project.externalId,
+			role: "ADMIN",
+			createdAt: project.createdAt,
+		};
+	}
+
+	async updateWorkspaceDisplayName(input: {
+		projectId: string;
+		displayName: string;
+	}): Promise<boolean> {
+		const [row] = await this.database
+			.update(projects)
+			.set({ displayName: input.displayName, updatedAt: new Date() })
+			.where(eq(projects.id, input.projectId))
+			.returning({ id: projects.id });
+		return Boolean(row);
 	}
 
 	async getMemberProjectIdBySlug(input: {
