@@ -366,13 +366,10 @@ def test_fetch_child_workflow_strict_http_failure_does_not_fallback(monkeypatch)
         def get_workflow(self, *_args, **_kwargs):
             raise RuntimeError("workflow-data unavailable")
 
-    def fail_db_fetch(_workflow_id):
-        raise AssertionError("Postgres child workflow fallback should not be called")
-
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
     _block_psycopg2_imports(monkeypatch)
+    monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
     monkeypatch.setattr(fetch_child_workflow, "workflow_data_client", FailingWorkflowDataClient())
-    monkeypatch.setattr(fetch_child_workflow, "_fetch_workflow_from_db", fail_db_fetch)
 
     try:
         fetch_child_workflow._fetch_workflow("wf-child")
@@ -380,6 +377,24 @@ def test_fetch_child_workflow_strict_http_failure_does_not_fallback(monkeypatch)
         assert "workflow-data unavailable" in str(exc)
     else:
         raise AssertionError("strict child workflow fetch should surface workflow-data failure")
+
+
+def test_fetch_child_workflow_fallback_mode_does_not_call_postgres(monkeypatch):
+    class FailingWorkflowDataClient:
+        def get_workflow(self, *_args, **_kwargs):
+            raise RuntimeError("workflow-data unavailable")
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http-fallback-db")
+    _block_psycopg2_imports(monkeypatch)
+    monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
+    monkeypatch.setattr(fetch_child_workflow, "workflow_data_client", FailingWorkflowDataClient())
+
+    try:
+        fetch_child_workflow._fetch_workflow("wf-child")
+    except RuntimeError as exc:
+        assert "workflow-data unavailable" in str(exc)
+    else:
+        raise AssertionError("child workflow fetch should surface workflow-data failure")
 
 
 def test_log_node_execution_strict_http_uses_workflow_data_client(monkeypatch):

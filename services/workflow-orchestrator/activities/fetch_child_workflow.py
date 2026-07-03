@@ -1,8 +1,8 @@
 """
 Fetch Child Workflow Activity
 
-Fetches a workflow definition from the database for child workflow execution,
-with cycle detection to prevent infinite recursion.
+Fetches a workflow definition through workflow-data for child workflow
+execution, with cycle detection to prevent infinite recursion.
 """
 
 from __future__ import annotations
@@ -13,41 +13,17 @@ from typing import Any
 
 import dapr.ext.workflow as wf
 
-from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
+from activities.workflow_data_client import workflow_data_client
 
 logger = logging.getLogger(__name__)
 
 
-def _get_database_url() -> str:
-    """Fetch DATABASE_URL from the Dapr kubernetes-secrets store (cached)."""
-    # Reuse the cached helper from app.py at runtime
-    from app import _get_database_url as get_db_url
-    return get_db_url()
-
-
-def _fetch_workflow_from_db(workflow_id: str) -> dict[str, Any]:
-    """Fetch a workflow definition from the database by ID."""
-    from app import _fetch_workflow_from_db as fetch_wf
-    return fetch_wf(workflow_id)
-
-
 def _fetch_workflow(workflow_id: str) -> dict[str, Any]:
     """Fetch a workflow definition through the application boundary."""
-    mode = workflow_data_api_mode()
-    if mode != "postgres":
-        try:
-            workflow = workflow_data_client.get_workflow(workflow_id, by="id")
-            if not workflow:
-                raise RuntimeError(f"Workflow {workflow_id} not found")
-            return workflow
-        except Exception:
-            if mode == "http":
-                raise
-            logger.warning(
-                "[Fetch Child Workflow] workflow-data lookup failed; falling back to Postgres",
-                exc_info=True,
-            )
-    return _fetch_workflow_from_db(workflow_id)
+    workflow = workflow_data_client.get_workflow(workflow_id, by="id")
+    if not workflow:
+        raise RuntimeError(f"Workflow {workflow_id} not found")
+    return workflow
 
 
 def _topological_sort(nodes: list[dict], edges: list[dict]) -> list[str]:
@@ -106,7 +82,7 @@ def _scan_for_sub_workflow_ids(nodes: list[dict[str, Any]]) -> list[str]:
 
 def fetch_child_workflow(ctx: wf.WorkflowActivityContext, input: dict) -> dict:
     """
-    Fetch workflow definition from DB for child workflow execution.
+    Fetch workflow definition for child workflow execution.
 
     Performs cycle detection by checking parentWorkflowIds chain.
     Also scans child nodes for nested sub-workflow references to catch
