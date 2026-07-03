@@ -94,6 +94,10 @@ import {
 } from "$lib/server/application/adapters/lifecycle-bulk-stop";
 import { DaprCoordinatorCancelAdapter } from "$lib/server/application/adapters/run-cancellation";
 import {
+	LegacyBenchmarkRunLaunchAdapter,
+	LegacyEvaluationRunLaunchAdapter,
+} from "$lib/server/application/adapters/run-launch";
+import {
 	KroPreviewEnvironmentProvisioner,
 	SandboxExecutionPreviewEnvironmentProvisioner,
 } from "$lib/server/application/adapters/preview";
@@ -162,6 +166,10 @@ import { ApplicationBulkLifecycleStopService } from "$lib/server/application/lif
 import { ApplicationCapacityActiveService } from "$lib/server/application/capacity-active";
 import { ApplicationCapacityOverviewService } from "$lib/server/application/capacity-overview";
 import { ApplicationDaprInspectionService } from "$lib/server/application/dapr-inspection";
+import {
+	ApplicationBenchmarkRunLaunchService,
+	ApplicationEvaluationRunLaunchService,
+} from "$lib/server/application/run-launch";
 import { ApplicationRunCancellationService } from "$lib/server/application/run-cancellation";
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
 import { ApplicationWorkflowBrowserArtifactsService } from "$lib/server/application/workflow-browser-artifacts";
@@ -301,6 +309,8 @@ export function getApplicationAdapters(
 	let sessionBrowser: ApplicationSessionBrowserService | undefined;
 	let bulkLifecycleStop: ApplicationBulkLifecycleStopService | undefined;
 	let runCancellation: ApplicationRunCancellationService | undefined;
+	let benchmarkRunLaunch: ApplicationBenchmarkRunLaunchService | undefined;
+	let evaluationRunLaunch: ApplicationEvaluationRunLaunchService | undefined;
 	let capacityActive: ApplicationCapacityActiveService | undefined;
 	let capacityOverview: ApplicationCapacityOverviewService | undefined;
 	let daprInspection: ApplicationDaprInspectionService | undefined;
@@ -508,6 +518,14 @@ export function getApplicationAdapters(
 			evaluationRuns: new ServiceEvaluationRunCancellationPort(),
 			coordinator: new DaprCoordinatorCancelAdapter(),
 		}));
+	const getBenchmarkRunLaunch = () =>
+		(benchmarkRunLaunch ??= new ApplicationBenchmarkRunLaunchService(
+			new LegacyBenchmarkRunLaunchAdapter(),
+		));
+	const getEvaluationRunLaunch = () =>
+		(evaluationRunLaunch ??= new ApplicationEvaluationRunLaunchService(
+			new LegacyEvaluationRunLaunchAdapter(),
+		));
 	const getCapacityActive = () =>
 		(capacityActive ??= new ApplicationCapacityActiveService({
 			fleetActivity: new SessionFleetActivityAdapter(),
@@ -798,6 +816,12 @@ export function getApplicationAdapters(
 		},
 		get runCancellation() {
 			return getRunCancellation();
+		},
+		get benchmarkRunLaunch() {
+			return getBenchmarkRunLaunch();
+		},
+		get evaluationRunLaunch() {
+			return getEvaluationRunLaunch();
 		},
 		get capacityActive() {
 			return getCapacityActive();
