@@ -8,6 +8,7 @@ import {
 	eq,
 	gte,
 	gt,
+	ilike,
 	inArray,
 	isNotNull,
 	isNull,
@@ -15,6 +16,7 @@ import {
 	lt,
 	or,
 	sql,
+	type SQL,
 } from "drizzle-orm";
 import { db as defaultDb, sql as defaultSql } from "$lib/server/db";
 import { BENCHMARK_AGENT_RUNTIMES } from "$lib/benchmarks/agent-runtimes";
@@ -207,6 +209,9 @@ import type {
 	ActiveWorkflowExecutionReadModel,
 	InternalAgentWorkflowExecutionListInput,
 	InternalAgentWorkflowExecutionListReadModel,
+	ListProjectWorkflowRunsInput,
+	ProjectWorkflowRunAgent,
+	ProjectWorkflowRunSummary,
 	WorkflowExecutionForkCountRecord,
 	WorkflowExecutionLogPatch,
 	WorkflowExecutionPickerRecord,
@@ -1028,6 +1033,12 @@ function mapExecution(row: WorkflowExecution): WorkflowExecutionRecord {
 		stopRequestedAt: row.stopRequestedAt,
 		stopReason: row.stopReason,
 	};
+}
+
+function parseNumericDurationMs(value: string | null): number | null {
+	if (!value) return null;
+	const parsed = Number(value);
+	return Number.isFinite(parsed) ? parsed : null;
 }
 
 function mapExecutionLog(row: WorkflowExecutionLog): WorkflowExecutionLogRecord {
@@ -5273,6 +5284,116 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 				completedAt: execution.completedAt,
 				duration: execution.duration,
 				sessionIds: extras.sessionIds,
+				agents: extras.agents,
+			};
+		});
+	}
+
+	async listProjectRuns(
+		input: ListProjectWorkflowRunsInput,
+	): Promise<ProjectWorkflowRunSummary[]> {
+		const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+		const conditions: SQL[] = [eq(workflowExecutions.projectId, input.projectId)];
+		if (input.workflowId) {
+			conditions.push(eq(workflowExecutions.workflowId, input.workflowId));
+		}
+		if (input.status) conditions.push(eq(workflowExecutions.status, input.status));
+		if (input.since) conditions.push(gte(workflowExecutions.startedAt, input.since));
+		if (input.q && input.q.trim().length >= 2) {
+			const needle = `%${input.q.trim()}%`;
+			const textCondition = or(
+				ilike(workflows.name, needle),
+				ilike(workflowExecutions.id, needle),
+			);
+			if (textCondition) conditions.push(textCondition);
+		}
+
+		const execRows = await this.database
+			.select({
+				id: workflowExecutions.id,
+				workflowId: workflowExecutions.workflowId,
+				workflowName: workflows.name,
+				status: workflowExecutions.status,
+				startedAt: workflowExecutions.startedAt,
+				completedAt: workflowExecutions.completedAt,
+				duration: workflowExecutions.duration,
+			})
+			.from(workflowExecutions)
+			.innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+			.where(and(...conditions))
+			.orderBy(desc(workflowExecutions.startedAt))
+			.limit(limit);
+
+		if (execRows.length === 0) return [];
+
+		const executionIds = execRows.map((row) => row.id);
+		const sessionRows = await this.database
+			.select({
+				id: sessions.id,
+				workflowExecutionId: sessions.workflowExecutionId,
+				agentId: sessions.agentId,
+			})
+			.from(sessions)
+			.where(inArray(sessions.workflowExecutionId, executionIds));
+
+		const agentIds = Array.from(
+			new Set(sessionRows.map((session) => session.agentId).filter((id): id is string => !!id)),
+		);
+		const agentById = new Map<string, ProjectWorkflowRunAgent>();
+		if (agentIds.length > 0) {
+			const agentRows = await this.database
+				.select({
+					id: agents.id,
+					name: agents.name,
+					avatar: agents.avatar,
+					slug: agents.slug,
+				})
+				.from(agents)
+				.where(inArray(agents.id, agentIds));
+			for (const agent of agentRows) {
+				agentById.set(agent.id, {
+					id: agent.id,
+					name: agent.name,
+					avatar: agent.avatar ?? null,
+					slug: agent.slug ?? null,
+				});
+			}
+		}
+
+		const byExecution = new Map<
+			string,
+			{ sessionCount: number; agents: ProjectWorkflowRunAgent[] }
+		>();
+		for (const session of sessionRows) {
+			if (!session.workflowExecutionId) continue;
+			const bucket = byExecution.get(session.workflowExecutionId) ?? {
+				sessionCount: 0,
+				agents: [],
+			};
+			bucket.sessionCount += 1;
+			if (session.agentId) {
+				const agent = agentById.get(session.agentId);
+				if (agent && !bucket.agents.find((item) => item.id === agent.id)) {
+					bucket.agents.push(agent);
+				}
+			}
+			byExecution.set(session.workflowExecutionId, bucket);
+		}
+
+		return execRows.map((execution) => {
+			const extras = byExecution.get(execution.id) ?? {
+				sessionCount: 0,
+				agents: [],
+			};
+			return {
+				executionId: execution.id,
+				workflowId: execution.workflowId,
+				workflowName: execution.workflowName,
+				status: execution.status,
+				startedAt: execution.startedAt.toISOString(),
+				completedAt: execution.completedAt?.toISOString() ?? null,
+				durationMs: parseNumericDurationMs(execution.duration),
+				sessionCount: extras.sessionCount,
 				agents: extras.agents,
 			};
 		});

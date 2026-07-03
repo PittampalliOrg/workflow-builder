@@ -2507,6 +2507,34 @@ export type WorkflowExecutionRunSummary = {
 	agents: Array<{ id: string; name: string }>;
 };
 
+export type ProjectWorkflowRunAgent = {
+	id: string;
+	name: string;
+	avatar: string | null;
+	slug: string | null;
+};
+
+export type ProjectWorkflowRunSummary = {
+	executionId: string;
+	workflowId: string;
+	workflowName: string;
+	status: WorkflowExecutionStatus;
+	startedAt: string;
+	completedAt: string | null;
+	durationMs: number | null;
+	sessionCount: number;
+	agents: ProjectWorkflowRunAgent[];
+};
+
+export type ListProjectWorkflowRunsInput = {
+	projectId: string;
+	workflowId?: string;
+	status?: WorkflowExecutionStatus;
+	since?: Date;
+	q?: string;
+	limit?: number;
+};
+
 export type WorkflowExecutionSessionSummary = {
 	id: string;
 	title: string | null;
@@ -2885,6 +2913,9 @@ export interface WorkflowExecutionRepository {
 		workflowId: string;
 		limit: number;
 	}): Promise<WorkflowExecutionRunSummary[]>;
+	listProjectRuns(
+		input: ListProjectWorkflowRunsInput,
+	): Promise<ProjectWorkflowRunSummary[]>;
 	countForksByWorkflowIds(
 		workflowIds: string[],
 	): Promise<WorkflowExecutionForkCountRecord[]>;
@@ -5349,6 +5380,9 @@ export interface WorkflowDataService {
 		workflowId: string;
 		limit: number;
 	}): Promise<WorkflowExecutionRunSummary[]>;
+	listProjectWorkflowRuns(
+		input: ListProjectWorkflowRunsInput,
+	): Promise<ProjectWorkflowRunSummary[]>;
 	listExecutionSessions(input: {
 		executionId: string;
 		projectId?: string | null;

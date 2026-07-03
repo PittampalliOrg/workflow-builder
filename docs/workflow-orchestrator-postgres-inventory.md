@@ -106,6 +106,11 @@ The security audit API now loads its aggregated audit stream through a
 workflow-data read model.
 The dashboard API now loads its summary, active-session list, recent changes,
 and resource counts through a workflow-data dashboard read model.
+The project workflow-run list route (`src/routes/api/v1/runs/+server.ts`) now
+loads cross-workflow run summaries through `workflowData.listProjectWorkflowRuns`.
+The former direct DB helper `src/lib/server/workflows/runs.ts` was removed; its
+query now lives in `PostgresWorkflowExecutionRepository` behind the
+workflow-data application port.
 The dev-preview lifecycle now persists retained workspace rows, resolves
 canonical execution ids, marks cleaned previews, and writes source-bundle
 artifacts through workflow-data application ports; `dev-preview.ts` no longer
@@ -1126,7 +1131,7 @@ documented inside legacy preview gateway adapters.
 Sandbox list owner-session enrichment now resolves through workflow-data
 session-owner ports instead of importing DB/Drizzle from
 `src/lib/server/sandbox-sessions.ts`.
-The dashboard route is also clean.
+The dashboard and project workflow-run list routes are also clean.
 The sandbox-delete route's session read is also clean, while its lifecycle and
 Kubernetes/OpenShell deletion behavior intentionally remain in the route.
 The broader BFF/control-plane still has route-level or service-level direct DB

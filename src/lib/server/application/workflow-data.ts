@@ -121,6 +121,7 @@ import type {
 	ObservabilityTraceScopeReadModel,
 	ObservabilityServiceGraphWorkflowReadModel,
 	ProjectMembershipRole,
+	ProjectWorkflowRunSummary,
 	StartHostedMcpWorkflowToolInput,
 	StartHostedMcpWorkflowToolResult,
 	WorkflowArtifactInput,
@@ -132,6 +133,7 @@ import type {
 	CliWorkspaceCommandCandidate,
 	IngestSessionEventInput,
 	IngestSessionEventResult,
+	ListProjectWorkflowRunsInput,
 	ListSessionEventsInput,
 	ListWorkflowFilesFilter,
 	PersistWorkflowRunDiffInput,
@@ -4720,6 +4722,12 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		limit: number;
 	}) {
 		return this.deps.workflowExecutions.listRunSummariesByWorkflowId(input);
+	}
+
+	listProjectWorkflowRuns(
+		input: ListProjectWorkflowRunsInput,
+	): Promise<ProjectWorkflowRunSummary[]> {
+		return this.deps.workflowExecutions.listProjectRuns(input);
 	}
 
 	listExecutionSessions(input: {

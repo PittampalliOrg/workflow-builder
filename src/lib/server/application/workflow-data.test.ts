@@ -447,6 +447,7 @@ function fakeWorkflowExecutions(): WorkflowExecutionRepository {
 		})),
 		listByWorkflowId: vi.fn(async () => []),
 		listRunSummariesByWorkflowId: vi.fn(async () => []),
+		listProjectRuns: vi.fn(async () => []),
 		countForksByWorkflowIds: vi.fn(async () => []),
 		listRecentRunsByWorkflowIds: vi.fn(async () => []),
 		listRecentExecutionPickerRecords: vi.fn(async () => []),
@@ -8416,6 +8417,7 @@ describe("ApplicationWorkflowDataService", () => {
 			})),
 			listByWorkflowId: vi.fn(async () => []),
 			listRunSummariesByWorkflowId: vi.fn(async () => []),
+			listProjectRuns: vi.fn(async () => []),
 			countForksByWorkflowIds: vi.fn(async () => []),
 			listRecentRunsByWorkflowIds: vi.fn(async () => []),
 			listRecentExecutionPickerRecords: vi.fn(async () => []),
@@ -8527,6 +8529,14 @@ describe("ApplicationWorkflowDataService", () => {
 		await service.listWorkflowExecutionRunSummaries({
 			workflowId: "wf-1",
 			limit: 20,
+		});
+		await service.listProjectWorkflowRuns({
+			projectId: "project-1",
+			workflowId: "wf-1",
+			status: "running",
+			since: new Date("2026-01-01T00:00:00.000Z"),
+			q: "Example",
+			limit: 10,
 		});
 		await service.listExecutionSessions({
 			executionId: "exec-1",
@@ -8670,6 +8680,14 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(workflowExecutions.listRunSummariesByWorkflowId).toHaveBeenCalledWith({
 			workflowId: "wf-1",
 			limit: 20,
+		});
+		expect(workflowExecutions.listProjectRuns).toHaveBeenCalledWith({
+			projectId: "project-1",
+			workflowId: "wf-1",
+			status: "running",
+			since: new Date("2026-01-01T00:00:00.000Z"),
+			q: "Example",
+			limit: 10,
 		});
 		expect(workflowExecutions.listSessionsForExecutionLineage).toHaveBeenCalledWith({
 			executionId: "exec-1",

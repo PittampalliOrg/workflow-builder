@@ -1,11 +1,9 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import {
-	listRecentRuns,
-	type RunStatus,
-} from "$lib/server/workflows/runs";
+import { getApplicationAdapters } from "$lib/server/application";
+import type { WorkflowExecutionStatus } from "$lib/server/application/ports";
 
-const VALID_STATUSES: ReadonlyArray<RunStatus> = [
+const VALID_STATUSES: ReadonlyArray<WorkflowExecutionStatus> = [
 	"pending",
 	"running",
 	"success",
@@ -37,8 +35,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 	const statusParam = url.searchParams.get("status");
 	const status =
-		statusParam && VALID_STATUSES.includes(statusParam as RunStatus)
-			? (statusParam as RunStatus)
+		statusParam && VALID_STATUSES.includes(statusParam as WorkflowExecutionStatus)
+			? (statusParam as WorkflowExecutionStatus)
 			: undefined;
 
 	const sinceParam = url.searchParams.get("since");
@@ -51,7 +49,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const limitParam = url.searchParams.get("limit");
 	const limit = limitParam ? Number.parseInt(limitParam, 10) : undefined;
 
-	const runs = await listRecentRuns({
+	const runs = await getApplicationAdapters().workflowData.listProjectWorkflowRuns({
 		projectId: locals.session.projectId,
 		workflowId: url.searchParams.get("workflowId") ?? undefined,
 		status,
