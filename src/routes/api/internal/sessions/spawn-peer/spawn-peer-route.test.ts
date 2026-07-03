@@ -2,65 +2,37 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { PeerSessionSpawnResult } from "$lib/server/application/peer-session-spawn";
 
 const mocks = vi.hoisted(() => {
-	const peerSession = {
-		id: "ca-session-1",
-		agentId: "agent-peer",
-		agentVersion: 3,
-		environmentId: "env-1",
-		environmentVersion: 4,
-		vaultIds: ["vault-1"],
-		daprInstanceId: null as string | null,
-		natsSubject: null as string | null,
-	};
-	const dispatchContext = {
-		agentConfig: { systemPrompt: "Peer" },
-		environmentConfig: { image: "env-image" },
-		callableAgents: [
-			{
-				slug: "reviewer",
-				agentId: "agent-reviewer",
-				version: 2,
-				appId: "dapr-agent-py",
-				team: "project-1",
-				registryKey: "project-1/reviewer",
+	const peerSessionSpawn = {
+		spawnPeerSession: vi.fn(
+			async (): Promise<PeerSessionSpawnResult> => ({
+			status: "ok" as const,
+			body: {
+				sessionId: "ca-session-1",
+				agentId: "agent-peer",
+				agentVersion: 3,
+				daprInstanceId: "ca-session-1",
+				natsSubject: "session.events.ca-session-1",
+				reused: false,
 			},
-		],
-		registryTeam: "project-1",
-	};
-	const workflowData = {
-		ensurePeerSession: vi.fn(async (): Promise<unknown> => ({
-			ok: true,
-			session: peerSession,
-			reused: false,
-		})),
-		resolvePeerAgentDispatchContext: vi.fn(async () => dispatchContext),
+			}),
+		),
 	};
 	const validateInternalToken = vi.fn(() => true);
-	const spawnSessionWorkflow = vi.fn(async () => ({
-		instanceId: "ca-session-1",
-		natsSubject: "session.events.ca-session-1",
-	}));
 	return {
-		dispatchContext,
-		peerSession,
-		spawnSessionWorkflow,
+		peerSessionSpawn,
 		validateInternalToken,
-		workflowData,
 	};
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
+	getApplicationAdapters: () => ({ peerSessionSpawn: mocks.peerSessionSpawn }),
 }));
 
 vi.mock("$lib/server/internal-auth", () => ({
 	validateInternalToken: mocks.validateInternalToken,
-}));
-
-vi.mock("$lib/server/sessions/spawn", () => ({
-	spawnSessionWorkflow: mocks.spawnSessionWorkflow,
 }));
 
 import { POST } from "./+server";
@@ -99,28 +71,28 @@ describe("internal spawn-peer route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mocks.validateInternalToken.mockReturnValue(true);
-		mocks.workflowData.ensurePeerSession.mockResolvedValue({
-			ok: true,
-			session: mocks.peerSession,
-			reused: false,
-		});
-		mocks.workflowData.resolvePeerAgentDispatchContext.mockResolvedValue(
-			mocks.dispatchContext,
-		);
-		mocks.spawnSessionWorkflow.mockResolvedValue({
-			instanceId: "ca-session-1",
-			natsSubject: "session.events.ca-session-1",
+		mocks.peerSessionSpawn.spawnPeerSession.mockResolvedValue({
+			status: "ok",
+			body: {
+				sessionId: "ca-session-1",
+				agentId: "agent-peer",
+				agentVersion: 3,
+				daprInstanceId: "ca-session-1",
+				natsSubject: "session.events.ca-session-1",
+				reused: false,
+			},
 		});
 	});
 
-	it("keeps peer session persistence behind workflow-data services", () => {
+	it("keeps peer session spawn behavior behind the application service", () => {
 		const source = readFileSync(
 			join(dirname(fileURLToPath(import.meta.url)), "+server.ts"),
 			"utf8",
 		);
 
-		expect(source).toContain("workflowData.ensurePeerSession");
-		expect(source).toContain("workflowData.resolvePeerAgentDispatchContext");
+		expect(source).toContain("peerSessionSpawn.spawnPeerSession");
+		expect(source).not.toContain("workflowData");
+		expect(source).not.toContain("spawnSessionWorkflow");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");
@@ -135,102 +107,53 @@ describe("internal spawn-peer route", () => {
 		mocks.validateInternalToken.mockReturnValueOnce(false);
 
 		await expectHttpStatus(Promise.resolve(POST(event(body()) as never)), 401);
-		expect(mocks.workflowData.ensurePeerSession).not.toHaveBeenCalled();
+		expect(mocks.peerSessionSpawn.spawnPeerSession).not.toHaveBeenCalled();
 	});
 
-	it("validates required fields before ensuring the session", async () => {
-		await expectHttpStatus(Promise.resolve(POST(event({}) as never)), 400);
-		await expectHttpStatus(
-			Promise.resolve(POST(event(body({ sessionId: "x".repeat(65) })) as never)),
-			400,
+	it("delegates peer-spawn requests to the application service", async () => {
+		const payload = body({ title: "Peer review" });
+		const response = (await POST(event(payload) as never)) as Response;
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toEqual({
+			sessionId: "ca-session-1",
+			agentId: "agent-peer",
+			agentVersion: 3,
+			daprInstanceId: "ca-session-1",
+			natsSubject: "session.events.ca-session-1",
+			reused: false,
+		});
+		expect(mocks.peerSessionSpawn.spawnPeerSession).toHaveBeenCalledWith(
+			payload,
 		);
-		expect(mocks.workflowData.ensurePeerSession).not.toHaveBeenCalled();
 	});
 
-	it("creates and spawns a fresh peer session", async () => {
-		const response = (await POST(event(body({ title: "Peer review" })) as never)) as Response;
-
-		expect(response.status).toBe(200);
-		await expect(response.json()).resolves.toEqual({
-			sessionId: "ca-session-1",
-			agentId: "agent-peer",
-			agentVersion: 3,
-			daprInstanceId: "ca-session-1",
-			natsSubject: "session.events.ca-session-1",
-			reused: false,
-		});
-		expect(mocks.workflowData.ensurePeerSession).toHaveBeenCalledWith({
-			sessionId: "ca-session-1",
-			peerAgentId: "agent-peer",
-			prompt: "Review this change",
-			parentSessionId: "parent-session-1",
-			parentInstanceId: "parent-instance-1",
-			title: "Peer review",
-		});
-		expect(mocks.spawnSessionWorkflow).toHaveBeenCalledWith("ca-session-1");
-	});
-
-	it("returns reused sessions without spawning unless skipSpawn is requested", async () => {
-		mocks.workflowData.ensurePeerSession.mockResolvedValueOnce({
-			ok: true,
-			session: {
-				...mocks.peerSession,
-				daprInstanceId: "ca-session-1",
-				natsSubject: "session.events.ca-session-1",
-			},
-			reused: true,
-		});
-
-		const response = (await POST(event(body()) as never)) as Response;
-
-		expect(response.status).toBe(200);
-		await expect(response.json()).resolves.toEqual({
-			sessionId: "ca-session-1",
-			agentId: "agent-peer",
-			agentVersion: 3,
-			daprInstanceId: "ca-session-1",
-			natsSubject: "session.events.ca-session-1",
-			reused: true,
-		});
-		expect(mocks.spawnSessionWorkflow).not.toHaveBeenCalled();
-		expect(mocks.workflowData.resolvePeerAgentDispatchContext).not.toHaveBeenCalled();
-	});
-
-	it("returns dispatch context for skipSpawn callers", async () => {
-		const response = (await POST(event(body({ skipSpawn: true })) as never)) as Response;
-
-		expect(response.status).toBe(200);
-		await expect(response.json()).resolves.toEqual({
-			sessionId: "ca-session-1",
-			agentId: "agent-peer",
-			agentVersion: 3,
-			daprInstanceId: null,
-			natsSubject: null,
-			reused: false,
-			agentConfig: { systemPrompt: "Peer" },
-			environmentConfig: { image: "env-image" },
-			vaultIds: ["vault-1"],
-			callableAgents: mocks.dispatchContext.callableAgents,
-			registryTeam: "project-1",
-			skipSpawn: true,
-		});
-		expect(mocks.workflowData.resolvePeerAgentDispatchContext).toHaveBeenCalledWith({
-			agentId: "agent-peer",
-			agentVersion: 3,
-			environmentId: "env-1",
-			environmentVersion: 4,
-		});
-		expect(mocks.spawnSessionWorkflow).not.toHaveBeenCalled();
-	});
-
-	it("maps workflow-data errors to route errors", async () => {
-		mocks.workflowData.ensurePeerSession.mockResolvedValueOnce({
-			ok: false,
-			status: 404,
+	it("maps application errors and accepted spawn failures to HTTP responses", async () => {
+		mocks.peerSessionSpawn.spawnPeerSession.mockResolvedValueOnce({
+			status: "error",
+			httpStatus: 404,
 			message: "Peer agent missing",
 		});
-
 		await expectHttpStatus(Promise.resolve(POST(event(body()) as never)), 404);
-		expect(mocks.spawnSessionWorkflow).not.toHaveBeenCalled();
+
+		mocks.peerSessionSpawn.spawnPeerSession.mockResolvedValueOnce({
+			status: "ok",
+			httpStatus: 202,
+			body: {
+				sessionId: "ca-session-1",
+				agentId: "agent-peer",
+				agentVersion: 3,
+				daprInstanceId: null,
+				natsSubject: null,
+				reused: false,
+				error: "Dapr unavailable",
+			},
+		});
+		const response = (await POST(event(body()) as never)) as Response;
+		expect(response.status).toBe(202);
+		await expect(response.json()).resolves.toMatchObject({
+			sessionId: "ca-session-1",
+			error: "Dapr unavailable",
+		});
 	});
 });

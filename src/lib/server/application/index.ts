@@ -194,6 +194,7 @@ import { ApplicationSessionSandboxService } from "$lib/server/application/sessio
 import { ApplicationSessionMcpStatusService } from "$lib/server/application/session-mcp-status";
 import { ApplicationSessionRuntimeAccessService } from "$lib/server/application/session-runtime-access";
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
+import { ApplicationPeerSessionSpawnService } from "$lib/server/application/peer-session-spawn";
 import { ApplicationBulkLifecycleStopService } from "$lib/server/application/lifecycle-bulk-stop";
 import { ApplicationBenchmarkRunDetailPageService } from "$lib/server/application/benchmark-run-detail";
 import { ApplicationBenchmarkCompareService } from "$lib/server/application/benchmark-compare";
@@ -358,6 +359,7 @@ export function getApplicationAdapters(
 	let sessionMcpStatus: ApplicationSessionMcpStatusService | undefined;
 	let sessionRuntimeAccess: ApplicationSessionRuntimeAccessService | undefined;
 	let sessionBrowser: ApplicationSessionBrowserService | undefined;
+	let peerSessionSpawn: ApplicationPeerSessionSpawnService | undefined;
 	let bulkLifecycleStop: ApplicationBulkLifecycleStopService | undefined;
 	let runCancellation: ApplicationRunCancellationService | undefined;
 	let benchmarkRunLaunch: ApplicationBenchmarkRunLaunchService | undefined;
@@ -698,6 +700,11 @@ export function getApplicationAdapters(
 		});
 		return sessionRuntimeAccess;
 	};
+	const getPeerSessionSpawn = () =>
+		(peerSessionSpawn ??= new ApplicationPeerSessionSpawnService({
+			workflowData: getWorkflowData(),
+			workflowSpawner: getWorkflowSpawner(),
+		}));
 	const getCodeCheckpoints = () =>
 		(codeCheckpoints ??= new PostgresWorkflowCodeCheckpointStore(getDatabase()));
 	const getEvaluationArtifacts = () =>
@@ -1026,6 +1033,9 @@ export function getApplicationAdapters(
 		},
 		get sessionRuntimeAccess() {
 			return getSessionRuntimeAccess();
+		},
+		get peerSessionSpawn() {
+			return getPeerSessionSpawn();
 		},
 		get agentRuntimeControl() {
 			return getAgentRuntimeControl();

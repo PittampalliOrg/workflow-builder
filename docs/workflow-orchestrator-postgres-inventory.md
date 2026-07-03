@@ -737,6 +737,11 @@ services:
   trigger admission gating, idempotent workflow start, and poison-message ACK
   policy to `ApplicationTriggeredWorkflowStartService`; the route owns only JSON
   parsing and Dapr pub/sub status response mapping.
+- `src/routes/api/internal/sessions/spawn-peer/+server.ts` now delegates peer
+  session request validation, workflow-data ensure/reuse, skip-spawn dispatch
+  context resolution, Dapr `session_workflow` spawning, and accepted spawn-failure
+  response shaping to `ApplicationPeerSessionSpawnService`; the route owns only
+  internal-token auth, JSON parsing, and HTTP response mapping.
 - `src/routes/api/workflow/active-executions/+server.ts`,
   `src/routes/api/internal/agent/workflows/executions/+server.ts`, and
   `src/routes/api/internal/agent/workflows/executions/[executionId]/status/+server.ts`
