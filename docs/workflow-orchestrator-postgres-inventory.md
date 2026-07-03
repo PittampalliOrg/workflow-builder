@@ -858,7 +858,8 @@ The internal piece-execution artifact readback and CLI workspace command routes
 are also clean. The prompt preset, agent skill, and vault resource-usage
 reverse-lookup routes are also clean. The AI assistant message-history route is
 also clean, and the AI assistant build-workflow stream no longer imports direct
-DB modules. The security audit route is also clean. The scanned session
+DB modules. The security audit route and admin GitOps promotions remote are
+also clean. The scanned session
 provisioning, context-usage, control settings/MCP status, session
 detail/title/archive/delete, fork, goal,
 goal-flow, event list/append/detail, runtime-config, config patch commands,
