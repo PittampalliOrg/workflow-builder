@@ -1,6 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { requireInternal } from "$lib/server/internal-auth";
+import { getApplicationAdapters } from "$lib/server/application";
 import { BenchmarkAgentValidationError } from "$lib/server/benchmarks/agents";
 import {
 	createBenchmarkRun,
@@ -9,7 +10,6 @@ import {
 	startSwebenchCoordinator,
 } from "$lib/server/benchmarks/service";
 import { normalizeSwebenchSuiteSlug } from "$lib/server/benchmarks/swebench";
-import { selectExactReadySwebenchInstanceIds } from "$lib/server/benchmarks/environment-validation";
 import {
 	benchmarkLaunchControlPlaneError,
 	loadBenchmarkLaunchControlPlaneStability,
@@ -27,12 +27,15 @@ export const POST: RequestHandler = async ({ request }) => {
 		readOptionalString(body.suiteSlug) ?? readOptionalString(body.suite) ?? "SWE-bench_Verified",
 	);
 	const requestedLimit = readOptionalInt(body.limit);
-	const selection = await selectExactReadySwebenchInstanceIds({
-		suiteSlug,
-		instanceIds: body.instanceIds ?? body.selectedInstanceIds,
-		limit: requestedLimit,
-		syncBuildStatuses: body.previewOnly !== true && body.dryRun !== true,
-	});
+	const selection =
+		await getApplicationAdapters().benchmarkEnvironmentValidation.selectExactReady(
+			{
+				suiteSlug,
+				instanceIds: body.instanceIds ?? body.selectedInstanceIds,
+				limit: requestedLimit,
+				syncBuildStatuses: body.previewOnly !== true && body.dryRun !== true,
+			},
+		);
 	if (selection.missingInstanceIds.length > 0) {
 		return json(
 			{

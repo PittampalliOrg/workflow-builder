@@ -4,12 +4,6 @@ const environmentMocks = vi.hoisted(() => ({
 	ensureSwebenchEnvironment: vi.fn(),
 }));
 
-vi.mock("$lib/server/environments/environment-image-builds", () => ({
-	buildSwebenchEnvironmentSpec: vi.fn(),
-	ensureSwebenchEnvironment: environmentMocks.ensureSwebenchEnvironment,
-	syncEnvironmentBuild: vi.fn(),
-}));
-
 import {
 	buildExactReadySelection,
 	submitSwebenchEnvironmentValidationBuilds,
@@ -132,6 +126,11 @@ describe("SWE-bench environment validation selection", () => {
 			limit: 4,
 			targetValidatedCount: 4,
 			allowBuild: true,
+		}, {
+			provisioner: {
+				ensureEnvironment: environmentMocks.ensureSwebenchEnvironment,
+				syncSelectableBuilds: vi.fn(),
+			},
 		});
 
 		expect(environmentMocks.ensureSwebenchEnvironment).toHaveBeenCalledTimes(2);

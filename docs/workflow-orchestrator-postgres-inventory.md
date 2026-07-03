@@ -196,6 +196,13 @@ slug lookup through Drizzle. `createBenchmarkRun` accepts `agentSlug` as an
 alternate selector and resolves it through the existing benchmark-agent
 validation path, preserving archived/published/runtime/model checks inside the
 benchmark command service.
+SWE-bench exact-ready environment validation now runs through
+`ApplicationBenchmarkEnvironmentValidationService`. Suite/instance/build-status
+queries are confined to `PostgresSwebenchEnvironmentValidationRepository`, and
+build submission/sync side effects are behind
+`LegacySwebenchEnvironmentBuildProvisioner`. The public/internal validation
+routes and internal benchmark run launch route no longer import the
+DB-backed environment validation helper directly.
 
 ## Strict HTTP Runtime Paths
 

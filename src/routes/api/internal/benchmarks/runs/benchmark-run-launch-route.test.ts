@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
 	getBenchmarkRun: vi.fn(),
 	markBenchmarkRunStatus: vi.fn(),
 	startSwebenchCoordinator: vi.fn(),
-	selectExactReadySwebenchInstanceIds: vi.fn(),
+	selectExactReady: vi.fn(),
 	loadBenchmarkLaunchControlPlaneStability: vi.fn(),
 	benchmarkLaunchControlPlaneError: vi.fn(),
 }));
@@ -25,8 +25,12 @@ vi.mock("$lib/server/benchmarks/service", () => ({
 	startSwebenchCoordinator: mocks.startSwebenchCoordinator,
 }));
 
-vi.mock("$lib/server/benchmarks/environment-validation", () => ({
-	selectExactReadySwebenchInstanceIds: mocks.selectExactReadySwebenchInstanceIds,
+vi.mock("$lib/server/application", () => ({
+	getApplicationAdapters: () => ({
+		benchmarkEnvironmentValidation: {
+			selectExactReady: mocks.selectExactReady,
+		},
+	}),
 }));
 
 vi.mock("$lib/server/benchmarks/launch-stability", () => ({
@@ -40,7 +44,7 @@ import { POST } from "./+server";
 describe("internal benchmark run launch route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.selectExactReadySwebenchInstanceIds.mockResolvedValue({
+		mocks.selectExactReady.mockResolvedValue({
 			requestedLimit: 1,
 			selectedCount: 1,
 			selectedInstanceIds: ["astropy__astropy-7166"],
@@ -87,6 +91,12 @@ describe("internal benchmark run launch route", () => {
 
 		expect(response.status).toBe(201);
 		expect(mocks.requireInternal).toHaveBeenCalled();
+		expect(mocks.selectExactReady).toHaveBeenCalledWith({
+			suiteSlug: "SWE-bench_Verified",
+			instanceIds: undefined,
+			limit: 1,
+			syncBuildStatuses: true,
+		});
 		expect(mocks.createBenchmarkRun).toHaveBeenCalledWith(
 			expect.objectContaining({
 				projectId: "project-1",

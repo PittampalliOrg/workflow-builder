@@ -60,6 +60,10 @@ import {
 	LegacyBenchmarkRunLifecycleAdapter,
 } from "$lib/server/application/adapters/benchmark-evaluation-results";
 import {
+	LegacySwebenchEnvironmentBuildProvisioner,
+	PostgresSwebenchEnvironmentValidationRepository,
+} from "$lib/server/application/adapters/benchmark-environment-validation";
+import {
 	LegacyAdminPieceRuntimeImageBuildPort,
 	LegacyAdminPieceRuntimeImageRegistryPort,
 } from "$lib/server/application/adapters/admin-piece-images";
@@ -282,6 +286,7 @@ import { ApplicationEnvironmentService } from "$lib/server/application/environme
 import { ApplicationVaultService } from "$lib/server/application/vault-management";
 import { ApplicationVaultCredentialService } from "$lib/server/application/vault-credentials";
 import { ApplicationBenchmarkCapacityDiagnosticsService } from "$lib/server/application/benchmark-capacity-diagnostics";
+import { ApplicationBenchmarkEnvironmentValidationService } from "$lib/server/application/benchmark-environment-validation";
 import { ApplicationBenchmarkRunInstanceDetailService } from "$lib/server/application/benchmark-run-instance-detail";
 import { ApplicationRunCancellationService } from "$lib/server/application/run-cancellation";
 import { ApplicationEvaluationRunDetailService } from "$lib/server/application/evaluation-run-detail";
@@ -453,6 +458,9 @@ export function getApplicationAdapters(
 	let vaultCredentialsService: ApplicationVaultCredentialService | undefined;
 	let benchmarkCapacityDiagnostics:
 		| ApplicationBenchmarkCapacityDiagnosticsService
+		| undefined;
+	let benchmarkEnvironmentValidation:
+		| ApplicationBenchmarkEnvironmentValidationService
 		| undefined;
 	let evaluationRunDetail: ApplicationEvaluationRunDetailService | undefined;
 	let benchmarkRunDetail: ApplicationBenchmarkRunDetailPageService | undefined;
@@ -774,6 +782,12 @@ export function getApplicationAdapters(
 			new ApplicationBenchmarkCapacityDiagnosticsService(
 				new LegacyBenchmarkCapacityDiagnosticsAdapter(),
 			));
+	const getBenchmarkEnvironmentValidation = () =>
+		(benchmarkEnvironmentValidation ??=
+			new ApplicationBenchmarkEnvironmentValidationService({
+				repository: new PostgresSwebenchEnvironmentValidationRepository(),
+				provisioner: new LegacySwebenchEnvironmentBuildProvisioner(),
+			}));
 	const getEvaluationRunLaunch = () =>
 		(evaluationRunLaunch ??= new ApplicationEvaluationRunLaunchService(
 			new LegacyEvaluationRunLaunchAdapter(),
@@ -1277,6 +1291,9 @@ export function getApplicationAdapters(
 		},
 		get benchmarkCapacityDiagnostics() {
 			return getBenchmarkCapacityDiagnostics();
+		},
+		get benchmarkEnvironmentValidation() {
+			return getBenchmarkEnvironmentValidation();
 		},
 		get evaluationRunLaunch() {
 			return getEvaluationRunLaunch();

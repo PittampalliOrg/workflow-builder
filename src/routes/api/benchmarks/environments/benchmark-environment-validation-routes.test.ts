@@ -5,18 +5,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	requireInternal: vi.fn(),
-	planSwebenchEnvironmentValidation: vi.fn(),
-	submitSwebenchEnvironmentValidationBuilds: vi.fn(),
+	plan: vi.fn(),
+	submit: vi.fn(),
 }));
 
 vi.mock("$lib/server/internal-auth", () => ({
 	requireInternal: mocks.requireInternal,
 }));
 
-vi.mock("$lib/server/benchmarks/environment-validation", () => ({
-	planSwebenchEnvironmentValidation: mocks.planSwebenchEnvironmentValidation,
-	submitSwebenchEnvironmentValidationBuilds:
-		mocks.submitSwebenchEnvironmentValidationBuilds,
+vi.mock("$lib/server/application", () => ({
+	getApplicationAdapters: () => ({
+		benchmarkEnvironmentValidation: {
+			plan: mocks.plan,
+			submit: mocks.submit,
+		},
+	}),
 }));
 
 import { POST as publicPost } from "./validate/+server";
@@ -63,8 +66,8 @@ const submission = {
 describe("benchmark environment validation routes", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.planSwebenchEnvironmentValidation.mockResolvedValue(plan);
-		mocks.submitSwebenchEnvironmentValidationBuilds.mockResolvedValue(submission);
+		mocks.plan.mockResolvedValue(plan);
+		mocks.submit.mockResolvedValue(submission);
 	});
 
 	it("delegates public validation to the validation service", async () => {
@@ -86,12 +89,12 @@ describe("benchmark environment validation routes", () => {
 		const body = await response.json();
 
 		expect(response.status).toBe(200);
-		expect(mocks.planSwebenchEnvironmentValidation).toHaveBeenCalledWith({
+		expect(mocks.plan).toHaveBeenCalledWith({
 			suiteSlug: "SWE-bench_Verified",
 			instanceIds: ["astropy__astropy-7166"],
 			limit: null,
 		});
-		expect(mocks.submitSwebenchEnvironmentValidationBuilds).toHaveBeenCalledWith({
+		expect(mocks.submit).toHaveBeenCalledWith({
 			plan,
 			limit: 5,
 			targetValidatedCount: null,
@@ -121,13 +124,13 @@ describe("benchmark environment validation routes", () => {
 
 		expect(response.status).toBe(200);
 		expect(mocks.requireInternal).toHaveBeenCalledTimes(1);
-		expect(mocks.planSwebenchEnvironmentValidation).toHaveBeenCalledWith({
+		expect(mocks.plan).toHaveBeenCalledWith({
 			suiteSlug: "SWE-bench_Verified",
 			instanceIds: [],
 			limit: 500,
 			syncBuildStatuses: true,
 		});
-		expect(mocks.submitSwebenchEnvironmentValidationBuilds).toHaveBeenCalledWith({
+		expect(mocks.submit).toHaveBeenCalledWith({
 			plan,
 			limit: 2,
 			targetValidatedCount: 3,
@@ -152,7 +155,8 @@ describe("benchmark environment validation routes", () => {
 				"utf8",
 			);
 
-			expect(source).toContain("planSwebenchEnvironmentValidation");
+			expect(source).toContain("getApplicationAdapters");
+			expect(source).toContain("benchmarkEnvironmentValidation");
 			expect(source).not.toContain("$lib/server/db");
 			expect(source).not.toContain("$lib/server/db/schema");
 			expect(source).not.toContain("drizzle-orm");

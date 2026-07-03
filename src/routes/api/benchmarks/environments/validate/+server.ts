@@ -1,9 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import {
-	planSwebenchEnvironmentValidation,
-	submitSwebenchEnvironmentValidationBuilds,
-} from "$lib/server/benchmarks/environment-validation";
+import { getApplicationAdapters } from "$lib/server/application";
+import type { SwebenchEnvironmentPlan } from "$lib/server/application/benchmark-environment-validation";
 import {
 	normalizeInstanceIds,
 	normalizeSwebenchSuiteSlug,
@@ -15,6 +13,7 @@ const MAX_VALIDATION_LIMIT = 100;
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
+	const validation = getApplicationAdapters().benchmarkEnvironmentValidation;
 	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
 	const suiteSlug = requireSuiteSlug(body.suiteSlug ?? body.suite);
 	const requestedInstanceIds = normalizeInstanceIds(
@@ -26,7 +25,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			? null
 			: clampInt(body.targetValidatedCount, 1, 500, limit);
 
-	const plan = await planSwebenchEnvironmentValidation({
+	const plan = await validation.plan({
 		suiteSlug,
 		instanceIds: requestedInstanceIds,
 		limit: requestedInstanceIds.length > 0 ? null : 500,
@@ -38,7 +37,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		);
 	}
 
-	const submission = await submitSwebenchEnvironmentValidationBuilds({
+	const submission = await validation.submit({
 		plan,
 		limit,
 		targetValidatedCount,
@@ -83,7 +82,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 };
 
 function idsForStatus(
-	plan: Awaited<ReturnType<typeof planSwebenchEnvironmentValidation>>,
+	plan: SwebenchEnvironmentPlan,
 	status: "validated" | "building" | "failed" | "not_built",
 ): string[] {
 	return plan.planned
