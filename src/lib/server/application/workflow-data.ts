@@ -3911,6 +3911,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		});
 	}
 
+	getBenchmarkRunProjectId(runId: string) {
+		return this.requireBenchmarkRuns().getProjectId(runId);
+	}
+
 	async getDevPreviewHubReadModel(input: { projectId?: string | null }) {
 		const devEnvironments = this.requireDevEnvironments();
 		const projectId = input.projectId ?? null;

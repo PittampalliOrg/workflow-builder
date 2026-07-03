@@ -1088,6 +1088,7 @@ function fakeDevEnvironments(): DevEnvironmentReadRepository {
 
 function fakeBenchmarkRuns(): BenchmarkRunRepository {
 	return {
+		getProjectId: vi.fn(async () => "project-1"),
 		getSessionProvisioningGate: vi.fn(async () => ({
 			runStatus: "inferencing",
 			summary: { execution: { class: "gpu-large" } },
@@ -1984,6 +1985,7 @@ describe("ApplicationWorkflowDataService", () => {
 
 	it("preserves benchmark provisioning gate failure semantics", async () => {
 		const missingRuns = {
+			getProjectId: vi.fn(async () => null),
 			getSessionProvisioningGate: vi.fn(async () => null),
 		} satisfies BenchmarkRunRepository;
 		await expect(
@@ -2015,6 +2017,7 @@ describe("ApplicationWorkflowDataService", () => {
 			],
 		] as const) {
 			const benchmarkRuns = {
+				getProjectId: vi.fn(async () => "project-1"),
 				getSessionProvisioningGate: vi.fn(async () => ({
 					runStatus: "inferencing",
 					summary: {},
@@ -2040,6 +2043,7 @@ describe("ApplicationWorkflowDataService", () => {
 
 	it("returns no benchmark execution class for malformed summaries", async () => {
 		const benchmarkRuns = {
+			getProjectId: vi.fn(async () => "project-1"),
 			getSessionProvisioningGate: vi.fn(async () => ({
 				runStatus: "queued",
 				summary: { execution: { class: " " } },
@@ -6802,6 +6806,17 @@ describe("ApplicationWorkflowDataService", () => {
 			instanceId: "sympy__sympy-20590",
 			now,
 		});
+	});
+
+	it("loads benchmark run project ids through workflow-data ports", async () => {
+		const benchmarkRuns: BenchmarkRunRepository = {
+			getProjectId: vi.fn(async () => "project-1"),
+			getSessionProvisioningGate: vi.fn(async () => null),
+		};
+		const { service } = makeService({ benchmarkRuns });
+
+		await expect(service.getBenchmarkRunProjectId("run-1")).resolves.toBe("project-1");
+		expect(benchmarkRuns.getProjectId).toHaveBeenCalledWith("run-1");
 	});
 
 	it("loads piece catalog detail and connection usage through application ports", async () => {

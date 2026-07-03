@@ -2457,6 +2457,15 @@ export class PostgresCodeFunctionCatalogRepository implements CodeFunctionCatalo
 export class PostgresBenchmarkRunRepository implements BenchmarkRunRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
+	async getProjectId(runId: string): Promise<string | null> {
+		const [run] = await this.database
+			.select({ projectId: benchmarkRuns.projectId })
+			.from(benchmarkRuns)
+			.where(eq(benchmarkRuns.id, runId))
+			.limit(1);
+		return run?.projectId ?? null;
+	}
+
 	async getSessionProvisioningGate(input: {
 		runId: string;
 		instanceId?: string | null;

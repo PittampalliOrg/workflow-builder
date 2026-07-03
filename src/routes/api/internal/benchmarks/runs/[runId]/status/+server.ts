@@ -6,20 +6,24 @@ import {
 	markBenchmarkRunStatus,
 	recomputeRunSummary,
 } from "$lib/server/benchmarks/service";
-import { db } from "$lib/server/db";
-import { benchmarkRuns } from "$lib/server/db/schema";
-import { eq } from "drizzle-orm";
+import { getApplicationAdapters } from "$lib/server/application";
 
 export const GET: RequestHandler = async ({ request, params }) => {
 	requireInternal(request);
-	if (!db) return error(503, "Database not configured");
-	const [run] = await db
-		.select({ projectId: benchmarkRuns.projectId })
-		.from(benchmarkRuns)
-		.where(eq(benchmarkRuns.id, params.runId))
-		.limit(1);
-	if (!run) return error(404, "Benchmark run not found");
-	const fullRun = await getBenchmarkRun(run.projectId, params.runId);
+	let projectId;
+	try {
+		projectId = await getApplicationAdapters().workflowData.getBenchmarkRunProjectId(
+			params.runId,
+		);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : "";
+		if (/Database not configured/.test(message)) {
+			return error(503, "Database not configured");
+		}
+		throw err;
+	}
+	if (!projectId) return error(404, "Benchmark run not found");
+	const fullRun = await getBenchmarkRun(projectId, params.runId);
 	return json({ run: fullRun });
 };
 

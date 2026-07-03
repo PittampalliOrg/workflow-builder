@@ -1961,6 +1961,7 @@ export interface BenchmarkRunRepository {
 		runId: string;
 		instanceId?: string | null;
 	}): Promise<BenchmarkSessionProvisioningGateRecord | null>;
+	getProjectId(runId: string): Promise<string | null>;
 }
 
 export interface WorkflowDefinitionRepository {
@@ -3858,6 +3859,7 @@ export interface WorkflowDataService {
 		instanceId: string;
 		now?: Date;
 	}): Promise<BenchmarkRunInstanceProgressReadModel>;
+	getBenchmarkRunProjectId(runId: string): Promise<string | null>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;
 	}): Promise<DevPreviewHubReadModel>;
