@@ -1,7 +1,10 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { validateInternalToken } from "$lib/server/internal-auth";
-import { refreshExpiringCredentials } from "$lib/server/vaults/refresher";
+import { getApplicationAdapters } from "$lib/server/application";
+import {
+	ApplicationVaultCredentialError,
+} from "$lib/server/application/vault-credentials";
 
 /**
  * Internal endpoint invoked by the OAuth auto-refresh scheduler (Dapr
@@ -16,8 +19,20 @@ export const POST: RequestHandler = async ({ request, url }) => {
 	if (!validateInternalToken(request)) return error(401, "Unauthorized");
 	const leadTimeParam = url.searchParams.get("leadTimeSeconds");
 	const leadTime = leadTimeParam ? Number.parseInt(leadTimeParam, 10) : undefined;
-	const report = await refreshExpiringCredentials({
-		leadTimeSeconds: Number.isFinite(leadTime) ? leadTime : undefined,
-	});
-	return json({ report });
+	try {
+		return json(
+			await getApplicationAdapters().vaultCredentials.refreshExpiring({
+				leadTimeSeconds: Number.isFinite(leadTime) ? leadTime : undefined,
+			}),
+		);
+	} catch (err) {
+		handleVaultCredentialError(err);
+	}
 };
+
+function handleVaultCredentialError(err: unknown): never {
+	if (err instanceof ApplicationVaultCredentialError) {
+		throw error(err.status, err.message);
+	}
+	throw err;
+}

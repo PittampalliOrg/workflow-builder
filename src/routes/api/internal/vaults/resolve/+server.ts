@@ -1,7 +1,10 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { validateInternalToken } from "$lib/server/internal-auth";
-import { findCredentialForMcpServer } from "$lib/server/vaults/credentials";
+import { getApplicationAdapters } from "$lib/server/application";
+import {
+	ApplicationVaultCredentialError,
+} from "$lib/server/application/vault-credentials";
 
 /**
  * Internal endpoint used by function-router to resolve an MCP credential at
@@ -18,20 +21,20 @@ import { findCredentialForMcpServer } from "$lib/server/vaults/credentials";
  */
 export const POST: RequestHandler = async ({ request }) => {
 	if (!validateInternalToken(request)) return error(401, "Unauthorized");
-	const body = (await request.json().catch(() => ({}))) as Record<
-		string,
-		unknown
-	>;
-	const vaultIds = Array.isArray(body.vaultIds)
-		? (body.vaultIds as unknown[]).filter(
-				(v): v is string => typeof v === "string",
-			)
-		: [];
-	const mcpServerUrl =
-		typeof body.mcpServerUrl === "string" ? body.mcpServerUrl : "";
-	if (!mcpServerUrl) return error(400, "mcpServerUrl is required");
-	if (vaultIds.length === 0) return json({ credential: null });
-
-	const credential = await findCredentialForMcpServer(vaultIds, mcpServerUrl);
-	return json({ credential });
+	try {
+		return json(
+			await getApplicationAdapters().vaultCredentials.resolveForMcpServer({
+				body: await request.json().catch(() => ({})),
+			}),
+		);
+	} catch (err) {
+		handleVaultCredentialError(err);
+	}
 };
+
+function handleVaultCredentialError(err: unknown): never {
+	if (err instanceof ApplicationVaultCredentialError) {
+		throw error(err.status, err.message);
+	}
+	throw err;
+}

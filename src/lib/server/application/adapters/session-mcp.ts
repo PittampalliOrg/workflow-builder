@@ -3,7 +3,7 @@ import type {
 	SessionMcpCredentialStatusReader,
 } from "$lib/server/application/ports";
 import { resolveAgentRef } from "$lib/server/agents/registry";
-import { findCredentialForMcpServer } from "$lib/server/vaults/credentials";
+import { PostgresVaultCredentialRepository } from "$lib/server/application/adapters/vault-credentials";
 
 export class RegistrySessionMcpAgentConfigReader
 	implements SessionMcpAgentConfigReader
@@ -23,12 +23,19 @@ export class RegistrySessionMcpAgentConfigReader
 export class VaultSessionMcpCredentialStatusReader
 	implements SessionMcpCredentialStatusReader
 {
+	constructor(
+		private readonly credentials = new PostgresVaultCredentialRepository(),
+	) {}
+
 	async hasCredentialForMcpServer(input: {
 		vaultIds: string[];
 		mcpServerUrl: string;
 	}) {
 		return Boolean(
-			await findCredentialForMcpServer(input.vaultIds, input.mcpServerUrl),
+			await this.credentials.findCredentialForMcpServer(
+				input.vaultIds,
+				input.mcpServerUrl,
+			),
 		);
 	}
 }

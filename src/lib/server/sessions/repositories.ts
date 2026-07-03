@@ -4,7 +4,7 @@
  *
  * Design (see plan "Attach GitHub repositories to agent runs"):
  *   - The token is brokered ENTIRELY in the BFF. We decrypt the referenced
- *     vault credential in-process (`resolveCredential`) — it never enters the
+ *     vault credential in-process through the vault credential adapter — it never enters the
  *     pod spec, a K8s Secret, or a new internal endpoint.
  *   - Delivery into the sandbox is the same workspace channel
  *     `provisionSessionSandbox` already uses
@@ -20,9 +20,11 @@ import { and, eq, isNull } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import { sessionResources } from "$lib/server/db/schema";
 import { daprFetch, getWorkspaceRuntimeUrl } from "$lib/server/dapr-client";
-import { resolveCredential } from "$lib/server/vaults/credentials";
+import { PostgresVaultCredentialRepository } from "$lib/server/application/adapters/vault-credentials";
 import { getScmConnection } from "$lib/server/scm-connections";
 import { appendEvent } from "$lib/server/sessions/events";
+
+const vaultCredentialRepository = new PostgresVaultCredentialRepository();
 
 /** Where to run the clone — the already-provisioned session sandbox. */
 export type RepositorySandboxTarget = {
@@ -209,7 +211,9 @@ async function prepareRepoMount(
 		}
 	} else if (row.authTokenCredentialId) {
 		try {
-			const cred = await resolveCredential(row.authTokenCredentialId);
+			const cred = await vaultCredentialRepository.resolveCredential(
+				row.authTokenCredentialId,
+			);
 			token = cred?.accessToken ?? cred?.secret ?? null;
 			if (!token) {
 				await emitMountFailed(

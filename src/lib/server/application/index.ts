@@ -106,6 +106,7 @@ import {
 } from "$lib/server/application/adapters/evaluations";
 import { LegacyEnvironmentRepository } from "$lib/server/application/adapters/environments";
 import { LegacyVaultRepository } from "$lib/server/application/adapters/vaults";
+import { PostgresVaultCredentialRepository } from "$lib/server/application/adapters/vault-credentials";
 import { LegacyBenchmarkCapacityDiagnosticsAdapter } from "$lib/server/application/adapters/benchmark-capacity-diagnostics";
 import { EnvBenchmarkRunInstanceMlflowLinks } from "$lib/server/application/adapters/benchmark-run-instance-detail";
 import { LegacyEvaluationRunDetailReadAdapter } from "$lib/server/application/adapters/evaluation-run-detail";
@@ -258,6 +259,7 @@ import { ApplicationEvaluationDatasetService } from "$lib/server/application/eva
 import { ApplicationEvaluationTemplateService } from "$lib/server/application/evaluation-templates";
 import { ApplicationEnvironmentService } from "$lib/server/application/environment-management";
 import { ApplicationVaultService } from "$lib/server/application/vault-management";
+import { ApplicationVaultCredentialService } from "$lib/server/application/vault-credentials";
 import { ApplicationBenchmarkCapacityDiagnosticsService } from "$lib/server/application/benchmark-capacity-diagnostics";
 import { ApplicationBenchmarkRunInstanceDetailService } from "$lib/server/application/benchmark-run-instance-detail";
 import { ApplicationRunCancellationService } from "$lib/server/application/run-cancellation";
@@ -412,6 +414,12 @@ export function getApplicationAdapters(
 	let evaluationTemplates: ApplicationEvaluationTemplateService | undefined;
 	let environments: ApplicationEnvironmentService | undefined;
 	let vaultsService: ApplicationVaultService | undefined;
+	let vaultCredentialRepository:
+		| PostgresVaultCredentialRepository
+		| undefined;
+	let vaultCredentialsService:
+		| ApplicationVaultCredentialService
+		| undefined;
 	let benchmarkCapacityDiagnostics:
 		| ApplicationBenchmarkCapacityDiagnosticsService
 		| undefined;
@@ -694,6 +702,13 @@ export function getApplicationAdapters(
 		));
 	const getVaultsService = () =>
 		(vaultsService ??= new ApplicationVaultService(
+			new LegacyVaultRepository(),
+		));
+	const getVaultCredentialRepository = () =>
+		(vaultCredentialRepository ??= new PostgresVaultCredentialRepository());
+	const getVaultCredentialsService = () =>
+		(vaultCredentialsService ??= new ApplicationVaultCredentialService(
+			getVaultCredentialRepository(),
 			new LegacyVaultRepository(),
 		));
 	const getEvaluationRunDetail = () =>
@@ -1109,6 +1124,9 @@ export function getApplicationAdapters(
 		},
 		get vaults() {
 			return getVaultsService();
+		},
+		get vaultCredentials() {
+			return getVaultCredentialsService();
 		},
 		get evaluationRunDetail() {
 			return getEvaluationRunDetail();
