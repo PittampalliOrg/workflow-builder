@@ -462,6 +462,11 @@ services:
   scheduler attachment, and start-failure marking to
   `ApplicationWorkflowExecutionControlService.executeWorkflow`, which reaches
   workflow-data and the canonical starter only through application ports.
+- The `resolveSpecAgentRefs` path used by `startWorkflowRun` no longer imports
+  `$lib/server/db`, Drizzle, or `agentSkillRegistry` directly. Attached
+  `agentConfig.skills[]` entries are hydrated through
+  `AgentSkillHydrationRepository`, with the Postgres query confined to
+  `PostgresAgentSkillHydrationRepository`.
 - `src/routes/api/workflows/[workflowId]/webhook/+server.ts` is now a thin CORS
   presentation adapter: it parses the body/authorization header and delegates
   workflow lookup, API-key ownership validation, webhook-trigger validation, SW

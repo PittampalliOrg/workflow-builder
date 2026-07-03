@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 const resolveAgentRefMock = vi.fn();
 vi.mock("./registry", () => ({
@@ -178,6 +179,82 @@ describe("resolveSpecAgentRefs", () => {
 		expect(withBlock.agentVersion).toBe(3);
 		expect(withBlock.agentAppId).toBe("agent-runtime-code-agent");
 		expect(withBlock.agentSlug).toBe("code-agent");
+	});
+
+	it("hydrates skill registry entries through the injected repository", async () => {
+		const config = minimalConfig({
+			skills: [
+				{
+					name: "spreadsheet-helper",
+					registryId: "skill_1",
+				},
+			],
+		});
+		resolveAgentRefMock.mockResolvedValueOnce(resolvedAgent({ config }));
+		const skillHydration = {
+			listAgentSkillHydrationEntries: vi.fn(async () => [
+				{
+					id: "skill_1",
+					prompt: "Use spreadsheet formulas carefully.",
+					allowedTools: ["read_file", "write_file"],
+					description: "Spreadsheet helper",
+					whenToUse: "When editing spreadsheets",
+					arguments: ["path"],
+					argumentHint: "Workbook path",
+					model: "openai/gpt-5.5",
+					packageManifest: { files: [{ path: "SKILL.md" }] },
+					skillName: "spreadsheet-helper",
+					slug: "spreadsheet-helper",
+					version: "2",
+				},
+			]),
+		};
+		const spec = specWithTasks([
+			{
+				Run: {
+					call: "durable/run",
+					with: {
+						body: {
+							prompt: "hello",
+							agentRef: { id: "a1" },
+						},
+					},
+				},
+			},
+		]);
+
+		const resolved = await resolveSpecAgentRefs(spec, { skillHydration });
+		const task = (resolved.document as Record<string, unknown>).do as Array<
+			Record<string, unknown>
+		>;
+		const withBlock = (task[0].Run as Record<string, unknown>).with as Record<
+			string,
+			unknown
+		>;
+		const body = withBlock.body as Record<string, unknown>;
+		const skill = ((body.agentConfig as AgentConfig).skills[0] ??
+			{}) as Record<string, unknown>;
+
+		expect(skillHydration.listAgentSkillHydrationEntries).toHaveBeenCalledWith([
+			"skill_1",
+		]);
+		expect(skill.prompt).toBe("Use spreadsheet formulas carefully.");
+		expect(skill.allowedTools).toEqual(["read_file", "write_file"]);
+		expect(skill.description).toBe("Spreadsheet helper");
+		expect(skill.whenToUse).toBe("When editing spreadsheets");
+		expect(skill.arguments).toEqual(["path"]);
+		expect(skill.argumentHint).toBe("Workbook path");
+		expect(skill.model).toBe("openai/gpt-5.5");
+		expect(skill.packageManifest).toEqual({ files: [{ path: "SKILL.md" }] });
+		expect(skill.skillName).toBe("spreadsheet-helper");
+		expect(skill.version).toBe("2");
+	});
+
+	it("keeps the resolver behind application ports for skill hydration", () => {
+		const source = readFileSync(new URL("./resolver.ts", import.meta.url), "utf8");
+
+		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("drizzle-orm");
 	});
 
 	it("stamps a shared runtime-pool app id when pool routing is enabled", async () => {

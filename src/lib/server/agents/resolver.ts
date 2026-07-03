@@ -22,9 +22,8 @@ import {
 	resolveEnvironmentRef,
 	type ResolvedEnvironment,
 } from "$lib/server/environments/registry";
-import { db } from "$lib/server/db";
-import { agentSkillRegistry } from "$lib/server/db/schema";
-import { inArray } from "drizzle-orm";
+import { getApplicationAdapters } from "$lib/server/application";
+import type { AgentSkillHydrationRepository } from "$lib/server/application/ports";
 import { hashAgentConfig } from "./config-hash";
 import {
 	buildInstructionBundle,
@@ -98,6 +97,7 @@ export function assertConsistentWorkspaceBackends(
 
 type ResolveSpecAgentRefsOptions = {
 	triggerData?: Record<string, unknown>;
+	skillHydration?: AgentSkillHydrationRepository;
 };
 
 /**
@@ -111,8 +111,10 @@ type ResolveSpecAgentRefsOptions = {
  * Mutates `config.skills` in place. Silent no-op when skills is absent or
  * empty, or when none of the entries carry a registryId.
  */
-async function hydrateSkillsFromRegistry(config: AgentConfig): Promise<void> {
-	if (!db) return;
+async function hydrateSkillsFromRegistry(
+	config: AgentConfig,
+	repository?: AgentSkillHydrationRepository,
+): Promise<void> {
 	const skills = (config as { skills?: unknown }).skills;
 	if (!Array.isArray(skills) || skills.length === 0) return;
 	const ids = new Set<string>();
@@ -122,11 +124,16 @@ async function hydrateSkillsFromRegistry(config: AgentConfig): Promise<void> {
 		if (id) ids.add(id);
 	}
 	if (ids.size === 0) return;
-	const rows = await db
-		.select()
-		.from(agentSkillRegistry)
-		.where(inArray(agentSkillRegistry.id, Array.from(ids)));
-	const byId = new Map<string, typeof rows[number]>();
+	let repo = repository;
+	if (!repo) {
+		try {
+			repo = getApplicationAdapters().agentSkillHydration;
+		} catch {
+			return;
+		}
+	}
+	const rows = await repo.listAgentSkillHydrationEntries(Array.from(ids));
+	const byId = new Map<string, (typeof rows)[number]>();
 	for (const row of rows) byId.set(row.id, row);
 	for (const item of skills) {
 		if (!isRecord(item)) continue;
@@ -367,7 +374,7 @@ export async function resolveSpecAgentRefs(
 		// to activate the skill + materialize its bundled assets. Without
 		// this hydration, `_extract_skill_configs` in dapr-agent-py skips the
 		// skill because `prompt` is empty.
-		await hydrateSkillsFromRegistry(config);
+		await hydrateSkillsFromRegistry(config, options.skillHydration);
 		config = stampCliAdapterForRuntime(config);
 		const prompt = pickPrompt(withBlock, bodyRecord);
 		const sandboxPolicy = environment

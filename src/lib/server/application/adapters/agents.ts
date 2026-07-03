@@ -1,7 +1,8 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type {
 	AgentCatalogCreateInput,
 	AgentCatalogRepository,
+	AgentSkillHydrationRepository,
 	AgentCatalogUpdateInput,
 	AgentCatalogUpdateResult,
 	AgentCatalogWriteResult,
@@ -24,7 +25,12 @@ import type {
 	WorkflowPublishedAgentResolutionResult,
 } from "$lib/server/application/ports";
 import { db as defaultDb } from "$lib/server/db";
-import { agents, agentVersions, users } from "$lib/server/db/schema";
+import {
+	agents,
+	agentSkillRegistry,
+	agentVersions,
+	users,
+} from "$lib/server/db/schema";
 import {
 	AgentConfigValidationError,
 	archiveAgent,
@@ -217,6 +223,36 @@ export class LocalAgentTemplateCatalog implements AgentTemplateCatalog {
 			skills: template.config.skills,
 			runtimeOverridePolicy: template.config.runtimeOverridePolicy,
 		};
+	}
+}
+
+export class PostgresAgentSkillHydrationRepository
+	implements AgentSkillHydrationRepository
+{
+	constructor(private readonly database: Database = requireDb()) {}
+
+	async listAgentSkillHydrationEntries(ids: string[]) {
+		const uniqueIds = Array.from(
+			new Set(ids.map((id) => id.trim()).filter(Boolean)),
+		);
+		if (uniqueIds.length === 0) return [];
+		return this.database
+			.select({
+				id: agentSkillRegistry.id,
+				prompt: agentSkillRegistry.prompt,
+				allowedTools: agentSkillRegistry.allowedTools,
+				description: agentSkillRegistry.description,
+				whenToUse: agentSkillRegistry.whenToUse,
+				arguments: agentSkillRegistry.arguments,
+				argumentHint: agentSkillRegistry.argumentHint,
+				model: agentSkillRegistry.model,
+				packageManifest: agentSkillRegistry.packageManifest,
+				skillName: agentSkillRegistry.skillName,
+				slug: agentSkillRegistry.slug,
+				version: agentSkillRegistry.version,
+			})
+			.from(agentSkillRegistry)
+			.where(inArray(agentSkillRegistry.id, uniqueIds));
 	}
 }
 

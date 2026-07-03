@@ -594,6 +594,27 @@ export type AgentSkillUsedByReadModel = {
 	total: number;
 };
 
+export type AgentSkillHydrationEntry = {
+	id: string;
+	prompt: string | null;
+	allowedTools: string[] | null;
+	description: string | null;
+	whenToUse: string | null;
+	arguments: string[] | null;
+	argumentHint: string | null;
+	model: string | null;
+	packageManifest: Record<string, unknown> | null;
+	skillName: string | null;
+	slug: string | null;
+	version: string | null;
+};
+
+export interface AgentSkillHydrationRepository {
+	listAgentSkillHydrationEntries(
+		ids: string[],
+	): Promise<AgentSkillHydrationEntry[]>;
+}
+
 export type VaultUsageAgentReadModel = {
 	id: string;
 	slug: string;

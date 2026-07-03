@@ -79,6 +79,7 @@ import {
 	LegacyWorkflowEphemeralAgentStore,
 	LocalAgentRuntimeCatalog,
 	LocalAgentTemplateCatalog,
+	PostgresAgentSkillHydrationRepository,
 	RegistryPeerAgentResolver,
 } from "$lib/server/application/adapters/agents";
 import {
@@ -422,6 +423,9 @@ export function getApplicationAdapters(
 	let sessionTraceLifecycle: LegacyMlflowSessionTraceLifecycle | undefined;
 	let sessionGoalStore: PostgresSessionGoalStore | undefined;
 	let peerAgentResolver: RegistryPeerAgentResolver | undefined;
+	let agentSkillHydration:
+		| PostgresAgentSkillHydrationRepository
+		| undefined;
 	let sessionEventNotifications:
 		| PostgresWorkflowSessionEventNotificationSource
 		| undefined;
@@ -709,6 +713,10 @@ export function getApplicationAdapters(
 	const getGoalLoopStore = () => new PostgresGoalLoopStore(getDatabase);
 	const getPeerAgentResolver = () =>
 		(peerAgentResolver ??= new RegistryPeerAgentResolver(getDatabase()));
+	const getAgentSkillHydration = () =>
+		(agentSkillHydration ??= new PostgresAgentSkillHydrationRepository(
+			getDatabase(),
+		));
 	const getSessionEventNotifications = () =>
 		(sessionEventNotifications ??=
 			new PostgresWorkflowSessionEventNotificationSource());
@@ -1393,6 +1401,9 @@ export function getApplicationAdapters(
 		},
 		get agentCatalog() {
 			return getAgentCatalog();
+		},
+		get agentSkillHydration() {
+			return getAgentSkillHydration();
 		},
 		get agentProfiles() {
 			return getAgentProfiles();
