@@ -108,6 +108,7 @@ import {
 	LifecycleWorkflowExecutionControllerPort,
 	LifecycleWorkflowExecutionCoordinatorOwnerPort,
 } from "$lib/server/application/adapters/workflow-control";
+import { LegacyWorkflowConnectionRefSyncPort } from "$lib/server/application/adapters/workflow-connections";
 import { LegacyCliPreviewGatewayPort } from "$lib/server/application/adapters/cli-preview";
 import { LegacySandboxPreviewGatewayPort } from "$lib/server/application/adapters/sandbox-preview";
 import { LegacyWorkflowTriggerLifecyclePort } from "$lib/server/application/adapters/workflow-trigger-lifecycle";
@@ -123,6 +124,7 @@ import { ApplicationSessionSandboxService } from "$lib/server/application/sessio
 import { ApplicationSessionMcpStatusService } from "$lib/server/application/session-mcp-status";
 import { ApplicationSessionRuntimeAccessService } from "$lib/server/application/session-runtime-access";
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
+import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
 import { ApplicationWorkflowExecutionStreamService } from "$lib/server/application/workflow-execution-stream";
 import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/application/workflow-code-checkpoints";
@@ -239,6 +241,9 @@ export function getApplicationAdapters(
 	let sessionMcpStatus: ApplicationSessionMcpStatusService | undefined;
 	let sessionRuntimeAccess: ApplicationSessionRuntimeAccessService | undefined;
 	let sessionBrowser: ApplicationSessionBrowserService | undefined;
+	let workflowDefinitionCommands:
+		| ApplicationWorkflowDefinitionCommandService
+		| undefined;
 	let workflowExecutionControl:
 		| ApplicationWorkflowExecutionControlService
 		| undefined;
@@ -422,6 +427,11 @@ export function getApplicationAdapters(
 			workspaceProjects: getWorkspaceProjects(),
 			warmPools: getAgentRuntimeWarmPools(),
 		}));
+	const getWorkflowDefinitionCommands = () =>
+		(workflowDefinitionCommands ??= new ApplicationWorkflowDefinitionCommandService({
+			workflowData: getWorkflowData(),
+			connectionRefs: new LegacyWorkflowConnectionRefSyncPort(),
+		}));
 	const getWorkflowExecutionControl = () =>
 		(workflowExecutionControl ??= new ApplicationWorkflowExecutionControlService({
 			workflowData: getWorkflowData(),
@@ -584,6 +594,9 @@ export function getApplicationAdapters(
 		},
 		get agentRuntimeControl() {
 			return getAgentRuntimeControl();
+		},
+		get workflowDefinitionCommands() {
+			return getWorkflowDefinitionCommands();
 		},
 		get workflowExecutionControl() {
 			return getWorkflowExecutionControl();

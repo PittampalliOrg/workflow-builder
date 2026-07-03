@@ -301,10 +301,14 @@ The first UI-facing route has also moved behind the application service:
   the workflow through `workflowData` and loads cross-run source-bundle artifacts
   through `workflowData.listSourceBundleArtifactsByWorkflowId`.
 - `src/routes/api/workflows/+server.ts` and
-  `src/routes/api/workflows/[workflowId]/+server.ts` now list, create, fetch,
-  update, active-run-check, and delete workflow definitions through
-  workflow-data application ports. Route-local logic is limited to request/body
-  shaping, workspace scope checks, and the existing connection-ref sync call.
+  `src/routes/api/workflows/[workflowId]/+server.ts` now list and fetch
+  workflow definitions through workflow-data application ports, while
+  create/update/delete commands delegate to
+  `ApplicationWorkflowDefinitionCommandService`. Connection-ref sync,
+  destructive delete scope checks, active-run guards, and terminal-history FK
+  conflict mapping are no longer route-local; direct `workflow_connection_refs`
+  writes remain confined to the `LegacyWorkflowConnectionRefSyncPort` adapter
+  seam.
 - `src/routes/api/workflows/[workflowId]/publish/+server.ts` now reads and
   updates workflow definitions through workflow-data application ports while
   preserving the existing published-runtime metadata shape.

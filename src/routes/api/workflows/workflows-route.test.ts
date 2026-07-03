@@ -17,18 +17,22 @@ const mocks = vi.hoisted(() => {
 	};
 	const workflowData = {
 		listWorkflows: vi.fn(async () => [workflow]),
-		createWorkflowDefinition: vi.fn(async () => workflow),
 	};
-	const syncWorkflowConnectionRefs = vi.fn(async () => undefined);
-	return { workflow, workflowData, syncWorkflowConnectionRefs };
+	const workflowDefinitionCommands = {
+		createWorkflow: vi.fn(async () => ({
+			status: "ok" as const,
+			httpStatus: 201,
+			body: workflow,
+		}) as unknown),
+	};
+	return { workflow, workflowData, workflowDefinitionCommands };
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
-}));
-
-vi.mock("$lib/server/workflow-connections", () => ({
-	syncWorkflowConnectionRefs: mocks.syncWorkflowConnectionRefs,
+	getApplicationAdapters: () => ({
+		workflowData: mocks.workflowData,
+		workflowDefinitionCommands: mocks.workflowDefinitionCommands,
+	}),
 }));
 
 import { GET, POST } from "./+server";
@@ -49,7 +53,11 @@ describe("workflows collection route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mocks.workflowData.listWorkflows.mockResolvedValue([mocks.workflow]);
-		mocks.workflowData.createWorkflowDefinition.mockResolvedValue(mocks.workflow);
+		mocks.workflowDefinitionCommands.createWorkflow.mockResolvedValue({
+			status: "ok",
+			httpStatus: 201,
+			body: mocks.workflow,
+		});
 	});
 
 	it("keeps the route behind workflow-data application services", () => {
@@ -60,6 +68,8 @@ describe("workflows collection route", () => {
 		expect(source).toContain("getApplicationAdapters");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
+		expect(source).not.toContain("$lib/server/workflow-connections");
+		expect(source).not.toContain("syncWorkflowConnectionRefs");
 	});
 
 	it("lists workflows through workflow-data", async () => {
@@ -79,7 +89,7 @@ describe("workflows collection route", () => {
 		});
 	});
 
-	it("creates a workflow through workflow-data and syncs connection refs", async () => {
+	it("creates a workflow through workflow definition commands", async () => {
 		const response = (await POST(event() as never)) as Response;
 
 		expect(response.status).toBe(201);
@@ -87,15 +97,10 @@ describe("workflows collection route", () => {
 			id: "wf-1",
 			name: "Example",
 		});
-		expect(mocks.workflowData.createWorkflowDefinition).toHaveBeenCalledWith({
-			name: "Example",
-			nodes: [],
-			edges: [],
-			engineType: "dapr",
+		expect(mocks.workflowDefinitionCommands.createWorkflow).toHaveBeenCalledWith({
+			body: { name: "Example", nodes: [], edges: [], spec: { do: [] } },
 			userId: "user-1",
 			projectId: "project-1",
-			spec: { do: [] },
 		});
-		expect(mocks.syncWorkflowConnectionRefs).toHaveBeenCalledWith("wf-1", [], { do: [] });
 	});
 });

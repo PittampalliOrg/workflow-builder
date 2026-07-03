@@ -1103,6 +1103,14 @@ export type UpdateWorkflowDefinitionInput = {
 	daprWorkflowName?: string;
 };
 
+export interface WorkflowConnectionRefSyncPort {
+	syncWorkflowConnectionRefs(input: {
+		workflowId: string;
+		nodes: unknown;
+		spec?: unknown;
+	}): Promise<void>;
+}
+
 export type WorkflowTriggerStatus =
 	| "inactive"
 	| "activating"

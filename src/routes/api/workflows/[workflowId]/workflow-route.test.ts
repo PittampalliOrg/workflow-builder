@@ -17,20 +17,25 @@ const mocks = vi.hoisted(() => {
 	};
 	const workflowData = {
 		getWorkflowByRef: vi.fn(async () => workflow),
-		updateWorkflowDefinition: vi.fn(async () => workflow),
-		hasActiveWorkflowExecutions: vi.fn(async () => false),
-		deleteWorkflowDefinition: vi.fn(async () => undefined),
 	};
-	const syncWorkflowConnectionRefs = vi.fn(async () => undefined);
-	return { workflow, workflowData, syncWorkflowConnectionRefs };
+	const workflowDefinitionCommands = {
+		updateWorkflow: vi.fn(async () => ({
+			status: "ok" as const,
+			body: workflow,
+		}) as unknown),
+		deleteWorkflow: vi.fn(async () => ({
+			status: "ok" as const,
+			body: { success: true },
+		}) as unknown),
+	};
+	return { workflow, workflowData, workflowDefinitionCommands };
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
-}));
-
-vi.mock("$lib/server/workflow-connections", () => ({
-	syncWorkflowConnectionRefs: mocks.syncWorkflowConnectionRefs,
+	getApplicationAdapters: () => ({
+		workflowData: mocks.workflowData,
+		workflowDefinitionCommands: mocks.workflowDefinitionCommands,
+	}),
 }));
 
 import { DELETE, GET, PUT } from "./+server";
@@ -60,8 +65,14 @@ describe("workflow item route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mocks.workflowData.getWorkflowByRef.mockResolvedValue(mocks.workflow);
-		mocks.workflowData.updateWorkflowDefinition.mockResolvedValue(mocks.workflow);
-		mocks.workflowData.hasActiveWorkflowExecutions.mockResolvedValue(false);
+		mocks.workflowDefinitionCommands.updateWorkflow.mockResolvedValue({
+			status: "ok",
+			body: mocks.workflow,
+		});
+		mocks.workflowDefinitionCommands.deleteWorkflow.mockResolvedValue({
+			status: "ok",
+			body: { success: true },
+		});
 	});
 
 	it("keeps the route behind workflow-data application services", () => {
@@ -72,6 +83,9 @@ describe("workflow item route", () => {
 		expect(source).toContain("getApplicationAdapters");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
+		expect(source).not.toContain("$lib/server/workflow-connections");
+		expect(source).not.toContain("syncWorkflowConnectionRefs");
+		expect(source).not.toContain("isResourceInScope");
 	});
 
 	it("loads a workflow through workflow-data", async () => {
@@ -88,31 +102,40 @@ describe("workflow item route", () => {
 		});
 	});
 
-	it("updates a workflow through workflow-data and syncs connection refs", async () => {
+	it("updates a workflow through workflow definition commands", async () => {
 		const response = (await PUT(event() as never)) as Response;
 
 		expect(response.status).toBe(200);
-		expect(mocks.workflowData.updateWorkflowDefinition).toHaveBeenCalledWith("wf-1", {
-			name: "Updated",
-			nodes: [],
-			edges: [],
-			spec: { do: [] },
+		expect(mocks.workflowDefinitionCommands.updateWorkflow).toHaveBeenCalledWith({
+			workflowId: "wf-1",
+			body: { name: "Updated", nodes: [], edges: [], spec: { do: [] } },
 		});
-		expect(mocks.syncWorkflowConnectionRefs).toHaveBeenCalledWith("wf-1", [], { do: [] });
 	});
 
 	it("blocks delete when active executions exist", async () => {
-		mocks.workflowData.hasActiveWorkflowExecutions.mockResolvedValueOnce(true);
+		mocks.workflowDefinitionCommands.deleteWorkflow.mockResolvedValueOnce({
+			status: "error",
+			httpStatus: 409,
+			body: "Stop the running execution before deleting this workflow",
+		});
 
 		await expectHttpStatus(Promise.resolve(DELETE(event() as never)), 409);
-		expect(mocks.workflowData.deleteWorkflowDefinition).not.toHaveBeenCalled();
+		expect(mocks.workflowDefinitionCommands.deleteWorkflow).toHaveBeenCalledWith({
+			workflowId: "wf-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
 	});
 
-	it("deletes scoped workflows through workflow-data", async () => {
+	it("deletes scoped workflows through workflow definition commands", async () => {
 		const response = (await DELETE(event() as never)) as Response;
 
 		expect(response.status).toBe(200);
 		await expect(response.json()).resolves.toEqual({ success: true });
-		expect(mocks.workflowData.deleteWorkflowDefinition).toHaveBeenCalledWith("wf-1");
+		expect(mocks.workflowDefinitionCommands.deleteWorkflow).toHaveBeenCalledWith({
+			workflowId: "wf-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
 	});
 });
