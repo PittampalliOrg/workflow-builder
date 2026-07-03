@@ -456,6 +456,66 @@ export interface WorkflowMonitorReadRepository {
 	}): Promise<WorkflowMonitorFallbackExecutionReadModel[]>;
 }
 
+export type PromptPresetUsageBindingKind = "static" | "dynamic";
+
+export type PromptPresetAgentUsageReadModel = {
+	id: string;
+	slug: string;
+	name: string;
+	bindingKind: PromptPresetUsageBindingKind;
+	version: number;
+	latestVersion: number;
+	isStale: boolean;
+};
+
+export type PromptPresetUsagesReadModel = {
+	usages: PromptPresetAgentUsageReadModel[];
+	latestVersion: number;
+};
+
+export type AgentSkillUsedByAgentReadModel = {
+	id: string;
+	slug: string;
+	name: string;
+	projectId: string | null;
+	runtimeAppId: string | null;
+	registryStatus: string | null;
+};
+
+export type AgentSkillUsedByReadModel = {
+	agents: AgentSkillUsedByAgentReadModel[];
+	truncated: boolean;
+	total: number;
+};
+
+export type VaultUsageAgentReadModel = {
+	id: string;
+	slug: string;
+	name: string;
+	avatar: string | null;
+	isArchived: boolean;
+};
+
+export type VaultUsagesReadModel = {
+	agents: VaultUsageAgentReadModel[];
+	sessionCount: number;
+};
+
+export interface ResourceUsageReadRepository {
+	getPromptPresetUsages(input: {
+		presetId: string;
+		projectId: string;
+	}): Promise<PromptPresetUsagesReadModel | null>;
+	listAgentSkillUsedBy(input: {
+		skillRef: string;
+		projectId?: string | null;
+		limit: number;
+	}): Promise<AgentSkillUsedByReadModel | null>;
+	getVaultUsages(input: {
+		vaultId: string;
+	}): Promise<VaultUsagesReadModel>;
+}
+
 export type CreateWorkflowDefinitionInput = {
 	name: string;
 	nodes: unknown[];
@@ -3428,6 +3488,18 @@ export interface WorkflowDataService {
 	listWorkflowMonitorFallbackExecutions(input: {
 		limit: number;
 	}): Promise<WorkflowMonitorFallbackExecutionReadModel[]>;
+	getPromptPresetUsages(input: {
+		presetId: string;
+		projectId: string;
+	}): Promise<PromptPresetUsagesReadModel | null>;
+	listAgentSkillUsedBy(input: {
+		skillRef: string;
+		projectId?: string | null;
+		limit: number;
+	}): Promise<AgentSkillUsedByReadModel | null>;
+	getVaultUsages(input: {
+		vaultId: string;
+	}): Promise<VaultUsagesReadModel>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;
 	}): Promise<DevPreviewHubReadModel>;

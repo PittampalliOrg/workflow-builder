@@ -21,6 +21,8 @@ gate, and the internal piece-execution artifact readback route.
 The internal CLI workspace command route now routes execution lookup,
 CLI-session candidate lookup, file creation, and browser artifact persistence
 through workflow-data.
+The prompt preset, agent skill, and vault "used by/usages" reverse-lookup
+routes now load their read models through workflow-data resource usage ports.
 
 ## Strict HTTP Runtime Paths
 
@@ -257,6 +259,12 @@ The first UI-facing route has also moved behind the application service:
   `src/routes/api/admin/pieces/[pieceName]/enable/+server.ts` now resolve
   platform-admin status through the workflow-data user profile port instead of
   querying `users.platform_role` directly in route code.
+- `src/routes/api/prompt-presets/[id]/usages/+server.ts`,
+  `src/routes/api/agent-skills/[id]/used-by/+server.ts`, and
+  `src/routes/api/v1/vaults/[id]/usages/+server.ts` now read reverse-lookup
+  usage models through workflow-data resource usage ports. Preset binding scans,
+  skill attachment JSONB queries, and vault/session JSONB containment queries
+  are confined to the Postgres resource-usage adapter.
 - `src/routes/workspaces/[slug]/dev/+page.server.ts`,
   `src/routes/workspaces/[slug]/dev/[executionId]/+page.server.ts`, and the
   public `src/routes/api/dev-environments/**` GET routes now load dev-preview
@@ -628,8 +636,10 @@ events-ingest route subsets, plus the agent-trigger route membership check and
 the CLI credential capture session-owner lookup and ActivePieces resume
 execution lookup, and the GitHub trigger ingress/gate subset, are also clean.
 The internal piece-execution artifact readback and CLI workspace command routes
-are also clean. The scanned session provisioning, context-usage, control
-settings/MCP status, session detail/title/archive/delete, fork, goal,
+are also clean. The prompt preset, agent skill, and vault resource-usage
+reverse-lookup routes are also clean. The scanned session provisioning,
+context-usage, control settings/MCP status, session detail/title/archive/delete,
+fork, goal,
 goal-flow, event list/append/detail, runtime-config, config patch commands,
 runtime debug target routes, resources, and event-stream routes are also clean.
 The sandbox-delete route's session read is also clean, while its lifecycle and

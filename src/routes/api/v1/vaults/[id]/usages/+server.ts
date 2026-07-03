@@ -1,8 +1,6 @@
 import { error, json } from "@sveltejs/kit";
-import { and, eq, sql } from "drizzle-orm";
 import type { RequestHandler } from "./$types";
-import { db } from "$lib/server/db";
-import { agents, sessions } from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * GET /api/v1/vaults/[id]/usages
@@ -13,39 +11,20 @@ import { agents, sessions } from "$lib/server/db/schema";
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	if (!db) return error(503, "Database not configured");
 
 	const vaultId = params.id;
+	if (!vaultId) return error(400, "vault id is required");
 
-	const referencingAgents = await db
-		.select({
-			id: agents.id,
-			slug: agents.slug,
-			name: agents.name,
-			avatar: agents.avatar,
-			isArchived: agents.isArchived,
-		})
-		.from(agents)
-		.where(
-			and(
-				sql`${agents.defaultVaultIds} @> ${JSON.stringify([vaultId])}::jsonb`,
-				eq(agents.isArchived, false),
-			),
-		);
-
-	const [sessionCount] = await db
-		.select({ count: sql<number>`count(*)` })
-		.from(sessions)
-		.where(sql`${sessions.vaultIds} @> ${JSON.stringify([vaultId])}::jsonb`);
-
-	return json({
-		agents: referencingAgents.map((a) => ({
-			id: a.id,
-			slug: a.slug,
-			name: a.name,
-			avatar: a.avatar ?? null,
-			isArchived: a.isArchived,
-		})),
-		sessionCount: Number(sessionCount?.count ?? 0),
-	});
+	try {
+		const result = await getApplicationAdapters().workflowData.getVaultUsages({
+			vaultId,
+		});
+		return json(result);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : "";
+		if (/Database not configured/.test(message)) {
+			return error(503, "Database not configured");
+		}
+		throw err;
+	}
 };

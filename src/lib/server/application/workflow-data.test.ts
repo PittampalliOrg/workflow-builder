@@ -16,6 +16,7 @@ import type {
 	McpRunRepository,
 	PeerAgentResolver,
 	RuntimeRegistryReader,
+	ResourceUsageReadRepository,
 	SettingsRepository,
 	TraceLineageStore,
 	UsageReportingRepository,
@@ -1325,6 +1326,7 @@ function makeService(options: {
 	activityRateTargets?: WorkflowActivityRateTargetRepository;
 	observabilityTraces?: ObservabilityTraceRepository;
 	workflowMonitorReads?: WorkflowMonitorReadRepository;
+	resourceUsages?: ResourceUsageReadRepository;
 	pieceExecutions?: PieceExecutionRepository;
 	browserArtifacts?: WorkflowBrowserArtifactStore;
 	sessions?: SessionRepository;
@@ -1384,6 +1386,7 @@ function makeService(options: {
 		activityRateTargets: options.activityRateTargets,
 		observabilityTraces: options.observabilityTraces,
 		workflowMonitorReads: options.workflowMonitorReads,
+		resourceUsages: options.resourceUsages,
 		workflowExecutions,
 		sessionEvents: options.sessionEvents,
 		sessionRuntimeConfigs:
@@ -6119,6 +6122,120 @@ describe("ApplicationWorkflowDataService", () => {
 		]);
 		expect(workflowMonitorReads.listFallbackExecutions).toHaveBeenCalledWith({
 			limit: 50,
+		});
+	});
+
+	it("loads resource usage read models through the workflow-data port", async () => {
+		const resourceUsages: ResourceUsageReadRepository = {
+			getPromptPresetUsages: vi.fn(async () => ({
+				latestVersion: 3,
+				usages: [
+					{
+						id: "agent-1",
+						slug: "agent-one",
+						name: "Agent One",
+						bindingKind: "static" as const,
+						version: 2,
+						latestVersion: 3,
+						isStale: true,
+					},
+				],
+			})),
+			listAgentSkillUsedBy: vi.fn(async () => ({
+				agents: [
+					{
+						id: "agent-1",
+						slug: "agent-one",
+						name: "Agent One",
+						projectId: "project-1",
+						runtimeAppId: "agent-session-abc",
+						registryStatus: "synced",
+					},
+				],
+				truncated: false,
+				total: 1,
+			})),
+			getVaultUsages: vi.fn(async () => ({
+				agents: [
+					{
+						id: "agent-1",
+						slug: "agent-one",
+						name: "Agent One",
+						avatar: null,
+						isArchived: false,
+					},
+				],
+				sessionCount: 2,
+			})),
+		};
+		const { service } = makeService({ resourceUsages });
+
+		await expect(
+			service.getPromptPresetUsages({
+				presetId: "preset-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual({
+			latestVersion: 3,
+			usages: [
+				{
+					id: "agent-1",
+					slug: "agent-one",
+					name: "Agent One",
+					bindingKind: "static",
+					version: 2,
+					latestVersion: 3,
+					isStale: true,
+				},
+			],
+		});
+		expect(resourceUsages.getPromptPresetUsages).toHaveBeenCalledWith({
+			presetId: "preset-1",
+			projectId: "project-1",
+		});
+
+		await expect(
+			service.listAgentSkillUsedBy({
+				skillRef: "skill-1",
+				projectId: "project-1",
+				limit: 50,
+			}),
+		).resolves.toEqual({
+			agents: [
+				{
+					id: "agent-1",
+					slug: "agent-one",
+					name: "Agent One",
+					projectId: "project-1",
+					runtimeAppId: "agent-session-abc",
+					registryStatus: "synced",
+				},
+			],
+			truncated: false,
+			total: 1,
+		});
+		expect(resourceUsages.listAgentSkillUsedBy).toHaveBeenCalledWith({
+			skillRef: "skill-1",
+			projectId: "project-1",
+			limit: 50,
+		});
+
+		await expect(
+			service.getVaultUsages({ vaultId: "vault-1" }),
+		).resolves.toEqual({
+			agents: [
+				{
+					id: "agent-1",
+					slug: "agent-one",
+					name: "Agent One",
+					avatar: null,
+					isArchived: false,
+				},
+			],
+			sessionCount: 2,
+		});
+		expect(resourceUsages.getVaultUsages).toHaveBeenCalledWith({
+			vaultId: "vault-1",
 		});
 	});
 

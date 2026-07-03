@@ -151,6 +151,7 @@ import type {
 	UpdateWorkflowEnsureSessionRuntimeInput,
 	UpsertTraceLineageLinksInput,
 	RuntimeRegistryReader,
+	ResourceUsageReadRepository,
 	WorkspaceSessionStore,
 	ServiceGraphPickerOptions,
 	WorkspaceWorkflowListItem,
@@ -779,6 +780,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			activityRateTargets?: WorkflowActivityRateTargetRepository;
 			observabilityTraces?: ObservabilityTraceRepository;
 			workflowMonitorReads?: WorkflowMonitorReadRepository;
+			resourceUsages?: ResourceUsageReadRepository;
 			workflowExecutions: WorkflowExecutionRepository;
 			sessions?: SessionRepository;
 			sessionProvisioning?: SessionProvisioningReader;
@@ -903,6 +905,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Workflow monitor read repository not configured");
 		}
 		return this.deps.workflowMonitorReads;
+	}
+
+	private requireResourceUsages(): ResourceUsageReadRepository {
+		if (!this.deps.resourceUsages) {
+			throw new Error("Resource usage read repository not configured");
+		}
+		return this.deps.resourceUsages;
 	}
 
 	private requireSessionRuntimeConfigs(): SessionRuntimeConfigReader {
@@ -3642,6 +3651,25 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		limit: number;
 	}): Promise<WorkflowMonitorFallbackExecutionReadModel[]> {
 		return this.requireWorkflowMonitorReads().listFallbackExecutions(input);
+	}
+
+	getPromptPresetUsages(input: {
+		presetId: string;
+		projectId: string;
+	}) {
+		return this.requireResourceUsages().getPromptPresetUsages(input);
+	}
+
+	listAgentSkillUsedBy(input: {
+		skillRef: string;
+		projectId?: string | null;
+		limit: number;
+	}) {
+		return this.requireResourceUsages().listAgentSkillUsedBy(input);
+	}
+
+	getVaultUsages(input: { vaultId: string }) {
+		return this.requireResourceUsages().getVaultUsages(input);
 	}
 
 	async getDevPreviewHubReadModel(input: { projectId?: string | null }) {

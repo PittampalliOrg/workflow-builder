@@ -32,6 +32,7 @@ import {
 	filePayloads,
 	apiKeys,
 	appConnections,
+	agentSkillRegistry,
 	codeFunctions,
 	mlflowLineageLinks,
 	agents,
@@ -56,6 +57,8 @@ import {
 	mcpRuns,
 	sessionEvents,
 	sessions,
+	resourcePromptVersions,
+	resourcePrompts,
 	threadGoals,
 	workflowConnectionRefs,
 	workflowArtifacts,
@@ -140,6 +143,7 @@ import type {
 	McpCatalogAppConnectionSummary,
 	PieceExecutionReadModel,
 	PieceExecutionRepository,
+	ResourceUsageReadRepository,
 	ProjectMemberListItem,
 	ProjectMemberRecord,
 	ProjectMembershipRole,
@@ -3269,6 +3273,211 @@ export class PostgresWorkflowMonitorReadRepository implements WorkflowMonitorRea
 			.leftJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
 			.orderBy(desc(workflowExecutions.startedAt))
 			.limit(limit);
+	}
+}
+
+const DEFAULT_AGENT_SKILL_USED_BY_LIMIT = 50;
+
+function promptPresetRefs(
+	config: unknown,
+	key: "staticPromptPresetRefs" | "dynamicPromptPresetRefs",
+): Array<{ id: string; version: number }> {
+	if (!isRecord(config)) return [];
+	const value = config[key];
+	if (!Array.isArray(value)) return [];
+	return value
+		.map((item) => {
+			if (!isRecord(item) || typeof item.id !== "string") return null;
+			const version = typeof item.version === "number" ? item.version : 0;
+			return { id: item.id, version };
+		})
+		.filter((item): item is { id: string; version: number } => item !== null);
+}
+
+export class PostgresResourceUsageReadRepository implements ResourceUsageReadRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async getPromptPresetUsages(input: {
+		presetId: string;
+		projectId: string;
+	}) {
+		const presetId = input.presetId.trim();
+		const projectId = input.projectId.trim();
+		if (!presetId || !projectId) return null;
+
+		const [preset] = await this.database
+			.select({
+				id: resourcePrompts.id,
+				version: resourcePrompts.version,
+			})
+			.from(resourcePrompts)
+			.where(
+				and(
+					eq(resourcePrompts.id, presetId),
+					eq(resourcePrompts.projectId, projectId),
+				),
+			)
+			.limit(1);
+		if (!preset) return null;
+
+		const [latest] = await this.database
+			.select({ version: resourcePromptVersions.version })
+			.from(resourcePromptVersions)
+			.where(eq(resourcePromptVersions.promptId, presetId))
+			.orderBy(desc(resourcePromptVersions.version))
+			.limit(1);
+		const latestVersion = latest?.version ?? preset.version;
+
+		const rows = await this.database
+			.select({
+				id: agents.id,
+				slug: agents.slug,
+				name: agents.name,
+				config: agentVersions.config,
+			})
+			.from(agents)
+			.leftJoin(agentVersions, eq(agentVersions.id, agents.currentVersionId))
+			.where(and(eq(agents.projectId, projectId), eq(agents.isArchived, false)));
+
+		const usages = [];
+		for (const row of rows) {
+			for (const ref of promptPresetRefs(row.config, "staticPromptPresetRefs")) {
+				if (ref.id !== presetId) continue;
+				usages.push({
+					id: row.id,
+					slug: row.slug,
+					name: row.name,
+					bindingKind: "static" as const,
+					version: ref.version,
+					latestVersion,
+					isStale: ref.version < latestVersion,
+				});
+			}
+			for (const ref of promptPresetRefs(row.config, "dynamicPromptPresetRefs")) {
+				if (ref.id !== presetId) continue;
+				usages.push({
+					id: row.id,
+					slug: row.slug,
+					name: row.name,
+					bindingKind: "dynamic" as const,
+					version: ref.version,
+					latestVersion,
+					isStale: ref.version < latestVersion,
+				});
+			}
+		}
+
+		usages.sort((a, b) => {
+			if (a.isStale !== b.isStale) return a.isStale ? -1 : 1;
+			return a.name.localeCompare(b.name);
+		});
+
+		return { usages, latestVersion };
+	}
+
+	async listAgentSkillUsedBy(input: {
+		skillRef: string;
+		projectId?: string | null;
+		limit: number;
+	}) {
+		const skillRef = input.skillRef.trim();
+		if (!skillRef) return null;
+		const projectId = input.projectId ?? null;
+		const limit = Math.max(
+			1,
+			Math.min(
+				Math.trunc(input.limit || DEFAULT_AGENT_SKILL_USED_BY_LIMIT),
+				DEFAULT_AGENT_SKILL_USED_BY_LIMIT,
+			),
+		);
+		const skillScope = projectId
+			? or(isNull(agentSkillRegistry.projectId), eq(agentSkillRegistry.projectId, projectId))
+			: isNull(agentSkillRegistry.projectId);
+
+		const [skill] = await this.database
+			.select({
+				id: agentSkillRegistry.id,
+				slug: agentSkillRegistry.slug,
+			})
+			.from(agentSkillRegistry)
+			.where(
+				and(
+					skillScope,
+					or(eq(agentSkillRegistry.id, skillRef), eq(agentSkillRegistry.slug, skillRef)),
+				),
+			)
+			.limit(1);
+		if (!skill) return null;
+
+		type AgentRow = {
+			id: string;
+			slug: string;
+			name: string;
+			projectId: string | null;
+			runtimeAppId: string | null;
+			registryStatus: string | null;
+		};
+		const all = await this.database.execute<AgentRow>(sql`
+			SELECT a.id, a.slug, a.name, a.project_id AS "projectId",
+			       a.runtime_app_id AS "runtimeAppId", a.registry_status AS "registryStatus"
+			FROM agents a
+			JOIN agent_versions av ON av.id = a.current_version_id
+			WHERE a.is_archived = false
+				AND NOT COALESCE(a.tags, '[]'::jsonb) @> '["workflow-ephemeral"]'::jsonb
+				AND (${projectId === null}::boolean OR a.project_id = ${projectId} OR a.project_id IS NULL)
+				AND EXISTS (
+					SELECT 1
+					FROM jsonb_array_elements(COALESCE(av.config->'skills', '[]'::jsonb)) se
+					WHERE (se->>'registryId') = ${skill.id}
+					   OR (se->>'slug') = ${skill.slug}
+				)
+			ORDER BY a.name ASC
+			LIMIT ${limit + 1}
+		`);
+		const truncated = all.length > limit;
+		return {
+			agents: truncated ? all.slice(0, limit) : all,
+			truncated,
+			total: all.length,
+		};
+	}
+
+	async getVaultUsages(input: { vaultId: string }) {
+		const vaultId = input.vaultId.trim();
+		if (!vaultId) return { agents: [], sessionCount: 0 };
+
+		const [referencingAgents, sessionCountRows] = await Promise.all([
+			this.database
+				.select({
+					id: agents.id,
+					slug: agents.slug,
+					name: agents.name,
+					avatar: agents.avatar,
+					isArchived: agents.isArchived,
+				})
+				.from(agents)
+				.where(
+					and(
+						sql`${agents.defaultVaultIds} @> ${JSON.stringify([vaultId])}::jsonb`,
+						eq(agents.isArchived, false),
+					),
+				),
+			this.database
+				.select({ count: sql<number>`count(*)` })
+				.from(sessions)
+				.where(sql`${sessions.vaultIds} @> ${JSON.stringify([vaultId])}::jsonb`),
+		]);
+
+		return {
+			agents: referencingAgents.map((agent) => ({
+				id: agent.id,
+				slug: agent.slug,
+				name: agent.name,
+				avatar: agent.avatar ?? null,
+				isArchived: agent.isArchived,
+			})),
+			sessionCount: Number(sessionCountRows[0]?.count ?? 0),
+		};
 	}
 }
 
