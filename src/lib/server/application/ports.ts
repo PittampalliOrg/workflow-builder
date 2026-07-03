@@ -191,6 +191,33 @@ export interface AgentRuntimeWarmPoolClient {
 	): Promise<void>;
 }
 
+export type StartBenchmarkInstanceWorkflowInput = {
+	runId: string;
+	instanceId: string;
+};
+
+export type StartBenchmarkInstanceWorkflowResult = Record<string, unknown>;
+
+export type TerminateBenchmarkRunInstanceInput = {
+	projectId?: string | null;
+	runId: string;
+	instanceId: string;
+	reason: string;
+};
+
+export type TerminateBenchmarkRunInstanceResult = {
+	cleanupConfirmed: boolean;
+} & Record<string, unknown>;
+
+export interface BenchmarkInstanceLifecyclePort {
+	startBenchmarkInstanceWorkflow(
+		input: StartBenchmarkInstanceWorkflowInput,
+	): Promise<StartBenchmarkInstanceWorkflowResult>;
+	terminateBenchmarkRunInstance(
+		input: TerminateBenchmarkRunInstanceInput,
+	): Promise<TerminateBenchmarkRunInstanceResult | null>;
+}
+
 export type PieceMetadataDetailRecord = {
 	name: string;
 	displayName: string;

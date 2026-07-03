@@ -200,6 +200,12 @@ slug lookup through Drizzle. `createBenchmarkRun` accepts `agentSlug` as an
 alternate selector and resolves it through the existing benchmark-agent
 validation path, preserving archived/published/runtime/model checks inside the
 benchmark command service.
+The internal benchmark run-instance start route and the public/internal
+run-instance terminate route now delegate to
+`ApplicationBenchmarkInstanceLifecycleService`. The underlying Dapr workflow
+start, Kueue capacity behavior, sandbox cleanup, resource lease release, and
+durable termination confirmation remain in the documented legacy benchmark
+lifecycle adapter pending the deeper benchmark service extraction.
 SWE-bench exact-ready environment validation now runs through
 `ApplicationBenchmarkEnvironmentValidationService`. Suite/instance/build-status
 queries are confined to `PostgresSwebenchEnvironmentValidationRepository`, and

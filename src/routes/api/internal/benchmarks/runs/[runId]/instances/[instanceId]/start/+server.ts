@@ -1,13 +1,14 @@
-import { error, json } from "@sveltejs/kit";
+import { json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { requireInternal } from "$lib/server/internal-auth";
-import { startBenchmarkInstanceWorkflow } from "$lib/server/benchmarks/service";
+import { getApplicationAdapters } from "$lib/server/application";
 
 export const POST: RequestHandler = async ({ request, params }) => {
 	requireInternal(request);
-	const result = await startBenchmarkInstanceWorkflow({
-		runId: params.runId,
-		instanceId: params.instanceId,
-	});
+	const result =
+		await getApplicationAdapters().benchmarkInstanceLifecycle.startBenchmarkInstanceWorkflow({
+			runId: params.runId,
+			instanceId: params.instanceId,
+		});
 	return json({ success: true, ...result });
 };

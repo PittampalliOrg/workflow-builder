@@ -1,6 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { terminateBenchmarkRunInstance } from "$lib/server/benchmarks/service";
+import { getApplicationAdapters } from "$lib/server/application";
 import { validateInternalToken } from "$lib/server/internal-auth";
 
 export const POST: RequestHandler = async ({ params, locals, request }) => {
@@ -11,15 +11,16 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 	const instanceId = decodeURIComponent(params.instanceId ?? "");
 	if (!runId || !instanceId) return error(400, "runId and instanceId required");
 	const body = await request.json().catch(() => null);
-	const result = await terminateBenchmarkRunInstance({
-		projectId: internal ? null : locals.session?.projectId,
-		runId,
-		instanceId,
-		reason:
-			body && typeof body.reason === "string"
-				? body.reason
-				: "benchmark instance terminated by user",
-	});
+	const result =
+		await getApplicationAdapters().benchmarkInstanceLifecycle.terminateBenchmarkRunInstance({
+			projectId: internal ? null : locals.session?.projectId,
+			runId,
+			instanceId,
+			reason:
+				body && typeof body.reason === "string"
+					? body.reason
+					: "benchmark instance terminated by user",
+		});
 	if (!result) return error(404, "Instance not found in this run");
 	if (!result.cleanupConfirmed) {
 		return json(

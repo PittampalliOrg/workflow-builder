@@ -121,6 +121,7 @@ import { LegacyEnvironmentRepository } from "$lib/server/application/adapters/en
 import { LegacyVaultRepository } from "$lib/server/application/adapters/vaults";
 import { PostgresVaultCredentialRepository } from "$lib/server/application/adapters/vault-credentials";
 import { LegacyBenchmarkCapacityDiagnosticsAdapter } from "$lib/server/application/adapters/benchmark-capacity-diagnostics";
+import { LegacyBenchmarkInstanceLifecycleAdapter } from "$lib/server/application/adapters/benchmark-instance-lifecycle";
 import { EnvBenchmarkRunInstanceMlflowLinks } from "$lib/server/application/adapters/benchmark-run-instance-detail";
 import { LegacyEvaluationRunDetailReadAdapter } from "$lib/server/application/adapters/evaluation-run-detail";
 import {
@@ -288,6 +289,7 @@ import { ApplicationVaultService } from "$lib/server/application/vault-managemen
 import { ApplicationVaultCredentialService } from "$lib/server/application/vault-credentials";
 import { ApplicationBenchmarkCapacityDiagnosticsService } from "$lib/server/application/benchmark-capacity-diagnostics";
 import { ApplicationBenchmarkEnvironmentValidationService } from "$lib/server/application/benchmark-environment-validation";
+import { ApplicationBenchmarkInstanceLifecycleService } from "$lib/server/application/benchmark-instance-lifecycle";
 import { ApplicationBenchmarkRunInstanceDetailService } from "$lib/server/application/benchmark-run-instance-detail";
 import { ApplicationRunCancellationService } from "$lib/server/application/run-cancellation";
 import { ApplicationEvaluationRunDetailService } from "$lib/server/application/evaluation-run-detail";
@@ -465,6 +467,9 @@ export function getApplicationAdapters(
 		| undefined;
 	let benchmarkEnvironmentValidation:
 		| ApplicationBenchmarkEnvironmentValidationService
+		| undefined;
+	let benchmarkInstanceLifecycle:
+		| ApplicationBenchmarkInstanceLifecycleService
 		| undefined;
 	let evaluationRunDetail: ApplicationEvaluationRunDetailService | undefined;
 	let benchmarkRunDetail: ApplicationBenchmarkRunDetailPageService | undefined;
@@ -991,6 +996,11 @@ export function getApplicationAdapters(
 			workspaceProjects: getWorkspaceProjects(),
 			warmPools: getAgentRuntimeWarmPools(),
 		}));
+	const getBenchmarkInstanceLifecycle = () =>
+		(benchmarkInstanceLifecycle ??=
+			new ApplicationBenchmarkInstanceLifecycleService(
+				new LegacyBenchmarkInstanceLifecycleAdapter(),
+			));
 	const getAgentCatalog = () =>
 		(agentCatalog ??= new ApplicationAgentCatalogService({
 			agents: new LegacyAgentCatalogRepository(),
@@ -1302,6 +1312,9 @@ export function getApplicationAdapters(
 		},
 		get benchmarkEnvironmentValidation() {
 			return getBenchmarkEnvironmentValidation();
+		},
+		get benchmarkInstanceLifecycle() {
+			return getBenchmarkInstanceLifecycle();
 		},
 		get evaluationRunLaunch() {
 			return getEvaluationRunLaunch();
