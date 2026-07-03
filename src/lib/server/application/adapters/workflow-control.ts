@@ -30,6 +30,9 @@ export class LegacyWorkflowRunStarterPort implements WorkflowRunStarterPort {
 						ok: true,
 						executionId: result.executionId,
 						instanceId: result.instanceId,
+						workflowId: result.workflowId,
+						workflowName: result.workflowName,
+						reused: result.reused,
 					}
 				: result,
 		);

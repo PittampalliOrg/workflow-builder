@@ -161,6 +161,10 @@ import {
 	LifecycleWorkflowExecutionControllerPort,
 	LifecycleWorkflowExecutionCoordinatorOwnerPort,
 } from "$lib/server/application/adapters/workflow-control";
+import {
+	LegacyTriggeredRunAdmissionPort,
+	ShaTriggeredWorkflowExecutionIdPort,
+} from "$lib/server/application/adapters/triggered-workflow-start";
 import { LegacyWorkflowConnectionRefSyncPort } from "$lib/server/application/adapters/workflow-connections";
 import { LegacyWorkflowCodeCheckpointWorkspacePort } from "$lib/server/application/adapters/workflow-code-checkpoints";
 import {
@@ -222,6 +226,7 @@ import { ApplicationWorkflowBrowserArtifactsService } from "$lib/server/applicat
 import { ApplicationWorkflowExecutionArtifactDiffService } from "$lib/server/application/workflow-execution-artifact-diff";
 import { ApplicationWorkflowExecutionArtifactsService } from "$lib/server/application/workflow-execution-artifacts";
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
+import { ApplicationTriggeredWorkflowStartService } from "$lib/server/application/triggered-workflow-start";
 import { ApplicationWorkflowExecutionFilesService } from "$lib/server/application/workflow-execution-files";
 import { ApplicationWorkflowExecutionLineageService } from "$lib/server/application/workflow-execution-lineage";
 import { ApplicationWorkflowExecutionLogsService } from "$lib/server/application/workflow-execution-logs";
@@ -388,6 +393,9 @@ export function getApplicationAdapters(
 	let workflowExport: ApplicationWorkflowExportService | undefined;
 	let workflowExecutionControl:
 		| ApplicationWorkflowExecutionControlService
+		| undefined;
+	let triggeredWorkflowStart:
+		| ApplicationTriggeredWorkflowStartService
 		| undefined;
 	let workflowExecutionArtifactDiff:
 		| ApplicationWorkflowExecutionArtifactDiffService
@@ -729,6 +737,12 @@ export function getApplicationAdapters(
 			runStarter: new LegacyWorkflowRunStarterPort(),
 			workflowSpecs: new LegacyWorkflowSpecValidatorPort(),
 		}));
+	const getTriggeredWorkflowStart = () =>
+		(triggeredWorkflowStart ??= new ApplicationTriggeredWorkflowStartService({
+			admission: new LegacyTriggeredRunAdmissionPort(),
+			executionIds: new ShaTriggeredWorkflowExecutionIdPort(),
+			runStarter: new LegacyWorkflowRunStarterPort(),
+		}));
 	const getWorkflowExecutionArtifacts = () =>
 		(workflowExecutionArtifacts ??= new ApplicationWorkflowExecutionArtifactsService({
 			workflowData: getWorkflowData(),
@@ -1027,6 +1041,9 @@ export function getApplicationAdapters(
 		},
 		get workflowExecutionControl() {
 			return getWorkflowExecutionControl();
+		},
+		get triggeredWorkflowStart() {
+			return getTriggeredWorkflowStart();
 		},
 		get workflowExecutionArtifacts() {
 			return getWorkflowExecutionArtifacts();

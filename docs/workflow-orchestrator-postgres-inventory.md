@@ -732,6 +732,11 @@ services:
   user-scoped code-function lookup, preview execution-id generation,
   function-router payload construction, Dapr invocation, and router error
   mapping to `ApplicationCodeFunctionExecutionService`.
+- `src/routes/api/internal/workflows/triggers/start/+server.ts` now delegates
+  Dapr CloudEvent normalization, deterministic execution-id derivation,
+  trigger admission gating, idempotent workflow start, and poison-message ACK
+  policy to `ApplicationTriggeredWorkflowStartService`; the route owns only JSON
+  parsing and Dapr pub/sub status response mapping.
 - `src/routes/api/workflow/active-executions/+server.ts`,
   `src/routes/api/internal/agent/workflows/executions/+server.ts`, and
   `src/routes/api/internal/agent/workflows/executions/[executionId]/status/+server.ts`

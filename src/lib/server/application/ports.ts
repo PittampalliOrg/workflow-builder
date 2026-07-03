@@ -3243,9 +3243,12 @@ export interface WorkflowApprovalEventPort {
 }
 
 export type WorkflowRunStartInput = {
-	workflowId: string;
+	workflowId?: string;
+	workflowName?: string;
 	userId?: string;
 	triggerData: Record<string, unknown>;
+	executionId?: string;
+	idempotent?: boolean;
 	resumeFromNode?: string;
 	seedWorkspaceFrom?: string;
 	rerunOfExecutionId?: string;
@@ -3258,6 +3261,9 @@ export type WorkflowRunStartResult =
 			ok: true;
 			executionId: string;
 			instanceId: string | null;
+			workflowId?: string;
+			workflowName?: string;
+			reused?: boolean;
 	  }
 	| { ok: false; status: number; error: string };
 
