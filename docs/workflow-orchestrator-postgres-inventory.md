@@ -565,6 +565,12 @@ The first UI-facing route has also moved behind the application service:
   connection-usage mapping are no longer page-loader behavior; the loader only
   obtains workspace context, calls the application service, and maps missing
   pieces to 404.
+- The workflow run shim plus the artifacts, sessions, lineage, spec-diff, and
+  metrics execution read APIs now use `workflowData.getScopedExecutionById`.
+  Project/workspace scoping for these run-detail reads is application-service
+  policy rather than route code; the routes authenticate, call the scoped use
+  case, map missing/out-of-scope executions to 404, and keep their existing
+  read-model response shaping.
 - `src/routes/api/v1/agent-runtimes/+server.ts`,
   `src/routes/api/v1/agent-runtimes/[slug]/+server.ts`,
   `src/routes/api/v1/agent-runtimes/[slug]/wake/+server.ts`,

@@ -4,12 +4,13 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
+	const execution = {
+		id: "exec-1",
+		userId: "user-1",
+		projectId: "project-1",
+	};
 	const workflowData = {
-		getExecutionById: vi.fn(async () => ({
-			id: "exec-1",
-			userId: "user-1",
-			projectId: "project-1",
-		})),
+		getScopedExecutionById: vi.fn(async (): Promise<typeof execution | null> => execution),
 		listWorkflowArtifactsByExecutionId: vi.fn(async () => [
 			{
 				id: "artifact-1",
@@ -28,7 +29,7 @@ const mocks = vi.hoisted(() => {
 			},
 		]),
 	};
-	return { workflowData };
+	return { execution, workflowData };
 });
 
 vi.mock("$lib/server/application", () => ({
@@ -65,6 +66,8 @@ describe("workflow execution artifacts route", () => {
 			"utf8",
 		);
 		expect(source).toContain("getApplicationAdapters");
+		expect(source).toContain("workflowData.getScopedExecutionById");
+		expect(source).not.toContain("$lib/server/workflows/project-scope");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
 	});
@@ -82,16 +85,16 @@ describe("workflow execution artifacts route", () => {
 				},
 			],
 		});
-		expect(mocks.workflowData.getExecutionById).toHaveBeenCalledWith("exec-1");
+		expect(mocks.workflowData.getScopedExecutionById).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
 		expect(mocks.workflowData.listWorkflowArtifactsByExecutionId).toHaveBeenCalledWith("exec-1");
 	});
 
 	it("hides artifacts when the execution is outside the active workspace", async () => {
-		mocks.workflowData.getExecutionById.mockResolvedValueOnce({
-			id: "exec-1",
-			userId: "user-1",
-			projectId: "project-2",
-		});
+		mocks.workflowData.getScopedExecutionById.mockResolvedValueOnce(null);
 
 		await expectHttpStatus(Promise.resolve(GET(event() as never)), 404);
 		expect(mocks.workflowData.listWorkflowArtifactsByExecutionId).not.toHaveBeenCalled();

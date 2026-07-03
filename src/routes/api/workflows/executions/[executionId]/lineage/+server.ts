@@ -1,7 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getApplicationAdapters } from '$lib/server/application';
-import { isResourceInScope } from '$lib/server/workflows/project-scope';
 
 /**
  * GET /api/workflows/executions/[executionId]/lineage
@@ -24,9 +23,12 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 	// Scope check on the requested run (404 hides cross-workspace existence).
 	const workflowData = getApplicationAdapters().workflowData;
-	const self = await workflowData.getExecutionById(params.executionId);
+	const self = await workflowData.getScopedExecutionById({
+		executionId: params.executionId,
+		userId: locals.session.userId,
+		projectId: locals.session.projectId,
+	});
 	if (!self) return error(404, 'Execution not found');
-	if (!isResourceInScope(self, locals.session)) return error(404, 'Execution not found');
 
 	const lineage = await workflowData.getExecutionLineage(params.executionId);
 	if (!lineage) return error(404, 'Execution not found');

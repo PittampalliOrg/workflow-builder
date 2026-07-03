@@ -12,7 +12,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
-import { isResourceInScope } from "$lib/server/workflows/project-scope";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -23,7 +22,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const workflowData = getApplicationAdapters().workflowData;
 	let execution;
 	try {
-		execution = await workflowData.getExecutionById(executionId);
+		execution = await workflowData.getScopedExecutionById({
+			executionId,
+			userId: locals.session.userId,
+			projectId: locals.session.projectId,
+		});
 	} catch (err) {
 		console.error("[WorkflowArtifacts] execution lookup failed:", err);
 		return error(
@@ -32,10 +35,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		);
 	}
 
-	// Workspace-scope check via the parent execution row.
-	if (!isResourceInScope(execution, locals.session)) {
-		return error(404, "Execution not found");
-	}
+	if (!execution) return error(404, "Execution not found");
 
 	let artifacts;
 	try {

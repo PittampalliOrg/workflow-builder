@@ -32,7 +32,7 @@ const mocks = vi.hoisted(() => {
 		},
 	];
 	const workflowData = {
-		getExecutionById: vi.fn(async () => execution),
+		getScopedExecutionById: vi.fn(async (): Promise<typeof execution | null> => execution),
 		listExecutionSessions: vi.fn(async () => sessions),
 	};
 	return { execution, sessions, workflowData };
@@ -64,7 +64,7 @@ async function expectHttpStatus(promise: Promise<unknown>, status: number) {
 describe("workflow execution sessions route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.workflowData.getExecutionById.mockResolvedValue(mocks.execution);
+		mocks.workflowData.getScopedExecutionById.mockResolvedValue(mocks.execution);
 		mocks.workflowData.listExecutionSessions.mockResolvedValue(mocks.sessions);
 	});
 
@@ -74,6 +74,8 @@ describe("workflow execution sessions route", () => {
 			"utf8",
 		);
 		expect(source).toContain("getApplicationAdapters");
+		expect(source).toContain("workflowData.getScopedExecutionById");
+		expect(source).not.toContain("$lib/server/workflows/project-scope");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
 	});
@@ -106,7 +108,11 @@ describe("workflow execution sessions route", () => {
 				},
 			],
 		});
-		expect(mocks.workflowData.getExecutionById).toHaveBeenCalledWith("exec-child");
+		expect(mocks.workflowData.getScopedExecutionById).toHaveBeenCalledWith({
+			executionId: "exec-child",
+			userId: "user-1",
+			projectId: "project-1",
+		});
 		expect(mocks.workflowData.listExecutionSessions).toHaveBeenCalledWith({
 			executionId: "exec-child",
 			projectId: "project-1",
@@ -115,10 +121,7 @@ describe("workflow execution sessions route", () => {
 	});
 
 	it("hides executions outside the active workspace", async () => {
-		mocks.workflowData.getExecutionById.mockResolvedValueOnce({
-			...mocks.execution,
-			projectId: "project-2",
-		});
+		mocks.workflowData.getScopedExecutionById.mockResolvedValueOnce(null);
 
 		await expectHttpStatus(Promise.resolve(GET(event() as never)), 404);
 		expect(mocks.workflowData.listExecutionSessions).not.toHaveBeenCalled();

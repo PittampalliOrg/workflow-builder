@@ -2398,6 +2398,12 @@ export type WorkflowExecutionRecord = {
 	stopReason: string | null;
 };
 
+export type WorkflowExecutionScopeInput = {
+	executionId: string;
+	userId: string;
+	projectId?: string | null;
+};
+
 export type WorkflowExecutionLineageNode = {
 	id: string;
 	status: string | null;
@@ -5005,6 +5011,9 @@ export interface WorkflowDataService {
 	}): Promise<UserApiKeyWithPlaintext | null>;
 	assertExecutionReadModelReady(): Promise<void>;
 	getExecutionById(id: string): Promise<WorkflowExecutionRecord | null>;
+	getScopedExecutionById(
+		input: WorkflowExecutionScopeInput,
+	): Promise<WorkflowExecutionRecord | null>;
 	getExecutionByDaprInstanceId(
 		instanceId: string,
 	): Promise<WorkflowExecutionRecord | null>;

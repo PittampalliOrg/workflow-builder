@@ -142,6 +142,7 @@ import type {
 	WorkflowExecutionReadModelPatch,
 	WorkflowExecutionRepository,
 	WorkflowExecutionRecord,
+	WorkflowExecutionScopeInput,
 	WorkflowExecutionStatus,
 	WorkflowSessionEventNotification,
 	WorkflowSessionEventNotificationSource,
@@ -376,6 +377,20 @@ function resolvePublicMcpGatewayBaseUrl(requestUrl?: string | null): string | nu
 	} catch {
 		return null;
 	}
+}
+
+function isScopedExecutionInScope(
+	execution: WorkflowExecutionRecord | null,
+	input: { userId: string; projectId?: string | null },
+): execution is WorkflowExecutionRecord {
+	if (!execution) return false;
+	if (execution.projectId && input.projectId) {
+		return execution.projectId === input.projectId;
+	}
+	if (!execution.projectId) {
+		return execution.userId === input.userId;
+	}
+	return execution.userId === input.userId;
 }
 
 function buildHostedMcpServerUrl(
@@ -4350,6 +4365,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	getExecutionById(id: string) {
 		return this.deps.workflowExecutions.getById(id);
+	}
+
+	async getScopedExecutionById(
+		input: WorkflowExecutionScopeInput,
+	): Promise<WorkflowExecutionRecord | null> {
+		const execution = await this.deps.workflowExecutions.getById(input.executionId);
+		return isScopedExecutionInScope(execution, input) ? execution : null;
 	}
 
 	getExecutionByDaprInstanceId(instanceId: string) {

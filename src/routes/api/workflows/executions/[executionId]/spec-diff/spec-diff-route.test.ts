@@ -48,6 +48,7 @@ const mocks = vi.hoisted(() => {
 		resumeFromNode: null,
 	};
 	const workflowData = {
+		getScopedExecutionById: vi.fn(async (): Promise<typeof childExecution | null> => childExecution),
 		getExecutionById: vi.fn(async (id: string) =>
 			id === "exec-parent" ? parentExecution : childExecution,
 		),
@@ -81,6 +82,7 @@ async function expectHttpStatus(promise: Promise<unknown>, status: number) {
 describe("workflow execution spec-diff route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mocks.workflowData.getScopedExecutionById.mockResolvedValue(mocks.childExecution);
 		mocks.workflowData.getExecutionById.mockImplementation(async (id: string) =>
 			id === "exec-parent" ? mocks.parentExecution : mocks.childExecution,
 		);
@@ -92,6 +94,8 @@ describe("workflow execution spec-diff route", () => {
 			"utf8",
 		);
 		expect(source).toContain("getApplicationAdapters");
+		expect(source).toContain("workflowData.getScopedExecutionById");
+		expect(source).not.toContain("$lib/server/workflows/project-scope");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
 	});
@@ -109,17 +113,18 @@ describe("workflow execution spec-diff route", () => {
 			removed: [],
 			changed: [expect.objectContaining({ name: "refine" })],
 		});
-		expect(mocks.workflowData.getExecutionById).toHaveBeenCalledWith("exec-child");
+		expect(mocks.workflowData.getScopedExecutionById).toHaveBeenCalledWith({
+			executionId: "exec-child",
+			userId: "user-1",
+			projectId: "project-1",
+		});
 		expect(mocks.workflowData.getExecutionById).toHaveBeenCalledWith("exec-parent");
 	});
 
 	it("hides executions outside the active workspace", async () => {
-		mocks.workflowData.getExecutionById.mockResolvedValueOnce({
-			...mocks.childExecution,
-			projectId: "project-2",
-		});
+		mocks.workflowData.getScopedExecutionById.mockResolvedValueOnce(null);
 
 		await expectHttpStatus(Promise.resolve(GET(event() as never)), 404);
-		expect(mocks.workflowData.getExecutionById).toHaveBeenCalledTimes(1);
+		expect(mocks.workflowData.getExecutionById).not.toHaveBeenCalled();
 	});
 });

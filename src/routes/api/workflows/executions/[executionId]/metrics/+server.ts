@@ -1,7 +1,6 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getApplicationAdapters } from '$lib/server/application';
-import { assertInScope } from '$lib/server/workflows/project-scope';
 import { costFor, formatCurrency } from '$lib/server/pricing/model-pricing';
 
 /**
@@ -21,8 +20,12 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, 'Authentication required');
 
 	const workflowData = getApplicationAdapters().workflowData;
-	const execution = await workflowData.getExecutionById(params.executionId);
-	assertInScope(execution, locals.session, 'Execution not found');
+	const execution = await workflowData.getScopedExecutionById({
+		executionId: params.executionId,
+		userId: locals.session.userId,
+		projectId: locals.session.projectId,
+	});
+	if (!execution) return error(404, 'Execution not found');
 	const rows = await workflowData.aggregateExecutionUsageMetrics({
 		executionId: params.executionId,
 		projectId: locals.session.projectId,

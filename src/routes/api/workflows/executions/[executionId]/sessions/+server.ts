@@ -1,7 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getApplicationAdapters } from '$lib/server/application';
-import { isResourceInScope } from '$lib/server/workflows/project-scope';
 
 /**
  * GET /api/workflows/executions/[executionId]/sessions
@@ -20,8 +19,12 @@ import { isResourceInScope } from '$lib/server/workflows/project-scope';
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, 'Authentication required');
 	const workflowData = getApplicationAdapters().workflowData;
-	const execution = await workflowData.getExecutionById(params.executionId);
-	if (!isResourceInScope(execution, locals.session)) return error(404, 'Execution not found');
+	const execution = await workflowData.getScopedExecutionById({
+		executionId: params.executionId,
+		userId: locals.session.userId,
+		projectId: locals.session.projectId,
+	});
+	if (!execution) return error(404, 'Execution not found');
 
 	const rows = await workflowData.listExecutionSessions({
 		executionId: params.executionId,

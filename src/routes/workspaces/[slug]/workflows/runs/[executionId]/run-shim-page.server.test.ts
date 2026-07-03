@@ -11,8 +11,8 @@ describe("workspace workflow run shim loader", () => {
 		);
 
 		expect(source).toContain("getApplicationAdapters");
-		expect(source).toContain("workflowData.getExecutionById");
-		expect(source).toContain("isResourceInScope");
+		expect(source).toContain("workflowData.getScopedExecutionById");
+		expect(source).not.toContain("$lib/server/workflows/project-scope");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");

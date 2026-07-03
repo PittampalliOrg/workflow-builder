@@ -1944,6 +1944,76 @@ describe("ApplicationWorkflowDataService", () => {
 		});
 	});
 
+	it("returns scoped execution records through the execution port", async () => {
+		const execution = workflowExecutionRecord({
+			id: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
+		const workflowExecutions = {
+			getById: vi.fn(async () => execution),
+		};
+		const { service } = makeService({ workflowExecutions });
+
+		await expect(
+			service.getScopedExecutionById({
+				executionId: "exec-1",
+				userId: "user-2",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual(execution);
+		expect(workflowExecutions.getById).toHaveBeenCalledWith("exec-1");
+	});
+
+	it("hides scoped execution records outside the caller project", async () => {
+		const workflowExecutions = {
+			getById: vi.fn(async () =>
+				workflowExecutionRecord({
+					id: "exec-1",
+					userId: "user-1",
+					projectId: "project-2",
+				}),
+			),
+		};
+		const { service } = makeService({ workflowExecutions });
+
+		await expect(
+			service.getScopedExecutionById({
+				executionId: "exec-1",
+				userId: "user-1",
+				projectId: "project-1",
+			}),
+		).resolves.toBeNull();
+	});
+
+	it("preserves legacy owner fallback for unscoped execution records", async () => {
+		const workflowExecutions = {
+			getById: vi.fn(async () =>
+				workflowExecutionRecord({
+					id: "exec-1",
+					userId: "user-1",
+					projectId: null,
+				}),
+			),
+		};
+		const { service } = makeService({ workflowExecutions });
+
+		await expect(
+			service.getScopedExecutionById({
+				executionId: "exec-1",
+				userId: "user-1",
+				projectId: "project-2",
+			}),
+		).resolves.toEqual(expect.objectContaining({ id: "exec-1" }));
+		await expect(
+			service.getScopedExecutionById({
+				executionId: "exec-1",
+				userId: "user-2",
+				projectId: "project-2",
+			}),
+		).resolves.toBeNull();
+	});
+
 	it("delegates piece execution artifact reads to the piece execution port", async () => {
 		const pieceExecution = {
 			idempotencyKey: "wf:exec:task",

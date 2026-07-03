@@ -2,7 +2,6 @@ import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { createTwoFilesPatch } from 'diff';
 import { getApplicationAdapters } from '$lib/server/application';
-import { isResourceInScope } from '$lib/server/workflows/project-scope';
 import { getTask, getTaskNames, type Spec } from '$lib/helpers/spec-mutations';
 
 /**
@@ -33,9 +32,12 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, 'Authentication required');
 
 	const workflowData = getApplicationAdapters().workflowData;
-	const self = await workflowData.getExecutionById(params.executionId);
+	const self = await workflowData.getScopedExecutionById({
+		executionId: params.executionId,
+		userId: locals.session.userId,
+		projectId: locals.session.projectId,
+	});
 	if (!self) return error(404, 'Execution not found');
-	if (!isResourceInScope(self, locals.session)) return error(404, 'Execution not found');
 
 	const parentId = self.rerunOfExecutionId ?? null;
 	if (!parentId) {
