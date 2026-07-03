@@ -682,6 +682,63 @@ export interface DashboardReadRepository {
 	}): Promise<DashboardReadModel>;
 }
 
+export type HomePageUserReadModel = {
+	name: string | null;
+	email: string | null;
+};
+
+export type HomePageRecentSessionReadModel = {
+	id: string;
+	title: string | null;
+	status: string;
+	agentId: string;
+	updatedAt: string;
+};
+
+export type HomePageRecentRunReadModel = {
+	executionId: string;
+	workflowId: string;
+	workflowName: string;
+	status: string;
+	startedAt: string;
+	durationMs: number | null;
+};
+
+export type HomePageReadModel = {
+	user: HomePageUserReadModel | null;
+	recentSessions: HomePageRecentSessionReadModel[];
+	recentRuns: HomePageRecentRunReadModel[];
+};
+
+export type HomePageRecentSessionRecord = {
+	id: string;
+	title: string | null;
+	status: string;
+	agentId: string;
+	updatedAt: Date;
+};
+
+export type HomePageRecentRunRecord = {
+	executionId: string;
+	workflowId: string;
+	workflowName: string;
+	status: string;
+	startedAt: Date;
+	duration: string | null;
+};
+
+export interface HomePageReadRepository {
+	listRecentHomeSessions(input: {
+		userId: string;
+		projectId?: string | null;
+		limit: number;
+	}): Promise<HomePageRecentSessionRecord[]>;
+	listRecentHomeRuns(input: {
+		projectId: string;
+		limit: number;
+	}): Promise<HomePageRecentRunRecord[]>;
+}
+
 export type BenchmarkInstanceDetailReadModel = {
 	id: string;
 	instanceId: string;
@@ -4033,6 +4090,11 @@ export interface WorkflowDataService {
 		userId: string;
 		now?: Date;
 	}): Promise<DashboardReadModel>;
+	getHomePageReadModel(input: {
+		userId: string;
+		projectId?: string | null;
+		limit?: number;
+	}): Promise<HomePageReadModel>;
 	getBenchmarkInstanceDetail(input: {
 		suiteSlug: string;
 		instanceId: string;

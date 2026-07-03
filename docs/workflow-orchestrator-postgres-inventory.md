@@ -470,10 +470,12 @@ The first UI-facing route has also moved behind the application service:
   MCP-usage, and per-piece image status SQL is confined to the Postgres admin
   piece adapter. The remaining per-piece image build trigger still delegates to
   the existing `enablePiece` service path.
-- `src/routes/+layout.server.ts` and `src/routes/+page.server.ts` now read
-  sidebar/dashboard user profile data through `workflowData.getUserProfile`.
-  The root UI loaders no longer import `users`, Drizzle, or `$lib/server/db`
-  for profile display fields.
+- `src/routes/+layout.server.ts` reads sidebar profile data through
+  `workflowData.getUserProfile`, and `src/routes/+page.server.ts` reads the
+  root dashboard profile/recent-session/recent-run model through
+  `workflowData.getHomePageReadModel`. The root UI loaders no longer import
+  `users`, legacy session/run registries, Drizzle, or `$lib/server/db` for
+  dashboard display fields.
 - `src/routes/api/v1/agent-runtimes/+server.ts`,
   `src/routes/api/v1/agent-runtimes/[slug]/+server.ts`,
   `src/routes/api/v1/agent-runtimes/[slug]/wake/+server.ts`,

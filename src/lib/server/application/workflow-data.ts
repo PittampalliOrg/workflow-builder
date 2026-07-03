@@ -107,6 +107,8 @@ import type {
 	HostedMcpServerReadModel,
 	HostedMcpServerRecord,
 	HostedMcpServerRepository,
+	HomePageReadModel,
+	HomePageReadRepository,
 	HostedMcpServerStatus,
 	HostedMcpWorkflow,
 	McpAvailabilityReadModel,
@@ -258,6 +260,12 @@ function metadataString(
 		if (typeof value === "number") return String(value);
 	}
 	return null;
+}
+
+function parseDurationMs(value: string | null): number | null {
+	if (!value) return null;
+	const durationMs = Number(value);
+	return Number.isFinite(durationMs) ? durationMs : null;
 }
 
 function normalizePieceName(pieceName: string): string {
@@ -820,6 +828,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			aiAssistantMessages?: WorkflowAiAssistantMessageRepository;
 			securityAudit?: SecurityAuditReadRepository;
 			dashboard?: DashboardReadRepository;
+			homePageReads?: HomePageReadRepository;
 			workflowExecutions: WorkflowExecutionRepository;
 			sessions?: SessionRepository;
 			sessionProvisioning?: SessionProvisioningReader;
@@ -1051,6 +1060,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.dashboard;
 	}
 
+	private requireHomePageReads(): HomePageReadRepository {
+		if (!this.deps.homePageReads) {
+			throw new Error("Home page read repository not configured");
+		}
+		return this.deps.homePageReads;
+	}
+
 	private requireSessionRuntimeConfigs(): SessionRuntimeConfigReader {
 		if (!this.deps.sessionRuntimeConfigs) {
 			throw new Error("Session runtime config reader not configured");
@@ -1130,6 +1146,58 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	getUserProfile(userId: string) {
 		return this.deps.userProfiles.getUserProfile(userId);
+	}
+
+	async getHomePageReadModel(input: {
+		userId: string;
+		projectId?: string | null;
+		limit?: number;
+	}): Promise<HomePageReadModel> {
+		const homePageReads = this.requireHomePageReads();
+		const limit = Math.min(Math.max(input.limit ?? 5, 1), 20);
+		const projectId = input.projectId ?? null;
+		const [profile, recentSessions, recentRuns] = await Promise.all([
+			this.deps.userProfiles.getUserProfile(input.userId).catch(() => null),
+			homePageReads
+				.listRecentHomeSessions({
+					userId: input.userId,
+					projectId,
+					limit,
+				})
+				.catch(() => []),
+			projectId
+				? homePageReads
+						.listRecentHomeRuns({
+							projectId,
+							limit,
+						})
+						.catch(() => [])
+				: Promise.resolve([]),
+		]);
+
+		return {
+			user: profile
+				? {
+						name: profile.name ?? null,
+						email: profile.email ?? null,
+					}
+				: null,
+			recentSessions: recentSessions.map((session) => ({
+				id: session.id,
+				title: session.title ?? null,
+				status: session.status,
+				agentId: session.agentId,
+				updatedAt: session.updatedAt.toISOString(),
+			})),
+			recentRuns: recentRuns.map((run) => ({
+				executionId: run.executionId,
+				workflowId: run.workflowId,
+				workflowName: run.workflowName,
+				status: run.status,
+				startedAt: run.startedAt.toISOString(),
+				durationMs: parseDurationMs(run.duration),
+			})),
+		};
 	}
 
 	async isPlatformAdmin(userId: string) {

@@ -164,6 +164,7 @@ import type {
 	HostedMcpServerRecord,
 	HostedMcpServerRepository,
 	HostedMcpWorkflowSourceRecord,
+	HomePageReadRepository,
 	McpConnectionRecord,
 	McpConnectionRepository,
 	McpRunRecord,
@@ -4641,6 +4642,53 @@ export class PostgresDashboardReadRepository implements DashboardReadRepository 
 			})),
 			recentChanges,
 		};
+	}
+}
+
+export class PostgresHomePageReadRepository implements HomePageReadRepository {
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async listRecentHomeSessions(input: {
+		userId: string;
+		projectId?: string | null;
+		limit: number;
+	}) {
+		const conditions = [
+			eq(sessions.userId, input.userId),
+			isNull(sessions.archivedAt),
+		];
+		if (input.projectId) conditions.push(eq(sessions.projectId, input.projectId));
+		const limit = Math.min(Math.max(input.limit, 1), 20);
+		return this.database
+			.select({
+				id: sessions.id,
+				title: sessions.title,
+				status: sessions.status,
+				agentId: sessions.agentId,
+				updatedAt: sessions.updatedAt,
+			})
+			.from(sessions)
+			.where(and(...conditions))
+			.orderBy(desc(sessions.createdAt))
+			.limit(limit);
+	}
+
+	async listRecentHomeRuns(input: { projectId: string; limit: number }) {
+		const limit = Math.min(Math.max(input.limit, 1), 20);
+		return this.database
+			.select({
+				executionId: workflowExecutions.id,
+				workflowId: workflowExecutions.workflowId,
+				workflowName: workflows.name,
+				status: workflowExecutions.status,
+				startedAt: workflowExecutions.startedAt,
+				duration: workflowExecutions.duration,
+			})
+			.from(workflowExecutions)
+			.innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+			.where(eq(workflowExecutions.projectId, input.projectId))
+			.orderBy(desc(workflowExecutions.startedAt))
+			.limit(limit);
 	}
 }
 

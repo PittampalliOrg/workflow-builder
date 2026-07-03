@@ -21,6 +21,7 @@ import type {
 	DevEnvironmentReadRepository,
 	EvaluationArtifactStore,
 	GoalFlowReadStore,
+	HomePageReadRepository,
 	HostedMcpServerRepository,
 	McpConnectionRepository,
 	McpConnectionRecord,
@@ -205,6 +206,13 @@ function fakeApiKeys(): ApiKeyStore {
 function fakeUserProfiles(): UserProfileRepository {
 	return {
 		getUserProfile: vi.fn(async () => null),
+	};
+}
+
+function fakeHomePageReads(): HomePageReadRepository {
+	return {
+		listRecentHomeSessions: vi.fn(async () => []),
+		listRecentHomeRuns: vi.fn(async () => []),
 	};
 }
 
@@ -1376,6 +1384,7 @@ function makeService(options: {
 	goalFlow?: GoalFlowReadStore;
 	userProfiles?: UserProfileRepository;
 	workspaceProjects?: WorkspaceProjectRepository;
+	homePageReads?: HomePageReadRepository;
 }) {
 	const workflowDefinitions = {
 		getById: vi.fn(async () => options.byId ?? null),
@@ -1432,6 +1441,7 @@ function makeService(options: {
 		aiAssistantMessages: options.aiAssistantMessages,
 		securityAudit: options.securityAudit,
 		dashboard: options.dashboard,
+		homePageReads: options.homePageReads ?? fakeHomePageReads(),
 		workflowExecutions,
 		sessionEvents: options.sessionEvents,
 		sessionRuntimeConfigs:
@@ -1637,6 +1647,126 @@ function makeServiceWithSandboxInventory(
 }
 
 describe("ApplicationWorkflowDataService", () => {
+	it("builds the home page read model through application ports", async () => {
+		const userProfiles: UserProfileRepository = {
+			getUserProfile: vi.fn(async () => ({
+				name: "Ada Lovelace",
+				email: "ada@example.com",
+				image: null,
+				platformRole: "MEMBER" as const,
+			})),
+		};
+		const homePageReads: HomePageReadRepository = {
+			listRecentHomeSessions: vi.fn(async () => [
+				{
+					id: "session-1",
+					title: "Recent session",
+					status: "running",
+					agentId: "agent-1",
+					updatedAt: new Date("2026-01-02T00:00:00.000Z"),
+				},
+			]),
+			listRecentHomeRuns: vi.fn(async () => [
+				{
+					executionId: "exec-1",
+					workflowId: "wf-1",
+					workflowName: "Workflow",
+					status: "success",
+					startedAt: new Date("2026-01-01T00:00:00.000Z"),
+					duration: "1234",
+				},
+			]),
+		};
+		const { service } = makeService({ userProfiles, homePageReads });
+
+		await expect(
+			service.getHomePageReadModel({
+				userId: "user-1",
+				projectId: "project-1",
+				limit: 5,
+			}),
+		).resolves.toEqual({
+			user: {
+				name: "Ada Lovelace",
+				email: "ada@example.com",
+			},
+			recentSessions: [
+				{
+					id: "session-1",
+					title: "Recent session",
+					status: "running",
+					agentId: "agent-1",
+					updatedAt: "2026-01-02T00:00:00.000Z",
+				},
+			],
+			recentRuns: [
+				{
+					executionId: "exec-1",
+					workflowId: "wf-1",
+					workflowName: "Workflow",
+					status: "success",
+					startedAt: "2026-01-01T00:00:00.000Z",
+					durationMs: 1234,
+				},
+			],
+		});
+		expect(homePageReads.listRecentHomeSessions).toHaveBeenCalledWith({
+			userId: "user-1",
+			projectId: "project-1",
+			limit: 5,
+		});
+		expect(homePageReads.listRecentHomeRuns).toHaveBeenCalledWith({
+			projectId: "project-1",
+			limit: 5,
+		});
+	});
+
+	it("omits home page runs when there is no project scope", async () => {
+		const homePageReads = fakeHomePageReads();
+		const { service } = makeService({ homePageReads });
+
+		await service.getHomePageReadModel({
+			userId: "user-1",
+			projectId: null,
+			limit: 5,
+		});
+
+		expect(homePageReads.listRecentHomeSessions).toHaveBeenCalledWith({
+			userId: "user-1",
+			projectId: null,
+			limit: 5,
+		});
+		expect(homePageReads.listRecentHomeRuns).not.toHaveBeenCalled();
+	});
+
+	it("keeps home page recents best-effort", async () => {
+		const userProfiles: UserProfileRepository = {
+			getUserProfile: vi.fn(async () => {
+				throw new Error("profile unavailable");
+			}),
+		};
+		const homePageReads: HomePageReadRepository = {
+			listRecentHomeSessions: vi.fn(async () => {
+				throw new Error("sessions unavailable");
+			}),
+			listRecentHomeRuns: vi.fn(async () => {
+				throw new Error("runs unavailable");
+			}),
+		};
+		const { service } = makeService({ userProfiles, homePageReads });
+
+		await expect(
+			service.getHomePageReadModel({
+				userId: "user-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual({
+			user: null,
+			recentSessions: [],
+			recentRuns: [],
+		});
+	});
+
 	it("resolves auto workflow refs by id before name", async () => {
 		const { service, workflowDefinitions } = makeService({
 			byId: baseWorkflow,

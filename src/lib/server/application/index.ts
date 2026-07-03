@@ -22,6 +22,7 @@ import {
 	PostgresDashboardReadRepository,
 	PostgresEvaluationArtifactStore,
 	PostgresGoalFlowReadStore,
+	PostgresHomePageReadRepository,
 	PostgresHostedMcpServerRepository,
 	PostgresMcpConnectionRepository,
 	PostgresMcpRunRepository,
@@ -160,6 +161,7 @@ export function getApplicationAdapters(
 	let aiAssistantMessages: PostgresWorkflowAiAssistantMessageRepository | undefined;
 	let securityAudit: PostgresSecurityAuditReadRepository | undefined;
 	let dashboard: PostgresDashboardReadRepository | undefined;
+	let homePageReads: PostgresHomePageReadRepository | undefined;
 	let workflowExecutions: PostgresWorkflowExecutionRepository | undefined;
 	let workflowFiles: PostgresWorkflowFileStore | undefined;
 	let sandboxInventory: PostgresSandboxInventoryRepository | undefined;
@@ -256,6 +258,8 @@ export function getApplicationAdapters(
 		(securityAudit ??= new PostgresSecurityAuditReadRepository(getDatabase()));
 	const getDashboard = () =>
 		(dashboard ??= new PostgresDashboardReadRepository(getDatabase()));
+	const getHomePageReads = () =>
+		(homePageReads ??= new PostgresHomePageReadRepository(getDatabase()));
 	const getWorkflowExecutions = () =>
 		(workflowExecutions ??= new PostgresWorkflowExecutionRepository(getDatabase()));
 	const getWorkflowFiles = () =>
@@ -348,6 +352,7 @@ export function getApplicationAdapters(
 			aiAssistantMessages: getAiAssistantMessages(),
 			securityAudit: getSecurityAudit(),
 			dashboard: getDashboard(),
+			homePageReads: getHomePageReads(),
 			workflowExecutions: getWorkflowExecutions(),
 			sessions: getSessions(),
 			sessionProvisioning: getSessionProvisioning(),
