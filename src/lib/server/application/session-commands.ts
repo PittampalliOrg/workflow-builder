@@ -38,6 +38,35 @@ export type CreateInteractiveSessionResult =
 			session: SessionDetail;
 	  };
 
+export type StartSessionWorkflowCommand = {
+	sessionId: string;
+	userId: string;
+	projectId?: string | null;
+};
+
+export type StartSessionWorkflowResult =
+	| {
+			status: "started";
+			instanceId: string;
+			natsSubject: string;
+			alreadyStarted: false;
+	  }
+	| {
+			status: "already_started";
+			instanceId: string;
+			natsSubject: string | null;
+			alreadyStarted: true;
+	  }
+	| {
+			status: "precondition_failed";
+			code: string;
+			provider: string;
+			settingsPath: string;
+			message: string;
+	  }
+	| { status: "not_found"; message: string }
+	| { status: "failed"; message: string };
+
 export class ApplicationSessionCommandService {
 	constructor(
 		private readonly deps: {
@@ -54,6 +83,60 @@ export class ApplicationSessionCommandService {
 
 	listSessions(filter: SessionListInput = {}) {
 		return this.deps.sessions.listSessions(filter);
+	}
+
+	async startSessionWorkflow(
+		input: StartSessionWorkflowCommand,
+	): Promise<StartSessionWorkflowResult> {
+		const session = await this.deps.sessions.getSession(input.sessionId);
+		if (!session || !this.isSessionInProject(session, input.projectId ?? null)) {
+			return { status: "not_found", message: "Session not found" };
+		}
+
+		if (session.daprInstanceId) {
+			return {
+				status: "already_started",
+				instanceId: session.daprInstanceId,
+				natsSubject: session.natsSubject,
+				alreadyStarted: true,
+			};
+		}
+
+		await this.deps.sessions.updateSessionStatusUnlessTerminated({
+			id: input.sessionId,
+			status: "rescheduling",
+			errorMessage: null,
+		});
+
+		try {
+			const runtime = await this.deps.workflowSpawner.spawnSessionWorkflow(
+				input.sessionId,
+			);
+			return {
+				status: "started",
+				instanceId: runtime.instanceId,
+				natsSubject: runtime.natsSubject,
+				alreadyStarted: false,
+			};
+		} catch (err) {
+			const message =
+				err instanceof Error ? err.message : "Session workflow spawn failed";
+			await this.deps.sessions.updateSessionStatusUnlessTerminated({
+				id: input.sessionId,
+				status: "rescheduling",
+				errorMessage: message,
+			});
+			if (err instanceof CliTokenError) {
+				return {
+					status: "precondition_failed",
+					code: err.code,
+					provider: err.provider,
+					settingsPath: "/settings/cli-tokens",
+					message,
+				};
+			}
+			return { status: "failed", message };
+		}
 	}
 
 	async createInteractiveSession(
@@ -389,6 +472,13 @@ export class ApplicationSessionCommandService {
 			}
 			return null;
 		}
+	}
+
+	private isSessionInProject(
+		session: SessionDetail,
+		projectId?: string | null,
+	): boolean {
+		return !projectId || session.projectId === projectId;
 	}
 }
 

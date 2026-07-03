@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
+import { CliTokenError } from "$lib/server/users/cli-credentials";
 import type {
 	SandboxProvisioner,
 	SessionAgentResolver,
@@ -127,6 +128,94 @@ describe("ApplicationSessionCommandService", () => {
 		expect(result.session.errorMessage).toBe(
 			"OpenShell sandbox provisioning failed: failed to decode Protobuf message",
 		);
+	});
+
+	it("returns existing workflow runtime when the session is already started", async () => {
+		vi.mocked(sessions.getSession).mockResolvedValue({
+			...sampleSession(),
+			daprInstanceId: "existing-instance",
+			natsSubject: "session.events.existing-instance",
+		});
+
+		const result = await service.startSessionWorkflow({
+			sessionId: "session-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
+
+		expect(result).toEqual({
+			status: "already_started",
+			instanceId: "existing-instance",
+			natsSubject: "session.events.existing-instance",
+			alreadyStarted: true,
+		});
+		expect(sessions.updateSessionStatusUnlessTerminated).not.toHaveBeenCalled();
+		expect(workflowSpawner.spawnSessionWorkflow).not.toHaveBeenCalled();
+	});
+
+	it("starts an unstarted session through workflow spawner and status ports", async () => {
+		vi.mocked(sessions.getSession).mockResolvedValue(sampleSession());
+
+		const result = await service.startSessionWorkflow({
+			sessionId: "session-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
+
+		expect(result).toEqual({
+			status: "started",
+			instanceId: "session-1",
+			natsSubject: "session.events.session-1",
+			alreadyStarted: false,
+		});
+		expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenCalledWith({
+			id: "session-1",
+			status: "rescheduling",
+			errorMessage: null,
+		});
+		expect(workflowSpawner.spawnSessionWorkflow).toHaveBeenCalledWith("session-1");
+	});
+
+	it("keeps CLI token spawn failures retry-safe and returns a precondition result", async () => {
+		vi.mocked(sessions.getSession).mockResolvedValue(sampleSession());
+		vi.mocked(workflowSpawner.spawnSessionWorkflow).mockRejectedValue(
+			new CliTokenError("CLI_TOKEN_MISSING", "agy", "AGY login required"),
+		);
+
+		const result = await service.startSessionWorkflow({
+			sessionId: "session-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
+
+		expect(result).toEqual({
+			status: "precondition_failed",
+			code: "CLI_TOKEN_MISSING",
+			provider: "agy",
+			settingsPath: "/settings/cli-tokens",
+			message: "AGY login required",
+		});
+		expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenLastCalledWith({
+			id: "session-1",
+			status: "rescheduling",
+			errorMessage: "AGY login required",
+		});
+	});
+
+	it("does not start sessions outside the caller project", async () => {
+		vi.mocked(sessions.getSession).mockResolvedValue({
+			...sampleSession(),
+			projectId: "other-project",
+		});
+
+		const result = await service.startSessionWorkflow({
+			sessionId: "session-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
+
+		expect(result).toEqual({ status: "not_found", message: "Session not found" });
+		expect(workflowSpawner.spawnSessionWorkflow).not.toHaveBeenCalled();
 	});
 });
 
