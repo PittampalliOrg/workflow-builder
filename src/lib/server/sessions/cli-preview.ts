@@ -14,11 +14,8 @@
  * `openshell`-namespace NetworkPolicy does not apply here.
  */
 import http from "node:http";
-import { and, eq } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import { agents, sessions, workflowExecutions } from "$lib/server/db/schema";
+import type { SessionRuntimeDebugTarget } from "$lib/server/application/ports";
 import { getAgentWorkflowHostPod } from "$lib/server/kube/client";
-import { resolveSessionRuntimeDebugTarget } from "$lib/server/sessions/runtime-target";
 import {
 	maybeProvisionAgentWorkflowHost,
 	sessionHostAppId,
@@ -47,6 +44,14 @@ const CLI_AGENT_PORT = 8002;
  */
 const CLI_PREVIEW_RUNTIME = "claude-code-cli";
 
+export type CliPreviewDataPort = SandboxPreviewInfoDataPort & {
+	getSessionRuntimeDebugTarget(input: {
+		sessionId: string;
+		projectId?: string | null;
+	}): Promise<SessionRuntimeDebugTarget | null>;
+	hasInteractiveCliSessionForExecution(executionId: string): Promise<boolean>;
+};
+
 /** Hard wall-clock lifetime (minutes) of an on-demand execution preview pod. It
  * self-reaps via the Sandbox CR timeout; re-open the preview to get a fresh one. */
 function cliPreviewTtlMinutes(): number {
@@ -64,11 +69,15 @@ export type CliPreviewTarget = { podIP: string; runtime: string };
 export async function resolveCliPreviewTarget(
 	sessionId: string,
 	projectId: string | undefined,
+	data: Pick<CliPreviewDataPort, "getSessionRuntimeDebugTarget">,
 ): Promise<
 	| { ok: true; target: CliPreviewTarget }
 	| { ok: false; status: number; message: string }
 > {
-	const target = await resolveSessionRuntimeDebugTarget(sessionId, projectId);
+	const target = await data.getSessionRuntimeDebugTarget({
+		sessionId,
+		projectId: projectId ?? null,
+	});
 	if (!target) return { ok: false, status: 404, message: "Session not found in workspace" };
 	const descriptor = getRuntimeDescriptor(target.agentRuntime);
 	if (descriptor?.capabilities?.interactiveTerminal !== true) {
@@ -336,24 +345,11 @@ export type ResolveExecutionCliPreviewResult =
 export type ExecutionPreviewBackend = "cli" | "openshell" | null;
 export async function executionPreviewBackend(
 	executionId: string,
-	sandboxPreviewData: SandboxPreviewInfoDataPort,
+	data: CliPreviewDataPort,
 ): Promise<ExecutionPreviewBackend> {
-	if (await executionIsInteractiveCli(executionId)) return "cli";
-	const info = await getExecutionSandboxPreviewInfo(executionId, sandboxPreviewData);
+	if (await data.hasInteractiveCliSessionForExecution(executionId)) return "cli";
+	const info = await getExecutionSandboxPreviewInfo(executionId, data);
 	return info ? "openshell" : null;
-}
-
-/** True when ANY session of this execution ran on an interactive-cli runtime. */
-async function executionIsInteractiveCli(executionId: string): Promise<boolean> {
-	if (!db) return false;
-	const rows = await db
-		.select({ runtime: agents.runtime })
-		.from(sessions)
-		.innerJoin(agents, eq(agents.id, sessions.agentId))
-		.where(eq(sessions.workflowExecutionId, executionId));
-	return rows.some(
-		(r) => getRuntimeDescriptor(r.runtime)?.family === "interactive-cli",
-	);
 }
 
 /**
@@ -366,19 +362,13 @@ async function executionIsInteractiveCli(executionId: string): Promise<boolean> 
 export async function resolveExecutionCliPreviewTarget(
 	executionId: string,
 	projectId: string | undefined,
+	data: Pick<
+		CliPreviewDataPort,
+		"getExecutionById" | "hasInteractiveCliSessionForExecution"
+	>,
 	opts?: { readyBudgetSeconds?: number; provisionIfMissing?: boolean },
 ): Promise<ResolveExecutionCliPreviewResult> {
-	if (!db) return { ok: false, status: 503, message: "Database not configured" };
-
-	const [exec] = await db
-		.select({
-			id: workflowExecutions.id,
-			daprInstanceId: workflowExecutions.daprInstanceId,
-			projectId: workflowExecutions.projectId,
-		})
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, executionId))
-		.limit(1);
+	const exec = await data.getExecutionById(executionId);
 	if (!exec) return { ok: false, status: 404, message: "Run not found" };
 	// Workspace scope: only enforce when the run carries a project (older rows may
 	// be null); a mismatch is a 404 (don't leak existence across workspaces).
@@ -386,7 +376,7 @@ export async function resolveExecutionCliPreviewTarget(
 		return { ok: false, status: 404, message: "Run not found in workspace" };
 	}
 
-	if (!(await executionIsInteractiveCli(executionId))) {
+	if (!(await data.hasInteractiveCliSessionForExecution(executionId))) {
 		return {
 			ok: false,
 			status: 409,

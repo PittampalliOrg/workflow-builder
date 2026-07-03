@@ -38,6 +38,9 @@ The dev-preview lifecycle now persists retained workspace rows, resolves
 canonical execution ids, marks cleaned previews, and writes source-bundle
 artifacts through workflow-data application ports; `dev-preview.ts` no longer
 imports DB, Drizzle, workflow artifact, or file-registry modules directly.
+The CLI preview helper now resolves session runtime targets, execution rows, and
+interactive-CLI detection through workflow-data ports; direct DB/Drizzle imports
+are confined to the Postgres session adapter for that preview lookup.
 The benchmark instance-detail API now loads SWE-bench instance details through
 a workflow-data read model, and its contamination-risk audit authorization check
 uses workflow-data user/project ports instead of the route utility reading
@@ -961,12 +964,14 @@ services:
   now delegate preview target resolution, preview process start, reverse proxy
   request shaping, and preview-backend detection to
   `ApplicationCliPreviewService`. The SvelteKit handlers no longer import the
-  CLI preview helper, Drizzle, or `$lib/server/db` directly. The existing
-  `src/lib/server/sessions/cli-preview.ts` helper still owns DB-backed
-  execution/session lookup, Kubernetes pod/provisioning calls, and low-level
-  HTTP proxying behind `LegacyCliPreviewGatewayPort`; splitting those internals
-  into narrower workflow-data, runtime, and proxy ports remains the next
-  preview portability slice.
+  CLI preview helper, Drizzle, or `$lib/server/db` directly.
+  `src/lib/server/sessions/cli-preview.ts` now receives workflow-data readers
+  for session runtime target lookup, execution lookup, interactive-CLI detection,
+  and retained OpenShell fallback metadata; the helper no longer imports direct
+  DB/Drizzle modules or the legacy DB-backed runtime-target helper. Kubernetes
+  pod/provisioning calls and low-level HTTP proxying still sit behind
+  `LegacyCliPreviewGatewayPort`; splitting those runtime/proxy internals into
+  narrower ports remains a later preview portability slice.
 - `src/routes/api/workflows/executions/[executionId]/sandbox-preview/+server.ts`
   and
   `src/routes/api/workflows/executions/[executionId]/sandbox-preview/[previewId]/[...path]/+server.ts`
@@ -974,11 +979,10 @@ services:
   runtime-preview page URL construction, proxy request forwarding, and response
   body/header rewriting to `ApplicationSandboxPreviewService`. The route family
   no longer imports the sandbox-preview helper, runtime-preview URL helper,
-  OpenShell runtime client, Drizzle, or `$lib/server/db` directly. The existing
-  DB-backed retained-sandbox lookup, workspace route lookup, and OpenShell
-  runtime fetch remain behind `LegacySandboxPreviewGatewayPort`; splitting those
-  internals into narrower workflow-data, workspace-route, and runtime proxy
-  ports remains a later preview portability slice.
+  OpenShell runtime client, Drizzle, or `$lib/server/db` directly. Retained
+  sandbox metadata is resolved through workflow-data ports; OpenShell runtime
+  fetch/proxy behavior remains behind `LegacySandboxPreviewGatewayPort` pending
+  a narrower runtime proxy port.
 - `src/routes/api/v1/sessions/[id]/control/set-model/+server.ts`,
   `src/routes/api/v1/sessions/[id]/control/set-permission-mode/+server.ts`,
   and `src/routes/api/v1/sessions/[id]/control/update-agent-config/+server.ts`
@@ -1022,8 +1026,9 @@ detail/title/archive/delete, fork, goal,
 goal-flow, event list/append/detail, runtime-config, config patch commands,
 runtime debug target routes, resources, and event-stream routes are also clean.
 The session/execution CLI preview and OpenShell sandbox preview route families
-are also presentation-clean; their remaining direct DB/Kubernetes/OpenShell
-coupling is documented inside legacy preview gateway adapters.
+are also presentation-clean; their persistence lookups now flow through
+workflow-data, while remaining Kubernetes/OpenShell transport coupling is
+documented inside legacy preview gateway adapters.
 The dashboard route is also clean.
 The sandbox-delete route's session read is also clean, while its lifecycle and
 Kubernetes/OpenShell deletion behavior intentionally remain in the route.
@@ -1038,9 +1043,9 @@ categories include:
 - session/runtime/workspace helpers under `src/lib/server/sessions/**`,
   `src/lib/server/openshell-sessions.ts`, `src/lib/server/sandbox-sessions.ts`,
   and related API routes.
-- session/execution CLI preview and OpenShell sandbox-preview helper internals,
-  where live runtime transport is already adapter-owned but some lookup helpers
-  still need narrower workflow-data/runtime/proxy ports.
+- preview runtime/proxy helper internals, where persistence lookups have moved
+  behind workflow-data but live Kubernetes/OpenShell transport still needs
+  narrower runtime/proxy ports.
 - benchmark/evaluation/admin/reporting API surfaces outside the migrated
   workspace benchmark browser/run-list/compare loaders.
 - startup/migration/bootstrap and remaining non-migrated API route handlers.

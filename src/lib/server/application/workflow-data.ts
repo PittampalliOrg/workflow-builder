@@ -4513,6 +4513,15 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return candidates;
 	}
 
+	async hasInteractiveCliSessionForExecution(executionId: string): Promise<boolean> {
+		const rows = await this.requireSessions().listWorkflowExecutionSessionRuntimes({
+			workflowExecutionId: executionId,
+		});
+		return rows.some(
+			(row) => getRuntimeDescriptor(row.agentRuntime)?.family === "interactive-cli",
+		);
+	}
+
 	getWorkflowEnsureSession(sessionId: string) {
 		return this.requireSessions().getWorkflowEnsureSession(sessionId);
 	}

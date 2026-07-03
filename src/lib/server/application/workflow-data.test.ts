@@ -612,6 +612,7 @@ function fakeSessions(): SessionRepository {
 			agentSlug: "browser-agent",
 		})),
 		listCliWorkspaceSessionCandidates: vi.fn(async () => []),
+		listWorkflowExecutionSessionRuntimes: vi.fn(async () => []),
 		getWorkflowEnsureSession: vi.fn(async () => ({
 			id: "session-1",
 			agentId: "agent-1",
@@ -2191,6 +2192,31 @@ describe("ApplicationWorkflowDataService", () => {
 			executionId: "exec-1",
 			limit: 8,
 		});
+	});
+
+	it("detects interactive CLI executions through session runtime ports", async () => {
+		const sessions = {
+			...fakeSessions(),
+			listWorkflowExecutionSessionRuntimes: vi.fn(async () => [
+				{ sessionId: "session-durable", agentRuntime: "dapr-agent-py" },
+				{ sessionId: "session-codex", agentRuntime: "codex-cli" },
+			]),
+		} satisfies SessionRepository;
+		const { service } = makeService({ sessions });
+
+		await expect(
+			service.hasInteractiveCliSessionForExecution("exec-1"),
+		).resolves.toBe(true);
+		expect(sessions.listWorkflowExecutionSessionRuntimes).toHaveBeenCalledWith({
+			workflowExecutionId: "exec-1",
+		});
+
+		vi.mocked(sessions.listWorkflowExecutionSessionRuntimes).mockResolvedValueOnce([
+			{ sessionId: "session-durable", agentRuntime: "dapr-agent-py" },
+		]);
+		await expect(
+			service.hasInteractiveCliSessionForExecution("exec-2"),
+		).resolves.toBe(false);
 	});
 
 	it("delegates workflow ensure session persistence to the session port", async () => {

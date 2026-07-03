@@ -40,6 +40,7 @@ import type {
 	UpdateSessionStatusUnlessTerminatedInput,
 	UpdateWorkflowEnsureSessionRuntimeInput,
 	WorkflowEnsureSessionRecord,
+	WorkflowExecutionSessionRuntimeRecord,
 	WorkflowSessionRuntimeHostRecord,
 } from "$lib/server/application/ports";
 import { and, asc, desc, eq, gt, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
@@ -461,6 +462,26 @@ export class CurrentSessionRepository implements SessionRepository {
 			)
 			.orderBy(desc(sessions.createdAt))
 			.limit(limit);
+	}
+
+	async listWorkflowExecutionSessionRuntimes(input: {
+		workflowExecutionId: string;
+	}): Promise<WorkflowExecutionSessionRuntimeRecord[]> {
+		const workflowExecutionId = input.workflowExecutionId.trim();
+		if (!workflowExecutionId) return [];
+		const database = requireDb(this.database);
+		const rows = await database
+			.select({
+				sessionId: sessions.id,
+				agentRuntime: agents.runtime,
+			})
+			.from(sessions)
+			.innerJoin(agents, eq(agents.id, sessions.agentId))
+			.where(eq(sessions.workflowExecutionId, workflowExecutionId));
+		return rows.map((row) => ({
+			sessionId: row.sessionId,
+			agentRuntime: row.agentRuntime ?? null,
+		}));
 	}
 
 	async getWorkflowEnsureSession(

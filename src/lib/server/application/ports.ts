@@ -3628,6 +3628,9 @@ export interface SessionRepository {
 		executionId: string;
 		limit: number;
 	}): Promise<CliWorkspaceSessionCandidateRecord[]>;
+	listWorkflowExecutionSessionRuntimes(input: {
+		workflowExecutionId: string;
+	}): Promise<WorkflowExecutionSessionRuntimeRecord[]>;
 	getWorkflowEnsureSession(sessionId: string): Promise<WorkflowEnsureSessionRecord | null>;
 	createWorkflowEnsureSession(input: CreateWorkflowEnsureSessionInput): Promise<void>;
 	updateWorkflowEnsureSessionRuntime(
@@ -3842,6 +3845,11 @@ export type CliWorkspaceSessionCandidateRecord = {
 	agentSlug: string;
 	agentRuntime: string | null;
 	agentRuntimeAppId: string | null;
+};
+
+export type WorkflowExecutionSessionRuntimeRecord = {
+	sessionId: string;
+	agentRuntime: string | null;
 };
 
 export type CliWorkspaceCommandCandidate = {
@@ -5208,6 +5216,7 @@ export interface WorkflowDataService {
 		executionId: string;
 		limit: number;
 	}): Promise<CliWorkspaceCommandCandidate[]>;
+	hasInteractiveCliSessionForExecution(executionId: string): Promise<boolean>;
 	getWorkflowEnsureSession(
 		sessionId: string,
 	): Promise<WorkflowEnsureSessionRecord | null>;
