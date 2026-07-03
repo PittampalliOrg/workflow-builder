@@ -96,10 +96,10 @@ shared bundle image still reads the DB (one catalog, many pieces).
 
 **Phase B — build-on-enable automation (2026-06-13).**
 - **Enable is per-cluster + instant when the image exists.** The `ap-piece-<name>:<ver>`
-  image is GLOBAL (GHCR), so enabling splits from building: `enablePiece()`
-  (`src/lib/server/pieces/piece-images.ts`) resolves the catalog version, HEAD-checks GHCR
-  (authed via `GITHUB_TOKEN`), and either writes a `ready` `piece_images` row instantly or
-  writes `building` + triggers a hub build. Surfaces: admin REST
+  image is GLOBAL (GHCR), so enabling splits from building:
+  `workflowData.enableAdminPieceRuntimeImage()` resolves the catalog version, HEAD-checks
+  GHCR through the admin piece image adapter (authed via `GITHUB_TOKEN`), and either writes
+  a `ready` `piece_images` row instantly or writes `building` + triggers a hub build. Surfaces: admin REST
   `POST /api/admin/pieces/[piece]/enable` + the admin pieces page "Available to enable"
   section; the build callback is `POST /api/internal/pieces/[piece]/image-registration`.
 - **Enable signal = the `piece_images` row, NOT an `available_only` flip.** `available_only`

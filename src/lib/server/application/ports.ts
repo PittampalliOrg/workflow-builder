@@ -1429,6 +1429,30 @@ export type AdminPieceRuntimeImageEnableResult = {
 	build?: { triggered: boolean; status?: number; reason?: string };
 };
 
+export type AdminPieceRuntimeImageRegistrationResult = {
+	pieceName: string;
+	version: string;
+	status: AdminPieceRuntimeImageStatus;
+	madeRunnable: boolean;
+};
+
+export type AdminPieceRuntimeImageReconcileResult = {
+	checked: number;
+	readied: number;
+	failed: number;
+};
+
+export type AdminPieceRuntimeImageRecordResult = {
+	enabledAt: Date | null;
+};
+
+export type AdminPieceRuntimeImageBuildingRecord = {
+	pieceName: string;
+	version: string;
+	updatedAt: Date;
+	enabledAt: Date | null;
+};
+
 export interface AdminPieceRuntimeImageRegistryPort {
 	imageExists(input: {
 		pieceName: string;
@@ -2275,6 +2299,15 @@ export interface AdminPieceRepository {
 		image: string;
 		digest?: string | null;
 	}): Promise<void>;
+	recordPieceImageResult(input: {
+		pieceName: string;
+		version: string;
+		status: AdminPieceRuntimeImageStatus;
+		image?: string | null;
+		digest?: string | null;
+		errorMessage?: string | null;
+	}): Promise<AdminPieceRuntimeImageRecordResult | null>;
+	listBuildingPieceImages(): Promise<AdminPieceRuntimeImageBuildingRecord[]>;
 	markPieceRunnable(pieceName: string): Promise<void>;
 }
 
@@ -5206,6 +5239,17 @@ export interface WorkflowDataService {
 		pieceName: string;
 		callbackUrl: string;
 	}): Promise<AdminPieceRuntimeImageEnableResult>;
+	recordAdminPieceRuntimeImageResult(input: {
+		pieceName: string;
+		version: string;
+		status: AdminPieceRuntimeImageStatus;
+		image?: string | null;
+		digest?: string | null;
+		errorMessage?: string | null;
+	}): Promise<AdminPieceRuntimeImageRegistrationResult>;
+	reconcileAdminPieceRuntimeImages(input?: {
+		buildTimeoutMs?: number;
+	}): Promise<AdminPieceRuntimeImageReconcileResult>;
 	getBenchmarkBrowserReadModel(input: {
 		projectId: string | null;
 	}): Promise<BenchmarkBrowserReadModel>;

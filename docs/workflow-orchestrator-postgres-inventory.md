@@ -675,13 +675,14 @@ services:
   `$lib/server/db`, `$lib/server/db/schema`, `drizzle-orm`, `appConnections`,
   `pieceMetadata`, `platformOauthApps`, `encryptObject`, `decryptObject`, and
   `decryptString` imports.
-- `src/routes/(admin)/admin/pieces/+page.server.ts` now reads provisioned and
-  available piece enablement state through `workflowData.getAdminPiecesReadModel`
-  and mutates the platform disable list through
-  `workflowData.setAdminPieceEnabled`. Catalog, disabled-piece, workflow-usage,
-  MCP-usage, and per-piece image status SQL is confined to the Postgres admin
-  piece adapter. The remaining per-piece image build trigger still delegates to
-  the existing `enablePiece` service path.
+- `src/routes/(admin)/admin/pieces/+page.server.ts`,
+  `src/routes/api/admin/pieces/[pieceName]/enable/+server.ts`, and
+  `src/routes/api/internal/pieces/**/+server.ts` now read and mutate admin
+  piece enablement plus per-piece image lifecycle through workflow-data
+  application services. Catalog, disabled-piece, workflow-usage, MCP-usage, and
+  per-piece image status SQL is confined to the Postgres admin piece adapter;
+  GHCR checks and Tekton build triggers are confined to the admin piece image
+  infrastructure adapter.
 - `src/routes/+layout.server.ts` reads sidebar profile data through
   `workflowData.getUserProfile`, and `src/routes/+page.server.ts` reads the
   root dashboard profile/recent-session/recent-run model through

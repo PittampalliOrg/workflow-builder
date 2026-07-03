@@ -2235,6 +2235,62 @@ export class PostgresAdminPieceRepository implements AdminPieceRepository {
 			});
 	}
 
+	async recordPieceImageResult(input: {
+		pieceName: string;
+		version: string;
+		status: "building" | "ready" | "failed";
+		image?: string | null;
+		digest?: string | null;
+		errorMessage?: string | null;
+	}): Promise<{ enabledAt: Date | null } | null> {
+		const setReady = input.status === "ready";
+		await this.database
+			.insert(pieceImages)
+			.values({
+				pieceName: input.pieceName,
+				version: input.version,
+				status: input.status,
+				image: input.image ?? null,
+				digest: input.digest ?? null,
+				errorMessage: input.errorMessage ?? null,
+				builtAt: setReady ? sql`now()` : null,
+			})
+			.onConflictDoUpdate({
+				target: [pieceImages.pieceName, pieceImages.version],
+				set: {
+					status: input.status,
+					image: input.image ?? null,
+					digest: input.digest ?? null,
+					errorMessage: input.errorMessage ?? null,
+					...(setReady ? { builtAt: sql`now()`, disabledAt: null } : {}),
+					updatedAt: sql`now()`,
+				},
+			});
+		const [row] = await this.database
+			.select({ enabledAt: pieceImages.enabledAt })
+			.from(pieceImages)
+			.where(
+				and(
+					eq(pieceImages.pieceName, input.pieceName),
+					eq(pieceImages.version, input.version),
+				),
+			)
+			.limit(1);
+		return row ?? null;
+	}
+
+	async listBuildingPieceImages() {
+		return this.database
+			.select({
+				pieceName: pieceImages.pieceName,
+				version: pieceImages.version,
+				updatedAt: pieceImages.updatedAt,
+				enabledAt: pieceImages.enabledAt,
+			})
+			.from(pieceImages)
+			.where(eq(pieceImages.status, "building"));
+	}
+
 	async markPieceRunnable(pieceName: string): Promise<void> {
 		await this.database
 			.delete(platformDisabledPieces)

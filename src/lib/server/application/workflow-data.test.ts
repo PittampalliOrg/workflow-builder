@@ -559,6 +559,8 @@ function fakeAdminPieces(): AdminPieceRepository {
 		setPieceEnabled: vi.fn(async () => undefined),
 		markPieceImageBuilding: vi.fn(async () => undefined),
 		markPieceImageReadyEnabled: vi.fn(async () => undefined),
+		recordPieceImageResult: vi.fn(async () => null),
+		listBuildingPieceImages: vi.fn(async () => []),
 		markPieceRunnable: vi.fn(async () => undefined),
 	};
 }
@@ -5970,6 +5972,8 @@ describe("ApplicationWorkflowDataService", () => {
 			setPieceEnabled: vi.fn(async () => undefined),
 			markPieceImageBuilding: vi.fn(async () => undefined),
 			markPieceImageReadyEnabled: vi.fn(async () => undefined),
+			recordPieceImageResult: vi.fn(async () => null),
+			listBuildingPieceImages: vi.fn(async () => []),
 			markPieceRunnable: vi.fn(async () => undefined),
 		} satisfies AdminPieceRepository;
 		const service = new ApplicationWorkflowDataService({
@@ -6155,6 +6159,132 @@ describe("ApplicationWorkflowDataService", () => {
 				"https://workflow-builder-dev.example.test/api/internal/pieces/custom-tool/image-registration",
 		});
 		expect(adminPieces.markPieceRunnable).not.toHaveBeenCalled();
+	});
+
+	it("records admin piece image callback results and makes enabled ready pieces runnable", async () => {
+		const adminPieces = fakeAdminPieces();
+		adminPieces.recordPieceImageResult = vi.fn(async () => ({
+			enabledAt: new Date("2026-07-03T00:00:00.000Z"),
+		}));
+		const service = new ApplicationWorkflowDataService({
+			workflowDefinitions: makeService({}).workflowDefinitions,
+			workflowTriggers: fakeWorkflowTriggers(),
+			userProfiles: fakeUserProfiles(),
+			settings: fakeSettings(),
+			mcpConnections: fakeMcpConnections(),
+			hostedMcpServers: fakeHostedMcpServers(),
+			mcpRuns: fakeMcpRuns(),
+			appConnections: fakeAppConnections(),
+			adminPieces,
+			apiKeys: fakeApiKeys(),
+			workspaceProjects: fakeWorkspaceProjects(),
+			pieceCatalog: fakePieceCatalog(),
+			benchmarkBrowser: fakeBenchmarkBrowser(),
+			workflowExecutions: {} as WorkflowExecutionRepository,
+			sessionEventNotifications: fakeSessionEventNotifications(),
+			artifactStore: {} as ArtifactStore,
+			workspaceSessions: {} as WorkspaceSessionStore,
+			agentRuns: {} as WorkflowAgentRunStore,
+			planArtifacts: {} as WorkflowPlanArtifactStore,
+			traceLineage: {} as TraceLineageStore,
+		});
+
+		await expect(
+			service.recordAdminPieceRuntimeImageResult({
+				pieceName: "custom-tool",
+				version: "3.0.0",
+				status: "ready",
+				image: "ghcr.io/example/ap-piece-custom-tool:3.0.0",
+				digest: "sha256:def",
+			}),
+		).resolves.toEqual({
+			pieceName: "custom-tool",
+			version: "3.0.0",
+			status: "ready",
+			madeRunnable: true,
+		});
+		expect(adminPieces.recordPieceImageResult).toHaveBeenCalledWith({
+			pieceName: "custom-tool",
+			version: "3.0.0",
+			status: "ready",
+			image: "ghcr.io/example/ap-piece-custom-tool:3.0.0",
+			digest: "sha256:def",
+			errorMessage: null,
+		});
+		expect(adminPieces.markPieceRunnable).toHaveBeenCalledWith("custom-tool");
+	});
+
+	it("reconciles admin piece building rows through repository and registry ports", async () => {
+		const adminPieces = fakeAdminPieces();
+		const now = Date.now();
+		adminPieces.listBuildingPieceImages = vi.fn(async () => [
+			{
+				pieceName: "ready-piece",
+				version: "1.0.0",
+				updatedAt: new Date(now),
+				enabledAt: new Date("2026-07-03T00:00:00.000Z"),
+			},
+			{
+				pieceName: "stale-piece",
+				version: "2.0.0",
+				updatedAt: new Date(now - 10_000),
+				enabledAt: null,
+			},
+		]);
+		adminPieces.recordPieceImageResult = vi.fn(async (input) => ({
+			enabledAt: input.pieceName === "ready-piece" ? new Date() : null,
+		}));
+		const registry = {
+			imageExists: vi.fn(async (input: { pieceName: string }) => ({
+				exists: input.pieceName === "ready-piece",
+				digest: input.pieceName === "ready-piece" ? "sha256:ready" : undefined,
+			})),
+			imageRef: vi.fn(
+				(input: { pieceName: string; version: string }) =>
+					`ghcr.io/example/ap-piece-${input.pieceName}:${input.version}`,
+			),
+		};
+		const service = new ApplicationWorkflowDataService({
+			workflowDefinitions: makeService({}).workflowDefinitions,
+			workflowTriggers: fakeWorkflowTriggers(),
+			userProfiles: fakeUserProfiles(),
+			settings: fakeSettings(),
+			mcpConnections: fakeMcpConnections(),
+			hostedMcpServers: fakeHostedMcpServers(),
+			mcpRuns: fakeMcpRuns(),
+			appConnections: fakeAppConnections(),
+			adminPieces,
+			adminPieceRuntimeImages: registry,
+			apiKeys: fakeApiKeys(),
+			workspaceProjects: fakeWorkspaceProjects(),
+			pieceCatalog: fakePieceCatalog(),
+			benchmarkBrowser: fakeBenchmarkBrowser(),
+			workflowExecutions: {} as WorkflowExecutionRepository,
+			sessionEventNotifications: fakeSessionEventNotifications(),
+			artifactStore: {} as ArtifactStore,
+			workspaceSessions: {} as WorkspaceSessionStore,
+			agentRuns: {} as WorkflowAgentRunStore,
+			planArtifacts: {} as WorkflowPlanArtifactStore,
+			traceLineage: {} as TraceLineageStore,
+		});
+
+		await expect(
+			service.reconcileAdminPieceRuntimeImages({ buildTimeoutMs: 1000 }),
+		).resolves.toEqual({ checked: 2, readied: 1, failed: 1 });
+		expect(adminPieces.recordPieceImageResult).toHaveBeenCalledWith({
+			pieceName: "ready-piece",
+			version: "1.0.0",
+			status: "ready",
+			image: "ghcr.io/example/ap-piece-ready-piece:1.0.0",
+			digest: "sha256:ready",
+		});
+		expect(adminPieces.recordPieceImageResult).toHaveBeenCalledWith({
+			pieceName: "stale-piece",
+			version: "2.0.0",
+			status: "failed",
+			errorMessage: "build did not produce a GHCR image within the timeout",
+		});
+		expect(adminPieces.markPieceRunnable).toHaveBeenCalledWith("ready-piece");
 	});
 
 	it("rejects unknown or invalid admin piece runtime image enablement requests", async () => {

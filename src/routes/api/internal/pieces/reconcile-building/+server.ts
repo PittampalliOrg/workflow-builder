@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { getApplicationAdapters } from '$lib/server/application';
 import { requireInternal } from '$lib/server/internal-auth';
-import { reconcileBuildingImages } from '$lib/server/pieces/piece-images';
 
 /**
  * Spoke-side polling reconcile for per-piece runtime images
@@ -13,6 +13,6 @@ import { reconcileBuildingImages } from '$lib/server/pieces/piece-images';
  */
 export const POST: RequestHandler = async ({ request }) => {
 	requireInternal(request);
-	const result = await reconcileBuildingImages();
+	const result = await getApplicationAdapters().workflowData.reconcileAdminPieceRuntimeImages();
 	return json(result);
 };

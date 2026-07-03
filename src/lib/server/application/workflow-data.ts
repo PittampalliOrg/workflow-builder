@@ -66,7 +66,10 @@ import type {
 	AdminPieceRepository,
 	AdminPieceRuntimeImageBuildPort,
 	AdminPieceRuntimeImageEnableResult,
+	AdminPieceRuntimeImageReconcileResult,
+	AdminPieceRuntimeImageRegistrationResult,
 	AdminPieceRuntimeImageRegistryPort,
+	AdminPieceRuntimeImageStatus,
 	AddSessionResourceInput,
 	AppConnectionCreateInput,
 	AppConnectionListItem,
@@ -3030,6 +3033,103 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			madeRunnable: false,
 			build,
 		};
+	}
+
+	async recordAdminPieceRuntimeImageResult(input: {
+		pieceName: string;
+		version: string;
+		status: AdminPieceRuntimeImageStatus;
+		image?: string | null;
+		digest?: string | null;
+		errorMessage?: string | null;
+	}): Promise<AdminPieceRuntimeImageRegistrationResult> {
+		const pieceName = input.pieceName.trim();
+		assertValidAdminPieceSlug(pieceName);
+		const version = input.version.trim();
+		if (!version) throw new Error("version is required");
+		if (!["building", "ready", "failed"].includes(input.status)) {
+			throw new Error("status must be one of building|ready|failed");
+		}
+		if (input.status === "ready" && !input.image) {
+			throw new Error("image is required when status=ready");
+		}
+
+		const row = await this.deps.adminPieces.recordPieceImageResult({
+			pieceName,
+			version,
+			status: input.status,
+			image: input.image ?? null,
+			digest: input.digest ?? null,
+			errorMessage: input.errorMessage ?? null,
+		});
+		let madeRunnable = false;
+		if (input.status === "ready" && row?.enabledAt) {
+			await this.deps.adminPieces.markPieceRunnable(pieceName);
+			madeRunnable = true;
+		}
+		return {
+			pieceName,
+			version,
+			status: input.status,
+			madeRunnable,
+		};
+	}
+
+	async reconcileAdminPieceRuntimeImages(input?: {
+		buildTimeoutMs?: number;
+	}): Promise<AdminPieceRuntimeImageReconcileResult> {
+		const registry = this.deps.adminPieceRuntimeImages;
+		if (!registry) {
+			throw new Error("Admin piece runtime image registry adapter is not configured");
+		}
+		const buildTimeoutMs = input?.buildTimeoutMs ?? 30 * 60 * 1000;
+		const rows = await this.deps.adminPieces.listBuildingPieceImages();
+		let checked = 0;
+		let readied = 0;
+		let failed = 0;
+		for (const row of rows) {
+			checked++;
+			try {
+				const { exists, digest } = await registry.imageExists({
+					pieceName: row.pieceName,
+					version: row.version,
+				});
+				if (exists) {
+					const result = await this.deps.adminPieces.recordPieceImageResult({
+						pieceName: row.pieceName,
+						version: row.version,
+						status: "ready",
+						image: registry.imageRef({
+							pieceName: row.pieceName,
+							version: row.version,
+						}),
+						digest: digest ?? null,
+					});
+					if (result?.enabledAt) {
+						await this.deps.adminPieces.markPieceRunnable(row.pieceName);
+					}
+					readied++;
+					continue;
+				}
+
+				const age = Date.now() - row.updatedAt.getTime();
+				if (age > buildTimeoutMs) {
+					await this.deps.adminPieces.recordPieceImageResult({
+						pieceName: row.pieceName,
+						version: row.version,
+						status: "failed",
+						errorMessage: "build did not produce a GHCR image within the timeout",
+					});
+					failed++;
+				}
+			} catch (err) {
+				console.warn(
+					`[reconcileAdminPieceRuntimeImages] ${row.pieceName}:${row.version} reconcile failed:`,
+					err,
+				);
+			}
+		}
+		return { checked, readied, failed };
 	}
 
 	resolveWorkspaceProjectId(input: {

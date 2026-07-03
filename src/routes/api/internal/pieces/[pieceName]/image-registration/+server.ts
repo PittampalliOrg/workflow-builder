@@ -1,12 +1,8 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { getApplicationAdapters } from '$lib/server/application';
+import type { AdminPieceRuntimeImageStatus } from '$lib/server/application/ports';
 import { requireInternal } from '$lib/server/internal-auth';
-import {
-	isValidPieceSlug,
-	markPieceRunnable,
-	recordImageResult,
-	type PieceImageStatus
-} from '$lib/server/pieces/piece-images';
 
 /**
  * Build-completion callback for per-piece runtime images
@@ -21,13 +17,12 @@ import {
 export const POST: RequestHandler = async ({ request, params }) => {
 	requireInternal(request);
 	const pieceName = decodeURIComponent(params.pieceName);
-	if (!isValidPieceSlug(pieceName)) return error(400, 'invalid piece name');
 
 	let body: {
 		version?: string;
 		image?: string;
 		digest?: string;
-		status?: PieceImageStatus;
+		status?: AdminPieceRuntimeImageStatus;
 		errorMessage?: string;
 	};
 	try {
@@ -43,13 +38,21 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	}
 	if (status === 'ready' && !image) return error(400, 'image is required when status=ready');
 
-	const row = await recordImageResult(pieceName, version, { status, image, digest, errorMessage });
-
-	let madeRunnable = false;
-	if (status === 'ready' && row?.enabledAt) {
-		await markPieceRunnable(pieceName);
-		madeRunnable = true;
+	try {
+		const result = await getApplicationAdapters().workflowData.recordAdminPieceRuntimeImageResult({
+			pieceName,
+			version,
+			status,
+			image,
+			digest,
+			errorMessage,
+		});
+		return json({ ok: true, ...result });
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : 'image registration failed';
+		if (/invalid piece name|version is required|status must be|image is required/.test(msg)) {
+			return error(400, msg);
+		}
+		return error(500, msg);
 	}
-
-	return json({ ok: true, pieceName, version, status, madeRunnable });
 };
