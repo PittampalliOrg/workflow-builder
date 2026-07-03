@@ -110,6 +110,7 @@ import {
 } from "$lib/server/application/adapters/workflow-control";
 import { LegacyCliPreviewGatewayPort } from "$lib/server/application/adapters/cli-preview";
 import { LegacySandboxPreviewGatewayPort } from "$lib/server/application/adapters/sandbox-preview";
+import { LegacyWorkflowTriggerLifecyclePort } from "$lib/server/application/adapters/workflow-trigger-lifecycle";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
 import { ApplicationCliPreviewService } from "$lib/server/application/cli-preview";
@@ -125,6 +126,7 @@ import { ApplicationSessionBrowserService } from "$lib/server/application/sessio
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
 import { ApplicationWorkflowExecutionStreamService } from "$lib/server/application/workflow-execution-stream";
 import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/application/workflow-code-checkpoints";
+import { ApplicationWorkflowTriggerLifecycleService } from "$lib/server/application/workflow-trigger-lifecycle";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 
 export { getEventBusAdapter } from "$lib/server/application/event-bus";
@@ -244,6 +246,9 @@ export function getApplicationAdapters(
 		| undefined;
 	let workflowCodeCheckpoints:
 		| ApplicationWorkflowCodeCheckpointService
+		| undefined;
+	let workflowTriggerLifecycle:
+		| ApplicationWorkflowTriggerLifecycleService
 		| undefined;
 	let cliPreview: ApplicationCliPreviewService | undefined;
 	let sandboxPreview: ApplicationSandboxPreviewService | undefined;
@@ -432,6 +437,11 @@ export function getApplicationAdapters(
 		(workflowCodeCheckpoints ??= new ApplicationWorkflowCodeCheckpointService({
 			checkpoints: getCodeCheckpoints(),
 		}));
+	const getWorkflowTriggerLifecycle = () =>
+		(workflowTriggerLifecycle ??= new ApplicationWorkflowTriggerLifecycleService({
+			workflowData: getWorkflowData(),
+			lifecycle: new LegacyWorkflowTriggerLifecyclePort(),
+		}));
 	const getCliPreview = () =>
 		(cliPreview ??= new ApplicationCliPreviewService({
 			preview: new LegacyCliPreviewGatewayPort(),
@@ -575,6 +585,9 @@ export function getApplicationAdapters(
 		},
 		get workflowCodeCheckpoints() {
 			return getWorkflowCodeCheckpoints();
+		},
+		get workflowTriggerLifecycle() {
+			return getWorkflowTriggerLifecycle();
 		},
 		get cliPreview() {
 			return getCliPreview();

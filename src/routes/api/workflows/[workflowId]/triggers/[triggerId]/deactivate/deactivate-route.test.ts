@@ -4,22 +4,19 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
-	const workflow = { id: "wf-1", userId: "user-1", projectId: "project-1" };
-	const trigger = { id: "trigger-1", workflowId: "wf-1" };
-	const workflowData = {
-		getWorkflowByRef: vi.fn(async () => workflow),
-		getWorkflowTrigger: vi.fn(async () => trigger),
+	const workflowTriggerLifecycle = {
+		deactivateTrigger: vi.fn(async () => ({
+			status: "ok" as const,
+			body: { success: true, status: "inactive" },
+		})),
 	};
-	const deactivateWorkflowTrigger = vi.fn(async () => ({ ok: true, status: "inactive" }));
-	return { workflow, trigger, workflowData, deactivateWorkflowTrigger };
+	return { workflowTriggerLifecycle };
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
-}));
-
-vi.mock("$lib/server/lifecycle/trigger-reconciler", () => ({
-	deactivateWorkflowTrigger: mocks.deactivateWorkflowTrigger,
+	getApplicationAdapters: () => ({
+		workflowTriggerLifecycle: mocks.workflowTriggerLifecycle,
+	}),
 }));
 
 import { POST } from "./+server";
@@ -27,18 +24,25 @@ import { POST } from "./+server";
 describe("workflow trigger deactivate route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.workflowData.getWorkflowByRef.mockResolvedValue(mocks.workflow);
-		mocks.workflowData.getWorkflowTrigger.mockResolvedValue(mocks.trigger);
+		mocks.workflowTriggerLifecycle.deactivateTrigger.mockResolvedValue({
+			status: "ok",
+			body: { success: true, status: "inactive" },
+		});
 	});
 
-	it("keeps the route behind workflow-data application services", () => {
+	it("keeps the route behind the trigger lifecycle application service", () => {
 		const source = readFileSync(
 			join(dirname(fileURLToPath(import.meta.url)), "+server.ts"),
 			"utf8",
 		);
 		expect(source).toContain("getApplicationAdapters");
+		expect(source).toContain("workflowTriggerLifecycle.deactivateTrigger");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
+		expect(source).not.toContain("$lib/server/lifecycle/trigger-reconciler");
+		expect(source).not.toContain("deactivateWorkflowTrigger");
+		expect(source).not.toContain("isResourceInScope");
+		expect(source).not.toContain("workflowData");
 	});
 
 	it("deactivates a scoped trigger", async () => {
@@ -49,6 +53,11 @@ describe("workflow trigger deactivate route", () => {
 
 		expect(response.status).toBe(200);
 		await expect(response.json()).resolves.toEqual({ success: true, status: "inactive" });
-		expect(mocks.deactivateWorkflowTrigger).toHaveBeenCalledWith("trigger-1");
+		expect(mocks.workflowTriggerLifecycle.deactivateTrigger).toHaveBeenCalledWith({
+			workflowId: "wf-1",
+			triggerId: "trigger-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
 	});
 });

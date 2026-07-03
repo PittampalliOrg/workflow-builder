@@ -308,10 +308,13 @@ The first UI-facing route has also moved behind the application service:
 - `src/routes/api/workflows/[workflowId]/publish/+server.ts` now reads and
   updates workflow definitions through workflow-data application ports while
   preserving the existing published-runtime metadata shape.
-- `src/routes/api/workflows/[workflowId]/triggers/**` now scope-checks
-  workflows through `workflowData`, lists/creates/gets/deletes trigger rows
-  through a workflow-data trigger store, and leaves activation/deactivation
-  backing reconciliation behind the existing Lifecycle Controller reconciler.
+- `src/routes/api/workflows/[workflowId]/triggers/**` now keeps list/create
+  request shaping in the route but moves item activate/deactivate/delete
+  commands behind `ApplicationWorkflowTriggerLifecycleService`. The route no
+  longer imports workflow-data, project-scope helpers, or the trigger
+  reconciler directly; the existing direct-DB/Kubernetes/GitHub backing
+  reconciliation remains confined to the documented
+  `LegacyWorkflowTriggerLifecyclePort` rollback seam.
 - `src/routes/workspaces/[slug]/workflows/runs/[executionId]/+page.server.ts`
   now resolves the execution through `workflowData.getExecutionById` before
   redirecting to the canonical workflow run URL. The page loader keeps only URL
@@ -840,6 +843,8 @@ the CLI credential capture session-owner lookup and ActivePieces resume
 execution lookup, and the GitHub trigger ingress/gate subset, are also clean.
 The workflow code-checkpoints list route is also clean; code-checkpoint diff
 and restore routes remain explicitly deferred.
+The workflow trigger item lifecycle routes are also clean; direct trigger
+backing reconciliation remains in the legacy lifecycle adapter seam.
 The internal piece-execution artifact readback and CLI workspace command routes
 are also clean. The prompt preset, agent skill, and vault resource-usage
 reverse-lookup routes are also clean. The AI assistant message-history route is

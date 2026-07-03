@@ -1,25 +1,25 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getApplicationAdapters } from '$lib/server/application';
-import { isResourceInScope } from '$lib/server/workflows/project-scope';
-import { activateWorkflowTrigger } from '$lib/server/lifecycle/trigger-reconciler';
+import type { WorkflowTriggerLifecycleCommandResult } from '$lib/server/application/workflow-trigger-lifecycle';
 
 // POST — activate a trigger: provision its backing (Argo EventSource+Sensor, …)
 // so the workflow fires whenever the signal arrives.
 export const POST: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, 'Authentication required');
-	const workflowData = getApplicationAdapters().workflowData;
-	const wf = await workflowData.getWorkflowByRef({ workflowId: params.workflowId!, lookup: 'id' });
-	if (!wf || !isResourceInScope(wf, locals.session)) {
-		return error(404, 'Workflow not found');
-	}
-	const trigger = await workflowData.getWorkflowTrigger({
+	const result = await getApplicationAdapters().workflowTriggerLifecycle.activateTrigger({
 		workflowId: params.workflowId!,
 		triggerId: params.triggerId!,
+		userId: locals.session.userId,
+		projectId: locals.session.projectId,
 	});
-	if (!trigger) return error(404, 'Trigger not found');
-
-	const result = await activateWorkflowTrigger(params.triggerId!);
-	if (!result.ok) return json({ error: result.error }, { status: 502 });
-	return json({ success: true, status: result.status });
+	return workflowTriggerLifecycleResponse(result);
 };
+
+function workflowTriggerLifecycleResponse(result: WorkflowTriggerLifecycleCommandResult) {
+	if (result.status === 'error') {
+		if (typeof result.body === 'string') return error(result.httpStatus, result.body);
+		return json(result.body, { status: result.httpStatus });
+	}
+	return json(result.body, { status: result.httpStatus ?? 200 });
+}

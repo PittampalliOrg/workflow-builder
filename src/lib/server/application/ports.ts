@@ -1150,6 +1150,15 @@ export interface WorkflowTriggerStore {
 	delete(triggerId: string): Promise<void>;
 }
 
+export type WorkflowTriggerLifecycleActionResult =
+	| { ok: true; status: string }
+	| { ok: false; error: string };
+
+export interface WorkflowTriggerLifecyclePort {
+	activateTrigger(triggerId: string): Promise<WorkflowTriggerLifecycleActionResult>;
+	deactivateTrigger(triggerId: string): Promise<WorkflowTriggerLifecycleActionResult>;
+}
+
 export type PieceExecutionStatus = "running" | "paused" | "completed" | "failed";
 
 export type PieceExecutionReadModel = {
