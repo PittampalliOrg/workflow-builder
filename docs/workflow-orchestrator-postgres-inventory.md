@@ -1078,7 +1078,8 @@ categories include:
 
 - Lifecycle Controller internals under `src/lib/server/lifecycle/**`, excluding
   the trigger activation reconciler's trigger-row persistence now routed through
-  `WorkflowTriggerStore`.
+  `WorkflowTriggerStore` and pause/resume session-status mirroring now routed
+  through workflow-data.
 - goal-loop storage helpers under `src/lib/server/goals/**`, which still own
   drivable-goal claiming, usage accrual, idle-event metadata, and continuation
   claim queries.

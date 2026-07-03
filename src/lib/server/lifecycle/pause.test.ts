@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { applyPauseResume, type PauseResumeDeps } from "./pause";
 import type { ResolvedDurableTarget } from "./resolvers";
@@ -122,5 +123,14 @@ describe("applyPauseResume — resume", () => {
 		);
 		expect(r.ok).toBe(false);
 		expect(r.reason).toBe("resume_failed");
+	});
+});
+
+describe("pauseDurableRun wiring", () => {
+	it("does not import the legacy session registry for status mirroring", () => {
+		const source = readFileSync(new URL("./pause.ts", import.meta.url), "utf8");
+
+		expect(source).not.toContain("$lib/server/sessions/registry");
+		expect(source).toContain("workflowData.updateSessionStatus");
 	});
 });

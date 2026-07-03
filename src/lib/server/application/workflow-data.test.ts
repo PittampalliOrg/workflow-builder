@@ -3073,6 +3073,36 @@ describe("ApplicationWorkflowDataService", () => {
 		).resolves.toBeNull();
 	});
 
+	it("mirrors session status updates through the injected session repository", async () => {
+		const sessions = {
+			...fakeSessions(),
+			updateSessionStatus: vi.fn(async () => undefined),
+			updateSessionStatusUnlessTerminated: vi.fn(async () => undefined),
+		} satisfies SessionRepository;
+		const { service } = makeService({ sessions });
+		const pauseRequestedAt = new Date("2026-01-01T00:00:00Z");
+
+		await service.updateSessionStatus({
+			id: "session-1",
+			status: "paused",
+			pauseRequestedAt,
+		});
+		await service.updateSessionStatusUnlessTerminated({
+			id: "session-1",
+			status: "idle",
+		});
+
+		expect(sessions.updateSessionStatus).toHaveBeenCalledWith({
+			id: "session-1",
+			status: "paused",
+			pauseRequestedAt,
+		});
+		expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenCalledWith({
+			id: "session-1",
+			status: "idle",
+		});
+	});
+
 	it("builds session goal-flow read models through scoped goal-flow ports", async () => {
 		const sourceSession = {
 			id: "session-1",

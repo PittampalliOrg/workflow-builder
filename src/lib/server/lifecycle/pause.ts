@@ -10,12 +10,12 @@
  * UI can render it and stop/cleanup paths treat it as an intentional hold.
  *
  * `applyPauseResume` is the deps-injected core (unit-tested); `pauseDurableRun`/
- * `resumeDurableRun` wire the real Dapr-invoke + DB-write deps. Symmetric with
- * `stopDurableRun` (lifecycle/index.ts): routes stay thin, the DB write lives here.
+ * `resumeDurableRun` wire the real Dapr-invoke + workflow-data status mirror.
+ * Symmetric with `stopDurableRun` (lifecycle/index.ts): routes stay thin, and
+ * product persistence stays behind application ports.
  */
 import { env } from "$env/dynamic/private";
 import { getAgentWorkflowHostPod } from "$lib/server/kube/client";
-import { updateSessionStatus } from "$lib/server/sessions/registry";
 import type { SessionStatus } from "$lib/types/sessions";
 import type { AgentRuntimeTarget } from "./cascade";
 import {
@@ -136,8 +136,14 @@ export async function applyPauseResume(
 const realDeps: PauseResumeDeps = {
 	resolve: resolveDurableTarget,
 	invoke: invokeAgentRuntimeControl,
-	setSessionStatus: (id, status, pauseRequestedAt) =>
-		updateSessionStatus(id, status, { pauseRequestedAt }),
+	setSessionStatus: async (id, status, pauseRequestedAt) => {
+		const { getApplicationAdapters } = await import("$lib/server/application");
+		await getApplicationAdapters().workflowData.updateSessionStatus({
+			id,
+			status,
+			pauseRequestedAt,
+		});
+	},
 };
 
 /** Pause (suspend) a still-active durable run. */

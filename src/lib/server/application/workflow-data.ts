@@ -204,6 +204,8 @@ import type {
 	SettingsPageReadModel,
 	SettingsRepository,
 	UpsertWorkspaceSessionInput,
+	UpdateSessionStatusInput,
+	UpdateSessionStatusUnlessTerminatedInput,
 	WorkflowScheduler,
 	WorkflowFileStore,
 	CodeFunctionCatalogRepository,
@@ -5188,6 +5190,16 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			sourceSessionId: input.sourceSessionId,
 			replayed: rows.length,
 		};
+	}
+
+	updateSessionStatus(input: UpdateSessionStatusInput): Promise<void> {
+		return this.requireSessions().updateSessionStatus(input);
+	}
+
+	updateSessionStatusUnlessTerminated(
+		input: UpdateSessionStatusUnlessTerminatedInput,
+	): Promise<void> {
+		return this.requireSessions().updateSessionStatusUnlessTerminated(input);
 	}
 
 	async ingestSessionEvent(input: IngestSessionEventInput): Promise<IngestSessionEventResult> {
