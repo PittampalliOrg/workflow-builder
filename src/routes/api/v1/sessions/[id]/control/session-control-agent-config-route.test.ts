@@ -10,14 +10,16 @@ function readRoute(name: string): string {
 }
 
 describe("session control agent-config routes", () => {
-	it("raises config patches through workflow-data", () => {
+	it("delegates config patch commands to the application service", () => {
 		for (const source of [
 			readRoute("set-model"),
 			readRoute("set-permission-mode"),
 			readRoute("update-agent-config"),
 		]) {
 			expect(source).toContain("getApplicationAdapters");
-			expect(source).toContain("workflowData.raiseSessionAgentConfigPatch");
+			expect(source).toContain("sessionAgentConfig");
+			expect(source).not.toContain("workflowData.raiseSessionAgentConfigPatch");
+			expect(source).not.toContain("$lib/agents/model-options");
 			expect(source).not.toContain("$lib/server/sessions/scope");
 			expect(source).not.toContain("$lib/server/sessions/agent-config-patch");
 			expect(source).not.toContain("assertSessionInScope");

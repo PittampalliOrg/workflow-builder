@@ -99,6 +99,7 @@ import { PlaywrightMcpBrowserRuntimeClient } from "$lib/server/application/adapt
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
+import { ApplicationSessionAgentConfigService } from "$lib/server/application/session-agent-config";
 import { ApplicationSessionGoalService } from "$lib/server/application/session-goals";
 import { ApplicationSessionLifecycleService } from "$lib/server/application/session-lifecycle";
 import { ApplicationSessionSandboxService } from "$lib/server/application/session-sandboxes";
@@ -207,6 +208,7 @@ export function getApplicationAdapters(
 	let repositoryMounter: WorkspaceSessionRepositoryMounter | undefined;
 	let workflowSpawner: DaprSessionWorkflowSpawner | undefined;
 	let sessionCommands: ApplicationSessionCommandService | undefined;
+	let sessionAgentConfig: ApplicationSessionAgentConfigService | undefined;
 	let sessionGoals: ApplicationSessionGoalService | undefined;
 	let sessionLifecycle: ApplicationSessionLifecycleService | undefined;
 	let sessionSandboxes: ApplicationSessionSandboxService | undefined;
@@ -372,6 +374,10 @@ export function getApplicationAdapters(
 			workflowSpawner: getWorkflowSpawner(),
 			sessionTraceLifecycle: getSessionTraceLifecycle(),
 		}));
+	const getSessionAgentConfig = () =>
+		(sessionAgentConfig ??= new ApplicationSessionAgentConfigService({
+			patches: getWorkflowData(),
+		}));
 	const previewEnvironmentProvisioner =
 		config.previewProvisionerAdapter === "kro"
 			? new KroPreviewEnvironmentProvisioner()
@@ -462,6 +468,9 @@ export function getApplicationAdapters(
 		},
 		get sessionCommands() {
 			return getSessionCommands();
+		},
+		get sessionAgentConfig() {
+			return getSessionAgentConfig();
 		},
 		get sessionGoals() {
 			return getSessionGoals();

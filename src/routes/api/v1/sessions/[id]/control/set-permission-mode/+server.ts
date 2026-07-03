@@ -1,6 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
+import type { SessionAgentConfigCommandResult } from "$lib/server/application/session-agent-config";
 
 /**
  * Toggle the session's permission mode. `bypass` skips always_ask gates for
@@ -13,17 +14,17 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		string,
 		unknown
 	>;
-	const mode = body.mode;
-	if (mode !== "bypass" && mode !== "default") {
-		return error(400, "mode must be 'bypass' or 'default'");
-	}
-	const result = await getApplicationAdapters().workflowData.raiseSessionAgentConfigPatch({
-		sessionId: params.id,
-		patch: { permissionMode: mode },
-		projectId: locals.session.projectId ?? null,
-		userId: locals.session.userId,
-	});
-	if (!result.ok)
-		return error(result.status, result.error ?? "set-permission-mode failed");
-	return json({ mode });
+	return sessionAgentConfigResponse(
+		await getApplicationAdapters().sessionAgentConfig.setPermissionMode({
+			sessionId: params.id,
+			body,
+			projectId: locals.session.projectId ?? null,
+			userId: locals.session.userId,
+		}),
+	);
 };
+
+function sessionAgentConfigResponse(result: SessionAgentConfigCommandResult) {
+	if (result.status === "error") return error(result.httpStatus, result.message);
+	return json(result.body);
+}
