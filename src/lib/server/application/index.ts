@@ -118,6 +118,7 @@ import {
 	LocalSettingsCliRuntimeCatalogReader,
 	UserCliCredentialSummaryReader,
 } from "$lib/server/application/adapters/settings-cli-tokens";
+import { LegacyPromptPresetRepository } from "$lib/server/application/adapters/prompt-presets";
 import { KubernetesSessionRuntimeStatusReader } from "$lib/server/application/adapters/runtime-status";
 import {
 	CurrentSessionRepository,
@@ -189,6 +190,7 @@ import {
 	ApplicationWorkflowTriggerKindCatalogService,
 } from "$lib/server/application/catalogs";
 import { ApplicationSettingsCliTokensService } from "$lib/server/application/settings-cli-tokens";
+import { ApplicationPromptPresetService } from "$lib/server/application/prompt-presets";
 import {
 	ApplicationBenchmarkRunLaunchService,
 	ApplicationEvaluationRunLaunchService,
@@ -357,6 +359,7 @@ export function getApplicationAdapters(
 		| ApplicationWorkflowTriggerKindCatalogService
 		| undefined;
 	let settingsCliTokens: ApplicationSettingsCliTokensService | undefined;
+	let promptPresets: ApplicationPromptPresetService | undefined;
 	let workflowDefinitionCommands:
 		| ApplicationWorkflowDefinitionCommandService
 		| undefined;
@@ -622,6 +625,10 @@ export function getApplicationAdapters(
 			runtimes: new LocalSettingsCliRuntimeCatalogReader(),
 			credentials: new UserCliCredentialSummaryReader(),
 		}));
+	const getPromptPresets = () =>
+		(promptPresets ??= new ApplicationPromptPresetService(
+			new LegacyPromptPresetRepository(),
+		));
 	const getSessionSandboxes = () =>
 		(sessionSandboxes ??= new ApplicationSessionSandboxService({
 			sessions: getSessions(),
@@ -945,6 +952,9 @@ export function getApplicationAdapters(
 		},
 		get settingsCliTokens() {
 			return getSettingsCliTokens();
+		},
+		get promptPresets() {
+			return getPromptPresets();
 		},
 		get sessionSandboxes() {
 			return getSessionSandboxes();

@@ -396,6 +396,14 @@ services:
   `src/routes/api/admin/pieces/[pieceName]/enable/+server.ts` now resolve
   platform-admin status through the workflow-data user profile port instead of
   querying `users.platform_role` directly in route code.
+- `src/routes/api/prompt-presets/+server.ts` and
+  `src/routes/api/prompt-presets/[id]/+server.ts` now delegate project-scoped
+  prompt-preset list/create/update/archive behavior to
+  `ApplicationPromptPresetService`. The existing prompt-preset persistence
+  module is confined to `LegacyPromptPresetRepository`; route-local behavior is
+  limited to auth, JSON parsing, validation-error mapping, and HTTP status
+  mapping. The legacy best-effort MLflow prompt sync remains inside that
+  adapter seam pending the separate OTel lineage cleanup.
 - `src/routes/api/prompt-presets/[id]/usages/+server.ts`,
   `src/routes/api/agent-skills/[id]/used-by/+server.ts`, and
   `src/routes/api/v1/vaults/[id]/usages/+server.ts` now read reverse-lookup
