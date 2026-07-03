@@ -1,6 +1,4 @@
-import { eq } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import { workflowExecutions, workflows } from "$lib/server/db/schema";
+import { getApplicationAdapters } from "$lib/server/application";
 import { getAgentBySlug } from "$lib/server/agents/registry";
 import { createSession } from "$lib/server/sessions/registry";
 import { sendUserEvent } from "$lib/server/sessions/events";
@@ -41,24 +39,15 @@ export interface SpawnDevSessionParams {
 export async function spawnDevSession(
 	params: SpawnDevSessionParams,
 ): Promise<{ sessionId: string; url: string; agentSlug: string }> {
-	if (!db) throw new Error("Database not configured");
-	const [exec] = await db
-		.select({
-			userId: workflowExecutions.userId,
-			// workflow_executions.project_id is nullable; fall back to the workflow's.
-			projectId: workflowExecutions.projectId,
-			workflowProjectId: workflows.projectId,
-		})
-		.from(workflowExecutions)
-		.innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
-		.where(eq(workflowExecutions.id, params.executionId))
-		.limit(1);
-	if (!exec?.userId) {
+	const executionOwner =
+		await getApplicationAdapters().workflowData.getWorkflowExecutionSessionOwnerContext(
+			params.executionId,
+		);
+	if (!executionOwner?.userId) {
 		throw new Error(
 			`execution ${params.executionId} not found or has no owner (cannot scope the dev session)`,
 		);
 	}
-	const projectId = exec.projectId ?? exec.workflowProjectId ?? null;
 	const agentSlug = (params.agentSlug || DEFAULT_DEV_AGENT_SLUG).trim();
 	const agent = await getAgentBySlug(agentSlug);
 	if (!agent) {
@@ -71,8 +60,8 @@ export async function spawnDevSession(
 	// execution's shared /sandbox/work, so the agent sees the cloned repo.
 	const session = await createSession({
 		agentId: agent.id,
-		userId: exec.userId,
-		projectId,
+		userId: executionOwner.userId,
+		projectId: executionOwner.projectId ?? null,
 		workflowExecutionId: params.executionId,
 		title: params.title ?? `Dev session (${params.executionId})`,
 	});

@@ -30,6 +30,10 @@ The session runtime-config helper now takes its persisted
 `session.runtime_config` fallback as an injected adapter dependency. The latest
 runtime-config event query is confined to `DefaultSessionRuntimeConfigReader`;
 `runtime-config.ts` no longer imports DB, schema, or Drizzle.
+The workflow interactive dev-session handoff now resolves execution owner and
+project context through workflow-data execution ports instead of querying
+`workflow_executions`/`workflows` directly; `dev-session-handoff.ts` no longer
+imports DB, schema, or Drizzle.
 The internal CLI workspace command route now routes execution lookup,
 CLI-session candidate lookup, file creation, and browser artifact persistence
 through workflow-data.
