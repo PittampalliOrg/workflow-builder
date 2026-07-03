@@ -717,6 +717,12 @@ services:
   confined to `PostgresPieceCatalogRepository` and
   `PostgresCodeFunctionCatalogRepository`; the routes import no direct DB,
   schema, Drizzle, or catalog DB helpers.
+- `src/routes/api/action-catalog/[actionId]/options/+server.ts` now delegates
+  dynamic option lookup to `ApplicationActionOptionsService`. Action catalog
+  lookup, code-function option proxying, connection decrypt/provider validation,
+  ActivePieces piece-runtime invocation, and cold-start warming response shaping
+  are behind application ports; the route owns only auth, JSON parsing, and HTTP
+  response mapping.
 - `src/routes/api/workflow/active-executions/+server.ts`,
   `src/routes/api/internal/agent/workflows/executions/+server.ts`, and
   `src/routes/api/internal/agent/workflows/executions/[executionId]/status/+server.ts`

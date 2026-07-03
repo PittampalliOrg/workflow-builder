@@ -115,6 +115,12 @@ import {
 	LocalWorkflowTriggerKindCatalogReader,
 } from "$lib/server/application/adapters/catalogs";
 import {
+	DaprPieceOptionsClient,
+	LocalActionOptionsCatalogReader,
+	LocalCodeFunctionOptionsPort,
+	WorkflowDataActionOptionsConnectionReader,
+} from "$lib/server/application/adapters/action-options";
+import {
 	LocalSettingsCliRuntimeCatalogReader,
 	UserCliCredentialSummaryReader,
 } from "$lib/server/application/adapters/settings-cli-tokens";
@@ -189,6 +195,7 @@ import {
 	ApplicationRuntimeCatalogService,
 	ApplicationWorkflowTriggerKindCatalogService,
 } from "$lib/server/application/catalogs";
+import { ApplicationActionOptionsService } from "$lib/server/application/action-options";
 import { ApplicationSettingsCliTokensService } from "$lib/server/application/settings-cli-tokens";
 import { ApplicationPromptPresetService } from "$lib/server/application/prompt-presets";
 import {
@@ -358,6 +365,7 @@ export function getApplicationAdapters(
 	let workflowTriggerKindCatalog:
 		| ApplicationWorkflowTriggerKindCatalogService
 		| undefined;
+	let actionOptions: ApplicationActionOptionsService | undefined;
 	let settingsCliTokens: ApplicationSettingsCliTokensService | undefined;
 	let promptPresets: ApplicationPromptPresetService | undefined;
 	let workflowDefinitionCommands:
@@ -620,6 +628,13 @@ export function getApplicationAdapters(
 			new ApplicationWorkflowTriggerKindCatalogService(
 				new LocalWorkflowTriggerKindCatalogReader(),
 			));
+	const getActionOptions = () =>
+		(actionOptions ??= new ApplicationActionOptionsService({
+			actions: new LocalActionOptionsCatalogReader(),
+			codeFunctions: new LocalCodeFunctionOptionsPort(),
+			connections: new WorkflowDataActionOptionsConnectionReader(),
+			pieces: new DaprPieceOptionsClient(),
+		}));
 	const getSettingsCliTokens = () =>
 		(settingsCliTokens ??= new ApplicationSettingsCliTokensService({
 			runtimes: new LocalSettingsCliRuntimeCatalogReader(),
@@ -949,6 +964,9 @@ export function getApplicationAdapters(
 		},
 		get workflowTriggerKindCatalog() {
 			return getWorkflowTriggerKindCatalog();
+		},
+		get actionOptions() {
+			return getActionOptions();
 		},
 		get settingsCliTokens() {
 			return getSettingsCliTokens();
