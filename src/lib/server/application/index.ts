@@ -59,7 +59,11 @@ import {
 	LegacyBenchmarkEvaluationTelemetryAdapter,
 	LegacyBenchmarkRunLifecycleAdapter,
 } from "$lib/server/application/adapters/benchmark-evaluation-results";
-import { RegistryPeerAgentResolver } from "$lib/server/application/adapters/agents";
+import {
+	AgentRuntimeRegistrySyncAdapter,
+	LegacyWorkflowEphemeralAgentStore,
+	RegistryPeerAgentResolver,
+} from "$lib/server/application/adapters/agents";
 import {
 	DaprCredentialStore,
 	DaprEventBus,
@@ -484,6 +488,8 @@ export function getApplicationAdapters(
 			workflowSpawner: getWorkflowSpawner(),
 			sessionTraceLifecycle: getSessionTraceLifecycle(),
 			sandboxDestroyer: new KubernetesSessionSandboxDestroyer(),
+			workflowEphemeralAgents: new LegacyWorkflowEphemeralAgentStore(),
+			agentRuntimeSync: new AgentRuntimeRegistrySyncAdapter(),
 		}));
 	const getSessionAgentConfig = () =>
 		(sessionAgentConfig ??= new ApplicationSessionAgentConfigService({

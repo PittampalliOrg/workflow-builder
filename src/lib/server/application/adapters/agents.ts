@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import type {
+	AgentRuntimeSyncPort,
 	PeerAgentDispatchContext,
 	PeerAgentOwner,
 	PeerAgentResolver,
@@ -7,6 +8,7 @@ import type {
 	SessionControlSettingsReferences,
 	SessionExperimentAgentStore,
 	SessionForkBaseAgent,
+	WorkflowEphemeralAgentStore,
 	WorkflowAgentReadRepository,
 	WorkflowAgentRuntimeIdentity,
 	WorkflowPublishedAgentResolutionResult,
@@ -17,8 +19,14 @@ import {
 	resolveAgentRef,
 	resolveCallableAgents,
 } from "$lib/server/agents/registry";
-import { findOrCreateExperimentAgent } from "$lib/server/agents/ephemeral";
-import { agentRegistryKey } from "$lib/server/agents/registry-sync";
+import {
+	findOrCreateEphemeralAgent,
+	findOrCreateExperimentAgent,
+} from "$lib/server/agents/ephemeral";
+import {
+	agentRegistryKey,
+	syncAgentRuntimeCR,
+} from "$lib/server/agents/registry-sync";
 import { resolveEnvironmentRef } from "$lib/server/environments/registry";
 import { agentRuntimeDedicatedAppId } from "$lib/server/agents/runtime-routing";
 import type { AgentConfig } from "$lib/types/agents";
@@ -28,6 +36,24 @@ type Database = typeof defaultDb;
 function requireDb(database: Database = defaultDb): Database {
 	if (!database) throw new Error("Database not configured");
 	return database;
+}
+
+export class LegacyWorkflowEphemeralAgentStore
+	implements WorkflowEphemeralAgentStore
+{
+	findOrCreateWorkflowEphemeralAgent(
+		input: Parameters<
+			WorkflowEphemeralAgentStore["findOrCreateWorkflowEphemeralAgent"]
+		>[0],
+	): Promise<{ agentId: string; agentVersion: number }> {
+		return findOrCreateEphemeralAgent(input);
+	}
+}
+
+export class AgentRuntimeRegistrySyncAdapter implements AgentRuntimeSyncPort {
+	syncAgentRuntime(agentId: string): Promise<void> {
+		return syncAgentRuntimeCR(agentId);
+	}
 }
 
 export class RegistryPeerAgentResolver

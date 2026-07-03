@@ -15,11 +15,6 @@ const mocks = vi.hoisted(() => {
 	return {
 		state,
 		validateInternalToken: vi.fn(() => true),
-		findOrCreateEphemeralAgent: vi.fn(async () => ({
-			agentId: "agent-test",
-			agentVersion: 4,
-		})),
-		syncAgentRuntimeCR: vi.fn(async () => undefined),
 		compilePromptStack: vi.fn(async () => ({
 			static: [],
 			dynamic: [],
@@ -72,7 +67,17 @@ const mocks = vi.hoisted(() => {
 					},
 				};
 			}),
-			getWorkflowEnsureSession: vi.fn(async () => null),
+			getWorkflowEnsureSession: vi.fn(
+				async (): Promise<{
+					id: string;
+					agentId: string;
+					agentVersion: number;
+					workflowExecutionId: string | null;
+					vaultIds: unknown[];
+					sandboxName: string | null;
+					runtimeSandboxName: string | null;
+				} | null> => null,
+			),
 			createWorkflowEnsureSession: vi.fn(async (input: unknown) => {
 				state.inserted.push(input);
 			}),
@@ -88,6 +93,18 @@ const mocks = vi.hoisted(() => {
 			reapTerminatedWorkflowSessionRuntimeHosts: vi.fn(async () => undefined),
 			appendWorkflowSessionSwapDegradedEvent: vi.fn(async () => undefined),
 			appendWorkflowSessionInitialMessage: vi.fn(async () => undefined),
+			resolveWorkflowSessionAgent: vi.fn(
+				async (input: {
+					publishedAgent: { agentId: string; agentVersion: number } | null;
+				}) =>
+					input.publishedAgent
+						? {
+								agentId: input.publishedAgent.agentId,
+								agentVersion: input.publishedAgent.agentVersion,
+							}
+						: { agentId: "agent-test", agentVersion: 4 },
+			),
+			syncWorkflowSessionAgentRuntime: vi.fn(async () => undefined),
 		},
 	};
 });
@@ -102,14 +119,6 @@ vi.mock("$lib/server/application", () => ({
 		sessionGoals: mocks.sessionGoals,
 		sessionCommands: mocks.sessionCommands,
 	}),
-}));
-
-vi.mock("$lib/server/agents/ephemeral", () => ({
-	findOrCreateEphemeralAgent: mocks.findOrCreateEphemeralAgent,
-}));
-
-vi.mock("$lib/server/agents/registry-sync", () => ({
-	syncAgentRuntimeCR: mocks.syncAgentRuntimeCR,
 }));
 
 vi.mock("$lib/server/prompt-presets", () => ({
@@ -217,7 +226,13 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 		expect(source).toContain("sessionCommands.reapTerminatedWorkflowSessionRuntimeHosts");
 		expect(source).toContain("sessionCommands.appendWorkflowSessionInitialMessage");
 		expect(source).toContain("sessionCommands.appendWorkflowSessionSwapDegradedEvent");
+		expect(source).toContain("sessionCommands.resolveWorkflowSessionAgent");
+		expect(source).toContain("sessionCommands.syncWorkflowSessionAgentRuntime");
 		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("$lib/server/agents/ephemeral");
+		expect(source).not.toContain("findOrCreateEphemeralAgent");
+		expect(source).not.toContain("$lib/server/agents/registry-sync");
+		expect(source).not.toContain("syncAgentRuntimeCR");
 		expect(source).not.toContain("$lib/server/goals/repo");
 		expect(source).not.toContain("$lib/server/sessions/events");
 		expect(source).not.toContain("appendEvent");
@@ -265,7 +280,26 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 			agentVersion: 9,
 			projectId: "project-1",
 		});
-		expect(mocks.findOrCreateEphemeralAgent).not.toHaveBeenCalled();
+		expect(
+			mocks.sessionCommands.resolveWorkflowSessionAgent,
+		).toHaveBeenCalledWith(
+			expect.objectContaining({
+				publishedAgent: expect.objectContaining({
+					agentId: "agent-published",
+					agentVersion: 9,
+				}),
+				workflowId: "wf-1",
+				nodeId: "run-agent",
+				agentConfig: expect.objectContaining({
+					runtime: "codex-cli",
+					cliAdapter: "codex",
+				}),
+				userId: "user-1",
+			}),
+		);
+		expect(
+			mocks.sessionCommands.syncWorkflowSessionAgentRuntime,
+		).toHaveBeenCalledWith({ agentId: "agent-published" });
 		expect(payload.agentId).toBe("agent-published");
 		expect(payload.agentVersion).toBe(9);
 		expect(payload.agentSlug).toBe("published-agent");
@@ -293,7 +327,57 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 			agentVersion: null,
 			projectId: "project-1",
 		});
-		expect(mocks.findOrCreateEphemeralAgent).toHaveBeenCalled();
+		expect(
+			mocks.sessionCommands.resolveWorkflowSessionAgent,
+		).toHaveBeenCalledWith(
+			expect.objectContaining({
+				publishedAgent: null,
+				workflowId: "wf-1",
+				nodeId: "run-agent",
+				agentConfig: expect.objectContaining({
+					runtime: "codex-cli",
+					cliAdapter: "codex",
+				}),
+				userId: "user-1",
+			}),
+		);
+		expect(
+			mocks.sessionCommands.syncWorkflowSessionAgentRuntime,
+		).toHaveBeenCalledWith({ agentId: "agent-test" });
+	});
+
+	it("best-effort syncs the runtime when replay returns an existing session", async () => {
+		mocks.workflowData.getWorkflowEnsureSession.mockResolvedValueOnce({
+			id: "sess-codex-cli",
+			agentId: "agent-existing",
+			agentVersion: 7,
+			workflowExecutionId: "execution-1",
+			vaultIds: [],
+			sandboxName: "codex-cli",
+			runtimeSandboxName: null,
+		});
+
+		const payload = await callEnsureForWorkflow({
+			runtime: "codex-cli",
+			modelSpec: "openai/gpt-5.5",
+			provider: "openai",
+			token: '{"tokens":{"refresh_token":"codex"}}',
+			body: { workflowExecutionId: "execution-1" },
+		});
+
+		expect(
+			mocks.sessionCommands.syncWorkflowSessionAgentRuntime,
+		).toHaveBeenCalledWith({
+			agentId: "agent-existing",
+			bestEffort: true,
+			context: "existing session sess-codex-cli",
+		});
+		expect(
+			mocks.sessionCommands.resolveWorkflowSessionAgent,
+		).not.toHaveBeenCalled();
+		expect(payload.reused).toBe(true);
+		expect(payload.agentId).toBe("agent-existing");
+		expect(payload.agentVersion).toBe(7);
 	});
 
 	it("delegates evaluator goal persistence to the session goal service", async () => {

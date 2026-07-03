@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
 import { CliTokenError } from "$lib/server/users/cli-credentials";
 import type {
+	AgentRuntimeSyncPort,
 	SandboxProvisioner,
 	SessionAgentResolver,
 	SessionEventLog,
@@ -11,6 +12,8 @@ import type {
 	SessionSandboxDestroyer,
 	SessionTraceLifecycleStore,
 	SessionWorkflowSpawner,
+	WorkflowEphemeralAgentStore,
+	WorkflowPublishedAgent,
 } from "$lib/server/application/ports";
 import type { AgentConfig } from "$lib/types/agents";
 import type { SessionDetail, SessionEventEnvelope } from "$lib/types/sessions";
@@ -25,6 +28,8 @@ describe("ApplicationSessionCommandService", () => {
 	let sandboxDestroyer: SessionSandboxDestroyer;
 	let workflowSpawner: SessionWorkflowSpawner;
 	let sessionTraceLifecycle: SessionTraceLifecycleStore;
+	let workflowEphemeralAgents: WorkflowEphemeralAgentStore;
+	let agentRuntimeSync: AgentRuntimeSyncPort;
 	let service: ApplicationSessionCommandService;
 
 	beforeEach(() => {
@@ -65,6 +70,15 @@ describe("ApplicationSessionCommandService", () => {
 			createInteractiveSessionTraceRun: vi.fn(async () => null),
 			patchInteractiveSessionTraces: vi.fn(async () => undefined),
 		};
+		workflowEphemeralAgents = {
+			findOrCreateWorkflowEphemeralAgent: vi.fn(async () => ({
+				agentId: "workflow-ephemeral-agent-1",
+				agentVersion: 3,
+			})),
+		};
+		agentRuntimeSync = {
+			syncAgentRuntime: vi.fn(async () => undefined),
+		};
 		service = new ApplicationSessionCommandService({
 			sessions,
 			sessionEvents,
@@ -75,6 +89,8 @@ describe("ApplicationSessionCommandService", () => {
 			workflowSpawner,
 			sessionTraceLifecycle,
 			sandboxDestroyer,
+			workflowEphemeralAgents,
+			agentRuntimeSync,
 		});
 	});
 
@@ -435,6 +451,99 @@ describe("ApplicationSessionCommandService", () => {
 			},
 			processedAt: null,
 		});
+	});
+
+	it("resolves published workflow session agents without touching the ephemeral store", async () => {
+		const publishedAgent: WorkflowPublishedAgent = {
+			agentId: "agent-published",
+			agentVersion: 9,
+			agentSlug: "published-agent",
+			agentAppId: "agent-runtime-published-agent",
+			mlflowUri: null,
+			mlflowModelName: null,
+			mlflowModelVersion: null,
+		};
+
+		const result = await service.resolveWorkflowSessionAgent({
+			publishedAgent,
+			workflowId: "workflow-1",
+			nodeId: "run-agent",
+			agentConfig: { runtime: "codex-cli" } as AgentConfig,
+			userId: "user-1",
+		});
+
+		expect(result).toEqual({
+			agentId: "agent-published",
+			agentVersion: 9,
+		});
+		expect(
+			workflowEphemeralAgents.findOrCreateWorkflowEphemeralAgent,
+		).not.toHaveBeenCalled();
+	});
+
+	it("resolves inline workflow session agents through the ephemeral-agent port", async () => {
+		const agentConfig = {
+			runtime: "codex-cli",
+			modelSpec: "openai/gpt-5.5",
+		} as AgentConfig;
+
+		const result = await service.resolveWorkflowSessionAgent({
+			publishedAgent: null,
+			workflowId: "workflow-1",
+			nodeId: "run-agent",
+			agentConfig,
+			userId: "user-1",
+		});
+
+		expect(
+			workflowEphemeralAgents.findOrCreateWorkflowEphemeralAgent,
+		).toHaveBeenCalledWith({
+			workflowId: "workflow-1",
+			nodeId: "run-agent",
+			agentConfig,
+			userId: "user-1",
+		});
+		expect(result).toEqual({
+			agentId: "workflow-ephemeral-agent-1",
+			agentVersion: 3,
+		});
+	});
+
+	it("syncs workflow session agent runtimes through the runtime-sync port", async () => {
+		await service.syncWorkflowSessionAgentRuntime({ agentId: "agent-1" });
+
+		expect(agentRuntimeSync.syncAgentRuntime).toHaveBeenCalledWith("agent-1");
+	});
+
+	it("propagates runtime sync failures unless best-effort is requested", async () => {
+		vi.mocked(agentRuntimeSync.syncAgentRuntime).mockRejectedValueOnce(
+			new Error("sync failed"),
+		);
+
+		await expect(
+			service.syncWorkflowSessionAgentRuntime({ agentId: "agent-1" }),
+		).rejects.toThrow("sync failed");
+	});
+
+	it("keeps best-effort runtime sync failures non-fatal", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		vi.mocked(agentRuntimeSync.syncAgentRuntime).mockRejectedValueOnce(
+			new Error("sync failed"),
+		);
+
+		await expect(
+			service.syncWorkflowSessionAgentRuntime({
+				agentId: "agent-1",
+				bestEffort: true,
+				context: "existing session session-1",
+			}),
+		).resolves.toBeUndefined();
+
+		expect(warn).toHaveBeenCalledWith(
+			"[sessions] sync runtime for existing session session-1 failed:",
+			"sync failed",
+		);
+		warn.mockRestore();
 	});
 
 	it("rejects invalid session resource payloads before touching persistence", async () => {

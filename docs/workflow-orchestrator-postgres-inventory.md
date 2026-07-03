@@ -704,9 +704,13 @@ The first UI-facing route has also moved behind the application service:
   instead of the route calling `deleteSandbox` directly. Swap-degraded audit
   events and initial workflow user messages now delegate to
   `ApplicationSessionCommandService`, so the route no longer imports
-  `src/lib/server/sessions/events.ts`. The route still owns runtime command
-  ordering, sandbox provisioning/wake, child-input assembly, and ephemeral
-  workflow-agent creation through existing helper seams. It no longer imports
+  `src/lib/server/sessions/events.ts`. Published-vs-ephemeral workflow session
+  agent selection and runtime-registry sync now also delegate to
+  `ApplicationSessionCommandService` through the `WorkflowEphemeralAgentStore`
+  and `AgentRuntimeSyncPort` ports, so the route no longer imports
+  `src/lib/server/agents/ephemeral.ts` or
+  `src/lib/server/agents/registry-sync.ts`. The route still owns runtime command
+  ordering, sandbox provisioning/wake, and child-input assembly. It no longer imports
   `$lib/server/db` or Drizzle schema types; published-agent SQL is confined to
   the workflow-data agent adapter, and on-demand legacy MLflow registration is
   no longer created from this hot path.

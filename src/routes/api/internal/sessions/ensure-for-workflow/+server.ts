@@ -6,7 +6,6 @@ import type {
 	WorkflowPublishedAgent,
 } from "$lib/server/application/ports";
 import { validateInternalToken } from "$lib/server/internal-auth";
-import { findOrCreateEphemeralAgent } from "$lib/server/agents/ephemeral";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import {
 	getRuntimeDescriptor,
@@ -425,17 +424,11 @@ export const POST: RequestHandler = async ({ request }) => {
 	// Idempotent: if a session with this deterministic id already exists, return it.
 	const existing = await workflowData.getWorkflowEnsureSession(sessionId);
 	if (existing) {
-		try {
-			const { syncAgentRuntimeCR } = await import(
-				"$lib/server/agents/registry-sync"
-			);
-			await syncAgentRuntimeCR(existing.agentId);
-		} catch (err) {
-			console.warn(
-				`[ensure-for-workflow] sync runtime for existing session ${sessionId} failed:`,
-				err instanceof Error ? err.message : err,
-			);
-		}
+		await sessionCommands.syncWorkflowSessionAgentRuntime({
+			agentId: existing.agentId,
+			bestEffort: true,
+			context: `existing session ${sessionId}`,
+		});
 		// Also wake on replay/idempotent hits — the orchestrator's
 		// `ctx.call_child_workflow` still needs the target pod live.
 		const reuseRuntime = await resolveRuntimeIdentity(
@@ -560,21 +553,15 @@ export const POST: RequestHandler = async ({ request }) => {
 		agentVersion: bodyAgentVersion,
 		projectId,
 	});
-	const sessionAgent =
-		publishedAgent ??
-		(await findOrCreateEphemeralAgent({
-			workflowId,
-			nodeId,
-			agentConfig: dispatchAgentConfig,
-			userId,
-		}));
+	const sessionAgent = await sessionCommands.resolveWorkflowSessionAgent({
+		publishedAgent,
+		workflowId,
+		nodeId,
+		agentConfig: dispatchAgentConfig,
+		userId,
+	});
 	const { agentId, agentVersion } = sessionAgent;
-	await (async () => {
-		const { syncAgentRuntimeCR } = await import(
-			"$lib/server/agents/registry-sync"
-		);
-		await syncAgentRuntimeCR(agentId);
-	})();
+	await sessionCommands.syncWorkflowSessionAgentRuntime({ agentId });
 	const runtimeIdentity = await resolveRuntimeIdentity(workflowData, agentId);
 
 	// Create the session row with the deterministic id. We bypass createSession's

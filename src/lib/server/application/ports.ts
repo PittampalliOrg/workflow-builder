@@ -3959,6 +3959,19 @@ export interface WorkflowAgentReadRepository {
 	}): Promise<SessionControlSettingsReferences>;
 }
 
+export interface WorkflowEphemeralAgentStore {
+	findOrCreateWorkflowEphemeralAgent(input: {
+		workflowId: string;
+		nodeId: string;
+		agentConfig: AgentConfig;
+		userId: string;
+	}): Promise<{ agentId: string; agentVersion: number }>;
+}
+
+export interface AgentRuntimeSyncPort {
+	syncAgentRuntime(agentId: string): Promise<void>;
+}
+
 export type SessionForkBaseAgent = {
 	id: string;
 	slug: string;

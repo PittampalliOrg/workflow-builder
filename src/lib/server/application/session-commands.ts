@@ -12,6 +12,7 @@ import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { sandboxProvisionFailureMessage } from "$lib/server/sandboxes/provision";
 import type {
 	AddSessionResourceInput,
+	AgentRuntimeSyncPort,
 	SandboxProvisioner,
 	SessionAgentResolver,
 	SessionEventLog,
@@ -23,6 +24,8 @@ import type {
 	SessionSandboxDestroyer,
 	SessionTraceLifecycleStore,
 	SessionWorkflowSpawner,
+	WorkflowEphemeralAgentStore,
+	WorkflowPublishedAgent,
 } from "$lib/server/application/ports";
 
 export type CreateInteractiveSessionCommand = {
@@ -111,6 +114,20 @@ export type AppendWorkflowSessionInitialMessageCommand = {
 	text: string | null | undefined;
 };
 
+export type ResolveWorkflowSessionAgentCommand = {
+	publishedAgent: WorkflowPublishedAgent | null;
+	workflowId: string;
+	nodeId: string;
+	agentConfig: AgentConfig;
+	userId: string;
+};
+
+export type SyncWorkflowSessionAgentRuntimeCommand = {
+	agentId: string;
+	bestEffort?: boolean;
+	context?: string;
+};
+
 export class ApplicationSessionCommandService {
 	constructor(
 		private readonly deps: {
@@ -123,6 +140,8 @@ export class ApplicationSessionCommandService {
 			workflowSpawner: SessionWorkflowSpawner;
 			sessionTraceLifecycle?: SessionTraceLifecycleStore;
 			sandboxDestroyer?: SessionSandboxDestroyer;
+			workflowEphemeralAgents?: WorkflowEphemeralAgentStore;
+			agentRuntimeSync?: AgentRuntimeSyncPort;
 		},
 	) {}
 
@@ -255,6 +274,41 @@ export class ApplicationSessionCommandService {
 			);
 		} catch (mountErr) {
 			console.error("[sessions] workflow repository mount failed:", mountErr);
+		}
+	}
+
+	async resolveWorkflowSessionAgent(
+		input: ResolveWorkflowSessionAgentCommand,
+	): Promise<{ agentId: string; agentVersion: number }> {
+		if (input.publishedAgent) {
+			return {
+				agentId: input.publishedAgent.agentId,
+				agentVersion: input.publishedAgent.agentVersion,
+			};
+		}
+		if (!this.deps.workflowEphemeralAgents) {
+			throw new Error("Workflow ephemeral agent store is not configured");
+		}
+		return this.deps.workflowEphemeralAgents.findOrCreateWorkflowEphemeralAgent({
+			workflowId: input.workflowId,
+			nodeId: input.nodeId,
+			agentConfig: input.agentConfig,
+			userId: input.userId,
+		});
+	}
+
+	async syncWorkflowSessionAgentRuntime(
+		input: SyncWorkflowSessionAgentRuntimeCommand,
+	): Promise<void> {
+		if (!this.deps.agentRuntimeSync) return;
+		try {
+			await this.deps.agentRuntimeSync.syncAgentRuntime(input.agentId);
+		} catch (err) {
+			if (!input.bestEffort) throw err;
+			console.warn(
+				`[sessions] sync runtime${input.context ? ` for ${input.context}` : ""} failed:`,
+				err instanceof Error ? err.message : err,
+			);
 		}
 	}
 
