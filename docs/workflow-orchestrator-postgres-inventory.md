@@ -728,6 +728,10 @@ services:
   ActivePieces piece-runtime invocation, and cold-start warming response shaping
   are behind application ports; the route owns only auth, JSON parsing, and HTTP
   response mapping.
+- `src/routes/api/code-functions/[id]/execute/+server.ts` now delegates
+  user-scoped code-function lookup, preview execution-id generation,
+  function-router payload construction, Dapr invocation, and router error
+  mapping to `ApplicationCodeFunctionExecutionService`.
 - `src/routes/api/workflow/active-executions/+server.ts`,
   `src/routes/api/internal/agent/workflows/executions/+server.ts`, and
   `src/routes/api/internal/agent/workflows/executions/[executionId]/status/+server.ts`

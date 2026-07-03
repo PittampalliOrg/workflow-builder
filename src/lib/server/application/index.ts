@@ -120,6 +120,10 @@ import {
 	LocalCodeFunctionOptionsPort,
 	WorkflowDataActionOptionsConnectionReader,
 } from "$lib/server/application/adapters/action-options";
+import {
+	DaprFunctionRouterExecutionPort,
+	LegacyCodeFunctionExecutionRepository,
+} from "$lib/server/application/adapters/code-function-execution";
 import { LegacyActionCatalogReader } from "$lib/server/application/adapters/action-catalog";
 import {
 	LocalSettingsCliRuntimeCatalogReader,
@@ -198,6 +202,10 @@ import {
 } from "$lib/server/application/catalogs";
 import { ApplicationActionOptionsService } from "$lib/server/application/action-options";
 import { ApplicationActionCatalogService } from "$lib/server/application/action-catalog";
+import {
+	ApplicationCodeFunctionExecutionService,
+	DateCodeFunctionExecutionIdGenerator,
+} from "$lib/server/application/code-function-execution";
 import { ApplicationSettingsCliTokensService } from "$lib/server/application/settings-cli-tokens";
 import { ApplicationPromptPresetService } from "$lib/server/application/prompt-presets";
 import {
@@ -369,6 +377,9 @@ export function getApplicationAdapters(
 		| ApplicationWorkflowTriggerKindCatalogService
 		| undefined;
 	let actionOptions: ApplicationActionOptionsService | undefined;
+	let codeFunctionExecution:
+		| ApplicationCodeFunctionExecutionService
+		| undefined;
 	let settingsCliTokens: ApplicationSettingsCliTokensService | undefined;
 	let promptPresets: ApplicationPromptPresetService | undefined;
 	let workflowDefinitionCommands:
@@ -641,6 +652,12 @@ export function getApplicationAdapters(
 			codeFunctions: new LocalCodeFunctionOptionsPort(),
 			connections: new WorkflowDataActionOptionsConnectionReader(),
 			pieces: new DaprPieceOptionsClient(),
+		}));
+	const getCodeFunctionExecution = () =>
+		(codeFunctionExecution ??= new ApplicationCodeFunctionExecutionService({
+			codeFunctions: new LegacyCodeFunctionExecutionRepository(),
+			functionRouter: new DaprFunctionRouterExecutionPort(),
+			ids: new DateCodeFunctionExecutionIdGenerator(),
 		}));
 	const getSettingsCliTokens = () =>
 		(settingsCliTokens ??= new ApplicationSettingsCliTokensService({
@@ -977,6 +994,9 @@ export function getApplicationAdapters(
 		},
 		get actionOptions() {
 			return getActionOptions();
+		},
+		get codeFunctionExecution() {
+			return getCodeFunctionExecution();
 		},
 		get settingsCliTokens() {
 			return getSettingsCliTokens();
