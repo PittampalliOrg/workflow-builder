@@ -12,10 +12,10 @@
  * docs/workflow-lifecycle-termination.md.
  */
 import { env } from "$env/dynamic/private";
+import { createDaprCascadeDeps } from "$lib/server/application/adapters/lifecycle-cascade";
 import { deleteKubernetesSandbox } from "$lib/server/kube/client";
 import { raiseSessionEvent } from "$lib/server/sessions/control";
 import {
-	createDaprCascadeDeps,
 	DURABLE_RUNTIME_MISSING_STATUS,
 	type DurableCascadeResult,
 	isTerminalDurableRuntimeStatus,

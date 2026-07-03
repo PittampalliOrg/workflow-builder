@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	type DurableCascadeDeps,
@@ -27,6 +29,18 @@ function makeDeps(overrides: Partial<DurableCascadeDeps> = {}): DurableCascadeDe
 }
 
 describe("pure helpers", () => {
+	it("keeps the cascade engine free of infrastructure imports", () => {
+		const source = readFileSync(
+			join(process.cwd(), "src/lib/server/lifecycle/cascade.ts"),
+			"utf8",
+		);
+
+		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("$lib/server/db/schema");
+		expect(source).not.toContain("$lib/server/dapr-client");
+		expect(source).not.toContain("drizzle-orm");
+	});
+
 	it("isTerminalDurableRuntimeStatus matches terminal states case-insensitively", () => {
 		for (const s of ["COMPLETED", "failed", "Terminated", "CANCELLED", "canceled"]) {
 			expect(isTerminalDurableRuntimeStatus(s)).toBe(true);

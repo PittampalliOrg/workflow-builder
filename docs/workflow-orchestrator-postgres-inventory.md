@@ -51,6 +51,11 @@ session lifecycle ports. The user-facing stop/resume/detail services still
 preserve `coordinator_owned` behavior, while direct benchmark/eval/session SQL
 is confined to the application adapter layer rather than
 `src/lib/server/lifecycle`.
+Lifecycle cascade side effects now use the Dapr/Postgres adapter in
+`src/lib/server/application/adapters/lifecycle-cascade.ts`. The core cascade
+engine in `src/lib/server/lifecycle/cascade.ts` remains the pure termination
+algorithm with injected `DurableCascadeDeps`; raw `wfstate_state` /
+`agent_py_state` state-row deletion is confined to the adapter.
 Goal-loop driver persistence now uses the application `GoalLoopStore` port with
 `PostgresGoalLoopStore` as the first adapter. The event-driven loop preserves
 the existing exactly-once continuation, budget, and completion behavior, but no
