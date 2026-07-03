@@ -790,6 +790,18 @@ The first UI-facing route has also moved behind the application service:
   HTTP proxying behind `LegacyCliPreviewGatewayPort`; splitting those internals
   into narrower workflow-data, runtime, and proxy ports remains the next
   preview portability slice.
+- `src/routes/api/workflows/executions/[executionId]/sandbox-preview/+server.ts`
+  and
+  `src/routes/api/workflows/executions/[executionId]/sandbox-preview/[previewId]/[...path]/+server.ts`
+  now delegate retained OpenShell sandbox lookup, preview start/stop commands,
+  runtime-preview page URL construction, proxy request forwarding, and response
+  body/header rewriting to `ApplicationSandboxPreviewService`. The route family
+  no longer imports the sandbox-preview helper, runtime-preview URL helper,
+  OpenShell runtime client, Drizzle, or `$lib/server/db` directly. The existing
+  DB-backed retained-sandbox lookup, workspace route lookup, and OpenShell
+  runtime fetch remain behind `LegacySandboxPreviewGatewayPort`; splitting those
+  internals into narrower workflow-data, workspace-route, and runtime proxy
+  ports remains a later preview portability slice.
 - `src/routes/api/v1/sessions/[id]/control/set-model/+server.ts`,
   `src/routes/api/v1/sessions/[id]/control/set-permission-mode/+server.ts`,
   and `src/routes/api/v1/sessions/[id]/control/update-agent-config/+server.ts`
@@ -825,9 +837,9 @@ provisioning, context-usage, control settings/MCP status, session
 detail/title/archive/delete, fork, goal,
 goal-flow, event list/append/detail, runtime-config, config patch commands,
 runtime debug target routes, resources, and event-stream routes are also clean.
-The session and execution CLI preview route family is also presentation-clean;
-its remaining direct DB/Kubernetes coupling is documented inside the legacy
-preview gateway adapter.
+The session/execution CLI preview and OpenShell sandbox preview route families
+are also presentation-clean; their remaining direct DB/Kubernetes/OpenShell
+coupling is documented inside legacy preview gateway adapters.
 The dashboard route is also clean.
 The sandbox-delete route's session read is also clean, while its lifecycle and
 Kubernetes/OpenShell deletion behavior intentionally remain in the route.

@@ -109,9 +109,11 @@ import {
 	LifecycleWorkflowExecutionCoordinatorOwnerPort,
 } from "$lib/server/application/adapters/workflow-control";
 import { LegacyCliPreviewGatewayPort } from "$lib/server/application/adapters/cli-preview";
+import { LegacySandboxPreviewGatewayPort } from "$lib/server/application/adapters/sandbox-preview";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
 import { ApplicationCliPreviewService } from "$lib/server/application/cli-preview";
+import { ApplicationSandboxPreviewService } from "$lib/server/application/sandbox-preview";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
 import { ApplicationSessionAgentConfigService } from "$lib/server/application/session-agent-config";
 import { ApplicationSessionGoalService } from "$lib/server/application/session-goals";
@@ -240,6 +242,7 @@ export function getApplicationAdapters(
 		| ApplicationWorkflowExecutionStreamService
 		| undefined;
 	let cliPreview: ApplicationCliPreviewService | undefined;
+	let sandboxPreview: ApplicationSandboxPreviewService | undefined;
 	const getDatabase = () => (database ??= requirePostgresDb());
 	const getAgentRuntimes = () =>
 		(agentRuntimes ??= new PostgresAgentRuntimeRepository(getDatabase()));
@@ -425,6 +428,10 @@ export function getApplicationAdapters(
 		(cliPreview ??= new ApplicationCliPreviewService({
 			preview: new LegacyCliPreviewGatewayPort(),
 		}));
+	const getSandboxPreview = () =>
+		(sandboxPreview ??= new ApplicationSandboxPreviewService({
+			preview: new LegacySandboxPreviewGatewayPort(),
+		}));
 	const getSessionCommands = () =>
 		(sessionCommands ??= new ApplicationSessionCommandService({
 			sessions: getSessions(),
@@ -560,6 +567,9 @@ export function getApplicationAdapters(
 		},
 		get cliPreview() {
 			return getCliPreview();
+		},
+		get sandboxPreview() {
+			return getSandboxPreview();
 		},
 		get sessionBrowser() {
 			return (sessionBrowser ??= new ApplicationSessionBrowserService({

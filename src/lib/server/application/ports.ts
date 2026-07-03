@@ -3233,6 +3233,37 @@ export interface CliPreviewGatewayPort {
 	executionPreviewBackend(executionId: string): Promise<ExecutionPreviewBackend>;
 }
 
+export type ExecutionSandboxPreviewInfo = {
+	executionId: string;
+	workspaceRef: string;
+	sandboxName: string;
+	rootPath: string;
+	workingDir: string;
+	provider: string;
+	kept: boolean;
+};
+
+export type ExecutionWorkspaceRouteInfo = {
+	projectId: string;
+	userId: string;
+	workspaceSlug: string;
+};
+
+export interface SandboxPreviewGatewayPort {
+	getSandboxPreviewInfo(
+		executionId: string,
+	): Promise<ExecutionSandboxPreviewInfo | null>;
+	getExecutionWorkspaceRoute(
+		executionId: string,
+	): Promise<ExecutionWorkspaceRouteInfo | null>;
+	buildRuntimePreviewPath(
+		executionId: string,
+		workspaceSlug: string,
+		search?: string,
+	): string;
+	runtimeFetch(path: string, options?: RequestInit): Promise<Response>;
+}
+
 export interface EventBus {
 	publish(topic: string, payload: unknown): Promise<void>;
 }
