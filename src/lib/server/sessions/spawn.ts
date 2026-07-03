@@ -3,14 +3,12 @@ import {
 	ensureGoalMcpServer,
 	stampGoalMcpSessionHeader,
 } from "$lib/server/goals/mcp-wiring";
-import { resolveAgentRef } from "$lib/server/agents/registry";
 import { resolveEnvironmentRef } from "$lib/server/environments/registry";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution-application";
 import { flattenBundles } from "$lib/server/capabilities/flatten";
 import { getApplicationAdapters } from "$lib/server/application";
 import {
-	agentRuntimeDedicatedAppId,
 	agentRuntimeInvokeTarget,
 	resolveAgentRuntimeRoute,
 } from "$lib/server/agents/runtime-routing";
@@ -78,7 +76,8 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	instanceId: string;
 	natsSubject: string;
 }> {
-	const session = await getApplicationAdapters().workflowData.getSessionDetail({
+	const workflowData = getApplicationAdapters().workflowData;
+	const session = await workflowData.getSessionDetail({
 		sessionId,
 	});
 	if (!session) throw new Error(`Session ${sessionId} not found`);
@@ -91,9 +90,9 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		};
 	}
 
-	const agent = await resolveAgentRef({
-		id: session.agentId,
-		version: session.agentVersion ?? undefined,
+	const agent = await workflowData.resolveSessionAgent({
+		agentId: session.agentId,
+		agentVersion: session.agentVersion ?? undefined,
 	});
 	if (!agent) throw new Error(`Agent ${session.agentId} not found`);
 
@@ -114,19 +113,11 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 				team: string;
 				registryKey: string;
 			}>;
-		const { resolveCallableAgents } =
-			await import("$lib/server/agents/registry");
-		const { agentRegistryKey } =
-			await import("$lib/server/agents/registry-sync");
-		const peers = await resolveCallableAgents(agent.projectId, callableSlugs);
-		return peers.map((p) => ({
-			slug: p.slug,
-			agentId: p.agentId,
-			version: p.version,
-			appId: p.runtimeAppId ?? agentRuntimeDedicatedAppId(p.slug),
-			team: agent.projectId as string,
-			registryKey: agentRegistryKey(agent.projectId as string, p.slug),
-		}));
+		const context = await workflowData.resolvePeerAgentDispatchContext({
+			agentId: agent.id,
+			agentVersion: agent.version ?? undefined,
+		});
+		return context?.callableAgents ?? [];
 	})();
 
 	const environment = session.environmentId

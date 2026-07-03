@@ -4849,6 +4849,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.requirePeerAgentResolver().resolvePeerAgentDispatchContext(input);
 	}
 
+	resolveSessionAgent(input: {
+		agentId: string;
+		agentVersion?: number | null;
+	}) {
+		return this.requireSessionAgents().resolveSessionAgent(input);
+	}
+
 	getWorkflowAgentRuntimeIdentity(
 		agentId: string,
 	): Promise<WorkflowAgentRuntimeIdentity | null> {

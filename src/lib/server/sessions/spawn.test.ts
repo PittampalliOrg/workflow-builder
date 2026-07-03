@@ -6,10 +6,14 @@ describe("session spawn wiring", () => {
 		const source = readFileSync(new URL("./spawn.ts", import.meta.url), "utf8");
 
 		expect(source).toContain("workflowData.getSessionDetail");
+		expect(source).toContain("workflowData.resolveSessionAgent");
+		expect(source).toContain("workflowData.resolvePeerAgentDispatchContext");
 		expect(source).toContain("workflowData.attachSessionRuntime");
 		expect(source).toContain("workflowData.listSessionEvents");
 		expect(source).toContain("workflowData.appendSessionEvent");
 		expect(source).toContain("sessionCommands.materializeSessionRepositoriesViaHost");
+		expect(source).not.toContain("$lib/server/agents/registry");
+		expect(source).not.toContain("$lib/server/agents/registry-sync");
 		expect(source).not.toContain("$lib/server/sessions/registry");
 		expect(source).not.toContain("$lib/server/sessions/events");
 		expect(source).not.toContain("$lib/server/sessions/repositories");

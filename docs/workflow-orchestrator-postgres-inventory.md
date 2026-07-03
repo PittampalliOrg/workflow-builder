@@ -29,6 +29,10 @@ and `runtime-target.ts` no longer import DB or Drizzle for these lookups.
 Session workflow spawn now also loads the session row and attaches Dapr runtime
 metadata through workflow-data; the legacy `sessions/registry` `getSession` and
 `attachRuntime` calls are no longer imported by `spawn.ts`.
+Session workflow spawn now also resolves the session's primary agent and
+callable peer-agent dispatch metadata through workflow-data application ports;
+`spawn.ts` no longer imports the legacy agent registry or registry-sync helpers
+for those runtime-start inputs.
 Session workflow spawn now also reads initial user events and emits swap-safety
 audit events through workflow-data; `spawn.ts` no longer imports the legacy
 session event-log helper directly.
@@ -1210,7 +1214,8 @@ categories include:
   capacity fleet-activity summary now confined to the adapter layer, the
   runtime-config helper's latest-event adapter seam, and session agent config
   patch command session lookup now routed through workflow-data, plus the
-  session spawn read/attach-runtime path now routed through workflow-data.
+  session spawn read/agent-resolution/peer-dispatch/attach-runtime path now
+  routed through workflow-data.
 - preview runtime/proxy helper internals, where persistence lookups and
   per-preview database create/drop have moved behind ports, but live
   Kubernetes/OpenShell transport still needs narrower runtime/proxy ports.

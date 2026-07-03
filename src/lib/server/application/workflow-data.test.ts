@@ -3785,6 +3785,26 @@ describe("ApplicationWorkflowDataService", () => {
 		);
 	});
 
+	it("resolves session agents through the configured session-agent port", async () => {
+		const sessionAgents = fakeSessionAgentResolver();
+		const { service } = makeService({ sessionAgents });
+
+		await expect(
+			service.resolveSessionAgent({
+				agentId: "agent-1",
+				agentVersion: 4,
+			}),
+		).resolves.toMatchObject({
+			id: "agent-1",
+			version: 4,
+			projectId: "project-1",
+		});
+		expect(sessionAgents.resolveSessionAgent).toHaveBeenCalledWith({
+			agentId: "agent-1",
+			agentVersion: 4,
+		});
+	});
+
 	it("does not create workflow dev sessions without an execution owner", async () => {
 		const sessions = fakeSessions();
 		const sessionEvents = fakeSessionEvents();
