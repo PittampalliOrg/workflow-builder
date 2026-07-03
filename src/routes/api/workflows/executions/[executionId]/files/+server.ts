@@ -8,24 +8,26 @@
  * the UI can offer the LIVE workspace tree (via SandboxFileBrowser) while the
  * pod is still up, falling back to the persisted list otherwise.
  *
- * Workspace-scoped via `assertInScope`. Cross-workspace access 404s.
+ * Workspace-scoped by the application service. Cross-workspace access 404s.
  */
 
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
-import { assertInScope } from "$lib/server/workflows/project-scope";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
-  if (!locals.session?.userId) return error(401, "Authentication required");
+	if (!locals.session?.userId) return error(401, "Authentication required");
 
-  const { executionId } = params;
-  if (!executionId) return error(400, "executionId required");
+	const { executionId } = params;
+	if (!executionId) return error(400, "executionId required");
 
-  // Workspace-scope check via the parent execution row.
-  const workflowData = getApplicationAdapters().workflowData;
-  const execution = await workflowData.getExecutionById(executionId);
-  assertInScope(execution, locals.session, "Execution not found");
-
-  return json(await workflowData.listExecutionOutputFiles(executionId));
+	const result =
+		await getApplicationAdapters().workflowExecutionFiles.listOutputFiles({
+			executionId,
+			userId: locals.session.userId,
+			projectId: locals.session.projectId ?? null,
+		});
+	if (result.status === "error")
+		return error(result.httpStatus, result.message);
+	return json(result.body);
 };

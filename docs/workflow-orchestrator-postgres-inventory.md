@@ -243,10 +243,11 @@ services:
   `workflowData.getExecutionById`; JuiceFS/WebDAV access remains behind the
   existing workspace helper service boundary.
 - `src/routes/api/workflows/executions/[executionId]/files/+server.ts` now
-  scope-checks through `workflowData.getExecutionById` and loads the persisted
-  output-file read model through `workflowData.listExecutionOutputFiles`.
-  Session/file joins, live-sandbox selection, and CLI workspace detection are
-  confined to the execution repository adapter.
+  delegates scoped execution lookup and persisted output-file read-model loading
+  to `ApplicationWorkflowExecutionFilesService`. Session/file joins,
+  live-sandbox selection, and CLI workspace detection are confined to the
+  execution repository adapter; the route only performs auth, parameter
+  validation, and response mapping.
 - `src/routes/api/workflows/executions/[executionId]/metrics/+server.ts` now
   scope-checks through `workflowData.getExecutionById` and loads lineage-aware
   token aggregates through `workflowData.aggregateExecutionUsageMetrics`.

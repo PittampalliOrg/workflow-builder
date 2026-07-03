@@ -4,13 +4,6 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
-	const execution = {
-		id: "exec-1",
-		workflowId: "wf-1",
-		userId: "user-1",
-		projectId: "project-1",
-		status: "running",
-	};
 	const outputFiles = {
 		files: [
 			{
@@ -24,15 +17,21 @@ const mocks = vi.hoisted(() => {
 		liveSandbox: { name: "workspace-abc" },
 		cliWorkspace: false,
 	};
-	const workflowData = {
-		getExecutionById: vi.fn(async () => execution),
-		listExecutionOutputFiles: vi.fn(async () => outputFiles),
+	const workflowExecutionFiles = {
+		listOutputFiles: vi.fn(
+			async (): Promise<unknown> => ({
+				status: "ok" as const,
+				body: outputFiles,
+			}),
+		),
 	};
-	return { execution, outputFiles, workflowData };
+	return { outputFiles, workflowExecutionFiles };
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
+	getApplicationAdapters: () => ({
+		workflowExecutionFiles: mocks.workflowExecutionFiles,
+	}),
 }));
 
 import { GET } from "./+server";
@@ -57,8 +56,6 @@ async function expectHttpStatus(promise: Promise<unknown>, status: number) {
 describe("workflow execution files route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.workflowData.getExecutionById.mockResolvedValue(mocks.execution);
-		mocks.workflowData.listExecutionOutputFiles.mockResolvedValue(mocks.outputFiles);
 	});
 
 	it("keeps the route behind workflow-data application services", () => {
@@ -67,8 +64,11 @@ describe("workflow execution files route", () => {
 			"utf8",
 		);
 		expect(source).toContain("getApplicationAdapters");
+		expect(source).toContain("workflowExecutionFiles");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
+		expect(source).not.toContain("workflowData");
+		expect(source).not.toContain("assertInScope");
 	});
 
 	it("returns output files from workflow-data", async () => {
@@ -88,17 +88,20 @@ describe("workflow execution files route", () => {
 			liveSandbox: { name: "workspace-abc" },
 			cliWorkspace: false,
 		});
-		expect(mocks.workflowData.getExecutionById).toHaveBeenCalledWith("exec-1");
-		expect(mocks.workflowData.listExecutionOutputFiles).toHaveBeenCalledWith("exec-1");
+		expect(mocks.workflowExecutionFiles.listOutputFiles).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
 	});
 
-	it("hides executions outside the active workspace", async () => {
-		mocks.workflowData.getExecutionById.mockResolvedValueOnce({
-			...mocks.execution,
-			projectId: "project-2",
+	it("maps application-service not-found responses", async () => {
+		mocks.workflowExecutionFiles.listOutputFiles.mockResolvedValueOnce({
+			status: "error",
+			httpStatus: 404,
+			message: "Execution not found",
 		});
 
 		await expectHttpStatus(Promise.resolve(GET(event() as never)), 404);
-		expect(mocks.workflowData.listExecutionOutputFiles).not.toHaveBeenCalled();
 	});
 });

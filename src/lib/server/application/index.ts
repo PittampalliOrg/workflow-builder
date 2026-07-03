@@ -150,6 +150,7 @@ import { ApplicationSessionBrowserService } from "$lib/server/application/sessio
 import { ApplicationBulkLifecycleStopService } from "$lib/server/application/lifecycle-bulk-stop";
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
+import { ApplicationWorkflowExecutionFilesService } from "$lib/server/application/workflow-execution-files";
 import { ApplicationWorkflowExecutionStreamService } from "$lib/server/application/workflow-execution-stream";
 import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/application/workflow-code-checkpoints";
 import { ApplicationWorkflowCodeVersionService } from "$lib/server/application/workflow-code-versions";
@@ -277,6 +278,9 @@ export function getApplicationAdapters(
 		| undefined;
 	let workflowExecutionControl:
 		| ApplicationWorkflowExecutionControlService
+		| undefined;
+	let workflowExecutionFiles:
+		| ApplicationWorkflowExecutionFilesService
 		| undefined;
 	let workflowExecutionStream:
 		| ApplicationWorkflowExecutionStreamService
@@ -501,6 +505,10 @@ export function getApplicationAdapters(
 			runStarter: new LegacyWorkflowRunStarterPort(),
 			workflowSpecs: new LegacyWorkflowSpecValidatorPort(),
 		}));
+	const getWorkflowExecutionFiles = () =>
+		(workflowExecutionFiles ??= new ApplicationWorkflowExecutionFilesService({
+			workflowData: getWorkflowData(),
+		}));
 	const getWorkflowExecutionStream = () =>
 		(workflowExecutionStream ??= new ApplicationWorkflowExecutionStreamService({
 			workflowData: getWorkflowData(),
@@ -690,6 +698,9 @@ export function getApplicationAdapters(
 		},
 		get workflowExecutionControl() {
 			return getWorkflowExecutionControl();
+		},
+		get workflowExecutionFiles() {
+			return getWorkflowExecutionFiles();
 		},
 		get workflowExecutionStream() {
 			return getWorkflowExecutionStream();
