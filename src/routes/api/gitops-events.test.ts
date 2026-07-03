@@ -3,23 +3,25 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-	getLatestGitOpsActivitySequence,
-	ingestGitOpsActivityEvent,
-	listGitOpsActivityEvents,
-	subscribeGitOpsActivityEvents,
-} from "$lib/server/gitops/activity-events";
 import { requireInternal } from "$lib/server/internal-auth";
 import { requirePlatformAdmin } from "$lib/server/platform-admin";
 import { POST as postIngest } from "./internal/gitops/events/ingest/+server";
 import { GET as getEvents } from "./v1/gitops/events/+server";
 import { GET as getStream } from "./v1/gitops/events/stream/+server";
 
-vi.mock("$lib/server/gitops/activity-events", () => ({
-	getLatestGitOpsActivitySequence: vi.fn(),
-	ingestGitOpsActivityEvent: vi.fn(),
-	listGitOpsActivityEvents: vi.fn(),
-	subscribeGitOpsActivityEvents: vi.fn(),
+const mocks = vi.hoisted(() => ({
+	gitOpsActivityEvents: {
+		getLatestSequence: vi.fn(),
+		ingest: vi.fn(),
+		list: vi.fn(),
+		subscribe: vi.fn(),
+	},
+}));
+
+vi.mock("$lib/server/application", () => ({
+	getApplicationAdapters: () => ({
+		gitOpsActivityEvents: mocks.gitOpsActivityEvents,
+	}),
 }));
 vi.mock("$lib/server/internal-auth", () => ({
 	requireInternal: vi.fn(),
@@ -30,10 +32,10 @@ vi.mock("$lib/server/platform-admin", () => ({
 
 describe("GitOps activity event APIs", () => {
 	beforeEach(() => {
-		vi.mocked(getLatestGitOpsActivitySequence).mockReset();
-		vi.mocked(ingestGitOpsActivityEvent).mockReset();
-		vi.mocked(listGitOpsActivityEvents).mockReset();
-		vi.mocked(subscribeGitOpsActivityEvents).mockReset();
+		mocks.gitOpsActivityEvents.getLatestSequence.mockReset();
+		mocks.gitOpsActivityEvents.ingest.mockReset();
+		mocks.gitOpsActivityEvents.list.mockReset();
+		mocks.gitOpsActivityEvents.subscribe.mockReset();
 		vi.mocked(requireInternal).mockReset();
 		vi.mocked(requirePlatformAdmin).mockReset();
 	});
@@ -51,7 +53,7 @@ describe("GitOps activity event APIs", () => {
 	});
 
 	it("lists durable events for admins with since replay", async () => {
-		vi.mocked(listGitOpsActivityEvents).mockResolvedValue([
+		mocks.gitOpsActivityEvents.list.mockResolvedValue([
 			{
 				eventId: "evt-1",
 				sequence: 8,
@@ -87,7 +89,7 @@ describe("GitOps activity event APIs", () => {
 		await expect(response.json()).resolves.toMatchObject({
 			events: [{ eventId: "evt-1", sequence: 8 }],
 		});
-		expect(listGitOpsActivityEvents).toHaveBeenCalledWith({
+		expect(mocks.gitOpsActivityEvents.list).toHaveBeenCalledWith({
 			since: "7",
 			afterSequence: 7,
 			limit: 25,
@@ -95,7 +97,7 @@ describe("GitOps activity event APIs", () => {
 	});
 
 	it("ingests internal events behind the shared token gate", async () => {
-		vi.mocked(ingestGitOpsActivityEvent).mockResolvedValue({
+		mocks.gitOpsActivityEvents.ingest.mockResolvedValue({
 			eventId: "evt-1",
 			sequence: 1,
 			source: "argocd",
@@ -129,14 +131,14 @@ describe("GitOps activity event APIs", () => {
 
 		expect(response.status).toBe(202);
 		expect(requireInternal).toHaveBeenCalled();
-		expect(ingestGitOpsActivityEvent).toHaveBeenCalledWith({ source: "argocd" });
+		expect(mocks.gitOpsActivityEvents.ingest).toHaveBeenCalledWith({ source: "argocd" });
 	});
 
 	it("streams events through the activity subscription port", async () => {
 		const abort = new AbortController();
 		const unlisten = vi.fn().mockResolvedValue(undefined);
-		vi.mocked(getLatestGitOpsActivitySequence).mockResolvedValue(9);
-		vi.mocked(listGitOpsActivityEvents).mockResolvedValueOnce([
+		mocks.gitOpsActivityEvents.getLatestSequence.mockResolvedValue(9);
+		mocks.gitOpsActivityEvents.list.mockResolvedValueOnce([
 			{
 				eventId: "evt-10",
 				sequence: 10,
@@ -162,8 +164,8 @@ describe("GitOps activity event APIs", () => {
 				updatedAt: "2026-06-05T12:00:00Z",
 			},
 		]);
-		vi.mocked(listGitOpsActivityEvents).mockResolvedValue([]);
-		vi.mocked(subscribeGitOpsActivityEvents).mockResolvedValue(unlisten);
+		mocks.gitOpsActivityEvents.list.mockResolvedValue([]);
+		mocks.gitOpsActivityEvents.subscribe.mockResolvedValue(unlisten);
 
 		const response = (await getStream({
 			locals: { session: { userId: "admin-1" } },
@@ -176,10 +178,10 @@ describe("GitOps activity event APIs", () => {
 		expect(response.status).toBe(200);
 		expect(response.headers.get("content-type")).toBe("text/event-stream");
 		await vi.waitFor(() => {
-			expect(subscribeGitOpsActivityEvents).toHaveBeenCalledTimes(1);
+			expect(mocks.gitOpsActivityEvents.subscribe).toHaveBeenCalledTimes(1);
 		});
-		expect(getLatestGitOpsActivitySequence).toHaveBeenCalled();
-		expect(listGitOpsActivityEvents).toHaveBeenCalledWith({
+		expect(mocks.gitOpsActivityEvents.getLatestSequence).toHaveBeenCalled();
+		expect(mocks.gitOpsActivityEvents.list).toHaveBeenCalledWith({
 			afterSequence: 9,
 			ascending: true,
 			limit: 500,
@@ -192,14 +194,18 @@ describe("GitOps activity event APIs", () => {
 	});
 
 	it("keeps the stream route free of direct DB imports", () => {
-		const source = readFileSync(
-			join(dirname(fileURLToPath(import.meta.url)), "v1/gitops/events/stream/+server.ts"),
-			"utf8",
-		);
-
-		expect(source).toContain("subscribeGitOpsActivityEvents");
-		expect(source).not.toContain("$lib/server/db");
-		expect(source).not.toContain("drizzle-orm");
-		expect(source).not.toContain(".listen(");
+		const routeDir = dirname(fileURLToPath(import.meta.url));
+		for (const routePath of [
+			"internal/gitops/events/ingest/+server.ts",
+			"v1/gitops/events/+server.ts",
+			"v1/gitops/events/stream/+server.ts",
+		]) {
+			const source = readFileSync(join(routeDir, routePath), "utf8");
+			expect(source).toContain("gitOpsActivityEvents");
+			expect(source).not.toContain("$lib/server/gitops/activity-events");
+			expect(source).not.toContain("$lib/server/db");
+			expect(source).not.toContain("drizzle-orm");
+			expect(source).not.toContain(".listen(");
+		}
 	});
 });

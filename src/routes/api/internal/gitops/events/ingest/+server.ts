@@ -1,7 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 
-import { ingestGitOpsActivityEvent } from "$lib/server/gitops/activity-events";
+import { getApplicationAdapters } from "$lib/server/application";
 import {
 	invalidateGitOpsPinCaches,
 	invalidateGitOpsRuntimeCaches,
@@ -34,7 +34,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		return error(400, "Expected JSON body");
 	}
 
-	const event = await ingestGitOpsActivityEvent(body);
+	const event = await getApplicationAdapters().gitOpsActivityEvents.ingest(body);
 	if (event.activityType === "promoter.pullrequest") {
 		invalidateGitOpsPinCaches();
 		invalidateGitOpsRuntimeCaches();

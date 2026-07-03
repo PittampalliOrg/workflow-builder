@@ -1,11 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, gt, gte, sql as drizzleSql } from "drizzle-orm";
 
-import { db, sql } from "$lib/server/db";
-import {
-	gitopsActivityEvents,
-	type GitOpsActivityType,
-} from "$lib/server/db/schema";
 import type {
 	GitOpsActivityEvent,
 	GitOpsResourceRef,
@@ -13,7 +7,21 @@ import type {
 
 type JsonRecord = Record<string, unknown>;
 
-type NormalizedGitOpsActivityEvent = {
+type GitOpsActivityType =
+	| "github.push"
+	| "github.pull_request"
+	| "github.event"
+	| "tekton.pipelinerun"
+	| "tekton.taskrun"
+	| "promoter.promotionstrategy"
+	| "promoter.changetransferpolicy"
+	| "promoter.pullrequest"
+	| "promoter.commitstatus"
+	| "argocd.application"
+	| "gitops.inventory"
+	| "kubernetes.resource";
+
+export type NormalizedGitOpsActivityEvent = {
 	eventId: string;
 	source: string;
 	resourceRef: GitOpsResourceRef;
@@ -27,11 +35,27 @@ type NormalizedGitOpsActivityEvent = {
 	raw: JsonRecord;
 };
 
-type ListOptions = {
-	limit?: number;
-	since?: string | null;
-	afterSequence?: number | null;
-	ascending?: boolean;
+export type GitOpsActivityEventRow = {
+	eventId: string;
+	sequence: number;
+	source: string;
+	activityKey: string;
+	activityType: string;
+	phase: string | null;
+	reason: string | null;
+	message: string | null;
+	resourceGroup: string | null;
+	resourceVersion: string | null;
+	resourceResource: string | null;
+	resourceKind: string | null;
+	resourceNamespace: string | null;
+	resourceName: string | null;
+	resourceUid: string | null;
+	observedAt: Date;
+	correlation: JsonRecord;
+	raw: JsonRecord;
+	createdAt: Date;
+	updatedAt: Date;
 };
 
 const DEFAULT_LIMIT = 200;
@@ -138,10 +162,11 @@ function trimConfigMapRawPayload(rawEnvelope: JsonRecord): void {
 	}
 }
 
-export async function ingestGitOpsActivityEvent(payload: unknown): Promise<GitOpsActivityEvent> {
-	const event = normalizeGitOpsActivityEvent(payload);
-	const database = requireDb();
-	const values = {
+export function gitOpsActivityEventStorageValues(
+	event: NormalizedGitOpsActivityEvent,
+	now: Date = new Date(),
+) {
+	return {
 		eventId: event.eventId,
 		source: event.source,
 		activityKey: event.activityKey,
@@ -159,82 +184,19 @@ export async function ingestGitOpsActivityEvent(payload: unknown): Promise<GitOp
 		observedAt: event.observedAt,
 		correlation: event.correlation,
 		raw: event.raw,
-		updatedAt: new Date(),
+		updatedAt: now,
 	};
-	const [row] = await database
-		.insert(gitopsActivityEvents)
-		.values(values)
-		.onConflictDoUpdate({
-			target: gitopsActivityEvents.eventId,
-			set: {
-				source: drizzleSql`excluded.source`,
-				activityKey: drizzleSql`excluded.activity_key`,
-				activityType: drizzleSql`excluded.activity_type`,
-				phase: drizzleSql`excluded.phase`,
-				reason: drizzleSql`excluded.reason`,
-				message: drizzleSql`excluded.message`,
-				resourceGroup: drizzleSql`excluded.resource_group`,
-				resourceVersion: drizzleSql`excluded.resource_version`,
-				resourceResource: drizzleSql`excluded.resource_resource`,
-				resourceKind: drizzleSql`excluded.resource_kind`,
-				resourceNamespace: drizzleSql`excluded.resource_namespace`,
-				resourceName: drizzleSql`excluded.resource_name`,
-				resourceUid: drizzleSql`excluded.resource_uid`,
-				observedAt: drizzleSql`excluded.observed_at`,
-				correlation: drizzleSql`excluded.correlation`,
-				raw: drizzleSql`excluded.raw`,
-				updatedAt: new Date(),
-			},
-		})
-		.returning();
-	return rowToEvent(row);
 }
 
-export async function listGitOpsActivityEvents(
-	options: ListOptions = {},
-): Promise<GitOpsActivityEvent[]> {
-	const database = requireDb();
-	const limit = clampLimit(options.limit);
-	const conditions = [];
-	if (Number.isFinite(options.afterSequence ?? NaN)) {
-		conditions.push(gt(gitopsActivityEvents.sequence, Number(options.afterSequence)));
-	}
-	const sinceDate = parseSinceDate(options.since);
-	if (sinceDate) {
-		conditions.push(gte(gitopsActivityEvents.observedAt, sinceDate));
-	}
-	const order = options.ascending
-		? [asc(gitopsActivityEvents.sequence)]
-		: [desc(gitopsActivityEvents.observedAt), desc(gitopsActivityEvents.sequence)];
-	const query = database
-		.select()
-		.from(gitopsActivityEvents)
-		.where(conditions.length > 0 ? and(...conditions) : undefined)
-		.orderBy(...order)
-		.limit(limit);
-	const rows = await query;
-	return rows.map(rowToEvent);
+export function clampGitOpsActivityEventLimit(limit?: number): number {
+	return clampLimit(limit);
 }
 
-export async function getLatestGitOpsActivitySequence(): Promise<number> {
-	const database = requireDb();
-	const [row] = await database
-		.select({ sequence: gitopsActivityEvents.sequence })
-		.from(gitopsActivityEvents)
-		.orderBy(desc(gitopsActivityEvents.sequence))
-		.limit(1);
-	return row?.sequence ?? 0;
+export function parseGitOpsActivitySinceDate(since?: string | null): Date | null {
+	return parseSinceDate(since);
 }
 
-export async function subscribeGitOpsActivityEvents(
-	onEvent: () => void,
-): Promise<() => Promise<void>> {
-	if (!sql) return async () => {};
-	const listener = await sql.listen("gitops_activity_events", onEvent);
-	return () => listener.unlisten();
-}
-
-export function rowToEvent(row: typeof gitopsActivityEvents.$inferSelect): GitOpsActivityEvent {
+export function rowToEvent(row: GitOpsActivityEventRow): GitOpsActivityEvent {
 	return {
 		eventId: row.eventId,
 		sequence: row.sequence,
@@ -259,11 +221,6 @@ export function rowToEvent(row: typeof gitopsActivityEvents.$inferSelect): GitOp
 		createdAt: row.createdAt.toISOString(),
 		updatedAt: row.updatedAt.toISOString(),
 	};
-}
-
-function requireDb() {
-	if (!db) throw new Error("Database not configured");
-	return db;
 }
 
 function eventEnvelope(input: JsonRecord): JsonRecord {

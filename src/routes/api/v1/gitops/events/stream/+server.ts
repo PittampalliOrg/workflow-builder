@@ -1,16 +1,13 @@
 import type { RequestHandler } from "./$types";
 
-import {
-	getLatestGitOpsActivitySequence,
-	listGitOpsActivityEvents,
-	subscribeGitOpsActivityEvents,
-} from "$lib/server/gitops/activity-events";
+import { getApplicationAdapters } from "$lib/server/application";
 import { requirePlatformAdmin } from "$lib/server/platform-admin";
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 
 export const GET: RequestHandler = async ({ locals, request, url }) => {
 	await requirePlatformAdmin(locals);
+	const gitOpsActivityEvents = getApplicationAdapters().gitOpsActivityEvents;
 
 	const lastEventId = Number.parseInt(request.headers.get("last-event-id") ?? "", 10);
 	const sinceParam = url.searchParams.get("since");
@@ -20,7 +17,7 @@ export const GET: RequestHandler = async ({ locals, request, url }) => {
 		lastSequence = Number(sinceParam);
 	}
 	if (!Number.isFinite(lastSequence) && sinceParam === "latest") {
-		lastSequence = await getLatestGitOpsActivitySequence();
+		lastSequence = await gitOpsActivityEvents.getLatestSequence();
 	}
 	if (!Number.isFinite(lastSequence)) lastSequence = 0;
 
@@ -66,7 +63,7 @@ export const GET: RequestHandler = async ({ locals, request, url }) => {
 				try {
 					do {
 						drainAgain = false;
-						const events = await listGitOpsActivityEvents({
+						const events = await gitOpsActivityEvents.list({
 							afterSequence: lastSequence,
 							ascending: true,
 							limit: 500,
@@ -103,7 +100,7 @@ export const GET: RequestHandler = async ({ locals, request, url }) => {
 
 			if (!cancelled) {
 				try {
-					unlisten = await subscribeGitOpsActivityEvents(() => {
+					unlisten = await gitOpsActivityEvents.subscribe(() => {
 						void drain();
 					});
 					void drain();

@@ -205,6 +205,7 @@ import {
 	HelperPodSourceBundlePromotionRunner,
 	WorkflowPromotionGateAdapter,
 } from "$lib/server/application/adapters/workflow-code-version-promotion";
+import { PostgresGitOpsActivityEventStore } from "$lib/server/application/adapters/gitops-activity-events";
 import { JuiceFsWorkflowExecutionWorkspaceAdapter } from "$lib/server/application/adapters/workflow-execution-workspace";
 import { LegacyCliPreviewGatewayPort } from "$lib/server/application/adapters/cli-preview";
 import { LegacySandboxPreviewGatewayPort } from "$lib/server/application/adapters/sandbox-preview";
@@ -294,6 +295,7 @@ import { ApplicationWorkflowTriggerManagementService } from "$lib/server/applica
 import { ApplicationWorkflowTriggerLifecycleService } from "$lib/server/application/workflow-trigger-lifecycle";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 import { ApplicationWorkflowPlanService } from "$lib/server/application/workflow-plan";
+import { ApplicationGitOpsActivityEventService } from "$lib/server/application/gitops-activity-events";
 import { extractExecutionTraceIds } from "$lib/server/otel/clickhouse";
 import { costFor, formatCurrency } from "$lib/server/pricing/model-pricing";
 import {
@@ -528,6 +530,7 @@ export function getApplicationAdapters(
 		| ApplicationWorkflowTriggerManagementService
 		| undefined;
 	let workflowPlan: ApplicationWorkflowPlanService | undefined;
+	let gitOpsActivityEvents: ApplicationGitOpsActivityEventService | undefined;
 	let cliPreview: ApplicationCliPreviewService | undefined;
 	let sandboxPreview: ApplicationSandboxPreviewService | undefined;
 	const getDatabase = () => (database ??= requirePostgresDb());
@@ -1034,6 +1037,10 @@ export function getApplicationAdapters(
 			workflowData: getWorkflowData(),
 			legacyAgentPlans: new DaprLegacyAgentPlanReader(),
 		}));
+	const getGitOpsActivityEvents = () =>
+		(gitOpsActivityEvents ??= new ApplicationGitOpsActivityEventService(
+			new PostgresGitOpsActivityEventStore(),
+		));
 	const getCliPreview = () =>
 		(cliPreview ??= new ApplicationCliPreviewService({
 			preview: new LegacyCliPreviewGatewayPort(),
@@ -1350,6 +1357,9 @@ export function getApplicationAdapters(
 		},
 		get workflowPlan() {
 			return getWorkflowPlan();
+		},
+		get gitOpsActivityEvents() {
+			return getGitOpsActivityEvents();
 		},
 		get cliPreview() {
 			return getCliPreview();

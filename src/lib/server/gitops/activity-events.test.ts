@@ -1,6 +1,17 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { normalizeGitOpsActivityEvent } from "./activity-events";
+
+describe("activity-events module boundary", () => {
+	it("keeps GitOps event normalization free of persistence imports", () => {
+		const source = readFileSync(new URL("./activity-events.ts", import.meta.url), "utf8");
+
+		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("$lib/server/db/schema");
+		expect(source).not.toContain("drizzle-orm");
+	});
+});
 
 describe("normalizeGitOpsActivityEvent", () => {
 	it("normalizes Tekton PipelineRun resource events with deterministic ids", () => {
