@@ -766,6 +766,7 @@ function fakeSessions(): SessionRepository {
 		getSessionProvisioningContext: vi.fn(async () => null),
 		getSessionContextUsage: vi.fn(async () => null),
 		getSessionOwnerUserId: vi.fn(async () => null),
+		attachSessionRuntime: vi.fn(async () => undefined),
 		getSessionRuntimeTarget: vi.fn(async () => null),
 		getSessionRuntimeDebugTarget: vi.fn(async () => null),
 		getBrowserSessionTarget: vi.fn(async () => null),

@@ -3,7 +3,6 @@ import {
 	ensureGoalMcpServer,
 	stampGoalMcpSessionHeader,
 } from "$lib/server/goals/mcp-wiring";
-import { attachRuntime, getSession } from "$lib/server/sessions/registry";
 import { resolveAgentRef } from "$lib/server/agents/registry";
 import { resolveEnvironmentRef } from "$lib/server/environments/registry";
 import { appendEvent, listEvents } from "$lib/server/sessions/events";
@@ -86,7 +85,9 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	instanceId: string;
 	natsSubject: string;
 }> {
-	const session = await getSession(sessionId);
+	const session = await getApplicationAdapters().workflowData.getSessionDetail({
+		sessionId,
+	});
 	if (!session) throw new Error(`Session ${sessionId} not found`);
 
 	// If we already have a Dapr instance ID recorded, short-circuit.
@@ -560,7 +561,8 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	}
 
 	const natsSubject = `session.events.${sessionId}`;
-	await attachRuntime(sessionId, {
+	await getApplicationAdapters().workflowData.attachSessionRuntime({
+		sessionId,
 		daprInstanceId: instanceId,
 		natsSubject,
 		runtimeAppId: targetAppId,
@@ -584,7 +586,9 @@ export async function raiseSessionUserEvents(
 	sessionId: string,
 	events: unknown[],
 ): Promise<void> {
-	const session = await getSession(sessionId);
+	const session = await getApplicationAdapters().workflowData.getSessionDetail({
+		sessionId,
+	});
 	if (!session?.daprInstanceId) return; // not yet spawned — events will be picked up at spawn time via listEvents
 	// Route raise-event to the exact runtime that owns the session. New rows
 	// persist this at spawn time; older rows fall back through the agent route.

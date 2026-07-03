@@ -26,6 +26,9 @@ ids, workflow execution workspace keys, and session runtime targets through
 workflow-data ports. Direct `sessions`/`workflow_executions` reads for those
 paths are confined to Postgres application adapters; `spawn.ts`, `control.ts`,
 and `runtime-target.ts` no longer import DB or Drizzle for these lookups.
+Session workflow spawn now also loads the session row and attaches Dapr runtime
+metadata through workflow-data; the legacy `sessions/registry` `getSession` and
+`attachRuntime` calls are no longer imported by `spawn.ts`.
 The session runtime-config helper now takes its persisted
 `session.runtime_config` fallback as an injected adapter dependency. The latest
 runtime-config event query is confined to `DefaultSessionRuntimeConfigReader`;
@@ -1090,7 +1093,8 @@ categories include:
   `src/lib/server/openshell-sessions.ts`, and related API routes, excluding the
   capacity fleet-activity summary now confined to the adapter layer, the
   runtime-config helper's latest-event adapter seam, and session agent config
-  patch command session lookup now routed through workflow-data.
+  patch command session lookup now routed through workflow-data, plus the
+  session spawn read/attach-runtime path now routed through workflow-data.
 - preview runtime/proxy helper internals, where persistence lookups have moved
   behind workflow-data but live Kubernetes/OpenShell transport still needs
   narrower runtime/proxy ports.

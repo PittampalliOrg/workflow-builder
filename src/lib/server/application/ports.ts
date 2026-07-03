@@ -3629,6 +3629,7 @@ export interface SessionRepository {
 		projectId?: string | null;
 	}): Promise<SessionContextUsageReadModel | null>;
 	getSessionOwnerUserId(input: { sessionId: string }): Promise<string | null>;
+	attachSessionRuntime(input: AttachSessionRuntimeInput): Promise<void>;
 	getSessionRuntimeTarget(input: {
 		sessionId: string;
 		projectId?: string | null;
@@ -3855,6 +3856,14 @@ export type UpdateSessionStatusUnlessTerminatedInput = Omit<
 	"status" | "markCompleted" | "pauseRequestedAt"
 > & {
 	status: Exclude<SessionStatus, "terminated" | "paused">;
+};
+
+export type AttachSessionRuntimeInput = {
+	sessionId: string;
+	daprInstanceId?: string;
+	natsSubject?: string;
+	runtimeAppId?: string | null;
+	runtimeSandboxName?: string | null;
 };
 
 export type CliWorkspaceSessionCandidateRecord = {
@@ -5194,6 +5203,7 @@ export interface WorkflowDataService {
 		userId?: string | null;
 	}): Promise<RuntimeConfigCloudEvent | null>;
 	getSessionOwnerUserId(sessionId: string): Promise<string | null>;
+	attachSessionRuntime(input: AttachSessionRuntimeInput): Promise<void>;
 	getSessionRuntimeTarget(input: {
 		sessionId: string;
 		projectId?: string | null;

@@ -4896,6 +4896,12 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.requireSessions().getSessionOwnerUserId({ sessionId });
 	}
 
+	attachSessionRuntime(
+		input: Parameters<WorkflowDataService["attachSessionRuntime"]>[0],
+	): Promise<void> {
+		return this.requireSessions().attachSessionRuntime(input);
+	}
+
 	async getSessionRuntimeTarget(input: {
 		sessionId: string;
 		projectId?: string | null;

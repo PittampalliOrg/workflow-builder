@@ -1,5 +1,6 @@
 import type {
 	AddSessionResourceInput,
+	AttachSessionRuntimeInput,
 	AppendSessionEventInput,
 	CliWorkspaceSessionCandidateRecord,
 	CreateSessionForkInput,
@@ -398,6 +399,29 @@ export class CurrentSessionRepository implements SessionRepository {
 			.where(eq(sessions.id, input.sessionId))
 			.limit(1);
 		return row?.userId ?? null;
+	}
+
+	async attachSessionRuntime(input: AttachSessionRuntimeInput): Promise<void> {
+		const database = requireDb(this.database);
+		const patch: Partial<Session> & { updatedAt: Date } = {
+			updatedAt: new Date(),
+		};
+		if (input.daprInstanceId !== undefined) {
+			patch.daprInstanceId = input.daprInstanceId;
+		}
+		if (input.natsSubject !== undefined) {
+			patch.natsSubject = input.natsSubject;
+		}
+		if (input.runtimeAppId !== undefined) {
+			patch.runtimeAppId = input.runtimeAppId;
+		}
+		if (input.runtimeSandboxName !== undefined) {
+			patch.runtimeSandboxName = input.runtimeSandboxName;
+		}
+		await database
+			.update(sessions)
+			.set(patch)
+			.where(eq(sessions.id, input.sessionId));
 	}
 
 	async getSessionRuntimeTarget(input: {

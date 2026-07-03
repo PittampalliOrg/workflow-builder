@@ -602,6 +602,7 @@ function fakeSessions(): SessionRepository {
 			events: { total: 3, totalBytes: 1024, llmTurns: 1 },
 		})),
 		getSessionOwnerUserId: vi.fn(async () => "user-1"),
+		attachSessionRuntime: vi.fn(async () => undefined),
 		getSessionRuntimeTarget: vi.fn(async () => ({
 			appId: "agent-session-1",
 			invokeTarget: "agent-session-1",
@@ -2759,6 +2760,30 @@ describe("ApplicationWorkflowDataService", () => {
 		);
 		expect(sessions.getSessionOwnerUserId).toHaveBeenCalledWith({
 			sessionId: "session-1",
+		});
+	});
+
+	it("attaches session runtime metadata through session ports", async () => {
+		const sessions = {
+			...fakeSessions(),
+			attachSessionRuntime: vi.fn(async () => undefined),
+		} satisfies SessionRepository;
+		const { service } = makeService({ sessions });
+
+		await service.attachSessionRuntime({
+			sessionId: "session-1",
+			daprInstanceId: "session-1",
+			natsSubject: "session.events.session-1",
+			runtimeAppId: "agent-session-1",
+			runtimeSandboxName: "agent-host-agent-session-1",
+		});
+
+		expect(sessions.attachSessionRuntime).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			daprInstanceId: "session-1",
+			natsSubject: "session.events.session-1",
+			runtimeAppId: "agent-session-1",
+			runtimeSandboxName: "agent-host-agent-session-1",
 		});
 	});
 
