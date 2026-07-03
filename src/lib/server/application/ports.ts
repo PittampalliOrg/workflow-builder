@@ -609,6 +609,27 @@ export interface DashboardReadRepository {
 	}): Promise<DashboardReadModel>;
 }
 
+export type BenchmarkInstanceDetailReadModel = {
+	id: string;
+	instanceId: string;
+	repo: string | null;
+	baseCommit: string | null;
+	problemStatement: string | null;
+	hintsText: string | null;
+	testMetadata: Record<string, unknown>;
+	goldPatch: string | null;
+	metadata: Record<string, unknown> | null;
+	suiteSlug: string;
+	suiteName: string;
+};
+
+export interface BenchmarkInstanceDetailReadRepository {
+	getBenchmarkInstanceDetail(input: {
+		suiteSlug: string;
+		instanceId: string;
+	}): Promise<BenchmarkInstanceDetailReadModel | null>;
+}
+
 export type CreateWorkflowDefinitionInput = {
 	name: string;
 	nodes: unknown[];
@@ -3362,6 +3383,10 @@ export interface PreviewEnvironmentProvisioner {
 export interface WorkflowDataService {
 	getUserProfile(userId: string): Promise<UserProfileRecord | null>;
 	isPlatformAdmin(userId: string): Promise<boolean>;
+	canViewContaminationRiskMetadata(input: {
+		userId: string;
+		projectId?: string | null;
+	}): Promise<boolean>;
 	resolveWorkspaceProjectId(input: {
 		slug?: string | null;
 		userId: string;
@@ -3610,6 +3635,10 @@ export interface WorkflowDataService {
 		userId: string;
 		now?: Date;
 	}): Promise<DashboardReadModel>;
+	getBenchmarkInstanceDetail(input: {
+		suiteSlug: string;
+		instanceId: string;
+	}): Promise<BenchmarkInstanceDetailReadModel | null>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;
 	}): Promise<DevPreviewHubReadModel>;

@@ -1,11 +1,3 @@
-import { and, eq } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import {
-	projectMembers,
-	users,
-	type ProjectRole,
-} from "$lib/server/db/schema";
-
 export const CONTAMINATION_RISK_QUERY_PARAM = "includeContaminationRiskMetadata";
 
 const CONTAMINATION_RISK_TEST_METADATA_KEYS = new Set([
@@ -73,34 +65,10 @@ export function mergeServerSwebenchTestMetadata(params: {
 	};
 }
 
-export async function canViewContaminationRiskMetadata(params: {
-	userId: string;
-	projectId?: string | null;
-}): Promise<boolean> {
-	if (!db) return false;
-	const [user] = await db
-		.select({ platformRole: users.platformRole })
-		.from(users)
-		.where(eq(users.id, params.userId))
-		.limit(1);
-	if (user?.platformRole === "ADMIN") return true;
-
-	if (!params.projectId) return false;
-	const [member] = await db
-		.select({ role: projectMembers.role })
-		.from(projectMembers)
-		.where(
-			and(
-				eq(projectMembers.userId, params.userId),
-				eq(projectMembers.projectId, params.projectId),
-			),
-		)
-		.limit(1);
-	return canProjectRoleAuditContaminationMetadata(member?.role ?? null);
-}
+type ContaminationAuditProjectRole = "ADMIN" | "EDITOR" | "OPERATOR" | "VIEWER";
 
 export function canProjectRoleAuditContaminationMetadata(
-	role: ProjectRole | null,
+	role: ContaminationAuditProjectRole | null,
 ): boolean {
 	return role === "ADMIN" || role === "OPERATOR";
 }

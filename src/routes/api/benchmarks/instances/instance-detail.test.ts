@@ -1,25 +1,19 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const dbMock = vi.hoisted(() => {
-	const queuedRows: Array<unknown[]> = [];
-	const select = vi.fn(() => {
-		const result = queuedRows.shift() ?? [];
-		const chain: Record<string, unknown> = {};
-		chain.from = vi.fn(() => chain);
-		chain.innerJoin = vi.fn(() => chain);
-		chain.where = vi.fn(() => chain);
-		chain.limit = vi.fn(async () => result);
-		return chain;
-	});
+const workflowDataMock = vi.hoisted(() => {
 	return {
-		queuedRows,
-		db: { select },
-		select,
+		canViewContaminationRiskMetadata: vi.fn(async () => false),
+		getBenchmarkInstanceDetail: vi.fn(),
 	};
 });
 
-vi.mock("$lib/server/db", () => ({
-	db: dbMock.db,
+vi.mock("$lib/server/application", () => ({
+	getApplicationAdapters: () => ({
+		workflowData: workflowDataMock,
+	}),
 }));
 
 vi.mock("$lib/server/environments/environment-image-builds", () => ({
@@ -35,12 +29,37 @@ import { GET } from "./[suiteSlug]/[instanceId]/+server";
 
 describe("benchmark instance detail API", () => {
 	beforeEach(() => {
-		dbMock.queuedRows.length = 0;
-		dbMock.select.mockClear();
+		workflowDataMock.canViewContaminationRiskMetadata.mockReset();
+		workflowDataMock.canViewContaminationRiskMetadata.mockResolvedValue(false);
+		workflowDataMock.getBenchmarkInstanceDetail.mockReset();
+	});
+
+	it("loads instance details through workflow-data", () => {
+		const source = readFileSync(
+			join(dirname(fileURLToPath(import.meta.url)), "[suiteSlug]/[instanceId]/+server.ts"),
+			"utf8",
+		);
+		const contaminationSource = readFileSync(
+			join(
+				dirname(fileURLToPath(import.meta.url)),
+				"../../../../lib/server/benchmarks/contamination.ts",
+			),
+			"utf8",
+		);
+
+		expect(source).toContain("getApplicationAdapters");
+		expect(source).toContain("getBenchmarkInstanceDetail");
+		expect(source).toContain("canViewContaminationRiskMetadata");
+		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("$lib/server/db/schema");
+		expect(source).not.toContain("drizzle-orm");
+		expect(contaminationSource).not.toContain("$lib/server/db");
+		expect(contaminationSource).not.toContain("$lib/server/db/schema");
+		expect(contaminationSource).not.toContain("drizzle-orm");
 	});
 
 	it("redacts contamination-risk metadata by default", async () => {
-		dbMock.queuedRows.push([sampleInstanceRow()]);
+		workflowDataMock.getBenchmarkInstanceDetail.mockResolvedValue(sampleInstanceRow());
 
 		const response = (await GET({
 			params: { suiteSlug: "SWE-bench_Lite", instanceId: "sympy__sympy-20590" },
@@ -63,10 +82,16 @@ describe("benchmark instance detail API", () => {
 		expect(JSON.stringify(body)).not.toContain("FAIL_TO_PASS");
 		expect(JSON.stringify(body)).not.toContain("PASS_TO_PASS");
 		expect(JSON.stringify(body)).not.toContain("sympy/core/add.py");
+		expect(workflowDataMock.canViewContaminationRiskMetadata).not.toHaveBeenCalled();
+		expect(workflowDataMock.getBenchmarkInstanceDetail).toHaveBeenCalledWith({
+			suiteSlug: "SWE-bench_Lite",
+			instanceId: "sympy__sympy-20590",
+		});
 	});
 
 	it("returns contamination-risk metadata only in explicit authorized audit mode", async () => {
-		dbMock.queuedRows.push([{ platformRole: "ADMIN" }], [sampleInstanceRow()]);
+		workflowDataMock.canViewContaminationRiskMetadata.mockResolvedValue(true);
+		workflowDataMock.getBenchmarkInstanceDetail.mockResolvedValue(sampleInstanceRow());
 
 		const response = (await GET({
 			params: { suiteSlug: "SWE-bench_Lite", instanceId: "sympy__sympy-20590" },
@@ -89,6 +114,10 @@ describe("benchmark instance detail API", () => {
 		expect(body.instance.contaminationRiskMetadata).toMatchObject({
 			included: true,
 			redacted: false,
+		});
+		expect(workflowDataMock.canViewContaminationRiskMetadata).toHaveBeenCalledWith({
+			userId: "user_1",
+			projectId: "project_1",
 		});
 	});
 });

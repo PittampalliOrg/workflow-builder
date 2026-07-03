@@ -31,6 +31,10 @@ The security audit API now loads its aggregated audit stream through a
 workflow-data read model.
 The dashboard API now loads its summary, active-session list, recent changes,
 and resource counts through a workflow-data dashboard read model.
+The benchmark instance-detail API now loads SWE-bench instance details through
+a workflow-data read model, and its contamination-risk audit authorization check
+uses workflow-data user/project ports instead of the route utility reading
+`users`/`project_members` directly.
 
 ## Strict HTTP Runtime Paths
 

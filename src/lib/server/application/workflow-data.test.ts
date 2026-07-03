@@ -4,6 +4,7 @@ import type {
 	AdminPieceRepository,
 	AppConnectionRepository,
 	ArtifactStore,
+	BenchmarkInstanceDetailReadRepository,
 	BenchmarkBrowserRepository,
 	BenchmarkRunReadRepository,
 	BenchmarkRunRepository,
@@ -1326,6 +1327,7 @@ function makeService(options: {
 	workflowExecutions?: Partial<WorkflowExecutionRepository>;
 	benchmarkRunReads?: BenchmarkRunReadRepository;
 	benchmarkRuns?: BenchmarkRunRepository;
+	benchmarkInstanceDetails?: BenchmarkInstanceDetailReadRepository;
 	activityRateTargets?: WorkflowActivityRateTargetRepository;
 	observabilityTraces?: ObservabilityTraceRepository;
 	workflowMonitorReads?: WorkflowMonitorReadRepository;
@@ -1351,6 +1353,8 @@ function makeService(options: {
 	sessionRuntimeStatus?: SessionRuntimeStatusReader;
 	sessionExperimentAgents?: SessionExperimentAgentStore;
 	goalFlow?: GoalFlowReadStore;
+	userProfiles?: UserProfileRepository;
+	workspaceProjects?: WorkspaceProjectRepository;
 }) {
 	const workflowDefinitions = {
 		getById: vi.fn(async () => options.byId ?? null),
@@ -1372,7 +1376,7 @@ function makeService(options: {
 	const service = new ApplicationWorkflowDataService({
 		workflowDefinitions,
 		workflowTriggers,
-		userProfiles: fakeUserProfiles(),
+		userProfiles: options.userProfiles ?? fakeUserProfiles(),
 		settings: fakeSettings(),
 		mcpConnections: fakeMcpConnections(),
 		hostedMcpServers: fakeHostedMcpServers(),
@@ -1380,12 +1384,13 @@ function makeService(options: {
 		appConnections: fakeAppConnections(),
 		adminPieces: fakeAdminPieces(),
 		apiKeys: fakeApiKeys(),
-		workspaceProjects: fakeWorkspaceProjects(),
+		workspaceProjects: options.workspaceProjects ?? fakeWorkspaceProjects(),
 		pieceCatalog: fakePieceCatalog(),
 		pieceExecutions: options.pieceExecutions,
 		sessions: options.sessions,
 		browserArtifacts: options.browserArtifacts,
 		benchmarkBrowser: fakeBenchmarkBrowser(),
+		benchmarkInstanceDetails: options.benchmarkInstanceDetails,
 		benchmarkRunReads: options.benchmarkRunReads ?? fakeBenchmarkRunReads(),
 		devEnvironments: options.devEnvironments ?? fakeDevEnvironments(),
 		benchmarkRuns: options.benchmarkRuns ?? fakeBenchmarkRuns(),
@@ -6420,6 +6425,89 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(dashboard.getDashboard).toHaveBeenCalledWith({
 			userId: "user-1",
 			now,
+		});
+	});
+
+	it("checks contamination-risk audit access through user and project ports", async () => {
+		const userProfiles: UserProfileRepository = {
+			getUserProfile: vi.fn(async () => ({
+				name: "Member",
+				email: "member@example.test",
+				image: null,
+				platformRole: "MEMBER" as const,
+			})),
+		};
+		const workspaceProjects: WorkspaceProjectRepository = {
+			...fakeWorkspaceProjects(),
+			getProjectMemberRole: vi.fn(async () => "OPERATOR" as const),
+		};
+		const { service } = makeService({ userProfiles, workspaceProjects });
+
+		await expect(
+			service.canViewContaminationRiskMetadata({
+				userId: "user-1",
+				projectId: "project-1",
+			}),
+		).resolves.toBe(true);
+		expect(userProfiles.getUserProfile).toHaveBeenCalledWith("user-1");
+		expect(workspaceProjects.getProjectMemberRole).toHaveBeenCalledWith({
+			projectId: "project-1",
+			userId: "user-1",
+		});
+	});
+
+	it("lets platform admins audit contamination-risk metadata without project membership", async () => {
+		const userProfiles: UserProfileRepository = {
+			getUserProfile: vi.fn(async () => ({
+				name: "Admin",
+				email: "admin@example.test",
+				image: null,
+				platformRole: "ADMIN" as const,
+			})),
+		};
+		const workspaceProjects: WorkspaceProjectRepository = {
+			...fakeWorkspaceProjects(),
+			getProjectMemberRole: vi.fn(async () => "VIEWER" as const),
+		};
+		const { service } = makeService({ userProfiles, workspaceProjects });
+
+		await expect(
+			service.canViewContaminationRiskMetadata({
+				userId: "admin-1",
+				projectId: "project-1",
+			}),
+		).resolves.toBe(true);
+		expect(workspaceProjects.getProjectMemberRole).not.toHaveBeenCalled();
+	});
+
+	it("loads benchmark instance detail through the workflow-data port", async () => {
+		const detail = {
+			id: "inst-1",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "abc123",
+			problemStatement: "Fix it",
+			hintsText: "Look at Add",
+			testMetadata: { version: "1.7" },
+			goldPatch: "diff --git a/sympy/core/add.py b/sympy/core/add.py\n",
+			metadata: { issue_url: "https://example.test/issue" },
+			suiteSlug: "SWE-bench_Lite",
+			suiteName: "SWE-bench Lite",
+		};
+		const benchmarkInstanceDetails: BenchmarkInstanceDetailReadRepository = {
+			getBenchmarkInstanceDetail: vi.fn(async () => detail),
+		};
+		const { service } = makeService({ benchmarkInstanceDetails });
+
+		await expect(
+			service.getBenchmarkInstanceDetail({
+				suiteSlug: "SWE-bench_Lite",
+				instanceId: "sympy__sympy-20590",
+			}),
+		).resolves.toEqual(detail);
+		expect(benchmarkInstanceDetails.getBenchmarkInstanceDetail).toHaveBeenCalledWith({
+			suiteSlug: "SWE-bench_Lite",
+			instanceId: "sympy__sympy-20590",
 		});
 	});
 

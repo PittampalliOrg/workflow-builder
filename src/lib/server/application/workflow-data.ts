@@ -72,6 +72,7 @@ import type {
 	AppendSessionEventInput,
 	ArtifactStore,
 	BenchmarkBrowserEnvironmentBuildRecord,
+	BenchmarkInstanceDetailReadRepository,
 	BenchmarkBrowserReadModel,
 	BenchmarkBrowserRepository,
 	BenchmarkRunReadRepository,
@@ -777,6 +778,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			browserArtifacts?: WorkflowBrowserArtifactStore;
 			codeFunctionCatalog?: CodeFunctionCatalogRepository;
 			benchmarkBrowser: BenchmarkBrowserRepository;
+			benchmarkInstanceDetails?: BenchmarkInstanceDetailReadRepository;
 			benchmarkRunReads?: BenchmarkRunReadRepository;
 			devEnvironments?: DevEnvironmentReadRepository;
 			benchmarkRuns?: BenchmarkRunRepository;
@@ -858,6 +860,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Benchmark run read repository not configured");
 		}
 		return this.deps.benchmarkRunReads;
+	}
+
+	private requireBenchmarkInstanceDetails(): BenchmarkInstanceDetailReadRepository {
+		if (!this.deps.benchmarkInstanceDetails) {
+			throw new Error("Benchmark instance detail read repository not configured");
+		}
+		return this.deps.benchmarkInstanceDetails;
 	}
 
 	private isResourceVisibleToCaller<T extends { userId: string; projectId: string | null }>(
@@ -1025,6 +1034,20 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	async isPlatformAdmin(userId: string) {
 		const profile = await this.deps.userProfiles.getUserProfile(userId);
 		return profile?.platformRole === "ADMIN";
+	}
+
+	async canViewContaminationRiskMetadata(input: {
+		userId: string;
+		projectId?: string | null;
+	}) {
+		const profile = await this.deps.userProfiles.getUserProfile(input.userId);
+		if (profile?.platformRole === "ADMIN") return true;
+		if (!input.projectId) return false;
+		const role = await this.deps.workspaceProjects.getProjectMemberRole({
+			projectId: input.projectId,
+			userId: input.userId,
+		});
+		return role === "ADMIN" || role === "OPERATOR";
 	}
 
 	async getSettingsPageReadModel(input: {
@@ -3727,6 +3750,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			userId: input.userId,
 			now: input.now ?? new Date(),
 		});
+	}
+
+	getBenchmarkInstanceDetail(input: { suiteSlug: string; instanceId: string }) {
+		return this.requireBenchmarkInstanceDetails().getBenchmarkInstanceDetail(input);
 	}
 
 	async getDevPreviewHubReadModel(input: { projectId?: string | null }) {

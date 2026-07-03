@@ -104,6 +104,7 @@ import type {
 	ApiKeyStore,
 	ArtifactStore,
 	BenchmarkBrowserRepository,
+	BenchmarkInstanceDetailReadRepository,
 	BenchmarkRunRepository,
 	BenchmarkSessionProvisioningGateRecord,
 	SandboxExecutionRecord,
@@ -2578,6 +2579,55 @@ export class PostgresBenchmarkBrowserRepository implements BenchmarkBrowserRepos
 				),
 			)
 			.orderBy(asc(agents.name));
+	}
+}
+
+export class PostgresBenchmarkInstanceDetailReadRepository
+	implements BenchmarkInstanceDetailReadRepository
+{
+	constructor(private readonly database: Database = requirePostgresDb()) {}
+
+	async getBenchmarkInstanceDetail(input: {
+		suiteSlug: string;
+		instanceId: string;
+	}) {
+		const suiteSlug = input.suiteSlug.trim();
+		const instanceId = input.instanceId.trim();
+		if (!suiteSlug || !instanceId) return null;
+
+		const [row] = await this.database
+			.select({
+				id: benchmarkInstances.id,
+				instanceId: benchmarkInstances.instanceId,
+				repo: benchmarkInstances.repo,
+				baseCommit: benchmarkInstances.baseCommit,
+				problemStatement: benchmarkInstances.problemStatement,
+				hintsText: benchmarkInstances.hintsText,
+				testMetadata: benchmarkInstances.testMetadata,
+				goldPatch: benchmarkInstances.goldPatch,
+				metadata: benchmarkInstances.metadata,
+				suiteSlug: benchmarkSuites.slug,
+				suiteName: benchmarkSuites.name,
+			})
+			.from(benchmarkInstances)
+			.innerJoin(
+				benchmarkSuites,
+				eq(benchmarkInstances.suiteId, benchmarkSuites.id),
+			)
+			.where(
+				and(
+					eq(benchmarkSuites.slug, suiteSlug),
+					eq(benchmarkInstances.instanceId, instanceId),
+				),
+			)
+			.limit(1);
+		if (!row) return null;
+
+		return {
+			...row,
+			testMetadata: isRecord(row.testMetadata) ? row.testMetadata : {},
+			metadata: isRecord(row.metadata) ? row.metadata : null,
+		};
 	}
 }
 
