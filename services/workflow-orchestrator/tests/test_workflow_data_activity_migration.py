@@ -26,6 +26,22 @@ if requests_spec is None:
     requests_stub.exceptions = types.SimpleNamespace(RequestException=Exception)
     sys.modules["requests"] = requests_stub
 
+try:
+    dapr_workflow_spec = importlib.util.find_spec("dapr.ext.workflow")
+except (ImportError, ModuleNotFoundError, ValueError):
+    dapr_workflow_spec = None
+
+if dapr_workflow_spec is None:
+    dapr_stub = types.ModuleType("dapr")
+    dapr_ext_stub = types.ModuleType("dapr.ext")
+    dapr_workflow_stub = types.ModuleType("dapr.ext.workflow")
+    dapr_workflow_stub.WorkflowActivityContext = object
+    dapr_ext_stub.workflow = dapr_workflow_stub
+    dapr_stub.ext = dapr_ext_stub
+    sys.modules["dapr"] = dapr_stub
+    sys.modules["dapr.ext"] = dapr_ext_stub
+    sys.modules["dapr.ext.workflow"] = dapr_workflow_stub
+
 activities_pkg = types.ModuleType("activities")
 activities_pkg.__path__ = [str(ROOT / "activities")]
 sys.modules["activities"] = activities_pkg
@@ -52,6 +68,7 @@ track_agent_run = _load_activity("track_agent_run")
 persist_plan_artifact = _load_activity("persist_plan_artifact")
 finalizer = _load_activity("finalize_otel_trace_root")
 log_node_execution = _load_activity("log_node_execution")
+fetch_child_workflow = _load_activity("fetch_child_workflow")
 persist_workspace_session = _load_activity("persist_workspace_session")
 register_resumable_workspace = _load_activity("register_resumable_workspace")
 
@@ -128,6 +145,77 @@ def test_track_agent_run_strict_http_uses_workflow_data_client(monkeypatch):
     ]
 
 
+def test_track_agent_run_lifecycle_strict_http_uses_workflow_data_client(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    class FakeWorkflowDataClient:
+        def update_agent_run(self, run_id, payload):
+            calls.append((run_id, payload))
+            return {"ok": True, "id": run_id}
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
+    monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
+    monkeypatch.setattr(track_agent_run, "workflow_data_client", FakeWorkflowDataClient())
+    monkeypatch.setattr(track_agent_run, "_get_database_url", _fail_database_url)
+
+    running = track_agent_run.track_agent_run_running(
+        None,
+        {"id": "agent-run-1", "result": {"phase": "thinking"}},
+    )
+    completed = track_agent_run.track_agent_run_completed(
+        None,
+        {
+            "id": "agent-run-1",
+            "success": True,
+            "result": {"content": "done", "workspaceRef": "workspace-1"},
+            "eventPublished": True,
+        },
+    )
+
+    assert running == {"success": True, "id": "agent-run-1", "status": "running"}
+    assert completed == {"success": True, "id": "agent-run-1", "status": "completed"}
+    assert calls == [
+        ("agent-run-1", {"status": "running", "result": {"phase": "thinking"}}),
+        (
+            "agent-run-1",
+            {
+                "status": "completed",
+                "result": {"content": "done", "workspaceRef": "workspace-1"},
+                "error": None,
+                "workspaceRef": "workspace-1",
+                "eventPublished": True,
+            },
+        ),
+    ]
+
+
+def test_track_agent_run_lifecycle_strict_http_failure_does_not_fallback(monkeypatch):
+    class FailingWorkflowDataClient:
+        def update_agent_run(self, *_args, **_kwargs):
+            raise RuntimeError("workflow-data unavailable")
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
+    monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
+    monkeypatch.setattr(track_agent_run, "workflow_data_client", FailingWorkflowDataClient())
+    monkeypatch.setattr(track_agent_run, "_get_database_url", _fail_database_url)
+
+    running = track_agent_run.track_agent_run_running(
+        None,
+        {"id": "agent-run-1", "result": {"phase": "thinking"}},
+    )
+    completed = track_agent_run.track_agent_run_completed(
+        None,
+        {"id": "agent-run-1", "success": False, "error": "failed"},
+    )
+
+    assert running["success"] is False
+    assert "workflow-data unavailable" in running["error"]
+    assert completed["success"] is False
+    assert "workflow-data unavailable" in completed["error"]
+
+
 def test_persist_plan_artifact_strict_http_uses_workflow_data_client(monkeypatch):
     calls: list[dict] = []
 
@@ -174,6 +262,114 @@ def test_persist_plan_artifact_strict_http_uses_workflow_data_client(monkeypatch
     }
     assert calls[0]["workflowExecutionId"] == "exec-1"
     assert calls[0]["planJson"] == {"steps": []}
+
+
+def test_plan_artifact_update_and_fetch_strict_http_use_workflow_data_client(monkeypatch):
+    calls: list[tuple[str, str | None, dict | None]] = []
+
+    class FakeWorkflowDataClient:
+        def update_plan_artifact(self, artifact_ref, payload):
+            calls.append(("update", artifact_ref, payload))
+            return {"artifactRef": artifact_ref, "status": payload["status"]}
+
+        def get_plan_artifact(self, artifact_ref):
+            calls.append(("get", artifact_ref, None))
+            return {
+                "artifactRef": artifact_ref,
+                "status": "ready",
+                "goal": "ship it",
+                "planJson": {"steps": []},
+                "planMarkdown": "## Plan",
+                "metadata": {"reviewed": True},
+                "workspaceRef": "workspace-1",
+                "clonePath": "/repo",
+            }
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
+    monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
+    monkeypatch.setattr(persist_plan_artifact, "workflow_data_client", FakeWorkflowDataClient())
+    monkeypatch.setattr(persist_plan_artifact, "_get_database_url", _fail_database_url)
+
+    updated = persist_plan_artifact.update_plan_artifact_status(
+        None,
+        {
+            "artifactRef": "plan-1",
+            "status": "ready",
+            "metadata": {"reviewed": True},
+        },
+    )
+    fetched = persist_plan_artifact.fetch_plan_artifact(
+        None,
+        {"artifactRef": "plan-1"},
+    )
+
+    assert updated == {"success": True, "artifactRef": "plan-1", "status": "ready"}
+    assert fetched == {
+        "success": True,
+        "artifactRef": "plan-1",
+        "status": "ready",
+        "goal": "ship it",
+        "planJson": {"steps": []},
+        "planMarkdown": "## Plan",
+        "metadata": {"reviewed": True},
+        "workspaceRef": "workspace-1",
+        "clonePath": "/repo",
+    }
+    assert calls == [
+        ("update", "plan-1", {"status": "ready", "metadata": {"reviewed": True}}),
+        ("get", "plan-1", None),
+    ]
+
+
+def test_plan_artifact_update_and_fetch_strict_http_failure_does_not_fallback(monkeypatch):
+    class FailingWorkflowDataClient:
+        def update_plan_artifact(self, *_args, **_kwargs):
+            raise RuntimeError("workflow-data unavailable")
+
+        def get_plan_artifact(self, *_args, **_kwargs):
+            raise RuntimeError("workflow-data unavailable")
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
+    monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
+    monkeypatch.setattr(persist_plan_artifact, "workflow_data_client", FailingWorkflowDataClient())
+    monkeypatch.setattr(persist_plan_artifact, "_get_database_url", _fail_database_url)
+
+    updated = persist_plan_artifact.update_plan_artifact_status(
+        None,
+        {"artifactRef": "plan-1", "status": "ready"},
+    )
+    fetched = persist_plan_artifact.fetch_plan_artifact(
+        None,
+        {"artifactRef": "plan-1"},
+    )
+
+    assert updated["success"] is False
+    assert "workflow-data unavailable" in updated["error"]
+    assert fetched["success"] is False
+    assert "workflow-data unavailable" in fetched["error"]
+
+
+def test_fetch_child_workflow_strict_http_failure_does_not_fallback(monkeypatch):
+    class FailingWorkflowDataClient:
+        def get_workflow(self, *_args, **_kwargs):
+            raise RuntimeError("workflow-data unavailable")
+
+    def fail_db_fetch(_workflow_id):
+        raise AssertionError("Postgres child workflow fallback should not be called")
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    _block_psycopg2_imports(monkeypatch)
+    monkeypatch.setattr(fetch_child_workflow, "workflow_data_client", FailingWorkflowDataClient())
+    monkeypatch.setattr(fetch_child_workflow, "_fetch_workflow_from_db", fail_db_fetch)
+
+    try:
+        fetch_child_workflow._fetch_workflow("wf-child")
+    except RuntimeError as exc:
+        assert "workflow-data unavailable" in str(exc)
+    else:
+        raise AssertionError("strict child workflow fetch should surface workflow-data failure")
 
 
 def test_log_node_execution_strict_http_uses_workflow_data_client(monkeypatch):
