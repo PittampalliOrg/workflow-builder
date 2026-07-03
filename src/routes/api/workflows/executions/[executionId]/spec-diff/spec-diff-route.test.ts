@@ -4,60 +4,30 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
-	const parentSpec = {
-		do: [
-			{
-				refine: {
-					call: "agent.run",
-					with: { prompt: "old" },
-				},
-			},
-		],
+	const body = {
+		hasParent: true,
+		parentId: "exec-parent",
+		fromNode: "refine",
+		snapshotUnavailable: false,
+		added: ["verify"],
+		removed: [],
+		changed: [{ name: "refine", patch: "--- refine (parent)\n+++ refine (this run)\n" }],
 	};
-	const childSpec = {
-		do: [
-			{
-				refine: {
-					call: "agent.run",
-					with: { prompt: "new" },
-				},
-			},
-			{
-				verify: {
-					call: "agent.run",
-					with: { prompt: "check" },
-				},
-			},
-		],
-	};
-	const childExecution = {
-		id: "exec-child",
-		workflowId: "wf-1",
-		userId: "user-1",
-		projectId: "project-1",
-		status: "running",
-		executionIr: { spec: childSpec },
-		rerunOfExecutionId: "exec-parent",
-		resumeFromNode: "refine",
-	};
-	const parentExecution = {
-		...childExecution,
-		id: "exec-parent",
-		executionIr: { spec: parentSpec },
-		rerunOfExecutionId: null,
-		resumeFromNode: null,
-	};
-	const workflowData = {
-		getScopedExecutionById: vi.fn(async (): Promise<typeof childExecution | null> => childExecution),
-		getExecutionById: vi.fn(async (id: string) =>
-			id === "exec-parent" ? parentExecution : childExecution,
+	type GetSpecDiffResult =
+		| { status: "ok"; body: typeof body }
+		| { status: "error"; httpStatus: number; message: string };
+	const workflowExecutionSpecDiff = {
+		getSpecDiff: vi.fn(
+			async (): Promise<GetSpecDiffResult> => ({ status: "ok", body }),
 		),
 	};
-	return { childExecution, parentExecution, workflowData };
+	return { body, workflowExecutionSpecDiff };
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
+	getApplicationAdapters: () => ({
+		workflowExecutionSpecDiff: mocks.workflowExecutionSpecDiff,
+	}),
 }));
 
 import { GET } from "./+server";
@@ -82,19 +52,21 @@ async function expectHttpStatus(promise: Promise<unknown>, status: number) {
 describe("workflow execution spec-diff route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.workflowData.getScopedExecutionById.mockResolvedValue(mocks.childExecution);
-		mocks.workflowData.getExecutionById.mockImplementation(async (id: string) =>
-			id === "exec-parent" ? mocks.parentExecution : mocks.childExecution,
-		);
+		mocks.workflowExecutionSpecDiff.getSpecDiff.mockResolvedValue({
+			status: "ok",
+			body: mocks.body,
+		});
 	});
 
-	it("keeps the route behind workflow-data application services", () => {
+	it("keeps the route behind workflow execution spec-diff application services", () => {
 		const source = readFileSync(
 			join(dirname(fileURLToPath(import.meta.url)), "+server.ts"),
 			"utf8",
 		);
 		expect(source).toContain("getApplicationAdapters");
-		expect(source).toContain("workflowData.getScopedExecutionById");
+		expect(source).toContain("workflowExecutionSpecDiff.getSpecDiff");
+		expect(source).not.toContain("workflowData");
+		expect(source).not.toContain("createTwoFilesPatch");
 		expect(source).not.toContain("$lib/server/workflows/project-scope");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
@@ -113,18 +85,20 @@ describe("workflow execution spec-diff route", () => {
 			removed: [],
 			changed: [expect.objectContaining({ name: "refine" })],
 		});
-		expect(mocks.workflowData.getScopedExecutionById).toHaveBeenCalledWith({
+		expect(mocks.workflowExecutionSpecDiff.getSpecDiff).toHaveBeenCalledWith({
 			executionId: "exec-child",
 			userId: "user-1",
 			projectId: "project-1",
 		});
-		expect(mocks.workflowData.getExecutionById).toHaveBeenCalledWith("exec-parent");
 	});
 
 	it("hides executions outside the active workspace", async () => {
-		mocks.workflowData.getScopedExecutionById.mockResolvedValueOnce(null);
+		mocks.workflowExecutionSpecDiff.getSpecDiff.mockResolvedValueOnce({
+			status: "error",
+			httpStatus: 404,
+			message: "Execution not found",
+		});
 
 		await expectHttpStatus(Promise.resolve(GET(event() as never)), 404);
-		expect(mocks.workflowData.getExecutionById).not.toHaveBeenCalled();
 	});
 });

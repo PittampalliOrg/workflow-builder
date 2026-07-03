@@ -209,8 +209,10 @@ services:
   resolves the execution and Dapr instance through `workflowData` before raising
   the approval event through Dapr service invocation.
 - `src/routes/api/workflows/executions/[executionId]/spec-diff/+server.ts` now
-  loads the forked execution and its parent through `workflowData`; spec
-  comparison remains route-local presentation shaping over application DTOs.
+  delegates scoped execution access, parent loading, snapshot-unavailable
+  detection, task-name comparison, and per-task unified patch generation to
+  `ApplicationWorkflowExecutionSpecDiffService`. The route imports no
+  workflow-data, diff, spec-mutation, DB, Drizzle, or project-scope modules.
 - `src/routes/api/workflows/executions/[executionId]/sessions/+server.ts` now
   delegates scoped execution access, direct plus inherited rerun-lineage
   session loading, and inherited/source response shaping to

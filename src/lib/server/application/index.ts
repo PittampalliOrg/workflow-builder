@@ -158,6 +158,7 @@ import { ApplicationWorkflowExecutionFilesService } from "$lib/server/applicatio
 import { ApplicationWorkflowExecutionLineageService } from "$lib/server/application/workflow-execution-lineage";
 import { ApplicationWorkflowExecutionMetricsService } from "$lib/server/application/workflow-execution-metrics";
 import { ApplicationWorkflowExecutionSessionsService } from "$lib/server/application/workflow-execution-sessions";
+import { ApplicationWorkflowExecutionSpecDiffService } from "$lib/server/application/workflow-execution-spec-diff";
 import { ApplicationWorkflowExecutionWorkspaceService } from "$lib/server/application/workflow-execution-workspace";
 import { ApplicationWorkflowExecutionStreamService } from "$lib/server/application/workflow-execution-stream";
 import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/application/workflow-code-checkpoints";
@@ -306,6 +307,9 @@ export function getApplicationAdapters(
 		| undefined;
 	let workflowExecutionSessions:
 		| ApplicationWorkflowExecutionSessionsService
+		| undefined;
+	let workflowExecutionSpecDiff:
+		| ApplicationWorkflowExecutionSpecDiffService
 		| undefined;
 	let workflowExecutionWorkspace:
 		| ApplicationWorkflowExecutionWorkspaceService
@@ -563,6 +567,10 @@ export function getApplicationAdapters(
 		(workflowExecutionSessions ??= new ApplicationWorkflowExecutionSessionsService({
 			workflowData: getWorkflowData(),
 		}));
+	const getWorkflowExecutionSpecDiff = () =>
+		(workflowExecutionSpecDiff ??= new ApplicationWorkflowExecutionSpecDiffService({
+			workflowData: getWorkflowData(),
+		}));
 	const getWorkflowExecutionWorkspace = () =>
 		(workflowExecutionWorkspace ??= new ApplicationWorkflowExecutionWorkspaceService({
 			workflowData: getWorkflowData(),
@@ -779,6 +787,9 @@ export function getApplicationAdapters(
 		},
 		get workflowExecutionSessions() {
 			return getWorkflowExecutionSessions();
+		},
+		get workflowExecutionSpecDiff() {
+			return getWorkflowExecutionSpecDiff();
 		},
 		get workflowExecutionWorkspace() {
 			return getWorkflowExecutionWorkspace();
