@@ -1,6 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { backfillInlineAgents } from "$lib/server/agents/backfill";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * One-shot admin endpoint to migrate any remaining inline agentConfig blobs in
@@ -12,6 +12,7 @@ export const POST: RequestHandler = async ({ locals }) => {
 	// Simple gate: platform admin only. A production install would check
 	// locals.session.platformRole === "ADMIN"; leaving an explicit check for
 	// the deployer to layer on per their auth model.
-	const report = await backfillInlineAgents();
+	const report =
+		await getApplicationAdapters().agentBackfill.backfillInlineAgents();
 	return json({ report });
 };

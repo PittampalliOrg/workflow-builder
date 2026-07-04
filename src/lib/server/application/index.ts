@@ -92,6 +92,7 @@ import {
 	PostgresAgentSkillHydrationRepository,
 	RegistryPeerAgentResolver,
 } from "$lib/server/application/adapters/agents";
+import { PostgresAgentInlineBackfillRepository } from "$lib/server/application/adapters/agent-backfill";
 import { ClickHouseTraceOwnerResolver } from "$lib/server/application/adapters/observability-trace-access";
 import { PostgresCapabilityBundleRepository } from "$lib/server/application/adapters/capability-bundles";
 import { LegacyAgentSkillRepository } from "$lib/server/application/adapters/agent-skills";
@@ -249,6 +250,7 @@ import { LegacySandboxPreviewGatewayPort } from "$lib/server/application/adapter
 import { WorkflowTriggerLifecycleAdapter } from "$lib/server/application/adapters/workflow-trigger-lifecycle";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
+import { ApplicationAgentBackfillService } from "$lib/server/application/agent-backfill";
 import { ApplicationAgentCatalogService } from "$lib/server/application/agent-catalog";
 import { ApplicationAgentImportExportService } from "$lib/server/application/agent-import-export";
 import { ApplicationAgentProfileService } from "$lib/server/application/agent-profiles";
@@ -472,6 +474,7 @@ export function getApplicationAdapters(
 	let workflowData: ApplicationWorkflowDataService | undefined;
 	let agentRuntimeWarmPools: KubernetesAgentRuntimeWarmPoolClient | undefined;
 	let agentRuntimeControl: ApplicationAgentRuntimeControlService | undefined;
+	let agentBackfill: ApplicationAgentBackfillService | undefined;
 	let agentCatalog: ApplicationAgentCatalogService | undefined;
 	let agentImportExport: ApplicationAgentImportExportService | undefined;
 	let agentProfiles: ApplicationAgentProfileService | undefined;
@@ -1077,6 +1080,10 @@ export function getApplicationAdapters(
 			workspaceProjects: getWorkspaceProjects(),
 			warmPools: getAgentRuntimeWarmPools(),
 		}));
+	const getAgentBackfill = () =>
+		(agentBackfill ??= new ApplicationAgentBackfillService(
+			new PostgresAgentInlineBackfillRepository(),
+		));
 	const getBenchmarkInstanceLifecycle = () =>
 		(benchmarkInstanceLifecycle ??=
 			new ApplicationBenchmarkInstanceLifecycleService(
@@ -1518,6 +1525,9 @@ export function getApplicationAdapters(
 		},
 		get agentRuntimeControl() {
 			return getAgentRuntimeControl();
+		},
+		get agentBackfill() {
+			return getAgentBackfill();
 		},
 		get agentCatalog() {
 			return getAgentCatalog();

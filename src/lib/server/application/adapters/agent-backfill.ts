@@ -5,10 +5,24 @@ import {
 	agentVersions,
 	workflows,
 } from "$lib/server/db/schema";
+import type {
+	AgentInlineBackfillReport,
+	AgentInlineBackfillRepository,
+} from "$lib/server/application/agent-backfill";
 import type { AgentConfig, AgentRuntime } from "$lib/types/agents";
 import { createDefaultAgentConfig } from "$lib/types/agents";
 import { listRuntimeIds } from "$lib/server/agents/runtime-registry";
-import { hashAgentConfig } from "./config-hash";
+import { hashAgentConfig } from "$lib/server/agents/config-hash";
+
+type BackfillReport = AgentInlineBackfillReport;
+
+export class PostgresAgentInlineBackfillRepository
+	implements AgentInlineBackfillRepository
+{
+	backfillInlineAgents(): Promise<AgentInlineBackfillReport> {
+		return backfillInlineAgents();
+	}
+}
 
 type NodeRecord = Record<string, unknown>;
 
@@ -154,14 +168,6 @@ function proposedAgentName(
 	return base || "Migrated Agent";
 }
 
-export type BackfillReport = {
-	agentsCreated: number;
-	agentsReused: number;
-	nodesRewritten: number;
-	workflowsTouched: number;
-	workflowsScanned: number;
-};
-
 /**
  * One-shot, idempotent migration. Walks every workflow, finds every durable/run
  * node with inline agentConfig (and no agentRef), dedupes by config hash into
@@ -171,7 +177,7 @@ export type BackfillReport = {
  * Reruns are safe — nodes already carrying agentRef are skipped and no
  * duplicate agents are created.
  */
-export async function backfillInlineAgents(): Promise<BackfillReport> {
+async function backfillInlineAgents(): Promise<BackfillReport> {
 	const database = requireDb();
 	const workflowRows = await database
 		.select({

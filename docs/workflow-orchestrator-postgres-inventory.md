@@ -644,6 +644,11 @@ services:
   helper was removed; default-environment creation, unlinked-agent repair, and
   built-in sandbox image repair SQL are confined to
   `PostgresEnvironmentMaintenanceRepository`.
+- `src/routes/api/admin/agents/backfill/+server.ts` now calls
+  `ApplicationAgentBackfillService`. The one-shot inline `agentConfig` to named
+  agent migration SQL moved under
+  `src/lib/server/application/adapters/agent-backfill.ts`; the admin route no
+  longer imports the legacy DB helper directly.
 - `src/routes/workspaces/[slug]/+layout.server.ts` and
   `src/lib/server/workspaces/resolve.ts` now validate workspace slug membership
   and stale-slug redirect targets through workflow-data workspace-project
