@@ -77,6 +77,7 @@ import {
 	PostgresAuthSignInRepository,
 } from "$lib/server/application/adapters/auth-sign-in";
 import {
+	LegacyAuthAccessTokenVerifier,
 	LegacyAuthSessionReader,
 	LegacyAuthTokenRefresher,
 } from "$lib/server/application/adapters/auth-session";
@@ -1011,6 +1012,7 @@ export function getApplicationAdapters(
 		(authSession ??= new ApplicationAuthSessionService({
 			sessions: new LegacyAuthSessionReader(),
 			tokens: new LegacyAuthTokenRefresher(),
+			accessTokens: new LegacyAuthAccessTokenVerifier(),
 		}));
 	const getSettingsCliTokens = () =>
 		(settingsCliTokens ??= new ApplicationSettingsCliTokensService({

@@ -896,6 +896,9 @@ services:
   directly. They call
   `ApplicationAuthSessionService`; the existing token/session helpers remain
   behind `LegacyAuthSessionReader` and `LegacyAuthTokenRefresher`.
+  The terminal WebSocket proxies also verify bearer/cookie access tokens through
+  the same auth-session application port instead of importing `verifyAccessToken`
+  from `auth.ts`.
 - `src/routes/api/v1/gitops/events/stream/+server.ts` no longer imports the raw
   Postgres client for `LISTEN`. SSE framing, heartbeat, replay, and abort
   cleanup stay in the route; the Postgres `LISTEN gitops_activity_events`

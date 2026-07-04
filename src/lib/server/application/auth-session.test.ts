@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	ApplicationAuthSessionService,
+	type AuthAccessTokenVerifier,
 	type AuthSessionReader,
 	type AuthTokenRefresher,
 } from "$lib/server/application/auth-session";
@@ -27,6 +28,7 @@ describe("ApplicationAuthSessionService", () => {
 		const service = new ApplicationAuthSessionService({
 			sessions,
 			tokens: createTokenRefresher(),
+			accessTokens: createAccessTokenVerifier(),
 		});
 
 		await expect(service.getSession({ request, cookies })).resolves.toEqual({
@@ -45,6 +47,7 @@ describe("ApplicationAuthSessionService", () => {
 		const service = new ApplicationAuthSessionService({
 			sessions: createSessionReader(),
 			tokens,
+			accessTokens: createAccessTokenVerifier(),
 		});
 
 		await expect(
@@ -61,10 +64,35 @@ describe("ApplicationAuthSessionService", () => {
 		const service = new ApplicationAuthSessionService({
 			sessions: createSessionReader(),
 			tokens,
+			accessTokens: createAccessTokenVerifier(),
 		});
 
 		await expect(service.refreshTokens({ refreshToken: " " })).resolves.toBeNull();
 		expect(tokens.refreshTokens).not.toHaveBeenCalled();
+	});
+
+	it("verifies non-empty access tokens through the access token verifier port", async () => {
+		const accessTokens = createAccessTokenVerifier({
+				verifyAccessToken: vi.fn(async () => ({
+					sub: "user-1",
+					projectId: "project-1",
+					type: "access" as const,
+				})),
+		});
+		const service = new ApplicationAuthSessionService({
+			sessions: createSessionReader(),
+			tokens: createTokenRefresher(),
+			accessTokens,
+		});
+
+		await expect(
+			service.verifyAccessToken({ token: " access-1 " }),
+		).resolves.toEqual({
+			sub: "user-1",
+			projectId: "project-1",
+			type: "access",
+		});
+		expect(accessTokens.verifyAccessToken).toHaveBeenCalledWith("access-1");
 	});
 });
 
@@ -82,6 +110,15 @@ function createTokenRefresher(
 ): AuthTokenRefresher {
 	return {
 		refreshTokens: vi.fn(async () => null),
+		...overrides,
+	};
+}
+
+function createAccessTokenVerifier(
+	overrides: Partial<AuthAccessTokenVerifier> = {},
+): AuthAccessTokenVerifier {
+	return {
+		verifyAccessToken: vi.fn(async () => null),
 		...overrides,
 	};
 }

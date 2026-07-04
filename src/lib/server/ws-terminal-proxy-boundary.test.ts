@@ -14,4 +14,17 @@ describe('dev terminal WebSocket proxy persistence boundary', () => {
 		expect(source).not.toContain(['$lib', 'server', 'db'].join('/'));
 		expect(source).not.toContain(['drizzle', 'orm'].join('-'));
 	});
+
+	it.each([
+		['openshell terminal', './ws-terminal-proxy.ts'],
+		['shell', './ws-kube-exec-proxy.ts'],
+		['cli terminal', './ws-cli-terminal-proxy.ts'],
+	])('%s proxy verifies access tokens through auth-session ports', (_name, path) => {
+		const source = readFileSync(new URL(path, import.meta.url), 'utf8');
+
+		expect(source).toContain('authSession.verifyAccessToken');
+		expect(source).not.toMatch(/from ['"].*server\/auth['"]/);
+		expect(source).not.toContain('verifyAccessToken } from');
+		expect(source).not.toContain('verifyAccessToken,');
+	});
 });

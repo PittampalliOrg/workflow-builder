@@ -1,7 +1,8 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import { ACCESS_TOKEN_COOKIE, verifyAccessToken } from '$lib/server/auth';
+import { ACCESS_TOKEN_COOKIE } from '$lib/server/auth-cookies';
+import { getApplicationAdapters } from '$lib/server/application';
 import {
 	getOpenShellRuntimeInternalToken,
 	getOpenShellRuntimeWsUrl
@@ -35,7 +36,9 @@ async function authenticate(
 	if (auth?.startsWith('Bearer ')) token = auth.slice(7);
 	else token = readCookie(req.headers.cookie, ACCESS_TOKEN_COOKIE);
 	if (!token) return null;
-	const payload = await verifyAccessToken(token);
+	const payload = await getApplicationAdapters().authSession.verifyAccessToken({
+		token,
+	});
 	if (!payload?.sub) return null;
 	return {
 		userId: payload.sub,

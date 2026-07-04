@@ -1,8 +1,10 @@
 import {
 	getSession,
 	refreshTokens,
+	verifyAccessToken,
 } from "$lib/server/auth";
 import type {
+	AuthAccessTokenVerifier,
 	AuthCookieStore,
 	AuthSessionReader,
 	AuthTokenRefresher,
@@ -17,5 +19,11 @@ export class LegacyAuthSessionReader implements AuthSessionReader {
 export class LegacyAuthTokenRefresher implements AuthTokenRefresher {
 	refreshTokens(refreshToken: string) {
 		return refreshTokens(refreshToken);
+	}
+}
+
+export class LegacyAuthAccessTokenVerifier implements AuthAccessTokenVerifier {
+	verifyAccessToken(token: string) {
+		return verifyAccessToken(token);
 	}
 }

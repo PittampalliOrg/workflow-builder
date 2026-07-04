@@ -25,6 +25,15 @@ export type AuthTokenPair = {
 	refreshToken: string;
 };
 
+export type AuthAccessTokenPayload = {
+	sub: string;
+	email?: string;
+	platformId?: string;
+	projectId?: string;
+	tokenVersion?: number;
+	type?: "access" | "refresh";
+};
+
 export type AuthSessionReader = {
 	getSession(input: {
 		request: Request;
@@ -36,11 +45,16 @@ export type AuthTokenRefresher = {
 	refreshTokens(refreshToken: string): Promise<AuthTokenPair | null>;
 };
 
+export type AuthAccessTokenVerifier = {
+	verifyAccessToken(token: string): Promise<AuthAccessTokenPayload | null>;
+};
+
 export class ApplicationAuthSessionService {
 	constructor(
 		private readonly deps: {
 			sessions: AuthSessionReader;
 			tokens: AuthTokenRefresher;
+			accessTokens: AuthAccessTokenVerifier;
 		},
 	) {}
 
@@ -57,5 +71,13 @@ export class ApplicationAuthSessionService {
 		const refreshToken = input.refreshToken?.trim();
 		if (!refreshToken) return Promise.resolve(null);
 		return this.deps.tokens.refreshTokens(refreshToken);
+	}
+
+	verifyAccessToken(input: {
+		token: string | null | undefined;
+	}): Promise<AuthAccessTokenPayload | null> {
+		const token = input.token?.trim();
+		if (!token) return Promise.resolve(null);
+		return this.deps.accessTokens.verifyAccessToken(token);
 	}
 }
