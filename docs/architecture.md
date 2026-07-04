@@ -2,6 +2,9 @@
 
 Workflow Builder is a visual workflow system that uses Dapr Workflows for durable orchestration, OpenShell-backed sandboxes for agent execution, and Postgres-backed review artifacts for patches, file snapshots, browser captures, and child-run metadata.
 
+For the post-migration port/adapters view, see
+[`docs/hexagonal-architecture.md`](hexagonal-architecture.md).
+
 ## Current Runtime Model
 
 The active runtime runs on the `ryzen` local Talos spoke for development and on
