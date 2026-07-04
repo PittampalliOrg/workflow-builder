@@ -57,8 +57,12 @@ jobs:
       - name: Run unit tests
         run: pnpm test:unit --run
 
+      # Pre-merge smoke build only: on pushes to main the Tekton outer-loop
+      # builds the same commit authoritatively (inside the Dockerfile), so a
+      # second build here adds nothing — tests/boundaries above still run.
       - name: Run build
         run: pnpm build
+        if: github.event_name == 'pull_request'
 
   orchestrator-tests:
     runs-on: ubuntu-latest
