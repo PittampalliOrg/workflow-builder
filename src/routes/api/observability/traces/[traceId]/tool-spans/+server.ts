@@ -1,5 +1,5 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { normalizeRawTraceSpans } from '$lib/server/benchmarks/trace-bundle';
+import { normalizeRawTraceSpans } from '$lib/server/observability/trace-span-normalization';
 import { getTraceSpans, getTraceToolSpans } from '$lib/server/otel/clickhouse';
 import { assertTraceInScope } from '../trace-access';
 

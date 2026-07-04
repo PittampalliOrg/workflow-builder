@@ -2,7 +2,7 @@ import { json, type RequestHandler } from '@sveltejs/kit';
 import {
 	enrichLlmSpansWithRawTraceAttributes,
 	normalizeRawTraceSpans
-} from '$lib/server/benchmarks/trace-bundle';
+} from '$lib/server/observability/trace-span-normalization';
 import { getTraceLlmSpans, getTraceSpans } from '$lib/server/otel/clickhouse';
 import { assertTraceInScope } from '../trace-access';
 

@@ -558,6 +558,9 @@ services:
   `workflow_executions` owner authorization is confined to
   `PostgresObservabilityTraceRepository`; the old DB-backed
   `observability/trace-scope.ts` helper was removed.
+- The per-trace LLM/tool span routes no longer import the DB-backed benchmark
+  trace-bundle service for raw span fallback normalization. That pure mapping
+  now lives in `src/lib/server/observability/trace-span-normalization.ts`.
 - The obsolete `/api/monitor` route family was retired with the old admin
   workflow-instance diagnostic page.
 - The admin-gated routes `src/routes/api/metrics/aggregate/+server.ts`,

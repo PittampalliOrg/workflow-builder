@@ -19,6 +19,7 @@ describe("observability per-trace route access boundary", () => {
 		for (const file of routeFiles) {
 			const source = readFileSync(join(root, file), "utf8");
 			expect(source).not.toContain("$lib/server/observability/trace-scope");
+			expect(source).not.toContain("$lib/server/benchmarks/trace-bundle");
 			expect(source).not.toContain("$lib/server/db");
 			expect(source).not.toContain("$lib/server/db/schema");
 			expect(source).not.toContain("drizzle-orm");
