@@ -118,6 +118,7 @@ import {
 } from "$lib/server/application/adapters/capacity-overview";
 import { LegacyBenchmarkRunDetailReadAdapter } from "$lib/server/application/adapters/benchmark-run-detail";
 import { LegacyBenchmarkRunReadRepository } from "$lib/server/application/adapters/benchmark-runs";
+import { PostgresBenchmarkMlflowEvaluationRepository } from "$lib/server/application/adapters/benchmark-mlflow-evaluation";
 import { PostgresDevEnvironmentReadRepository } from "$lib/server/application/adapters/dev-environments";
 import {
 	DaprLifecycleCoordinatorCancelNotifier,
@@ -320,6 +321,7 @@ import { ApplicationBenchmarkCapacityDiagnosticsService } from "$lib/server/appl
 import { ApplicationBenchmarkEnvironmentValidationService } from "$lib/server/application/benchmark-environment-validation";
 import { ApplicationBenchmarkInstanceLifecycleService } from "$lib/server/application/benchmark-instance-lifecycle";
 import { ApplicationBenchmarkRunInstanceDetailService } from "$lib/server/application/benchmark-run-instance-detail";
+import { ApplicationBenchmarkMlflowEvaluationService } from "$lib/server/application/benchmark-mlflow-evaluation";
 import { ApplicationRunCancellationService } from "$lib/server/application/run-cancellation";
 import { ApplicationEvaluationRunDetailService } from "$lib/server/application/evaluation-run-detail";
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
@@ -510,6 +512,9 @@ export function getApplicationAdapters(
 		| undefined;
 	let benchmarkInstanceLifecycle:
 		| ApplicationBenchmarkInstanceLifecycleService
+		| undefined;
+	let benchmarkMlflowEvaluation:
+		| ApplicationBenchmarkMlflowEvaluationService
 		| undefined;
 	let evaluationRunDetail: ApplicationEvaluationRunDetailService | undefined;
 	let benchmarkRunDetail: ApplicationBenchmarkRunDetailPageService | undefined;
@@ -1089,6 +1094,11 @@ export function getApplicationAdapters(
 			new ApplicationBenchmarkInstanceLifecycleService(
 				new LegacyBenchmarkInstanceLifecycleAdapter(),
 			));
+	const getBenchmarkMlflowEvaluation = () =>
+		(benchmarkMlflowEvaluation ??=
+			new ApplicationBenchmarkMlflowEvaluationService(
+				new PostgresBenchmarkMlflowEvaluationRepository(),
+			));
 	const getAgentCatalog = () =>
 		(agentCatalog ??= new ApplicationAgentCatalogService({
 			agents: new LegacyAgentCatalogRepository(),
@@ -1408,6 +1418,9 @@ export function getApplicationAdapters(
 		},
 		get benchmarkInstanceLifecycle() {
 			return getBenchmarkInstanceLifecycle();
+		},
+		get benchmarkMlflowEvaluation() {
+			return getBenchmarkMlflowEvaluation();
 		},
 		get evaluationRunLaunch() {
 			return getEvaluationRunLaunch();

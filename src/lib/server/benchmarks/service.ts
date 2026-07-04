@@ -5778,39 +5778,6 @@ export async function upsertEvaluationDatasetArtifact(
 	await syncBenchmarkRunMlflow(runId);
 }
 
-export async function recordBenchmarkMlflowEvaluation(params: {
-	runId: string;
-	mlflowEvalRunId: string;
-	summary?: Record<string, unknown> | null;
-}) {
-	const database = requireDb();
-	const [run] = await database
-		.select({ summary: benchmarkRuns.summary })
-		.from(benchmarkRuns)
-		.where(eq(benchmarkRuns.id, params.runId))
-		.limit(1);
-	if (!run) return null;
-	const existingSummary = isRecord(run.summary) ? run.summary : {};
-	const mlflowEvaluation = isRecord(params.summary) ? params.summary : {};
-	await database
-		.update(benchmarkRuns)
-		.set({
-			summary: {
-				...existingSummary,
-				mlflowEvalRunId: params.mlflowEvalRunId,
-				mlflowEvaluation: {
-					...mlflowEvaluation,
-					mlflowEvalRunId: params.mlflowEvalRunId,
-				},
-			},
-			mlflowEvalRunId: params.mlflowEvalRunId,
-			updatedAt: new Date(),
-		})
-		.where(eq(benchmarkRuns.id, params.runId));
-	await syncBenchmarkRunMlflow(params.runId);
-	return { mlflowEvalRunId: params.mlflowEvalRunId };
-}
-
 async function buildPredictionsJsonlForRunById(runId: string): Promise<string> {
 	const database = requireDb();
 	const [run] = await database

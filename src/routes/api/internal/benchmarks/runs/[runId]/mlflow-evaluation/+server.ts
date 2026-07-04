@@ -1,23 +1,16 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { requireInternal } from "$lib/server/internal-auth";
-import { recordBenchmarkMlflowEvaluation } from "$lib/server/benchmarks/service";
+import { getApplicationAdapters } from "$lib/server/application";
 
 export const POST: RequestHandler = async ({ request, params }) => {
 	requireInternal(request);
 	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-	const mlflowEvalRunId =
-		typeof body.mlflowEvalRunId === "string" ? body.mlflowEvalRunId.trim() : "";
-	if (!mlflowEvalRunId) return error(400, "mlflowEvalRunId is required");
-	const summary =
-		body.summary && typeof body.summary === "object" && !Array.isArray(body.summary)
-			? (body.summary as Record<string, unknown>)
-			: null;
-	const result = await recordBenchmarkMlflowEvaluation({
+	const result = await getApplicationAdapters().benchmarkMlflowEvaluation.recordEvaluation({
 		runId: params.runId,
-		mlflowEvalRunId,
-		summary,
+		body,
 	});
-	if (!result) return error(404, "Benchmark run not found");
-	return json({ success: true, ...result });
+	if (result.status === "invalid") return error(400, result.message);
+	if (result.status === "not_found") return error(404, result.message);
+	return json({ success: true, ...result.record });
 };

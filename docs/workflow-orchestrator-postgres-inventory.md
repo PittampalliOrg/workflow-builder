@@ -202,6 +202,11 @@ updates, active-row counting, lifecycle transitions, MLflow/trace sync
 scheduling, and coordinator notifications are no longer owned by the route.
 The optimized `jsonb_to_recordset` update remains intact inside
 `PostgresBenchmarkEvaluationResultRepository`.
+The SWE-bench MLflow evaluation callback now delegates request validation and
+summary persistence to `ApplicationBenchmarkMlflowEvaluationService`. The
+nullable `benchmark_runs.mlflow_eval_run_id` update and legacy best-effort
+benchmark MLflow sync are confined to
+`PostgresBenchmarkMlflowEvaluationRepository`.
 The internal benchmark run launch route no longer performs route-local agent
 slug lookup through Drizzle. `createBenchmarkRun` accepts `agentSlug` as an
 alternate selector and resolves it through the existing benchmark-agent
