@@ -5,15 +5,21 @@ import {
 	createEvaluationDefinition,
 	createSwebenchEvaluationTemplate,
 	deleteEvaluationDatasetRow,
+	buildEvaluationPredictionsJsonl,
+	gradeEvaluationRun,
 	getEvaluationDataset,
 	getEvaluationDefinition,
+	getInternalEvaluationRun,
 	getEvaluationRun,
 	getEvaluationRunItem,
 	listEvaluations,
 	listEvaluationDatasets,
 	markEvaluationRunItemStatus,
+	markEvaluationRunStatus,
 	parseDatasetImport,
+	recordEvaluationArtifact,
 	recordEvaluationRunItemGraderResults,
+	recomputeEvaluationRunSummary,
 	syncEvaluationRunItemFromExecution,
 	updateEvaluationRunItemOutput,
 	updateEvaluationDefinition,
@@ -29,6 +35,11 @@ import type {
 	EvaluationDefinitionCreateInput,
 	EvaluationDefinitionRepository,
 } from "$lib/server/application/evaluation-definitions";
+import type {
+	EvaluationArtifactKindInput,
+	EvaluationRunRepository,
+	EvaluationRunStatusInput,
+} from "$lib/server/application/evaluation-runs";
 import type {
 	EvaluationRunItemOutputInput,
 	EvaluationRunItemRepository,
@@ -159,6 +170,49 @@ export class LegacyEvaluationRunItemRepository
 		error?: string | null;
 	}): Promise<unknown | null> {
 		return recordEvaluationRunItemGraderResults(input);
+	}
+}
+
+export class LegacyEvaluationRunRepository
+	implements EvaluationRunRepository
+{
+	getInternalRun(
+		runId: string,
+		options?: { itemMode?: "summary" | "full" },
+	): Promise<unknown | null> {
+		return getInternalEvaluationRun(runId, options);
+	}
+
+	markStatus(
+		runId: string,
+		status: EvaluationRunStatusInput,
+		extra: Record<string, unknown>,
+	): Promise<unknown | null> {
+		return markEvaluationRunStatus(runId, status, extra);
+	}
+
+	recomputeSummary(runId: string): Promise<unknown> {
+		return recomputeEvaluationRunSummary(runId);
+	}
+
+	recordArtifact(input: {
+		runId: string;
+		runItemId: string | null;
+		kind: EvaluationArtifactKindInput;
+		path: string | null;
+		content: unknown;
+		contentType: string | null;
+		metadata?: Record<string, unknown>;
+	}): Promise<unknown> {
+		return recordEvaluationArtifact(input);
+	}
+
+	gradeRun(projectId: string, runId: string): Promise<unknown> {
+		return gradeEvaluationRun(projectId, runId);
+	}
+
+	buildPredictionsJsonl(projectId: string, runId: string): Promise<string> {
+		return buildEvaluationPredictionsJsonl(projectId, runId);
 	}
 }
 

@@ -134,6 +134,7 @@ import {
 	LegacyEvaluationDatasetImportParser,
 	LegacyEvaluationDatasetRepository,
 	LegacyEvaluationDefinitionRepository,
+	LegacyEvaluationRunRepository,
 	LegacyEvaluationRunItemRepository,
 	LegacyEvaluationTemplateRepository,
 	StaticSwebenchSuiteCatalog,
@@ -317,6 +318,7 @@ import {
 } from "$lib/server/application/run-launch";
 import { ApplicationEvaluationDefinitionService } from "$lib/server/application/evaluation-definitions";
 import { ApplicationEvaluationDatasetService } from "$lib/server/application/evaluation-datasets";
+import { ApplicationEvaluationRunService } from "$lib/server/application/evaluation-runs";
 import { ApplicationEvaluationRunItemService } from "$lib/server/application/evaluation-run-items";
 import { ApplicationEvaluationTemplateService } from "$lib/server/application/evaluation-templates";
 import { ApplicationEnvironmentService } from "$lib/server/application/environment-management";
@@ -508,6 +510,7 @@ export function getApplicationAdapters(
 		| ApplicationEvaluationDefinitionService
 		| undefined;
 	let evaluationDatasets: ApplicationEvaluationDatasetService | undefined;
+	let evaluationRuns: ApplicationEvaluationRunService | undefined;
 	let evaluationRunItems: ApplicationEvaluationRunItemService | undefined;
 	let evaluationTemplates: ApplicationEvaluationTemplateService | undefined;
 	let environments: ApplicationEnvironmentService | undefined;
@@ -901,6 +904,10 @@ export function getApplicationAdapters(
 		(evaluationDatasets ??= new ApplicationEvaluationDatasetService(
 			new LegacyEvaluationDatasetRepository(),
 			new LegacyEvaluationDatasetImportParser(),
+		));
+	const getEvaluationRuns = () =>
+		(evaluationRuns ??= new ApplicationEvaluationRunService(
+			new LegacyEvaluationRunRepository(),
 		));
 	const getEvaluationRunItems = () =>
 		(evaluationRunItems ??= new ApplicationEvaluationRunItemService(
@@ -1459,6 +1466,9 @@ export function getApplicationAdapters(
 		},
 		get evaluationDatasets() {
 			return getEvaluationDatasets();
+		},
+		get evaluationRuns() {
+			return getEvaluationRuns();
 		},
 		get evaluationRunItems() {
 			return getEvaluationRunItems();
