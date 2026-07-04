@@ -702,7 +702,11 @@ def test_existing_live_execution_instance_returns_running_dapr_id(monkeypatch):
 
     fake_psycopg2 = types.SimpleNamespace(connect=lambda _url: FakeConnection())
     monkeypatch.setitem(sys.modules, "psycopg2", fake_psycopg2)
-    monkeypatch.setattr(APP, "_get_database_url", lambda: "postgres://test")
+    monkeypatch.setattr(
+        APP.workflow_data_postgres_rollback,
+        "get_database_url",
+        lambda: "postgres://test",
+    )
 
     assert APP._existing_live_execution_instance("exec-1") == "sw-instance-1"
 
@@ -730,7 +734,11 @@ def test_existing_live_execution_instance_ignores_terminal_rows(monkeypatch):
 
     fake_psycopg2 = types.SimpleNamespace(connect=lambda _url: FakeConnection())
     monkeypatch.setitem(sys.modules, "psycopg2", fake_psycopg2)
-    monkeypatch.setattr(APP, "_get_database_url", lambda: "postgres://test")
+    monkeypatch.setattr(
+        APP.workflow_data_postgres_rollback,
+        "get_database_url",
+        lambda: "postgres://test",
+    )
 
     assert APP._existing_live_execution_instance("exec-1") is None
 
@@ -793,7 +801,11 @@ def test_app_start_control_strict_http_uses_workflow_data_client(monkeypatch):
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
     _block_psycopg2_imports(monkeypatch)
     monkeypatch.setattr(APP, "workflow_data_client", FakeWorkflowDataClient())
-    monkeypatch.setattr(APP, "_get_database_url", fail_database_url)
+    monkeypatch.setattr(
+        APP.workflow_data_postgres_rollback,
+        "get_database_url",
+        fail_database_url,
+    )
     monkeypatch.setitem(
         sys.modules,
         "psycopg2",
@@ -910,7 +922,11 @@ def test_app_start_control_fallback_mode_uses_postgres_when_workflow_data_fails(
     monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http-fallback-db")
     monkeypatch.setattr(APP, "workflow_data_client", FailingWorkflowDataClient())
     monkeypatch.setattr(APP, "_generate_execution_id", lambda: "exec-fallback-1")
-    monkeypatch.setattr(APP, "_get_database_url", lambda: "postgres://test")
+    monkeypatch.setattr(
+        APP.workflow_data_postgres_rollback,
+        "get_database_url",
+        lambda: "postgres://test",
+    )
     monkeypatch.setitem(
         sys.modules,
         "psycopg2",
@@ -970,7 +986,7 @@ def test_health_is_process_local(monkeypatch):
 
 
 def test_database_url_secret_fetch_retries_until_sidecar_ready(monkeypatch):
-    APP._database_url = None
+    APP.workflow_data_postgres_rollback._database_url = None
     calls = []
 
     class Response:
@@ -995,19 +1011,26 @@ def test_database_url_secret_fetch_retries_until_sidecar_ready(monkeypatch):
         }
         return values.get(name, default)
 
-    monkeypatch.setattr(APP.requests, "get", fake_get)
-    monkeypatch.setattr(APP, "_env_float", fake_env_float)
-    monkeypatch.setattr(APP.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(APP.workflow_data_postgres_rollback.requests, "get", fake_get)
+    monkeypatch.setattr(APP.workflow_data_postgres_rollback, "_env_float", fake_env_float)
+    monkeypatch.setattr(
+        APP.workflow_data_postgres_rollback.time,
+        "sleep",
+        lambda _seconds: None,
+    )
 
     try:
-        assert APP._get_database_url() == "postgres://workflow-builder"
+        assert (
+            APP.workflow_data_postgres_rollback.get_database_url()
+            == "postgres://workflow-builder"
+        )
         assert len(calls) == 2
     finally:
-        APP._database_url = None
+        APP.workflow_data_postgres_rollback._database_url = None
 
 
 def test_database_url_secret_fetch_fails_after_bounded_retry_window(monkeypatch):
-    APP._database_url = None
+    APP.workflow_data_postgres_rollback._database_url = None
 
     def fake_get(*_args, **_kwargs):
         raise RuntimeError("connection refused")
@@ -1017,14 +1040,14 @@ def test_database_url_secret_fetch_fails_after_bounded_retry_window(monkeypatch)
             return 0.0
         return default
 
-    monkeypatch.setattr(APP.requests, "get", fake_get)
-    monkeypatch.setattr(APP, "_env_float", fake_env_float)
+    monkeypatch.setattr(APP.workflow_data_postgres_rollback.requests, "get", fake_get)
+    monkeypatch.setattr(APP.workflow_data_postgres_rollback, "_env_float", fake_env_float)
 
     try:
         with pytest.raises(RuntimeError, match="Failed to fetch DATABASE_URL"):
-            APP._get_database_url()
+            APP.workflow_data_postgres_rollback.get_database_url()
     finally:
-        APP._database_url = None
+        APP.workflow_data_postgres_rollback._database_url = None
 
 
 def test_sw_workflow_trace_context_is_isolated_per_execution():
@@ -1148,7 +1171,11 @@ def test_mark_workflow_execution_started_persists_primary_trace_id(monkeypatch):
         def close(self):
             executed["closed"] = True
 
-    monkeypatch.setattr(APP, "_get_database_url", lambda: "postgres://test")
+    monkeypatch.setattr(
+        APP.workflow_data_postgres_rollback,
+        "get_database_url",
+        lambda: "postgres://test",
+    )
     monkeypatch.setattr(
         sys.modules["psycopg2"],
         "connect",

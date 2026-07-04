@@ -53,6 +53,7 @@ from workflows.sw_workflow import wfr
 from activities.metadata import get_activity_metadata
 from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
 from content_tracing import io_attributes
+import workflow_data_postgres_rollback
 
 REQUESTS_TIMEOUT = getattr(requests, "Timeout", TimeoutError)
 
@@ -1654,93 +1655,7 @@ def _registered_workflow_descriptors() -> list[dict[str, Any]]:
     ]
 
 
-# --- Database helpers for SW workflow execution ---
-
-_database_url: str | None = None
-
-
-def _database_secret_fetch_timeout_seconds() -> float:
-    return max(
-        0.0,
-        _env_float("DATABASE_URL_SECRET_FETCH_TIMEOUT_SECONDS", 90.0),
-    )
-
-
-def _database_secret_fetch_retry_interval_seconds() -> float:
-    return max(
-        0.1,
-        _env_float("DATABASE_URL_SECRET_FETCH_RETRY_INTERVAL_SECONDS", 1.0),
-    )
-
-
-def _fetch_database_url_from_dapr_secret(url: str) -> str:
-    response = requests.get(
-        url,
-        headers=_dapr_api_token_headers(),
-        timeout=10,
-    )
-    response.raise_for_status()
-    secrets = response.json() if response.content else {}
-    db_url = secrets.get("DATABASE_URL") if isinstance(secrets, dict) else None
-    if not db_url:
-        raise RuntimeError("DATABASE_URL not found in Dapr secrets")
-    return str(db_url)
-
-
-def _get_database_url() -> str:
-    """Resolve DATABASE_URL.
-
-    Preview orchestrators (the dev-preview "preview set") point at their own
-    `preview_<id>` database, delivered as a plain DATABASE_URL env var. So an
-    explicit env wins over the Dapr kubernetes-secrets fetch (the prod path).
-    """
-    global _database_url
-    if _database_url is not None:
-        return _database_url
-
-    env_url = os.environ.get("DATABASE_URL")
-    if env_url and env_url.strip():
-        _database_url = env_url.strip()
-        logger.info("[Execute-By-Id] Using DATABASE_URL from environment (preview/override)")
-        return _database_url
-
-    dapr_host = config.DAPR_HOST
-    dapr_port = config.DAPR_HTTP_PORT
-    url = f"http://{dapr_host}:{dapr_port}/v1.0/secrets/kubernetes-secrets/workflow-builder-secrets"
-    retry_deadline = time.monotonic() + _database_secret_fetch_timeout_seconds()
-    retry_interval = _database_secret_fetch_retry_interval_seconds()
-    attempts = 0
-    last_error: Exception | None = None
-
-    while True:
-        attempts += 1
-        try:
-            db_url = _fetch_database_url_from_dapr_secret(url)
-            _database_url = db_url
-            logger.info(
-                "[Execute-By-Id] Fetched DATABASE_URL from Dapr secrets after %d attempt(s)",
-                attempts,
-            )
-            return db_url
-        except Exception as e:
-            last_error = e
-            remaining_seconds = retry_deadline - time.monotonic()
-            if remaining_seconds <= 0:
-                break
-            sleep_seconds = min(retry_interval, remaining_seconds)
-            logger.warning(
-                "[Execute-By-Id] DATABASE_URL secret fetch failed on attempt %d; "
-                "retrying in %.1fs: %s",
-                attempts,
-                sleep_seconds,
-                e,
-            )
-            time.sleep(sleep_seconds)
-
-    raise RuntimeError(
-        "Failed to fetch DATABASE_URL from Dapr secrets after "
-        f"{attempts} attempt(s): {last_error}"
-    ) from last_error
+# --- Workflow-data helpers for SW workflow execution ---
 
 
 def _use_workflow_data_api() -> bool:
@@ -1771,42 +1686,7 @@ def _assert_execution_read_model_columns() -> None:
                 raise
             _log_workflow_data_fallback("read-model readiness check", exc)
 
-    import psycopg2
-
-    required_columns = {
-        "current_node_id",
-        "current_node_name",
-        "primary_trace_id",
-        "workflow_session_id",
-        "summary_output",
-    }
-
-    db_url = _get_database_url()
-    conn = psycopg2.connect(db_url)
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'workflow_executions'
-                  AND column_name = ANY(%s)
-                """,
-                (list(required_columns),),
-            )
-            existing = {row[0] for row in cur.fetchall()}
-    finally:
-        conn.close()
-
-    missing = sorted(required_columns - existing)
-    if missing:
-        raise RuntimeError(
-            "Execution read-model schema cutover is incomplete. "
-            "Missing workflow_executions columns: "
-            f"{', '.join(missing)}. Apply atlas/migrations/20260408120000_add_execution_read_model_columns.sql "
-            "or drizzle/0024_execution_read_model.sql before starting workflow-orchestrator."
-        )
+    workflow_data_postgres_rollback.assert_execution_read_model_columns()
 
 
 def _fetch_workflow_from_db(workflow_id: str) -> dict[str, Any]:
@@ -1824,55 +1704,7 @@ def _fetch_workflow_from_db(workflow_id: str) -> dict[str, Any]:
                 raise
             _log_workflow_data_fallback("workflow lookup", exc)
 
-    import psycopg2
-
-    db_url = _get_database_url()
-    conn = psycopg2.connect(db_url)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT id, name, description, user_id, project_id, nodes, edges, spec, spec_version, dapr_workflow_name
-            FROM workflows
-            WHERE id = %s
-            """,
-            (workflow_id,),
-        )
-        row = cur.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail=f"Workflow {workflow_id} not found")
-
-        (
-            wf_id,
-            wf_name,
-            wf_description,
-            user_id,
-            project_id,
-            nodes_json,
-            edges_json,
-            spec_json,
-            spec_version,
-            dapr_workflow_name,
-        ) = row
-        # JSONB columns may already be dicts/lists, or may need parsing
-        nodes = json.loads(nodes_json) if isinstance(nodes_json, str) else nodes_json
-        edges = json.loads(edges_json) if isinstance(edges_json, str) else edges_json
-        spec = json.loads(spec_json) if isinstance(spec_json, str) else spec_json
-
-        return {
-            "id": wf_id,
-            "name": wf_name,
-            "description": wf_description,
-            "userId": user_id,
-            "projectId": project_id,
-            "nodes": nodes,
-            "edges": edges,
-            "spec": spec,
-            "specVersion": spec_version,
-            "daprWorkflowName": dapr_workflow_name,
-        }
-    finally:
-        conn.close()
+    return workflow_data_postgres_rollback.fetch_workflow(workflow_id)
 
 
 def _generate_execution_id() -> str:
@@ -1919,35 +1751,13 @@ def _create_workflow_execution(
                 raise
             _log_workflow_data_fallback("workflow execution create", exc)
 
-    import psycopg2
-
-    db_url = _get_database_url()
-    conn = psycopg2.connect(db_url)
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO workflow_executions (
-                    id, workflow_id, user_id, project_id, status, input, phase, progress, workflow_session_id
-                )
-                VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
-                """,
-                (
-                    execution_id,
-                    workflow_id,
-                    user_id,
-                    project_id,
-                    "running",
-                    json.dumps(trigger_data or {}),
-                    "running",
-                    0,
-                    execution_id,
-                ),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-    return execution_id
+    return workflow_data_postgres_rollback.create_workflow_execution(
+        execution_id,
+        workflow_id,
+        user_id,
+        trigger_data,
+        project_id,
+    )
 
 
 def _mark_workflow_execution_started(
@@ -1972,34 +1782,11 @@ def _mark_workflow_execution_started(
                 raise
             _log_workflow_data_fallback("execution scheduler attach", exc)
 
-    import psycopg2
-
-    db_url = _get_database_url()
-    conn = psycopg2.connect(db_url)
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE workflow_executions
-                SET dapr_instance_id = %s,
-                    phase = %s,
-                    progress = %s,
-                    workflow_session_id = COALESCE(workflow_session_id, %s),
-                    primary_trace_id = COALESCE(primary_trace_id, %s)
-                WHERE id = %s
-                """,
-                (
-                    dapr_instance_id,
-                    "running",
-                    0,
-                    execution_id,
-                    primary_trace_id,
-                    execution_id,
-                ),
-            )
-        conn.commit()
-    finally:
-        conn.close()
+    workflow_data_postgres_rollback.mark_workflow_execution_started(
+        execution_id,
+        dapr_instance_id,
+        primary_trace_id,
+    )
 
 
 def _existing_live_execution_instance(execution_id: str) -> str | None:
@@ -2019,34 +1806,7 @@ def _existing_live_execution_instance(execution_id: str) -> str | None:
                 raise
             _log_workflow_data_fallback("live execution lookup", exc)
 
-    import psycopg2
-
-    db_url = _get_database_url()
-    conn = psycopg2.connect(db_url)
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT status, dapr_instance_id
-                FROM workflow_executions
-                WHERE id = %s
-                """,
-                (execution_id,),
-            )
-            row = cur.fetchone()
-    finally:
-        conn.close()
-
-    if not row:
-        return None
-
-    status = str(row[0] or "").strip().lower()
-    dapr_instance_id = str(row[1] or "").strip()
-    if not dapr_instance_id:
-        return None
-    if status in {"completed", "failed", "error", "cancelled", "terminated"}:
-        return None
-    return dapr_instance_id
+    return workflow_data_postgres_rollback.existing_live_execution_instance(execution_id)
 
 
 def _db_execution_status_for_instance(instance_id: str) -> str | None:
@@ -2075,30 +1835,7 @@ def _db_execution_status_for_instance(instance_id: str) -> str | None:
                 return None
             _log_workflow_data_fallback("execution status lookup by Dapr instance", exc)
 
-    import psycopg2
-
-    try:
-        conn = psycopg2.connect(_get_database_url(), connect_timeout=3)
-    except Exception as exc:
-        logger.warning(
-            "[Idempotent Schedule] DB status connect failed for %s: %s", instance_id, exc
-        )
-        return None
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT status FROM workflow_executions WHERE dapr_instance_id = %s LIMIT 1",
-                (instance_id,),
-            )
-            row = cur.fetchone()
-    except Exception as exc:
-        logger.warning(
-            "[Idempotent Schedule] DB status lookup failed for %s: %s", instance_id, exc
-        )
-        return None
-    finally:
-        conn.close()
-    return str(row[0]).strip().lower() if row and row[0] else None
+    return workflow_data_postgres_rollback.execution_status_for_instance(instance_id)
 
 
 def _terminate_and_purge_for_reuse(client: DaprWorkflowClient, instance_id: str) -> None:
@@ -2147,35 +1884,7 @@ def _mark_workflow_execution_failed_to_start(execution_id: str, error: str) -> N
                 raise
             _log_workflow_data_fallback("execution failed-to-start update", exc)
 
-    import psycopg2
-    from datetime import datetime, timezone
-
-    db_url = _get_database_url()
-    conn = psycopg2.connect(db_url)
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE workflow_executions
-                SET status = %s,
-                    phase = %s,
-                    progress = %s,
-                    error = %s,
-                    completed_at = %s
-                WHERE id = %s
-                """,
-                (
-                    "error",
-                    "failed",
-                    100,
-                    error,
-                    datetime.now(timezone.utc),
-                    execution_id,
-                ),
-            )
-        conn.commit()
-    finally:
-        conn.close()
+    workflow_data_postgres_rollback.mark_execution_start_failed(execution_id, error)
 
 
 def _is_benchmark_workflow_execution(
@@ -2220,24 +1929,9 @@ def _list_stale_running_execution_rows(
                 raise
             _log_workflow_data_fallback("stale running execution lookup", exc)
 
-    import psycopg2
-
-    db_url = _get_database_url()
-    conn = psycopg2.connect(db_url)
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, dapr_instance_id, input
-                FROM workflow_executions
-                WHERE status = 'running'
-                  AND started_at < NOW() - INTERVAL '%s minutes'
-                """,
-                (stale_threshold_minutes,),
-            )
-            return list(cur.fetchall())
-    finally:
-        conn.close()
+    return workflow_data_postgres_rollback.list_stale_running_execution_rows(
+        stale_threshold_minutes
+    )
 
 
 def _cleanup_stale_instances_on_startup() -> None:

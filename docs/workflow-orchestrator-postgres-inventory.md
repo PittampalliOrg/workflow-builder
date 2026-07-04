@@ -56,6 +56,13 @@ peer-agent dispatch metadata through workflow-data ports. `resolveSpecAgentRefs`
 no longer imports the legacy DB-backed agent registry, registry-sync helper, or
 `resolveCallableAgents`; those lookups are confined to the application adapter
 layer.
+The Python workflow-orchestrator `app.py` start/control helpers now keep only the
+workflow-data mode decision and orchestration control flow. Direct Postgres SQL,
+`DATABASE_URL` resolution, and `psycopg2` imports for the documented
+`postgres`/`http-fallback-db` rollback modes live in
+`services/workflow-orchestrator/workflow_data_postgres_rollback.py`; strict
+`WORKFLOW_DATA_API_MODE=http` still raises or returns best-effort `None` without
+importing the Postgres driver.
 Session workflow spawn now also reads initial user events and emits swap-safety
 audit events through workflow-data; `spawn.ts` no longer imports the legacy
 session event-log helper directly.
@@ -328,8 +335,10 @@ so import-time coupling does not affect strict HTTP mode.
 for their runtime persistence paths; their workflow-data endpoints are the only
 persistence path.
 
-`app.py` still contains `_get_database_url` and lazy `psycopg2` imports in the
-fallback bodies for:
+`app.py` no longer contains `_get_database_url`, `DATABASE_URL` secret
+resolution, or `psycopg2` imports in these fallback bodies. The rollback SQL is
+confined to `services/workflow-orchestrator/workflow_data_postgres_rollback.py`
+for:
 
 - `_assert_execution_read_model_columns`
 - `_fetch_workflow_from_db`
