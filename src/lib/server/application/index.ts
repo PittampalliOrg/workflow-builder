@@ -140,6 +140,7 @@ import {
 	LegacyEnvironmentRepository,
 	LegacyEnvironmentRuntimeResolver,
 } from "$lib/server/application/adapters/environments";
+import { LegacyEnvironmentBuildActivityReadAdapter } from "$lib/server/application/adapters/environment-build-activity";
 import { PostgresEnvironmentMaintenanceRepository } from "$lib/server/application/adapters/environment-maintenance";
 import { LegacyVaultRepository } from "$lib/server/application/adapters/vaults";
 import { PostgresVaultCredentialRepository } from "$lib/server/application/adapters/vault-credentials";
@@ -315,6 +316,7 @@ import {
 import { ApplicationEvaluationDatasetService } from "$lib/server/application/evaluation-datasets";
 import { ApplicationEvaluationTemplateService } from "$lib/server/application/evaluation-templates";
 import { ApplicationEnvironmentService } from "$lib/server/application/environment-management";
+import { ApplicationEnvironmentBuildActivityService } from "$lib/server/application/environment-build-activity";
 import { ApplicationVaultService } from "$lib/server/application/vault-management";
 import { ApplicationVaultCredentialService } from "$lib/server/application/vault-credentials";
 import { ApplicationBenchmarkCapacityDiagnosticsService } from "$lib/server/application/benchmark-capacity-diagnostics";
@@ -501,6 +503,9 @@ export function getApplicationAdapters(
 	let evaluationDatasets: ApplicationEvaluationDatasetService | undefined;
 	let evaluationTemplates: ApplicationEvaluationTemplateService | undefined;
 	let environments: ApplicationEnvironmentService | undefined;
+	let environmentBuildActivity:
+		| ApplicationEnvironmentBuildActivityService
+		| undefined;
 	let vaultsService: ApplicationVaultService | undefined;
 	let vaultCredentialRepository: PostgresVaultCredentialRepository | undefined;
 	let vaultCredentialsService: ApplicationVaultCredentialService | undefined;
@@ -896,6 +901,11 @@ export function getApplicationAdapters(
 			new PostgresEnvironmentMaintenanceRepository(),
 			new LegacyEnvironmentRuntimeResolver(),
 		));
+	const getEnvironmentBuildActivity = () =>
+		(environmentBuildActivity ??=
+			new ApplicationEnvironmentBuildActivityService(
+				new LegacyEnvironmentBuildActivityReadAdapter(),
+			));
 	const getVaultsService = () =>
 		(vaultsService ??= new ApplicationVaultService(
 			new LegacyVaultRepository(),
@@ -1435,6 +1445,9 @@ export function getApplicationAdapters(
 		},
 		get environments() {
 			return getEnvironments();
+		},
+		get environmentBuildActivity() {
+			return getEnvironmentBuildActivity();
 		},
 		get vaults() {
 			return getVaultsService();

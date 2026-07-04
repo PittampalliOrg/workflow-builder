@@ -1,31 +1,42 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	getBenchmarkRunEnvironmentActivity,
-	getEnvironmentBuildActivity,
-	type EnvironmentBuildActivityResponse,
-} from "$lib/server/environments/environment-image-builds";
+import type { EnvironmentBuildActivityResponse } from "$lib/server/application/environment-build-activity";
 import { GET as getRunActivity } from "./benchmarks/runs/[runId]/activity/+server";
 import { GET as getBuildActivity } from "./environment-builds/[buildId]/activity/+server";
 import { GET as getBuildStream } from "./environment-builds/[buildId]/stream/+server";
 
-vi.mock("$lib/server/environments/environment-image-builds", () => ({
-	getBenchmarkRunEnvironmentActivity: vi.fn(),
-	getEnvironmentBuildActivity: vi.fn(),
+const mocks = vi.hoisted(() => ({
+	environmentBuildActivity: {
+		getBenchmarkRunActivity: vi.fn(),
+		getBuildActivity: vi.fn(),
+	},
+}));
+
+vi.mock("$lib/server/application", () => ({
+	getApplicationAdapters: () => ({
+		environmentBuildActivity: mocks.environmentBuildActivity,
+	}),
 }));
 
 describe("environment build activity API", () => {
 	beforeEach(() => {
-		vi.mocked(getBenchmarkRunEnvironmentActivity).mockReset();
-		vi.mocked(getEnvironmentBuildActivity).mockReset();
+		mocks.environmentBuildActivity.getBenchmarkRunActivity.mockReset();
+		mocks.environmentBuildActivity.getBuildActivity.mockReset();
 	});
 
 	it("returns a build snapshot and activity events without forcing sync when requested", async () => {
-		vi.mocked(getEnvironmentBuildActivity).mockResolvedValue(sampleActivity());
+		mocks.environmentBuildActivity.getBuildActivity.mockResolvedValue(
+			sampleActivity(),
+		);
 
 		const response = (await getBuildActivity({
 			params: { buildId: "build_1" },
 			locals: { session: { userId: "user_1", projectId: "project_1" } },
-			url: new URL("http://localhost/api/environment-builds/build_1/activity?sync=0"),
+			url: new URL(
+				"http://localhost/api/environment-builds/build_1/activity?sync=0",
+			),
 		} as never)) as Response;
 
 		expect(response.status).toBe(200);
@@ -33,14 +44,16 @@ describe("environment build activity API", () => {
 			build: { id: "build_1", status: "validated" },
 			events: [{ id: "event_1", eventType: "build_succeeded" }],
 		});
-		expect(getEnvironmentBuildActivity).toHaveBeenCalledWith("build_1", {
+		expect(
+			mocks.environmentBuildActivity.getBuildActivity,
+		).toHaveBeenCalledWith("build_1", {
 			sync: false,
 			forceTerminal: true,
 		});
 	});
 
 	it("returns environment build activity grouped by benchmark instance", async () => {
-		vi.mocked(getBenchmarkRunEnvironmentActivity).mockResolvedValue({
+		mocks.environmentBuildActivity.getBenchmarkRunActivity.mockResolvedValue({
 			runId: "run_1",
 			instances: [
 				{
@@ -56,7 +69,9 @@ describe("environment build activity API", () => {
 		const response = (await getRunActivity({
 			params: { runId: "run_1" },
 			locals: { session: { userId: "user_1", projectId: "project_1" } },
-			url: new URL("http://localhost/api/benchmarks/runs/run_1/activity?sync=1"),
+			url: new URL(
+				"http://localhost/api/benchmarks/runs/run_1/activity?sync=1",
+			),
 		} as never)) as Response;
 
 		expect(response.status).toBe(200);
@@ -70,20 +85,22 @@ describe("environment build activity API", () => {
 				},
 			],
 		});
-		expect(getBenchmarkRunEnvironmentActivity).toHaveBeenCalledWith(
-			"project_1",
-			"run_1",
-			{ syncActive: true },
-		);
+		expect(
+			mocks.environmentBuildActivity.getBenchmarkRunActivity,
+		).toHaveBeenCalledWith("project_1", "run_1", { syncActive: true });
 	});
 
 	it("streams snapshots, new activity events, and terminal status over SSE", async () => {
-		vi.mocked(getEnvironmentBuildActivity).mockResolvedValue(sampleActivity());
+		mocks.environmentBuildActivity.getBuildActivity.mockResolvedValue(
+			sampleActivity(),
+		);
 
 		const response = (await getBuildStream({
 			params: { buildId: "build_1" },
 			locals: { session: { userId: "user_1", projectId: "project_1" } },
-			request: new Request("http://localhost/api/environment-builds/build_1/stream"),
+			request: new Request(
+				"http://localhost/api/environment-builds/build_1/stream",
+			),
 		} as never)) as Response;
 
 		expect(response.headers.get("content-type")).toBe("text/event-stream");
@@ -95,10 +112,32 @@ describe("environment build activity API", () => {
 		expect(body).toContain('"final":true');
 		expect(body).toContain("event: terminal\n");
 		expect(body).toContain('"status":"validated"');
-		expect(getEnvironmentBuildActivity).toHaveBeenCalledWith("build_1", {
+		expect(
+			mocks.environmentBuildActivity.getBuildActivity,
+		).toHaveBeenCalledWith("build_1", {
 			sync: true,
 			forceTerminal: true,
 		});
+	});
+
+	it("keeps activity routes behind application services", () => {
+		for (const relative of [
+			"environment-builds/[buildId]/activity/+server.ts",
+			"environment-builds/[buildId]/stream/+server.ts",
+			"benchmarks/runs/[runId]/activity/+server.ts",
+		]) {
+			const source = readFileSync(
+				join(dirname(fileURLToPath(import.meta.url)), relative),
+				"utf8",
+			);
+			expect(source).toContain("getApplicationAdapters");
+			expect(source).toContain("environmentBuildActivity");
+			expect(source).not.toContain(
+				"$lib/server/environments/environment-image-builds",
+			);
+			expect(source).not.toContain("$lib/server/db");
+			expect(source).not.toContain("drizzle-orm");
+		}
 	});
 });
 
@@ -134,7 +173,8 @@ function sampleActivity(): EnvironmentBuildActivityResponse {
 			buildLogRef: "tekton://pipelineruns/tekton-pipelines/swe-env-abc",
 			pipelineRunName: "swe-env-abc",
 			pipelineRunNamespace: "tekton-pipelines",
-			pipelineRunUrl: "https://tekton.example/namespaces/tekton-pipelines/pipelineruns/swe-env-abc",
+			pipelineRunUrl:
+				"https://tekton.example/namespaces/tekton-pipelines/pipelineruns/swe-env-abc",
 			error: null,
 			requestedAt: timestamp,
 			startedAt: timestamp,
@@ -148,7 +188,8 @@ function sampleActivity(): EnvironmentBuildActivityResponse {
 				id: "event_1",
 				buildId: "build_1",
 				environmentKey: "sympy-1.7",
-				eventKey: "build_succeeded|tekton-pipelines|swe-env-abc||succeeded|2026-04-28T12:00:00.000Z",
+				eventKey:
+					"build_succeeded|tekton-pipelines|swe-env-abc||succeeded|2026-04-28T12:00:00.000Z",
 				eventType: "build_succeeded",
 				pipelineRunName: "swe-env-abc",
 				pipelineRunNamespace: "tekton-pipelines",
@@ -166,7 +207,8 @@ function sampleActivity(): EnvironmentBuildActivityResponse {
 			id: "event_1",
 			buildId: "build_1",
 			environmentKey: "sympy-1.7",
-			eventKey: "build_succeeded|tekton-pipelines|swe-env-abc||succeeded|2026-04-28T12:00:00.000Z",
+			eventKey:
+				"build_succeeded|tekton-pipelines|swe-env-abc||succeeded|2026-04-28T12:00:00.000Z",
 			eventType: "build_succeeded",
 			pipelineRunName: "swe-env-abc",
 			pipelineRunNamespace: "tekton-pipelines",

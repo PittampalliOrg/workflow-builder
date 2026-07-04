@@ -1,6 +1,6 @@
 import { error } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { getEnvironmentBuildActivity } from "$lib/server/environments/environment-image-builds";
+import { getApplicationAdapters } from "$lib/server/application";
 
 const POLL_MS = 2_000;
 
@@ -23,7 +23,9 @@ export const GET: RequestHandler = async ({ params, locals, request }) => {
 				if (cancelled) return;
 				try {
 					controller.enqueue(
-						encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
+						encoder.encode(
+							`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+						),
 					);
 				} catch {
 					cancelled = true;
@@ -40,10 +42,14 @@ export const GET: RequestHandler = async ({ params, locals, request }) => {
 			try {
 				controller.enqueue(encoder.encode(`: ${" ".repeat(2048)}\n\n`));
 				while (!cancelled) {
-					const activity = await getEnvironmentBuildActivity(params.buildId, {
-						sync: true,
-						forceTerminal: true,
-					});
+					const activity =
+						await getApplicationAdapters().environmentBuildActivity.getBuildActivity(
+							params.buildId,
+							{
+								sync: true,
+								forceTerminal: true,
+							},
+						);
 					if (!activity) {
 						send("error", { error: "Environment build not found" });
 						break;
