@@ -14,6 +14,10 @@ import type {
 	ExecutionStepLog,
 	ExecutionTimelineEvent,
 } from "$lib/types/execution-stream";
+import {
+	isLiteWorkflowInstanceId,
+	LITE_WORKFLOW_NOT_EXECUTED_MESSAGE,
+} from "$lib/server/application/lite-profile";
 
 type ExecutionStatus = ExecutionReadModel["status"];
 
@@ -369,6 +373,29 @@ export class ApplicationWorkflowExecutionReadModelService
 	): Promise<WorkflowRuntimeStatusSnapshot | null> {
 		if (!execution.daprInstanceId) return null;
 		if (execution.status !== "running" && execution.status !== "pending") return null;
+
+		// Lite profile: the scheduler is an honest stub — nothing was scheduled.
+		// Surface a clear terminal state instead of polling a non-existent
+		// orchestrator (which would leave the run stuck in "running" forever).
+		if (isLiteWorkflowInstanceId(execution.daprInstanceId)) {
+			const completedAt = execution.completedAt ?? new Date();
+			await this.deps.workflowData.updateExecutionReadModel(execution.id, {
+				status: "error",
+				error: LITE_WORKFLOW_NOT_EXECUTED_MESSAGE,
+				completedAt,
+			});
+			return {
+				runtimeStatus: "FAILED",
+				phase: execution.phase,
+				progress: execution.progress,
+				currentNodeId: execution.currentNodeId,
+				currentNodeName: execution.currentNodeName,
+				traceId: null,
+				outputs: null,
+				error: LITE_WORKFLOW_NOT_EXECUTED_MESSAGE,
+				completedAt: toIso(completedAt),
+			};
+		}
 
 		try {
 			const runtime = await this.deps.runtimeStatus.getWorkflowStatus(

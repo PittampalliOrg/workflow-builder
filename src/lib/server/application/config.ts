@@ -1,11 +1,13 @@
 import { env } from "$env/dynamic/private";
 
+export const APP_PROFILES = ["full", "lite"] as const;
 export const PERSISTENCE_ADAPTERS = ["postgres"] as const;
-export const EVENT_BUS_ADAPTERS = ["dapr-pubsub"] as const;
+export const EVENT_BUS_ADAPTERS = ["dapr-pubsub", "in-process"] as const;
 export const ARTIFACT_STORE_ADAPTERS = ["postgres-metadata-object-data"] as const;
-export const WORKFLOW_SCHEDULER_ADAPTERS = ["dapr-workflow"] as const;
+export const WORKFLOW_SCHEDULER_ADAPTERS = ["dapr-workflow", "lite-stub"] as const;
 export const PREVIEW_PROVISIONER_ADAPTERS = ["sandbox-execution-api", "kro"] as const;
 
+export type AppProfile = (typeof APP_PROFILES)[number];
 export type PersistenceAdapter = (typeof PERSISTENCE_ADAPTERS)[number];
 export type EventBusAdapter = (typeof EVENT_BUS_ADAPTERS)[number];
 export type ArtifactStoreAdapter = (typeof ARTIFACT_STORE_ADAPTERS)[number];
@@ -13,6 +15,7 @@ export type WorkflowSchedulerAdapter = (typeof WORKFLOW_SCHEDULER_ADAPTERS)[numb
 export type PreviewProvisionerAdapter = (typeof PREVIEW_PROVISIONER_ADAPTERS)[number];
 
 export type ApplicationAdapterConfig = {
+	appProfile: AppProfile;
 	persistenceAdapter: PersistenceAdapter;
 	eventBusAdapter: EventBusAdapter;
 	artifactStoreAdapter: ArtifactStoreAdapter;
@@ -34,10 +37,30 @@ function readAdapter<T extends string>(
 	);
 }
 
+function readProfile(source: Record<string, string | undefined>): AppProfile {
+	const raw = source.APP_PROFILE?.trim().toLowerCase();
+	if (!raw) return "full";
+	if ((APP_PROFILES as readonly string[]).includes(raw)) return raw as AppProfile;
+	throw new Error(
+		`Unsupported APP_PROFILE='${raw}'. Supported values: ${APP_PROFILES.join(", ")}`,
+	);
+}
+
 export function getApplicationAdapterConfig(
 	source: Record<string, string | undefined> = env,
 ): ApplicationAdapterConfig {
+	const appProfile = readProfile(source);
+	// The lite profile flips the two Dapr-coupled families to their in-process
+	// members by default (no cluster). Explicit env still wins, unknown values
+	// still throw, and every other family (persistence, artifact store) is
+	// unchanged — the PGlite driver handles persistence in lite. The full
+	// profile keeps the byte-identical production defaults.
+	const eventBusFallback: EventBusAdapter =
+		appProfile === "lite" ? "in-process" : "dapr-pubsub";
+	const workflowSchedulerFallback: WorkflowSchedulerAdapter =
+		appProfile === "lite" ? "lite-stub" : "dapr-workflow";
 	return {
+		appProfile,
 		persistenceAdapter: readAdapter(
 			source,
 			"PERSISTENCE_ADAPTER",
@@ -47,7 +70,7 @@ export function getApplicationAdapterConfig(
 		eventBusAdapter: readAdapter(
 			source,
 			"EVENT_BUS_ADAPTER",
-			"dapr-pubsub",
+			eventBusFallback,
 			EVENT_BUS_ADAPTERS,
 		),
 		artifactStoreAdapter: readAdapter(
@@ -59,7 +82,7 @@ export function getApplicationAdapterConfig(
 		workflowSchedulerAdapter: readAdapter(
 			source,
 			"WORKFLOW_SCHEDULER_ADAPTER",
-			"dapr-workflow",
+			workflowSchedulerFallback,
 			WORKFLOW_SCHEDULER_ADAPTERS,
 		),
 		previewProvisionerAdapter: readAdapter(
