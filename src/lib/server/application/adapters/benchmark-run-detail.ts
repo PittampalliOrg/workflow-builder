@@ -4,7 +4,7 @@ import { normalizeHeadlampCluster } from "$lib/headlamp/links";
 import { getBenchmarkRun } from "$lib/server/benchmarks/service";
 import { computeRunStats } from "$lib/server/application/adapters/benchmark-stats";
 import { getBenchmarkRunCapacityDiagnostics } from "$lib/server/benchmarks/capacity-diagnostics";
-import { getBenchmarkRunPhaseAttribution } from "$lib/server/benchmarks/phase-attribution";
+import { getBenchmarkRunPhaseAttribution } from "$lib/server/application/adapters/benchmark-phase-attribution";
 import {
 	buildRunFailureContext,
 	type RunFailureContext,

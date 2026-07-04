@@ -1002,6 +1002,10 @@ services:
   `src/lib/server/benchmarks/stats.ts`; the run, instance, scorer, and human
   annotation SQL is confined to
   `src/lib/server/application/adapters/benchmark-stats.ts`.
+- Benchmark phase-attribution windowing and aggregate shaping now live in the
+  DB-free `src/lib/server/benchmarks/phase-attribution.ts`; the run/instance
+  SQL, ClickHouse metric reads, and run-stats adapter composition are confined
+  to `src/lib/server/application/adapters/benchmark-phase-attribution.ts`.
 - `src/routes/api/pieces/+server.ts` and
   `src/routes/api/catalog/functions/+server.ts` now read connectable pieces and
   function catalog summaries through workflow-data application ports. Connectable
