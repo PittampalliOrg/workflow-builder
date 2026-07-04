@@ -1461,12 +1461,19 @@ coordinator bridge persistence now live in
 no direct DB, Drizzle, or schema imports. This is a quarantine step for the
 large legacy benchmark service; smaller benchmark use cases should still be
 split behind explicit ports over later checkpoints.
+Evaluation definition/dataset/run orchestration, grading, artifact, and
+coordinator bridge persistence now live in
+`src/lib/server/application/adapters/evaluation-service.ts`; the legacy
+`src/lib/server/evaluations/service.ts` module is a compatibility re-export
+with no direct DB, Drizzle, or schema imports. This is a quarantine step for the
+large legacy evaluation service; smaller evaluation use cases should still be
+split behind explicit ports over later checkpoints.
 The broader BFF/control-plane still has service-level direct DB imports outside
 that subset and remains the next migration area. Current categories include:
 
-- evaluation service modules that still own direct
-  Drizzle/Postgres access until their behavior is fully expressed as application
-  ports and adapter implementations;
+- remaining direct DB references should now be adapter, startup/bootstrap,
+  migration, rollback, or test-only; broad scans should remain the source of
+  truth as new code lands;
 - preview runtime/proxy helper internals, where persistence lookups and
   per-preview database create/drop have moved behind ports, but live
   Kubernetes/OpenShell transport still needs narrower runtime/proxy ports;

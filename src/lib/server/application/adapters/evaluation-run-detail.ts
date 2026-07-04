@@ -1,4 +1,4 @@
-import { getEvaluationRun } from "$lib/server/evaluations/service";
+import { getEvaluationRun } from "$lib/server/application/adapters/evaluation-service";
 import type {
 	EvaluationRunDetailReadPort,
 	EvaluationRunItemMode,

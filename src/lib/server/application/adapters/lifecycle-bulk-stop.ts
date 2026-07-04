@@ -11,7 +11,7 @@ import {
 import {
 	cancelEvaluationRun,
 	getEvaluationCoordinatorUrl,
-} from "$lib/server/evaluations/service";
+} from "$lib/server/application/adapters/evaluation-service";
 import { daprFetch } from "$lib/server/dapr-client";
 
 export class ServiceBenchmarkRunCancellationPort

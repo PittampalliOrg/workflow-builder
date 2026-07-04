@@ -1,7 +1,7 @@
 import { env } from "$env/dynamic/private";
 import { daprFetch } from "$lib/server/dapr-client";
 import { getSwebenchCoordinatorUrl } from "$lib/server/application/adapters/benchmark-service";
-import { getEvaluationCoordinatorUrl } from "$lib/server/evaluations/service";
+import { getEvaluationCoordinatorUrl } from "$lib/server/application/adapters/evaluation-service";
 import type {
 	CoordinatorCancelInput,
 	CoordinatorCancelPort,

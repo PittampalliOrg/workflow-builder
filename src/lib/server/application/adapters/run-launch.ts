@@ -14,7 +14,7 @@ import {
 	startEvaluationCoordinator,
 	type CreateEvaluationRunInput,
 	type EvaluationSubjectTypeInput as LegacyEvaluationSubjectTypeInput,
-} from "$lib/server/evaluations/service";
+} from "$lib/server/application/adapters/evaluation-service";
 import type {
 	BenchmarkCreateRunResult,
 	BenchmarkRunLaunchCreateInput,

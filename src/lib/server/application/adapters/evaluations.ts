@@ -26,7 +26,7 @@ import {
 	updateEvaluationDefinition,
 	updateEvaluationDataset,
 	updateEvaluationDatasetRow,
-} from "$lib/server/evaluations/service";
+} from "$lib/server/application/adapters/evaluation-service";
 import { SWEBENCH_SUITES } from "$lib/server/benchmarks/swebench";
 import type {
 	EvaluationDatasetCreateInput,
