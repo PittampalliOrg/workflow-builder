@@ -835,7 +835,12 @@ def _adopt_scale_deployment_down(apps: Any, *, namespace: str, name: str) -> Non
 
 
 def _adopt_deferred_scale_down(
-    *, namespace: str, deployment: str, execution_id: str, wait_seconds: int
+    *,
+    namespace: str,
+    deployment: str,
+    execution_id: str,
+    wait_seconds: int,
+    service: str | None = None,
 ) -> None:
     """Background target: wait for the dev pod to be Ready, THEN scale the prod
     Deployment to 0. Deferring is REQUIRED when the dev pod adopts the BFF's own
@@ -852,7 +857,15 @@ def _adopt_deferred_scale_down(
     except Exception as exc:
         logger.warning("adopt: deferred scale-down could not load clients: %s", exc)
         return
-    selector = f"workflow-execution-id={_safe_name(execution_id, max_length=63)}"
+    # Scope to (execution, service): with N dev pods sharing one execution, an
+    # execution-id-only selector would scale service B's prod Deployment to 0 the
+    # moment service A's dev pod became Ready. `dev-preview-service` is stamped on
+    # every dev pod (build_dev_preview_sandbox_manifest) and never appears in a
+    # Service selector, so it survives the adopt-selector merge.
+    selector = (
+        f"workflow-execution-id={_safe_name(execution_id, max_length=63)},"
+        f"dev-preview-service={_dev_preview_service_label(service)}"
+    )
     # Generous: the full BFF vite dev server can cold-boot well past waitReadySeconds.
     # Until the dev pod is Ready the prod Deployment is LEFT UP, so over-waiting only
     # delays the cutover; it never causes downtime.
@@ -2589,11 +2602,34 @@ DEFAULT_DEV_PREVIEW_IMAGE = os.environ.get(
 )
 
 
-def _dev_preview_sandbox_name(execution_id: str) -> str:
+def _dev_preview_service_label(service: str | None) -> str:
+    """The `dev-preview-service` label value stamped on every dev-preview pod/CR/Secret.
+
+    Single source of truth so the readiness/scale-down/teardown SELECTORS match what
+    `build_dev_preview_sandbox_manifest` stamps. Defaults to `workflow-builder` for
+    back-compat with the single-service path (which never sent a `service`)."""
+    return _safe_name(service or "workflow-builder", max_length=63)
+
+
+def _dev_preview_sandbox_name(execution_id: str, service: str | None = None) -> str:
+    # Scope the deterministic name by (execution, service) so N dev pods can share one
+    # execution without colliding on the CR name (the 409 idempotency then keys per
+    # service). A falsy `service` keeps the legacy `wfb-dev-preview-<exec>` name so
+    # in-flight single-service sessions torn down by name still resolve.
+    if service:
+        return _safe_resource_name(
+            f"wfb-dev-preview-{_safe_name(service, max_length=24)}-{execution_id}",
+            max_length=63,
+        )
     return _safe_resource_name(f"wfb-dev-preview-{execution_id}", max_length=63)
 
 
-def _dev_preview_secret_name(execution_id: str) -> str:
+def _dev_preview_secret_name(execution_id: str, service: str | None = None) -> str:
+    if service:
+        return _safe_resource_name(
+            f"dev-preview-secret-{_safe_name(service, max_length=24)}-{execution_id}",
+            max_length=63,
+        )
     return _safe_resource_name(f"dev-preview-secret-{execution_id}", max_length=63)
 
 
@@ -2607,10 +2643,13 @@ def _ensure_dev_preview_secret(
     """
     if not request.serviceSecretEnv:
         return None
-    secret_name = _dev_preview_secret_name(request.executionId)
+    secret_name = _dev_preview_secret_name(request.executionId, request.service)
     labels = {
         "app": "wfb-dev-preview",
         "workflow-execution-id": _safe_name(request.executionId, max_length=63),
+        # Service-scoped so tearing down one service deletes only ITS secret, not a
+        # sibling service's secret sharing the same execution id.
+        "dev-preview-service": _dev_preview_service_label(request.service),
     }
     string_data = {k: v for k, v in request.serviceSecretEnv.items() if k}
     body = {
@@ -2686,7 +2725,7 @@ def build_dev_preview_sandbox_manifest(
     sync_mode = (request.syncMode or "plugin").lower()
     use_sidecar = sync_mode == "sidecar"
     sync_port = request.syncPort or (8001 if use_sidecar else port)
-    service_label = _safe_name(request.service or "workflow-builder", max_length=63)
+    service_label = _dev_preview_service_label(request.service)
     command = request.command or class_config.serviceCommand
     args = request.args or class_config.serviceArgs
 
@@ -3045,7 +3084,7 @@ def build_dev_preview_sandbox_manifest(
         sandbox_spec["shutdownPolicy"] = "Delete"
         sandbox_spec["shutdownTime"] = shutdown_time
     cr_metadata: dict[str, Any] = {
-        "name": _dev_preview_sandbox_name(request.executionId),
+        "name": _dev_preview_sandbox_name(request.executionId, request.service),
         "namespace": namespace,
         "labels": {
             "app": "wfb-dev-preview",
@@ -3076,13 +3115,19 @@ def _wait_for_dev_preview_ready(
     namespace: str,
     execution_id: str,
     wait_seconds: int,
+    service: str | None = None,
     failure_probe: Any | None = None,
 ) -> tuple[str, str | None]:
     """Poll the dev-preview pod until Ready; return ``(status, podIP|None)``."""
-    # Key on workflow-execution-id alone (unique per run, never in a Service
-    # selector) — in preview-native adopt mode the `app` label is overwritten by the
-    # adopted Service's selector, so we cannot rely on `app=wfb-dev-preview`.
-    selector = f"workflow-execution-id={_safe_name(execution_id, max_length=63)}"
+    # Scope to (execution, service): with N dev pods sharing one execution, an
+    # execution-id-only selector could return the WRONG service's pod IP. Key on
+    # workflow-execution-id + dev-preview-service — both stamped on every dev pod and
+    # never in a Service selector, so they survive the preview-native adopt-selector
+    # merge (which overwrites `app`).
+    selector = (
+        f"workflow-execution-id={_safe_name(execution_id, max_length=63)},"
+        f"dev-preview-service={_dev_preview_service_label(service)}"
+    )
 
     def _pod_ip() -> str | None:
         try:
@@ -3326,6 +3371,15 @@ def submit_agent_workflow_host(
 def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str, Any]:
     _require_internal(request)
     set_current_span_io("input", body.model_dump())
+    # Preview-native runs REAL app-ids inside a Tier-2 vcluster (the vcluster IS the
+    # isolation boundary). The Dapr-shadow defaults (PUBSUB_NAME=pubsub-dev,
+    # DAPR_CONFIG_STORE=disabled-dev) are a HOST-only hack; injected here they point
+    # the pod at a `pubsub-dev` component that does not exist in the preview (its
+    # component is named `pubsub`) → silently dead subscriptions. Force them OFF
+    # server-side no matter what the caller sent (the BFF also sends false; this is
+    # the defense-in-depth backstop).
+    if body.previewNative:
+        body.applyDaprShadowDefaults = False
     classes = _load_execution_classes()
     class_config = classes.get(body.executionClass)
     if class_config is None:
@@ -3338,13 +3392,15 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
     # envFrom it LAST so it overrides the reused prod secret. Append the secretRef
     # to envFrom BEFORE building the manifest so the dev container picks it up.
     preview_secret_name = (
-        _dev_preview_secret_name(body.executionId) if body.serviceSecretEnv else None
+        _dev_preview_secret_name(body.executionId, body.service)
+        if body.serviceSecretEnv
+        else None
     )
     if preview_secret_name:
         body.envFrom = list(body.envFrom or []) + [
             {"secretRef": {"name": preview_secret_name}}
         ]
-    sandbox_name = _dev_preview_sandbox_name(body.executionId)
+    sandbox_name = _dev_preview_sandbox_name(body.executionId, body.service)
     adopt_selector: dict[str, str] | None = None
     pod_ip: str | None = None
     readiness_status = "queued"
@@ -3436,6 +3492,7 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
                     "deployment": _safe_resource_name(body.adoptDeployment),
                     "execution_id": body.executionId,
                     "wait_seconds": body.waitReadySeconds,
+                    "service": body.service,
                 },
                 daemon=True,
             ).start()
@@ -3444,6 +3501,7 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
             namespace=namespace,
             execution_id=body.executionId,
             wait_seconds=body.waitReadySeconds,
+            service=body.service,
             failure_probe=lambda: _sandbox_failure_reason(
                 custom, namespace=namespace, sandbox_name=sandbox_name
             ),
@@ -3499,18 +3557,25 @@ def teardown_dev_preview(request: Request, name: str) -> dict[str, Any]:
                 name=safe_name,
             )
             cr_metadata = (cr.get("metadata", {}) or {}) if cr else {}
-            exec_label = (cr_metadata.get("labels", {}) or {}).get(
-                "workflow-execution-id"
-            )
+            cr_labels = cr_metadata.get("labels", {}) or {}
+            exec_label = cr_labels.get("workflow-execution-id")
+            service_label = cr_labels.get("dev-preview-service")
             adopt_deployment = (cr_metadata.get("annotations", {}) or {}).get(
                 "wfb-dev-preview/adopt-deployment"
             )
             if exec_label:
+                # Scope the secret cleanup to THIS service so tearing down one dev
+                # pod doesn't delete a sibling service's per-preview Secret sharing the
+                # execution id. Old CRs predate the label → fall back to the
+                # exec-only selector (single-service, so nothing else to protect).
+                secret_selector = (
+                    f"app=wfb-dev-preview,workflow-execution-id={exec_label}"
+                )
+                if service_label:
+                    secret_selector += f",dev-preview-service={service_label}"
                 core.delete_collection_namespaced_secret(
                     namespace=namespace,
-                    label_selector=(
-                        f"app=wfb-dev-preview,workflow-execution-id={exec_label}"
-                    ),
+                    label_selector=secret_selector,
                 )
         except Exception as exc:
             logger.info("dev-preview secret cleanup skipped: %s", exc)

@@ -219,7 +219,14 @@ export async function provisionDevPreview(
 		syncMode: descriptor.syncMode,
 		syncPort: descriptor.syncPort,
 		...(descriptor.needsDapr ? { needsDapr: true } : {}),
-		...(descriptor.applyDaprShadowDefaults === false
+		// Dapr-shadow env (PUBSUB_NAME=pubsub-dev / DAPR_CONFIG_STORE=disabled-dev) is a
+		// HOST-only isolation hack. A preview-native pod runs REAL app-ids inside the
+		// vcluster against its own `pubsub` component, so the shadow defaults would
+		// point it at a non-existent `pubsub-dev` component → silently dead
+		// subscriptions. Send false whenever preview-native (SEA also forces this
+		// server-side); only the BFF descriptor opts out explicitly today, so the
+		// orchestrator/coordinator would otherwise inherit the SEA default (true).
+		...(previewNative || descriptor.applyDaprShadowDefaults === false
 			? { applyDaprShadowDefaults: false }
 			: {}),
 		// Preview-native: always reuse the preview's own DB/secrets (skip throwaway).

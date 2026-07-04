@@ -104,6 +104,72 @@ describe("dev-preview portability boundary", () => {
 		);
 	});
 
+	it("forces applyDaprShadowDefaults:false for a preview-native provision", async () => {
+		// The workflow-orchestrator descriptor does NOT set applyDaprShadowDefaults,
+		// so pre-fix the request omitted it and the SEA default (true) injected
+		// PUBSUB_NAME=pubsub-dev into a vcluster whose component is named `pubsub`.
+		vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+		const fetchMock = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
+						podIP: "10.0.0.13",
+						port: 8080,
+						syncPort: 8001,
+						ready: true,
+						status: "running",
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await provisionDevPreview(
+			{
+				executionId: "exec-1",
+				service: "workflow-orchestrator",
+				mode: "preview-native",
+			},
+			fakePersistence(),
+		);
+
+		const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+		const body = JSON.parse(String(request.body));
+		expect(body.previewNative).toBe(true);
+		expect(body.applyDaprShadowDefaults).toBe(false);
+		// The host-only shadow pubsub name must NOT leak into a preview-native pod.
+		expect(body.env?.PUBSUB_NAME).toBeUndefined();
+	});
+
+	it("omits applyDaprShadowDefaults for a shadow-default host provision", async () => {
+		// A host-throwaway orchestrator preview keeps the SEA default (the shadow env
+		// IS the host-isolation mechanism there), so the BFF sends no override.
+		vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+		const fetchMock = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						sandboxName: "wfb-dev-preview-exec-1",
+						ready: true,
+						status: "running",
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await provisionDevPreview(
+			{ executionId: "exec-1", service: "workflow-orchestrator" },
+			fakePersistence(),
+		);
+
+		const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+		const body = JSON.parse(String(request.body));
+		expect(body.previewNative).toBeUndefined();
+		expect("applyDaprShadowDefaults" in body).toBe(false);
+	});
+
 	it("provisions functional preview databases through the injected port", async () => {
 		vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
 		const fetchMock = vi.fn(async (_url, init) => {
