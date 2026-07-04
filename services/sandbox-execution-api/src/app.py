@@ -853,6 +853,38 @@ def _dev_pod_has_daprd(pod: Any) -> bool:
     return labels.get("dapr.io/sidecar-injected") == "true"
 
 
+def _wait_for_dapr_injector_available(apps: Any, *, timeout_seconds: int = 60) -> bool:
+    """Best-effort: wait for the (in-vcluster) Dapr sidecar-injector Deployment to be
+    Available BEFORE creating a needsDapr Sandbox. The injector webhook is FAIL-OPEN
+    (failurePolicy: Ignore), so a pod created while the injector is down comes up with
+    NO daprd (cold-start race). Returns True once available; False on timeout (the
+    caller proceeds anyway — the deferred daprd-present assert is the backstop, and a
+    hard-fail here would block provisioning if the RBAC/name assumptions are wrong)."""
+    ns = os.environ.get("DAPR_SIDECAR_INJECTOR_NAMESPACE", "dapr-system")
+    name = os.environ.get("DAPR_SIDECAR_INJECTOR_DEPLOYMENT", "dapr-sidecar-injector")
+    deadline = time.monotonic() + max(timeout_seconds, 0)
+    while True:
+        try:
+            dep = apps.read_namespaced_deployment(name=name, namespace=ns)
+            available = (
+                getattr(getattr(dep, "status", None), "available_replicas", None) or 0
+            )
+            if available >= 1:
+                return True
+        except Exception as exc:
+            logger.info("dapr injector availability check error: %s", exc)
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "dapr injector %s/%s not Available within %ss; provisioning anyway "
+                "(deferred daprd-present assert is the backstop)",
+                ns,
+                name,
+                timeout_seconds,
+            )
+            return False
+        time.sleep(2)
+
+
 def _adopt_deferred_scale_down(
     *,
     namespace: str,
@@ -3120,6 +3152,13 @@ def build_dev_preview_sandbox_manifest(
                 )
             ),
             "dapr.io/enable-workflow": "true",
+            # Native sidecar (daprd init container, restartPolicy: Always) — parity with
+            # build_agent_workflow_host_sandbox_manifest. Native injection works in the
+            # vcluster (confirmed: the adopt pod comes up with daprd in initContainers +
+            # dapr.io/sidecar-injected=true); the fail-open injector cold-start race is
+            # handled by the injector-Availability gate + the deferred daprd-present
+            # assert, NOT by dropping native-sidecar.
+            "dapr.io/enable-native-sidecar": "true",
             "dapr.io/internal-grpc-port": os.environ.get(
                 "DAPR_AGENT_HOST_INTERNAL_GRPC_PORT", "3502"
             ),
@@ -3137,16 +3176,6 @@ def build_dev_preview_sandbox_manifest(
             "dapr.io/sidecar-readiness-probe-period-seconds": "1",
             "dapr.io/sidecar-readiness-probe-timeout-seconds": "1",
         }
-        # Native sidecar = a daprd INIT container with restartPolicy: Always. The
-        # in-vcluster Dapr injector does NOT add it to the dev-preview Sandbox pod
-        # (restartPolicy: Never) — the pod comes up with NO daprd, breaking
-        # BFF→orchestrator invocation. The prod BFF/orchestrator Deployments a
-        # preview-native adopt pod REPLACES use a CLASSIC daprd sidecar (regular
-        # container) and inject fine in-vcluster, so mirror them: omit native-sidecar
-        # under previewNative. The host Dapr-shadow path keeps native-sidecar (validated
-        # on the host cluster, where agent-host pods use it).
-        if not request.previewNative:
-            dapr_annotations["dapr.io/enable-native-sidecar"] = "true"
         pod_template_metadata["annotations"] = dapr_annotations
     sandbox_spec: dict[str, Any] = {
         "replicas": 1,
@@ -3489,6 +3518,17 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
         apps = _load_k8s_apps_client()
         _, core = _load_k8s_clients()
         custom = _load_k8s_custom_objects_client()
+        # Gate needsDapr provisions on the Dapr sidecar-injector being Available: the
+        # injector webhook is fail-open, so creating the pod while it is still cold
+        # yields NO daprd. Best-effort wait (the deferred daprd-present assert is the
+        # backstop; never hard-fails provisioning).
+        if body.needsDapr:
+            _wait_for_dapr_injector_available(
+                apps,
+                timeout_seconds=int(
+                    os.environ.get("DEV_PREVIEW_INJECTOR_WAIT_SECONDS", "60")
+                ),
+            )
         # Preview-native adopt (in a Tier-2 vcluster preview): read the target
         # Service's selector so the dev pod can adopt it (the Service then routes to
         # the dev pod). Read-only here — the prod Deployment scale-to-0 is DEFERRED

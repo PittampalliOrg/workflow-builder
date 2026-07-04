@@ -119,46 +119,29 @@ def test_manifest_keeps_shadow_env_when_enabled() -> None:
     assert env.get("DAPR_CONFIG_STORE") == "disabled-dev"
 
 
-def test_preview_native_uses_classic_daprd_sidecar() -> None:
-    # In-vcluster the injector won't add a native sidecar (init container,
-    # restartPolicy: Always) to the restartPolicy: Never Sandbox pod → no daprd. The
-    # prod pods this adopt pod replaces use a classic sidecar and inject fine, so a
-    # preview-native pod must omit native-sidecar.
-    manifest = build_dev_preview_sandbox_manifest(
-        DevPreviewRequest(
-            executionId="exec-1",
-            service="workflow-orchestrator",
-            needsDapr=True,
-            previewNative=True,
-        ),
-        namespace="workflow-builder",
-        class_config=_dev_class(),
-    )
-    ann = manifest["spec"]["podTemplate"]["metadata"]["annotations"]
-    assert ann["dapr.io/enabled"] == "true"
-    assert ann["dapr.io/enable-workflow"] == "true"
-    assert "dapr.io/enable-native-sidecar" not in ann
-    # Readiness-probe tuning (agent-host parity) applies regardless of sidecar mode.
-    assert ann["dapr.io/sidecar-readiness-probe-delay-seconds"] == "0"
-    assert ann["dapr.io/sidecar-readiness-probe-period-seconds"] == "1"
-    assert ann["dapr.io/sidecar-readiness-probe-timeout-seconds"] == "1"
-
-
-def test_host_shadow_keeps_native_daprd_sidecar() -> None:
-    # The host Dapr-shadow path (needsDapr, not previewNative) keeps native-sidecar,
-    # which is validated on the host cluster.
-    manifest = build_dev_preview_sandbox_manifest(
-        DevPreviewRequest(
-            executionId="exec-1",
-            service="workflow-orchestrator",
-            needsDapr=True,
-            previewNative=False,
-        ),
-        namespace="workflow-builder",
-        class_config=_dev_class(),
-    )
-    ann = manifest["spec"]["podTemplate"]["metadata"]["annotations"]
-    assert ann["dapr.io/enable-native-sidecar"] == "true"
+def test_needsdapr_uses_native_sidecar_with_readiness_probe() -> None:
+    # daprd is a NATIVE sidecar (agent-host parity) for both previewNative adopt and
+    # the host Dapr-shadow path; native injection works in-vcluster (the fail-open
+    # cold-start race is handled by the injector gate + daprd-present assert, not by
+    # dropping native-sidecar). The readiness-probe 0/1/1 tuning matches agent-host.
+    for preview_native in (True, False):
+        manifest = build_dev_preview_sandbox_manifest(
+            DevPreviewRequest(
+                executionId="exec-1",
+                service="workflow-orchestrator",
+                needsDapr=True,
+                previewNative=preview_native,
+            ),
+            namespace="workflow-builder",
+            class_config=_dev_class(),
+        )
+        ann = manifest["spec"]["podTemplate"]["metadata"]["annotations"]
+        assert ann["dapr.io/enabled"] == "true"
+        assert ann["dapr.io/enable-workflow"] == "true"
+        assert ann["dapr.io/enable-native-sidecar"] == "true"
+        assert ann["dapr.io/sidecar-readiness-probe-delay-seconds"] == "0"
+        assert ann["dapr.io/sidecar-readiness-probe-period-seconds"] == "1"
+        assert ann["dapr.io/sidecar-readiness-probe-timeout-seconds"] == "1"
 
 
 def test_wait_for_dev_preview_ready_scopes_selector_by_service() -> None:
@@ -241,6 +224,24 @@ def _ready_pod(name: str, *, daprd: str | None = None) -> SimpleNamespace:
             container_statuses=regular, init_container_statuses=init_cs
         ),
     )
+
+
+def test_wait_for_dapr_injector_available_true_when_ready(monkeypatch) -> None:
+    apps = SimpleNamespace(
+        read_namespaced_deployment=lambda *, name, namespace: SimpleNamespace(
+            status=SimpleNamespace(available_replicas=1)
+        )
+    )
+    assert app_module._wait_for_dapr_injector_available(apps, timeout_seconds=5)
+
+
+def test_wait_for_dapr_injector_available_false_on_timeout(monkeypatch) -> None:
+    # Missing/unavailable injector → returns False (caller proceeds; assert is backstop).
+    def read_dep(*, name, namespace):
+        raise RuntimeError("not found")
+
+    apps = SimpleNamespace(read_namespaced_deployment=read_dep)
+    assert not app_module._wait_for_dapr_injector_available(apps, timeout_seconds=0)
 
 
 def test_dev_pod_has_daprd_checks_init_regular_and_label() -> None:
@@ -334,6 +335,9 @@ def test_provision_forces_shadow_off_and_scopes_cr_when_preview_native(
     )
     monkeypatch.setattr(
         app_module, "_load_k8s_custom_objects_client", lambda: fake_custom
+    )
+    monkeypatch.setattr(
+        app_module, "_wait_for_dapr_injector_available", lambda *_a, **_k: True
     )
     monkeypatch.setattr(
         app_module,
