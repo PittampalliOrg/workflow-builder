@@ -9,7 +9,18 @@ describe("application adapter config", () => {
 			artifactStoreAdapter: "postgres-metadata-object-data",
 			workflowSchedulerAdapter: "dapr-workflow",
 			previewProvisionerAdapter: "sandbox-execution-api",
+			crossPreviewFeedEnabled: false,
 		});
+	});
+
+	it("enables the cross-preview run feed only when the flag is truthy", () => {
+		expect(getApplicationAdapterConfig({}).crossPreviewFeedEnabled).toBe(false);
+		expect(
+			getApplicationAdapterConfig({ CROSS_PREVIEW_FEED_ENABLED: "true" }).crossPreviewFeedEnabled,
+		).toBe(true);
+		expect(
+			getApplicationAdapterConfig({ CROSS_PREVIEW_FEED_ENABLED: "off" }).crossPreviewFeedEnabled,
+		).toBe(false);
 	});
 
 	it("accepts kro as an optional preview provisioner adapter", () => {

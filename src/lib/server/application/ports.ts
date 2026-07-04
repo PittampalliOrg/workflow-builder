@@ -5,6 +5,7 @@
 export * from "./ports/agents";
 export * from "./ports/benchmarks";
 export * from "./ports/connections";
+export * from "./ports/cross-preview-runs";
 export * from "./ports/evaluations";
 export * from "./ports/executions";
 export * from "./ports/mcp";

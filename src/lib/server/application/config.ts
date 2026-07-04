@@ -18,7 +18,19 @@ export type ApplicationAdapterConfig = {
 	artifactStoreAdapter: ArtifactStoreAdapter;
 	workflowSchedulerAdapter: WorkflowSchedulerAdapter;
 	previewProvisionerAdapter: PreviewProvisionerAdapter;
+	/** E1: the Dev-hub cross-preview live run feed. Off by default. */
+	crossPreviewFeedEnabled: boolean;
 };
+
+function readFlag(
+	source: Record<string, string | undefined>,
+	key: string,
+	fallback = false,
+): boolean {
+	const raw = source[key]?.trim().toLowerCase();
+	if (!raw) return fallback;
+	return ["1", "true", "yes", "on"].includes(raw);
+}
 
 function readAdapter<T extends string>(
 	source: Record<string, string | undefined>,
@@ -68,5 +80,6 @@ export function getApplicationAdapterConfig(
 			"sandbox-execution-api",
 			PREVIEW_PROVISIONER_ADAPTERS,
 		),
+		crossPreviewFeedEnabled: readFlag(source, "CROSS_PREVIEW_FEED_ENABLED"),
 	};
 }

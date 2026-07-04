@@ -349,6 +349,9 @@ import { ApplicationWorkflowExecutionSessionsService } from "$lib/server/applica
 import { ApplicationWorkflowExecutionSpecDiffService } from "$lib/server/application/workflow-execution-spec-diff";
 import { ApplicationWorkflowExecutionWorkspaceService } from "$lib/server/application/workflow-execution-workspace";
 import { ApplicationWorkflowExecutionStreamService } from "$lib/server/application/workflow-execution-stream";
+import { ApplicationCrossPreviewRunFeedService } from "$lib/server/application/cross-preview-run-feed";
+import { NatsCrossPreviewRunFeed } from "$lib/server/application/adapters/nats-cross-preview-run-feed";
+import { listVclusterPreviews } from "$lib/server/workflows/vcluster-preview";
 import { ApplicationWorkflowExecutionReadModelService } from "$lib/server/application/workflow-execution-read-model";
 import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/application/workflow-code-checkpoints";
 import { ApplicationWorkflowCodeVersionService } from "$lib/server/application/workflow-code-versions";
@@ -613,6 +616,7 @@ export function getApplicationAdapters(
 	let workflowExecutionStream:
 		| ApplicationWorkflowExecutionStreamService
 		| undefined;
+	let crossPreviewRunFeed: ApplicationCrossPreviewRunFeedService | undefined;
 	let workflowExecutionReadModels:
 		| ApplicationWorkflowExecutionReadModelService
 		| undefined;
@@ -1248,6 +1252,14 @@ export function getApplicationAdapters(
 			workflowData: getWorkflowData(),
 			executionReadModels: getWorkflowExecutionReadModels(),
 		}));
+	const getCrossPreviewRunFeed = () =>
+		(crossPreviewRunFeed ??= new ApplicationCrossPreviewRunFeedService({
+			feed: new NatsCrossPreviewRunFeed(),
+			listPreviews: async () =>
+				(await listVclusterPreviews())
+					.filter((p) => p.ready)
+					.map((p) => ({ name: p.name, url: p.url })),
+		}));
 	const getWorkflowBrowserArtifacts = () =>
 		(workflowBrowserArtifacts ??=
 			new ApplicationWorkflowBrowserArtifactsService({
@@ -1655,6 +1667,9 @@ export function getApplicationAdapters(
 		},
 		get workflowExecutionStream() {
 			return getWorkflowExecutionStream();
+		},
+		get crossPreviewRunFeed() {
+			return getCrossPreviewRunFeed();
 		},
 		get workflowBrowserArtifacts() {
 			return getWorkflowBrowserArtifacts();
