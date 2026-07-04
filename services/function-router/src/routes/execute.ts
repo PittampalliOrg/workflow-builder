@@ -750,6 +750,10 @@ async function executeDevPreview(
       const payload: Record<string, unknown> = {};
       for (const key of [
         "service",
+        // Multi-service adopt (B1): fan out N services into one execution. The BFF
+        // route provisionMany-branches on a non-empty `services` array; `service`
+        // stays the single-service entry.
+        "services",
         "syncToken",
         "timeoutSeconds",
         "waitReadySeconds",
