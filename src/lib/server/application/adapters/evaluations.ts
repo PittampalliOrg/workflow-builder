@@ -20,6 +20,7 @@ import {
 	recordEvaluationArtifact,
 	recordEvaluationRunItemGraderResults,
 	recomputeEvaluationRunSummary,
+	startEvaluationRunItemWorkflow,
 	syncEvaluationRunItemFromExecution,
 	updateEvaluationRunItemOutput,
 	updateEvaluationDefinition,
@@ -170,6 +171,13 @@ export class LegacyEvaluationRunItemRepository
 		error?: string | null;
 	}): Promise<unknown | null> {
 		return recordEvaluationRunItemGraderResults(input);
+	}
+
+	startWorkflow(input: {
+		runId: string;
+		itemId: string;
+	}): Promise<Record<string, unknown>> {
+		return startEvaluationRunItemWorkflow(input);
 	}
 }
 

@@ -221,14 +221,15 @@ Evaluation run item read and output-update routes now route through
 `ApplicationEvaluationRunItemService` and `LegacyEvaluationRunItemRepository`.
 The public run-item read/output routes and internal output callback no longer
 import the legacy DB-owning evaluation service.
-Internal evaluation run item status, execution-sync, and grader-result callback
-routes now use the same run-item application service. The only remaining
-legacy-service import in the item callback subtree is workflow item start,
-which is deferred to the workflow-launch side-effect slice.
+Internal evaluation run item status, execution-sync, grader-result, and
+workflow-start callback routes now use the same run-item application service.
+Workflow item start remains an adapter-owned launch side effect behind
+`ApplicationEvaluationRunItemService.startWorkflow` and
+`LegacyEvaluationRunItemRepository`.
 Evaluation run status, artifact recording, grading, and predictions JSONL export
 routes now use `ApplicationEvaluationRunService` and
-`LegacyEvaluationRunRepository`. Across evaluation routes, the remaining direct
-legacy evaluation-service import is the internal item workflow-start route.
+`LegacyEvaluationRunRepository`. Across evaluation routes, direct imports of the
+legacy DB-owning evaluation service have been removed from the route layer.
 The internal benchmark run-instance progress API now reads instance status and
 latest session activity through a workflow-data read model; the route no longer
 imports `benchmark_run_instances`, `session_events`, or Drizzle.

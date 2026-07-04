@@ -158,6 +158,25 @@ describe("ApplicationEvaluationRunItemService", () => {
 			error: undefined,
 		});
 	});
+
+	it("delegates workflow item starts", async () => {
+		const repository = createRepository({
+			startWorkflow: vi.fn(async () => ({ workflowExecutionId: "exec-1" })),
+		});
+		const service = new ApplicationEvaluationRunItemService(repository);
+
+		await expect(
+			service.startWorkflow({ runId: "run-1", itemId: "item-1" }),
+		).resolves.toEqual({
+			success: true,
+			workflowExecutionId: "exec-1",
+		});
+
+		expect(repository.startWorkflow).toHaveBeenCalledWith({
+			runId: "run-1",
+			itemId: "item-1",
+		});
+	});
 });
 
 function createRepository(
@@ -170,6 +189,7 @@ function createRepository(
 		markStatus: vi.fn(async () => ({ id: "item-1" })),
 		syncFromExecution: vi.fn(async () => ({ id: "item-1" })),
 		recordGraderResults: vi.fn(async () => ({ id: "item-1" })),
+		startWorkflow: vi.fn(async () => ({ workflowExecutionId: "exec-1" })),
 		...overrides,
 	};
 }

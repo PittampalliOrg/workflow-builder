@@ -53,6 +53,10 @@ export type EvaluationRunItemRepository = {
 		status?: EvaluationRunItemStatusInput;
 		error?: string | null;
 	}): Promise<unknown | null>;
+	startWorkflow(input: {
+		runId: string;
+		itemId: string;
+	}): Promise<Record<string, unknown>>;
 };
 
 export class ApplicationEvaluationRunItemService {
@@ -192,6 +196,16 @@ export class ApplicationEvaluationRunItemService {
 			);
 		}
 		return { success: true, item };
+	}
+
+	async startWorkflow(input: {
+		runId: string;
+		itemId: string;
+	}): Promise<Record<string, unknown> & { success: true }> {
+		const result = await this.runRepositoryCall(() =>
+			this.repository.startWorkflow(input),
+		);
+		return { success: true, ...result };
 	}
 
 	private async updateOutput(
