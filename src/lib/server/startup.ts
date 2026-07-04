@@ -39,6 +39,13 @@ function shouldSkipStartupMigrations(): boolean {
 	// Hard opt-out, independent of environment.
 	if (truthyEnv(process.env.WORKFLOW_BUILDER_SKIP_STARTUP_MIGRATIONS)) return true;
 
+	// The lite/PGlite profile owns its schema via `drizzle-kit push` (schema.ts
+	// head) — see scripts/dev-lite.sh. The atlas/migrations set is a secondary
+	// tracker that has drifted from head (missing tables/columns), so running it
+	// here would fail queries against head-shaped repositories. Same rationale as
+	// the ryzen DevSpace path below, where schema is drizzle-owned.
+	if ((process.env.APP_PROFILE ?? "").toLowerCase() === "lite") return true;
+
 	// RUN_MIGRATIONS is the explicit control knob. The ryzen DevSpace wrapper
 	// (scripts/devspace-dev-ryzen.sh) exports RUN_MIGRATIONS=false because the
 	// dev DB schema is owned by drizzle-kit (`pnpm db:migrate`), not the in-app

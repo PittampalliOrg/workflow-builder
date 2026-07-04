@@ -56,3 +56,7 @@ __pycache__/
 
 # local claude-code settings
 .claude/
+
+# Lite profile (embedded PGlite) local data + dev keys
+.pglite-data/
+.pglite-keys/
