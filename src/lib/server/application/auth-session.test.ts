@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
 	ApplicationAuthSessionService,
@@ -93,6 +96,19 @@ describe("ApplicationAuthSessionService", () => {
 			type: "access",
 		});
 		expect(accessTokens.verifyAccessToken).toHaveBeenCalledWith("access-1");
+	});
+
+	it("keeps the legacy auth compatibility module free of direct DB imports", () => {
+		const source = readFileSync(
+			join(dirname(fileURLToPath(import.meta.url)), "../auth.ts"),
+			"utf8",
+		);
+
+		expect(source).toContain("$lib/server/application/adapters/auth-session");
+		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("drizzle-orm");
+		expect(source).not.toContain("signingKeys");
+		expect(source).not.toContain("userIdentities");
 	});
 });
 

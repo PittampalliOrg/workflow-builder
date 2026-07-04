@@ -14,7 +14,7 @@ import type {
 	AuthTokenIssuer,
 	AuthUserCreateInput,
 } from "$lib/server/application/auth-sign-in";
-import { generateTokens } from "$lib/server/auth";
+import { generateTokens } from "$lib/server/auth-jwt";
 import { generateId } from "$lib/server/utils/id";
 
 const DEFAULT_PLATFORM_ID = "default-platform";

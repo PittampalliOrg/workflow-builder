@@ -1416,10 +1416,14 @@ SWE-bench trace-bundle loading/materialization now lives in
 `src/lib/server/application/adapters/benchmark-trace-bundle.ts`; the legacy
 `src/lib/server/benchmarks/trace-bundle.ts` module is a compatibility re-export
 with no direct DB, Drizzle, or schema imports.
+Auth session token verification, refresh, and session materialization now live
+in `src/lib/server/application/adapters/auth-session.ts`; the legacy
+`src/lib/server/auth.ts` module is a DB-free compatibility wrapper and JWT
+issuing is isolated in `src/lib/server/auth-jwt.ts`.
 The broader BFF/control-plane still has service-level direct DB imports outside
 that subset and remains the next migration area. Current categories include:
 
-- legacy auth, agent registry/sync, environment registry/image-build, benchmark,
+- legacy agent registry/sync, environment registry/image-build, benchmark,
   evaluation, and MLflow/observability service modules that still own direct
   Drizzle/Postgres access until their behavior is fully expressed as application
   ports and adapter implementations;
