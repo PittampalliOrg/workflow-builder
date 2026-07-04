@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("$env/dynamic/private", () => ({ env: process.env }));
@@ -98,6 +101,18 @@ beforeEach(() => {
 });
 
 describe("mlflow lifecycle helpers", () => {
+	it("keeps the legacy observability module free of direct DB imports", () => {
+		const source = readFileSync(
+			join(dirname(fileURLToPath(import.meta.url)), "mlflow-lifecycle.ts"),
+			"utf8",
+		);
+
+		expect(source).toContain("$lib/server/application/adapters/mlflow-lifecycle");
+		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("drizzle-orm");
+		expect(source).not.toContain("mlflowLineageLinks");
+	});
+
 	it("uses mlflow-artifacts for lifecycle experiments", () => {
 		expect(
 			mlflowArtifactLocationForLifecycleExperiment(

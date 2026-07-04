@@ -14,7 +14,7 @@ import {
 import {
 	registerAgentVersionInMlflow,
 	resolveAgentApplicationMlflowExperiment,
-} from "$lib/server/observability/mlflow-lifecycle";
+} from "$lib/server/application/adapters/mlflow-lifecycle";
 
 export type MlflowTag = { key: string; value: string };
 type MlflowParam = { key: string; value: string };

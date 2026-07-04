@@ -16,7 +16,7 @@ import type {
 	AgentVersionSummary,
 } from "$lib/types/agents";
 import { createDefaultAgentConfig } from "$lib/types/agents";
-import { safeRegisterAgentVersionInMlflow } from "$lib/server/observability/mlflow-lifecycle";
+import { safeRegisterAgentVersionInMlflow } from "$lib/server/application/adapters/mlflow-lifecycle";
 import { hashAgentConfig } from "./config-hash";
 import { safeSyncOnArchive, safeSyncOnPublish } from "./registry-sync";
 

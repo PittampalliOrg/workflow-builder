@@ -1426,6 +1426,12 @@ Benchmark MLflow sync/link/proxy helpers now live in
 no direct DB, Drizzle, or schema imports. This keeps the remaining active MLflow
 coupling quarantined as adapter/telemetry cleanup while OTel lineage remains the
 preferred forward path.
+Legacy MLflow lifecycle helpers now live in
+`src/lib/server/application/adapters/mlflow-lifecycle.ts`; the legacy
+`src/lib/server/observability/mlflow-lifecycle.ts` module is a compatibility
+re-export with no direct DB, Drizzle, or schema imports. This does not broaden
+MLflow usage; it keeps the gated legacy lifecycle persistence behind the adapter
+boundary while OTel lineage remains the forward path.
 Environment image build, dynamic SWE-bench environment, and build-activity
 projection helpers now live in
 `src/lib/server/application/adapters/environment-image-builds.ts`; the legacy
@@ -1435,7 +1441,7 @@ The broader BFF/control-plane still has service-level direct DB imports outside
 that subset and remains the next migration area. Current categories include:
 
 - legacy agent registry/sync, environment registry, benchmark,
-  evaluation, and MLflow/observability service modules that still own direct
+  and evaluation service modules that still own direct
   Drizzle/Postgres access until their behavior is fully expressed as application
   ports and adapter implementations;
 - preview runtime/proxy helper internals, where persistence lookups and
