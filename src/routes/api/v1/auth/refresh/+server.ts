@@ -1,6 +1,6 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { refreshTokens } from '$lib/server/auth';
+import { getApplicationAdapters } from '$lib/server/application';
 import {
 	ACCESS_TOKEN_COOKIE,
 	REFRESH_TOKEN_COOKIE,
@@ -13,7 +13,9 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 		return error(401, 'Refresh token missing');
 	}
 
-	const tokens = await refreshTokens(refreshCookie);
+	const tokens = await getApplicationAdapters().authSession.refreshTokens({
+		refreshToken: refreshCookie,
+	});
 	if (!tokens) {
 		cookies.delete(ACCESS_TOKEN_COOKIE, { path: '/' });
 		cookies.delete(REFRESH_TOKEN_COOKIE, { path: '/' });

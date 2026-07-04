@@ -14,18 +14,19 @@ const mocks = vi.hoisted(() => {
 	const workflowData = {
 		listActiveWorkflowExecutionsForUser: vi.fn(async () => activeExecutions),
 	};
-	const getSession = vi.fn(async () => ({
-		user: { id: "user-1" },
-	}));
-	return { activeExecutions, workflowData, getSession };
+	const authSession = {
+		getSession: vi.fn(async () => ({
+			user: { id: "user-1" },
+		})),
+	};
+	return { activeExecutions, workflowData, authSession };
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
-}));
-
-vi.mock("$lib/server/auth", () => ({
-	getSession: mocks.getSession,
+	getApplicationAdapters: () => ({
+		workflowData: mocks.workflowData,
+		authSession: mocks.authSession,
+	}),
 }));
 
 import { GET } from "./+server";
@@ -33,7 +34,7 @@ import { GET } from "./+server";
 describe("active workflow executions route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.getSession.mockResolvedValue({
+		mocks.authSession.getSession.mockResolvedValue({
 			user: { id: "user-1" },
 		});
 		mocks.workflowData.listActiveWorkflowExecutionsForUser.mockResolvedValue(
@@ -48,6 +49,8 @@ describe("active workflow executions route", () => {
 		);
 
 		expect(source).toContain("workflowData.listActiveWorkflowExecutionsForUser");
+		expect(source).toContain("authSession.getSession");
+		expect(source).not.toMatch(/from ['"]\$lib\/server\/auth['"]/);
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");
@@ -61,7 +64,10 @@ describe("active workflow executions route", () => {
 
 		expect(response.status).toBe(200);
 		await expect(response.json()).resolves.toEqual(mocks.activeExecutions);
-		expect(mocks.getSession).toHaveBeenCalledWith(request, {});
+		expect(mocks.authSession.getSession).toHaveBeenCalledWith({
+			request,
+			cookies: {},
+		});
 		expect(mocks.workflowData.listActiveWorkflowExecutionsForUser).toHaveBeenCalledWith(
 			"user-1",
 		);

@@ -11,8 +11,10 @@ describe("server hooks boundary", () => {
 		);
 
 		expect(source).toContain("getApplicationAdapters");
+		expect(source).toContain("authSession.getSession");
 		expect(source).toContain("workflowData.resolveSessionProjectId");
 		expect(source).toContain("resolveWorkspaceProjectId");
+		expect(source).not.toMatch(/from ["']\$lib\/server\/auth["']/);
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");

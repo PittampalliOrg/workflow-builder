@@ -1,7 +1,6 @@
 import type { Handle } from "@sveltejs/kit";
 import { sequence } from "@sveltejs/kit/hooks";
 import { SpanStatusCode, trace, type Span } from "@opentelemetry/api";
-import { getSession } from "$lib/server/auth";
 import { ensureStartupReady } from "$lib/server/startup";
 import { getApplicationAdapters } from "$lib/server/application";
 import { resolveWorkspaceProjectId } from "$lib/server/workspaces/resolve";
@@ -32,7 +31,11 @@ const startupHandle: Handle = async ({ event, resolve }) => {
 };
 
 const authHandle: Handle = async ({ event, resolve }) => {
-  const session = await getSession(event.request, event.cookies);
+  const adapters = getApplicationAdapters();
+  const session = await adapters.authSession.getSession({
+    request: event.request,
+    cookies: event.cookies,
+  });
 
   event.locals.session = session
     ? {
@@ -56,7 +59,7 @@ const authHandle: Handle = async ({ event, resolve }) => {
   if (event.locals.session) {
     try {
       const resolvedProjectId =
-        await getApplicationAdapters().workflowData.resolveSessionProjectId({
+        await adapters.workflowData.resolveSessionProjectId({
           userId: event.locals.session.userId,
           currentProjectId: event.locals.session.projectId,
         });

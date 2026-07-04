@@ -77,6 +77,10 @@ import {
 	PostgresAuthSignInRepository,
 } from "$lib/server/application/adapters/auth-sign-in";
 import {
+	LegacyAuthSessionReader,
+	LegacyAuthTokenRefresher,
+} from "$lib/server/application/adapters/auth-session";
+import {
 	LegacyAgentCompiledCapabilitiesRepository,
 	AgentRuntimeRegistrySyncAdapter,
 	LegacyAgentCatalogRepository,
@@ -340,6 +344,7 @@ import { ApplicationWorkflowDataService } from "$lib/server/application/workflow
 import { ApplicationWorkflowPlanService } from "$lib/server/application/workflow-plan";
 import { ApplicationGitOpsActivityEventService } from "$lib/server/application/gitops-activity-events";
 import { ApplicationAuthSignInService } from "$lib/server/application/auth-sign-in";
+import { ApplicationAuthSessionService } from "$lib/server/application/auth-session";
 import { extractExecutionTraceIds } from "$lib/server/otel/clickhouse";
 import { costFor, formatCurrency } from "$lib/server/pricing/model-pricing";
 import {
@@ -534,6 +539,7 @@ export function getApplicationAdapters(
 	let codeFunctionStore: PostgresCodeFunctionStore | undefined;
 	let cliCredentials: ApplicationCliCredentialsService | undefined;
 	let authSignIn: ApplicationAuthSignInService | undefined;
+	let authSession: ApplicationAuthSessionService | undefined;
 	let settingsCliTokens: ApplicationSettingsCliTokensService | undefined;
 	let promptPresets: ApplicationPromptPresetService | undefined;
 	let promptStackCompiler: ApplicationPromptStackCompilerService | undefined;
@@ -1000,6 +1006,11 @@ export function getApplicationAdapters(
 			repository: new PostgresAuthSignInRepository(),
 			tokens: new JwtAuthTokenIssuer(),
 			ids: new DateAuthIdGenerator(),
+		}));
+	const getAuthSession = () =>
+		(authSession ??= new ApplicationAuthSessionService({
+			sessions: new LegacyAuthSessionReader(),
+			tokens: new LegacyAuthTokenRefresher(),
 		}));
 	const getSettingsCliTokens = () =>
 		(settingsCliTokens ??= new ApplicationSettingsCliTokensService({
@@ -1478,6 +1489,9 @@ export function getApplicationAdapters(
 		},
 		get authSignIn() {
 			return getAuthSignIn();
+		},
+		get authSession() {
+			return getAuthSession();
 		},
 		get settingsCliTokens() {
 			return getSettingsCliTokens();

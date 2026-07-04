@@ -1,6 +1,5 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getSession } from '$lib/server/auth';
 import { getApplicationAdapters } from '$lib/server/application';
 
 /**
@@ -11,13 +10,14 @@ import { getApplicationAdapters } from '$lib/server/application';
  */
 export const GET: RequestHandler = async ({ request, cookies }) => {
 	try {
-		const session = await getSession(request, cookies);
+		const adapters = getApplicationAdapters();
+		const session = await adapters.authSession.getSession({ request, cookies });
 		if (!session) {
 			return error(401, 'Unauthorized');
 		}
 
 		return json(
-			await getApplicationAdapters().workflowData.listActiveWorkflowExecutionsForUser(
+			await adapters.workflowData.listActiveWorkflowExecutionsForUser(
 				session.user.id
 			)
 		);

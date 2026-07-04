@@ -21,7 +21,8 @@ gate, and the internal piece-execution artifact readback route, plus the
 workflow trigger management/lifecycle, workflow definition command,
 code-checkpoint list/diff/restore, admin GitOps auth-check, and session-goal
 storage wiring slices, plus dev-preview database provisioning and password/social
-sign-in route persistence, plus internal runtime environment resolution.
+sign-in route persistence, internal runtime environment resolution, and
+auth-session/refresh route persistence.
 The session spawn/control runtime-target helper now resolves session owner user
 ids, workflow execution workspace keys, and session runtime targets through
 workflow-data ports. Direct `sessions`/`workflow_executions` reads for those
@@ -887,6 +888,14 @@ services:
   bcrypt/scrypt verification, platform/project resolution, and token generation
   now live in `signInWithPassword`; the route sets cookies and maps the
   service result to HTTP.
+- `src/routes/api/v1/auth/session/+server.ts`,
+  `src/routes/api/v1/auth/me/+server.ts`,
+  `src/routes/api/v1/auth/refresh/+server.ts`, and
+  `src/routes/api/workflow/active-executions/+server.ts`, plus
+  `src/hooks.server.ts`, no longer import the DB-owning `auth.ts` helper
+  directly. They call
+  `ApplicationAuthSessionService`; the existing token/session helpers remain
+  behind `LegacyAuthSessionReader` and `LegacyAuthTokenRefresher`.
 - `src/routes/api/v1/gitops/events/stream/+server.ts` no longer imports the raw
   Postgres client for `LISTEN`. SSE framing, heartbeat, replay, and abort
   cleanup stay in the route; the Postgres `LISTEN gitops_activity_events`
