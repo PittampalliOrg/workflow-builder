@@ -96,7 +96,7 @@ import { GET as getPlanArtifact, PATCH as patchPlanArtifact } from "./plan-artif
 import { GET as getTraceTargets } from "./traces/executions/[executionId]/targets/+server";
 import { POST as postTraceLineage } from "./traces/lineage/+server";
 
-type RouteHandler = (event: never) => Promise<Response>;
+type RouteHandler = (event: never) => Response | Promise<Response>;
 
 function requestEvent(fixture: ContractFixture) {
 	const url = new URL(`http://workflow-builder.internal${fixture.path}`);
