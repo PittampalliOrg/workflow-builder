@@ -3963,6 +3963,14 @@ class VclusterPreviewRequest(BaseModel):
     # otel-collector replicated into the vcluster. Defaults from env so it can be flipped
     # cluster-wide without an API change.
     previewObservability: str | None = None
+    # PREVIEW_PARALLEL_BRINGUP=true → runner backgrounds the independent infra installs
+    # (Dapr/CNPG-operator/agent-sandbox/NATS) behind a hard barrier. Default false = serial.
+    # A2, flagged default-off; env-defaulted for a cluster-wide flip without an API change.
+    previewParallelBringup: bool | None = None
+    # PREVIEW_DB_BOOTSTRAP=migrate|template → template clones the pre-seeded host
+    # `preview_template` DB via CNPG import (cnpg mode) instead of empty-migrate+seed.
+    # A2, flagged default-off (migrate); env-defaulted.
+    previewDbBootstrap: str | None = None
 
 
 def _vcluster_preview_job_name(name: str, action: str) -> str:
@@ -4007,6 +4015,24 @@ def _vcluster_preview_job_manifest(
     env.append(
         {"name": "PREVIEW_OBSERVABILITY", "value": preview_observability}
     )
+    # A2 cold-boot flags (default-off; env-defaulted for a cluster-wide flip). Parallel
+    # bringup backgrounds the runner's independent infra installs; db-bootstrap=template
+    # clones the pre-seeded host preview_template DB via CNPG import instead of migrate+seed.
+    preview_parallel = req.previewParallelBringup
+    if preview_parallel is None:
+        preview_parallel = (
+            os.environ.get("VCLUSTER_PREVIEW_PARALLEL_BRINGUP", "false") == "true"
+        )
+    env.append(
+        {
+            "name": "PREVIEW_PARALLEL_BRINGUP",
+            "value": "true" if preview_parallel else "false",
+        }
+    )
+    preview_db_bootstrap = req.previewDbBootstrap or os.environ.get(
+        "VCLUSTER_PREVIEW_DB_BOOTSTRAP", "migrate"
+    )
+    env.append({"name": "PREVIEW_DB_BOOTSTRAP", "value": preview_db_bootstrap})
     # Interactive dev preview (adopt:true dev image replaces the prod BFF): thread
     # PREVIEW_DEV_MODE so the runner wires the prod LB to the adopted dev pod
     # (EXPOSE_DEV_POD=false). Defaults from env for a cluster-wide flip.
