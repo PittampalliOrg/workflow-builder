@@ -1468,8 +1468,12 @@ coordinator bridge persistence now live in
 with no direct DB, Drizzle, or schema imports. This is a quarantine step for the
 large legacy evaluation service; smaller evaluation use cases should still be
 split behind explicit ports over later checkpoints.
-The broader BFF/control-plane still has service-level direct DB imports outside
-that subset and remains the next migration area. Current categories include:
+The broad BFF/control-plane scan now shows no production direct DB/Drizzle
+imports outside adapter, startup/bootstrap, migration, rollback, or test-only
+boundaries. Remaining work is no longer about finding route-local Postgres
+imports; it is about splitting the larger adapter-quarantined legacy services
+into smaller application use cases and adding live strict-mode rollout proof.
+Current categories include:
 
 - remaining direct DB references should now be adapter, startup/bootstrap,
   migration, rollback, or test-only; broad scans should remain the source of
@@ -1480,17 +1484,16 @@ that subset and remains the next migration area. Current categories include:
 - startup/migration/bootstrap utilities and any remaining explicitly deferred
   compatibility helpers.
 
-Current source scans show no production `src/routes/**` direct imports of
-`$lib/server/db`, `drizzle-orm`, the DB-backed evaluation service, or the
-DB-backed benchmark service helpers. The lifecycle, goal, and session server
-directories are also clean for direct DB/Drizzle hits in the current scan;
-persistence for those areas is either behind application ports/adapters or in
+Current source scans show no production `src/routes/**` or non-adapter
+`src/lib/server/**` direct imports of `$lib/server/db`, `drizzle-orm`,
+`requireDb`, or `getDb`, excluding the documented startup/bootstrap directory,
+the DB package itself, tests, and `src/lib/server/application/adapters/**`.
+Persistence for migrated areas is either behind application ports/adapters or in
 explicitly documented helper seams.
 
-Those BFF paths are not strict-orchestrator runtime fallbacks; they are product
-runtime seams to migrate behind application ports in later checkpoints. Raw DB
-access remains acceptable inside adapters, migrations/bootstrap utilities,
-explicit rollback branches, and tests.
+Those BFF paths are not strict-orchestrator runtime fallbacks. Raw DB access
+remains acceptable inside adapters, migrations/bootstrap utilities, explicit
+rollback branches, and tests.
 
 ## Test-Only References
 
