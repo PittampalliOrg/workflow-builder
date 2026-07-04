@@ -21,12 +21,26 @@ export interface VclusterPreview {
 	targetCluster: "dev";
 	fallbackCluster: "ryzen";
 	isolationTier: "tier-2-vcluster";
-	/** provisioning | ready | failed | pending | terminating | absent | unknown */
+	/** provisioning | ready | failed | pending | terminating | claiming | absent | unknown */
 	phase: string;
 	ready: boolean;
 	tailnetHost: string | null;
 	/** Browsable preview URL once ready. */
 	url: string | null;
+	/** A3: the backing warm-pool member id (pool-<n>) when this preview was CLAIMED, else null.
+	 * Presence means the preview came up instantly from the pool rather than a cold provision. */
+	pool: string | null;
+}
+
+/** A3 capacity accounting (from the SEA list): awake = every non-terminating preview vcluster
+ * (claimed + free-hot + regular), so the launch cap counts pooled members too. */
+export interface VclusterPreviewCounts {
+	awake: number;
+	free: number;
+	claimed: number;
+	recycling: number;
+	max: number;
+	poolSize: number;
 }
 
 function sandboxExecutionApiUrl(): string | null {
@@ -91,11 +105,51 @@ function toPreview(d: Record<string, unknown>): VclusterPreview {
 		ready: d.ready === true,
 		tailnetHost: typeof d.tailnetHost === "string" ? d.tailnetHost : null,
 		url: typeof d.url === "string" ? d.url : null,
+		pool: typeof d.pool === "string" ? d.pool : null,
 	};
 }
 
-/** Launch (or re-provision) a Tier-2 preview vcluster. Returns immediately (202). */
-export async function launchVclusterPreview(params: {
+/**
+ * A3: claim a pre-baked warm-pool member (instant). Returns the claimed preview, or `null`
+ * when the pool is empty/off (SEA 404) — the caller then falls back to a cold provision. A
+ * claim consumes an already-awake member, so it is not capacity-gated.
+ */
+export async function claimVclusterPreview(params: {
+	name: string;
+	devMode?: boolean;
+	user?: string;
+}): Promise<VclusterPreview | null> {
+	const baseUrl = sandboxExecutionApiUrl();
+	if (!baseUrl) throw new Error("SANDBOX_EXECUTION_API_URL not configured");
+	const name = safePreviewName(params.name);
+	const token = internalToken();
+	const res = await fetch(`${baseUrl}/internal/vcluster-preview/claim`, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			...(token ? { Authorization: `Bearer ${token}` } : {}),
+		},
+		body: JSON.stringify({
+			name,
+			...(params.devMode ? { devMode: true } : {}),
+			...(params.user ? { user: params.user } : {}),
+		}),
+	});
+	if (res.status === 404) return null; // no free member / pool off → cold-provision fallback
+	const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+	if (!res.ok) {
+		const detail =
+			typeof data.detail === "string"
+				? data.detail
+				: `vcluster-preview claim failed (HTTP ${res.status})`;
+		throw new Error(detail);
+	}
+	return toPreview(data);
+}
+
+/** Cold-provision (or re-provision) a Tier-2 preview vcluster (ACTION=up). Returns immediately
+ * (202). This is the fallback when the warm pool has no free member. */
+export async function provisionVclusterPreview(params: {
 	name: string;
 	daprVersion?: string;
 	tailnetHost?: string;
@@ -117,7 +171,30 @@ export async function launchVclusterPreview(params: {
 	return toPreview(data);
 }
 
-/** Current status of a Tier-2 preview (job phase == environment readiness). */
+/**
+ * Launch a Tier-2 preview: A3 claim-first (instant from the warm pool), falling back to a cold
+ * provision when the pool is empty/off. Returns immediately (202). Note: capacity admission for
+ * the COLD fallback lives in the route (it must count awake members); a claim needs no cap.
+ */
+export async function launchVclusterPreview(params: {
+	name: string;
+	daprVersion?: string;
+	tailnetHost?: string;
+	previewDb?: string;
+	devMode?: boolean;
+	user?: string;
+}): Promise<VclusterPreview> {
+	const claimed = await claimVclusterPreview({
+		name: params.name,
+		devMode: params.devMode,
+		user: params.user,
+	});
+	if (claimed) return claimed;
+	return provisionVclusterPreview(params);
+}
+
+/** Current status of a Tier-2 preview (job phase == environment readiness). Accepts a claimed
+ * preview's alias — SEA resolves it to the backing member. */
 export async function getVclusterPreview(name: string): Promise<VclusterPreview> {
 	const data = await call(
 		"GET",
@@ -126,11 +203,39 @@ export async function getVclusterPreview(name: string): Promise<VclusterPreview>
 	return toPreview(data);
 }
 
-/** List active Tier-2 previews (from the provisioning Jobs). */
+/** List active Tier-2 previews. Free/recycling pool members are hidden; a claimed member shows
+ * under the user's alias. */
 export async function listVclusterPreviews(): Promise<VclusterPreview[]> {
+	const { previews } = await listVclusterPreviewsWithCounts();
+	return previews;
+}
+
+function toCounts(d: unknown): VclusterPreviewCounts | null {
+	if (!d || typeof d !== "object") return null;
+	const c = d as Record<string, unknown>;
+	const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+	return {
+		awake: num(c.awake),
+		free: num(c.free),
+		claimed: num(c.claimed),
+		recycling: num(c.recycling),
+		max: num(c.max),
+		poolSize: num(c.poolSize),
+	};
+}
+
+/** List Tier-2 previews AND the A3 capacity counts (awake includes free pool members, so the
+ * launch cap counts them). `counts` is null against an older SEA that doesn't emit it. */
+export async function listVclusterPreviewsWithCounts(): Promise<{
+	previews: VclusterPreview[];
+	counts: VclusterPreviewCounts | null;
+}> {
 	const data = await call("GET", "/internal/vcluster-previews");
 	const arr = Array.isArray(data.previews) ? data.previews : [];
-	return arr.map((d) => toPreview(d as Record<string, unknown>));
+	return {
+		previews: arr.map((d) => toPreview(d as Record<string, unknown>)),
+		counts: toCounts(data.counts),
+	};
 }
 
 /** Tear down a Tier-2 preview (drops the per-preview DB + `vcluster delete`). */
