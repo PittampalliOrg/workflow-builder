@@ -1409,6 +1409,9 @@ through `getBenchmarkRunCapacitySource` in
 `src/lib/server/benchmarks/capacity-diagnostics.ts` service keeps capacity math,
 Dapr/Kubernetes probes, and response shaping without importing DB, Drizzle, or
 schema types.
+Benchmark scorer persistence and score context loading now live in
+`src/lib/server/application/adapters/benchmark-score-runner.ts`; the legacy
+`src/lib/server/benchmarks/score-runner.ts` module is a compatibility re-export.
 The broader BFF/control-plane still has service-level direct DB imports outside
 that subset and remains the next migration area. Current categories include:
 
