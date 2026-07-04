@@ -971,6 +971,9 @@ services:
   capacity shaping, run summary listing, and compare-grid loading are behind
   application ports. Drizzle access is confined to Postgres/legacy benchmark
   read adapters pending the deeper benchmark service extraction.
+  The compare-grid SQL now lives in the benchmark run read adapter; the
+  `src/lib/server/benchmarks/comparison.ts` module is a DB-free read-model
+  shaping helper.
 - `src/routes/api/v1/usage/+server.ts`, `src/routes/api/v1/cost/+server.ts`,
   and `src/routes/api/v1/limits/live/+server.ts` now read reporting snapshots
   through workflow-data application ports. Default time windows, response
