@@ -1,7 +1,3 @@
-import { error } from "@sveltejs/kit";
-import { and, eq } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import { benchmarkRuns, type BenchmarkResourceLeaseType } from "$lib/server/db/schema";
 import { resolveAgentRuntimeRoute } from "$lib/server/agents/runtime-routing";
 import { listDaprComponents, type DaprComponent } from "$lib/server/kube/client";
 import {
@@ -20,12 +16,19 @@ import {
 	type BenchmarkEvaluationCapacitySnapshot,
 } from "./evaluation-capacity";
 import { loadSchedulableSandboxCapacitySnapshot } from "./sandbox-capacity";
-import { loadBenchmarkResourceCapacityDiagnostics } from "./resource-leases";
+import {
+	loadBenchmarkResourceCapacityDiagnostics,
+	type BenchmarkResourceLeaseTypeInput,
+} from "./resource-leases";
 import { resolveBenchmarkAgent } from "./service";
 import {
 	summarizeBenchmarkClusterPressure,
 	type BenchmarkClusterPressureSnapshot,
 } from "./cluster-pressure";
+import { getBenchmarkRunCapacitySource } from "$lib/server/application/adapters/benchmark-capacity-run";
+import type { BenchmarkRunCapacitySource } from "$lib/server/application/benchmark-capacity-diagnostics";
+
+type BenchmarkResourceLeaseType = BenchmarkResourceLeaseTypeInput;
 
 const DIAGNOSTIC_RESOURCES = [
 	"inference_slot",
@@ -35,11 +38,6 @@ const DIAGNOSTIC_RESOURCES = [
 	"model_slot",
 	"evaluator_slot",
 ] satisfies BenchmarkResourceLeaseType[];
-
-function requireDb() {
-	if (!db) throw error(503, "Database not configured");
-	return db;
-}
 
 function positiveInt(value: unknown): number | null {
 	const parsed =
@@ -352,7 +350,7 @@ async function loadWorkflowLifecycleDiagnostics(
 }
 
 function diagnosticsFromCapacity(params: {
-	run: typeof benchmarkRuns.$inferSelect;
+	run: BenchmarkRunCapacitySource;
 	capacity: Record<string, unknown>;
 	selectedInstanceCount: number;
 	resources: Awaited<ReturnType<typeof loadBenchmarkResourceCapacityDiagnostics>>;
@@ -606,12 +604,7 @@ export async function getBenchmarkRunCapacityDiagnostics(
 	projectId: string,
 	runId: string,
 ): Promise<BenchmarkCapacityDiagnostics | null> {
-	const database = requireDb();
-	const [run] = await database
-		.select()
-		.from(benchmarkRuns)
-		.where(and(eq(benchmarkRuns.projectId, projectId), eq(benchmarkRuns.id, runId)))
-		.limit(1);
+	const run = await getBenchmarkRunCapacitySource(projectId, runId);
 	if (!run) return null;
 	const capacity = capacityFromSummary(run.summary);
 	const selectedInstanceCount = instanceCount(run.selectedInstanceIds);
@@ -765,14 +758,8 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 		evaluationConcurrencyReason: evaluatorCapacity.reason,
 		evaluatorCapacity,
 	};
-	const pseudoRun = {
+	const pseudoRun: BenchmarkRunCapacitySource = {
 		id: "launch-candidate",
-		projectId: input.projectId,
-		userId: "",
-		suiteId: "",
-		agentId: agent.id,
-		agentVersion: agent.version,
-		agentRuntime: agent.runtime,
 		agentRuntimeAppId: runtimeRoute.appId,
 		status: "queued",
 		modelNameOrPath:
@@ -785,24 +772,8 @@ export async function getBenchmarkLaunchCapacityDiagnostics(input: {
 		concurrency: capacity.effectiveConcurrency,
 		evaluationConcurrency: evaluatorCapacity.effectiveEvaluationConcurrency,
 		timeoutSeconds: 7200,
-		maxTurns: null,
-		evaluatorResourceClass: "standard",
-		coordinatorExecutionId: null,
-		evaluatorJobName: null,
-		predictionsPath: null,
-		mlflowExperimentId: null,
-		mlflowRunId: null,
-		mlflowDatasetId: null,
-		mlflowEvalRunId: null,
 		summary: { capacity: capacityWithEvaluation },
-		tags: [],
-		error: null,
-		cancelRequestedAt: null,
-		startedAt: null,
-		completedAt: null,
-		createdAt: new Date(),
-		updatedAt: new Date(),
-	} as typeof benchmarkRuns.$inferSelect;
+	};
 	const [resources, workflowLifecycle] = await Promise.all([
 		loadBenchmarkResourceCapacityDiagnostics({
 			run: pseudoRun,

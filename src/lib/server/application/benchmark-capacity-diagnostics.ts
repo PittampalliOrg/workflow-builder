@@ -158,6 +158,19 @@ export type BenchmarkCapacityDiagnostics = {
 
 export type BenchmarkRunCapacityDiagnostics = BenchmarkCapacityDiagnostics;
 
+export type BenchmarkRunCapacitySource = {
+	id: string;
+	status: string;
+	agentRuntimeAppId: string | null;
+	summary: unknown;
+	selectedInstanceIds: unknown;
+	concurrency: number | null;
+	evaluationConcurrency: number | null;
+	modelNameOrPath: string | null;
+	modelConfigLabel: string | null;
+	timeoutSeconds: number | null;
+};
+
 export type BenchmarkLaunchCapacityInput = {
 	projectId: string;
 	agentId: string;

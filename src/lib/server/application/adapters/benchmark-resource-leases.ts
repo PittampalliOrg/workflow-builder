@@ -6,6 +6,7 @@ import {
 	benchmarkResourceLeases,
 	benchmarkRuns,
 } from "$lib/server/db/schema";
+import type { BenchmarkRunCapacitySource } from "$lib/server/application/benchmark-capacity-diagnostics";
 import {
 	loadSchedulableSandboxCapacitySnapshot,
 	type BenchmarkSandboxCapacitySnapshot,
@@ -34,7 +35,18 @@ const KUEUE_OPTIONAL_LEASE_RESOURCES = [
 	"model_slot",
 ] satisfies BenchmarkResourceLeaseType[];
 
-type BenchmarkRunForLease = typeof benchmarkRuns.$inferSelect;
+export type BenchmarkRunForLease = Pick<
+	BenchmarkRunCapacitySource,
+	| "id"
+	| "status"
+	| "agentRuntimeAppId"
+	| "summary"
+	| "concurrency"
+	| "evaluationConcurrency"
+	| "modelNameOrPath"
+	| "modelConfigLabel"
+	| "timeoutSeconds"
+>;
 
 export type BenchmarkResourceLeaseRequest = {
 	runId: string;

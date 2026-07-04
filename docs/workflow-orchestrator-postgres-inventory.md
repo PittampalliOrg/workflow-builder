@@ -1403,6 +1403,12 @@ Benchmark resource lease persistence has moved to
 `src/lib/server/application/adapters/benchmark-resource-leases.ts`; the legacy
 `src/lib/server/benchmarks/resource-leases.ts` module is now a compatibility
 re-export with no direct DB, Drizzle, or schema imports.
+Benchmark capacity diagnostics now read scoped `benchmark_runs` capacity inputs
+through `getBenchmarkRunCapacitySource` in
+`src/lib/server/application/adapters/benchmark-capacity-run.ts`; the
+`src/lib/server/benchmarks/capacity-diagnostics.ts` service keeps capacity math,
+Dapr/Kubernetes probes, and response shaping without importing DB, Drizzle, or
+schema types.
 The broader BFF/control-plane still has service-level direct DB imports outside
 that subset and remains the next migration area. Current categories include:
 
