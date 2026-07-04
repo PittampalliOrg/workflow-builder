@@ -6,7 +6,7 @@ runtime boundary is Dapr service invocation to `workflow-builder` internal
 workflow-data routes. Postgres remains the first workflow-data infrastructure
 adapter, not an orchestrator dependency.
 
-Inventory status: 2026-07-03, after the workflow start/control slice and the
+Inventory status: 2026-07-04, after the workflow start/control slice and the
 workspace workflow, service graph, connections, benchmark, top-level
 connections redirect, settings OAuth/profile, settings members, admin pieces,
 root UI-facing route, MCP connection, and app-connection CRUD/OAuth/decrypt
@@ -1494,6 +1494,53 @@ explicitly documented helper seams.
 Those BFF paths are not strict-orchestrator runtime fallbacks. Raw DB access
 remains acceptable inside adapters, migrations/bootstrap utilities, explicit
 rollback branches, and tests.
+
+## 2026-07-04 Strict Preview Evidence
+
+Dev vCluster preview `hex-strict-0704` ran the promoted workflow-builder and
+workflow-orchestrator images with:
+
+- `WORKFLOW_DATA_API_MODE=http`
+- `WORKFLOW_DATA_API_TRANSPORT=dapr`
+- `WORKFLOW_BUILDER_APP_ID=workflow-builder`
+
+The preview Dapr component inventory showed exactly one
+`actorStateStore=true` component: `workflowstatestore`. The strict smoke
+executions completed successfully and persisted the expected read-model rows:
+workflow execution status/progress, execution logs, workflow artifact, plan
+artifact, retained workspace session, and agent-run lineage. Orchestrator logs
+for the strict preview window contained no `fallback`, `psycopg`, `postgres`, or
+`DATABASE_URL` matches for migrated paths. A wait-node workflow was stopped via
+`POST /api/workflows/executions/[id]/stop`; the lifecycle controller confirmed
+`mark-stop-requested`, `durable-cascade`, and `finalize-db`. A second wait-node
+workflow remained running through a workflow-builder-only rollout restart and
+was then stopped through the same controller.
+
+## Service-Local Postgres Clients
+
+The BFF/control-plane and workflow-orchestrator runtime migration does not imply
+that every microservice has stopped using a database. Current service-local
+Postgres clients are classified as infrastructure adapters or user-configured
+execution adapters, not BFF route-local persistence:
+
+- `services/function-router/src/core/db.ts` is the function-router persistence
+  adapter used by execution logging, credential audit/linkage, code-function
+  lookup, and external-event routing. It is not an orchestrator fallback path.
+- `services/workflow-mcp-server/src/db.ts` and `goal-db.ts` are the MCP server's
+  service-local adapter for goal/session/workflow tool state.
+- `services/piece-mcp-server/src/db.ts` is lazy service-local persistence for
+  piece execution idempotency and metadata sync. The MCP catalog path can start
+  without `DATABASE_URL`; `/execute` uses the adapter when idempotency rows are
+  required.
+- `services/crawl4ai-adapter/app.py` owns a Crawl4AI-specific job store through
+  `CRAWL4AI_DATABASE_URL`.
+- `services/fn-system/src/steps/database-query.ts` is an explicit
+  user-configured database action adapter; it uses attached credentials or
+  `DATABASE_URL` for that step, not workflow-builder control-plane persistence.
+
+Future portability work can split these service-local adapters behind narrower
+ports or Dapr service boundaries, but they are outside the migrated
+workflow-orchestrator strict-mode fallback surface.
 
 ## Test-Only References
 
