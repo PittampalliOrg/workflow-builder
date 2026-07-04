@@ -1,3 +1,8 @@
+import type {
+	EvaluationDatasetImportFormat,
+	EvaluationDatasetImportParser,
+} from "$lib/server/application/evaluation-templates";
+
 export class ApplicationEvaluationDatasetError extends Error {
 	constructor(
 		public readonly status: number,
@@ -48,7 +53,10 @@ export type EvaluationDatasetRepository = {
 };
 
 export class ApplicationEvaluationDatasetService {
-	constructor(private readonly repository: EvaluationDatasetRepository) {}
+	constructor(
+		private readonly repository: EvaluationDatasetRepository,
+		private readonly imports?: EvaluationDatasetImportParser,
+	) {}
 
 	async list(input: { projectId?: string | null }): Promise<{ datasets: unknown[] }> {
 		if (!input.projectId) return { datasets: [] };
@@ -149,6 +157,25 @@ export class ApplicationEvaluationDatasetService {
 				),
 			),
 		};
+	}
+
+	async importRows(input: {
+		projectId: string;
+		datasetId: string;
+		format: EvaluationDatasetImportFormat;
+		content: string;
+	}): Promise<{ rows: unknown[]; imported: number }> {
+		if (!this.imports) {
+			throw new ApplicationEvaluationDatasetError(
+				500,
+				"Evaluation dataset import parser is not configured",
+			);
+		}
+		const rows = this.imports.parse(input.content, input.format);
+		const createdRows = await this.runRepositoryCall(() =>
+			this.repository.createRows(input.projectId, input.datasetId, rows),
+		);
+		return { rows: createdRows, imported: createdRows.length };
 	}
 
 	async updateRow(input: {

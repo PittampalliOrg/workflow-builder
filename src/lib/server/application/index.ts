@@ -888,6 +888,7 @@ export function getApplicationAdapters(
 	const getEvaluationDatasets = () =>
 		(evaluationDatasets ??= new ApplicationEvaluationDatasetService(
 			new LegacyEvaluationDatasetRepository(),
+			new LegacyEvaluationDatasetImportParser(),
 		));
 	const getEvaluationTemplates = () =>
 		(evaluationTemplates ??= new ApplicationEvaluationTemplateService({

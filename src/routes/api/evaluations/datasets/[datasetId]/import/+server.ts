@@ -1,6 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { importEvaluationDatasetRows } from "$lib/server/evaluations/service";
+import { getApplicationAdapters } from "$lib/server/application";
+import { ApplicationEvaluationDatasetError } from "$lib/server/application/evaluation-datasets";
 
 export const POST: RequestHandler = async ({ request, params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -19,13 +20,21 @@ export const POST: RequestHandler = async ({ request, params, locals }) => {
 		format = rawFormat === "csv" || rawFormat === "json" ? rawFormat : "jsonl";
 	}
 	if (!content.trim()) return error(400, "Import content is required");
-	const rows = await importEvaluationDatasetRows({
-		projectId: locals.session.projectId,
-		datasetId: params.datasetId,
-		format,
-		content,
-	});
-	return json({ rows, imported: rows.length });
+	try {
+		return json(
+			await getApplicationAdapters().evaluationDatasets.importRows({
+				projectId: locals.session.projectId,
+				datasetId: params.datasetId,
+				format,
+				content,
+			}),
+		);
+	} catch (err) {
+		if (err instanceof ApplicationEvaluationDatasetError) {
+			throw error(err.status, err.message);
+		}
+		throw err;
+	}
 };
 
 function asRecord(value: unknown): Record<string, unknown> {

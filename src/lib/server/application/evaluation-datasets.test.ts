@@ -92,6 +92,44 @@ describe("ApplicationEvaluationDatasetService", () => {
 		});
 	});
 
+	it("parses imported content and persists rows through repository ports", async () => {
+		const repository = createRepository({
+			createRows: vi.fn(async () => [{ id: "row-1" }, { id: "row-2" }]),
+		});
+		const imports = {
+			parse: vi.fn(() => [
+				{ input: { prompt: "one" } },
+				{ input: { prompt: "two" } },
+			]),
+		};
+		const service = new ApplicationEvaluationDatasetService(
+			repository,
+			imports,
+		);
+
+		await expect(
+			service.importRows({
+				projectId: "project-1",
+				datasetId: "dataset-1",
+				format: "jsonl",
+				content: "{\"input\":{\"prompt\":\"one\"}}\n",
+			}),
+		).resolves.toEqual({
+			rows: [{ id: "row-1" }, { id: "row-2" }],
+			imported: 2,
+		});
+
+		expect(imports.parse).toHaveBeenCalledWith(
+			"{\"input\":{\"prompt\":\"one\"}}\n",
+			"jsonl",
+		);
+		expect(repository.createRows).toHaveBeenCalledWith(
+			"project-1",
+			"dataset-1",
+			[{ input: { prompt: "one" } }, { input: { prompt: "two" } }],
+		);
+	});
+
 	it("maps repository errors to application errors", async () => {
 		const service = new ApplicationEvaluationDatasetService(
 			createRepository({
