@@ -3,15 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const raiseSessionEventMock = vi.fn();
 const getSessionMock = vi.fn();
-const resolveAgentRefMock = vi.fn();
+const resolveSessionAgentMock = vi.fn();
 const resolveAgentConfigMcpForProjectMock = vi.fn();
 
 vi.mock("./control", () => ({
 	raiseSessionEvent: (...args: unknown[]) => raiseSessionEventMock(...args),
-}));
-
-vi.mock("$lib/server/agents/registry", () => ({
-	resolveAgentRef: (...args: unknown[]) => resolveAgentRefMock(...args),
 }));
 
 vi.mock("$lib/server/agents/mcp-resolution-application", () => ({
@@ -29,7 +25,7 @@ describe("session agent config patch", () => {
 	beforeEach(() => {
 		raiseSessionEventMock.mockReset();
 		getSessionMock.mockReset();
-		resolveAgentRefMock.mockReset();
+		resolveSessionAgentMock.mockReset();
 		resolveAgentConfigMcpForProjectMock.mockReset();
 	});
 
@@ -77,7 +73,9 @@ describe("session agent config patch", () => {
 		);
 
 		expect(source).not.toContain("$lib/server/sessions/registry");
+		expect(source).not.toContain("$lib/server/agents/registry");
 		expect(source).toContain("workflowData.getSessionDetail");
+		expect(source).toContain("workflowData.resolveSessionAgent");
 	});
 
 	it("raises one canonical config patch event", async () => {
@@ -104,7 +102,7 @@ describe("session agent config patch", () => {
 			agentId: "a1",
 			agentVersion: 3,
 		});
-		resolveAgentRefMock.mockResolvedValueOnce({
+		resolveSessionAgentMock.mockResolvedValueOnce({
 			config: {
 				builtinTools: ["read_file"],
 				mcpConnectionMode: "explicit",
@@ -156,7 +154,7 @@ describe("session agent config patch", () => {
 			agentId: "agent-agy",
 			agentVersion: null,
 		});
-		resolveAgentRefMock.mockResolvedValueOnce({
+		resolveSessionAgentMock.mockResolvedValueOnce({
 			config: {
 				builtinTools: ["read_file"],
 				mcpConnectionMode: "explicit",
@@ -191,5 +189,6 @@ describe("session agent config patch", () => {
 function raiseSessionAgentConfigPatchForTest(sessionId: string, input: unknown) {
 	return raiseSessionAgentConfigPatch(sessionId, input, {
 		getSession: (id) => getSessionMock(id),
+		resolveSessionAgent: (agent) => resolveSessionAgentMock(agent),
 	});
 }

@@ -66,7 +66,9 @@ now lives under `src/lib/server/application/adapters/session-repositories.ts`.
 The session runtime-config helper now takes its persisted
 `session.runtime_config` fallback as an injected adapter dependency. The latest
 runtime-config event query is confined to `DefaultSessionRuntimeConfigReader`;
-`runtime-config.ts` no longer imports DB, schema, or Drizzle.
+settings fallback agent resolution uses the workflow-data session-agent port, so
+`runtime-config.ts` no longer imports DB, schema, Drizzle, the legacy session
+registry, or the legacy agent registry.
 Lifecycle coordinator ownership checks now use
 `PostgresLifecycleCoordinatorOwnerStore`, injected behind workflow-execution and
 session lifecycle ports. The user-facing stop/resume/detail services still
@@ -98,8 +100,9 @@ the existing exactly-once continuation, budget, and completion behavior, but no
 longer imports `src/lib/server/goals/repo.ts`, `$lib/server/db`, Drizzle, or
 Drizzle schema types from `src/lib/server/goals/goal-loop.ts`.
 Session agent config patch commands now reuse the scoped session already loaded
-by workflow-data, with a workflow-data fallback for standalone helper use;
-`agent-config-patch.ts` no longer imports the legacy session registry.
+by workflow-data, with workflow-data fallbacks for standalone helper session and
+agent resolution; `agent-config-patch.ts` no longer imports the legacy session
+registry or the legacy agent registry.
 The workflow interactive dev-session handoff now resolves execution owner and
 project context through workflow-data execution ports instead of querying
 `workflow_executions`/`workflows` directly; `dev-session-handoff.ts` no longer

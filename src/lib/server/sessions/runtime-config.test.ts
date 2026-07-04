@@ -5,7 +5,7 @@ import type { SessionDetail } from "$lib/types/sessions";
 const getSessionMock = vi.fn();
 const resolveSessionRuntimeTargetMock = vi.fn();
 const daprFetchMock = vi.fn();
-const resolveAgentRefMock = vi.fn();
+const resolveSessionAgentMock = vi.fn();
 const waitForAgentWorkflowHostAppReadyMock = vi.fn();
 
 vi.mock("$env/dynamic/private", () => ({
@@ -22,10 +22,6 @@ vi.mock("$lib/server/dapr-client", () => ({
 	getDaprSidecarUrl: () => "http://localhost:3500",
 }));
 
-vi.mock("$lib/server/agents/registry", () => ({
-	resolveAgentRef: (...args: unknown[]) => resolveAgentRefMock(...args),
-}));
-
 vi.mock("$lib/server/sessions/agent-workflow-host", () => ({
 	waitForAgentWorkflowHostAppReady: (...args: unknown[]) =>
 		waitForAgentWorkflowHostAppReadyMock(...args),
@@ -38,13 +34,13 @@ describe("getSessionRuntimeConfig", () => {
 		getSessionMock.mockReset();
 		resolveSessionRuntimeTargetMock.mockReset();
 		daprFetchMock.mockReset();
-		resolveAgentRefMock.mockReset();
+		resolveSessionAgentMock.mockReset();
 		waitForAgentWorkflowHostAppReadyMock.mockReset();
 
 		getSessionMock.mockResolvedValue(sampleSession());
 		resolveSessionRuntimeTargetMock.mockResolvedValue(null);
 		daprFetchMock.mockResolvedValue(new Response("", { status: 404 }));
-		resolveAgentRefMock.mockResolvedValue(sampleAgent());
+		resolveSessionAgentMock.mockResolvedValue(sampleAgent());
 	});
 
 	it("keeps direct database access outside the runtime-config helper", () => {
@@ -56,6 +52,8 @@ describe("getSessionRuntimeConfig", () => {
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
 		expect(source).not.toContain("$lib/server/sessions/registry");
+		expect(source).not.toContain("$lib/server/agents/registry");
+		expect(source).toContain("workflowData.resolveSessionAgent");
 	});
 
 	it("prefers the live runtime endpoint", async () => {
@@ -148,6 +146,7 @@ function runtimeConfig(
 ) {
 	return getSessionRuntimeConfig(sessionId, options, {
 		getSession: (id) => getSessionMock(id),
+		resolveSessionAgent: (agent) => resolveSessionAgentMock(agent),
 		...dependencies,
 	});
 }

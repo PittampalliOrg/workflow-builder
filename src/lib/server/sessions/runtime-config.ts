@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { env } from "$env/dynamic/private";
 import { daprFetch, getDaprSidecarUrl } from "$lib/server/dapr-client";
-import { resolveAgentRef } from "$lib/server/agents/registry";
 import { resolveSessionRuntimeTarget } from "$lib/server/sessions/runtime-target";
 import { waitForAgentWorkflowHostAppReady } from "$lib/server/sessions/agent-workflow-host";
+import type { SessionCommandAgent } from "$lib/server/application/ports";
 import type { SessionDetail } from "$lib/types/sessions";
 
 export const RUNTIME_CONFIG_SESSION_EVENT_TYPE = "session.runtime_config";
@@ -45,11 +45,15 @@ export type GetSessionRuntimeConfigOptions = {
 };
 
 type SessionLookup = (sessionId: string) => Promise<SessionDetail | null>;
+type SessionAgentLookup = (input: {
+	agentId: string;
+	agentVersion?: number | null;
+}) => Promise<SessionCommandAgent | null>;
 
 export type SessionRuntimeConfigDependencies = Partial<{
 	getSession: SessionLookup;
 	resolveSessionRuntimeTarget: typeof resolveSessionRuntimeTarget;
-	resolveAgentRef: typeof resolveAgentRef;
+	resolveSessionAgent: SessionAgentLookup;
 	readLatestRuntimeConfigEvent: (
 		sessionId: string,
 	) => Promise<unknown | null | undefined>;
@@ -62,10 +66,18 @@ async function getSessionViaWorkflowData(
 	return getApplicationAdapters().workflowData.getSessionDetail({ sessionId });
 }
 
+async function resolveSessionAgentViaWorkflowData(input: {
+	agentId: string;
+	agentVersion?: number | null;
+}): Promise<SessionCommandAgent | null> {
+	const { getApplicationAdapters } = await import("$lib/server/application");
+	return getApplicationAdapters().workflowData.resolveSessionAgent(input);
+}
+
 const defaultRuntimeConfigDependencies = {
 	getSession: getSessionViaWorkflowData,
 	resolveSessionRuntimeTarget,
-	resolveAgentRef,
+	resolveSessionAgent: resolveSessionAgentViaWorkflowData,
 	readLatestRuntimeConfigEvent: async () => null,
 } satisfies Required<SessionRuntimeConfigDependencies>;
 
@@ -81,9 +93,9 @@ export async function getSessionRuntimeConfig(
 		resolveSessionRuntimeTarget:
 			dependencyOverrides.resolveSessionRuntimeTarget ??
 			defaultRuntimeConfigDependencies.resolveSessionRuntimeTarget,
-		resolveAgentRef:
-			dependencyOverrides.resolveAgentRef ??
-			defaultRuntimeConfigDependencies.resolveAgentRef,
+		resolveSessionAgent:
+			dependencyOverrides.resolveSessionAgent ??
+			defaultRuntimeConfigDependencies.resolveSessionAgent,
 		readLatestRuntimeConfigEvent:
 			dependencyOverrides.readLatestRuntimeConfigEvent ??
 			defaultRuntimeConfigDependencies.readLatestRuntimeConfigEvent,
@@ -219,9 +231,9 @@ async function buildSettingsRuntimeConfigEvent(
 	session: SessionDetail,
 	deps: Required<SessionRuntimeConfigDependencies>,
 ): Promise<RuntimeConfigCloudEvent> {
-	const agent = await deps.resolveAgentRef({
-		id: session.agentId,
-		version: session.agentVersion ?? undefined,
+	const agent = await deps.resolveSessionAgent({
+		agentId: session.agentId,
+		agentVersion: session.agentVersion ?? undefined,
 	});
 	const config: Record<string, unknown> = isRecord(agent?.config)
 		? agent.config
