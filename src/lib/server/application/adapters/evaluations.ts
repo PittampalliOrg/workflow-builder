@@ -7,9 +7,12 @@ import {
 	deleteEvaluationDatasetRow,
 	getEvaluationDataset,
 	getEvaluationDefinition,
+	getEvaluationRun,
+	getEvaluationRunItem,
 	listEvaluations,
 	listEvaluationDatasets,
 	parseDatasetImport,
+	updateEvaluationRunItemOutput,
 	updateEvaluationDefinition,
 	updateEvaluationDataset,
 	updateEvaluationDatasetRow,
@@ -23,6 +26,10 @@ import type {
 	EvaluationDefinitionCreateInput,
 	EvaluationDefinitionRepository,
 } from "$lib/server/application/evaluation-definitions";
+import type {
+	EvaluationRunItemOutputInput,
+	EvaluationRunItemRepository,
+} from "$lib/server/application/evaluation-run-items";
 import type {
 	CodeEvaluationSuiteSlug,
 	EvaluationDatasetImportFormat,
@@ -101,6 +108,26 @@ export class LegacyEvaluationDefinitionRepository
 		patch: Record<string, unknown>;
 	}): Promise<unknown> {
 		return updateEvaluationDefinition(input);
+	}
+}
+
+export class LegacyEvaluationRunItemRepository
+	implements EvaluationRunItemRepository
+{
+	getRun(projectId: string, runId: string): Promise<unknown | null> {
+		return getEvaluationRun(projectId, runId);
+	}
+
+	getItem(
+		projectId: string,
+		runId: string,
+		itemId: string,
+	): Promise<unknown | null> {
+		return getEvaluationRunItem(projectId, runId, itemId);
+	}
+
+	updateOutput(input: EvaluationRunItemOutputInput): Promise<unknown | null> {
+		return updateEvaluationRunItemOutput(input);
 	}
 }
 
