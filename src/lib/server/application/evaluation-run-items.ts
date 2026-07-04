@@ -17,6 +17,16 @@ export type EvaluationRunItemOutputInput = {
 	autoGrade: boolean;
 };
 
+export type EvaluationRunItemStatusInput =
+	| "queued"
+	| "running"
+	| "grading"
+	| "passed"
+	| "failed"
+	| "error"
+	| "cancelled"
+	| "skipped";
+
 export type EvaluationRunItemRepository = {
 	getRun(projectId: string, runId: string): Promise<unknown | null>;
 	getItem(
@@ -25,6 +35,24 @@ export type EvaluationRunItemRepository = {
 		itemId: string,
 	): Promise<unknown | null>;
 	updateOutput(input: EvaluationRunItemOutputInput): Promise<unknown | null>;
+	markStatus(input: {
+		runId: string;
+		itemId: string;
+		status: EvaluationRunItemStatusInput;
+		error?: string | null;
+	}): Promise<unknown | null>;
+	syncFromExecution(input: {
+		runId: string;
+		itemId: string;
+	}): Promise<unknown | null>;
+	recordGraderResults(input: {
+		runId: string;
+		itemId: string;
+		graderResults: Record<string, unknown>;
+		scores?: Record<string, unknown>;
+		status?: EvaluationRunItemStatusInput;
+		error?: string | null;
+	}): Promise<unknown | null>;
 };
 
 export class ApplicationEvaluationRunItemService {
@@ -78,6 +106,94 @@ export class ApplicationEvaluationRunItemService {
 		return { success: true, item };
 	}
 
+	async markStatus(input: {
+		runId: string;
+		itemId: string;
+		body: unknown;
+	}): Promise<{ success: true; item: unknown }> {
+		const body = asRecord(input.body);
+		const status = String(body.status ?? "");
+		if (!isEvaluationRunItemStatus(status)) {
+			throw new ApplicationEvaluationRunItemError(
+				400,
+				"Invalid evaluation run item status",
+			);
+		}
+		const item = await this.runRepositoryCall(() =>
+			this.repository.markStatus({
+				runId: input.runId,
+				itemId: input.itemId,
+				status,
+				error:
+					typeof body.error === "string" || body.error === null
+						? body.error
+						: undefined,
+			}),
+		);
+		if (!item) {
+			throw new ApplicationEvaluationRunItemError(
+				404,
+				"Evaluation run item not found",
+			);
+		}
+		return { success: true, item };
+	}
+
+	async syncFromExecution(input: {
+		runId: string;
+		itemId: string;
+	}): Promise<{ success: true; item: unknown }> {
+		const item = await this.runRepositoryCall(() =>
+			this.repository.syncFromExecution(input),
+		);
+		if (!item) {
+			throw new ApplicationEvaluationRunItemError(
+				404,
+				"Evaluation run item not found",
+			);
+		}
+		return { success: true, item };
+	}
+
+	async recordGraderResults(input: {
+		runId: string;
+		itemId: string;
+		body: unknown;
+	}): Promise<{ success: true; item: unknown }> {
+		const body = asRecord(input.body);
+		const graderResults = asRecord(body.graderResults ?? body.results);
+		if (Object.keys(graderResults).length === 0) {
+			throw new ApplicationEvaluationRunItemError(
+				400,
+				"graderResults is required",
+			);
+		}
+		const rawStatus = typeof body.status === "string" ? body.status : null;
+		const item = await this.runRepositoryCall(() =>
+			this.repository.recordGraderResults({
+				runId: input.runId,
+				itemId: input.itemId,
+				graderResults,
+				scores: asOptionalRecord(body.scores),
+				status:
+					rawStatus && isEvaluationRunItemStatus(rawStatus)
+						? rawStatus
+						: undefined,
+				error:
+					typeof body.error === "string" || body.error === null
+						? body.error
+						: undefined,
+			}),
+		);
+		if (!item) {
+			throw new ApplicationEvaluationRunItemError(
+				404,
+				"Evaluation run item not found",
+			);
+		}
+		return { success: true, item };
+	}
+
 	private async updateOutput(
 		runId: string,
 		itemId: string,
@@ -128,6 +244,23 @@ function asOptionalRecord(value: unknown): Record<string, unknown> | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const EVALUATION_RUN_ITEM_STATUSES = new Set<EvaluationRunItemStatusInput>([
+	"queued",
+	"running",
+	"grading",
+	"passed",
+	"failed",
+	"error",
+	"cancelled",
+	"skipped",
+]);
+
+function isEvaluationRunItemStatus(
+	status: string,
+): status is EvaluationRunItemStatusInput {
+	return EVALUATION_RUN_ITEM_STATUSES.has(status as EvaluationRunItemStatusInput);
 }
 
 function toApplicationError(err: unknown): ApplicationEvaluationRunItemError {

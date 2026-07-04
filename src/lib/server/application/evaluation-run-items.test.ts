@@ -81,6 +81,83 @@ describe("ApplicationEvaluationRunItemService", () => {
 			message: "Evaluation run item not found",
 		});
 	});
+
+	it("validates status callbacks and delegates status updates", async () => {
+		const repository = createRepository({
+			markStatus: vi.fn(async () => ({ id: "item-1", status: "running" })),
+		});
+		const service = new ApplicationEvaluationRunItemService(repository);
+
+		await expect(
+			service.markStatus({
+				runId: "run-1",
+				itemId: "item-1",
+				body: { status: "running", error: null },
+			}),
+		).resolves.toEqual({
+			success: true,
+			item: { id: "item-1", status: "running" },
+		});
+		expect(repository.markStatus).toHaveBeenCalledWith({
+			runId: "run-1",
+			itemId: "item-1",
+			status: "running",
+			error: null,
+		});
+
+		await expect(
+			service.markStatus({
+				runId: "run-1",
+				itemId: "item-1",
+				body: { status: "wat" },
+			}),
+		).rejects.toMatchObject({
+			status: 400,
+			message: "Invalid evaluation run item status",
+		});
+	});
+
+	it("delegates sync and grader-result callbacks", async () => {
+		const repository = createRepository({
+			syncFromExecution: vi.fn(async () => ({ id: "item-1", status: "passed" })),
+			recordGraderResults: vi.fn(async () => ({ id: "item-1", status: "passed" })),
+		});
+		const service = new ApplicationEvaluationRunItemService(repository);
+
+		await expect(
+			service.syncFromExecution({ runId: "run-1", itemId: "item-1" }),
+		).resolves.toEqual({
+			success: true,
+			item: { id: "item-1", status: "passed" },
+		});
+		await expect(
+			service.recordGraderResults({
+				runId: "run-1",
+				itemId: "item-1",
+				body: {
+					graderResults: { correctness: { passed: true } },
+					scores: { passed: true },
+					status: "passed",
+				},
+			}),
+		).resolves.toEqual({
+			success: true,
+			item: { id: "item-1", status: "passed" },
+		});
+
+		expect(repository.syncFromExecution).toHaveBeenCalledWith({
+			runId: "run-1",
+			itemId: "item-1",
+		});
+		expect(repository.recordGraderResults).toHaveBeenCalledWith({
+			runId: "run-1",
+			itemId: "item-1",
+			graderResults: { correctness: { passed: true } },
+			scores: { passed: true },
+			status: "passed",
+			error: undefined,
+		});
+	});
 });
 
 function createRepository(
@@ -90,6 +167,9 @@ function createRepository(
 		getRun: vi.fn(async () => ({ id: "run-1" })),
 		getItem: vi.fn(async () => ({ id: "item-1" })),
 		updateOutput: vi.fn(async () => ({ id: "item-1" })),
+		markStatus: vi.fn(async () => ({ id: "item-1" })),
+		syncFromExecution: vi.fn(async () => ({ id: "item-1" })),
+		recordGraderResults: vi.fn(async () => ({ id: "item-1" })),
 		...overrides,
 	};
 }

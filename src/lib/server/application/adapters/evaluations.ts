@@ -11,7 +11,10 @@ import {
 	getEvaluationRunItem,
 	listEvaluations,
 	listEvaluationDatasets,
+	markEvaluationRunItemStatus,
 	parseDatasetImport,
+	recordEvaluationRunItemGraderResults,
+	syncEvaluationRunItemFromExecution,
 	updateEvaluationRunItemOutput,
 	updateEvaluationDefinition,
 	updateEvaluationDataset,
@@ -29,6 +32,7 @@ import type {
 import type {
 	EvaluationRunItemOutputInput,
 	EvaluationRunItemRepository,
+	EvaluationRunItemStatusInput,
 } from "$lib/server/application/evaluation-run-items";
 import type {
 	CodeEvaluationSuiteSlug,
@@ -128,6 +132,33 @@ export class LegacyEvaluationRunItemRepository
 
 	updateOutput(input: EvaluationRunItemOutputInput): Promise<unknown | null> {
 		return updateEvaluationRunItemOutput(input);
+	}
+
+	markStatus(input: {
+		runId: string;
+		itemId: string;
+		status: EvaluationRunItemStatusInput;
+		error?: string | null;
+	}): Promise<unknown | null> {
+		return markEvaluationRunItemStatus(input);
+	}
+
+	syncFromExecution(input: {
+		runId: string;
+		itemId: string;
+	}): Promise<unknown | null> {
+		return syncEvaluationRunItemFromExecution(input);
+	}
+
+	recordGraderResults(input: {
+		runId: string;
+		itemId: string;
+		graderResults: Record<string, unknown>;
+		scores?: Record<string, unknown>;
+		status?: EvaluationRunItemStatusInput;
+		error?: string | null;
+	}): Promise<unknown | null> {
+		return recordEvaluationRunItemGraderResults(input);
 	}
 }
 
