@@ -30,6 +30,11 @@ describe("ApplicationBenchmarkEnvironmentValidationService", () => {
 					testMetadata: null,
 				},
 			]),
+			getInstanceBySuiteSlug: vi.fn(async () => ({
+				repo: "astropy/astropy",
+				baseCommit: "abc123",
+				testMetadata: { FAIL_TO_PASS: ["test_example.py::test_fix"] },
+			})),
 			loadBuildStatusByHash: vi.fn(async () => new Map()),
 		};
 		provisioner = {
@@ -59,7 +64,9 @@ describe("ApplicationBenchmarkEnvironmentValidationService", () => {
 		});
 
 		expect(repository.ensureDefaultBenchmarkSuites).toHaveBeenCalled();
-		expect(repository.getSuiteBySlug).toHaveBeenCalledWith("SWE-bench_Verified");
+		expect(repository.getSuiteBySlug).toHaveBeenCalledWith(
+			"SWE-bench_Verified",
+		);
 		expect(repository.listInstances).toHaveBeenCalledWith({
 			suiteId: "suite-1",
 			instanceIds: ["astropy__astropy-7166"],
@@ -112,9 +119,58 @@ describe("ApplicationBenchmarkEnvironmentValidationService", () => {
 		});
 	});
 
+	it("prepares an internal ensure request through repository and provisioner ports", async () => {
+		await service.ensureInternalRequest({
+			dataset: "SWE-bench_Verified",
+			instanceId: "astropy__astropy-7166",
+			repo: "astropy/astropy",
+			baseCommit: "abc123",
+			allowBuild: true,
+		});
+
+		expect(repository.getInstanceBySuiteSlug).toHaveBeenCalledWith({
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "astropy__astropy-7166",
+		});
+		expect(provisioner.ensureEnvironment).toHaveBeenCalledWith(
+			expect.objectContaining({
+				dataset: "SWE-bench_Verified",
+				suiteSlug: "SWE-bench_Verified",
+				instanceId: "astropy__astropy-7166",
+				repo: "astropy/astropy",
+				baseCommit: "abc123",
+				testMetadata: expect.objectContaining({
+					FAIL_TO_PASS: ["test_example.py::test_fix"],
+				}),
+				allowBuild: true,
+			}),
+		);
+	});
+
+	it("rejects internal ensure requests when imported metadata is missing", async () => {
+		vi.mocked(repository.getInstanceBySuiteSlug).mockResolvedValueOnce(null);
+
+		await expect(
+			service.ensureInternalRequest({
+				dataset: "SWE-bench_Verified",
+				instanceId: "astropy__astropy-7166",
+				repo: "astropy/astropy",
+				baseCommit: "abc123",
+			}),
+		).rejects.toMatchObject({
+			status: 409,
+			message:
+				"SWE-bench metadata for astropy__astropy-7166 has not been imported for SWE-bench_Verified",
+		});
+		expect(provisioner.ensureEnvironment).not.toHaveBeenCalled();
+	});
+
 	it("keeps DB and Drizzle access out of the application use case", () => {
 		const source = readFileSync(
-			join(dirname(fileURLToPath(import.meta.url)), "benchmark-environment-validation.ts"),
+			join(
+				dirname(fileURLToPath(import.meta.url)),
+				"benchmark-environment-validation.ts",
+			),
 			"utf8",
 		);
 

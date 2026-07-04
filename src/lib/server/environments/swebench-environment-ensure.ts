@@ -1,4 +1,3 @@
-import { and, eq } from "drizzle-orm";
 import {
 	containsContaminationRiskMetadata,
 	mergeServerSwebenchTestMetadata,
@@ -7,11 +6,10 @@ import {
 	normalizeSwebenchSuiteSlug,
 	type SwebenchSuiteSlug,
 } from "$lib/server/benchmarks/swebench";
-import { db } from "$lib/server/db";
-import { benchmarkInstances, benchmarkSuites } from "$lib/server/db/schema";
 import {
 	ensureSwebenchEnvironment,
 	type EnvironmentPrepareResult,
+	type EnsureSwebenchEnvironmentInput,
 } from "$lib/server/environments/environment-image-builds";
 
 export class SwebenchEnvironmentEnsureRequestError extends Error {
@@ -24,10 +22,34 @@ export class SwebenchEnvironmentEnsureRequestError extends Error {
 	}
 }
 
+export type ServerSwebenchEnvironmentInstance = {
+	repo: string | null;
+	baseCommit: string | null;
+	testMetadata: Record<string, unknown> | null;
+};
+
+export type SwebenchEnvironmentEnsureDependencies = {
+	requireImportedMetadata?: boolean;
+	loadServerSwebenchInstance(input: {
+		suiteSlug: SwebenchSuiteSlug;
+		instanceId: string;
+		requestMetadata: Record<string, unknown>;
+	}): Promise<ServerSwebenchEnvironmentInstance | null>;
+	ensureEnvironment(
+		input: EnsureSwebenchEnvironmentInput,
+	): Promise<EnvironmentPrepareResult>;
+};
+
 export async function ensureSwebenchEnvironmentFromInternalRequest(
 	body: Record<string, unknown> | null,
+	deps: SwebenchEnvironmentEnsureDependencies = {
+		requireImportedMetadata: false,
+		loadServerSwebenchInstance: loadLegacyServerSwebenchInstance,
+		ensureEnvironment: ensureSwebenchEnvironment,
+	},
 ): Promise<EnvironmentPrepareResult> {
-	if (!body) throw new SwebenchEnvironmentEnsureRequestError(400, "JSON body required");
+	if (!body)
+		throw new SwebenchEnvironmentEnsureRequestError(400, "JSON body required");
 	if (
 		body.dataset &&
 		body.dataset !== "swebench" &&
@@ -39,14 +61,30 @@ export async function ensureSwebenchEnvironmentFromInternalRequest(
 			"Only SWE-bench environment preparation is supported",
 		);
 	}
-	const suiteSlug = requireSuiteSlug(body.suiteSlug ?? body.datasetName ?? body.dataset);
-	const instanceId = typeof body.instanceId === "string" ? body.instanceId.trim() : null;
+	const suiteSlug = requireSuiteSlug(
+		body.suiteSlug ?? body.datasetName ?? body.dataset,
+	);
+	const instanceId =
+		typeof body.instanceId === "string" ? body.instanceId.trim() : null;
 	const requestMetadata = isRecord(body.testMetadata) ? body.testMetadata : {};
-	const serverInstance = await loadServerSwebenchInstance({
-		suiteSlug,
-		instanceId,
-		requestMetadata,
-	});
+	const serverInstance = instanceId
+		? await deps.loadServerSwebenchInstance({
+				suiteSlug,
+				instanceId,
+				requestMetadata,
+			})
+		: null;
+	if (
+		instanceId &&
+		!serverInstance &&
+		deps.requireImportedMetadata === true &&
+		!containsContaminationRiskMetadata(requestMetadata)
+	) {
+		throw new SwebenchEnvironmentEnsureRequestError(
+			409,
+			`SWE-bench metadata for ${instanceId} has not been imported for ${suiteSlug}`,
+		);
+	}
 	const requestRepo = requireString(body.repo, "repo");
 	const requestBaseCommit = requireString(body.baseCommit, "baseCommit");
 	if (serverInstance) {
@@ -70,7 +108,7 @@ export async function ensureSwebenchEnvironmentFromInternalRequest(
 		serverMetadata: serverInstance?.testMetadata,
 		requestMetadata,
 	});
-	return ensureSwebenchEnvironment({
+	return deps.ensureEnvironment({
 		dataset:
 			typeof body.datasetName === "string"
 				? body.datasetName
@@ -99,7 +137,10 @@ function requireString(value: unknown, key: string): string {
 
 function requireSuiteSlug(value: unknown): SwebenchSuiteSlug {
 	if (typeof value !== "string" || !value.trim()) {
-		throw new SwebenchEnvironmentEnsureRequestError(400, "suiteSlug is required");
+		throw new SwebenchEnvironmentEnsureRequestError(
+			400,
+			"suiteSlug is required",
+		);
 	}
 	try {
 		if (value.includes("SWE-bench_Verified")) return "SWE-bench_Verified";
@@ -117,45 +158,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-async function loadServerSwebenchInstance(params: {
-	suiteSlug: SwebenchSuiteSlug;
-	instanceId: string | null;
-	requestMetadata: Record<string, unknown>;
-}): Promise<{
-	repo: string | null;
-	baseCommit: string | null;
-	testMetadata: Record<string, unknown> | null;
-} | null> {
-	if (!db || !params.instanceId) return null;
-	const [row] = await db
-		.select({
-			repo: benchmarkInstances.repo,
-			baseCommit: benchmarkInstances.baseCommit,
-			testMetadata: benchmarkInstances.testMetadata,
-		})
-		.from(benchmarkInstances)
-		.innerJoin(
-			benchmarkSuites,
-			eq(benchmarkInstances.suiteId, benchmarkSuites.id),
-		)
-		.where(
-			and(
-				eq(benchmarkSuites.slug, params.suiteSlug),
-				eq(benchmarkInstances.instanceId, params.instanceId),
-			),
-		)
-		.limit(1);
-	if (!row && !containsContaminationRiskMetadata(params.requestMetadata)) {
-		throw new SwebenchEnvironmentEnsureRequestError(
-			409,
-			`SWE-bench metadata for ${params.instanceId} has not been imported for ${params.suiteSlug}`,
-		);
-	}
-	return row
-		? {
-				repo: row.repo,
-				baseCommit: row.baseCommit,
-				testMetadata: isRecord(row.testMetadata) ? row.testMetadata : null,
-			}
-		: null;
+async function loadLegacyServerSwebenchInstance(): Promise<null> {
+	return null;
 }

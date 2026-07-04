@@ -20,9 +20,7 @@ import type { SwebenchSuiteSlug } from "$lib/server/benchmarks/swebench";
 
 type Database = typeof defaultDb;
 
-export class PostgresSwebenchEnvironmentValidationRepository
-	implements SwebenchEnvironmentValidationRepository
-{
+export class PostgresSwebenchEnvironmentValidationRepository implements SwebenchEnvironmentValidationRepository {
 	constructor(private readonly database: Database = defaultDb) {}
 
 	ensureDefaultBenchmarkSuites(): Promise<void> {
@@ -75,6 +73,38 @@ export class PostgresSwebenchEnvironmentValidationRepository
 		}));
 	}
 
+	async getInstanceBySuiteSlug(input: {
+		suiteSlug: SwebenchSuiteSlug;
+		instanceId: string;
+	}) {
+		const database = this.requireDatabase();
+		const [row] = await database
+			.select({
+				repo: benchmarkInstances.repo,
+				baseCommit: benchmarkInstances.baseCommit,
+				testMetadata: benchmarkInstances.testMetadata,
+			})
+			.from(benchmarkInstances)
+			.innerJoin(
+				benchmarkSuites,
+				eq(benchmarkInstances.suiteId, benchmarkSuites.id),
+			)
+			.where(
+				and(
+					eq(benchmarkSuites.slug, input.suiteSlug),
+					eq(benchmarkInstances.instanceId, input.instanceId),
+				),
+			)
+			.limit(1);
+		return row
+			? {
+					repo: row.repo,
+					baseCommit: row.baseCommit,
+					testMetadata: isRecord(row.testMetadata) ? row.testMetadata : null,
+				}
+			: null;
+	}
+
 	async loadBuildStatusByHash(
 		suiteSlug: SwebenchSuiteSlug,
 	): Promise<Map<string, SwebenchEnvironmentBuildProjection>> {
@@ -108,9 +138,7 @@ export class PostgresSwebenchEnvironmentValidationRepository
 	}
 }
 
-export class LegacySwebenchEnvironmentBuildProvisioner
-	implements SwebenchEnvironmentBuildProvisioner
-{
+export class LegacySwebenchEnvironmentBuildProvisioner implements SwebenchEnvironmentBuildProvisioner {
 	constructor(private readonly database: Database = defaultDb) {}
 
 	ensureEnvironment(input: Parameters<typeof ensureSwebenchEnvironment>[0]) {
@@ -121,7 +149,11 @@ export class LegacySwebenchEnvironmentBuildProvisioner
 		envSpecHashes: string[];
 		limit: number;
 	}): Promise<void> {
-		if (!this.database || input.envSpecHashes.length === 0 || input.limit <= 0) {
+		if (
+			!this.database ||
+			input.envSpecHashes.length === 0 ||
+			input.limit <= 0
+		) {
 			return;
 		}
 		const rows = (await this.database

@@ -13,6 +13,10 @@ import {
 	type EnvironmentPrepareResult,
 	type EnsureSwebenchEnvironmentInput,
 } from "$lib/server/environments/environment-image-builds";
+import {
+	ensureSwebenchEnvironmentFromInternalRequest,
+	type ServerSwebenchEnvironmentInstance,
+} from "$lib/server/environments/swebench-environment-ensure";
 
 export type SwebenchEnvironmentStatus =
 	| "validated"
@@ -109,6 +113,10 @@ export type SwebenchEnvironmentValidationRepository = {
 		instanceIds: string[];
 		limit: number | null;
 	}): Promise<SwebenchEnvironmentInstanceRecord[]>;
+	getInstanceBySuiteSlug(input: {
+		suiteSlug: SwebenchSuiteSlug;
+		instanceId: string;
+	}): Promise<ServerSwebenchEnvironmentInstance | null>;
 	loadBuildStatusByHash(
 		suiteSlug: SwebenchSuiteSlug,
 	): Promise<Map<string, SwebenchEnvironmentBuildProjection>>;
@@ -162,6 +170,18 @@ export class ApplicationBenchmarkEnvironmentValidationService {
 	}> {
 		return submitSwebenchEnvironmentValidationBuilds(input, this.deps);
 	}
+
+	ensureInternalRequest(
+		body: Record<string, unknown> | null,
+	): Promise<EnvironmentPrepareResult> {
+		return ensureSwebenchEnvironmentFromInternalRequest(body, {
+			requireImportedMetadata: true,
+			loadServerSwebenchInstance: ({ suiteSlug, instanceId }) =>
+				this.deps.repository.getInstanceBySuiteSlug({ suiteSlug, instanceId }),
+			ensureEnvironment: (input) =>
+				this.deps.provisioner.ensureEnvironment(input),
+		});
+	}
 }
 
 export async function planSwebenchEnvironmentValidation(
@@ -188,9 +208,12 @@ export async function planSwebenchEnvironmentValidation(
 				: Math.max(input.limit, 1),
 	});
 	const foundIds = new Set(rows.map((row) => row.instanceId));
-	const missingInstanceIds = requestedInstanceIds.filter((id) => !foundIds.has(id));
+	const missingInstanceIds = requestedInstanceIds.filter(
+		(id) => !foundIds.has(id),
+	);
 
-	let buildStatusByHash = await deps.repository.loadBuildStatusByHash(suiteSlug);
+	let buildStatusByHash =
+		await deps.repository.loadBuildStatusByHash(suiteSlug);
 	const mappings = loadSwebenchInferenceEnvironmentMappings();
 	let planned = classifyRows({
 		rows,
@@ -204,7 +227,10 @@ export async function planSwebenchEnvironmentValidation(
 			envSpecHashes: planned
 				.map((item) => item.envSpecHash)
 				.filter((hash): hash is string => Boolean(hash)),
-			limit: readPositiveEnvInt("SWEBENCH_RANDOM_SELECTION_SYNC_BUILDS_LIMIT", 32),
+			limit: readPositiveEnvInt(
+				"SWEBENCH_RANDOM_SELECTION_SYNC_BUILDS_LIMIT",
+				32,
+			),
 		});
 		buildStatusByHash = await deps.repository.loadBuildStatusByHash(suiteSlug);
 		planned = classifyRows({
@@ -353,7 +379,9 @@ export async function submitSwebenchEnvironmentValidationBuilds(
 			instanceId: item.row.instanceId,
 			repo: item.row.repo!,
 			baseCommit: item.row.baseCommit!,
-			testMetadata: isRecord(item.row.testMetadata) ? item.row.testMetadata : {},
+			testMetadata: isRecord(item.row.testMetadata)
+				? item.row.testMetadata
+				: {},
 			allowBuild: true,
 		});
 		results.push({

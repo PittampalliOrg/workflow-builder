@@ -15,7 +15,9 @@ const mocks = vi.hoisted(() => {
 	}
 	return {
 		requireInternal: vi.fn(),
-		ensureSwebenchEnvironmentFromInternalRequest: vi.fn(),
+		benchmarkEnvironmentValidation: {
+			ensureInternalRequest: vi.fn(),
+		},
 		SwebenchEnvironmentEnsureRequestError:
 			MockSwebenchEnvironmentEnsureRequestError,
 	};
@@ -25,11 +27,15 @@ vi.mock("$lib/server/internal-auth", () => ({
 	requireInternal: mocks.requireInternal,
 }));
 
+vi.mock("$lib/server/application", () => ({
+	getApplicationAdapters: () => ({
+		benchmarkEnvironmentValidation: mocks.benchmarkEnvironmentValidation,
+	}),
+}));
+
 vi.mock("$lib/server/environments/swebench-environment-ensure", () => ({
 	SwebenchEnvironmentEnsureRequestError:
 		mocks.SwebenchEnvironmentEnsureRequestError,
-	ensureSwebenchEnvironmentFromInternalRequest:
-		mocks.ensureSwebenchEnvironmentFromInternalRequest,
 }));
 
 import { SwebenchEnvironmentEnsureRequestError } from "$lib/server/environments/swebench-environment-ensure";
@@ -38,13 +44,15 @@ import { POST } from "./+server";
 describe("internal environment ensure route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.ensureSwebenchEnvironmentFromInternalRequest.mockResolvedValue({
-			success: true,
-			complete: true,
-			environmentStatus: "validated",
-			status: "validated",
-			sandboxTemplate: "dapr-agent",
-		});
+		mocks.benchmarkEnvironmentValidation.ensureInternalRequest.mockResolvedValue(
+			{
+				success: true,
+				complete: true,
+				environmentStatus: "validated",
+				status: "validated",
+				sandboxTemplate: "dapr-agent",
+			},
+		);
 	});
 
 	it("delegates SWE-bench environment preparation to the use case", async () => {
@@ -66,7 +74,9 @@ describe("internal environment ensure route", () => {
 
 		expect(response.status).toBe(200);
 		expect(mocks.requireInternal).toHaveBeenCalledTimes(1);
-		expect(mocks.ensureSwebenchEnvironmentFromInternalRequest).toHaveBeenCalledWith(body);
+		expect(
+			mocks.benchmarkEnvironmentValidation.ensureInternalRequest,
+		).toHaveBeenCalledWith(body);
 		expect(payload).toEqual({
 			success: true,
 			complete: true,
@@ -77,7 +87,7 @@ describe("internal environment ensure route", () => {
 	});
 
 	it("maps use-case request errors to HTTP errors", async () => {
-		mocks.ensureSwebenchEnvironmentFromInternalRequest.mockRejectedValue(
+		mocks.benchmarkEnvironmentValidation.ensureInternalRequest.mockRejectedValue(
 			new SwebenchEnvironmentEnsureRequestError(409, "metadata missing"),
 		);
 
@@ -102,7 +112,8 @@ describe("internal environment ensure route", () => {
 			"utf8",
 		);
 
-		expect(source).toContain("ensureSwebenchEnvironmentFromInternalRequest");
+		expect(source).toContain("getApplicationAdapters");
+		expect(source).toContain("benchmarkEnvironmentValidation");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");

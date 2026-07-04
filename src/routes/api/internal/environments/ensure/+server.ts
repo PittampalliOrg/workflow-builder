@@ -1,9 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import {
-	ensureSwebenchEnvironmentFromInternalRequest,
-	SwebenchEnvironmentEnsureRequestError,
-} from "$lib/server/environments/swebench-environment-ensure";
+import { getApplicationAdapters } from "$lib/server/application";
+import { SwebenchEnvironmentEnsureRequestError } from "$lib/server/environments/swebench-environment-ensure";
 import { requireInternal } from "$lib/server/internal-auth";
 
 export const POST: RequestHandler = async ({ request }) => {
@@ -12,9 +10,9 @@ export const POST: RequestHandler = async ({ request }) => {
 		string,
 		unknown
 	> | null;
-	const result = await ensureSwebenchEnvironmentFromInternalRequest(body).catch(
-		mapEnsureError,
-	);
+	const result = await getApplicationAdapters()
+		.benchmarkEnvironmentValidation.ensureInternalRequest(body)
+		.catch(mapEnsureError);
 	return json(result);
 };
 
