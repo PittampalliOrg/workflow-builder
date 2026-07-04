@@ -45,6 +45,12 @@ resolution, and the compiled-capabilities debug view now runs through
 `ApplicationCapabilityBundleService` and
 `PostgresCapabilityBundleRepository`. `src/lib/server/capabilities/flatten.ts`
 is now a pure merge/provenance helper with no DB, Drizzle, or schema imports.
+Environment id/version runtime resolution for session spawn and workflow
+agent-ref resolution now runs through `ApplicationEnvironmentService` and its
+runtime resolver port. `src/lib/server/sessions/spawn.ts` and
+`src/lib/server/agents/resolver.ts` no longer import the DB-backed environment
+registry; `resolveEnvironmentRef` is confined to the environment application
+adapter.
 Session workflow spawn now also reads initial user events and emits swap-safety
 audit events through workflow-data; `spawn.ts` no longer imports the legacy
 session event-log helper directly.

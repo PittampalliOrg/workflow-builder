@@ -3,7 +3,6 @@ import {
 	ensureGoalMcpServer,
 	stampGoalMcpSessionHeader,
 } from "$lib/server/goals/mcp-wiring";
-import { resolveEnvironmentRef } from "$lib/server/environments/registry";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution-application";
 import { getApplicationAdapters } from "$lib/server/application";
@@ -120,10 +119,10 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	})();
 
 	const environment = session.environmentId
-		? await resolveEnvironmentRef({
+		? (await getApplicationAdapters().environments.resolveRuntimeByRef({
 				id: session.environmentId,
 				version: session.environmentVersion ?? undefined,
-			})
+			})).environment
 		: null;
 
 	// Seed the workflow with any events the user already posted between

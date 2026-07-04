@@ -180,6 +180,65 @@ describe("ApplicationEnvironmentService", () => {
 		expect(runtimeResolver.resolveBySlug).toHaveBeenCalledWith("dapr-agent");
 	});
 
+	it("resolves runtime environments by id/version through the runtime resolver port", async () => {
+		const runtimeResolver = createRuntimeResolver({
+			resolveRef: vi.fn(async () => ({
+				id: "env-1",
+				slug: "dapr-agent",
+				version: 4,
+				imageTag: "ghcr.io/test/dapr-agent:v4",
+				imageSource: "stored" as const,
+				imageResolutionWarning: null,
+				baseEnvSlug: null,
+				config: {
+					sandboxMode: "per-run" as const,
+					keepAfterRun: false,
+					ttlSeconds: 1800,
+					networking: { type: "unrestricted" as const },
+					capabilities: ["python"],
+				},
+			})),
+		});
+		const service = new ApplicationEnvironmentService(
+			createRepository(),
+			undefined,
+			runtimeResolver,
+		);
+
+		await expect(
+			service.resolveRuntimeByRef({ id: " env-1 ", version: 4 }),
+		).resolves.toEqual({
+			environment: expect.objectContaining({
+				id: "env-1",
+				slug: "dapr-agent",
+				version: 4,
+			}),
+		});
+		expect(runtimeResolver.resolveRef).toHaveBeenCalledWith({
+			id: "env-1",
+			version: 4,
+		});
+	});
+
+	it("preserves nullable id/version runtime resolution for best-effort callers", async () => {
+		const runtimeResolver = createRuntimeResolver({
+			resolveRef: vi.fn(async () => null),
+		});
+		const service = new ApplicationEnvironmentService(
+			createRepository(),
+			undefined,
+			runtimeResolver,
+		);
+
+		await expect(
+			service.resolveRuntimeByRef({ id: "missing", version: null }),
+		).resolves.toEqual({ environment: null });
+		await expect(service.resolveRuntimeByRef({ id: " " })).rejects.toMatchObject({
+			status: 400,
+			message: "environment id required",
+		});
+	});
+
 	it("maps runtime resolver validation and misses to application errors", async () => {
 		const service = new ApplicationEnvironmentService(
 			createRepository(),
@@ -246,6 +305,7 @@ function createRuntimeResolver(
 ): EnvironmentRuntimeResolver {
 	return {
 		resolveBySlug: vi.fn(async () => null),
+		resolveRef: vi.fn(async () => null),
 		...overrides,
 	};
 }

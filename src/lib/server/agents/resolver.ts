@@ -8,6 +8,7 @@ import type {
 	EnvironmentConfig,
 	EnvironmentRef,
 } from "$lib/types/environments";
+import type { EnvironmentRuntimeResolution } from "$lib/server/application/environment-management";
 import {
 	resolveAgentRef,
 	resolveCallableAgents,
@@ -17,10 +18,6 @@ import {
 	agentRegistryKey,
 	teamRegistryPrefix,
 } from "./registry-sync";
-import {
-	resolveEnvironmentRef,
-	type ResolvedEnvironment,
-} from "$lib/server/environments/registry";
 import { getApplicationAdapters } from "$lib/server/application";
 import type { AgentSkillHydrationRepository } from "$lib/server/application/ports";
 import { hashAgentConfig } from "./config-hash";
@@ -314,7 +311,7 @@ export async function resolveSpecAgentRefs(
 	if (tasks.length === 0) return cloned;
 
 	const agentCache = new Map<string, ResolvedAgent | null>();
-	const envCache = new Map<string, ResolvedEnvironment | null>();
+	const envCache = new Map<string, EnvironmentRuntimeResolution | null>();
 	// Collected per node for the cross-backend file-sharing guard (below).
 	const workspaceGuard: { taskName: string; runtime: string; workspaceRef: string }[] = [];
 	for (const { task, taskName } of tasks) {
@@ -344,12 +341,14 @@ export async function resolveSpecAgentRefs(
 		}
 
 		const envRef = pickEnvironmentRef(withBlock, bodyRecord, resolved);
-		let environment: ResolvedEnvironment | null = null;
+		let environment: EnvironmentRuntimeResolution | null = null;
 		if (envRef) {
 			const envKey = `${envRef.id}#${envRef.version ?? "current"}`;
 			const cached = envCache.get(envKey);
 			if (cached === undefined) {
-				environment = await resolveEnvironmentRef(envRef);
+				environment = (
+					await getApplicationAdapters().environments.resolveRuntimeByRef(envRef)
+				).environment;
 				envCache.set(envKey, environment);
 			} else {
 				environment = cached;
@@ -566,7 +565,7 @@ const PERSONA_OVERRIDE_FIELDS = [
  * is the intended source going forward.
  */
 function deriveSandboxPolicy(
-	environment: ResolvedEnvironment,
+	environment: EnvironmentRuntimeResolution,
 	override?: Partial<Record<string, unknown>>,
 ): Record<string, unknown> {
 	const cfg = environment.config;

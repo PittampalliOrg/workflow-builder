@@ -11,12 +11,14 @@ import {
 	listEnvironments,
 	listVersions,
 	resolveEnvironmentBySlug,
+	resolveEnvironmentRef,
 	restoreVersion,
 	updateEnvironment,
 } from "$lib/server/environments/registry";
 import type {
 	EnvironmentCreateCommand,
 	EnvironmentListFilter,
+	EnvironmentRuntimeRef,
 	EnvironmentRepository,
 	EnvironmentRuntimeResolver,
 	EnvironmentUpdateCommand,
@@ -83,6 +85,15 @@ export class LegacyEnvironmentRepository implements EnvironmentRepository {
 export class LegacyEnvironmentRuntimeResolver implements EnvironmentRuntimeResolver {
 	resolveBySlug(slug: string) {
 		return mapValidationErrors(() => resolveEnvironmentBySlug(slug));
+	}
+
+	resolveRef(ref: EnvironmentRuntimeRef) {
+		return mapValidationErrors(() =>
+			resolveEnvironmentRef({
+				id: ref.id,
+				version: ref.version ?? undefined,
+			}),
+		);
 	}
 }
 

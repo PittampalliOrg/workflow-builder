@@ -99,8 +99,14 @@ export type EnvironmentRuntimeResolution = {
 	baseEnvSlug: string | null;
 };
 
+export type EnvironmentRuntimeRef = {
+	id: string;
+	version?: number | null;
+};
+
 export type EnvironmentRuntimeResolver = {
 	resolveBySlug(slug: string): Promise<EnvironmentRuntimeResolution | null>;
+	resolveRef(ref: EnvironmentRuntimeRef): Promise<EnvironmentRuntimeResolution | null>;
 };
 
 export class ApplicationEnvironmentService {
@@ -328,6 +334,25 @@ export class ApplicationEnvironmentService {
 			throw new ApplicationEnvironmentError(404, `Environment "${slug}" not found`);
 		}
 		return { environment };
+	}
+
+	async resolveRuntimeByRef(input: {
+		id: string | null | undefined;
+		version?: number | null;
+	}): Promise<{ environment: EnvironmentRuntimeResolution | null }> {
+		const id = input.id?.trim();
+		if (!id) throw new ApplicationEnvironmentError(400, "environment id required");
+		if (!this.runtimeResolver) {
+			throw new ApplicationEnvironmentError(500, "Environment runtime resolver is not configured");
+		}
+		return {
+			environment: await this.runRepositoryCall(() =>
+				this.runtimeResolver!.resolveRef({
+					id,
+					version: input.version ?? undefined,
+				}),
+			),
+		};
 	}
 
 	private async runRepositoryCall<T>(operation: () => Promise<T>): Promise<T> {

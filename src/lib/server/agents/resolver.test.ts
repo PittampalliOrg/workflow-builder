@@ -6,10 +6,25 @@ vi.mock("./registry", () => ({
 	resolveAgentRef: (...args: unknown[]) => resolveAgentRefMock(...args),
 }));
 
-const resolveEnvironmentRefMock = vi.fn();
-vi.mock("$lib/server/environments/registry", () => ({
-	resolveEnvironmentRef: (...args: unknown[]) =>
-		resolveEnvironmentRefMock(...args),
+const resolveRuntimeByRefMock = vi.fn();
+const flattenBundlesMock = vi.fn(
+	async (config: unknown, _projectId?: unknown) => config,
+);
+const agentSkillHydrationMock = {
+	listAgentSkillHydrationEntries: vi.fn(async () => []),
+};
+vi.mock("$lib/server/application", () => ({
+	getApplicationAdapters: () => ({
+		environments: {
+			resolveRuntimeByRef: (...args: unknown[]) =>
+				resolveRuntimeByRefMock(...args),
+		},
+		capabilityBundles: {
+			flattenBundles: (config: unknown, projectId: unknown) =>
+				flattenBundlesMock(config, projectId),
+		},
+		agentSkillHydration: agentSkillHydrationMock,
+	}),
 }));
 
 import {
@@ -110,7 +125,9 @@ function resolvedAgent(
 describe("resolveSpecAgentRefs", () => {
 	beforeEach(() => {
 		resolveAgentRefMock.mockReset();
-		resolveEnvironmentRefMock.mockReset();
+		resolveRuntimeByRefMock.mockReset();
+		flattenBundlesMock.mockClear();
+		agentSkillHydrationMock.listAgentSkillHydrationEntries.mockClear();
 		delete process.env.AGENT_RUNTIME_SHARED_POOLS_ENABLED;
 		delete process.env.AGENT_RUNTIME_POOL_APP_IDS_JSON;
 	});
@@ -255,6 +272,14 @@ describe("resolveSpecAgentRefs", () => {
 
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
+	});
+
+	it("keeps environment runtime resolution behind the application service", () => {
+		const source = readFileSync(new URL("./resolver.ts", import.meta.url), "utf8");
+
+		expect(source).toContain("environments.resolveRuntimeByRef");
+		expect(source).not.toContain("$lib/server/environments/registry");
+		expect(source).not.toContain("resolveEnvironmentRef");
 	});
 
 	it("stamps a shared runtime-pool app id when pool routing is enabled", async () => {
@@ -507,11 +532,13 @@ describe("resolveSpecAgentRefs", () => {
 				environmentVersion: 1,
 			}),
 		);
-		resolveEnvironmentRefMock.mockResolvedValueOnce({
-			id: "env_1",
-			slug: "dev",
-			version: 1,
-			config: minimalEnv({ sandboxMode: "per-run" }),
+		resolveRuntimeByRefMock.mockResolvedValueOnce({
+			environment: {
+				id: "env_1",
+				slug: "dev",
+				version: 1,
+				config: minimalEnv({ sandboxMode: "per-run" }),
+			},
 		});
 		const spec = specWithTasks([
 			{
@@ -583,16 +610,18 @@ describe("resolveSpecAgentRefs", () => {
 				environmentVersion: 2,
 			}),
 		);
-		resolveEnvironmentRefMock.mockResolvedValueOnce({
-			id: "env_1",
-			slug: "dev-sandbox",
-			version: 2,
-			config: minimalEnv({
-				sandboxTemplate: "dapr-agent-xlsx",
-				sandboxMode: "per-node",
-				keepAfterRun: true,
-				ttlSeconds: 3600,
-			}),
+		resolveRuntimeByRefMock.mockResolvedValueOnce({
+			environment: {
+				id: "env_1",
+				slug: "dev-sandbox",
+				version: 2,
+				config: minimalEnv({
+					sandboxTemplate: "dapr-agent-xlsx",
+					sandboxMode: "per-node",
+					keepAfterRun: true,
+					ttlSeconds: 3600,
+				}),
+			},
 		});
 		const spec = specWithTasks([
 			{
@@ -611,7 +640,7 @@ describe("resolveSpecAgentRefs", () => {
 			unknown
 		>;
 		const body = withBlock.body as Record<string, unknown>;
-		expect(resolveEnvironmentRefMock).toHaveBeenCalledWith({
+		expect(resolveRuntimeByRefMock).toHaveBeenCalledWith({
 			id: "env_1",
 			version: 2,
 		});
@@ -632,11 +661,13 @@ describe("resolveSpecAgentRefs", () => {
 		resolveAgentRefMock.mockResolvedValueOnce(
 			resolvedAgent({ environmentId: "env_default", environmentVersion: 1 }),
 		);
-		resolveEnvironmentRefMock.mockResolvedValueOnce({
-			id: "env_override",
-			slug: "prod",
-			version: 7,
-			config: minimalEnv({ sandboxMode: "shared-runtime" }),
+		resolveRuntimeByRefMock.mockResolvedValueOnce({
+			environment: {
+				id: "env_override",
+				slug: "prod",
+				version: 7,
+				config: minimalEnv({ sandboxMode: "shared-runtime" }),
+			},
 		});
 		const spec = specWithTasks([
 			{
@@ -652,7 +683,7 @@ describe("resolveSpecAgentRefs", () => {
 			},
 		]);
 		await resolveSpecAgentRefs(spec);
-		expect(resolveEnvironmentRefMock).toHaveBeenCalledWith({
+		expect(resolveRuntimeByRefMock).toHaveBeenCalledWith({
 			id: "env_override",
 			version: 7,
 		});
@@ -662,7 +693,7 @@ describe("resolveSpecAgentRefs", () => {
 		resolveAgentRefMock.mockResolvedValueOnce(
 			resolvedAgent({ environmentId: "env_missing", environmentVersion: 1 }),
 		);
-		resolveEnvironmentRefMock.mockResolvedValueOnce(null);
+		resolveRuntimeByRefMock.mockResolvedValueOnce({ environment: null });
 		const spec = specWithTasks([
 			{
 				Run: {
