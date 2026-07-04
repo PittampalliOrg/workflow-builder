@@ -57,6 +57,7 @@ import type {
 	WorkflowAgentReadRepository,
 	WorkflowCodeCheckpointStore,
 	WorkflowExecutionRepository,
+	WorkflowExecutionLogRecord,
 	WorkflowExecutionRecord,
 	PieceCatalogRepository,
 	SessionRuntimeCliAuthReadModel,
@@ -371,28 +372,7 @@ function fakeMcpRuns(): McpRunRepository {
 }
 
 function fakeWorkflowExecutions(): WorkflowExecutionRepository {
-	const executionLog = {
-		id: "log-1",
-		executionId: "exec-1",
-		nodeId: "agent",
-		nodeName: "Agent",
-		nodeType: "action",
-		activityName: "durable/run",
-		status: "running" as const,
-		input: {},
-		output: null,
-		error: null,
-		startedAt: new Date("2026-01-01T00:00:00.000Z"),
-		completedAt: null,
-		duration: null,
-		timestamp: new Date("2026-01-01T00:00:00.000Z"),
-		credentialFetchMs: null,
-		routingMs: null,
-		coldStartMs: null,
-		executionMs: null,
-		routedTo: null,
-		wasColdStart: null,
-	};
+	const executionLog = executionLogRecord();
 	return {
 		assertReadModelReady: vi.fn(async () => undefined),
 		getById: vi.fn(async () => null),
@@ -466,11 +446,37 @@ function fakeWorkflowExecutions(): WorkflowExecutionRepository {
 		appendLog: vi.fn(async () => executionLog),
 		updateLog: vi.fn(async () => ({ ...executionLog, status: "success" as const })),
 		listLogsByExecutionId: vi.fn(async () => [executionLog]),
+		listLogsByWorkflowSince: vi.fn(async () => [executionLog]),
 		listSessionIdsByExecutionId: vi.fn(async () => ["session-1"]),
 		countActiveTriggeredRuns: vi.fn(async () => 0),
 		listAgentEventsByExecutionId: vi.fn(async () => []),
 		listRecentAgentEventsByExecutionId: vi.fn(async () => []),
 		listAgentEventsByExecutionIdAfter: vi.fn(async () => []),
+	};
+}
+
+function executionLogRecord(): WorkflowExecutionLogRecord {
+	return {
+		id: "log-1",
+		executionId: "exec-1",
+		nodeId: "agent",
+		nodeName: "Agent",
+		nodeType: "action",
+		activityName: "durable/run",
+		status: "running" as const,
+		input: {},
+		output: null,
+		error: null,
+		startedAt: new Date("2026-01-01T00:00:00.000Z"),
+		completedAt: null,
+		duration: null,
+		timestamp: new Date("2026-01-01T00:00:00.000Z"),
+		credentialFetchMs: null,
+		routingMs: null,
+		coldStartMs: null,
+		executionMs: null,
+		routedTo: null,
+		wasColdStart: null,
 	};
 }
 
@@ -7221,6 +7227,69 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(workflowDefinitions.getById).toHaveBeenCalledWith("wf-window");
 	});
 
+	it("lists service-graph step logs for a scoped execution", async () => {
+		const execution = workflowExecutionRecord();
+		const logs = [executionLogRecord()];
+		const workflowExecutions = {
+			getById: vi.fn(async () => execution),
+			listLogsByExecutionId: vi.fn(async () => logs),
+		};
+		const { service } = makeService({ workflowExecutions });
+
+		await expect(
+			service.listObservabilityServiceGraphStepLogs({
+				executionId: "exec-1",
+				userId: "user-1",
+				projectId: "project-1",
+			}),
+		).resolves.toBe(logs);
+		expect(workflowExecutions.getById).toHaveBeenCalledWith("exec-1");
+		expect(workflowExecutions.listLogsByExecutionId).toHaveBeenCalledWith("exec-1");
+	});
+
+	it("hides service-graph step logs for out-of-scope executions", async () => {
+		const workflowExecutions = {
+			getById: vi.fn(async () => workflowExecutionRecord({ projectId: "project-2" })),
+			listLogsByExecutionId: vi.fn(async () => [executionLogRecord()]),
+		};
+		const { service } = makeService({ workflowExecutions });
+
+		await expect(
+			service.listObservabilityServiceGraphStepLogs({
+				executionId: "exec-1",
+				userId: "user-1",
+				projectId: "project-1",
+			}),
+		).resolves.toBeNull();
+		expect(workflowExecutions.listLogsByExecutionId).not.toHaveBeenCalled();
+	});
+
+	it("lists service-graph step logs for a scoped workflow window", async () => {
+		const logs = [executionLogRecord()];
+		const workflowExecutions = {
+			listLogsByWorkflowSince: vi.fn(async () => logs),
+		};
+		const { service, workflowDefinitions } = makeService({
+			byId: { ...baseWorkflow, id: "wf-window" },
+			workflowExecutions,
+		});
+
+		await expect(
+			service.listObservabilityServiceGraphStepLogs({
+				workflowId: "wf-window",
+				userId: "user-1",
+				projectId: "project-1",
+				windowSeconds: 900,
+			}),
+		).resolves.toBe(logs);
+		expect(workflowDefinitions.getById).toHaveBeenCalledWith("wf-window");
+		expect(workflowExecutions.listLogsByWorkflowSince).toHaveBeenCalledWith({
+			workflowId: "wf-window",
+			since: expect.any(Date),
+			executionLimit: 2000,
+		});
+	});
+
 	it("resolves workflow activity-rate target through the application port", async () => {
 		const activityRateTargets: WorkflowActivityRateTargetRepository = {
 			resolveWorkflowActivityRateTarget: vi.fn(async () => ({
@@ -8767,9 +8836,10 @@ describe("ApplicationWorkflowDataService", () => {
 			listStaleRunningExecutions: vi.fn(async () => []),
 			updateReadModel: vi.fn(async () => undefined),
 			appendLog: vi.fn(async () => executionLog),
-			updateLog: vi.fn(async () => ({ ...executionLog, status: "success" as const })),
-			listLogsByExecutionId: vi.fn(async () => [executionLog]),
-			listSessionIdsByExecutionId: vi.fn(async () => ["session-1"]),
+				updateLog: vi.fn(async () => ({ ...executionLog, status: "success" as const })),
+				listLogsByExecutionId: vi.fn(async () => [executionLog]),
+				listLogsByWorkflowSince: vi.fn(async () => [executionLog]),
+				listSessionIdsByExecutionId: vi.fn(async () => ["session-1"]),
 			countActiveTriggeredRuns: vi.fn(async () => 0),
 			listAgentEventsByExecutionId: vi.fn(async () => []),
 			listRecentAgentEventsByExecutionId: vi.fn(async () => []),

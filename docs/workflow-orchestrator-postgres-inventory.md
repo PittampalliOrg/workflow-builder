@@ -542,9 +542,11 @@ services:
   resolve scoped execution/workflow graph context through workflow-data before
   invoking the existing observability graph/drilldown helpers and metric
   readers. Route-local direct `workflow_executions`/`workflows`/`sessions` SQL,
-  `sessionHostAppId`, and `isResourceInScope` imports were removed; ClickHouse
-  and workflow-log aggregation remain inside observability helpers pending the
-  deeper telemetry adapter slice.
+  `sessionHostAppId`, and `isResourceInScope` imports were removed. Service-graph
+  step-mode workflow-log reads now come from workflow-data step-log DTOs; the
+  OTel graph builder no longer imports Drizzle or `$lib/server/db`. ClickHouse
+  trace aggregation remains inside observability helpers pending the deeper
+  telemetry adapter slice.
 - `src/routes/api/observability/traces/+server.ts` now resolves its in-scope
   session/execution id sets and trace goal-chip enrichment through workflow-data
   observability trace ports. ClickHouse trace listing and service filter queries

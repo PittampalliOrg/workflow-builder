@@ -12,6 +12,7 @@ describe("observability service graph route", () => {
 
 		expect(source).toContain("getApplicationAdapters");
 		expect(source).toContain("getObservabilityServiceGraphContext");
+		expect(source).toContain("listObservabilityServiceGraphStepLogs");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");

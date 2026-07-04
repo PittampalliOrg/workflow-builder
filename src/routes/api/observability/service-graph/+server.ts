@@ -26,6 +26,7 @@ import {
  */
 export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!locals.session?.userId) return error(401, 'Authentication required');
+	const application = getApplicationAdapters();
 
 	const mode = (url.searchParams.get('mode') ?? 'service') as ServiceGraphMode;
 	const scope = (url.searchParams.get('scope') ?? 'execution') as ServiceGraphScope;
@@ -45,7 +46,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	if (mode === 'step' && scope === 'window' && !workflowIdParam) {
 		return error(400, 'workflowId is required for step + window');
 	}
-	const context = await getApplicationAdapters().workflowData.getObservabilityServiceGraphContext({
+	const context = await application.workflowData.getObservabilityServiceGraphContext({
 		userId: locals.session.userId,
 		projectId: locals.session.projectId ?? null,
 		executionId: scope === 'execution' ? executionId : undefined,
@@ -62,11 +63,26 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		workflowId: context.targetWorkflowId ?? undefined,
 		windowSeconds
 	};
+	const stepLogs =
+		mode === 'step'
+			? await application.workflowData.listObservabilityServiceGraphStepLogs({
+					userId: locals.session.userId,
+					projectId: locals.session.projectId ?? null,
+					executionId: scope === 'execution' ? executionId : undefined,
+					workflowId: scope === 'window' ? context.targetWorkflowId : undefined,
+					windowSeconds,
+					executionLimit: 2000
+				})
+			: undefined;
+	if (mode === 'step' && stepLogs == null) {
+		return error(404, scope === 'execution' ? 'Execution not found' : 'Workflow not found');
+	}
 
 	const payload = await buildServiceGraph({
 		query,
 		execution: context.execution,
-		workflow: context.workflow
+		workflow: context.workflow,
+		stepLogs: stepLogs ?? undefined
 	});
 	return json(payload);
 };

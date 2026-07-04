@@ -4183,6 +4183,34 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		};
 	}
 
+	async listObservabilityServiceGraphStepLogs(input: {
+		userId: string;
+		projectId?: string | null;
+		executionId?: string | null;
+		workflowId?: string | null;
+		windowSeconds?: number;
+		executionLimit?: number;
+	}) {
+		const caller = { userId: input.userId, projectId: input.projectId ?? null };
+		if (input.executionId) {
+			const execution = await this.deps.workflowExecutions.getById(input.executionId);
+			if (!this.isResourceVisibleToCaller(execution, caller)) return null;
+			return this.deps.workflowExecutions.listLogsByExecutionId(input.executionId);
+		}
+
+		const workflowId = input.workflowId?.trim();
+		if (!workflowId) return null;
+		const definition = await this.deps.workflowDefinitions.getById(workflowId);
+		if (!this.isResourceVisibleToCaller(definition, caller)) return null;
+		const windowSeconds = Math.max(0, input.windowSeconds ?? 0);
+		const since = new Date(Date.now() - windowSeconds * 1000);
+		return this.deps.workflowExecutions.listLogsByWorkflowSince({
+			workflowId,
+			since,
+			executionLimit: input.executionLimit ?? 2000,
+		});
+	}
+
 	resolveWorkflowActivityRateTarget(input: {
 		executionId: string;
 	}): Promise<WorkflowActivityRateTargetReadModel | null> {

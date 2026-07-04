@@ -19,9 +19,6 @@
  *     compares against 'STATUS_CODE_ERROR', which never matches — so we read the
  *     raw `statusCode` field here, not the derived `status`.)
  */
-import { and, desc, eq, gte, inArray } from 'drizzle-orm';
-import { db } from '$lib/server/db';
-import { workflowExecutionLogs, workflowExecutions } from '$lib/server/db/schema';
 import type { ObservabilityLlmSpan, ObservabilityTraceSpan } from '$lib/types/observability';
 import {
 	CLICKHOUSE_DB,
@@ -66,6 +63,17 @@ export type ServiceGraphWorkflowContext = {
 	id: string;
 	nodes: unknown[];
 	edges: unknown[];
+};
+
+export type ServiceGraphStepLogRow = {
+	nodeId: string;
+	status: string;
+	duration: string | number | null;
+	executionMs: number | null;
+	credentialFetchMs: number | null;
+	routingMs: number | null;
+	coldStartMs: number | null;
+	wasColdStart: boolean | null;
 };
 
 export function isBenignControlPlaneError(span: ObservabilityTraceSpan): boolean {
@@ -533,17 +541,11 @@ function nodeLabel(node: WorkflowNodeJson): string {
 // ---------------------------------------------------------------------------
 
 async function buildStepGraphSingleExec(
-	execution: ExecutionRow,
-	workflow: ServiceGraphWorkflowContext
+	workflow: ServiceGraphWorkflowContext,
+	logs: ServiceGraphStepLogRow[]
 ): Promise<{ nodes: ServiceGraphNode[]; edges: ServiceGraphEdge[]; logs: StepLogRow[] }> {
 	const wfNodes = (workflow.nodes ?? []) as WorkflowNodeJson[];
 	const wfEdges = (workflow.edges ?? []) as WorkflowEdgeJson[];
-	const logs = db
-		? await db
-				.select()
-				.from(workflowExecutionLogs)
-				.where(eq(workflowExecutionLogs.executionId, execution.id))
-		: [];
 
 	const byNode = new Map<string, typeof logs>();
 	for (const log of logs) {
@@ -607,35 +609,11 @@ async function buildStepGraphSingleExec(
 
 async function buildStepGraphWindowed(
 	workflow: ServiceGraphWorkflowContext,
-	windowSeconds: number
+	windowSeconds: number,
+	logs: ServiceGraphStepLogRow[]
 ): Promise<{ nodes: ServiceGraphNode[]; edges: ServiceGraphEdge[] }> {
 	const wfNodes = (workflow.nodes ?? []) as WorkflowNodeJson[];
 	const wfEdges = (workflow.edges ?? []) as WorkflowEdgeJson[];
-	const since = new Date(Date.now() - windowSeconds * 1000);
-
-	// Recent execution ids for this workflow inside the window.
-	const execRows = db
-		? await db
-				.select({ id: workflowExecutions.id })
-				.from(workflowExecutions)
-				.where(
-					and(
-						eq(workflowExecutions.workflowId, workflow.id),
-						gte(workflowExecutions.startedAt, since)
-					)
-				)
-				.orderBy(desc(workflowExecutions.startedAt))
-				.limit(2000)
-		: [];
-	const execIds = execRows.map((r) => r.id);
-
-	const logs =
-		db && execIds.length > 0
-			? await db
-					.select()
-					.from(workflowExecutionLogs)
-					.where(inArray(workflowExecutionLogs.executionId, execIds))
-			: [];
 
 	const byNode = new Map<string, typeof logs>();
 	for (const log of logs) {
@@ -697,7 +675,7 @@ async function buildStepGraphWindowed(
 
 const WORKFLOW_NODE_ATTR = 'workflow.node.id';
 const WORKFLOW_ACTIVITY_ATTR = 'workflow.activity.correlation_id';
-type StepLogRow = typeof workflowExecutionLogs.$inferSelect;
+type StepLogRow = ServiceGraphStepLogRow;
 
 /**
  * Map each spanId → the workflow node id of its nearest ancestor span that carries
@@ -929,6 +907,7 @@ export interface BuildServiceGraphInput {
 	/** Pre-loaded + scope-validated by the API route (null when not found / N/A). */
 	execution?: ExecutionRow | null;
 	workflow?: ServiceGraphWorkflowContext | null;
+	stepLogs?: ServiceGraphStepLogRow[];
 }
 
 export async function buildServiceGraph(input: BuildServiceGraphInput): Promise<ServiceGraphPayload> {
@@ -981,7 +960,7 @@ export async function buildServiceGraph(input: BuildServiceGraphInput): Promise<
 		if (query.mode === 'step' && query.scope === 'execution') {
 			if (!execution) return emptyServiceGraph(query, { warnings: ['Execution not found'] });
 			if (!workflow) return emptyServiceGraph(query, { warnings: ['Workflow not found'] });
-			const { nodes, edges, logs } = await buildStepGraphSingleExec(execution, workflow);
+			const { nodes, edges, logs } = await buildStepGraphSingleExec(workflow, input.stepLogs ?? []);
 			const traceIds = await resolveExecutionTraceIds(execution);
 			const insights = await computeExecutionInsights({
 				mode: 'step',
@@ -1003,7 +982,11 @@ export async function buildServiceGraph(input: BuildServiceGraphInput): Promise<
 		if (!workflow) {
 			return emptyServiceGraph(query, { warnings: ['workflowId is required for step + window'] });
 		}
-		const { nodes, edges } = await buildStepGraphWindowed(workflow, query.windowSeconds);
+		const { nodes, edges } = await buildStepGraphWindowed(
+			workflow,
+			query.windowSeconds,
+			input.stepLogs ?? []
+		);
 		return { ...base, nodes, edges, meta: { spanCount: 0, traceCount: 0, warnings: [] } };
 	} catch (err) {
 		return emptyServiceGraph(query, {

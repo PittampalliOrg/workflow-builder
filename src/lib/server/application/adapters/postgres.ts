@@ -5994,6 +5994,30 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 		return rows.map(mapExecutionLog);
 	}
 
+	async listLogsByWorkflowSince(input: {
+		workflowId: string;
+		since: Date;
+		executionLimit: number;
+	}): Promise<WorkflowExecutionLogRecord[]> {
+		const executionRows = await this.database
+			.select({ id: workflowExecutions.id })
+			.from(workflowExecutions)
+			.where(and(
+				eq(workflowExecutions.workflowId, input.workflowId),
+				gte(workflowExecutions.startedAt, input.since),
+			))
+			.orderBy(desc(workflowExecutions.startedAt))
+			.limit(input.executionLimit);
+		const executionIds = executionRows.map((row) => row.id);
+		if (executionIds.length === 0) return [];
+		const rows = await this.database
+			.select()
+			.from(workflowExecutionLogs)
+			.where(inArray(workflowExecutionLogs.executionId, executionIds))
+			.orderBy(workflowExecutionLogs.startedAt);
+		return rows.map(mapExecutionLog);
+	}
+
 	async listSessionIdsByExecutionId(executionId: string): Promise<string[]> {
 		const rows = await this.database
 			.select({ id: sessions.id })

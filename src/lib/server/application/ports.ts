@@ -3093,6 +3093,11 @@ export interface WorkflowExecutionRepository {
 		patch: WorkflowExecutionLogPatch,
 	): Promise<WorkflowExecutionLogRecord | null>;
 	listLogsByExecutionId(executionId: string): Promise<WorkflowExecutionLogRecord[]>;
+	listLogsByWorkflowSince(input: {
+		workflowId: string;
+		since: Date;
+		executionLimit: number;
+	}): Promise<WorkflowExecutionLogRecord[]>;
 	listSessionIdsByExecutionId(executionId: string): Promise<string[]>;
 	countActiveTriggeredRuns(input: { statuses: WorkflowExecutionStatus[] }): Promise<number>;
 	listAgentEventsByExecutionId(
@@ -5342,6 +5347,14 @@ export interface WorkflowDataService {
 		executionId?: string | null;
 		workflowId?: string | null;
 	}): Promise<ObservabilityServiceGraphContextReadModel | null>;
+	listObservabilityServiceGraphStepLogs(input: {
+		userId: string;
+		projectId?: string | null;
+		executionId?: string | null;
+		workflowId?: string | null;
+		windowSeconds?: number;
+		executionLimit?: number;
+	}): Promise<WorkflowExecutionLogRecord[] | null>;
 	resolveWorkflowActivityRateTarget(input: {
 		executionId: string;
 	}): Promise<WorkflowActivityRateTargetReadModel | null>;
@@ -5651,6 +5664,14 @@ export interface WorkflowDataService {
 		patch: WorkflowExecutionLogPatch,
 	): Promise<WorkflowExecutionLogRecord | null>;
 	listExecutionLogs(executionId: string): Promise<WorkflowExecutionLogRecord[]>;
+	listObservabilityServiceGraphStepLogs(input: {
+		userId: string;
+		projectId?: string | null;
+		executionId?: string | null;
+		workflowId?: string | null;
+		windowSeconds?: number;
+		executionLimit?: number;
+	}): Promise<WorkflowExecutionLogRecord[] | null>;
 	listExecutionSessionIds(executionId: string): Promise<string[]>;
 	listExecutionAgentEvents(
 		executionId: string,
