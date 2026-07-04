@@ -350,6 +350,9 @@ import { ApplicationWorkflowExecutionSessionsService } from "$lib/server/applica
 import { ApplicationWorkflowExecutionSpecDiffService } from "$lib/server/application/workflow-execution-spec-diff";
 import { ApplicationWorkflowExecutionWorkspaceService } from "$lib/server/application/workflow-execution-workspace";
 import { ApplicationWorkflowExecutionStreamService } from "$lib/server/application/workflow-execution-stream";
+import { ApplicationPreviewRunFeedService } from "$lib/server/application/preview-run-feed";
+import { NatsPreviewRunFeed } from "$lib/server/application/adapters/nats-preview-run-feed";
+import { listVclusterPreviews } from "$lib/server/workflows/vcluster-preview";
 import { ApplicationWorkflowExecutionReadModelService } from "$lib/server/application/workflow-execution-read-model";
 import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/application/workflow-code-checkpoints";
 import { ApplicationWorkflowCodeVersionService } from "$lib/server/application/workflow-code-versions";
@@ -609,6 +612,7 @@ export function getApplicationAdapters(
 	let workflowExecutionStream:
 		| ApplicationWorkflowExecutionStreamService
 		| undefined;
+	let previewRunFeed: ApplicationPreviewRunFeedService | undefined;
 	let workflowExecutionReadModels:
 		| ApplicationWorkflowExecutionReadModelService
 		| undefined;
@@ -1244,6 +1248,14 @@ export function getApplicationAdapters(
 			workflowData: getWorkflowData(),
 			executionReadModels: getWorkflowExecutionReadModels(),
 		}));
+	const getPreviewRunFeed = () =>
+		(previewRunFeed ??= new ApplicationPreviewRunFeedService({
+			feed: new NatsPreviewRunFeed(),
+			listPreviews: async () =>
+				(await listVclusterPreviews())
+					.filter((p) => p.ready)
+					.map((p) => ({ name: p.name, url: p.url })),
+		}));
 	const getWorkflowBrowserArtifacts = () =>
 		(workflowBrowserArtifacts ??=
 			new ApplicationWorkflowBrowserArtifactsService({
@@ -1654,6 +1666,9 @@ export function getApplicationAdapters(
 		},
 		get workflowExecutionStream() {
 			return getWorkflowExecutionStream();
+		},
+		get previewRunFeed() {
+			return getPreviewRunFeed();
 		},
 		get workflowBrowserArtifacts() {
 			return getWorkflowBrowserArtifacts();

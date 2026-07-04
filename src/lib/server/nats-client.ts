@@ -109,6 +109,28 @@ export function executionSubject(executionId: string): string {
 }
 
 /**
+ * Per-preview JetStream stream name (E1). Each Tier-2 preview publishes its
+ * orchestrator run events into its own stream on the shared host NATS, named
+ * `ORCHESTRATOR-<previewName>` — the same server the host BFF already reads.
+ */
+export function previewStreamName(previewName: string): string {
+	return `${STREAM_NAME}-${previewName}`;
+}
+
+/**
+ * Subject filter for a preview's events within its `ORCHESTRATOR-<name>` stream.
+ * The preview's Dapr NATS component publishes under a per-preview
+ * `wbpreview-<name>.` subject prefix (so it can't collide with the host
+ * `ORCHESTRATOR` stream's `workflow.>` on the shared server) — verified live on
+ * dev (e.g. stream `ORCHESTRATOR-gan-codex` binds subject `wbpreview-gan-codex.>`).
+ * The stream only holds that preview's events, so the `>` wildcard tails all of
+ * them; the adapter decodes the `workflow.*` CloudEvents and drops the rest.
+ */
+export function previewWorkflowEventsSubject(previewName: string): string {
+	return `wbpreview-${previewName}.>`;
+}
+
+/**
  * Check if NATS is available (non-blocking).
  */
 export function isNatsAvailable(): boolean {

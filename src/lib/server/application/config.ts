@@ -21,7 +21,19 @@ export type ApplicationAdapterConfig = {
 	artifactStoreAdapter: ArtifactStoreAdapter;
 	workflowSchedulerAdapter: WorkflowSchedulerAdapter;
 	previewProvisionerAdapter: PreviewProvisionerAdapter;
+	/** E1: the Dev-hub live preview run feed. Off by default. */
+	previewRunFeedEnabled: boolean;
 };
+
+function readFlag(
+	source: Record<string, string | undefined>,
+	key: string,
+	fallback = false,
+): boolean {
+	const raw = source[key]?.trim().toLowerCase();
+	if (!raw) return fallback;
+	return ["1", "true", "yes", "on"].includes(raw);
+}
 
 function readAdapter<T extends string>(
 	source: Record<string, string | undefined>,
@@ -91,5 +103,6 @@ export function getApplicationAdapterConfig(
 			"sandbox-execution-api",
 			PREVIEW_PROVISIONER_ADAPTERS,
 		),
+		previewRunFeedEnabled: readFlag(source, "PREVIEW_RUN_FEED_ENABLED"),
 	};
 }
