@@ -1,4 +1,5 @@
 import { getApplicationAdapters } from "$lib/server/application";
+import { getApplicationAdapterConfig } from "$lib/server/application/config";
 import type { PageServerLoad } from "./$types";
 
 /**
@@ -7,7 +8,11 @@ import type { PageServerLoad } from "./$types";
  * client-side (polled) from /api/dev-environments.
  */
 export const load: PageServerLoad = async ({ locals }) => {
-	return getApplicationAdapters().workflowData.getDevPreviewHubReadModel({
+	const hub = await getApplicationAdapters().workflowData.getDevPreviewHubReadModel({
 		projectId: locals.session?.projectId ?? null,
 	});
+	return {
+		...hub,
+		previewRunFeedEnabled: getApplicationAdapterConfig().previewRunFeedEnabled,
+	};
 };
