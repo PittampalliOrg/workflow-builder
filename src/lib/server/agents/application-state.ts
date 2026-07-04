@@ -1,10 +1,39 @@
 import { createHash } from "node:crypto";
 import { env } from "$env/dynamic/private";
-import type { Agent, AgentVersion } from "$lib/server/db/schema";
 import type { AgentConfig, AgentDetail } from "$lib/types/agents";
 import { resolveAgentRuntimeRoute } from "./runtime-routing";
 import { buildAgentMetadata, type AgentMetadataBlob } from "./registry-sync";
 import { listRuntimes } from "./runtime-registry";
+
+export type AgentApplicationStateAgentRow = {
+	id: string;
+	slug: string;
+	name: string;
+	description: string | null;
+	avatar: string | null;
+	tags: unknown;
+	runtime: string;
+	runtimeAppId: string | null;
+	environmentId: string | null;
+	environmentVersion: number | null;
+	defaultVaultIds: unknown;
+	projectId: string | null;
+	isArchived: boolean;
+	registryStatus: string;
+	registrySyncedAt: Date | string | null;
+	registryError: string | null;
+	createdAt: Date | string | null;
+	updatedAt: Date | string | null;
+	sourceTemplateSlug: string | null;
+	sourceTemplateVersion: number | null;
+};
+
+export type AgentApplicationStateVersionRow = {
+	id: string;
+	version: number;
+	config: unknown;
+	configHash: string;
+};
 
 export type AgentApplicationStateManifest = {
 	schemaVersion: "workflow-builder.agent-application-state.v1";
@@ -81,8 +110,8 @@ export type CompiledAgentApplicationState = {
 };
 
 export function compileAgentApplicationState(params: {
-	agent: Agent;
-	version: AgentVersion;
+	agent: AgentApplicationStateAgentRow;
+	version: AgentApplicationStateVersionRow;
 }): CompiledAgentApplicationState {
 	const config = params.version.config as unknown as AgentConfig;
 	const detail = agentDetailFromRows(params.agent, params.version, config);
@@ -221,8 +250,8 @@ export function validateAgentMetadata(value: AgentMetadataBlob): void {
 }
 
 function agentDetailFromRows(
-	agent: Agent,
-	version: AgentVersion,
+	agent: AgentApplicationStateAgentRow,
+	version: AgentApplicationStateVersionRow,
 	config: AgentConfig,
 ): AgentDetail {
 	return {
@@ -244,7 +273,7 @@ function agentDetailFromRows(
 		isArchived: agent.isArchived,
 		registryStatus: agent.registryStatus as AgentDetail["registryStatus"],
 		registrySyncedAt: agent.registrySyncedAt
-			? agent.registrySyncedAt.toISOString()
+			? dateToIso(agent.registrySyncedAt)
 			: null,
 		registryError: agent.registryError ?? null,
 		createdAt: dateToIso(agent.createdAt),

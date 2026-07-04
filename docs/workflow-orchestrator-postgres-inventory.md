@@ -940,6 +940,10 @@ services:
   `src/lib/server/evaluations/graders.ts` derives `EvaluationGraderType` from
   its local allowed-type tuple. The DB-heavy benchmark/evaluation services still
   have direct Postgres seams to migrate separately.
+- Agent application-state compilation now uses local agent/version row DTOs
+  instead of Drizzle schema row types. The compiler remains a pure
+  manifest/digest builder; the MLflow lifecycle service that calls it remains a
+  separate telemetry/lineage migration slice.
 - `src/lib/server/workflows/start-run.ts` no longer imports the direct
   execution read-model schema probe. Workflow start readiness now calls
   `workflowData.assertExecutionReadModelReady`, and trigger model-catalog
