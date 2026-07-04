@@ -40,6 +40,11 @@ Workflow/session ephemeral-agent persistence now lives in
 application adapter layer. The old DB-owning
 `src/lib/server/agents/ephemeral.ts` helper was removed, keeping deterministic
 slug/version semantics while confining those writes to Postgres adapters.
+Capability-bundle version resolution for session spawn, workflow agent-ref
+resolution, and the compiled-capabilities debug view now runs through
+`ApplicationCapabilityBundleService` and
+`PostgresCapabilityBundleRepository`. `src/lib/server/capabilities/flatten.ts`
+is now a pure merge/provenance helper with no DB, Drizzle, or schema imports.
 Session workflow spawn now also reads initial user events and emits swap-safety
 audit events through workflow-data; `spawn.ts` no longer imports the legacy
 session event-log helper directly.

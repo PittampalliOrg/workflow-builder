@@ -709,7 +709,7 @@ export function getApplicationAdapters(
 		}));
 	const getCapabilityBundles = () =>
 		(capabilityBundles ??= new ApplicationCapabilityBundleService(
-			new PostgresCapabilityBundleRepository(getDatabase()),
+			new PostgresCapabilityBundleRepository(getDatabase),
 		));
 	const getAgentSkills = () =>
 		(agentSkills ??= new ApplicationAgentSkillService(
@@ -1102,7 +1102,9 @@ export function getApplicationAdapters(
 	const getAgentCatalog = () =>
 		(agentCatalog ??= new ApplicationAgentCatalogService({
 			agents: new LegacyAgentCatalogRepository(),
-			capabilities: new LegacyAgentCompiledCapabilitiesRepository(),
+			capabilities: new LegacyAgentCompiledCapabilitiesRepository(
+				getCapabilityBundles(),
+			),
 			registry: new LegacyAgentRegistryRepository(),
 			runtimes: new LocalAgentRuntimeCatalog(),
 			templates: new LocalAgentTemplateCatalog(),

@@ -13,7 +13,6 @@ import {
 	resolveCallableAgents,
 	type ResolvedAgent,
 } from "./registry";
-import { flattenBundles } from "$lib/server/capabilities/flatten";
 import {
 	agentRegistryKey,
 	teamRegistryPrefix,
@@ -366,7 +365,11 @@ export async function resolveSpecAgentRefs(
 		const overrides = pickOverrides(withBlock, bodyRecord);
 		// Flatten the agent's capability bundles (Pillar 2) into the base config,
 		// then layer node/session overrides on top.
-		const flattened = await flattenBundles(resolved.config, resolved.projectId);
+		const flattened =
+			await getApplicationAdapters().capabilityBundles.flattenBundles(
+				resolved.config,
+				resolved.projectId,
+			);
 		let config = await applyOverrides(flattened, overrides, resolved.projectId);
 		// Hydrate attached skills from agent_skill_registry. The agent's stored
 		// config only carries the `registryId` pointer — the Python runtime
@@ -672,7 +675,10 @@ async function applyOverrides(
 	// servers / skills / tools merge before MCP resolution (the agent's inline
 	// config still wins on key collision via flattenBundles' config-wins union).
 	if (Array.isArray(overrides.bundleRefs) && overrides.bundleRefs.length > 0) {
-		next = await flattenBundles({ ...next, bundleRefs: overrides.bundleRefs }, projectId);
+		next = await getApplicationAdapters().capabilityBundles.flattenBundles(
+			{ ...next, bundleRefs: overrides.bundleRefs },
+			projectId,
+		);
 	}
 	return next;
 }

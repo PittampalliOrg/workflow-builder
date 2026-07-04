@@ -6,6 +6,7 @@ import {
 	type CapabilityBundleRepository,
 	type CapabilityBundleUpdateRecord,
 } from "$lib/server/application/capability-bundles";
+import { createDefaultAgentConfig } from "$lib/types/agents";
 
 describe("ApplicationCapabilityBundleService", () => {
 	it("normalizes create requests before calling the repository", async () => {
@@ -126,6 +127,77 @@ describe("ApplicationCapabilityBundleService", () => {
 		expect(repository.getBundle).toHaveBeenCalledWith("bundle-1");
 		expect(repository.archiveBundle).toHaveBeenCalledWith("bundle-1");
 	});
+
+	it("flattens bundle refs through the repository without DB coupling", async () => {
+		const repository = fakeRepository();
+		vi.mocked(repository.resolveBundleVersions).mockResolvedValueOnce([
+			{
+				id: "bundle-1",
+				name: "Bundle",
+				version: 2,
+				config: {
+					tools: ["shell"],
+					builtinTools: ["Read"],
+					mcpServers: [{ serverName: "bundle-mcp" }] as never,
+				},
+			},
+		]);
+		const service = new ApplicationCapabilityBundleService(repository);
+
+		const result = await service.flattenBundles(
+			{
+				...createDefaultAgentConfig(),
+				bundleRefs: [{ id: "bundle-1", version: 2 }],
+				tools: ["editor"],
+				builtinTools: ["Read", "Write"],
+			},
+			"project-1",
+		);
+
+		expect(repository.resolveBundleVersions).toHaveBeenCalledWith({
+			refs: [{ id: "bundle-1", version: 2 }],
+			projectId: "project-1",
+		});
+		expect([...(result.tools ?? [])].sort()).toEqual(["editor", "shell"]);
+		expect([...(result.builtinTools ?? [])].sort()).toEqual(["Read", "Write"]);
+		expect(
+			(result.mcpServers as Array<{ serverName: string }>).map(
+				(server) => server.serverName,
+			),
+		).toEqual(["bundle-mcp"]);
+	});
+
+	it("builds bundle provenance from resolved repository rows", async () => {
+		const repository = fakeRepository();
+		vi.mocked(repository.resolveBundleVersions).mockResolvedValueOnce([
+			{
+				id: "bundle-1",
+				name: "Bundle",
+				version: 1,
+				config: {
+					mcpServers: [{ serverName: "mcp-a" }] as never,
+					skills: [{ registryId: "skill-a" }] as never,
+					tools: ["tool-a"],
+					builtinTools: ["Read"],
+				},
+			},
+		]);
+		const service = new ApplicationCapabilityBundleService(repository);
+
+		await expect(
+			service.resolveBundleProvenance([{ id: "bundle-1" }], "project-1"),
+		).resolves.toEqual([
+			{
+				id: "bundle-1",
+				name: "Bundle",
+				version: 1,
+				mcpServers: ["mcp-a"],
+				skills: ["skill-a"],
+				tools: ["tool-a"],
+				builtinTools: ["Read"],
+			},
+		]);
+	});
 });
 
 function fakeRepository(): CapabilityBundleRepository {
@@ -147,6 +219,7 @@ function fakeRepository(): CapabilityBundleRepository {
 	return {
 		listBundles: vi.fn(async () => [detail]),
 		getBundle: vi.fn(async () => detail),
+		resolveBundleVersions: vi.fn(async () => []),
 		createBundle: vi.fn(async (_input: CapabilityBundleCreateRecord) => detail),
 		updateBundle: vi.fn(
 			async (_id: string, _input: CapabilityBundleUpdateRecord) => detail,

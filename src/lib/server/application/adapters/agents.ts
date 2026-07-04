@@ -57,7 +57,10 @@ import {
 	syncAgentRuntimeCR,
 } from "$lib/server/agents/registry-sync";
 import { hashAgentConfig } from "$lib/server/agents/config-hash";
-import { compileAgentCapabilities } from "$lib/server/agents/compiled-capabilities";
+import {
+	compileAgentCapabilities,
+	type CompileAgentCapabilitiesOptions,
+} from "$lib/server/agents/compiled-capabilities";
 import { resolveEnvironmentRef } from "$lib/server/environments/registry";
 import { agentRuntimeDedicatedAppId } from "$lib/server/agents/runtime-routing";
 import { listRuntimeIds } from "$lib/server/agents/runtime-registry";
@@ -285,7 +288,10 @@ export class LegacyAgentCatalogRepository implements AgentCatalogRepository {
 export class LegacyAgentCompiledCapabilitiesRepository
 	implements AgentCompiledCapabilitiesRepository
 {
-	constructor(private readonly database: Database = requireDb()) {}
+	constructor(
+		private readonly capabilityBundles: CompileAgentCapabilitiesOptions["capabilityBundles"],
+		private readonly database: Database = requireDb(),
+	) {}
 
 	async compileAgentCapabilities(agentId: string) {
 		const [row] = await this.database
@@ -295,6 +301,7 @@ export class LegacyAgentCompiledCapabilitiesRepository
 			.limit(1);
 		return (await compileAgentCapabilities(agentId, {
 			projectId: row?.projectId ?? null,
+			capabilityBundles: this.capabilityBundles,
 		})) as Awaited<
 			ReturnType<AgentCompiledCapabilitiesRepository["compileAgentCapabilities"]>
 		>;

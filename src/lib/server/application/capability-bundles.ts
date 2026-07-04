@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { canonicalJson } from "$lib/server/agents/config-hash";
+import {
+	flattenBundleConfigs,
+	resolveBundleProvenanceFromVersions,
+	type BundleProvenanceEntry,
+	type ResolvedCapabilityBundleVersion,
+} from "$lib/server/capabilities/flatten";
 import type { CapabilityBundleConfig } from "$lib/types/agents";
+import type { AgentConfig, BundleRef } from "$lib/types/agents";
 
 export type CapabilityBundleSummary = {
 	id: string;
@@ -48,6 +55,10 @@ export interface CapabilityBundleRepository {
 		includeArchived?: boolean;
 	}): Promise<CapabilityBundleSummary[]>;
 	getBundle(id: string): Promise<CapabilityBundleDetail | null>;
+	resolveBundleVersions(input: {
+		refs: BundleRef[];
+		projectId?: string | null;
+	}): Promise<ResolvedCapabilityBundleVersion[]>;
 	createBundle(input: CapabilityBundleCreateRecord): Promise<CapabilityBundleDetail>;
 	updateBundle(
 		id: string,
@@ -68,6 +79,35 @@ export class ApplicationCapabilityBundleService {
 
 	getBundle(input: { id: string }): Promise<CapabilityBundleDetail | null> {
 		return this.repository.getBundle(input.id);
+	}
+
+	async flattenBundles(
+		config: AgentConfig,
+		projectId?: string | null,
+	): Promise<AgentConfig> {
+		const refs = validBundleRefs(config.bundleRefs);
+		if (refs.length === 0) return config;
+		const rows = await this.repository.resolveBundleVersions({
+			refs,
+			projectId: projectId ?? null,
+		});
+		return flattenBundleConfigs(
+			config,
+			rows.map((row) => row.config),
+		);
+	}
+
+	async resolveBundleProvenance(
+		refs: BundleRef[] | null | undefined,
+		projectId?: string | null,
+	): Promise<BundleProvenanceEntry[]> {
+		const valid = validBundleRefs(refs);
+		if (valid.length === 0) return [];
+		const rows = await this.repository.resolveBundleVersions({
+			refs: valid,
+			projectId: projectId ?? null,
+		});
+		return resolveBundleProvenanceFromVersions(rows);
 	}
 
 	createBundle(input: {
@@ -178,4 +218,13 @@ function stringArray(value: unknown): string[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function validBundleRefs(value: BundleRef[] | null | undefined): BundleRef[] {
+	return Array.isArray(value)
+		? value.filter(
+				(ref): ref is BundleRef =>
+					!!ref && typeof ref.id === "string" && ref.id.length > 0,
+			)
+		: [];
 }

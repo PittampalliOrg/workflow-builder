@@ -6,7 +6,6 @@ import {
 import { resolveEnvironmentRef } from "$lib/server/environments/registry";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution-application";
-import { flattenBundles } from "$lib/server/capabilities/flatten";
 import { getApplicationAdapters } from "$lib/server/application";
 import {
 	agentRuntimeInvokeTarget,
@@ -148,10 +147,11 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 	// Flatten reusable capability bundles (Pillar 2) into the effective config
 	// BEFORE MCP resolution, so bundle-contributed MCP servers participate in
 	// project-connection resolution exactly like inline ones.
-	const flattenedAgentConfig = await flattenBundles(
-		agent.config,
-		agent.projectId,
-	);
+	const flattenedAgentConfig =
+		await getApplicationAdapters().capabilityBundles.flattenBundles(
+			agent.config,
+			agent.projectId,
+		);
 	const resolutionTarget = getRuntimeDescriptor(
 		(flattenedAgentConfig as { runtime?: string }).runtime ?? agent.runtime,
 	);

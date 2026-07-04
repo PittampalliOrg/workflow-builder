@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
 import {
 	capabilityBundles,
@@ -11,15 +11,21 @@ import type {
 	CapabilityBundleSummary,
 	CapabilityBundleUpdateRecord,
 } from "$lib/server/application/capability-bundles";
+import type { ResolvedCapabilityBundleVersion } from "$lib/server/capabilities/flatten";
 import type { CapabilityBundleConfig } from "$lib/types/agents";
 
 type Database = typeof defaultDb;
+type DatabaseSource = Database | (() => Database);
 type BundleRow = typeof capabilityBundles.$inferSelect;
 type VersionRow = typeof capabilityBundleVersions.$inferSelect;
 
-function requireDb(database: Database = defaultDb): NonNullable<Database> {
-	if (!database) throw new Error("Database not configured");
-	return database;
+function requireDb(database: DatabaseSource = defaultDb): NonNullable<Database> {
+	const resolved =
+		typeof database === "function"
+			? (database as () => Database)()
+			: database;
+	if (!resolved) throw new Error("Database not configured");
+	return resolved;
 }
 
 function rowToSummary(
@@ -55,7 +61,7 @@ function rowToDetail(
 export class PostgresCapabilityBundleRepository
 	implements CapabilityBundleRepository
 {
-	constructor(private readonly database: Database = defaultDb) {}
+	constructor(private readonly database: DatabaseSource = defaultDb) {}
 
 	async listBundles(input: {
 		projectId?: string | null;
@@ -105,6 +111,72 @@ export class PostgresCapabilityBundleRepository
 		const version = await this.getCurrentOrLatestVersion(id, row.currentVersionId);
 		if (!version) return null;
 		return rowToDetail(row, version);
+	}
+
+	async resolveBundleVersions(input: {
+		refs: Array<{ id: string; version?: number | null }>;
+		projectId?: string | null;
+	}): Promise<ResolvedCapabilityBundleVersion[]> {
+		const database = requireDb(this.database);
+		const ids = [
+			...new Set(
+				input.refs.map((ref) => ref.id).filter((id): id is string => !!id),
+			),
+		];
+		if (ids.length === 0) return [];
+
+		const bundleRows = await database
+			.select()
+			.from(capabilityBundles)
+			.where(inArray(capabilityBundles.id, ids));
+		const byId = new Map(bundleRows.map((bundle) => [bundle.id, bundle]));
+		const projectId = input.projectId ?? null;
+		const out: ResolvedCapabilityBundleVersion[] = [];
+
+		for (const ref of input.refs) {
+			const bundle = byId.get(ref.id);
+			if (!bundle || bundle.isArchived) continue;
+			// Workspace scope: a bundle bound to a project is only usable in that
+			// project. Project-less bundles are curated/global and usable anywhere.
+			if (projectId && bundle.projectId && bundle.projectId !== projectId) {
+				continue;
+			}
+
+			let versionRow: VersionRow | undefined;
+			if (ref.version != null) {
+				[versionRow] = await database
+					.select()
+					.from(capabilityBundleVersions)
+					.where(
+						and(
+							eq(capabilityBundleVersions.bundleId, ref.id),
+							eq(capabilityBundleVersions.version, ref.version),
+						),
+					)
+					.limit(1);
+			} else if (bundle.currentVersionId) {
+				[versionRow] = await database
+					.select()
+					.from(capabilityBundleVersions)
+					.where(eq(capabilityBundleVersions.id, bundle.currentVersionId))
+					.limit(1);
+			} else {
+				[versionRow] = await database
+					.select()
+					.from(capabilityBundleVersions)
+					.where(eq(capabilityBundleVersions.bundleId, ref.id))
+					.orderBy(desc(capabilityBundleVersions.version))
+					.limit(1);
+			}
+			if (!versionRow) continue;
+			out.push({
+				id: bundle.id,
+				name: bundle.name,
+				version: versionRow.version,
+				config: (versionRow.config ?? {}) as CapabilityBundleConfig,
+			});
+		}
+		return out;
 	}
 
 	async createBundle(

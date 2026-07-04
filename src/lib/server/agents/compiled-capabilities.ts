@@ -17,11 +17,7 @@
  * Mirrors `src/lib/server/sessions/spawn.ts` (lines ~138-176) — keep in sync.
  */
 import { getAgent } from "./registry";
-import {
-	flattenBundles,
-	resolveBundleProvenance,
-	type BundleProvenanceEntry,
-} from "$lib/server/capabilities/flatten";
+import type { BundleProvenanceEntry } from "$lib/server/capabilities/flatten";
 import { resolveAgentConfigMcpForProject } from "./mcp-resolution-application";
 import { getRuntimeDescriptor, type RuntimeDescriptor } from "./runtime-registry";
 import { evaluateSwap, type SwapVerdict } from "./swap-safety";
@@ -55,6 +51,16 @@ export type CompiledCapabilities = {
 
 export type CompileAgentCapabilitiesOptions = {
 	projectId?: string | null;
+	capabilityBundles: {
+		flattenBundles(
+			config: AgentConfig,
+			projectId?: string | null,
+		): Promise<AgentConfig>;
+		resolveBundleProvenance(
+			refs: BundleRef[] | null | undefined,
+			projectId?: string | null,
+		): Promise<BundleProvenanceEntry[]>;
+	};
 };
 
 function asStringArray(value: unknown): string[] {
@@ -67,7 +73,7 @@ function asStringArray(value: unknown): string[] {
  */
 export async function compileAgentCapabilities(
 	agentId: string,
-	options: CompileAgentCapabilitiesOptions = {},
+	options: CompileAgentCapabilitiesOptions,
 ): Promise<CompiledCapabilities | null> {
 	const agent = await getAgent(agentId);
 	if (!agent) return null;
@@ -76,7 +82,10 @@ export async function compileAgentCapabilities(
 
 	// Mirror the spawn resolve pipeline (read-only). Bundles flatten BEFORE MCP
 	// resolution so bundle-contributed servers resolve like inline ones.
-	const flattened = await flattenBundles(baseConfig, projectId);
+	const flattened = await options.capabilityBundles.flattenBundles(
+		baseConfig,
+		projectId,
+	);
 	const resolutionTarget = getRuntimeDescriptor(
 		(flattened as { runtime?: string }).runtime ?? agent.runtime,
 	);
@@ -107,7 +116,7 @@ export async function compileAgentCapabilities(
 			})
 		: null;
 
-	const provenance = await resolveBundleProvenance(
+	const provenance = await options.capabilityBundles.resolveBundleProvenance(
 		baseConfig.bundleRefs,
 		projectId,
 	);

@@ -1,33 +1,14 @@
 /**
  * Capability-bundle flattening (Pillar 2).
  *
- * `flattenBundles()` resolves an `AgentConfig.bundleRefs[]` into the effective
- * config: each referenced bundle's version config (mcpServers / skills / tools /
- * builtinTools / hooks / plugins / prompt presets) is UNIONED into the config.
- * Bundle entries form the base layer; the agent / session / node config wins on
- * key collision. Called BEFORE MCP resolution in both spawn paths
- * (`sessions/spawn.ts`, `agents/resolver.ts`) so bundle-contributed MCP servers
- * participate in project-connection resolution exactly like inline ones.
- *
- * Pure merge helpers ({@link mergeBundleConfig}) are exported + DB-free for unit
- * testing; {@link flattenBundles} is the DB-backed entry point.
+ * The merge helpers in this module are DB-free. Application services resolve
+ * `AgentConfig.bundleRefs[]` through a repository, then call these helpers to
+ * build the effective config before MCP resolution.
  */
-import { and, desc, eq, inArray } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import {
-	capabilityBundles,
-	capabilityBundleVersions,
-} from "$lib/server/db/schema";
 import type {
 	AgentConfig,
-	BundleRef,
 	CapabilityBundleConfig,
 } from "$lib/types/agents";
-
-function requireDb() {
-	if (!db) throw new Error("Database not configured");
-	return db;
-}
 
 function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
@@ -122,82 +103,6 @@ export function mergeBundleConfig(
 	return next;
 }
 
-/** Resolve each ref to its bundle row + version row (pinned version or latest),
- * project-scoped. Shared by {@link flattenBundles} (configs) and
- * {@link resolveBundleProvenance} (identity + per-bundle capability summary) so
- * both observe the exact same version-selection precedence. */
-async function loadResolvedBundleVersions(
-	refs: BundleRef[],
-	projectId: string | null,
-): Promise<
-	Array<{
-		bundle: typeof capabilityBundles.$inferSelect;
-		versionRow: typeof capabilityBundleVersions.$inferSelect;
-	}>
-> {
-	const database = requireDb();
-	const ids = [...new Set(refs.map((r) => r.id).filter((id): id is string => !!id))];
-	if (ids.length === 0) return [];
-
-	const bundleRows = await database
-		.select()
-		.from(capabilityBundles)
-		.where(inArray(capabilityBundles.id, ids));
-	const byId = new Map(bundleRows.map((b) => [b.id, b]));
-
-	const out: Array<{
-		bundle: typeof capabilityBundles.$inferSelect;
-		versionRow: typeof capabilityBundleVersions.$inferSelect;
-	}> = [];
-	for (const ref of refs) {
-		const bundle = byId.get(ref.id);
-		if (!bundle || bundle.isArchived) continue;
-		// Workspace scope: a bundle bound to a project is only usable in that
-		// project (project-less bundles are usable anywhere — curated/global).
-		if (projectId && bundle.projectId && bundle.projectId !== projectId) continue;
-
-		let versionRow:
-			| typeof capabilityBundleVersions.$inferSelect
-			| undefined;
-		if (ref.version != null) {
-			[versionRow] = await database
-				.select()
-				.from(capabilityBundleVersions)
-				.where(
-					and(
-						eq(capabilityBundleVersions.bundleId, ref.id),
-						eq(capabilityBundleVersions.version, ref.version),
-					),
-				)
-				.limit(1);
-		} else if (bundle.currentVersionId) {
-			[versionRow] = await database
-				.select()
-				.from(capabilityBundleVersions)
-				.where(eq(capabilityBundleVersions.id, bundle.currentVersionId))
-				.limit(1);
-		} else {
-			[versionRow] = await database
-				.select()
-				.from(capabilityBundleVersions)
-				.where(eq(capabilityBundleVersions.bundleId, ref.id))
-				.orderBy(desc(capabilityBundleVersions.version))
-				.limit(1);
-		}
-		if (versionRow) out.push({ bundle, versionRow });
-	}
-	return out;
-}
-
-/** Resolve each ref to its bundle-version config (pinned version or latest), project-scoped. */
-async function loadBundleConfigs(
-	refs: BundleRef[],
-	projectId: string | null,
-): Promise<CapabilityBundleConfig[]> {
-	const rows = await loadResolvedBundleVersions(refs, projectId);
-	return rows.map((r) => r.versionRow.config as CapabilityBundleConfig);
-}
-
 export type BundleProvenanceEntry = {
 	id: string;
 	name: string;
@@ -208,29 +113,22 @@ export type BundleProvenanceEntry = {
 	builtinTools: string[];
 };
 
-/**
- * Per-bundle summary of what each `bundleRefs[]` entry contributes (resolved
- * names of mcpServers / skills / tools / builtinTools) for the
- * compiled-capabilities debug view. Same version precedence as
- * {@link flattenBundles}; returns `[]` when there are no resolvable refs.
- */
-export async function resolveBundleProvenance(
-	refs: BundleRef[] | null | undefined,
-	projectId: string | null | undefined,
-): Promise<BundleProvenanceEntry[]> {
-	const valid = Array.isArray(refs)
-		? refs.filter(
-				(r): r is BundleRef => !!r && typeof r.id === "string" && r.id.length > 0,
-			)
-		: [];
-	if (valid.length === 0) return [];
-	const rows = await loadResolvedBundleVersions(valid, projectId ?? null);
-	return rows.map(({ bundle, versionRow }) => {
-		const cfg = (versionRow.config ?? {}) as CapabilityBundleConfig;
+export type ResolvedCapabilityBundleVersion = {
+	id: string;
+	name: string;
+	version: number;
+	config: CapabilityBundleConfig;
+};
+
+export function resolveBundleProvenanceFromVersions(
+	rows: ResolvedCapabilityBundleVersion[],
+): BundleProvenanceEntry[] {
+	return rows.map((row) => {
+		const cfg = row.config ?? {};
 		return {
-			id: bundle.id,
-			name: bundle.name,
-			version: versionRow.version,
+			id: row.id,
+			name: row.name,
+			version: row.version,
 			mcpServers: (cfg.mcpServers ?? []).map((s) => mcpKey(s)),
 			skills: (cfg.skills ?? []).map((s) => skillKey(s)),
 			tools: (cfg.tools ?? []).map((t) => String(t)),
@@ -240,20 +138,13 @@ export async function resolveBundleProvenance(
 }
 
 /**
- * Resolve `config.bundleRefs` into the effective `AgentConfig`. No-op (returns
- * the same reference) when there are no resolvable bundle refs.
+ * Merge already-resolved bundle configs into the effective `AgentConfig`.
+ * No-op (returns the same reference) when there are no resolvable bundle refs.
  */
-export async function flattenBundles(
+export function flattenBundleConfigs(
 	config: AgentConfig,
-	projectId: string | null | undefined,
-): Promise<AgentConfig> {
-	const refs = Array.isArray(config.bundleRefs)
-		? config.bundleRefs.filter(
-				(r): r is BundleRef => !!r && typeof r.id === "string" && r.id.length > 0,
-			)
-		: [];
-	if (refs.length === 0) return config;
-	const bundles = await loadBundleConfigs(refs, projectId ?? null);
+	bundles: CapabilityBundleConfig[],
+): AgentConfig {
 	if (bundles.length === 0) return config;
 	let merged: AgentConfig = { ...config };
 	for (const bundle of bundles) merged = mergeBundleConfig(merged, bundle);
