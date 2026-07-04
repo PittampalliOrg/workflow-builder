@@ -35,6 +35,11 @@ Session workflow spawn now also resolves the session's primary agent and
 callable peer-agent dispatch metadata through workflow-data application ports;
 `spawn.ts` no longer imports the legacy agent registry or registry-sync helpers
 for those runtime-start inputs.
+Workflow/session ephemeral-agent persistence now lives in
+`PostgresWorkflowEphemeralAgentStore` and `RegistryPeerAgentResolver` under the
+application adapter layer. The old DB-owning
+`src/lib/server/agents/ephemeral.ts` helper was removed, keeping deterministic
+slug/version semantics while confining those writes to Postgres adapters.
 Session workflow spawn now also reads initial user events and emits swap-safety
 audit events through workflow-data; `spawn.ts` no longer imports the legacy
 session event-log helper directly.

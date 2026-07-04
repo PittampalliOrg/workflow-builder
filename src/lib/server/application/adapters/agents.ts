@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type {
 	AgentCatalogCreateInput,
 	AgentCatalogRepository,
@@ -47,11 +47,8 @@ import {
 	resolveCallableAgents,
 	restoreVersion,
 	updateAgent,
+	validateAgentConfig,
 } from "$lib/server/agents/registry";
-import {
-	findOrCreateEphemeralAgent,
-	findOrCreateExperimentAgent,
-} from "$lib/server/agents/ephemeral";
 import {
 	agentRegistryKey,
 	deregisterAgent,
@@ -59,6 +56,7 @@ import {
 	registerAgent,
 	syncAgentRuntimeCR,
 } from "$lib/server/agents/registry-sync";
+import { hashAgentConfig } from "$lib/server/agents/config-hash";
 import { compileAgentCapabilities } from "$lib/server/agents/compiled-capabilities";
 import { resolveEnvironmentRef } from "$lib/server/environments/registry";
 import { agentRuntimeDedicatedAppId } from "$lib/server/agents/runtime-routing";
@@ -75,15 +73,134 @@ function requireDb(database: Database = defaultDb): Database {
 	return database;
 }
 
-export class LegacyWorkflowEphemeralAgentStore
+const EPHEMERAL_TAG_WORKFLOW = "workflow-ephemeral";
+const EPHEMERAL_TAG_SESSION_EXPERIMENT = "session-experiment";
+
+function ephemeralSlug(workflowId: string, nodeId: string): string {
+	const shortWf = workflowId.slice(0, 12).toLowerCase();
+	const shortNode = nodeId
+		.toLowerCase()
+		.replace(/[^a-z0-9-]/g, "-")
+		.replace(/-+/g, "-")
+		.slice(0, 24);
+	return `wf-${shortWf}-${shortNode}`;
+}
+
+function experimentSlug(baseAgentSlug: string, configHash: string): string {
+	const shortBase = baseAgentSlug
+		.toLowerCase()
+		.replace(/[^a-z0-9-]/g, "-")
+		.replace(/-+/g, "-")
+		.slice(0, 24);
+	const shortHash = configHash.slice(0, 10).toLowerCase();
+	return `exp-${shortBase}-${shortHash}`;
+}
+
+async function ensureEphemeralAgent(
+	database: Database,
+	params: {
+		slug: string;
+		name: string;
+		description: string;
+		tag: typeof EPHEMERAL_TAG_WORKFLOW | typeof EPHEMERAL_TAG_SESSION_EXPERIMENT;
+		agentConfig: AgentConfig;
+		userId: string;
+		projectId?: string | null;
+	},
+): Promise<{ agentId: string; agentVersion: number }> {
+	const activeDb = requireDb(database);
+	validateAgentConfig(params.agentConfig);
+	const configHash = hashAgentConfig(params.agentConfig);
+
+	const [existing] = await activeDb
+		.select()
+		.from(agents)
+		.where(eq(agents.slug, params.slug))
+		.limit(1);
+
+	if (existing) {
+		const [currentVersion] = await activeDb
+			.select()
+			.from(agentVersions)
+			.where(eq(agentVersions.agentId, existing.id))
+			.orderBy(desc(agentVersions.version))
+			.limit(1);
+
+		if (currentVersion && currentVersion.configHash === configHash) {
+			return { agentId: existing.id, agentVersion: currentVersion.version };
+		}
+
+		const nextVersion = (currentVersion?.version ?? 0) + 1;
+		const [bumped] = await activeDb
+			.insert(agentVersions)
+			.values({
+				agentId: existing.id,
+				version: nextVersion,
+				config: params.agentConfig as unknown as Record<string, unknown>,
+				configHash,
+				publishedAt: new Date(),
+				publishedBy: params.userId,
+			})
+			.returning();
+		await activeDb
+			.update(agents)
+			.set({ currentVersionId: bumped.id, updatedAt: new Date() })
+			.where(eq(agents.id, existing.id));
+		return { agentId: existing.id, agentVersion: bumped.version };
+	}
+
+	const [created] = await activeDb
+		.insert(agents)
+		.values({
+			slug: params.slug,
+			name: params.name,
+			description: params.description,
+			tags: [params.tag],
+			runtime: params.agentConfig.runtime,
+			createdBy: params.userId,
+			projectId: params.projectId ?? null,
+		})
+		.returning();
+
+	const [version] = await activeDb
+		.insert(agentVersions)
+		.values({
+			agentId: created.id,
+			version: 1,
+			config: params.agentConfig as unknown as Record<string, unknown>,
+			configHash,
+			publishedAt: new Date(),
+			publishedBy: params.userId,
+		})
+		.returning();
+
+	await activeDb
+		.update(agents)
+		.set({ currentVersionId: version.id, updatedAt: new Date() })
+		.where(eq(agents.id, created.id));
+
+	return { agentId: created.id, agentVersion: version.version };
+}
+
+export class PostgresWorkflowEphemeralAgentStore
 	implements WorkflowEphemeralAgentStore
 {
-	findOrCreateWorkflowEphemeralAgent(
-		input: Parameters<
-			WorkflowEphemeralAgentStore["findOrCreateWorkflowEphemeralAgent"]
-		>[0],
-	): Promise<{ agentId: string; agentVersion: number }> {
-		return findOrCreateEphemeralAgent(input);
+	constructor(private readonly database: Database = requireDb()) {}
+
+	findOrCreateWorkflowEphemeralAgent(input: {
+		workflowId: string;
+		nodeId: string;
+		agentConfig: AgentConfig;
+		userId: string;
+	}): Promise<{ agentId: string; agentVersion: number }> {
+		return ensureEphemeralAgent(this.database, {
+			slug: ephemeralSlug(input.workflowId, input.nodeId),
+			name: `Ephemeral agent (${input.nodeId})`,
+			description: `Auto-created for workflow node ${input.nodeId}`,
+			tag: EPHEMERAL_TAG_WORKFLOW,
+			agentConfig: input.agentConfig,
+			userId: input.userId,
+		});
 	}
 }
 
@@ -390,7 +507,16 @@ export class RegistryPeerAgentResolver
 		userId: string;
 		projectId?: string | null;
 	}): Promise<{ agentId: string; agentVersion: number }> {
-		return findOrCreateExperimentAgent(input);
+		const configHash = hashAgentConfig(input.agentConfig);
+		return ensureEphemeralAgent(this.database, {
+			slug: experimentSlug(input.baseAgentSlug, configHash),
+			name: `(experiment) ${input.baseAgentName}`,
+			description: `Tweaked config experiment of ${input.baseAgentSlug}`,
+			tag: EPHEMERAL_TAG_SESSION_EXPERIMENT,
+			agentConfig: input.agentConfig,
+			userId: input.userId,
+			projectId: input.projectId,
+		});
 	}
 
 	async getWorkflowAgentRuntimeIdentity(

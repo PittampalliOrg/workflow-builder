@@ -247,7 +247,7 @@ export type ListAgentsFilter = {
 	 * legacy data isn't hidden from single-workspace users. */
 	projectId?: string;
 	/** Include workflow-spawned ephemeral agents (tagged
-	 * "workflow-ephemeral" by `findOrCreateEphemeralAgent`). Default false
+	 * "workflow-ephemeral" by the workflow ephemeral-agent adapter). Default false
 	 * — per CMA alignment these shells represent sessions, not user-owned
 	 * agents, and shouldn't pollute the workspace Agents list. */
 	includeEphemeral?: boolean;

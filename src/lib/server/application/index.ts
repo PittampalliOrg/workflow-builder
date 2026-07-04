@@ -86,7 +86,7 @@ import {
 	AgentRuntimeRegistrySyncAdapter,
 	LegacyAgentCatalogRepository,
 	LegacyAgentRegistryRepository,
-	LegacyWorkflowEphemeralAgentStore,
+	PostgresWorkflowEphemeralAgentStore,
 	LocalAgentRuntimeCatalog,
 	LocalAgentTemplateCatalog,
 	PostgresAgentSkillHydrationRepository,
@@ -1267,7 +1267,7 @@ export function getApplicationAdapters(
 			workspaceProjects: getWorkspaceProjects(),
 			sessionTraceLifecycle: getSessionTraceLifecycle(),
 			sandboxDestroyer: new KubernetesSessionSandboxDestroyer(),
-			workflowEphemeralAgents: new LegacyWorkflowEphemeralAgentStore(),
+			workflowEphemeralAgents: new PostgresWorkflowEphemeralAgentStore(),
 			agentRuntimeSync: new AgentRuntimeRegistrySyncAdapter(),
 		}));
 	const getSessionAgentConfig = () =>
