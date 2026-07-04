@@ -141,7 +141,8 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
 		repoUrl: "PittampalliOrg/workflow-builder",
 		repoSubdir: "services/workflow-orchestrator",
 		// uvicorn --reload-dir /app watches everything; sync the python source trees.
-		syncPaths: ["app.py", "core", "activities", "workflows"],
+		// `tests` + `subscriptions` so a contract/subscription edit hot-reloads too.
+		syncPaths: ["app.py", "core", "activities", "workflows", "tests", "subscriptions"],
 		tailnetHost: "orchestrator-preview-ryzen.tail286401.ts.net",
 		// Startup fetches DATABASE_URL from Dapr secrets + runs `wfr.start()`.
 		needsDapr: true,

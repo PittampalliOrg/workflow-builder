@@ -4,9 +4,12 @@ import type {
 } from "$lib/server/application/ports";
 import {
 	provisionDevPreview,
+	provisionDevPreviews,
 	type DevPreviewInfo,
 	type DevPreviewPersistence,
+	type DevPreviewsResult,
 	type ProvisionDevPreviewParams,
+	type ProvisionDevPreviewsParams,
 	teardownDevPreview,
 	type TeardownDevPreviewParams,
 	type TeardownDevPreviewResult,
@@ -28,6 +31,14 @@ export class SandboxExecutionPreviewEnvironmentProvisioner
 		);
 	}
 
+	provisionMany(input: ProvisionDevPreviewsParams): Promise<DevPreviewsResult> {
+		return provisionDevPreviews(
+			input,
+			this.persistence?.(),
+			this.previewDatabases,
+		);
+	}
+
 	teardown(input: TeardownDevPreviewParams): Promise<TeardownDevPreviewResult> {
 		return teardownDevPreview(
 			input,
@@ -41,6 +52,14 @@ export class KroPreviewEnvironmentProvisioner
 	implements PreviewEnvironmentProvisioner
 {
 	async provision(_input: ProvisionDevPreviewParams): Promise<DevPreviewInfo> {
+		throw new Error(
+			"PREVIEW_PROVISIONER_ADAPTER=kro is available for packaging pilots, but runtime WorkflowBuilderPreviewEnvironment instance creation is not wired in the BFF yet",
+		);
+	}
+
+	async provisionMany(
+		_input: ProvisionDevPreviewsParams,
+	): Promise<DevPreviewsResult> {
 		throw new Error(
 			"PREVIEW_PROVISIONER_ADAPTER=kro is available for packaging pilots, but runtime WorkflowBuilderPreviewEnvironment instance creation is not wired in the BFF yet",
 		);

@@ -11,4 +11,15 @@ describe("KroPreviewEnvironmentProvisioner", () => {
 			}),
 		).rejects.toThrow("WorkflowBuilderPreviewEnvironment instance creation");
 	});
+
+	it("also throws for the multi-service provisionMany fan-out", async () => {
+		const provisioner = new KroPreviewEnvironmentProvisioner();
+
+		await expect(
+			provisioner.provisionMany({
+				executionId: "exec-1",
+				services: ["workflow-builder", "workflow-orchestrator"],
+			}),
+		).rejects.toThrow("WorkflowBuilderPreviewEnvironment instance creation");
+	});
 });

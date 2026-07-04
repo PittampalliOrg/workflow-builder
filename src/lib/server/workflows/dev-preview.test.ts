@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PreviewDatabaseProvisioner } from "$lib/server/application/ports";
 import {
 	provisionDevPreview,
+	provisionDevPreviews,
 	type DevPreviewPersistence,
 } from "./dev-preview";
 
@@ -110,7 +111,7 @@ describe("dev-preview portability boundary", () => {
 		// PUBSUB_NAME=pubsub-dev into a vcluster whose component is named `pubsub`.
 		vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
 		const fetchMock = vi.fn(
-			async () =>
+			async (_url: string, _init?: RequestInit) =>
 				new Response(
 					JSON.stringify({
 						sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
@@ -147,7 +148,7 @@ describe("dev-preview portability boundary", () => {
 		// IS the host-isolation mechanism there), so the BFF sends no override.
 		vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
 		const fetchMock = vi.fn(
-			async () =>
+			async (_url: string, _init?: RequestInit) =>
 				new Response(
 					JSON.stringify({
 						sandboxName: "wfb-dev-preview-exec-1",
@@ -168,6 +169,54 @@ describe("dev-preview portability boundary", () => {
 		const body = JSON.parse(String(request.body));
 		expect(body.previewNative).toBeUndefined();
 		expect("applyDaprShadowDefaults" in body).toBe(false);
+	});
+
+	it("fans out provisionDevPreviews and keeps successes on partial failure", async () => {
+		vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+		const fetchMock = vi.fn(async (_url, init) => {
+			const body = JSON.parse(String((init as RequestInit).body));
+			if (body.service === "workflow-orchestrator") {
+				return new Response(JSON.stringify({ detail: "boom" }), {
+					status: 503,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			return new Response(
+				JSON.stringify({
+					sandboxName: `wfb-dev-preview-${body.service}-exec-1`,
+					podIP: "10.0.0.5",
+					port: 3000,
+					syncPort: 3000,
+					ready: true,
+					status: "running",
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const persistence = fakePersistence();
+
+		const result = await provisionDevPreviews(
+			{
+				executionId: "exec-1",
+				services: ["workflow-builder", "workflow-orchestrator"],
+				mode: "preview-native",
+			},
+			persistence,
+		);
+
+		expect(result.ok).toBe(false);
+		const bySvc = Object.fromEntries(
+			result.services.map((s) => [s.service, s]),
+		);
+		expect(bySvc["workflow-builder"].ok).toBe(true);
+		expect(bySvc["workflow-builder"].info?.sandboxName).toBe(
+			"wfb-dev-preview-workflow-builder-exec-1",
+		);
+		expect(bySvc["workflow-orchestrator"].ok).toBe(false);
+		expect(bySvc["workflow-orchestrator"].error).toContain("boom");
+		// The service that came up is persisted and NOT torn down (session still useful).
+		expect(persistence.upsertWorkflowWorkspaceSession).toHaveBeenCalledTimes(1);
 	});
 
 	it("provisions functional preview databases through the injected port", async () => {

@@ -1,6 +1,8 @@
 import type {
 	DevPreviewInfo,
+	DevPreviewsResult,
 	ProvisionDevPreviewParams,
+	ProvisionDevPreviewsParams,
 	TeardownDevPreviewParams,
 	TeardownDevPreviewResult,
 } from "$lib/server/workflows/dev-preview";
@@ -629,5 +631,7 @@ export type SessionControlSettingsEnvironment = {
 
 export interface PreviewEnvironmentProvisioner {
 	provision(input: ProvisionDevPreviewParams): Promise<DevPreviewInfo>;
+	/** Fan-out provision of N services into one execution (multi-service adopt). */
+	provisionMany(input: ProvisionDevPreviewsParams): Promise<DevPreviewsResult>;
 	teardown(input: TeardownDevPreviewParams): Promise<TeardownDevPreviewResult>;
 }

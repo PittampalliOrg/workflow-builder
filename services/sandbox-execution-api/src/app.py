@@ -834,6 +834,57 @@ def _adopt_scale_deployment_down(apps: Any, *, namespace: str, name: str) -> Non
     logger.info("adopt: scaled deployment %s to 0 (original=%s)", name, original)
 
 
+def _dev_pod_has_daprd(pod: Any) -> bool:
+    """True if the pod carries an injected daprd sidecar.
+
+    daprd can be a NATIVE sidecar (an init container with restartPolicy: Always) OR a
+    classic sidecar (a regular container); the injector also stamps the
+    `dapr.io/sidecar-injected=true` label. Check all three — auditing only
+    `.spec.containers` misses the native-sidecar case."""
+    status = getattr(pod, "status", None)
+    for statuses in (
+        getattr(status, "init_container_statuses", None),
+        getattr(status, "container_statuses", None),
+    ):
+        if any(getattr(cs, "name", "") == "daprd" for cs in (statuses or [])):
+            return True
+    meta = getattr(pod, "metadata", None)
+    labels = (getattr(meta, "labels", None) or {}) if meta else {}
+    return labels.get("dapr.io/sidecar-injected") == "true"
+
+
+def _wait_for_dapr_injector_available(apps: Any, *, timeout_seconds: int = 60) -> bool:
+    """Best-effort: wait for the (in-vcluster) Dapr sidecar-injector Deployment to be
+    Available BEFORE creating a needsDapr Sandbox. The injector webhook is FAIL-OPEN
+    (failurePolicy: Ignore), so a pod created while the injector is down comes up with
+    NO daprd (cold-start race). Returns True once available; False on timeout (the
+    caller proceeds anyway — the deferred daprd-present assert is the backstop, and a
+    hard-fail here would block provisioning if the RBAC/name assumptions are wrong)."""
+    ns = os.environ.get("DAPR_SIDECAR_INJECTOR_NAMESPACE", "dapr-system")
+    name = os.environ.get("DAPR_SIDECAR_INJECTOR_DEPLOYMENT", "dapr-sidecar-injector")
+    deadline = time.monotonic() + max(timeout_seconds, 0)
+    while True:
+        try:
+            dep = apps.read_namespaced_deployment(name=name, namespace=ns)
+            available = (
+                getattr(getattr(dep, "status", None), "available_replicas", None) or 0
+            )
+            if available >= 1:
+                return True
+        except Exception as exc:
+            logger.info("dapr injector availability check error: %s", exc)
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "dapr injector %s/%s not Available within %ss; provisioning anyway "
+                "(deferred daprd-present assert is the backstop)",
+                ns,
+                name,
+                timeout_seconds,
+            )
+            return False
+        time.sleep(2)
+
+
 def _adopt_deferred_scale_down(
     *,
     namespace: str,
@@ -841,6 +892,7 @@ def _adopt_deferred_scale_down(
     execution_id: str,
     wait_seconds: int,
     service: str | None = None,
+    needs_dapr: bool = False,
 ) -> None:
     """Background target: wait for the dev pod to be Ready, THEN scale the prod
     Deployment to 0. Deferring is REQUIRED when the dev pod adopts the BFF's own
@@ -869,20 +921,59 @@ def _adopt_deferred_scale_down(
     # Generous: the full BFF vite dev server can cold-boot well past waitReadySeconds.
     # Until the dev pod is Ready the prod Deployment is LEFT UP, so over-waiting only
     # delays the cutover; it never causes downtime.
+    recreated = False
     deadline = time.monotonic() + max(wait_seconds, 600)
     while time.monotonic() < deadline:
         try:
             pods = core.list_namespaced_pod(
                 namespace=namespace, label_selector=selector
             ).items
-            ready = any(
-                any(
-                    cs.name == "dev" and cs.ready
-                    for cs in (p.status.container_statuses or [])
-                )
-                for p in pods
+            ready_pod = next(
+                (
+                    p
+                    for p in pods
+                    if any(
+                        cs.name == "dev" and cs.ready
+                        for cs in (p.status.container_statuses or [])
+                    )
+                ),
+                None,
             )
-            if ready:
+            if ready_pod is not None:
+                # Defense-in-depth (the Dapr injector is FAIL-OPEN — failurePolicy
+                # Ignore): a needsDapr adopt pod can come up Ready with NO daprd
+                # (cold-start injection race). Scaling the prod Deployment to 0 into a
+                # daprd-less adopt would break BFF→orchestrator invocation with no
+                # failsafe. So assert daprd is present; if missing, delete the pod ONCE
+                # to force a fresh injection (the Sandbox controller recreates it, the
+                # injector now warm); if STILL missing, LEAVE PROD UP (the preview keeps
+                # serving via prod — a degraded but working state).
+                if needs_dapr and not _dev_pod_has_daprd(ready_pod):
+                    if not recreated:
+                        recreated = True
+                        logger.warning(
+                            "adopt: dev pod %s Ready but NO daprd (fail-open injector "
+                            "race); deleting to force re-injection (exec %s)",
+                            ready_pod.metadata.name,
+                            execution_id,
+                        )
+                        try:
+                            core.delete_namespaced_pod(
+                                name=ready_pod.metadata.name, namespace=namespace
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "adopt: daprd-retry pod delete failed: %s", exc
+                            )
+                        time.sleep(10)
+                        continue
+                    logger.error(
+                        "adopt: dev pod for exec %s Ready but STILL no daprd after "
+                        "recreate; leaving %s UP (failsafe — preview serves via prod)",
+                        execution_id,
+                        deployment,
+                    )
+                    return
                 # Grace so the provision HTTP response (which returns when the dev
                 # pod is Ready) fully propagates orchestrator←router←BFF BEFORE we
                 # scale the BFF to 0 — otherwise the scale could still kill the pod
@@ -892,7 +983,7 @@ def _adopt_deferred_scale_down(
                     apps, namespace=namespace, name=deployment
                 )
                 logger.info(
-                    "adopt: dev pod ready → scaled %s to 0 (exec %s)",
+                    "adopt: dev pod ready (daprd ok) → scaled %s to 0 (exec %s)",
                     deployment,
                     execution_id,
                 )
@@ -3049,7 +3140,7 @@ def build_dev_preview_sandbox_manifest(
     # run; the daprd attaches to the SAME single workflowstatestore under its own
     # app-id partition (does NOT add a 2nd actorStateStore=true component).
     if request.needsDapr:
-        pod_template_metadata["annotations"] = {
+        dapr_annotations = {
             "dapr.io/enabled": "true",
             "dapr.io/app-id": dapr_app_id,
             "dapr.io/app-port": str(port),
@@ -3061,6 +3152,12 @@ def build_dev_preview_sandbox_manifest(
                 )
             ),
             "dapr.io/enable-workflow": "true",
+            # Native sidecar (daprd init container, restartPolicy: Always) — parity with
+            # build_agent_workflow_host_sandbox_manifest. Native injection works in the
+            # vcluster (confirmed: the adopt pod comes up with daprd in initContainers +
+            # dapr.io/sidecar-injected=true); the fail-open injector cold-start race is
+            # handled by the injector-Availability gate + the deferred daprd-present
+            # assert, NOT by dropping native-sidecar.
             "dapr.io/enable-native-sidecar": "true",
             "dapr.io/internal-grpc-port": os.environ.get(
                 "DAPR_AGENT_HOST_INTERNAL_GRPC_PORT", "3502"
@@ -3071,7 +3168,15 @@ def build_dev_preview_sandbox_manifest(
             ),
             "dapr.io/max-body-size": os.environ.get("DAPR_MAX_BODY_SIZE", "16Mi"),
             "dapr.io/graceful-shutdown-seconds": "60",
+            # Aggressive daprd readiness probe (agent-host parity — same 0/1/1 tuning as
+            # build_agent_workflow_host_sandbox_manifest). daprd reports Ready ASAP so
+            # the pod is not Ready-with-daprd-not-yet-up during the fail-open injector
+            # cold-start window (the fn-system dapr-race mitigation).
+            "dapr.io/sidecar-readiness-probe-delay-seconds": "0",
+            "dapr.io/sidecar-readiness-probe-period-seconds": "1",
+            "dapr.io/sidecar-readiness-probe-timeout-seconds": "1",
         }
+        pod_template_metadata["annotations"] = dapr_annotations
     sandbox_spec: dict[str, Any] = {
         "replicas": 1,
         "podTemplate": {
@@ -3413,6 +3518,17 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
         apps = _load_k8s_apps_client()
         _, core = _load_k8s_clients()
         custom = _load_k8s_custom_objects_client()
+        # Gate needsDapr provisions on the Dapr sidecar-injector being Available: the
+        # injector webhook is fail-open, so creating the pod while it is still cold
+        # yields NO daprd. Best-effort wait (the deferred daprd-present assert is the
+        # backstop; never hard-fails provisioning).
+        if body.needsDapr:
+            _wait_for_dapr_injector_available(
+                apps,
+                timeout_seconds=int(
+                    os.environ.get("DEV_PREVIEW_INJECTOR_WAIT_SECONDS", "60")
+                ),
+            )
         # Preview-native adopt (in a Tier-2 vcluster preview): read the target
         # Service's selector so the dev pod can adopt it (the Service then routes to
         # the dev pod). Read-only here — the prod Deployment scale-to-0 is DEFERRED
@@ -3493,6 +3609,7 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
                     "execution_id": body.executionId,
                     "wait_seconds": body.waitReadySeconds,
                     "service": body.service,
+                    "needs_dapr": body.needsDapr,
                 },
                 daemon=True,
             ).start()
@@ -3593,6 +3710,76 @@ def teardown_dev_preview(request: Request, name: str) -> dict[str, Any]:
                     "adopt: failed restoring deployment %s: %s", adopt_deployment, exc
                 )
     return {"sandboxName": safe_name, "deleted": True}
+
+
+@app.get("/internal/dev-previews")
+def list_dev_previews(request: Request, executionId: str) -> dict[str, Any]:
+    """Per-service dev-preview status for one workflow execution (Dev-hub polling).
+
+    Mirrors the /internal/vcluster-previews list pattern. With N dev pods per
+    execution (multi-service adopt) this returns one entry per `dev-preview-service`
+    — the Sandbox name, the adopted Deployment (if any), readiness and pod IP — joined
+    from the Sandbox CRs and their pods (both labeled workflow-execution-id +
+    dev-preview-service, which survive the preview-native adopt-selector merge)."""
+    _require_internal(request)
+    namespace = _agent_workflow_host_namespace()
+    exec_label = _safe_name(executionId, max_length=63)
+    services: list[dict[str, Any]] = []
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        custom = _load_k8s_custom_objects_client()
+        _, core = _load_k8s_clients()
+        selector = f"workflow-execution-id={exec_label}"
+        # First pod per service (readiness/IP). The `app` label is overwritten by the
+        # adopted Service selector, so key on the two labels that survive.
+        pod_by_service: dict[str, Any] = {}
+        try:
+            pods = core.list_namespaced_pod(
+                namespace=namespace, label_selector=selector
+            ).items
+        except Exception as exc:
+            logger.warning("dev-previews: pod list failed: %s", exc)
+            pods = []
+        for pod in pods:
+            labels = (pod.metadata.labels or {}) if pod.metadata else {}
+            svc = labels.get("dev-preview-service")
+            if svc and svc not in pod_by_service:
+                pod_by_service[svc] = pod
+        try:
+            crs = custom.list_namespaced_custom_object(
+                group="agents.x-k8s.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="sandboxes",
+                label_selector=selector,
+            ).get("items", [])
+        except Exception as exc:
+            logger.warning("dev-previews: sandbox list failed: %s", exc)
+            crs = []
+        for cr in crs:
+            meta = cr.get("metadata", {}) or {}
+            labels = meta.get("labels", {}) or {}
+            svc = labels.get("dev-preview-service") or "workflow-builder"
+            pod = pod_by_service.get(svc)
+            services.append(
+                {
+                    "service": svc,
+                    "sandboxName": meta.get("name"),
+                    "adoptDeployment": (meta.get("annotations", {}) or {}).get(
+                        "wfb-dev-preview/adopt-deployment"
+                    ),
+                    "ready": _pod_is_ready(pod) if pod is not None else False,
+                    "podIP": (
+                        getattr(getattr(pod, "status", None), "pod_ip", None)
+                        if pod is not None
+                        else None
+                    ),
+                }
+            )
+    return {"executionId": executionId, "services": services}
 
 
 class PurgeWorkspaceDataRequest(BaseModel):
