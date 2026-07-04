@@ -243,8 +243,9 @@ SWE-bench exact-ready environment validation now runs through
 queries are confined to `PostgresSwebenchEnvironmentValidationRepository`, and
 build submission/sync side effects are behind
 `LegacySwebenchEnvironmentBuildProvisioner`. The public/internal validation
-routes and internal benchmark run launch route no longer import the
-DB-backed environment validation helper directly.
+routes, internal benchmark run launch route, benchmark instance-detail
+environment planning, and internal environment status route no longer import the
+DB-backed environment image-build helper directly.
 The password sign-in and social OAuth callback routes now delegate user lookup,
 identity creation, default platform/project handling, password verification, and
 token issuing through `ApplicationAuthSignInService`. Direct Drizzle access is

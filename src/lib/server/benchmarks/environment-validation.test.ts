@@ -128,7 +128,9 @@ describe("SWE-bench environment validation selection", () => {
 			allowBuild: true,
 		}, {
 			provisioner: {
+				planEnvironment: vi.fn(),
 				ensureEnvironment: environmentMocks.ensureSwebenchEnvironment,
+				getEnvironmentStatus: vi.fn(),
 				syncSelectableBuilds: vi.fn(),
 			},
 		});

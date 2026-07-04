@@ -1,6 +1,7 @@
 import {
 	isExactValidatedSwebenchInferenceEnvironment,
 	loadSwebenchInferenceEnvironmentMappings,
+	type ResolvedSwebenchInferenceEnvironment,
 	type SwebenchInferenceEnvironmentMapping,
 } from "$lib/server/benchmarks/inference-environments";
 import {
@@ -103,6 +104,12 @@ export type EnvironmentValidationSubmission = {
 	reason: string | null;
 };
 
+export type SwebenchEnvironmentStatusLookupInput = {
+	buildId?: string | null;
+	envSpecHash?: string | null;
+	environmentKey?: string | null;
+};
+
 export type SwebenchEnvironmentValidationRepository = {
 	ensureDefaultBenchmarkSuites(): Promise<void>;
 	getSuiteBySlug(
@@ -123,8 +130,14 @@ export type SwebenchEnvironmentValidationRepository = {
 };
 
 export type SwebenchEnvironmentBuildProvisioner = {
+	planEnvironment(
+		input: EnsureSwebenchEnvironmentInput,
+	): ResolvedSwebenchInferenceEnvironment;
 	ensureEnvironment(
 		input: EnsureSwebenchEnvironmentInput,
+	): Promise<EnvironmentPrepareResult>;
+	getEnvironmentStatus(
+		input: SwebenchEnvironmentStatusLookupInput,
 	): Promise<EnvironmentPrepareResult>;
 	syncSelectableBuilds(input: {
 		envSpecHashes: string[];
@@ -181,6 +194,18 @@ export class ApplicationBenchmarkEnvironmentValidationService {
 			ensureEnvironment: (input) =>
 				this.deps.provisioner.ensureEnvironment(input),
 		});
+	}
+
+	planInstanceEnvironment(
+		input: EnsureSwebenchEnvironmentInput,
+	): ResolvedSwebenchInferenceEnvironment {
+		return this.deps.provisioner.planEnvironment(input);
+	}
+
+	getEnvironmentStatus(
+		input: SwebenchEnvironmentStatusLookupInput,
+	): Promise<EnvironmentPrepareResult> {
+		return this.deps.provisioner.getEnvironmentStatus(input);
 	}
 }
 

@@ -38,6 +38,15 @@ describe("ApplicationBenchmarkEnvironmentValidationService", () => {
 			loadBuildStatusByHash: vi.fn(async () => new Map()),
 		};
 		provisioner = {
+			planEnvironment: vi.fn(() => ({
+				environmentStatus: "building" as const,
+				suite: "SWE-bench_Verified",
+				repo: "astropy/astropy",
+				sandboxTemplate: "dapr-agent",
+				environmentKey: "astropy-7166",
+				buildStrategy: "swebench-harness",
+				version: "1.0",
+			})),
 			ensureEnvironment: vi.fn(async () => ({
 				success: true,
 				complete: false,
@@ -47,6 +56,15 @@ describe("ApplicationBenchmarkEnvironmentValidationService", () => {
 				buildId: "build-1",
 				pipelineRunName: "swe-env-build-1",
 				pipelineRunNamespace: "tekton-pipelines",
+			})),
+			getEnvironmentStatus: vi.fn(async () => ({
+				success: true,
+				complete: false,
+				environmentStatus: "building" as const,
+				status: "building" as const,
+				sandboxTemplate: "swebench",
+				buildId: "build-1",
+				envSpecHash: "hash-1",
 			})),
 			syncSelectableBuilds: vi.fn(async () => {}),
 		};
@@ -145,6 +163,48 @@ describe("ApplicationBenchmarkEnvironmentValidationService", () => {
 				allowBuild: true,
 			}),
 		);
+	});
+
+	it("plans one instance environment through the provisioner port", () => {
+		const result = service.planInstanceEnvironment({
+			dataset: "SWE-bench_Verified",
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "astropy__astropy-7166",
+			repo: "astropy/astropy",
+			baseCommit: "abc123",
+			testMetadata: {},
+		});
+
+		expect(provisioner.planEnvironment).toHaveBeenCalledWith({
+			dataset: "SWE-bench_Verified",
+			suiteSlug: "SWE-bench_Verified",
+			instanceId: "astropy__astropy-7166",
+			repo: "astropy/astropy",
+			baseCommit: "abc123",
+			testMetadata: {},
+		});
+		expect(result).toMatchObject({
+			environmentStatus: "building",
+			environmentKey: "astropy-7166",
+		});
+	});
+
+	it("reads one environment status through the provisioner port", async () => {
+		const result = await service.getEnvironmentStatus({
+			buildId: "build-1",
+			envSpecHash: null,
+			environmentKey: null,
+		});
+
+		expect(provisioner.getEnvironmentStatus).toHaveBeenCalledWith({
+			buildId: "build-1",
+			envSpecHash: null,
+			environmentKey: null,
+		});
+		expect(result).toMatchObject({
+			environmentStatus: "building",
+			buildId: "build-1",
+		});
 	});
 
 	it("rejects internal ensure requests when imported metadata is missing", async () => {

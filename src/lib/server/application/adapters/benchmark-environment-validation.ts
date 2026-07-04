@@ -9,6 +9,8 @@ import {
 } from "$lib/server/db/schema";
 import {
 	ensureSwebenchEnvironment,
+	getSwebenchEnvironmentStatus,
+	plannedSwebenchInferenceEnvironment,
 	syncEnvironmentBuild,
 } from "$lib/server/environments/environment-image-builds";
 import type {
@@ -141,8 +143,16 @@ export class PostgresSwebenchEnvironmentValidationRepository implements Swebench
 export class LegacySwebenchEnvironmentBuildProvisioner implements SwebenchEnvironmentBuildProvisioner {
 	constructor(private readonly database: Database = defaultDb) {}
 
+	planEnvironment(input: Parameters<typeof plannedSwebenchInferenceEnvironment>[0]) {
+		return plannedSwebenchInferenceEnvironment(input);
+	}
+
 	ensureEnvironment(input: Parameters<typeof ensureSwebenchEnvironment>[0]) {
 		return ensureSwebenchEnvironment(input);
+	}
+
+	getEnvironmentStatus(input: Parameters<typeof getSwebenchEnvironmentStatus>[0]) {
+		return getSwebenchEnvironmentStatus(input);
 	}
 
 	async syncSelectableBuilds(input: {

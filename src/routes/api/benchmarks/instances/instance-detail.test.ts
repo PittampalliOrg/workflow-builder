@@ -10,19 +10,22 @@ const workflowDataMock = vi.hoisted(() => {
 	};
 });
 
+const benchmarkEnvironmentValidationMock = vi.hoisted(() => {
+	return {
+		planInstanceEnvironment: vi.fn(() => ({
+			environmentStatus: "building",
+			environmentKey: "sympy-1.7",
+			buildStrategy: "swebench-harness",
+			version: "1.7",
+		})),
+	};
+});
+
 vi.mock("$lib/server/application", () => ({
 	getApplicationAdapters: () => ({
 		workflowData: workflowDataMock,
+		benchmarkEnvironmentValidation: benchmarkEnvironmentValidationMock,
 	}),
-}));
-
-vi.mock("$lib/server/environments/environment-image-builds", () => ({
-	plannedSwebenchInferenceEnvironment: vi.fn(() => ({
-		environmentStatus: "building",
-		environmentKey: "sympy-1.7",
-		buildStrategy: "swebench-harness",
-		version: "1.7",
-	})),
 }));
 
 import { GET } from "./[suiteSlug]/[instanceId]/+server";
@@ -32,6 +35,7 @@ describe("benchmark instance detail API", () => {
 		workflowDataMock.canViewContaminationRiskMetadata.mockReset();
 		workflowDataMock.canViewContaminationRiskMetadata.mockResolvedValue(false);
 		workflowDataMock.getBenchmarkInstanceDetail.mockReset();
+		benchmarkEnvironmentValidationMock.planInstanceEnvironment.mockClear();
 	});
 
 	it("loads instance details through workflow-data", () => {
@@ -50,9 +54,12 @@ describe("benchmark instance detail API", () => {
 		expect(source).toContain("getApplicationAdapters");
 		expect(source).toContain("getBenchmarkInstanceDetail");
 		expect(source).toContain("canViewContaminationRiskMetadata");
+		expect(source).toContain("benchmarkEnvironmentValidation");
+		expect(source).toContain("planInstanceEnvironment");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");
+		expect(source).not.toContain("environment-image-builds");
 		expect(contaminationSource).not.toContain("$lib/server/db");
 		expect(contaminationSource).not.toContain("$lib/server/db/schema");
 		expect(contaminationSource).not.toContain("drizzle-orm");
@@ -86,6 +93,16 @@ describe("benchmark instance detail API", () => {
 		expect(workflowDataMock.getBenchmarkInstanceDetail).toHaveBeenCalledWith({
 			suiteSlug: "SWE-bench_Lite",
 			instanceId: "sympy__sympy-20590",
+		});
+		expect(
+			benchmarkEnvironmentValidationMock.planInstanceEnvironment,
+		).toHaveBeenCalledWith({
+			dataset: "SWE-bench_Lite",
+			suiteSlug: "SWE-bench_Lite",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "abc123",
+			testMetadata: expect.objectContaining({ version: "1.7" }),
 		});
 	});
 

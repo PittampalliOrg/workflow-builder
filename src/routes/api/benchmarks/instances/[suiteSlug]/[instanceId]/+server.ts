@@ -4,7 +4,6 @@ import {
 	publicSwebenchTestMetadata,
 	wantsContaminationRiskMetadata,
 } from "$lib/server/benchmarks/contamination";
-import { plannedSwebenchInferenceEnvironment } from "$lib/server/environments/environment-image-builds";
 import { getApplicationAdapters } from "$lib/server/application";
 import type { RequestHandler } from "./$types";
 
@@ -14,7 +13,10 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
 	const suiteSlug = decodeURIComponent(params.suiteSlug ?? "");
 	const instanceId = decodeURIComponent(params.instanceId ?? "");
 	if (!suiteSlug || !instanceId) error(400, "suiteSlug and instanceId required");
-	const workflowData = getApplicationAdapters().workflowData;
+	const application = getApplicationAdapters();
+	const workflowData = application.workflowData;
+	const benchmarkEnvironmentValidation =
+		application.benchmarkEnvironmentValidation;
 	const wantsAuditMetadata = wantsContaminationRiskMetadata(url);
 	let includeContaminationRiskMetadata = false;
 	try {
@@ -51,7 +53,7 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
 
 	if (!row) error(404, `Instance not found: ${suiteSlug}/${instanceId}`);
 
-	const environment = plannedSwebenchInferenceEnvironment({
+	const environment = benchmarkEnvironmentValidation.planInstanceEnvironment({
 		dataset: row.suiteSlug,
 		suiteSlug:
 			row.suiteSlug === "SWE-bench_Verified"
