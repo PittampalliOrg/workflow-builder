@@ -3958,6 +3958,11 @@ class VclusterPreviewRequest(BaseModel):
     # EXPOSE_DEV_POD=false so the prod tailnet LB fronts the adopted dev pod (its
     # tls-terminator) over HTTPS. Defaults from env so it can be flipped without an API change.
     previewDevMode: bool | None = None
+    # PREVIEW_OBSERVABILITY=disabled|async → disabled (default) keeps previews behavior-
+    # identical to today (OTEL SDK off); async re-enables async OTLP export to the host
+    # otel-collector replicated into the vcluster. Defaults from env so it can be flipped
+    # cluster-wide without an API change.
+    previewObservability: str | None = None
 
 
 def _vcluster_preview_job_name(name: str, action: str) -> str:
@@ -3993,6 +3998,15 @@ def _vcluster_preview_job_manifest(
         "VCLUSTER_PREVIEW_DB_MODE", "shared"
     )
     env.append({"name": "PREVIEW_DB_MODE", "value": preview_db_mode})
+    # Preview observability mode (disabled = OTEL off, behavior-identical to today; async =
+    # re-enable async OTLP export to the replicated host otel-collector). Env-defaulted for a
+    # cluster-wide flip. The runner stages a preview-observability ConfigMap from this value.
+    preview_observability = req.previewObservability or os.environ.get(
+        "VCLUSTER_PREVIEW_OBSERVABILITY", "disabled"
+    )
+    env.append(
+        {"name": "PREVIEW_OBSERVABILITY", "value": preview_observability}
+    )
     # Interactive dev preview (adopt:true dev image replaces the prod BFF): thread
     # PREVIEW_DEV_MODE so the runner wires the prod LB to the adopted dev pod
     # (EXPOSE_DEV_POD=false). Defaults from env for a cluster-wide flip.
@@ -4164,6 +4178,27 @@ def _vcluster_preview_phase(batch, core, name: str) -> tuple[str, int, int, int]
     return phase, active, succeeded, failed
 
 
+def _vcluster_preview_boot_seconds(core, name: str) -> int | None:
+    """Boot duration (seconds) the provisioning runner stamped on the host preview
+    namespace as the `vcluster-preview-boot-seconds` annotation (A0 instrumentation),
+    or None if not yet recorded / the ns is absent. Additive telemetry — never raises
+    for a missing ns."""
+    try:
+        ns = core.read_namespace(name=f"vcluster-{name}")
+    except Exception as exc:
+        if getattr(exc, "status", None) != 404:
+            raise
+        return None
+    annotations = (ns.metadata.annotations or {}) if ns.metadata else {}
+    raw = annotations.get("vcluster-preview-boot-seconds")
+    if raw is None:
+        return None
+    try:
+        return int(float(str(raw).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
 @app.get("/internal/vcluster-preview/{name}")
 def get_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
     _require_internal(request)
@@ -4171,6 +4206,7 @@ def get_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
     url = f"https://{tailnet_host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}"
     phase = "unknown"
     active = succeeded = failed = 0
+    boot_seconds: int | None = None
     if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
         "1",
         "true",
@@ -4178,6 +4214,7 @@ def get_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
     }:
         batch, core = _load_k8s_clients()
         phase, active, succeeded, failed = _vcluster_preview_phase(batch, core, name)
+        boot_seconds = _vcluster_preview_boot_seconds(core, name)
     return {
         "name": name,
         "job": _vcluster_preview_job_name(name, "up"),
@@ -4188,6 +4225,7 @@ def get_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
         "failed": failed,
         "tailnetHost": tailnet_host,
         "url": url,
+        "bootSeconds": boot_seconds,
     }
 
 
