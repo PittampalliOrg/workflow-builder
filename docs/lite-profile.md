@@ -36,10 +36,13 @@ and unknown values still throw.
 
 ## Schema
 
-Lite owns its schema via `drizzle-kit push` of `schema.ts` head (not the
-`atlas/migrations` startup pass, which is a drifted secondary tracker). This is the
-same "schema is drizzle-owned" model as the ryzen DevSpace path, so the atlas
-startup pass is skipped when `APP_PROFILE=lite`.
+Lite owns its schema via `drizzle-kit push` of `schema.ts` head. Drizzle is the
+**single schema owner** across all modes: the postgres path applies drizzle
+migrations out-of-band via the `db-migrate` init container (`pnpm db:migrate`)
+before the app boots, and lite pushes `schema.ts` head. The old in-app
+`atlas/migrations` startup pass — a drifted secondary tracker (missing tables/columns
+vs head, some files failing even on real Postgres) — has been retired; `atlas/*.sql`
+is kept only as history. Boot now runs only idempotent data backfills, never schema.
 
 ## Commands
 
