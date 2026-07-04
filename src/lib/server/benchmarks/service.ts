@@ -127,7 +127,7 @@ import {
 	type BenchmarkExecutionBackend,
 	type BenchmarkExecutionClass,
 } from "./execution-plane";
-import { buildSwebenchEnvironmentSpec } from "$lib/server/environments/environment-image-builds";
+import { buildSwebenchEnvironmentSpec } from "$lib/server/environments/swebench-environment-spec";
 
 const HIDDEN_WORKFLOW_NAME = "SWE-bench instance runner";
 const DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60;

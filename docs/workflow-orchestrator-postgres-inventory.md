@@ -251,6 +251,11 @@ build submission/sync side effects are behind
 routes, internal benchmark run launch route, benchmark instance-detail
 environment planning, and internal environment status route no longer import the
 DB-backed environment image-build helper directly.
+The pure SWE-bench environment spec planner now lives in
+`src/lib/server/environments/swebench-environment-spec.ts`, so application
+services can derive deterministic `envSpecHash` / environment keys without
+importing the DB/Tekton-backed `environment-image-builds` adapter module. The
+legacy image-build module re-exports the planner for compatibility.
 The password sign-in and social OAuth callback routes now delegate user lookup,
 identity creation, default platform/project handling, password verification, and
 token issuing through `ApplicationAuthSignInService`. Direct Drizzle access is

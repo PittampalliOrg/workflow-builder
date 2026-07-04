@@ -43,7 +43,7 @@ import {
 	swebenchInferenceEnvironmentPromptNotes,
 	type ResolvedSwebenchInferenceEnvironment,
 } from "$lib/server/benchmarks/inference-environments";
-import { buildSwebenchEnvironmentSpec } from "$lib/server/environments/environment-image-builds";
+import { buildSwebenchEnvironmentSpec } from "$lib/server/environments/swebench-environment-spec";
 import { buildStableWorkspaceRef } from "$lib/server/benchmarks/workspace-ref";
 import {
 	aggregateGraderResults,

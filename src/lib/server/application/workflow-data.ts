@@ -15,7 +15,7 @@ import {
 } from "$lib/server/benchmarks/inference-environments";
 import { normalizeSwebenchSuiteSlug } from "$lib/server/benchmarks/swebench";
 import { estimateBenchmarkRuntimeCapacity } from "$lib/server/benchmarks/runtime-capacity";
-import { buildSwebenchEnvironmentSpec } from "$lib/server/environments/environment-image-builds";
+import { buildSwebenchEnvironmentSpec } from "$lib/server/environments/swebench-environment-spec";
 import { connectionBelongsToProject, mergeConnectionProjectId } from "$lib/server/app-connection-scope";
 import {
 	buildOAuth2AuthorizationUrl,

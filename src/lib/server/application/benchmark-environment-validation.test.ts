@@ -237,6 +237,7 @@ describe("ApplicationBenchmarkEnvironmentValidationService", () => {
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");
+		expect(source).not.toContain("environment-image-builds");
 	});
 });
 

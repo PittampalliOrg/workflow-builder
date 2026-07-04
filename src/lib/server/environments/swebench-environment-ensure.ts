@@ -7,10 +7,9 @@ import {
 	type SwebenchSuiteSlug,
 } from "$lib/server/benchmarks/swebench";
 import {
-	ensureSwebenchEnvironment,
 	type EnvironmentPrepareResult,
 	type EnsureSwebenchEnvironmentInput,
-} from "$lib/server/environments/environment-image-builds";
+} from "$lib/server/environments/swebench-environment-spec";
 
 export class SwebenchEnvironmentEnsureRequestError extends Error {
 	constructor(
@@ -45,7 +44,7 @@ export async function ensureSwebenchEnvironmentFromInternalRequest(
 	deps: SwebenchEnvironmentEnsureDependencies = {
 		requireImportedMetadata: false,
 		loadServerSwebenchInstance: loadLegacyServerSwebenchInstance,
-		ensureEnvironment: ensureSwebenchEnvironment,
+		ensureEnvironment: ensureLegacySwebenchEnvironment,
 	},
 ): Promise<EnvironmentPrepareResult> {
 	if (!body)
@@ -128,6 +127,15 @@ export async function ensureSwebenchEnvironmentFromInternalRequest(
 			body.forceRefreshLegacy === true ||
 			body.forceRefresh === true,
 	});
+}
+
+async function ensureLegacySwebenchEnvironment(
+	input: EnsureSwebenchEnvironmentInput,
+): Promise<EnvironmentPrepareResult> {
+	const { ensureSwebenchEnvironment } = await import(
+		"$lib/server/environments/environment-image-builds"
+	);
+	return ensureSwebenchEnvironment(input);
 }
 
 function requireString(value: unknown, key: string): string {

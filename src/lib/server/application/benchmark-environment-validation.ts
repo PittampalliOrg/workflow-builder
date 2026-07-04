@@ -13,7 +13,7 @@ import {
 	buildSwebenchEnvironmentSpec,
 	type EnvironmentPrepareResult,
 	type EnsureSwebenchEnvironmentInput,
-} from "$lib/server/environments/environment-image-builds";
+} from "$lib/server/environments/swebench-environment-spec";
 import {
 	ensureSwebenchEnvironmentFromInternalRequest,
 	type ServerSwebenchEnvironmentInstance,
