@@ -1437,10 +1437,14 @@ projection helpers now live in
 `src/lib/server/application/adapters/environment-image-builds.ts`; the legacy
 `src/lib/server/environments/environment-image-builds.ts` module is a
 compatibility re-export with no direct DB, Drizzle, Tekton, or schema imports.
+Environment registry CRUD, versioning, runtime resolution, and usage lookups
+now live in `src/lib/server/application/adapters/environment-registry.ts`; the
+legacy `src/lib/server/environments/registry.ts` module is a compatibility
+re-export with no direct DB, Drizzle, or schema imports.
 The broader BFF/control-plane still has service-level direct DB imports outside
 that subset and remains the next migration area. Current categories include:
 
-- legacy agent registry/sync, environment registry, benchmark,
+- legacy agent registry/sync, benchmark,
   and evaluation service modules that still own direct
   Drizzle/Postgres access until their behavior is fully expressed as application
   ports and adapter implementations;

@@ -1,7 +1,7 @@
 import {
 	listEnvironments,
 	resolveEnvironmentRef,
-} from "$lib/server/environments/registry";
+} from "$lib/server/application/adapters/environment-registry";
 import type {
 	AgentImportExportEnvironmentRef,
 	AgentImportExportReferenceRepository,

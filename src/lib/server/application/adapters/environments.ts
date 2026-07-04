@@ -14,7 +14,7 @@ import {
 	resolveEnvironmentRef,
 	restoreVersion,
 	updateEnvironment,
-} from "$lib/server/environments/registry";
+} from "$lib/server/application/adapters/environment-registry";
 import type {
 	EnvironmentCreateCommand,
 	EnvironmentListFilter,

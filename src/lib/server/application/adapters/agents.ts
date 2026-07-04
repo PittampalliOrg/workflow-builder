@@ -61,7 +61,7 @@ import {
 	compileAgentCapabilities,
 	type CompileAgentCapabilitiesOptions,
 } from "$lib/server/agents/compiled-capabilities";
-import { resolveEnvironmentRef } from "$lib/server/environments/registry";
+import { resolveEnvironmentRef } from "$lib/server/application/adapters/environment-registry";
 import { agentRuntimeDedicatedAppId } from "$lib/server/agents/runtime-routing";
 import { listRuntimeIds } from "$lib/server/agents/runtime-registry";
 import { BUILTIN_AGENT_PROFILES } from "$lib/server/agent-profiles";
