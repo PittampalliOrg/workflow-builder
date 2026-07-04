@@ -239,6 +239,19 @@ export default defineConfig({
 		noExternal: ['nats']
 	},
 	test: {
-		exclude: [...configDefaults.exclude, 'tests/e2e/**']
+		exclude: [
+			...configDefaults.exclude,
+			'tests/e2e/**',
+			// CI-only: these two import service-local deps (@activepieces/*,
+			// function-router's runtime stack) that the root install does not
+			// provide; locally they run against services/*/node_modules.
+			// Follow-up: service-owned test lanes.
+			...(process.env.CI
+				? [
+						'services/piece-mcp-server/src/metadata-catalog.test.ts',
+						'services/function-router/src/routes/execute.test.ts'
+					]
+				: [])
+		]
 	}
 });
