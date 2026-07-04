@@ -39,6 +39,10 @@ if [ ! -d "$DATA_DIR" ]; then
 fi
 
 export APP_PROFILE=lite
+# Lite runs off-cluster with no OTLP collector — disable the OTEL SDK so boots
+# don't spew exporter-connection-refused noise (the tracing.py-equivalent
+# neutralization the in-cluster deploy does).
+export OTEL_SDK_DISABLED=true
 if [ -f "$PRIV" ]; then
   export JWT_SIGNING_KEY="$(cat "$PRIV")"
 fi

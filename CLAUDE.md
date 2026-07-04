@@ -88,6 +88,26 @@ Key facts (full detail in the `skaffold-dev-loop` skill):
 
 Observable live via **Argo Events** (hub) → BFF ingest `POST /api/internal/gitops/events/ingest` (`gitops/activity-events.ts` → `gitops_activity_events`) → SSE `GET /api/v1/gitops/events/stream?since=<seq>`. The "Kargo lens" pipeline (`pipeline-model.ts`, `activity-overlay.ts`) renders event-first; the overlay never mutates authoritative inventory health/sync. Build feedback + the Commit→Build→Pin→Promote→Deploy timeline are INVENTORY-sourced, not event-sourced (the stream is ~100% ArgoCD). **App-wide deployment notifications** (toast + sidebar bell, `deployment-notifications.svelte.ts`) fire on inventory-diff (new live image tag-SET while `Synced`), admin-gated.
 
+## Lite Profile & Gate (`APP_PROFILE=lite`)
+
+Innermost dev loop — the full BFF core with **no cluster, no DB server**. Same
+hexagonal app; only the outer adapters change. See `docs/lite-profile.md`.
+
+- **Persistence**: the unchanged Postgres adapter runs on embedded **PGlite** (WASM,
+  in-process) via the `src/lib/server/db/index.ts` driver seam. Schema is
+  drizzle-owned (`drizzle-kit push` of `schema.ts`), not the drifted `atlas/migrations`
+  pass (which is skipped under lite).
+- **Event bus / scheduler**: `in-process` bus + `lite-stub` scheduler (`config.ts`
+  flips these defaults under lite; explicit env still wins; unknown still throws).
+- **Workflows do NOT execute in lite** — durable SW workflows need the Python
+  orchestrator + Dapr placement. Starting one returns a `lite-`-prefixed instance and
+  surfaces an explicit "requires a preview environment" state (never faked).
+- Commands: `pnpm dev:lite` (push+seed+serve, sign-in works), `pnpm db:reset-lite`,
+  `pnpm spike:pglite`.
+- **`pnpm gate`** — run before requesting a preview (warm < 2 min): TS + Python
+  workflow-data contract fixtures + `check:boundaries`. `pnpm gate --full` = the whole
+  unit + orchestrator suites (matches CI).
+
 ## Services Overview
 
 | Service | Port | Role |

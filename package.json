@@ -10,6 +10,7 @@
 		"seed:lite": "tsx scripts/seed-lite.ts",
 		"db:reset-lite": "rm -rf .pglite-data .pglite-keys",
 		"spike:pglite": "tsx scripts/pglite-spike.ts",
+		"gate": "bash scripts/lite-gate.sh",
 		"build": "vite build",
 		"build:db-scripts": "node scripts/build-db-scripts.mjs",
 		"preview": "vite preview",

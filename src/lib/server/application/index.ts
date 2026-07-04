@@ -107,6 +107,7 @@ import {
 	DaprWorkflowApprovalEventPort,
 	DaprWorkflowScheduler,
 } from "$lib/server/application/adapters/dapr";
+import { LiteStubWorkflowScheduler } from "$lib/server/application/adapters/in-process";
 import { DaprClientInspectionRuntimeAdapter } from "$lib/server/application/adapters/dapr-inspection";
 import { SessionFleetActivityAdapter } from "$lib/server/application/adapters/capacity-active";
 import {
@@ -382,14 +383,9 @@ export function getApplicationAdapters(
 			`Unsupported artifact store adapter: ${config.artifactStoreAdapter}`,
 		);
 	}
-	if (config.workflowSchedulerAdapter !== "dapr-workflow") {
-		throw new Error(
-			`Unsupported workflow scheduler adapter: ${config.workflowSchedulerAdapter}`,
-		);
-	}
-	if (config.eventBusAdapter !== "dapr-pubsub") {
-		throw new Error(`Unsupported event bus adapter: ${config.eventBusAdapter}`);
-	}
+	// Event bus + workflow scheduler are selected below (getEventBusAdapter /
+	// the workflowScheduler branch) and validated by getApplicationAdapterConfig;
+	// both families have a lite member, so no fixed-value guard here.
 
 	let database: ReturnType<typeof requirePostgresDb> | undefined;
 	let agentRuntimes: PostgresAgentRuntimeRepository | undefined;
@@ -1319,7 +1315,10 @@ export function getApplicationAdapters(
 		(sessionAgentConfig ??= new ApplicationSessionAgentConfigService({
 			patches: getWorkflowData(),
 		}));
-	const workflowScheduler = new DaprWorkflowScheduler();
+	const workflowScheduler =
+		config.workflowSchedulerAdapter === "lite-stub"
+			? new LiteStubWorkflowScheduler()
+			: new DaprWorkflowScheduler();
 	const getWorkflowData = () =>
 		(workflowData ??= new ApplicationWorkflowDataService({
 			workflowDefinitions: getWorkflowDefinitions(),

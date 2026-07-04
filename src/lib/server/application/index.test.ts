@@ -29,6 +29,11 @@ vi.mock("$lib/server/application/adapters/postgres", () => ({
 
 import { getApplicationAdapters } from "$lib/server/application";
 import { requirePostgresDb } from "$lib/server/application/adapters/postgres";
+import { getApplicationAdapterConfig } from "$lib/server/application/config";
+import {
+	InProcessEventBus,
+	LiteStubWorkflowScheduler,
+} from "$lib/server/application/adapters/in-process";
 
 describe("getApplicationAdapters", () => {
 	it("does not initialize Postgres when only Dapr-backed ports are read", () => {
@@ -37,6 +42,14 @@ describe("getApplicationAdapters", () => {
 		expect(app.eventBus).toBeTruthy();
 		expect(app.workflowScheduler).toBeTruthy();
 		expect(app.credentialStore).toBeTruthy();
+		expect(requirePostgresDb).not.toHaveBeenCalled();
+	});
+
+	it("wires the in-process bus and lite-stub scheduler in the lite profile", () => {
+		const app = getApplicationAdapters(getApplicationAdapterConfig({ APP_PROFILE: "lite" }));
+
+		expect(app.eventBus).toBeInstanceOf(InProcessEventBus);
+		expect(app.workflowScheduler).toBeInstanceOf(LiteStubWorkflowScheduler);
 		expect(requirePostgresDb).not.toHaveBeenCalled();
 	});
 

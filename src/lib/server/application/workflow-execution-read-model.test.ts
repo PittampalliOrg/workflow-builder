@@ -11,6 +11,7 @@ import type {
 	WorkflowExecutionRecord,
 	WorkflowRuntimeStatusPort,
 } from "$lib/server/application/ports";
+import { LITE_WORKFLOW_NOT_EXECUTED_MESSAGE } from "$lib/server/application/lite-profile";
 
 function execution(overrides: Partial<WorkflowExecutionRecord> = {}): WorkflowExecutionRecord {
 	return {
@@ -195,6 +196,43 @@ describe("ApplicationWorkflowExecutionReadModelService", () => {
 		expect(workflowData.getExecutionById).toHaveBeenCalledTimes(2);
 		expect(model?.status).toBe("success");
 		expect(model?.traceId).toBe("trace-runtime");
+	});
+
+	it("surfaces a not-executed-in-lite state instead of polling a lite instance", async () => {
+		const updateReadModel = vi.fn(async () => undefined);
+		const runtimeStatus = {
+			getWorkflowStatus: vi.fn(async () => null),
+		} satisfies WorkflowRuntimeStatusPort;
+		const { service: readModel } = service({
+			executions: [
+				execution({ daprInstanceId: "lite-abc", status: "running" }),
+				execution({
+					daprInstanceId: "lite-abc",
+					status: "error",
+					error: LITE_WORKFLOW_NOT_EXECUTED_MESSAGE,
+					completedAt: new Date("2026-07-03T00:01:00.000Z"),
+				}),
+			],
+			runtime: runtimeStatus,
+			updateReadModel,
+		});
+
+		const model = await readModel.loadExecutionReadModel({
+			executionId: "exec-1",
+			refreshRuntime: true,
+			includeAgentEvents: false,
+		});
+
+		expect(runtimeStatus.getWorkflowStatus).not.toHaveBeenCalled();
+		expect(updateReadModel).toHaveBeenCalledWith(
+			"exec-1",
+			expect.objectContaining({
+				status: "error",
+				error: LITE_WORKFLOW_NOT_EXECUTED_MESSAGE,
+			}),
+		);
+		expect(model?.status).toBe("error");
+		expect(model?.error).toBe(LITE_WORKFLOW_NOT_EXECUTED_MESSAGE);
 	});
 
 	it("loads recent agent events for trace harvesting when timeline events are hidden", async () => {
