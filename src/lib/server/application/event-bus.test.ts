@@ -26,6 +26,7 @@ describe("getEventBusAdapter", () => {
 				artifactStoreAdapter: "postgres-metadata-object-data",
 				workflowSchedulerAdapter: "dapr-workflow",
 				previewProvisionerAdapter: "sandbox-execution-api",
+				previewRunFeedEnabled: false,
 			}),
 		).toThrow("Unsupported event bus adapter: bogus");
 	});
