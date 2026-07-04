@@ -5,7 +5,7 @@ import type {
 	BenchmarkMlflowEvaluationRecord,
 	BenchmarkMlflowEvaluationRepository,
 } from "$lib/server/application/benchmark-mlflow-evaluation";
-import { syncBenchmarkRunMlflow } from "$lib/server/benchmarks/mlflow";
+import { syncBenchmarkRunMlflow } from "$lib/server/application/adapters/benchmark-mlflow";
 
 type Database = typeof defaultDb;
 

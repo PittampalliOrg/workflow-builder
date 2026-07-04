@@ -27,8 +27,8 @@ import {
 	normalizeMlflowTraceId,
 	publicMlflowTracesUrl,
 	publicWorkflowBuilderTraceUrl,
-} from "$lib/server/benchmarks/mlflow";
-import type { MlflowNativeTrace, MlflowNativeTraceSpan, MlflowTag } from "$lib/server/benchmarks/mlflow";
+} from "$lib/server/application/adapters/benchmark-mlflow";
+import type { MlflowNativeTrace, MlflowNativeTraceSpan, MlflowTag } from "$lib/server/application/adapters/benchmark-mlflow";
 
 export type SwebenchTraceBundleBackend =
 	| "mlflow_artifact"

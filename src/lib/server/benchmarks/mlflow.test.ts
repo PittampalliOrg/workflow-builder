@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("$env/dynamic/private", () => ({ env: process.env }));
@@ -22,6 +25,18 @@ beforeEach(() => {
 });
 
 describe("publicMlflowTracesUrl", () => {
+	it("keeps the legacy benchmark MLflow module free of direct DB imports", () => {
+		const source = readFileSync(
+			join(dirname(fileURLToPath(import.meta.url)), "mlflow.ts"),
+			"utf8",
+		);
+
+		expect(source).toContain("$lib/server/application/adapters/benchmark-mlflow");
+		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("drizzle-orm");
+		expect(source).not.toContain("benchmarkRuns");
+	});
+
 	it("routes benchmark trace links through the local trace viewer", () => {
 		expect(publicMlflowTracesUrl("1", "abc123")).toBe(
 			"/observability/abc123",

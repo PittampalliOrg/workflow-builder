@@ -4,7 +4,7 @@ import {
 	markBenchmarkRunStatus,
 	recomputeRunSummary,
 } from "$lib/server/benchmarks/service";
-import { syncBenchmarkInstanceMlflow } from "$lib/server/benchmarks/mlflow";
+import { syncBenchmarkInstanceMlflow } from "$lib/server/application/adapters/benchmark-mlflow";
 import { daprFetch } from "$lib/server/dapr-client";
 import type {
 	BenchmarkEvaluationEventNotifier,

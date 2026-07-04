@@ -1420,6 +1420,12 @@ Auth session token verification, refresh, and session materialization now live
 in `src/lib/server/application/adapters/auth-session.ts`; the legacy
 `src/lib/server/auth.ts` module is a DB-free compatibility wrapper and JWT
 issuing is isolated in `src/lib/server/auth-jwt.ts`.
+Benchmark MLflow sync/link/proxy helpers now live in
+`src/lib/server/application/adapters/benchmark-mlflow.ts`; the legacy
+`src/lib/server/benchmarks/mlflow.ts` module is a compatibility re-export with
+no direct DB, Drizzle, or schema imports. This keeps the remaining active MLflow
+coupling quarantined as adapter/telemetry cleanup while OTel lineage remains the
+preferred forward path.
 The broader BFF/control-plane still has service-level direct DB imports outside
 that subset and remains the next migration area. Current categories include:
 
