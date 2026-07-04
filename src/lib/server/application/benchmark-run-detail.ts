@@ -45,7 +45,10 @@ export type BenchmarkRunDetailReadPort = {
 		runId: string,
 	): Promise<BenchmarkRunCapacityDiagnostics | null>;
 	getPhaseAttribution(runId: string): Promise<RunPhaseAttribution | null>;
-	getFailureContext(runId: string): Promise<RunFailureContext | null>;
+	getFailureContext(
+		projectId: string,
+		runId: string,
+	): Promise<RunFailureContext | null>;
 	getHeadlampCluster(): HeadlampCluster;
 };
 
@@ -71,7 +74,9 @@ export class ApplicationBenchmarkRunDetailPageService {
 				.getCapacityDiagnostics(input.projectId, input.runId)
 				.catch(() => null),
 			this.readModel.getPhaseAttribution(input.runId).catch(() => null),
-			this.readModel.getFailureContext(input.runId).catch(() => null),
+			this.readModel
+				.getFailureContext(input.projectId, input.runId)
+				.catch(() => null),
 		]);
 		if (!run) return runNotFound();
 

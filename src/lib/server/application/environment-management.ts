@@ -83,10 +83,31 @@ export type EnvironmentMaintenanceRepository = {
 	repairBuiltinSandboxEnvironmentImages(): Promise<BuiltinSandboxImageRepairReport>;
 };
 
+export type EnvironmentRuntimeImageSource =
+	| "stored"
+	| "translated"
+	| "unconfigured";
+
+export type EnvironmentRuntimeResolution = {
+	id: string;
+	slug: string;
+	version: number;
+	config: EnvironmentConfig;
+	imageTag: string | null;
+	imageSource?: EnvironmentRuntimeImageSource;
+	imageResolutionWarning?: string | null;
+	baseEnvSlug: string | null;
+};
+
+export type EnvironmentRuntimeResolver = {
+	resolveBySlug(slug: string): Promise<EnvironmentRuntimeResolution | null>;
+};
+
 export class ApplicationEnvironmentService {
 	constructor(
 		private readonly repository: EnvironmentRepository,
 		private readonly maintenanceRepository?: EnvironmentMaintenanceRepository,
+		private readonly runtimeResolver?: EnvironmentRuntimeResolver,
 	) {}
 
 	async list(input: {
@@ -290,6 +311,23 @@ export class ApplicationEnvironmentService {
 				this.maintenanceRepository!.repairBuiltinSandboxEnvironmentImages(),
 			),
 		};
+	}
+
+	async resolveRuntimeBySlug(input: {
+		slug: string | null | undefined;
+	}): Promise<{ environment: EnvironmentRuntimeResolution }> {
+		const slug = input.slug?.trim();
+		if (!slug) throw new ApplicationEnvironmentError(400, "slug query param required");
+		if (!this.runtimeResolver) {
+			throw new ApplicationEnvironmentError(500, "Environment runtime resolver is not configured");
+		}
+		const environment = await this.runRepositoryCall(() =>
+			this.runtimeResolver!.resolveBySlug(slug),
+		);
+		if (!environment) {
+			throw new ApplicationEnvironmentError(404, `Environment "${slug}" not found`);
+		}
+		return { environment };
 	}
 
 	private async runRepositoryCall<T>(operation: () => Promise<T>): Promise<T> {

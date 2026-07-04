@@ -41,6 +41,10 @@ describe("ApplicationBenchmarkRunDetailPageService", () => {
 			"project-1",
 			"run-1",
 		);
+		expect(readModel.getFailureContext).toHaveBeenCalledWith(
+			"project-1",
+			"run-1",
+		);
 	});
 
 	it("uses empty stats and preserves best-effort diagnostics when optional reads fail", async () => {

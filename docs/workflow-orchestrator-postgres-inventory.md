@@ -21,7 +21,7 @@ gate, and the internal piece-execution artifact readback route, plus the
 workflow trigger management/lifecycle, workflow definition command,
 code-checkpoint list/diff/restore, admin GitOps auth-check, and session-goal
 storage wiring slices, plus dev-preview database provisioning and password/social
-sign-in route persistence.
+sign-in route persistence, plus internal runtime environment resolution.
 The session spawn/control runtime-target helper now resolves session owner user
 ids, workflow execution workspace keys, and session runtime targets through
 workflow-data ports. Direct `sessions`/`workflow_executions` reads for those
@@ -163,6 +163,11 @@ The benchmark run-instance detail API now scope-checks the run, loads the
 selected run instance, benchmark metadata, and execution payloads through a
 workflow-data read model, while keeping response shaping, gold-patch redaction,
 host-job extraction, and MLflow URL formatting route-local.
+The benchmark run-detail failure-context path now scopes the benchmark run
+lookup through `BenchmarkRunDetailReadPort.getFailureContext(projectId, runId)`.
+`src/lib/server/benchmarks/failure-context.ts` is a DB-free metrics-window
+builder; the Postgres run lookup is confined to the benchmark run-detail
+adapter.
 The benchmark run-instance annotations API now reads aggregate annotation
 counts, validates/upserts the caller verdict, and deletes the caller annotation
 through workflow-data ports. The Postgres adapter preserves the existing
@@ -872,6 +877,11 @@ services:
   metadata lookup. It delegates request validation, server metadata merge,
   repo/baseCommit conflict checks, and environment preparation to
   `ensureSwebenchEnvironmentFromInternalRequest`.
+- `src/routes/api/internal/environments/resolve/+server.ts` no longer imports
+  the DB-backed environment registry directly. It delegates slug validation and
+  runtime image/capability resolution to `ApplicationEnvironmentService` through
+  the `EnvironmentRuntimeResolver` port; the existing registry resolver remains
+  behind `LegacyEnvironmentRuntimeResolver`.
 - `src/routes/api/v1/auth/sign-in/+server.ts` no longer imports Drizzle,
   `$lib/server/db`, or auth-related schema tables. Password identity lookup,
   bcrypt/scrypt verification, platform/project resolution, and token generation

@@ -2,20 +2,43 @@
 // inside the window a benchmark run was alive. Drives the "Platform state at
 // failure time" panel on the run-detail page — only renders for terminal
 // failure statuses.
-//
-// All four metric helpers come from $lib/server/otel/metrics. Best-effort:
-// the page-load wraps this in .catch(() => null) so a ClickHouse outage
-// doesn't gate the run-detail page.
 
-import { eq } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import { benchmarkRuns } from "$lib/server/db/schema";
 import {
 	queryCounterDelta,
 	queryGaugeLatest,
 	queryHistogramPercentiles,
+	type CounterDeltaResult,
+	type GaugeLatestResult,
+	type HistogramPercentileResult,
+	type MetricFilter,
 	type TimeRange,
 } from "$lib/server/otel/metrics";
+
+export type RunFailureContextSource = {
+	status: unknown;
+	startedAt: Date | null;
+	completedAt: Date | null;
+	createdAt: Date;
+};
+
+export type RunFailureContextMetricReader = {
+	queryGaugeLatest(
+		metric: string,
+		range: TimeRange,
+		filters?: MetricFilter,
+	): Promise<GaugeLatestResult>;
+	queryCounterDelta(
+		metric: string,
+		range: TimeRange,
+		filters?: MetricFilter,
+	): Promise<CounterDeltaResult>;
+	queryHistogramPercentiles(
+		metric: string,
+		percentiles: number[],
+		range: TimeRange,
+		filters?: MetricFilter,
+	): Promise<HistogramPercentileResult>;
+};
 
 export type RunFailureContext = {
 	windowFrom: string;
@@ -45,31 +68,30 @@ const TERMINAL_FAILURE_STATUSES = new Set([
 
 const DEFAULT_CLUSTER = process.env.METRICS_DEFAULT_CLUSTER ?? "dev";
 
+const defaultMetrics: RunFailureContextMetricReader = {
+	queryGaugeLatest,
+	queryCounterDelta,
+	queryHistogramPercentiles,
+};
+
 export function isTerminalFailureStatus(status: unknown): boolean {
 	return typeof status === "string" && TERMINAL_FAILURE_STATUSES.has(status);
 }
 
-export async function getRunFailureContext(
-	runId: string,
+export async function buildRunFailureContext(
+	run: RunFailureContextSource,
+	options: {
+		cluster?: string;
+		metrics?: RunFailureContextMetricReader;
+		now?: () => Date;
+	} = {},
 ): Promise<RunFailureContext | null> {
-	if (!db) return null;
-
-	const [run] = await db
-		.select({
-			id: benchmarkRuns.id,
-			status: benchmarkRuns.status,
-			startedAt: benchmarkRuns.startedAt,
-			completedAt: benchmarkRuns.completedAt,
-			createdAt: benchmarkRuns.createdAt,
-		})
-		.from(benchmarkRuns)
-		.where(eq(benchmarkRuns.id, runId))
-		.limit(1);
-	if (!run) return null;
 	if (!isTerminalFailureStatus(run.status)) return null;
 
+	const cluster = options.cluster ?? DEFAULT_CLUSTER;
+	const metrics = options.metrics ?? defaultMetrics;
 	const start = run.startedAt ?? run.createdAt;
-	const end = run.completedAt ?? new Date();
+	const end = run.completedAt ?? options.now?.() ?? new Date();
 	const range: TimeRange = {
 		from: new Date(start.getTime() - 60_000),
 		to: new Date(end.getTime() + 30_000),
@@ -84,35 +106,35 @@ export async function getRunFailureContext(
 		workflowRecoverable,
 		schedulingLatency,
 	] = await Promise.all([
-		queryGaugeLatest("kueue_pending_workloads", range, {
-			cluster: DEFAULT_CLUSTER,
+		metrics.queryGaugeLatest("kueue_pending_workloads", range, {
+			cluster,
 		}).catch(() => null),
-		queryCounterDelta("kueue_preempted_workloads_total", range, {
-			cluster: DEFAULT_CLUSTER,
+		metrics.queryCounterDelta("kueue_preempted_workloads_total", range, {
+			cluster,
 		}).catch(() => ({ delta: 0, samples: 0 })),
-		queryHistogramPercentiles(
+		metrics.queryHistogramPercentiles(
 			"kueue_admission_wait_time_seconds",
 			[0.95],
 			range,
-			{ cluster: DEFAULT_CLUSTER },
+			{ cluster },
 		).catch(() => null),
-		queryCounterDelta("controller_runtime_reconcile_errors_total", range, {
-			cluster: DEFAULT_CLUSTER,
+		metrics.queryCounterDelta("controller_runtime_reconcile_errors_total", range, {
+			cluster,
 			attribute: { controller: "sandbox" },
 		}).catch(() => ({ delta: 0, samples: 0 })),
-		queryCounterDelta("dapr_runtime_workflow_execution_count", range, {
-			cluster: DEFAULT_CLUSTER,
+		metrics.queryCounterDelta("dapr_runtime_workflow_execution_count", range, {
+			cluster,
 			attribute: { status: "failed" },
 		}).catch(() => ({ delta: 0, samples: 0 })),
-		queryCounterDelta("dapr_runtime_workflow_execution_count", range, {
-			cluster: DEFAULT_CLUSTER,
+		metrics.queryCounterDelta("dapr_runtime_workflow_execution_count", range, {
+			cluster,
 			attribute: { status: "recoverable" },
 		}).catch(() => ({ delta: 0, samples: 0 })),
-		queryHistogramPercentiles(
+		metrics.queryHistogramPercentiles(
 			"dapr_runtime_workflow_scheduling_latency",
 			[0.95],
 			range,
-			{ cluster: DEFAULT_CLUSTER },
+			{ cluster },
 		).catch(() => null),
 	]);
 
@@ -128,7 +150,7 @@ export async function getRunFailureContext(
 	return {
 		windowFrom: range.from.toISOString(),
 		windowTo: range.to.toISOString(),
-		cluster: DEFAULT_CLUSTER,
+		cluster,
 		kueue: {
 			pendingWorkloadsAtEnd: pending ? Math.round(pending.value) : null,
 			preemptionsInWindow: Math.round(preemptions.delta),

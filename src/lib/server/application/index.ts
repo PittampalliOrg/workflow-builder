@@ -129,7 +129,10 @@ import {
 	LegacyEvaluationTemplateRepository,
 	StaticSwebenchSuiteCatalog,
 } from "$lib/server/application/adapters/evaluations";
-import { LegacyEnvironmentRepository } from "$lib/server/application/adapters/environments";
+import {
+	LegacyEnvironmentRepository,
+	LegacyEnvironmentRuntimeResolver,
+} from "$lib/server/application/adapters/environments";
 import { PostgresEnvironmentMaintenanceRepository } from "$lib/server/application/adapters/environment-maintenance";
 import { LegacyVaultRepository } from "$lib/server/application/adapters/vaults";
 import { PostgresVaultCredentialRepository } from "$lib/server/application/adapters/vault-credentials";
@@ -876,6 +879,7 @@ export function getApplicationAdapters(
 		(environments ??= new ApplicationEnvironmentService(
 			new LegacyEnvironmentRepository(),
 			new PostgresEnvironmentMaintenanceRepository(),
+			new LegacyEnvironmentRuntimeResolver(),
 		));
 	const getVaultsService = () =>
 		(vaultsService ??= new ApplicationVaultService(

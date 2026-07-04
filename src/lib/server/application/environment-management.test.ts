@@ -3,6 +3,7 @@ import {
 	ApplicationEnvironmentService,
 	type EnvironmentMaintenanceRepository,
 	type EnvironmentRepository,
+	type EnvironmentRuntimeResolver,
 } from "$lib/server/application/environment-management";
 
 describe("ApplicationEnvironmentService", () => {
@@ -141,6 +142,64 @@ describe("ApplicationEnvironmentService", () => {
 		expect(maintenance.backfillDefaultEnvironment).toHaveBeenCalledOnce();
 		expect(maintenance.repairBuiltinSandboxEnvironmentImages).toHaveBeenCalledOnce();
 	});
+
+	it("resolves runtime environments through the runtime resolver port", async () => {
+		const runtimeResolver = createRuntimeResolver({
+			resolveBySlug: vi.fn(async () => ({
+				id: "env-1",
+				slug: "dapr-agent",
+				version: 3,
+				imageTag: "ghcr.io/test/dapr-agent:latest",
+				imageSource: "translated" as const,
+				imageResolutionWarning: null,
+				baseEnvSlug: null,
+				config: {
+					sandboxMode: "per-run" as const,
+					keepAfterRun: true,
+					ttlSeconds: 900,
+					networking: { type: "unrestricted" as const },
+					capabilities: ["python"],
+				},
+			})),
+		});
+		const service = new ApplicationEnvironmentService(
+			createRepository(),
+			undefined,
+			runtimeResolver,
+		);
+
+		await expect(
+			service.resolveRuntimeBySlug({ slug: " dapr-agent " }),
+		).resolves.toEqual({
+			environment: expect.objectContaining({
+				id: "env-1",
+				slug: "dapr-agent",
+				imageSource: "translated",
+			}),
+		});
+		expect(runtimeResolver.resolveBySlug).toHaveBeenCalledWith("dapr-agent");
+	});
+
+	it("maps runtime resolver validation and misses to application errors", async () => {
+		const service = new ApplicationEnvironmentService(
+			createRepository(),
+			undefined,
+			createRuntimeResolver(),
+		);
+
+		await expect(
+			service.resolveRuntimeBySlug({ slug: " " }),
+		).rejects.toMatchObject({
+			status: 400,
+			message: "slug query param required",
+		});
+		await expect(
+			service.resolveRuntimeBySlug({ slug: "missing" }),
+		).rejects.toMatchObject({
+			status: 404,
+			message: 'Environment "missing" not found',
+		});
+	});
 });
 
 function createRepository(
@@ -178,6 +237,15 @@ function createMaintenanceRepository(
 			updated: 0,
 			cleared: 0,
 		})),
+		...overrides,
+	};
+}
+
+function createRuntimeResolver(
+	overrides: Partial<EnvironmentRuntimeResolver> = {},
+): EnvironmentRuntimeResolver {
+	return {
+		resolveBySlug: vi.fn(async () => null),
 		...overrides,
 	};
 }

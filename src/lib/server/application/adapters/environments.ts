@@ -10,6 +10,7 @@ import {
 	getVersion,
 	listEnvironments,
 	listVersions,
+	resolveEnvironmentBySlug,
 	restoreVersion,
 	updateEnvironment,
 } from "$lib/server/environments/registry";
@@ -17,6 +18,7 @@ import type {
 	EnvironmentCreateCommand,
 	EnvironmentListFilter,
 	EnvironmentRepository,
+	EnvironmentRuntimeResolver,
 	EnvironmentUpdateCommand,
 } from "$lib/server/application/environment-management";
 
@@ -75,6 +77,12 @@ export class LegacyEnvironmentRepository implements EnvironmentRepository {
 			const resolver = await getBaseImageResolver();
 			return previewEnvironmentDockerfile(environment, resolver);
 		});
+	}
+}
+
+export class LegacyEnvironmentRuntimeResolver implements EnvironmentRuntimeResolver {
+	resolveBySlug(slug: string) {
+		return mapValidationErrors(() => resolveEnvironmentBySlug(slug));
 	}
 }
 

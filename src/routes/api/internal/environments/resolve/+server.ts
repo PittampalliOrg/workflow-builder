@@ -1,6 +1,6 @@
-import { error, json } from "@sveltejs/kit";
+import { json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { resolveEnvironmentBySlug } from "$lib/server/environments/registry";
+import { getApplicationAdapters } from "$lib/server/application";
 import { validateInternalToken } from "$lib/server/internal-auth";
 
 /**
@@ -16,26 +16,36 @@ import { validateInternalToken } from "$lib/server/internal-auth";
  */
 export const GET: RequestHandler = async ({ url, request }) => {
 	if (!validateInternalToken(request)) {
-		return error(401, "Invalid or missing internal token");
+		return json({ error: "Invalid or missing internal token" }, { status: 401 });
 	}
-	const slug = url.searchParams.get("slug")?.trim();
-	if (!slug) return error(400, "slug query param required");
 
-	const env = await resolveEnvironmentBySlug(slug);
-	if (!env) return error(404, `Environment "${slug}" not found`);
+	try {
+		const { environment: env } =
+			await getApplicationAdapters().environments.resolveRuntimeBySlug({
+				slug: url.searchParams.get("slug"),
+			});
 
-	return json({
-		id: env.id,
-		slug: env.slug,
-		version: env.version,
-		imageTag: env.imageTag,
-		imageSource: env.imageSource ?? "stored",
-		imageResolutionWarning: env.imageResolutionWarning ?? null,
-		baseEnvSlug: env.baseEnvSlug,
-		sandboxMode: env.config.sandboxMode,
-		keepAfterRun: env.config.keepAfterRun,
-		ttlSeconds: env.config.ttlSeconds ?? null,
-		networking: env.config.networking,
-		capabilities: env.config.capabilities ?? [],
-	});
+		return json({
+			id: env.id,
+			slug: env.slug,
+			version: env.version,
+			imageTag: env.imageTag,
+			imageSource: env.imageSource ?? "stored",
+			imageResolutionWarning: env.imageResolutionWarning ?? null,
+			baseEnvSlug: env.baseEnvSlug,
+			sandboxMode: env.config.sandboxMode,
+			keepAfterRun: env.config.keepAfterRun,
+			ttlSeconds: env.config.ttlSeconds ?? null,
+			networking: env.config.networking,
+			capabilities: env.config.capabilities ?? [],
+		});
+	} catch (err) {
+		const maybe = err as { status?: unknown; message?: unknown };
+		const status = typeof maybe.status === "number" ? maybe.status : 500;
+		const message =
+			typeof maybe.message === "string"
+				? maybe.message
+				: "Failed to resolve environment";
+		return json({ error: message }, { status });
+	}
 };
