@@ -3,6 +3,10 @@ name: PR Checks
 on:
   pull_request:
     branches: ['*']
+  # Skaffold commit-pin / outer-loop flows land commits directly on main,
+  # so PR-only gating would leave main unguarded.
+  push:
+    branches: ['main']
 
 jobs:
   checks:
@@ -47,6 +51,29 @@ jobs:
       - name: Run type check
         run: pnpm type-check
 
+      - name: Run import-boundary check
+        run: pnpm check:boundaries
+
+      - name: Run unit tests
+        run: pnpm test:unit --run
+
       - name: Run build
         run: pnpm build
+
+  orchestrator-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/workflow-orchestrator/uv.lock
+
+      - name: Run orchestrator tests
+        working-directory: services/workflow-orchestrator
+        run: uv run pytest tests/ -q
 
