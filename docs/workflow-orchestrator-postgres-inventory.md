@@ -20,7 +20,8 @@ execution lookup, plus the GitHub trigger ingress and event-trigger admission
 gate, and the internal piece-execution artifact readback route, plus the
 workflow trigger management/lifecycle, workflow definition command,
 code-checkpoint list/diff/restore, admin GitOps auth-check, and session-goal
-storage wiring slices, plus dev-preview database provisioning.
+storage wiring slices, plus dev-preview database provisioning and password/social
+sign-in route persistence.
 The session spawn/control runtime-target helper now resolves session owner user
 ids, workflow execution workspace keys, and session runtime targets through
 workflow-data ports. Direct `sessions`/`workflow_executions` reads for those
@@ -213,6 +214,15 @@ build submission/sync side effects are behind
 `LegacySwebenchEnvironmentBuildProvisioner`. The public/internal validation
 routes and internal benchmark run launch route no longer import the
 DB-backed environment validation helper directly.
+The password sign-in and social OAuth callback routes now delegate user lookup,
+identity creation, default platform/project handling, password verification, and
+token issuing through `ApplicationAuthSignInService`. Direct Drizzle access is
+confined to `PostgresAuthSignInRepository`; the old DB-backed
+`src/lib/server/auth/password-sign-in.ts` and `src/lib/server/auth-social.ts`
+helpers were removed. Cookie-only auth routes import `auth-cookies.ts` instead
+of the DB-backed `auth.ts` where possible. `auth.ts` still owns token
+verification/refresh/session construction and remains a separate auth-session
+adapter slice.
 
 ## Strict HTTP Runtime Paths
 

@@ -1,8 +1,8 @@
 import { redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { env } from '$env/dynamic/private';
-import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE, shouldUseSecureCookies } from '$lib/server/auth';
-import { signInSocial } from '$lib/server/auth-social';
+import { getApplicationAdapters } from '$lib/server/application';
+import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE, shouldUseSecureCookies } from '$lib/server/auth-cookies';
 import { getAppUrl } from '$lib/server/app-url';
 
 /**
@@ -54,7 +54,7 @@ export const GET: RequestHandler = async ({ params, url, request, cookies }) => 
 	// Sign in or create user with the social profile
 	let result;
 	try {
-		result = await signInSocial({
+		result = await getApplicationAdapters().authSignIn.signInSocial({
 			email,
 			name,
 			image,

@@ -2,7 +2,7 @@ import { redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { env } from '$env/dynamic/private';
 import { getAppUrl } from '$lib/server/app-url';
-import { shouldUseSecureCookies } from '$lib/server/auth';
+import { shouldUseSecureCookies } from '$lib/server/auth-cookies';
 
 export const GET: RequestHandler = async ({ params, url, request, cookies }) => {
 	const { provider } = params;

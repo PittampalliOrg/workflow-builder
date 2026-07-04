@@ -9,16 +9,17 @@ import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { signingKeys, users, userIdentities } from '$lib/server/db/schema';
 import { env } from '$env/dynamic/private';
+import {
+	ACCESS_TOKEN_COOKIE,
+	REFRESH_TOKEN_COOKIE,
+	shouldUseSecureCookies,
+} from "$lib/server/auth-cookies";
 
-// Cookie names (must match across apps)
-export const ACCESS_TOKEN_COOKIE = 'wb_access_token';
-export const REFRESH_TOKEN_COOKIE = 'wb_refresh_token';
-
-export function shouldUseSecureCookies(request: Request): boolean {
-	const forwardedProto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
-	const protocol = forwardedProto || new URL(request.url).protocol.replace(':', '');
-	return protocol === 'https';
-}
+export {
+	ACCESS_TOKEN_COOKIE,
+	REFRESH_TOKEN_COOKIE,
+	shouldUseSecureCookies,
+} from "$lib/server/auth-cookies";
 
 export type TokenPayload = {
 	sub: string; // userId

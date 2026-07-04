@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE } from '$lib/server/auth';
+import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE } from '$lib/server/auth-cookies';
 
 export const POST: RequestHandler = async ({ cookies }) => {
 	cookies.delete(ACCESS_TOKEN_COOKIE, { path: '/' });

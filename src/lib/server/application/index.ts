@@ -72,6 +72,11 @@ import {
 	RawPostgresHostCliCredentialStore,
 } from "$lib/server/application/adapters/cli-credentials";
 import {
+	DateAuthIdGenerator,
+	JwtAuthTokenIssuer,
+	PostgresAuthSignInRepository,
+} from "$lib/server/application/adapters/auth-sign-in";
+import {
 	LegacyAgentCompiledCapabilitiesRepository,
 	AgentRuntimeRegistrySyncAdapter,
 	LegacyAgentCatalogRepository,
@@ -331,6 +336,7 @@ import { ApplicationWorkflowTriggerLifecycleService } from "$lib/server/applicat
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 import { ApplicationWorkflowPlanService } from "$lib/server/application/workflow-plan";
 import { ApplicationGitOpsActivityEventService } from "$lib/server/application/gitops-activity-events";
+import { ApplicationAuthSignInService } from "$lib/server/application/auth-sign-in";
 import { extractExecutionTraceIds } from "$lib/server/otel/clickhouse";
 import { costFor, formatCurrency } from "$lib/server/pricing/model-pricing";
 import {
@@ -524,6 +530,7 @@ export function getApplicationAdapters(
 		| undefined;
 	let codeFunctionStore: PostgresCodeFunctionStore | undefined;
 	let cliCredentials: ApplicationCliCredentialsService | undefined;
+	let authSignIn: ApplicationAuthSignInService | undefined;
 	let settingsCliTokens: ApplicationSettingsCliTokensService | undefined;
 	let promptPresets: ApplicationPromptPresetService | undefined;
 	let promptStackCompiler: ApplicationPromptStackCompilerService | undefined;
@@ -983,6 +990,12 @@ export function getApplicationAdapters(
 		(cliCredentials ??= new ApplicationCliCredentialsService({
 			userStore: new PostgresUserCliCredentialStore(),
 			hostStore: new RawPostgresHostCliCredentialStore(),
+		}));
+	const getAuthSignIn = () =>
+		(authSignIn ??= new ApplicationAuthSignInService({
+			repository: new PostgresAuthSignInRepository(),
+			tokens: new JwtAuthTokenIssuer(),
+			ids: new DateAuthIdGenerator(),
 		}));
 	const getSettingsCliTokens = () =>
 		(settingsCliTokens ??= new ApplicationSettingsCliTokensService({
@@ -1458,6 +1471,9 @@ export function getApplicationAdapters(
 		},
 		get cliCredentials() {
 			return getCliCredentials();
+		},
+		get authSignIn() {
+			return getAuthSignIn();
 		},
 		get settingsCliTokens() {
 			return getSettingsCliTokens();

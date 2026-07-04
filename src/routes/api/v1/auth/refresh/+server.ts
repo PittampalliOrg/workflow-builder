@@ -1,11 +1,11 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { refreshTokens } from '$lib/server/auth';
 import {
 	ACCESS_TOKEN_COOKIE,
 	REFRESH_TOKEN_COOKIE,
-	refreshTokens,
 	shouldUseSecureCookies,
-} from '$lib/server/auth';
+} from '$lib/server/auth-cookies';
 
 export const POST: RequestHandler = async ({ request, cookies }) => {
 	const refreshCookie = cookies.get(REFRESH_TOKEN_COOKIE);

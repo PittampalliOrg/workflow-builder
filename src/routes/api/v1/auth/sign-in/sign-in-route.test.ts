@@ -8,14 +8,18 @@ const mocks = vi.hoisted(() => ({
 	shouldUseSecureCookies: vi.fn(),
 }));
 
-vi.mock("$lib/server/auth", () => ({
+vi.mock("$lib/server/auth-cookies", () => ({
 	ACCESS_TOKEN_COOKIE: "wb_access_token",
 	REFRESH_TOKEN_COOKIE: "wb_refresh_token",
 	shouldUseSecureCookies: mocks.shouldUseSecureCookies,
 }));
 
-vi.mock("$lib/server/auth/password-sign-in", () => ({
-	signInWithPassword: mocks.signInWithPassword,
+vi.mock("$lib/server/application", () => ({
+	getApplicationAdapters: () => ({
+		authSignIn: {
+			signInWithPassword: mocks.signInWithPassword,
+		},
+	}),
 }));
 
 import { POST } from "./+server";
@@ -115,7 +119,11 @@ describe("password sign-in route", () => {
 			"utf8",
 		);
 
-		expect(source).toContain("signInWithPassword");
+		expect(source).toContain("getApplicationAdapters().authSignIn.signInWithPassword");
+		expect(source).not.toContain("$lib/server/auth/password-sign-in");
+		expect(source).not.toContain("$lib/server/auth-social");
+		expect(source).not.toContain("$lib/server/auth\"");
+		expect(source).not.toContain("$lib/server/auth'");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");
