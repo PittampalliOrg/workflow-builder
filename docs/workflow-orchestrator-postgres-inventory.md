@@ -839,6 +839,10 @@ services:
   create/read calls, and missing-reference warnings are application behavior
   behind agent-catalog and reference ports; the routes no longer import the
   legacy agent, environment, or vault registries directly.
+- Vault metadata CRUD and vault reference listing now use the adapter-owned
+  `LegacyVaultRepository`; the deleted `src/lib/server/vaults/registry.ts`
+  no longer carries Postgres/Drizzle access outside the application adapter
+  layer. Vault credential persistence remains in `PostgresVaultCredentialRepository`.
 - `src/routes/api/agents/registry/+server.ts` now delegates the global Dapr
   registry browser read model to `ApplicationAgentRegistryBrowserService`.
   Registry team/store env parsing and Dapr state HTTP reads are confined to

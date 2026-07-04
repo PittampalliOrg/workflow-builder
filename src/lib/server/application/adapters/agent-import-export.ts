@@ -2,12 +2,14 @@ import {
 	listEnvironments,
 	resolveEnvironmentRef,
 } from "$lib/server/environments/registry";
-import { listVaults } from "$lib/server/vaults/registry";
 import type {
 	AgentImportExportEnvironmentRef,
 	AgentImportExportReferenceRepository,
 	AgentImportExportVaultRef,
 } from "$lib/server/application/agent-import-export";
+import { LegacyVaultRepository } from "./vaults";
+
+const vaultRepository = new LegacyVaultRepository();
 
 export class LegacyAgentImportExportReferenceRepository
 	implements AgentImportExportReferenceRepository
@@ -26,7 +28,9 @@ export class LegacyAgentImportExportReferenceRepository
 	async listVaults(input: {
 		includeArchived?: boolean;
 	}): Promise<AgentImportExportVaultRef[]> {
-		const vaults = await listVaults(input);
+		const vaults = (await vaultRepository.list(
+			input,
+		)) as AgentImportExportVaultRef[];
 		return vaults.map((vault) => ({
 			id: vault.id,
 			name: vault.name,
