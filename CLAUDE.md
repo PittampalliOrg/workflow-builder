@@ -95,8 +95,10 @@ hexagonal app; only the outer adapters change. See `docs/lite-profile.md`.
 
 - **Persistence**: the unchanged Postgres adapter runs on embedded **PGlite** (WASM,
   in-process) via the `src/lib/server/db/index.ts` driver seam. Schema is
-  drizzle-owned (`drizzle-kit push` of `schema.ts`), not the drifted `atlas/migrations`
-  pass (which is skipped under lite).
+  drizzle-owned (`drizzle-kit push` of `schema.ts`); the postgres path applies drizzle
+  migrations out-of-band via the `db-migrate` init container. The old in-app
+  `atlas/migrations` startup pass was retired — **drizzle is the single schema owner**
+  (`atlas/*.sql` kept only as history; boot runs data backfills only).
 - **Event bus / scheduler**: `in-process` bus + `lite-stub` scheduler (`config.ts`
   flips these defaults under lite; explicit env still wins; unknown still throws).
 - **Workflows do NOT execute in lite** — durable SW workflows need the Python
