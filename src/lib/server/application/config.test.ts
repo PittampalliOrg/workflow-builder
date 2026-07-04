@@ -48,6 +48,7 @@ describe("application adapter config", () => {
 			artifactStoreAdapter: "postgres-metadata-object-data",
 			workflowSchedulerAdapter: "lite-stub",
 			previewProvisionerAdapter: "sandbox-execution-api",
+			previewRunFeedEnabled: false,
 		});
 	});
 
