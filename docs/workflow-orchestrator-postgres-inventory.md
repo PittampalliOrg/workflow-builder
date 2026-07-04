@@ -1399,6 +1399,10 @@ delegates list/create/read/update/archive behavior to
 `PostgresCapabilityBundleRepository`. The runtime capability-flattening helper
 is still listed below because it participates in effective agent/session config
 resolution and needs its own narrower read port before it can move.
+Benchmark resource lease persistence has moved to
+`src/lib/server/application/adapters/benchmark-resource-leases.ts`; the legacy
+`src/lib/server/benchmarks/resource-leases.ts` module is now a compatibility
+re-export with no direct DB, Drizzle, or schema imports.
 The broader BFF/control-plane still has service-level direct DB imports outside
 that subset and remains the next migration area. Current categories include:
 
@@ -1414,9 +1418,9 @@ that subset and remains the next migration area. Current categories include:
 
 Current source scans show no production `src/routes/**` direct imports of
 `$lib/server/db`, `drizzle-orm`, the DB-backed evaluation service, or the
-DB-backed benchmark service/resource-lease/trace-bundle helpers. The lifecycle,
-goal, and session server directories are also clean for direct DB/Drizzle hits in
-the current scan; persistence for those areas is either behind application
+DB-backed benchmark service/trace-bundle helpers. The lifecycle, goal, and
+session server directories are also clean for direct DB/Drizzle hits in the
+current scan; persistence for those areas is either behind application
 ports/adapters or in explicitly documented helper seams.
 
 Those BFF paths are not strict-orchestrator runtime fallbacks; they are product
