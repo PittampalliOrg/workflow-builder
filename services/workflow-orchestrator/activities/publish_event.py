@@ -51,6 +51,27 @@ def _workflow_events_topic() -> str:
 
 WORKFLOW_EVENTS_TOPIC = _workflow_events_topic()
 
+
+def _emit_lifecycle_events_enabled() -> bool:
+    """Whether the orchestration run wrapper auto-emits workflow.started/completed/failed.
+
+    Explicit `WORKFLOW_ORCHESTRATOR_EMIT_LIFECYCLE_EVENTS` (true/false) wins. When
+    unset, defaults to ON exactly when a preview topic prefix is set — so Tier-2
+    previews auto-emit lifecycle events (making the E1 Dev-hub run feed surface every
+    run, not only workflows that carry an explicit `emit` task), while the shared host
+    stays OFF (no new event volume/types until evaluated). Host enablement is safe
+    whenever we want it: approval-notifier ignores every event that isn't
+    `workflow.approval.requested`, so the new types are no-ops for it — this default
+    just keeps host behavior identical for now.
+    """
+    raw = os.getenv("WORKFLOW_ORCHESTRATOR_EMIT_LIFECYCLE_EVENTS", "").strip()
+    if raw:
+        return raw.lower() in ("1", "true", "yes", "on")
+    return bool(os.getenv("WORKFLOW_ORCHESTRATOR_EVENT_TOPIC_PREFIX", "").strip().strip("."))
+
+
+EMIT_LIFECYCLE_EVENTS = _emit_lifecycle_events_enabled()
+
 PUBLISH_EVENT_INPUT_SCHEMA = schema_object(
     {
         "topic": schema_string(description="Pub/sub topic to publish to.", default=WORKFLOW_EVENTS_TOPIC),

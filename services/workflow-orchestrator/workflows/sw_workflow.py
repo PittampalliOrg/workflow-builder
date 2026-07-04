@@ -53,7 +53,13 @@ from activities.crawl4ai import crawl4ai_get_job_status, crawl4ai_start_job
 from activities.environment_build import check_environment_build, ensure_environment
 from activities.persist_artifact import persist_workflow_artifact
 from activities.persist_state import persist_state
-from activities.publish_event import publish_phase_changed
+from activities.publish_event import (
+    EMIT_LIFECYCLE_EVENTS,
+    publish_phase_changed,
+    publish_workflow_completed,
+    publish_workflow_failed,
+    publish_workflow_started,
+)
 from activities.log_external_event import (
     log_approval_request,
     log_approval_response,
@@ -3906,6 +3912,20 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         task_index = 0
         task_name_to_index = {name: idx for idx, (name, _) in enumerate(tasks)}
 
+        # Auto-emit workflow.started so the E1 cross-preview run feed surfaces every
+        # run, not only workflows that carry an explicit `emit` task. Gated (previews
+        # on, host off by default) via EMIT_LIFECYCLE_EVENTS; goes through an activity
+        # so it is deterministic + replay-safe (publish_event swallows its own errors).
+        if EMIT_LIFECYCLE_EVENTS:
+            yield ctx.call_activity(
+                publish_workflow_started,
+                input=_freeze({
+                    "workflowId": workflow_id,
+                    "executionId": execution_id,
+                    "workflowName": workflow_name,
+                }),
+            )
+
         # Resume / fork-from-node: this is a FRESH execution (so it runs the CURRENT,
         # possibly edited, spec) that REUSES the source run's retained /sandbox/work
         # and SKIPS every top-level node before `resumeFromNode`. We skip rather than
@@ -4170,6 +4190,15 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 ),
             )
 
+        if EMIT_LIFECYCLE_EVENTS:
+            yield ctx.call_activity(
+                publish_workflow_completed,
+                input=_freeze({
+                    "workflowId": workflow_id,
+                    "executionId": execution_id,
+                }),
+            )
+
         return SWWorkflowOutput(
             success=True,
             outputs=tc.task_outputs,
@@ -4262,6 +4291,16 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     start_time_ms=start_time_ms,
                     error=error_msg,
                 ),
+            )
+
+        if EMIT_LIFECYCLE_EVENTS:
+            yield ctx.call_activity(
+                publish_workflow_failed,
+                input=_freeze({
+                    "workflowId": workflow_id,
+                    "executionId": execution_id,
+                    "error": error_msg[:500],
+                }),
             )
 
         return SWWorkflowOutput(

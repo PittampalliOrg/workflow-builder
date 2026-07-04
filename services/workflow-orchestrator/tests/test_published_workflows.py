@@ -1324,6 +1324,79 @@ def test_sw_workflow_failure_schedules_otel_finalizer_with_error_after_cleanup(m
     assert stop.value.value["phase"] == "failed"
 
 
+def test_sw_workflow_emits_lifecycle_started_and_completed_when_enabled(monkeypatch):
+    # Task #17: with lifecycle auto-emit on (the preview default), the run wrapper
+    # yields publish_workflow_started first and publish_workflow_completed before the
+    # terminal return — so the E1 feed surfaces every run, not just `emit`-authored
+    # workflows. Off-by-default (host) keeps the sequence identical (other tests).
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    monkeypatch.setattr(SW_WORKFLOW, "EMIT_LIFECYCLE_EVENTS", True)
+    ctx = _FakeTerminalWorkflowCtx()
+    workflow_gen = SW_WORKFLOW.sw_workflow(ctx, _terminal_workflow_input())
+
+    started = next(workflow_gen)
+    assert started["activity"] == "publish_workflow_started"
+    assert started["input"]["executionId"] == "parent-terminal-wf-1"
+    assert started["input"]["workflowId"] == "wf_test"
+    assert started["input"]["workflowName"] == "test-workflow"
+
+    persisted = workflow_gen.send({"success": True})
+    assert persisted["activity"] == "persist_results_to_db"
+
+    cleanup = workflow_gen.send({"success": True})
+    assert cleanup["activity"] == "cleanup_execution_workspaces"
+
+    finalized = workflow_gen.send({"success": True})
+    assert finalized["activity"] == "finalize_otel_trace_root"
+
+    completed = workflow_gen.send({"success": True})
+    assert completed["activity"] == "publish_workflow_completed"
+    assert completed["input"]["executionId"] == "parent-terminal-wf-1"
+
+    with pytest.raises(StopIteration) as stop:
+        workflow_gen.send({"success": True})
+    assert stop.value.value["success"] is True
+
+
+def test_sw_workflow_emits_lifecycle_failed_when_enabled(monkeypatch):
+    # Task #17: a failing run emits started then failed (carrying the error).
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    monkeypatch.setattr(SW_WORKFLOW, "EMIT_LIFECYCLE_EVENTS", True)
+    ctx = _FakeTerminalWorkflowCtx()
+    workflow_gen = SW_WORKFLOW.sw_workflow(
+        ctx,
+        _terminal_workflow_input([{"fail_step": {"call": "system/fail", "with": {}}}]),
+    )
+
+    started = next(workflow_gen)
+    assert started["activity"] == "publish_workflow_started"
+
+    node_update = workflow_gen.send({"success": True})
+    assert node_update["activity"] == "update_execution_node"
+
+    execution = workflow_gen.send({"success": True})
+    assert execution["activity"] == "execute_action"
+
+    persisted = workflow_gen.send({"success": False, "error": "forced failure"})
+    assert persisted["activity"] == "persist_results_to_db"
+    assert persisted["input"]["success"] is False
+
+    cleanup = workflow_gen.send({"success": True})
+    assert cleanup["activity"] == "cleanup_execution_workspaces"
+
+    finalized = workflow_gen.send({"success": True})
+    assert finalized["activity"] == "finalize_otel_trace_root"
+
+    failed = workflow_gen.send({"success": True})
+    assert failed["activity"] == "publish_workflow_failed"
+    assert failed["input"]["executionId"] == "parent-terminal-wf-1"
+    assert failed["input"]["error"] == "forced failure"
+
+    with pytest.raises(StopIteration) as stop:
+        workflow_gen.send({"success": False})
+    assert stop.value.value["phase"] == "failed"
+
+
 def test_cleanup_execution_workspaces_defaults_to_dapr_invoke(monkeypatch):
     module = _load_module(
         "workflow_orchestrator_call_agent_service_dapr",
