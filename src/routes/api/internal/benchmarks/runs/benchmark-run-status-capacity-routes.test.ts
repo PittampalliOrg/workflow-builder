@@ -8,10 +8,12 @@ const mocks = vi.hoisted(() => ({
 	workflowData: {
 		getBenchmarkRunProjectId: vi.fn(),
 	},
+	benchmarkCapacityDiagnostics: {
+		getRunCapacity: vi.fn(),
+	},
 	getBenchmarkRun: vi.fn(),
 	markBenchmarkRunStatus: vi.fn(),
 	recomputeRunSummary: vi.fn(),
-	getBenchmarkRunCapacityDiagnostics: vi.fn(),
 }));
 
 vi.mock("$lib/server/internal-auth", () => ({
@@ -21,6 +23,7 @@ vi.mock("$lib/server/internal-auth", () => ({
 vi.mock("$lib/server/application", () => ({
 	getApplicationAdapters: () => ({
 		workflowData: mocks.workflowData,
+		benchmarkCapacityDiagnostics: mocks.benchmarkCapacityDiagnostics,
 	}),
 }));
 
@@ -28,10 +31,6 @@ vi.mock("$lib/server/benchmarks/service", () => ({
 	getBenchmarkRun: mocks.getBenchmarkRun,
 	markBenchmarkRunStatus: mocks.markBenchmarkRunStatus,
 	recomputeRunSummary: mocks.recomputeRunSummary,
-}));
-
-vi.mock("$lib/server/benchmarks/capacity-diagnostics", () => ({
-	getBenchmarkRunCapacityDiagnostics: mocks.getBenchmarkRunCapacityDiagnostics,
 }));
 
 import { GET as getCapacityGate } from "./[runId]/capacity-gate/+server";
@@ -44,7 +43,7 @@ describe("internal benchmark run status and capacity routes", () => {
 		mocks.getBenchmarkRun.mockReset();
 		mocks.markBenchmarkRunStatus.mockReset();
 		mocks.recomputeRunSummary.mockReset();
-		mocks.getBenchmarkRunCapacityDiagnostics.mockReset();
+		mocks.benchmarkCapacityDiagnostics.getRunCapacity.mockReset();
 	});
 
 	it("loads run status through workflow-data project scope", async () => {
@@ -66,15 +65,20 @@ describe("internal benchmark run status and capacity routes", () => {
 
 	it("loads capacity diagnostics through workflow-data project scope", async () => {
 		mocks.workflowData.getBenchmarkRunProjectId.mockResolvedValue("project-1");
-		mocks.getBenchmarkRunCapacityDiagnostics.mockResolvedValue({
-			pressureAdjustedConcurrency: 2,
-			capReason: "",
-			clusterPressure: null,
-			parentWorkflow: { daprRuntimePressure: false },
-			agentHostRuntime: { daprRuntimePressure: false },
-			sandbox: {
-				diskPressureNodeCount: 0,
-				kueueClusterQueueActive: true,
+		mocks.benchmarkCapacityDiagnostics.getRunCapacity.mockResolvedValue({
+			status: "ok",
+			body: {
+				diagnostics: {
+					pressureAdjustedConcurrency: 2,
+					capReason: "",
+					clusterPressure: null,
+					parentWorkflow: { daprRuntimePressure: false },
+					agentHostRuntime: { daprRuntimePressure: false },
+					sandbox: {
+						diskPressureNodeCount: 0,
+						kueueClusterQueueActive: true,
+					},
+				},
 			},
 		});
 
@@ -86,10 +90,10 @@ describe("internal benchmark run status and capacity routes", () => {
 
 		expect(response.status).toBe(200);
 		expect(mocks.workflowData.getBenchmarkRunProjectId).toHaveBeenCalledWith("run-1");
-		expect(mocks.getBenchmarkRunCapacityDiagnostics).toHaveBeenCalledWith(
-			"project-1",
-			"run-1",
-		);
+		expect(mocks.benchmarkCapacityDiagnostics.getRunCapacity).toHaveBeenCalledWith({
+			projectId: "project-1",
+			runId: "run-1",
+		});
 		expect(body.success).toBe(true);
 		expect(body.admitNewStarts).toBe(true);
 	});
@@ -105,6 +109,9 @@ describe("internal benchmark run status and capacity routes", () => {
 			);
 
 			expect(source).toContain("getBenchmarkRunProjectId");
+			if (relativePath.includes("capacity-gate")) {
+				expect(source).toContain("benchmarkCapacityDiagnostics");
+			}
 			expect(source).not.toContain("$lib/server/db");
 			expect(source).not.toContain("$lib/server/db/schema");
 			expect(source).not.toContain("drizzle-orm");

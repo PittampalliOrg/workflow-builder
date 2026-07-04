@@ -197,8 +197,9 @@ The internal benchmark run-instance progress API now reads instance status and
 latest session activity through a workflow-data read model; the route no longer
 imports `benchmark_run_instances`, `session_events`, or Drizzle.
 The internal benchmark run status and capacity-gate APIs now resolve the run's
-project scope through workflow-data before delegating to benchmark services,
-removing route-local `benchmark_runs`/Drizzle imports.
+project scope through workflow-data; capacity-gate delegates diagnostics through
+the application capacity service instead of importing the benchmark diagnostics
+helper directly. Route-local `benchmark_runs`/Drizzle imports were removed.
 The internal benchmark artifact upload/read/delete route now uses the
 application-owned `BenchmarkArtifactKind` DTO, and benchmark artifact metadata
 recording is routed through a workflow-data port. Blob/local object storage

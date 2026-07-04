@@ -2,17 +2,15 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "@sveltejs/kit";
 import { requireInternal } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
-import { getBenchmarkRunCapacityDiagnostics } from "$lib/server/benchmarks/capacity-diagnostics";
 
 export const GET: RequestHandler = async ({ request, params }) => {
 	requireInternal(request);
 	const runId = params.runId;
 	if (!runId) return error(400, "runId is required");
+	const adapters = getApplicationAdapters();
 	let projectId;
 	try {
-		projectId = await getApplicationAdapters().workflowData.getBenchmarkRunProjectId(
-			runId,
-		);
+		projectId = await adapters.workflowData.getBenchmarkRunProjectId(runId);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : "";
 		if (/Database not configured/.test(message)) {
@@ -21,10 +19,14 @@ export const GET: RequestHandler = async ({ request, params }) => {
 		throw err;
 	}
 	if (!projectId) return error(404, "Benchmark run not found");
-	const diagnostics = await getBenchmarkRunCapacityDiagnostics(
+	const result = await adapters.benchmarkCapacityDiagnostics.getRunCapacity({
 		projectId,
 		runId,
-	);
+	});
+	if (result.status !== "ok") {
+		return error(result.httpStatus, result.message ?? "Benchmark run not found");
+	}
+	const diagnostics = result.body.diagnostics;
 	const clusterPressure = diagnostics?.clusterPressure ?? null;
 	const admitNewStarts =
 		!!diagnostics &&
