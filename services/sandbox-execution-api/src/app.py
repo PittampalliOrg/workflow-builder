@@ -4,7 +4,9 @@ import json
 import logging
 import os
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
@@ -4409,16 +4411,24 @@ def provision_vcluster_preview(
     return response
 
 
-def _vcluster_preview_phase(batch, core, name: str) -> tuple[str, int, int, int]:
+def _vcluster_preview_phase(
+    batch, core, name: str, request_timeout: float | None = None
+) -> tuple[str, int, int, int]:
     """Phase keyed on the DURABLE vcluster (its host namespace), so a ready preview
     survives the provisioning Job's TTL GC. Readiness is the ACTUAL stack: a synced
     `workflow-builder-*` (BFF) pod reporting Ready in the `vcluster-<name>` host ns —
-    NOT mere namespace existence (an empty/half-up ns is not ready)."""
+    NOT mere namespace existence (an empty/half-up ns is not ready).
+
+    `request_timeout` (seconds) bounds each K8s call so one slow/hung preview can't
+    stall the caller (the list endpoint probes previews concurrently and treats a
+    timed-out probe as not-ready rather than sinking the whole list)."""
     namespace = _agent_workflow_host_namespace()
     job_name = _vcluster_preview_job_name(name, "up")
     active = succeeded = failed = 0
     try:
-        st = batch.read_namespaced_job_status(name=job_name, namespace=namespace).status
+        st = batch.read_namespaced_job_status(
+            name=job_name, namespace=namespace, _request_timeout=request_timeout
+        ).status
         active = int(getattr(st, "active", 0) or 0)
         succeeded = int(getattr(st, "succeeded", 0) or 0)
         failed = int(getattr(st, "failed", 0) or 0)
@@ -4428,7 +4438,9 @@ def _vcluster_preview_phase(batch, core, name: str) -> tuple[str, int, int, int]
     ns_exists = False
     bff_ready = False
     try:
-        pods = core.list_namespaced_pod(namespace=f"vcluster-{name}")
+        pods = core.list_namespaced_pod(
+            namespace=f"vcluster-{name}", _request_timeout=request_timeout
+        )
         ns_exists = True
         for p in pods.items:
             if not (p.metadata.name or "").startswith("workflow-builder-"):
@@ -4515,39 +4527,99 @@ def teardown_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
     return provision_vcluster_preview(request, body)
 
 
-@app.get("/internal/vcluster-previews")
-def list_vcluster_previews(request: Request) -> dict[str, Any]:
-    _require_internal(request)
+# Short burst cache for the preview list. The E1 Dev-hub feed re-scans every 20s
+# AND the dashboard UI polls, so concurrent/rapid callers used to each trigger a
+# full cluster scan; combined with the serial per-preview probe below that made the
+# list degrade badly under back-to-back calls (14s -> 60s timeout). The cache
+# collapses bursts into one scan; the periodic re-scan still refreshes (TTL << 20s).
+_VCLUSTER_PREVIEWS_CACHE_TTL = float(
+    os.environ.get("VCLUSTER_PREVIEWS_CACHE_TTL_SECONDS", "8") or 8
+)
+_vcluster_previews_cache: dict[str, Any] = {"at": 0.0, "data": None}
+_vcluster_previews_cache_lock = threading.Lock()
+# Per-preview K8s-call timeout (seconds) so one slow/hung preview can't stall the list.
+_VCLUSTER_PREVIEW_PROBE_TIMEOUT = float(
+    os.environ.get("VCLUSTER_PREVIEW_PROBE_TIMEOUT_SECONDS", "10") or 10
+)
+
+
+def _compute_vcluster_previews() -> dict[str, Any]:
     items: list[dict[str, Any]] = []
-    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
         "1",
         "true",
         "yes",
     }:
-        batch, core = _load_k8s_clients()
-        # Durable: enumerate the preview VCLUSTER NAMESPACES (labeled by the
-        # runner), not the TTL-GC'd provisioning Jobs.
-        nss = core.list_namespace(label_selector="app=vcluster-preview")
-        for ns in nss.items:
-            labels = (ns.metadata.labels or {}) if ns.metadata else {}
-            name = labels.get("vcluster-preview-name") or (
-                ns.metadata.name[len("vcluster-") :]
-                if ns.metadata.name.startswith("vcluster-")
-                else ns.metadata.name
+        return {"previews": items}
+
+    batch, core = _load_k8s_clients()
+    # Durable: enumerate the preview VCLUSTER NAMESPACES (labeled by the runner),
+    # not the TTL-GC'd provisioning Jobs.
+    nss = core.list_namespace(label_selector="app=vcluster-preview")
+    names: list[str] = []
+    for ns in nss.items:
+        labels = (ns.metadata.labels or {}) if ns.metadata else {}
+        name = labels.get("vcluster-preview-name") or (
+            ns.metadata.name[len("vcluster-") :]
+            if ns.metadata.name.startswith("vcluster-")
+            else ns.metadata.name
+        )
+        if ns.status and getattr(ns.status, "phase", "") == "Terminating":
+            continue
+        names.append(name)
+
+    # Each _vcluster_preview_phase does 2 serial K8s reads (job status + pod list);
+    # serial across N previews was the dominant cost. Probe them concurrently — the
+    # kubernetes client's connection pool is thread-safe for reads.
+    def _probe(name: str) -> tuple[str, str]:
+        # Isolate per-preview failures/timeouts: a bad preview is reported "absent"
+        # (filtered out below) instead of raising and sinking the whole list.
+        try:
+            phase, _a, _s, _f = _vcluster_preview_phase(
+                batch, core, name, request_timeout=_VCLUSTER_PREVIEW_PROBE_TIMEOUT
             )
-            if (ns.status and getattr(ns.status, "phase", "") == "Terminating"):
-                continue
-            phase, _a, _s, _f = _vcluster_preview_phase(batch, core, name)
-            if phase == "absent":
-                continue
-            host = f"wfb-{name}"
-            items.append(
-                {
-                    "name": name,
-                    "phase": phase,
-                    "ready": phase == "ready",
-                    "tailnetHost": host,
-                    "url": f"https://{host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}",
-                }
-            )
+            return name, phase
+        except Exception as exc:
+            logger.warning("vcluster-previews: phase probe for %s failed: %s", name, exc)
+            return name, "absent"
+
+    phases: list[tuple[str, str]] = []
+    if names:
+        with ThreadPoolExecutor(max_workers=min(8, len(names))) as pool:
+            phases = list(pool.map(_probe, names))
+
+    for name, phase in phases:
+        if phase == "absent":
+            continue
+        host = f"wfb-{name}"
+        items.append(
+            {
+                "name": name,
+                "phase": phase,
+                "ready": phase == "ready",
+                "tailnetHost": host,
+                "url": f"https://{host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}",
+            }
+        )
     return {"previews": items}
+
+
+@app.get("/internal/vcluster-previews")
+def list_vcluster_previews(request: Request) -> dict[str, Any]:
+    _require_internal(request)
+    now = time.monotonic()
+    with _vcluster_previews_cache_lock:
+        cached = _vcluster_previews_cache
+        if (
+            _VCLUSTER_PREVIEWS_CACHE_TTL > 0
+            and cached["data"] is not None
+            and (now - cached["at"]) < _VCLUSTER_PREVIEWS_CACHE_TTL
+        ):
+            return cached["data"]
+
+    result = _compute_vcluster_previews()
+
+    with _vcluster_previews_cache_lock:
+        _vcluster_previews_cache["at"] = time.monotonic()
+        _vcluster_previews_cache["data"] = result
+    return result
