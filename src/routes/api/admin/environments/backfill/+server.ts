@@ -1,6 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { backfillDefaultEnvironment } from "$lib/server/environments/backfill";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * One-shot admin endpoint to create a default environment and link every
@@ -10,6 +10,5 @@ import { backfillDefaultEnvironment } from "$lib/server/environments/backfill";
  */
 export const POST: RequestHandler = async ({ locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const report = await backfillDefaultEnvironment();
-	return json({ report });
+	return json(await getApplicationAdapters().environments.backfillDefault());
 };

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	ApplicationEnvironmentService,
+	type EnvironmentMaintenanceRepository,
 	type EnvironmentRepository,
 } from "$lib/server/application/environment-management";
 
@@ -103,6 +104,43 @@ describe("ApplicationEnvironmentService", () => {
 			service.dockerfilePreview({ id: "env-1" }),
 		).resolves.toEqual({ dockerfile: "FROM python:3.12" });
 	});
+
+	it("delegates environment maintenance to the maintenance port", async () => {
+		const maintenance = createMaintenanceRepository({
+			backfillDefaultEnvironment: vi.fn(async () => ({
+				defaultEnvironmentCreated: true,
+				defaultEnvironmentId: "env-default",
+				agentsLinked: 2,
+				totalAgents: 3,
+			})),
+			repairBuiltinSandboxEnvironmentImages: vi.fn(async () => ({
+				environmentName: "dev",
+				scanned: 4,
+				updated: 1,
+				cleared: 0,
+			})),
+		});
+		const service = new ApplicationEnvironmentService(createRepository(), maintenance);
+
+		await expect(service.backfillDefault()).resolves.toEqual({
+			report: {
+				defaultEnvironmentCreated: true,
+				defaultEnvironmentId: "env-default",
+				agentsLinked: 2,
+				totalAgents: 3,
+			},
+		});
+		await expect(service.repairBuiltinSandboxImages()).resolves.toEqual({
+			report: {
+				environmentName: "dev",
+				scanned: 4,
+				updated: 1,
+				cleared: 0,
+			},
+		});
+		expect(maintenance.backfillDefaultEnvironment).toHaveBeenCalledOnce();
+		expect(maintenance.repairBuiltinSandboxEnvironmentImages).toHaveBeenCalledOnce();
+	});
 });
 
 function createRepository(
@@ -120,6 +158,26 @@ function createRepository(
 		restoreVersion: vi.fn(async () => null),
 		findUsages: vi.fn(async () => []),
 		previewDockerfile: vi.fn(async () => null),
+		...overrides,
+	};
+}
+
+function createMaintenanceRepository(
+	overrides: Partial<EnvironmentMaintenanceRepository> = {},
+): EnvironmentMaintenanceRepository {
+	return {
+		backfillDefaultEnvironment: vi.fn(async () => ({
+			defaultEnvironmentCreated: false,
+			defaultEnvironmentId: "env-default",
+			agentsLinked: 0,
+			totalAgents: 0,
+		})),
+		repairBuiltinSandboxEnvironmentImages: vi.fn(async () => ({
+			environmentName: "dev",
+			scanned: 0,
+			updated: 0,
+			cleared: 0,
+		})),
 		...overrides,
 	};
 }

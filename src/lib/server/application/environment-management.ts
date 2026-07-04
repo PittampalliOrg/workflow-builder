@@ -64,8 +64,30 @@ export type EnvironmentRepository = {
 	previewDockerfile(id: string): Promise<string | null>;
 };
 
+export type EnvironmentBackfillReport = {
+	defaultEnvironmentCreated: boolean;
+	defaultEnvironmentId: string;
+	agentsLinked: number;
+	totalAgents: number;
+};
+
+export type BuiltinSandboxImageRepairReport = {
+	environmentName: string;
+	scanned: number;
+	updated: number;
+	cleared: number;
+};
+
+export type EnvironmentMaintenanceRepository = {
+	backfillDefaultEnvironment(): Promise<EnvironmentBackfillReport>;
+	repairBuiltinSandboxEnvironmentImages(): Promise<BuiltinSandboxImageRepairReport>;
+};
+
 export class ApplicationEnvironmentService {
-	constructor(private readonly repository: EnvironmentRepository) {}
+	constructor(
+		private readonly repository: EnvironmentRepository,
+		private readonly maintenanceRepository?: EnvironmentMaintenanceRepository,
+	) {}
 
 	async list(input: {
 		query: URLSearchParams;
@@ -246,6 +268,28 @@ export class ApplicationEnvironmentService {
 		);
 		if (!dockerfile) throw new ApplicationEnvironmentError(404, "Environment not found");
 		return { dockerfile };
+	}
+
+	async backfillDefault(): Promise<{ report: EnvironmentBackfillReport }> {
+		if (!this.maintenanceRepository) {
+			throw new ApplicationEnvironmentError(500, "Environment maintenance is not configured");
+		}
+		return {
+			report: await this.runRepositoryCall(() =>
+				this.maintenanceRepository!.backfillDefaultEnvironment(),
+			),
+		};
+	}
+
+	async repairBuiltinSandboxImages(): Promise<{ report: BuiltinSandboxImageRepairReport }> {
+		if (!this.maintenanceRepository) {
+			throw new ApplicationEnvironmentError(500, "Environment maintenance is not configured");
+		}
+		return {
+			report: await this.runRepositoryCall(() =>
+				this.maintenanceRepository!.repairBuiltinSandboxEnvironmentImages(),
+			),
+		};
 	}
 
 	private async runRepositoryCall<T>(operation: () => Promise<T>): Promise<T> {

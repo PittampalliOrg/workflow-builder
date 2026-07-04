@@ -2,10 +2,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sql } from "drizzle-orm";
 import { db } from "$lib/server/db";
-import {
-	backfillDefaultEnvironment,
-	repairBuiltinSandboxEnvironmentImages,
-} from "$lib/server/environments/backfill";
+import { ApplicationEnvironmentService } from "$lib/server/application/environment-management";
+import { LegacyEnvironmentRepository } from "$lib/server/application/adapters/environments";
+import { PostgresEnvironmentMaintenanceRepository } from "$lib/server/application/adapters/environment-maintenance";
 
 /**
  * Boot-time migration + backfill runner. Runs once per process via the
@@ -202,13 +201,17 @@ async function runMigrations(): Promise<{
 async function runBackfills(): Promise<void> {
 	if (!db) return;
 	try {
-		const report = await backfillDefaultEnvironment();
+		const environmentService = new ApplicationEnvironmentService(
+			new LegacyEnvironmentRepository(),
+			new PostgresEnvironmentMaintenanceRepository(),
+		);
+		const { report } = await environmentService.backfillDefault();
 		if (report.defaultEnvironmentCreated || report.agentsLinked > 0) {
 			console.log(
 				`[startup] environments backfill: created=${report.defaultEnvironmentCreated}, linked=${report.agentsLinked}/${report.totalAgents}`,
 			);
 		}
-		const repairReport = await repairBuiltinSandboxEnvironmentImages();
+		const { report: repairReport } = await environmentService.repairBuiltinSandboxImages();
 		if (repairReport.updated > 0) {
 			console.log(
 				`[startup] builtin sandbox image repair (${repairReport.environmentName}): updated=${repairReport.updated}, cleared=${repairReport.cleared}, scanned=${repairReport.scanned}`,

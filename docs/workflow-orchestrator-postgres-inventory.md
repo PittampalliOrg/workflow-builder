@@ -622,6 +622,12 @@ services:
   wrapped as a legacy adapter. Dev-preview provision/teardown routes now call
   `PreviewEnvironmentProvisioner`; per-preview database create/drop is confined
   to `PostgresPreviewDatabaseProvisioner`.
+- `src/routes/api/admin/environments/backfill/+server.ts` and the startup
+  environment backfill/repair path now call `ApplicationEnvironmentService`
+  maintenance methods. The old DB-backed `src/lib/server/environments/backfill.ts`
+  helper was removed; default-environment creation, unlinked-agent repair, and
+  built-in sandbox image repair SQL are confined to
+  `PostgresEnvironmentMaintenanceRepository`.
 - `src/routes/workspaces/[slug]/+layout.server.ts` and
   `src/lib/server/workspaces/resolve.ts` now validate workspace slug membership
   and stale-slug redirect targets through workflow-data workspace-project
