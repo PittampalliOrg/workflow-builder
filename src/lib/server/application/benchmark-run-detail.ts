@@ -1,17 +1,50 @@
 import type { HeadlampCluster } from "$lib/headlamp/links";
-import type { getBenchmarkRun } from "$lib/server/benchmarks/service";
 import type { RunStats } from "$lib/server/benchmarks/stats";
-import type { getBenchmarkRunCapacityDiagnostics } from "$lib/server/benchmarks/capacity-diagnostics";
 import type { RunPhaseAttribution } from "$lib/server/benchmarks/phase-attribution";
 import type { RunFailureContext } from "$lib/server/benchmarks/failure-context";
+import type { BenchmarkCapacityDiagnostics } from "$lib/server/application/benchmark-capacity-diagnostics";
 
-export type BenchmarkRunDetailRun = NonNullable<
-	Awaited<ReturnType<typeof getBenchmarkRun>>
->;
+export type BenchmarkRunDetailInstance = {
+	id: string;
+	instanceId: string;
+	repo: string | null;
+	status: string;
+	inferenceStatus: string;
+	evaluationStatus: string;
+	patchBytes: number | null;
+	startedAt: string | null;
+	inferenceCompletedAt: string | null;
+	evaluatedAt: string | null;
+	usage: Record<string, unknown> | null;
+	sessionId: string | null;
+	[key: string]: unknown;
+};
 
-export type BenchmarkRunCapacityDiagnostics = Awaited<
-	ReturnType<typeof getBenchmarkRunCapacityDiagnostics>
->;
+export type BenchmarkRunDetailRun = {
+	id: string;
+	status: string;
+	suiteSlug: string;
+	suiteName: string;
+	modelConfigLabel: string | null;
+	agentName: string;
+	agentVersion: number;
+	modelNameOrPath: string | null;
+	concurrency: number;
+	evaluationConcurrency: number;
+	evaluatorResourceClass: string | null;
+	createdAt: string;
+	startedAt: string | null;
+	completedAt: string | null;
+	coordinatorExecutionId: string | null;
+	evaluatorJobName: string | null;
+	predictionsPath: string | null;
+	mlflowRunId: string | null;
+	error: string | null;
+	instances: BenchmarkRunDetailInstance[];
+	[key: string]: unknown;
+};
+
+export type BenchmarkRunCapacityDiagnostics = BenchmarkCapacityDiagnostics;
 
 export type BenchmarkRunDetailPageData = {
 	runId: string;

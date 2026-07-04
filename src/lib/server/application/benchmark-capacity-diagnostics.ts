@@ -1,15 +1,162 @@
-import type {
-	getBenchmarkLaunchCapacityDiagnostics,
-	getBenchmarkRunCapacityDiagnostics,
-} from "$lib/server/benchmarks/capacity-diagnostics";
+export type BenchmarkCapacityDiagnostics = {
+	requestedConcurrency: number;
+	deterministicConcurrency: number;
+	pressureAdjustedConcurrency: number;
+	storedEffectiveConcurrency: number;
+	selectedInstanceCount: number;
+	blockedBy: string[];
+	resources: Array<{
+		resourceType: string;
+		capacityKey?: string;
+		active: number;
+		limit: number;
+		headroom?: number;
+		staleActive: number;
+		[key: string]: unknown;
+	}>;
+	runtime: {
+		class?: string | null;
+		appId?: string | null;
+		replicas: number | null;
+		slotsPerReplica: number | null;
+		slots: number | null;
+		maxActiveSessions?: number | null;
+		[key: string]: unknown;
+	};
+	daprWorkflow: {
+		perSidecarLimit?: number | null;
+		effectiveCapacity: number | null;
+		agentWorkflowMaxActiveTurns?: number | null;
+		[key: string]: unknown;
+	};
+	parentWorkflow: {
+		appId?: string | null;
+		replicas: number | null;
+		readyReplicas?: number | null;
+		connectedWorkers: number | null;
+		connectedWorkerPods?: number | null;
+		podWorkers?: unknown[];
+		workflowLimitPerSidecar?: number | null;
+		activityLimitPerSidecar?: number | null;
+		configurationWorkflowLimitPerSidecar?: number | null;
+		configurationActivityLimitPerSidecar: number | null;
+		workerWorkflowLimitPerSidecar?: number | null;
+		workerActivityLimitPerSidecar: number | null;
+		effectiveWorkflowCapacity: number | null;
+		effectiveActivityCapacity: number | null;
+		daprRuntimeVersion?: string | null;
+		schedulerPods: number | null;
+		schedulerReadyPods: number | null;
+		recentActorErrorCount: number | null;
+		recentReminderErrorCount: number | null;
+		recentStaleWorkflowEventCount?: number | null;
+		recentStartPendingTimeoutCount?: number | null;
+		daprRuntimePressure: boolean;
+		error?: string | null;
+		[key: string]: unknown;
+	};
+	agentHostRuntime: {
+		activePods: number | null;
+		unhealthyPods: string[];
+		oomKilledPods: string[];
+		recentActorErrorCount: number | null;
+		recentReminderErrorCount: number | null;
+		daprRuntimePressure: boolean;
+		pressureReasons: string[];
+		error: string | null;
+		[key: string]: unknown;
+	};
+	sandbox: {
+		configuredMaxActiveSandboxes?: number | null;
+		maxActiveSandboxes?: number | null;
+		schedulableSandboxCapacity: number | null;
+		availableSandboxSlots?: number | null;
+		activeSwebenchPods?: number | null;
+		pendingSwebenchPods?: number | null;
+		ephemeralStorageLimitedCapacity: number | null;
+		nodeFsLimitedCapacity: number | null;
+		nodeFsAvailableBytes?: number | null;
+		nodeFsEvictionReserveBytes?: number | null;
+		kueueClusterQueueName?: string | null;
+		kueueClusterQueueActive?: boolean | null;
+		kueueClusterQueueReason?: string | null;
+		kueueClusterQueueMessage?: string | null;
+		kueueAvailableSandboxSlots?: number | null;
+		kueueBorrowAvailableSandboxSlots?: number | null;
+		kueueCpuLimitedCapacity?: number | null;
+		kueueMemoryLimitedCapacity?: number | null;
+		kueueEphemeralStorageLimitedCapacity?: number | null;
+		kueuePodLimitedCapacity?: number | null;
+		kueueInstanceRequestCpuMilli?: number | null;
+		kueueInstanceRequestMemoryBytes?: number | null;
+		kueueInstanceRequestEphemeralStorageBytes?: number | null;
+		kueueInstancePodCount?: number | null;
+		kueueInstancePodCountScope?: string | null;
+		kueueInstanceRequestMode?: string | null;
+		kueueAvailableInstanceSlots?: number | null;
+		kueueBorrowAvailableInstanceSlots?: number | null;
+		kueueInstanceCpuLimitedCapacity?: number | null;
+		kueueInstanceMemoryLimitedCapacity?: number | null;
+		kueueInstanceEphemeralStorageLimitedCapacity?: number | null;
+		kueueInstancePodLimitedCapacity?: number | null;
+		schedulableKueueInstanceCapacity?: number | null;
+		diskPressureNodeCount: number | null;
+		error?: string | null;
+		[key: string]: unknown;
+	};
+	modelCaps: {
+		modelMaxActiveRequests: number | null;
+		[key: string]: unknown;
+	};
+	evaluator?: {
+		requestedEvaluationConcurrency: number | null;
+		effectiveEvaluationConcurrency: number | null;
+		reason?: string | null;
+		capacity?: unknown;
+		[key: string]: unknown;
+	};
+	clusterPressure: {
+		hardBlock?: boolean;
+		[key: string]: unknown;
+	} | null;
+	sharedCapacity?: {
+		available?: boolean;
+		fitsAdditionalSessions?: number | null;
+		[key: string]: unknown;
+	};
+	coverage?: unknown;
+	workflowLifecycle?: {
+		parentAppId?: string;
+		childAppId?: string | null;
+		sharedActorStateStore?: boolean | null;
+		parentActorStateStore?: {
+			componentName: string;
+			componentType?: string | null;
+			tablePrefix: string | null;
+			connectionSecretRef?: string | null;
+			maxConns?: number | null;
+			scoped?: boolean;
+			[key: string]: unknown;
+		} | null;
+		childActorStateStore?: {
+			componentName: string;
+			componentType?: string | null;
+			tablePrefix: string | null;
+			connectionSecretRef?: string | null;
+			maxConns?: number | null;
+			scoped?: boolean;
+			[key: string]: unknown;
+		} | null;
+		issue: string | null;
+		error?: string | null;
+		[key: string]: unknown;
+	};
+	capReason?: string | null;
+	computedAt?: string;
+	[key: string]: unknown;
+};
 
-export type BenchmarkCapacityDiagnostics = Awaited<
-	ReturnType<typeof getBenchmarkLaunchCapacityDiagnostics>
->;
-
-export type BenchmarkRunCapacityDiagnostics = NonNullable<
-	Awaited<ReturnType<typeof getBenchmarkRunCapacityDiagnostics>>
->;
+export type BenchmarkRunCapacityDiagnostics = BenchmarkCapacityDiagnostics;
 
 export type BenchmarkLaunchCapacityInput = {
 	projectId: string;
