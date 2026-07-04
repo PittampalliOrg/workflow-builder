@@ -1397,6 +1397,81 @@ def test_sw_workflow_emits_lifecycle_failed_when_enabled(monkeypatch):
     assert stop.value.value["phase"] == "failed"
 
 
+def _drive_workflow(workflow_gen, fail_on=None):
+    """Drive a sw_workflow generator to completion, recording every yielded activity.
+
+    Sends `{success: True}` for each yielded activity (or `{success: False, error}` for
+    the activity named `fail_on`, to exercise the failure path). Returns
+    (activity_names, final_output).
+    """
+    activities: list[str] = []
+    to_send = None
+    while True:
+        try:
+            step = workflow_gen.send(to_send)
+        except StopIteration as stop:
+            return activities, stop.value
+        activities.append(step["activity"])
+        if fail_on is not None and step["activity"] == fail_on:
+            to_send = {"success": False, "error": "forced failure"}
+        else:
+            to_send = {"success": True}
+
+
+def test_sw_workflow_emits_failed_exactly_once_when_enabled(monkeypatch):
+    # Task #17 (item 3): a failing run emits started once + failed EXACTLY once, and
+    # never completed.
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    monkeypatch.setattr(SW_WORKFLOW, "EMIT_LIFECYCLE_EVENTS", True)
+    ctx = _FakeTerminalWorkflowCtx()
+    gen = SW_WORKFLOW.sw_workflow(
+        ctx, _terminal_workflow_input([{"fail_step": {"call": "system/fail", "with": {}}}])
+    )
+    activities, final = _drive_workflow(gen, fail_on="execute_action")
+
+    assert activities[0] == "publish_workflow_started"
+    assert activities.count("publish_workflow_started") == 1
+    assert activities.count("publish_workflow_failed") == 1
+    assert "publish_workflow_completed" not in activities
+    assert final["phase"] == "failed"
+
+
+def test_sw_workflow_lifecycle_does_not_collide_with_emit_node(monkeypatch):
+    # Task #17 (item 2): lifecycle events (workflow.started/completed) are SEPARATE from
+    # an `emit` node's phase-changed (workflow.phase.changed) — distinct event types, no
+    # double-emit. A workflow with an emit node yields started once, the node's
+    # phase-changed, and completed once.
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    monkeypatch.setattr(SW_WORKFLOW, "EMIT_LIFECYCLE_EVENTS", True)
+    ctx = _FakeTerminalWorkflowCtx()
+    gen = SW_WORKFLOW.sw_workflow(
+        ctx,
+        _terminal_workflow_input(
+            [{"emit_probe": {"emit": {"event": {"with": {"type": "phase-x", "subject": "s"}}}}}]
+        ),
+    )
+    activities, final = _drive_workflow(gen)
+
+    assert activities.count("publish_workflow_started") == 1
+    assert activities.count("publish_workflow_completed") == 1
+    assert "publish_workflow_failed" not in activities
+    assert activities.count("publish_phase_changed") == 1  # the emit node itself
+    assert final["success"] is True
+
+
+def test_sw_workflow_no_lifecycle_publishes_when_disabled(monkeypatch):
+    # Task #17 (item 3): flag OFF => ZERO lifecycle publishes (byte-identical to pre-#17).
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    monkeypatch.setattr(SW_WORKFLOW, "EMIT_LIFECYCLE_EVENTS", False)
+    ctx = _FakeTerminalWorkflowCtx()
+    activities, final = _drive_workflow(SW_WORKFLOW.sw_workflow(ctx, _terminal_workflow_input()))
+
+    assert "publish_workflow_started" not in activities
+    assert "publish_workflow_completed" not in activities
+    assert "publish_workflow_failed" not in activities
+    assert final["success"] is True
+
+
 def test_cleanup_execution_workspaces_defaults_to_dapr_invoke(monkeypatch):
     module = _load_module(
         "workflow_orchestrator_call_agent_service_dapr",
