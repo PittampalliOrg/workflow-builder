@@ -934,6 +934,12 @@ services:
   `EvaluationRunItemStatusInput`, `EvaluationArtifactKindInput`, and
   `BenchmarkResourceLeaseTypeInput` are route-facing application unions exported
   from the owning service modules.
+- Pure SWE-bench and evaluation grader helpers no longer import Drizzle schema
+  types. `src/lib/server/benchmarks/swebench.ts` now owns benchmark run/status
+  unions used by its transition helpers, and
+  `src/lib/server/evaluations/graders.ts` derives `EvaluationGraderType` from
+  its local allowed-type tuple. The DB-heavy benchmark/evaluation services still
+  have direct Postgres seams to migrate separately.
 - `src/lib/server/workflows/start-run.ts` no longer imports the direct
   execution read-model schema probe. Workflow start readiness now calls
   `workflowData.assertExecutionReadModelReady`, and trigger model-catalog

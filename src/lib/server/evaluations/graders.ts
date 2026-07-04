@@ -1,5 +1,3 @@
-import type { EvaluationGraderType } from "$lib/server/db/schema";
-
 export const EVALUATION_GRADER_TYPES = [
 	"string_check",
 	"text_similarity",
@@ -8,7 +6,9 @@ export const EVALUATION_GRADER_TYPES = [
 	"multi",
 	"external_harness",
 	"mlflow_judge",
-] as const satisfies readonly EvaluationGraderType[];
+] as const;
+
+export type EvaluationGraderType = (typeof EVALUATION_GRADER_TYPES)[number];
 
 export type GraderDefinition = {
 	id?: string;

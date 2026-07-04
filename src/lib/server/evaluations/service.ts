@@ -14,7 +14,6 @@ import {
 	sessions,
 	workflowExecutions,
 	workflows,
-	type EvaluationGraderType,
 	type EvaluationRunStatus,
 } from "$lib/server/db/schema";
 import {
@@ -51,6 +50,7 @@ import {
 	runGrader,
 	runGraderAsync,
 	validateGraderDefinition,
+	type EvaluationGraderType,
 	type GraderDefinition,
 	type GraderResult,
 } from "./graders";

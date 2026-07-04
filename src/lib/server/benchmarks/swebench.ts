@@ -1,9 +1,23 @@
-import type {
-	BenchmarkRunInstanceStatus,
-	BenchmarkRunStatus,
-} from "$lib/server/db/schema";
-
 export type SwebenchSuiteSlug = "SWE-bench_Verified" | "SWE-bench_Lite";
+
+export type BenchmarkRunStatus =
+	| "queued"
+	| "inferencing"
+	| "evaluating"
+	| "completed"
+	| "failed"
+	| "cancelled";
+
+export type BenchmarkRunInstanceStatus =
+	| "queued"
+	| "inferencing"
+	| "inferred"
+	| "evaluating"
+	| "resolved"
+	| "failed"
+	| "error"
+	| "timeout"
+	| "cancelled";
 
 export const SWEBENCH_ALLOWED_AGENT_TOOLS = [
 	"execute_command",

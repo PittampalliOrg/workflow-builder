@@ -37,8 +37,6 @@ import {
 	workflows,
 	type BenchmarkEvaluationStatus,
 	type BenchmarkInferenceStatus,
-	type BenchmarkRunInstanceStatus,
-	type BenchmarkRunStatus,
 } from "$lib/server/db/schema";
 import {
 	daprFetch,
@@ -92,6 +90,8 @@ import {
 	summarizeRunInstances,
 	SWEBENCH_ALLOWED_AGENT_TOOLS,
 	SWEBENCH_SUITES,
+	type BenchmarkRunInstanceStatus,
+	type BenchmarkRunStatus,
 	type SwebenchSuiteSlug,
 } from "./swebench";
 import {
