@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dbMocks = vi.hoisted(() => {
@@ -55,6 +58,18 @@ import {
 } from "./environment-image-builds";
 
 describe("SWE-bench environment image build planning", () => {
+	it("keeps the legacy environment image build module free of direct DB imports", () => {
+		const source = readFileSync(
+			join(dirname(fileURLToPath(import.meta.url)), "environment-image-builds.ts"),
+			"utf8",
+		);
+
+		expect(source).toContain("$lib/server/application/adapters/environment-image-builds");
+		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("drizzle-orm");
+		expect(source).not.toContain("environmentImageBuilds");
+	});
+
 	beforeEach(() => {
 		dbMocks.state.lastUpdate = null;
 		dbMocks.select.mockClear();

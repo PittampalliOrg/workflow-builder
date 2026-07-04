@@ -1426,10 +1426,15 @@ Benchmark MLflow sync/link/proxy helpers now live in
 no direct DB, Drizzle, or schema imports. This keeps the remaining active MLflow
 coupling quarantined as adapter/telemetry cleanup while OTel lineage remains the
 preferred forward path.
+Environment image build, dynamic SWE-bench environment, and build-activity
+projection helpers now live in
+`src/lib/server/application/adapters/environment-image-builds.ts`; the legacy
+`src/lib/server/environments/environment-image-builds.ts` module is a
+compatibility re-export with no direct DB, Drizzle, Tekton, or schema imports.
 The broader BFF/control-plane still has service-level direct DB imports outside
 that subset and remains the next migration area. Current categories include:
 
-- legacy agent registry/sync, environment registry/image-build, benchmark,
+- legacy agent registry/sync, environment registry, benchmark,
   evaluation, and MLflow/observability service modules that still own direct
   Drizzle/Postgres access until their behavior is fully expressed as application
   ports and adapter implementations;

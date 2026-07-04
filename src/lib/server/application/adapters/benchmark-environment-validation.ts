@@ -12,7 +12,7 @@ import {
 	getSwebenchEnvironmentStatus,
 	plannedSwebenchInferenceEnvironment,
 	syncEnvironmentBuild,
-} from "$lib/server/environments/environment-image-builds";
+} from "$lib/server/application/adapters/environment-image-builds";
 import type {
 	SwebenchEnvironmentBuildProjection,
 	SwebenchEnvironmentBuildProvisioner,

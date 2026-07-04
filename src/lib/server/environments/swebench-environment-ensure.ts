@@ -133,7 +133,7 @@ async function ensureLegacySwebenchEnvironment(
 	input: EnsureSwebenchEnvironmentInput,
 ): Promise<EnvironmentPrepareResult> {
 	const { ensureSwebenchEnvironment } = await import(
-		"$lib/server/environments/environment-image-builds"
+		"$lib/server/application/adapters/environment-image-builds"
 	);
 	return ensureSwebenchEnvironment(input);
 }

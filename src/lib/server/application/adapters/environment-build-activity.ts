@@ -6,7 +6,7 @@ import type {
 import {
 	getBenchmarkRunEnvironmentActivity,
 	getEnvironmentBuildActivity,
-} from "$lib/server/environments/environment-image-builds";
+} from "$lib/server/application/adapters/environment-image-builds";
 
 export class LegacyEnvironmentBuildActivityReadAdapter implements EnvironmentBuildActivityReadPort {
 	getBuildActivity(
