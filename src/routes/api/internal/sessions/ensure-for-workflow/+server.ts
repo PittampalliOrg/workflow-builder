@@ -137,7 +137,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	// browser via Browserstation and doesn't use an in-pod playwright-mcp
 	// sidecar, so the rewrite would mis-route any Playwright preset to a
 	// non-existent localhost:3100 endpoint. Mirrors the skip in
-	// src/lib/server/agents/registry-sync.ts:752-754.
+	// src/lib/server/application/adapters/agent-registry-sync.ts:752-754.
 	const isBrowserUseRuntime =
 		rawAgentConfig != null &&
 		(rawAgentConfig as { runtime?: unknown }).runtime === "browser-use-agent";

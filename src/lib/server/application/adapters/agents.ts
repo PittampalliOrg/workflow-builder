@@ -55,7 +55,7 @@ import {
 	getRegistryStatus,
 	registerAgent,
 	syncAgentRuntimeCR,
-} from "$lib/server/agents/registry-sync";
+} from "$lib/server/application/adapters/agent-registry-sync";
 import { hashAgentConfig } from "$lib/server/agents/config-hash";
 import {
 	compileAgentCapabilities,

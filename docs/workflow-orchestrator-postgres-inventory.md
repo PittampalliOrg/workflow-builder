@@ -1447,10 +1447,17 @@ the legacy `src/lib/server/agents/registry.ts` module is a compatibility
 re-export with no direct DB, Drizzle, or schema imports. The non-adapter
 `compiled-capabilities` helper still reaches the compatibility facade and should
 move to an explicit read port in a later checkpoint.
+Agent registry dual-write/sync helpers now live in
+`src/lib/server/application/adapters/agent-registry-sync.ts`; the legacy
+`src/lib/server/agents/registry-sync.ts` module is a compatibility re-export
+with no direct DB, Drizzle, or schema imports. The non-adapter
+`application-state` helper still reaches the compatibility facade for metadata
+serialization and should move to an explicit registry metadata port in a later
+checkpoint.
 The broader BFF/control-plane still has service-level direct DB imports outside
 that subset and remains the next migration area. Current categories include:
 
-- legacy agent registry-sync, benchmark,
+- benchmark,
   and evaluation service modules that still own direct
   Drizzle/Postgres access until their behavior is fully expressed as application
   ports and adapter implementations;

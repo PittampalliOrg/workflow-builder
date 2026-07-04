@@ -18,7 +18,7 @@ import type {
 import { createDefaultAgentConfig } from "$lib/types/agents";
 import { safeRegisterAgentVersionInMlflow } from "$lib/server/application/adapters/mlflow-lifecycle";
 import { hashAgentConfig } from "$lib/server/agents/config-hash";
-import { safeSyncOnArchive, safeSyncOnPublish } from "$lib/server/agents/registry-sync";
+import { safeSyncOnArchive, safeSyncOnPublish } from "$lib/server/application/adapters/agent-registry-sync";
 
 function requireDb() {
 	if (!db) throw new Error("Database not configured");
