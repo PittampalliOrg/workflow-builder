@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -30,7 +31,25 @@ from tracing import set_current_span_attrs, start_activity_span, inject_current_
 logger = logging.getLogger(__name__)
 
 PUBSUB_NAME = config.PUBSUB_NAME
-WORKFLOW_EVENTS_TOPIC = "workflow.events"
+
+
+def _workflow_events_topic() -> str:
+    """Pub/sub topic for workflow events.
+
+    On the host this is bare `workflow.events`. In a Tier-2 preview the runner
+    sets `WORKFLOW_ORCHESTRATOR_EVENT_TOPIC_PREFIX=wbpreview-<name>` so events
+    publish to `wbpreview-<name>.workflow.events` — landing in the preview's own
+    `ORCHESTRATOR-<name>` JetStream stream (which binds `wbpreview-<name>.>`)
+    instead of leaking, unattributed, into the shared host `ORCHESTRATOR` stream.
+    Mirrors SANDBOX_EXECUTION_AGENT_TOPIC_PREFIX on the agent side; the host feed
+    (E1) tails each preview stream. Nothing in a preview subscribes to this topic
+    (approval-notifier is host-only), so the prefix breaks no consumer.
+    """
+    prefix = os.getenv("WORKFLOW_ORCHESTRATOR_EVENT_TOPIC_PREFIX", "").strip().strip(".")
+    return f"{prefix}.workflow.events" if prefix else "workflow.events"
+
+
+WORKFLOW_EVENTS_TOPIC = _workflow_events_topic()
 
 PUBLISH_EVENT_INPUT_SCHEMA = schema_object(
     {
