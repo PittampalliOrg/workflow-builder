@@ -482,3 +482,119 @@ def test_list_dev_previews_groups_by_service(monkeypatch) -> None:
     assert by_svc["workflow-orchestrator"]["ready"] is False
     assert by_svc["workflow-orchestrator"]["podIP"] == "10.0.0.2"
     assert by_svc["workflow-orchestrator"]["adoptDeployment"] is None
+
+
+# --- vcluster-previews list perf (task #18): parallel probe + burst cache + per-preview
+#     error isolation. Fake k8s clients accept _request_timeout (the list now bounds
+#     each call). --------------------------------------------------------------------
+
+
+def _vc_ns(host_name, preview_name=None, phase=None):
+    labels = {"vcluster-preview-name": preview_name} if preview_name else {}
+    return SimpleNamespace(
+        metadata=SimpleNamespace(name=host_name, labels=labels),
+        status=SimpleNamespace(phase=phase),
+    )
+
+
+def _vc_ready_pod():
+    return SimpleNamespace(
+        metadata=SimpleNamespace(name="workflow-builder-xyz"),
+        status=SimpleNamespace(
+            conditions=[SimpleNamespace(type="Ready", status="True")]
+        ),
+    )
+
+
+def test_list_vcluster_previews_parallel_and_burst_cached(monkeypatch) -> None:
+    app_module._vcluster_previews_cache["data"] = None
+    monkeypatch.setattr(app_module, "_require_internal", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        app_module, "_agent_workflow_host_namespace", lambda: "workflow-builder"
+    )
+    ns_calls = {"n": 0}
+
+    def list_namespace(*, label_selector, **_k):
+        ns_calls["n"] += 1
+        return SimpleNamespace(
+            items=[_vc_ns("vcluster-gan-a", "gan-a"), _vc_ns("vcluster-gan-b", "gan-b")]
+        )
+
+    def read_job_status(*, name, namespace, **_k):
+        return SimpleNamespace(
+            status=SimpleNamespace(active=1, succeeded=0, failed=0)
+        )
+
+    def list_pod(*, namespace, **_k):
+        items = [_vc_ready_pod()] if namespace == "vcluster-gan-a" else []
+        return SimpleNamespace(items=items)
+
+    fake_core = SimpleNamespace(
+        list_namespace=list_namespace, list_namespaced_pod=list_pod
+    )
+    fake_batch = SimpleNamespace(read_namespaced_job_status=read_job_status)
+    monkeypatch.setattr(
+        app_module, "_load_k8s_clients", lambda: (fake_batch, fake_core)
+    )
+
+    req = SimpleNamespace()
+    out = app_module.list_vcluster_previews(req)
+    by = {p["name"]: p for p in out["previews"]}
+    assert set(by) == {"gan-a", "gan-b"}
+    assert by["gan-a"]["ready"] is True and by["gan-a"]["phase"] == "ready"
+    assert by["gan-b"]["ready"] is False and by["gan-b"]["phase"] == "provisioning"
+    assert by["gan-a"]["url"].startswith("https://wfb-gan-a.")
+    assert ns_calls["n"] == 1
+    # Burst cache: a second call within TTL must NOT re-scan the cluster.
+    assert app_module.list_vcluster_previews(req) == out
+    assert ns_calls["n"] == 1
+
+
+def test_list_vcluster_previews_isolates_a_failing_preview(monkeypatch) -> None:
+    app_module._vcluster_previews_cache["data"] = None
+    monkeypatch.setattr(app_module, "_require_internal", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        app_module, "_agent_workflow_host_namespace", lambda: "workflow-builder"
+    )
+
+    def list_namespace(*, label_selector, **_k):
+        return SimpleNamespace(
+            items=[_vc_ns("vcluster-ok", "ok"), _vc_ns("vcluster-bad", "bad")]
+        )
+
+    def read_job_status(*, name, namespace, **_k):
+        return SimpleNamespace(status=SimpleNamespace(active=1, succeeded=0, failed=0))
+
+    def list_pod(*, namespace, **_k):
+        if namespace == "vcluster-bad":
+            raise RuntimeError("simulated k8s timeout")
+        return SimpleNamespace(items=[_vc_ready_pod()])
+
+    fake_core = SimpleNamespace(
+        list_namespace=list_namespace, list_namespaced_pod=list_pod
+    )
+    fake_batch = SimpleNamespace(read_namespaced_job_status=read_job_status)
+    monkeypatch.setattr(
+        app_module, "_load_k8s_clients", lambda: (fake_batch, fake_core)
+    )
+
+    out = app_module.list_vcluster_previews(SimpleNamespace())
+    # The failing preview is dropped (probe error -> "absent"), the healthy one lists.
+    assert {p["name"] for p in out["previews"]} == {"ok"}
+
+
+def test_list_vcluster_previews_ttl_zero_disables_cache(monkeypatch) -> None:
+    app_module._vcluster_previews_cache["data"] = None
+    monkeypatch.setattr(app_module, "_require_internal", lambda *_a, **_k: None)
+    monkeypatch.setattr(app_module, "_VCLUSTER_PREVIEWS_CACHE_TTL", 0.0)
+    calls = {"n": 0}
+
+    def compute():
+        calls["n"] += 1
+        return {"previews": []}
+
+    monkeypatch.setattr(app_module, "_compute_vcluster_previews", compute)
+    req = SimpleNamespace()
+    app_module.list_vcluster_previews(req)
+    app_module.list_vcluster_previews(req)
+    assert calls["n"] == 2
