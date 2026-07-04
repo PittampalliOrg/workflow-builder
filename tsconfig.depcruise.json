@@ -1,0 +1,13 @@
+{
+	"//": "Resolution-only tsconfig for dependency-cruiser (.dependency-cruiser.cjs). dep-cruiser does not reliably pick up the $lib paths through the root tsconfig's extends chain into .svelte-kit/tsconfig.json, so the aliases are declared flat here. Not used by svelte-check/tsc.",
+	"compilerOptions": {
+		"baseUrl": ".",
+		"module": "esnext",
+		"moduleResolution": "bundler",
+		"paths": {
+			"$lib": ["src/lib"],
+			"$lib/*": ["src/lib/*"]
+		}
+	},
+	"include": ["src/**/*.ts"]
+}
