@@ -819,3 +819,138 @@ def test_trace_target_fetch_does_not_fallback_to_postgres_in_fallback_mode(monke
     monkeypatch.setitem(sys.modules, "psycopg2", FailingPsycopg2)
 
     assert finalizer._fetch_trace_targets("exec-1") == []
+
+
+# ---------------------------------------------------------------------------
+# Wire-contract section: the shared fixtures in
+# services/shared/workflow-data-contract/fixtures drive an HTTP stub under
+# WorkflowDataClient and pin method + path + body + parsed return for every
+# endpoint. The same fixtures are replayed against the SvelteKit route
+# handlers by src/routes/api/internal/workflow-data/workflow-data-contract.test.ts.
+# Contract rules (additive-only) live in the fixture directory's README.
+# ---------------------------------------------------------------------------
+
+import json as json_module
+
+import pytest
+
+CONTRACT_FIXTURE_DIR = ROOT.parent / "shared" / "workflow-data-contract" / "fixtures"
+
+
+class _FixtureHttpStub:
+    """requests.Session stand-in that records the wire request and replays
+    the fixture's responseBody."""
+
+    def __init__(self, fixture: dict):
+        self._fixture = fixture
+        self.calls: list[dict] = []
+
+    def request(self, method, url, headers=None, json=None, timeout=None):
+        self.calls.append(
+            {"method": method, "url": url, "headers": headers or {}, "json": json}
+        )
+        return types.SimpleNamespace(
+            status_code=200,
+            json=lambda: self._fixture["responseBody"],
+            text="",
+        )
+
+
+_CONTRACT_CALLS = {
+    "get-workflow": lambda c, f: c.get_workflow(
+        f["pathParams"]["workflowRef"], by=f["queryParams"]["by"]
+    ),
+    "get-execution": lambda c, f: c.get_execution(f["pathParams"]["executionId"]),
+    "read-model-ready": lambda c, _f: c.assert_execution_read_model_ready(),
+    "get-execution-by-instance": lambda c, f: c.get_execution_by_instance(
+        f["pathParams"]["instanceId"]
+    ),
+    "create-execution": lambda c, f: c.create_execution(f["requestBody"]),
+    "get-live-execution-instance": lambda c, f: c.get_live_execution_instance(
+        f["pathParams"]["executionId"]
+    ),
+    "attach-scheduler-instance": lambda c, f: c.attach_execution_scheduler_instance(
+        f["pathParams"]["executionId"], f["requestBody"]
+    ),
+    "mark-start-failed": lambda c, f: c.mark_execution_start_failed(
+        f["pathParams"]["executionId"], f["requestBody"]["error"]
+    ),
+    "list-stale-executions": lambda c, f: c.list_stale_running_executions(
+        int(f["queryParams"]["staleOlderThanMinutes"])
+    ),
+    "patch-execution": lambda c, f: c.patch_execution(
+        f["pathParams"]["executionId"], f["requestBody"]
+    ),
+    "append-execution-log": lambda c, f: c.append_execution_log(
+        f["pathParams"]["executionId"], f["requestBody"]
+    ),
+    "update-execution-log": lambda c, f: c.update_execution_log(
+        f["pathParams"]["executionId"], f["pathParams"]["logId"], f["requestBody"]
+    ),
+    "upsert-workflow-artifact": lambda c, f: c.upsert_workflow_artifact(
+        f["pathParams"]["executionId"], f["requestBody"]
+    ),
+    "upsert-workspace-session": lambda c, f: c.upsert_workspace_session(f["requestBody"]),
+    "resolve-mcp-config": lambda c, f: c.resolve_mcp_config(f["requestBody"]),
+    "schedule-agent-run": lambda c, f: c.schedule_agent_run(f["requestBody"]),
+    "update-agent-run": lambda c, f: c.update_agent_run(
+        f["pathParams"]["runId"], f["requestBody"]
+    ),
+    "upsert-plan-artifact": lambda c, f: c.upsert_plan_artifact(f["requestBody"]),
+    "update-plan-artifact": lambda c, f: c.update_plan_artifact(
+        f["pathParams"]["artifactRef"], f["requestBody"]
+    ),
+    "get-plan-artifact": lambda c, f: c.get_plan_artifact(f["pathParams"]["artifactRef"]),
+    "get-trace-targets": lambda c, f: c.get_trace_targets(f["pathParams"]["executionId"]),
+    "upsert-trace-lineage": lambda c, f: c.upsert_trace_lineage(f["requestBody"]),
+}
+
+_CONTRACT_RETURNS = {
+    "get-workflow": lambda f: f["responseBody"]["workflow"],
+    "get-execution": lambda f: f["responseBody"]["execution"],
+    "read-model-ready": lambda _f: None,
+    "get-execution-by-instance": lambda f: f["responseBody"]["execution"],
+    "get-live-execution-instance": lambda f: f["responseBody"]["instance"],
+    "list-stale-executions": lambda f: f["responseBody"]["executions"],
+    "get-plan-artifact": lambda f: f["responseBody"]["artifact"],
+    "get-trace-targets": lambda f: f["responseBody"]["targets"],
+}
+
+
+def _contract_fixture_paths() -> list[Path]:
+    return sorted(CONTRACT_FIXTURE_DIR.glob("*.json"))
+
+
+def test_contract_fixture_coverage_is_exhaustive():
+    fixture_names = {path.stem for path in _contract_fixture_paths()}
+    assert fixture_names, f"no contract fixtures found in {CONTRACT_FIXTURE_DIR}"
+    assert fixture_names == set(_CONTRACT_CALLS), (
+        "contract fixtures and client-call mappings drifted apart; "
+        "update _CONTRACT_CALLS alongside the fixture directory"
+    )
+
+
+@pytest.mark.parametrize(
+    "fixture_path", _contract_fixture_paths(), ids=lambda path: path.stem
+)
+def test_workflow_data_client_matches_wire_contract(monkeypatch, fixture_path):
+    fixture = json_module.loads(fixture_path.read_text())
+    monkeypatch.setenv("INTERNAL_API_TOKEN", "token-1")
+    monkeypatch.setenv("WORKFLOW_DATA_API_TRANSPORT", "direct")
+    monkeypatch.setenv("WORKFLOW_BUILDER_URL", "http://workflow-builder.test")
+
+    client = workflow_data_module.WorkflowDataClient()
+    stub = _FixtureHttpStub(fixture)
+    client._session = stub
+
+    result = _CONTRACT_CALLS[fixture_path.stem](client, fixture)
+
+    assert len(stub.calls) == 1
+    call = stub.calls[0]
+    assert call["method"] == fixture["method"]
+    assert call["url"] == f"http://workflow-builder.test{fixture['path']}"
+    assert call["json"] == fixture["requestBody"]
+    assert call["headers"]["X-Internal-Token"] == "token-1"
+
+    expected = _CONTRACT_RETURNS.get(fixture_path.stem, lambda f: f["responseBody"])(fixture)
+    assert result == expected

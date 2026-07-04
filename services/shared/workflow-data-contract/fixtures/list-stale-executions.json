@@ -1,0 +1,22 @@
+{
+	"description": "List running executions older than N minutes (WorkflowDataClient.list_stale_running_executions).",
+	"method": "GET",
+	"pathTemplate": "/api/internal/workflow-data/executions",
+	"path": "/api/internal/workflow-data/executions?staleOlderThanMinutes=60",
+	"pathParams": {},
+	"queryParams": {
+		"staleOlderThanMinutes": "60"
+	},
+	"requestBody": null,
+	"responseBody": {
+		"executions": [
+			{
+				"id": "exec-1",
+				"daprInstanceId": "sw-example-exec-exec-1",
+				"input": {
+					"prompt": "ship it"
+				}
+			}
+		]
+	}
+}

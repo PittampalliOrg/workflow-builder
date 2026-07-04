@@ -1,0 +1,21 @@
+{
+	"description": "Fetch a workflow definition by id or name (WorkflowDataClient.get_workflow).",
+	"method": "GET",
+	"pathTemplate": "/api/internal/workflow-data/workflows/{workflowRef}",
+	"path": "/api/internal/workflow-data/workflows/wf-1?by=id",
+	"pathParams": {
+		"workflowRef": "wf-1"
+	},
+	"queryParams": {
+		"by": "id"
+	},
+	"requestBody": null,
+	"responseBody": {
+		"workflow": {
+			"id": "wf-1",
+			"name": "Example Workflow",
+			"nodes": [],
+			"edges": []
+		}
+	}
+}

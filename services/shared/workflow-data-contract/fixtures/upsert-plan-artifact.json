@@ -1,0 +1,27 @@
+{
+	"description": "Upsert a plan artifact (WorkflowDataClient.upsert_plan_artifact).",
+	"method": "POST",
+	"pathTemplate": "/api/internal/workflow-data/plan-artifacts",
+	"path": "/api/internal/workflow-data/plan-artifacts",
+	"pathParams": {},
+	"requestBody": {
+		"artifactRef": "plan-1",
+		"workflowExecutionId": "exec-1",
+		"workflowId": "wf-1",
+		"nodeId": "agent",
+		"goal": "ship it",
+		"planJson": {
+			"steps": []
+		},
+		"sourcePrompt": "ship it",
+		"artifactType": "claude_task_graph_v1",
+		"status": "draft"
+	},
+	"responseBody": {
+		"ok": true,
+		"artifactRef": "plan-1",
+		"storageBackend": "workflow_plan_artifacts",
+		"artifactType": "claude_task_graph_v1",
+		"status": "draft"
+	}
+}

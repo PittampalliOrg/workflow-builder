@@ -1,0 +1,17 @@
+{
+	"description": "Attach the Dapr scheduler instance to an execution (WorkflowDataClient.attach_execution_scheduler_instance).",
+	"method": "POST",
+	"pathTemplate": "/api/internal/workflow-data/executions/{executionId}/scheduler-instance",
+	"path": "/api/internal/workflow-data/executions/exec-1/scheduler-instance",
+	"pathParams": {
+		"executionId": "exec-1"
+	},
+	"requestBody": {
+		"instanceId": "sw-example-exec-exec-1",
+		"workflowSessionId": "exec-1",
+		"primaryTraceId": "trace-1"
+	},
+	"responseBody": {
+		"ok": true
+	}
+}

@@ -1,0 +1,26 @@
+{
+	"description": "Fetch a plan artifact (WorkflowDataClient.get_plan_artifact).",
+	"method": "GET",
+	"pathTemplate": "/api/internal/workflow-data/plan-artifacts/{artifactRef}",
+	"path": "/api/internal/workflow-data/plan-artifacts/plan-1",
+	"pathParams": {
+		"artifactRef": "plan-1"
+	},
+	"requestBody": null,
+	"responseBody": {
+		"artifact": {
+			"artifactRef": "plan-1",
+			"status": "approved",
+			"goal": "ship it",
+			"planJson": {
+				"steps": []
+			},
+			"planMarkdown": "## Plan",
+			"metadata": {
+				"reviewed": true
+			},
+			"workspaceRef": "workspace-1",
+			"clonePath": "/repo"
+		}
+	}
+}

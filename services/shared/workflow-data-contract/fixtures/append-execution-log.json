@@ -1,0 +1,28 @@
+{
+	"description": "Append a node execution log (WorkflowDataClient.append_execution_log).",
+	"method": "POST",
+	"pathTemplate": "/api/internal/workflow-data/executions/{executionId}/logs",
+	"path": "/api/internal/workflow-data/executions/exec-1/logs",
+	"pathParams": {
+		"executionId": "exec-1"
+	},
+	"requestBody": {
+		"id": "log-1",
+		"nodeId": "agent",
+		"nodeName": "Agent",
+		"nodeType": "action",
+		"activityName": "durable/run",
+		"status": "running",
+		"input": {
+			"prompt": "ship it"
+		},
+		"startedAt": "2026-01-01T00:00:00.000Z"
+	},
+	"responseBody": {
+		"ok": true,
+		"log": {
+			"id": "log-1",
+			"executionId": "exec-1"
+		}
+	}
+}

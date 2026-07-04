@@ -1,0 +1,26 @@
+{
+	"description": "Update a node execution log (WorkflowDataClient.update_execution_log).",
+	"method": "PATCH",
+	"pathTemplate": "/api/internal/workflow-data/executions/{executionId}/logs/{logId}",
+	"path": "/api/internal/workflow-data/executions/exec-1/logs/log-1",
+	"pathParams": {
+		"executionId": "exec-1",
+		"logId": "log-1"
+	},
+	"requestBody": {
+		"status": "success",
+		"output": {
+			"content": "done"
+		},
+		"completedAt": "2026-01-01T00:00:42.000Z",
+		"duration": "42"
+	},
+	"responseBody": {
+		"ok": true,
+		"log": {
+			"id": "log-1",
+			"executionId": "exec-1",
+			"status": "success"
+		}
+	}
+}

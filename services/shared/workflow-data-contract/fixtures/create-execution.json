@@ -1,0 +1,23 @@
+{
+	"description": "Create a workflow execution row (WorkflowDataClient.create_execution).",
+	"method": "POST",
+	"pathTemplate": "/api/internal/workflow-data/executions",
+	"path": "/api/internal/workflow-data/executions",
+	"pathParams": {},
+	"requestBody": {
+		"id": "exec-1",
+		"workflowId": "wf-1",
+		"userId": "user-1",
+		"projectId": "project-1",
+		"status": "running",
+		"phase": "running",
+		"progress": 0,
+		"input": {
+			"prompt": "ship it"
+		},
+		"workflowSessionId": "exec-1"
+	},
+	"responseBody": {
+		"id": "exec-1"
+	}
+}

@@ -1,0 +1,30 @@
+{
+	"description": "Record trace lineage links (WorkflowDataClient.upsert_trace_lineage).",
+	"method": "POST",
+	"pathTemplate": "/api/internal/workflow-data/traces/lineage",
+	"path": "/api/internal/workflow-data/traces/lineage",
+	"pathParams": {},
+	"requestBody": {
+		"traceId": "tr-1234567890abcdef1234567890abcdef",
+		"targets": [
+			{
+				"entityType": "workflow_execution",
+				"entityId": "exec-1",
+				"projectId": "project-1",
+				"externalExperimentId": "exp-1",
+				"externalRunId": "run-1"
+			}
+		],
+		"source": "primary",
+		"attrs": {
+			"service": "workflow-orchestrator"
+		}
+	},
+	"responseBody": {
+		"ok": true,
+		"recorded": 1,
+		"sourceKeys": [
+			"source-key"
+		]
+	}
+}

@@ -1,0 +1,16 @@
+{
+	"description": "Fetch the live scheduler instance for an execution (WorkflowDataClient.get_live_execution_instance).",
+	"method": "GET",
+	"pathTemplate": "/api/internal/workflow-data/executions/{executionId}/live-instance",
+	"path": "/api/internal/workflow-data/executions/exec-1/live-instance",
+	"pathParams": {
+		"executionId": "exec-1"
+	},
+	"requestBody": null,
+	"responseBody": {
+		"instance": {
+			"instanceId": "sw-example-exec-exec-1",
+			"status": "running"
+		}
+	}
+}
