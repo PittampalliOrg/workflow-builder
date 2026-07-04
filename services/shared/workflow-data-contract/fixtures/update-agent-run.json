@@ -1,0 +1,23 @@
+{
+	"description": "Update agent-run lifecycle status (WorkflowDataClient.update_agent_run).",
+	"method": "PATCH",
+	"pathTemplate": "/api/internal/workflow-data/agent-runs/{runId}",
+	"path": "/api/internal/workflow-data/agent-runs/agent-run-1",
+	"pathParams": {
+		"runId": "agent-run-1"
+	},
+	"requestBody": {
+		"status": "completed",
+		"result": {
+			"content": "done"
+		},
+		"error": null,
+		"workspaceRef": "workspace-1",
+		"eventPublished": true
+	},
+	"responseBody": {
+		"ok": true,
+		"id": "agent-run-1",
+		"status": "completed"
+	}
+}

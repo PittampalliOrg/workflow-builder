@@ -1,0 +1,11 @@
+{
+	"description": "Readiness gate for the execution read model (WorkflowDataClient.assert_execution_read_model_ready).",
+	"method": "GET",
+	"pathTemplate": "/api/internal/workflow-data/executions/read-model-ready",
+	"path": "/api/internal/workflow-data/executions/read-model-ready",
+	"pathParams": {},
+	"requestBody": null,
+	"responseBody": {
+		"ok": true
+	}
+}

@@ -1,0 +1,26 @@
+{
+	"description": "Resolve MCP server config for a durable agent run (WorkflowDataClient.resolve_mcp_config).",
+	"method": "POST",
+	"pathTemplate": "/api/internal/workflow-data/mcp/resolve",
+	"path": "/api/internal/workflow-data/mcp/resolve",
+	"pathParams": {},
+	"requestBody": {
+		"workflowId": "wf-1",
+		"projectId": "project-1",
+		"requestedServers": [
+			{
+				"pieceName": "github"
+			}
+		],
+		"includeProjectConnections": true
+	},
+	"responseBody": {
+		"mcpServers": [
+			{
+				"server_name": "piece_github",
+				"url": "http://ap-github-service.workflow-builder.svc.cluster.local/mcp"
+			}
+		],
+		"warnings": []
+	}
+}

@@ -1,0 +1,18 @@
+{
+	"description": "Fetch an execution by id (WorkflowDataClient.get_execution).",
+	"method": "GET",
+	"pathTemplate": "/api/internal/workflow-data/executions/{executionId}",
+	"path": "/api/internal/workflow-data/executions/exec-1",
+	"pathParams": {
+		"executionId": "exec-1"
+	},
+	"requestBody": null,
+	"responseBody": {
+		"execution": {
+			"id": "exec-1",
+			"workflowId": "wf-1",
+			"status": "running",
+			"daprInstanceId": "sw-example-exec-exec-1"
+		}
+	}
+}

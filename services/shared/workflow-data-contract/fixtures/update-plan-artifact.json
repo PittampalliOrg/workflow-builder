@@ -1,0 +1,20 @@
+{
+	"description": "Update plan artifact status (WorkflowDataClient.update_plan_artifact).",
+	"method": "PATCH",
+	"pathTemplate": "/api/internal/workflow-data/plan-artifacts/{artifactRef}",
+	"path": "/api/internal/workflow-data/plan-artifacts/plan-1",
+	"pathParams": {
+		"artifactRef": "plan-1"
+	},
+	"requestBody": {
+		"status": "approved",
+		"metadata": {
+			"reviewed": true
+		}
+	},
+	"responseBody": {
+		"ok": true,
+		"artifactRef": "plan-1",
+		"status": "approved"
+	}
+}

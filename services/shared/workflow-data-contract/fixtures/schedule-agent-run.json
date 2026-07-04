@@ -1,0 +1,23 @@
+{
+	"description": "Record a scheduled durable agent run (WorkflowDataClient.schedule_agent_run).",
+	"method": "POST",
+	"pathTemplate": "/api/internal/workflow-data/agent-runs",
+	"path": "/api/internal/workflow-data/agent-runs",
+	"pathParams": {},
+	"requestBody": {
+		"id": "agent-run-1",
+		"workflowExecutionId": "exec-1",
+		"workflowId": "wf-1",
+		"nodeId": "agent",
+		"mode": "run",
+		"agentWorkflowId": "agent-run-1",
+		"daprInstanceId": "agent-run-1",
+		"parentExecutionId": "parent-1",
+		"workspaceRef": null,
+		"artifactRef": null
+	},
+	"responseBody": {
+		"ok": true,
+		"id": "agent-run-1"
+	}
+}

@@ -1,0 +1,15 @@
+{
+	"description": "Mark an execution as failed-to-start (WorkflowDataClient.mark_execution_start_failed).",
+	"method": "POST",
+	"pathTemplate": "/api/internal/workflow-data/executions/{executionId}/start-failed",
+	"path": "/api/internal/workflow-data/executions/exec-1/start-failed",
+	"pathParams": {
+		"executionId": "exec-1"
+	},
+	"requestBody": {
+		"error": "failed to start"
+	},
+	"responseBody": {
+		"ok": true
+	}
+}

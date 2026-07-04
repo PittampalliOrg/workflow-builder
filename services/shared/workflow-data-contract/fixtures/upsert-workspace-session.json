@@ -1,0 +1,25 @@
+{
+	"description": "Upsert a workflow workspace session (WorkflowDataClient.upsert_workspace_session).",
+	"method": "POST",
+	"pathTemplate": "/api/internal/workflow-data/workspace-sessions",
+	"path": "/api/internal/workflow-data/workspace-sessions",
+	"pathParams": {},
+	"requestBody": {
+		"workspaceRef": "workspace-1",
+		"workflowExecutionId": "exec-1",
+		"name": "workspace_profile",
+		"rootPath": "/sandbox",
+		"backend": "openshell",
+		"enabledTools": [
+			"shell"
+		],
+		"status": "active",
+		"sandboxState": {
+			"keepAfterRun": true
+		}
+	},
+	"responseBody": {
+		"ok": true,
+		"workspaceRef": "workspace-1"
+	}
+}

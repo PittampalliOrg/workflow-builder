@@ -1,0 +1,18 @@
+{
+	"description": "Patch the execution read model (WorkflowDataClient.patch_execution).",
+	"method": "PATCH",
+	"pathTemplate": "/api/internal/workflow-data/executions/{executionId}",
+	"path": "/api/internal/workflow-data/executions/exec-1",
+	"pathParams": {
+		"executionId": "exec-1"
+	},
+	"requestBody": {
+		"phase": "running",
+		"progress": 50,
+		"currentNodeId": "agent",
+		"currentNodeName": "Agent"
+	},
+	"responseBody": {
+		"ok": true
+	}
+}

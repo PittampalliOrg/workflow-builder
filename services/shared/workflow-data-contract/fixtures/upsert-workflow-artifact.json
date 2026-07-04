@@ -1,0 +1,23 @@
+{
+	"description": "Upsert a typed workflow artifact; deterministic id makes activity retries idempotent (WorkflowDataClient.upsert_workflow_artifact).",
+	"method": "POST",
+	"pathTemplate": "/api/internal/workflow-data/executions/{executionId}/artifacts",
+	"path": "/api/internal/workflow-data/executions/exec-1/artifacts",
+	"pathParams": {
+		"executionId": "exec-1"
+	},
+	"requestBody": {
+		"id": "artifact-1",
+		"nodeId": "agent",
+		"slot": "primary",
+		"kind": "markdown",
+		"title": "Agent output",
+		"inlinePayload": {
+			"content": "done"
+		}
+	},
+	"responseBody": {
+		"ok": true,
+		"id": "artifact-1"
+	}
+}
