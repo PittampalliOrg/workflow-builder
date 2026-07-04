@@ -144,6 +144,45 @@ def test_needsdapr_uses_native_sidecar_with_readiness_probe() -> None:
         assert ann["dapr.io/sidecar-readiness-probe-timeout-seconds"] == "1"
 
 
+def test_preview_native_omits_internal_grpc_port_override() -> None:
+    # internal-grpc-port is app-level contract (daprd's peer-dial port, caller-chosen).
+    # A preview-native adopt pod must service-invoke NON-adopted prod peers (prod sets
+    # no override → Dapr default), so it must NOT set the 3502 override, else
+    # adopted→prod invoke (orchestrator→function-router) hits connection-refused on 3502.
+    manifest = build_dev_preview_sandbox_manifest(
+        DevPreviewRequest(
+            executionId="exec-1",
+            service="workflow-orchestrator",
+            needsDapr=True,
+            previewNative=True,
+        ),
+        namespace="workflow-builder",
+        class_config=_dev_class(),
+    )
+    ann = manifest["spec"]["podTemplate"]["metadata"]["annotations"]
+    assert "dapr.io/internal-grpc-port" not in ann
+    # Native sidecar + placement are unaffected (agent-host dispatch is a placement-
+    # routed child workflow, so the port change doesn't touch it).
+    assert ann["dapr.io/enable-native-sidecar"] == "true"
+
+
+def test_host_shadow_keeps_internal_grpc_port_override() -> None:
+    # The host Dapr-shadow path (needsDapr, not previewNative) keeps the 3502 override
+    # for agent-host parity.
+    manifest = build_dev_preview_sandbox_manifest(
+        DevPreviewRequest(
+            executionId="exec-1",
+            service="workflow-orchestrator",
+            needsDapr=True,
+            previewNative=False,
+        ),
+        namespace="workflow-builder",
+        class_config=_dev_class(),
+    )
+    ann = manifest["spec"]["podTemplate"]["metadata"]["annotations"]
+    assert ann["dapr.io/internal-grpc-port"] == "3502"
+
+
 def test_wait_for_dev_preview_ready_scopes_selector_by_service() -> None:
     captured: dict[str, str] = {}
 
