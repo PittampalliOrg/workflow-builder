@@ -66,7 +66,7 @@ import {
 	safeCreateInteractiveSessionMlflowRun,
 	safePatchInteractiveSessionMlflowTraces,
 } from "$lib/server/application/adapters/mlflow-lifecycle";
-import { resolveAgentRef } from "$lib/server/agents/registry";
+import { resolveAgentRef } from "$lib/server/application/adapters/agent-registry";
 import { raiseSessionAgentConfigPatch as raiseSessionAgentConfigPatchForRuntime } from "$lib/server/sessions/agent-config-patch";
 import { getSessionProvisioningPreferObserver } from "$lib/server/sessions/provisioning";
 import {

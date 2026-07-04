@@ -2,7 +2,7 @@ import type {
 	SessionMcpAgentConfigReader,
 	SessionMcpCredentialStatusReader,
 } from "$lib/server/application/ports";
-import { resolveAgentRef } from "$lib/server/agents/registry";
+import { resolveAgentRef } from "$lib/server/application/adapters/agent-registry";
 import { PostgresVaultCredentialRepository } from "$lib/server/application/adapters/vault-credentials";
 
 export class RegistrySessionMcpAgentConfigReader

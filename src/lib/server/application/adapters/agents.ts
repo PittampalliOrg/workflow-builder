@@ -48,7 +48,7 @@ import {
 	restoreVersion,
 	updateAgent,
 	validateAgentConfig,
-} from "$lib/server/agents/registry";
+} from "$lib/server/application/adapters/agent-registry";
 import {
 	agentRegistryKey,
 	deregisterAgent,

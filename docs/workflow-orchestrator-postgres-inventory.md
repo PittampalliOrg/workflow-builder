@@ -1441,10 +1441,16 @@ Environment registry CRUD, versioning, runtime resolution, and usage lookups
 now live in `src/lib/server/application/adapters/environment-registry.ts`; the
 legacy `src/lib/server/environments/registry.ts` module is a compatibility
 re-export with no direct DB, Drizzle, or schema imports.
+Agent registry CRUD, versioning, config validation, usage lookup, and agent-ref
+resolution now live in `src/lib/server/application/adapters/agent-registry.ts`;
+the legacy `src/lib/server/agents/registry.ts` module is a compatibility
+re-export with no direct DB, Drizzle, or schema imports. The non-adapter
+`compiled-capabilities` helper still reaches the compatibility facade and should
+move to an explicit read port in a later checkpoint.
 The broader BFF/control-plane still has service-level direct DB imports outside
 that subset and remains the next migration area. Current categories include:
 
-- legacy agent registry/sync, benchmark,
+- legacy agent registry-sync, benchmark,
   and evaluation service modules that still own direct
   Drizzle/Postgres access until their behavior is fully expressed as application
   ports and adapter implementations;
