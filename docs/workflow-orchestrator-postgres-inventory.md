@@ -991,6 +991,10 @@ services:
   `src/lib/server/benchmarks/timings.ts`; the session-event and benchmark
   instance SQL used to materialize those rollups is confined to
   `src/lib/server/application/adapters/benchmark-timings.ts`.
+- Benchmark regression statistics are now pure helpers in
+  `src/lib/server/benchmarks/regression.ts`; the persisted run-instance metric
+  loader and run-id comparison wrapper are confined to
+  `src/lib/server/application/adapters/benchmark-regression.ts`.
 - `src/routes/api/pieces/+server.ts` and
   `src/routes/api/catalog/functions/+server.ts` now read connectable pieces and
   function catalog summaries through workflow-data application ports. Connectable

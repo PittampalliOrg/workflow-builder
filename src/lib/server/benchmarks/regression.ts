@@ -11,11 +11,8 @@
 //
 // All math is pure-TS — no scipy / jstat / simple-statistics dep. The only
 // non-obvious piece is the incomplete-beta routine; tested against known
-// values in regression.test.ts.
-
-import { and, eq } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import { benchmarkRunInstances, benchmarkRuns } from "$lib/server/db/schema";
+// values in regression.test.ts. Run-id persistence lives in the application
+// adapter layer; this module only compares already-loaded metrics.
 
 export type RegressionMetric =
 	| "resolved_rate"
@@ -232,7 +229,7 @@ function percentile(sorted: number[], p: number): number | null {
 	return sorted[idx];
 }
 
-type RunInstanceMetrics = {
+export type RunInstanceMetrics = {
 	resolved: boolean;
 	turnCount: number | null;
 	toolCallCount: number | null;
@@ -241,55 +238,21 @@ type RunInstanceMetrics = {
 	costUsd: number | null;
 };
 
-async function loadRunInstanceMetrics(runId: string): Promise<RunInstanceMetrics[]> {
-	if (!db) throw new Error("Database not configured");
-	const rows = await db
-		.select({
-			status: benchmarkRunInstances.status,
-			turnCount: benchmarkRunInstances.turnCount,
-			toolCallCount: benchmarkRunInstances.toolCallCount,
-			usage: benchmarkRunInstances.usage,
-			ttftFirstMs: benchmarkRunInstances.ttftFirstMs,
-		})
-		.from(benchmarkRunInstances)
-		.where(eq(benchmarkRunInstances.runId, runId));
-	return rows.map((r) => {
-		const usage = (r.usage ?? {}) as Record<string, unknown>;
-		const inputTokens = Number(usage.input_tokens ?? 0);
-		const outputTokens = Number(usage.output_tokens ?? 0);
-		const tokens = inputTokens + outputTokens;
-		const costUsd = Number(usage.cost_usd ?? 0);
-		return {
-			resolved: r.status === "resolved",
-			turnCount: r.turnCount,
-			toolCallCount: r.toolCallCount,
-			tokens: tokens > 0 ? tokens : null,
-			ttft: r.ttftFirstMs,
-			costUsd: costUsd > 0 ? costUsd : null,
-		};
-	});
-}
-
 /* -------------------------------------------------------------------------- */
 /*                              Public entrypoint                              */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Compare two benchmark runs across the canonical metrics. Treats `baseline`
- * as the established run and `candidate` as the new variant. Direction
+ * Compare two benchmark run metric sets across the canonical metrics. Treats
+ * `baseline` as the established run and `candidate` as the new variant. Direction
  * heuristic: lower is better for {cost_per_resolved, turn_count, ttft, tokens,
  * tool_call_count}; higher is better for {resolved_rate}. Significance is
  * pValue < 0.05.
  */
-export async function compareRuns(
-	baselineRunId: string,
-	candidateRunId: string,
-): Promise<RegressionTest[]> {
-	const [baseline, candidate] = await Promise.all([
-		loadRunInstanceMetrics(baselineRunId),
-		loadRunInstanceMetrics(candidateRunId),
-	]);
-
+export function compareRunMetrics(
+	baseline: RunInstanceMetrics[],
+	candidate: RunInstanceMetrics[],
+): RegressionTest[] {
 	const tests: RegressionTest[] = [];
 
 	// resolved_rate — Fisher's exact (binary outcome)

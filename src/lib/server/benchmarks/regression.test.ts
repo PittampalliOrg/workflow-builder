@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fisherExact, welchTTest } from "./regression";
+import { compareRunMetrics, fisherExact, welchTTest } from "./regression";
 
 describe("fisherExact", () => {
 	it("returns p≈1 for identical 2×2 tables", () => {
@@ -73,5 +73,62 @@ describe("welchTTest", () => {
 	it("returns p≈1 when stddev is zero in both", () => {
 		const { pValue } = welchTTest([5, 5, 5, 5], [5, 5, 5, 5]);
 		expect(pValue).toBe(1);
+	});
+});
+
+describe("compareRunMetrics", () => {
+	it("compares already-loaded run metrics without persistence dependencies", () => {
+		const tests = compareRunMetrics(
+			[
+				{
+					resolved: true,
+					turnCount: 6,
+					toolCallCount: 3,
+					tokens: 900,
+					ttft: 1200,
+					costUsd: 0.09,
+				},
+				{
+					resolved: false,
+					turnCount: 8,
+					toolCallCount: 5,
+					tokens: 1300,
+					ttft: 1600,
+					costUsd: null,
+				},
+			],
+			[
+				{
+					resolved: true,
+					turnCount: 4,
+					toolCallCount: 2,
+					tokens: 700,
+					ttft: 900,
+					costUsd: 0.07,
+				},
+				{
+					resolved: true,
+					turnCount: 5,
+					toolCallCount: 2,
+					tokens: 800,
+					ttft: 1000,
+					costUsd: 0.08,
+				},
+			],
+		);
+
+		expect(tests.map((test) => test.metric)).toEqual([
+			"resolved_rate",
+			"cost_per_resolved",
+			"turn_count_p50",
+			"tokens_p50",
+			"ttft_p50",
+			"tool_call_count_p50",
+		]);
+		expect(tests[0]).toMatchObject({
+			metric: "resolved_rate",
+			baseline: { mean: 0.5, n: 2 },
+			candidate: { mean: 1, n: 2 },
+		});
 	});
 });

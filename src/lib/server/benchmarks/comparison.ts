@@ -388,7 +388,7 @@ export async function loadCompareData(
 	const axisDiff = buildAxisDiff(runs);
 
 	// Phase F: pairwise regression tests vs runs[0] as baseline.
-	const { compareRuns } = await import("./regression");
+	const { compareRuns } = await import("$lib/server/application/adapters/benchmark-regression");
 	const regression: import("./regression").RegressionTest[][] = [];
 	if (runs.length >= 2) {
 		const baselineRunId = runs[0].runId;
