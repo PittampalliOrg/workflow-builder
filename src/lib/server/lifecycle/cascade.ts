@@ -6,7 +6,7 @@
  * `session_workflow` instances that each live under their own app-id) and
  * optionally purges their durable state. It was generalized from the
  * battle-tested benchmark cancellation cascade
- * (`src/lib/server/benchmarks/service.ts`), which now drives this engine via
+ * (`src/lib/server/application/adapters/benchmark-service.ts`), which drives this engine via
  * `runDurableCascade`. Keep the two in sync — this is the single source of
  * truth for the algorithm.
  *

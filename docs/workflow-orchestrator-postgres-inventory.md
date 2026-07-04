@@ -1454,11 +1454,17 @@ with no direct DB, Drizzle, or schema imports. The non-adapter
 `application-state` helper still reaches the compatibility facade for metadata
 serialization and should move to an explicit registry metadata port in a later
 checkpoint.
+Benchmark run orchestration, SWE-bench launch/cancel/read-model helpers, and
+coordinator bridge persistence now live in
+`src/lib/server/application/adapters/benchmark-service.ts`; the legacy
+`src/lib/server/benchmarks/service.ts` module is a compatibility re-export with
+no direct DB, Drizzle, or schema imports. This is a quarantine step for the
+large legacy benchmark service; smaller benchmark use cases should still be
+split behind explicit ports over later checkpoints.
 The broader BFF/control-plane still has service-level direct DB imports outside
 that subset and remains the next migration area. Current categories include:
 
-- benchmark,
-  and evaluation service modules that still own direct
+- evaluation service modules that still own direct
   Drizzle/Postgres access until their behavior is fully expressed as application
   ports and adapter implementations;
 - preview runtime/proxy helper internals, where persistence lookups and

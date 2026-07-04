@@ -18,7 +18,7 @@ import {
 	upsertEvaluationDatasetArtifact,
 	upsertPredictionsArtifact,
 	type CreateBenchmarkRunInput,
-} from "$lib/server/benchmarks/service";
+} from "$lib/server/application/adapters/benchmark-service";
 import {
 	acquireBenchmarkResourceLeases,
 	benchmarkResourceLeaseSnapshot,

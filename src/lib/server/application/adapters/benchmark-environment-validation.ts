@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
-import { ensureDefaultBenchmarkSuites } from "$lib/server/benchmarks/service";
+import { ensureDefaultBenchmarkSuites } from "$lib/server/application/adapters/benchmark-service";
 import { db as defaultDb } from "$lib/server/db";
 import {
 	benchmarkInstances,

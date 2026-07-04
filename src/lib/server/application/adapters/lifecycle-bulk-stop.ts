@@ -7,7 +7,7 @@ import type {
 import {
 	cancelBenchmarkRun,
 	getSwebenchCoordinatorUrl,
-} from "$lib/server/benchmarks/service";
+} from "$lib/server/application/adapters/benchmark-service";
 import {
 	cancelEvaluationRun,
 	getEvaluationCoordinatorUrl,

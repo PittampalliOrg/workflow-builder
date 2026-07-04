@@ -6,7 +6,7 @@ import {
 	markBenchmarkRunStatus,
 	startSwebenchCoordinator,
 	type CreateBenchmarkRunInput,
-} from "$lib/server/benchmarks/service";
+} from "$lib/server/application/adapters/benchmark-service";
 import {
 	createEvaluationRun,
 	listEvaluationRuns,

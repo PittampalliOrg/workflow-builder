@@ -3,7 +3,7 @@ import {
 	getSwebenchCoordinatorUrl,
 	markBenchmarkRunStatus,
 	recomputeRunSummary,
-} from "$lib/server/benchmarks/service";
+} from "$lib/server/application/adapters/benchmark-service";
 import { syncBenchmarkInstanceMlflow } from "$lib/server/application/adapters/benchmark-mlflow";
 import { daprFetch } from "$lib/server/dapr-client";
 import type {

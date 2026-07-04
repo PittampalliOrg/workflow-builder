@@ -8,7 +8,7 @@ import {
 	benchmarkRuns,
 	benchmarkSuites,
 } from "$lib/server/db/schema";
-import { listBenchmarkRuns } from "$lib/server/benchmarks/service";
+import { listBenchmarkRuns } from "$lib/server/application/adapters/benchmark-service";
 import {
 	buildAxisDiff,
 	durationFor,

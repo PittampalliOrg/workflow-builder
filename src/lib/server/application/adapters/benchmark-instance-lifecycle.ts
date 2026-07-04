@@ -6,7 +6,7 @@ import type {
 import {
 	startBenchmarkInstanceWorkflow,
 	terminateBenchmarkRunInstance,
-} from "$lib/server/benchmarks/service";
+} from "$lib/server/application/adapters/benchmark-service";
 
 export class LegacyBenchmarkInstanceLifecycleAdapter
 	implements BenchmarkInstanceLifecyclePort
