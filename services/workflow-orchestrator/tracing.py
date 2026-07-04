@@ -196,6 +196,22 @@ def _mlflow_enabled() -> bool:
     )
 
 
+def _mlflow_otlp_export_enabled() -> bool:
+    """Gate for the async-safe raw OTLP finalizer/node-span export.
+
+    This bounded ``requests.post`` export (``_post_otlp_span``) is independent of
+    the legacy synchronous MLflow SDK client (``_mlflow_enabled``) — the sync
+    client is what deadlocked preview workflows against an unresolvable host, not
+    this export. It runs when a dedicated ``WORKFLOW_ORCHESTRATOR_MLFLOW_OTLP_ENDPOINT``
+    is set (async preview mode, legacy flag off) OR when the legacy path is on
+    (back-compat, unchanged). With neither set it stays off. The endpoint is the
+    only new trigger, so every existing fleet env combination is unchanged.
+    """
+    if (os.getenv("WORKFLOW_ORCHESTRATOR_MLFLOW_OTLP_ENDPOINT") or "").strip():
+        return True
+    return _mlflow_enabled()
+
+
 def _parse_resource_attributes(value: str | None) -> dict[str, str]:
     # OTEL_RESOURCE_ATTRIBUTES uses comma-separated key=value.
     if not value:
@@ -315,7 +331,7 @@ def _post_otlp_span(
     from opentelemetry.proto.resource.v1 import resource_pb2
     from opentelemetry.proto.trace.v1 import trace_pb2
 
-    if not _mlflow_enabled():
+    if not _mlflow_otlp_export_enabled():
         return {"success": True, "skipped": True, "reason": "disabled"}
 
     endpoint = _mlflow_otlp_endpoint_for("traces")
@@ -393,7 +409,10 @@ def emit_mlflow_trace_root_span(input_data: dict[str, Any]) -> dict[str, Any]:
     if not _env_bool(MLFLOW_FINALIZE_ROOT_SPAN_ENV, True):
         return {"success": True, "skipped": True, "reason": "disabled"}
 
-    if not _otlp_endpoint_for("traces"):
+    # Gate on the MLflow OTLP endpoint the finalizer actually POSTs to (which
+    # falls back to the general OTEL endpoint), so an async-only MLflow endpoint
+    # still lets the finalizer proceed.
+    if not _mlflow_otlp_endpoint_for("traces"):
         return {"success": True, "skipped": True, "reason": "missing_endpoint"}
 
     carrier = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else {}
