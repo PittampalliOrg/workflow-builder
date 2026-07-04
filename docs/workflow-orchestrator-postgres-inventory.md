@@ -1412,6 +1412,10 @@ schema types.
 Benchmark scorer persistence and score context loading now live in
 `src/lib/server/application/adapters/benchmark-score-runner.ts`; the legacy
 `src/lib/server/benchmarks/score-runner.ts` module is a compatibility re-export.
+SWE-bench trace-bundle loading/materialization now lives in
+`src/lib/server/application/adapters/benchmark-trace-bundle.ts`; the legacy
+`src/lib/server/benchmarks/trace-bundle.ts` module is a compatibility re-export
+with no direct DB, Drizzle, or schema imports.
 The broader BFF/control-plane still has service-level direct DB imports outside
 that subset and remains the next migration area. Current categories include:
 
@@ -1427,10 +1431,10 @@ that subset and remains the next migration area. Current categories include:
 
 Current source scans show no production `src/routes/**` direct imports of
 `$lib/server/db`, `drizzle-orm`, the DB-backed evaluation service, or the
-DB-backed benchmark service/trace-bundle helpers. The lifecycle, goal, and
-session server directories are also clean for direct DB/Drizzle hits in the
-current scan; persistence for those areas is either behind application
-ports/adapters or in explicitly documented helper seams.
+DB-backed benchmark service helpers. The lifecycle, goal, and session server
+directories are also clean for direct DB/Drizzle hits in the current scan;
+persistence for those areas is either behind application ports/adapters or in
+explicitly documented helper seams.
 
 Those BFF paths are not strict-orchestrator runtime fallbacks; they are product
 runtime seams to migrate behind application ports in later checkpoints. Raw DB

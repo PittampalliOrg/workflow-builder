@@ -25,7 +25,7 @@ import {
 	releaseBenchmarkResourceLeases,
 	type BenchmarkResourceLeaseTypeInput as LegacyBenchmarkResourceLeaseTypeInput,
 } from "$lib/server/application/adapters/benchmark-resource-leases";
-import { loadSwebenchTraceBundle } from "$lib/server/benchmarks/trace-bundle";
+import { loadSwebenchTraceBundle } from "$lib/server/application/adapters/benchmark-trace-bundle";
 import type {
 	BenchmarkRouteOperationsPort,
 	BenchmarkRunCreateInput,
