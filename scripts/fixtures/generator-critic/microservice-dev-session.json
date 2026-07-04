@@ -3,9 +3,9 @@
     "dsl": "1.0.0",
     "namespace": "workflow-builder",
     "name": "microservice-dev-session",
-    "version": "0.1.0",
-    "title": "Microservice dev-session: provision a live dev preview, then hand off to an interactive coding agent",
-    "summary": "Generalizes the per-run live-sync loop to ANY microservice (workflow-builder/workflow-orchestrator/function-router). Provisions that service's per-run dev preview (kept alive, browsable at its tailnet URL), clones the repo into the shared /sandbox/work + writes a sync.sh helper, then ENDS INTO a persistent interactive coding-agent session bound to the same workspace + preview. Keep prompting the agent: it edits repo/, runs ./sync.sh to live-sync, you inspect. P3 of the agentic dev loop (docs/agentic-deploy-inspect-loop.md).",
+    "version": "0.2.0",
+    "title": "Microservice dev-session: provision N live dev previews (multi-service), then hand off to an interactive coding agent",
+    "summary": "Generalizes the per-run live-sync loop to N microservices at once (workflow-builder/workflow-orchestrator/function-router). Provisions each service's per-run dev preview (kept alive, browsable at the preview URL), clones the repo once into the shared /sandbox/work + writes a fan-out sync.sh (per-service .syncenv.d entries), then ENDS INTO a persistent interactive coding-agent session bound to the same workspace + previews. `services` is a CSV (default \"workflow-builder\"); the fan-out is opt-in by listing more than one. B1 of the agentic dev loop.",
     "x-workflow-builder": {
       "resumable": true
     }
@@ -16,17 +16,17 @@
       "document": {
         "type": "object",
         "properties": {
-          "service": {
+          "services": {
             "type": "string",
-            "title": "Microservice to develop",
-            "default": "workflow-orchestrator",
-            "description": "workflow-builder | workflow-orchestrator | function-router (registered in the dev-preview registry)."
+            "title": "Microservice(s) to develop (CSV)",
+            "default": "workflow-builder",
+            "description": "Comma-separated logical services from the dev-preview registry (workflow-builder | workflow-orchestrator | function-router). One = single-service; multiple = simultaneous multi-service adopt in ONE preview."
           },
           "mode": {
             "type": "string",
             "title": "Dev-preview mode",
-            "default": "host-throwaway",
-            "description": "host-throwaway (legacy per-run preview on the host dev cluster) | preview-native (run INSIDE a Tier-2 vcluster preview: REPLACE the preview's prod pod with this dev server + adopt its Service, so the preview's own URL serves live edits). preview-native is for workflow-builder (the BFF) first."
+            "default": "preview-native",
+            "description": "preview-native (run INSIDE a Tier-2 vcluster preview: REPLACE each prod pod with its dev server + adopt its Service) | host-throwaway (legacy per-run preview on the host dev cluster)."
           },
           "keepPreview": {
             "type": "string",
@@ -56,17 +56,17 @@
         "call": "dev/preview",
         "with": {
           "executionId": "${ .runtime.executionId }",
-          "service": "${ .trigger.service // \"workflow-orchestrator\" }",
-          "mode": "${ .trigger.mode // \"host-throwaway\" }",
+          "services": "${ (.trigger.services // \"workflow-builder\") | split(\",\") | map(gsub(\"^\\\\s+|\\\\s+$\";\"\")) | map(select(. != \"\")) }",
+          "mode": "${ .trigger.mode // \"preview-native\" }",
           "timeoutSeconds": "${ if (.trigger.keepPreview // \"true\") == \"true\" then 86400 else 3600 end }",
           "waitReadySeconds": 180
         },
         "artifacts": [
           {
-            "from": "${ { service: (.data.service // \"\"), url: (.data.url // \"\"), browseUrl: (.data.browseUrl // \"\"), syncUrl: (.data.syncUrl // \"\"), podIP: (.data.podIP // \"\"), ready: (.data.ready // false) } }",
+            "from": "${ { ok: (.data.ok // false), services: ([ .data.services[]? | { service: .service, ok: .ok, url: (.info.url // \"\"), syncUrl: (.info.syncUrl // \"\"), sandboxName: (.info.sandboxName // \"\"), ready: (.info.ready // false), error: (.error // \"\") } ]) } }",
             "kind": "json",
             "slot": "secondary",
-            "title": "Per-run dev preview"
+            "title": "Per-service dev previews"
           }
         ]
       }
@@ -76,7 +76,7 @@
         "call": "workspace/command",
         "with": {
           "cliWorkspace": true,
-          "command": "${ \"export REPOURL=\" + ((.trigger.repoUrl // \"PittampalliOrg/workflow-builder\") | @sh) + \"; export SUBDIR=\" + ((.provision_preview.repoSubdir // \".\") | @sh) + \"; export PATHS=\" + (((.provision_preview.syncPaths // [\"src\"]) | join(\" \")) | @sh) + \"; export SYNCURL=\" + ((.provision_preview.syncUrl // \"\") | @sh) + \";\" + \"\\nset -e\\ncd /sandbox/work\\nrm -rf repo\\ngit clone --depth 1 --single-branch https://x-access-token:${GITHUB_TOKEN}@github.com/$REPOURL.git repo\\nprintf 'SUBDIR=%s\\\\nPATHS=\\\"%s\\\"\\\\nSYNCURL=%s\\\\n' \\\"$SUBDIR\\\" \\\"$PATHS\\\" \\\"$SYNCURL\\\" > /sandbox/work/.syncenv\\ncat > /sandbox/work/sync.sh <<'SH'\\n#!/bin/sh\\nset -e\\n. /sandbox/work/.syncenv\\ncd /sandbox/work/repo/$SUBDIR\\nSYNCPATHS=\\\"\\\"; for p in $PATHS; do [ -e \\\"$p\\\" ] && SYNCPATHS=\\\"$SYNCPATHS $p\\\"; done\\ntar -czf /tmp/sync.tgz $SYNCPATHS\\ncurl -sS -X POST --data-binary @/tmp/sync.tgz -H 'content-type: application/gzip' \\\"$SYNCURL\\\"\\necho\\necho SYNCED\\nSH\\nchmod +x /sandbox/work/sync.sh\\necho CLONED $(git -C repo rev-parse --short HEAD); echo '--- .syncenv ---'; cat /sandbox/work/.syncenv\" }",
+          "command": "${ \"export REPOURL=\" + ((.trigger.repoUrl // \"PittampalliOrg/workflow-builder\") | @sh) + \"\\n\" + \"set -e\\ncd /sandbox/work\\nrm -rf repo .syncenv.d\\n\" + \"git clone --depth 1 --single-branch https://x-access-token:${GITHUB_TOKEN}@github.com/$REPOURL.git repo\\n\" + \"mkdir -p /sandbox/work/.syncenv.d\\n\" + ( [ .provision_preview.services[]       | select((.info.syncUrl // \"\") != \"\")       | \"printf 'SUBDIR=%s\\\\nPATHS=\\\"%s\\\"\\\\nSYNCURL=%s\\\\nURL=%s\\\\n' \"         + ((.info.repoSubdir // \".\") | @sh) + \" \"         + (((.info.syncPaths // [\"src\"]) | join(\" \")) | @sh) + \" \"         + ((.info.syncUrl) | @sh) + \" \"         + ((.info.url // \"\") | @sh)         + \" > /sandbox/work/.syncenv.d/\" + .service ]     | join(\"\\n\") ) + \"\\n\" + \"cat > /sandbox/work/sync.sh <<'SH'\\n\" + \"#!/bin/sh\\nset -e\\nSVCS=\\\"$*\\\"; [ -z \\\"$SVCS\\\" ] && SVCS=$(ls /sandbox/work/.syncenv.d)\\n\" + \"for svc in $SVCS; do\\n\" + \"  . /sandbox/work/.syncenv.d/$svc\\n\" + \"  cd /sandbox/work/repo/$SUBDIR\\n\" + \"  SYNCPATHS=\\\"\\\"; for p in $PATHS; do [ -e \\\"$p\\\" ] && SYNCPATHS=\\\"$SYNCPATHS $p\\\"; done\\n\" + \"  tar -czf /tmp/sync-$svc.tgz $SYNCPATHS\\n\" + \"  curl -sS -X POST --data-binary @/tmp/sync-$svc.tgz -H 'content-type: application/gzip' \\\"$SYNCURL\\\"\\n\" + \"  echo; echo \\\"SYNCED $svc\\\"; cd /sandbox/work\\n\" + \"done\\nSH\\n\" + \"chmod +x /sandbox/work/sync.sh\\n\" + \"echo CLONED $(git -C repo rev-parse --short HEAD); echo '--- .syncenv.d ---'; for f in /sandbox/work/.syncenv.d/*; do echo \\\"== $f ==\\\"; cat \\\"$f\\\"; done\" }",
           "cwd": "/sandbox/work",
           "timeoutMs": 600000,
           "allowFailure": false
@@ -89,17 +89,16 @@
         "with": {
           "executionId": "${ .runtime.executionId }",
           "agentSlug": "${ .trigger.agentSlug // \"cli-dev-agent\" }",
-          "instructions": "${ \"You are an interactive developer for the microservice **\" + (.trigger.service // \"workflow-orchestrator\") + \"**.\\n\\n- The repo is cloned at /sandbox/work/repo. EDIT FILES UNDER /sandbox/work/repo/\" + (.provision_preview.repoSubdir // \".\") + \" (only paths under there are synced).\\n- A live dev preview of this service is ALREADY running with hot-reload.\\n- After you edit files, run /sandbox/work/sync.sh to push your changes to the preview; it hot-reloads in a few seconds.\\n- VERIFY from inside this sandbox by curling the in-cluster preview URL \" + (.provision_preview.url // \"\") + \" (e.g. curl \" + (.provision_preview.url // \"\") + \"/<your-route>). Do NOT curl the public URL \" + (.provision_preview.browseUrl // \"\") + \" from here — it is for the human to open in a browser and is NOT resolvable inside the cluster.\\n- The in-cluster sync endpoint is \" + (.provision_preview.syncUrl // \"\") + \" (sync.sh targets it).\\n\\nReply 'ready' and then wait for the user's next message describing the change to make. Then implement it under repo/\" + (.provision_preview.repoSubdir // \".\") + \", run /sandbox/work/sync.sh, and confirm it is live by curling the in-cluster preview URL.\" }"
+          "instructions": "${ \"You are an interactive developer for these microservices: **\" + ([.provision_preview.services[] | select(.ok) | .service] | join(\", \")) + \"**.\\n\\n\" + \"One repo is cloned at /sandbox/work/repo. Each service has its own subdir + sync target:\\n\\n\" + \"| service | edit under | sync | verify (in-cluster) |\\n|---|---|---|---|\\n\" + ( [ .provision_preview.services[] | select(.ok)       | \"| \" + .service       + \" | repo/\" + (.info.repoSubdir // \".\")       + \" | ./sync.sh \" + .service       + \" | curl \" + (.info.url // \"(pending)\")       + \" |\" ] | join(\"\\n\") ) + \"\\n\\n- Edit files under each service's subdir, then run `./sync.sh` (all services) or `./sync.sh <service>` (one). It hot-reloads in a few seconds.\\n\" + \"- VERIFY from inside this sandbox by curling that service's in-cluster URL above. Do NOT curl the public browse URL from here (not resolvable in-cluster).\\n\\n\" + \"Reply 'ready' and wait for the user's next message describing the change.\" }"
         }
       }
     },
     {
       "summary": {
         "set": {
-          "service": "${ .provision_preview.service // .trigger.service // \"workflow-orchestrator\" }",
-          "browseUrl": "${ .provision_preview.browseUrl // \"\" }",
-          "syncUrl": "${ .provision_preview.syncUrl // \"\" }",
-          "sandboxName": "${ .provision_preview.sandboxName // \"\" }",
+          "services": "${ [ .provision_preview.services[]? | .service ] | join(\",\") }",
+          "ready": "${ [ .provision_preview.services[]? | select(.info.ready // false) | .service ] | join(\",\") }",
+          "sandboxNames": "${ [ .provision_preview.services[]? | .info.sandboxName // empty ] | join(\",\") }",
           "sessionId": "${ .handoff.sessionId // \"\" }",
           "sessionUrl": "${ .handoff.url // \"\" }",
           "keptAlive": "${ (.trigger.keepPreview // \"true\") == \"true\" }"
