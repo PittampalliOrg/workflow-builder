@@ -5,10 +5,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	requireInternal: vi.fn(),
-	createBenchmarkRun: vi.fn(),
-	getBenchmarkRun: vi.fn(),
-	markBenchmarkRunStatus: vi.fn(),
-	startSwebenchCoordinator: vi.fn(),
+	benchmarkRouteOperations: {
+		createRun: vi.fn(),
+		getRun: vi.fn(),
+		markStatus: vi.fn(),
+		startCoordinator: vi.fn(),
+	},
 	selectExactReady: vi.fn(),
 	loadBenchmarkLaunchControlPlaneStability: vi.fn(),
 	benchmarkLaunchControlPlaneError: vi.fn(),
@@ -18,15 +20,9 @@ vi.mock("$lib/server/internal-auth", () => ({
 	requireInternal: mocks.requireInternal,
 }));
 
-vi.mock("$lib/server/benchmarks/service", () => ({
-	createBenchmarkRun: mocks.createBenchmarkRun,
-	getBenchmarkRun: mocks.getBenchmarkRun,
-	markBenchmarkRunStatus: mocks.markBenchmarkRunStatus,
-	startSwebenchCoordinator: mocks.startSwebenchCoordinator,
-}));
-
 vi.mock("$lib/server/application", () => ({
 	getApplicationAdapters: () => ({
+		benchmarkRouteOperations: mocks.benchmarkRouteOperations,
 		benchmarkEnvironmentValidation: {
 			selectExactReady: mocks.selectExactReady,
 		},
@@ -54,10 +50,15 @@ describe("internal benchmark run launch route", () => {
 			healthy: true,
 		});
 		mocks.benchmarkLaunchControlPlaneError.mockReturnValue(null);
-		mocks.createBenchmarkRun.mockResolvedValue({ id: "run-1" });
-		mocks.startSwebenchCoordinator.mockResolvedValue({ executionId: "coord-1" });
-		mocks.markBenchmarkRunStatus.mockResolvedValue({ id: "run-1" });
-		mocks.getBenchmarkRun.mockResolvedValue({
+		mocks.benchmarkRouteOperations.createRun.mockResolvedValue({
+			status: "ok",
+			run: { id: "run-1" },
+		});
+		mocks.benchmarkRouteOperations.startCoordinator.mockResolvedValue({
+			executionId: "coord-1",
+		});
+		mocks.benchmarkRouteOperations.markStatus.mockResolvedValue({ id: "run-1" });
+		mocks.benchmarkRouteOperations.getRun.mockResolvedValue({
 			id: "run-1",
 			status: "queued",
 		});
@@ -68,13 +69,19 @@ describe("internal benchmark run launch route", () => {
 			join(dirname(fileURLToPath(import.meta.url)), "+server.ts"),
 			"utf8",
 		);
-		expect(source).toContain("createBenchmarkRun");
+		expect(source).toContain("benchmarkRouteOperations");
+		expect(source).toContain("operations.createRun");
+		expect(source).toContain("operations.startCoordinator");
+		expect(source).toContain("operations.markStatus");
+		expect(source).toContain("operations.getRun");
+		expect(source).not.toContain("$lib/server/benchmarks/service");
+		expect(source).not.toContain("$lib/server/benchmarks/agents");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");
 	});
 
-	it("delegates agent slug resolution to createBenchmarkRun", async () => {
+	it("delegates agent slug resolution to benchmark route operations", async () => {
 		const response = (await POST({
 			request: new Request("http://localhost", {
 				method: "POST",
@@ -97,7 +104,7 @@ describe("internal benchmark run launch route", () => {
 			limit: 1,
 			syncBuildStatuses: true,
 		});
-		expect(mocks.createBenchmarkRun).toHaveBeenCalledWith(
+		expect(mocks.benchmarkRouteOperations.createRun).toHaveBeenCalledWith(
 			expect.objectContaining({
 				projectId: "project-1",
 				userId: "user-1",
@@ -108,9 +115,15 @@ describe("internal benchmark run launch route", () => {
 				requirePrevalidatedEnvironments: true,
 			}),
 		);
-		expect(mocks.startSwebenchCoordinator).toHaveBeenCalledWith("run-1");
-		expect(mocks.markBenchmarkRunStatus).toHaveBeenCalledWith("run-1", "queued", {
-			coordinatorExecutionId: "coord-1",
-		});
+		expect(mocks.benchmarkRouteOperations.startCoordinator).toHaveBeenCalledWith(
+			"run-1",
+		);
+		expect(mocks.benchmarkRouteOperations.markStatus).toHaveBeenCalledWith(
+			"run-1",
+			"queued",
+			{
+				coordinatorExecutionId: "coord-1",
+			},
+		);
 	});
 });

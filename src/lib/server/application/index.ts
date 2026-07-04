@@ -316,6 +316,7 @@ import {
 	ApplicationBenchmarkRunLaunchService,
 	ApplicationEvaluationRunLaunchService,
 } from "$lib/server/application/run-launch";
+import { ApplicationBenchmarkRouteOperationsService } from "$lib/server/application/benchmark-route-operations";
 import { ApplicationEvaluationDefinitionService } from "$lib/server/application/evaluation-definitions";
 import { ApplicationEvaluationDatasetService } from "$lib/server/application/evaluation-datasets";
 import { ApplicationEvaluationRunService } from "$lib/server/application/evaluation-runs";
@@ -330,6 +331,7 @@ import { ApplicationBenchmarkEnvironmentValidationService } from "$lib/server/ap
 import { ApplicationBenchmarkInstanceLifecycleService } from "$lib/server/application/benchmark-instance-lifecycle";
 import { ApplicationBenchmarkRunInstanceDetailService } from "$lib/server/application/benchmark-run-instance-detail";
 import { ApplicationBenchmarkMlflowEvaluationService } from "$lib/server/application/benchmark-mlflow-evaluation";
+import { LegacyBenchmarkRouteOperationsAdapter } from "$lib/server/application/adapters/benchmark-route-operations";
 import { ApplicationRunCancellationService } from "$lib/server/application/run-cancellation";
 import { ApplicationEvaluationRunDetailService } from "$lib/server/application/evaluation-run-detail";
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
@@ -505,6 +507,9 @@ export function getApplicationAdapters(
 	let bulkLifecycleStop: ApplicationBulkLifecycleStopService | undefined;
 	let runCancellation: ApplicationRunCancellationService | undefined;
 	let benchmarkRunLaunch: ApplicationBenchmarkRunLaunchService | undefined;
+	let benchmarkRouteOperations:
+		| ApplicationBenchmarkRouteOperationsService
+		| undefined;
 	let evaluationRunLaunch: ApplicationEvaluationRunLaunchService | undefined;
 	let evaluationDefinitions:
 		| ApplicationEvaluationDefinitionService
@@ -880,6 +885,10 @@ export function getApplicationAdapters(
 	const getBenchmarkRunLaunch = () =>
 		(benchmarkRunLaunch ??= new ApplicationBenchmarkRunLaunchService(
 			new LegacyBenchmarkRunLaunchAdapter(),
+		));
+	const getBenchmarkRouteOperations = () =>
+		(benchmarkRouteOperations ??= new ApplicationBenchmarkRouteOperationsService(
+			new LegacyBenchmarkRouteOperationsAdapter(),
 		));
 	const getBenchmarkCapacityDiagnostics = () =>
 		(benchmarkCapacityDiagnostics ??=
@@ -1445,6 +1454,9 @@ export function getApplicationAdapters(
 		},
 		get benchmarkRunLaunch() {
 			return getBenchmarkRunLaunch();
+		},
+		get benchmarkRouteOperations() {
+			return getBenchmarkRouteOperations();
 		},
 		get benchmarkCapacityDiagnostics() {
 			return getBenchmarkCapacityDiagnostics();

@@ -1,6 +1,6 @@
 import { error, json } from "@sveltejs/kit";
-import { loadSwebenchTraceBundle } from "$lib/server/benchmarks/trace-bundle";
 import type { RequestHandler } from "./$types";
+import { getApplicationAdapters } from "$lib/server/application";
 
 // MLflow-first span drilldown for the run-instance drawer. ClickHouse remains
 // the repair/source fallback when the per-instance artifact is missing.
@@ -13,7 +13,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!runId || !instanceId) return error(400, "runId and instanceId required");
 
 	try {
-		const bundle = await loadSwebenchTraceBundle({
+		const bundle = await getApplicationAdapters().benchmarkRouteOperations.loadTraceBundle({
 			runId,
 			instanceId,
 			projectId: locals.session.projectId,

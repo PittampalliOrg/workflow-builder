@@ -2,13 +2,6 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { requireInternal } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
-import { BenchmarkAgentValidationError } from "$lib/server/benchmarks/agents";
-import {
-	createBenchmarkRun,
-	getBenchmarkRun,
-	markBenchmarkRunStatus,
-	startSwebenchCoordinator,
-} from "$lib/server/benchmarks/service";
 import { normalizeSwebenchSuiteSlug } from "$lib/server/benchmarks/swebench";
 import {
 	benchmarkLaunchControlPlaneError,
@@ -79,52 +72,49 @@ export const POST: RequestHandler = async ({ request }) => {
 		);
 	}
 
-	let run;
-	try {
-		run = await createBenchmarkRun({
-			projectId,
-			userId,
-			suiteSlug,
-			agentId: agentId ?? undefined,
-			agentSlug,
-			agentVersion: readOptionalInt(body.agentVersion) ?? undefined,
-			instanceIds: selection.selectedInstanceIds,
-			modelNameOrPath: readOptionalString(body.modelNameOrPath) ?? undefined,
-			modelConfigLabel: readOptionalString(body.modelConfigLabel),
-			concurrency: readOptionalInt(body.concurrency) ?? undefined,
-			evaluationConcurrency:
-				readOptionalInt(body.evaluationConcurrency) ?? undefined,
-			timeoutSeconds: readOptionalInt(body.timeoutSeconds) ?? undefined,
-			maxTurns: readOptionalInt(body.maxTurns),
-			evaluatorResourceClass: readOptionalString(body.evaluatorResourceClass),
-			tags: normalizeTags(body.tags),
-			requirePrevalidatedEnvironments: true,
-			executionBackend: readOptionalString(body.executionBackend),
-			executionClass: readOptionalString(body.executionClass),
-		});
-	} catch (err) {
-		if (err instanceof BenchmarkAgentValidationError) {
-			return json({ message: err.message }, { status: 400 });
-		}
-		throw err;
+	const operations = getApplicationAdapters().benchmarkRouteOperations;
+	const createResult = await operations.createRun({
+		projectId,
+		userId,
+		suiteSlug,
+		agentId: agentId ?? undefined,
+		agentSlug,
+		agentVersion: readOptionalInt(body.agentVersion) ?? undefined,
+		instanceIds: selection.selectedInstanceIds,
+		modelNameOrPath: readOptionalString(body.modelNameOrPath) ?? undefined,
+		modelConfigLabel: readOptionalString(body.modelConfigLabel),
+		concurrency: readOptionalInt(body.concurrency) ?? undefined,
+		evaluationConcurrency:
+			readOptionalInt(body.evaluationConcurrency) ?? undefined,
+		timeoutSeconds: readOptionalInt(body.timeoutSeconds) ?? undefined,
+		maxTurns: readOptionalInt(body.maxTurns),
+		evaluatorResourceClass: readOptionalString(body.evaluatorResourceClass),
+		tags: normalizeTags(body.tags),
+		requirePrevalidatedEnvironments: true,
+		executionBackend: readOptionalString(body.executionBackend),
+		executionClass: readOptionalString(body.executionClass),
+	});
+	if (createResult.status === "validation_error") {
+		return json({ message: createResult.message }, { status: 400 });
 	}
+	const run = createResult.run;
 
 	let coordinatorStartError: string | null = null;
 	try {
-		const coordinator = await startSwebenchCoordinator(run.id);
+		const coordinator = await operations.startCoordinator(String(run.id));
 		if (typeof coordinator.executionId === "string") {
-			await markBenchmarkRunStatus(run.id, "queued", {
+			await operations.markStatus(String(run.id), "queued", {
 				coordinatorExecutionId: coordinator.executionId,
 			});
 		}
 	} catch (err) {
 		coordinatorStartError = err instanceof Error ? err.message : String(err);
-		await markBenchmarkRunStatus(run.id, "failed", {
+		await operations.markStatus(String(run.id), "failed", {
 			error: coordinatorStartError,
 		});
 	}
 
-	const fullRun = await getBenchmarkRun(projectId, run.id);
+	const fullRun = await operations.getRun(projectId, String(run.id));
 	return json(
 		{
 			run: fullRun,

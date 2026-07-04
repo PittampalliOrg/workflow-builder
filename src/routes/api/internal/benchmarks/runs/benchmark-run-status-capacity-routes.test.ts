@@ -11,9 +11,11 @@ const mocks = vi.hoisted(() => ({
 	benchmarkCapacityDiagnostics: {
 		getRunCapacity: vi.fn(),
 	},
-	getBenchmarkRun: vi.fn(),
-	markBenchmarkRunStatus: vi.fn(),
-	recomputeRunSummary: vi.fn(),
+	benchmarkRouteOperations: {
+		getRun: vi.fn(),
+		markStatus: vi.fn(),
+		recomputeSummary: vi.fn(),
+	},
 }));
 
 vi.mock("$lib/server/internal-auth", () => ({
@@ -24,13 +26,8 @@ vi.mock("$lib/server/application", () => ({
 	getApplicationAdapters: () => ({
 		workflowData: mocks.workflowData,
 		benchmarkCapacityDiagnostics: mocks.benchmarkCapacityDiagnostics,
+		benchmarkRouteOperations: mocks.benchmarkRouteOperations,
 	}),
-}));
-
-vi.mock("$lib/server/benchmarks/service", () => ({
-	getBenchmarkRun: mocks.getBenchmarkRun,
-	markBenchmarkRunStatus: mocks.markBenchmarkRunStatus,
-	recomputeRunSummary: mocks.recomputeRunSummary,
 }));
 
 import { GET as getCapacityGate } from "./[runId]/capacity-gate/+server";
@@ -40,15 +37,18 @@ describe("internal benchmark run status and capacity routes", () => {
 	beforeEach(() => {
 		mocks.requireInternal.mockReset();
 		mocks.workflowData.getBenchmarkRunProjectId.mockReset();
-		mocks.getBenchmarkRun.mockReset();
-		mocks.markBenchmarkRunStatus.mockReset();
-		mocks.recomputeRunSummary.mockReset();
+		mocks.benchmarkRouteOperations.getRun.mockReset();
+		mocks.benchmarkRouteOperations.markStatus.mockReset();
+		mocks.benchmarkRouteOperations.recomputeSummary.mockReset();
 		mocks.benchmarkCapacityDiagnostics.getRunCapacity.mockReset();
 	});
 
 	it("loads run status through workflow-data project scope", async () => {
 		mocks.workflowData.getBenchmarkRunProjectId.mockResolvedValue("project-1");
-		mocks.getBenchmarkRun.mockResolvedValue({ id: "run-1", status: "running" });
+		mocks.benchmarkRouteOperations.getRun.mockResolvedValue({
+			id: "run-1",
+			status: "running",
+		});
 
 		const response = (await getRunStatus({
 			request: new Request("http://localhost"),
@@ -59,7 +59,10 @@ describe("internal benchmark run status and capacity routes", () => {
 		expect(response.status).toBe(200);
 		expect(mocks.requireInternal).toHaveBeenCalledTimes(1);
 		expect(mocks.workflowData.getBenchmarkRunProjectId).toHaveBeenCalledWith("run-1");
-		expect(mocks.getBenchmarkRun).toHaveBeenCalledWith("project-1", "run-1");
+		expect(mocks.benchmarkRouteOperations.getRun).toHaveBeenCalledWith(
+			"project-1",
+			"run-1",
+		);
 		expect(body).toEqual({ run: { id: "run-1", status: "running" } });
 	});
 
@@ -111,7 +114,10 @@ describe("internal benchmark run status and capacity routes", () => {
 			expect(source).toContain("getBenchmarkRunProjectId");
 			if (relativePath.includes("capacity-gate")) {
 				expect(source).toContain("benchmarkCapacityDiagnostics");
+			} else {
+				expect(source).toContain("benchmarkRouteOperations");
 			}
+			expect(source).not.toContain("$lib/server/benchmarks/service");
 			expect(source).not.toContain("$lib/server/db");
 			expect(source).not.toContain("$lib/server/db/schema");
 			expect(source).not.toContain("drizzle-orm");
@@ -124,7 +130,8 @@ describe("internal benchmark run status and capacity routes", () => {
 			"utf8",
 		);
 
-		expect(source).toContain("$lib/server/benchmarks/resource-leases");
+		expect(source).toContain("benchmarkRouteOperations");
+		expect(source).not.toContain("$lib/server/benchmarks/resource-leases");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");

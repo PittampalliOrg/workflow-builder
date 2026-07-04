@@ -1,12 +1,8 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { requireInternal } from "$lib/server/internal-auth";
-import {
-	acquireBenchmarkResourceLeases,
-	benchmarkResourceLeaseSnapshot,
-	releaseBenchmarkResourceLeases,
-	type BenchmarkResourceLeaseTypeInput,
-} from "$lib/server/benchmarks/resource-leases";
+import { getApplicationAdapters } from "$lib/server/application";
+import type { BenchmarkResourceLeaseTypeInput } from "$lib/server/application/benchmark-route-operations";
 
 function resourceTypes(value: unknown): BenchmarkResourceLeaseTypeInput[] | null {
 	if (!Array.isArray(value)) return null;
@@ -23,7 +19,11 @@ function resourceTypes(value: unknown): BenchmarkResourceLeaseTypeInput[] | null
 
 export const GET: RequestHandler = async ({ request, params }) => {
 	requireInternal(request);
-	return json(await benchmarkResourceLeaseSnapshot(params.runId));
+	return json(
+		await getApplicationAdapters().benchmarkRouteOperations.leaseSnapshot(
+			params.runId,
+		),
+	);
 };
 
 export const POST: RequestHandler = async ({ request, params }) => {
@@ -34,10 +34,11 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	> | null;
 	if (!body) return error(400, "JSON body required");
 	const action = typeof body.action === "string" ? body.action : "acquire";
+	const operations = getApplicationAdapters().benchmarkRouteOperations;
 	if (action === "release") {
 		return json({
 			success: true,
-			...(await releaseBenchmarkResourceLeases({
+			...(await operations.releaseLeases({
 				runId: params.runId,
 				instanceId:
 					typeof body.instanceId === "string" ? body.instanceId : null,
@@ -51,7 +52,7 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	if (action !== "acquire") return error(400, `Unsupported lease action: ${action}`);
 	return json({
 		success: true,
-		...(await acquireBenchmarkResourceLeases({
+		...(await operations.acquireLeases({
 			runId: params.runId,
 			instanceId:
 				typeof body.instanceId === "string" ? body.instanceId : null,

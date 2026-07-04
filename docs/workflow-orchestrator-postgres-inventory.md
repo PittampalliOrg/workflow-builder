@@ -261,11 +261,14 @@ summary persistence to `ApplicationBenchmarkMlflowEvaluationService`. The
 nullable `benchmark_runs.mlflow_eval_run_id` update and legacy best-effort
 benchmark MLflow sync are confined to
 `PostgresBenchmarkMlflowEvaluationRepository`.
-The internal benchmark run launch route no longer performs route-local agent
-slug lookup through Drizzle. `createBenchmarkRun` accepts `agentSlug` as an
-alternate selector and resolves it through the existing benchmark-agent
-validation path, preserving archived/published/runtime/model checks inside the
-benchmark command service.
+Benchmark suite listing, public predictions/cleanup/span-bundle routes, internal
+benchmark run launch/status/cleanup/preflight/lease routes, and internal
+benchmark instance/artifact callback routes now call
+`ApplicationBenchmarkRouteOperationsService`. Route handlers no longer import
+the DB-backed benchmark service, resource-lease service, or trace-bundle helper
+directly. The adapter still delegates to the legacy benchmark service modules so
+the deeper benchmark-service extraction can proceed separately without changing
+route contracts.
 The internal benchmark run-instance start route and the public/internal
 run-instance terminate route now delegate to
 `ApplicationBenchmarkInstanceLifecycleService`. The underlying Dapr workflow
@@ -1396,30 +1399,25 @@ delegates list/create/read/update/archive behavior to
 `PostgresCapabilityBundleRepository`. The runtime capability-flattening helper
 is still listed below because it participates in effective agent/session config
 resolution and needs its own narrower read port before it can move.
-The broader BFF/control-plane still has route-level or service-level direct DB
-imports outside that subset and remains the next migration area. Current
-categories include:
+The broader BFF/control-plane still has service-level direct DB imports outside
+that subset and remains the next migration area. Current categories include:
 
-- Lifecycle Controller internals under `src/lib/server/lifecycle/**`, excluding
-  the trigger activation reconciler's trigger-row persistence now routed through
-  `WorkflowTriggerStore` and pause/resume session-status mirroring now routed
-  through workflow-data.
-- goal-loop storage helpers under `src/lib/server/goals/**`, which still own
-  drivable-goal claiming, usage accrual, idle-event metadata, and continuation
-  claim queries.
-- remaining session/workspace helpers under `src/lib/server/sessions/**`,
-  `src/lib/server/openshell-sessions.ts`, and related API routes, excluding the
-  capacity fleet-activity summary now confined to the adapter layer, the
-  runtime-config helper's latest-event adapter seam, and session agent config
-  patch command session lookup now routed through workflow-data, plus the
-  session spawn read/agent-resolution/peer-dispatch/attach-runtime path now
-  routed through workflow-data.
+- legacy auth, agent registry/sync, environment registry/image-build, benchmark,
+  evaluation, and MLflow/observability service modules that still own direct
+  Drizzle/Postgres access until their behavior is fully expressed as application
+  ports and adapter implementations;
 - preview runtime/proxy helper internals, where persistence lookups and
   per-preview database create/drop have moved behind ports, but live
-  Kubernetes/OpenShell transport still needs narrower runtime/proxy ports.
-- benchmark/evaluation/admin/reporting API surfaces outside the migrated
-  workspace benchmark browser/run-list/compare loaders.
-- startup/migration/bootstrap and remaining non-migrated API route handlers.
+  Kubernetes/OpenShell transport still needs narrower runtime/proxy ports;
+- startup/migration/bootstrap utilities and any remaining explicitly deferred
+  compatibility helpers.
+
+Current source scans show no production `src/routes/**` direct imports of
+`$lib/server/db`, `drizzle-orm`, the DB-backed evaluation service, or the
+DB-backed benchmark service/resource-lease/trace-bundle helpers. The lifecycle,
+goal, and session server directories are also clean for direct DB/Drizzle hits in
+the current scan; persistence for those areas is either behind application
+ports/adapters or in explicitly documented helper seams.
 
 Those BFF paths are not strict-orchestrator runtime fallbacks; they are product
 runtime seams to migrate behind application ports in later checkpoints. Raw DB

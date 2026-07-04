@@ -1,11 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { requireInternal } from "$lib/server/internal-auth";
-import {
-	getBenchmarkRun,
-	markBenchmarkRunStatus,
-	recomputeRunSummary,
-} from "$lib/server/benchmarks/service";
 import { getApplicationAdapters } from "$lib/server/application";
 
 export const GET: RequestHandler = async ({ request, params }) => {
@@ -23,7 +18,11 @@ export const GET: RequestHandler = async ({ request, params }) => {
 		throw err;
 	}
 	if (!projectId) return error(404, "Benchmark run not found");
-	const fullRun = await getBenchmarkRun(projectId, params.runId);
+	const fullRun =
+		await getApplicationAdapters().benchmarkRouteOperations.getRun(
+			projectId,
+			params.runId,
+		);
 	return json({ run: fullRun });
 };
 
@@ -49,13 +48,20 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	if (typeof body.predictionsPath === "string") {
 		extra.predictionsPath = body.predictionsPath;
 	}
-	const run = await markBenchmarkRunStatus(params.runId, status, extra, {
-		terminalCleanup:
-			status === "failed" || status === "cancelled" ? "background" : "sync",
-	});
+	const run = await getApplicationAdapters().benchmarkRouteOperations.markStatus(
+		params.runId,
+		status,
+		extra,
+		{
+			terminalCleanup:
+				status === "failed" || status === "cancelled" ? "background" : "sync",
+		},
+	);
 	if (!run) return error(404, "Benchmark run not found");
 	try {
-		await recomputeRunSummary(params.runId);
+		await getApplicationAdapters().benchmarkRouteOperations.recomputeSummary(
+			params.runId,
+		);
 	} catch (err) {
 		console.warn(
 			`Benchmark run ${params.runId} status ${status} committed, but summary recompute failed:`,
