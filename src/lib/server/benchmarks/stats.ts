@@ -1,17 +1,6 @@
 // Server-side aggregation: computes the structured statistics surfaced on
-// the run-detail page. Reads benchmarkRunInstances joined to
-// benchmarkInstances for repo + metadata.difficulty.
+// the run-detail page from adapter-provided row DTOs.
 
-import { and, eq, inArray } from "drizzle-orm";
-import { db } from "$lib/server/db";
-import {
-	benchmarkInstances,
-	benchmarkRunInstanceAnnotations,
-	benchmarkRunInstanceScores,
-	benchmarkRuns,
-	benchmarkRunInstances,
-	type BenchmarkInstanceAnnotationVerdict,
-} from "$lib/server/db/schema";
 import {
 	parseHarnessResult,
 	aggregateFailureCategories,
@@ -90,6 +79,41 @@ export type HumanAnnotationStats = {
 	// disagrees with the harness pass/fail signal. Computed only over instances
 	// that have at least one annotation.
 	harnessDisagreement: number;
+};
+
+export type BenchmarkInstanceAnnotationVerdict =
+	| "correct"
+	| "incorrect"
+	| "partial"
+	| "unsure";
+
+export type RunStatsInstanceRow = {
+	id: string;
+	instanceId: string;
+	status: string;
+	startedAt: Date | null;
+	inferenceCompletedAt: Date | null;
+	evaluatedAt: Date | null;
+	usage: Record<string, unknown> | null;
+	timings: Record<string, unknown> | null;
+	harnessResult: unknown;
+	turnCount: number | null;
+	terminationReason: string | null;
+	toolHistogram: Record<string, unknown> | null;
+	ttftFirstMs: number | null;
+	repo: string | null;
+	metadata: Record<string, unknown> | null;
+};
+
+export type RunStatsScoreRow = {
+	scorerName: string;
+	scorerVersion: number;
+	score: unknown;
+};
+
+export type RunStatsAnnotationRow = {
+	runInstanceId: string;
+	verdict: BenchmarkInstanceAnnotationVerdict;
 };
 
 export type ByScorerStat = {
@@ -189,52 +213,11 @@ function pickDifficulty(metadata: Record<string, unknown> | null | undefined): s
 	return null;
 }
 
-export async function computeRunStats(runId: string): Promise<RunStats> {
-	if (!db) throw new Error('Database not configured');
-	const database = db;
-
-	const [run] = await database
-		.select({
-			id: benchmarkRuns.id,
-			summary: benchmarkRuns.summary,
-		})
-		.from(benchmarkRuns)
-		.where(eq(benchmarkRuns.id, runId))
-		.limit(1);
-	if (!run) throw new Error(`Run not found: ${runId}`);
-
-	const rows = await database
-		.select({
-			id: benchmarkRunInstances.id,
-			instanceId: benchmarkRunInstances.instanceId,
-			status: benchmarkRunInstances.status,
-			startedAt: benchmarkRunInstances.startedAt,
-			inferenceCompletedAt: benchmarkRunInstances.inferenceCompletedAt,
-			evaluatedAt: benchmarkRunInstances.evaluatedAt,
-			usage: benchmarkRunInstances.usage,
-			timings: benchmarkRunInstances.timings,
-			harnessResult: benchmarkRunInstances.harnessResult,
-			turnCount: benchmarkRunInstances.turnCount,
-			terminationReason: benchmarkRunInstances.terminationReason,
-			toolHistogram: benchmarkRunInstances.toolHistogram,
-			ttftFirstMs: benchmarkRunInstances.ttftFirstMs,
-			repo: benchmarkInstances.repo,
-			metadata: benchmarkInstances.metadata,
-		})
-		.from(benchmarkRunInstances)
-		// Inner-join benchmarkRuns FIRST so the leftJoin below can reference
-		// benchmarkRuns.suiteId. Postgres rejects the leftJoin condition if a
-		// table referenced inside it isn't already in the FROM-clause graph.
-		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
-		.leftJoin(
-			benchmarkInstances,
-			and(
-				eq(benchmarkInstances.instanceId, benchmarkRunInstances.instanceId),
-				eq(benchmarkRuns.suiteId, benchmarkInstances.suiteId),
-			),
-		)
-		.where(eq(benchmarkRunInstances.runId, runId));
-
+export function computeRunStatsFromRows(
+	rows: RunStatsInstanceRow[],
+	scoreRows: RunStatsScoreRow[] = [],
+	annotationRows: RunStatsAnnotationRow[] = [],
+): RunStats {
 	const total = rows.length;
 	const repoCounts = new Map<string, { total: number; resolved: number }>();
 	const difficultyCounts = new Map<string, { total: number; resolved: number }>();
@@ -288,7 +271,7 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 		const dur = inferenceDurationMs({
 			startedAt: row.startedAt,
 			inferenceCompletedAt: row.inferenceCompletedAt,
-			timings: row.timings as Record<string, unknown>,
+			timings: row.timings ?? {},
 		});
 		if (dur != null) inferenceDurations.push(dur);
 
@@ -423,14 +406,6 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 	const instanceIds = rows.map((r) => r.id);
 	const byScorer: ByScorerStat[] = [];
 	if (instanceIds.length > 0) {
-		const scoreRows = await database
-			.select({
-				scorerName: benchmarkRunInstanceScores.scorerName,
-				scorerVersion: benchmarkRunInstanceScores.scorerVersion,
-				score: benchmarkRunInstanceScores.score,
-			})
-			.from(benchmarkRunInstanceScores)
-			.where(inArray(benchmarkRunInstanceScores.runInstanceId, instanceIds));
 		const scoresByName = new Map<string, { version: number; values: number[] }>();
 		for (const sr of scoreRows) {
 			const key = `${sr.scorerName}:${sr.scorerVersion}`;
@@ -470,17 +445,10 @@ export async function computeRunStats(runId: string): Promise<RunStats> {
 	let harnessDisagreement = 0;
 	const totalAnnotatedSet = new Set<string>();
 	if (instanceIds.length > 0) {
-		const annotationRows = await database
-			.select({
-				runInstanceId: benchmarkRunInstanceAnnotations.runInstanceId,
-				verdict: benchmarkRunInstanceAnnotations.verdict,
-			})
-			.from(benchmarkRunInstanceAnnotations)
-			.where(inArray(benchmarkRunInstanceAnnotations.runInstanceId, instanceIds));
 		const harnessByInstance = new Map<string, boolean>();
 		for (const r of rows) harnessByInstance.set(r.id, r.status === 'resolved');
 		for (const ann of annotationRows) {
-			const verdict = ann.verdict as BenchmarkInstanceAnnotationVerdict;
+			const verdict = ann.verdict;
 			humanCounts[verdict] += 1;
 			totalAnnotatedSet.add(ann.runInstanceId);
 			const passed = harnessByInstance.get(ann.runInstanceId);

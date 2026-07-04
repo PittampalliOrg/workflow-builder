@@ -998,6 +998,10 @@ services:
   `src/lib/server/benchmarks/regression.ts`; the persisted run-instance metric
   loader and run-id comparison wrapper are confined to
   `src/lib/server/application/adapters/benchmark-regression.ts`.
+- Benchmark run-stat aggregation is now a pure DTO reducer in
+  `src/lib/server/benchmarks/stats.ts`; the run, instance, scorer, and human
+  annotation SQL is confined to
+  `src/lib/server/application/adapters/benchmark-stats.ts`.
 - `src/routes/api/pieces/+server.ts` and
   `src/routes/api/catalog/functions/+server.ts` now read connectable pieces and
   function catalog summaries through workflow-data application ports. Connectable

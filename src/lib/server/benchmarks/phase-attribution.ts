@@ -16,7 +16,7 @@ import {
 	benchmarkRunInstances,
 	benchmarkRuns,
 } from "$lib/server/db/schema";
-import { computeRunStats } from "./stats";
+import { computeRunStats } from "$lib/server/application/adapters/benchmark-stats";
 import {
 	queryHistogramPercentiles,
 	type TimeRange,

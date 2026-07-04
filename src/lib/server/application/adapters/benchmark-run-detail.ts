@@ -2,7 +2,7 @@ import { env as privateEnv } from "$env/dynamic/private";
 import { and, eq } from "drizzle-orm";
 import { normalizeHeadlampCluster } from "$lib/headlamp/links";
 import { getBenchmarkRun } from "$lib/server/benchmarks/service";
-import { computeRunStats } from "$lib/server/benchmarks/stats";
+import { computeRunStats } from "$lib/server/application/adapters/benchmark-stats";
 import { getBenchmarkRunCapacityDiagnostics } from "$lib/server/benchmarks/capacity-diagnostics";
 import { getBenchmarkRunPhaseAttribution } from "$lib/server/benchmarks/phase-attribution";
 import {
