@@ -1,7 +1,7 @@
 import { and, asc, eq, gt, lte, sql } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
 import { sessionEvents } from "$lib/server/db/schema";
-import { aggregateBenchmarkSessionTimings } from "$lib/server/benchmarks/timings";
+import { aggregateBenchmarkSessionTimings } from "$lib/server/application/adapters/benchmark-timings";
 import type {
 	AppendSessionEventInput,
 	ListSessionEventsInput,

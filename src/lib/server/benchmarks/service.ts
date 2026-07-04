@@ -76,7 +76,7 @@ import {
 	benchmarkLaunchControlPlaneError,
 	loadBenchmarkLaunchControlPlaneStability,
 } from "./launch-stability";
-import { aggregateBenchmarkInstanceTimings } from "./timings";
+import { aggregateBenchmarkInstanceTimings } from "$lib/server/application/adapters/benchmark-timings";
 import {
 	buildSwebenchDatasetJsonl,
 	buildPredictionsJsonl,

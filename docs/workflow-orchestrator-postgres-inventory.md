@@ -987,6 +987,10 @@ services:
   the `SandboxRuntimeInventory` adapter. The routes preserve the legacy
   best-effort behavior by returning empty execution/stat payloads when the
   Postgres adapter is unavailable.
+- Benchmark timing rollup reducers are now pure helpers in
+  `src/lib/server/benchmarks/timings.ts`; the session-event and benchmark
+  instance SQL used to materialize those rollups is confined to
+  `src/lib/server/application/adapters/benchmark-timings.ts`.
 - `src/routes/api/pieces/+server.ts` and
   `src/routes/api/catalog/functions/+server.ts` now read connectable pieces and
   function catalog summaries through workflow-data application ports. Connectable
