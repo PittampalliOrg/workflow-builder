@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
-	import { Boxes, Plus, ExternalLink, Loader2, Trash2 } from '@lucide/svelte';
+	import { Boxes, Plus, ExternalLink, Loader2, Trash2, Zap } from '@lucide/svelte';
 
 	type Preview = {
 		name: string;
@@ -12,7 +12,13 @@
 		ready: boolean;
 		tailnetHost: string | null;
 		url: string | null;
+		/** A3: the backing warm-pool member id when this preview was CLAIMED (instant). */
+		pool?: string | null;
 	};
+
+	// A3: number of free warm-pool members (from the list counts) — surfaced so a user knows a
+	// launch will be instant. 0 (or pool off) = cold provision (a few minutes).
+	let poolFree = $state(0);
 
 	let previews = $state<Preview[]>([]);
 	let name = $state('');
@@ -24,7 +30,11 @@
 	async function load() {
 		try {
 			const res = await fetch('/api/dev-environments/vcluster');
-			if (res.ok) previews = ((await res.json()).previews ?? []) as Preview[];
+			if (res.ok) {
+				const body = await res.json();
+				previews = (body.previews ?? []) as Preview[];
+				poolFree = Number(body.counts?.free ?? 0) || 0;
+			}
 		} catch {
 			/* transient */
 		}
@@ -69,7 +79,7 @@
 	function tone(phase: string) {
 		if (phase === 'ready') return 'bg-green-500/15 text-green-600 dark:text-green-400';
 		if (phase === 'failed') return 'bg-red-500/15 text-red-600 dark:text-red-400';
-		if (phase === 'provisioning' || phase === 'pending')
+		if (phase === 'provisioning' || phase === 'pending' || phase === 'claiming')
 			return 'bg-amber-500/15 text-amber-600 dark:text-amber-400';
 		return 'bg-muted text-muted-foreground';
 	}
@@ -105,9 +115,19 @@
 			disabled={launching}
 		/>
 		<Button size="sm" onclick={launch} disabled={launching || !name.trim()}>
-			{#if launching}<Loader2 class="size-4 animate-spin" />{:else}<Plus class="size-4" />{/if}
+			{#if launching}<Loader2 class="size-4 animate-spin" />{:else if poolFree > 0}<Zap
+					class="size-4"
+				/>{:else}<Plus class="size-4" />{/if}
 			Launch
 		</Button>
+		{#if poolFree > 0}
+			<span
+				class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-green-500/15 text-green-600 dark:text-green-400"
+				title="A warm vcluster is pre-baked — your launch is claimed instantly instead of a multi-minute cold provision"
+			>
+				<Zap class="size-3" /> instant · {poolFree} warm
+			</span>
+		{/if}
 	</div>
 
 	{#if errorMessage}
@@ -121,6 +141,14 @@
 					<div class="flex items-center gap-2 min-w-0">
 						<span class="font-medium truncate">{p.name}</span>
 						<span class="text-xs px-1.5 py-0.5 rounded {tone(p.phase)}">{p.phase}</span>
+						{#if p.pool}
+							<span
+								class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-green-500/15 text-green-600 dark:text-green-400"
+								title="Claimed instantly from the warm pool ({p.pool})"
+							>
+								<Zap class="size-3" /> pooled
+							</span>
+						{/if}
 						<span class="text-xs text-muted-foreground">{p.targetCluster ?? 'dev'}</span>
 					</div>
 					<div class="flex items-center gap-1 shrink-0">

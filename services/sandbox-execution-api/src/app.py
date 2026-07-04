@@ -4,8 +4,10 @@ import json
 import logging
 import os
 import re
+import secrets
 import threading
 import time
+from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -120,7 +122,19 @@ def _init_otel() -> None:
 
 _init_otel()
 
-app = FastAPI(title="sandbox-execution-api")
+
+@asynccontextmanager
+async def _lifespan(_app: "FastAPI"):
+    # Start the A3 warm-pool reconcile thread iff enabled (VCLUSTER_PREVIEW_POOL_SIZE>0); a no-op
+    # otherwise. Defined here so it runs under uvicorn (not on bare import in tests).
+    try:
+        _start_pool_manager()
+    except Exception as exc:  # pragma: no cover - never block startup on the optional pool
+        logger.warning("pool-manager: startup failed: %s", exc)
+    yield
+
+
+app = FastAPI(title="sandbox-execution-api", lifespan=_lifespan)
 
 if _otel_ready:
     try:
@@ -4201,6 +4215,27 @@ _VCLUSTER_PREVIEW_TAILNET_SUFFIX = os.environ.get(
 )
 
 
+def _vcluster_preview_max() -> int:
+    """Max concurrent AWAKE preview vclusters (claimed + free-hot + regular). The A3 pool
+    manager will not fill past this; the BFF 429s a cold provision past it. Matches the BFF's
+    VCLUSTER_PREVIEW_MAX (default 6)."""
+    try:
+        n = int(os.environ.get("VCLUSTER_PREVIEW_MAX", "6"))
+    except (TypeError, ValueError):
+        n = 6
+    return n if n > 0 else 6
+
+
+def _vcluster_preview_pool_size() -> int:
+    """Target number of FREE (baked, claimable) warm-pool members. 0 (default) = pool OFF —
+    the whole A3 path stays dormant and previews cold-provision as before."""
+    try:
+        n = int(os.environ.get("VCLUSTER_PREVIEW_POOL_SIZE", "0"))
+    except (TypeError, ValueError):
+        n = 0
+    return max(0, n)
+
+
 class VclusterPreviewRequest(BaseModel):
     """Provision (or tear down) a Tier-2 full-isolation preview vcluster."""
 
@@ -4236,6 +4271,21 @@ class VclusterPreviewRequest(BaseModel):
     # `preview_template` DB via CNPG import (cnpg mode) instead of empty-migrate+seed.
     # A2, flagged default-off (migrate); env-defaulted.
     previewDbBootstrap: str | None = None
+    # POOL=true (A3) → bake a GENERIC warm-pool member: the runner labels the host ns
+    # `vcluster-preview-pool=free`, records its image pins, and skips the (user-specific) CLI-
+    # cred copy (deferred to claim). Set only by the SEA pool manager, never by a user request.
+    pool: bool = False
+
+
+class VclusterPreviewClaimRequest(BaseModel):
+    """Claim a pre-baked warm-pool member for a user (A3). `name` is the user's requested
+    preview name (becomes the alias + the wfb-<name> tailnet host); `devMode` optionally wires
+    the claim so the adopt:true dev image can replace the prod BFF; `user` is recorded on the
+    claimed namespace for attribution."""
+
+    name: str = Field(min_length=1, max_length=40)
+    devMode: bool | None = None
+    user: str | None = None
 
 
 def _vcluster_preview_job_name(name: str, action: str) -> str:
@@ -4309,6 +4359,9 @@ def _vcluster_preview_job_manifest(
     env.append(
         {"name": "PREVIEW_DEV_MODE", "value": "true" if preview_dev_mode else "false"}
     )
+    # A3 warm pool: bake a generic free member (runner labels the ns free + skips cred-copy).
+    if req.pool:
+        env.append({"name": "POOL", "value": "true"})
     if enroll_mode == "agent":
         env.append(
             {
@@ -4368,6 +4421,35 @@ def _vcluster_preview_job_manifest(
     }
 
 
+def _create_preview_job(
+    batch, *, namespace: str, manifest: dict[str, Any]
+) -> None:
+    """Idempotently (re)create a preview provisioning/claim/teardown Job: clear a prior
+    same-name Job, wait for it to clear, then create. Shared by provision, claim, and the
+    A3 pool manager so all three get the same 409-safe delete→settle→create behavior."""
+    job_name = manifest["metadata"]["name"]
+    try:
+        batch.delete_namespaced_job(
+            name=job_name, namespace=namespace, propagation_policy="Background"
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) not in (404, None):
+            logger.info("preview job prior delete: %s", exc)
+    # Brief settle so the recreate doesn't 409 on a terminating job.
+    for _ in range(20):
+        try:
+            batch.read_namespaced_job(name=job_name, namespace=namespace)
+            time.sleep(0.5)
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                break
+    try:
+        batch.create_namespaced_job(namespace=namespace, body=manifest)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+
+
 @app.post("/internal/vcluster-preview", status_code=status.HTTP_202_ACCEPTED)
 def provision_vcluster_preview(
     request: Request, body: VclusterPreviewRequest
@@ -4387,29 +4469,7 @@ def provision_vcluster_preview(
         "yes",
     }:
         batch, _ = _load_k8s_clients()
-        # Idempotent: clear a prior same-action Job before recreating.
-        try:
-            batch.delete_namespaced_job(
-                name=job_name,
-                namespace=namespace,
-                propagation_policy="Background",
-            )
-        except Exception as exc:
-            if getattr(exc, "status", None) not in (404, None):
-                logger.info("vcluster-preview prior job delete: %s", exc)
-        # Brief settle so the recreate doesn't 409 on a terminating job.
-        for _ in range(20):
-            try:
-                batch.read_namespaced_job(name=job_name, namespace=namespace)
-                time.sleep(0.5)
-            except Exception as exc:
-                if getattr(exc, "status", None) == 404:
-                    break
-        try:
-            batch.create_namespaced_job(namespace=namespace, body=manifest)
-        except Exception as exc:
-            if getattr(exc, "status", None) != 409:
-                raise
+        _create_preview_job(batch, namespace=namespace, manifest=manifest)
     response = {
         "name": body.name,
         "action": body.action,
@@ -4500,25 +4560,49 @@ def _vcluster_preview_boot_seconds(core, name: str) -> int | None:
         return None
 
 
+def _resolve_preview_realname(core, name: str) -> str:
+    """Map a user-facing preview name to its ns-backing member id: a claimed pool member's ALIAS
+    resolves to its pool-<n> (whose ns is vcluster-pool-<n>); a normal preview resolves to
+    itself. Best-effort — a lookup failure falls back to the name as-is."""
+    try:
+        nss = core.list_namespace(
+            label_selector=f"{_VCLUSTER_PREVIEW_ALIAS_LABEL}={_safe_resource_name(name, max_length=40)}"
+        )
+    except Exception as exc:
+        logger.warning("resolve preview alias %s failed: %s", name, exc)
+        return name
+    for ns in nss.items:
+        if _preview_ns_is_terminating(ns):
+            continue
+        return _preview_realname_from_ns(ns)
+    return name
+
+
 @app.get("/internal/vcluster-preview/{name}")
 def get_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
     _require_internal(request)
+    # `name` may be a user's alias for a claimed pool member — probe its backing member id but
+    # report the user's requested name + its wfb-<name> host.
     tailnet_host = f"wfb-{name}"
     url = f"https://{tailnet_host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}"
     phase = "unknown"
     active = succeeded = failed = 0
     boot_seconds: int | None = None
+    real_name = name
     if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
         "1",
         "true",
         "yes",
     }:
         batch, core = _load_k8s_clients()
-        phase, active, succeeded, failed = _vcluster_preview_phase(batch, core, name)
-        boot_seconds = _vcluster_preview_boot_seconds(core, name)
-    return {
+        real_name = _resolve_preview_realname(core, name)
+        phase, active, succeeded, failed = _vcluster_preview_phase(
+            batch, core, real_name
+        )
+        boot_seconds = _vcluster_preview_boot_seconds(core, real_name)
+    result = {
         "name": name,
-        "job": _vcluster_preview_job_name(name, "up"),
+        "job": _vcluster_preview_job_name(real_name, "up"),
         "phase": phase,
         "ready": phase == "ready",
         "active": active,
@@ -4528,13 +4612,25 @@ def get_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
         "url": url,
         "bootSeconds": boot_seconds,
     }
+    if real_name != name:
+        result["pool"] = real_name
+    return result
 
 
 @app.delete("/internal/vcluster-preview/{name}")
 def teardown_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
     _require_internal(request)
-    # Teardown == an ACTION=down Job (drops the per-preview DB + vcluster delete).
-    body = VclusterPreviewRequest(name=name, action="down")
+    # Teardown == an ACTION=down Job (drops the per-preview DB + vcluster delete). Resolve an
+    # alias to its backing pool member so tearing down a claimed preview reaps pool-<n>.
+    real_name = name
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        _, core = _load_k8s_clients()
+        real_name = _resolve_preview_realname(core, name)
+    body = VclusterPreviewRequest(name=real_name, action="down")
     return provision_vcluster_preview(request, body)
 
 
@@ -4548,71 +4644,117 @@ _VCLUSTER_PREVIEWS_CACHE_TTL = float(
 )
 _vcluster_previews_cache: dict[str, Any] = {"at": 0.0, "data": None}
 _vcluster_previews_cache_lock = threading.Lock()
+
+
+def _invalidate_previews_cache() -> None:
+    """Drop the burst cache so a claim (or pool change) is reflected on the next list rather
+    than after the ≤8s TTL — the claimed member's alias/host must appear promptly."""
+    with _vcluster_previews_cache_lock:
+        _vcluster_previews_cache["at"] = 0.0
+        _vcluster_previews_cache["data"] = None
 # Per-preview K8s-call timeout (seconds) so one slow/hung preview can't stall the list.
 _VCLUSTER_PREVIEW_PROBE_TIMEOUT = float(
     os.environ.get("VCLUSTER_PREVIEW_PROBE_TIMEOUT_SECONDS", "10") or 10
 )
 
+# ---- A3 warm-pool label/annotation contract (shared by list + claim + pool manager) ----
+# The runner stamps these on the DURABLE host preview namespace (vcluster-<name>):
+_VCLUSTER_PREVIEW_NAME_LABEL = "vcluster-preview-name"  # the ns-backing member id
+# vcluster-preview-pool: free (baked, claimable) | claimed (personalized) | recycling
+# (being torn down by the recycler; excluded from claims). Absent = a normal (non-pool) preview.
+_VCLUSTER_PREVIEW_POOL_LABEL = "vcluster-preview-pool"
+_VCLUSTER_PREVIEW_ALIAS_LABEL = "vcluster-preview-alias"  # a claimed member's user-facing name
+_VCLUSTER_PREVIEW_CLAIMED_BY_ANNOTATION = "vcluster-preview-claimed-by"
+_VCLUSTER_PREVIEW_CLAIMED_AT_ANNOTATION = "vcluster-preview-claimed-at"
+# Baked image-pin signature (bff=…;orch=…;fr=…;sea=…) the recycler diffs vs the live host images.
+_VCLUSTER_PREVIEW_IMAGE_PINS_ANNOTATION = "vcluster-preview-image-pins"
+
+
+def _preview_realname_from_ns(ns) -> str:
+    """The ns-backing member id: the vcluster-preview-name label, else the ns name with the
+    `vcluster-` prefix stripped."""
+    labels = (ns.metadata.labels or {}) if ns.metadata else {}
+    name = labels.get(_VCLUSTER_PREVIEW_NAME_LABEL)
+    if name:
+        return name
+    nsname = (ns.metadata.name or "") if ns.metadata else ""
+    return nsname[len("vcluster-") :] if nsname.startswith("vcluster-") else nsname
+
+
+def _preview_ns_is_terminating(ns) -> bool:
+    return bool(ns.status and getattr(ns.status, "phase", "") == "Terminating")
+
 
 def _compute_vcluster_previews() -> dict[str, Any]:
     items: list[dict[str, Any]] = []
+    counts = {"awake": 0, "free": 0, "claimed": 0, "recycling": 0}
+    counts["max"] = _vcluster_preview_max()
+    counts["poolSize"] = _vcluster_preview_pool_size()
     if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
         "1",
         "true",
         "yes",
     }:
-        return {"previews": items}
+        return {"previews": items, "counts": counts}
 
     batch, core = _load_k8s_clients()
     # Durable: enumerate the preview VCLUSTER NAMESPACES (labeled by the runner),
     # not the TTL-GC'd provisioning Jobs.
     nss = core.list_namespace(label_selector="app=vcluster-preview")
-    names: list[str] = []
+    # A claimed pool member is shown under the user's ALIAS but PROBED under its real member id
+    # (its ns is vcluster-<real>); a FREE/recycling member is a pool slot, hidden from the user
+    # list but counted for capacity (awake = every non-terminating preview vcluster).
+    visible: list[tuple[str, str, str]] = []  # (real_name, display_name, host)
     for ns in nss.items:
-        labels = (ns.metadata.labels or {}) if ns.metadata else {}
-        name = labels.get("vcluster-preview-name") or (
-            ns.metadata.name[len("vcluster-") :]
-            if ns.metadata.name.startswith("vcluster-")
-            else ns.metadata.name
-        )
-        if ns.status and getattr(ns.status, "phase", "") == "Terminating":
+        if _preview_ns_is_terminating(ns):
             continue
-        names.append(name)
+        counts["awake"] += 1
+        labels = (ns.metadata.labels or {}) if ns.metadata else {}
+        real_name = _preview_realname_from_ns(ns)
+        pool_state = labels.get(_VCLUSTER_PREVIEW_POOL_LABEL)
+        alias = labels.get(_VCLUSTER_PREVIEW_ALIAS_LABEL)
+        if pool_state in counts:
+            counts[pool_state] += 1
+        if pool_state in ("free", "recycling"):
+            continue  # a pool slot, not a user-facing preview
+        display_name = alias if (pool_state == "claimed" and alias) else real_name
+        host = f"wfb-{display_name}"
+        visible.append((real_name, display_name, host))
 
-    # Each _vcluster_preview_phase does 2 serial K8s reads (job status + pod list);
-    # serial across N previews was the dominant cost. Probe them concurrently — the
-    # kubernetes client's connection pool is thread-safe for reads.
-    def _probe(name: str) -> tuple[str, str]:
-        # Isolate per-preview failures/timeouts: a bad preview is reported "absent"
-        # (filtered out below) instead of raising and sinking the whole list.
+    # Each _vcluster_preview_phase does 2 serial K8s reads (job status + pod list); probe them
+    # concurrently keyed on the real member id — the k8s client pool is thread-safe for reads.
+    def _probe(entry: tuple[str, str, str]) -> tuple[str, str, str, str]:
+        real_name, display_name, host = entry
         try:
             phase, _a, _s, _f = _vcluster_preview_phase(
-                batch, core, name, request_timeout=_VCLUSTER_PREVIEW_PROBE_TIMEOUT
+                batch, core, real_name, request_timeout=_VCLUSTER_PREVIEW_PROBE_TIMEOUT
             )
-            return name, phase
+            return display_name, host, phase, real_name
         except Exception as exc:
-            logger.warning("vcluster-previews: phase probe for %s failed: %s", name, exc)
-            return name, "absent"
+            logger.warning(
+                "vcluster-previews: phase probe for %s failed: %s", real_name, exc
+            )
+            return display_name, host, "absent", real_name
 
-    phases: list[tuple[str, str]] = []
-    if names:
-        with ThreadPoolExecutor(max_workers=min(8, len(names))) as pool:
-            phases = list(pool.map(_probe, names))
+    probed: list[tuple[str, str, str, str]] = []
+    if visible:
+        with ThreadPoolExecutor(max_workers=min(8, len(visible))) as pool:
+            probed = list(pool.map(_probe, visible))
 
-    for name, phase in phases:
+    for display_name, host, phase, real_name in probed:
         if phase == "absent":
             continue
-        host = f"wfb-{name}"
-        items.append(
-            {
-                "name": name,
-                "phase": phase,
-                "ready": phase == "ready",
-                "tailnetHost": host,
-                "url": f"https://{host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}",
-            }
-        )
-    return {"previews": items}
+        item = {
+            "name": display_name,
+            "phase": phase,
+            "ready": phase == "ready",
+            "tailnetHost": host,
+            "url": f"https://{host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}",
+        }
+        if real_name != display_name:
+            item["pool"] = real_name  # surface the backing member id for claimed previews
+        items.append(item)
+    return {"previews": items, "counts": counts}
 
 
 @app.get("/internal/vcluster-previews")
@@ -4634,3 +4776,364 @@ def list_vcluster_previews(request: Request) -> dict[str, Any]:
         _vcluster_previews_cache["at"] = time.monotonic()
         _vcluster_previews_cache["data"] = result
     return result
+
+
+# ===========================================================================
+# A3 warm vcluster pool: bake generic free members, claim one atomically for a
+# user (<90s — skips the whole cold path), and keep the pool full + fresh via a
+# background reconcile. Everything gates on VCLUSTER_PREVIEW_POOL_SIZE (default 0
+# = OFF); at 0 none of this runs and previews cold-provision exactly as before.
+# ===========================================================================
+
+# Read→compare-and-swap retry budget for a claim (a 409 = a concurrent claim won that member).
+_VCLUSTER_PREVIEW_CLAIM_ATTEMPTS = int(
+    os.environ.get("VCLUSTER_PREVIEW_CLAIM_ATTEMPTS", "6") or 6
+)
+
+
+def _claim_bump_stale_enabled() -> bool:
+    """Re-author a claimed member's Application with current host images if it drifted. OFF by
+    default: it triggers a rollout (slow), and the recycler already keeps free members fresh."""
+    return os.environ.get("VCLUSTER_PREVIEW_CLAIM_BUMP_STALE", "false").lower() == "true"
+
+
+def _pool_recycle_deadline_seconds() -> int:
+    try:
+        return int(os.environ.get("VCLUSTER_PREVIEW_POOL_RECYCLE_DEADLINE", "900") or 900)
+    except (TypeError, ValueError):
+        return 900
+
+
+def _deploy_container_image(apps, namespace: str, name: str) -> str:
+    """The image of the like-named container in Deployment `name` (mirrors the runner's
+    jsonpath `containers[?(@.name=="name")].image`); "" if unreadable."""
+    try:
+        dep = apps.read_namespaced_deployment(name=name, namespace=namespace)
+    except Exception:
+        return ""
+    spec = dep.spec.template.spec if dep.spec and dep.spec.template else None
+    if not spec or not spec.containers:
+        return ""
+    main = next((c for c in spec.containers if c.name == name), spec.containers[0])
+    return main.image or ""
+
+
+def _host_image_pins(apps) -> str | None:
+    """The live host image-pin signature (bff=…;orch=…;fr=…;sea=…) — the CONTRACT string the
+    runner stamps on each baked member (preview_image_pins). None if any of the 4 can't be read,
+    so the recycler never false-recycles on a transient API error."""
+    ns = _agent_workflow_host_namespace()
+    bff = _deploy_container_image(apps, ns, "workflow-builder")
+    orch = _deploy_container_image(apps, ns, "workflow-orchestrator")
+    fr = _deploy_container_image(apps, ns, "function-router")
+    sea = _deploy_container_image(apps, ns, "sandbox-execution-api")
+    if not (bff and orch and fr and sea):
+        return None
+    return f"bff={bff};orch={orch};fr={fr};sea={sea}"
+
+
+def _member_image_pins(core, real_name: str) -> str | None:
+    try:
+        ns = core.read_namespace(name=f"vcluster-{real_name}")
+    except Exception:
+        return None
+    ann = (ns.metadata.annotations or {}) if ns.metadata else {}
+    return ann.get(_VCLUSTER_PREVIEW_IMAGE_PINS_ANNOTATION)
+
+
+def _member_is_stale(core, apps, real_name: str) -> bool:
+    host = _host_image_pins(apps)
+    member = _member_image_pins(core, real_name)
+    return bool(host and member and host != member)
+
+
+def _claim_free_member(core, *, alias: str, claim_user: str) -> str | None:
+    """Atomically hand a FREE warm-pool member to a claim. Returns the member's real id
+    (pool-<n>) or None if none free. Idempotent: an alias already claimed reuses that member.
+    The flip free→claimed is a resourceVersion-guarded replace, so two concurrent claims for
+    different members can't both win the SAME member (the loser 409s and takes the next one)."""
+    # Idempotent re-claim: this alias is already claimed (or provisioning) → reuse it.
+    try:
+        existing = core.list_namespace(
+            label_selector=f"{_VCLUSTER_PREVIEW_ALIAS_LABEL}={alias}"
+        )
+        for ns in existing.items:
+            if not _preview_ns_is_terminating(ns):
+                return _preview_realname_from_ns(ns)
+    except Exception as exc:
+        logger.warning("claim: alias lookup for %s failed: %s", alias, exc)
+
+    # A COLD (non-pool) preview already literally named `alias` occupies vcluster-<alias> — do NOT
+    # claim a fresh member aliased to it (that would double-allocate). Return None so the BFF
+    # re-provisions that existing preview via the cold path instead.
+    try:
+        cold = core.read_namespace(name=f"vcluster-{alias}")
+        if not _preview_ns_is_terminating(cold):
+            return None
+    except Exception as exc:
+        if getattr(exc, "status", None) != 404:
+            logger.warning("claim: cold-name check for %s failed: %s", alias, exc)
+
+    claimed_at = datetime.now(UTC).isoformat()
+    for _ in range(_VCLUSTER_PREVIEW_CLAIM_ATTEMPTS):
+        try:
+            free = core.list_namespace(
+                label_selector=f"{_VCLUSTER_PREVIEW_POOL_LABEL}=free"
+            )
+        except Exception as exc:
+            logger.warning("claim: free-member list failed: %s", exc)
+            return None
+        candidates = [ns for ns in free.items if not _preview_ns_is_terminating(ns)]
+        if not candidates:
+            return None
+        # Oldest first — drain aging members before freshly-baked ones.
+        candidates.sort(
+            key=lambda ns: (ns.metadata.creation_timestamp or datetime.now(UTC))
+        )
+        for ns in candidates:
+            real_name = _preview_realname_from_ns(ns)
+            meta = ns.metadata
+            labels = dict(meta.labels or {})
+            labels[_VCLUSTER_PREVIEW_POOL_LABEL] = "claimed"
+            labels[_VCLUSTER_PREVIEW_ALIAS_LABEL] = alias
+            meta.labels = labels
+            annotations = dict(meta.annotations or {})
+            annotations[_VCLUSTER_PREVIEW_CLAIMED_BY_ANNOTATION] = claim_user
+            annotations[_VCLUSTER_PREVIEW_CLAIMED_AT_ANNOTATION] = claimed_at
+            meta.annotations = annotations
+            try:
+                # meta.resource_version guards the CAS: if a concurrent claim already flipped
+                # this member the replace 409s → try the next candidate.
+                core.replace_namespace(name=meta.name, body=ns)
+                logger.info(
+                    "claim: member %s → alias=%s by %s", real_name, alias, claim_user
+                )
+                return real_name
+            except Exception as exc:
+                if getattr(exc, "status", None) == 409:
+                    continue  # lost the race for this member; try another
+                logger.warning("claim: replace %s failed: %s", meta.name, exc)
+                continue
+    return None
+
+
+def _vcluster_claim_job_manifest(
+    pool_name: str,
+    alias: str,
+    claim_user: str,
+    *,
+    dev_mode: bool | None,
+    bump_images: bool,
+    namespace: str,
+) -> dict[str, Any]:
+    """The ACTION=claim Job manifest. Reuses the up-Job's env defaulting (ENROLL_MODE/
+    PREVIEW_DB_MODE/TARGET_REVISION/PREVIEW_DEV_MODE/…) so the runner resolves the member's DB +
+    (optionally) re-authors it, then appends the claim-specific env."""
+    req = VclusterPreviewRequest(name=pool_name, action="claim", previewDevMode=dev_mode)
+    manifest = _vcluster_preview_job_manifest(req, namespace=namespace)
+    env = manifest["spec"]["template"]["spec"]["containers"][0]["env"]
+    env.extend(
+        [
+            {"name": "POOL_NAME", "value": pool_name},
+            {"name": "ALIAS", "value": alias},
+            {"name": "CLAIM_USER", "value": claim_user},
+            {"name": "CLAIM_BUMP_IMAGES", "value": "true" if bump_images else "false"},
+        ]
+    )
+    return manifest
+
+
+@app.post("/internal/vcluster-preview/claim", status_code=status.HTTP_202_ACCEPTED)
+def claim_vcluster_preview(
+    request: Request, body: VclusterPreviewClaimRequest
+) -> dict[str, Any]:
+    """Claim a pre-baked warm-pool member for a user (A3). 404 when the pool is empty/off — the
+    BFF then falls back to a cold provision. A claim consumes an already-awake member (no new
+    capacity), so it is NOT gated by VCLUSTER_PREVIEW_MAX."""
+    _require_internal(request)
+    set_current_span_io("input", body.model_dump())
+    alias = _safe_resource_name(body.name, max_length=40)
+    claim_user = (body.user or "unknown").strip() or "unknown"
+    namespace = _agent_workflow_host_namespace()
+    tailnet_host = f"wfb-{alias}"
+    url = f"https://{tailnet_host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}"
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {"1", "true", "yes"}:
+        # No real vclusters in dry-run → behave as an empty pool (BFF cold-path also dry-runs).
+        raise HTTPException(status_code=404, detail="warm pool unavailable (dry-run)")
+    batch, core = _load_k8s_clients()
+    pool_name = _claim_free_member(core, alias=alias, claim_user=claim_user)
+    if not pool_name:
+        raise HTTPException(
+            status_code=404, detail="no free warm-pool member available"
+        )
+    bump = False
+    if _claim_bump_stale_enabled():
+        try:
+            bump = _member_is_stale(core, _load_k8s_apps_client(), pool_name)
+        except Exception as exc:
+            logger.warning("claim: staleness check for %s failed: %s", pool_name, exc)
+    manifest = _vcluster_claim_job_manifest(
+        pool_name,
+        alias,
+        claim_user,
+        dev_mode=body.devMode,
+        bump_images=bump,
+        namespace=namespace,
+    )
+    _create_preview_job(batch, namespace=namespace, manifest=manifest)
+    _invalidate_previews_cache()
+    response = {
+        "name": alias,
+        "pool": pool_name,
+        "pooled": True,
+        "action": "claim",
+        "job": manifest["metadata"]["name"],
+        "status": "claiming",
+        "tailnetHost": tailnet_host,
+        "url": url,
+    }
+    set_current_span_io("output", response)
+    return response
+
+
+def _recycle_free_member(batch, core, ns, real_name: str, namespace: str) -> bool:
+    """Recycle one pin-drifted free member: EXCLUDE it from claims first (flip free→recycling),
+    THEN create a deadline-bounded down-Job. Order matters — a claim must never grab a member
+    whose teardown is already in flight."""
+    try:
+        core.patch_namespace(
+            name=ns.metadata.name,
+            body={"metadata": {"labels": {_VCLUSTER_PREVIEW_POOL_LABEL: "recycling"}}},
+        )
+    except Exception as exc:
+        logger.warning("pool: recycle relabel %s failed: %s", real_name, exc)
+        return False
+    req = VclusterPreviewRequest(name=real_name, action="down")
+    manifest = _vcluster_preview_job_manifest(req, namespace=namespace)
+    # Scoped subset of the teardown-watchdog gap (#25): a recycler down-Job gets a TIGHTER
+    # deadline than the default 1800s so a hung teardown can't wedge a pool slot for 30 minutes.
+    manifest["spec"]["activeDeadlineSeconds"] = _pool_recycle_deadline_seconds()
+    try:
+        _create_preview_job(batch, namespace=namespace, manifest=manifest)
+    except Exception as exc:
+        logger.warning("pool: recycle down-job %s failed: %s", real_name, exc)
+        return False
+    logger.info("pool: recycling stale member %s (image-pin drift)", real_name)
+    return True
+
+
+def _pool_reconcile_once(batch, core, apps) -> dict[str, int]:
+    """One reconcile pass: recycle pin-drifted free members, then top the pool up toward
+    VCLUSTER_PREVIEW_POOL_SIZE — bounded by VCLUSTER_PREVIEW_MAX awake and the per-tick fill
+    batch. Returns a small stats dict (used by tests)."""
+    stats = {"awake": 0, "free": 0, "created": 0, "recycled": 0}
+    pool_size = _vcluster_preview_pool_size()
+    if pool_size <= 0:
+        return stats
+    max_awake = _vcluster_preview_max()
+    try:
+        fill_batch = int(os.environ.get("VCLUSTER_PREVIEW_POOL_FILL_BATCH", "1") or 1)
+    except (TypeError, ValueError):
+        fill_batch = 1
+    recycle_on = (
+        os.environ.get("VCLUSTER_PREVIEW_POOL_RECYCLE", "true").lower() != "false"
+    )
+    namespace = _agent_workflow_host_namespace()
+
+    nss = core.list_namespace(label_selector="app=vcluster-preview")
+    free_members = []
+    awake = 0
+    free = 0
+    for ns in nss.items:
+        if _preview_ns_is_terminating(ns):
+            continue
+        awake += 1
+        labels = (ns.metadata.labels or {}) if ns.metadata else {}
+        if labels.get(_VCLUSTER_PREVIEW_POOL_LABEL) == "free":
+            free += 1
+            free_members.append(ns)
+
+    recycled = 0
+    if recycle_on and free_members:
+        host_pins = _host_image_pins(apps)
+        if host_pins:
+            for ns in free_members:
+                ann = (ns.metadata.annotations or {}) if ns.metadata else {}
+                member_pins = ann.get(_VCLUSTER_PREVIEW_IMAGE_PINS_ANNOTATION)
+                if member_pins and member_pins != host_pins:
+                    real_name = _preview_realname_from_ns(ns)
+                    if _recycle_free_member(batch, core, ns, real_name, namespace):
+                        recycled += 1
+                        free -= 1  # no longer claimable (relabeled recycling); still awake
+
+    # Fill: aim for pool_size free, but never past max_awake, and at most fill_batch per tick
+    # (bounds the IO/enrollment burst — load-test #20 hasn't set a safe concurrent ceiling yet).
+    need = pool_size - free
+    room = max_awake - awake
+    to_create = max(0, min(need, room, fill_batch))
+    created = 0
+    for _ in range(to_create):
+        name = f"pool-{secrets.token_hex(2)}"
+        req = VclusterPreviewRequest(name=name, action="up", pool=True)
+        manifest = _vcluster_preview_job_manifest(req, namespace=namespace)
+        try:
+            _create_preview_job(batch, namespace=namespace, manifest=manifest)
+            created += 1
+            logger.info(
+                "pool: baking member %s (free=%d awake=%d target=%d max=%d)",
+                name,
+                free,
+                awake,
+                pool_size,
+                max_awake,
+            )
+        except Exception as exc:
+            logger.warning("pool: failed to create member %s: %s", name, exc)
+
+    if created or recycled:
+        _invalidate_previews_cache()
+    stats.update(awake=awake, free=free, created=created, recycled=recycled)
+    return stats
+
+
+_pool_manager_started = False
+_pool_manager_lock = threading.Lock()
+
+
+def _pool_manager_loop() -> None:
+    interval = float(
+        os.environ.get("VCLUSTER_PREVIEW_POOL_RECONCILE_SECONDS", "60") or 60
+    )
+    time.sleep(min(interval, 15.0))  # let app startup settle before the first pass
+    logger.info(
+        "pool-manager: started (size=%d max=%d interval=%.0fs)",
+        _vcluster_preview_pool_size(),
+        _vcluster_preview_max(),
+        interval,
+    )
+    while True:
+        try:
+            batch, core = _load_k8s_clients()
+            apps = _load_k8s_apps_client()
+            _pool_reconcile_once(batch, core, apps)
+        except Exception as exc:
+            logger.warning("pool-manager: reconcile failed: %s", exc)
+        time.sleep(interval)
+
+
+def _start_pool_manager() -> None:
+    """Start the singleton reconcile thread iff the pool is enabled (size>0) and not dry-run.
+    SEA runs replicas=1 so a single in-process thread is the whole coordinator — no Lease
+    needed; the module-level guard keeps a double startup event from spawning two."""
+    if _vcluster_preview_pool_size() <= 0:
+        return
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {"1", "true", "yes"}:
+        return
+    global _pool_manager_started
+    with _pool_manager_lock:
+        if _pool_manager_started:
+            return
+        _pool_manager_started = True
+        threading.Thread(
+            target=_pool_manager_loop, daemon=True, name="vcluster-pool-manager"
+        ).start()

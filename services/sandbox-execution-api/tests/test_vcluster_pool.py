@@ -1,0 +1,388 @@
+"""A3 warm vcluster pool: bake POOL=true members, atomically claim one for a user, and keep
+the pool full + fresh. Fake k8s clients mirror the test_app.py monkeypatch pattern."""
+
+from datetime import UTC, datetime
+from types import SimpleNamespace
+
+import pytest
+
+import src.app as app_module
+from src.app import VclusterPreviewClaimRequest, VclusterPreviewRequest
+
+
+class _ApiExc(Exception):
+    def __init__(self, status: int) -> None:
+        super().__init__(f"api status {status}")
+        self.status = status
+
+
+def _ns(
+    real_name: str,
+    *,
+    pool: str | None = None,
+    alias: str | None = None,
+    pins: str | None = None,
+    phase: str = "Active",
+    rv: str = "1",
+    created: datetime | None = None,
+):
+    labels = {"app": "vcluster-preview", "vcluster-preview-name": real_name}
+    if pool is not None:
+        labels["vcluster-preview-pool"] = pool
+    if alias is not None:
+        labels["vcluster-preview-alias"] = alias
+    annotations = {}
+    if pins is not None:
+        annotations["vcluster-preview-image-pins"] = pins
+    meta = SimpleNamespace(
+        name=f"vcluster-{real_name}",
+        labels=labels,
+        annotations=annotations,
+        resource_version=rv,
+        creation_timestamp=created or datetime.now(UTC),
+    )
+    return SimpleNamespace(metadata=meta, status=SimpleNamespace(phase=phase))
+
+
+def _sel_match(ns, selector: str | None) -> bool:
+    if not selector:
+        return True
+    key, _, value = selector.partition("=")
+    return (ns.metadata.labels or {}).get(key) == value
+
+
+class _FakeCore:
+    def __init__(self, namespaces) -> None:
+        self._ns = {n.metadata.name: n for n in namespaces}
+        self.replaced: list = []
+        self.patched: list = []
+        self.replace_conflicts: set[str] = set()
+
+    def list_namespace(self, label_selector=None):
+        items = [n for n in self._ns.values() if _sel_match(n, label_selector)]
+        return SimpleNamespace(items=items)
+
+    def replace_namespace(self, name, body):
+        if name in self.replace_conflicts:
+            self.replace_conflicts.discard(name)
+            raise _ApiExc(409)
+        self._ns[name] = body
+        self.replaced.append((name, body))
+        return body
+
+    def patch_namespace(self, name, body):
+        self.patched.append((name, body))
+        self._ns[name].metadata.labels.update(body["metadata"]["labels"])
+        return self._ns[name]
+
+    def read_namespace(self, name):
+        if name not in self._ns:
+            raise _ApiExc(404)
+        return self._ns[name]
+
+
+class _FakeBatch:
+    def __init__(self) -> None:
+        self.created: list = []
+
+    def delete_namespaced_job(self, name, namespace, propagation_policy=None):
+        raise _ApiExc(404)  # no prior job
+
+    def read_namespaced_job(self, name, namespace):
+        raise _ApiExc(404)  # settle loop breaks immediately (no sleep)
+
+    def create_namespaced_job(self, namespace, body):
+        self.created.append(body)
+
+
+class _FakeApps:
+    def __init__(self, images: dict[str, str]) -> None:
+        self._images = images
+
+    def read_namespaced_deployment(self, name, namespace):
+        img = self._images.get(name)
+        if img is None:
+            raise _ApiExc(404)
+        cont = SimpleNamespace(name=name, image=img)
+        template = SimpleNamespace(spec=SimpleNamespace(containers=[cont]))
+        return SimpleNamespace(spec=SimpleNamespace(template=template))
+
+
+_HOST_IMAGES = {
+    "workflow-builder": "ghcr.io/x/workflow-builder:git-aaa",
+    "workflow-orchestrator": "ghcr.io/x/workflow-orchestrator:git-bbb",
+    "function-router": "ghcr.io/x/function-router:git-ccc",
+    "sandbox-execution-api": "ghcr.io/x/sandbox-execution-api:git-ddd",
+}
+_HOST_PINS = "bff=ghcr.io/x/workflow-builder:git-aaa;orch=ghcr.io/x/workflow-orchestrator:git-bbb;fr=ghcr.io/x/function-router:git-ccc;sea=ghcr.io/x/sandbox-execution-api:git-ddd"
+
+
+def _env(names) -> dict[str, str]:
+    return {e["name"]: e["value"] for e in names}
+
+
+def _job_env(manifest) -> dict[str, str]:
+    return _env(manifest["spec"]["template"]["spec"]["containers"][0]["env"])
+
+
+# ---- manifests -------------------------------------------------------------
+
+
+def test_up_job_manifest_pool_flag_sets_POOL_env() -> None:
+    m = app_module._vcluster_preview_job_manifest(
+        VclusterPreviewRequest(name="pool-abcd", action="up", pool=True),
+        namespace="workflow-builder",
+    )
+    assert _job_env(m)["POOL"] == "true"
+    assert _job_env(m)["ACTION"] == "up"
+
+
+def test_up_job_manifest_omits_POOL_when_not_pool() -> None:
+    m = app_module._vcluster_preview_job_manifest(
+        VclusterPreviewRequest(name="feat-x", action="up"),
+        namespace="workflow-builder",
+    )
+    assert "POOL" not in _job_env(m)
+
+
+def test_claim_job_manifest_carries_claim_env() -> None:
+    m = app_module._vcluster_claim_job_manifest(
+        "pool-abcd",
+        "my-feature",
+        "vpittamp",
+        dev_mode=True,
+        bump_images=False,
+        namespace="workflow-builder",
+    )
+    env = _job_env(m)
+    assert env["ACTION"] == "claim"
+    assert env["POOL_NAME"] == "pool-abcd"
+    assert env["ALIAS"] == "my-feature"
+    assert env["CLAIM_USER"] == "vpittamp"
+    assert env["CLAIM_BUMP_IMAGES"] == "false"
+    assert env["PREVIEW_DEV_MODE"] == "true"
+    assert m["metadata"]["name"] == "vcpreview-claim-pool-abcd"
+
+
+# ---- atomic claim ----------------------------------------------------------
+
+
+def test_claim_free_member_flips_one_atomically() -> None:
+    core = _FakeCore([_ns("pool-1", pool="free")])
+    real = app_module._claim_free_member(core, alias="my-feature", claim_user="vp")
+    assert real == "pool-1"
+    assert len(core.replaced) == 1
+    _name, body = core.replaced[0]
+    assert body.metadata.labels["vcluster-preview-pool"] == "claimed"
+    assert body.metadata.labels["vcluster-preview-alias"] == "my-feature"
+    assert body.metadata.annotations["vcluster-preview-claimed-by"] == "vp"
+    assert "vcluster-preview-claimed-at" in body.metadata.annotations
+
+
+def test_claim_free_member_none_when_pool_empty() -> None:
+    core = _FakeCore([_ns("regular", pool=None)])  # no free members
+    assert app_module._claim_free_member(core, alias="x", claim_user="vp") is None
+
+
+def test_claim_free_member_idempotent_on_existing_alias() -> None:
+    core = _FakeCore([_ns("pool-7", pool="claimed", alias="my-feature")])
+    real = app_module._claim_free_member(core, alias="my-feature", claim_user="vp")
+    assert real == "pool-7"
+    assert core.replaced == []  # reused; no new flip
+
+
+def test_claim_free_member_skips_when_cold_preview_shares_name() -> None:
+    # A cold preview literally named "foo" occupies vcluster-foo; claim must NOT grab a free
+    # member aliased to "foo" (the BFF cold-path re-provisions the existing one instead).
+    core = _FakeCore([_ns("foo", pool=None), _ns("pool-1", pool="free")])
+    assert app_module._claim_free_member(core, alias="foo", claim_user="vp") is None
+    assert core.replaced == []
+
+
+def test_claim_free_member_retries_next_on_409() -> None:
+    older = _ns("pool-a", pool="free", created=datetime(2020, 1, 1, tzinfo=UTC))
+    newer = _ns("pool-b", pool="free", created=datetime(2020, 1, 2, tzinfo=UTC))
+    core = _FakeCore([older, newer])
+    core.replace_conflicts.add("vcluster-pool-a")  # someone else won pool-a
+    real = app_module._claim_free_member(core, alias="x", claim_user="vp")
+    assert real == "pool-b"  # fell through to the next candidate
+
+
+# ---- claim endpoint --------------------------------------------------------
+
+
+def _no_auth_request():
+    return SimpleNamespace(headers={})
+
+
+def test_claim_endpoint_launches_claim_job(monkeypatch) -> None:
+    monkeypatch.delenv("SANDBOX_EXECUTION_DRY_RUN", raising=False)
+    monkeypatch.delenv("SANDBOX_EXECUTION_API_TOKEN", raising=False)
+    monkeypatch.delenv("INTERNAL_API_TOKEN", raising=False)
+    batch = _FakeBatch()
+    core = _FakeCore([_ns("pool-xyz", pool="free")])
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+    resp = app_module.claim_vcluster_preview(
+        _no_auth_request(),
+        VclusterPreviewClaimRequest(name="My Feature", user="vpittamp"),
+    )
+    assert resp["pooled"] is True
+    assert resp["pool"] == "pool-xyz"
+    assert resp["name"] == "my-feature"
+    assert resp["tailnetHost"] == "wfb-my-feature"
+    assert len(batch.created) == 1
+    assert _job_env(batch.created[0])["ACTION"] == "claim"
+    assert _job_env(batch.created[0])["ALIAS"] == "my-feature"
+
+
+def test_claim_endpoint_404_when_pool_empty(monkeypatch) -> None:
+    monkeypatch.delenv("SANDBOX_EXECUTION_DRY_RUN", raising=False)
+    monkeypatch.delenv("SANDBOX_EXECUTION_API_TOKEN", raising=False)
+    monkeypatch.delenv("INTERNAL_API_TOKEN", raising=False)
+    batch = _FakeBatch()
+    core = _FakeCore([])  # empty pool
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+    with pytest.raises(app_module.HTTPException) as exc:
+        app_module.claim_vcluster_preview(
+            _no_auth_request(), VclusterPreviewClaimRequest(name="x")
+        )
+    assert exc.value.status_code == 404
+    assert batch.created == []
+
+
+# ---- image pins / staleness ------------------------------------------------
+
+
+def test_host_image_pins_format() -> None:
+    assert app_module._host_image_pins(_FakeApps(_HOST_IMAGES)) == _HOST_PINS
+
+
+def test_host_image_pins_none_when_a_deployment_missing() -> None:
+    missing = dict(_HOST_IMAGES)
+    del missing["function-router"]
+    assert app_module._host_image_pins(_FakeApps(missing)) is None
+
+
+def test_member_is_stale_detects_pin_drift() -> None:
+    core = _FakeCore([_ns("pool-1", pool="free", pins="bff=old;orch=x;fr=y;sea=z")])
+    apps = _FakeApps(_HOST_IMAGES)
+    assert app_module._member_is_stale(core, apps, "pool-1") is True
+
+
+def test_member_not_stale_when_pins_match() -> None:
+    core = _FakeCore([_ns("pool-1", pool="free", pins=_HOST_PINS)])
+    apps = _FakeApps(_HOST_IMAGES)
+    assert app_module._member_is_stale(core, apps, "pool-1") is False
+
+
+# ---- pool reconcile --------------------------------------------------------
+
+
+def test_pool_reconcile_off_when_size_zero(monkeypatch) -> None:
+    monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_SIZE", "0")
+    batch = _FakeBatch()
+    core = _FakeCore([])
+    stats = app_module._pool_reconcile_once(batch, core, _FakeApps(_HOST_IMAGES))
+    assert stats["created"] == 0
+    assert batch.created == []
+
+
+def test_pool_reconcile_fills_toward_size(monkeypatch) -> None:
+    monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_SIZE", "2")
+    monkeypatch.setenv("VCLUSTER_PREVIEW_MAX", "6")
+    monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_FILL_BATCH", "1")
+    batch = _FakeBatch()
+    core = _FakeCore([])  # no free members yet
+    stats = app_module._pool_reconcile_once(batch, core, _FakeApps(_HOST_IMAGES))
+    assert stats["created"] == 1  # capped by fill_batch=1
+    m = batch.created[0]
+    assert _job_env(m)["POOL"] == "true"
+    assert _job_env(m)["ACTION"] == "up"
+    assert m["metadata"]["name"].startswith("vcpreview-up-pool-")
+
+
+def test_pool_reconcile_respects_max_awake(monkeypatch) -> None:
+    monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_SIZE", "5")
+    monkeypatch.setenv("VCLUSTER_PREVIEW_MAX", "2")
+    batch = _FakeBatch()
+    # 2 awake (both regular) → no room even though 0 free < pool_size
+    core = _FakeCore([_ns("a", pool=None), _ns("b", pool=None)])
+    stats = app_module._pool_reconcile_once(batch, core, _FakeApps(_HOST_IMAGES))
+    assert stats["awake"] == 2
+    assert stats["created"] == 0
+    assert batch.created == []
+
+
+def test_pool_reconcile_no_fill_when_already_full(monkeypatch) -> None:
+    monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_SIZE", "2")
+    monkeypatch.setenv("VCLUSTER_PREVIEW_MAX", "6")
+    batch = _FakeBatch()
+    core = _FakeCore(
+        [_ns("pool-1", pool="free", pins=_HOST_PINS), _ns("pool-2", pool="free", pins=_HOST_PINS)]
+    )
+    stats = app_module._pool_reconcile_once(batch, core, _FakeApps(_HOST_IMAGES))
+    assert stats["free"] == 2
+    assert stats["created"] == 0
+
+
+def test_pool_reconcile_recycles_pin_drifted_free_member(monkeypatch) -> None:
+    monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_SIZE", "1")
+    monkeypatch.setenv("VCLUSTER_PREVIEW_MAX", "6")
+    monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_RECYCLE_DEADLINE", "900")
+    batch = _FakeBatch()
+    core = _FakeCore([_ns("pool-old", pool="free", pins="bff=stale;orch=x;fr=y;sea=z")])
+    stats = app_module._pool_reconcile_once(batch, core, _FakeApps(_HOST_IMAGES))
+    assert stats["recycled"] == 1
+    # relabeled off `free` so a claim can't grab a member mid-teardown
+    assert core._ns["vcluster-pool-old"].metadata.labels["vcluster-preview-pool"] == "recycling"
+    down_jobs = [j for j in batch.created if _job_env(j)["ACTION"] == "down"]
+    assert len(down_jobs) == 1
+    assert down_jobs[0]["spec"]["activeDeadlineSeconds"] == 900
+
+
+def test_pool_reconcile_keeps_fresh_free_member(monkeypatch) -> None:
+    monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_SIZE", "1")
+    monkeypatch.setenv("VCLUSTER_PREVIEW_MAX", "6")
+    batch = _FakeBatch()
+    core = _FakeCore([_ns("pool-fresh", pool="free", pins=_HOST_PINS)])
+    stats = app_module._pool_reconcile_once(batch, core, _FakeApps(_HOST_IMAGES))
+    assert stats["recycled"] == 0
+    assert stats["created"] == 0
+
+
+# ---- alias-aware list ------------------------------------------------------
+
+
+def test_compute_previews_hides_free_shows_alias_and_counts(monkeypatch) -> None:
+    monkeypatch.delenv("SANDBOX_EXECUTION_DRY_RUN", raising=False)
+    monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_SIZE", "1")
+    monkeypatch.setenv("VCLUSTER_PREVIEW_MAX", "6")
+    core = _FakeCore(
+        [
+            _ns("pool-free1", pool="free"),
+            _ns("pool-9", pool="claimed", alias="my-feature"),
+            _ns("regular", pool=None),
+            _ns("recycling1", pool="recycling"),
+        ]
+    )
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (_FakeBatch(), core))
+    monkeypatch.setattr(
+        app_module, "_vcluster_preview_phase", lambda *a, **k: ("ready", 0, 1, 0)
+    )
+    result = app_module._compute_vcluster_previews()
+    names = {p["name"] for p in result["previews"]}
+    assert names == {"my-feature", "regular"}  # free + recycling hidden
+    claimed = next(p for p in result["previews"] if p["name"] == "my-feature")
+    assert claimed["tailnetHost"] == "wfb-my-feature"
+    assert claimed["pool"] == "pool-9"
+    counts = result["counts"]
+    assert counts["awake"] == 4
+    assert counts["free"] == 1
+    assert counts["claimed"] == 1
+    assert counts["recycling"] == 1
+
+
+def test_resolve_preview_realname_maps_alias(monkeypatch) -> None:
+    core = _FakeCore([_ns("pool-3", pool="claimed", alias="my-feature")])
+    assert app_module._resolve_preview_realname(core, "my-feature") == "pool-3"
+    assert app_module._resolve_preview_realname(core, "unclaimed") == "unclaimed"
