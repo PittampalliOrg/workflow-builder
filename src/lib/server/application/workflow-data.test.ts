@@ -935,8 +935,12 @@ function fakeSessionAgentResolver(): SessionAgentResolver {
 			name: "CLI Dev Agent",
 			slug: "cli-dev-agent",
 			version: input.agentVersion ?? 7,
+			configHash: "agent-config-hash",
 			projectId: "project-1",
 			config: createDefaultAgentConfig(),
+			environmentId: null,
+			environmentVersion: null,
+			defaultVaultIds: [],
 			runtime: "codex-cli",
 			runtimeAppId: "agent-runtime-cli-dev-agent",
 			mlflowModelVersion: null,
@@ -3808,6 +3812,50 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(sessionAgents.resolveSessionAgent).toHaveBeenCalledWith({
 			agentId: "agent-1",
 			agentVersion: 4,
+		});
+	});
+
+	it("resolves session agents by id ref through the configured session-agent port", async () => {
+		const sessionAgents = fakeSessionAgentResolver();
+		const sessionAgentSlugs = fakeSessionAgentSlugs();
+		const { service } = makeService({ sessionAgents, sessionAgentSlugs });
+
+		await expect(
+			service.resolveSessionAgentByRef({
+				id: "agent-1",
+				version: 5,
+			}),
+		).resolves.toMatchObject({
+			id: "agent-1",
+			version: 5,
+		});
+		expect(sessionAgents.resolveSessionAgent).toHaveBeenCalledWith({
+			agentId: "agent-1",
+			agentVersion: 5,
+		});
+		expect(sessionAgentSlugs.resolveSessionAgentIdBySlug).not.toHaveBeenCalled();
+	});
+
+	it("resolves session agents by slug ref through configured slug and agent ports", async () => {
+		const sessionAgents = fakeSessionAgentResolver();
+		const sessionAgentSlugs = fakeSessionAgentSlugs();
+		const { service } = makeService({ sessionAgents, sessionAgentSlugs });
+
+		await expect(
+			service.resolveSessionAgentByRef({
+				slug: "cli-dev-agent",
+				version: 6,
+			}),
+		).resolves.toMatchObject({
+			id: "agent-1",
+			version: 6,
+		});
+		expect(sessionAgentSlugs.resolveSessionAgentIdBySlug).toHaveBeenCalledWith(
+			"cli-dev-agent",
+		);
+		expect(sessionAgents.resolveSessionAgent).toHaveBeenCalledWith({
+			agentId: "agent-1",
+			agentVersion: 6,
 		});
 	});
 

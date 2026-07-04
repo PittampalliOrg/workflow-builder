@@ -1,11 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 
-const resolveAgentRefMock = vi.fn();
-vi.mock("./registry", () => ({
-	resolveAgentRef: (...args: unknown[]) => resolveAgentRefMock(...args),
-}));
-
+const resolveSessionAgentByRefMock = vi.fn();
+const resolvePeerAgentDispatchContextMock = vi.fn();
 const resolveRuntimeByRefMock = vi.fn();
 const flattenBundlesMock = vi.fn(
 	async (config: unknown, _projectId?: unknown) => config,
@@ -15,6 +12,12 @@ const agentSkillHydrationMock = {
 };
 vi.mock("$lib/server/application", () => ({
 	getApplicationAdapters: () => ({
+		workflowData: {
+			resolveSessionAgentByRef: (...args: unknown[]) =>
+				resolveSessionAgentByRefMock(...args),
+			resolvePeerAgentDispatchContext: (...args: unknown[]) =>
+				resolvePeerAgentDispatchContextMock(...args),
+		},
 		environments: {
 			resolveRuntimeByRef: (...args: unknown[]) =>
 				resolveRuntimeByRefMock(...args),
@@ -124,10 +127,17 @@ function resolvedAgent(
 
 describe("resolveSpecAgentRefs", () => {
 	beforeEach(() => {
-		resolveAgentRefMock.mockReset();
+		resolveSessionAgentByRefMock.mockReset();
+		resolvePeerAgentDispatchContextMock.mockReset();
 		resolveRuntimeByRefMock.mockReset();
 		flattenBundlesMock.mockClear();
 		agentSkillHydrationMock.listAgentSkillHydrationEntries.mockClear();
+		resolvePeerAgentDispatchContextMock.mockResolvedValue({
+			agentConfig: minimalConfig(),
+			environmentConfig: null,
+			callableAgents: [],
+			registryTeam: null,
+		});
 		delete process.env.AGENT_RUNTIME_SHARED_POOLS_ENABLED;
 		delete process.env.AGENT_RUNTIME_POOL_APP_IDS_JSON;
 	});
@@ -137,7 +147,7 @@ describe("resolveSpecAgentRefs", () => {
 			modelSpec: "anthropic/claude-opus-4-7",
 			systemPrompt: "Sentinel system prompt",
 		});
-		resolveAgentRefMock.mockResolvedValueOnce(
+		resolveSessionAgentByRefMock.mockResolvedValueOnce(
 			resolvedAgent({ version: 3, config }),
 		);
 		const spec = specWithTasks([
@@ -207,7 +217,7 @@ describe("resolveSpecAgentRefs", () => {
 				},
 			],
 		});
-		resolveAgentRefMock.mockResolvedValueOnce(resolvedAgent({ config }));
+		resolveSessionAgentByRefMock.mockResolvedValueOnce(resolvedAgent({ config }));
 		const skillHydration = {
 			listAgentSkillHydrationEntries: vi.fn(async () => [
 				{
@@ -272,6 +282,12 @@ describe("resolveSpecAgentRefs", () => {
 
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
+		expect(source).not.toContain("$lib/server/agents/registry");
+		expect(source).not.toContain("./registry");
+		expect(source).not.toContain("./registry-sync");
+		expect(source).not.toContain("resolveCallableAgents");
+		expect(source).toContain("workflowData.resolveSessionAgentByRef");
+		expect(source).toContain("workflowData.resolvePeerAgentDispatchContext");
 	});
 
 	it("keeps environment runtime resolution behind the application service", () => {
@@ -287,7 +303,7 @@ describe("resolveSpecAgentRefs", () => {
 		process.env.AGENT_RUNTIME_POOL_APP_IDS_JSON = JSON.stringify({
 			coding: "agent-runtime-pool-coding",
 		});
-		resolveAgentRefMock.mockResolvedValueOnce(
+		resolveSessionAgentByRefMock.mockResolvedValueOnce(
 			resolvedAgent({ slug: "code-agent", config: minimalConfig() }),
 		);
 		const spec = specWithTasks([
@@ -333,7 +349,7 @@ describe("resolveSpecAgentRefs", () => {
 			// Stale stored value should be corrected from the runtime registry.
 			cliAdapter: "claude-code",
 		});
-		resolveAgentRefMock.mockResolvedValueOnce(
+		resolveSessionAgentByRefMock.mockResolvedValueOnce(
 			resolvedAgent({
 				slug: "codex-agent",
 				config,
@@ -380,7 +396,7 @@ describe("resolveSpecAgentRefs", () => {
 			runtime: "claude-code-cli",
 			modelSpec: "anthropic/claude-opus-4-8",
 		});
-		resolveAgentRefMock.mockResolvedValueOnce(
+		resolveSessionAgentByRefMock.mockResolvedValueOnce(
 			resolvedAgent({ slug: "claude-code-cli", config }),
 		);
 		const spec = specWithTasks([
@@ -401,7 +417,7 @@ describe("resolveSpecAgentRefs", () => {
 			triggerData: { cliRuntime: "claude-code-cli" },
 		});
 
-		expect(resolveAgentRefMock).toHaveBeenCalledWith({
+		expect(resolveSessionAgentByRefMock).toHaveBeenCalledWith({
 			slug: "claude-code-cli",
 		});
 		const task = (resolved.document as Record<string, unknown>).do as Array<
@@ -416,7 +432,7 @@ describe("resolveSpecAgentRefs", () => {
 	});
 
 	it("resolves an agentRef slug expression fallback when trigger input is omitted", async () => {
-		resolveAgentRefMock.mockResolvedValueOnce(
+		resolveSessionAgentByRefMock.mockResolvedValueOnce(
 			resolvedAgent({ slug: "codex-cli", config: minimalConfig({ runtime: "codex-cli" }) }),
 		);
 		const spec = specWithTasks([
@@ -437,7 +453,7 @@ describe("resolveSpecAgentRefs", () => {
 			triggerData: {},
 		});
 
-		expect(resolveAgentRefMock).toHaveBeenCalledWith({ slug: "codex-cli" });
+		expect(resolveSessionAgentByRefMock).toHaveBeenCalledWith({ slug: "codex-cli" });
 		const task = (resolved.document as Record<string, unknown>).do as Array<
 			Record<string, unknown>
 		>;
@@ -448,7 +464,7 @@ describe("resolveSpecAgentRefs", () => {
 	});
 
 	it("resolves a whole agentRef from trigger input with fallback", async () => {
-		resolveAgentRefMock.mockResolvedValueOnce(
+		resolveSessionAgentByRefMock.mockResolvedValueOnce(
 			resolvedAgent({ slug: "codex-cli", config: minimalConfig({ runtime: "codex-cli" }) }),
 		);
 		const spec = specWithTasks([
@@ -469,7 +485,7 @@ describe("resolveSpecAgentRefs", () => {
 			triggerData: { cliRuntime: "codex-cli" },
 		});
 
-		expect(resolveAgentRefMock).toHaveBeenCalledWith({
+		expect(resolveSessionAgentByRefMock).toHaveBeenCalledWith({
 			slug: "codex-cli",
 		});
 	});
@@ -504,7 +520,7 @@ describe("resolveSpecAgentRefs", () => {
 	});
 
 	it("throws when the referenced agent is not found", async () => {
-		resolveAgentRefMock.mockResolvedValueOnce(null);
+		resolveSessionAgentByRefMock.mockResolvedValueOnce(null);
 		const spec = specWithTasks([
 			{
 				Run: {
@@ -524,7 +540,7 @@ describe("resolveSpecAgentRefs", () => {
 			maxTurns: 100,
 			timeoutMinutes: 30,
 		});
-		resolveAgentRefMock.mockResolvedValueOnce(
+		resolveSessionAgentByRefMock.mockResolvedValueOnce(
 			resolvedAgent({
 				slug: "s",
 				config,
@@ -578,18 +594,18 @@ describe("resolveSpecAgentRefs", () => {
 	});
 
 	it("caches repeated refs within a single spec", async () => {
-		resolveAgentRefMock.mockResolvedValue(resolvedAgent({ slug: "s" }));
+		resolveSessionAgentByRefMock.mockResolvedValue(resolvedAgent({ slug: "s" }));
 		const spec = specWithTasks([
 			{ A: { call: "durable/run", with: { body: { agentRef: { id: "a1" } } } } },
 			{ B: { call: "durable/run", with: { body: { agentRef: { id: "a1" } } } } },
 			{ C: { call: "durable/run", with: { body: { agentRef: { id: "a1" } } } } },
 		]);
 		await resolveSpecAgentRefs(spec);
-		expect(resolveAgentRefMock).toHaveBeenCalledTimes(1);
+		expect(resolveSessionAgentByRefMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("does not mutate the input spec", async () => {
-		resolveAgentRefMock.mockResolvedValueOnce(resolvedAgent({ slug: "s" }));
+		resolveSessionAgentByRefMock.mockResolvedValueOnce(resolvedAgent({ slug: "s" }));
 		const spec = specWithTasks([
 			{
 				Run: {
@@ -604,7 +620,7 @@ describe("resolveSpecAgentRefs", () => {
 	});
 
 	it("resolves environmentRef from the agent and inlines a derived sandboxPolicy", async () => {
-		resolveAgentRefMock.mockResolvedValueOnce(
+		resolveSessionAgentByRefMock.mockResolvedValueOnce(
 			resolvedAgent({
 				environmentId: "env_1",
 				environmentVersion: 2,
@@ -658,7 +674,7 @@ describe("resolveSpecAgentRefs", () => {
 	});
 
 	it("prefers explicit body.environmentRef over the agent's default environment", async () => {
-		resolveAgentRefMock.mockResolvedValueOnce(
+		resolveSessionAgentByRefMock.mockResolvedValueOnce(
 			resolvedAgent({ environmentId: "env_default", environmentVersion: 1 }),
 		);
 		resolveRuntimeByRefMock.mockResolvedValueOnce({
@@ -690,7 +706,7 @@ describe("resolveSpecAgentRefs", () => {
 	});
 
 	it("throws when the agent's environmentRef resolves to nothing", async () => {
-		resolveAgentRefMock.mockResolvedValueOnce(
+		resolveSessionAgentByRefMock.mockResolvedValueOnce(
 			resolvedAgent({ environmentId: "env_missing", environmentVersion: 1 }),
 		);
 		resolveRuntimeByRefMock.mockResolvedValueOnce({ environment: null });

@@ -9,17 +9,13 @@ import type {
 	EnvironmentRef,
 } from "$lib/types/environments";
 import type { EnvironmentRuntimeResolution } from "$lib/server/application/environment-management";
-import {
-	resolveAgentRef,
-	resolveCallableAgents,
-	type ResolvedAgent,
-} from "./registry";
-import {
-	agentRegistryKey,
-	teamRegistryPrefix,
-} from "./registry-sync";
 import { getApplicationAdapters } from "$lib/server/application";
-import type { AgentSkillHydrationRepository } from "$lib/server/application/ports";
+import type {
+	AgentSkillHydrationRepository,
+	PeerAgentDispatchContext,
+	SessionAgentRef,
+	SessionCommandAgent,
+} from "$lib/server/application/ports";
 import { hashAgentConfig } from "./config-hash";
 import {
 	buildInstructionBundle,
@@ -94,7 +90,39 @@ export function assertConsistentWorkspaceBackends(
 type ResolveSpecAgentRefsOptions = {
 	triggerData?: Record<string, unknown>;
 	skillHydration?: AgentSkillHydrationRepository;
+	resolveAgentByRef?: (
+		ref: SessionAgentRef,
+	) => Promise<SessionCommandAgent | null>;
+	resolvePeerAgentDispatchContext?: (input: {
+		agentId: string;
+		agentVersion?: number | null;
+		environmentId?: string | null;
+		environmentVersion?: number | null;
+	}) => Promise<PeerAgentDispatchContext | null>;
 };
+
+function defaultResolveAgentByRef(ref: SessionAgentRef) {
+	return getApplicationAdapters().workflowData.resolveSessionAgentByRef(ref);
+}
+
+function defaultResolvePeerAgentDispatchContext(input: {
+	agentId: string;
+	agentVersion?: number | null;
+	environmentId?: string | null;
+	environmentVersion?: number | null;
+}) {
+	return getApplicationAdapters().workflowData.resolvePeerAgentDispatchContext(
+		input,
+	);
+}
+
+function teamRegistryPrefix(team: string): string {
+	return `agents:${team}`;
+}
+
+function agentRegistryKey(team: string, agentSlug: string): string {
+	return `${teamRegistryPrefix(team)}:${agentSlug}`;
+}
 
 /**
  * Hydrate each entry of `config.skills[]` from `agent_skill_registry` so
@@ -256,7 +284,7 @@ function resolveTriggerExpression(
 	return undefined;
 }
 
-function resolveAgentRefValue(
+function parseAgentReferenceValue(
 	value: unknown,
 	triggerData: Record<string, unknown> | undefined,
 	taskName: string,
@@ -310,7 +338,12 @@ export async function resolveSpecAgentRefs(
 	const tasks = collectDurableRunTasks(cloned);
 	if (tasks.length === 0) return cloned;
 
-	const agentCache = new Map<string, ResolvedAgent | null>();
+	const resolveAgent =
+		options.resolveAgentByRef ?? defaultResolveAgentByRef;
+	const resolvePeerAgentDispatchContext =
+		options.resolvePeerAgentDispatchContext ??
+		defaultResolvePeerAgentDispatchContext;
+	const agentCache = new Map<string, SessionCommandAgent | null>();
 	const envCache = new Map<string, EnvironmentRuntimeResolution | null>();
 	// Collected per node for the cross-backend file-sharing guard (below).
 	const workspaceGuard: { taskName: string; runtime: string; workspaceRef: string }[] = [];
@@ -330,7 +363,7 @@ export async function resolveSpecAgentRefs(
 		const key = `${refKey}#${ref.version ?? "current"}`;
 		let resolved = agentCache.get(key);
 		if (resolved === undefined) {
-			resolved = await resolveAgentRef(ref);
+			resolved = await resolveAgent(ref);
 			agentCache.set(key, resolved);
 		}
 		if (!resolved) {
@@ -395,10 +428,13 @@ export async function resolveSpecAgentRefs(
 			Array.isArray(config.callableAgents) &&
 			config.callableAgents.length > 0
 		) {
-			const peers = await resolveCallableAgents(
-				resolved.projectId,
-				config.callableAgents,
-			);
+			const peerContext = await resolvePeerAgentDispatchContext({
+				agentId: resolved.id,
+				agentVersion: resolved.version,
+				environmentId: environment?.id ?? null,
+				environmentVersion: environment?.version ?? null,
+			});
+			const peers = peerContext?.callableAgents ?? [];
 			const team = resolved.projectId;
 			callableAgents = peers.map((p) => ({
 				slug: p.slug,
@@ -408,7 +444,7 @@ export async function resolveSpecAgentRefs(
 				// the peer's materialized runtime app id. For pool-backed
 				// agents this may be agent-runtime-pool-<class>; otherwise it
 				// stays agent-runtime-<slug>.
-				appId: p.runtimeAppId ?? agentRuntimeDedicatedAppId(p.slug),
+				appId: p.appId ?? agentRuntimeDedicatedAppId(p.slug),
 				team,
 				registryKey: agentRegistryKey(team, p.slug),
 			}));
@@ -582,7 +618,7 @@ function deriveSandboxPolicy(
 function pickEnvironmentRef(
 	withBlock: unknown,
 	body: Record<string, unknown> | null,
-	agent: ResolvedAgent,
+	agent: SessionCommandAgent,
 ): EnvironmentRef | null {
 	const fromBody = body?.environmentRef;
 	if (isEnvironmentRef(fromBody)) return fromBody;
@@ -617,10 +653,10 @@ function pickAgentRef(
 	taskName: string,
 ): AgentRef | null {
 	const fromBody = body?.agentRef;
-	const bodyRef = resolveAgentRefValue(fromBody, triggerData, taskName);
+	const bodyRef = parseAgentReferenceValue(fromBody, triggerData, taskName);
 	if (bodyRef) return bodyRef;
 	const fromWith = isRecord(withBlock) ? withBlock.agentRef : undefined;
-	return resolveAgentRefValue(fromWith, triggerData, taskName);
+	return parseAgentReferenceValue(fromWith, triggerData, taskName);
 }
 
 function pickOverrides(

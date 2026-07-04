@@ -4864,8 +4864,12 @@ export type SessionCommandAgent = {
 	name: string;
 	slug: string;
 	version: number;
+	configHash?: string | null;
 	projectId?: string | null;
 	config: AgentConfig;
+	environmentId?: string | null;
+	environmentVersion?: number | null;
+	defaultVaultIds?: string[];
 	runtime: string;
 	runtimeAppId: string | null;
 	mlflowModelVersion: string | null;
@@ -4879,6 +4883,12 @@ export interface SessionAgentResolver {
 		agentVersion?: number | null;
 	}): Promise<SessionCommandAgent | null>;
 }
+
+export type SessionAgentRef = {
+	id?: string;
+	slug?: string;
+	version?: number;
+};
 
 export interface SessionAgentSlugResolver {
 	resolveSessionAgentIdBySlug(slug: string): Promise<string | null>;
@@ -5598,6 +5608,11 @@ export interface WorkflowDataService {
 		environmentId?: string | null;
 		environmentVersion?: number | null;
 	}): Promise<PeerAgentDispatchContext | null>;
+	resolveSessionAgent(input: {
+		agentId: string;
+		agentVersion?: number | null;
+	}): Promise<SessionCommandAgent | null>;
+	resolveSessionAgentByRef(ref: SessionAgentRef): Promise<SessionCommandAgent | null>;
 	getWorkflowAgentRuntimeIdentity(
 		agentId: string,
 	): Promise<WorkflowAgentRuntimeIdentity | null>;

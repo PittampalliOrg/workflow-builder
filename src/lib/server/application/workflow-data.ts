@@ -169,6 +169,7 @@ import type {
 	SandboxRuntimeInventory,
 	SessionAgentConfigCommandPort,
 	SessionAgentConfigPatchResult,
+	SessionAgentRef,
 	SessionAgentResolver,
 	SessionAgentSlugResolver,
 	SessionEventLog,
@@ -4882,6 +4883,23 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		agentVersion?: number | null;
 	}) {
 		return this.requireSessionAgents().resolveSessionAgent(input);
+	}
+
+	async resolveSessionAgentByRef(ref: SessionAgentRef) {
+		const agentId =
+			typeof ref.id === "string" && ref.id.trim()
+				? ref.id.trim()
+				: typeof ref.slug === "string" && ref.slug.trim()
+					? await this.requireSessionAgentSlugs().resolveSessionAgentIdBySlug(
+							ref.slug.trim(),
+						)
+					: null;
+		return agentId
+			? this.requireSessionAgents().resolveSessionAgent({
+					agentId,
+					agentVersion: ref.version ?? undefined,
+				})
+			: null;
 	}
 
 	getWorkflowAgentRuntimeIdentity(

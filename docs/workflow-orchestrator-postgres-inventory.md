@@ -51,6 +51,11 @@ runtime resolver port. `src/lib/server/sessions/spawn.ts` and
 `src/lib/server/agents/resolver.ts` no longer import the DB-backed environment
 registry; `resolveEnvironmentRef` is confined to the environment application
 adapter.
+Workflow durable/run agent-ref resolution now loads primary agents and callable
+peer-agent dispatch metadata through workflow-data ports. `resolveSpecAgentRefs`
+no longer imports the legacy DB-backed agent registry, registry-sync helper, or
+`resolveCallableAgents`; those lookups are confined to the application adapter
+layer.
 Session workflow spawn now also reads initial user events and emits swap-safety
 audit events through workflow-data; `spawn.ts` no longer imports the legacy
 session event-log helper directly.
@@ -515,7 +520,9 @@ services:
   `ApplicationWorkflowExecutionControlService.executeWorkflow`, which reaches
   workflow-data and the canonical starter only through application ports.
 - The `resolveSpecAgentRefs` path used by `startWorkflowRun` no longer imports
-  `$lib/server/db`, Drizzle, or `agentSkillRegistry` directly. Attached
+  `$lib/server/db`, Drizzle, the legacy agent registry, registry-sync, or
+  `agentSkillRegistry` directly. Primary agent lookup, slug resolution, and
+  callable peer metadata flow through workflow-data ports; attached
   `agentConfig.skills[]` entries are hydrated through
   `AgentSkillHydrationRepository`, with the Postgres query confined to
   `PostgresAgentSkillHydrationRepository`.
