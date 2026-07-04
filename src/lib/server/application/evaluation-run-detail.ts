@@ -1,8 +1,4 @@
-import type { getEvaluationRun } from "$lib/server/evaluations/service";
-
-export type EvaluationRunDetail = NonNullable<
-	Awaited<ReturnType<typeof getEvaluationRun>>
->;
+export type EvaluationRunDetail = Record<string, unknown>;
 
 export type EvaluationRunItemMode = "full" | "summary";
 
