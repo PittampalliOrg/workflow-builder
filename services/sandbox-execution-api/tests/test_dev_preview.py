@@ -224,6 +224,96 @@ def test_adopt_deferred_scale_down_scopes_selector_by_service(monkeypatch) -> No
     assert patched == {"name": "workflow-orchestrator", "replicas": 0}
 
 
+def _ready_pod(name: str, *, daprd: str | None = None) -> SimpleNamespace:
+    """A dev pod that is Ready. daprd: None=absent, "init"/"regular"/"label"=present."""
+    init_cs = [SimpleNamespace(name="daprd")] if daprd == "init" else None
+    regular = [SimpleNamespace(name="dev", ready=True)]
+    if daprd == "regular":
+        regular.append(SimpleNamespace(name="daprd"))
+    labels = {"dapr.io/sidecar-injected": "true"} if daprd == "label" else {}
+    return SimpleNamespace(
+        metadata=SimpleNamespace(name=name, labels=labels),
+        status=SimpleNamespace(
+            container_statuses=regular, init_container_statuses=init_cs
+        ),
+    )
+
+
+def test_dev_pod_has_daprd_checks_init_regular_and_label() -> None:
+    assert app_module._dev_pod_has_daprd(_ready_pod("p", daprd="init"))
+    assert app_module._dev_pod_has_daprd(_ready_pod("p", daprd="regular"))
+    assert app_module._dev_pod_has_daprd(_ready_pod("p", daprd="label"))
+    assert not app_module._dev_pod_has_daprd(_ready_pod("p", daprd=None))
+
+
+def _scale_down_fakes(monkeypatch, pods_sequence):
+    """Wire _adopt_deferred_scale_down against a scripted pod-list sequence."""
+    monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
+    state = {"i": 0, "deleted": [], "patched": {}}
+
+    def list_pods(*, namespace, label_selector):
+        idx = min(state["i"], len(pods_sequence) - 1)
+        state["i"] += 1
+        return SimpleNamespace(items=pods_sequence[idx])
+
+    def del_pod(*, name, namespace):
+        state["deleted"].append(name)
+
+    def read_dep(*, name, namespace):
+        return SimpleNamespace(
+            spec=SimpleNamespace(replicas=1), metadata=SimpleNamespace(annotations={})
+        )
+
+    def patch_dep(*, name, namespace, body):
+        state["patched"] = {"name": name, "replicas": body["spec"]["replicas"]}
+
+    fake_core = SimpleNamespace(
+        list_namespaced_pod=list_pods, delete_namespaced_pod=del_pod
+    )
+    fake_apps = SimpleNamespace(
+        read_namespaced_deployment=read_dep, patch_namespaced_deployment=patch_dep
+    )
+    monkeypatch.setattr(app_module, "_load_k8s_apps_client", lambda: fake_apps)
+    monkeypatch.setattr(
+        app_module, "_load_k8s_clients", lambda: (SimpleNamespace(), fake_core)
+    )
+    return state
+
+
+def test_adopt_scale_down_recreates_then_scales_when_daprd_appears(monkeypatch) -> None:
+    # 1st poll: Ready but no daprd (fail-open race) → delete to force re-injection;
+    # 2nd poll: the recreated pod has daprd → scale prod to 0.
+    state = _scale_down_fakes(
+        monkeypatch,
+        [[_ready_pod("wfb-dev-x", daprd=None)], [_ready_pod("wfb-dev-x", daprd="init")]],
+    )
+    app_module._adopt_deferred_scale_down(
+        namespace="wb",
+        deployment="workflow-builder",
+        execution_id="exec-1",
+        wait_seconds=1,
+        service="workflow-builder",
+        needs_dapr=True,
+    )
+    assert state["deleted"] == ["wfb-dev-x"]
+    assert state["patched"] == {"name": "workflow-builder", "replicas": 0}
+
+
+def test_adopt_scale_down_leaves_prod_up_when_daprd_never_injects(monkeypatch) -> None:
+    # daprd never appears → recreate once, then LEAVE PROD UP (no scale-to-0).
+    state = _scale_down_fakes(monkeypatch, [[_ready_pod("wfb-dev-x", daprd=None)]])
+    app_module._adopt_deferred_scale_down(
+        namespace="wb",
+        deployment="workflow-builder",
+        execution_id="exec-1",
+        wait_seconds=1,
+        service="workflow-builder",
+        needs_dapr=True,
+    )
+    assert state["deleted"] == ["wfb-dev-x"]  # recreated exactly once
+    assert state["patched"] == {}  # prod NOT scaled to 0 (failsafe)
+
+
 def test_provision_forces_shadow_off_and_scopes_cr_when_preview_native(
     monkeypatch,
 ) -> None:

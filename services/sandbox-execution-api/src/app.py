@@ -834,6 +834,25 @@ def _adopt_scale_deployment_down(apps: Any, *, namespace: str, name: str) -> Non
     logger.info("adopt: scaled deployment %s to 0 (original=%s)", name, original)
 
 
+def _dev_pod_has_daprd(pod: Any) -> bool:
+    """True if the pod carries an injected daprd sidecar.
+
+    daprd can be a NATIVE sidecar (an init container with restartPolicy: Always) OR a
+    classic sidecar (a regular container); the injector also stamps the
+    `dapr.io/sidecar-injected=true` label. Check all three — auditing only
+    `.spec.containers` misses the native-sidecar case."""
+    status = getattr(pod, "status", None)
+    for statuses in (
+        getattr(status, "init_container_statuses", None),
+        getattr(status, "container_statuses", None),
+    ):
+        if any(getattr(cs, "name", "") == "daprd" for cs in (statuses or [])):
+            return True
+    meta = getattr(pod, "metadata", None)
+    labels = (getattr(meta, "labels", None) or {}) if meta else {}
+    return labels.get("dapr.io/sidecar-injected") == "true"
+
+
 def _adopt_deferred_scale_down(
     *,
     namespace: str,
@@ -841,6 +860,7 @@ def _adopt_deferred_scale_down(
     execution_id: str,
     wait_seconds: int,
     service: str | None = None,
+    needs_dapr: bool = False,
 ) -> None:
     """Background target: wait for the dev pod to be Ready, THEN scale the prod
     Deployment to 0. Deferring is REQUIRED when the dev pod adopts the BFF's own
@@ -869,20 +889,59 @@ def _adopt_deferred_scale_down(
     # Generous: the full BFF vite dev server can cold-boot well past waitReadySeconds.
     # Until the dev pod is Ready the prod Deployment is LEFT UP, so over-waiting only
     # delays the cutover; it never causes downtime.
+    recreated = False
     deadline = time.monotonic() + max(wait_seconds, 600)
     while time.monotonic() < deadline:
         try:
             pods = core.list_namespaced_pod(
                 namespace=namespace, label_selector=selector
             ).items
-            ready = any(
-                any(
-                    cs.name == "dev" and cs.ready
-                    for cs in (p.status.container_statuses or [])
-                )
-                for p in pods
+            ready_pod = next(
+                (
+                    p
+                    for p in pods
+                    if any(
+                        cs.name == "dev" and cs.ready
+                        for cs in (p.status.container_statuses or [])
+                    )
+                ),
+                None,
             )
-            if ready:
+            if ready_pod is not None:
+                # Defense-in-depth (the Dapr injector is FAIL-OPEN — failurePolicy
+                # Ignore): a needsDapr adopt pod can come up Ready with NO daprd
+                # (cold-start injection race). Scaling the prod Deployment to 0 into a
+                # daprd-less adopt would break BFF→orchestrator invocation with no
+                # failsafe. So assert daprd is present; if missing, delete the pod ONCE
+                # to force a fresh injection (the Sandbox controller recreates it, the
+                # injector now warm); if STILL missing, LEAVE PROD UP (the preview keeps
+                # serving via prod — a degraded but working state).
+                if needs_dapr and not _dev_pod_has_daprd(ready_pod):
+                    if not recreated:
+                        recreated = True
+                        logger.warning(
+                            "adopt: dev pod %s Ready but NO daprd (fail-open injector "
+                            "race); deleting to force re-injection (exec %s)",
+                            ready_pod.metadata.name,
+                            execution_id,
+                        )
+                        try:
+                            core.delete_namespaced_pod(
+                                name=ready_pod.metadata.name, namespace=namespace
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "adopt: daprd-retry pod delete failed: %s", exc
+                            )
+                        time.sleep(10)
+                        continue
+                    logger.error(
+                        "adopt: dev pod for exec %s Ready but STILL no daprd after "
+                        "recreate; leaving %s UP (failsafe — preview serves via prod)",
+                        execution_id,
+                        deployment,
+                    )
+                    return
                 # Grace so the provision HTTP response (which returns when the dev
                 # pod is Ready) fully propagates orchestrator←router←BFF BEFORE we
                 # scale the BFF to 0 — otherwise the scale could still kill the pod
@@ -892,7 +951,7 @@ def _adopt_deferred_scale_down(
                     apps, namespace=namespace, name=deployment
                 )
                 logger.info(
-                    "adopt: dev pod ready → scaled %s to 0 (exec %s)",
+                    "adopt: dev pod ready (daprd ok) → scaled %s to 0 (exec %s)",
                     deployment,
                     execution_id,
                 )
@@ -3503,6 +3562,7 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
                     "execution_id": body.executionId,
                     "wait_seconds": body.waitReadySeconds,
                     "service": body.service,
+                    "needs_dapr": body.needsDapr,
                 },
                 daemon=True,
             ).start()
