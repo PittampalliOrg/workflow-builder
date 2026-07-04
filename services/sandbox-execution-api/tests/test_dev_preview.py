@@ -138,6 +138,10 @@ def test_preview_native_uses_classic_daprd_sidecar() -> None:
     assert ann["dapr.io/enabled"] == "true"
     assert ann["dapr.io/enable-workflow"] == "true"
     assert "dapr.io/enable-native-sidecar" not in ann
+    # Readiness-probe tuning (agent-host parity) applies regardless of sidecar mode.
+    assert ann["dapr.io/sidecar-readiness-probe-delay-seconds"] == "0"
+    assert ann["dapr.io/sidecar-readiness-probe-period-seconds"] == "1"
+    assert ann["dapr.io/sidecar-readiness-probe-timeout-seconds"] == "1"
 
 
 def test_host_shadow_keeps_native_daprd_sidecar() -> None:
@@ -239,6 +243,24 @@ def _ready_pod(name: str, *, daprd: str | None = None) -> SimpleNamespace:
     )
 
 
+def test_wait_for_dapr_injector_available_true_when_ready(monkeypatch) -> None:
+    apps = SimpleNamespace(
+        read_namespaced_deployment=lambda *, name, namespace: SimpleNamespace(
+            status=SimpleNamespace(available_replicas=1)
+        )
+    )
+    assert app_module._wait_for_dapr_injector_available(apps, timeout_seconds=5)
+
+
+def test_wait_for_dapr_injector_available_false_on_timeout(monkeypatch) -> None:
+    # Missing/unavailable injector → returns False (caller proceeds; assert is backstop).
+    def read_dep(*, name, namespace):
+        raise RuntimeError("not found")
+
+    apps = SimpleNamespace(read_namespaced_deployment=read_dep)
+    assert not app_module._wait_for_dapr_injector_available(apps, timeout_seconds=0)
+
+
 def test_dev_pod_has_daprd_checks_init_regular_and_label() -> None:
     assert app_module._dev_pod_has_daprd(_ready_pod("p", daprd="init"))
     assert app_module._dev_pod_has_daprd(_ready_pod("p", daprd="regular"))
@@ -330,6 +352,9 @@ def test_provision_forces_shadow_off_and_scopes_cr_when_preview_native(
     )
     monkeypatch.setattr(
         app_module, "_load_k8s_custom_objects_client", lambda: fake_custom
+    )
+    monkeypatch.setattr(
+        app_module, "_wait_for_dapr_injector_available", lambda *_a, **_k: True
     )
     monkeypatch.setattr(
         app_module,
