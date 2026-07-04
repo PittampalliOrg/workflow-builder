@@ -51,9 +51,27 @@ function closeReason(reason) {
 
 const wss = new WebSocketServer({ noServer: true });
 
-const server = http.createServer(handler);
+// Shutdown states: draining = /healthz reports 503 (readiness pulls the pod
+// out of Service endpoints) but requests/upgrades still serve; closing = the
+// listener is closed and new upgrades are refused.
+let draining = false;
+let closing = false;
+
+const server = http.createServer((req, res) => {
+	if (req.url === '/healthz' || req.url?.startsWith('/healthz?')) {
+		const code = draining ? 503 : 200;
+		res.writeHead(code, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
+		res.end(draining ? 'draining' : 'ok');
+		return;
+	}
+	handler(req, res);
+});
 
 server.on('upgrade', (req, socket, head) => {
+	if (closing) {
+		socket.destroy();
+		return;
+	}
 	const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
 	const shellMatch = url.pathname.match(SHELL_PATH_RE);
 	if (shellMatch) {
@@ -355,12 +373,63 @@ server.listen(PORT, HOST, () => {
 	console.log(`Listening on http://${HOST}:${PORT}`);
 });
 
-function gracefulShutdown() {
+// Drain instead of the old exit(1)-after-10s: that hard exit killed live
+// terminal WebSockets and SSE streams on every rollout despite the pod's
+// 90s terminationGracePeriodSeconds. Timeline (must fit inside that grace):
+//   t=0            healthz -> 503; keep serving so the Service stops routing
+//                  here BEFORE we refuse connections (no ECONNREFUSED blips;
+//                  replaces a preStop sleep)
+//   t=LAME_DUCK    close the listener + refuse new upgrades, ask WS clients
+//                  to leave (1001 -> clients reconnect to a healthy pod; the
+//                  PTYs live on in their pods), drop idle keep-alives
+//   +FORCE_CLOSE   sever remaining sockets (open SSE streams would otherwise
+//                  hold server.close() forever; EventSource auto-reconnects)
+//                  -> server.close() completes -> exit 0
+//   +5s            last-resort exit 1
+const SHUTDOWN_LAME_DUCK_MS = parseInt(process.env.SHUTDOWN_LAME_DUCK_MS || '15000', 10);
+const SHUTDOWN_FORCE_CLOSE_MS = parseInt(process.env.SHUTDOWN_FORCE_CLOSE_MS || '65000', 10);
+
+function beginClosePhase() {
+	if (closing) return;
+	closing = true;
+	console.log(`[shutdown] closing: refusing new connections, force-close in ${SHUTDOWN_FORCE_CLOSE_MS}ms`);
+
 	server.close(() => {
+		console.log('[shutdown] drained cleanly');
 		process.exit(0);
 	});
 	server.closeIdleConnections();
-	setTimeout(() => process.exit(1), 10000);
+
+	for (const ws of wss.clients) {
+		try {
+			ws.close(1001, 'server shutting down');
+		} catch {
+			/* noop */
+		}
+	}
+
+	setTimeout(() => {
+		console.log('[shutdown] force-closing remaining connections');
+		try {
+			server.closeAllConnections();
+		} catch {
+			/* noop */
+		}
+	}, SHUTDOWN_FORCE_CLOSE_MS).unref();
+
+	// Ref'd on purpose: guarantees the process ends inside the pod's 90s
+	// grace even if a handle is stuck; the clean-drain exit(0) preempts it.
+	setTimeout(() => process.exit(1), SHUTDOWN_FORCE_CLOSE_MS + 5000);
+}
+
+function gracefulShutdown() {
+	if (draining) {
+		// Second signal (e.g. Ctrl-C again in local dev): stop waiting.
+		process.exit(130);
+	}
+	draining = true;
+	console.log(`[shutdown] draining: healthz=503, close phase in ${SHUTDOWN_LAME_DUCK_MS}ms`);
+	setTimeout(beginClosePhase, SHUTDOWN_LAME_DUCK_MS);
 }
 
 process.on('SIGINT', gracefulShutdown);
