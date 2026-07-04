@@ -3152,6 +3152,13 @@ def build_dev_preview_sandbox_manifest(
                 )
             ),
             "dapr.io/enable-workflow": "true",
+            # Native sidecar (daprd init container, restartPolicy: Always) — parity with
+            # build_agent_workflow_host_sandbox_manifest. Native injection works in the
+            # vcluster (confirmed: the adopt pod comes up with daprd in initContainers +
+            # dapr.io/sidecar-injected=true); the fail-open injector cold-start race is
+            # handled by the injector-Availability gate + the deferred daprd-present
+            # assert, NOT by dropping native-sidecar.
+            "dapr.io/enable-native-sidecar": "true",
             "dapr.io/internal-grpc-port": os.environ.get(
                 "DAPR_AGENT_HOST_INTERNAL_GRPC_PORT", "3502"
             ),
@@ -3169,16 +3176,6 @@ def build_dev_preview_sandbox_manifest(
             "dapr.io/sidecar-readiness-probe-period-seconds": "1",
             "dapr.io/sidecar-readiness-probe-timeout-seconds": "1",
         }
-        # Native sidecar = a daprd INIT container with restartPolicy: Always. The
-        # in-vcluster Dapr injector does NOT add it to the dev-preview Sandbox pod
-        # (restartPolicy: Never) — the pod comes up with NO daprd, breaking
-        # BFF→orchestrator invocation. The prod BFF/orchestrator Deployments a
-        # preview-native adopt pod REPLACES use a CLASSIC daprd sidecar (regular
-        # container) and inject fine in-vcluster, so mirror them: omit native-sidecar
-        # under previewNative. The host Dapr-shadow path keeps native-sidecar (validated
-        # on the host cluster, where agent-host pods use it).
-        if not request.previewNative:
-            dapr_annotations["dapr.io/enable-native-sidecar"] = "true"
         pod_template_metadata["annotations"] = dapr_annotations
     sandbox_spec: dict[str, Any] = {
         "replicas": 1,
