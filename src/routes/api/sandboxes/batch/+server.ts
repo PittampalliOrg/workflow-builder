@@ -1,7 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { openshellRuntimeFetch } from '$lib/server/openshell-runtime';
-import { activeSessionForSandboxName } from '$lib/server/sandboxes/active-session-guard';
+import { getApplicationAdapters } from '$lib/server/application';
 
 /**
  * Batch sandbox operations.
@@ -27,7 +27,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		// Skip any name backing a LIVE session (out-of-band reap = DB↔Dapr divergence,
 		// the hazard the lifecycle SSOT prevents) — stop the run first. Report them as
 		// skipped rather than failing the whole batch.
-		const guards = await Promise.all(names.map((name) => activeSessionForSandboxName(name)));
+		const guards = await Promise.all(
+			names.map((name) =>
+				getApplicationAdapters().sandboxActiveGuard.activeSessionForSandboxName(name)
+			)
+		);
 		const skipped = new Set<string>();
 		names.forEach((name, i) => {
 			// Reaping a sandbox that backs a live session is always wrong (in-scope or

@@ -1,13 +1,10 @@
 import { and, eq, ne, or } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import { sessions } from "$lib/server/db/schema";
-
-export type SandboxActiveGuard = {
-	/** A still-active (non-terminal) session is backed by this sandbox name. */
-	active: boolean;
-	/** Scope of the backing session (for CMA enforcement), null if none. */
-	scope: { projectId: string | null; userId: string } | null;
-};
+import type {
+	SandboxActiveGuard,
+	SandboxActiveSessionGuardPort,
+} from "$lib/server/application/sandbox-active-guard";
 
 /**
  * Is the named sandbox the runtime/workspace sandbox of a still-active (non-terminal)
@@ -39,4 +36,10 @@ export async function activeSessionForSandboxName(
 		.limit(1);
 	if (!row) return { active: false, scope: null };
 	return { active: true, scope: { projectId: row.projectId ?? null, userId: row.userId } };
+}
+
+export class PostgresSandboxActiveSessionGuard
+	implements SandboxActiveSessionGuardPort
+{
+	activeSessionForSandboxName = activeSessionForSandboxName;
 }

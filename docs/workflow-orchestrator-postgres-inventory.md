@@ -1232,8 +1232,9 @@ Sandbox list owner-session enrichment now resolves through workflow-data
 session-owner ports instead of importing DB/Drizzle from
 `src/lib/server/sandbox-sessions.ts`.
 The dashboard and project workflow-run list routes are also clean.
-The sandbox-delete route's session read is also clean, while its lifecycle and
-Kubernetes/OpenShell deletion behavior intentionally remain in the route.
+The sandbox delete and batch-delete routes' active-session guard reads are also
+clean; they now call `ApplicationSandboxActiveGuardService`, while
+Kubernetes/OpenShell deletion behavior intentionally remains in the route.
 Capability bundle CRUD is now clean: `src/routes/api/capability-bundles/**`
 delegates list/create/read/update/archive behavior to
 `ApplicationCapabilityBundleService`, with Drizzle access confined to

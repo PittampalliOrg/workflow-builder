@@ -10,7 +10,7 @@ import {
 	getKubernetesSandbox,
 	type AgentSandboxResource
 } from '$lib/server/kube/client';
-import { activeSessionForSandboxName } from '$lib/server/sandboxes/active-session-guard';
+import { getApplicationAdapters } from '$lib/server/application';
 import { isResourceInScope } from '$lib/server/workflows/project-scope';
 import type { Sandbox, SandboxPhase } from '$lib/types/sandbox';
 
@@ -76,7 +76,9 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 	// lifecycle SSOT prevents). Stop the run first (POST /api/v1/sessions/[id]/stop
 	// {mode:'purge'}), which reaps the CR as its final step. Mirrors the per-session
 	// route /api/v1/sessions/[id]/sandbox.
-	const guard = await activeSessionForSandboxName(params.name);
+	const guard = await getApplicationAdapters().sandboxActiveGuard.activeSessionForSandboxName(
+		params.name
+	);
 	if (guard.active) {
 		if (guard.scope && !isResourceInScope(guard.scope, locals.session)) {
 			return error(404, 'Sandbox not found');

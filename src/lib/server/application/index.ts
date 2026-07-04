@@ -87,6 +87,7 @@ import { PostgresCapabilityBundleRepository } from "$lib/server/application/adap
 import { LegacyAgentSkillRepository } from "$lib/server/application/adapters/agent-skills";
 import { PostgresResourceMetricsRepository } from "$lib/server/application/adapters/aggregate-metrics";
 import { PostgresSessionResourceUsageRepository } from "$lib/server/application/adapters/session-resource-usage";
+import { PostgresSandboxActiveSessionGuard } from "$lib/server/application/adapters/sandbox-active-guard";
 import { LegacyAgentImportExportReferenceRepository } from "$lib/server/application/adapters/agent-import-export";
 import {
 	DaprCredentialStore,
@@ -243,6 +244,7 @@ import { ApplicationObservabilityTraceAccessService } from "$lib/server/applicat
 import { ApplicationCapabilityBundleService } from "$lib/server/application/capability-bundles";
 import { ApplicationAgentSkillService } from "$lib/server/application/agent-skills";
 import { ApplicationResourceMetricsService } from "$lib/server/application/resource-metrics";
+import { ApplicationSandboxActiveGuardService } from "$lib/server/application/sandbox-active-guard";
 import { ApplicationCliPreviewService } from "$lib/server/application/cli-preview";
 import { ApplicationSandboxPreviewService } from "$lib/server/application/sandbox-preview";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
@@ -414,6 +416,7 @@ export function getApplicationAdapters(
 	let capabilityBundles: ApplicationCapabilityBundleService | undefined;
 	let agentSkills: ApplicationAgentSkillService | undefined;
 	let resourceMetrics: ApplicationResourceMetricsService | undefined;
+	let sandboxActiveGuard: ApplicationSandboxActiveGuardService | undefined;
 	let workflowMonitorReads: PostgresWorkflowMonitorReadRepository | undefined;
 	let resourceUsages: PostgresResourceUsageReadRepository | undefined;
 	let aiAssistantMessages:
@@ -697,6 +700,10 @@ export function getApplicationAdapters(
 				new PostgresSessionResourceUsageRepository()
 					.sampleAndPersistSessionResourceUsage,
 		}));
+	const getSandboxActiveGuard = () =>
+		(sandboxActiveGuard ??= new ApplicationSandboxActiveGuardService(
+			new PostgresSandboxActiveSessionGuard(),
+		));
 	const getWorkflowMonitorReads = () =>
 		(workflowMonitorReads ??= new PostgresWorkflowMonitorReadRepository(
 			getDatabase(),
@@ -1431,6 +1438,9 @@ export function getApplicationAdapters(
 		},
 		get resourceMetrics() {
 			return getResourceMetrics();
+		},
+		get sandboxActiveGuard() {
+			return getSandboxActiveGuard();
 		},
 		get codeFunctionManagement() {
 			return getCodeFunctionManagement();
