@@ -213,6 +213,10 @@ Evaluation dataset import now routes through
 application import-parser port and row persistence behind the dataset repository
 port. The dataset/template route subtree no longer imports the legacy
 DB-owning evaluation service.
+Evaluation definition list/get/create/update routes now route through
+`ApplicationEvaluationDefinitionService` and `LegacyEvaluationDefinitionRepository`.
+The public evaluation definition, dataset, and template route subtrees no longer
+import the legacy DB-owning evaluation service.
 The internal benchmark run-instance progress API now reads instance status and
 latest session activity through a workflow-data read model; the route no longer
 imports `benchmark_run_instances`, `session_events`, or Drizzle.

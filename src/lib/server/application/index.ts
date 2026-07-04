@@ -133,6 +133,7 @@ import {
 import {
 	LegacyEvaluationDatasetImportParser,
 	LegacyEvaluationDatasetRepository,
+	LegacyEvaluationDefinitionRepository,
 	LegacyEvaluationTemplateRepository,
 	StaticSwebenchSuiteCatalog,
 } from "$lib/server/application/adapters/evaluations";
@@ -313,6 +314,7 @@ import {
 	ApplicationBenchmarkRunLaunchService,
 	ApplicationEvaluationRunLaunchService,
 } from "$lib/server/application/run-launch";
+import { ApplicationEvaluationDefinitionService } from "$lib/server/application/evaluation-definitions";
 import { ApplicationEvaluationDatasetService } from "$lib/server/application/evaluation-datasets";
 import { ApplicationEvaluationTemplateService } from "$lib/server/application/evaluation-templates";
 import { ApplicationEnvironmentService } from "$lib/server/application/environment-management";
@@ -500,6 +502,9 @@ export function getApplicationAdapters(
 	let runCancellation: ApplicationRunCancellationService | undefined;
 	let benchmarkRunLaunch: ApplicationBenchmarkRunLaunchService | undefined;
 	let evaluationRunLaunch: ApplicationEvaluationRunLaunchService | undefined;
+	let evaluationDefinitions:
+		| ApplicationEvaluationDefinitionService
+		| undefined;
 	let evaluationDatasets: ApplicationEvaluationDatasetService | undefined;
 	let evaluationTemplates: ApplicationEvaluationTemplateService | undefined;
 	let environments: ApplicationEnvironmentService | undefined;
@@ -884,6 +889,10 @@ export function getApplicationAdapters(
 	const getEvaluationRunLaunch = () =>
 		(evaluationRunLaunch ??= new ApplicationEvaluationRunLaunchService(
 			new LegacyEvaluationRunLaunchAdapter(),
+		));
+	const getEvaluationDefinitions = () =>
+		(evaluationDefinitions ??= new ApplicationEvaluationDefinitionService(
+			new LegacyEvaluationDefinitionRepository(),
 		));
 	const getEvaluationDatasets = () =>
 		(evaluationDatasets ??= new ApplicationEvaluationDatasetService(
@@ -1437,6 +1446,9 @@ export function getApplicationAdapters(
 		},
 		get evaluationRunLaunch() {
 			return getEvaluationRunLaunch();
+		},
+		get evaluationDefinitions() {
+			return getEvaluationDefinitions();
 		},
 		get evaluationDatasets() {
 			return getEvaluationDatasets();

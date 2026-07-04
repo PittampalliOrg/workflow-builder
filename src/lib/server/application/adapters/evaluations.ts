@@ -2,11 +2,15 @@ import {
 	createCodeEvalTemplate,
 	createEvaluationDataset,
 	createEvaluationDatasetRows,
+	createEvaluationDefinition,
 	createSwebenchEvaluationTemplate,
 	deleteEvaluationDatasetRow,
 	getEvaluationDataset,
+	getEvaluationDefinition,
+	listEvaluations,
 	listEvaluationDatasets,
 	parseDatasetImport,
+	updateEvaluationDefinition,
 	updateEvaluationDataset,
 	updateEvaluationDatasetRow,
 } from "$lib/server/evaluations/service";
@@ -15,6 +19,10 @@ import type {
 	EvaluationDatasetCreateInput,
 	EvaluationDatasetRepository,
 } from "$lib/server/application/evaluation-datasets";
+import type {
+	EvaluationDefinitionCreateInput,
+	EvaluationDefinitionRepository,
+} from "$lib/server/application/evaluation-definitions";
 import type {
 	CodeEvaluationSuiteSlug,
 	EvaluationDatasetImportFormat,
@@ -69,6 +77,30 @@ export class LegacyEvaluationDatasetRepository
 		rowId: string;
 	}): Promise<unknown> {
 		return deleteEvaluationDatasetRow(input);
+	}
+}
+
+export class LegacyEvaluationDefinitionRepository
+	implements EvaluationDefinitionRepository
+{
+	list(projectId: string): Promise<unknown[]> {
+		return listEvaluations(projectId);
+	}
+
+	get(projectId: string, evaluationId: string): Promise<unknown | null> {
+		return getEvaluationDefinition(projectId, evaluationId);
+	}
+
+	create(input: EvaluationDefinitionCreateInput): Promise<unknown> {
+		return createEvaluationDefinition(input);
+	}
+
+	update(input: {
+		projectId: string;
+		evaluationId: string;
+		patch: Record<string, unknown>;
+	}): Promise<unknown> {
+		return updateEvaluationDefinition(input);
 	}
 }
 
