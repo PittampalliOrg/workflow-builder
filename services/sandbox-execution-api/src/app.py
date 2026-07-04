@@ -3595,6 +3595,76 @@ def teardown_dev_preview(request: Request, name: str) -> dict[str, Any]:
     return {"sandboxName": safe_name, "deleted": True}
 
 
+@app.get("/internal/dev-previews")
+def list_dev_previews(request: Request, executionId: str) -> dict[str, Any]:
+    """Per-service dev-preview status for one workflow execution (Dev-hub polling).
+
+    Mirrors the /internal/vcluster-previews list pattern. With N dev pods per
+    execution (multi-service adopt) this returns one entry per `dev-preview-service`
+    — the Sandbox name, the adopted Deployment (if any), readiness and pod IP — joined
+    from the Sandbox CRs and their pods (both labeled workflow-execution-id +
+    dev-preview-service, which survive the preview-native adopt-selector merge)."""
+    _require_internal(request)
+    namespace = _agent_workflow_host_namespace()
+    exec_label = _safe_name(executionId, max_length=63)
+    services: list[dict[str, Any]] = []
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        custom = _load_k8s_custom_objects_client()
+        _, core = _load_k8s_clients()
+        selector = f"workflow-execution-id={exec_label}"
+        # First pod per service (readiness/IP). The `app` label is overwritten by the
+        # adopted Service selector, so key on the two labels that survive.
+        pod_by_service: dict[str, Any] = {}
+        try:
+            pods = core.list_namespaced_pod(
+                namespace=namespace, label_selector=selector
+            ).items
+        except Exception as exc:
+            logger.warning("dev-previews: pod list failed: %s", exc)
+            pods = []
+        for pod in pods:
+            labels = (pod.metadata.labels or {}) if pod.metadata else {}
+            svc = labels.get("dev-preview-service")
+            if svc and svc not in pod_by_service:
+                pod_by_service[svc] = pod
+        try:
+            crs = custom.list_namespaced_custom_object(
+                group="agents.x-k8s.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="sandboxes",
+                label_selector=selector,
+            ).get("items", [])
+        except Exception as exc:
+            logger.warning("dev-previews: sandbox list failed: %s", exc)
+            crs = []
+        for cr in crs:
+            meta = cr.get("metadata", {}) or {}
+            labels = meta.get("labels", {}) or {}
+            svc = labels.get("dev-preview-service") or "workflow-builder"
+            pod = pod_by_service.get(svc)
+            services.append(
+                {
+                    "service": svc,
+                    "sandboxName": meta.get("name"),
+                    "adoptDeployment": (meta.get("annotations", {}) or {}).get(
+                        "wfb-dev-preview/adopt-deployment"
+                    ),
+                    "ready": _pod_is_ready(pod) if pod is not None else False,
+                    "podIP": (
+                        getattr(getattr(pod, "status", None), "pod_ip", None)
+                        if pod is not None
+                        else None
+                    ),
+                }
+            )
+    return {"executionId": executionId, "services": services}
+
+
 class PurgeWorkspaceDataRequest(BaseModel):
     """Purge the DATA of one retained JuiceFS shared workspace (subPath)."""
 

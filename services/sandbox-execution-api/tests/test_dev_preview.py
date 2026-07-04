@@ -229,3 +229,81 @@ def test_provision_forces_shadow_off_and_scopes_cr_when_preview_native(
     assert "DAPR_CONFIG_STORE" not in env
     assert body["metadata"]["labels"]["dev-preview-service"] == "workflow-orchestrator"
     assert "workflow-orchestrator" in body["metadata"]["name"]
+
+
+def test_list_dev_previews_groups_by_service(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "token")
+    bff_pod = SimpleNamespace(
+        metadata=SimpleNamespace(
+            labels={
+                "dev-preview-service": "workflow-builder",
+                "workflow-execution-id": "exec-1",
+            }
+        ),
+        status=SimpleNamespace(
+            pod_ip="10.0.0.1",
+            conditions=[SimpleNamespace(type="Ready", status="True")],
+        ),
+    )
+    orch_pod = SimpleNamespace(
+        metadata=SimpleNamespace(
+            labels={
+                "dev-preview-service": "workflow-orchestrator",
+                "workflow-execution-id": "exec-1",
+            }
+        ),
+        status=SimpleNamespace(
+            pod_ip="10.0.0.2",
+            conditions=[SimpleNamespace(type="Ready", status="False")],
+        ),
+    )
+    fake_core = SimpleNamespace(
+        list_namespaced_pod=lambda *, namespace, label_selector: SimpleNamespace(
+            items=[bff_pod, orch_pod]
+        )
+    )
+
+    class FakeCustom:
+        def list_namespaced_custom_object(
+            self, *, group, version, namespace, plural, label_selector
+        ):
+            return {
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "wfb-dev-preview-workflow-builder-exec-1",
+                            "labels": {"dev-preview-service": "workflow-builder"},
+                            "annotations": {
+                                "wfb-dev-preview/adopt-deployment": "workflow-builder"
+                            },
+                        }
+                    },
+                    {
+                        "metadata": {
+                            "name": "wfb-dev-preview-workflow-orchestrator-exec-1",
+                            "labels": {"dev-preview-service": "workflow-orchestrator"},
+                        }
+                    },
+                ]
+            }
+
+    monkeypatch.setattr(
+        app_module, "_load_k8s_custom_objects_client", lambda: FakeCustom()
+    )
+    monkeypatch.setattr(
+        app_module, "_load_k8s_clients", lambda: (SimpleNamespace(), fake_core)
+    )
+
+    resp = app_module.list_dev_previews(
+        SimpleNamespace(headers={"authorization": "Bearer token"}),
+        executionId="exec-1",
+    )
+    assert resp["executionId"] == "exec-1"
+    by_svc = {s["service"]: s for s in resp["services"]}
+    assert set(by_svc) == {"workflow-builder", "workflow-orchestrator"}
+    assert by_svc["workflow-builder"]["ready"] is True
+    assert by_svc["workflow-builder"]["podIP"] == "10.0.0.1"
+    assert by_svc["workflow-builder"]["adoptDeployment"] == "workflow-builder"
+    assert by_svc["workflow-orchestrator"]["ready"] is False
+    assert by_svc["workflow-orchestrator"]["podIP"] == "10.0.0.2"
+    assert by_svc["workflow-orchestrator"]["adoptDeployment"] is None
