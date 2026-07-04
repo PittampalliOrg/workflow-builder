@@ -651,6 +651,11 @@ services:
   sessions, recent agent/environment version changes, and resource counts
   through workflow-data. Session, agent, environment, and vault SQL is confined
   to the Postgres dashboard read adapter.
+- Observability investigation builders now load workflow execution identity and
+  workflow-step/log read models through `ObservabilityInvestigationWorkflowReader`.
+  Drizzle access for those read models is confined to
+  `PostgresObservabilityInvestigationWorkflowReader`; the route-facing
+  investigation builder no longer imports direct DB modules.
 - `src/routes/workspaces/[slug]/dev/+page.server.ts`,
   `src/routes/workspaces/[slug]/dev/[executionId]/+page.server.ts`, and the
   public `src/routes/api/dev-environments/**` GET routes now load dev-preview
