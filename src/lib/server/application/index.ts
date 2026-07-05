@@ -363,6 +363,7 @@ import {
 	VclusterPrPreviewClusterGateway,
 	WorkflowDispatchPrPreviewVerifyRunner,
 } from "$lib/server/application/adapters/pr-previews";
+import { DrizzlePrPreviewRecordStore } from "$lib/server/application/adapters/pr-preview-records";
 import { ApplicationPreviewReadProxyService } from "$lib/server/application/preview-read-proxy";
 import { ApplicationPreviewArchiveService } from "$lib/server/application/preview-archive";
 import { HttpPreviewReadProxy } from "$lib/server/application/adapters/preview-read-proxy";
@@ -1276,6 +1277,7 @@ export function getApplicationAdapters(
 		}));
 	const getPrPreviews = () =>
 		(prPreviews ??= new ApplicationPrPreviewService({
+			store: new DrizzlePrPreviewRecordStore(),
 			clusters: new VclusterPrPreviewClusterGateway(),
 			devPods: new PreviewBffDevPodGateway(),
 			seeder: new HelperPodPrHeadSeeder(),

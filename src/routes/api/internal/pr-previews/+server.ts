@@ -41,7 +41,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	if (!headSha) {
 		return json({ error: "headSha is required for action 'up'" }, { status: 400 });
 	}
-	const status = service.up({
+	const status = await service.up({
 		prNumber,
 		headSha,
 		headRef: typeof body.headRef === "string" ? body.headRef : null,

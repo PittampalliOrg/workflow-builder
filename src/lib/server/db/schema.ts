@@ -3060,6 +3060,36 @@ export const cliCredentialLocks = pgTable(
 	}),
 );
 
+/**
+ * D1 per-PR preview pipeline records (label-gated PR previews). Durable so the
+ * status polled by the hub Tekton dispatch Task reads the SAME record from ANY
+ * BFF replica (the run itself executes on the replica that took the up), and so
+ * a Deployment rollout mid-run leaves a resumable record instead of a silent
+ * forever-pending commit status. Rows are per-PR (pk pr_number) and deleted on
+ * teardown; a stale non-terminal row is atomically claimed for resume by
+ * whichever replica's status() sees it first.
+ */
+export const prPreviews = pgTable("pr_previews", {
+	prNumber: integer("pr_number").primaryKey(),
+	alias: text("alias").notNull(),
+	url: text("url"),
+	state: text("state").notNull(),
+	headSha: text("head_sha"),
+	services: jsonb("services").$type<string[]>().notNull().default([]),
+	error: text("error"),
+	verify: jsonb("verify").$type<{
+		state: "started" | "skipped" | "completed" | "failed";
+		executionId: string | null;
+		reason: string | null;
+		verdict: string | null;
+	} | null>(),
+	/** Ownership fencing token: bumped by every up/resume takeover; all pipeline
+	 * writes CAS on it so a deposed pipeline aborts instead of clobbering. */
+	ownerGen: integer("owner_gen").notNull().default(0),
+	createdAt: timestamp("created_at").notNull().defaultNow(),
+	updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 // ============================================================================
 // Sessions (one agent run, multi-turn, streamed events)
 // ============================================================================

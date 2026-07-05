@@ -2,10 +2,11 @@ import type {
 	PrPreviewClusterPort,
 	PrPreviewDevPodPort,
 	PrPreviewPullRequestPort,
+	PrPreviewRecord,
+	PrPreviewRecordStore,
 	PrPreviewRegistryEntry,
 	PrPreviewSeedPort,
 	PrPreviewSeedTarget,
-	PrPreviewState,
 	PrPreviewStatus,
 	PrPreviewVerifyPort,
 } from "$lib/server/application/ports";
@@ -14,6 +15,12 @@ const DEFAULT_POLL_INTERVAL_MS = 10_000;
 const DEFAULT_READY_TIMEOUT_MS = 900_000;
 const DEFAULT_TTL_HOURS = 24;
 const DEFAULT_VERIFY_TIMEOUT_MS = 15 * 60_000;
+/** Heartbeat cadence for the durable record while a pipeline is in flight. */
+const DEFAULT_HEARTBEAT_MS = 30_000;
+/** A non-terminal record whose updatedAt is older than this is considered
+ * orphaned (its owner replica died mid-run) and eligible for resume. Must be
+ * comfortably larger than the heartbeat. */
+const DEFAULT_RESUME_STALE_MS = 120_000;
 /** BFF-owned sticky marker for the D2 verify verdict comment. The main
  * `<!-- pr-preview -->` status comment is owned by the hub Tekton dispatch Task. */
 export const PR_PREVIEW_VERIFY_MARKER = "<!-- pr-preview-verify -->";
@@ -24,6 +31,10 @@ export type PrPreviewUpInput = {
 	headRef?: string | null;
 	/** Repo-relative changed paths; when omitted the PR gateway is queried. */
 	changedFiles?: string[] | null;
+	/** Resume path: reuse the services the interrupted run already computed
+	 * instead of re-querying the PR gateway (whose silent failure would re-map
+	 * everything onto the BFF only). */
+	presetServices?: string[] | null;
 	/** D2: request the Playwright-critic verify pass (still gated on the flag). */
 	verify?: boolean;
 };
@@ -34,6 +45,10 @@ export type PrPreviewDeps = {
 	seeder: PrPreviewSeedPort;
 	pullRequests: PrPreviewPullRequestPort;
 	verify: PrPreviewVerifyPort;
+	/** Durable pipeline records (table `pr_previews`) — the cross-replica,
+	 * rollout-surviving source of truth for `status()`, with generation-fenced
+	 * writes so at most one pipeline ever owns a row. */
+	store: PrPreviewRecordStore;
 	/** Changed-path → service mapping table (from the dev-preview registry). */
 	registry: PrPreviewRegistryEntry[];
 	/** Deterministic per-preview sync token (stable across re-seeds — adopted
@@ -45,22 +60,33 @@ export type PrPreviewDeps = {
 	pollIntervalMs?: number;
 	readyTimeoutMs?: number;
 	verifyTimeoutMs?: number;
-};
-
-type PrPreviewRecord = {
-	prNumber: number;
-	alias: string;
-	url: string | null;
-	state: PrPreviewState;
-	headSha: string | null;
-	services: string[];
-	error: string | null;
-	verify: PrPreviewStatus["verify"];
-	updatedAt: string;
+	heartbeatMs?: number;
+	resumeStaleMs?: number;
 };
 
 export function prPreviewAlias(prNumber: number): string {
 	return `pr-${prNumber}`;
+}
+
+function log(prNumber: number, stage: string, detail?: string) {
+	console.info(`[pr-preview] pr=${prNumber} ${stage}${detail ? ` ${detail}` : ""}`);
+}
+
+function logError(prNumber: number, stage: string, err: unknown) {
+	console.error(
+		`[pr-preview] pr=${prNumber} ${stage} FAILED: ${
+			err instanceof Error ? err.message : String(err)
+		}`,
+	);
+}
+
+/** Thrown by fenced writes when the pipeline's generation lost the row (a newer
+ * up/resume took over, or down() deleted it): abort, write nothing further. */
+class PrPreviewDeposedError extends Error {
+	constructor(prNumber: number) {
+		super(`pr-preview pr=${prNumber} pipeline deposed (newer owner or torn down)`);
+		this.name = "PrPreviewDeposedError";
+	}
 }
 
 /**
@@ -95,25 +121,40 @@ export function mapChangedFilesToServices(
  * re-seed), capacity-aware claim-first launch, `down` teardown by alias, and the
  * flagged D2 verify dispatch. `up`/`down` return immediately; the heavy pipeline
  * runs detached and is observed via `status()` (polled by the hub Tekton Task).
+ *
+ * State lives in the generation-fenced durable record store, NOT in this
+ * instance: the dispatch Task's polls are conntrack-pinned to one BFF replica
+ * while the pipeline runs on whichever replica took the up, and a Deployment
+ * rollout can kill the pipeline mid-run. Ownership rules:
+ *
+ * - Every `up` bumps the row's generation — LATEST PUSH WINS. Any pipeline
+ *   still running for an older generation (same or other replica) aborts at
+ *   its next fenced write instead of clobbering the winner's state.
+ * - The owner heartbeats its record; `status()` on any replica atomically
+ *   claims a stale non-terminal record (`claimStale` bumps the generation, so
+ *   even a merely-stalled previous owner is fenced out) and resumes the
+ *   idempotent pipeline with the services the interrupted run computed.
+ * - `down()` deletes the row; every fenced write from any surviving pipeline
+ *   then fails → abort. A zombie preview from the narrow claim window is
+ *   reaped by the SEA TTL/GC backstop (PR previews carry ttlHours).
  */
 export class ApplicationPrPreviewService {
-	private readonly records = new Map<number, PrPreviewRecord>();
+	/** Local task handles for settled() (tests); ownership lives in the store. */
 	private readonly inFlight = new Map<number, Promise<void>>();
 
 	constructor(private readonly deps: PrPreviewDeps) {}
 
 	/** Start (or refresh) the preview for a PR. Returns the current snapshot;
-	 * the provision/seed pipeline continues in the background. */
-	up(input: PrPreviewUpInput): PrPreviewStatus {
+	 * the provision/seed pipeline continues in the background. A concurrent
+	 * older run (rapid synchronize pushes, either replica) is deposed by the
+	 * generation bump and aborts at its next write. */
+	async up(input: PrPreviewUpInput): Promise<PrPreviewStatus> {
 		const prNumber = input.prNumber;
 		const alias = prPreviewAlias(prNumber);
-		const existing = this.records.get(prNumber);
-		if (this.inFlight.has(prNumber)) {
-			// An up is already running for this PR (e.g. rapid synchronize pushes):
-			// report it instead of racing a second pipeline.
-			return this.snapshot(prNumber);
-		}
-		const record: PrPreviewRecord = {
+		const existing = await this.deps.store.get(prNumber);
+		// Persist (and take ownership) BEFORE dispatching so every replica sees
+		// `provisioning` immediately (the pending commit status reads through here).
+		const record = await this.deps.store.upsert({
 			prNumber,
 			alias,
 			url: existing?.url ?? null,
@@ -122,50 +163,46 @@ export class ApplicationPrPreviewService {
 			services: existing?.services ?? [],
 			error: null,
 			verify: null,
-			updatedAt: new Date().toISOString(),
-		};
-		this.records.set(prNumber, record);
-		const task = this.runUp(input, record)
-			.catch((err) => {
-				this.patch(record, {
-					state: "error",
-					error: err instanceof Error ? err.message : String(err),
-				});
-			})
-			.finally(() => {
-				this.inFlight.delete(prNumber);
-			});
-		this.inFlight.set(prNumber, task);
+		});
+		log(prNumber, "up:accepted", `head=${input.headSha.slice(0, 10)} gen=${record.gen}`);
+		this.dispatch(input, record);
 		return this.snapshot(prNumber);
 	}
 
-	/** Tear down the PR's preview (idempotent — absent is fine). Does NOT wait
-	 * for an in-flight up (the dispatcher's HTTP budget is short); a racing up
-	 * errors out against the vanished preview and the SEA TTL/GC backstops. */
+	/** Tear down the PR's preview (idempotent — absent is fine). Deleting the
+	 * record fences out any in-flight pipeline (its next write fails → abort);
+	 * the dispatcher's HTTP budget is short so we never wait for one. */
 	async down(input: { prNumber: number }): Promise<{ state: "down" | "absent" }> {
 		const alias = prPreviewAlias(input.prNumber);
-		this.records.delete(input.prNumber);
+		await this.deps.store.delete(input.prNumber);
 		const exists = await this.deps.clusters.get(alias).catch(() => null);
-		if (!exists) return { state: "absent" };
+		if (!exists) {
+			log(input.prNumber, "down", "(already absent)");
+			return { state: "absent" };
+		}
 		await this.deps.clusters.teardown(alias);
+		log(input.prNumber, "down", "teardown dispatched");
 		return { state: "down" };
 	}
 
-	/** Current state of the PR's preview: the in-memory pipeline record when this
-	 * BFF ran the up, else derived from the cluster (post-restart fallback). */
+	/** Current state of the PR's preview from the durable record (any replica),
+	 * else derived from the cluster. A stale non-terminal record — its owner
+	 * died or stalled mid-run — is atomically claimed and its pipeline resumed
+	 * here, so the dispatcher's next polls converge instead of pending forever. */
 	async status(prNumber: number): Promise<PrPreviewStatus> {
-		const record = this.records.get(prNumber);
-		if (record) return this.snapshot(prNumber);
+		const record = await this.deps.store.get(prNumber);
+		if (record) {
+			await this.maybeResume(record);
+			return this.snapshot(prNumber);
+		}
 		const alias = prPreviewAlias(prNumber);
 		const info = await this.deps.clusters.get(alias).catch(() => null);
 		return {
 			prNumber,
 			alias,
 			url: info?.url ?? null,
-			// ready MUST map to a terminal state: with 2 BFF replicas the record
-			// lives only on the replica that ran the up, and conntrack pins the
-			// dispatcher's polls to ONE backend — a non-owner replica reporting
-			// "unknown" for a ready cluster kept the commit status pending forever.
+			// ready MUST map to a terminal state for the dispatcher's poll; a
+			// record-less ready preview (e.g. records wiped out-of-band) is ready.
 			state: info ? (info.ready ? "ready" : "provisioning") : "absent",
 			headSha: null,
 			services: [],
@@ -180,8 +217,88 @@ export class ApplicationPrPreviewService {
 		await this.inFlight.get(prNumber)?.catch(() => {});
 	}
 
-	private snapshot(prNumber: number): PrPreviewStatus {
-		const r = this.records.get(prNumber);
+	/** Resume an orphaned pipeline: non-terminal record with no heartbeat for
+	 * `resumeStaleMs`. `claimStale` bumps the generation — exactly one replica
+	 * becomes the new owner AND a merely-stalled previous owner is fenced out.
+	 * The pipeline is idempotent (existing preview reused, recorded head
+	 * re-seeded into the services the interrupted run computed). */
+	private async maybeResume(record: PrPreviewRecord): Promise<void> {
+		if (record.state !== "provisioning" && record.state !== "seeding") return;
+		if (!record.headSha) return;
+		const staleMs = this.deps.resumeStaleMs ?? DEFAULT_RESUME_STALE_MS;
+		if (Date.now() - Date.parse(record.updatedAt) < staleMs) return;
+		const claimed = await this.deps.store
+			.claimStale(record.prNumber, staleMs)
+			.catch(() => null);
+		if (!claimed) return;
+		log(
+			record.prNumber,
+			"resume:claimed",
+			`state=${claimed.state} head=${claimed.headSha} gen=${claimed.gen}`,
+		);
+		this.dispatch(
+			{
+				prNumber: claimed.prNumber,
+				headSha: claimed.headSha ?? record.headSha,
+				presetServices: claimed.services.length ? claimed.services : null,
+				// The original verify request is not persisted; verify is flagged
+				// and best-effort, so a resumed run skips it.
+				verify: false,
+			},
+			claimed,
+		);
+	}
+
+	/** Kick the detached pipeline with a heartbeat keeping the record fresh
+	 * (fresh = not claimable by another replica's resume). The catch handler
+	 * never rejects — an unhandled rejection here would kill the BFF process. */
+	private dispatch(input: PrPreviewUpInput, record: PrPreviewRecord): void {
+		const prNumber = input.prNumber;
+		const heartbeat = setInterval(
+			() => {
+				void this.deps.store
+					.patch(prNumber, record.gen, {})
+					.then((owned) => {
+						if (!owned) {
+							log(prNumber, "heartbeat:deposed", `gen=${record.gen}`);
+							clearInterval(heartbeat);
+						}
+					})
+					.catch(() => {});
+			},
+			this.deps.heartbeatMs ?? DEFAULT_HEARTBEAT_MS,
+		);
+		// Never keep the process alive for a background heartbeat (Node-only API).
+		(heartbeat as unknown as { unref?: () => void }).unref?.();
+		const task = this.runUp(input, record)
+			.catch(async (err) => {
+				if (err instanceof PrPreviewDeposedError) {
+					// A newer up/resume owns the row (or down() removed it): their
+					// pipeline reports; this one just stops.
+					log(prNumber, "pipeline:deposed", `gen=${record.gen}`);
+					return;
+				}
+				logError(prNumber, `stage=${record.state}`, err);
+				try {
+					await this.deps.store.patch(prNumber, record.gen, {
+						state: "error",
+						error: err instanceof Error ? err.message : String(err),
+					});
+				} catch (patchErr) {
+					// Best effort — swallowing keeps the task promise resolved (an
+					// unhandled rejection would crash the replica).
+					logError(prNumber, "error-state write", patchErr);
+				}
+			})
+			.finally(() => {
+				clearInterval(heartbeat);
+				if (this.inFlight.get(prNumber) === task) this.inFlight.delete(prNumber);
+			});
+		this.inFlight.set(prNumber, task);
+	}
+
+	private async snapshot(prNumber: number): Promise<PrPreviewStatus> {
+		const r = await this.deps.store.get(prNumber);
 		if (!r) {
 			return {
 				prNumber,
@@ -195,52 +312,82 @@ export class ApplicationPrPreviewService {
 				updatedAt: null,
 			};
 		}
-		return { ...r, services: [...r.services] };
+		return {
+			prNumber: r.prNumber,
+			alias: r.alias,
+			url: r.url,
+			state: r.state,
+			headSha: r.headSha,
+			services: [...r.services],
+			error: r.error,
+			verify: r.verify,
+			updatedAt: r.updatedAt,
+		};
 	}
 
-	private patch(record: PrPreviewRecord, changes: Partial<PrPreviewRecord>) {
+	/** Fenced stage write: mutate the local record (in-run reads) AND persist.
+	 * Throws PrPreviewDeposedError when the row moved on without us. `{}` is
+	 * the pure ownership probe (used right before the seed POST). */
+	private async patch(record: PrPreviewRecord, changes: Partial<PrPreviewRecord>) {
 		Object.assign(record, changes, { updatedAt: new Date().toISOString() });
+		const { prNumber: _pr, gen: _gen, updatedAt: _ts, ...rest } = changes;
+		const owned = await this.deps.store.patch(record.prNumber, record.gen, rest);
+		if (!owned) throw new PrPreviewDeposedError(record.prNumber);
 	}
 
 	private async runUp(input: PrPreviewUpInput, record: PrPreviewRecord): Promise<void> {
 		const deps = this.deps;
 		const alias = record.alias;
+		const prNumber = input.prNumber;
 
-		// 1. Changed paths → services (registry repoSubdir longest-prefix).
-		const changed =
-			input.changedFiles ??
-			(await deps.pullRequests.listChangedFiles(input.prNumber).catch(() => null));
-		const services = mapChangedFilesToServices(changed, deps.registry);
-		this.patch(record, { services });
+		// 1. Changed paths → services (registry repoSubdir longest-prefix). A
+		// resume reuses the interrupted run's mapping (presetServices).
+		const services =
+			input.presetServices?.length
+				? input.presetServices
+				: mapChangedFilesToServices(
+						input.changedFiles ??
+							(await deps.pullRequests.listChangedFiles(prNumber).catch(() => null)),
+						deps.registry,
+					);
+		await this.patch(record, { services });
+		log(prNumber, "stage=services", services.join(","));
 
 		// 2. Ensure the Tier-2 preview exists (idempotent: an existing preview —
 		// ready or still booting — is reused; synchronize only re-seeds).
 		const launch = {
 			alias,
-			prNumber: input.prNumber,
+			prNumber,
 			ttlHours: deps.ttlHours ?? DEFAULT_TTL_HOURS,
 		};
 		let info = await deps.clusters.get(alias);
 		if (!info) {
 			const claimed = await deps.clusters.claim(launch);
-			if (!claimed) {
+			if (claimed) {
+				log(prNumber, "stage=claimed", `url=${claimed.url ?? "pending"}`);
+			} else {
 				const admitted = await this.admitColdProvision(launch);
 				if (!admitted) {
-					this.patch(record, {
+					log(prNumber, "stage=capacity_full");
+					await this.patch(record, {
 						state: "capacity_full",
 						error: "preview capacity is full (no free slot after PR-origin reap)",
 					});
 					return;
 				}
+				log(prNumber, "stage=cold-provisioned");
 			}
+		} else {
+			log(prNumber, "stage=reusing", `phase=${info.phase}`);
 		}
 
 		// 3. Wait for readiness (pool claims are near-instant; cold ≈ 5 min).
 		info = await this.waitReady(alias);
-		this.patch(record, { url: info.url });
+		await this.patch(record, { url: info.url });
+		log(prNumber, "stage=cluster-ready", `url=${info.url ?? "n/a"}`);
 
 		// 4. Adopt dev-mode pods for the mapped services inside the preview.
-		this.patch(record, { state: "seeding" });
+		await this.patch(record, { state: "seeding" });
 		const syncToken = deps.syncToken(alias);
 		const previewUrl = info.url ?? `https://wfb-${alias}.tail286401.ts.net`;
 		const pods = await deps.devPods.provision({
@@ -266,6 +413,11 @@ export class ApplicationPrPreviewService {
 				podErrors.push(`${pod.service}: ${pod.error ?? "no pod address"}`);
 			}
 		}
+		log(
+			prNumber,
+			"stage=dev-pods",
+			`ok=${targets.length}/${pods.length}${podErrors.length ? ` errors=[${podErrors.join("; ")}]` : ""}`,
+		);
 		if (targets.length === 0) {
 			throw new Error(
 				`no dev-mode pod came up for ${services.join(", ")}${
@@ -274,10 +426,12 @@ export class ApplicationPrPreviewService {
 			);
 		}
 
-		// 5. Seed the PR head into every adopted pod (/__sync). Partial pod
-		// failure is tolerated (B1 semantics) but surfaces in `error`.
+		// 5. Seed the PR head into every adopted pod (/__sync). The ownership
+		// probe just before the POST keeps a deposed pipeline from overwriting a
+		// newer run's freshly-seeded pods (the widest un-fenced gap otherwise).
+		await this.patch(record, {});
 		const seeded = await deps.seeder.seed({
-			prNumber: input.prNumber,
+			prNumber,
 			headSha: input.headSha,
 			targets,
 			syncToken,
@@ -285,13 +439,12 @@ export class ApplicationPrPreviewService {
 		if (!seeded.ok) {
 			throw new Error(seeded.detail ?? "PR-head seed failed");
 		}
-		this.patch(record, {
+		await this.patch(record, {
 			state: "ready",
 			headSha: input.headSha,
-			error: podErrors.length
-				? `partial: ${podErrors.join("; ")}`
-				: null,
+			error: podErrors.length ? `partial: ${podErrors.join("; ")}` : null,
 		});
+		log(prNumber, "stage=ready", `head=${input.headSha.slice(0, 10)}`);
 
 		// 6. D2: flagged Playwright-critic verify against the preview URL.
 		if (deps.verifyEnabled && input.verify !== false) {
@@ -353,7 +506,7 @@ export class ApplicationPrPreviewService {
 				headSha: input.headSha,
 			});
 			if (!started.started) {
-				this.patch(record, {
+				await this.patch(record, {
 					verify: {
 						state: "skipped",
 						executionId: null,
@@ -363,7 +516,7 @@ export class ApplicationPrPreviewService {
 				});
 				return;
 			}
-			this.patch(record, {
+			await this.patch(record, {
 				verify: {
 					state: "started",
 					executionId: started.executionId ?? null,
@@ -371,12 +524,13 @@ export class ApplicationPrPreviewService {
 					verdict: null,
 				},
 			});
+			log(input.prNumber, "stage=verify-started", started.executionId ?? "");
 			const result = await deps.verify.waitForVerdict({
 				executionId: started.executionId ?? "",
 				timeoutMs: deps.verifyTimeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS,
 			});
 			const ok = result.status === "completed";
-			this.patch(record, {
+			await this.patch(record, {
 				verify: {
 					state: ok ? "completed" : "failed",
 					executionId: started.executionId ?? null,
@@ -384,6 +538,7 @@ export class ApplicationPrPreviewService {
 					verdict: result.verdict,
 				},
 			});
+			log(input.prNumber, "stage=verify-done", result.status);
 			await deps.pullRequests.upsertStickyComment({
 				prNumber: input.prNumber,
 				marker: PR_PREVIEW_VERIFY_MARKER,
@@ -399,8 +554,10 @@ export class ApplicationPrPreviewService {
 				].join("\n"),
 			});
 		} catch (err) {
+			if (err instanceof PrPreviewDeposedError) throw err;
 			// Verify is best-effort: never fail a ready preview over it.
-			this.patch(record, {
+			logError(input.prNumber, "stage=verify", err);
+			await this.patch(record, {
 				verify: {
 					state: "failed",
 					executionId: record.verify?.executionId ?? null,

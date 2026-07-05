@@ -607,8 +607,22 @@
     {
       "idx": 86,
       "version": "7",
+      "when": 1782937109000,
+      "tag": "0092_cli_credential_locks",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
       "when": 1782937110000,
       "tag": "0093_workflow_plan_artifacts",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1783241092157,
+      "tag": "0094_pr_previews",
       "breakpoints": true
     }
   ]
