@@ -143,6 +143,41 @@ deterministic (`sha256(alias + INTERNAL_API_TOKEN)`), so re-seeds keep working
 against pods provisioned by an earlier `up`. Dev-pod adoption is idempotent
 server-side (SEA keys sandboxes on `(executionId=pr-<n>, service)`).
 
+## Seed readiness gate + route-add restart (#41)
+
+Live failure this closes (2026-07-05, cold-provisioned `pr-421`-era repro): the
+PR-head seed tar-POSTed `src/` to `/__sync` **while the just-adopted Vite dev
+server was mid-restart**. The new route file landed on disk, but the replaced
+watcher missed the `add` event — the route never registered (requests 302'd via
+the error-page layout; even a later `touch` produced no watcher event).
+Pool-claimed previews (stable server at seed time) were never affected.
+
+Two complementary fixes:
+
+1. **Seed readiness gate** (`buildPrSeedCommand`, adapters/pr-previews.ts):
+   before each target's `/__sync` POST, the helper-pod shell polls the dev
+   server's **app port** on its registry `healthPath`
+   (`http://<podIp>:<appPort><healthPath>`; the BFF = `3000/`, orchestrator =
+   `8080/healthz`) until it answers ANY http status — `curl -w '%{http_code}'`
+   != `000` means the server is accepting; the code itself is irrelevant.
+   Bounded budget: 30 attempts × (3s curl cap + 3s sleep) ≈ 90–180s hard
+   ceiling, ~0s when the server is already up. The gate never fails the seed —
+   it emits an informational `SEED_READY_<svc>=<code|000>` marker and proceeds
+   (`SEED_<svc>` from the POST stays the authoritative outcome). Polling the
+   sync port is NOT sufficient: in sidecar mode the sidecar answers long before
+   the app server, and the whole point is to wait for the dev server itself.
+2. **Route-add restart** (vite.config.ts `wfb-dev-live-sync`): the `/__sync`
+   plugin pre-lists the incoming tar (`tar -tzf`) and, when it ADDS files under
+   `src/routes/` that don't exist yet, responds to the POST first and then
+   triggers an in-process `server.restart()` (response field
+   `routesAdded` + `willRestart: true`). Never kills PID 1 — killing a
+   vcluster-synced pod's PID 1 wedges the container ready=false with no kubelet
+   restart. Sidecar-transport pods get the same effect via the sidecar's
+   restart-signal file (see `docs/dev-sync-normalization.md`).
+
+Belt-and-braces on purpose: the gate shrinks the race window on cold provisions;
+the restart makes a route-add that still slips through self-heal.
+
 ## Verify (D2) — current state
 
 There is **no reusable URL-taking Playwright-critic workflow in the repo
@@ -169,9 +204,9 @@ workflow that navigates `previewUrl` with the Playwright MCP agent and emits a
 - Seeding POSTs to pod IPs from the hub… no — from a helper pod on the DEV
   cluster; vcluster pods are host pods, so pod-IP reachability is flat. If a
   CNI policy ever blocks it, seed through the preview BFF instead.
-- PR-preview status is in-memory on the dev BFF: after a BFF restart the GET
-  reports `unknown` for an existing-ready preview (a fresh `up` re-establishes
-  it). Acceptable for v1; a table is the upgrade path if it bites.
+- ~~PR-preview status is in-memory on the dev BFF~~ — superseded by the durable
+  `pr_previews` records (#39, section above); status reads work from any
+  replica and survive BFF restarts.
 - Fork PRs work (seed fetches `pull/<n>/head` on the base repo), but the label
   gate means a maintainer must opt each fork PR in — that is the security
   boundary for running fork code in a preview.

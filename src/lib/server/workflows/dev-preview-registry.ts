@@ -11,6 +11,11 @@
  *                 image). syncPort = 8001. The sidecar also serves `/__export`
  *                 (version capture), `/__status`, and `/__run` (allowlisted deps/
  *                 test commands) — the same surface the Vite plugin gives the BFF.
+ *                 `/__run` commands execute in the APP container via its exec
+ *                 bridge (#40, `services/dev-sync-sidecar/exec-bridge.mjs`/`.py`
+ *                 on pod-localhost:8002) so they get the service's real
+ *                 toolchain; the sidecar only runs them itself as a fallback
+ *                 (`executedIn: "sidecar"`) against pre-bridge images.
  *
  * The dev images' own CMD already runs the hot-reload server (vite / `uvicorn
  * --reload` / `pnpm dev` → tsx watch), so `command` is null = use the image CMD.

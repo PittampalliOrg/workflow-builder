@@ -22,10 +22,26 @@ import path from 'node:path';
  *   - GET  /__export : pull the current workdir source as a tar.gz (version capture)
  *   - GET  /__status : last-sync + last-run diagnostics
  *   - POST /__run    : run an ALLOWLISTED named command (deps install / contract
- *                      tests) in the workdir — the allowlist is DEV_SYNC_COMMANDS_JSON
- *                      (SEA populates it from the dev-preview registry). No new trust
- *                      boundary: /__sync already delivers code the dev server executes,
- *                      so an allowlisted /__run adds none.
+ *                      tests) — the allowlist is DEV_SYNC_COMMANDS_JSON (SEA
+ *                      populates it from the dev-preview registry). No new trust
+ *                      boundary: /__sync already delivers code the dev server
+ *                      executes, so an allowlisted /__run adds none.
+ *
+ * /__run executes in the APP container when possible (#40): this sidecar image
+ * is node-only, so running e.g. the orchestrator's pytest HERE exits 127. The
+ * dev images host a tiny exec bridge (exec-bridge.mjs / exec_bridge.py) on
+ * 127.0.0.1:8002 INSIDE the app container; /__run proxies the command NAME to
+ * it (containers in a pod share localhost) and only falls back to local
+ * execution when the bridge provably did not run the command (unreachable, or
+ * a non-200 refusal like 401/404). Responses carry `executedIn: "app"|"sidecar"`
+ * so callers can tell which runtime ran the command.
+ *
+ * Route-add restart signal (#41): a sync that ADDS files under `src/routes/`
+ * while the dev server is mid-restart lands on disk but the route never
+ * registers (the replaced watcher misses the add event). After applying such a
+ * sync we write RESTART_SIGNAL_FILE into the workdir; the BFF's Vite plugin
+ * polls for it (WFB_DEV_SYNC_RESTART_SIGNAL), consumes it, and does a full
+ * `server.restart()`. Mirrors src/lib/server/dev-sync/added-routes.ts.
  *
  * Env:
  *   DEV_SYNC_PORT          (default 8001)   — listen port
@@ -33,6 +49,8 @@ import path from 'node:path';
  *   DEV_SYNC_TOKEN         (optional)       — if set, require matching `x-sync-token`
  *   DEV_SYNC_COMMANDS_JSON (optional)       — {"<name>":"<shell command>"} allowlist
  *   DEV_SYNC_RUN_TIMEOUT_MS (default 900000) — hard kill for a /__run child
+ *   DEV_SYNC_EXEC_PORT     (default 8002)   — app-container exec bridge port
+ *   DEV_SYNC_EXEC_HOST     (default 127.0.0.1) — bridge host (tests only)
  *
  * Endpoints: POST /__sync (tar.gz body) · GET /__export?paths=… · GET /__status ·
  *            POST /__run?cmd=<name> · GET /healthz
@@ -44,6 +62,12 @@ const TOKEN = process.env.DEV_SYNC_TOKEN || '';
 const MAX = 256 * 1024 * 1024; // 256 MiB ceiling on a /__sync upload
 const RUN_TIMEOUT_MS = Number(process.env.DEV_SYNC_RUN_TIMEOUT_MS || 900000); // 15 min
 const RUN_OUTPUT_CAP = 64 * 1024; // cap the captured /__run output at 64 KiB
+const EXEC_PORT = Number(process.env.DEV_SYNC_EXEC_PORT || 8002);
+const EXEC_HOST = process.env.DEV_SYNC_EXEC_HOST || '127.0.0.1';
+// Shared with src/lib/server/dev-sync/added-routes.ts (the Vite plugin's poll
+// target) — keep the two literals in lockstep.
+const RESTART_SIGNAL_FILE = '.dev-sync-restart-request.json';
+const ROUTES_PREFIX = 'src/routes/';
 
 /**
  * The /__run allowlist. Parsed ONCE at boot — SEA stamps it into the pod's env
@@ -77,7 +101,7 @@ const COMMANDS = loadCommands();
 // /__status diagnostics.
 let lastSyncAt = null; // ISO string of the last successful /__sync
 let lastSyncBytes = 0; // byte size of that upload
-let lastRun = null; // { name, exitCode, startedAt, finishedAt, durationMs }
+let lastRun = null; // { name, exitCode, startedAt, finishedAt, durationMs, executedIn }
 
 function reply(res, code, body) {
 	try {
@@ -91,6 +115,43 @@ function reply(res, code, body) {
 
 function unauthorized(req) {
 	return TOKEN && req.headers['x-sync-token'] !== TOKEN;
+}
+
+/** List the members of a tar.gz file (`tar -tzf`); null on any failure. */
+function listTarEntries(file, cb) {
+	const tar = spawn('tar', ['-tzf', file], { stdio: ['ignore', 'pipe', 'ignore'] });
+	let out = '';
+	let overflow = false;
+	tar.stdout.on('data', (d) => {
+		out += String(d);
+		if (out.length > 8 * 1024 * 1024) {
+			overflow = true;
+			tar.kill();
+		}
+	});
+	tar.on('error', () => cb(null));
+	tar.on('close', (code) =>
+		cb(code === 0 && !overflow ? out.split('\n').map((l) => l.trim()).filter(Boolean) : null)
+	);
+}
+
+/**
+ * #41: entries under src/routes/ that do NOT yet exist in DEST — the files
+ * whose creation needs a full dev-server restart to register (an add during
+ * the server's restart window is otherwise silently dropped by the watcher).
+ * Inline twin of src/lib/server/dev-sync/added-routes.ts (this file is a
+ * zero-dependency plain-node script and cannot import the TS helper).
+ */
+function detectAddedRouteFiles(entries) {
+	const added = [];
+	const seen = new Set();
+	for (const raw of entries) {
+		const entry = raw.replace(/^\.\//, '');
+		if (!entry.startsWith(ROUTES_PREFIX) || entry.endsWith('/') || seen.has(entry)) continue;
+		seen.add(entry);
+		if (!fs.existsSync(path.join(DEST, entry))) added.push(entry);
+	}
+	return added;
 }
 
 /** Sanitize `?paths=` into safe relative paths (no absolute, no `..` escape). */
@@ -147,27 +208,62 @@ function handleSync(req, res) {
 				/* ignore */
 			}
 		};
-		// busybox tar (alpine): `-o` = don't restore user:group; busybox strips a
-		// leading '/' itself. The producer archives relative paths.
-		const tar = spawn('tar', ['-xzf', tmp, '-C', DEST, '-o'], {
-			stdio: ['ignore', 'ignore', 'pipe']
-		});
-		let errout = '';
-		tar.stderr.on('data', (d) => (errout += String(d)));
-		tar.on('error', (e) => {
-			cleanup();
-			reply(res, 500, { ok: false, error: `tar spawn: ${e.message}` });
-		});
-		tar.on('close', (code) => {
-			cleanup();
-			if (code === 0) {
-				lastSyncAt = new Date().toISOString();
-				lastSyncBytes = buf.length;
-				console.log(`[dev-sync-sidecar] applied sync (${buf.length}B) → ${DEST}`);
-				reply(res, 200, { ok: true, bytes: buf.length, dest: DEST });
-			} else {
-				reply(res, 500, { ok: false, error: errout.slice(0, 500) || `tar exit ${code}` });
-			}
+		// #41: list the archive BEFORE extracting to learn which src/routes/
+		// files are new (afterwards everything exists). A listing failure only
+		// disables the restart signal — the sync itself proceeds regardless.
+		listTarEntries(tmp, (entries) => {
+			const addedRoutes = entries ? detectAddedRouteFiles(entries) : [];
+			// busybox tar (alpine): `-o` = don't restore user:group; busybox strips a
+			// leading '/' itself. The producer archives relative paths.
+			const tar = spawn('tar', ['-xzf', tmp, '-C', DEST, '-o'], {
+				stdio: ['ignore', 'ignore', 'pipe']
+			});
+			let errout = '';
+			tar.stderr.on('data', (d) => (errout += String(d)));
+			tar.on('error', (e) => {
+				cleanup();
+				reply(res, 500, { ok: false, error: `tar spawn: ${e.message}` });
+			});
+			tar.on('close', (code) => {
+				cleanup();
+				if (code === 0) {
+					lastSyncAt = new Date().toISOString();
+					lastSyncBytes = buf.length;
+					let restartSignaled = false;
+					if (addedRoutes.length) {
+						// The dev server must fully restart to register brand-new route
+						// files; we can't restart it from this container (killing the app
+						// pod's PID 1 wedges vcluster-synced pods), so drop the signal
+						// file the Vite plugin polls (consume-then-restart, loop-safe).
+						try {
+							fs.writeFileSync(
+								path.join(DEST, RESTART_SIGNAL_FILE),
+								JSON.stringify({
+									requestedAt: new Date().toISOString(),
+									addedRoutes: addedRoutes.slice(0, 50)
+								})
+							);
+							restartSignaled = true;
+							console.log(
+								`[dev-sync-sidecar] sync added ${addedRoutes.length} route file(s) — wrote ${RESTART_SIGNAL_FILE} (dev-server restart requested)`
+							);
+						} catch (e) {
+							console.warn(`[dev-sync-sidecar] restart signal write failed: ${e.message}`);
+						}
+					}
+					console.log(`[dev-sync-sidecar] applied sync (${buf.length}B) → ${DEST}`);
+					reply(res, 200, {
+						ok: true,
+						bytes: buf.length,
+						dest: DEST,
+						...(addedRoutes.length
+							? { routesAdded: addedRoutes.slice(0, 50), restartSignaled }
+							: {})
+					});
+				} else {
+					reply(res, 500, { ok: false, error: errout.slice(0, 500) || `tar exit ${code}` });
+				}
+			});
 		});
 	});
 }
@@ -239,6 +335,15 @@ function handleStatus(req, res) {
 // (never an arbitrary command string from the request). Output is capped and the
 // exit code is returned in the body; HTTP 200 means the command ran (check `ok`),
 // non-200 means it could not be dispatched (auth / unknown name / spawn failure).
+//
+// #40: the command runs in the APP container when its exec bridge is present
+// (executedIn:"app") — only the NAME crosses the pod-localhost hop, and the
+// bridge enforces its own allowlist copy. Fallback to local execution
+// (executedIn:"sidecar", the pre-bridge behavior) happens ONLY when the bridge
+// provably did not run the command: connection failure or a non-200 refusal
+// (401/404/500-spawn). A 200 that then goes bad mid-body is reported as an
+// error WITHOUT fallback — the command may have run, and double-executing a
+// deps install or test lane is worse than surfacing the broken response.
 function handleRun(req, res) {
 	if (req.method !== 'POST') return reply(res, 405, { ok: false, error: 'POST only' });
 	if (unauthorized(req)) return reply(res, 401, { ok: false, error: 'unauthorized' });
@@ -255,6 +360,106 @@ function handleRun(req, res) {
 		});
 	}
 
+	tryBridgeRun(name, (bridge) => {
+		if (bridge.ran) {
+			const body = bridge.body || {};
+			const exitCode = typeof body.exitCode === 'number' ? body.exitCode : -1;
+			lastRun = {
+				name,
+				exitCode,
+				startedAt: bridge.startedAt,
+				finishedAt: new Date().toISOString(),
+				durationMs: typeof body.durationMs === 'number' ? body.durationMs : null,
+				executedIn: 'app'
+			};
+			console.log(`[dev-sync-sidecar] run "${name}" via app exec bridge exit=${exitCode}`);
+			return reply(res, 200, { ...body, cmd: name, executedIn: 'app' });
+		}
+		if (bridge.fatal) {
+			// The bridge MAY have run the command (response broke after it was
+			// accepted) — do not double-execute; report the broken bridge.
+			return reply(res, 200, {
+				ok: false,
+				cmd: name,
+				exitCode: null,
+				error: `exec bridge failed mid-run: ${bridge.reason}`,
+				executedIn: 'app'
+			});
+		}
+		runLocal(name, command, res, bridge.reason);
+	});
+}
+
+/**
+ * Ask the app container's exec bridge (127.0.0.1:EXEC_PORT) to run `name`.
+ * Callback receives exactly one of:
+ *   {ran:true, body, startedAt}    — bridge returned 200 (the command RAN there)
+ *   {ran:false, reason}            — bridge did NOT run it (safe to fall back)
+ *   {ran:false, fatal:true, reason} — ambiguous mid-run failure (do NOT fall back)
+ */
+function tryBridgeRun(name, cb) {
+	const startedAt = new Date().toISOString();
+	let settled = false;
+	const settle = (result) => {
+		if (settled) return;
+		settled = true;
+		cb(result);
+	};
+	const preq = http.request(
+		{
+			host: EXEC_HOST,
+			port: EXEC_PORT,
+			path: `/__exec?cmd=${encodeURIComponent(name)}`,
+			method: 'POST',
+			headers: TOKEN ? { 'x-sync-token': TOKEN } : {}
+		},
+		(pres) => {
+			let body = '';
+			pres.on('data', (d) => {
+				body += String(d);
+				if (body.length > RUN_OUTPUT_CAP + 64 * 1024) pres.destroy();
+			});
+			pres.on('error', () => {
+				// Headers arrived → the bridge accepted the request; ambiguous.
+				settle(
+					pres.statusCode === 200
+						? { ran: false, fatal: true, reason: 'response stream error' }
+						: { ran: false, reason: `bridge HTTP ${pres.statusCode} (broken body)` }
+				);
+			});
+			pres.on('end', () => {
+				if (pres.statusCode !== 200) {
+					// 401/404/405/500 → the bridge REFUSED before running anything.
+					return settle({ ran: false, reason: `bridge HTTP ${pres.statusCode}` });
+				}
+				try {
+					settle({ ran: true, body: JSON.parse(body), startedAt });
+				} catch {
+					settle({ ran: false, fatal: true, reason: 'malformed bridge response' });
+				}
+			});
+		}
+	);
+	// Localhost connect is instant; anything slower means no bridge listening.
+	const connectTimer = setTimeout(() => {
+		settle({ ran: false, reason: 'bridge connect timeout' });
+		preq.destroy();
+	}, 2000);
+	preq.on('socket', (socket) => {
+		socket.once('connect', () => clearTimeout(connectTimer));
+	});
+	preq.on('error', (e) => {
+		clearTimeout(connectTimer);
+		// ECONNREFUSED/EHOSTUNREACH before a response → the command never ran.
+		settle({ ran: false, reason: `bridge unreachable (${e.code || e.message})` });
+	});
+	preq.end();
+}
+
+// Local execution in THIS (node-only) container — the pre-bridge behavior,
+// kept for images that predate the exec bridge. `bridgeNote` says why the
+// bridge was skipped so callers can tell a fallback from the intended path.
+function runLocal(name, command, res, bridgeNote) {
 	const startedAt = new Date().toISOString();
 	const t0 = Date.now();
 	let child;
@@ -290,8 +495,18 @@ function handleRun(req, res) {
 		done = true;
 		clearTimeout(timer);
 		const durationMs = Date.now() - t0;
-		lastRun = { name, exitCode, startedAt, finishedAt: new Date().toISOString(), durationMs };
-		console.log(`[dev-sync-sidecar] run "${name}" exit=${exitCode} (${durationMs}ms)`);
+		lastRun = {
+			name,
+			exitCode,
+			startedAt,
+			finishedAt: new Date().toISOString(),
+			durationMs,
+			executedIn: 'sidecar'
+		};
+		console.log(
+			`[dev-sync-sidecar] run "${name}" exit=${exitCode} (${durationMs}ms) executedIn=sidecar` +
+				(bridgeNote ? ` (${bridgeNote})` : '')
+		);
 		reply(res, 200, {
 			ok: exitCode === 0,
 			cmd: name,
@@ -299,6 +514,8 @@ function handleRun(req, res) {
 			durationMs,
 			truncated,
 			output,
+			executedIn: 'sidecar',
+			...(bridgeNote ? { bridge: bridgeNote } : {}),
 			...(extra || {})
 		});
 	};

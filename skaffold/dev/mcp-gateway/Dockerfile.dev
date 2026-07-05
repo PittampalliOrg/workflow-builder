@@ -17,9 +17,16 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
 
 COPY services/mcp-gateway/ ./
 
+# #40 exec bridge: /__run commands (registry `deps` = pnpm install) execute
+# HERE with the app container's pnpm/node_modules instead of the bare
+# dev-sync-sidecar. Outside /app so the emptyDir workdir mount can't mask it;
+# 127.0.0.1-only; fails closed without DEV_SYNC_COMMANDS_JSON.
+COPY services/dev-sync-sidecar/exec-bridge.mjs /devtools/exec-bridge.mjs
+
 ENV NODE_ENV=development
 ENV PORT=8080
 
 EXPOSE 8080
 
-CMD ["pnpm", "dev"]
+# Bridge as background child; `exec` keeps the dev server as PID 1.
+CMD ["sh", "-c", "node /devtools/exec-bridge.mjs & exec pnpm dev"]

@@ -55,6 +55,11 @@ export function prPreviewRegistryEntries(): PrPreviewRegistryEntry[] {
 		repoSubdir: d.repoSubdir,
 		syncPaths: devPreviewSyncPaths(d),
 		extraSync: (d.extraSync ?? []).map((e) => ({ from: e.from, to: e.to })),
+		// #41 readiness gate: the seed polls the dev server itself (app port +
+		// health route), not the sync receiver — the sidecar is up long before
+		// the app, and the plugin-mode BFF's sync port IS the app port.
+		appPort: d.port,
+		healthPath: d.healthPath,
 	}));
 }
 
@@ -309,6 +314,28 @@ export function buildPrSeedCommand(
 				`if [ -e ${shQuote(extra.from)} ]; then rm -rf "${stage}/${extra.to}"; mkdir -p "$(dirname "${stage}/${extra.to}")"; cp -a ${shQuote(extra.from)} "${stage}/${extra.to}"; fi`,
 			);
 		}
+		// #41 readiness gate: on a cold provision the seed can land while the
+		// just-adopted dev server is still booting/restarting — a /__sync that
+		// ADDS route files in that window never registers them. Poll the APP
+		// port's known route (ANY http status = the server is accepting; the
+		// sidecar answering /__sync is NOT enough) with a bounded budget
+		// (30 × (3s curl cap + 3s sleep) ≈ 90–180s), then seed regardless —
+		// the marker records what we saw and the plugin-side route-add restart
+		// backstops a straggler.
+		const gatePort = target.appPort ?? target.syncPort;
+		const rawHealth = target.healthPath ?? "/";
+		const gatePath = rawHealth.startsWith("/") ? rawHealth : `/${rawHealth}`;
+		lines.push(
+			`READY=000`,
+			`i=0`,
+			`while [ $i -lt 30 ]; do`,
+			`  READY=$(curl -s -o /dev/null -m 3 -w '%{http_code}' "http://${target.podIp}:${gatePort}${gatePath}" || echo 000)`,
+			`  [ "$READY" != "000" ] && break`,
+			`  i=$((i+1))`,
+			`  sleep 3`,
+			`done`,
+			`echo "${seedReadyKey(target.service)}=$READY"`,
+		);
 		lines.push(
 			`tar -czf /tmp/seed-${target.service}.tgz -C ${shQuote(stage)} .`,
 			`CODE=$(curl -s -o /tmp/resp-${target.service} -w '%{http_code}' -X POST "http://${target.podIp}:${target.syncPort}/__sync" -H 'Content-Type: application/gzip' -H "x-sync-token: $SYNC_TOKEN" --data-binary @/tmp/seed-${target.service}.tgz || echo 000)`,
@@ -316,6 +343,13 @@ export function buildPrSeedCommand(
 		);
 	}
 	return lines.join("\n");
+}
+
+/** Informational marker: the last http code the readiness gate saw (000 = the
+ * budget elapsed with the app port never answering). Not parsed for failure —
+ * the seed still runs and SEED_<svc> stays the authoritative outcome. */
+function seedReadyKey(service: string): string {
+	return `SEED_READY_${service.replace(/[^a-zA-Z0-9]/g, "_")}`;
 }
 
 function shQuote(value: string): string {
