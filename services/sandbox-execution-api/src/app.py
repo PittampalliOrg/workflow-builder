@@ -5045,7 +5045,7 @@ def _pool_reconcile_once(batch, core, apps) -> dict[str, int]:
     """One reconcile pass: recycle pin-drifted free members, then top the pool up toward
     VCLUSTER_PREVIEW_POOL_SIZE — bounded by VCLUSTER_PREVIEW_MAX awake and the per-tick fill
     batch. Returns a small stats dict (used by tests)."""
-    stats = {"awake": 0, "free": 0, "created": 0, "recycled": 0}
+    stats = {"awake": 0, "free": 0, "baking": 0, "created": 0, "recycled": 0}
     pool_size = _vcluster_preview_pool_size()
     if pool_size <= 0:
         return stats
@@ -5085,9 +5085,32 @@ def _pool_reconcile_once(batch, core, apps) -> dict[str, int]:
                         recycled += 1
                         free -= 1  # no longer claimable (relabeled recycling); still awake
 
-    # Fill: aim for pool_size free, but never past max_awake, and at most fill_batch per tick
-    # (bounds the IO/enrollment burst — load-test #20 hasn't set a safe concurrent ceiling yet).
-    need = pool_size - free
+    # In-flight bakes: pool up-Jobs still Running. A baking member is counted in `awake` but NOT
+    # in `free` (the free label lands only at the END of its ~277s bringup), so without counting
+    # these the fill below would relaunch a redundant bake every reconcile tick during that window
+    # and overshoot pool_size (task #33). Keying on the Job's `active` status (not a namespace
+    # label) is the robust signal: it survives an SEA restart (the Job persists, so a fresh pool
+    # manager still sees the in-flight bake) and self-clears on a failed bake (a labelless
+    # half-baked namespace would otherwise count as in-flight forever → permanent under-fill).
+    baking = 0
+    try:
+        jobs = batch.list_namespaced_job(
+            namespace=namespace, label_selector="vcluster-preview-action=up"
+        )
+        for j in jobs.items:
+            jname = (j.metadata.name or "") if j.metadata else ""
+            if jname.startswith("vcpreview-up-pool-") and int(
+                getattr(j.status, "active", 0) or 0
+            ) > 0:
+                baking += 1
+    except Exception as exc:
+        # Fail-open toward the pre-#33 behavior (may overshoot, never under-fill).
+        logger.warning("pool: in-flight bake count failed: %s", exc)
+        baking = 0
+
+    # Fill: aim for pool_size free members, counting in-flight bakes so we don't over-provision;
+    # never past max_awake, and at most fill_batch per tick (bounds the IO/enrollment burst).
+    need = pool_size - (free + baking)
     room = max_awake - awake
     to_create = max(0, min(need, room, fill_batch))
     created = 0
@@ -5099,9 +5122,10 @@ def _pool_reconcile_once(batch, core, apps) -> dict[str, int]:
             _create_preview_job(batch, namespace=namespace, manifest=manifest)
             created += 1
             logger.info(
-                "pool: baking member %s (free=%d awake=%d target=%d max=%d)",
+                "pool: baking member %s (free=%d baking=%d awake=%d target=%d max=%d)",
                 name,
                 free,
+                baking,
                 awake,
                 pool_size,
                 max_awake,
@@ -5111,7 +5135,9 @@ def _pool_reconcile_once(batch, core, apps) -> dict[str, int]:
 
     if created or recycled:
         _invalidate_previews_cache()
-    stats.update(awake=awake, free=free, created=created, recycled=recycled)
+    stats.update(
+        awake=awake, free=free, baking=baking, created=created, recycled=recycled
+    )
     return stats
 
 
