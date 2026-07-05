@@ -8,6 +8,7 @@ export * from "./ports/connections";
 export * from "./ports/dev-previews";
 export * from "./ports/evaluations";
 export * from "./ports/executions";
+export * from "./ports/gitops";
 export * from "./ports/mcp";
 export * from "./ports/observability";
 export * from "./ports/pieces";

@@ -1,8 +1,7 @@
 import { env } from "$env/dynamic/public";
 
 import { DEFAULT_HEADLAMP_URL } from "$lib/headlamp/links";
-import { getDeploymentMetadata } from "$lib/server/gitops/deployment-metadata";
-import { getPromotionStrategies } from "$lib/server/promoter";
+import { getApplicationAdapters } from "$lib/server/application";
 
 import type { PageServerLoad } from "./$types";
 
@@ -18,9 +17,10 @@ export type GitopsPageLinks = {
 };
 
 export const load: PageServerLoad = async () => {
+	const { gitOpsDeployment, gitOpsPromotions } = getApplicationAdapters();
 	const [initial, promotions] = await Promise.all([
-		getDeploymentMetadata(),
-		getPromotionStrategies(),
+		gitOpsDeployment.getMetadata(),
+		gitOpsPromotions.getStrategies(),
 	]);
 	const tektonBase =
 		env.PUBLIC_TEKTON_DASHBOARD_URL?.trim() ||

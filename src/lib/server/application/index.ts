@@ -250,6 +250,8 @@ import {
 	WorkflowPromotionGateAdapter,
 } from "$lib/server/application/adapters/workflow-code-version-promotion";
 import { PostgresGitOpsActivityEventStore } from "$lib/server/application/adapters/gitops-activity-events";
+import { LegacyDeploymentMetadataGateway } from "$lib/server/application/adapters/gitops-deployment";
+import { LegacyPromotionStateGateway } from "$lib/server/application/adapters/gitops-promotions";
 import { JuiceFsWorkflowExecutionWorkspaceAdapter } from "$lib/server/application/adapters/workflow-execution-workspace";
 import { LegacyCliPreviewGatewayPort } from "$lib/server/application/adapters/cli-preview";
 import { LegacySandboxPreviewGatewayPort } from "$lib/server/application/adapters/sandbox-preview";
@@ -382,6 +384,8 @@ import { ApplicationWorkflowTriggerLifecycleService } from "$lib/server/applicat
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 import { ApplicationWorkflowPlanService } from "$lib/server/application/workflow-plan";
 import { ApplicationGitOpsActivityEventService } from "$lib/server/application/gitops-activity-events";
+import { ApplicationGitOpsDeploymentService } from "$lib/server/application/gitops-deployment";
+import { ApplicationGitOpsPromotionsService } from "$lib/server/application/gitops-promotions";
 import { ApplicationAuthSignInService } from "$lib/server/application/auth-sign-in";
 import { ApplicationAuthSessionService } from "$lib/server/application/auth-session";
 import { extractExecutionTraceIds } from "$lib/server/otel/clickhouse";
@@ -659,6 +663,8 @@ export function getApplicationAdapters(
 		| undefined;
 	let workflowPlan: ApplicationWorkflowPlanService | undefined;
 	let gitOpsActivityEvents: ApplicationGitOpsActivityEventService | undefined;
+	let gitOpsDeployment: ApplicationGitOpsDeploymentService | undefined;
+	let gitOpsPromotions: ApplicationGitOpsPromotionsService | undefined;
 	let cliPreview: ApplicationCliPreviewService | undefined;
 	let sandboxPreview: ApplicationSandboxPreviewService | undefined;
 	let sandboxEvents: ApplicationSandboxEventsService | undefined;
@@ -1376,6 +1382,14 @@ export function getApplicationAdapters(
 		(gitOpsActivityEvents ??= new ApplicationGitOpsActivityEventService(
 			new PostgresGitOpsActivityEventStore(),
 		));
+	const getGitOpsDeployment = () =>
+		(gitOpsDeployment ??= new ApplicationGitOpsDeploymentService({
+			metadata: new LegacyDeploymentMetadataGateway(),
+		}));
+	const getGitOpsPromotions = () =>
+		(gitOpsPromotions ??= new ApplicationGitOpsPromotionsService({
+			promotions: new LegacyPromotionStateGateway(),
+		}));
 	const getCliPreview = () =>
 		(cliPreview ??= new ApplicationCliPreviewService({
 			preview: new LegacyCliPreviewGatewayPort(getWorkflowData()),
@@ -1787,6 +1801,12 @@ export function getApplicationAdapters(
 		},
 		get gitOpsActivityEvents() {
 			return getGitOpsActivityEvents();
+		},
+		get gitOpsDeployment() {
+			return getGitOpsDeployment();
+		},
+		get gitOpsPromotions() {
+			return getGitOpsPromotions();
 		},
 		get cliPreview() {
 			return getCliPreview();

@@ -9,7 +9,6 @@ import { error } from "@sveltejs/kit";
 
 import { getRequestEvent, query } from "$app/server";
 import { getApplicationAdapters } from "$lib/server/application";
-import { getPromotionStrategy } from "$lib/server/promoter";
 
 async function requireAdmin(): Promise<void> {
 	const event = getRequestEvent();
@@ -21,5 +20,5 @@ async function requireAdmin(): Promise<void> {
 
 export const getStrategyDetail = query("unchecked", async (name: string) => {
 	await requireAdmin();
-	return await getPromotionStrategy(name);
+	return await getApplicationAdapters().gitOpsPromotions.getStrategy(name);
 });

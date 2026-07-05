@@ -1,7 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 
 import { getApplicationAdapters } from "$lib/server/application";
-import { getPromotionStrategies } from "$lib/server/promoter";
 
 import type { RequestHandler } from "./$types";
 
@@ -19,6 +18,6 @@ export const GET: RequestHandler = async ({ locals }) => {
 		throw err;
 	}
 
-	const promotions = await getPromotionStrategies();
+	const promotions = await getApplicationAdapters().gitOpsPromotions.getStrategies();
 	return json(promotions);
 };

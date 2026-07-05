@@ -2,10 +2,6 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 
 import { getApplicationAdapters } from "$lib/server/application";
-import {
-	invalidateGitOpsPinCaches,
-	invalidateGitOpsRuntimeCaches,
-} from "$lib/server/gitops/deployment-metadata";
 import { requireInternal } from "$lib/server/internal-auth";
 
 // Activity types whose arrival means cluster state may have moved — clear the
@@ -34,12 +30,13 @@ export const POST: RequestHandler = async ({ request }) => {
 		return error(400, "Expected JSON body");
 	}
 
-	const event = await getApplicationAdapters().gitOpsActivityEvents.ingest(body);
+	const { gitOpsActivityEvents, gitOpsDeployment } = getApplicationAdapters();
+	const event = await gitOpsActivityEvents.ingest(body);
 	if (event.activityType === "promoter.pullrequest") {
-		invalidateGitOpsPinCaches();
-		invalidateGitOpsRuntimeCaches();
+		gitOpsDeployment.invalidateCaches("pins");
+		gitOpsDeployment.invalidateCaches("runtime");
 	} else if (RUNTIME_CACHE_ACTIVITY_TYPES.has(event.activityType)) {
-		invalidateGitOpsRuntimeCaches();
+		gitOpsDeployment.invalidateCaches("runtime");
 	}
 	return json({ event }, { status: 202 });
 };

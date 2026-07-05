@@ -16,11 +16,15 @@ const mocks = vi.hoisted(() => ({
 		list: vi.fn(),
 		subscribe: vi.fn(),
 	},
+	gitOpsDeployment: {
+		invalidateCaches: vi.fn(),
+	},
 }));
 
 vi.mock("$lib/server/application", () => ({
 	getApplicationAdapters: () => ({
 		gitOpsActivityEvents: mocks.gitOpsActivityEvents,
+		gitOpsDeployment: mocks.gitOpsDeployment,
 	}),
 }));
 vi.mock("$lib/server/internal-auth", () => ({
@@ -36,6 +40,7 @@ describe("GitOps activity event APIs", () => {
 		mocks.gitOpsActivityEvents.ingest.mockReset();
 		mocks.gitOpsActivityEvents.list.mockReset();
 		mocks.gitOpsActivityEvents.subscribe.mockReset();
+		mocks.gitOpsDeployment.invalidateCaches.mockReset();
 		vi.mocked(requireInternal).mockReset();
 		vi.mocked(requirePlatformAdmin).mockReset();
 	});
@@ -132,6 +137,8 @@ describe("GitOps activity event APIs", () => {
 		expect(response.status).toBe(202);
 		expect(requireInternal).toHaveBeenCalled();
 		expect(mocks.gitOpsActivityEvents.ingest).toHaveBeenCalledWith({ source: "argocd" });
+		// argocd.application moves cluster state → clear the cheap runtime caches.
+		expect(mocks.gitOpsDeployment.invalidateCaches).toHaveBeenCalledWith("runtime");
 	});
 
 	it("streams events through the activity subscription port", async () => {
