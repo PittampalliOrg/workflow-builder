@@ -68,6 +68,7 @@
 		Archive,
 		ArrowLeft,
 		Bot,
+		Boxes,
 		Activity,
 		Check,
 		ChevronDown,
@@ -112,12 +113,18 @@
 		agentSummaryStore,
 		ensureAgentSummaries
 	} from '$lib/stores/agent-summary.svelte';
+	import type { PageData } from './$types';
+	import SessionDevEnvironmentCard from '../session-dev-environment-card.svelte';
+
+	// SSR seed (kills the blank flash + pre-paint 404/auth). The client refresh
+	// loop below still owns live updates — it overwrites `session` idempotently.
+	let { data: pageData }: { data: PageData } = $props();
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
 	const sessionId = page.params.id as string;
 
-	let session = $state<SessionDetail | null>(null);
+	let session = $state<SessionDetail | null>(pageData.session ?? null);
 	let events = $state<SessionEventEnvelope[]>([]);
 	let inFlightPartials = $state<Record<string, InFlightPartial>>({});
 	let agentRegistry = $state<{
@@ -1888,9 +1895,13 @@
 						<div class="text-muted-foreground">
 							{session.agentSlug ?? '—'} · v{session.agentVersion ?? '—'}
 						</div>
-						{#if session.agentSlug?.startsWith('exp-')}
+						{#if pageData.kind === 'experiment'}
 							<Badge variant="outline" class="border-amber-500/40 text-amber-500 text-[10px]">
 								<Sparkles class="size-2.5 mr-1" /> Experiment
+							</Badge>
+						{:else if pageData.kind === 'dev'}
+							<Badge variant="outline" class="border-emerald-500/40 text-emerald-500 text-[10px]">
+								<Boxes class="size-2.5 mr-1" /> Dev session
 							</Badge>
 						{:else if session.agentSlug?.startsWith('wf-')}
 							<Badge variant="outline" class="border-cyan-500/40 text-cyan-500 text-[10px]">
@@ -1899,6 +1910,10 @@
 						{/if}
 					</CardContent>
 				</Card>
+
+				{#if pageData.kind === 'dev' && pageData.devContext}
+					<SessionDevEnvironmentCard {slug} devContext={pageData.devContext} />
+				{/if}
 
 				{#if session.environmentId}
 					<Card>

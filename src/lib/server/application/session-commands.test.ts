@@ -18,7 +18,11 @@ import type {
 	WorkflowPublishedAgent,
 } from "$lib/server/application/ports";
 import type { AgentConfig } from "$lib/types/agents";
-import type { SessionDetail, SessionEventEnvelope } from "$lib/types/sessions";
+import type {
+	SessionDetail,
+	SessionEventEnvelope,
+	SessionSummary,
+} from "$lib/types/sessions";
 
 describe("ApplicationSessionCommandService", () => {
 	let sessions: SessionRepository;
@@ -948,3 +952,134 @@ function sampleSession(): SessionDetail {
 		pausedAt: null,
 	};
 }
+
+describe("ApplicationSessionCommandService.getSessionListPage", () => {
+	function mkSummary(
+		overrides: Partial<SessionSummary> & { id: string },
+	): SessionSummary {
+		return {
+			title: overrides.id,
+			status: "idle",
+			stopReason: null,
+			agentId: "agent-1",
+			agentVersion: 1,
+			projectId: "proj-1",
+			environmentId: null,
+			environmentVersion: null,
+			vaultIds: [],
+			usage: {},
+			errorMessage: null,
+			workflowExecutionId: null,
+			mlflowExperimentId: null,
+			mlflowRunId: null,
+			mlflowParentRunId: null,
+			mlflowSessionId: null,
+			workflowId: null,
+			workflowName: null,
+			agentName: "Agent",
+			agentSlug: "claude-code",
+			agentAvatar: null,
+			agentEphemeral: false,
+			createdAt: "2026-07-01T00:00:00.000Z",
+			updatedAt: "2026-07-01T00:00:00.000Z",
+			completedAt: null,
+			archivedAt: null,
+			...overrides,
+		} as SessionSummary;
+	}
+
+	function makeService(rows: SessionSummary[], devWorkflowId: string | null) {
+		const listSessions = vi.fn(async () => rows);
+		const findProjectWorkflowIdByIdOrNamePrefix = vi.fn(
+			async () => devWorkflowId,
+		);
+		const service = new ApplicationSessionCommandService({
+			sessions: { listSessions } as unknown as SessionRepository,
+			sessionEvents: {} as SessionEventLog,
+			sessionAgents: {} as SessionAgentResolver,
+			sessionExperimentAgents: {} as SessionExperimentAgentStore,
+			sandboxProvisioner: {} as SandboxProvisioner,
+			repositoryMounter: {} as SessionRepositoryMounter,
+			workflowSpawner: {} as SessionWorkflowSpawner,
+			devSessionWorkflows: { findProjectWorkflowIdByIdOrNamePrefix },
+		});
+		return { service, listSessions, findProjectWorkflowIdByIdOrNamePrefix };
+	}
+
+	it("classifies each row and derives hasMore from limit+1", async () => {
+		const rows = [
+			mkSummary({ id: "s1" }),
+			mkSummary({ id: "s2", agentSlug: "exp-abc" }),
+			mkSummary({ id: "s3", workflowExecutionId: "e3", workflowId: "wf-x" }),
+		];
+		const { service, listSessions } = makeService(rows, null);
+		const page = await service.getSessionListPage({
+			projectId: "proj-1",
+			limit: 2,
+		});
+		// limit+1 requested
+		expect(listSessions).toHaveBeenCalledWith(
+			expect.objectContaining({ limit: 3, offset: 0 }),
+		);
+		expect(page.hasMore).toBe(true);
+		expect(page.sessions.map((s) => [s.id, s.kind])).toEqual([
+			["s1", "interactive"],
+			["s2", "experiment"],
+		]);
+	});
+
+	it("server-narrows kind=dev to the resolved workflow id", async () => {
+		const rows = [mkSummary({ id: "d1", workflowId: "wf-dev-42" })];
+		const { service, listSessions } = makeService(rows, "wf-dev-42");
+		const page = await service.getSessionListPage({
+			projectId: "proj-1",
+			kind: "dev",
+			limit: 10,
+		});
+		expect(listSessions).toHaveBeenCalledWith(
+			expect.objectContaining({ workflowId: "wf-dev-42" }),
+		);
+		expect(page.devWorkflowId).toBe("wf-dev-42");
+		expect(page.sessions[0].kind).toBe("dev");
+	});
+
+	it("server-narrows kind=workflow to source=workflow", async () => {
+		const rows = [
+			mkSummary({ id: "w1", workflowExecutionId: "e", workflowId: "wf-a" }),
+		];
+		const { service, listSessions } = makeService(rows, null);
+		await service.getSessionListPage({
+			projectId: "proj-1",
+			kind: "workflow",
+			limit: 10,
+		});
+		expect(listSessions).toHaveBeenCalledWith(
+			expect.objectContaining({ source: "workflow" }),
+		);
+	});
+
+	it("post-filters interactive out of the direct set (drops experiments)", async () => {
+		const rows = [
+			mkSummary({ id: "i1" }),
+			mkSummary({ id: "x1", agentSlug: "exp-y" }),
+		];
+		const { service, listSessions } = makeService(rows, null);
+		const page = await service.getSessionListPage({
+			projectId: "proj-1",
+			kind: "interactive",
+			limit: 10,
+		});
+		expect(listSessions).toHaveBeenCalledWith(
+			expect.objectContaining({ source: "direct" }),
+		);
+		expect(page.sessions.map((s) => s.id)).toEqual(["i1"]);
+	});
+
+	it("passes offset through for load-more paging", async () => {
+		const { service, listSessions } = makeService([], null);
+		await service.getSessionListPage({ projectId: "proj-1", offset: 50, limit: 50 });
+		expect(listSessions).toHaveBeenCalledWith(
+			expect.objectContaining({ offset: 50, limit: 51 }),
+		);
+	});
+});

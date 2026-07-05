@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/state';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Button } from '$lib/components/ui/button';
@@ -14,70 +13,72 @@
 		AlertDialogHeader,
 		AlertDialogTitle
 	} from '$lib/components/ui/alert-dialog';
-	import { Container, Plus } from '@lucide/svelte';
+	import { Container, Plus, Radio } from '@lucide/svelte';
 	import DevEnvironmentCard, {
 		type DevEnvironmentSummary
 	} from '$lib/components/dev/dev-environment-card.svelte';
 	import DevLaunchDialog from '$lib/components/dev/dev-launch-dialog.svelte';
 	import VclusterPreviewPanel from '$lib/components/dev/vcluster-preview-panel.svelte';
+	import PrPreviewsPanel from '$lib/components/dev/pr-previews-panel.svelte';
 	import PreviewRunFeedPanel from '$lib/components/dev/preview-run-feed-panel.svelte';
+	import { getDevEnvironmentGroups, getPrPreviews, getVclusterPreviews } from './data.remote';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
-	// B5: one grid entry per EXECUTION (a multi-service session renders as one
-	// environment with N services), fed by the additive `groups` read model.
-	type DevEnvironmentGroup = {
-		executionId: string;
-		services: DevEnvironmentSummary[];
-		primary: DevEnvironmentSummary;
-		ready: boolean;
-		sessionId: string | null;
-		sessionUrl: string | null;
-		runStatus: string | null;
-		createdAt: string;
-	};
+	// One query per surface (dev grid, vcluster previews + counts, PR previews),
+	// driven by a single visibility-gated 5s tick — replaces the old 4s blanket poll.
+	const groupsQuery = getDevEnvironmentGroups();
+	const vclusterQuery = getVclusterPreviews();
+	const prPreviewsQuery = getPrPreviews();
 
-	let groups = $state<DevEnvironmentGroup[]>([]);
-	let loading = $state(true);
-	let errorMessage = $state<string | null>(null);
+	const groups = $derived(groupsQuery.current ?? []);
+	const firstLoad = $derived(groupsQuery.current === undefined);
+	const vcluster = $derived(vclusterQuery.current);
+	const prPreviews = $derived(prPreviewsQuery.current);
+
 	let launchOpen = $state(false);
 	let toTeardown = $state<DevEnvironmentSummary | null>(null);
 	let busyId = $state<string | null>(null);
-	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	let errorMessage = $state<string | null>(null);
 
-	async function load() {
-		try {
-			const res = await fetch('/api/dev-environments');
-			if (!res.ok) {
-				errorMessage = `Failed to load dev environments (${res.status})`;
-				return;
-			}
-			const body = (await res.json()) as {
-				environments: DevEnvironmentSummary[];
-				groups?: DevEnvironmentGroup[];
-			};
-			groups =
-				body.groups ??
-				(body.environments ?? []).map((e) => ({
-					executionId: e.executionId,
-					services: [e],
-					primary: e,
-					ready: e.ready,
-					sessionId: e.sessionId,
-					sessionUrl: e.sessionUrl,
-					runStatus: e.runStatus,
-					createdAt: e.createdAt
-				}));
-			errorMessage = null;
-		} catch (err) {
-			errorMessage = err instanceof Error ? err.message : String(err);
-		} finally {
-			loading = false;
-		}
+	async function tick() {
+		await Promise.all([
+			groupsQuery.refresh(),
+			vclusterQuery.refresh(),
+			prPreviewsQuery.refresh()
+		]);
 	}
+
+	$effect(() => {
+		if (typeof document === 'undefined') return;
+		let timer: ReturnType<typeof setInterval> | null = null;
+		const start = () => {
+			if (timer === null) timer = setInterval(tick, 5000);
+		};
+		const stop = () => {
+			if (timer !== null) {
+				clearInterval(timer);
+				timer = null;
+			}
+		};
+		const onVisibility = () => {
+			if (document.visibilityState === 'visible') {
+				void tick();
+				start();
+			} else {
+				stop();
+			}
+		};
+		onVisibility();
+		document.addEventListener('visibilitychange', onVisibility);
+		return () => {
+			stop();
+			document.removeEventListener('visibilitychange', onVisibility);
+		};
+	});
 
 	function openEnv(env: DevEnvironmentSummary) {
 		goto(`/workspaces/${slug}/dev/${env.executionId}`);
@@ -94,7 +95,7 @@
 				errorMessage = `Teardown failed (${res.status})`;
 				return;
 			}
-			groups = groups.filter((g) => g.executionId !== env.executionId);
+			await groupsQuery.refresh();
 		} finally {
 			busyId = null;
 		}
@@ -103,14 +104,6 @@
 	function onLaunched(executionId: string) {
 		goto(`/workspaces/${slug}/dev/${executionId}`);
 	}
-
-	onMount(() => {
-		load();
-		pollTimer = setInterval(load, 4000);
-	});
-	onDestroy(() => {
-		if (pollTimer) clearInterval(pollTimer);
-	});
 </script>
 
 <div class="h-full overflow-y-auto p-6 space-y-5 max-w-6xl mx-auto w-full">
@@ -133,13 +126,30 @@
 		</Alert>
 	{/if}
 
-	<VclusterPreviewPanel readProxyEnabled={data.previewReadProxyEnabled} />
+	<VclusterPreviewPanel
+		previews={vcluster?.previews ?? []}
+		counts={vcluster?.counts ?? null}
+		readProxyEnabled={data.previewReadProxyEnabled}
+		{slug}
+		onchanged={() => void vclusterQuery.refresh()}
+	/>
+
+	<PrPreviewsPanel enabled={prPreviews?.enabled ?? false} items={prPreviews?.items ?? []} />
 
 	{#if data.previewRunFeedEnabled}
 		<PreviewRunFeedPanel />
+	{:else}
+		<section class="rounded-xl border border-dashed bg-card p-4">
+			<div class="flex items-center gap-2 text-sm text-muted-foreground">
+				<Radio class="size-4" />
+				Cross-preview live run feed is off. Set
+				<code class="text-xs">PREVIEW_RUN_FEED_ENABLED=1</code> to stream every preview's workflow runs
+				here.
+			</div>
+		</section>
 	{/if}
 
-	{#if loading && groups.length === 0}
+	{#if firstLoad}
 		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
 			{#each Array(3) as _, i (i)}
 				<div class="h-40 rounded-xl border bg-muted/30 animate-pulse"></div>
