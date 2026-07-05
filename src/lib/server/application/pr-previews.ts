@@ -212,6 +212,30 @@ export class ApplicationPrPreviewService {
 		};
 	}
 
+	/** UI list read: recent PR-preview records as status snapshots. STRICTLY
+	 * read-only — no resume, no cluster probes (a browser poll must never kick a
+	 * pipeline; the dispatcher's `status()` keeps that job). */
+	async listStatuses(): Promise<PrPreviewStatus[]> {
+		const records = await this.deps.store.listActive();
+		return records.map((r) => ({
+			prNumber: r.prNumber,
+			alias: r.alias,
+			url: r.url,
+			state: r.state,
+			headSha: r.headSha,
+			services: [...r.services],
+			error: r.error,
+			verify: r.verify,
+			updatedAt: r.updatedAt,
+		}));
+	}
+
+	/** UI single read: the record snapshot (or cluster-free `absent`). Same
+	 * resume-safety contract as `listStatuses()`. */
+	async peek(prNumber: number): Promise<PrPreviewStatus> {
+		return this.snapshot(prNumber);
+	}
+
 	/** Await the in-flight pipeline for a PR (test/synchronization hook). */
 	async settled(prNumber: number): Promise<void> {
 		await this.inFlight.get(prNumber)?.catch(() => {});

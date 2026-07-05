@@ -28,6 +28,8 @@ describe("getEventBusAdapter", () => {
 				previewProvisionerAdapter: "sandbox-execution-api",
 				previewRunFeedEnabled: false,
 				prPreviewsEnabled: false,
+		prPreviewRepo: "PittampalliOrg/workflow-builder",
+		vclusterPreviewMax: 6,
 				prPreviewVerifyEnabled: false,
 				promoteAutoPreviewLabel: false,
 				previewReadProxyEnabled: false,

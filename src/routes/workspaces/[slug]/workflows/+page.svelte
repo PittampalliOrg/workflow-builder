@@ -1,4 +1,5 @@
 <script lang="ts">
+	import StatusPill from "$lib/components/shared/status-pill.svelte";
 	import type { PageData } from "./$types";
 	import { page } from "$app/state";
 	import { Workflow, Search, GitFork } from "@lucide/svelte";
@@ -21,20 +22,6 @@
 		}),
 	);
 
-	function statusColor(status: string): string {
-		switch (status) {
-			case "success":
-				return "text-green-600 bg-green-50 border-green-200";
-			case "error":
-			case "cancelled":
-				return "text-red-600 bg-red-50 border-red-200";
-			case "running":
-			case "pending":
-				return "text-blue-600 bg-blue-50 border-blue-200";
-			default:
-				return "text-gray-600 bg-gray-50 border-gray-200";
-		}
-	}
 
 	function formatRelative(iso: string): string {
 		const diff = Date.now() - new Date(iso).getTime();
@@ -186,13 +173,7 @@
 							</td>
 							<td class="px-4 py-3">
 								{#if wf.latestExecution}
-									<span
-										class="inline-flex items-center text-[10px] font-medium px-2 py-0.5 rounded-full border {statusColor(
-											wf.latestExecution.status,
-										)}"
-									>
-										{wf.latestExecution.status}
-									</span>
+									<StatusPill status={wf.latestExecution.status} />
 								{:else}
 									<span class="text-xs text-muted-foreground">never run</span>
 								{/if}

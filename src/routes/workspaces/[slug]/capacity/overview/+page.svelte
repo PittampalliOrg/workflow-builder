@@ -14,7 +14,7 @@
 	} from '@lucide/svelte';
 	import { createClusterQueueStream } from '$lib/stores/kueueviz/cluster-queues.svelte';
 	import { createWorkloadStream } from '$lib/stores/kueueviz/workloads.svelte';
-	import StatusPill from '$lib/components/capacity/status-pill.svelte';
+	import StatusPill from '$lib/components/capacity/stream-status-pill.svelte';
 	import { formatQuantityForResource } from '$lib/components/capacity/quantity';
 	import MetricSparkline from '$lib/components/metrics/MetricSparkline.svelte';
 	import CapacityGauge from '$lib/components/capacity/overview/capacity-gauge.svelte';

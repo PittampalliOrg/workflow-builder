@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { Badge } from '$lib/components/ui/badge';
 	import { CheckCircle2, XCircle, Loader2, Clock, Copy, Check, ExternalLink } from '@lucide/svelte';
+	import { resolveStatusTone, statusTonePillClass } from '$lib/utils/status-tone';
 
 	interface Props {
 		status: string;
@@ -21,21 +21,6 @@
 		status.toUpperCase() === 'RUNNING' || status.toUpperCase() === 'PENDING'
 	);
 
-	function statusVariant(s: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-		switch (s.toUpperCase()) {
-			case 'RUNNING':
-			case 'PENDING':
-				return 'default';
-			case 'COMPLETED':
-			case 'SUCCESS':
-				return 'secondary';
-			case 'FAILED':
-			case 'ERROR':
-				return 'destructive';
-			default:
-				return 'outline';
-		}
-	}
 
 	async function copyId() {
 		try {
@@ -57,7 +42,9 @@
 		<span class="text-sm font-medium">Execution</span>
 	</div>
 
-	<Badge variant={statusVariant(status)} class="flex items-center gap-1">
+	<span
+		class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium {statusTonePillClass(resolveStatusTone(status))}"
+	>
 		{#if isRunning}
 			<Loader2 size={12} class="animate-spin" />
 		{:else if status.toUpperCase() === 'COMPLETED' || status.toUpperCase() === 'SUCCESS'}
@@ -68,7 +55,7 @@
 			<Clock size={12} />
 		{/if}
 		{status}
-	</Badge>
+	</span>
 
 	{#if duration}
 		<span class="flex items-center gap-1 text-xs text-muted-foreground">
