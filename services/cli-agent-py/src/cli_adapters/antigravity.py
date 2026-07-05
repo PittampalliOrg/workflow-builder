@@ -1343,6 +1343,15 @@ class AntigravityAdapter(CliAdapter):
         model = normalize_agy_model(agent_config.get("modelSpec"))
         if model:
             argv += ["--model", model]
+        # agy 1.0.16 exposes no reasoning/effort control (no --effort/--reasoning
+        # flag and no settings.json reasoning-budget key), so AgentConfig.effort is
+        # a documented NO-OP for this runtime — we do not invent a flag. Log once so
+        # an operator who set `effort` on an agy agent knows it is ignored.
+        if clean_string(agent_config.get("effort")):
+            logger.info(
+                "[agy] AgentConfig.effort=%s is not supported by the agy CLI; ignoring",
+                clean_string(agent_config.get("effort")),
+            )
         return argv
 
     def extract_completion_text(self, payload: Mapping[str, Any]) -> str | None:
@@ -1507,6 +1516,7 @@ class AntigravityAdapter(CliAdapter):
         base_env: Mapping[str, str],
         *,
         session_id: str | None = None,
+        agent_config: Mapping[str, Any] | None = None,
     ) -> dict[str, str]:
         env: dict[str, str] = {}
         passthrough = (

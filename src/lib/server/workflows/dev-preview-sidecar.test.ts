@@ -19,7 +19,13 @@ describe("sidecarBaseUrl", () => {
 
 describe("allowedSidecarCommands", () => {
 	it("exposes the registry's deps + testCommands names", () => {
-		expect(allowedSidecarCommands("workflow-builder")).toEqual(["contract", "deps"]);
+		expect(allowedSidecarCommands("workflow-builder")).toEqual([
+			"boundaries",
+			"check",
+			"contract",
+			"deps",
+			"test-unit",
+		]);
 	});
 	it("denies unknown services instead of throwing", () => {
 		expect(allowedSidecarCommands("not-a-service")).toEqual([]);

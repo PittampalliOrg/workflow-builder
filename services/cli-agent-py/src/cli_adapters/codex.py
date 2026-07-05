@@ -68,6 +68,25 @@ CODEX_BIN = os.environ.get("CLI_AGENT_CODEX_PATH", "codex")
 # Where the credential blob is delivered (must match descriptor cliAuth.envVar).
 CODEX_AUTH_ENV = "CODEX_AUTH_JSON"
 
+# codex-scoped `codexReasoningEffort` → passed LITERALLY to codex, which accepts
+# minimal|low|medium|high|xhigh (extra-high). Takes precedence over the unified
+# `effort` below.
+_CODEX_REASONING_EFFORT_VALUES = ("minimal", "low", "medium", "high", "xhigh")
+# Unified AgentConfig.effort → codex `-c model_reasoning_effort=<v>` FALLBACK (used
+# only when `codexReasoningEffort` is unset). low|medium|high|xhigh pass through
+# (codex supports xhigh natively); max/ultracode map to xhigh. `minimal` is only
+# reachable via the codex-scoped `codexReasoningEffort` field.
+_CODEX_EFFORT_MAP = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "xhigh",
+    "ultracode": "xhigh",
+}
+# AgentConfig.codexReasoningSummary → codex `-c model_reasoning_summary=<v>`.
+_CODEX_SUMMARY_VALUES = ("auto", "concise", "detailed", "none")
+
 
 def clean_string(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
@@ -717,6 +736,23 @@ class CodexAdapter(CliAdapter):
         model = normalize_codex_model(agent_config.get("modelSpec"))
         if model:
             argv += ["--model", model]
+        # codex takes config overrides via repeated `-c key=value`. Reasoning
+        # effort: the codex-scoped `codexReasoningEffort` (literal, supports xhigh)
+        # wins; otherwise fall back to the unified `effort` map. Plus the codex-only
+        # reasoning-summary knob and web search (`--search`). Absent → codex defaults.
+        explicit_effort = clean_string(agent_config.get("codexReasoningEffort"))
+        if explicit_effort in _CODEX_REASONING_EFFORT_VALUES:
+            mapped_effort: str | None = explicit_effort
+        else:
+            unified_effort = clean_string(agent_config.get("effort"))
+            mapped_effort = _CODEX_EFFORT_MAP.get(unified_effort) if unified_effort else None
+        if mapped_effort:
+            argv += ["-c", f"model_reasoning_effort={mapped_effort}"]
+        summary = clean_string(agent_config.get("codexReasoningSummary"))
+        if summary in _CODEX_SUMMARY_VALUES:
+            argv += ["-c", f"model_reasoning_summary={summary}"]
+        if bool(agent_config.get("codexWebSearch")):
+            argv += ["--search"]
         return argv
 
     def extract_completion_text(self, payload: Mapping[str, Any]) -> str | None:
@@ -813,6 +849,7 @@ class CodexAdapter(CliAdapter):
         base_env: Mapping[str, str],
         *,
         session_id: str | None = None,
+        agent_config: Mapping[str, Any] | None = None,
     ) -> dict[str, str]:
         env: dict[str, str] = {}
         passthrough = (

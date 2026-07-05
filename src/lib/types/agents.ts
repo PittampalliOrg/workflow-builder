@@ -142,6 +142,49 @@ export type AgentConfig = {
 	}>;
 
 	modelSpec?: string;
+
+	/**
+	 * Fallback model spec for the claude-code-cli adapter — passed as
+	 * `--fallback-model` and used when the primary model is overloaded. Normalized
+	 * the same way as `modelSpec` (an `anthropic/` prefix is stripped). Claude Code
+	 * only; the codex / agy adapters ignore it.
+	 */
+	fallbackModelSpec?: string;
+
+	/**
+	 * Unified reasoning-effort selector for the interactive-cli runtimes. Each CLI
+	 * adapter maps it to its own native control (see the adapters under
+	 * `services/cli-agent-py/src/cli_adapters/`):
+	 *  - claude-code-cli: `low|medium|high|xhigh` → `--effort <v>`; `max` → the
+	 *    session-only `CLAUDE_CODE_EFFORT_LEVEL=max` pane env; `ultracode` →
+	 *    `--settings '{"ultracode": true}'` (ultracode is a Claude Code setting, not
+	 *    an effort level, so it is NOT combined with `--effort`).
+	 *  - codex-cli: `-c model_reasoning_effort=<v>` — `low|medium|high|xhigh` pass
+	 *    through (codex supports `xhigh` natively), `max`/`ultracode` map to `xhigh`.
+	 *    Overridden by the codex-only `codexReasoningEffort` when that is set.
+	 *  - agy-cli: no native reasoning/effort control on the pinned version → a
+	 *    documented no-op.
+	 * Absent → each CLI's own default effort (current behavior).
+	 */
+	effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode";
+
+	/**
+	 * codex-cli only: explicit reasoning-effort override, passed literally as
+	 * `-c model_reasoning_effort=<v>` (codex accepts `minimal|low|medium|high|xhigh`,
+	 * including extra-high `xhigh`). Takes precedence over the unified `effort` for
+	 * codex; ignored by the other adapters.
+	 */
+	codexReasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+
+	/**
+	 * codex-cli only: reasoning-summary verbosity, passed as
+	 * `-c model_reasoning_summary=<v>`. Ignored by the other adapters.
+	 */
+	codexReasoningSummary?: "auto" | "concise" | "detailed" | "none";
+
+	/** codex-cli only: enable codex's web-search tool via the `--search` flag. */
+	codexWebSearch?: boolean;
+
 	temperature?: number;
 	toolChoice?: AgentToolChoice;
 

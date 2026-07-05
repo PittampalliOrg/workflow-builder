@@ -208,6 +208,58 @@ describe("resolveSpecAgentRefs", () => {
 		expect(withBlock.agentSlug).toBe("code-agent");
 	});
 
+	it("carries interactive-cli effort/options fields through to the dispatched agentConfig", async () => {
+		// Load-bearing round-trip: the new AgentConfig fields (effort,
+		// fallbackModelSpec, codexReasoningSummary, codexWebSearch) must survive the
+		// BFF→sandbox path so `effort` actually reaches cli-agent-py. They ride the
+		// SAME pass-through as `modelSpec`: the agent-row config flows through
+		// flattenBundles → applyOverrides → stampCliAdapterForRuntime and is written
+		// verbatim onto the durable/run node's `with.agentConfig` + `with.body.agentConfig`
+		// (there is no zod schema / allowlist / field-pick on this path that would drop
+		// unknown keys). This test fails loudly if someone later adds one.
+		const config = minimalConfig({
+			runtime: "claude-code-cli",
+			modelSpec: "anthropic/claude-opus-4-8",
+			effort: "ultracode",
+			fallbackModelSpec: "anthropic/claude-sonnet-4-6",
+			codexReasoningEffort: "xhigh",
+			codexReasoningSummary: "detailed",
+			codexWebSearch: true,
+		});
+		resolveSessionAgentByRefMock.mockResolvedValueOnce(
+			resolvedAgent({ version: 2, slug: "ultra-agent", config }),
+		);
+		const spec = specWithTasks([
+			{
+				Run: {
+					call: "durable/run",
+					with: { body: { prompt: "hi", agentRef: { id: "a1" } } },
+				},
+			},
+		]);
+
+		const resolved = await resolveSpecAgentRefs(spec);
+		const task = (resolved.document as Record<string, unknown>).do as Array<
+			Record<string, unknown>
+		>;
+		const withBlock = (task[0].Run as Record<string, unknown>).with as Record<
+			string,
+			unknown
+		>;
+		for (const target of [
+			withBlock.agentConfig,
+			(withBlock.body as Record<string, unknown>).agentConfig,
+		]) {
+			const ac = target as Record<string, unknown>;
+			expect(ac.modelSpec).toBe("anthropic/claude-opus-4-8");
+			expect(ac.effort).toBe("ultracode");
+			expect(ac.fallbackModelSpec).toBe("anthropic/claude-sonnet-4-6");
+			expect(ac.codexReasoningEffort).toBe("xhigh");
+			expect(ac.codexReasoningSummary).toBe("detailed");
+			expect(ac.codexWebSearch).toBe(true);
+		}
+	});
+
 	it("hydrates skill registry entries through the injected repository", async () => {
 		const config = minimalConfig({
 			skills: [
