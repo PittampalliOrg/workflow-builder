@@ -30,17 +30,43 @@ export interface VclusterPreview {
 	/** A3: the backing warm-pool member id (pool-<n>) when this preview was CLAIMED, else null.
 	 * Presence means the preview came up instantly from the pool rather than a cold provision. */
 	pool: string | null;
+	/** A4 lifecycle state: "hot" (running) | "slept" (control plane + workloads scaled down;
+	 * a touch/claim wakes it). Null against an older SEA that doesn't emit it. */
+	state: "hot" | "slept" | null;
+	/** D1: who this preview belongs to — "user" | "pr" | null (legacy/human). */
+	origin: string | null;
+	/** D1: the GitHub PR a pr-origin preview serves. */
+	prNumber: number | null;
+	/** D1: RFC3339 expiry (from ttlHours); the reaper tears the preview down past it. */
+	expiresAt: string | null;
+	/** A4: RFC3339 last-activity stamp (touch endpoint / provision / claim). */
+	lastActive: string | null;
 }
 
-/** A3 capacity accounting (from the SEA list): awake = every non-terminating preview vcluster
- * (claimed + free-hot + regular), so the launch cap counts pooled members too. */
+/** A3/A4 capacity accounting (from the SEA list): `awake` counts HOT members only (claimed +
+ * free-hot + regular — a slept preview holds no compute so it doesn't gate cold provisions);
+ * `total` counts everything (awake + slept) against `totalMax` (0 = unlimited). */
 export interface VclusterPreviewCounts {
 	awake: number;
+	slept: number;
+	total: number;
 	free: number;
 	claimed: number;
 	recycling: number;
 	max: number;
+	totalMax: number;
 	poolSize: number;
+}
+
+/** D1 lifecycle fields accepted by claim/provision/launch (all optional; omitted = the
+ * legacy/human preview shape — never auto-reaped, never evicted). */
+export interface VclusterPreviewLifecycleParams {
+	/** "user" (a human asked for it) | "pr" (PR-preview automation; evictable). */
+	origin?: "user" | "pr";
+	/** The GitHub PR a pr-origin preview serves. */
+	prNumber?: number;
+	/** Per-preview lifetime in hours; SEA stamps `vcluster-preview-expires-at`. */
+	ttlHours?: number;
 }
 
 function sandboxExecutionApiUrl(): string | null {
@@ -106,6 +132,22 @@ function toPreview(d: Record<string, unknown>): VclusterPreview {
 		tailnetHost: typeof d.tailnetHost === "string" ? d.tailnetHost : null,
 		url: typeof d.url === "string" ? d.url : null,
 		pool: typeof d.pool === "string" ? d.pool : null,
+		state: d.state === "slept" ? "slept" : d.state === "hot" ? "hot" : null,
+		origin: typeof d.origin === "string" ? d.origin : null,
+		prNumber:
+			typeof d.prNumber === "number" && Number.isFinite(d.prNumber)
+				? d.prNumber
+				: null,
+		expiresAt: typeof d.expiresAt === "string" ? d.expiresAt : null,
+		lastActive: typeof d.lastActive === "string" ? d.lastActive : null,
+	};
+}
+
+function lifecycleBody(params: VclusterPreviewLifecycleParams): Record<string, unknown> {
+	return {
+		...(params.origin ? { origin: params.origin } : {}),
+		...(params.prNumber ? { prNumber: params.prNumber } : {}),
+		...(params.ttlHours ? { ttlHours: params.ttlHours } : {}),
 	};
 }
 
@@ -114,11 +156,13 @@ function toPreview(d: Record<string, unknown>): VclusterPreview {
  * when the pool is empty/off (SEA 404) — the caller then falls back to a cold provision. A
  * claim consumes an already-awake member, so it is not capacity-gated.
  */
-export async function claimVclusterPreview(params: {
-	name: string;
-	devMode?: boolean;
-	user?: string;
-}): Promise<VclusterPreview | null> {
+export async function claimVclusterPreview(
+	params: {
+		name: string;
+		devMode?: boolean;
+		user?: string;
+	} & VclusterPreviewLifecycleParams,
+): Promise<VclusterPreview | null> {
 	const baseUrl = sandboxExecutionApiUrl();
 	if (!baseUrl) throw new Error("SANDBOX_EXECUTION_API_URL not configured");
 	const name = safePreviewName(params.name);
@@ -133,6 +177,7 @@ export async function claimVclusterPreview(params: {
 			name,
 			...(params.devMode ? { devMode: true } : {}),
 			...(params.user ? { user: params.user } : {}),
+			...lifecycleBody(params),
 		}),
 	});
 	if (res.status === 404) return null; // no free member / pool off → cold-provision fallback
@@ -149,16 +194,18 @@ export async function claimVclusterPreview(params: {
 
 /** Cold-provision (or re-provision) a Tier-2 preview vcluster (ACTION=up). Returns immediately
  * (202). This is the fallback when the warm pool has no free member. */
-export async function provisionVclusterPreview(params: {
-	name: string;
-	daprVersion?: string;
-	tailnetHost?: string;
-	previewDb?: string;
-	/** Interactive dev preview: provision so the dev image can adopt the prod BFF
-	 * over HTTPS (runner sets EXPOSE_DEV_POD=false). The adopt:true dev/preview is
-	 * triggered separately after provisioning. */
-	devMode?: boolean;
-}): Promise<VclusterPreview> {
+export async function provisionVclusterPreview(
+	params: {
+		name: string;
+		daprVersion?: string;
+		tailnetHost?: string;
+		previewDb?: string;
+		/** Interactive dev preview: provision so the dev image can adopt the prod BFF
+		 * over HTTPS (runner sets EXPOSE_DEV_POD=false). The adopt:true dev/preview is
+		 * triggered separately after provisioning. */
+		devMode?: boolean;
+	} & VclusterPreviewLifecycleParams,
+): Promise<VclusterPreview> {
 	const name = safePreviewName(params.name);
 	const data = await call("POST", "/internal/vcluster-preview", {
 		name,
@@ -167,6 +214,7 @@ export async function provisionVclusterPreview(params: {
 		...(params.tailnetHost ? { tailnetHost: params.tailnetHost } : {}),
 		...(params.previewDb ? { previewDb: params.previewDb } : {}),
 		...(params.devMode ? { previewDevMode: true } : {}),
+		...lifecycleBody(params),
 	});
 	return toPreview(data);
 }
@@ -176,21 +224,55 @@ export async function provisionVclusterPreview(params: {
  * provision when the pool is empty/off. Returns immediately (202). Note: capacity admission for
  * the COLD fallback lives in the route (it must count awake members); a claim needs no cap.
  */
-export async function launchVclusterPreview(params: {
-	name: string;
-	daprVersion?: string;
-	tailnetHost?: string;
-	previewDb?: string;
-	devMode?: boolean;
-	user?: string;
-}): Promise<VclusterPreview> {
+export async function launchVclusterPreview(
+	params: {
+		name: string;
+		daprVersion?: string;
+		tailnetHost?: string;
+		previewDb?: string;
+		devMode?: boolean;
+		user?: string;
+	} & VclusterPreviewLifecycleParams,
+): Promise<VclusterPreview> {
 	const claimed = await claimVclusterPreview({
 		name: params.name,
 		devMode: params.devMode,
 		user: params.user,
+		origin: params.origin,
+		prNumber: params.prNumber,
+		ttlHours: params.ttlHours,
 	});
-	if (claimed) return claimed;
+	if (claimed) {
+		// A4: launching IS activity. A FRESH claim already stamped last-active inside the
+		// atomic label flip, but an IDEMPOTENT re-claim of an existing alias does not —
+		// touch covers it (and a touch on a slept re-claim is a harmless second resume
+		// signal). Best-effort: a touch failure never fails the launch.
+		await touchVclusterPreview(claimed.name).catch(() => undefined);
+		return claimed;
+	}
 	return provisionVclusterPreview(params);
+}
+
+/** A4 activity ping + wake-up. Stamps `vcluster-preview-last-active` on the preview; touching
+ * a SLEPT preview starts a resume-Job (`resuming: true` — poll getVclusterPreview until ready).
+ * Call this from points where a preview is actively USED (launch, dev-preview provision) —
+ * never from list/status reads (reads don't count as activity). */
+export async function touchVclusterPreview(name: string): Promise<{
+	name: string;
+	state: string;
+	resuming: boolean;
+	lastActive: string | null;
+}> {
+	const data = await call(
+		"POST",
+		`/internal/vcluster-preview/${encodeURIComponent(safePreviewName(name))}/touch`,
+	);
+	return {
+		name: String(data.name ?? name),
+		state: typeof data.state === "string" ? data.state : "hot",
+		resuming: data.resuming === true,
+		lastActive: typeof data.lastActive === "string" ? data.lastActive : null,
+	};
 }
 
 /** Current status of a Tier-2 preview (job phase == environment readiness). Accepts a claimed
@@ -216,10 +298,13 @@ function toCounts(d: unknown): VclusterPreviewCounts | null {
 	const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 	return {
 		awake: num(c.awake),
+		slept: num(c.slept),
+		total: num(c.total),
 		free: num(c.free),
 		claimed: num(c.claimed),
 		recycling: num(c.recycling),
 		max: num(c.max),
+		totalMax: num(c.totalMax),
 		poolSize: num(c.poolSize),
 	};
 }

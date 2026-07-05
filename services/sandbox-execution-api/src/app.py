@@ -9,6 +9,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
@@ -131,6 +132,12 @@ async def _lifespan(_app: "FastAPI"):
         _start_pool_manager()
     except Exception as exc:  # pragma: no cover - never block startup on the optional pool
         logger.warning("pool-manager: startup failed: %s", exc)
+    # A4 lifecycle reaper (sleep/TTL/capacity) — a no-op unless one of its flags is set
+    # (VCLUSTER_PREVIEW_SLEEP_AFTER_MINUTES / _TTL_HOURS / _TOTAL_MAX > 0).
+    try:
+        _start_lifecycle_reaper()
+    except Exception as exc:  # pragma: no cover - never block startup on the reaper
+        logger.warning("lifecycle-reaper: startup failed: %s", exc)
     yield
 
 
@@ -4251,6 +4258,40 @@ def _vcluster_preview_pool_size() -> int:
     return max(0, n)
 
 
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    try:
+        n = int(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        n = default
+    return max(minimum, n)
+
+
+def _vcluster_preview_sleep_after_minutes() -> int:
+    """A4: sleep an ACTIVITY-TRACKED preview after this many idle minutes (per its
+    vcluster-preview-last-active annotation). 0 (default) = sleep OFF."""
+    return _env_int("VCLUSTER_PREVIEW_SLEEP_AFTER_MINUTES", 0)
+
+
+def _vcluster_preview_ttl_hours() -> int:
+    """A4: tear a preview down this many hours after creation (or at its explicit
+    vcluster-preview-expires-at annotation, whichever is SOONER). 0 (default) = the
+    global creation-TTL is OFF; an explicit expires-at annotation is still honored
+    by any reap pass (it is a per-preview opt-in marker, e.g. a PR preview's ttlHours)."""
+    return _env_int("VCLUSTER_PREVIEW_TTL_HOURS", 0)
+
+
+def _vcluster_preview_total_max() -> int:
+    """A4: hard cap on ALL preview vclusters (awake + slept). 0 (default) = unlimited.
+    VCLUSTER_PREVIEW_MAX stays the AWAKE-only cap (slept previews don't count against it)."""
+    return _env_int("VCLUSTER_PREVIEW_TOTAL_MAX", 0)
+
+
+def _vcluster_preview_active_minutes() -> int:
+    """A4: a preview touched within this window counts as ACTIVE — the eviction
+    selector never picks it, whatever its origin."""
+    return _env_int("VCLUSTER_PREVIEW_ACTIVE_MINUTES", 30, minimum=1)
+
+
 class VclusterPreviewRequest(BaseModel):
     """Provision (or tear down) a Tier-2 full-isolation preview vcluster."""
 
@@ -4290,17 +4331,33 @@ class VclusterPreviewRequest(BaseModel):
     # `vcluster-preview-pool=free`, records its image pins, and skips the (user-specific) CLI-
     # cred copy (deferred to claim). Set only by the SEA pool manager, never by a user request.
     pool: bool = False
+    # ---- D1 lifecycle contract (all optional; absent = the legacy/human preview shape) ----
+    # origin: who this preview belongs to — "user" (a human asked for it) or "pr" (a PR-preview
+    # automation asked for it). Stamped as the `vcluster-preview-origin` ns label; PR-origin
+    # previews are EVICTABLE by the A4 capacity logic, human ones are not.
+    origin: str | None = None  # user | pr
+    # prNumber: the GitHub PR a pr-origin preview serves; stamped as `vcluster-preview-pr`.
+    prNumber: int | None = None
+    # ttlHours: per-preview lifetime. SEA computes now+ttlHours and stamps it as the
+    # `vcluster-preview-expires-at` RFC3339 ns annotation; any reap pass tears the preview
+    # down once past it (independent of the global VCLUSTER_PREVIEW_TTL_HOURS flag).
+    ttlHours: int | None = None
 
 
 class VclusterPreviewClaimRequest(BaseModel):
     """Claim a pre-baked warm-pool member for a user (A3). `name` is the user's requested
     preview name (becomes the alias + the wfb-<name> tailnet host); `devMode` optionally wires
     the claim so the adopt:true dev image can replace the prod BFF; `user` is recorded on the
-    claimed namespace for attribution."""
+    claimed namespace for attribution. origin/prNumber/ttlHours mirror VclusterPreviewRequest
+    (D1) — a PR preview claimed from the pool must carry the same lifecycle markers as a
+    cold-provisioned one."""
 
     name: str = Field(min_length=1, max_length=40)
     devMode: bool | None = None
     user: str | None = None
+    origin: str | None = None  # user | pr
+    prNumber: int | None = None
+    ttlHours: int | None = None
 
 
 def _vcluster_preview_job_name(name: str, action: str) -> str:
@@ -4377,6 +4434,19 @@ def _vcluster_preview_job_manifest(
     # A3 warm pool: bake a generic free member (runner labels the ns free + skips cred-copy).
     if req.pool:
         env.append({"name": "POOL", "value": "true"})
+    # D1 lifecycle metadata → the runner stamps these on the host preview ns at bringup
+    # (SEA can't stamp a COLD provision itself — the ns doesn't exist yet at accept time;
+    # the CLAIM path stamps them SEA-side inside the atomic label flip instead). The expiry
+    # is computed HERE (Python) so the runner never does busybox date math.
+    if req.origin in ("user", "pr"):
+        env.append({"name": "ORIGIN", "value": req.origin})
+    if req.prNumber is not None and req.prNumber > 0:
+        env.append({"name": "PR_NUMBER", "value": str(req.prNumber)})
+    if req.ttlHours is not None and req.ttlHours > 0:
+        expires_at = (
+            datetime.now(UTC) + timedelta(hours=req.ttlHours)
+        ).isoformat(timespec="seconds")
+        env.append({"name": "EXPIRES_AT", "value": expires_at})
     if enroll_mode == "agent":
         env.append(
             {
@@ -4406,8 +4476,12 @@ def _vcluster_preview_job_manifest(
             # Teardown must reclaim its slot promptly, so a wedged down-Job gets a much shorter
             # deadline than a provision (task #25 — a hung teardown was silently holding a
             # preview slot for the full 30 min). runner.sh ACTION=down now bounds each hang-prone
-            # step with `timeout`; this deadline is the last-resort backstop.
-            "activeDeadlineSeconds": 900 if req.action == "down" else 1800,
+            # step with `timeout`; this deadline is the last-resort backstop. A4 sleep/resume
+            # Jobs are quick edge operations (scale + pod delete / scale + rollout wait) and get
+            # correspondingly tight deadlines.
+            "activeDeadlineSeconds": {"down": 900, "sleep": 600, "resume": 900}.get(
+                req.action, 1800
+            ),
             "template": {
                 "metadata": {"labels": {"app": "vcluster-preview"}},
                 "spec": {
@@ -4608,6 +4682,7 @@ def get_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
     active = succeeded = failed = 0
     boot_seconds: int | None = None
     real_name = name
+    lifecycle: dict[str, Any] = {}
     if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
         "1",
         "true",
@@ -4615,10 +4690,25 @@ def get_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
     }:
         batch, core = _load_k8s_clients()
         real_name = _resolve_preview_realname(core, name)
-        phase, active, succeeded, failed = _vcluster_preview_phase(
-            batch, core, real_name
-        )
+        member: PreviewMember | None = None
+        try:
+            member = _preview_member_from_ns(
+                core.read_namespace(name=f"vcluster-{real_name}")
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) != 404:
+                raise
+        if member is not None and member.slept:
+            # A slept preview's pods are DELIBERATELY gone — probing would misreport
+            # "provisioning"; surface the slept state instead (A4 contract).
+            phase = "slept"
+        else:
+            phase, active, succeeded, failed = _vcluster_preview_phase(
+                batch, core, real_name
+            )
         boot_seconds = _vcluster_preview_boot_seconds(core, real_name)
+        if member is not None:
+            lifecycle = _preview_lifecycle_fields(member)
     result = {
         "name": name,
         "job": _vcluster_preview_job_name(real_name, "up"),
@@ -4630,10 +4720,139 @@ def get_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
         "tailnetHost": tailnet_host,
         "url": url,
         "bootSeconds": boot_seconds,
+        **lifecycle,
     }
     if real_name != name:
         result["pool"] = real_name
     return result
+
+
+def _read_preview_member(core, name: str) -> PreviewMember:
+    """Resolve a user-facing name (alias or real) to its PreviewMember, 404-ing on
+    anything that is not a live preview vcluster namespace. The app=vcluster-preview
+    label check is the HARD safety rule: lifecycle endpoints can never act on an
+    arbitrary namespace."""
+    real_name = _resolve_preview_realname(core, name)
+    try:
+        ns = core.read_namespace(name=f"vcluster-{real_name}")
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            raise HTTPException(status_code=404, detail="preview not found") from exc
+        raise
+    labels = (ns.metadata.labels or {}) if ns.metadata else {}
+    if labels.get("app") != "vcluster-preview":
+        raise HTTPException(status_code=404, detail="not a preview vcluster")
+    member = _preview_member_from_ns(ns)
+    if member.terminating:
+        raise HTTPException(status_code=409, detail="preview is terminating")
+    return member
+
+
+@app.post("/internal/vcluster-preview/{name}/touch")
+def touch_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
+    """A4 activity ping: stamp vcluster-preview-last-active=now on the preview's host ns.
+    The BFF calls this from the points where a preview is actively USED (launch, dev-preview
+    provision) — reads/list/status never touch. Touching a SLEPT preview wakes it (resume-Job);
+    the caller should poll GET /internal/vcluster-preview/{name} until ready."""
+    _require_internal(request)
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {"1", "true", "yes"}:
+        return {"name": name, "state": "hot", "lastActive": None, "resuming": False}
+    batch, core = _load_k8s_clients()
+    member = _read_preview_member(core, name)
+    now_iso = datetime.now(UTC).isoformat(timespec="seconds")
+    resuming = False
+    if member.slept:
+        resuming = _resume_member(batch, core, member, _agent_workflow_host_namespace())
+    else:
+        try:
+            core.patch_namespace(
+                name=member.ns_name,
+                body={
+                    "metadata": {
+                        "annotations": {
+                            _VCLUSTER_PREVIEW_LAST_ACTIVE_ANNOTATION: now_iso
+                        }
+                    }
+                },
+            )
+        except Exception as exc:
+            logger.warning("touch: last-active stamp %s failed: %s", member.real_name, exc)
+            raise HTTPException(status_code=500, detail="touch failed") from exc
+    _invalidate_previews_cache()
+    result = {
+        "name": name,
+        "state": "resuming" if resuming else "hot",
+        "lastActive": now_iso,
+        "resuming": resuming,
+    }
+    if member.real_name != name:
+        result["pool"] = member.real_name
+    return result
+
+
+@app.post("/internal/vcluster-preview/{name}/sleep")
+def sleep_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
+    """A4 explicit sleep (the reaper's mechanism, callable directly — e.g. the lead's live
+    validation, or a BFF 'sleep now' affordance). Free/recycling pool members and protected
+    previews refuse with 409."""
+    _require_internal(request)
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {"1", "true", "yes"}:
+        return {"name": name, "state": "slept", "job": None}
+    batch, core = _load_k8s_clients()
+    member = _read_preview_member(core, name)
+    if member.protected:
+        raise HTTPException(status_code=409, detail="preview is protected")
+    if member.pool_state in ("free", "recycling"):
+        raise HTTPException(
+            status_code=409, detail="free pool members stay claim-ready (never slept)"
+        )
+    if member.slept:
+        return {"name": name, "state": "slept", "job": None, "alreadySlept": True}
+    if not _sleep_member(batch, core, member, _agent_workflow_host_namespace()):
+        raise HTTPException(status_code=500, detail="sleep failed")
+    _invalidate_previews_cache()
+    result = {
+        "name": name,
+        "state": "slept",
+        "job": _vcluster_preview_job_name(member.real_name, "sleep"),
+    }
+    if member.real_name != name:
+        result["pool"] = member.real_name
+    return result
+
+
+class VclusterPreviewReapRequest(BaseModel):
+    """Optional body for the reap endpoint. needRoom asks the pass to ALSO evict this many
+    members (beyond TTL/TOTAL_MAX work) via the locked eviction order — the D1 PR-preview
+    consumer uses it to make room before provisioning when capacity is full."""
+
+    needRoom: int | None = None
+
+
+@app.post("/internal/vcluster-preview/reap")
+def reap_vcluster_previews(
+    request: Request, body: VclusterPreviewReapRequest | None = None
+) -> dict[str, Any]:
+    """Run ONE A4 reaper pass synchronously (TTL teardown → capacity eviction → sleep) and
+    return its stats. The suspended preview-lifecycle-reap CronJob curls this every 30 min
+    as the belt-and-suspenders backstop against SEA thread death; it is also the manual
+    lever for live validation. Inert while all lifecycle flags are 0 (only explicit
+    per-preview expires-at markers are acted on)."""
+    _require_internal(request)
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {"1", "true", "yes"}:
+        return {
+            "total": 0,
+            "awake": 0,
+            "slept": 0,
+            "reapedExpired": 0,
+            "evicted": 0,
+            "sleptNow": 0,
+        }
+    batch, core = _load_k8s_clients()
+    need_room = body.needRoom if body and body.needRoom and body.needRoom > 0 else 0
+    stats = _lifecycle_reap_once(batch, core, need_room=need_room)
+    set_current_span_io("output", stats)
+    return stats
 
 
 @app.delete("/internal/vcluster-preview/{name}")
@@ -4688,6 +4907,25 @@ _VCLUSTER_PREVIEW_CLAIMED_AT_ANNOTATION = "vcluster-preview-claimed-at"
 # Baked image-pin signature (bff=…;orch=…;fr=…;sea=…) the recycler diffs vs the live host images.
 _VCLUSTER_PREVIEW_IMAGE_PINS_ANNOTATION = "vcluster-preview-image-pins"
 
+# ---- A4/D1 lifecycle contract (labels + annotations on the host preview ns) ----
+# vcluster-preview-state: absent/hot = running; slept = control plane + workloads scaled
+# down by an A4 sleep-Job (PVCs + tailnet hostname persist; a resume-Job wakes it).
+_VCLUSTER_PREVIEW_STATE_LABEL = "vcluster-preview-state"
+# vcluster-preview-origin: user | pr (absent = legacy/human preview predating D1). PR-origin
+# previews are evictable; human ones never are.
+_VCLUSTER_PREVIEW_ORIGIN_LABEL = "vcluster-preview-origin"
+_VCLUSTER_PREVIEW_PR_LABEL = "vcluster-preview-pr"  # the GitHub PR number (origin=pr)
+# vcluster-preview-protected=true: a hard operator exemption — the reaper/eviction/sleep
+# logic NEVER touches a protected preview (the lead's tool for the standing gan-* previews).
+_VCLUSTER_PREVIEW_PROTECTED_LABEL = "vcluster-preview-protected"
+# vcluster-preview-last-active: RFC3339 — stamped by the touch endpoint + at provision/claim.
+# ABSENT = the preview is not activity-tracked and the sleep reaper never considers it.
+_VCLUSTER_PREVIEW_LAST_ACTIVE_ANNOTATION = "vcluster-preview-last-active"
+# vcluster-preview-expires-at: RFC3339 — explicit per-preview expiry (from ttlHours); any
+# reap pass tears the preview down once past it, independent of the global TTL flag.
+_VCLUSTER_PREVIEW_EXPIRES_AT_ANNOTATION = "vcluster-preview-expires-at"
+_VCLUSTER_PREVIEW_SLEPT_AT_ANNOTATION = "vcluster-preview-slept-at"
+
 
 def _preview_realname_from_ns(ns) -> str:
     """The ns-backing member id: the vcluster-preview-name label, else the ns name with the
@@ -4704,10 +4942,186 @@ def _preview_ns_is_terminating(ns) -> bool:
     return bool(ns.status and getattr(ns.status, "phase", "") == "Terminating")
 
 
+def _parse_rfc3339(raw: Any) -> datetime | None:
+    """Lenient RFC3339 parse (the annotations are stamped by us, but a hand-edited or
+    truncated value must never crash a reap pass — unparseable = absent)."""
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).strip().replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt
+
+
+@dataclass
+class PreviewMember:
+    """One preview vcluster's lifecycle-relevant state, parsed off its host namespace.
+    A plain value object so the A4 selection logic (`_select_preview_evictions`,
+    `_member_is_expired`, …) stays PURE and exhaustively unit-testable."""
+
+    real_name: str
+    ns_name: str
+    pool_state: str | None = None  # free | claimed | recycling | None (non-pool)
+    alias: str | None = None
+    slept: bool = False
+    origin: str | None = None  # user | pr | None (legacy/human)
+    pr_number: int | None = None
+    protected: bool = False
+    terminating: bool = False
+    created_at: datetime | None = None
+    last_active: datetime | None = None
+    expires_at: datetime | None = None  # the EXPLICIT annotation only
+
+
+def _preview_member_from_ns(ns) -> PreviewMember:
+    meta = getattr(ns, "metadata", None)
+    labels = getattr(meta, "labels", None) or {}
+    annotations = getattr(meta, "annotations", None) or {}
+    pr_raw = labels.get(_VCLUSTER_PREVIEW_PR_LABEL)
+    try:
+        pr_number = int(pr_raw) if pr_raw is not None else None
+    except (TypeError, ValueError):
+        pr_number = None
+    created = getattr(meta, "creation_timestamp", None)
+    if created is not None and created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    return PreviewMember(
+        real_name=_preview_realname_from_ns(ns),
+        ns_name=getattr(meta, "name", None) or "",
+        pool_state=labels.get(_VCLUSTER_PREVIEW_POOL_LABEL),
+        alias=labels.get(_VCLUSTER_PREVIEW_ALIAS_LABEL),
+        slept=labels.get(_VCLUSTER_PREVIEW_STATE_LABEL) == "slept",
+        origin=labels.get(_VCLUSTER_PREVIEW_ORIGIN_LABEL),
+        pr_number=pr_number,
+        protected=labels.get(_VCLUSTER_PREVIEW_PROTECTED_LABEL) == "true",
+        terminating=_preview_ns_is_terminating(ns),
+        created_at=created,
+        last_active=_parse_rfc3339(
+            annotations.get(_VCLUSTER_PREVIEW_LAST_ACTIVE_ANNOTATION)
+        ),
+        expires_at=_parse_rfc3339(
+            annotations.get(_VCLUSTER_PREVIEW_EXPIRES_AT_ANNOTATION)
+        ),
+    )
+
+
+def _member_effective_expiry(
+    member: PreviewMember, *, ttl_hours: int
+) -> datetime | None:
+    """The moment this member expires: the SOONER of its explicit expires-at annotation
+    (honored whenever present — it is a per-preview opt-in marker) and creation+TTL when
+    the global VCLUSTER_PREVIEW_TTL_HOURS flag is on. None = never expires."""
+    candidates: list[datetime] = []
+    if member.expires_at:
+        candidates.append(member.expires_at)
+    if ttl_hours > 0 and member.created_at:
+        candidates.append(member.created_at + timedelta(hours=ttl_hours))
+    return min(candidates) if candidates else None
+
+
+def _member_is_expired(
+    member: PreviewMember, *, now: datetime, ttl_hours: int
+) -> bool:
+    expiry = _member_effective_expiry(member, ttl_hours=ttl_hours)
+    return bool(expiry and now >= expiry)
+
+
+def _member_recently_active(
+    member: PreviewMember, *, now: datetime, active_minutes: int
+) -> bool:
+    return bool(
+        member.last_active
+        and (now - member.last_active) < timedelta(minutes=active_minutes)
+    )
+
+
+def _select_preview_evictions(
+    members: list[PreviewMember],
+    *,
+    need: int,
+    pool_size: int,
+    now: datetime,
+    ttl_hours: int,
+    active_minutes: int,
+) -> list[PreviewMember]:
+    """A4 eviction selector — PURE (no k8s, no env, no clock reads; everything injected).
+
+    Returns up to `need` members to tear down, most-evictable first, in the locked order:
+      1. free-slept        — slept free pool members (only exist after a manual force-sleep;
+                             the reaper never sleeps free members), oldest first
+      2. free-hot surplus  — free hot pool members BEYOND the pool_size target (the pool
+                             keeps its claim-ready quota), oldest first
+      3. TTL-expired       — expired non-free members (explicit expires-at, or creation+TTL
+                             when the global flag is on), soonest-expired first
+      4. PR-origin         — non-expired origin=pr previews, oldest-created first
+
+    NEVER returned, in any bucket: protected members, terminating members, members already
+    recycling, RECENTLY-ACTIVE members (touched within active_minutes), and human previews
+    (origin absent or "user") that are not expired."""
+    if need <= 0:
+        return []
+    eligible = [
+        m
+        for m in members
+        if not m.terminating
+        and not m.protected
+        and m.pool_state != "recycling"
+        and not _member_recently_active(m, now=now, active_minutes=active_minutes)
+    ]
+    created_key = lambda m: m.created_at or now  # noqa: E731 - local sort key
+
+    free_slept = sorted(
+        (m for m in eligible if m.pool_state == "free" and m.slept), key=created_key
+    )
+    free_hot = sorted(
+        (m for m in eligible if m.pool_state == "free" and not m.slept),
+        key=created_key,
+    )
+    # Keep pool_size free-hot members claim-ready; only the oldest surplus is evictable.
+    free_hot_surplus = free_hot[: max(0, len(free_hot) - pool_size)]
+
+    non_free = [m for m in eligible if m.pool_state != "free"]
+    expired = sorted(
+        (m for m in non_free if _member_is_expired(m, now=now, ttl_hours=ttl_hours)),
+        key=lambda m: _member_effective_expiry(m, ttl_hours=ttl_hours) or now,
+    )
+    expired_names = {m.real_name for m in expired}
+    pr_origin = sorted(
+        (
+            m
+            for m in non_free
+            if m.origin == "pr" and m.real_name not in expired_names
+        ),
+        key=created_key,
+    )
+    ordered = free_slept + free_hot_surplus + expired + pr_origin
+    return ordered[:need]
+
+
+def _preview_lifecycle_fields(member: PreviewMember) -> dict[str, Any]:
+    """The A4/D1 lifecycle fields surfaced on the list + get endpoints (contract with the
+    BFF PR-preview consumer): origin, prNumber, expiresAt, state (hot|slept), lastActive."""
+    return {
+        "state": "slept" if member.slept else "hot",
+        "origin": member.origin,
+        "prNumber": member.pr_number,
+        "expiresAt": member.expires_at.isoformat(timespec="seconds")
+        if member.expires_at
+        else None,
+        "lastActive": member.last_active.isoformat(timespec="seconds")
+        if member.last_active
+        else None,
+    }
+
+
 def _compute_vcluster_previews() -> dict[str, Any]:
     items: list[dict[str, Any]] = []
-    counts = {"awake": 0, "free": 0, "claimed": 0, "recycling": 0}
+    counts = {"awake": 0, "slept": 0, "total": 0, "free": 0, "claimed": 0, "recycling": 0}
     counts["max"] = _vcluster_preview_max()
+    counts["totalMax"] = _vcluster_preview_total_max()
     counts["poolSize"] = _vcluster_preview_pool_size()
     if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
         "1",
@@ -4722,45 +5136,59 @@ def _compute_vcluster_previews() -> dict[str, Any]:
     nss = core.list_namespace(label_selector="app=vcluster-preview")
     # A claimed pool member is shown under the user's ALIAS but PROBED under its real member id
     # (its ns is vcluster-<real>); a FREE/recycling member is a pool slot, hidden from the user
-    # list but counted for capacity (awake = every non-terminating preview vcluster).
-    visible: list[tuple[str, str, str]] = []  # (real_name, display_name, host)
+    # list but counted for capacity. A4: `awake` counts only HOT members — a slept preview
+    # (control plane scaled down) holds no capacity, so it doesn't gate cold provisions;
+    # `total` (and totalMax) count everything.
+    visible: list[tuple[PreviewMember, str, str]] = []  # (member, display_name, host)
     for ns in nss.items:
         if _preview_ns_is_terminating(ns):
             continue
-        counts["awake"] += 1
-        labels = (ns.metadata.labels or {}) if ns.metadata else {}
-        real_name = _preview_realname_from_ns(ns)
-        pool_state = labels.get(_VCLUSTER_PREVIEW_POOL_LABEL)
-        alias = labels.get(_VCLUSTER_PREVIEW_ALIAS_LABEL)
-        if pool_state in counts:
-            counts[pool_state] += 1
-        if pool_state in ("free", "recycling"):
+        member = _preview_member_from_ns(ns)
+        counts["total"] += 1
+        if member.slept:
+            counts["slept"] += 1
+        else:
+            counts["awake"] += 1
+        if member.pool_state in counts:
+            counts[member.pool_state] += 1
+        if member.pool_state in ("free", "recycling"):
             continue  # a pool slot, not a user-facing preview
-        display_name = alias if (pool_state == "claimed" and alias) else real_name
+        display_name = (
+            member.alias
+            if (member.pool_state == "claimed" and member.alias)
+            else member.real_name
+        )
         host = f"wfb-{display_name}"
-        visible.append((real_name, display_name, host))
+        visible.append((member, display_name, host))
 
     # Each _vcluster_preview_phase does 2 serial K8s reads (job status + pod list); probe them
     # concurrently keyed on the real member id — the k8s client pool is thread-safe for reads.
-    def _probe(entry: tuple[str, str, str]) -> tuple[str, str, str, str]:
-        real_name, display_name, host = entry
+    # A slept member is not probed at all: its pods are DELIBERATELY gone, so the probe would
+    # just read "provisioning" (misleading) at the cost of 2 API calls — report phase "slept".
+    def _probe(entry: tuple[PreviewMember, str, str]) -> tuple[PreviewMember, str, str, str]:
+        member, display_name, host = entry
+        if member.slept:
+            return member, display_name, host, "slept"
         try:
             phase, _a, _s, _f = _vcluster_preview_phase(
-                batch, core, real_name, request_timeout=_VCLUSTER_PREVIEW_PROBE_TIMEOUT
+                batch,
+                core,
+                member.real_name,
+                request_timeout=_VCLUSTER_PREVIEW_PROBE_TIMEOUT,
             )
-            return display_name, host, phase, real_name
+            return member, display_name, host, phase
         except Exception as exc:
             logger.warning(
-                "vcluster-previews: phase probe for %s failed: %s", real_name, exc
+                "vcluster-previews: phase probe for %s failed: %s", member.real_name, exc
             )
-            return display_name, host, "absent", real_name
+            return member, display_name, host, "absent"
 
-    probed: list[tuple[str, str, str, str]] = []
+    probed: list[tuple[PreviewMember, str, str, str]] = []
     if visible:
         with ThreadPoolExecutor(max_workers=min(8, len(visible))) as pool:
             probed = list(pool.map(_probe, visible))
 
-    for display_name, host, phase, real_name in probed:
+    for member, display_name, host, phase in probed:
         if phase == "absent":
             continue
         item = {
@@ -4769,9 +5197,10 @@ def _compute_vcluster_previews() -> dict[str, Any]:
             "ready": phase == "ready",
             "tailnetHost": host,
             "url": f"https://{host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}",
+            **_preview_lifecycle_fields(member),
         }
-        if real_name != display_name:
-            item["pool"] = real_name  # surface the backing member id for claimed previews
+        if member.real_name != display_name:
+            item["pool"] = member.real_name  # the backing member id for claimed previews
         items.append(item)
     return {"previews": items, "counts": counts}
 
@@ -4866,11 +5295,21 @@ def _member_is_stale(core, apps, real_name: str) -> bool:
     return bool(host and member and host != member)
 
 
-def _claim_free_member(core, *, alias: str, claim_user: str) -> str | None:
+def _claim_free_member(
+    core,
+    *,
+    alias: str,
+    claim_user: str,
+    origin: str | None = None,
+    pr_number: int | None = None,
+    ttl_hours: int | None = None,
+) -> str | None:
     """Atomically hand a FREE warm-pool member to a claim. Returns the member's real id
     (pool-<n>) or None if none free. Idempotent: an alias already claimed reuses that member.
     The flip free→claimed is a resourceVersion-guarded replace, so two concurrent claims for
-    different members can't both win the SAME member (the loser 409s and takes the next one)."""
+    different members can't both win the SAME member (the loser 409s and takes the next one).
+    A4/D1: the SAME atomic replace stamps the lifecycle contract (origin/pr labels,
+    last-active + expires-at annotations) — no separate patch to race with."""
     # Idempotent re-claim: this alias is already claimed (or provisioning) → reuse it.
     try:
         existing = core.list_namespace(
@@ -4902,7 +5341,18 @@ def _claim_free_member(core, *, alias: str, claim_user: str) -> str | None:
         except Exception as exc:
             logger.warning("claim: free-member list failed: %s", exc)
             return None
-        candidates = [ns for ns in free.items if not _preview_ns_is_terminating(ns)]
+        candidates = [
+            ns
+            for ns in free.items
+            if not _preview_ns_is_terminating(ns)
+            # A SLEPT free member is not claimable (its control plane is down; the claim
+            # Job's connect would fail). The reaper never sleeps free members, so this
+            # only guards against a manual force-sleep.
+            and ((ns.metadata.labels or {}) if ns.metadata else {}).get(
+                _VCLUSTER_PREVIEW_STATE_LABEL
+            )
+            != "slept"
+        ]
         if not candidates:
             return None
         # Oldest first — drain aging members before freshly-baked ones.
@@ -4915,10 +5365,19 @@ def _claim_free_member(core, *, alias: str, claim_user: str) -> str | None:
             labels = dict(meta.labels or {})
             labels[_VCLUSTER_PREVIEW_POOL_LABEL] = "claimed"
             labels[_VCLUSTER_PREVIEW_ALIAS_LABEL] = alias
+            if origin in ("user", "pr"):
+                labels[_VCLUSTER_PREVIEW_ORIGIN_LABEL] = origin
+            if pr_number is not None and pr_number > 0:
+                labels[_VCLUSTER_PREVIEW_PR_LABEL] = str(pr_number)
             meta.labels = labels
             annotations = dict(meta.annotations or {})
             annotations[_VCLUSTER_PREVIEW_CLAIMED_BY_ANNOTATION] = claim_user
             annotations[_VCLUSTER_PREVIEW_CLAIMED_AT_ANNOTATION] = claimed_at
+            annotations[_VCLUSTER_PREVIEW_LAST_ACTIVE_ANNOTATION] = claimed_at
+            if ttl_hours is not None and ttl_hours > 0:
+                annotations[_VCLUSTER_PREVIEW_EXPIRES_AT_ANNOTATION] = (
+                    datetime.now(UTC) + timedelta(hours=ttl_hours)
+                ).isoformat(timespec="seconds")
             meta.annotations = annotations
             try:
                 # meta.resource_version guards the CAS: if a concurrent claim already flipped
@@ -4980,11 +5439,42 @@ def claim_vcluster_preview(
         # No real vclusters in dry-run → behave as an empty pool (BFF cold-path also dry-runs).
         raise HTTPException(status_code=404, detail="warm pool unavailable (dry-run)")
     batch, core = _load_k8s_clients()
-    pool_name = _claim_free_member(core, alias=alias, claim_user=claim_user)
+    pool_name = _claim_free_member(
+        core,
+        alias=alias,
+        claim_user=claim_user,
+        origin=body.origin,
+        pr_number=body.prNumber,
+        ttl_hours=body.ttlHours,
+    )
     if not pool_name:
         raise HTTPException(
             status_code=404, detail="no free warm-pool member available"
         )
+    # A4: an IDEMPOTENT re-claim can resolve to an already-claimed member that has since
+    # been put to sleep — wake it instead of running the claim personalization again (the
+    # claim-Job's vcluster connect would fail against a scaled-down control plane; the
+    # member already carries its alias/LB/creds from the original claim).
+    try:
+        member_ns = core.read_namespace(name=f"vcluster-{pool_name}")
+        member = _preview_member_from_ns(member_ns)
+    except Exception:
+        member = None
+    if member is not None and member.slept:
+        _resume_member(batch, core, member, namespace)
+        _invalidate_previews_cache()
+        response = {
+            "name": alias,
+            "pool": pool_name,
+            "pooled": True,
+            "action": "resume",
+            "job": _vcluster_preview_job_name(pool_name, "resume"),
+            "status": "resuming",
+            "tailnetHost": tailnet_host,
+            "url": url,
+        }
+        set_current_span_io("output", response)
+        return response
     bump = False
     if _claim_bump_stale_enabled():
         try:
@@ -5041,6 +5531,291 @@ def _recycle_free_member(batch, core, ns, real_name: str, namespace: str) -> boo
     return True
 
 
+# ===========================================================================
+# A4 lifecycle: touch/last-active, sleep/resume, TTL teardown, capacity
+# eviction. All flag-gated (VCLUSTER_PREVIEW_SLEEP_AFTER_MINUTES /
+# VCLUSTER_PREVIEW_TTL_HOURS / VCLUSTER_PREVIEW_TOTAL_MAX default 0 = OFF): with
+# the flags at 0 no reaper thread starts and a reap pass only honors EXPLICIT
+# per-preview expires-at markers — merging this is inert for the live fleet.
+# ===========================================================================
+
+
+def _lifecycle_job(batch, member: PreviewMember, namespace: str, action: str) -> bool:
+    """Create a sleep/resume Job for a member (the runner is the mechanism; SEA only
+    decides). Returns False (logged) on failure — callers revert their label flip."""
+    req = VclusterPreviewRequest(name=member.real_name, action=action)
+    manifest = _vcluster_preview_job_manifest(req, namespace=namespace)
+    try:
+        _create_preview_job(batch, namespace=namespace, manifest=manifest)
+    except Exception as exc:
+        logger.warning("lifecycle: %s job for %s failed: %s", action, member.real_name, exc)
+        return False
+    return True
+
+
+def _sleep_member(batch, core, member: PreviewMember, namespace: str) -> bool:
+    """Sleep one preview: flip the state label FIRST (claims/touch must see the transition
+    immediately — mirrors the recycler's exclude-then-teardown order), then create the
+    sleep-Job. A failed Job create reverts the label so a preview never reads slept while
+    its pods still run."""
+    slept_at = datetime.now(UTC).isoformat(timespec="seconds")
+    try:
+        core.patch_namespace(
+            name=member.ns_name,
+            body={
+                "metadata": {
+                    "labels": {_VCLUSTER_PREVIEW_STATE_LABEL: "slept"},
+                    "annotations": {
+                        _VCLUSTER_PREVIEW_SLEPT_AT_ANNOTATION: slept_at
+                    },
+                }
+            },
+        )
+    except Exception as exc:
+        logger.warning("lifecycle: sleep relabel %s failed: %s", member.real_name, exc)
+        return False
+    if not _lifecycle_job(batch, member, namespace, "sleep"):
+        try:
+            core.patch_namespace(
+                name=member.ns_name,
+                body={"metadata": {"labels": {_VCLUSTER_PREVIEW_STATE_LABEL: "hot"}}},
+            )
+        except Exception as exc:
+            logger.warning(
+                "lifecycle: sleep revert relabel %s failed: %s", member.real_name, exc
+            )
+        return False
+    logger.info("lifecycle: sleeping idle preview %s", member.real_name)
+    return True
+
+
+def _resume_member(batch, core, member: PreviewMember, namespace: str) -> bool:
+    """Wake a slept preview: flip the state label to hot + stamp last-active (the resume
+    IS activity), then create the resume-Job."""
+    now_iso = datetime.now(UTC).isoformat(timespec="seconds")
+    try:
+        core.patch_namespace(
+            name=member.ns_name,
+            body={
+                "metadata": {
+                    "labels": {_VCLUSTER_PREVIEW_STATE_LABEL: "hot"},
+                    "annotations": {
+                        _VCLUSTER_PREVIEW_LAST_ACTIVE_ANNOTATION: now_iso
+                    },
+                }
+            },
+        )
+    except Exception as exc:
+        logger.warning("lifecycle: resume relabel %s failed: %s", member.real_name, exc)
+    if not _lifecycle_job(batch, member, namespace, "resume"):
+        return False
+    logger.info("lifecycle: resuming slept preview %s", member.real_name)
+    return True
+
+
+def _reap_teardown_member(
+    batch, core, member: PreviewMember, namespace: str, *, reason: str
+) -> bool:
+    """Tear one member down for the reaper (TTL-expired or capacity eviction). Pool
+    members (free OR claimed) are excluded from claims FIRST (flip to recycling — the
+    proven recycler order), then a deadline-bounded down-Job does the teardown."""
+    if member.pool_state in ("free", "claimed"):
+        try:
+            core.patch_namespace(
+                name=member.ns_name,
+                body={
+                    "metadata": {
+                        "labels": {_VCLUSTER_PREVIEW_POOL_LABEL: "recycling"}
+                    }
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "lifecycle: reap relabel %s failed: %s", member.real_name, exc
+            )
+            return False
+    req = VclusterPreviewRequest(name=member.real_name, action="down")
+    manifest = _vcluster_preview_job_manifest(req, namespace=namespace)
+    manifest["spec"]["activeDeadlineSeconds"] = _pool_recycle_deadline_seconds()
+    try:
+        _create_preview_job(batch, namespace=namespace, manifest=manifest)
+    except Exception as exc:
+        logger.warning(
+            "lifecycle: reap down-job %s failed: %s", member.real_name, exc
+        )
+        return False
+    logger.info("lifecycle: tearing down preview %s (%s)", member.real_name, reason)
+    return True
+
+
+def _preview_jobs_in_flight(batch, namespace: str) -> set[str]:
+    """Members with an ACTIVE down/sleep/resume Job — the reaper skips them for the tick
+    (never stack a second transition on an in-flight one). Keyed on the Job's labels +
+    active status, like the #33 bake counter: survives an SEA restart and self-clears."""
+    names: set[str] = set()
+    try:
+        jobs = batch.list_namespaced_job(
+            namespace=namespace, label_selector="app=vcluster-preview"
+        )
+    except Exception as exc:
+        logger.warning("lifecycle: in-flight job list failed: %s", exc)
+        return names
+    for j in jobs.items:
+        labels = getattr(getattr(j, "metadata", None), "labels", None) or {}
+        if labels.get("vcluster-preview-action") not in ("down", "sleep", "resume"):
+            continue
+        if int(getattr(j.status, "active", 0) or 0) > 0:
+            name = labels.get(_VCLUSTER_PREVIEW_NAME_LABEL)
+            if name:
+                names.add(name)
+    return names
+
+
+def _lifecycle_reap_once(batch, core, *, need_room: int = 0) -> dict[str, int]:
+    """One A4 reaper pass, in leverage order:
+      1. TTL teardown  — members past their effective expiry (explicit expires-at always;
+                         creation+VCLUSTER_PREVIEW_TTL_HOURS only when that flag is on)
+      2. capacity      — evict (via the PURE selector) down to VCLUSTER_PREVIEW_TOTAL_MAX,
+                         plus any explicit need_room the caller asked for
+      3. sleep         — activity-tracked members idle past VCLUSTER_PREVIEW_SLEEP_AFTER_MINUTES
+                         (free/recycling pool members and untracked previews are exempt)
+    HARD RULES enforced here + in the selector: only namespaces labeled app=vcluster-preview
+    are ever considered; protected members are never touched; members with an in-flight
+    down/sleep/resume Job are skipped for the tick. Returns a stats dict (endpoint + tests)."""
+    stats = {
+        "total": 0,
+        "awake": 0,
+        "slept": 0,
+        "reapedExpired": 0,
+        "evicted": 0,
+        "sleptNow": 0,
+    }
+    namespace = _agent_workflow_host_namespace()
+    now = datetime.now(UTC)
+    ttl_hours = _vcluster_preview_ttl_hours()
+    sleep_after = _vcluster_preview_sleep_after_minutes()
+    total_max = _vcluster_preview_total_max()
+    active_minutes = _vcluster_preview_active_minutes()
+    pool_size = _vcluster_preview_pool_size()
+
+    nss = core.list_namespace(label_selector="app=vcluster-preview")
+    live = [
+        m
+        for m in (_preview_member_from_ns(ns) for ns in nss.items)
+        if not m.terminating
+    ]
+    stats["total"] = len(live)
+    stats["slept"] = sum(1 for m in live if m.slept)
+    stats["awake"] = stats["total"] - stats["slept"]
+
+    in_flight = _preview_jobs_in_flight(batch, namespace)
+    reaped: set[str] = set()
+
+    # 1) TTL teardown.
+    for m in live:
+        if m.protected or m.real_name in in_flight:
+            continue
+        if _member_is_expired(m, now=now, ttl_hours=ttl_hours):
+            if _reap_teardown_member(batch, core, m, namespace, reason="ttl-expired"):
+                stats["reapedExpired"] += 1
+                reaped.add(m.real_name)
+
+    # 2) Capacity eviction: TOTAL_MAX overflow + explicit need_room (both via the pure
+    # selector, so the locked eviction order is the ONLY order).
+    remaining = [
+        m for m in live if m.real_name not in reaped and m.real_name not in in_flight
+    ]
+    overflow = (len(remaining) - total_max) if total_max > 0 else 0
+    need = max(0, overflow) + max(0, need_room)
+    if need > 0:
+        for m in _select_preview_evictions(
+            remaining,
+            need=need,
+            pool_size=pool_size,
+            now=now,
+            ttl_hours=ttl_hours,
+            active_minutes=active_minutes,
+        ):
+            if _reap_teardown_member(batch, core, m, namespace, reason="capacity"):
+                stats["evicted"] += 1
+                reaped.add(m.real_name)
+
+    # 3) Sleep idle activity-tracked previews. Free members stay claim-ready (a slept
+    # member would blow the <90s claim budget on an unexpected cold resume); previews
+    # WITHOUT a last-active annotation (legacy/human, e.g. the standing gan-*) are not
+    # activity-tracked and are never slept.
+    if sleep_after > 0:
+        idle = timedelta(minutes=sleep_after)
+        for m in live:
+            if m.real_name in reaped or m.real_name in in_flight:
+                continue
+            if m.protected or m.slept or m.terminating:
+                continue
+            if m.pool_state in ("free", "recycling"):
+                continue
+            if m.last_active is None:
+                continue
+            if now - m.last_active >= idle:
+                if _sleep_member(batch, core, m, namespace):
+                    stats["sleptNow"] += 1
+
+    if stats["reapedExpired"] or stats["evicted"] or stats["sleptNow"]:
+        _invalidate_previews_cache()
+    return stats
+
+
+_lifecycle_reaper_started = False
+_lifecycle_reaper_lock = threading.Lock()
+
+
+def _lifecycle_enabled() -> bool:
+    return (
+        _vcluster_preview_sleep_after_minutes() > 0
+        or _vcluster_preview_ttl_hours() > 0
+        or _vcluster_preview_total_max() > 0
+    )
+
+
+def _lifecycle_reaper_loop() -> None:
+    interval = float(
+        os.environ.get("VCLUSTER_PREVIEW_LIFECYCLE_RECONCILE_SECONDS", "60") or 60
+    )
+    time.sleep(min(interval, 15.0))  # let app startup settle before the first pass
+    logger.info(
+        "lifecycle-reaper: started (sleepAfterMin=%d ttlHours=%d totalMax=%d interval=%.0fs)",
+        _vcluster_preview_sleep_after_minutes(),
+        _vcluster_preview_ttl_hours(),
+        _vcluster_preview_total_max(),
+        interval,
+    )
+    while True:
+        try:
+            batch, core = _load_k8s_clients()
+            _lifecycle_reap_once(batch, core)
+        except Exception as exc:
+            logger.warning("lifecycle-reaper: pass failed: %s", exc)
+        time.sleep(interval)
+
+
+def _start_lifecycle_reaper() -> None:
+    """Start the singleton reaper thread iff any A4 lifecycle flag is on and not dry-run.
+    Mirrors _start_pool_manager (SEA is replicas=1 — the thread is the whole coordinator;
+    the suspended GC CronJob calling POST /internal/vcluster-preview/reap is the
+    belt-and-suspenders backstop against thread death)."""
+    if not _lifecycle_enabled():
+        return
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {"1", "true", "yes"}:
+        return
+    global _lifecycle_reaper_started
+    with _lifecycle_reaper_lock:
+        if _lifecycle_reaper_started:
+            return
+        _lifecycle_reaper_started = True
+        threading.Thread(
+            target=_lifecycle_reaper_loop, daemon=True, name="vcluster-lifecycle-reaper"
+        ).start()
+
+
 def _pool_reconcile_once(batch, core, apps) -> dict[str, int]:
     """One reconcile pass: recycle pin-drifted free members, then top the pool up toward
     VCLUSTER_PREVIEW_POOL_SIZE — bounded by VCLUSTER_PREVIEW_MAX awake and the per-tick fill
@@ -5066,8 +5841,13 @@ def _pool_reconcile_once(batch, core, apps) -> dict[str, int]:
     for ns in nss.items:
         if _preview_ns_is_terminating(ns):
             continue
-        awake += 1
         labels = (ns.metadata.labels or {}) if ns.metadata else {}
+        # A4: a SLEPT preview holds no compute — it doesn't count against the awake cap,
+        # so the pool can keep filling while user previews sleep. (A slept FREE member —
+        # manual force-sleep only — still counts as free to avoid an overshoot when it
+        # wakes; claims skip it.)
+        if labels.get(_VCLUSTER_PREVIEW_STATE_LABEL) != "slept":
+            awake += 1
         if labels.get(_VCLUSTER_PREVIEW_POOL_LABEL) == "free":
             free += 1
             free_members.append(ns)

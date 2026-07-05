@@ -7,6 +7,7 @@ import {
 	resolveDevPreviewImage,
 	type DevPreviewExtraSync,
 } from "$lib/server/workflows/dev-preview-registry";
+import { touchVclusterPreview } from "$lib/server/workflows/vcluster-preview";
 
 /**
  * Per-run ephemeral dev-server preview (P2).
@@ -342,6 +343,17 @@ export async function provisionDevPreview(
 		daprAppId: typeof body.daprAppId === "string" ? body.daprAppId : null,
 	};
 	await persistDevPreviewSession(info, persistence);
+	// A4: provisioning a dev pod INSIDE a vcluster preview is activity on that preview —
+	// ping its last-active clock (and wake it if slept) so the lifecycle reaper never
+	// sleeps a preview under an active dev session. The vcluster identity travels as the
+	// canonical origin (https://wfb-<name>.<tailnet>); best-effort — a touch failure
+	// never fails the provision.
+	if (previewNative) {
+		const alias = /^https:\/\/wfb-([a-z0-9][a-z0-9-]*)\./.exec(
+			params.origin ?? "",
+		)?.[1];
+		if (alias) await touchVclusterPreview(alias).catch(() => undefined);
+	}
 	return info;
 }
 

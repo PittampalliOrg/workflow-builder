@@ -143,6 +143,72 @@ describe("dev-preview portability boundary", () => {
 		expect(body.env?.PUBSUB_NAME).toBeUndefined();
 	});
 
+	it("touches the vcluster preview on a preview-native provision with an origin", async () => {
+		// A4: a dev pod landing INSIDE a vcluster preview is activity on that preview —
+		// the provision pings SEA's touch endpoint (alias derived from the wfb-<name>
+		// origin host) so the lifecycle reaper never sleeps a preview mid-session.
+		vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+		const calls: string[] = [];
+		const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+			calls.push(url);
+			if (url.endsWith("/touch"))
+				return new Response(
+					JSON.stringify({ name: "myprev", state: "hot", resuming: false }),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			return new Response(
+				JSON.stringify({
+					sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
+					podIP: "10.0.0.13",
+					port: 3000,
+					syncPort: 3000,
+					ready: true,
+					status: "running",
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		await provisionDevPreview(
+			{
+				executionId: "exec-1",
+				service: "workflow-builder",
+				mode: "preview-native",
+				origin: "https://wfb-myprev.tail286401.ts.net",
+			},
+			fakePersistence(),
+		);
+
+		expect(calls).toContain(
+			"http://sandbox-api/internal/vcluster-preview/myprev/touch",
+		);
+	});
+
+	it("does not touch on a host-throwaway provision or without an origin", async () => {
+		vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+		const calls: string[] = [];
+		const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+			calls.push(url);
+			return new Response(
+				JSON.stringify({
+					sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
+					ready: true,
+					status: "running",
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		// preview-native but NO origin -> no alias to touch.
+		await provisionDevPreview(
+			{ executionId: "exec-1", service: "workflow-orchestrator", mode: "preview-native" },
+			fakePersistence(),
+		);
+		expect(calls.some((u) => u.endsWith("/touch"))).toBe(false);
+	});
+
 	it("omits applyDaprShadowDefaults for a shadow-default host provision", async () => {
 		// A host-throwaway orchestrator preview keeps the SEA default (the shadow env
 		// IS the host-isolation mechanism there), so the BFF sends no override.
