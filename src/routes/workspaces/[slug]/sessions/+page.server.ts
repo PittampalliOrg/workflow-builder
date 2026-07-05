@@ -8,7 +8,7 @@ import {
 import type { SessionStatus } from "$lib/types/sessions";
 
 /** One load-more page. Kept in sync with `data.remote.ts`. */
-export const SESSIONS_PAGE_SIZE = 50;
+const SESSIONS_PAGE_SIZE = 50;
 
 const SESSION_STATUSES: SessionStatus[] = [
 	"rescheduling",
