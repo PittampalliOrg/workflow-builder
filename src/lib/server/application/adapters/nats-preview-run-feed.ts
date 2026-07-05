@@ -102,7 +102,11 @@ export class NatsPreviewRunFeed implements PreviewRunFeedPort {
 
 		await Promise.all(
 			input.previews.map(async (preview) => {
-				const stream = previewStreamName(preview.name);
+				// A claimed warm-pool member emits to its POOL-named stream (the baked
+				// topic prefix; claim doesn't re-stamp it), so key the stream + subject
+				// on `pool ?? name`. The event still carries the alias `name` (below).
+				const streamKey = preview.pool ?? preview.name;
+				const stream = previewStreamName(streamKey);
 				try {
 					// Absent stream (preview has no orchestrator events yet) is not an error.
 					await jsm.streams.info(stream);
@@ -111,7 +115,7 @@ export class NatsPreviewRunFeed implements PreviewRunFeedPort {
 				}
 				try {
 					const consumer = await js.consumers.get(stream, {
-						filterSubjects: previewWorkflowEventsSubject(preview.name),
+						filterSubjects: previewWorkflowEventsSubject(streamKey),
 						deliver_policy: "new",
 					} as never);
 					const messages = await consumer.consume();
