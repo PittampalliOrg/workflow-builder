@@ -539,7 +539,13 @@ def test_list_vcluster_previews_parallel_and_burst_cached(monkeypatch) -> None:
         return SimpleNamespace(items=items)
 
     fake_core = SimpleNamespace(
-        list_namespace=list_namespace, list_namespaced_pod=list_pod
+        list_namespace=list_namespace,
+        list_namespaced_pod=list_pod,
+        # phase now confirms ns existence with a real read (list-pods-in-missing-ns
+        # is 200+empty in k8s); these previews' namespaces all exist.
+        read_namespace=lambda *, name, **_k: SimpleNamespace(
+            metadata=SimpleNamespace(name=name)
+        ),
     )
     fake_batch = SimpleNamespace(read_namespaced_job_status=read_job_status)
     monkeypatch.setattr(
@@ -580,7 +586,13 @@ def test_list_vcluster_previews_isolates_a_failing_preview(monkeypatch) -> None:
         return SimpleNamespace(items=[_vc_ready_pod()])
 
     fake_core = SimpleNamespace(
-        list_namespace=list_namespace, list_namespaced_pod=list_pod
+        list_namespace=list_namespace,
+        list_namespaced_pod=list_pod,
+        # phase now confirms ns existence with a real read (list-pods-in-missing-ns
+        # is 200+empty in k8s); these previews' namespaces all exist.
+        read_namespace=lambda *, name, **_k: SimpleNamespace(
+            metadata=SimpleNamespace(name=name)
+        ),
     )
     fake_batch = SimpleNamespace(read_namespaced_job_status=read_job_status)
     monkeypatch.setattr(
