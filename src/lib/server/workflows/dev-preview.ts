@@ -709,7 +709,6 @@ export async function teardownDevPreview(
 	const names = params.sandboxName
 		? [params.sandboxName]
 		: await listDevPreviewSandboxNames(params.executionId, persistence);
-	if (names.length === 0) return { ok: true, sandboxName: null };
 	for (const name of names) {
 		if (baseUrl) {
 			try {
@@ -737,6 +736,26 @@ export async function teardownDevPreview(
 			}
 		}
 	}
+	// B5: restore-all sweep. The per-Sandbox DELETE restores ITS adopted prod
+	// Deployment from the CR annotation, but a Deployment can be orphaned at 0
+	// replicas with no Sandbox CR left to name it (SEA restarted mid-provision,
+	// CR reaped out-of-band). Ask SEA to restore any Deployment still carrying
+	// wfb-dev-preview/original-replicas that no live Sandbox claims. Runs even
+	// when no session rows were found — that IS the orphan case. Best-effort.
+	if (baseUrl) {
+		try {
+			await fetch(`${baseUrl}/internal/dev-preview/restore-orphans`, {
+				method: "POST",
+				headers: token ? { Authorization: `Bearer ${token}` } : {},
+			});
+		} catch (err) {
+			console.warn(
+				"[dev-preview] restore-orphans sweep failed:",
+				err instanceof Error ? err.message : err,
+			);
+		}
+	}
+	if (names.length === 0) return { ok: true, sandboxName: null };
 	// Drop the per-preview database (functional previews). Best-effort — IF NOT
 	// EXISTS-safe, so harmless for UI-only previews that never created one.
 	if (previewDatabases) {

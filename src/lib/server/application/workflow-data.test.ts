@@ -1210,6 +1210,7 @@ function fakeDevEnvironments(): DevEnvironmentReadRepository {
 				createdAt: "2026-07-02T00:00:00.000Z",
 			},
 		]),
+		listDevEnvironmentGroups: vi.fn(async () => []),
 		getDevEnvironmentOrPending: vi.fn(async (input) => ({
 			executionId: input.executionId,
 			workspaceRef: "workspace-1",

@@ -29,6 +29,10 @@ export type ApplicationAdapterConfig = {
 	prPreviewVerifyEnabled: boolean;
 	/** D2: Promote adds the `preview` label to the PRs it opens. Off by default. */
 	promoteAutoPreviewLabel: boolean;
+	/** E2: the Dev-hub read proxy into preview BFF run history. Off by default. */
+	previewReadProxyEnabled: boolean;
+	/** E3: archive run summaries + un-promoted bundles before vcluster teardown. Off by default. */
+	previewArchiveOnTeardownEnabled: boolean;
 };
 
 function readFlag(
@@ -113,5 +117,10 @@ export function getApplicationAdapterConfig(
 		prPreviewsEnabled: readFlag(source, "PR_PREVIEWS_ENABLED"),
 		prPreviewVerifyEnabled: readFlag(source, "PR_PREVIEW_VERIFY_ENABLED"),
 		promoteAutoPreviewLabel: readFlag(source, "PROMOTE_AUTO_PREVIEW_LABEL"),
+		previewReadProxyEnabled: readFlag(source, "PREVIEW_READ_PROXY_ENABLED"),
+		previewArchiveOnTeardownEnabled: readFlag(
+			source,
+			"PREVIEW_ARCHIVE_ON_TEARDOWN",
+		),
 	};
 }

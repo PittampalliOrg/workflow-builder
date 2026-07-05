@@ -30,6 +30,8 @@ describe("getEventBusAdapter", () => {
 				prPreviewsEnabled: false,
 				prPreviewVerifyEnabled: false,
 				promoteAutoPreviewLabel: false,
+				previewReadProxyEnabled: false,
+				previewArchiveOnTeardownEnabled: false,
 			}),
 		).toThrow("Unsupported event bus adapter: bogus");
 	});

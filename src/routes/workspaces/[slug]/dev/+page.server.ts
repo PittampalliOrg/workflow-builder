@@ -11,8 +11,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const hub = await getApplicationAdapters().workflowData.getDevPreviewHubReadModel({
 		projectId: locals.session?.projectId ?? null,
 	});
+	const config = getApplicationAdapterConfig();
 	return {
 		...hub,
-		previewRunFeedEnabled: getApplicationAdapterConfig().previewRunFeedEnabled,
+		previewRunFeedEnabled: config.previewRunFeedEnabled,
+		previewReadProxyEnabled: config.previewReadProxyEnabled,
 	};
 };

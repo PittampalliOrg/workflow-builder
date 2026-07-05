@@ -28,15 +28,20 @@
 		environment,
 		slug,
 		busy = false,
+		services = [],
 		onopen,
 		onteardown
 	}: {
 		environment: DevEnvironmentSummary;
 		slug: string;
 		busy?: boolean;
+		/** B5: every per-service preview of the execution (multi-service session). */
+		services?: DevEnvironmentSummary[];
 		onopen: (e: DevEnvironmentSummary) => void;
 		onteardown: (e: DevEnvironmentSummary) => void;
 	} = $props();
+
+	const multiService = $derived(services.length > 1);
 
 	const ready = $derived(environment.ready && environment.runStatus !== 'error');
 	const dotClass = $derived(
@@ -75,7 +80,9 @@
 					<Container class="size-4 text-primary" />
 				</span>
 				<span class="min-w-0">
-					<span class="block font-medium truncate hover:underline">{environment.service}</span>
+					<span class="block font-medium truncate hover:underline"
+						>{multiService ? services.map((s) => s.service).join(' + ') : environment.service}</span
+					>
 					<span class="block text-xs text-muted-foreground">{relative(environment.createdAt)}</span>
 				</span>
 			</button>
@@ -86,6 +93,18 @@
 		</div>
 	</CardHeader>
 	<CardContent class="space-y-3">
+		{#if multiService}
+			<div class="flex flex-wrap items-center gap-1.5">
+				{#each services as svc (svc.service)}
+					<Badge variant="outline" class="text-[10px] gap-1">
+						<span
+							class="size-1.5 rounded-full {svc.ready ? 'bg-emerald-500' : 'bg-amber-500'}"
+						></span>
+						{svc.service}
+					</Badge>
+				{/each}
+			</div>
+		{/if}
 		<div class="flex flex-wrap items-center gap-1.5">
 			{#if environment.needsDapr}
 				<Badge
