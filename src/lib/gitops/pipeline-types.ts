@@ -161,6 +161,13 @@ export type PipelineStage = {
 	controlFlow: boolean;
 	dormant: boolean;
 	/**
+	 * `true` when this stage's env is administratively STOPPED (e.g. ryzen since
+	 * 2026-07-04, `PUBLIC_GITOPS_STOPPED_ENVS`). A stopped stage is rendered
+	 * dormant but distinctly ("stopped", not merely downstream-control-flow) and
+	 * collapsed into the env board's "Dormant lanes" expander.
+	 */
+	stopped?: boolean;
+	/**
 	 * How this stage receives changes:
 	 *  - `direct-main`: reads the bare workload kustomization on stacks main (ryzen).
 	 *    No Promoter env branch → no proposed-vs-active promotion tone.
@@ -225,4 +232,7 @@ export type PipelineModel = {
 	subsystems: string[];
 	warehousesBySubsystem: Record<string, PipelineWarehouse[]>;
 	generatedAt: string;
+	/** Envs that are administratively stopped (their stages are dormant+stopped).
+	 * Drives the env board's "Dormant lanes" expander. */
+	stoppedEnvs?: string[];
 };

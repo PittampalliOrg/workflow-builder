@@ -195,6 +195,28 @@ describe("buildPipelineModel", () => {
 		expect(ryzen.health).toBe("Healthy");
 	});
 
+	it("renders a stopped env as dormant+stopped and records it on the model", () => {
+		const inventory = makeInventory({
+			ryzen: [makeApp({ name: "ryzen-workflow-builder", component: "workflow-builder" })],
+			dev: [makeApp({ name: "dev-workflow-builder", component: "workflow-builder" })],
+		});
+		const model = buildPipelineModel(
+			makeMetadata(inventory, [makePin("workflow-builder", "git-aaaaaaaa")]),
+			EMPTY_PROMOTIONS,
+			{ stoppedEnvs: ["ryzen"] },
+		);
+
+		expect(model.stoppedEnvs).toEqual(["ryzen"]);
+		const ryzen = model.stages.find((s) => s.env === "ryzen")!;
+		expect(ryzen.stopped).toBe(true);
+		expect(ryzen.dormant).toBe(true);
+		expect(ryzen.deliveryMode).toBe("dormant");
+		// A non-stopped env is untouched.
+		const dev = model.stages.find((s) => s.env === "dev")!;
+		expect(dev.stopped).toBeUndefined();
+		expect(dev.deliveryMode).toBe("promoter");
+	});
+
 	it("models ryzen as direct-main (no promoter tone) and dev as promoter", () => {
 		const inventory = makeInventory({
 			ryzen: [makeApp({ name: "ryzen-workflow-builder", component: "workflow-builder" })],

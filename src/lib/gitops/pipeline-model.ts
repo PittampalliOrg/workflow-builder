@@ -450,10 +450,21 @@ function groupHistoryByService(history: ImageVersion[]): Map<string, ImageVersio
 	return map;
 }
 
+export type BuildPipelineModelOptions = {
+	/** Envs to render as administratively stopped (dormant+stopped). Their stages
+	 * keep their identity/provenance but drop the live promotion tone. */
+	stoppedEnvs?: string[];
+};
+
 export function buildPipelineModel(
 	metadata: DeploymentMetadataResponse,
 	promotions: PromotionStrategiesResponse,
+	opts: BuildPipelineModelOptions = {},
 ): PipelineModel {
+	const stoppedEnvs = (opts.stoppedEnvs ?? [])
+		.map((env) => env.trim())
+		.filter((env) => env.length > 0);
+	const stoppedEnvSet = new Set(stoppedEnvs);
 	const rows = buildServiceMatrix({
 		inventory: metadata.inventory.data,
 		releasePins: metadata.gitops.desiredImages,
@@ -553,7 +564,11 @@ export function buildPipelineModel(
 	]);
 
 	const warehouses = [bundleWarehouse, ...service.warehouses];
-	const stages = [bundleDev, bundleStaging, ...service.stages];
+	const stages = [bundleDev, bundleStaging, ...service.stages].map((stage) =>
+		stoppedEnvSet.has(stage.env)
+			? { ...stage, dormant: true, stopped: true, deliveryMode: "dormant" as const }
+			: stage,
+	);
 	const freights = [...bundleFreights, ...service.freights];
 
 	// ── Colours: warehouse identity hue; stages inherit their warehouse hue ──
@@ -590,6 +605,7 @@ export function buildPipelineModel(
 		subsystems,
 		warehousesBySubsystem,
 		generatedAt: metadata.generatedAt,
+		stoppedEnvs,
 	};
 }
 

@@ -1,7 +1,10 @@
 import { env } from "$env/dynamic/public";
 
 import { DEFAULT_HEADLAMP_URL } from "$lib/headlamp/links";
+import { mapPrPreviewStatuses } from "$lib/gitops/pr-preview-summary";
+import type { GitOpsPrPreviewSummary } from "$lib/gitops/pr-preview-summary";
 import { getApplicationAdapters } from "$lib/server/application";
+import { getApplicationAdapterConfig } from "$lib/server/application/config";
 
 import type { PageServerLoad } from "./$types";
 
@@ -21,12 +24,14 @@ export type GitopsSystemPageLinks = {
 };
 
 export const load: PageServerLoad = async ({ locals }) => {
-	const { gitOpsActivityEvents, gitOpsDeployment, gitOpsPromotions } =
-		getApplicationAdapters();
-	const [initial, promotions, activityEvents] = await Promise.all([
+	const adapters = getApplicationAdapters();
+	const { gitOpsActivityEvents, gitOpsDeployment, gitOpsPromotions } = adapters;
+	const config = getApplicationAdapterConfig();
+	const [initial, promotions, activityEvents, prPreviews] = await Promise.all([
 		gitOpsDeployment.getMetadata(),
 		gitOpsPromotions.getStrategies(),
 		gitOpsActivityEvents.list({ limit: 200 }),
+		loadPrPreviews(adapters, config),
 	]);
 	const tektonBase =
 		env.PUBLIC_TEKTON_DASHBOARD_URL?.trim() ||
@@ -56,7 +61,20 @@ export const load: PageServerLoad = async ({ locals }) => {
 		initial,
 		promotions,
 		activityEvents,
+		prPreviews,
 		links,
 		viewerEmail: locals.session?.email ?? null,
 	};
 };
+
+/** Resume-safe per-PR preview snapshots for the pr-preview lane. Flag-gated
+ * (off → empty); a failed read degrades to empty rather than blocking the page.
+ * NEVER calls `.status()` — a browser poll must not kick a preview pipeline. */
+async function loadPrPreviews(
+	adapters: ReturnType<typeof getApplicationAdapters>,
+	config: ReturnType<typeof getApplicationAdapterConfig>,
+): Promise<GitOpsPrPreviewSummary[]> {
+	if (!config.prPreviewsEnabled) return [];
+	const statuses = await adapters.prPreviews.listStatuses().catch(() => []);
+	return mapPrPreviewStatuses(statuses, config.prPreviewRepo);
+}

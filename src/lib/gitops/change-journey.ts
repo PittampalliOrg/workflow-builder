@@ -1,4 +1,5 @@
 import { BUNDLE_WAREHOUSE } from "./pipeline-model";
+import type { GitOpsPrPreviewSummary } from "./pr-preview-summary";
 import type { PipelineModel, PipelineStage } from "./pipeline-types";
 import type { DeploymentMetadataResponse, ImageVersion } from "$lib/types/deployment-metadata";
 import type { GitOpsActivityEvent } from "$lib/types/gitops-activity";
@@ -12,7 +13,9 @@ export type ChangeJourneyFilter =
 	| "images"
 	| "waiting-failed"
 	| "direct-ryzen"
-	| "promoter-dev";
+	| "promoter-dev"
+	| "pr-preview"
+	| "dev-images";
 
 export type ChangeJourneyStatus = "done" | "active" | "failed" | "waiting" | "neutral";
 
@@ -22,6 +25,8 @@ export type ChangeJourneyStepKind =
 	| "github-pr"
 	| "github-push"
 	| "merge"
+	| "preview"
+	| "verify"
 	| "build"
 	| "pin"
 	| "promote"
@@ -59,7 +64,7 @@ export type ChangeJourney = {
 	hydratedSha: string | null;
 	services: string[];
 	environments: string[];
-	lanes: ("direct-ryzen" | "promoter-dev" | "dormant" | "unknown")[];
+	lanes: ("direct-ryzen" | "promoter-dev" | "pr-preview" | "dev-images" | "dormant" | "unknown")[];
 	actors: string[];
 	status: ChangeJourneyStatus;
 	currentPhase: string;
@@ -89,6 +94,9 @@ type BuildChangeJourneysInput = {
 	links?: ChangeJourneyLinks;
 	viewerEmail?: string | null;
 	limit?: number;
+	/** Resume-safe per-PR preview snapshots (A2 `listStatuses()`), mapped in the
+	 * load. Threaded onto their PR journey as preview + verify steps. */
+	prPreviews?: GitOpsPrPreviewSummary[];
 };
 
 type MutableJourney = Omit<
@@ -135,6 +143,8 @@ export const CHANGE_JOURNEY_FILTERS: { value: ChangeJourneyFilter; label: string
 	{ value: "waiting-failed", label: "Waiting / failed" },
 	{ value: "promoter-dev", label: "Dev promoted lane" },
 	{ value: "direct-ryzen", label: "Ryzen canary lane" },
+	{ value: "pr-preview", label: "PR preview lane" },
+	{ value: "dev-images", label: "Dev-images lane" },
 ];
 
 export function buildChangeJourneys(input: BuildChangeJourneysInput): ChangeJourney[] {
@@ -142,6 +152,10 @@ export function buildChangeJourneys(input: BuildChangeJourneysInput): ChangeJour
 	const model = input.model;
 	const events = input.events ?? [];
 	const commitToPrKey = buildCommitToPrKey(events);
+	// PR number → canonical journey key (repo-qualified). Lets a pr-preview
+	// TaskRun (which carries the PR number but no GitHub repo) land on the same
+	// journey as the GitHub PR event instead of forking a `pr:_:<n>` group.
+	const prToKey = buildPrNumberToKey(events);
 	const groups = new Map<string, MutableJourney>();
 
 	const get = (key: string, seed?: Partial<MutableJourney>): MutableJourney => {
@@ -176,7 +190,7 @@ export function buildChangeJourneys(input: BuildChangeJourneysInput): ChangeJour
 	};
 
 	for (const event of events) {
-		const key = groupKeyForEvent(event, commitToPrKey);
+		const key = groupKeyForEvent(event, commitToPrKey, prToKey);
 		if (!key) continue;
 		const journey = get(key);
 		applyEvent(journey, event, model, links);
@@ -195,6 +209,15 @@ export function buildChangeJourneys(input: BuildChangeJourneysInput): ChangeJour
 		if (!groups.has(key)) continue;
 		const journey = get(key);
 		applyStageEvidence(journey, stage, links);
+	}
+
+	// Per-PR previews (A2 listStatuses) → preview + verify steps on the PR journey
+	// (or a synthetic PR journey when the PR has no events in this window).
+	for (const preview of input.prPreviews ?? []) {
+		if (preview.state === "absent") continue;
+		const key = prToKey.get(String(preview.prNumber)) ?? `pr:_:${preview.prNumber}`;
+		const journey = get(key);
+		applyPrPreview(journey, preview);
 	}
 
 	const viewerAliases = aliasesForViewer(input.viewerEmail);
@@ -226,6 +249,10 @@ export function filterChangeJourneys(
 			return journeys.filter((journey) => journey.lanes.includes("direct-ryzen"));
 		case "promoter-dev":
 			return journeys.filter((journey) => journey.lanes.includes("promoter-dev"));
+		case "pr-preview":
+			return journeys.filter((journey) => journey.lanes.includes("pr-preview"));
+		case "dev-images":
+			return journeys.filter((journey) => journey.lanes.includes("dev-images"));
 		default:
 			return journeys;
 	}
@@ -274,7 +301,7 @@ function applyEvent(
 			const env = stageName.split("::")[1];
 			if (env) {
 				journey.environments.add(env);
-				journey.lanes.add(laneForEnv(env));
+				journey.lanes.add(model.stoppedEnvs?.includes(env) ? "dormant" : laneForEnv(env));
 			}
 		} else {
 			journey.warehouseNames.add(target.id.slice("warehouse/".length));
@@ -288,12 +315,91 @@ function applyEvent(
 	}
 	const lane = readString(corr.expectedGitOpsLane);
 	if (lane) addExpectedLane(journey, lane);
+	// Tekton runs carry the lane in their name / build-loop label rather than an
+	// expectedGitOpsLane correlation (raw-body fallback for pre-migration rows).
+	if (event.source.toLowerCase() === "tekton" || event.activityType.toLowerCase().startsWith("tekton.")) {
+		const run =
+			readString(corr.pipelineRun) ?? readString(corr.taskRun) ?? event.resourceRef.name;
+		const tektonLane = tektonLaneForRun(run, readString(corr.buildLoop));
+		if (tektonLane) journey.lanes.add(tektonLane);
+	}
 
 	const step = stepForEvent(event, links, target);
 	upsertStep(journey, step);
 	journey.eventIds.add(event.eventId);
 	if (step.state === "failed") journey.hasFailure = true;
 	if (step.state === "active" || step.state === "waiting") journey.isWaiting = true;
+}
+
+function applyPrPreview(journey: MutableJourney, preview: GitOpsPrPreviewSummary): void {
+	if (!journey.pullRequestNumber) journey.pullRequestNumber = String(preview.prNumber);
+	journey.lanes.add("pr-preview");
+
+	const previewHref = preview.url ?? preview.prUrl;
+	upsertStep(journey, {
+		id: `preview:pr-${preview.prNumber}`,
+		kind: "preview",
+		label: "PR preview",
+		state: previewStateToStepState(preview.state),
+		detail: preview.services.length
+			? `${preview.state} · ${preview.services.join(", ")}`
+			: preview.state,
+		sub: preview.error,
+		at: preview.updatedAt,
+		href: previewHref,
+		hrefLabel: preview.url ? "Preview" : preview.prUrl ? "PR" : null,
+		eventIds: [],
+		selection: null,
+	});
+
+	if (preview.verify) {
+		upsertStep(journey, {
+			id: `verify:pr-${preview.prNumber}`,
+			kind: "verify",
+			label: "Preview verify",
+			state: verifyStateToStepState(preview.verify.state),
+			detail: preview.verify.verdict ?? preview.verify.reason ?? preview.verify.state,
+			sub: preview.verify.reason,
+			at: preview.updatedAt,
+			href: previewHref,
+			hrefLabel: preview.url ? "Preview" : null,
+			eventIds: [],
+			selection: null,
+		});
+	}
+}
+
+function previewStateToStepState(state: GitOpsPrPreviewSummary["state"]): ChangeJourneyStepState {
+	switch (state) {
+		case "ready":
+			return "done";
+		case "error":
+			return "failed";
+		case "provisioning":
+		case "seeding":
+			return "active";
+		case "capacity_full":
+			return "waiting";
+		default:
+			return "waiting";
+	}
+}
+
+function verifyStateToStepState(
+	state: NonNullable<GitOpsPrPreviewSummary["verify"]>["state"],
+): ChangeJourneyStepState {
+	switch (state) {
+		case "completed":
+			return "done";
+		case "failed":
+			return "failed";
+		case "started":
+			return "active";
+		case "skipped":
+			return "skipped";
+		default:
+			return "waiting";
+	}
 }
 
 function applyImageVersion(
@@ -593,11 +699,30 @@ function stepForEvent(
 	}
 
 	if (source === "tekton" || activity.startsWith("tekton.")) {
-		const run = readString(corr.pipelineRun) ?? event.resourceRef.name;
+		const run =
+			readString(corr.pipelineRun) ?? readString(corr.taskRun) ?? event.resourceRef.name;
+		const tektonLane = tektonLaneForRun(run, readString(corr.buildLoop));
+		// pr-preview dispatch TaskRuns → a distinct `preview` step (verify is a
+		// separate step fed by the prPreviews input, not a Tekton run).
+		if (tektonLane === "pr-preview") {
+			return {
+				id: `preview:${run ?? event.eventId}`,
+				kind: "preview",
+				label: "PR preview",
+				state,
+				detail: run,
+				sub: event.message,
+				at,
+				href: tektonPipelineRunUrl(links.tektonBase, run),
+				hrefLabel: run ? "Tekton" : null,
+				eventIds: [event.eventId],
+				selection,
+			};
+		}
 		return {
 			id: `build:${run ?? event.eventId}`,
 			kind: "build",
-			label: "Image build",
+			label: tektonLane === "dev-images" ? "Dev-image rebuild" : "Image build",
 			state,
 			detail: run,
 			sub: event.message,
@@ -685,11 +810,12 @@ function stagesForVersion(model: PipelineModel, version: ImageVersion): Pipeline
 function groupKeyForEvent(
 	event: GitOpsActivityEvent,
 	commitToPrKey: Map<string, string>,
+	prToKey: Map<string, string>,
 ): string | null {
 	const corr = event.correlation ?? {};
 	const repo = eventRepo(event);
 	const pr = readString(corr.pullRequestNumber) ?? githubPullRequestNumber(event);
-	if (pr) return `pr:${repo ?? "_"}:${pr}`;
+	if (pr) return prToKey.get(pr) ?? `pr:${repo ?? "_"}:${pr}`;
 	const commit = eventSourceCommit(event);
 	if (commit) return commitToPrKey.get(commit.toLowerCase()) ?? `commit:${commit}`;
 	const pinCommit = readString(corr.pinCommit);
@@ -729,6 +855,20 @@ function groupKeyForStage(
 	return null;
 }
 
+/** PR number → repo-qualified journey key, from the events that DO carry a
+ * GitHub repo (the PR webhook). First real-repo event per PR wins. */
+function buildPrNumberToKey(events: GitOpsActivityEvent[]): Map<string, string> {
+	const map = new Map<string, string>();
+	for (const event of events) {
+		const pr = readString(event.correlation.pullRequestNumber) ?? githubPullRequestNumber(event);
+		if (!pr) continue;
+		const repo = eventRepo(event);
+		if (!repo) continue;
+		if (!map.has(pr)) map.set(pr, `pr:${repo}:${pr}`);
+	}
+	return map;
+}
+
 function buildCommitToPrKey(events: GitOpsActivityEvent[]): Map<string, string> {
 	const map = new Map<string, string>();
 	for (const event of events) {
@@ -751,12 +891,57 @@ function setRepo(journey: MutableJourney, repo: string): void {
 }
 
 function addExpectedLane(journey: MutableJourney, lane: string): void {
-	const normalized = lane.toLowerCase();
+	const normalized = lane.trim().toLowerCase();
+	// Exact tokens first, new lanes ahead of the legacy substring fallback: the
+	// `expectedGitOpsLane` value "dev-images" contains the substring "dev", so the
+	// old `.includes("dev") → promoter-dev` branch would mislabel it. The combined
+	// stacks/main token expands to BOTH release lanes.
+	if (normalized === "pr-preview") {
+		journey.lanes.add("pr-preview");
+		return;
+	}
+	if (normalized === "dev-images") {
+		journey.lanes.add("dev-images");
+		return;
+	}
+	if (normalized === "direct-ryzen") {
+		journey.lanes.add("direct-ryzen");
+		return;
+	}
+	if (normalized === "promoter-dev") {
+		journey.lanes.add("promoter-dev");
+		return;
+	}
+	if (normalized === "direct-ryzen+promoter-dev") {
+		journey.lanes.add("direct-ryzen");
+		journey.lanes.add("promoter-dev");
+		return;
+	}
+	if (normalized === "skipped") return;
+	// Legacy/loose values (pre-migration rows) — substring fallback, reached only
+	// when no exact token matched.
 	if (normalized.includes("ryzen") || normalized.includes("direct")) journey.lanes.add("direct-ryzen");
-	if (normalized.includes("promoter") || normalized.includes("dev")) journey.lanes.add("promoter-dev");
+	else if (normalized.includes("promoter") || normalized.includes("dev")) journey.lanes.add("promoter-dev");
+}
+
+/** Classify a Tekton run into a dev-env-v2 lane by build-loop label or run name
+ * (`wfb-pr-preview-*` dispatch TaskRuns, `outer-loop-dev-images-*` PipelineRuns).
+ * Run-name matching is the raw-body fallback when the label is absent. */
+function tektonLaneForRun(
+	run: string | null | undefined,
+	buildLoop: string | null | undefined,
+): "pr-preview" | "dev-images" | null {
+	if (buildLoop === "pr-preview") return "pr-preview";
+	const name = run ?? "";
+	if (name.startsWith("wfb-pr-preview")) return "pr-preview";
+	if (name.startsWith("outer-loop-dev-images")) return "dev-images";
+	return null;
 }
 
 function laneForStage(stage: PipelineStage): ChangeJourney["lanes"][number] {
+	// A stopped env is dormant regardless of its native delivery mode (checked
+	// first so a stopped ryzen doesn't read as a live direct-ryzen lane).
+	if (stage.stopped) return "dormant";
 	if (stage.env === "ryzen" || stage.deliveryMode === "direct-main") return "direct-ryzen";
 	if (stage.env === "dev" || stage.deliveryMode === "promoter") return "promoter-dev";
 	if (stage.deliveryMode === "dormant") return "dormant";
@@ -799,12 +984,14 @@ function compareSteps(a: ChangeJourneyStep, b: ChangeJourneyStep): number {
 		"github-pr": 0,
 		"github-push": 0,
 		"merge": 1,
-		"build": 2,
-		"pin": 3,
-		"promote": 4,
-		"argocd-sync": 5,
-		"deploy": 6,
-		"event": 7,
+		"preview": 2,
+		"verify": 3,
+		"build": 4,
+		"pin": 5,
+		"promote": 6,
+		"argocd-sync": 7,
+		"deploy": 8,
+		"event": 9,
 	};
 	const rank = kindOrder[a.kind] - kindOrder[b.kind];
 	if (rank !== 0) return rank;

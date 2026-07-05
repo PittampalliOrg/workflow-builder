@@ -15,6 +15,7 @@
 
 	import { goto } from "$app/navigation";
 	import { page } from "$app/state";
+	import { env as publicEnv } from "$env/dynamic/public";
 
 	import { Button } from "$lib/components/ui/button";
 	import PipelineGraph, {
@@ -96,6 +97,9 @@
 		health: string;
 		actionHref: string | null;
 		inFlight: boolean;
+		/** Env is administratively stopped (dormant lane) — rendered in the
+		 * "Dormant lanes" expander, excluded from the live health rollup. */
+		stopped: boolean;
 	};
 
 	let metadata = $state<DeploymentMetadataResponse>(untrack(() => data.initial));
@@ -135,8 +139,16 @@
 	let selectedJourneyId = $state<string | null>(null);
 	let evidenceTarget = $state<EvidenceTarget>(null);
 
+	// Administratively-stopped envs (ryzen since 2026-07-04). Their stages render
+	// dormant+stopped and collapse into the env board's "Dormant lanes" expander.
+	const stoppedEnvs = untrack(() =>
+		(publicEnv.PUBLIC_GITOPS_STOPPED_ENVS ?? "ryzen")
+			.split(",")
+			.map((env) => env.trim())
+			.filter((env) => env.length > 0),
+	);
 	const now = $derived(nowTick());
-	const baseModel = $derived(buildPipelineModel(metadata, promotions));
+	const baseModel = $derived(buildPipelineModel(metadata, promotions, { stoppedEnvs }));
 	const model = $derived(applyPipelineActivityOverlay(baseModel, activityEvents));
 	const changeJourneys = $derived(
 		buildChangeJourneys({
@@ -145,6 +157,7 @@
 			model: baseModel,
 			links,
 			viewerEmail: data.viewerEmail,
+			prPreviews: data.prPreviews ?? [],
 			limit: 12,
 		}),
 	);
@@ -185,8 +198,12 @@
 			promotions.error,
 		].filter((m): m is string => Boolean(m)),
 	);
-	const needsYou = $derived(deriveNeedsYou(envRows, errors, streamState, inventoryStale));
-	const runningNow = $derived(deriveRunningNow(envRows, changeJourneys));
+	// Live envs render as cards; stopped envs collapse into the "Dormant lanes"
+	// expander and are excluded from the attention/running/health rollups.
+	const liveEnvRows = $derived(envRows.filter((row) => !row.stopped));
+	const dormantEnvRows = $derived(envRows.filter((row) => row.stopped));
+	const needsYou = $derived(deriveNeedsYou(liveEnvRows, errors, streamState, inventoryStale));
+	const runningNow = $derived(deriveRunningNow(liveEnvRows, changeJourneys));
 	const evidenceJourney = $derived.by(() => {
 		const target = evidenceTarget;
 		if (target?.kind === "change") {
@@ -408,8 +425,14 @@
 		currentMetadata: DeploymentMetadataResponse,
 		argoCdBase: string,
 	): EnvOverview[] {
+		const stoppedSet = new Set(currentModel.stoppedEnvs ?? []);
 		return (["dev", "ryzen"] as const).map((env) => {
-			const stages = currentModel.stages.filter((stage) => stage.env === env && !stage.dormant);
+			const stopped = stoppedSet.has(env);
+			// A stopped env has only dormant stages; still surface its last known
+			// state (don't exclude dormant) so the expander shows where it froze.
+			const stages = currentModel.stages.filter(
+				(stage) => stage.env === env && (stopped || !stage.dormant),
+			);
 			const primary =
 				stages.find((stage) => stage.warehouse === "workflow-builder") ??
 				stages.find((stage) => stage.warehouse === "release-pins") ??
@@ -468,6 +491,7 @@
 				health: healthLabel(stages),
 				actionHref: primary ? argoAppUrl(argoCdBase, env, primary.warehouse) : null,
 				inFlight: deploying,
+				stopped,
 			};
 		});
 	}
@@ -806,7 +830,7 @@
 						<small>deploys now</small>
 					</div>
 					<div>
-						<span>{envRows.filter((row) => row.status === "Healthy").length}/{envRows.length}</span>
+						<span>{liveEnvRows.filter((row) => row.status === "Healthy").length}/{liveEnvRows.length}</span>
 						<small>healthy envs</small>
 					</div>
 				</div>
@@ -824,7 +848,7 @@
 				<div>Capacity</div>
 				<div>Health</div>
 			</div>
-			{#each envRows as row (row.env)}
+			{#each liveEnvRows as row (row.env)}
 				<button
 					type="button"
 				class="env-row board-grid row-status-{row.status.toLowerCase().replace('-', '')} grid w-full items-center border-b border-[#e5e2da] px-3 py-3 text-left text-sm last:border-b-0 hover:bg-[#f3f1ea] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#5f7661]"
@@ -902,6 +926,49 @@
 					</div>
 				</button>
 			{/each}
+			{#if dormantEnvRows.length > 0}
+				<details class="border-t border-[#d9d7cf] bg-[#f6f4ee]">
+					<summary class="cursor-pointer px-3 py-2 text-[0.72rem] font-medium text-[#66706b] hover:text-[#33453a]">
+						Dormant lanes · {dormantEnvRows.map((row) => row.env).join(", ")} (stopped)
+					</summary>
+					{#each dormantEnvRows as row (row.env)}
+						<button
+							type="button"
+							class="env-row board-grid grid w-full items-center border-t border-[#e5e2da] px-3 py-3 text-left text-sm opacity-70 hover:bg-[#efece4] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#5f7661]"
+							aria-label={`${row.env} environment details (stopped)`}
+							onclick={() => openEnvironment(row)}
+						>
+							<div class="min-w-0">
+								<span class="mobile-label">Environment</span>
+								<div class="font-medium">{row.env} <span class="text-[0.66rem] font-normal text-[#9a9b94]">stopped</span></div>
+								<div class="truncate text-[0.72rem] text-[#66706b]">{row.service} · {row.image}</div>
+							</div>
+							<div>
+								<span class="mobile-label">Status</span>
+								<span class="status-chip status-outofdate">Dormant</span>
+							</div>
+							<div class="font-mono text-[0.78rem]">
+								<span class="mobile-label">Running</span>
+								{shortSha(row.runningSha)}
+							</div>
+							<div class="text-[0.78rem] text-[#66706b]">
+								<span class="mobile-label">Age</span>
+								{row.runningAt ? relativeTime(row.runningAt, now) : "Not reported"}
+							</div>
+							<div class="text-[0.78rem] text-[#9a9b94]">—</div>
+							<div class="text-[0.78rem] text-[#9a9b94]">—</div>
+							<div class="text-[0.78rem] text-[#66706b]">
+								<span class="mobile-label">Capacity</span>
+								{row.capacity}
+							</div>
+							<div class="truncate text-[0.78rem] text-[#66706b]">
+								<span class="mobile-label">Health</span>
+								{row.health}
+							</div>
+						</button>
+					{/each}
+				</details>
+			{/if}
 		</section>
 
 		<div class="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_18rem]">
