@@ -41,7 +41,7 @@ describe("ApplicationPreviewRunFeedService", () => {
 		};
 		const service = new ApplicationPreviewRunFeedService({
 			feed,
-			listPreviews: async () => [{ name: "pr-1", url: null }],
+			listPreviews: async () => [{ name: "pr-1", url: null, pool: null }],
 			heartbeatIntervalMs: 60_000,
 			previewRefreshIntervalMs: 60_000,
 		});

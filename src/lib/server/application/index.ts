@@ -1254,7 +1254,9 @@ export function getApplicationAdapters(
 			listPreviews: async () =>
 				(await listVclusterPreviews())
 					.filter((p) => p.ready)
-					.map((p) => ({ name: p.name, url: p.url })),
+					// Carry `pool`: a claimed member emits to its POOL-named stream, so the
+					// feed must key on pool (its alias `name` stays the display + deep-link).
+					.map((p) => ({ name: p.name, url: p.url, pool: p.pool })),
 		}));
 	const getWorkflowBrowserArtifacts = () =>
 		(workflowBrowserArtifacts ??=

@@ -61,6 +61,15 @@ export type TraceLinkTarget = {
 export type PreviewRunTarget = {
 	name: string;
 	url: string | null;
+	/**
+	 * A3 warm pool: the backing pool-member id (`pool-<n>`) when this preview was
+	 * CLAIMED from the pool, else null. The claimed member's orchestrator keeps the
+	 * pool-baked `WORKFLOW_ORCHESTRATOR_EVENT_TOPIC_PREFIX=wbpreview-<pool>` (claim
+	 * does NOT re-stamp it — a pod restart would defeat the ~11s claim), so its events
+	 * land in the POOL-named stream. The feed therefore keys the stream/subject on
+	 * `pool ?? name`, while `name` stays the display name + deep-link.
+	 */
+	pool: string | null;
 };
 
 /** A normalized workflow event observed in some preview's run stream. */

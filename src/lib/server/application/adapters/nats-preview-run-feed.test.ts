@@ -16,7 +16,7 @@ describe("preview stream/subject scheme (verified live on dev)", () => {
 	});
 });
 
-const preview: PreviewRunTarget = { name: "pr-1", url: "https://wfb-pr-1.example" };
+const preview: PreviewRunTarget = { name: "pr-1", url: "https://wfb-pr-1.example", pool: null };
 
 describe("decodePreviewRunEvent", () => {
 	it("decodes a direct orchestrator workflow event", () => {
@@ -107,8 +107,8 @@ describe("NatsPreviewRunFeed.subscribe", () => {
 		const events: unknown[] = [];
 		const unsubscribe = await feed.subscribe({
 			previews: [
-				{ name: "present", url: null },
-				{ name: "missing", url: null },
+				{ name: "present", url: null, pool: null },
+				{ name: "missing", url: null, pool: null },
 			],
 			onEvent: (e) => events.push(e),
 		});
@@ -125,5 +125,43 @@ describe("NatsPreviewRunFeed.subscribe", () => {
 
 		await unsubscribe();
 		expect(messages.stop).toHaveBeenCalled();
+	});
+
+	it("keys a claimed pool member on the POOL stream/subject, event on the alias", async () => {
+		const messages = fakeMessages([
+			{ type: "workflow.started", data: { executionId: "ex1" } },
+		]);
+		const consume = vi.fn(async () => messages);
+		const consumersGet = vi.fn(async () => ({ consume }));
+		const streamsInfo = vi.fn(async () => ({}));
+
+		const feed = new NatsPreviewRunFeed({
+			jetStream: async () => ({ consumers: { get: consumersGet } }) as never,
+			jetStreamManager: async () => ({ streams: { info: streamsInfo } }) as never,
+		});
+
+		const events: Array<Record<string, unknown>> = [];
+		const unsubscribe = await feed.subscribe({
+			// alias "gan-claim" claimed from warm-pool member "pool-3".
+			previews: [{ name: "gan-claim", url: "https://wfb-gan-claim.example", pool: "pool-3" }],
+			onEvent: (e) => events.push(e as unknown as Record<string, unknown>),
+		});
+		await new Promise((r) => setTimeout(r, 10));
+
+		// Stream + consumer keyed on the POOL name (where the baked orchestrator emits),
+		// NOT the claimed alias.
+		expect(streamsInfo).toHaveBeenCalledWith("ORCHESTRATOR-pool-3");
+		expect(consumersGet).toHaveBeenCalledWith(
+			"ORCHESTRATOR-pool-3",
+			expect.objectContaining({ filterSubjects: "wbpreview-pool-3.>" }),
+		);
+		// But the surfaced event carries the ALIAS as display name + deep-link source.
+		expect(events[0]).toMatchObject({
+			previewName: "gan-claim",
+			previewUrl: "https://wfb-gan-claim.example",
+			eventType: "workflow.started",
+		});
+
+		await unsubscribe();
 	});
 });
