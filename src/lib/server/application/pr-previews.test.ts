@@ -402,7 +402,6 @@ describe("ApplicationPrPreviewService durable records (#39)", () => {
 			services: ["workflow-builder"],
 			error: null,
 			verify: null,
-			updatedAt: new Date(0).toISOString(),
 		});
 		const replica = new ApplicationPrPreviewService(deps);
 		await replica.status(7); // sees the stale record → claims → re-dispatches
@@ -425,7 +424,6 @@ describe("ApplicationPrPreviewService durable records (#39)", () => {
 			services: [],
 			error: null,
 			verify: null,
-			updatedAt: new Date().toISOString(),
 		});
 		const replica = new ApplicationPrPreviewService(deps);
 		const seen = await replica.status(7);
@@ -445,7 +443,6 @@ describe("ApplicationPrPreviewService durable records (#39)", () => {
 			services: [],
 			error: null,
 			verify: null,
-			updatedAt: "",
 		});
 		// staleMs 0: any non-terminal row is claimable — the first caller wins.
 		const before = await store.get(5);
