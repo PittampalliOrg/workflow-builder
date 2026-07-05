@@ -1,8 +1,11 @@
 import { env } from "$env/dynamic/private";
 import type { PreviewDatabaseProvisioner } from "$lib/server/application/ports";
 import {
+	devPreviewCommands,
+	devPreviewSyncPaths,
 	resolveDevPreviewDescriptor,
 	resolveDevPreviewImage,
+	type DevPreviewExtraSync,
 } from "$lib/server/workflows/dev-preview-registry";
 
 /**
@@ -33,6 +36,8 @@ export interface DevPreviewInfo {
 	repoUrl: string;
 	repoSubdir: string;
 	syncPaths: string[];
+	/** Extra source trees the sync client stages into the tar (B4 contract fixtures). */
+	extraSync: DevPreviewExtraSync[];
 	ready: boolean;
 	status: string;
 	/** Dapr-shadow: this preview runs a daprd sidecar (isolated app-id). */
@@ -197,7 +202,10 @@ export async function provisionDevPreview(
 	if (!baseUrl) {
 		throw new Error("SANDBOX_EXECUTION_API_URL not configured");
 	}
-	const descriptor = resolveDevPreviewDescriptor(params.service);
+	const descriptor = resolveDevPreviewDescriptor(params.service, {
+		...process.env,
+		...env,
+	});
 	const image =
 		params.image ||
 		resolveDevPreviewImage(descriptor, { ...process.env, ...env });
@@ -229,6 +237,9 @@ export async function provisionDevPreview(
 	if (descriptor.pubsubName && !previewNative)
 		previewEnv.PUBSUB_NAME = descriptor.pubsubName;
 
+	// Named-command allowlist for the sidecar's POST /__run (deps + test lanes).
+	// Forwarded server-side into the pod's DEV_SYNC_COMMANDS_JSON. Empty → no /__run.
+	const devSyncCommands = devPreviewCommands(descriptor);
 	const requestBody: Record<string, unknown> = {
 		executionId: params.executionId,
 		executionClass: params.executionClass ?? "dev-preview",
@@ -239,6 +250,7 @@ export async function provisionDevPreview(
 		workdir: descriptor.workdir,
 		syncMode: descriptor.syncMode,
 		syncPort: descriptor.syncPort,
+		...(Object.keys(devSyncCommands).length ? { devSyncCommands } : {}),
 		...(descriptor.needsDapr ? { needsDapr: true } : {}),
 		// Dapr-shadow env (PUBSUB_NAME=pubsub-dev / DAPR_CONFIG_STORE=disabled-dev) is a
 		// HOST-only isolation hack. A preview-native pod runs REAL app-ids inside the
@@ -322,7 +334,8 @@ export async function provisionDevPreview(
 		browseUrl: `http://${descriptor.tailnetHost}`,
 		repoUrl: descriptor.repoUrl,
 		repoSubdir: descriptor.repoSubdir,
-		syncPaths: descriptor.syncPaths,
+		syncPaths: devPreviewSyncPaths(descriptor),
+		extraSync: descriptor.extraSync ?? [],
 		ready: body.ready === true,
 		status: typeof body.status === "string" ? body.status : "queued",
 		needsDapr: body.needsDapr === true,
@@ -545,7 +558,7 @@ export async function captureDevPreviewSource(
 			return { ok: true, skipped: "no_dev_pod" };
 		}
 		const descriptor = resolveDevPreviewDescriptor(details.service);
-		const syncPaths = descriptor.syncPaths?.length ? descriptor.syncPaths : ["src"];
+		const syncPaths = devPreviewSyncPaths(descriptor);
 		const token = (env.WFB_DEV_SYNC_TOKEN ?? process.env.WFB_DEV_SYNC_TOKEN ?? "").trim();
 		const exportUrl = `http://${details.podIP}:${details.syncPort}/__export?paths=${encodeURIComponent(
 			syncPaths.join(","),

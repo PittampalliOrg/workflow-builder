@@ -242,6 +242,10 @@ export default defineConfig({
 		exclude: [
 			...configDefaults.exclude,
 			'tests/e2e/**',
+			// node:test suites (run via `node --test`, not vitest) — vitest's *.test.mjs
+			// glob would otherwise pick them up and fail with "No test suite found".
+			'services/dev-sync-sidecar/server.test.mjs',
+			'scripts/dev-sync/sync.test.mjs',
 			// CI-only: these two import service-local deps (@activepieces/*,
 			// function-router's runtime stack) that the root install does not
 			// provide; locally they run against services/*/node_modules.

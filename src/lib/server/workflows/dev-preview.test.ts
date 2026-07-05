@@ -219,6 +219,42 @@ describe("dev-preview portability boundary", () => {
 		expect(persistence.upsertWorkflowWorkspaceSession).toHaveBeenCalledTimes(1);
 	});
 
+	it("forwards the sidecar /__run command allowlist + extraSync to SEA", async () => {
+		vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+		const fetchMock = vi.fn(
+			async (_url: string, _init?: RequestInit) =>
+				new Response(
+					JSON.stringify({
+						sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
+						podIP: "10.0.0.13",
+						port: 8080,
+						syncPort: 8001,
+						ready: true,
+						status: "running",
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const info = await provisionDevPreview(
+			{ executionId: "exec-1", service: "workflow-orchestrator" },
+			fakePersistence(),
+		);
+
+		const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+		const body = JSON.parse(String(request.body));
+		// deps + the contract test lane travel to SEA (→ DEV_SYNC_COMMANDS_JSON).
+		expect(body.devSyncCommands).toEqual({
+			deps: "pip install -r requirements.txt && touch /app/app.py",
+			contract: "python -m pytest tests/test_workflow_data_activity_migration.py -q",
+		});
+		// The returned info carries the extraSync sources the sync client stages.
+		expect(info.extraSync).toEqual([
+			{ from: "../shared/workflow-data-contract", to: ".contract-fixtures" },
+		]);
+	});
+
 	it("provisions functional preview databases through the injected port", async () => {
 		vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
 		const fetchMock = vi.fn(async (_url, init) => {

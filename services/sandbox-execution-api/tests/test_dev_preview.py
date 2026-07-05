@@ -9,6 +9,7 @@ These cover the two latent bugs that block N dev pods per execution:
     a `pubsub-dev` component that does not exist in the vcluster preview.
 """
 
+import json
 import time as _time
 from types import SimpleNamespace
 
@@ -18,6 +19,14 @@ from src.app import (
     ExecutionClassConfig,
     build_dev_preview_sandbox_manifest,
 )
+
+
+def _sidecar_env(manifest: dict) -> dict[str, str | None] | None:
+    """Env of the dev-sync sidecar container (None if this manifest has no sidecar)."""
+    for c in manifest["spec"]["podTemplate"]["spec"]["containers"]:
+        if c["name"] == "dev-sync":
+            return {e["name"]: e.get("value") for e in c.get("env", [])}
+    return None
 
 
 class _FakeCustom:
@@ -581,6 +590,44 @@ def test_list_vcluster_previews_isolates_a_failing_preview(monkeypatch) -> None:
     out = app_module.list_vcluster_previews(SimpleNamespace())
     # The failing preview is dropped (probe error -> "absent"), the healthy one lists.
     assert {p["name"] for p in out["previews"]} == {"ok"}
+
+
+def test_sidecar_forwards_dev_sync_commands_json() -> None:
+    # The registry's deps/test command allowlist must reach the sidecar as
+    # DEV_SYNC_COMMANDS_JSON (which the sidecar parses once at boot for /__run).
+    manifest = build_dev_preview_sandbox_manifest(
+        DevPreviewRequest(
+            executionId="exec-1",
+            service="workflow-orchestrator",
+            syncMode="sidecar",
+            devSyncCommands={
+                "deps": "pip install -r requirements.txt && touch /app/app.py",
+                "contract": "python -m pytest tests/test_workflow_data_activity_migration.py -q",
+            },
+        ),
+        namespace="workflow-builder",
+        class_config=_dev_class(),
+    )
+    env = _sidecar_env(manifest)
+    assert env is not None, "sidecar container should exist in sidecar mode"
+    assert "DEV_SYNC_COMMANDS_JSON" in env
+    assert json.loads(env["DEV_SYNC_COMMANDS_JSON"]) == {
+        "deps": "pip install -r requirements.txt && touch /app/app.py",
+        "contract": "python -m pytest tests/test_workflow_data_activity_migration.py -q",
+    }
+
+
+def test_sidecar_omits_commands_json_when_none() -> None:
+    manifest = build_dev_preview_sandbox_manifest(
+        DevPreviewRequest(
+            executionId="exec-1", service="workflow-orchestrator", syncMode="sidecar"
+        ),
+        namespace="workflow-builder",
+        class_config=_dev_class(),
+    )
+    env = _sidecar_env(manifest)
+    assert env is not None
+    assert "DEV_SYNC_COMMANDS_JSON" not in env
 
 
 def test_list_vcluster_previews_ttl_zero_disables_cache(monkeypatch) -> None:
