@@ -15,7 +15,8 @@
 		RefreshCw,
 		Server,
 		Square,
-		Trash2
+		Trash2,
+		X
 	} from '@lucide/svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
@@ -151,6 +152,9 @@
 			: 'all'
 	);
 	let search = $state(page.url.searchParams.get('q') ?? '');
+	// Deep-link scope from the workflow editor's runs link (/runs?workflowId=X →
+	// here). Pins the table to one workflow's runs; a chip clears it locally.
+	let workflowIdFilter = $state(page.url.searchParams.get('workflowId') ?? '');
 
 	function startedMs(item: CapacityBusinessWorkItem): number {
 		if (item.startedAt) return new Date(item.startedAt).getTime();
@@ -167,6 +171,7 @@
 				if (kindFilter === 'workflow' && item.kind !== 'workflowRun') return false;
 				if (kindFilter === 'benchmark' && item.kind !== 'benchmarkRun' && item.kind !== 'benchmarkInstance')
 					return false;
+				if (workflowIdFilter && item.workflowId !== workflowIdFilter) return false;
 				if (q) {
 					const hay = `${item.title} ${item.status} ${item.model ?? ''} ${item.id}`.toLowerCase();
 					if (!hay.includes(q)) return false;
@@ -643,6 +648,17 @@
 						</button>
 					{/each}
 				</div>
+				{#if workflowIdFilter}
+					<button
+						type="button"
+						onclick={() => (workflowIdFilter = '')}
+						class="flex items-center gap-1 rounded-md border border-primary/40 bg-primary/10 px-2 py-1 text-[11px] text-primary hover:bg-primary/20"
+						title="Clear workflow filter"
+					>
+						Workflow <span class="font-mono">{workflowIdFilter.slice(0, 16)}</span>
+						<X class="size-3" />
+					</button>
+				{/if}
 			</div>
 		</header>
 

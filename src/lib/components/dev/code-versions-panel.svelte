@@ -12,6 +12,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
 	import { GitPullRequest, RefreshCw, ExternalLink, Loader2 } from '@lucide/svelte';
+	import CodePromotionChain from '../workflow/code/code-promotion-chain.svelte';
 
 	type VersionPayload = {
 		tier?: string;
@@ -218,6 +219,13 @@
 							<span class="text-muted-foreground">branch <code>{r.branch}</code></span>
 						{/if}
 					</div>
+					{#if prUrl}
+						<CodePromotionChain
+							{prUrl}
+							version={v.payload?.tier ??
+								(v.payload?.iteration != null ? `iter ${v.payload.iteration}` : null)}
+						/>
+					{/if}
 					{#if r?.error}
 						<p class="text-destructive">{r.error}</p>
 					{/if}

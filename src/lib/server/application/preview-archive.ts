@@ -1,5 +1,6 @@
 import type {
 	CreateWorkflowFileInput,
+	ListWorkflowFilesByScopePrefixFilter,
 	PreviewArtifactSummary,
 	PreviewExecutionSummary,
 	PreviewReadProxyPort,
@@ -27,9 +28,10 @@ import type {
  */
 
 export const PREVIEW_ARCHIVE_SCHEMA = "wfb.preview-archive/v1";
+export const PREVIEW_ARCHIVE_SCOPE_PREFIX = "preview-archive:";
 
 export function previewArchiveScopeId(previewName: string): string {
-	return `preview-archive:${previewName}`;
+	return `${PREVIEW_ARCHIVE_SCOPE_PREFIX}${previewName}`;
 }
 
 export type PreviewArchiveDeps = {
@@ -39,6 +41,12 @@ export type PreviewArchiveDeps = {
 		createFile(
 			input: CreateWorkflowFileInput,
 		): Promise<{ file: WorkflowFileRecord; deduplicated: boolean }>;
+		listFilesByScopePrefix(
+			filter: ListWorkflowFilesByScopePrefixFilter,
+		): Promise<WorkflowFileRecord[]>;
+		getFileContent(
+			id: string,
+		): Promise<{ summary: WorkflowFileRecord; bytes: Buffer } | null>;
 	};
 	/** Max executions pulled into the summary (proxy caps at 500). */
 	executionLimit?: number;
@@ -72,6 +80,85 @@ export type PreviewArchiveResult = {
 const DEFAULT_EXECUTION_LIMIT = 200;
 const DEFAULT_BUNDLE_LIMIT = 20;
 const DEFAULT_DEADLINE_MS = 45_000;
+
+/** One archived preview scope, summarised from its file metadata alone (no
+ * bundle bytes read — see `getArchivedPreview` for the parsed detail). */
+export type ArchivedPreviewListItem = {
+	name: string;
+	scopeId: string;
+	/** Most-recent file createdAt across the scope (ISO). */
+	lastArchivedAt: string;
+	summaryCount: number;
+	bundleCount: number;
+	fileCount: number;
+	totalBytes: number;
+};
+
+/** A file that lives under an archive scope (for raw download links). */
+export type ArchivedPreviewFile = {
+	id: string;
+	name: string;
+	contentType: string | null;
+	sizeBytes: number;
+	createdAt: string;
+	kind: "summary" | "bundle" | "other";
+};
+
+export type ArchivedPreviewExecution = {
+	id: string;
+	workflowId: string | null;
+	workflowName: string | null;
+	status: string | null;
+	phase: string | null;
+	error: string | null;
+	startedAt: string | null;
+	completedAt: string | null;
+	durationMs: number | null;
+};
+
+export type ArchivedPreviewDetail =
+	| {
+			ok: true;
+			name: string;
+			scopeId: string;
+			archivedAt: string;
+			pool: string | null;
+			url: string | null;
+			executionsTotal: number | null;
+			executions: ArchivedPreviewExecution[];
+			bundles: PreviewArchivedBundle[];
+			artifactListingDegraded: boolean;
+			notes: string[];
+			files: ArchivedPreviewFile[];
+	  }
+	| {
+			ok: false;
+			name: string;
+			scopeId: string;
+			/** `not-found` = no files for the scope; `no-summary` = files exist but
+			 * no run-summary; `malformed` = summary present but unparseable / wrong
+			 * schema. Files are still returned (when any) for raw downloads. */
+			reason: "not-found" | "no-summary" | "malformed";
+			message?: string;
+			files: ArchivedPreviewFile[];
+	  };
+
+function classifyArchiveFile(name: string): ArchivedPreviewFile["kind"] {
+	if (name.includes("/run-summary-") && name.endsWith(".json")) return "summary";
+	if (name.includes("/bundle-")) return "bundle";
+	return "other";
+}
+
+function toArchivedPreviewFile(record: WorkflowFileRecord): ArchivedPreviewFile {
+	return {
+		id: record.id,
+		name: record.name,
+		contentType: record.contentType,
+		sizeBytes: record.sizeBytes,
+		createdAt: record.createdAt,
+		kind: classifyArchiveFile(record.name),
+	};
+}
 
 function isPromoted(artifact: PreviewArtifactSummary): boolean {
 	return !!artifact.metadata && "promotion" in artifact.metadata;
@@ -248,4 +335,226 @@ export class ApplicationPreviewArchiveService {
 			...(notes.length ? { notes } : {}),
 		};
 	}
+
+	/**
+	 * List every archived-preview scope for a user, summarised from file
+	 * metadata alone (no bundle bytes read — a listing must stay cheap). One
+	 * item per `preview-archive:<name>` scope, newest first.
+	 */
+	async listArchivedPreviews(input: {
+		userId: string;
+		limit?: number;
+	}): Promise<ArchivedPreviewListItem[]> {
+		const records = await this.deps.files.listFilesByScopePrefix({
+			userId: input.userId,
+			scopeIdPrefix: PREVIEW_ARCHIVE_SCOPE_PREFIX,
+			purpose: "output",
+			limit: input.limit,
+		});
+		const groups = new Map<string, WorkflowFileRecord[]>();
+		for (const record of records) {
+			if (!record.scopeId) continue;
+			const group = groups.get(record.scopeId);
+			if (group) group.push(record);
+			else groups.set(record.scopeId, [record]);
+		}
+		const items: ArchivedPreviewListItem[] = [];
+		for (const [scopeId, group] of groups) {
+			let summaryCount = 0;
+			let bundleCount = 0;
+			let totalBytes = 0;
+			let lastArchivedAt = "";
+			for (const file of group) {
+				const kind = classifyArchiveFile(file.name);
+				if (kind === "summary") summaryCount += 1;
+				else if (kind === "bundle") bundleCount += 1;
+				totalBytes += file.sizeBytes;
+				if (file.createdAt > lastArchivedAt) lastArchivedAt = file.createdAt;
+			}
+			items.push({
+				name: scopeId.slice(PREVIEW_ARCHIVE_SCOPE_PREFIX.length),
+				scopeId,
+				lastArchivedAt,
+				summaryCount,
+				bundleCount,
+				fileCount: group.length,
+				totalBytes,
+			});
+		}
+		items.sort((a, b) => b.lastArchivedAt.localeCompare(a.lastArchivedAt));
+		return items;
+	}
+
+	/**
+	 * Detail for one archived preview: the latest run-summary parsed into an
+	 * executions table + bundle links. A missing/unparseable/wrong-schema summary
+	 * resolves to a typed error state (never throws) so the route can render the
+	 * raw file list for recovery. Only the small summary JSON is read — bundle
+	 * bytes are downloaded on demand via the Files API.
+	 */
+	async getArchivedPreview(input: {
+		name: string;
+		userId: string;
+	}): Promise<ArchivedPreviewDetail> {
+		const name = input.name.trim();
+		const scopeId = previewArchiveScopeId(name);
+		// Prefix query then exact-scope filter so `pr-4` never matches `pr-42`.
+		const records = (
+			await this.deps.files.listFilesByScopePrefix({
+				userId: input.userId,
+				scopeIdPrefix: scopeId,
+				purpose: "output",
+			})
+		).filter((record) => record.scopeId === scopeId);
+		const files = records.map(toArchivedPreviewFile);
+		if (records.length === 0) {
+			return { ok: false, name, scopeId, reason: "not-found", files };
+		}
+
+		const summaryRecord = records
+			.filter((record) => classifyArchiveFile(record.name) === "summary")
+			.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+		if (!summaryRecord) {
+			return { ok: false, name, scopeId, reason: "no-summary", files };
+		}
+
+		const content = await this.deps.files.getFileContent(summaryRecord.id);
+		if (!content) {
+			return {
+				ok: false,
+				name,
+				scopeId,
+				reason: "malformed",
+				message: "summary file content unavailable",
+				files,
+			};
+		}
+		const parsed = parseArchiveSummary(content.bytes);
+		if (!parsed.ok) {
+			return {
+				ok: false,
+				name,
+				scopeId,
+				reason: "malformed",
+				message: parsed.message,
+				files,
+			};
+		}
+		const summary = parsed.summary;
+		return {
+			ok: true,
+			name,
+			scopeId,
+			archivedAt: summary.archivedAt ?? summaryRecord.createdAt,
+			pool: summary.pool,
+			url: summary.url,
+			executionsTotal: summary.executionsTotal,
+			executions: summary.executions,
+			bundles: summary.bundles,
+			artifactListingDegraded: summary.artifactListingDegraded,
+			notes: summary.notes,
+			files,
+		};
+	}
+}
+
+type ParsedArchiveSummary = {
+	archivedAt: string | null;
+	pool: string | null;
+	url: string | null;
+	executionsTotal: number | null;
+	executions: ArchivedPreviewExecution[];
+	bundles: PreviewArchivedBundle[];
+	artifactListingDegraded: boolean;
+	notes: string[];
+};
+
+function str(value: unknown): string | null {
+	return typeof value === "string" ? value : null;
+}
+
+function num(value: unknown): number | null {
+	return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function coerceExecution(value: unknown): ArchivedPreviewExecution | null {
+	if (!value || typeof value !== "object") return null;
+	const e = value as Record<string, unknown>;
+	if (typeof e.id !== "string") return null;
+	return {
+		id: e.id,
+		workflowId: str(e.workflowId),
+		workflowName: str(e.workflowName),
+		status: str(e.status),
+		phase: str(e.phase),
+		error: str(e.error),
+		startedAt: str(e.startedAt),
+		completedAt: str(e.completedAt),
+		durationMs: num(e.durationMs),
+	};
+}
+
+function coerceBundle(value: unknown): PreviewArchivedBundle | null {
+	if (!value || typeof value !== "object") return null;
+	const b = value as Record<string, unknown>;
+	if (typeof b.fileId !== "string") return null;
+	return {
+		executionId: str(b.executionId) ?? "",
+		artifactId: str(b.artifactId) ?? "",
+		fileId: b.fileId,
+		sizeBytes: num(b.sizeBytes) ?? 0,
+		contentType: str(b.contentType),
+	};
+}
+
+/** Validate + defensively coerce a run-summary JSON. Wrong schema, non-object,
+ * or invalid JSON → `{ ok:false, message }`. */
+function parseArchiveSummary(
+	bytes: Buffer,
+):
+	| { ok: true; summary: ParsedArchiveSummary }
+	| { ok: false; message: string } {
+	let raw: unknown;
+	try {
+		raw = JSON.parse(bytes.toString("utf8"));
+	} catch (err) {
+		return {
+			ok: false,
+			message: `invalid JSON: ${err instanceof Error ? err.message : String(err)}`,
+		};
+	}
+	if (!raw || typeof raw !== "object") {
+		return { ok: false, message: "summary is not an object" };
+	}
+	const obj = raw as Record<string, unknown>;
+	if (obj.schema !== PREVIEW_ARCHIVE_SCHEMA) {
+		return { ok: false, message: `unexpected schema: ${String(obj.schema)}` };
+	}
+	const preview =
+		obj.preview && typeof obj.preview === "object"
+			? (obj.preview as Record<string, unknown>)
+			: {};
+	return {
+		ok: true,
+		summary: {
+			archivedAt: str(obj.archivedAt),
+			pool: str(preview.pool),
+			url: str(preview.url),
+			executionsTotal: num(obj.executionsTotal),
+			executions: Array.isArray(obj.executions)
+				? obj.executions
+						.map(coerceExecution)
+						.filter((e): e is ArchivedPreviewExecution => e !== null)
+				: [],
+			bundles: Array.isArray(obj.bundles)
+				? obj.bundles
+						.map(coerceBundle)
+						.filter((b): b is PreviewArchivedBundle => b !== null)
+				: [],
+			artifactListingDegraded: obj.artifactListingDegraded === true,
+			notes: Array.isArray(obj.notes)
+				? obj.notes.filter((n): n is string => typeof n === "string")
+				: [],
+		},
+	};
 }

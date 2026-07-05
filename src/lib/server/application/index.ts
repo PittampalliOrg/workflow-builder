@@ -1313,7 +1313,12 @@ export function getApplicationAdapters(
 		(previewArchive ??= new ApplicationPreviewArchiveService({
 			proxy: new HttpPreviewReadProxy(),
 			listPreviews: listPreviewReadTargets,
-			files: { createFile: (input) => getWorkflowData().createWorkflowFile(input) },
+			files: {
+				createFile: (input) => getWorkflowData().createWorkflowFile(input),
+				listFilesByScopePrefix: (filter) =>
+					getWorkflowData().listWorkflowFilesByScopePrefix(filter),
+				getFileContent: (id) => getWorkflowData().getWorkflowFileContent(id),
+			},
 		}));
 	const getVclusterPreviews = () =>
 		(vclusterPreviews ??= new ApplicationVclusterPreviewService({
@@ -1395,6 +1400,7 @@ export function getApplicationAdapters(
 			sandboxDestroyer: new KubernetesSessionSandboxDestroyer(),
 			workflowEphemeralAgents: new PostgresWorkflowEphemeralAgentStore(),
 			agentRuntimeSync: new AgentRuntimeRegistrySyncAdapter(),
+			devSessionWorkflows: getWorkflowDefinitions(),
 		}));
 	const getSessionAgentConfig = () =>
 		(sessionAgentConfig ??= new ApplicationSessionAgentConfigService({
