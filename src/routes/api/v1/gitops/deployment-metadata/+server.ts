@@ -2,10 +2,6 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 
 import { getApplicationAdapters } from "$lib/server/application";
-import {
-	enrichLiveCommits,
-	getDeploymentMetadata,
-} from "$lib/server/gitops/deployment-metadata";
 
 export const GET: RequestHandler = async ({ locals, url }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
@@ -22,6 +18,9 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	}
 
 	const fresh = url.searchParams.get("fresh") === "1" || url.searchParams.get("fresh") === "true";
-	const metadata = await enrichLiveCommits(await getDeploymentMetadata({ fresh }));
+	const metadata = await getApplicationAdapters().gitOpsDeployment.getMetadata({
+		fresh,
+		enrichLive: true,
+	});
 	return json(metadata);
 };
