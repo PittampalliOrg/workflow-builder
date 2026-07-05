@@ -21,6 +21,7 @@
 	import type { SessionEventEnvelope } from '$lib/types/sessions';
 	import type { ExecutionReadModel, ExecutionStepLog } from '$lib/types/execution-stream';
 	import SessionTranscript from '$lib/components/sessions/session-transcript.svelte';
+	import CliTerminalTabs from '$lib/components/sessions/cli-terminal-tabs.svelte';
 	import RunMetricsBar, {
 		type RunMetricsLive,
 		type RunMetricsOutcome
@@ -28,7 +29,18 @@
 	import ProvisioningStepper from '$lib/components/workflow/execution/provisioning-stepper.svelte';
 	import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '$lib/components/ui/collapsible';
 	import { fmtTokens } from '$lib/utils/format-tokens';
-	import { ChevronDown, ExternalLink, Pin, Radio, Inbox, Loader2 } from '@lucide/svelte';
+	import {
+		ChevronDown,
+		ExternalLink,
+		Pin,
+		Radio,
+		Inbox,
+		Loader2,
+		Terminal,
+		ScrollText,
+		PanelLeftClose,
+		PanelLeftOpen
+	} from '@lucide/svelte';
 
 	interface Props {
 		executionId: string;
@@ -270,6 +282,65 @@
 		pinnedId ?? newestActiveId ?? (orderedSessions.length > 0 ? orderedSessions[orderedSessions.length - 1].id : null)
 	);
 	const following = $derived(pinnedId === null && selectedStep === null);
+
+	// ── Focused-session view mode: Transcript vs live CLI Terminal ──────────
+	// The cockpit's focus pane carries the interactive-CLI TUI the old session
+	// page rendered. We fetch the focused session's runtime flags; when it is an
+	// interactive-CLI session we offer a Transcript/Terminal segmented toggle and
+	// embed the same CliTerminalTabs (xterm over the cli-terminal WebSocket).
+	let focusViewMode = $state<'transcript' | 'terminal'>('transcript');
+	let focusFlags = $state<{ interactiveTerminal: boolean; cliLabel: string | null }>({
+		interactiveTerminal: false,
+		cliLabel: null
+	});
+	$effect(() => {
+		const id = focusedId;
+		if (!id) {
+			focusFlags = { interactiveTerminal: false, cliLabel: null };
+			focusViewMode = 'transcript';
+			return;
+		}
+		let cancelled = false;
+		(async () => {
+			try {
+				const res = await fetch(`/api/v1/sessions/${id}/runtime-flags`);
+				if (cancelled) return;
+				if (!res.ok) {
+					focusFlags = { interactiveTerminal: false, cliLabel: null };
+					focusViewMode = 'transcript';
+					return;
+				}
+				const body = (await res.json()) as { interactiveTerminal?: boolean; cliLabel?: string | null };
+				if (cancelled) return;
+				const interactive = body.interactiveTerminal === true;
+				focusFlags = { interactiveTerminal: interactive, cliLabel: body.cliLabel ?? null };
+				// Match the old session page: interactive-CLI sessions open on the
+				// live TUI; everything else shows the transcript.
+				focusViewMode = interactive ? 'terminal' : 'transcript';
+			} catch {
+				if (!cancelled) {
+					focusFlags = { interactiveTerminal: false, cliLabel: null };
+					focusViewMode = 'transcript';
+				}
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	});
+
+	// ── Collapsible sessions rail (lets the focus pane widen full-bleed) ────
+	let railCollapsed = $state(false);
+	const RAIL_COLLAPSE_KEY = 'wfb:run-console:rail-collapsed';
+	$effect(() => {
+		if (typeof localStorage === 'undefined') return;
+		railCollapsed = localStorage.getItem(RAIL_COLLAPSE_KEY) === '1';
+	});
+	function toggleRail() {
+		railCollapsed = !railCollapsed;
+		if (typeof localStorage !== 'undefined')
+			localStorage.setItem(RAIL_COLLAPSE_KEY, railCollapsed ? '1' : '0');
+	}
 
 	// ── Per-active-session preview streams (capped) ─────────────────────────
 	const MAX_PREVIEW_STREAMS = 4;
@@ -595,26 +666,72 @@
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
 			class="grid min-h-0 flex-1 overflow-hidden"
-			style:grid-template-columns="{railWidth}px 1fr"
+			style:grid-template-columns="{railCollapsed ? '2.5rem' : railWidth + 'px'} 1fr"
 			onmousemove={onResizeMove}
 			onmouseup={onResizeEnd}
 			onmouseleave={onResizeEnd}
 		>
+			{#if railCollapsed}
+				<!-- Collapsed rail: a slim strip that keeps sessions reachable while the
+				     focus pane widens full-bleed (no 1400px cap). -->
+				<div class="flex min-h-0 flex-col items-center gap-2 border-r py-2">
+					<button
+						class="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cockpit-ion)]"
+						onclick={toggleRail}
+						title="Expand sessions rail"
+						aria-label="Expand sessions rail"
+						aria-expanded="false"
+					>
+						<PanelLeftOpen class="size-4" />
+					</button>
+					<div class="flex flex-1 flex-col items-center gap-1.5 overflow-y-auto">
+						{#each orderedSessions as s (s.id)}
+							{@const dot = statusDot(s.status)}
+							<button
+								class="rounded-full p-1 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cockpit-ion)] {focusedId ===
+									s.id && selectedStep === null
+									? 'ring-2 ring-[var(--cockpit-phosphor)]'
+									: ''}"
+								onclick={() => focusSession(s.id)}
+								title={nodeOf(s)}
+								aria-label={nodeOf(s)}
+							>
+								{#if isActive(s)}
+									<span class="cockpit-live-dot block size-2 rounded-full"></span>
+								{:else}
+									<span class="{dot.cls} block text-xs leading-none">{dot.sym}</span>
+								{/if}
+							</button>
+						{/each}
+					</div>
+				</div>
+			{:else}
 			<!-- LEFT RAIL -->
 			<div class="flex min-h-0 flex-col border-r">
 				<div class="flex items-center justify-between gap-2 border-b px-3 py-1.5">
-					<span class="text-xs font-medium text-muted-foreground">
+					<span class="hud-nums text-xs font-medium text-muted-foreground">
 						{#if hasSpine}{steps.length} step{steps.length === 1 ? '' : 's'}{#if orderedSessions.length > 0} · {orderedSessions.length} session{orderedSessions.length === 1 ? '' : 's'}{/if}{:else}{orderedSessions.length} session{orderedSessions.length === 1 ? '' : 's'}{/if}
 					</span>
-					<button
-						class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] {following
-							? 'bg-teal-500/15 text-teal-600 dark:text-teal-400'
-							: 'text-muted-foreground hover:bg-muted'}"
-						onclick={() => { pinnedId = null; selectedStep = null; }}
-						title={following ? 'Following the newest active session' : 'Resume following latest'}
-					>
-						{#if following}<Radio class="size-3" /> Following latest{:else}<Pin class="size-3" /> Pinned{/if}
-					</button>
+					<div class="flex items-center gap-1">
+						<button
+							class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cockpit-ion)] {following
+								? 'bg-[var(--cockpit-phosphor)]/15 text-[var(--cockpit-phosphor)]'
+								: 'text-muted-foreground hover:bg-muted'}"
+							onclick={() => { pinnedId = null; selectedStep = null; }}
+							title={following ? 'Following the newest active session' : 'Resume following latest'}
+						>
+							{#if following}<Radio class="size-3" /> Following latest{:else}<Pin class="size-3" /> Pinned{/if}
+						</button>
+						<button
+							class="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cockpit-ion)]"
+							onclick={toggleRail}
+							title="Collapse sessions rail"
+							aria-label="Collapse sessions rail"
+							aria-expanded="true"
+						>
+							<PanelLeftClose class="size-3.5" />
+						</button>
+					</div>
 				</div>
 
 				<div class="min-h-0 flex-1 overflow-y-auto p-1.5">
@@ -660,15 +777,18 @@
 					</Collapsible>
 				{/if}
 			</div>
+			{/if}
 
 			<!-- Resize handle + MAIN PANE -->
 			<div class="relative flex min-h-0 flex-col overflow-hidden">
-				<!-- svelte-ignore a11y_no_static_element_interactions -->
-				<div
-					class="absolute left-0 top-0 bottom-0 z-10 -ml-0.5 w-1 cursor-col-resize transition-colors hover:bg-primary/40"
-					class:bg-primary={resizing}
-					onmousedown={onResizeStart}
-				></div>
+				{#if !railCollapsed}
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div
+						class="absolute left-0 top-0 bottom-0 z-10 -ml-0.5 w-1 cursor-col-resize transition-colors hover:bg-primary/40"
+						class:bg-primary={resizing}
+						onmousedown={onResizeStart}
+					></div>
+				{/if}
 				<div class="flex items-center justify-between gap-2 border-b px-3 py-1.5">
 					<div class="flex min-w-0 items-center gap-2">
 						<span class="truncate text-xs font-medium">
@@ -685,13 +805,53 @@
 						{/if}
 					</div>
 					{#if !selectedStepLog && focusedId}
-						<a
-							href="/workspaces/{slug}/sessions/{focusedId}"
-							class="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
-							title="Open the full session page (terminal / browser / shell / goal)"
-						>
-							<ExternalLink class="size-3" /> Full page
-						</a>
+						<div class="flex items-center gap-2">
+							{#if focusFlags.interactiveTerminal}
+								<!-- Signature: hardware-style Transcript/Terminal segmented switch. The
+								     phosphor that blinks the embedded xterm cursor also lights the active
+								     Terminal segment, wiring the HUD to the running agent. -->
+								<div
+									role="radiogroup"
+									aria-label="Focused-session view"
+									class="hud-nums inline-flex items-center gap-0.5 rounded-md border border-border bg-muted/40 p-0.5 text-[11px]"
+								>
+									<button
+										type="button"
+										role="radio"
+										aria-checked={focusViewMode === 'transcript'}
+										onclick={() => (focusViewMode = 'transcript')}
+										class="inline-flex items-center gap-1 rounded px-2 py-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cockpit-ion)] {focusViewMode ===
+										'transcript'
+											? 'bg-background font-medium text-foreground shadow-sm'
+											: 'text-muted-foreground hover:text-foreground'}"
+									>
+										<ScrollText class="size-3.5" /> Transcript
+									</button>
+									<button
+										type="button"
+										role="radio"
+										aria-checked={focusViewMode === 'terminal'}
+										onclick={() => (focusViewMode = 'terminal')}
+										class="inline-flex items-center gap-1 rounded px-2 py-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cockpit-ion)] {focusViewMode ===
+										'terminal'
+											? 'bg-background font-medium text-[var(--cockpit-phosphor)] shadow-sm'
+											: 'text-muted-foreground hover:text-foreground'}"
+									>
+										<Terminal class="size-3.5" /> Terminal
+										{#if focusViewMode === 'terminal'}
+											<span class="cockpit-live-dot block size-1.5 rounded-full"></span>
+										{/if}
+									</button>
+								</div>
+							{/if}
+							<a
+								href="/workspaces/{slug}/sessions/{focusedId}"
+								class="inline-flex items-center gap-1 rounded text-[11px] text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cockpit-ion)]"
+								title="Open the full session page (terminal / browser / shell / goal)"
+							>
+								<ExternalLink class="size-3" /> Full page
+							</a>
+						</div>
 					{/if}
 				</div>
 				<div class="min-h-0 flex-1 overflow-hidden">
@@ -724,9 +884,17 @@
 							{/if}
 						</div>
 					{:else if focusedId}
-						{#key focusedId}
-							<SessionTranscript sessionId={focusedId} />
-						{/key}
+						{#if focusFlags.interactiveTerminal && focusViewMode === 'terminal'}
+							{#key focusedId}
+								<div class="h-full min-h-0 p-2">
+									<CliTerminalTabs sessionId={focusedId} cliLabel={focusFlags.cliLabel ?? undefined} />
+								</div>
+							{/key}
+						{:else}
+							{#key focusedId}
+								<SessionTranscript sessionId={focusedId} />
+							{/key}
+						{/if}
 					{:else}
 						<div class="flex h-full items-center justify-center text-sm text-muted-foreground">
 							Select a step or session on the left.

@@ -9,6 +9,7 @@
 	 * Outcome chips read the run's summary output when present.
 	 */
 	import { fmtTokens } from '$lib/utils/format-tokens';
+	import * as Popover from '$lib/components/ui/popover';
 	import {
 		Coins,
 		Clock,
@@ -18,7 +19,8 @@
 		CircleCheck,
 		CircleAlert,
 		CircleDot,
-		Database
+		Database,
+		MoreHorizontal
 	} from '@lucide/svelte';
 
 	export type RunMetricsSession = {
@@ -168,121 +170,148 @@
 	const cacheHit = $derived(metrics?.cacheHitPct ?? null);
 </script>
 
-<div class="flex flex-wrap items-stretch gap-2 border-b bg-muted/20 px-3 py-2">
-	<!-- Tokens -->
+<!--
+	Single-line HUD strip. It NEVER wraps to a second row: primary chips are
+	always visible, secondary live chips + outcome pills collapse into an overflow
+	menu on narrow viewports, and `flex-nowrap` + `overflow-x-auto` is the final
+	guard so the row scrolls rather than breaking. Numerals are mono (JetBrains).
+-->
+{#snippet chip(Icon: typeof Layers, label: string, value: string, sub: string, title: string)}
 	<div
-		class="flex min-w-[7rem] flex-col rounded-md border bg-background px-2.5 py-1.5"
-		title={metrics
-			? `Input ${metrics.totals.inputTokens.toLocaleString()} · Output ${metrics.totals.outputTokens.toLocaleString()} · Cache read ${metrics.totals.cacheReadTokens.toLocaleString()} · Cache write ${metrics.totals.cacheCreateTokens.toLocaleString()}`
-			: 'Aggregating…'}
+		class="flex shrink-0 flex-col rounded-md border bg-background px-2.5 py-1 leading-tight"
+		{title}
 	>
 		<span class="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-			<Layers class="size-3" /> Tokens
+			<Icon class="size-3" />
+			{label}
 		</span>
-		<span class="text-sm font-semibold tabular-nums">{fmtTokens(totalTokens)}</span>
-		<span class="text-[10px] text-muted-foreground">
-			{fmtTokens(metrics?.totals.inputTokens ?? 0)} in · {fmtTokens(
-				metrics?.totals.outputTokens ?? 0
-			)} out
-		</span>
+		<span class="hud-nums text-sm font-semibold">{value}</span>
+		{#if sub}<span class="truncate text-[10px] text-muted-foreground">{sub}</span>{/if}
 	</div>
+{/snippet}
 
-	<!-- Cache hit -->
-	<div class="flex min-w-[5.5rem] flex-col rounded-md border bg-background px-2.5 py-1.5">
-		<span class="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-			<Database class="size-3" /> Cache
-		</span>
-		<span class="text-sm font-semibold tabular-nums">{cacheHit === null ? '—' : `${cacheHit}%`}</span>
-		<span class="text-[10px] text-muted-foreground">{fmtTokens(metrics?.totals.cacheReadTokens ?? 0)} read</span>
-	</div>
-
-	<!-- Cost -->
-	<div
-		class="flex min-w-[6rem] flex-col rounded-md border bg-background px-2.5 py-1.5"
-		title={metrics && metrics.byModel.length > 0
-			? metrics.byModel.map((m) => `${m.model}: ${modelCost(m.cost)}`).join('\n')
-			: 'Cost by model'}
-	>
-		<span class="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-			<Coins class="size-3" /> Cost
-		</span>
-		<span class="text-sm font-semibold tabular-nums">{metrics?.totalCostLabel ?? '—'}</span>
-		<span class="text-[10px] text-muted-foreground">
-			{metrics && metrics.byModel.length > 1 ? `${metrics.byModel.length} models` : (metrics?.byModel[0]?.model ?? '')}
-		</span>
-	</div>
-
-	<!-- Duration -->
-	<div
-		class="flex min-w-[6rem] flex-col rounded-md border bg-background px-2.5 py-1.5"
-		title={`Wall-clock ${fmtDuration(wallMs)} · Agent active ${fmtDuration(activeMs)}`}
-	>
-		<span class="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-			<Clock class="size-3" /> Duration
-		</span>
-		<span class="text-sm font-semibold tabular-nums">{fmtDuration(wallMs)}</span>
-		<span class="text-[10px] text-muted-foreground">{fmtDuration(activeMs)} active</span>
-	</div>
-
-	<!-- Sessions -->
-	<div class="flex min-w-[7rem] flex-col rounded-md border bg-background px-2.5 py-1.5">
+{#snippet sessionsChip()}
+	<div class="flex shrink-0 flex-col rounded-md border bg-background px-2.5 py-1 leading-tight">
 		<span class="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
 			<CircleDot class="size-3" /> Sessions
 		</span>
-		<span class="text-sm font-semibold tabular-nums">{counts.total}</span>
-		<span class="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-			{#if counts.running > 0}<span class="text-teal-500">▶ {counts.running}</span>{/if}
-			{#if counts.done > 0}<span class="text-emerald-500">✓ {counts.done}</span>{/if}
-			{#if counts.error > 0}<span class="text-red-500">✕ {counts.error}</span>{/if}
+		<span class="hud-nums text-sm font-semibold">{counts.total}</span>
+		<span class="hud-nums flex items-center gap-1.5 text-[10px] text-muted-foreground">
+			{#if counts.running > 0}<span style="color:var(--cockpit-phosphor)">▶ {counts.running}</span>{/if}
+			{#if counts.done > 0}<span class="text-emerald-600 dark:text-emerald-400">✓ {counts.done}</span>{/if}
+			{#if counts.error > 0}<span class="text-red-600 dark:text-red-400">✕ {counts.error}</span>{/if}
 		</span>
 	</div>
+{/snippet}
 
-	<!-- Tokens/sec (live) -->
+{#snippet secondaryChips()}
+	{@render chip(
+		Database,
+		'Cache',
+		cacheHit === null ? '—' : `${cacheHit}%`,
+		`${fmtTokens(metrics?.totals.cacheReadTokens ?? 0)} read`,
+		'Cache-read hit rate'
+	)}
 	{#if live?.tokensPerSec != null && live.tokensPerSec > 0}
-		<div class="flex min-w-[5.5rem] flex-col rounded-md border bg-background px-2.5 py-1.5">
-			<span class="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-				<Gauge class="size-3" /> Rate
-			</span>
-			<span class="text-sm font-semibold tabular-nums">{fmtTokens(Math.round(live.tokensPerSec))}/s</span>
-			<span class="text-[10px] text-muted-foreground">{live.isStreaming ? 'streaming' : 'idle'}</span>
-		</div>
+		{@render chip(
+			Gauge,
+			'Rate',
+			`${fmtTokens(Math.round(live.tokensPerSec))}/s`,
+			live.isStreaming ? 'streaming' : 'idle',
+			'Tokens per second (last 30s)'
+		)}
 	{/if}
-
-	<!-- Tool calls (live) -->
 	{#if live?.toolCallTotal != null && live.toolCallTotal > 0}
-		<div class="flex min-w-[5rem] flex-col rounded-md border bg-background px-2.5 py-1.5">
-			<span class="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-				<Wrench class="size-3" /> Tools
-			</span>
-			<span class="text-sm font-semibold tabular-nums">{live.toolCallTotal}</span>
-			<span class="text-[10px] text-muted-foreground">calls</span>
+		{@render chip(Wrench, 'Tools', String(live.toolCallTotal), 'calls', 'Tool calls this run')}
+	{/if}
+{/snippet}
+
+{#snippet outcomeChips()}
+	{#if outcome?.terminalState}
+		{@const ok = outcome?.terminalState === 'satisfied'}
+		<span
+			class="inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium {ok
+				? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+				: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'}"
+		>
+			{#if ok}<CircleCheck class="size-3.5" />{:else}<CircleAlert class="size-3.5" />{/if}
+			{outcome?.terminalState}
+		</span>
+	{/if}
+	{#if outcome?.criteriaTotal != null}
+		<span class="hud-nums inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-xs">
+			{outcome?.criteriaPassed ?? 0}/{outcome?.criteriaTotal} criteria
+		</span>
+	{/if}
+	{#if outcome?.negotiationRounds != null}
+		<span class="hud-nums inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-xs text-muted-foreground">
+			{outcome?.negotiationRounds} rounds · {outcome?.iterations ?? 0} iters
+		</span>
+	{/if}
+{/snippet}
+
+<div class="flex flex-nowrap items-center gap-1.5 overflow-x-auto border-b bg-muted/20 px-3 py-1.5">
+	{@render chip(
+		Layers,
+		'Tokens',
+		fmtTokens(totalTokens),
+		`${fmtTokens(metrics?.totals.inputTokens ?? 0)} in · ${fmtTokens(metrics?.totals.outputTokens ?? 0)} out`,
+		metrics
+			? `Input ${metrics.totals.inputTokens.toLocaleString()} · Output ${metrics.totals.outputTokens.toLocaleString()} · Cache read ${metrics.totals.cacheReadTokens.toLocaleString()} · Cache write ${metrics.totals.cacheCreateTokens.toLocaleString()}`
+			: 'Aggregating…'
+	)}
+	{@render chip(
+		Coins,
+		'Cost',
+		metrics?.totalCostLabel ?? '—',
+		metrics && metrics.byModel.length > 1 ? `${metrics.byModel.length} models` : (metrics?.byModel[0]?.model ?? ''),
+		metrics && metrics.byModel.length > 0
+			? metrics.byModel.map((m) => `${m.model}: ${modelCost(m.cost)}`).join('\n')
+			: 'Cost by model'
+	)}
+	{@render chip(
+		Clock,
+		'Duration',
+		fmtDuration(wallMs),
+		`${fmtDuration(activeMs)} active`,
+		`Wall-clock ${fmtDuration(wallMs)} · Agent active ${fmtDuration(activeMs)}`
+	)}
+	{@render sessionsChip()}
+
+	<!-- Secondary live chips: inline on wide, overflow menu below xl -->
+	<div class="hidden shrink-0 items-center gap-1.5 xl:flex">
+		{@render secondaryChips()}
+	</div>
+
+	<!-- Outcome pills: inline on wide -->
+	{#if outcome && (outcome.terminalState || outcome.criteriaTotal != null)}
+		<div class="ml-auto hidden shrink-0 items-center gap-2 xl:flex">
+			{@render outcomeChips()}
 		</div>
 	{/if}
 
-	<!-- Outcome chips (workflow summary output, when present) -->
-	{#if outcome && (outcome.terminalState || outcome.criteriaTotal != null)}
-		<div class="ml-auto flex items-center gap-2">
-			{#if outcome.terminalState}
-				{@const ok = outcome.terminalState === 'satisfied'}
-				<span
-					class="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium {ok
-						? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-						: 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'}"
-				>
-					{#if ok}<CircleCheck class="size-3.5" />{:else}<CircleAlert class="size-3.5" />{/if}
-					{outcome.terminalState}
-				</span>
-			{/if}
-			{#if outcome.criteriaTotal != null}
-				<span class="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs">
-					{outcome.criteriaPassed ?? 0}/{outcome.criteriaTotal} criteria
-				</span>
-			{/if}
-			{#if outcome.negotiationRounds != null}
-				<span class="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs text-muted-foreground">
-					{outcome.negotiationRounds} rounds · {outcome.iterations ?? 0} iters
-				</span>
-			{/if}
-		</div>
-	{/if}
+	<!-- Overflow menu (below xl) — holds every chip that doesn't fit, so nothing
+	     is ever hidden and the strip stays on one line. -->
+	<div class="ml-auto shrink-0 xl:hidden">
+		<Popover.Root>
+			<Popover.Trigger
+				class="inline-flex items-center gap-1 rounded-md border bg-background px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cockpit-ion)]"
+				title="More metrics"
+			>
+				<MoreHorizontal class="size-3.5" /> More
+			</Popover.Trigger>
+			<Popover.Content align="end" class="w-60 p-2">
+				<div class="flex flex-col gap-2">
+					<div class="flex flex-wrap gap-1.5">
+						{@render secondaryChips()}
+					</div>
+					{#if outcome && (outcome.terminalState || outcome.criteriaTotal != null)}
+						<div class="flex flex-wrap items-center gap-2 border-t pt-2">
+							{@render outcomeChips()}
+						</div>
+					{/if}
+				</div>
+			</Popover.Content>
+		</Popover.Root>
+	</div>
 </div>
