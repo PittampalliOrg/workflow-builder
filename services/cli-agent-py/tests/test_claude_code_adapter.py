@@ -201,6 +201,63 @@ def test_build_argv_omits_optional_flags():
     assert "--mcp-config" not in argv
     assert "--append-system-prompt-file" not in argv
     assert "--continue" not in argv
+    # no effort by default → neither --effort nor --settings
+    assert "--effort" not in argv
+    assert "--settings" not in argv
+    assert "--fallback-model" not in argv
+
+
+@pytest.mark.parametrize("level", ["low", "medium", "high", "xhigh"])
+def test_build_argv_effort_levels_use_effort_flag(level):
+    adapter = get_adapter("claude-code")
+    argv = adapter.build_argv({"effort": level}, {})
+    assert argv[argv.index("--effort") + 1] == level
+    # effort levels are NOT the ultracode setting
+    assert "--settings" not in argv
+
+
+def test_build_argv_ultracode_uses_settings_not_effort():
+    """ultracode is a Claude Code setting, enabled via --settings — NOT --effort."""
+    adapter = get_adapter("claude-code")
+    argv = adapter.build_argv({"effort": "ultracode"}, {})
+    assert "--effort" not in argv
+    assert argv[argv.index("--settings") + 1] == '{"ultracode": true}'
+
+
+def test_build_argv_effort_max_is_env_only_not_argv():
+    """max is session-only via CLAUDE_CODE_EFFORT_LEVEL (pane_env), not a flag."""
+    adapter = get_adapter("claude-code")
+    argv = adapter.build_argv({"effort": "max"}, {})
+    assert "--effort" not in argv
+    assert "--settings" not in argv
+
+
+def test_build_argv_unknown_effort_omitted():
+    adapter = get_adapter("claude-code")
+    argv = adapter.build_argv({"effort": "bogus"}, {})
+    assert "--effort" not in argv
+    assert "--settings" not in argv
+
+
+def test_build_argv_fallback_model_normalized_when_set():
+    adapter = get_adapter("claude-code")
+    argv = adapter.build_argv(
+        {"modelSpec": "anthropic/claude-opus-4-8", "fallbackModelSpec": "anthropic/claude-sonnet-4-6"},
+        {},
+    )
+    assert argv[argv.index("--model") + 1] == "claude-opus-4-8"
+    assert argv[argv.index("--fallback-model") + 1] == "claude-sonnet-4-6"
+
+
+def test_pane_env_effort_max_sets_level_env():
+    adapter = get_adapter("claude-code")
+    env = adapter.pane_env({"HOME": "/sandbox"}, session_id="s1", agent_config={"effort": "max"})
+    assert env["CLAUDE_CODE_EFFORT_LEVEL"] == "max"
+    # any other effort (or none) must NOT set the env var
+    assert "CLAUDE_CODE_EFFORT_LEVEL" not in adapter.pane_env(
+        {"HOME": "/sandbox"}, session_id="s1", agent_config={"effort": "high"}
+    )
+    assert "CLAUDE_CODE_EFFORT_LEVEL" not in adapter.pane_env({"HOME": "/sandbox"})
 
 
 def test_build_argv_continue_on_resume():

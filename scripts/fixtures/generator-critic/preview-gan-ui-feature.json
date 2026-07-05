@@ -1,0 +1,369 @@
+{
+	"document": {
+		"dsl": "1.0.0",
+		"namespace": "demos",
+		"name": "preview-gan-ui-feature",
+		"version": "0.1.0",
+		"title": "In-preview GAN UI-feature loop (Planner -> two-pass design -> Generator <-> skeptical Playwright critic) on the ADOPTED workflow-builder BFF -> PR",
+		"summary": "Generic UI-feature/refactor GAN loop running INSIDE a Tier-2 vcluster preview whose workflow-builder pod is ADOPTED by a hot-reload dev server (adopt:true: the dev pod becomes the BFF and the preview's own URL serves live edits). The Planner (gan-generator-ultracode: Opus 4.8 at ultracode effort) writes a TESTABLE JSON contract; a two-pass design_review critiques the token system BEFORE any code; then a refine loop has the GENERATOR pull the live source via GET /__export, edit ONLY src/, PUSH via POST /__sync (HMR), and self-check via POST /__run (check/boundaries/test-unit) \u2014 while a skeptical Playwright critic LOGS IN and grades each evaluationRoute against the contract (default-reject). Each iteration is captured as a promotable tar-overlay snapshot; when outputMode=pr the final source is opened as a pull request on PittampalliOrg/workflow-builder. Kept GENERIC \u2014 the specific task is the run-time `intent`. No HITL/approval gate.",
+		"x-workflow-builder": {
+			"resumable": true,
+			"input": {
+				"schema": {
+					"format": "json",
+					"document": {
+						"type": "object",
+						"required": [
+							"intent"
+						],
+						"properties": {
+							"intent": {
+								"type": "string",
+								"title": "Feature / refactor request",
+								"default": "Describe the UI feature or refactor you want on the workflow-builder app. State the goal, the user and the job the surface must do, what matters MOST, and what to AVOID. This drives a Planner -> Generator <-> skeptical Playwright Critic loop: the Planner writes a TESTABLE JSON contract, the Generator builds it against the live hot-reloading preview (edit src/, /__sync), and the Critic logs in and grades the live routes. Requirements: pull REAL data via +page.server.ts (never fabricate; degrade gracefully to empty states), keep hexagonal-architecture discipline for server/data code, keep existing functionality intact, fully responsive and accessible (AA contrast, visible keyboard focus). Never touch the sign-in/auth pages.",
+								"description": "The change request that drives the loop (Planner writes a testable contract -> Generator builds it -> skeptical Playwright Critic grades the live routes). Freeform; be specific about the goal and what to avoid."
+							},
+							"service": {
+								"type": "string",
+								"title": "Service",
+								"default": "workflow-builder",
+								"description": "The preview service whose pod is adopted by a dev server (workflow-builder = the BFF)."
+							},
+							"evaluationRoutes": {
+								"type": "array",
+								"title": "Evaluation routes",
+								"items": {
+									"type": "string"
+								},
+								"default": [
+									"/dashboard"
+								],
+								"description": "Route paths the generator builds and the critic grades against the contract (authenticated)."
+							},
+							"generatorAgent": {
+								"type": "string",
+								"title": "Generator/planner agent",
+								"default": "gan-generator-ultracode",
+								"description": "Plans (writes the contract) AND edits repo/src. interactive-cli family (shares the run workspace). Defaults to the Opus 4.8 ultracode agent."
+							},
+							"criticAgent": {
+								"type": "string",
+								"title": "Critic agent",
+								"default": "gan-critic-claude",
+								"description": "Reviews the design tokens + drives Playwright MCP against the live preview and grades each evaluation route."
+							},
+							"previewLogin": {
+								"type": "string",
+								"title": "Preview login email",
+								"default": "admin@example.com",
+								"description": "Admin login the critic uses to reach the authenticated routes (seeded by the preview runner)."
+							},
+							"previewPassword": {
+								"type": "string",
+								"title": "Preview login password",
+								"default": "developer"
+							},
+							"maxIterations": {
+								"type": "integer",
+								"title": "Max refine iterations",
+								"default": 5,
+								"description": "Upper bound on generate<->critique iterations; the loop also exits early once the critic accepts (score >= 8)."
+							},
+							"outputMode": {
+								"type": "string",
+								"title": "Output mode",
+								"default": "pr",
+								"enum": [
+									"pr",
+									"preview-only"
+								],
+								"description": "pr = open a pull request on PittampalliOrg/workflow-builder from the final source; preview-only = stop after the loop without a PR."
+							}
+						}
+					}
+				}
+			}
+		}
+	},
+	"input": {
+		"schema": {
+			"format": "json",
+			"document": {
+				"type": "object",
+				"required": [
+					"intent"
+				],
+				"properties": {
+					"intent": {
+						"type": "string",
+						"title": "Feature / refactor request",
+						"default": "Describe the UI feature or refactor you want on the workflow-builder app. State the goal, the user and the job the surface must do, what matters MOST, and what to AVOID. This drives a Planner -> Generator <-> skeptical Playwright Critic loop: the Planner writes a TESTABLE JSON contract, the Generator builds it against the live hot-reloading preview (edit src/, /__sync), and the Critic logs in and grades the live routes. Requirements: pull REAL data via +page.server.ts (never fabricate; degrade gracefully to empty states), keep hexagonal-architecture discipline for server/data code, keep existing functionality intact, fully responsive and accessible (AA contrast, visible keyboard focus). Never touch the sign-in/auth pages.",
+						"description": "The change request that drives the loop (Planner writes a testable contract -> Generator builds it -> skeptical Playwright Critic grades the live routes). Freeform; be specific about the goal and what to avoid."
+					},
+					"service": {
+						"type": "string",
+						"title": "Service",
+						"default": "workflow-builder",
+						"description": "The preview service whose pod is adopted by a dev server (workflow-builder = the BFF)."
+					},
+					"evaluationRoutes": {
+						"type": "array",
+						"title": "Evaluation routes",
+						"items": {
+							"type": "string"
+						},
+						"default": [
+							"/dashboard"
+						],
+						"description": "Route paths the generator builds and the critic grades against the contract (authenticated)."
+					},
+					"generatorAgent": {
+						"type": "string",
+						"title": "Generator/planner agent",
+						"default": "gan-generator-ultracode",
+						"description": "Plans (writes the contract) AND edits repo/src. interactive-cli family (shares the run workspace). Defaults to the Opus 4.8 ultracode agent."
+					},
+					"criticAgent": {
+						"type": "string",
+						"title": "Critic agent",
+						"default": "gan-critic-claude",
+						"description": "Reviews the design tokens + drives Playwright MCP against the live preview and grades each evaluation route."
+					},
+					"previewLogin": {
+						"type": "string",
+						"title": "Preview login email",
+						"default": "admin@example.com",
+						"description": "Admin login the critic uses to reach the authenticated routes (seeded by the preview runner)."
+					},
+					"previewPassword": {
+						"type": "string",
+						"title": "Preview login password",
+						"default": "developer"
+					},
+					"maxIterations": {
+						"type": "integer",
+						"title": "Max refine iterations",
+						"default": 5,
+						"description": "Upper bound on generate<->critique iterations; the loop also exits early once the critic accepts (score >= 8)."
+					},
+					"outputMode": {
+						"type": "string",
+						"title": "Output mode",
+						"default": "pr",
+						"enum": [
+							"pr",
+							"preview-only"
+						],
+						"description": "pr = open a pull request on PittampalliOrg/workflow-builder from the final source; preview-only = stop after the loop without a PR."
+					}
+				}
+			}
+		}
+	},
+	"output": {
+		"as": "${ .summary }"
+	},
+	"do": [
+		{
+			"enter_dev_mode": {
+				"call": "dev/preview",
+				"with": {
+					"executionId": "${ .runtime.executionId }",
+					"service": "${ .trigger.service // \"workflow-builder\" }",
+					"mode": "preview-native",
+					"adopt": true,
+					"timeoutSeconds": 86400,
+					"waitReadySeconds": 240
+				},
+				"artifacts": [
+					{
+						"from": "${ { service:(.data.service // \"\"), url:(.data.url // \"\"), syncUrl:(.data.syncUrl // \"\"), browseUrl:(.data.browseUrl // \"\"), ready:(.data.ready // false) } }",
+						"kind": "json",
+						"slot": "secondary",
+						"title": "Preview-native dev mode (adopted BFF)"
+					}
+				]
+			}
+		},
+		{
+			"plan": {
+				"call": "durable/run",
+				"with": {
+					"cwd": "/sandbox/scratch",
+					"mode": "execute_direct",
+					"workspaceRef": "${ .runtime.workspaceExecutionId }",
+					"agentRef": {
+						"slug": "${ .trigger.generatorAgent // \"gan-generator-ultracode\" }"
+					},
+					"agentConfig": {
+						"name": "Planner (contract author)",
+						"modelSpec": "claude-opus-4-8",
+						"effort": "ultracode",
+						"instructions": "You are the PLANNER/GENERATOR (a senior product engineer) in a GAN UI-feature loop on the workflow-builder app. The body prompt tells you whether to PLAN (write the testable contract, no app code) or BUILD (implement the feature against the live preview via /__export + /__sync, then self-check via /__run). Keep hexagonal-architecture discipline; wire REAL data with guarded server loads; keep existing functionality intact; never touch the sign-in/auth pages."
+					},
+					"body": {
+						"prompt": "${ \"You are the PLANNER for a UI feature/refactor on the workflow-builder app (Anthropic GAN harness). Stay HIGH-LEVEL.\\n\\n\" + \"=== HARD RULE: DO NOT WRITE APP CODE ===\\n\" + \"This step does NOT sync anything. Any edits to app source live only in throwaway /sandbox/scratch and are DISCARDED \\u2014 a separate GENERATOR builds the real code later. Read the current UI for understanding ONLY. Your ONE persistent deliverable is /sandbox/work/contract.json.\\n\\n\" + \"Feature/refactor request:\\n\" + (.trigger.intent // \"improve the UI\") + \"\\n\\n\" + \"Routes to evaluate: \" + ((.trigger.evaluationRoutes // [\"/dashboard\"]) | join(\", \")) + \"\\n\" + \"EXPORT_URL=\" + ((.enter_dev_mode.url // \"\") + \"/__export\") + \"\\n\\n\" + \"STEPS: (1) rm -rf /sandbox/scratch/repo && mkdir -p /sandbox/scratch/repo && curl -sS \\\"$EXPORT_URL\\\" | tar -xz -C /sandbox/scratch/repo and READ the current source for the evaluation routes under /sandbox/scratch/repo/src (understand the data/links/forms/components to preserve) \\u2014 do not edit. (2) mkdir -p /sandbox/work and WRITE /sandbox/work/contract.json (strict JSON), then cat it to verify. The contract has keys: objective (one sentence); subject, audience, featureJob; acceptanceCriteria (array of 5-8 {id,description,verify} TESTABLE on the live page \\u2014 cover the feature's core behavior, REAL data with graceful empty states, existing functionality staying intact, accessibility (AA contrast + visible keyboard focus), responsiveness down to mobile, and visual/interaction quality); designTokens {palette:4-6 {name,hex} (deliberate, NOT a generic AI default), typography {display,body,utility}, wireframe (ASCII), signature (the one memorable element)}; rubric (string: penalize AI-default looks; require deliberate type/spacing/contrast, real data with graceful empty states, active-voice copy, and hexagonal-architecture discipline for any server/data code). (3) STOP after writing + verifying the file. Do NOT write app code.\" }",
+						"overrides": {
+							"cwd": "/sandbox/scratch",
+							"maxTurns": 12,
+							"timeoutMinutes": 20
+						}
+					}
+				}
+			}
+		},
+		{
+			"design_review": {
+				"call": "durable/run",
+				"with": {
+					"cwd": "/sandbox/scratch",
+					"mode": "execute_direct",
+					"workspaceRef": "${ .runtime.workspaceExecutionId }",
+					"agentRef": {
+						"slug": "${ .trigger.criticAgent // \"gan-critic-claude\" }"
+					},
+					"agentConfig": {
+						"name": "Two-pass design review",
+						"instructions": "You are an exacting design lead doing the SECOND pass of a two-pass design review (frontend-design skill): you review the proposed token system BEFORE any code. You do NOT write code. Read the contract, review its designTokens + rubric against the request, REJECT generic/AI-default looks, and write a strict-JSON verdict {\"approved\": boolean, \"feedback\": string} to /sandbox/work/design-review.json."
+					},
+					"body": {
+						"prompt": "${ \"Second-pass design review BEFORE any code. Feature/refactor request:\\n\" + (.trigger.intent // \"\") + \"\\n\\nRead /sandbox/work/contract.json, review its designTokens against the rubric, and write your verdict to /sandbox/work/design-review.json per your instructions (strict JSON {approved, feedback}).\" }",
+						"overrides": {
+							"cwd": "/sandbox/scratch",
+							"maxTurns": 6,
+							"timeoutMinutes": 15
+						}
+					}
+				}
+			}
+		},
+		{
+			"refine": {
+				"for": {
+					"each": "i",
+					"in": [
+						0,
+						1,
+						2,
+						3,
+						4
+					],
+					"at": "idx"
+				},
+				"while": "${ ( ((.loop.last.critique.meets_criteria // false) == true) and (((.loop.last.critique.score // 0) as $s | if $s > 10 then ($s / 10) else $s end) >= 8) ) | not }",
+				"do": [
+					{
+						"generate": {
+							"call": "durable/run",
+							"with": {
+								"cwd": "/sandbox/scratch",
+								"mode": "execute_direct",
+								"workspaceRef": "${ .runtime.workspaceExecutionId }",
+								"agentRef": {
+									"slug": "${ .trigger.generatorAgent // \"gan-generator-ultracode\" }"
+								},
+								"agentConfig": {
+									"name": "Generator (dev-pod source, contract-driven)",
+									"modelSpec": "claude-opus-4-8",
+									"effort": "ultracode",
+									"instructions": "You are the PLANNER/GENERATOR (a senior product engineer) in a GAN UI-feature loop on the workflow-builder app. The body prompt tells you whether to PLAN (write the testable contract, no app code) or BUILD (implement the feature against the live preview via /__export + /__sync, then self-check via /__run). Keep hexagonal-architecture discipline; wire REAL data with guarded server loads; keep existing functionality intact; never touch the sign-in/auth pages."
+								},
+								"body": {
+									"prompt": "${ \"Implement the requested UI feature/refactor on the workflow-builder app and PUSH it live.\\n\\n\" + \"HARD REQUIREMENT \\u2014 satisfy the contract's acceptanceCriteria + designTokens + rubric and address the latest critic feedback. Wire REAL data via +page.server.ts from EXISTING repo endpoints (grep src for the real ones); NEVER fabricate data; guard EACH server-side source independently (try/catch or Promise.allSettled) and degrade THAT region to a graceful empty state \\u2014 one failing source must never 500 the page. Keep hexagonal-architecture discipline. Keep existing functionality working; do NOT touch the sign-in/auth pages.\\n\\n\" + \"Optionally read /sandbox/work/contract.json and /sandbox/work/design-review.json IF they exist (do NOT fail if missing).\\n\\n\" + \"EXPORT_URL=\" + ((.enter_dev_mode.url // \"\") + \"/__export\") + \"\\nSYNC_URL=\" + (.enter_dev_mode.syncUrl // \"\") + \"\\nPREVIEW_URL=\" + (.enter_dev_mode.url // \"\") + \"\\nTARGET_ROUTES=\" + ((.trigger.evaluationRoutes // [\"/dashboard\"]) | join(\", \")) + \"\\n\\n\" + \"FEATURE/INTENT:\\n\" + (.trigger.intent // \"\") + \"\\n\\n\" + \"STEPS each turn: (1) rm -rf /sandbox/scratch/repo && mkdir -p /sandbox/scratch/repo && curl -sS \\\"$EXPORT_URL\\\" | tar -xz -C /sandbox/scratch/repo (cumulative). (2) edit ONLY files under src/ to satisfy the contract for the target routes. (3) push live: cd /sandbox/scratch/repo && tar -czf - src | curl -sS -X POST --data-binary @- -H 'content-type: application/gzip' \\\"$SYNC_URL\\\". (4) GATE before stopping: take $SYNC_URL, replace /__sync with /__run, and POST ?cmd=check, ?cmd=boundaries, ?cmd=test-unit (and ?cmd=contract if you touched a shared contract) \\u2014 fix anything red \\u2014 then cheaply curl $PREVIEW_URL + a target route for HTTP 200. STOP after a clean sync + gate; a separate Playwright critic grades it.\\n\\n\" + \"Your previous attempt:\\n\" + (.loop.last.generate.content // \"(first attempt)\") + \"\\n\\n\" + \"Critic feedback to address now:\\n\" + (if .loop.last.critique then (.loop.last.critique.feedback // (.loop.last.critique | tojson)) else \"(none yet \\u2014 make your first improvement)\" end) }",
+									"overrides": {
+										"cwd": "/sandbox/scratch",
+										"maxTurns": 30,
+										"timeoutMinutes": 25
+									}
+								}
+							}
+						}
+					},
+					{
+						"snapshot": {
+							"call": "dev/preview-snapshot",
+							"with": {
+								"executionId": "${ .runtime.executionId }",
+								"nodeId": "generate",
+								"iteration": "${ .idx }"
+							},
+							"allowFailure": true
+						}
+					},
+					{
+						"critique": {
+							"call": "durable/run",
+							"with": {
+								"cwd": "/sandbox/scratch",
+								"mode": "execute_direct",
+								"workspaceRef": "${ .runtime.workspaceExecutionId }",
+								"agentRef": {
+									"slug": "${ .trigger.criticAgent // \"gan-critic-claude\" }"
+								},
+								"agentConfig": {
+									"name": "Skeptical visual+functional critic (Playwright, contract-graded)",
+									"instructions": "You are an exacting, INDEPENDENT visual + functional critic (skeptical-evaluator pattern). You do NOT edit code; you boot the LIVE authenticated app with Playwright MCP, log in, visit each evaluation route at desktop AND mobile widths, and grade against the contract + rubric, defaulting to NOT satisfied. Your FINAL message MUST be ONLY the strict JSON verdict (no prose, no fences)."
+								},
+								"body": {
+									"prompt": "${ \"Grade the LIVE app after the feature/refactor using your Playwright MCP tools. The app is AUTHENTICATED \\u2014 log in FIRST.\\n\\n\" + \"PREVIEW_URL=\" + (.enter_dev_mode.url // \"\") + \"\\nEVAL_ROUTES=\" + ((.trigger.evaluationRoutes // [\"/dashboard\"]) | join(\", \")) + \"\\nLOGIN_EMAIL=\" + (.trigger.previewLogin // \"admin@example.com\") + \"\\nLOGIN_PASSWORD=\" + (.trigger.previewPassword // \"developer\") + \"\\n\\n\" + \"Open \" + (.enter_dev_mode.url // \"\") + \"/auth/sign-in (slow first load \\u2014 use a 180000 ms navigation timeout + retry once or twice), LOG IN with the credentials above, then visit EACH route in EVAL_ROUTES. Screenshot desktop AND mobile, and interact (expand/hover/drill-down/keyboard focus) to check the feature.\\n\\n\" + \"If /sandbox/work/contract.json exists, grade against its acceptanceCriteria + rubric; if MISSING, grade the feature request above anyway \\u2014 NEVER refuse to grade for a missing contract file. Check: the feature behaves correctly, shows REAL data or a graceful empty state, existing functionality is intact, accessibility (AA contrast + visible keyboard focus), responsiveness, and visual/interaction quality (deliberate palette/typography/spacing, NO generic AI-default look).\\n\\n\" + \"Your ENTIRE final message must be ONLY this strict JSON object (start with { and end with }, NO prose/preamble and NO markdown fences; put ALL reasoning inside feedback) \\u2014 the harness machine-parses your FINAL message to decide whether the loop stops: {\\\"meets_criteria\\\": <true|false>, \\\"score\\\": <0-10>, \\\"perRoute\\\": [{\\\"route\\\": <string>, \\\"passes\\\": <bool>, \\\"note\\\": <string>}], \\\"feedback\\\": \\\"<specific, actionable next-step guidance>\\\"}. Set meets_criteria true ONLY if EVERY evaluation route meets the criteria, the feature works with real/empty-state data, existing functionality is intact, and score is at least 8.\" }",
+									"overrides": {
+										"cwd": "/sandbox/scratch",
+										"maxTurns": 24,
+										"timeoutMinutes": 25
+									}
+								}
+							},
+							"parseJson": true
+						}
+					}
+				]
+			}
+		},
+		{
+			"promote": {
+				"call": "workspace/command",
+				"if": "${ (.trigger.outputMode // \"pr\") == \"pr\" }",
+				"with": {
+					"cliWorkspace": true,
+					"cwd": "/sandbox/work",
+					"command": "${ \"EXPORT_URL=\" + ((.enter_dev_mode.url // \"\") + \"/__export\") + \" && set -e\" + \" && cd /sandbox/work && rm -rf pr-repo\" + \" && git clone --depth 1 --single-branch https://x-access-token:${GITHUB_TOKEN}@github.com/PittampalliOrg/workflow-builder.git pr-repo\" + \" && curl -sS \\\"$EXPORT_URL\\\" | tar -xz -C pr-repo\" + \" && cd pr-repo\" + \" && git config user.email agent@workflow-builder.local && git config user.name 'workflow-builder gan agent'\" + \" && BR=gan-ui-feature-$(date +%s) && git checkout -b \\\"$BR\\\"\" + \" && git add -A && (git commit -m 'GAN UI feature via workflow-builder planner/generator/critic loop' || echo nothing-to-commit)\" + \" && git push https://x-access-token:${GITHUB_TOKEN}@github.com/PittampalliOrg/workflow-builder.git HEAD:\\\"$BR\\\"\" + \" && printf '{\\\"title\\\":\\\"GAN UI feature (automated)\\\",\\\"head\\\":\\\"%s\\\",\\\"base\\\":\\\"main\\\",\\\"body\\\":\\\"Automated UI feature via the workflow-builder planner/generator/critic loop; a skeptical Playwright critic graded the live preview.\\\"}' \\\"$BR\\\" > /sandbox/work/pr.json\" + \" && PR=$(curl -sS -X POST -H \\\"Authorization: Bearer $GITHUB_TOKEN\\\" -H 'Accept: application/vnd.github+json' https://api.github.com/repos/PittampalliOrg/workflow-builder/pulls -d @/sandbox/work/pr.json)\" + \" && echo \\\"$PR\\\" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(\\\"PR_URL=\\\"+str(d.get(\\\"html_url\\\") or d.get(\\\"message\\\") or d))'\" }",
+					"timeoutMs": 180000,
+					"allowFailure": true
+				},
+				"artifacts": [
+					{
+						"from": "${ (.data.result.stdout // .data.stdout // .data.result.output // .data.output // \"\") }",
+						"kind": "text",
+						"slot": "primary",
+						"title": "Pull request",
+						"description": "git push + GitHub PR output (PR_URL=...) on PittampalliOrg/workflow-builder."
+					}
+				]
+			}
+		},
+		{
+			"summary": {
+				"set": {
+					"service": "${ .enter_dev_mode.service // .trigger.service // \"workflow-builder\" }",
+					"browseUrl": "${ .enter_dev_mode.browseUrl // \"\" }",
+					"evaluationRoutes": "${ .trigger.evaluationRoutes // [\"/dashboard\"] }",
+					"outputMode": "${ .trigger.outputMode // \"pr\" }",
+					"accepted": "${ ((.loop.last.critique.meets_criteria // false) == true) and (((.loop.last.critique.score // 0) as $s | if $s > 10 then ($s / 10) else $s end) >= 8) }",
+					"iterations": "${ .loop.iterations // 0 }",
+					"finalSummary": "${ .loop.last.generate.content // \"\" }",
+					"verdict": "${ .loop.last.critique // {} }",
+					"pullRequest": "${ .promote.result.stdout // .promote.stdout // \"\" }"
+				},
+				"artifacts": [
+					{
+						"from": "${ .data }",
+						"kind": "json",
+						"slot": "primary",
+						"title": "GAN UI-feature result",
+						"description": "Accepted flag, iteration count, evaluation routes, output mode, final generator summary, the critic's last verdict, and the PR output."
+					}
+				]
+			}
+		}
+	]
+}

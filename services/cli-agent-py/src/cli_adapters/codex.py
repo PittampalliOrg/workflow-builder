@@ -68,6 +68,20 @@ CODEX_BIN = os.environ.get("CLI_AGENT_CODEX_PATH", "codex")
 # Where the credential blob is delivered (must match descriptor cliAuth.envVar).
 CODEX_AUTH_ENV = "CODEX_AUTH_JSON"
 
+# AgentConfig.effort → codex `-c model_reasoning_effort=<v>` override. codex
+# exposes low|medium|high (its `minimal` is intentionally NOT surfaced); the
+# higher unified levels clamp to `high`.
+_CODEX_EFFORT_MAP = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "high",
+    "max": "high",
+    "ultracode": "high",
+}
+# AgentConfig.codexReasoningSummary → codex `-c model_reasoning_summary=<v>`.
+_CODEX_SUMMARY_VALUES = ("auto", "concise", "detailed", "none")
+
 
 def clean_string(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
@@ -717,6 +731,18 @@ class CodexAdapter(CliAdapter):
         model = normalize_codex_model(agent_config.get("modelSpec"))
         if model:
             argv += ["--model", model]
+        # codex takes config overrides via repeated `-c key=value`. Map the
+        # unified effort + the codex-only reasoning-summary knob; enable web
+        # search via `--search`. Unknown/absent → omit (codex's own defaults).
+        effort = clean_string(agent_config.get("effort"))
+        mapped_effort = _CODEX_EFFORT_MAP.get(effort) if effort else None
+        if mapped_effort:
+            argv += ["-c", f"model_reasoning_effort={mapped_effort}"]
+        summary = clean_string(agent_config.get("codexReasoningSummary"))
+        if summary in _CODEX_SUMMARY_VALUES:
+            argv += ["-c", f"model_reasoning_summary={summary}"]
+        if bool(agent_config.get("codexWebSearch")):
+            argv += ["--search"]
         return argv
 
     def extract_completion_text(self, payload: Mapping[str, Any]) -> str | None:
@@ -813,6 +839,7 @@ class CodexAdapter(CliAdapter):
         base_env: Mapping[str, str],
         *,
         session_id: str | None = None,
+        agent_config: Mapping[str, Any] | None = None,
     ) -> dict[str, str]:
         env: dict[str, str] = {}
         passthrough = (

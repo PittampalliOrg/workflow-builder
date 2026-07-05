@@ -205,6 +205,50 @@ def test_codex_build_argv_resume_on_continue(codex_home):
     assert "resume" not in get_adapter("codex").build_argv(SESSION["agentConfig"], {})
 
 
+def test_codex_build_argv_effort_maps_to_reasoning_effort_override(codex_home):
+    cfg = {**SESSION["agentConfig"], "effort": "high"}
+    argv = get_adapter("codex").build_argv(cfg, {})
+    assert "model_reasoning_effort=high" in argv
+    # emitted as a `-c key=value` override pair
+    assert argv[argv.index("model_reasoning_effort=high") - 1] == "-c"
+
+
+@pytest.mark.parametrize(
+    "level,expected",
+    [
+        ("low", "low"),
+        ("medium", "medium"),
+        ("high", "high"),
+        ("xhigh", "high"),
+        ("max", "high"),
+        ("ultracode", "high"),
+    ],
+)
+def test_codex_build_argv_effort_clamps_high_tiers(codex_home, level, expected):
+    cfg = {**SESSION["agentConfig"], "effort": level}
+    argv = get_adapter("codex").build_argv(cfg, {})
+    assert f"model_reasoning_effort={expected}" in argv
+
+
+def test_codex_build_argv_reasoning_summary_and_search(codex_home):
+    cfg = {
+        **SESSION["agentConfig"],
+        "codexReasoningSummary": "detailed",
+        "codexWebSearch": True,
+    }
+    argv = get_adapter("codex").build_argv(cfg, {})
+    assert "model_reasoning_summary=detailed" in argv
+    assert argv[argv.index("model_reasoning_summary=detailed") - 1] == "-c"
+    assert "--search" in argv
+
+
+def test_codex_build_argv_omits_effort_options_by_default(codex_home):
+    argv = get_adapter("codex").build_argv(SESSION["agentConfig"], {})
+    assert not any(a.startswith("model_reasoning_effort=") for a in argv)
+    assert not any(a.startswith("model_reasoning_summary=") for a in argv)
+    assert "--search" not in argv
+
+
 def test_codex_pane_env_strips_apikey_and_blob():
     env = get_adapter("codex").pane_env(
         {
@@ -772,6 +816,16 @@ def test_agy_build_argv():
     assert "--dangerously-skip-permissions" in argv
     assert "--sandbox=false" in argv
     assert argv[argv.index("--add-dir") + 1].endswith("sandbox")
+
+
+def test_agy_build_argv_effort_is_noop(agy_home):
+    """agy 1.0.16 has no reasoning/effort control — effort must add no flag and
+    leave argv byte-identical to the no-effort baseline (documented no-op)."""
+    cfg = {**AGY_SESSION["agentConfig"], "effort": "ultracode"}
+    argv = get_adapter("antigravity").build_argv(cfg, {})
+    for flag in ("--effort", "--reasoning", "--reasoning-effort", "--thinking", "--think"):
+        assert flag not in argv
+    assert argv == get_adapter("antigravity").build_argv(AGY_SESSION["agentConfig"], {})
 
 
 def test_agy_pane_env_strips_all_google_keys_and_pins_home(agy_home):

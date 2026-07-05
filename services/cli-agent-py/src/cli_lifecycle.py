@@ -194,7 +194,7 @@ async def _start_cli(input_data: dict[str, Any]) -> dict[str, Any]:
     }
     adapter = get_adapter(adapter_name_for(input_data))
     argv = adapter.build_argv(agent_config, seed_paths)
-    env = adapter.pane_env(os.environ, session_id=session_id)
+    env = adapter.pane_env(os.environ, session_id=session_id, agent_config=agent_config)
     cwd = _sandbox_root()
 
     # P3: install the run's portable agentConfig.hooks so HookProcessor executes

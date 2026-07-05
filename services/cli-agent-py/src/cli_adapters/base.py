@@ -205,8 +205,14 @@ class CliAdapter(abc.ABC):
         base_env: Mapping[str, str],
         *,
         session_id: str | None = None,
+        agent_config: Mapping[str, Any] | None = None,
     ) -> dict[str, str]:
-        """Build the pane environment (allow-list based; never API keys)."""
+        """Build the pane environment (allow-list based; never API keys).
+
+        ``agent_config`` is passed so an adapter can derive env-only knobs from
+        the session's config (e.g. Claude Code's ``max`` effort, which is a
+        session env var ``CLAUDE_CODE_EFFORT_LEVEL=max`` rather than a CLI flag).
+        """
 
     # -- optional lifecycle / mapping hooks ------------------------------------
 

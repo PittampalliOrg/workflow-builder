@@ -167,9 +167,14 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
 		// picks up the refreshed node_modules with no restart.
 		depsCommand: "pnpm install --no-frozen-lockfile",
 		// Fast contract lane: the single shared-fixture vitest (seconds), cwd /app.
+		// `check` (svelte-check), `test-unit` (vitest), and `boundaries` (depcruise)
+		// give an in-preview generator/critic the same gates run in CI via /__run.
 		testCommands: {
 			contract:
 				"node_modules/.bin/vitest run src/routes/api/internal/workflow-data/workflow-data-contract.test.ts",
+			check: "pnpm check",
+			"test-unit": "pnpm test:unit",
+			boundaries: "pnpm check:boundaries",
 		},
 		// Functional preview: the BFF actually runs against its own preview DB +
 		// a daprd sidecar (to service-invoke the backend). Reuses the prod

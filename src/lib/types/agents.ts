@@ -142,6 +142,40 @@ export type AgentConfig = {
 	}>;
 
 	modelSpec?: string;
+
+	/**
+	 * Fallback model spec for the claude-code-cli adapter — passed as
+	 * `--fallback-model` and used when the primary model is overloaded. Normalized
+	 * the same way as `modelSpec` (an `anthropic/` prefix is stripped). Claude Code
+	 * only; the codex / agy adapters ignore it.
+	 */
+	fallbackModelSpec?: string;
+
+	/**
+	 * Unified reasoning-effort selector for the interactive-cli runtimes. Each CLI
+	 * adapter maps it to its own native control (see the adapters under
+	 * `services/cli-agent-py/src/cli_adapters/`):
+	 *  - claude-code-cli: `low|medium|high|xhigh` → `--effort <v>`; `max` → the
+	 *    session-only `CLAUDE_CODE_EFFORT_LEVEL=max` pane env; `ultracode` →
+	 *    `--settings '{"ultracode": true}'` (ultracode is a Claude Code setting, not
+	 *    an effort level, so it is NOT combined with `--effort`).
+	 *  - codex-cli: `low|medium|high` via `-c model_reasoning_effort=<v>`
+	 *    (`xhigh|max|ultracode` clamp to `high`).
+	 *  - agy-cli: no native reasoning/effort control on the pinned version → a
+	 *    documented no-op.
+	 * Absent → each CLI's own default effort (current behavior).
+	 */
+	effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode";
+
+	/**
+	 * codex-cli only: reasoning-summary verbosity, passed as
+	 * `-c model_reasoning_summary=<v>`. Ignored by the other adapters.
+	 */
+	codexReasoningSummary?: "auto" | "concise" | "detailed" | "none";
+
+	/** codex-cli only: enable codex's web-search tool via the `--search` flag. */
+	codexWebSearch?: boolean;
+
 	temperature?: number;
 	toolChoice?: AgentToolChoice;
 

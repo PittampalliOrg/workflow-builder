@@ -85,6 +85,18 @@ _BLOCKING_HOOK_EVENTS = ("PermissionRequest", "PermissionDenied")
 # Modes the Claude Code CLI's --permission-mode flag accepts.
 _CLI_PERMISSION_MODES = {"default", "acceptEdits", "plan", "bypassPermissions"}
 
+# AgentConfig.effort → Claude Code control. The `--effort` FLAG accepts these
+# reasoning-effort levels (code.claude.com/docs model-config). `max` is NOT a
+# `--effort` value — it is session-only via the CLAUDE_CODE_EFFORT_LEVEL env var
+# (set in pane_env). `ultracode` is a Claude Code SETTING (not an effort level),
+# enabled via `--settings '{"ultracode": true}'` and NOT combined with --effort.
+_CLAUDE_EFFORT_FLAG_VALUES = ("low", "medium", "high", "xhigh")
+# The JSON passed to `--settings` to turn on ultracode. argv is exec'd directly
+# (no shell), so this JSON string needs no shell quoting. --settings MERGES with
+# the baked docker/managed-settings.json (different setting source) rather than
+# replacing it, so the managed mirroring/Stop hooks stay intact.
+_CLAUDE_ULTRACODE_SETTINGS = '{"ultracode": true}'
+
 # BFF skill-ingest caps (src/lib/server/skill-ingest.ts PACKAGE_MAX_*), kept in
 # lock-step with dapr-agent-py's _extract_skill_package_entries.
 SKILL_MAX_FILE_BYTES = 128 * 1024
@@ -332,6 +344,22 @@ class ClaudeCodeAdapter(CliAdapter):
         model = normalize_claude_model(agent_config.get("modelSpec"))
         if model:
             argv += ["--model", model]
+        # Fallback model (used when the primary is overloaded). Only when set —
+        # normalize_claude_model falls back to DEFAULT_MODEL on empty input, so
+        # guard on presence to avoid injecting a spurious fallback.
+        if clean_string(agent_config.get("fallbackModelSpec")):
+            fallback = normalize_claude_model(agent_config.get("fallbackModelSpec"))
+            if fallback:
+                argv += ["--fallback-model", fallback]
+        # Reasoning effort. `low|medium|high|xhigh` → `--effort <v>`; `ultracode`
+        # → `--settings '{"ultracode": true}'` (a setting, not an effort level, so
+        # NOT combined with --effort); `max` → the CLAUDE_CODE_EFFORT_LEVEL env in
+        # pane_env; unknown/absent → omit (the CLI's own default).
+        effort = clean_string(agent_config.get("effort"))
+        if effort in _CLAUDE_EFFORT_FLAG_VALUES:
+            argv += ["--effort", effort]
+        elif effort == "ultracode":
+            argv += ["--settings", _CLAUDE_ULTRACODE_SETTINGS]
         # The pod is the isolation boundary for managed CLI sessions; permission
         # prompts otherwise strand unattended workflow runs.
         argv += ["--dangerously-skip-permissions"]
@@ -353,6 +381,7 @@ class ClaudeCodeAdapter(CliAdapter):
         base_env: Mapping[str, str],
         *,
         session_id: str | None = None,
+        agent_config: Mapping[str, Any] | None = None,
     ) -> dict[str, str]:
         env: dict[str, str] = {}
         passthrough = (
@@ -377,6 +406,10 @@ class ClaudeCodeAdapter(CliAdapter):
             attrs = env.get("OTEL_RESOURCE_ATTRIBUTES", "")
             stamp = f"wfb.session.id={session_id}"
             env["OTEL_RESOURCE_ATTRIBUTES"] = f"{attrs},{stamp}" if attrs else stamp
+        # effort=max is session-only via CLAUDE_CODE_EFFORT_LEVEL=max (NOT a
+        # --effort flag value). Other effort levels are argv flags (build_argv).
+        if agent_config and clean_string(agent_config.get("effort")) == "max":
+            env["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
         # NEVER forward API-key auth — it silently outranks the OAuth token and
         # flips billing from subscription to API (startup guard in main.py is
         # the first line of defense; this is the second).

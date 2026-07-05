@@ -4400,6 +4400,10 @@ async function ensureCliShowcaseAgentFor(
 		// dapr-family variants drive API-key LLMs and need an explicit modelSpec
 		// (quota-free deepseek-v4-pro); CLI variants omit it (native CLI auth).
 		modelSpec?: string;
+		// Unified reasoning-effort selector for interactive-cli agents (mapped to
+		// each CLI's native control by the cli-agent-py adapters). Only set for
+		// agents that want a non-default effort (e.g. claude-code-cli "ultracode").
+		effort?: string;
 		// Role system prompt. resolveSpecAgentRefs builds the instructionBundle from
 		// the agent's resolved config, so a per-role system prompt MUST live on the
 		// agent (node-level agentConfig.instructions is ignored for CLI agents).
@@ -4410,6 +4414,7 @@ async function ensureCliShowcaseAgentFor(
 	const config = {
 		runtime,
 		...(opts.modelSpec ? { modelSpec: opts.modelSpec } : {}),
+		...(opts.effort ? { effort: opts.effort } : {}),
 		...(opts.instructions ? { instructions: opts.instructions } : {}),
 		maxTurns: 50,
 		timeoutMinutes: 30,
@@ -4653,6 +4658,28 @@ async function seedGeneratorCriticShowcases(params: {
 			});
 		}
 
+	// --- Ultracode GAN generator (planner + generator) ---
+	// A senior-product-engineer claude-code-cli agent pinned to Opus 4.8 at effort
+	// "ultracode" — used for BOTH the planner and generator phases of the
+	// preview-gan-ui-feature loop (the body.prompt selects the phase; this persona
+	// sets the engineering discipline). Effort rides AgentConfig.effort, which the
+	// cli-agent-py claude adapter maps to `--settings '{"ultracode": true}'`.
+	const GAN_GENERATOR_ULTRACODE_PERSONA =
+		"You are a SENIOR PRODUCT ENGINEER driving a UI feature or refactor against a LIVE, hot-reloading workflow-builder preview — the dev pod IS the source of truth and serves warm vite SSR. You hold a high craft bar and HEXAGONAL-ARCHITECTURE discipline: keep domain/application logic in the application ports (src/lib/server/application) and push framework/IO concerns to adapters + routes; never leak DB, HTTP, or SvelteKit specifics into domain code; respect the module boundaries the repo already enforces (depcruise / check:boundaries). " +
+		"You work in one of two modes, chosen by YOUR TASK PROMPT: " +
+		"PLAN mode (the prompt asks for a contract) — read the current target routes for understanding ONLY; NEVER write app code (this step does not sync and any edits are discarded). Write ONE testable contract as strict JSON to /sandbox/work/contract.json (objective, acceptanceCriteria, designTokens, rubric), cat it to verify, then STOP. Derive everything from the change request; do NOT assume a fixed product area or a generic rubric. " +
+		"BUILD mode (the prompt asks you to implement) — each turn: (1) PULL current source: rm -rf /sandbox/scratch/repo && mkdir -p /sandbox/scratch/repo && curl -sS \"$EXPORT_URL\" | tar -xz -C /sandbox/scratch/repo (cumulative — includes all prior edits). (2) Implement the feature editing ONLY files under src/ (plus any shared-contract dirs the preview syncs) to satisfy the contract + latest critic feedback; wire REAL data via +page.server.ts from EXISTING repo endpoints, NEVER fabricate data, and guard EACH server-side fetch independently (try/catch or Promise.allSettled) so one failing/empty source degrades THAT region to its empty state and never 500s the page; IMPORT every symbol you reference. Keep existing functionality working, NEVER touch the sign-in/auth pages, and leave NO debug/scratch routes in the diff. (3) PUSH live: cd /sandbox/scratch/repo && tar -czf - src | curl -sS -X POST --data-binary @- -H 'content-type: application/gzip' \"$SYNC_URL\". (4) GATE before you stop: POST the fast lanes the preview exposes — take the sync URL, replace /__sync with /__run, then run ?cmd=check, ?cmd=boundaries and ?cmd=test-unit (and ?cmd=contract when a shared-contract file changed) — fix anything red before stopping, and cheaply curl $PREVIEW_URL + a target route to confirm HTTP 200 (not 500). Do NOT do a full visual self-grade (the Playwright critic does that; grading cold vite wastes the turn). When you address a critic point, do NOT regress a previously-working area. End with a one-line summary of what you changed.";
+	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+		slug: "gan-generator-ultracode",
+		runtime: "claude-code-cli",
+		name: "GAN Generator (Ultracode)",
+		description:
+			"claude-code-cli senior-product-engineer planner/generator pinned to Opus 4.8 at ultracode effort; builds UI features against a live preview via /__export + /__sync and self-checks via /__run before handing off to the critic.",
+		modelSpec: "claude-opus-4-8",
+		effort: "ultracode",
+		instructions: GAN_GENERATOR_ULTRACODE_PERSONA,
+	});
+
 	const dir = path.resolve(process.cwd(), "scripts/fixtures/generator-critic");
 	for (const file of [
 		"evaluator-optimizer-showcase.json",
@@ -4723,6 +4750,12 @@ async function seedGeneratorCriticShowcases(params: {
 		// critic that LOGS IN, boots the live authenticated page, grades per-criterion) →
 		// per-iteration tar-overlay snapshot → promote→PR. dev-pod-as-source, per-CLI.
 		"preview-gan-redesign.json",
+		// Generic GAN UI-feature/refactor loop against the ADOPTED workflow-builder
+		// preview (dev pod becomes the BFF): Planner (gan-generator-ultracode, Opus 4.8
+		// ultracode) writes a contract → two-pass design_review → generate ↔ skeptical
+		// Playwright critic over evaluationRoutes → per-iteration snapshot → promote→PR
+		// on PittampalliOrg/workflow-builder. Task is passed as `intent` at run time.
+		"preview-gan-ui-feature.json",
 	]) {
 		const full = path.join(dir, file);
 		if (!fs.existsSync(full)) {

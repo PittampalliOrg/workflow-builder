@@ -29,11 +29,14 @@ describe("dev-preview registry", () => {
 	});
 
 	it("builds the /__run allowlist from depsCommand + testCommands", () => {
-		// BFF: deps + a contract test lane.
+		// BFF: deps + a contract lane + the CI gate lanes (check/test-unit/boundaries).
 		expect(devPreviewCommands(DEV_PREVIEW_SERVICES["workflow-builder"])).toEqual({
 			deps: "pnpm install --no-frozen-lockfile",
 			contract:
 				"node_modules/.bin/vitest run src/routes/api/internal/workflow-data/workflow-data-contract.test.ts",
+			check: "pnpm check",
+			"test-unit": "pnpm test:unit",
+			boundaries: "pnpm check:boundaries",
 		});
 		// Orchestrator: python deps + a pytest contract lane.
 		expect(devPreviewCommands(DEV_PREVIEW_SERVICES["workflow-orchestrator"])).toEqual({
