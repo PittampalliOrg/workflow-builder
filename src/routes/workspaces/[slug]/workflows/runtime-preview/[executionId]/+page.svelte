@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
+	import StatusPill from '$lib/components/shared/status-pill.svelte';
 
 	let loading = $state(true);
 	let stopping = $state(false);
@@ -105,6 +106,22 @@
 		}
 	}
 
+	// Single derived state for the shared StatusPill (replaces the ad-hoc
+	// green/red status divs).
+	const previewState = $derived(
+		errorMessage
+			? 'error'
+			: stopping
+				? 'stopping'
+				: loading
+					? 'starting'
+					: previewUrl
+						? 'running'
+						: statusMessage
+							? 'stopped'
+							: 'idle'
+	);
+
 	onMount(() => {
 		void startPreview();
 	});
@@ -147,13 +164,17 @@
 		</div>
 	{/if}
 
-	{#if errorMessage}
-		<div class="preview-error">{errorMessage}</div>
-	{:else if statusMessage}
-		<div class="preview-status">{statusMessage}</div>
-	{:else if loading}
-		<div class="preview-loading">Starting preview…</div>
-	{:else if previewUrl}
+	<div class="preview-state">
+		<StatusPill status={previewState} />
+		{#if errorMessage}
+			<span class="preview-state-error">{errorMessage}</span>
+		{:else if statusMessage}
+			<span class="preview-state-muted">{statusMessage}</span>
+		{:else if loading}
+			<span class="preview-state-muted">Starting preview…</span>
+		{/if}
+	</div>
+	{#if previewUrl && !errorMessage}
 		<iframe title="Runtime Preview" src={previewUrl} class="preview-frame"></iframe>
 	{/if}
 
@@ -185,7 +206,7 @@
 
 	.preview-header p {
 		margin: 0.35rem 0 0;
-		color: var(--muted-foreground, #666);
+		color: var(--muted-foreground);
 		font-size: 0.95rem;
 	}
 
@@ -197,11 +218,11 @@
 
 	.preview-actions button,
 	.preview-actions a {
-		border: 1px solid #d0d7de;
-		background: white;
-		color: #111827;
+		border: 1px solid var(--border);
+		background: var(--card);
+		color: var(--foreground);
 		padding: 0.55rem 0.9rem;
-		border-radius: 0.6rem;
+		border-radius: var(--radius);
 		font: inherit;
 		text-decoration: none;
 		cursor: pointer;
@@ -212,30 +233,30 @@
 		opacity: 0.7;
 	}
 
-	.preview-loading,
-	.preview-status,
-	.preview-error {
-		border: 1px solid #e5e7eb;
-		border-radius: 0.75rem;
-		padding: 1rem;
-		background: white;
+	.preview-state {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
 	}
 
-	.preview-error {
-		color: #b42318;
+	.preview-state-error {
+		color: var(--destructive);
+		font-size: 0.9rem;
 	}
 
-	.preview-status {
-		color: #166534;
+	.preview-state-muted {
+		color: var(--muted-foreground);
+		font-size: 0.9rem;
 	}
 
 	.preview-meta {
 		display: grid;
 		gap: 0.4rem;
-		border: 1px solid #e5e7eb;
-		border-radius: 0.75rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		padding: 0.9rem 1rem;
-		background: white;
+		background: var(--card);
 		font-size: 0.9rem;
 	}
 
@@ -253,14 +274,14 @@
 		flex: 1 1 auto;
 		width: 100%;
 		min-height: 70vh;
-		border: 1px solid #d0d7de;
-		border-radius: 0.9rem;
-		background: white;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--card);
 	}
 
 	.preview-footnote {
 		margin: 0;
 		font-size: 0.85rem;
-		color: #667085;
+		color: var(--muted-foreground);
 	}
 </style>

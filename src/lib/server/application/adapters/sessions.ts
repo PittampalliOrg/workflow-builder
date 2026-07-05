@@ -310,7 +310,8 @@ export class CurrentSessionRepository implements SessionRepository {
 			.leftJoin(agents, eq(agents.id, sessions.agentId))
 			.where(conditions.length > 0 ? and(...conditions) : undefined)
 			.orderBy(desc(sessions.createdAt))
-			.limit(filter.limit ?? 100);
+			.limit(filter.limit ?? 100)
+			.offset(filter.offset ?? 0);
 		return rows.map((row) =>
 			rowToSessionSummary(row.session, {
 				workflowId: row.workflowId ?? null,

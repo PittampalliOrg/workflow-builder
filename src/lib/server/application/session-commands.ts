@@ -5,8 +5,14 @@ import type {
 	SessionDetail,
 	SessionResource,
 	SessionResourceType,
+	SessionSummary,
 	UserEvent,
 } from "$lib/types/sessions";
+import {
+	classifySessionKind,
+	DEV_SESSION_WORKFLOW_ID,
+	type SessionKind,
+} from "$lib/server/application/session-kind";
 import { canResumeCliSession, isInteractiveCliRuntime } from "$lib/server/sessions/resume";
 import { CliTokenError } from "$lib/server/application/cli-credentials";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
@@ -30,6 +36,27 @@ import type {
 	WorkflowEphemeralAgentStore,
 	WorkflowPublishedAgent,
 } from "$lib/server/application/ports";
+
+/** Minimal slice of the workflow-definition repo used to resolve a project's
+ * dev-session workflow id (project-forked, else the template). Kept narrow so
+ * the session command service doesn't take a dependency on the whole repo. */
+export interface DevSessionWorkflowResolver {
+	findProjectWorkflowIdByIdOrNamePrefix(input: {
+		projectId: string;
+		workflowId: string;
+		namePrefix: string;
+	}): Promise<string | null>;
+}
+
+export type SessionListPageInput = SessionListInput & { kind?: SessionKind };
+
+export type SessionListPage = {
+	sessions: (SessionSummary & { kind: SessionKind })[];
+	hasMore: boolean;
+	/** The project's resolved dev-session workflow id (for client-side kind
+	 * links / re-classification); null when unresolved or project-less. */
+	devWorkflowId: string | null;
+};
 
 export type CreateInteractiveSessionCommand = {
 	userId: string;
@@ -190,11 +217,70 @@ export class ApplicationSessionCommandService {
 			sandboxDestroyer?: SessionSandboxDestroyer;
 			workflowEphemeralAgents?: WorkflowEphemeralAgentStore;
 			agentRuntimeSync?: AgentRuntimeSyncPort;
+			devSessionWorkflows?: DevSessionWorkflowResolver;
 		},
 	) {}
 
 	listSessions(filter: SessionListInput = {}) {
 		return this.deps.sessions.listSessions(filter);
+	}
+
+	/**
+	 * One page of classified sessions for the dedicated Sessions list. `limit+1`
+	 * is fetched to derive `hasMore` without a count query. Kind narrowing is
+	 * server-side where it maps cleanly onto existing filter columns (dev →
+	 * resolved workflowId, workflow → source); interactive/experiment share the
+	 * "direct" set and are refined by post-classification, so a page may render
+	 * fewer than `limit` rows while `hasMore`/`offset` still page the raw set.
+	 */
+	async getSessionListPage(
+		input: SessionListPageInput,
+	): Promise<SessionListPage> {
+		const { kind, limit: rawLimit, offset, ...rest } = input;
+		const limit = Math.max(1, Math.min(rawLimit ?? 50, 200));
+
+		let devWorkflowId: string | null = null;
+		if (rest.projectId && this.deps.devSessionWorkflows) {
+			devWorkflowId = await this.deps.devSessionWorkflows
+				.findProjectWorkflowIdByIdOrNamePrefix({
+					projectId: rest.projectId,
+					workflowId: DEV_SESSION_WORKFLOW_ID,
+					namePrefix: "Microservice dev-session%",
+				})
+				.catch(() => null);
+		}
+
+		const filter: SessionListInput = {
+			...rest,
+			limit: limit + 1,
+			offset: offset ?? 0,
+		};
+		if (kind === "dev") {
+			filter.workflowId = devWorkflowId ?? DEV_SESSION_WORKFLOW_ID;
+		} else if (kind === "workflow") {
+			filter.source = "workflow";
+		} else if (kind === "interactive") {
+			filter.source = "direct";
+		}
+
+		const rows = await this.deps.sessions.listSessions(filter);
+		const hasMore = rows.length > limit;
+		const page = rows.slice(0, limit).map((session) => ({
+			...session,
+			kind: classifySessionKind(
+				{
+					workflowId: session.workflowId,
+					workflowExecutionId: session.workflowExecutionId,
+					agentSlug: session.agentSlug,
+				},
+				devWorkflowId,
+			),
+		}));
+		const sessions =
+			kind === "interactive" || kind === "experiment"
+				? page.filter((session) => session.kind === kind)
+				: page;
+		return { sessions, hasMore, devWorkflowId };
 	}
 
 	async dispatchAgentTrigger(

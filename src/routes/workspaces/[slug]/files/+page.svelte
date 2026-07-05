@@ -11,6 +11,7 @@
 	import RowMoreActions from '$lib/components/console/row-more-actions.svelte';
 	import { ArrowRight, Download, ExternalLink, FileBox, Upload } from '@lucide/svelte';
 	import { page } from '$app/state';
+	import { fileScopeLabel, resolveFileScopeLink } from '$lib/utils/file-scope';
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 

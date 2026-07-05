@@ -5318,6 +5318,7 @@ def _preview_lifecycle_fields(member: PreviewMember) -> dict[str, Any]:
         "state": "slept" if member.slept else "hot",
         "origin": member.origin,
         "prNumber": member.pr_number,
+        "protected": member.protected,
         "expiresAt": member.expires_at.isoformat(timespec="seconds")
         if member.expires_at
         else None,

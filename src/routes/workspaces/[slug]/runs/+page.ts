@@ -12,5 +12,8 @@ export const load: PageLoad = ({ params, url }) => {
 	target.searchParams.set('scope', 'all');
 	const q = url.searchParams.get('q');
 	if (q) target.searchParams.set('q', q);
+	// Forward the editor's deep-link so the Fleet pins to one workflow's runs.
+	const workflowId = url.searchParams.get('workflowId');
+	if (workflowId) target.searchParams.set('workflowId', workflowId);
 	redirect(307, `${target.pathname}${target.search}`);
 };
