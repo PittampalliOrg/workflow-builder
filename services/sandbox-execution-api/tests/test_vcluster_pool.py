@@ -81,9 +81,17 @@ class _FakeCore:
         return self._ns[name]
 
 
+def _up_pool_job(name: str, active: int = 1):
+    """A pool bake Job as the reconcile's in-flight-bake count sees it (#33)."""
+    return SimpleNamespace(
+        metadata=SimpleNamespace(name=name), status=SimpleNamespace(active=active)
+    )
+
+
 class _FakeBatch:
-    def __init__(self) -> None:
+    def __init__(self, jobs=None) -> None:
         self.created: list = []
+        self.jobs = list(jobs or [])  # active up-Jobs the reconcile counts as in-flight bakes
 
     def delete_namespaced_job(self, name, namespace, propagation_policy=None):
         raise _ApiExc(404)  # no prior job
@@ -93,6 +101,9 @@ class _FakeBatch:
 
     def create_namespaced_job(self, namespace, body):
         self.created.append(body)
+
+    def list_namespaced_job(self, namespace, label_selector=None):
+        return SimpleNamespace(items=self.jobs)
 
 
 class _FakeApps:
@@ -299,6 +310,56 @@ def test_pool_reconcile_fills_toward_size(monkeypatch) -> None:
     assert _job_env(m)["POOL"] == "true"
     assert _job_env(m)["ACTION"] == "up"
     assert m["metadata"]["name"].startswith("vcpreview-up-pool-")
+
+
+def test_pool_reconcile_counts_inflight_bakes_no_overshoot(monkeypatch) -> None:
+    # #33: with 0 free but the target's worth of bakes already IN FLIGHT (active up-Jobs),
+    # the reconcile must create NOTHING — else it relaunches a redundant bake every tick and
+    # overshoots pool_size. (Pre-fix, need=pool_size-free=2 and fill_batch=1 → it created 1.)
+    monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_SIZE", "2")
+    monkeypatch.setenv("VCLUSTER_PREVIEW_MAX", "6")
+    monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_FILL_BATCH", "1")
+    batch = _FakeBatch(
+        jobs=[
+            _up_pool_job("vcpreview-up-pool-aaaa"),
+            _up_pool_job("vcpreview-up-pool-bbbb"),
+        ]
+    )
+    # the two baking members' namespaces (no pool-state label yet = counted awake, not free)
+    core = _FakeCore([_ns("pool-aaaa", pool=None), _ns("pool-bbbb", pool=None)])
+    stats = app_module._pool_reconcile_once(batch, core, _FakeApps(_HOST_IMAGES))
+    assert stats["baking"] == 2
+    assert stats["created"] == 0  # need = pool_size - (free 0 + baking 2) = 0
+    assert batch.created == []
+
+
+def test_pool_reconcile_fills_only_the_shortfall_past_inflight(monkeypatch) -> None:
+    # #33: with 0 free + 1 bake in flight and pool_size 2, the true shortfall is 1 → create 1.
+    monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_SIZE", "2")
+    monkeypatch.setenv("VCLUSTER_PREVIEW_MAX", "6")
+    monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_FILL_BATCH", "1")
+    batch = _FakeBatch(jobs=[_up_pool_job("vcpreview-up-pool-aaaa")])
+    core = _FakeCore([_ns("pool-aaaa", pool=None)])
+    stats = app_module._pool_reconcile_once(batch, core, _FakeApps(_HOST_IMAGES))
+    assert stats["baking"] == 1
+    assert stats["created"] == 1  # need = 2 - (0 + 1) = 1
+
+
+def test_pool_reconcile_ignores_non_active_and_non_pool_jobs(monkeypatch) -> None:
+    # Completed pool bakes (active=0) and unrelated up-Jobs must NOT count as in-flight.
+    monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_SIZE", "2")
+    monkeypatch.setenv("VCLUSTER_PREVIEW_MAX", "6")
+    monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_FILL_BATCH", "1")
+    batch = _FakeBatch(
+        jobs=[
+            _up_pool_job("vcpreview-up-pool-done", active=0),  # completed bake
+            _up_pool_job("vcpreview-up-feat-x", active=1),  # a normal preview, not a pool bake
+        ]
+    )
+    core = _FakeCore([])
+    stats = app_module._pool_reconcile_once(batch, core, _FakeApps(_HOST_IMAGES))
+    assert stats["baking"] == 0
+    assert stats["created"] == 1  # need = 2 - 0 = 2, capped to fill_batch=1
 
 
 def test_pool_reconcile_respects_max_awake(monkeypatch) -> None:
