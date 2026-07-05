@@ -28,7 +28,7 @@ export type SessionsFilters = {
 	workflowId: string | null;
 };
 
-export function parseSessionsFilters(url: URL): SessionsFilters {
+function parseSessionsFilters(url: URL): SessionsFilters {
 	const kindParam = url.searchParams.get("kind");
 	const statusParam = url.searchParams.get("status");
 	const sourceParam = url.searchParams.get("source");
