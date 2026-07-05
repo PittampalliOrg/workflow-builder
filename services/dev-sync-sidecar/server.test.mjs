@@ -1,0 +1,245 @@
+import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { test } from 'node:test';
+
+/**
+ * End-to-end tests for the dev-sync-sidecar. We spawn the REAL server.mjs as a
+ * child process (exactly as the pod runs it) and drive it over HTTP, so the tar
+ * untar/create + /__run child-exec paths are exercised for real. Zero deps:
+ * node:test + global fetch. Run: `node --test services/dev-sync-sidecar/`.
+ */
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const SERVER = path.join(HERE, 'server.mjs');
+const TOKEN = 'test-secret-token';
+
+function freePort() {
+	return new Promise((resolve, reject) => {
+		const srv = net.createServer();
+		srv.once('error', reject);
+		srv.listen(0, '127.0.0.1', () => {
+			const { port } = srv.address();
+			srv.close(() => resolve(port));
+		});
+	});
+}
+
+/** Spawn server.mjs with a fresh temp DEST; resolve once it logs "listening". */
+async function startSidecar(extraEnv = {}) {
+	const port = await freePort();
+	const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-dest-'));
+	const proc = spawn(process.execPath, [SERVER], {
+		env: {
+			...process.env,
+			DEV_SYNC_PORT: String(port),
+			DEV_SYNC_DEST: dest,
+			DEV_SYNC_TOKEN: TOKEN,
+			...extraEnv
+		},
+		stdio: ['ignore', 'pipe', 'pipe']
+	});
+	let log = '';
+	proc.stdout.on('data', (d) => (log += String(d)));
+	proc.stderr.on('data', (d) => (log += String(d)));
+	const base = `http://127.0.0.1:${port}`;
+	const deadline = Date.now() + 5000;
+	while (Date.now() < deadline) {
+		if (log.includes('listening on')) break;
+		await new Promise((r) => setTimeout(r, 50));
+	}
+	if (!log.includes('listening on')) {
+		proc.kill('SIGKILL');
+		throw new Error(`sidecar did not start; log:\n${log}`);
+	}
+	return {
+		port,
+		dest,
+		base,
+		proc,
+		log: () => log,
+		stop() {
+			proc.kill('SIGKILL');
+			try {
+				fs.rmSync(dest, { recursive: true, force: true });
+			} catch {
+				/* ignore */
+			}
+		}
+	};
+}
+
+/** Build a tar.gz of a {relPath: contents} map (uses the system tar, like the pod). */
+function makeTarGz(files) {
+	const src = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-src-'));
+	const tops = new Set();
+	for (const [rel, contents] of Object.entries(files)) {
+		const abs = path.join(src, rel);
+		fs.mkdirSync(path.dirname(abs), { recursive: true });
+		fs.writeFileSync(abs, contents);
+		tops.add(rel.split('/')[0]);
+	}
+	const out = path.join(os.tmpdir(), `dev-sync-upload-${Date.now()}.tgz`);
+	const r = spawnSync('tar', ['-czf', out, '-C', src, ...tops]);
+	assert.equal(r.status, 0, `tar create failed: ${r.stderr}`);
+	const buf = fs.readFileSync(out);
+	fs.rmSync(src, { recursive: true, force: true });
+	fs.rmSync(out, { force: true });
+	return buf;
+}
+
+test('GET /healthz is open (no token) and reports the dest', async (t) => {
+	const s = await startSidecar();
+	t.after(() => s.stop());
+	const resp = await fetch(`${s.base}/healthz`);
+	assert.equal(resp.status, 200);
+	const body = await resp.json();
+	assert.equal(body.ok, true);
+	assert.equal(body.dest, s.dest);
+});
+
+test('POST /__sync requires the token and untars into the dest', async (t) => {
+	const s = await startSidecar();
+	t.after(() => s.stop());
+	const tgz = makeTarGz({ 'src/a.txt': 'hello-sync', 'src/nested/b.txt': 'nested' });
+
+	// Wrong/absent token → 401, nothing written.
+	const noAuth = await fetch(`${s.base}/__sync`, { method: 'POST', body: tgz });
+	assert.equal(noAuth.status, 401);
+	assert.ok(!fs.existsSync(path.join(s.dest, 'src/a.txt')));
+
+	// Correct token → 200 and files land in the dest.
+	const ok = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN },
+		body: tgz
+	});
+	assert.equal(ok.status, 200);
+	const body = await ok.json();
+	assert.equal(body.ok, true);
+	assert.equal(fs.readFileSync(path.join(s.dest, 'src/a.txt'), 'utf8'), 'hello-sync');
+	assert.equal(fs.readFileSync(path.join(s.dest, 'src/nested/b.txt'), 'utf8'), 'nested');
+});
+
+test('GET /__export streams a gzip tar and filters non-existent paths', async (t) => {
+	const s = await startSidecar();
+	t.after(() => s.stop());
+	// Seed the dest via /__sync.
+	await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN },
+		body: makeTarGz({ 'src/x.ts': 'export const x = 1;' })
+	});
+
+	// Missing token → 401.
+	assert.equal((await fetch(`${s.base}/__export?paths=src`)).status, 401);
+
+	// `src` exists, `does-not-exist` is filtered out → still a valid gzip.
+	const resp = await fetch(`${s.base}/__export?paths=src,does-not-exist`, {
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(resp.status, 200);
+	assert.equal(resp.headers.get('content-type'), 'application/gzip');
+	const bytes = Buffer.from(await resp.arrayBuffer());
+	assert.equal(bytes[0], 0x1f, 'gzip magic byte 0');
+	assert.equal(bytes[1], 0x8b, 'gzip magic byte 1');
+	// Round-trip: the archive should contain src/x.ts.
+	const listed = spawnSync('tar', ['-tzf', '-'], { input: bytes }).stdout.toString();
+	assert.match(listed, /src\/x\.ts/);
+
+	// ALL paths non-existent → 400 (never a broken stream).
+	const none = await fetch(`${s.base}/__export?paths=nope`, {
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(none.status, 400);
+});
+
+test('GET /__status reflects the last sync + last run and lists commands', async (t) => {
+	const s = await startSidecar({ DEV_SYNC_COMMANDS_JSON: JSON.stringify({ deps: 'true', contract: 'true' }) });
+	t.after(() => s.stop());
+
+	let status = await (await fetch(`${s.base}/__status`, { headers: { 'x-sync-token': TOKEN } })).json();
+	assert.equal(status.lastSyncAt, null);
+	assert.deepEqual(status.commands, ['contract', 'deps']);
+
+	await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN },
+		body: makeTarGz({ 'src/a.txt': 'x' })
+	});
+	status = await (await fetch(`${s.base}/__status`, { headers: { 'x-sync-token': TOKEN } })).json();
+	assert.ok(status.lastSyncAt, 'lastSyncAt set after a sync');
+	assert.ok(status.lastSyncBytes > 0);
+
+	// Missing token → 401.
+	assert.equal((await fetch(`${s.base}/__status`)).status, 401);
+});
+
+test('POST /__run only runs allowlisted commands and returns the exit code', async (t) => {
+	const s = await startSidecar({
+		DEV_SYNC_COMMANDS_JSON: JSON.stringify({
+			deps: 'echo installing-deps',
+			failing: 'echo boom >&2; exit 3'
+		})
+	});
+	t.after(() => s.stop());
+
+	// Unknown command → 404 with the allowed list.
+	const unknown = await fetch(`${s.base}/__run?cmd=rm-rf`, {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(unknown.status, 404);
+	assert.deepEqual((await unknown.json()).allowed, ['deps', 'failing']);
+
+	// Missing token → 401.
+	assert.equal((await fetch(`${s.base}/__run?cmd=deps`, { method: 'POST' })).status, 401);
+
+	// Allowlisted success → ok:true, exit 0, output captured.
+	const ok = await (
+		await fetch(`${s.base}/__run?cmd=deps`, { method: 'POST', headers: { 'x-sync-token': TOKEN } })
+	).json();
+	assert.equal(ok.ok, true);
+	assert.equal(ok.exitCode, 0);
+	assert.match(ok.output, /installing-deps/);
+
+	// Allowlisted failure → HTTP 200 (it ran) but ok:false + the real exit code.
+	const failResp = await fetch(`${s.base}/__run?cmd=failing`, {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(failResp.status, 200);
+	const fail = await failResp.json();
+	assert.equal(fail.ok, false);
+	assert.equal(fail.exitCode, 3);
+	assert.match(fail.output, /boom/);
+});
+
+test('POST /__run runs in DEST and a bad DEV_SYNC_COMMANDS_JSON fails closed', async (t) => {
+	const s = await startSidecar({ DEV_SYNC_COMMANDS_JSON: 'not-json{' });
+	t.after(() => s.stop());
+	// Malformed allowlist → empty → every /__run 404s.
+	const resp = await fetch(`${s.base}/__run?cmd=deps`, {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(resp.status, 404);
+
+	const s2 = await startSidecar({ DEV_SYNC_COMMANDS_JSON: JSON.stringify({ pwd: 'pwd' }) });
+	t.after(() => s2.stop());
+	const out = await (
+		await fetch(`${s2.base}/__run?cmd=pwd`, { method: 'POST', headers: { 'x-sync-token': TOKEN } })
+	).json();
+	// Commands execute with cwd = DEST.
+	assert.match(out.output.trim(), new RegExp(s2.dest.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+});
+
+test('unknown paths 404', async (t) => {
+	const s = await startSidecar();
+	t.after(() => s.stop());
+	assert.equal((await fetch(`${s.base}/nope`)).status, 404);
+});

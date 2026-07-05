@@ -1,0 +1,30 @@
+# syntax=docker/dockerfile:1.7
+# Dev image for `skaffold dev -m workflow-mcp-server` / the dev-preview registry.
+# Clones the mcp-gateway dev-image pattern: baked source is the boot-time source of
+# truth, the dev-sync-sidecar delivers subsequent /__sync edits into the shared
+# emptyDir, and `tsx watch` (pnpm dev) hot-reloads. Listens on :3200 (/health).
+ARG PNPM_VERSION=9.12.3
+
+FROM node:22-alpine
+
+WORKDIR /app
+USER root
+
+ARG PNPM_VERSION
+RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
+
+# Dependency layer (cached unless the manifest changes).
+COPY services/workflow-mcp-server/package.json ./
+COPY services/workflow-mcp-server/pnpm-lock.yaml ./
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile --ignore-scripts
+
+# Source layer — /__sync delivers per-file updates on top of these baked copies.
+COPY services/workflow-mcp-server/ ./
+
+ENV NODE_ENV=development
+ENV PORT=3200
+
+EXPOSE 3200
+
+CMD ["pnpm", "dev"]

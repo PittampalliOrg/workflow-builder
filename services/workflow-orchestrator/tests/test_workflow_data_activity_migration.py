@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import builtins
 import importlib.util
+import os
 import sys
 import types
 from pathlib import Path
@@ -834,7 +835,13 @@ import json as json_module
 
 import pytest
 
-CONTRACT_FIXTURE_DIR = ROOT.parent / "shared" / "workflow-data-contract" / "fixtures"
+# Fixture dir is overridable so the dev image can point pytest at its baked
+# /app/.contract-fixtures/fixtures (B4 in-pod contract lane); defaults to the repo
+# path for local + CI runs.
+CONTRACT_FIXTURE_DIR = Path(
+    os.environ.get("WORKFLOW_DATA_CONTRACT_FIXTURE_DIR")
+    or ROOT.parent / "shared" / "workflow-data-contract" / "fixtures"
+)
 
 
 class _FixtureHttpStub:

@@ -44,6 +44,12 @@ COPY static ./static
 COPY lib ./lib
 COPY src ./src
 
+# B4 contract flow: bake the shared TS↔Python workflow-data contract fixtures. The
+# contract vitest reads them from process.cwd()/services/shared/... (= /app here);
+# the sync client (registry syncPaths includes this path) re-syncs live edits so a
+# fixture change can be re-checked in-pod via `/__run?cmd=contract`.
+COPY services/shared/workflow-data-contract ./services/shared/workflow-data-contract
+
 ENV NODE_ENV=development
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0

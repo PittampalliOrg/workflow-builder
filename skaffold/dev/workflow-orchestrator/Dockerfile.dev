@@ -12,14 +12,24 @@ RUN apt-get update \
         curl ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 
-# Dependency layer (cached unless requirements.txt changes).
+# Dependency layer (cached unless requirements.txt changes). pytest is added for
+# the B4 in-pod contract lane (`/__run?cmd=contract`); it is a dev-only dep, so it
+# is not in the prod requirements.txt.
 COPY services/workflow-orchestrator/requirements.txt /tmp/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip \
-    && pip install -r /tmp/requirements.txt
+    && pip install -r /tmp/requirements.txt \
+    && pip install pytest
 
 # Source layer — sync rules deliver per-file updates on top of these baked copies.
 COPY services/workflow-orchestrator/ ./
+
+# B4 contract flow: bake the shared TS↔Python workflow-data contract fixtures at a
+# stable path the pytest reads via WORKFLOW_DATA_CONTRACT_FIXTURE_DIR. The registry
+# `extraSync` re-stages live fixture edits into /app/.contract-fixtures so the
+# in-pod `/__run?cmd=contract` lane re-checks them.
+COPY services/shared/workflow-data-contract /app/.contract-fixtures
+ENV WORKFLOW_DATA_CONTRACT_FIXTURE_DIR=/app/.contract-fixtures/fixtures
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

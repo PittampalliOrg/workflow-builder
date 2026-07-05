@@ -366,6 +366,12 @@ class DevPreviewRequest(BaseModel):
     syncMode: str = "plugin"
     # Port the agent POSTs /__sync to. Defaults: plugin → the dev port; sidecar → 8001.
     syncPort: int | None = None
+    # Named-command allowlist for the sidecar's POST /__run (sidecar mode only).
+    # Stamped verbatim into the pod's DEV_SYNC_COMMANDS_JSON env; the sidecar runs
+    # ONLY these named commands in the workdir (never an arbitrary request string).
+    # `deps` is reserved for the dependency reinstall; other names are test lanes
+    # (e.g. `contract`). Populated by the BFF from the dev-preview registry.
+    devSyncCommands: dict[str, str] | None = None
     # ----- Dapr-shadow mode (P3.1, for Dapr/DB-coupled services) -----
     # When True, the dev container gets a daprd sidecar (via standard injector
     # annotations) so services whose startup needs Dapr (secrets/state/workflow —
@@ -3053,6 +3059,15 @@ def build_dev_preview_sandbox_manifest(
         ]
         if request.syncToken:
             sidecar_env.append({"name": "DEV_SYNC_TOKEN", "value": request.syncToken})
+        # /__run allowlist: the named deps/test commands from the dev-preview
+        # registry. The sidecar parses this ONCE at boot; only these names run.
+        if request.devSyncCommands:
+            sidecar_env.append(
+                {
+                    "name": "DEV_SYNC_COMMANDS_JSON",
+                    "value": json.dumps(request.devSyncCommands, sort_keys=True),
+                }
+            )
         pod_spec["containers"].append(
             {
                 "name": "dev-sync",
