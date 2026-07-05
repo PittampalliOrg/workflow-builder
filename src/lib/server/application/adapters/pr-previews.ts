@@ -27,6 +27,7 @@ import {
 	runHelperCommand,
 } from "$lib/server/workflows/helper-pod";
 import { resolveWorkflowGithubToken } from "$lib/server/workflows/github-token";
+import { previewApiBaseUrl } from "$lib/server/application/adapters/preview-read-proxy";
 import {
 	DEV_PREVIEW_SERVICES,
 	devPreviewSyncPaths,
@@ -134,10 +135,15 @@ export class VclusterPrPreviewClusterGateway implements PrPreviewClusterPort {
 
 /**
  * Adopt dev-mode pods INSIDE the preview by calling the PREVIEW BFF's own
- * internal dev-preview route over its tailnet URL (preview-native provisioning
- * is served by the preview's own SEA; the shared INTERNAL_API_TOKEN authorizes
- * it — same value fleet-wide via the ExternalSecret chain). Pod IPs come back
- * host-reachable (vcluster pods are host pods).
+ * internal dev-preview route (preview-native provisioning is served by the
+ * preview's own SEA; the shared INTERNAL_API_TOKEN authorizes it — same value
+ * fleet-wide via the ExternalSecret chain). Pod IPs come back host-reachable
+ * (vcluster pods are host pods).
+ *
+ * REACHABILITY: in-cluster pods cannot resolve tailnet MagicDNS (NXDOMAIN on
+ * dev) — the call targets the preview's SYNCED Service (same routing as the E2
+ * read proxy, keyed `pool ?? name` for claimed members); the tailnet URL is
+ * only sent as the user-facing `origin` field.
  */
 export class PreviewBffDevPodGateway implements PrPreviewDevPodPort {
 	async provision(input: {
@@ -146,7 +152,19 @@ export class PreviewBffDevPodGateway implements PrPreviewDevPodPort {
 		services: string[];
 		syncToken: string;
 	}): Promise<PrPreviewDevPodResult[]> {
-		const base = input.previewUrl.replace(/\/+$/, "");
+		const origin = input.previewUrl.replace(/\/+$/, "");
+		let base = origin;
+		try {
+			const preview = await getVclusterPreview(input.alias);
+			const inCluster = previewApiBaseUrl({
+				name: preview.pool ?? input.alias,
+				pool: preview.pool,
+				url: preview.url,
+			});
+			if (inCluster) base = inCluster;
+		} catch {
+			// SEA unreachable — keep the tailnet fallback and let the POST report.
+		}
 		const waitReadySeconds = 300;
 		const res = await fetch(
 			`${base}/api/internal/workflows/executions/${encodeURIComponent(input.alias)}/dev-preview`,
@@ -160,7 +178,7 @@ export class PreviewBffDevPodGateway implements PrPreviewDevPodPort {
 					services: input.services,
 					mode: "preview-native",
 					adopt: true,
-					origin: base,
+					origin,
 					syncToken: input.syncToken,
 					waitReadySeconds,
 				}),
