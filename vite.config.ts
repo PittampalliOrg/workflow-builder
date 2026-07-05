@@ -4,8 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import tailwindcss from '@tailwindcss/vite';
 import { sveltekit } from '@sveltejs/kit/vite';
-import type { Plugin } from 'vite';
+import type { Plugin, ViteDevServer } from 'vite';
 import { configDefaults, defineConfig } from 'vitest/config';
+// Relative import on purpose: $lib aliases don't resolve at config-load time.
+import { detectAddedRouteFiles } from './src/lib/server/dev-sync/added-routes';
 
 /**
  * Dev-only live-sync endpoint for the `workflow-builder-dev` preview pod.
@@ -22,12 +24,93 @@ import { configDefaults, defineConfig } from 'vitest/config';
  * of `vite build` / the prod image. It is additionally gated by WFB_DEV_SYNC_ENABLED
  * and a WFB_DEV_SYNC_TOKEN shared secret, and only ever writes under `src/`. The dev
  * pod has no DB/secrets, so the blast radius is the throwaway preview only.
+ *
+ * ROUTE-ADD RESTART (#41): a sync that ADDS files under `src/routes/` while the
+ * dev server is mid-restart lands on disk but the route never registers — the
+ * replaced watcher misses the `add` event and even a later `touch` fires
+ * nothing (verified live 2026-07-05; requests 302 via the error-page layout).
+ * Two hooks close the gap, both via Vite's own in-process `server.restart()`
+ * (NEVER by killing PID 1 — that wedges vcluster-synced pods ready=false):
+ *   1. in-plugin: /__sync pre-lists the tar; when it adds route files, we
+ *      respond first, then schedule a full restart;
+ *   2. sidecar transport: the dev-sync-sidecar can't reach into this process,
+ *      so it writes a signal file the poller below consumes
+ *      (WFB_DEV_SYNC_RESTART_SIGNAL, delete-then-restart → loop-safe).
  */
+function scheduleRouteAddRestart(server: ViteDevServer, addedRoutes: string[], why: string) {
+	console.log(
+		`[wfb-dev-live-sync] ${why}: ${addedRoutes.length} new route file(s) [${addedRoutes
+			.slice(0, 5)
+			.join(', ')}${addedRoutes.length > 5 ? ', …' : ''}] — full dev-server restart to register them`
+	);
+	setTimeout(() => {
+		server.restart().catch((e: unknown) => {
+			console.warn(
+				`[wfb-dev-live-sync] server.restart() failed: ${e instanceof Error ? e.message : e}`
+			);
+		});
+	}, 100);
+}
+
+/** List the members of a tar.gz (`tar -tzf`); null on any failure (detection
+ * is then skipped — the sync itself still applies). */
+function listTarEntries(file: string): Promise<string[] | null> {
+	return new Promise((resolve) => {
+		const tar = spawn('tar', ['-tzf', file], { stdio: ['ignore', 'pipe', 'ignore'] });
+		let out = '';
+		let overflow = false;
+		tar.stdout.on('data', (d) => {
+			out += String(d);
+			if (out.length > 8 * 1024 * 1024) {
+				overflow = true;
+				tar.kill();
+			}
+		});
+		tar.on('error', () => resolve(null));
+		tar.on('close', (code) =>
+			resolve(code === 0 && !overflow ? out.split('\n').filter((l) => l.trim()) : null)
+		);
+	});
+}
+
 function devLiveSyncPlugin(): Plugin {
 	return {
 		name: 'wfb-dev-live-sync',
 		apply: 'serve',
 		configureServer(server) {
+			// #41 hook 2 — sidecar-transport restart signal. The sidecar (a separate
+			// container applying /__sync into the shared workdir) writes this file
+			// when a sync added new route files; we consume (delete) it, then
+			// restart. Polling (not fs.watch) on purpose: the whole bug is that
+			// watchers miss events around the restart window, and a 2s stat of one
+			// path is free. Env is stamped by sandbox-execution-api in sidecar mode,
+			// so plain `vite dev` / plugin-mode pods pay nothing.
+			const restartSignal = process.env.WFB_DEV_SYNC_RESTART_SIGNAL ?? '';
+			if (restartSignal && server.httpServer) {
+				let consuming = false;
+				const poll = setInterval(() => {
+					if (consuming || !fs.existsSync(restartSignal)) return;
+					consuming = true;
+					let added: string[] = [];
+					try {
+						const parsed = JSON.parse(fs.readFileSync(restartSignal, 'utf8'));
+						if (Array.isArray(parsed?.addedRoutes)) added = parsed.addedRoutes;
+					} catch {
+						/* malformed signal still triggers a restart */
+					}
+					try {
+						fs.unlinkSync(restartSignal); // consume BEFORE restarting → no loop
+					} catch {
+						/* ignore */
+					}
+					scheduleRouteAddRestart(server, added, 'sidecar restart signal');
+				}, 2000);
+				poll.unref?.();
+				// A restart re-runs configureServer on the NEW server instance; the
+				// old poller dies with the old http server (else it would double-fire).
+				server.httpServer.once('close', () => clearInterval(poll));
+			}
+
 			if (process.env.WFB_DEV_SYNC_ENABLED !== 'true') return;
 			const token = process.env.WFB_DEV_SYNC_TOKEN ?? '';
 			const root = server.config.root;
@@ -88,28 +171,48 @@ function devLiveSyncPlugin(): Plugin {
 							/* ignore */
 						}
 					};
-					// Extract from the FILE (not a stream) into the project root. The dev
-					// image is node:22-alpine → BUSYBOX tar, which rejects GNU long flags
-					// (--no-same-owner/--no-absolute-names) and strips leading '/' itself;
-					// the producer archives only relative `src/`. `-o` = don't restore
-					// user:group (busybox + GNU compatible). Vite's watcher then HMRs.
-					const tar = spawn('tar', ['-xzf', tmp, '-C', root, '-o'], {
-						stdio: ['ignore', 'ignore', 'pipe']
-					});
-					let errout = '';
-					tar.stderr.on('data', (d) => (errout += String(d)));
-					tar.on('error', (e) => {
-						cleanup();
-						json(500, { ok: false, error: `tar spawn: ${e.message}` });
-					});
-					tar.on('close', (code) => {
-						cleanup();
-						if (code === 0) {
-							console.log(`[wfb-dev-live-sync] applied src sync (${buf.length}B) → Vite HMR`);
-							json(200, { ok: true, bytes: buf.length });
-						} else {
-							json(500, { ok: false, error: errout.slice(0, 500) || `tar exit ${code}` });
-						}
+					// #41 hook 1: list the archive BEFORE extracting — entries under
+					// src/routes/ that don't exist yet need a full restart to register
+					// (edits to existing files stay plain HMR). Listing failures only
+					// disable detection; the sync still applies.
+					void listTarEntries(tmp).then((entries) => {
+						const addedRoutes = entries
+							? detectAddedRouteFiles(entries, (rel) => fs.existsSync(path.join(root, rel)))
+							: [];
+						// Extract from the FILE (not a stream) into the project root. The dev
+						// image is node:22-alpine → BUSYBOX tar, which rejects GNU long flags
+						// (--no-same-owner/--no-absolute-names) and strips leading '/' itself;
+						// the producer archives only relative `src/`. `-o` = don't restore
+						// user:group (busybox + GNU compatible). Vite's watcher then HMRs.
+						const tar = spawn('tar', ['-xzf', tmp, '-C', root, '-o'], {
+							stdio: ['ignore', 'ignore', 'pipe']
+						});
+						let errout = '';
+						tar.stderr.on('data', (d) => (errout += String(d)));
+						tar.on('error', (e) => {
+							cleanup();
+							json(500, { ok: false, error: `tar spawn: ${e.message}` });
+						});
+						tar.on('close', (code) => {
+							cleanup();
+							if (code === 0) {
+								console.log(`[wfb-dev-live-sync] applied src sync (${buf.length}B) → Vite HMR`);
+								// Respond FIRST so the producer's POST completes, THEN restart
+								// (the restart tears the connection handling down).
+								json(200, {
+									ok: true,
+									bytes: buf.length,
+									...(addedRoutes.length
+										? { routesAdded: addedRoutes.slice(0, 50), willRestart: true }
+										: {})
+								});
+								if (addedRoutes.length) {
+									scheduleRouteAddRestart(server, addedRoutes, 'sync added routes');
+								}
+							} else {
+								json(500, { ok: false, error: errout.slice(0, 500) || `tar exit ${code}` });
+							}
+						});
 					});
 				});
 			});
@@ -244,7 +347,7 @@ export default defineConfig({
 			'tests/e2e/**',
 			// node:test suites (run via `node --test`, not vitest) — vitest's *.test.mjs
 			// glob would otherwise pick them up and fail with "No test suite found".
-			'services/dev-sync-sidecar/server.test.mjs',
+			'services/dev-sync-sidecar/**/*.test.mjs',
 			'scripts/dev-sync/sync.test.mjs',
 			// CI-only: these two import service-local deps (@activepieces/*,
 			// function-router's runtime stack) that the root install does not

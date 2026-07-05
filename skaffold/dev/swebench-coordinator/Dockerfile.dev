@@ -18,6 +18,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip \
     && pip install .
 
+# #40 exec bridge: uniform across the dev images so future registry
+# deps/testCommands for this service just work. The registry declares none
+# today → the bridge fails closed (404) and costs nothing.
+COPY services/dev-sync-sidecar/exec_bridge.py /devtools/exec_bridge.py
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0 \
@@ -25,4 +30,5 @@ ENV PYTHONUNBUFFERED=1 \
 
 EXPOSE 8080
 
-CMD ["python", "-m", "uvicorn", "src.app:app", "--host", "0.0.0.0", "--port", "8080", "--reload", "--reload-dir", "/app"]
+# Bridge as background child; `exec` keeps uvicorn as PID 1.
+CMD ["sh", "-c", "python /devtools/exec_bridge.py & exec python -m uvicorn src.app:app --host 0.0.0.0 --port 8080 --reload --reload-dir /app"]

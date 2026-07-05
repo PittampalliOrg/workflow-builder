@@ -374,10 +374,12 @@ class DevPreviewRequest(BaseModel):
     # Port the agent POSTs /__sync to. Defaults: plugin → the dev port; sidecar → 8001.
     syncPort: int | None = None
     # Named-command allowlist for the sidecar's POST /__run (sidecar mode only).
-    # Stamped verbatim into the pod's DEV_SYNC_COMMANDS_JSON env; the sidecar runs
-    # ONLY these named commands in the workdir (never an arbitrary request string).
-    # `deps` is reserved for the dependency reinstall; other names are test lanes
-    # (e.g. `contract`). Populated by the BFF from the dev-preview registry.
+    # Stamped verbatim as DEV_SYNC_COMMANDS_JSON into BOTH the sidecar (proxy +
+    # fallback allowlist) AND the app container (its /__exec bridge's own
+    # fail-closed allowlist, #40); only these named commands run in the workdir
+    # (never an arbitrary request string). `deps` is reserved for the dependency
+    # reinstall; other names are test lanes (e.g. `contract`). Populated by the
+    # BFF from the dev-preview registry.
     devSyncCommands: dict[str, str] | None = None
     # ----- Dapr-shadow mode (P3.1, for Dapr/DB-coupled services) -----
     # When True, the dev container gets a daprd sidecar (via standard injector
@@ -2782,6 +2784,11 @@ DEFAULT_DEV_PREVIEW_IMAGE = os.environ.get(
     "ghcr.io/pittampalliorg/workflow-builder-dev:latest",
 )
 
+# #40: pod-localhost port of the app-container exec bridge (the dev images'
+# entrypoints start it; the dev-sync-sidecar proxies /__run there). Stamped
+# into BOTH containers so the two defaults can never drift per-pod.
+DEV_SYNC_EXEC_BRIDGE_PORT = int(os.environ.get("DEV_SYNC_EXEC_BRIDGE_PORT", "8002"))
+
 
 def _dev_preview_service_label(service: str | None) -> str:
     """The `dev-preview-service` label value stamped on every dev-preview pod/CR/Secret.
@@ -2927,6 +2934,36 @@ def build_dev_preview_sandbox_manifest(
             )
         if request.syncToken:
             env.append({"name": "WFB_DEV_SYNC_TOKEN", "value": request.syncToken})
+    else:
+        # #40 app-container exec bridge: the dev images start a tiny /__exec
+        # server (127.0.0.1:8002, services/dev-sync-sidecar/exec-bridge.mjs or
+        # exec_bridge.py) so /__run commands execute with the APP's toolchain —
+        # the node-only sidecar can't run e.g. pytest (exit 127). The bridge
+        # needs ITS OWN copies of the token + command allowlist (it fails closed
+        # without them); the sidecar proxies /__run to it by name.
+        env.append(
+            {"name": "DEV_SYNC_EXEC_PORT", "value": str(DEV_SYNC_EXEC_BRIDGE_PORT)}
+        )
+        env.append({"name": "DEV_SYNC_DEST", "value": workdir})
+        if request.syncToken:
+            env.append({"name": "DEV_SYNC_TOKEN", "value": request.syncToken})
+        if request.devSyncCommands:
+            env.append(
+                {
+                    "name": "DEV_SYNC_COMMANDS_JSON",
+                    "value": json.dumps(request.devSyncCommands, sort_keys=True),
+                }
+            )
+        # #41 route-add restart signal: the sidecar (a separate process) cannot
+        # call the dev server's in-process restart, so it writes this file into
+        # the shared workdir when a sync ADDS src/routes files; the BFF's Vite
+        # plugin polls it (consume-then-restart). Python dev servers ignore it.
+        env.append(
+            {
+                "name": "WFB_DEV_SYNC_RESTART_SIGNAL",
+                "value": f"{workdir}/.dev-sync-restart-request.json",
+            }
+        )
     # Dapr-shadow defaults (P3.1): lowest priority, so request.env can override.
     # These GUARANTEE isolation even if a caller forgets to pass them:
     #   - DAPR_CONFIG_STORE=disabled-dev → forces core/config.py to fall back to
@@ -3124,6 +3161,9 @@ def build_dev_preview_sandbox_manifest(
         sidecar_env = [
             {"name": "DEV_SYNC_PORT", "value": str(sync_port)},
             {"name": "DEV_SYNC_DEST", "value": workdir},
+            # #40: where the app container's exec bridge listens (pod-localhost);
+            # /__run proxies there first, falling back to local execution.
+            {"name": "DEV_SYNC_EXEC_PORT", "value": str(DEV_SYNC_EXEC_BRIDGE_PORT)},
         ]
         if request.syncToken:
             sidecar_env.append({"name": "DEV_SYNC_TOKEN", "value": request.syncToken})

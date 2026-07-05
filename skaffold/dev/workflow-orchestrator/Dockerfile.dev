@@ -31,6 +31,13 @@ COPY services/workflow-orchestrator/ ./
 COPY services/shared/workflow-data-contract /app/.contract-fixtures
 ENV WORKFLOW_DATA_CONTRACT_FIXTURE_DIR=/app/.contract-fixtures/fixtures
 
+# #40 exec bridge: /__run commands execute HERE (python/pytest live in this
+# container; the node-only dev-sync-sidecar exits 127 on them). Lives OUTSIDE
+# /app so the shared emptyDir workdir mount can never mask it. Background child
+# of the entrypoint; binds 127.0.0.1 only, fails closed without
+# DEV_SYNC_COMMANDS_JSON (plain `skaffold dev` unaffected).
+COPY services/dev-sync-sidecar/exec_bridge.py /devtools/exec_bridge.py
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=8080 \
@@ -42,4 +49,6 @@ EXPOSE 8080
 
 # `uvicorn --reload --reload-dir /app` watches the filesystem and restarts on
 # .py changes. Skaffold sync drops new files in /app; uvicorn picks them up.
-CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--reload", "--reload-dir", "/app"]
+# The exec bridge is a background child; `exec` keeps uvicorn as PID 1 (a
+# bridge crash never takes the dev server down, and vice versa).
+CMD ["sh", "-c", "python /devtools/exec_bridge.py & exec python -m uvicorn app:app --host 0.0.0.0 --port 8080 --reload --reload-dir /app"]

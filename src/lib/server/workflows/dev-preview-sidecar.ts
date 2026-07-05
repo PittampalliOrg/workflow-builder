@@ -38,6 +38,10 @@ export type SidecarRunOutput = {
 	durationMs: number | null;
 	truncated: boolean;
 	output: string;
+	/** Where the command ran (#40): "app" = the app container's exec bridge
+	 * (the service's real toolchain), "sidecar" = the node-only sidecar (the
+	 * pre-bridge fallback). null against a sidecar too old to report it. */
+	executedIn: "app" | "sidecar" | null;
 };
 
 const STATUS_TIMEOUT_MS = 3_000;
@@ -191,6 +195,10 @@ export async function runSidecarCommand(input: {
 					: typeof body.error === "string"
 						? body.error
 						: "",
+			executedIn:
+				body.executedIn === "app" || body.executedIn === "sidecar"
+					? body.executedIn
+					: null,
 		},
 	};
 }

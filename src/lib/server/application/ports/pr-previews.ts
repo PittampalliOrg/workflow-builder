@@ -69,6 +69,12 @@ export type PrPreviewSeedTarget = {
 	extraSync: Array<{ from: string; to: string }>;
 	podIp: string;
 	syncPort: number;
+	/** Dev-server app port (#41 readiness gate target; falls back to syncPort —
+	 * correct for the plugin-mode BFF where they coincide). */
+	appPort?: number;
+	/** Known always-there route on the app port (registry healthPath, default "/").
+	 * ANY http response counts as "accepting" — the status code is irrelevant. */
+	healthPath?: string;
 };
 
 export interface PrPreviewSeedPort {
@@ -115,6 +121,10 @@ export type PrPreviewRegistryEntry = {
 	repoSubdir: string;
 	syncPaths: string[];
 	extraSync: Array<{ from: string; to: string }>;
+	/** Dev-server port + health route (descriptor `port`/`healthPath`), carried
+	 * into seed targets for the #41 readiness gate. */
+	appPort?: number;
+	healthPath?: string;
 };
 
 export type PrPreviewState =

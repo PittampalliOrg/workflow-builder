@@ -16,6 +16,8 @@ describe("buildPrSeedCommand", () => {
 				extraSync: [],
 				podIp: "10.1.2.3",
 				syncPort: 3000,
+				appPort: 3000,
+				healthPath: "/",
 			},
 			{
 				service: "workflow-orchestrator",
@@ -26,6 +28,8 @@ describe("buildPrSeedCommand", () => {
 				],
 				podIp: "10.1.2.4",
 				syncPort: 8001,
+				appPort: 8080,
+				healthPath: "/healthz",
 			},
 		],
 	};
@@ -59,6 +63,46 @@ describe("buildPrSeedCommand", () => {
 		expect(cmd).toContain('echo "SEED_workflow_builder=$CODE"');
 		expect(cmd).toContain('echo "SEED_workflow_orchestrator=$CODE"');
 	});
+
+	it("gates each seed on the dev server's APP port answering (#41 readiness gate)", () => {
+		const cmd = buildPrSeedCommand(input, "PittampalliOrg/workflow-builder");
+		// The gate polls the app port's health route — NOT the sync receiver
+		// (the sidecar answers long before uvicorn does).
+		expect(cmd).toContain('"http://10.1.2.3:3000/"');
+		expect(cmd).toContain('"http://10.1.2.4:8080/healthz"');
+		// Bounded budget: 30 attempts, 3s curl cap, 3s sleep.
+		expect(cmd).toContain("while [ $i -lt 30 ]; do");
+		expect(cmd).toContain("-m 3");
+		expect(cmd).toContain("sleep 3");
+		// ANY http status counts as accepting; only no-response keeps polling.
+		expect(cmd).toContain('[ "$READY" != "000" ] && break');
+		// Informational markers; the seed still runs after a timed-out gate.
+		expect(cmd).toContain('echo "SEED_READY_workflow_builder=$READY"');
+		expect(cmd).toContain('echo "SEED_READY_workflow_orchestrator=$READY"');
+		// The gate runs BEFORE the sync POST for each target.
+		expect(cmd.indexOf('"http://10.1.2.4:8080/healthz"')).toBeLessThan(
+			cmd.indexOf('"http://10.1.2.4:8001/__sync"'),
+		);
+	});
+
+	it("falls back to the sync port when a target carries no appPort", () => {
+		const bare = {
+			...input,
+			targets: [
+				{
+					service: "workflow-builder",
+					repoSubdir: ".",
+					syncPaths: ["src"],
+					extraSync: [],
+					podIp: "10.1.2.3",
+					syncPort: 3000,
+				},
+			],
+		};
+		const cmd = buildPrSeedCommand(bare, "PittampalliOrg/workflow-builder");
+		expect(cmd).toContain('"http://10.1.2.3:3000/"'); // gate on syncPort + "/"
+		expect(cmd).toContain('echo "SEED_READY_workflow_builder=$READY"');
+	});
 });
 
 describe("prPreviewRegistryEntries", () => {
@@ -69,6 +113,16 @@ describe("prPreviewRegistryEntries", () => {
 		expect(bff?.syncPaths.length).toBeGreaterThan(0);
 		const orch = entries.find((e) => e.service === "workflow-orchestrator");
 		expect(orch?.repoSubdir).toBe("services/workflow-orchestrator");
+	});
+
+	it("carries the dev-server app port + health route for the seed readiness gate", () => {
+		const entries = prPreviewRegistryEntries();
+		const bff = entries.find((e) => e.service === "workflow-builder");
+		expect(bff?.appPort).toBe(3000);
+		expect(bff?.healthPath).toBe("/");
+		const orch = entries.find((e) => e.service === "workflow-orchestrator");
+		expect(orch?.appPort).toBe(8080);
+		expect(orch?.healthPath).toBe("/healthz");
 	});
 });
 

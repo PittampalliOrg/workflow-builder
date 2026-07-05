@@ -16,6 +16,7 @@ import { test } from 'node:test';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(HERE, 'server.mjs');
+const BRIDGE = path.join(HERE, 'exec-bridge.mjs');
 const TOKEN = 'test-secret-token';
 
 function freePort() {
@@ -29,9 +30,13 @@ function freePort() {
 	});
 }
 
-/** Spawn server.mjs with a fresh temp DEST; resolve once it logs "listening". */
+/** Spawn server.mjs with a fresh temp DEST; resolve once it logs "listening".
+ * Always points DEV_SYNC_EXEC_PORT at a dedicated free port so a stray local
+ * listener on the default 8002 can never satisfy (or poison) the bridge probe —
+ * tests that WANT a bridge start one on that port via startBridge(). */
 async function startSidecar(extraEnv = {}) {
 	const port = await freePort();
+	const execPort = await freePort();
 	const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-dest-'));
 	const proc = spawn(process.execPath, [SERVER], {
 		env: {
@@ -39,6 +44,7 @@ async function startSidecar(extraEnv = {}) {
 			DEV_SYNC_PORT: String(port),
 			DEV_SYNC_DEST: dest,
 			DEV_SYNC_TOKEN: TOKEN,
+			DEV_SYNC_EXEC_PORT: String(execPort),
 			...extraEnv
 		},
 		stdio: ['ignore', 'pipe', 'pipe']
@@ -58,8 +64,51 @@ async function startSidecar(extraEnv = {}) {
 	}
 	return {
 		port,
+		execPort,
 		dest,
 		base,
+		proc,
+		log: () => log,
+		stop() {
+			proc.kill('SIGKILL');
+			try {
+				fs.rmSync(dest, { recursive: true, force: true });
+			} catch {
+				/* ignore */
+			}
+		}
+	};
+}
+
+/** Spawn the REAL exec-bridge.mjs on 127.0.0.1:<port> (the app-container half
+ * of /__run) and resolve once it logs "listening". */
+async function startBridge(port, extraEnv = {}) {
+	const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-bridge-dest-'));
+	const proc = spawn(process.execPath, [BRIDGE], {
+		env: {
+			...process.env,
+			DEV_SYNC_EXEC_PORT: String(port),
+			DEV_SYNC_DEST: dest,
+			DEV_SYNC_TOKEN: TOKEN,
+			...extraEnv
+		},
+		stdio: ['ignore', 'pipe', 'pipe']
+	});
+	let log = '';
+	proc.stdout.on('data', (d) => (log += String(d)));
+	proc.stderr.on('data', (d) => (log += String(d)));
+	const deadline = Date.now() + 5000;
+	while (Date.now() < deadline) {
+		if (log.includes('listening on')) break;
+		await new Promise((r) => setTimeout(r, 50));
+	}
+	if (!log.includes('listening on')) {
+		proc.kill('SIGKILL');
+		throw new Error(`exec bridge did not start; log:\n${log}`);
+	}
+	return {
+		dest,
+		base: `http://127.0.0.1:${port}`,
 		proc,
 		log: () => log,
 		stop() {
@@ -242,4 +291,130 @@ test('unknown paths 404', async (t) => {
 	const s = await startSidecar();
 	t.after(() => s.stop());
 	assert.equal((await fetch(`${s.base}/nope`)).status, 404);
+});
+
+// ----- #40: /__run proxies to the app-container exec bridge -----
+
+test('POST /__run executes via the app-container bridge when present (executedIn app)', async (t) => {
+	const s = await startSidecar({
+		DEV_SYNC_COMMANDS_JSON: JSON.stringify({ deps: 'echo sidecar-side' })
+	});
+	t.after(() => s.stop());
+	// The REAL bridge on the sidecar's exec port, with its OWN dest + allowlist —
+	// output proves the command ran in the bridge process, not the sidecar.
+	const b = await startBridge(s.execPort, {
+		DEV_SYNC_COMMANDS_JSON: JSON.stringify({ deps: 'echo bridge-side; pwd' })
+	});
+	t.after(() => b.stop());
+
+	const out = await (
+		await fetch(`${s.base}/__run?cmd=deps`, { method: 'POST', headers: { 'x-sync-token': TOKEN } })
+	).json();
+	assert.equal(out.executedIn, 'app');
+	assert.equal(out.ok, true);
+	assert.equal(out.exitCode, 0);
+	assert.match(out.output, /bridge-side/);
+	assert.match(out.output, new RegExp(b.dest.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+	assert.ok(!out.output.includes('sidecar-side'), 'must not also run locally');
+
+	// /__status reflects where the last run executed.
+	const status = await (
+		await fetch(`${s.base}/__status`, { headers: { 'x-sync-token': TOKEN } })
+	).json();
+	assert.equal(status.lastRun.executedIn, 'app');
+});
+
+test('bridge run failures propagate the real exit code (no sidecar fallback)', async (t) => {
+	const s = await startSidecar({
+		DEV_SYNC_COMMANDS_JSON: JSON.stringify({ contract: 'echo should-not-run-here' })
+	});
+	t.after(() => s.stop());
+	const b = await startBridge(s.execPort, {
+		DEV_SYNC_COMMANDS_JSON: JSON.stringify({ contract: 'echo bridge-boom >&2; exit 5' })
+	});
+	t.after(() => b.stop());
+
+	const resp = await fetch(`${s.base}/__run?cmd=contract`, {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(resp.status, 200); // it RAN (in the app container) — ok:false carries the failure
+	const out = await resp.json();
+	assert.equal(out.executedIn, 'app');
+	assert.equal(out.ok, false);
+	assert.equal(out.exitCode, 5);
+	assert.match(out.output, /bridge-boom/);
+});
+
+test('POST /__run falls back to sidecar execution when no bridge is listening', async (t) => {
+	// startSidecar points DEV_SYNC_EXEC_PORT at a free port with NO listener —
+	// exactly an image that predates the bridge.
+	const s = await startSidecar({
+		DEV_SYNC_COMMANDS_JSON: JSON.stringify({ deps: 'echo installing-deps' })
+	});
+	t.after(() => s.stop());
+	const out = await (
+		await fetch(`${s.base}/__run?cmd=deps`, { method: 'POST', headers: { 'x-sync-token': TOKEN } })
+	).json();
+	assert.equal(out.executedIn, 'sidecar');
+	assert.equal(out.ok, true);
+	assert.match(out.output, /installing-deps/);
+	assert.match(out.bridge, /unreachable|connect timeout/);
+});
+
+test('POST /__run falls back when the bridge refuses the command (empty allowlist 404)', async (t) => {
+	const s = await startSidecar({
+		DEV_SYNC_COMMANDS_JSON: JSON.stringify({ deps: 'echo ran-in-sidecar' })
+	});
+	t.after(() => s.stop());
+	// Bridge WITHOUT DEV_SYNC_COMMANDS_JSON → fail-closed 404 → safe local fallback.
+	const b = await startBridge(s.execPort);
+	t.after(() => b.stop());
+	const out = await (
+		await fetch(`${s.base}/__run?cmd=deps`, { method: 'POST', headers: { 'x-sync-token': TOKEN } })
+	).json();
+	assert.equal(out.executedIn, 'sidecar');
+	assert.equal(out.ok, true);
+	assert.match(out.output, /ran-in-sidecar/);
+	assert.match(out.bridge, /bridge HTTP 404/);
+});
+
+// ----- #41: route-add detection + restart signal -----
+
+test('POST /__sync flags NEW src/routes files and writes the restart signal once', async (t) => {
+	const s = await startSidecar();
+	t.after(() => s.stop());
+	const signal = path.join(s.dest, '.dev-sync-restart-request.json');
+	const tgz = makeTarGz({
+		'src/routes/pr-preview-marker/+server.ts': 'export const GET = () => new Response("ok");',
+		'src/lib/util.ts': 'export const x = 1;'
+	});
+
+	const first = await (
+		await fetch(`${s.base}/__sync`, {
+			method: 'POST',
+			headers: { 'x-sync-token': TOKEN },
+			body: tgz
+		})
+	).json();
+	assert.equal(first.ok, true);
+	assert.deepEqual(first.routesAdded, ['src/routes/pr-preview-marker/+server.ts']);
+	assert.equal(first.restartSignaled, true);
+	const written = JSON.parse(fs.readFileSync(signal, 'utf8'));
+	assert.deepEqual(written.addedRoutes, ['src/routes/pr-preview-marker/+server.ts']);
+	assert.ok(written.requestedAt);
+
+	// The plugin consumes (deletes) the signal before restarting; a re-sync of
+	// the SAME tree adds nothing → no new signal, no restart loop.
+	fs.unlinkSync(signal);
+	const second = await (
+		await fetch(`${s.base}/__sync`, {
+			method: 'POST',
+			headers: { 'x-sync-token': TOKEN },
+			body: tgz
+		})
+	).json();
+	assert.equal(second.ok, true);
+	assert.equal(second.routesAdded, undefined);
+	assert.ok(!fs.existsSync(signal), 'no signal for a sync that adds no routes');
 });

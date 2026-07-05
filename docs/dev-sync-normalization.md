@@ -16,13 +16,99 @@ new trust boundary — `/__sync` already delivers code the dev server executes):
 |---|---|
 | `POST /__sync` | untar an uploaded `tar.gz` into the workdir → inotify → HMR (unchanged) |
 | `GET /__export?paths=…` | stream a `tar.gz` of the live workdir source — **version capture parity** (`captureDevPreviewSource` guards on the gzip magic bytes, so the wire format matches the plugin: `tar -czf -`, busybox-relative; non-existent paths are filtered first) |
-| `GET /__status` | `{lastSyncAt, lastSyncBytes, lastRun, commands}` diagnostics |
-| `POST /__run?cmd=<name>` | run an **allowlisted** named command in the workdir; output capped, exit code returned. The allowlist is `DEV_SYNC_COMMANDS_JSON` (parsed once at boot); an unknown name 404s, a malformed allowlist fails closed |
+| `GET /__status` | `{lastSyncAt, lastSyncBytes, lastRun, commands}` diagnostics (`lastRun.executedIn` says where the last `/__run` executed) |
+| `POST /__run?cmd=<name>` | run an **allowlisted** named command in the workdir; output capped, exit code returned. The allowlist is `DEV_SYNC_COMMANDS_JSON` (parsed once at boot); an unknown name 404s, a malformed allowlist fails closed. Executes in the **app container** via the exec bridge when present (below) |
 
 `DEV_SYNC_COMMANDS_JSON` is stamped by `sandbox-execution-api` from the dev-preview
 registry: the reserved name `deps` = `depsCommand`, plus each `testCommands` entry
 under its own name. The sidecar never runs an arbitrary command string from a
 request.
+
+## `/__run` executes in the APP container — the exec bridge (#40)
+
+**The problem (live repro 2026-07-05):** the sidecar image is node-only, so a
+`/__run` executed *in the sidecar container* runs in the wrong runtime — the
+orchestrator's `cmd=contract` exited 127 (`sh: python: not found`); the node
+services' `deps` (`pnpm install`) had the same class of problem (no pnpm in the
+sidecar). The commands belong in the **app container**, where the service's
+real toolchain (python/pytest, pnpm + the pod's `node_modules`) lives.
+
+**The mechanism:** every dev image (`skaffold/dev/<svc>/Dockerfile.dev`) now
+bakes a ~150-line stdlib-only **exec bridge** at `/devtools/` —
+`services/dev-sync-sidecar/exec-bridge.mjs` for node images,
+`exec_bridge.py` for python images (twin contracts, shared tests) — and starts
+it as a **background child of the entrypoint** (`bridge & exec <dev server>`;
+the dev server stays PID 1, a bridge crash never takes it down). The bridge:
+
+- listens on **127.0.0.1:8002** ONLY (`DEV_SYNC_EXEC_PORT`) — pod-local by
+  construction, never reachable from outside the pod;
+- requires the shared sync token (`x-sync-token` = `DEV_SYNC_TOKEN`) when set;
+- runs ONLY the named entries of **its own** `DEV_SYNC_COMMANDS_JSON` copy,
+  cwd = `DEV_SYNC_DEST` — absent/malformed env → every `/__exec` 404s
+  (fail-closed, so plain `skaffold dev` pods are unaffected);
+- `POST /__exec?cmd=<name>` answers the same shape as `/__run`:
+  `{ok, cmd, exitCode, durationMs, truncated, output}`.
+
+SEA (`build_dev_preview_sandbox_manifest`) stamps `DEV_SYNC_EXEC_PORT`,
+`DEV_SYNC_DEST`, `DEV_SYNC_TOKEN`, and `DEV_SYNC_COMMANDS_JSON` into the **app
+container** in sidecar mode (previously only the sidecar got them), plus
+`DEV_SYNC_EXEC_PORT` into the sidecar (the proxy target).
+
+**Proxy + fallback semantics (`executedIn`):** the sidecar's `/__run` first
+POSTs the command **name** to the bridge over pod-localhost.
+
+- Bridge answers 200 → that IS the result; response carries
+  `"executedIn": "app"`.
+- Bridge unreachable (image predates the bridge) or refuses with a non-200
+  (401/404/500-spawn — the command provably did NOT run) → the sidecar runs the
+  command locally as before and says so: `"executedIn": "sidecar"` plus a
+  `bridge: "<why>"` note.
+- Bridge accepted (200) but the response broke mid-body → reported as an error
+  with NO local fallback: the command may already have run, and double-running
+  a `deps` install or test lane is worse than a surfaced broken response.
+
+Callers (BFF `runSidecarCommand`, the dev-environments run route) pass
+`executedIn` through; treat `"sidecar"` on a python service as the
+old-image signature.
+
+**Rollout (lead actions — pin bumps are manual for the sidecar):**
+
+1. The **dev-sync-sidecar image is NOT rebuilt by any lane** — rebuild via a
+   one-off hub TaskRun (precedent: git-d6d13218, stacks#3555) and bump the pin
+   sites in stacks for the `/__run` proxy + restart-signal writer to go live.
+2. The **dev images** need one manual `outer-loop-dev-images` PipelineRun fire
+   (workspaces: `shared-workspace` emptyDir + `dockerconfig`
+   ghcr-push-credentials) — it auto-commits the dev-preview pins.
+3. The **SEA image** rolls via the normal outer loop (the app-container env
+   stamping rides it).
+
+Mixed versions degrade cleanly: old sidecar + new images = old behavior
+(bridge idle); new sidecar + old images = fallback to `executedIn:"sidecar"`;
+new sidecar + old SEA = the bridge has no allowlist env → 404 → fallback.
+
+## Route-add restart signal (#41, sidecar side)
+
+A `/__sync` that ADDS files under `src/routes/` while the dev server is
+mid-restart lands on disk but never registers (the replaced watcher misses the
+`add` event — verified live: even `touch` fired nothing afterwards). The
+sidecar can't restart the dev server in another container (and killing PID 1 in
+a vcluster-synced pod wedges the container ready=false), so:
+
+- the sidecar pre-lists each sync tar (`tar -tzf`) and, when it added new
+  `src/routes/` files, writes **`.dev-sync-restart-request.json`** into the
+  workdir (`{requestedAt, addedRoutes}`) and reports
+  `routesAdded`/`restartSignaled` in the `/__sync` response;
+- the BFF's Vite plugin **polls** that file every 2s (`fs.stat`, not a watcher —
+  watchers are exactly what the restart window breaks), **deletes it first**
+  (consume-then-restart → no loop), then calls `server.restart()`. The poll is
+  armed by `WFB_DEV_SYNC_RESTART_SIGNAL` (stamped by SEA in sidecar mode);
+  plugin-mode syncs restart in-process without the file (see
+  `docs/pr-previews.md`).
+- Python dev servers ignore the signal file (uvicorn's new-file gap is a
+  separate, milder issue — `--reload` picks up edits to existing files).
+
+The detection helper is `src/lib/server/dev-sync/added-routes.ts` (unit-tested;
+the sidecar keeps an inline twin covered by its node:test e2e).
 
 ## Registry additions (`src/lib/server/workflows/dev-preview-registry.ts`)
 

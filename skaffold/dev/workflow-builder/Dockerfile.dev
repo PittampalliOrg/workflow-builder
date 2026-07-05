@@ -50,6 +50,13 @@ COPY src ./src
 # fixture change can be re-checked in-pod via `/__run?cmd=contract`.
 COPY services/shared/workflow-data-contract ./services/shared/workflow-data-contract
 
+# #40 exec bridge: /__run commands execute HERE (the app container's real
+# toolchain: node_modules, pnpm) instead of the node-only dev-sync-sidecar.
+# Lives OUTSIDE /app so the sidecar-transport emptyDir mount can never mask it.
+# Started as a background child of the entrypoint; binds 127.0.0.1 only and
+# fails closed without DEV_SYNC_COMMANDS_JSON (plain `skaffold dev` unaffected).
+COPY services/dev-sync-sidecar/exec-bridge.mjs /devtools/exec-bridge.mjs
+
 ENV NODE_ENV=development
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
@@ -61,4 +68,6 @@ EXPOSE 3000 24678
 # --host 0.0.0.0 binds inside the pod; the Service forwards from cluster
 # traffic. --port 3000 matches the prod container's exposed port so the
 # Service/Ingress need no changes.
-CMD ["sh", "-c", "exec /app/node_modules/.bin/vite dev --host 0.0.0.0 --port 3000"]
+# The exec bridge is a background child; `exec` keeps vite as PID 1 (a bridge
+# crash never takes the dev server down, and vice versa).
+CMD ["sh", "-c", "node /devtools/exec-bridge.mjs & exec /app/node_modules/.bin/vite dev --host 0.0.0.0 --port 3000"]

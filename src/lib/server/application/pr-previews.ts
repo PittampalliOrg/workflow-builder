@@ -408,6 +408,10 @@ export class ApplicationPrPreviewService {
 					extraSync: entry.extraSync,
 					podIp: pod.podIp,
 					syncPort: pod.syncPort,
+					// #41 readiness gate: poll the dev SERVER (not the sync receiver)
+					// before POSTing the seed, so cold provisions stop racing its boot.
+					appPort: entry.appPort,
+					healthPath: entry.healthPath,
 				});
 			} else {
 				podErrors.push(`${pod.service}: ${pod.error ?? "no pod address"}`);
