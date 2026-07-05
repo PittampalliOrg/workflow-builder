@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { argoGates, isPromotionPassing, releasePrGate, STAGING_SOAK_MS } from "./gates";
+import {
+	argoGates,
+	isPromotionPassing,
+	prPreviewVerifyGate,
+	releasePrGate,
+	STAGING_SOAK_MS,
+} from "./gates";
 import type { EnvCell } from "./service-matrix";
 
 function cell(overrides: Partial<EnvCell> = {}): EnvCell {
@@ -163,5 +169,43 @@ describe("argoGates", () => {
 	it("returns unknown when either cell is missing", () => {
 		expect(argoGates(null, cell()).status).toBe("unknown");
 		expect(argoGates(cell(), null).status).toBe("unknown");
+	});
+});
+
+describe("prPreviewVerifyGate", () => {
+	it("collapses to unknown when verify is absent (flag off / not started)", () => {
+		expect(prPreviewVerifyGate(null).status).toBe("unknown");
+	});
+
+	it("maps completed to passed with the verdict tooltip", () => {
+		const gate = prPreviewVerifyGate({
+			state: "completed",
+			executionId: "exec-1",
+			reason: null,
+			verdict: "all critical flows pass",
+		});
+		expect(gate.status).toBe("passed");
+		expect(gate.tooltip).toBe("all critical flows pass");
+	});
+
+	it("maps failed to failed with the reason tooltip", () => {
+		const gate = prPreviewVerifyGate({
+			state: "failed",
+			executionId: "exec-1",
+			reason: "critic run timed out",
+			verdict: null,
+		});
+		expect(gate.status).toBe("failed");
+		expect(gate.tooltip).toBe("critic run timed out");
+	});
+
+	it("maps started to pending and skipped to unknown", () => {
+		expect(
+			prPreviewVerifyGate({ state: "started", executionId: "e", reason: null, verdict: null }).status,
+		).toBe("pending");
+		expect(
+			prPreviewVerifyGate({ state: "skipped", executionId: null, reason: "no critic", verdict: null })
+				.status,
+		).toBe("unknown");
 	});
 });

@@ -5,7 +5,7 @@
 	import type { GateState } from "$lib/gitops/gates";
 
 	type Props = {
-		kind: "release-pr" | "argo-gates";
+		kind: "release-pr" | "argo-gates" | "pr-preview-verify";
 		state: GateState;
 	};
 
@@ -29,7 +29,13 @@
 					: Clock3,
 	);
 
-	const gateTitle = $derived(kind === "release-pr" ? "release PR" : "Promoter gates");
+	const gateTitle = $derived(
+		kind === "release-pr"
+			? "release PR"
+			: kind === "pr-preview-verify"
+				? "preview verify"
+				: "Promoter gates",
+	);
 
 	/**
 	 * When there is genuinely nothing to report (ryzen missing from hub

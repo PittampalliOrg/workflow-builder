@@ -379,3 +379,158 @@ describe("buildChangeJourneys", () => {
 		});
 	});
 });
+
+describe("change journey — dev-env-v2 lanes", () => {
+	it("classifies a dev-images pin bump into the dev-images lane, not promoter-dev", () => {
+		const journeys = buildChangeJourneys({
+			events: [
+				event({
+					source: "github",
+					activityType: "github.push",
+					correlation: {
+						repo: "PittampalliOrg/stacks",
+						branch: "main",
+						commitSha: "abc123",
+						// checked before the substring branches — must NOT become promoter-dev.
+						expectedGitOpsLane: "dev-images",
+					},
+				}),
+			],
+			metadata: metadata(),
+			model: model(),
+			links: LINKS,
+		});
+
+		expect(journeys).toHaveLength(1);
+		expect(journeys[0]?.lanes).toContain("dev-images");
+		expect(journeys[0]?.lanes).not.toContain("promoter-dev");
+		expect(filterChangeJourneys(journeys, "dev-images")).toHaveLength(1);
+		expect(filterChangeJourneys(journeys, "promoter-dev")).toHaveLength(0);
+	});
+
+	it("threads a pr-preview TaskRun onto the PR journey with a preview step", () => {
+		const journeys = buildChangeJourneys({
+			events: [
+				event({
+					eventId: "gh-pr",
+					source: "github",
+					activityType: "github.pull_request",
+					correlation: {
+						repo: "PittampalliOrg/workflow-builder",
+						pullRequestNumber: "77",
+						previewLabeled: true,
+						expectedGitOpsLane: "pr-preview",
+						pullRequestUrl: "https://github.com/PittampalliOrg/workflow-builder/pull/77",
+					},
+				}),
+				event({
+					eventId: "tr-preview",
+					source: "tekton",
+					activityType: "tekton.taskrun",
+					phase: "Running",
+					resourceRef: {
+						group: "tekton.dev",
+						version: "v1",
+						resource: "taskruns",
+						kind: "TaskRun",
+						namespace: "tekton-pipelines",
+						name: "wfb-pr-preview-up-xyz",
+						uid: "tr-uid",
+					},
+					correlation: {
+						pullRequestNumber: "77",
+						buildLoop: "pr-preview",
+						taskRun: "wfb-pr-preview-up-xyz",
+					},
+				}),
+			],
+			metadata: metadata(),
+			model: model(),
+			links: LINKS,
+		});
+
+		// Both events group onto ONE PR journey (repo-agnostic PR key).
+		expect(journeys).toHaveLength(1);
+		const journey = journeys[0]!;
+		expect(journey.lanes).toContain("pr-preview");
+		expect(kinds(journey)).toContain("preview");
+		expect(filterChangeJourneys(journeys, "pr-preview")).toHaveLength(1);
+	});
+
+	it("adds preview + verify steps from the prPreviews input", () => {
+		const journeys = buildChangeJourneys({
+			events: [
+				event({
+					eventId: "gh-pr",
+					source: "github",
+					activityType: "github.pull_request",
+					correlation: {
+						repo: "PittampalliOrg/workflow-builder",
+						pullRequestNumber: "88",
+						pullRequestUrl: "https://github.com/PittampalliOrg/workflow-builder/pull/88",
+					},
+				}),
+			],
+			metadata: metadata(),
+			model: model(),
+			links: LINKS,
+			prPreviews: [
+				{
+					prNumber: 88,
+					alias: "pr-88",
+					url: "https://wfb-pr-88.example",
+					state: "ready",
+					headSha: "deadbeef",
+					services: ["workflow-builder"],
+					error: null,
+					verify: {
+						state: "completed",
+						executionId: "exec-1",
+						reason: null,
+						verdict: "all flows pass",
+					},
+					updatedAt: "2026-07-05T12:00:00Z",
+					prUrl: "https://github.com/PittampalliOrg/workflow-builder/pull/88",
+				},
+			],
+		});
+
+		expect(journeys).toHaveLength(1);
+		const journey = journeys[0]!;
+		expect(journey.lanes).toContain("pr-preview");
+		expect(kinds(journey)).toEqual(expect.arrayContaining(["preview", "verify"]));
+		const previewStep = journey.steps.find((s) => s.kind === "preview");
+		expect(previewStep?.state).toBe("done");
+		expect(previewStep?.href).toBe("https://wfb-pr-88.example");
+		const verifyStep = journey.steps.find((s) => s.kind === "verify");
+		expect(verifyStep?.state).toBe("done");
+	});
+
+	it("shows an orphan preview (no PR events) as a synthetic pr-preview journey", () => {
+		const journeys = buildChangeJourneys({
+			events: [],
+			metadata: metadata(),
+			model: model(),
+			links: LINKS,
+			prPreviews: [
+				{
+					prNumber: 99,
+					alias: "pr-99",
+					url: null,
+					state: "provisioning",
+					headSha: null,
+					services: [],
+					error: null,
+					verify: null,
+					updatedAt: "2026-07-05T12:00:00Z",
+					prUrl: "https://github.com/PittampalliOrg/workflow-builder/pull/99",
+				},
+			],
+		});
+
+		expect(filterChangeJourneys(journeys, "pr-preview")).toHaveLength(1);
+		const journey = journeys[0]!;
+		expect(kinds(journey)).toEqual(["preview"]);
+		expect(journey.steps[0]?.state).toBe("active");
+	});
+});

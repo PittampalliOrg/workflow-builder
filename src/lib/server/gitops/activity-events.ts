@@ -455,6 +455,12 @@ function extractCorrelation(
 		pipelineRun,
 		taskRun: ref.kind === "TaskRun" ? ref.name : null,
 		pipelineTask: readString(labels["tekton.dev/pipelineTask"]),
+		// dev-env-v2 lane correlation: the pr-preview dispatch + dev-image rebuild
+		// pipelines stamp these (TriggerTemplate-pr-preview-dispatch /
+		// TriggerTemplate-dev-images on the hub). `buildLoop` is `pr-preview` for
+		// preview runs, `outer` for the dev-images pipeline (keyed on run name).
+		pullRequestNumber: readString(params.pr_number) ?? readString(labels["stacks.io/pr-number"]),
+		buildLoop: readString(labels["stacks.io/build-loop"]),
 		imageName,
 		imageRef,
 		imageDigest:
@@ -504,6 +510,10 @@ function extractGitHubCorrelation(body: JsonRecord): JsonRecord {
 		repoFullName?.toLowerCase().endsWith("/stacks") && files.some(isReleasePinPath)
 			? commitSha
 			: null;
+	const title = readString(pr?.title) ?? readString(asRecord(body.head_commit)?.message);
+	// D1 preview lifecycle signal: the PR carries (or the event just applied) the
+	// `preview` label that gates a per-PR preview.
+	const previewLabeled = hasPreviewLabel(body);
 	return compactObject({
 		repo: repoFullName,
 		branch,
@@ -512,15 +522,29 @@ function extractGitHubCorrelation(body: JsonRecord): JsonRecord {
 		pullRequestNumber: readString(body.number) ?? readString(pr?.number),
 		pullRequestUrl: readString(pr?.html_url),
 		merged: typeof pr?.merged === "boolean" ? pr.merged : null,
-		title: readString(pr?.title) ?? readString(asRecord(body.head_commit)?.message),
+		title,
+		// PR webhook action (opened/closed/labeled/synchronize/reopened) — lets the
+		// journey model distinguish a preview label event from a code push.
+		prAction: readString(body.action),
+		previewLabeled: previewLabeled ? true : null,
 		actor: readString(asRecord(body.sender)?.login),
 		senderLogin: readString(asRecord(body.sender)?.login),
 		pusherEmail: readString(asRecord(body.pusher)?.email),
 		authorEmail: readString(asRecord(asRecord(body.head_commit)?.author)?.email),
 		imageName,
 		pinCommit,
-		expectedGitOpsLane: expectedGitOpsLane(repoFullName, branch, files),
+		expectedGitOpsLane: expectedGitOpsLane(repoFullName, branch, files, { title, previewLabeled }),
 	});
+}
+
+/** True when the `preview` label is on the PR (or is the label this event just
+ * added/removed) — gates the per-PR preview pipeline. */
+function hasPreviewLabel(body: JsonRecord): boolean {
+	const single = asRecord(body.label);
+	if (readString(single?.name)?.toLowerCase() === "preview") return true;
+	const pr = asRecord(body.pull_request);
+	const labels = Array.isArray(pr?.labels) ? pr.labels : [];
+	return labels.some((item) => readString(asRecord(item)?.name)?.toLowerCase() === "preview");
 }
 
 function isGitHubBody(body: JsonRecord): boolean {
@@ -563,8 +587,19 @@ function isReleasePinPath(path: string): boolean {
 	);
 }
 
-function expectedGitOpsLane(repo: string | null, branch: string | null, files: string[]): string | null {
+function expectedGitOpsLane(
+	repo: string | null,
+	branch: string | null,
+	files: string[],
+	opts: { title?: string | null; previewLabeled?: boolean } = {},
+): string | null {
 	const lowerRepo = repo?.toLowerCase() ?? "";
+	// New dev-env-v2 lanes are resolved BEFORE the branch-substring branches: a
+	// `preview`-labeled PR and a `chore(dev-images):` pin bump both otherwise fall
+	// through to promoter-dev (the "dev" substring foot-gun this fixes downstream).
+	if (opts.previewLabeled) return "pr-preview";
+	const title = opts.title?.toLowerCase() ?? "";
+	if (title.startsWith("chore(dev-images)") || files.some(isDevImagePinPath)) return "dev-images";
 	if (branch?.includes("spokes-dev")) return "promoter-dev";
 	if (branch?.includes("ryzen")) return "direct-ryzen";
 	if (lowerRepo.endsWith("/workflow-builder") && branch === "main") {
@@ -574,6 +609,12 @@ function expectedGitOpsLane(repo: string | null, branch: string | null, files: s
 	}
 	if (lowerRepo.endsWith("/stacks") && branch === "main") return "direct-ryzen+promoter-dev";
 	return null;
+}
+
+/** Dev-preview image pins (the `outer-loop-dev-images` lane targets) live in the
+ * preview overlay + dev deployments, distinct from the prod release-pins path. */
+function isDevImagePinPath(path: string): boolean {
+	return path.includes("workflow-builder-preview");
 }
 
 function defaultActivityKey(

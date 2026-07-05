@@ -174,6 +174,96 @@ describe("normalizeGitOpsActivityEvent", () => {
 			pusherEmail: "vinod@pittampalli.com",
 		});
 	});
+
+	it("flags a `preview`-labeled PR into the pr-preview lane", () => {
+		const event = normalizeGitOpsActivityEvent({
+			action: "labeled",
+			number: 77,
+			repository: { full_name: "PittampalliOrg/workflow-builder" },
+			sender: { login: "vpittamp" },
+			label: { name: "preview" },
+			pull_request: {
+				number: 77,
+				html_url: "https://github.com/PittampalliOrg/workflow-builder/pull/77",
+				title: "Add lanes",
+				labels: [{ name: "preview" }],
+				head: { ref: "feature/lanes", sha: "b".repeat(40) },
+				base: { ref: "main" },
+			},
+		});
+
+		expect(event.correlation).toMatchObject({
+			pullRequestNumber: "77",
+			prAction: "labeled",
+			previewLabeled: true,
+			expectedGitOpsLane: "pr-preview",
+		});
+	});
+
+	it("routes a chore(dev-images) pin bump to the dev-images lane before the substring branches", () => {
+		const event = normalizeGitOpsActivityEvent({
+			ref: "refs/heads/main",
+			after: "c".repeat(40),
+			repository: { full_name: "PittampalliOrg/stacks" },
+			pusher: { email: "vinod@pittampalli.com" },
+			head_commit: {
+				id: "c".repeat(40),
+				message: "chore(dev-images): rebuild + bump dev-preview image pins to git-abc",
+				author: { email: "vinod@pittampalli.com" },
+			},
+			commits: [
+				{
+					modified: [
+						"packages/components/workloads/workflow-builder-preview/Deployment-workflow-builder-dev.yaml",
+					],
+					added: [],
+					removed: [],
+				},
+			],
+		});
+
+		// A stacks/main push would otherwise classify as direct-ryzen+promoter-dev;
+		// the dev-images check runs first so the rebuild lane wins.
+		expect(event.correlation).toMatchObject({ expectedGitOpsLane: "dev-images" });
+	});
+
+	it("correlates pr-preview dispatch TaskRuns via pr-number + build-loop labels", () => {
+		const event = normalizeGitOpsActivityEvent({
+			data: {
+				type: "UPDATE",
+				group: "tekton.dev",
+				version: "v1",
+				resource: "taskruns",
+				body: {
+					apiVersion: "tekton.dev/v1",
+					kind: "TaskRun",
+					metadata: {
+						name: "wfb-pr-preview-up-xyz",
+						namespace: "tekton-pipelines",
+						uid: "tr-uid",
+						resourceVersion: "990",
+						labels: {
+							"stacks.io/pr-number": "77",
+							"stacks.io/build-loop": "pr-preview",
+						},
+					},
+					status: {
+						conditions: [
+							{ type: "Succeeded", status: "Unknown", reason: "Running", lastTransitionTime: "2026-07-05T12:00:00Z" },
+						],
+					},
+				},
+			},
+		});
+
+		expect(event.source).toBe("tekton");
+		expect(event.activityType).toBe("tekton.taskrun");
+		expect(event.correlation).toMatchObject({
+			pullRequestNumber: "77",
+			buildLoop: "pr-preview",
+			taskRun: "wfb-pr-preview-up-xyz",
+		});
+	});
 });
 
 function sampleInventoryConfigMapEvent(contextId: string) {

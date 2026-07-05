@@ -1,4 +1,5 @@
 import type { EnvCell } from "$lib/gitops/service-matrix";
+import type { GitOpsPrPreviewVerify } from "$lib/gitops/pr-preview-summary";
 import { relativeTime, shortSha } from "$lib/utils/gitops-display";
 
 export type GateStatus = "passed" | "pending" | "failed" | "unknown";
@@ -87,6 +88,53 @@ export function releasePrGate(
 		label: "not aligned",
 		tooltip: `ryzen canary source ${shortSha(ryzenSha)} differs from dev release pin ${shortSha(devSha)}`,
 	};
+}
+
+/**
+ * D2 Playwright-critic verdict on a per-PR preview, rendered next to the
+ * preview step. `null` verify (flag off, or verify not started) collapses to
+ * unknown so the chip stays quiet.
+ */
+export function prPreviewVerifyGate(verify: GitOpsPrPreviewVerify): GateState {
+	if (!verify) {
+		return {
+			status: "unknown",
+			label: "no verify",
+			tooltip: "preview verify (Playwright critic) has not run",
+		};
+	}
+	switch (verify.state) {
+		case "completed":
+			return {
+				status: "passed",
+				label: "verify passed",
+				tooltip: verify.verdict ?? "Playwright critic completed",
+			};
+		case "failed":
+			return {
+				status: "failed",
+				label: "verify failed",
+				tooltip: verify.reason ?? verify.verdict ?? "Playwright critic reported a failure",
+			};
+		case "started":
+			return {
+				status: "pending",
+				label: "verifying",
+				tooltip: "Playwright critic run in progress",
+			};
+		case "skipped":
+			return {
+				status: "unknown",
+				label: "verify skipped",
+				tooltip: verify.reason ?? "preview verify was skipped",
+			};
+		default:
+			return {
+				status: "unknown",
+				label: "no verify",
+				tooltip: "preview verify state is unknown",
+			};
+	}
 }
 
 /**
