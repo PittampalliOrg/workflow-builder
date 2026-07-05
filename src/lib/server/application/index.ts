@@ -367,6 +367,12 @@ import { DrizzlePrPreviewRecordStore } from "$lib/server/application/adapters/pr
 import { ApplicationPreviewReadProxyService } from "$lib/server/application/preview-read-proxy";
 import { ApplicationPreviewArchiveService } from "$lib/server/application/preview-archive";
 import { HttpPreviewReadProxy } from "$lib/server/application/adapters/preview-read-proxy";
+import { ApplicationVclusterPreviewService } from "$lib/server/application/vcluster-previews";
+import { ApplicationDevPreviewSidecarService } from "$lib/server/application/dev-preview-sidecar";
+import {
+	LegacyVclusterPreviewGateway,
+	LegacyDevPreviewSidecarGateway,
+} from "$lib/server/application/adapters/dev-previews";
 import { ApplicationWorkflowExecutionReadModelService } from "$lib/server/application/workflow-execution-read-model";
 import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/application/workflow-code-checkpoints";
 import { ApplicationWorkflowCodeVersionService } from "$lib/server/application/workflow-code-versions";
@@ -630,6 +636,8 @@ export function getApplicationAdapters(
 	let prPreviews: ApplicationPrPreviewService | undefined;
 	let previewReadProxy: ApplicationPreviewReadProxyService | undefined;
 	let previewArchive: ApplicationPreviewArchiveService | undefined;
+	let vclusterPreviews: ApplicationVclusterPreviewService | undefined;
+	let devPreviewSidecar: ApplicationDevPreviewSidecarService | undefined;
 	let workflowExecutionReadModels:
 		| ApplicationWorkflowExecutionReadModelService
 		| undefined;
@@ -1307,6 +1315,17 @@ export function getApplicationAdapters(
 			listPreviews: listPreviewReadTargets,
 			files: { createFile: (input) => getWorkflowData().createWorkflowFile(input) },
 		}));
+	const getVclusterPreviews = () =>
+		(vclusterPreviews ??= new ApplicationVclusterPreviewService({
+			gateway: new LegacyVclusterPreviewGateway(),
+			previewRepo: config.prPreviewRepo,
+			maxPreviews: config.vclusterPreviewMax,
+		}));
+	const getDevPreviewSidecar = () =>
+		(devPreviewSidecar ??= new ApplicationDevPreviewSidecarService({
+			sidecar: new LegacyDevPreviewSidecarGateway(),
+			listEnvironments: (input) => getWorkflowData().listDevEnvironments(input),
+		}));
 	const getWorkflowBrowserArtifacts = () =>
 		(workflowBrowserArtifacts ??=
 			new ApplicationWorkflowBrowserArtifactsService({
@@ -1732,6 +1751,12 @@ export function getApplicationAdapters(
 		},
 		get previewArchive() {
 			return getPreviewArchive();
+		},
+		get vclusterPreviews() {
+			return getVclusterPreviews();
+		},
+		get devPreviewSidecar() {
+			return getDevPreviewSidecar();
 		},
 		get workflowBrowserArtifacts() {
 			return getWorkflowBrowserArtifacts();

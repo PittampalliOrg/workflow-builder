@@ -1,4 +1,9 @@
 import { env } from "$env/dynamic/private";
+import { safePreviewName } from "$lib/types/dev-previews";
+
+// Re-exported so existing importers (routes/tests) keep the same entrypoint; the
+// canonical (shared, client-safe) definition lives in $lib/types/dev-previews.
+export { safePreviewName };
 
 /**
  * Tier-2 full-isolation preview environments (vcluster).
@@ -41,6 +46,12 @@ export interface VclusterPreview {
 	expiresAt: string | null;
 	/** A4: RFC3339 last-activity stamp (touch endpoint / provision / claim). */
 	lastActive: string | null;
+	/** Operator hard-exemption (`vcluster-preview-protected=true`): the reaper /
+	 * eviction / sleep logic never touches it. false when the SEA omits it. */
+	protected: boolean;
+	/** Seconds the current provision (up) Job has been running — cold-boot
+	 * progress. null when not booting / unknown / against an older SEA. */
+	bootSeconds: number | null;
 }
 
 /** A3/A4 capacity accounting (from the SEA list): `awake` counts HOT members only (claimed +
@@ -50,6 +61,9 @@ export interface VclusterPreviewCounts {
 	awake: number;
 	slept: number;
 	total: number;
+	/** Pool up-Jobs still running (already counted in `awake`) — surfaced so the
+	 * capacity meter can show mid-bake members as a distinct, pulsing segment. */
+	baking: number;
 	free: number;
 	claimed: number;
 	recycling: number;
@@ -82,15 +96,6 @@ function sandboxExecutionApiUrl(): string | null {
 
 function internalToken(): string {
 	return env.INTERNAL_API_TOKEN ?? process.env.INTERNAL_API_TOKEN ?? "";
-}
-
-/** Sanitize a user-supplied preview name into a DNS-safe, short id. */
-export function safePreviewName(name: string): string {
-	return (name || "")
-		.toLowerCase()
-		.replace(/[^a-z0-9-]/g, "-")
-		.replace(/^-+|-+$/g, "")
-		.slice(0, 40) || "preview";
 }
 
 /** SEA call failure carrying the HTTP status (e.g. 429 = capacity refusal). */
@@ -161,6 +166,11 @@ function toPreview(d: Record<string, unknown>): VclusterPreview {
 				: null,
 		expiresAt: typeof d.expiresAt === "string" ? d.expiresAt : null,
 		lastActive: typeof d.lastActive === "string" ? d.lastActive : null,
+		protected: d.protected === true,
+		bootSeconds:
+			typeof d.bootSeconds === "number" && Number.isFinite(d.bootSeconds)
+				? d.bootSeconds
+				: null,
 	};
 }
 
@@ -316,6 +326,27 @@ export async function touchVclusterPreview(name: string): Promise<{
 
 /** Current status of a Tier-2 preview (job phase == environment readiness). Accepts a claimed
  * preview's alias — SEA resolves it to the backing member. */
+/** A4 explicit sleep: scale the preview's control plane + workloads down (a
+ * touch/claim wakes it). SEA `POST /internal/vcluster-preview/{name}/sleep`. A
+ * 409 (protected preview, or a free/recycling pool member that stays
+ * claim-ready) surfaces as a `VclusterPreviewHttpError` with status 409 for the
+ * caller to classify; `alreadySlept` is true when it was already asleep. */
+export async function sleepVclusterPreview(name: string): Promise<{
+	name: string;
+	state: "slept";
+	alreadySlept: boolean;
+}> {
+	const data = await call(
+		"POST",
+		`/internal/vcluster-preview/${encodeURIComponent(safePreviewName(name))}/sleep`,
+	);
+	return {
+		name: String(data.name ?? name),
+		state: "slept",
+		alreadySlept: data.alreadySlept === true,
+	};
+}
+
 export async function getVclusterPreview(name: string): Promise<VclusterPreview> {
 	const data = await call(
 		"GET",
@@ -339,6 +370,7 @@ function toCounts(d: unknown): VclusterPreviewCounts | null {
 		awake: num(c.awake),
 		slept: num(c.slept),
 		total: num(c.total),
+		baking: num(c.baking),
 		free: num(c.free),
 		claimed: num(c.claimed),
 		recycling: num(c.recycling),

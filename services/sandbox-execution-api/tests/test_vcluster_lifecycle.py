@@ -304,6 +304,36 @@ def test_preview_member_from_ns_tolerates_garbage_pr_and_missing_fields() -> Non
     assert m.expires_at is None
 
 
+def test_preview_lifecycle_fields_emits_the_ui_contract() -> None:
+    # The list/get lifecycle fields the BFF Dev-hub consumes, incl. `protected`
+    # (Track-1 UI renders a ShieldCheck tooltip + disables Sleep for it).
+    protected = app_module._preview_lifecycle_fields(
+        _member(
+            "gan-1",
+            origin="user",
+            protected=True,
+            last_active=NOW - timedelta(minutes=5),
+            expires_at=NOW + timedelta(hours=1),
+        )
+    )
+    assert protected["state"] == "hot"
+    assert protected["origin"] == "user"
+    assert protected["protected"] is True
+    assert protected["lastActive"] == (NOW - timedelta(minutes=5)).isoformat(
+        timespec="seconds"
+    )
+    assert protected["expiresAt"] == (NOW + timedelta(hours=1)).isoformat(
+        timespec="seconds"
+    )
+
+    plain = app_module._preview_lifecycle_fields(
+        _member("pr-9", origin="pr", pr_number=9, slept=True)
+    )
+    assert plain["state"] == "slept"
+    assert plain["prNumber"] == 9
+    assert plain["protected"] is False
+
+
 # ---- _select_preview_evictions (the pure selector — highest-risk logic) ------
 
 
