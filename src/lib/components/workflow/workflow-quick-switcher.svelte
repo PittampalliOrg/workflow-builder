@@ -43,9 +43,12 @@
 		if (loaded || loading) return;
 		loading = true;
 		try {
+			// No hard truncation: fetch the full set so every workflow (and its run
+			// status) is reachable. The Command palette filters client-side across
+			// all rendered items, so typing any name surfaces it regardless of recency.
 			const [wfRes, runRes] = await Promise.all([
-				fetch('/api/workflows?limit=200'),
-				fetch('/api/v1/runs?limit=100')
+				fetch('/api/workflows?limit=1000'),
+				fetch('/api/v1/runs?limit=1000')
 			]);
 			if (wfRes.ok) workflows = (await wfRes.json()) as WorkflowItem[];
 			if (runRes.ok) {
@@ -100,14 +103,14 @@
 			.sort((a, b) => (activityTs(b)).localeCompare(activityTs(a)))
 	);
 	// "Recent" = workflows that have actually RUN (not running now), newest run
-	// first. Run-less workflows go in the "All workflows" group below (not "Recent",
-	// to avoid fake timestamps), but are still LISTED so every workflow is selectable
-	// from the dropdown without searching.
+	// first. NOT truncated — every run workflow is listed here (older ones are just
+	// further down / found by search), so a workflow beyond any former cutoff stays
+	// reachable. Run-less workflows go in the "All workflows" group below (not
+	// "Recent", to avoid fake timestamps).
 	const recentWorkflows = $derived.by(() =>
 		workflows
 			.filter((w) => !runningByWf.has(w.id) && latestByWf.has(w.id))
 			.sort((a, b) => activityTs(b).localeCompare(activityTs(a)))
-			.slice(0, 15)
 	);
 	// Everything else (never run, not running) — alphabetical, so the dropdown is a
 	// complete picker rather than only "runs so far".

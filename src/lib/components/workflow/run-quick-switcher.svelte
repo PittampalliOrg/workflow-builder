@@ -36,8 +36,11 @@
 		if ((loaded && !force) || loading) return;
 		loading = true;
 		try {
+			// No hard cap: fetch the full run history so every run is reachable. The
+			// Command palette filters client-side across all rendered runs, so a run
+			// beyond any former limit is found by typing its id/status.
 			const res = await fetch(
-				`/api/workflows/${encodeURIComponent(workflowId)}/executions?include=summary&limit=30`
+				`/api/workflows/${encodeURIComponent(workflowId)}/executions?include=summary&limit=1000`
 			);
 			if (res.ok) runs = ((await res.json()) as RunRow[]) ?? [];
 			loaded = true;

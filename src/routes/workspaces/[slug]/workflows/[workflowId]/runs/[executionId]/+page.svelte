@@ -44,16 +44,13 @@
 		GitFork,
 		Play,
 		PencilLine,
-		Ellipsis,
-		List as ListIcon
+		Ellipsis
 	} from '@lucide/svelte';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import ForkDialog from '$lib/components/workflow/execution/fork-dialog.svelte';
 	import RunLineageTree from '$lib/components/workflow/execution/run-lineage-tree.svelte';
 	import ForkSpecDiff from '$lib/components/workflow/execution/fork-spec-diff.svelte';
-	import CodePromotionChain from '$lib/components/workflow/code/code-promotion-chain.svelte';
 	import { forkRun } from '$lib/workflows/fork';
-	import OtherRunsPanel from '$lib/components/runs/other-runs-panel.svelte';
 	import WorkflowQuickSwitcher from '$lib/components/workflow/workflow-quick-switcher.svelte';
 	import RunQuickSwitcher from '$lib/components/workflow/run-quick-switcher.svelte';
 	import RunProgressBand from '$lib/components/workflow/execution/run-progress-band.svelte';
@@ -141,10 +138,41 @@
 	let executionId = $derived(page.params.executionId ?? '');
 	let slug = $derived((page.params.slug ?? '') as string);
 
-	// Reference to the Other Runs panel — lets the header toolbar drive
-	// toggle / prev / next from keyboard shortcuts without duplicating
-	// state.
-	let otherRunsRef: OtherRunsPanel | undefined = $state();
+	// Sibling-run navigation. The old "Other runs" sidebar is gone (run switching
+	// now lives in the breadcrumb RunQuickSwitcher); we keep lightweight prev/next
+	// affordances (toolbar buttons + `[` / `]`) by loading the workflow's run list
+	// here. Newest-first, matching the executions endpoint order.
+	let siblingRuns = $state<Array<{ id: string }>>([]);
+	$effect(() => {
+		const wf = workflowId;
+		if (!wf) return;
+		let cancelled = false;
+		(async () => {
+			try {
+				const res = await fetch(`/api/workflows/${encodeURIComponent(wf)}/executions?limit=200`);
+				if (!res.ok || cancelled) return;
+				const body = (await res.json()) as Array<{ id: string }>;
+				if (!cancelled) siblingRuns = body ?? [];
+			} catch {
+				// best-effort; prev/next simply stay disabled
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	});
+	const runIndex = $derived(siblingRuns.findIndex((r) => r.id === executionId));
+	const canPrevRun = $derived(runIndex >= 0 && runIndex < siblingRuns.length - 1);
+	const canNextRun = $derived(runIndex > 0);
+	function gotoSiblingRun(id: string) {
+		goto(`/workspaces/${slug}/workflows/${workflowId}/runs/${id}`, { replaceState: true });
+	}
+	function prevRun() {
+		if (canPrevRun) gotoSiblingRun(siblingRuns[runIndex + 1].id);
+	}
+	function nextRun() {
+		if (canNextRun) gotoSiblingRun(siblingRuns[runIndex - 1].id);
+	}
 
 	function handleCockpitKey(e: KeyboardEvent) {
 		// Skip when the user is typing in an input or textarea.
@@ -153,10 +181,10 @@
 		if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
 		if (e.key === '[') {
 			e.preventDefault();
-			otherRunsRef?.prev();
+			prevRun();
 		} else if (e.key === ']') {
 			e.preventDefault();
-			otherRunsRef?.next();
+			nextRun();
 		}
 	}
 
@@ -2134,13 +2162,15 @@
 		</div>
 
 		<div class="ml-auto flex items-center gap-1 text-xs">
-			<!-- Prev / Next sibling runs. Disabled state cascades from the
-			     panel; keyboard `[` / `]` also wired via handleCockpitKey. -->
+			<!-- Prev / Next sibling runs. The full run list lives in the breadcrumb
+			     RunQuickSwitcher; these are quick step affordances. Keyboard `[` / `]`
+			     also wired via handleCockpitKey. -->
 			<Button
 				variant="ghost"
 				size="icon"
 				class="size-7"
-				onclick={() => otherRunsRef?.prev()}
+				disabled={!canPrevRun}
+				onclick={prevRun}
 				title="Previous run (older) — [">
 				<ChevronLeft class="size-3.5" />
 			</Button>
@@ -2148,17 +2178,10 @@
 				variant="ghost"
 				size="icon"
 				class="size-7"
-				onclick={() => otherRunsRef?.next()}
+				disabled={!canNextRun}
+				onclick={nextRun}
 				title="Next run (newer) — ]">
 				<ChevronRight class="size-3.5" />
-			</Button>
-			<Button
-				variant="ghost"
-				size="sm"
-				class="h-7 gap-1 px-2"
-				onclick={() => otherRunsRef?.toggleOpen()}
-				title="Toggle Other Runs panel">
-				<ListIcon class="size-3.5" /> Other runs
 			</Button>
 			{#if isRunning && coordinatorOwner}
 				<!-- Coordinator-owned (benchmark/eval instance): the generic per-execution
@@ -2416,12 +2439,6 @@
 
 	<!-- Body: Other Runs panel on the left (collapsible), tabbed content on the right. -->
 	<div class="flex flex-1 overflow-hidden">
-		<OtherRunsPanel
-			bind:this={otherRunsRef}
-			{slug}
-			{workflowId}
-			currentExecutionId={executionId}
-		/>
 		<Tabs bind:value={activeTab} class="flex flex-1 flex-col overflow-hidden">
 		<div class="border-b border-border px-4">
 			<TabsList class="h-10">
@@ -2669,7 +2686,7 @@
 						/>
 					{#if allTimelineItems.length > 0}
 						<!-- Filter pills + Outline trigger. Sticky so they remain accessible while scrolling. -->
-						<div class="sticky top-0 z-10 mx-auto mb-2 flex w-full max-w-[1400px] items-center gap-1 rounded-md border bg-background/95 px-2 py-1.5 backdrop-blur">
+						<div class="sticky top-0 z-10 mb-2 flex w-full max-w-none items-center gap-1 rounded-md border bg-background/95 px-2 py-1.5 backdrop-blur">
 							{#each [{ v: 'all', label: 'All' }, { v: 'messages', label: 'Messages' }, { v: 'tools', label: 'Tools' }, { v: 'errors', label: 'Errors' }] as const as opt (opt.v)}
 								<button
 									type="button"
@@ -2772,7 +2789,7 @@
 						</div>
 					{/if}
 					{#if timelineItems.length > 0}
-						<ChatContainerContent class="mx-auto w-full max-w-[1400px] divide-y divide-border/60 rounded-lg border bg-card/40 shadow-sm">
+						<ChatContainerContent class="w-full max-w-none divide-y divide-border/60 rounded-lg border bg-card/40 shadow-sm">
 							{#each timelineItems as item, i (item.key)}
 								{@const turnAnchor = turnNav.byKey.get(item.key)}
 								<div
@@ -2951,9 +2968,6 @@
 													<span> · {checkpointRemoteLabel(selectedCodeCheckpoint)}</span>
 												{/if}
 											</p>
-											{#if selectedCodeCheckpoint.remoteUrl}
-												<CodePromotionChain prUrl={selectedCodeCheckpoint.remoteUrl} class="mt-1.5" />
-											{/if}
 										</div>
 										<div class="flex flex-wrap items-center gap-1">
 											{#if checkpointIsDurable(selectedCodeCheckpoint)}

@@ -5,6 +5,10 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
+	/* Declare the light color-scheme so native controls, scrollbars and form
+	 * widgets render light by default (the .dark block flips this to dark, so
+	 * the dark cockpit no longer ships `color-scheme: light` metadata). */
+	color-scheme: light;
 	--radius: 0.625rem;
 	--background: oklch(1 0 0);
 	--foreground: oklch(0.145 0 0);
@@ -40,6 +44,7 @@
 }
 
 .dark {
+	color-scheme: dark;
 	--background: oklch(0.05 0 0);
 	--foreground: oklch(0.985 0 0);
 	--card: oklch(0.12 0 0);
@@ -123,6 +128,46 @@
 	}
 	pre, code, .font-mono, kbd {
 		font-family: 'Geist Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+	}
+
+	/* ── Cockpit operator-console design tokens ──────────────────────────────
+	 * Scoped identity for the run cockpit / session-focus surfaces: Graphite /
+	 * Gunmetal / Bone base with Phosphor / Ember / Ion signals. Light-theme
+	 * signal variants are darkened so they clear AA (4.5:1) as text/rings on
+	 * the Bone background (per the design review's binding contrast fixes). */
+	:root {
+		--cockpit-phosphor: #0f7a4e; /* AA on light surfaces */
+		--cockpit-ember: #b4471a;
+		--cockpit-ion: #3b45c4;
+	}
+	.dark {
+		--cockpit-phosphor: #57e3a0; /* 10.7:1 on Graphite */
+		--cockpit-ember: #e8703a;
+		--cockpit-ion: #6e79f0;
+	}
+	.font-display {
+		font-family: 'Space Grotesk', 'Geist', system-ui, sans-serif;
+		letter-spacing: -0.01em;
+	}
+	.hud-nums {
+		font-family: 'JetBrains Mono', 'Geist Mono', ui-monospace, monospace;
+		font-variant-numeric: tabular-nums;
+		font-feature-settings: 'tnum' 1;
+	}
+	/* Phosphor "live" pulse — the same signal that blinks the embedded xterm
+	 * cursor drives the run's live-rate dot and streaming-turn markers. */
+	.cockpit-live-dot {
+		background-color: var(--cockpit-phosphor);
+		box-shadow: 0 0 0 0 color-mix(in srgb, var(--cockpit-phosphor) 60%, transparent);
+		animation: cockpit-pulse 1.6s ease-out infinite;
+	}
+	@keyframes cockpit-pulse {
+		0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--cockpit-phosphor) 55%, transparent); }
+		70% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--cockpit-phosphor) 0%, transparent); }
+		100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--cockpit-phosphor) 0%, transparent); }
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.cockpit-live-dot { animation: none; }
 	}
 
 	/* Match native form elements to official shadcn-svelte component styling */
