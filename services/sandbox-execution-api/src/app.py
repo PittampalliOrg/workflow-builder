@@ -4691,26 +4691,37 @@ def _vcluster_preview_phase(
     except Exception as exc:
         if getattr(exc, "status", None) != 404:
             raise
+    # ns existence needs a real read_namespace: listing pods in a NON-EXISTENT
+    # namespace returns 200 + empty items (never 404), which made every unknown
+    # preview name report "provisioning" — the D1 idempotent-up then skipped its
+    # claim and polled that phantom forever.
     ns_exists = False
     bff_ready = False
     try:
-        pods = core.list_namespaced_pod(
-            namespace=f"vcluster-{name}", _request_timeout=request_timeout
-        )
+        core.read_namespace(name=f"vcluster-{name}", _request_timeout=request_timeout)
         ns_exists = True
-        for p in pods.items:
-            if not (p.metadata.name or "").startswith("workflow-builder-"):
-                continue
-            conds = (p.status.conditions or []) if p.status else []
-            if any(
-                getattr(c, "type", "") == "Ready" and getattr(c, "status", "") == "True"
-                for c in conds
-            ):
-                bff_ready = True
-                break
     except Exception as exc:
         if getattr(exc, "status", None) != 404:
             raise
+    if ns_exists:
+        try:
+            pods = core.list_namespaced_pod(
+                namespace=f"vcluster-{name}", _request_timeout=request_timeout
+            )
+            for p in pods.items:
+                if not (p.metadata.name or "").startswith("workflow-builder-"):
+                    continue
+                conds = (p.status.conditions or []) if p.status else []
+                if any(
+                    getattr(c, "type", "") == "Ready"
+                    and getattr(c, "status", "") == "True"
+                    for c in conds
+                ):
+                    bff_ready = True
+                    break
+        except Exception as exc:
+            if getattr(exc, "status", None) != 404:
+                raise
     if bff_ready:
         phase = "ready"  # BFF is up — stays ready even after the Job is GC'd
     elif active:

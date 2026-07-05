@@ -896,3 +896,73 @@ def test_pool_reconcile_awake_excludes_slept(monkeypatch) -> None:
     stats = app_module._pool_reconcile_once(batch, core, apps)
     assert stats["awake"] == 1
     assert stats["created"] == 1
+
+
+# ---------------------------------------------------------------------------
+# _vcluster_preview_phase: unknown preview → "absent" (regression: listing pods
+# in a non-existent namespace returns 200 + empty items, which used to flip
+# ns_exists and report a phantom "provisioning" — the D1 idempotent-up then
+# skipped its pool claim and polled that phantom forever).
+# ---------------------------------------------------------------------------
+
+
+class _K8s404(Exception):
+    def __init__(self):
+        super().__init__("not found")
+        self.status = 404
+
+
+def _phase_fakes(*, ns_exists, job_404=True, pods=()):
+    def read_namespace(*, name, _request_timeout=None):
+        if not ns_exists:
+            raise _K8s404()
+        return SimpleNamespace(metadata=SimpleNamespace(name=name))
+
+    def list_namespaced_pod(*, namespace, _request_timeout=None):
+        # K8s semantics: empty 200 even for a namespace that does not exist.
+        return SimpleNamespace(items=list(pods))
+
+    def read_namespaced_job_status(*, name, namespace, _request_timeout=None):
+        if job_404:
+            raise _K8s404()
+        return SimpleNamespace(status=SimpleNamespace(active=1, succeeded=0, failed=0))
+
+    batch = SimpleNamespace(read_namespaced_job_status=read_namespaced_job_status)
+    core = SimpleNamespace(
+        read_namespace=read_namespace, list_namespaced_pod=list_namespaced_pod
+    )
+    return batch, core
+
+
+def test_phase_absent_for_unknown_preview():
+    batch, core = _phase_fakes(ns_exists=False)
+    phase, active, succeeded, failed = app_module._vcluster_preview_phase(
+        batch, core, "pr-416"
+    )
+    assert phase == "absent"
+    assert (active, succeeded, failed) == (0, 0, 0)
+
+
+def test_phase_provisioning_when_ns_exists_but_bff_not_ready():
+    batch, core = _phase_fakes(ns_exists=True)
+    phase, *_ = app_module._vcluster_preview_phase(batch, core, "pool-1")
+    assert phase == "provisioning"
+
+
+def test_phase_provisioning_when_job_active_without_ns():
+    batch, core = _phase_fakes(ns_exists=False, job_404=False)
+    phase, active, *_ = app_module._vcluster_preview_phase(batch, core, "pr-7")
+    assert phase == "provisioning"
+    assert active == 1
+
+
+def test_phase_ready_when_bff_pod_ready():
+    pod = SimpleNamespace(
+        metadata=SimpleNamespace(name="workflow-builder-abc"),
+        status=SimpleNamespace(
+            conditions=[SimpleNamespace(type="Ready", status="True")]
+        ),
+    )
+    batch, core = _phase_fakes(ns_exists=True, pods=[pod])
+    phase, *_ = app_module._vcluster_preview_phase(batch, core, "pool-1")
+    assert phase == "ready"
