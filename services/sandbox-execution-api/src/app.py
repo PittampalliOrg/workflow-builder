@@ -5591,7 +5591,9 @@ def _sleep_member(batch, core, member: PreviewMember, namespace: str) -> bool:
 
 def _resume_member(batch, core, member: PreviewMember, namespace: str) -> bool:
     """Wake a slept preview: flip the state label to hot + stamp last-active (the resume
-    IS activity), then create the resume-Job."""
+    IS activity), then create the resume-Job. A failed Job create reverts the label to
+    slept — otherwise the preview would READ hot while actually down and a later
+    touch/claim would never retry the resume."""
     now_iso = datetime.now(UTC).isoformat(timespec="seconds")
     try:
         core.patch_namespace(
@@ -5608,6 +5610,15 @@ def _resume_member(batch, core, member: PreviewMember, namespace: str) -> bool:
     except Exception as exc:
         logger.warning("lifecycle: resume relabel %s failed: %s", member.real_name, exc)
     if not _lifecycle_job(batch, member, namespace, "resume"):
+        try:
+            core.patch_namespace(
+                name=member.ns_name,
+                body={"metadata": {"labels": {_VCLUSTER_PREVIEW_STATE_LABEL: "slept"}}},
+            )
+        except Exception as exc:
+            logger.warning(
+                "lifecycle: resume revert relabel %s failed: %s", member.real_name, exc
+            )
         return False
     logger.info("lifecycle: resuming slept preview %s", member.real_name)
     return True

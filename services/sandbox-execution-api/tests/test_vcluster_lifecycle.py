@@ -636,6 +636,18 @@ def test_sleep_member_reverts_the_label_when_the_job_fails() -> None:
     assert ns.metadata.labels["vcluster-preview-state"] == "hot"  # reverted
 
 
+def test_resume_member_reverts_the_label_when_the_job_fails() -> None:
+    ns = _ns("demo", state="slept")
+    core = _FakeCore([ns])
+    batch = _FakeBatch()
+    batch.create_fail = True
+    member = app_module._preview_member_from_ns(ns)
+    ok = app_module._resume_member(batch, core, member, "workflow-builder")
+    assert ok is False
+    # Reverted to slept so a later touch/claim retries the resume.
+    assert ns.metadata.labels["vcluster-preview-state"] == "slept"
+
+
 # ---- the reap pass -------------------------------------------------------------
 
 
