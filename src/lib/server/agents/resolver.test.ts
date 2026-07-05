@@ -222,6 +222,7 @@ describe("resolveSpecAgentRefs", () => {
 			modelSpec: "anthropic/claude-opus-4-8",
 			effort: "ultracode",
 			fallbackModelSpec: "anthropic/claude-sonnet-4-6",
+			codexReasoningEffort: "xhigh",
 			codexReasoningSummary: "detailed",
 			codexWebSearch: true,
 		});
@@ -253,6 +254,7 @@ describe("resolveSpecAgentRefs", () => {
 			expect(ac.modelSpec).toBe("anthropic/claude-opus-4-8");
 			expect(ac.effort).toBe("ultracode");
 			expect(ac.fallbackModelSpec).toBe("anthropic/claude-sonnet-4-6");
+			expect(ac.codexReasoningEffort).toBe("xhigh");
 			expect(ac.codexReasoningSummary).toBe("detailed");
 			expect(ac.codexWebSearch).toBe(true);
 		}

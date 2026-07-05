@@ -219,15 +219,32 @@ def test_codex_build_argv_effort_maps_to_reasoning_effort_override(codex_home):
         ("low", "low"),
         ("medium", "medium"),
         ("high", "high"),
-        ("xhigh", "high"),
-        ("max", "high"),
-        ("ultracode", "high"),
+        # codex supports xhigh natively → passed through (NOT clamped to high)
+        ("xhigh", "xhigh"),
+        ("max", "xhigh"),
+        ("ultracode", "xhigh"),
     ],
 )
-def test_codex_build_argv_effort_clamps_high_tiers(codex_home, level, expected):
+def test_codex_build_argv_effort_maps_high_tiers_to_xhigh(codex_home, level, expected):
     cfg = {**SESSION["agentConfig"], "effort": level}
     argv = get_adapter("codex").build_argv(cfg, {})
     assert f"model_reasoning_effort={expected}" in argv
+
+
+@pytest.mark.parametrize("level", ["minimal", "low", "medium", "high", "xhigh"])
+def test_codex_build_argv_explicit_reasoning_effort_passed_literally(codex_home, level):
+    """The codex-scoped codexReasoningEffort field is emitted verbatim (incl. xhigh)."""
+    cfg = {**SESSION["agentConfig"], "codexReasoningEffort": level}
+    argv = get_adapter("codex").build_argv(cfg, {})
+    assert f"model_reasoning_effort={level}" in argv
+    assert argv[argv.index(f"model_reasoning_effort={level}") - 1] == "-c"
+
+
+def test_codex_reasoning_effort_takes_precedence_over_unified_effort(codex_home):
+    cfg = {**SESSION["agentConfig"], "effort": "high", "codexReasoningEffort": "minimal"}
+    argv = get_adapter("codex").build_argv(cfg, {})
+    assert "model_reasoning_effort=minimal" in argv
+    assert "model_reasoning_effort=high" not in argv
 
 
 def test_codex_build_argv_reasoning_summary_and_search(codex_home):
