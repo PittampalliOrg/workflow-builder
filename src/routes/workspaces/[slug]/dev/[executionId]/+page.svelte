@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/state';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Button } from '$lib/components/ui/button';
@@ -22,22 +21,28 @@
 	import type { DevEnvironmentSummary } from '$lib/components/dev/dev-environment-card.svelte';
 	import SessionTranscript from '$lib/components/sessions/session-transcript.svelte';
 	import SessionGoalBadge from '$lib/components/sessions/session-goal-badge.svelte';
+	import { getDevEnvironment } from './data.remote';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
-	let environment = $state<DevEnvironmentSummary>(data.environment);
-	// B5: every per-service preview of this execution (multi-service session).
-	let services = $state<DevEnvironmentSummary[]>(data.services ?? [data.environment]);
+	// SSR-seeded so there's no blank flash; the query hydrates and a single
+	// visibility-gated 5s tick keeps it fresh (replacing the old 4s interval).
+	const envQuery = getDevEnvironment(data.environment.executionId);
+	const environment = $derived<DevEnvironmentSummary>(
+		envQuery.current?.environment ?? data.environment
+	);
+	const services = $derived<DevEnvironmentSummary[]>(
+		envQuery.current?.services ?? data.services ?? [data.environment]
+	);
+
 	let errorMessage = $state<string | null>(null);
 	let confirmTeardown = $state(false);
 	let busy = $state(false);
-	// Code versions this run produced that haven't been pushed to a GitHub PR yet —
-	// surfaced so they can be promoted before this ephemeral preview is torn down.
+	// Code versions this run produced that haven't been pushed to a GitHub PR yet.
 	let outstandingVersions = $state(0);
-	let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 	// Composer
 	let composer = $state('');
@@ -45,25 +50,33 @@
 
 	const sessionId = $derived(environment.sessionId);
 
-	async function refresh() {
-		try {
-			const res = await fetch(`/api/dev-environments/${environment.executionId}`);
-			if (res.status === 404) {
-				// Torn down elsewhere — bounce back to the hub.
-				goto(`/workspaces/${slug}/dev`);
-				return;
+	$effect(() => {
+		if (typeof document === 'undefined') return;
+		let timer: ReturnType<typeof setInterval> | null = null;
+		const start = () => {
+			if (timer === null) timer = setInterval(() => void envQuery.refresh(), 5000);
+		};
+		const stop = () => {
+			if (timer !== null) {
+				clearInterval(timer);
+				timer = null;
 			}
-			if (!res.ok) return;
-			const body = (await res.json()) as {
-				environment: DevEnvironmentSummary;
-				services?: DevEnvironmentSummary[];
-			};
-			if (body.environment) environment = body.environment;
-			if (body.services?.length) services = body.services;
-		} catch {
-			/* transient */
-		}
-	}
+		};
+		const onVisibility = () => {
+			if (document.visibilityState === 'visible') {
+				void envQuery.refresh();
+				start();
+			} else {
+				stop();
+			}
+		};
+		onVisibility();
+		document.addEventListener('visibilitychange', onVisibility);
+		return () => {
+			stop();
+			document.removeEventListener('visibilitychange', onVisibility);
+		};
+	});
 
 	async function send() {
 		const text = composer.trim();
@@ -113,13 +126,6 @@
 			busy = false;
 		}
 	}
-
-	onMount(() => {
-		pollTimer = setInterval(refresh, 4000);
-	});
-	onDestroy(() => {
-		if (pollTimer) clearInterval(pollTimer);
-	});
 </script>
 
 <div class="h-full flex flex-col">

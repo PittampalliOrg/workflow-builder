@@ -51,6 +51,7 @@
 	import ForkDialog from '$lib/components/workflow/execution/fork-dialog.svelte';
 	import RunLineageTree from '$lib/components/workflow/execution/run-lineage-tree.svelte';
 	import ForkSpecDiff from '$lib/components/workflow/execution/fork-spec-diff.svelte';
+	import CodePromotionChain from '$lib/components/workflow/code/code-promotion-chain.svelte';
 	import { forkRun } from '$lib/workflows/fork';
 	import OtherRunsPanel from '$lib/components/runs/other-runs-panel.svelte';
 	import WorkflowQuickSwitcher from '$lib/components/workflow/workflow-quick-switcher.svelte';
@@ -2950,6 +2951,9 @@
 													<span> · {checkpointRemoteLabel(selectedCodeCheckpoint)}</span>
 												{/if}
 											</p>
+											{#if selectedCodeCheckpoint.remoteUrl}
+												<CodePromotionChain prUrl={selectedCodeCheckpoint.remoteUrl} class="mt-1.5" />
+											{/if}
 										</div>
 										<div class="flex flex-wrap items-center gap-1">
 											{#if checkpointIsDurable(selectedCodeCheckpoint)}

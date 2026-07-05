@@ -503,6 +503,7 @@ function fakeWorkflowFiles(): WorkflowFileStore {
 	return {
 		createFile: vi.fn(async () => ({ file, deduplicated: false })),
 		listFiles: vi.fn(async () => [file]),
+		listFilesByScopePrefix: vi.fn(async () => [file]),
 		getFile: vi.fn(async () => file),
 		getFileContent: vi.fn(async () => ({ summary: file, bytes: Buffer.from("payload") })),
 		archiveFile: vi.fn(async () => true),

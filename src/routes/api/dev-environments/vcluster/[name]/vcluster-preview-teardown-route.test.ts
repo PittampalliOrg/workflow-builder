@@ -11,7 +11,7 @@ describe("vcluster preview teardown route (E3 archive-on-teardown)", () => {
 
 	it("archives BEFORE issuing the SEA teardown", () => {
 		const archiveAt = source.indexOf("previewArchive.archivePreview");
-		const teardownAt = source.indexOf("await teardownVclusterPreview");
+		const teardownAt = source.indexOf("vclusterPreviews.teardown");
 		expect(archiveAt).toBeGreaterThan(-1);
 		expect(teardownAt).toBeGreaterThan(archiveAt);
 	});
@@ -21,7 +21,7 @@ describe("vcluster preview teardown route (E3 archive-on-teardown)", () => {
 		// The archive call is wrapped: a throw degrades to archived:false.
 		expect(source).toContain("archived: false");
 		expect(source.indexOf("catch")).toBeLessThan(
-			source.indexOf("await teardownVclusterPreview"),
+			source.indexOf("vclusterPreviews.teardown"),
 		);
 	});
 

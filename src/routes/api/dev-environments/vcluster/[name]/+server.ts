@@ -3,15 +3,11 @@ import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
 import { getApplicationAdapterConfig } from "$lib/server/application/config";
 import type { PreviewArchiveResult } from "$lib/server/application/preview-archive";
-import {
-	getVclusterPreview,
-	teardownVclusterPreview,
-} from "$lib/server/workflows/vcluster-preview";
 
 /** Status of one Tier-2 preview (Job phase == environment readiness). */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const preview = await getVclusterPreview(params.name);
+	const preview = await getApplicationAdapters().vclusterPreviews.get(params.name);
 	return json({ preview });
 };
 
@@ -47,6 +43,6 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 		}
 	}
 
-	const preview = await teardownVclusterPreview(params.name);
+	const preview = await getApplicationAdapters().vclusterPreviews.teardown(params.name);
 	return json({ preview, ...(archive ? { archive } : {}) });
 };

@@ -210,6 +210,7 @@ export type SessionListInput = {
 	executionId?: string;
 	q?: string;
 	limit?: number;
+	offset?: number;
 };
 
 export type CreateSessionRecordInput = {

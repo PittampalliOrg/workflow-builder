@@ -172,6 +172,7 @@ import type {
 	HostedMcpWorkflowSourceRecord,
 	HomePageReadRepository,
 	ListWorkflowFilesFilter,
+	ListWorkflowFilesByScopePrefixFilter,
 	McpConnectionRecord,
 	McpConnectionRepository,
 	McpRunRecord,
@@ -6155,6 +6156,25 @@ export class PostgresWorkflowFileStore implements WorkflowFileStore {
 			.where(and(...conditions))
 			.orderBy(desc(files.createdAt))
 			.limit(filter.limit ?? 200);
+		return rows.map(mapWorkflowFile);
+	}
+
+	async listFilesByScopePrefix(
+		filter: ListWorkflowFilesByScopePrefixFilter,
+	): Promise<WorkflowFileRecord[]> {
+		const conditions = [
+			eq(files.userId, filter.userId),
+			like(files.scopeId, `${filter.scopeIdPrefix}%`),
+		];
+		if (filter.purpose) conditions.push(eq(files.purpose, filter.purpose));
+		if (!filter.includeArchived) conditions.push(isNull(files.archivedAt));
+
+		const rows = await this.database
+			.select()
+			.from(files)
+			.where(and(...conditions))
+			.orderBy(desc(files.createdAt))
+			.limit(filter.limit ?? 1000);
 		return rows.map(mapWorkflowFile);
 	}
 
