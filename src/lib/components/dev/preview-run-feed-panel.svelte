@@ -2,6 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Activity, ExternalLink } from '@lucide/svelte';
+	import { previewRunEvents } from '$lib/stores/preview-run-events.svelte';
 
 	type RunEvent = {
 		previewName: string;
@@ -76,6 +77,13 @@
 			try {
 				const run = JSON.parse((e as MessageEvent).data) as RunEvent;
 				runs = [run, ...runs].slice(0, MAX_RUNS);
+				// E2: nudge any per-preview runs panel (read proxy) to re-fetch.
+				previewRunEvents.publish({
+					previewName: run.previewName,
+					eventType: run.eventType,
+					executionId: run.executionId,
+					at: Date.now()
+				});
 			} catch {
 				/* ignore malformed frame */
 			}

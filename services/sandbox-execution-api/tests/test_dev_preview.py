@@ -645,3 +645,149 @@ def test_list_vcluster_previews_ttl_zero_disables_cache(monkeypatch) -> None:
     app_module.list_vcluster_previews(req)
     app_module.list_vcluster_previews(req)
     assert calls["n"] == 2
+
+
+# ---------------------------------------------------------------------------
+# B5: restore-all orphan sweep (_adopt_restore_orphans)
+# ---------------------------------------------------------------------------
+
+
+def _dep(name: str, *, annotated: bool, replicas: int):
+    return SimpleNamespace(
+        metadata=SimpleNamespace(
+            name=name,
+            annotations=(
+                {app_module.DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION: "2"}
+                if annotated
+                else {}
+            ),
+        ),
+        spec=SimpleNamespace(replicas=replicas),
+    )
+
+
+def _sweep_fakes(deployments, sandbox_items):
+    patched: list[tuple[str, dict]] = []
+
+    def read_dep(name, namespace):
+        for d in deployments:
+            if d.metadata.name == name:
+                return d
+        raise RuntimeError("not found")
+
+    def patch_dep(name, namespace, body):
+        patched.append((name, body))
+
+    apps = SimpleNamespace(
+        list_namespaced_deployment=lambda namespace: SimpleNamespace(items=deployments),
+        read_namespaced_deployment=read_dep,
+        patch_namespaced_deployment=patch_dep,
+    )
+    custom = SimpleNamespace(
+        list_namespaced_custom_object=lambda **_k: {"items": sandbox_items}
+    )
+    return apps, custom, patched
+
+
+def test_restore_orphans_restores_unclaimed_zero_replica_deployment() -> None:
+    orphan = _dep("workflow-orchestrator", annotated=True, replicas=0)
+    apps, custom, patched = _sweep_fakes([orphan], sandbox_items=[])
+
+    result = app_module._adopt_restore_orphans(
+        apps, custom, namespace="workflow-builder"
+    )
+
+    assert result["restored"] == ["workflow-orchestrator"]
+    assert len(patched) == 1
+    name, body = patched[0]
+    assert name == "workflow-orchestrator"
+    assert body["spec"]["replicas"] == 2  # stashed original count
+    assert (
+        body["metadata"]["annotations"][
+            app_module.DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION
+        ]
+        is None
+    )
+
+
+def test_restore_orphans_leaves_deployment_claimed_by_live_sandbox() -> None:
+    claimed = _dep("workflow-builder", annotated=True, replicas=0)
+    sandbox = {
+        "metadata": {
+            "annotations": {"wfb-dev-preview/adopt-deployment": "workflow-builder"}
+        }
+    }
+    apps, custom, patched = _sweep_fakes([claimed], sandbox_items=[sandbox])
+
+    result = app_module._adopt_restore_orphans(
+        apps, custom, namespace="workflow-builder"
+    )
+
+    assert result["restored"] == []
+    assert patched == []
+
+
+def test_restore_orphans_skips_running_deployment_with_stale_annotation() -> None:
+    # Annotation present but replicas already > 0: restoring would rewrite live
+    # scale from a stale stash — must be left alone.
+    running = _dep("function-router", annotated=True, replicas=3)
+    apps, custom, patched = _sweep_fakes([running], sandbox_items=[])
+
+    result = app_module._adopt_restore_orphans(
+        apps, custom, namespace="workflow-builder"
+    )
+
+    assert result["restored"] == []
+    assert patched == []
+
+
+def test_restore_orphans_ignores_unannotated_deployments() -> None:
+    plain = _dep("mcp-gateway", annotated=False, replicas=0)
+    apps, custom, patched = _sweep_fakes([plain], sandbox_items=[])
+
+    result = app_module._adopt_restore_orphans(
+        apps, custom, namespace="workflow-builder"
+    )
+
+    assert result["restored"] == []
+    assert patched == []
+
+
+def test_restore_orphans_noop_when_sandbox_list_fails() -> None:
+    # If the claimed-set cannot be established, restore NOTHING (better an
+    # orphan at 0 than breaking an active adopt).
+    orphan = _dep("workflow-orchestrator", annotated=True, replicas=0)
+    apps, _custom, patched = _sweep_fakes([orphan], sandbox_items=[])
+
+    def boom(**_k):
+        raise RuntimeError("apiserver unavailable")
+
+    custom = SimpleNamespace(list_namespaced_custom_object=boom)
+
+    result = app_module._adopt_restore_orphans(
+        apps, custom, namespace="workflow-builder"
+    )
+
+    assert result == {"restored": [], "skipped": "sandbox-list-failed"}
+    assert patched == []
+
+
+def test_restore_orphans_continues_past_a_failing_restore() -> None:
+    bad = _dep("workflow-builder", annotated=True, replicas=0)
+    good = _dep("workflow-orchestrator", annotated=True, replicas=0)
+    apps, custom, patched = _sweep_fakes([bad, good], sandbox_items=[])
+    original_patch = apps.patch_namespaced_deployment
+
+    def patch_dep(name, namespace, body):
+        if name == "workflow-builder":
+            raise RuntimeError("conflict")
+        original_patch(name, namespace, body)
+
+    apps.patch_namespaced_deployment = patch_dep
+
+    result = app_module._adopt_restore_orphans(
+        apps, custom, namespace="workflow-builder"
+    )
+
+    assert result["restored"] == ["workflow-orchestrator"]
+    assert [name for name, _ in patched] == ["workflow-orchestrator"]

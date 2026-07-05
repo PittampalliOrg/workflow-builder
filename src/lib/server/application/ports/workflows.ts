@@ -655,11 +655,36 @@ export type DevPreviewHubReadModel = {
 	devWorkflowName: string;
 };
 
+/**
+ * B5: one dev ENVIRONMENT = one execution with N per-service previews. A
+ * multi-service session persists one `workflow_workspace_sessions` row per
+ * service; this additive read model groups them so the Dev hub renders one
+ * card per execution instead of one card per (execution, service).
+ */
+export type DevEnvironmentGroupReadModel = {
+	executionId: string;
+	/** All per-service rows for the execution, ordered by service name. */
+	services: DevEnvironmentSummaryReadModel[];
+	/** The first (newest) row — back-compat anchor for single-service UI paths. */
+	primary: DevEnvironmentSummaryReadModel;
+	/** True when EVERY service preview reports ready. */
+	ready: boolean;
+	sessionId: string | null;
+	sessionUrl: string | null;
+	runStatus: string | null;
+	/** Earliest per-service createdAt (environment birth). */
+	createdAt: string;
+};
+
 export interface DevEnvironmentReadRepository {
 	listServices(): DevPreviewServiceReadModel[];
 	listDevEnvironments(
 		projectId: string | null | undefined,
 	): Promise<DevEnvironmentSummaryReadModel[]>;
+	/** B5 additive: `listDevEnvironments` rows grouped by execution. */
+	listDevEnvironmentGroups(
+		projectId: string | null | undefined,
+	): Promise<DevEnvironmentGroupReadModel[]>;
 	getDevEnvironmentOrPending(input: {
 		executionId: string;
 		projectId: string | null | undefined;

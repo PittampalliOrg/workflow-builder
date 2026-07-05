@@ -14,6 +14,8 @@ describe("application adapter config", () => {
 			prPreviewsEnabled: false,
 			prPreviewVerifyEnabled: false,
 			promoteAutoPreviewLabel: false,
+			previewReadProxyEnabled: false,
+			previewArchiveOnTeardownEnabled: false,
 		});
 	});
 
@@ -29,6 +31,25 @@ describe("application adapter config", () => {
 			getApplicationAdapterConfig({ PROMOTE_AUTO_PREVIEW_LABEL: "on" })
 				.promoteAutoPreviewLabel,
 		).toBe(true);
+	});
+
+	it("enables the preview read proxy and archive-on-teardown only when flagged", () => {
+		expect(getApplicationAdapterConfig({}).previewReadProxyEnabled).toBe(false);
+		expect(
+			getApplicationAdapterConfig({}).previewArchiveOnTeardownEnabled,
+		).toBe(false);
+		expect(
+			getApplicationAdapterConfig({ PREVIEW_READ_PROXY_ENABLED: "1" })
+				.previewReadProxyEnabled,
+		).toBe(true);
+		expect(
+			getApplicationAdapterConfig({ PREVIEW_ARCHIVE_ON_TEARDOWN: "true" })
+				.previewArchiveOnTeardownEnabled,
+		).toBe(true);
+		expect(
+			getApplicationAdapterConfig({ PREVIEW_ARCHIVE_ON_TEARDOWN: "off" })
+				.previewArchiveOnTeardownEnabled,
+		).toBe(false);
 	});
 
 	it("enables the preview run feed only when the flag is truthy", () => {
@@ -69,6 +90,8 @@ describe("application adapter config", () => {
 			prPreviewsEnabled: false,
 			prPreviewVerifyEnabled: false,
 			promoteAutoPreviewLabel: false,
+			previewReadProxyEnabled: false,
+			previewArchiveOnTeardownEnabled: false,
 		});
 	});
 

@@ -17,6 +17,7 @@
 	} from '$lib/components/ui/alert-dialog';
 	import { ArrowLeft, SendHorizontal } from '@lucide/svelte';
 	import DevPreviewStatusCard from '$lib/components/dev/dev-preview-status-card.svelte';
+	import DevServiceCard from '$lib/components/dev/dev-service-card.svelte';
 	import CodeVersionsPanel from '$lib/components/dev/code-versions-panel.svelte';
 	import type { DevEnvironmentSummary } from '$lib/components/dev/dev-environment-card.svelte';
 	import SessionTranscript from '$lib/components/sessions/session-transcript.svelte';
@@ -28,6 +29,8 @@
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
 	let environment = $state<DevEnvironmentSummary>(data.environment);
+	// B5: every per-service preview of this execution (multi-service session).
+	let services = $state<DevEnvironmentSummary[]>(data.services ?? [data.environment]);
 	let errorMessage = $state<string | null>(null);
 	let confirmTeardown = $state(false);
 	let busy = $state(false);
@@ -51,8 +54,12 @@
 				return;
 			}
 			if (!res.ok) return;
-			const body = (await res.json()) as { environment: DevEnvironmentSummary };
+			const body = (await res.json()) as {
+				environment: DevEnvironmentSummary;
+				services?: DevEnvironmentSummary[];
+			};
 			if (body.environment) environment = body.environment;
+			if (body.services?.length) services = body.services;
 		} catch {
 			/* transient */
 		}
@@ -138,6 +145,15 @@
 		<!-- Status / controls column -->
 		<aside class="border-r p-4 overflow-y-auto space-y-4">
 			<DevPreviewStatusCard {environment} {busy} onteardown={() => (confirmTeardown = true)} />
+			<!-- B5: per-service card grid (health, sidecar status, run commands). -->
+			<section class="space-y-2">
+				<h2 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+					Services ({services.length})
+				</h2>
+				{#each services as svc (svc.service)}
+					<DevServiceCard service={svc} />
+				{/each}
+			</section>
 			<CodeVersionsPanel
 				executionId={environment.executionId}
 				live={environment.runStatus !== 'completed' &&

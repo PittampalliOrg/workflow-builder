@@ -27,7 +27,20 @@
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
 
-	let environments = $state<DevEnvironmentSummary[]>([]);
+	// B5: one grid entry per EXECUTION (a multi-service session renders as one
+	// environment with N services), fed by the additive `groups` read model.
+	type DevEnvironmentGroup = {
+		executionId: string;
+		services: DevEnvironmentSummary[];
+		primary: DevEnvironmentSummary;
+		ready: boolean;
+		sessionId: string | null;
+		sessionUrl: string | null;
+		runStatus: string | null;
+		createdAt: string;
+	};
+
+	let groups = $state<DevEnvironmentGroup[]>([]);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
 	let launchOpen = $state(false);
@@ -42,8 +55,22 @@
 				errorMessage = `Failed to load dev environments (${res.status})`;
 				return;
 			}
-			const body = (await res.json()) as { environments: DevEnvironmentSummary[] };
-			environments = body.environments ?? [];
+			const body = (await res.json()) as {
+				environments: DevEnvironmentSummary[];
+				groups?: DevEnvironmentGroup[];
+			};
+			groups =
+				body.groups ??
+				(body.environments ?? []).map((e) => ({
+					executionId: e.executionId,
+					services: [e],
+					primary: e,
+					ready: e.ready,
+					sessionId: e.sessionId,
+					sessionUrl: e.sessionUrl,
+					runStatus: e.runStatus,
+					createdAt: e.createdAt
+				}));
 			errorMessage = null;
 		} catch (err) {
 			errorMessage = err instanceof Error ? err.message : String(err);
@@ -67,7 +94,7 @@
 				errorMessage = `Teardown failed (${res.status})`;
 				return;
 			}
-			environments = environments.filter((e) => e.executionId !== env.executionId);
+			groups = groups.filter((g) => g.executionId !== env.executionId);
 		} finally {
 			busyId = null;
 		}
@@ -106,19 +133,19 @@
 		</Alert>
 	{/if}
 
-	<VclusterPreviewPanel />
+	<VclusterPreviewPanel readProxyEnabled={data.previewReadProxyEnabled} />
 
 	{#if data.previewRunFeedEnabled}
 		<PreviewRunFeedPanel />
 	{/if}
 
-	{#if loading && environments.length === 0}
+	{#if loading && groups.length === 0}
 		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
 			{#each Array(3) as _, i (i)}
 				<div class="h-40 rounded-xl border bg-muted/30 animate-pulse"></div>
 			{/each}
 		</div>
-	{:else if environments.length === 0}
+	{:else if groups.length === 0}
 		<div class="flex flex-col items-center justify-center py-16 space-y-3">
 			<div class="size-14 rounded-full bg-primary/10 flex items-center justify-center">
 				<Container class="size-6 text-primary" />
@@ -134,11 +161,12 @@
 		</div>
 	{:else}
 		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-			{#each environments as env (env.executionId)}
+			{#each groups as group (group.executionId)}
 				<DevEnvironmentCard
-					environment={env}
+					environment={group.primary}
+					services={group.services}
 					{slug}
-					busy={busyId === env.executionId}
+					busy={busyId === group.executionId}
 					onopen={openEnv}
 					onteardown={(e) => (toTeardown = e)}
 				/>

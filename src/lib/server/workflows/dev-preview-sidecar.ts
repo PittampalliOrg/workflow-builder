@@ -1,0 +1,196 @@
+import { env } from "$env/dynamic/private";
+import {
+	devPreviewCommands,
+	resolveDevPreviewDescriptor,
+} from "$lib/server/workflows/dev-preview-registry";
+
+/**
+ * B5: host-side helpers for talking to a dev-preview pod's dev-sync-sidecar
+ * (`/__status`, `/__run`). The BFF reaches the pod exactly the way the
+ * existing `/__export` capture does (dev-preview.ts): direct pod IP + sync
+ * port on the cluster pod network, authenticated with the shared
+ * WFB_DEV_SYNC_TOKEN (`x-sync-token` header). The pod address comes off the
+ * persisted workspace-session row's `syncUrl` — never from caller input.
+ *
+ * Services in `plugin` sync mode (the Vite plugin serves only `/__sync` +
+ * `/__export`) have no `/__status`//`/__run`; those degrade to a typed
+ * failure the card renders as "sidecar status unavailable".
+ */
+
+export type SidecarStatus = {
+	ok: boolean;
+	service?: string;
+	dest?: string;
+	lastSyncAt?: string | null;
+	lastSyncBytes?: number | null;
+	lastRun?: unknown;
+	commands?: string[];
+};
+
+export type SidecarResult<T> =
+	| { ok: true; data: T }
+	| { ok: false; reason: "no-sidecar" | "unreachable" | "bad-response" | "forbidden"; message?: string };
+
+export type SidecarRunOutput = {
+	ok: boolean;
+	cmd: string;
+	exitCode: number | null;
+	durationMs: number | null;
+	truncated: boolean;
+	output: string;
+};
+
+const STATUS_TIMEOUT_MS = 3_000;
+const RUN_TIMEOUT_MS = 180_000;
+
+function syncToken(): string {
+	return (env.WFB_DEV_SYNC_TOKEN ?? process.env.WFB_DEV_SYNC_TOKEN ?? "").trim();
+}
+
+/** Derive the sidecar base URL from a persisted row's syncUrl (`http://ip:port/__sync`). */
+export function sidecarBaseUrl(syncUrl: string | null | undefined): string | null {
+	if (!syncUrl) return null;
+	const trimmed = syncUrl.trim();
+	if (!trimmed) return null;
+	return trimmed.replace(/\/__sync\/?$/, "").replace(/\/+$/, "") || null;
+}
+
+/** Allowlisted `/__run` command names for a service (registry deps + testCommands).
+ * Unknown services resolve to an empty allowlist (deny) instead of throwing. */
+export function allowedSidecarCommands(service: string): string[] {
+	try {
+		const descriptor = resolveDevPreviewDescriptor(service);
+		return Object.keys(devPreviewCommands(descriptor)).sort();
+	} catch {
+		return [];
+	}
+}
+
+export async function fetchSidecarStatus(input: {
+	syncUrl: string | null | undefined;
+	fetchImpl?: typeof fetch;
+	timeoutMs?: number;
+}): Promise<SidecarResult<SidecarStatus>> {
+	const base = sidecarBaseUrl(input.syncUrl);
+	if (!base) return { ok: false, reason: "no-sidecar", message: "no sync endpoint recorded" };
+	const doFetch = input.fetchImpl ?? fetch;
+	const token = syncToken();
+	let response: Response;
+	try {
+		response = await doFetch(`${base}/__status`, {
+			headers: token ? { "x-sync-token": token } : {},
+			signal: AbortSignal.timeout(input.timeoutMs ?? STATUS_TIMEOUT_MS),
+		});
+	} catch (err) {
+		return {
+			ok: false,
+			reason: "unreachable",
+			message: err instanceof Error ? err.message : String(err),
+		};
+	}
+	if (response.status === 401) return { ok: false, reason: "forbidden", message: "sync token rejected" };
+	if (!response.ok) {
+		return { ok: false, reason: "bad-response", message: `HTTP ${response.status}` };
+	}
+	try {
+		const body = (await response.json()) as Record<string, unknown>;
+		if (!body || typeof body !== "object") throw new Error("non-object body");
+		if (body.service !== "dev-sync-sidecar") {
+			// A plugin-mode dev server answering with app HTML/JSON — not a sidecar.
+			return {
+				ok: false,
+				reason: "no-sidecar",
+				message: "endpoint is not a dev-sync-sidecar (plugin sync mode?)",
+			};
+		}
+		return {
+			ok: true,
+			data: {
+				ok: body.ok === true,
+				service: typeof body.service === "string" ? body.service : undefined,
+				dest: typeof body.dest === "string" ? body.dest : undefined,
+				lastSyncAt: typeof body.lastSyncAt === "string" ? body.lastSyncAt : null,
+				lastSyncBytes: typeof body.lastSyncBytes === "number" ? body.lastSyncBytes : null,
+				lastRun: body.lastRun ?? null,
+				commands: Array.isArray(body.commands)
+					? body.commands.filter((c): c is string => typeof c === "string")
+					: [],
+			},
+		};
+	} catch (err) {
+		return {
+			ok: false,
+			reason: "no-sidecar",
+			message: err instanceof Error ? err.message : String(err),
+		};
+	}
+}
+
+export async function runSidecarCommand(input: {
+	syncUrl: string | null | undefined;
+	service: string;
+	cmd: string;
+	fetchImpl?: typeof fetch;
+	timeoutMs?: number;
+}): Promise<SidecarResult<SidecarRunOutput>> {
+	const base = sidecarBaseUrl(input.syncUrl);
+	if (!base) return { ok: false, reason: "no-sidecar", message: "no sync endpoint recorded" };
+	const cmd = input.cmd.trim();
+	// Defense in depth: the sidecar enforces its own DEV_SYNC_COMMANDS_JSON
+	// allowlist, but the BFF refuses anything outside the registry's declared
+	// command names before a request ever leaves the host.
+	const allowed = allowedSidecarCommands(input.service);
+	if (!allowed.includes(cmd)) {
+		return {
+			ok: false,
+			reason: "forbidden",
+			message: `command '${cmd}' not in allowlist [${allowed.join(", ")}]`,
+		};
+	}
+	const doFetch = input.fetchImpl ?? fetch;
+	const token = syncToken();
+	let response: Response;
+	try {
+		response = await doFetch(`${base}/__run?cmd=${encodeURIComponent(cmd)}`, {
+			method: "POST",
+			headers: token ? { "x-sync-token": token } : {},
+			signal: AbortSignal.timeout(input.timeoutMs ?? RUN_TIMEOUT_MS),
+		});
+	} catch (err) {
+		return {
+			ok: false,
+			reason: "unreachable",
+			message: err instanceof Error ? err.message : String(err),
+		};
+	}
+	if (response.status === 401) return { ok: false, reason: "forbidden", message: "sync token rejected" };
+	let body: Record<string, unknown>;
+	try {
+		body = (await response.json()) as Record<string, unknown>;
+		if (!body || typeof body !== "object") throw new Error("non-object body");
+	} catch (err) {
+		return {
+			ok: false,
+			reason: "bad-response",
+			message: err instanceof Error ? err.message : String(err),
+		};
+	}
+	// The sidecar 404s unknown commands with { ok:false, allowed:[...] } and
+	// reports run failures with ok:false + exitCode — both are valid payloads.
+	return {
+		ok: true,
+		data: {
+			ok: body.ok === true,
+			cmd,
+			exitCode: typeof body.exitCode === "number" ? body.exitCode : null,
+			durationMs: typeof body.durationMs === "number" ? body.durationMs : null,
+			truncated: body.truncated === true,
+			output:
+				typeof body.output === "string"
+					? body.output
+					: typeof body.error === "string"
+						? body.error
+						: "",
+		},
+	};
+}

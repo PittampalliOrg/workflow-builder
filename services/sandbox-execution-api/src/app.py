@@ -1056,6 +1056,67 @@ def _adopt_restore_deployment(apps: Any, *, namespace: str, name: str) -> None:
     logger.info("adopt: restored deployment %s to %s replicas", name, max(replicas, 1))
 
 
+def _adopt_restore_orphans(
+    apps: Any, custom: Any, *, namespace: str
+) -> dict[str, Any]:
+    """B5 restore-all sweep: restore every Deployment still carrying the
+    original-replicas annotation AT 0 REPLICAS that no live Sandbox CR claims
+    (via its wfb-dev-preview/adopt-deployment annotation). Covers orphans the
+    per-Sandbox teardown restore can't see — e.g. SEA restarted between the
+    deferred scale-down and CR creation, or a CR reaped out-of-band.
+
+    Deliberately conservative:
+      - a Deployment claimed by ANY live Sandbox CR is left alone (another
+        session's adopt is in flight);
+      - a Deployment with the annotation but replicas > 0 is left alone
+        (restoring would rewrite live scale from a stale stash);
+      - if the Sandbox CR list cannot be read, NOTHING is restored (better to
+        leave an orphan at 0 than to break an active adopt).
+    """
+    try:
+        crs = custom.list_namespaced_custom_object(
+            group="agents.x-k8s.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="sandboxes",
+        )
+    except Exception as exc:
+        logger.warning("adopt: orphan sweep skipped (sandbox list failed): %s", exc)
+        return {"restored": [], "skipped": "sandbox-list-failed"}
+    claimed: set[str] = set()
+    for item in (crs.get("items") or []) if isinstance(crs, dict) else []:
+        metadata = (item.get("metadata") or {}) if isinstance(item, dict) else {}
+        annotations = metadata.get("annotations") or {}
+        dep_name = annotations.get("wfb-dev-preview/adopt-deployment")
+        if dep_name:
+            claimed.add(dep_name)
+    try:
+        deployments = apps.list_namespaced_deployment(namespace=namespace)
+    except Exception as exc:
+        logger.warning("adopt: orphan sweep skipped (deployment list failed): %s", exc)
+        return {"restored": [], "skipped": "deployment-list-failed"}
+    restored: list[str] = []
+    for dep in getattr(deployments, "items", None) or []:
+        metadata = getattr(dep, "metadata", None)
+        name = getattr(metadata, "name", None)
+        annotations = (getattr(metadata, "annotations", None) or {}) if metadata else {}
+        if not name or DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION not in annotations:
+            continue
+        if name in claimed:
+            continue
+        replicas = getattr(getattr(dep, "spec", None), "replicas", None)
+        if replicas not in (0, None):
+            continue
+        try:
+            _adopt_restore_deployment(apps, namespace=namespace, name=name)
+            restored.append(name)
+        except Exception as exc:
+            logger.warning("adopt: orphan restore failed for %s: %s", name, exc)
+    if restored:
+        logger.info("adopt: orphan sweep restored %s", restored)
+    return {"restored": restored}
+
+
 def _require_internal(request: Request) -> None:
     expected = os.environ.get("SANDBOX_EXECUTION_API_TOKEN") or os.environ.get(
         "INTERNAL_API_TOKEN"
@@ -3758,7 +3819,38 @@ def teardown_dev_preview(request: Request, name: str) -> dict[str, Any]:
                 logger.warning(
                     "adopt: failed restoring deployment %s: %s", adopt_deployment, exc
                 )
+        # B5: opportunistic orphan sweep — the CR just deleted can no longer claim
+        # its Deployment, and any Deployment stranded at 0 replicas by an earlier
+        # SEA restart gets restored here too. Never fails the teardown.
+        try:
+            _adopt_restore_orphans(
+                _load_k8s_apps_client(), custom, namespace=namespace
+            )
+        except Exception as exc:
+            logger.warning("adopt: orphan sweep failed: %s", exc)
     return {"sandboxName": safe_name, "deleted": True}
+
+
+@app.post("/internal/dev-preview/restore-orphans")
+def restore_dev_preview_orphans(request: Request) -> dict[str, Any]:
+    """B5 restore-all sweep as a standalone call (SEA-restart resilience): the
+    BFF fires this after its per-Sandbox teardown loop so Deployments orphaned
+    at 0 replicas WITHOUT a Sandbox CR (nothing left for the per-CR restore to
+    key on) still come back. Conservative by construction — see
+    _adopt_restore_orphans."""
+    _require_internal(request)
+    namespace = _agent_workflow_host_namespace()
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        return {"restored": [], "skipped": "dry-run"}
+    return _adopt_restore_orphans(
+        _load_k8s_apps_client(),
+        _load_k8s_custom_objects_client(),
+        namespace=namespace,
+    )
 
 
 @app.get("/internal/dev-previews")

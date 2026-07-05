@@ -4443,6 +4443,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		);
 	}
 
+	/** B5 additive: dev environments grouped one-per-execution (N services each). */
+	async listDevEnvironmentGroups(input: { projectId?: string | null }) {
+		return this.requireDevEnvironments().listDevEnvironmentGroups(
+			input.projectId ?? null,
+		);
+	}
+
 	async getDevEnvironmentOrPending(input: {
 		executionId: string;
 		projectId?: string | null;

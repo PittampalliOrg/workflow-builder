@@ -8,10 +8,12 @@ import {
 } from "$lib/server/db/schema";
 import { requirePostgresDb } from "$lib/server/application/adapters/postgres";
 import type {
+	DevEnvironmentGroupReadModel,
 	DevEnvironmentReadRepository,
 	DevEnvironmentSummaryReadModel,
 	DevPreviewServiceReadModel,
 } from "$lib/server/application/ports";
+import { groupDevEnvironmentSummaries } from "$lib/server/application/dev-environment-grouping";
 import {
 	browseUrlFor,
 	detailsOf,
@@ -115,6 +117,13 @@ export class PostgresDevEnvironmentReadRepository
 				createdAt: row.createdAt.toISOString(),
 			};
 		});
+	}
+
+	/** B5 additive: active dev environments grouped one-per-execution. */
+	async listDevEnvironmentGroups(
+		projectId: string | null | undefined,
+	): Promise<DevEnvironmentGroupReadModel[]> {
+		return groupDevEnvironmentSummaries(await this.listDevEnvironments(projectId));
 	}
 
 	async getDevEnvironmentOrPending(input: {

@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
-	import { Boxes, Plus, ExternalLink, Loader2, Trash2, Zap } from '@lucide/svelte';
+	import { Boxes, ChevronDown, ChevronRight, Plus, ExternalLink, Loader2, Trash2, Zap } from '@lucide/svelte';
+	import PreviewRunsPanel from '$lib/components/dev/preview-runs-panel.svelte';
 
 	type Preview = {
 		name: string;
@@ -15,6 +16,11 @@
 		/** A3: the backing warm-pool member id when this preview was CLAIMED (instant). */
 		pool?: string | null;
 	};
+
+	// E2: when the read proxy is enabled, each ready preview grows an
+	// expandable "Recent runs" panel (proxied from the preview's own BFF).
+	let { readProxyEnabled = false }: { readProxyEnabled?: boolean } = $props();
+	let expandedRuns = $state<Record<string, boolean>>({});
 
 	// A3: number of free warm-pool members (from the list counts) — surfaced so a user knows a
 	// launch will be instant. 0 (or pool off) = cold provision (a few minutes).
@@ -137,44 +143,63 @@
 	{#if previews.length > 0}
 		<ul class="divide-y rounded-lg border">
 			{#each previews as p (p.name)}
-				<li class="flex items-center justify-between gap-3 px-3 py-2">
-					<div class="flex items-center gap-2 min-w-0">
-						<span class="font-medium truncate">{p.name}</span>
-						<span class="text-xs px-1.5 py-0.5 rounded {tone(p.phase)}">{p.phase}</span>
-						{#if p.pool}
-							<span
-								class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-green-500/15 text-green-600 dark:text-green-400"
-								title="Claimed instantly from the warm pool ({p.pool})"
+				<li class="px-3 py-2">
+					<div class="flex items-center justify-between gap-3">
+						<div class="flex items-center gap-2 min-w-0">
+							{#if readProxyEnabled && p.ready}
+								<button
+									type="button"
+									class="shrink-0 text-muted-foreground hover:text-foreground"
+									onclick={() => (expandedRuns = { ...expandedRuns, [p.name]: !expandedRuns[p.name] })}
+									title="Recent runs"
+								>
+									{#if expandedRuns[p.name]}<ChevronDown class="size-4" />{:else}<ChevronRight
+											class="size-4"
+										/>{/if}
+								</button>
+							{/if}
+							<span class="font-medium truncate">{p.name}</span>
+							<span class="text-xs px-1.5 py-0.5 rounded {tone(p.phase)}">{p.phase}</span>
+							{#if p.pool}
+								<span
+									class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-green-500/15 text-green-600 dark:text-green-400"
+									title="Claimed instantly from the warm pool ({p.pool})"
+								>
+									<Zap class="size-3" /> pooled
+								</span>
+							{/if}
+							<span class="text-xs text-muted-foreground">{p.targetCluster ?? 'dev'}</span>
+						</div>
+						<div class="flex items-center gap-1 shrink-0">
+							{#if p.ready && p.url}
+								<a
+									href={p.url}
+									target="_blank"
+									rel="noopener noreferrer"
+									class="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+								>
+									Open <ExternalLink class="size-3.5" />
+								</a>
+							{/if}
+							<Button
+								size="icon"
+								variant="ghost"
+								class="size-8"
+								onclick={() => teardown(p)}
+								disabled={busy === p.name}
+								title="Tear down"
 							>
-								<Zap class="size-3" /> pooled
-							</span>
-						{/if}
-						<span class="text-xs text-muted-foreground">{p.targetCluster ?? 'dev'}</span>
+								{#if busy === p.name}<Loader2 class="size-4 animate-spin" />{:else}<Trash2
+										class="size-4"
+									/>{/if}
+							</Button>
+						</div>
 					</div>
-					<div class="flex items-center gap-1 shrink-0">
-						{#if p.ready && p.url}
-							<a
-								href={p.url}
-								target="_blank"
-								rel="noopener noreferrer"
-								class="inline-flex items-center gap-1 text-sm text-primary hover:underline"
-							>
-								Open <ExternalLink class="size-3.5" />
-							</a>
-						{/if}
-						<Button
-							size="icon"
-							variant="ghost"
-							class="size-8"
-							onclick={() => teardown(p)}
-							disabled={busy === p.name}
-							title="Tear down"
-						>
-							{#if busy === p.name}<Loader2 class="size-4 animate-spin" />{:else}<Trash2
-									class="size-4"
-								/>{/if}
-						</Button>
-					</div>
+					{#if readProxyEnabled && p.ready && expandedRuns[p.name]}
+						<div class="mt-2">
+							<PreviewRunsPanel name={p.name} url={p.url} />
+						</div>
+					{/if}
 				</li>
 			{/each}
 		</ul>

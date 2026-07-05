@@ -103,3 +103,83 @@ export interface PreviewRunFeedPort {
 		onError?: (previewName: string, error: unknown) => void;
 	}): Promise<() => Promise<void>>;
 }
+
+/**
+ * Preview read proxy (E2): read-only HTTP access from the HOST BFF to a preview
+ * BFF's internal read APIs (executions list/detail, artifacts, file blobs).
+ * Previews run the same app, and the host `workflow-builder-secrets` Secret —
+ * including INTERNAL_API_TOKEN — is copied verbatim into every preview vcluster
+ * at provision time (runner.sh), so the host's own internal token authenticates
+ * against every preview's `/api/internal/*` guard. The adapter reaches the
+ * preview over its vcluster-synced in-cluster Service (preferred) or the
+ * tailnet URL (fallback). Everything here is read-only and failure-tolerant:
+ * an unreachable preview degrades to a typed failure, never a thrown 500.
+ */
+
+/** Typed failure for preview reads — callers render "preview unreachable", never 500. */
+export type PreviewReadFailure = {
+	ok: false;
+	reason: "unreachable" | "unauthorized" | "not-found" | "bad-response";
+	message?: string;
+};
+
+export type PreviewReadResult<T> = { ok: true; data: T } | PreviewReadFailure;
+
+/** Compact execution row proxied from a preview's internal executions list. */
+export type PreviewExecutionSummary = {
+	id: string;
+	workflowId: string | null;
+	workflowName: string | null;
+	status: string;
+	phase: string | null;
+	progress: number | null;
+	error: string | null;
+	startedAt: string | null;
+	completedAt: string | null;
+	durationMs: number | null;
+};
+
+/** Compact artifact row proxied from a preview's internal artifacts list. */
+export type PreviewArtifactSummary = {
+	id: string;
+	executionId: string;
+	kind: string;
+	title: string | null;
+	fileId: string | null;
+	contentType: string | null;
+	sizeBytes: number | null;
+	metadata: Record<string, unknown> | null;
+	createdAt: string | null;
+};
+
+export interface PreviewReadProxyPort {
+	listExecutions(input: {
+		target: PreviewRunTarget;
+		limit?: number;
+		status?: string | null;
+	}): Promise<
+		PreviewReadResult<{ executions: PreviewExecutionSummary[]; total: number }>
+	>;
+	getExecution(input: {
+		target: PreviewRunTarget;
+		executionId: string;
+	}): Promise<PreviewReadResult<Record<string, unknown>>>;
+	/** Lists a preview execution's artifacts (optionally by kind). Previews running
+	 * an app image that predates the internal artifacts GET degrade to a failure. */
+	listExecutionArtifacts(input: {
+		target: PreviewRunTarget;
+		executionId: string;
+		kind?: string | null;
+	}): Promise<PreviewReadResult<PreviewArtifactSummary[]>>;
+	/** Fetches a preview file blob (e.g. a source-bundle) by file id. */
+	fetchFileContent(input: {
+		target: PreviewRunTarget;
+		fileId: string;
+		maxBytes?: number;
+	}): Promise<
+		PreviewReadResult<{
+			bytes: Buffer;
+			contentType: string | null;
+		}>
+	>;
+}

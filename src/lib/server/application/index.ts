@@ -363,6 +363,9 @@ import {
 	VclusterPrPreviewClusterGateway,
 	WorkflowDispatchPrPreviewVerifyRunner,
 } from "$lib/server/application/adapters/pr-previews";
+import { ApplicationPreviewReadProxyService } from "$lib/server/application/preview-read-proxy";
+import { ApplicationPreviewArchiveService } from "$lib/server/application/preview-archive";
+import { HttpPreviewReadProxy } from "$lib/server/application/adapters/preview-read-proxy";
 import { ApplicationWorkflowExecutionReadModelService } from "$lib/server/application/workflow-execution-read-model";
 import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/application/workflow-code-checkpoints";
 import { ApplicationWorkflowCodeVersionService } from "$lib/server/application/workflow-code-versions";
@@ -624,6 +627,8 @@ export function getApplicationAdapters(
 		| undefined;
 	let previewRunFeed: ApplicationPreviewRunFeedService | undefined;
 	let prPreviews: ApplicationPrPreviewService | undefined;
+	let previewReadProxy: ApplicationPreviewReadProxyService | undefined;
+	let previewArchive: ApplicationPreviewArchiveService | undefined;
 	let workflowExecutionReadModels:
 		| ApplicationWorkflowExecutionReadModelService
 		| undefined;
@@ -1280,6 +1285,26 @@ export function getApplicationAdapters(
 			syncToken: prPreviewSyncToken,
 			verifyEnabled: config.prPreviewVerifyEnabled,
 		}));
+	// E2/E3 share the SEA preview list. Unlike the feed, targets are NOT
+	// filtered on `ready` — a read against a not-yet/no-longer-ready preview
+	// degrades in the adapter (short timeout) instead of being invisible.
+	const listPreviewReadTargets = async () =>
+		(await listVclusterPreviews()).map((p) => ({
+			name: p.name,
+			url: p.url,
+			pool: p.pool,
+		}));
+	const getPreviewReadProxy = () =>
+		(previewReadProxy ??= new ApplicationPreviewReadProxyService({
+			proxy: new HttpPreviewReadProxy(),
+			listPreviews: listPreviewReadTargets,
+		}));
+	const getPreviewArchive = () =>
+		(previewArchive ??= new ApplicationPreviewArchiveService({
+			proxy: new HttpPreviewReadProxy(),
+			listPreviews: listPreviewReadTargets,
+			files: { createFile: (input) => getWorkflowData().createWorkflowFile(input) },
+		}));
 	const getWorkflowBrowserArtifacts = () =>
 		(workflowBrowserArtifacts ??=
 			new ApplicationWorkflowBrowserArtifactsService({
@@ -1699,6 +1724,12 @@ export function getApplicationAdapters(
 		},
 		get prPreviews() {
 			return getPrPreviews();
+		},
+		get previewReadProxy() {
+			return getPreviewReadProxy();
+		},
+		get previewArchive() {
+			return getPreviewArchive();
 		},
 		get workflowBrowserArtifacts() {
 			return getWorkflowBrowserArtifacts();
