@@ -3,6 +3,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
 	import { ExternalLink, ShieldCheck, Trash2, Container } from '@lucide/svelte';
+	import StatusPill from '$lib/components/shared/status-pill.svelte';
 	import type { DevEnvironmentSummary } from '$lib/components/dev/dev-environment-card.svelte';
 
 	let {
@@ -16,14 +17,8 @@
 	} = $props();
 
 	const ready = $derived(environment.ready && environment.runStatus !== 'error');
-	const dotClass = $derived(
-		environment.runStatus === 'error'
-			? 'bg-red-500'
-			: ready
-				? 'bg-emerald-500'
-				: 'bg-amber-500 animate-pulse'
-	);
-	const statusLabel = $derived(
+	// Effective status for the shared pill: an errored run overrides readiness.
+	const status = $derived(
 		environment.runStatus === 'error' ? 'error' : ready ? 'ready' : 'provisioning'
 	);
 </script>
@@ -37,10 +32,7 @@
 				</span>
 				{environment.service}
 			</CardTitle>
-			<div class="flex items-center gap-1.5">
-				<span class="size-2 rounded-full {dotClass}"></span>
-				<span class="text-xs text-muted-foreground">{statusLabel}</span>
-			</div>
+			<StatusPill {status} />
 		</div>
 	</CardHeader>
 	<CardContent class="space-y-4 text-sm">
@@ -63,14 +55,16 @@
 					<ShieldCheck class="size-4" /> Dapr-shadow isolation
 				</div>
 				<div class="flex flex-wrap gap-1.5">
-					<Badge variant="outline" class="text-[10px] font-mono"
-						>{environment.daprAppId ?? 'unique app-id'}</Badge
-					>
-					<Badge variant="outline" class="text-[10px]">pubsub-dev</Badge>
-					<Badge variant="outline" class="text-[10px]">real DB</Badge>
+					{#if environment.daprAppId}
+						<Badge variant="outline" class="text-[10px] font-mono">{environment.daprAppId}</Badge>
+					{/if}
+					{#if environment.sandboxName}
+						<Badge variant="outline" class="text-[10px] font-mono">{environment.sandboxName}</Badge>
+					{/if}
 				</div>
 				<p class="text-xs text-muted-foreground">
-					Own task hub + isolated pubsub stream/consumer; zero prod blast radius.
+					Own task hub + isolated pubsub stream/consumer keyed on the shadow app-id above; zero prod
+					blast radius.
 				</p>
 			</div>
 		{/if}
