@@ -551,3 +551,65 @@ describe("ApplicationPrPreviewService generation fencing", () => {
 		expect(patches).toBeGreaterThan(0);
 	});
 });
+
+describe("UI reads are resume-safe (Phase A)", () => {
+	it("listStatuses maps records without touching the cluster or resuming", async () => {
+		const { deps, store, calls } = makeDeps({ getSequence: [READY], resumeStaleMs: 0 });
+		await store.upsert({
+			prNumber: 7,
+			alias: prPreviewAlias(7),
+			url: "https://wfb-pr-7.tail286401.ts.net",
+			state: "seeding", // non-terminal + stale → status() WOULD resume; list must not
+			headSha: "abc",
+			services: ["workflow-builder"],
+			error: null,
+			verify: null,
+		});
+		const service = new ApplicationPrPreviewService(deps);
+		const list = await service.listStatuses();
+		expect(list).toHaveLength(1);
+		expect(list[0]?.state).toBe("seeding");
+		expect(list[0]?.services).toEqual(["workflow-builder"]);
+		await service.settled(7);
+		expect(calls.seeds).toEqual([]); // no pipeline dispatched
+		expect(calls.claim).toBe(0);
+	});
+
+	it("peek returns the snapshot (absent for unknown) without resuming", async () => {
+		const { deps, store, calls } = makeDeps({ getSequence: [READY], resumeStaleMs: 0 });
+		await store.upsert({
+			prNumber: 9,
+			alias: prPreviewAlias(9),
+			url: null,
+			state: "provisioning",
+			headSha: "abc",
+			services: [],
+			error: null,
+			verify: null,
+		});
+		const service = new ApplicationPrPreviewService(deps);
+		expect((await service.peek(9)).state).toBe("provisioning");
+		expect((await service.peek(404)).state).toBe("absent");
+		await service.settled(9);
+		expect(calls.seeds).toEqual([]);
+	});
+
+	it("listActive orders by recency and bounds the page", async () => {
+		const store = new InMemoryPrPreviewRecordStore();
+		for (const n of [1, 2, 3]) {
+			await new Promise((r) => setTimeout(r, 3)); // distinct updatedAt millis
+			await store.upsert({
+				prNumber: n,
+				alias: `pr-${n}`,
+				url: null,
+				state: "ready",
+				headSha: "x",
+				services: [],
+				error: null,
+				verify: null,
+			});
+		}
+		const list = await store.listActive();
+		expect(list.map((r) => r.prNumber)).toEqual([3, 2, 1]);
+	});
+});

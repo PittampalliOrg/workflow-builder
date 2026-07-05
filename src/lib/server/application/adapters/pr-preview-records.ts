@@ -1,4 +1,4 @@
-import { and, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import { prPreviews } from "$lib/server/db/schema";
 import type { PrPreviewRecord, PrPreviewRecordStore } from "$lib/server/application/ports";
@@ -93,6 +93,15 @@ export class DrizzlePrPreviewRecordStore implements PrPreviewRecordStore {
 		await this.db.delete(prPreviews).where(eq(prPreviews.prNumber, prNumber));
 	}
 
+	async listActive(): Promise<PrPreviewRecord[]> {
+		const rows = await this.db
+			.select()
+			.from(prPreviews)
+			.orderBy(desc(prPreviews.updatedAt))
+			.limit(50);
+		return rows.map(toRecord);
+	}
+
 	async claimStale(prNumber: number, staleMs: number): Promise<PrPreviewRecord | null> {
 		const cutoff = new Date(Date.now() - staleMs);
 		const rows = await this.db
@@ -151,6 +160,13 @@ export class InMemoryPrPreviewRecordStore implements PrPreviewRecordStore {
 
 	async delete(prNumber: number): Promise<void> {
 		this.rows.delete(prNumber);
+	}
+
+	async listActive(): Promise<PrPreviewRecord[]> {
+		return [...this.rows.values()]
+			.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+			.slice(0, 50)
+			.map((r) => ({ ...r, services: [...r.services] }));
 	}
 
 	async claimStale(prNumber: number, staleMs: number): Promise<PrPreviewRecord | null> {

@@ -10,7 +10,7 @@
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { createWorkloadStream } from '$lib/stores/kueueviz/workloads.svelte';
-	import StatusPill from '$lib/components/capacity/status-pill.svelte';
+	import StatusPill from '$lib/components/capacity/stream-status-pill.svelte';
 	import WorkloadTable from '$lib/components/capacity/workload-table.svelte';
 	import WorkloadDetailSheet from '$lib/components/capacity/workload-detail-sheet.svelte';
 	import type { WorkloadSnapshot } from '$lib/server/kueueviz';

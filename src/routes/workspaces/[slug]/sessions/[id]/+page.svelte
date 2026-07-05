@@ -44,6 +44,7 @@
 	import EventTypePill from '$lib/components/sessions/event-type-pill.svelte';
 	import StopReasonChip from '$lib/components/sessions/stop-reason-chip.svelte';
 	import SessionGoalBadge from '$lib/components/sessions/session-goal-badge.svelte';
+	import StatusPill from '$lib/components/shared/status-pill.svelte';
 	import GoalFlowTimeline from '$lib/components/observability/goal-flow-timeline.svelte';
 	import SessionPulse from '$lib/components/sessions/session-pulse.svelte';
 	import SessionResourcesPanel from '$lib/components/sessions/session-resources-panel.svelte';
@@ -1408,9 +1409,7 @@
 				</h1>
 			</button>
 			{#if session}
-				<Badge variant="outline" class="text-[10px] capitalize bg-muted">
-					{session.status}
-				</Badge>
+				<StatusPill status={session.status} class="capitalize" />
 				{#if cliBlockedEvent}
 					<Badge
 						variant="outline"

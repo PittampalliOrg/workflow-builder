@@ -23,7 +23,8 @@
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import { createClusterQueueStream } from '$lib/stores/kueueviz/cluster-queues.svelte';
 	import { createWorkloadStream } from '$lib/stores/kueueviz/workloads.svelte';
-	import StatusPill from '$lib/components/capacity/status-pill.svelte';
+	import StatusPill from '$lib/components/capacity/stream-status-pill.svelte';
+	import SharedStatusPill from '$lib/components/shared/status-pill.svelte';
 	import { formatQuantityForResource } from '$lib/components/capacity/quantity';
 	import CapacityGauge from '$lib/components/capacity/overview/capacity-gauge.svelte';
 	import GaugeResourceToggle, {
@@ -446,17 +447,6 @@
 		if (pct >= 70) return 'bg-amber-500';
 		return 'bg-emerald-500';
 	}
-	function statusTone(status: string): string {
-		const s = status.toLowerCase();
-		if (s.includes('fail') || s.includes('error') || s.includes('timeout')) return 'text-rose-500';
-		if (s.includes('terminat') || s.includes('cancel') || s === 'idle' || s.includes('finish'))
-			return 'text-muted-foreground';
-		if (s.includes('reschedul') || s.includes('queue') || s.includes('start') || s.includes('pend'))
-			return 'text-sky-500';
-		if (s.includes('run') || s === 'active' || s.includes('infer') || s.includes('evaluat') || s.includes('grad'))
-			return 'text-emerald-500';
-		return 'text-foreground';
-	}
 </script>
 
 <div class="space-y-4">
@@ -789,7 +779,7 @@
 							{/if}
 						</div>
 
-						<span class="truncate font-mono text-[11px] {statusTone(item.status)}" title={item.status}>{item.status}</span>
+						<SharedStatusPill variant="text" status={item.status} label={item.status} />
 
 						<ActivityCell
 							status={item.status}

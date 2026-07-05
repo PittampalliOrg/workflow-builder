@@ -19,7 +19,7 @@
 	import { ArrowRight, Gauge } from '@lucide/svelte';
 	import { createWorkloadStream } from '$lib/stores/kueueviz/workloads.svelte';
 	import WorkloadStatusBadge from './workload-status-badge.svelte';
-	import StatusPill from './status-pill.svelte';
+	import StatusPill from './stream-status-pill.svelte';
 
 	type Props = {
 		sessionId: string;

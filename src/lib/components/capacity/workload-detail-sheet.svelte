@@ -18,7 +18,7 @@
 		createWorkloadDetailStream,
 		createWorkloadEventsStream,
 	} from '$lib/stores/kueueviz/workload-detail.svelte';
-	import StatusPill from './status-pill.svelte';
+	import StatusPill from './stream-status-pill.svelte';
 	import WorkloadStatusBadge from './workload-status-badge.svelte';
 
 	type Props = {

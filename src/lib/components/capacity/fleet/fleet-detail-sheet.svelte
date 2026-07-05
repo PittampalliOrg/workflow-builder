@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SharedStatusPill from '$lib/components/shared/status-pill.svelte';
 	/**
 	 * Fleet row detail drawer — a live preview of "what's happening" inside a run
 	 * without leaving the control plane. Kind-adaptive:
@@ -113,16 +114,6 @@
 		if (!kind) return '';
 		return kind.charAt(0).toUpperCase() + kind.slice(1);
 	}
-	function statusTone(status: string | null | undefined): string {
-		const s = (status ?? '').toLowerCase();
-		if (s.includes('fail') || s.includes('error') || s.includes('timeout')) return 'text-rose-500';
-		if (s.includes('terminat') || s.includes('cancel') || s === 'idle') return 'text-muted-foreground';
-		if (s.includes('reschedul') || s.includes('queue') || s.includes('start') || s.includes('pend'))
-			return 'text-sky-500';
-		if (s.includes('run') || s === 'active' || s.includes('infer') || s.includes('evaluat'))
-			return 'text-emerald-500';
-		return 'text-foreground';
-	}
 	function stepTone(status: string): string {
 		if (status === 'success') return 'bg-emerald-500';
 		if (status === 'error') return 'bg-rose-500';
@@ -152,7 +143,7 @@
 					<Sheet.Title class="min-w-0 truncate text-sm">{item.title}</Sheet.Title>
 				</div>
 				<Sheet.Description class="flex items-center gap-2 text-xs">
-					<span class="font-mono {statusTone(item.status)}">{item.status}</span>
+					<SharedStatusPill variant="text" status={item.status ?? ''} label={item.status ?? '—'} class="text-xs" />
 					{#if item.model}<span class="truncate text-muted-foreground">{item.model}</span>{/if}
 					{#if item.href}
 						<a href={item.href} class="ml-auto inline-flex shrink-0 items-center gap-1 text-primary hover:underline">

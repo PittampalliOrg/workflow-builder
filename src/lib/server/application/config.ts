@@ -25,6 +25,10 @@ export type ApplicationAdapterConfig = {
 	previewRunFeedEnabled: boolean;
 	/** D1: label-gated per-PR previews (`/api/internal/pr-previews`). Off by default. */
 	prPreviewsEnabled: boolean;
+	/** D1: repo slug for building PR URLs in UI reads (PR_PREVIEW_REPO). */
+	prPreviewRepo: string;
+	/** Awake-preview capacity for UI meters (mirrors SEA VCLUSTER_PREVIEW_MAX). */
+	vclusterPreviewMax: number;
 	/** D2: dispatch the Playwright-critic verify pass on a ready PR preview. Off by default. */
 	prPreviewVerifyEnabled: boolean;
 	/** D2: Promote adds the `preview` label to the PRs it opens. Off by default. */
@@ -115,6 +119,8 @@ export function getApplicationAdapterConfig(
 		),
 		previewRunFeedEnabled: readFlag(source, "PREVIEW_RUN_FEED_ENABLED"),
 		prPreviewsEnabled: readFlag(source, "PR_PREVIEWS_ENABLED"),
+		prPreviewRepo: source.PR_PREVIEW_REPO?.trim() || "PittampalliOrg/workflow-builder",
+		vclusterPreviewMax: Number.parseInt(source.VCLUSTER_PREVIEW_MAX ?? "", 10) || 6,
 		prPreviewVerifyEnabled: readFlag(source, "PR_PREVIEW_VERIFY_ENABLED"),
 		promoteAutoPreviewLabel: readFlag(source, "PROMOTE_AUTO_PREVIEW_LABEL"),
 		previewReadProxyEnabled: readFlag(source, "PREVIEW_READ_PROXY_ENABLED"),

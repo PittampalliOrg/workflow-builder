@@ -175,6 +175,10 @@ export interface PrPreviewRecordStore {
 		changes: Partial<Omit<PrPreviewRecord, "prNumber" | "gen" | "updatedAt">>,
 	): Promise<boolean>;
 	delete(prNumber: number): Promise<void>;
+	/** Recent records for UI listing (order: updatedAt desc, bounded). Rows are
+	 * deleted on teardown, so "active" === "all rows". Read-only — see the
+	 * service's `listStatuses()`/`peek()` for the resume-safe UI reads. */
+	listActive(): Promise<PrPreviewRecord[]>;
 	/**
 	 * Atomically claim a STALE, NON-TERMINAL record for resume: bumps the
 	 * generation + updatedAt iff state is provisioning/seeding AND updatedAt is
