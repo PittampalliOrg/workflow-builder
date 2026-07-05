@@ -86,6 +86,44 @@ regenerate the overlay, never hand-edit the rendered env branch.
    `PR_PREVIEW_VERIFY_ENABLED`; set `PROMOTE_AUTO_PREVIEW_LABEL` to close the
    Promote loop.
 
+## Durable pipeline records (#39)
+
+Run state lives in the `pr_previews` table (one row per PR), NOT in BFF memory.
+Why this is load-bearing, learned live on 2026-07-05:
+
+- The dev BFF runs 2 replicas and the hub dispatch Task's status polls are
+  conntrack-pinned to ONE backend — with in-memory records the poll usually hit
+  the non-owner replica and the commit status pended forever.
+- A Deployment rollout mid-run (any dev-overlay env regen re-rolls the BFF)
+  killed the pipeline silently; nothing resumed it.
+
+Mechanics (generation-fenced — `owner_gen` column):
+
+- `up` upserts the record BEFORE dispatching and BUMPS the generation: the
+  latest push wins, everywhere. Any older pipeline (same or other replica)
+  aborts at its next write — every stage patch is a CAS on `owner_gen`.
+- A 30s heartbeat (also fenced) keeps `updated_at` fresh while a pipeline runs.
+- `status()` reads the row from any replica. A NON-TERMINAL row
+  (provisioning/seeding) whose heartbeat is older than 120s is treated as
+  orphaned: `claimStale` (guarded single-row `UPDATE … RETURNING`, bumps the
+  generation) makes exactly one replica the new owner — a merely-STALLED
+  previous owner is fenced out, not just a dead one. The resume reuses the
+  interrupted run's recorded services and head; verify is not resumed.
+- An ownership probe runs right before the seed POST, so a deposed pipeline
+  cannot overwrite pods a newer run just seeded.
+- `down` deletes the row, which fences out every surviving pipeline. The
+  narrow window where an early-stage pipeline re-claims a preview after
+  teardown leaves a zombie that the SEA TTL/GC backstop reaps (PR previews
+  carry `ttlHours`).
+- A record-less ready preview still reports `ready` (terminal) straight from
+  the cluster.
+- Stages log as `[pr-preview] pr=<n> stage=… ` — `kubectl logs deploy/workflow-builder
+  -c workflow-builder | grep pr-preview` is the debugging entrypoint.
+
+Trade-off: a status poll that lands between owner-death and the next poll can
+report `ready` from the cluster-fallback while a re-seed is still pending —
+accepted; the seed converges via resume or the next synchronize push.
+
 ## Capacity semantics
 
 - **Claim-first**: pool claims consume an already-awake member — never

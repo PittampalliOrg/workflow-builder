@@ -124,6 +124,59 @@ export type PrPreviewState =
 	| "error"
 	| "capacity_full";
 
+/** One PR's durable pipeline record (table `pr_previews`). Written by the
+ * replica running the up-pipeline at every stage transition (plus a heartbeat),
+ * read by `status()` on ANY replica — the hub dispatch Task's polls are
+ * conntrack-pinned to one backend, so cross-replica visibility is load-bearing,
+ * not cosmetic. */
+export type PrPreviewRecord = {
+	prNumber: number;
+	alias: string;
+	url: string | null;
+	state: PrPreviewState;
+	headSha: string | null;
+	services: string[];
+	error: string | null;
+	verify: PrPreviewStatus["verify"];
+	/** Ownership generation (fencing token). Every `upsert` and `claimStale`
+	 * bumps it; every write from a pipeline is a CAS on it, so at most ONE
+	 * pipeline can ever write the row — a deposed pipeline's first failed CAS
+	 * tells it to abort. This is what makes concurrent up+up (either replica),
+	 * resume-vs-stalled-owner, and down-during-run deterministic. */
+	gen: number;
+	/** ISO timestamp of the last write (stage transition or heartbeat). */
+	updatedAt: string;
+};
+
+/** Durable store for PR-preview pipeline records (fenced writes). */
+export interface PrPreviewRecordStore {
+	get(prNumber: number): Promise<PrPreviewRecord | null>;
+	/** Insert-or-replace the row and BUMP the generation, deposing any pipeline
+	 * holding the previous one. Returns the stored record (with the new gen). */
+	upsert(
+		record: Omit<PrPreviewRecord, "gen" | "updatedAt">,
+	): Promise<PrPreviewRecord>;
+	/** Fenced merge-patch: applies + stamps updatedAt iff the row exists AND
+	 * still carries `gen`. Returns false when deposed or deleted — the calling
+	 * pipeline must abort. `{}` is the heartbeat/ownership probe. */
+	patch(
+		prNumber: number,
+		gen: number,
+		changes: Partial<Omit<PrPreviewRecord, "prNumber" | "gen" | "updatedAt">>,
+	): Promise<boolean>;
+	delete(prNumber: number): Promise<void>;
+	/**
+	 * Atomically claim a STALE, NON-TERMINAL record for resume: bumps the
+	 * generation + updatedAt iff state is provisioning/seeding AND updatedAt is
+	 * older than `staleMs`. Returns the claimed record (new gen), or null when
+	 * the row is missing, terminal, or fresh (a pipeline is heartbeating it).
+	 * Exactly one concurrent caller wins (single guarded UPDATE .. RETURNING),
+	 * and the gen bump fences out the previous owner even if it was merely
+	 * stalled rather than dead.
+	 */
+	claimStale(prNumber: number, staleMs: number): Promise<PrPreviewRecord | null>;
+}
+
 export type PrPreviewStatus = {
 	prNumber: number;
 	alias: string;
