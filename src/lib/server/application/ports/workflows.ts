@@ -467,6 +467,17 @@ export type ListWorkflowFilesFilter = {
 	includeArchived?: boolean;
 };
 
+/** List files whose scopeId starts with a prefix (e.g. `preview-archive:`),
+ * so the archived-previews browser can enumerate every archive scope in one
+ * query. `scopeId` here is an exact match; this is the prefix counterpart. */
+export type ListWorkflowFilesByScopePrefixFilter = {
+	userId: string;
+	scopeIdPrefix: string;
+	purpose?: "agent" | "output";
+	limit?: number;
+	includeArchived?: boolean;
+};
+
 export type WorkflowRunDiffStats = {
 	files: number;
 	additions: number;
@@ -513,6 +524,9 @@ export interface WorkflowFileStore {
 		deduplicated: boolean;
 	}>;
 	listFiles(filter: ListWorkflowFilesFilter): Promise<WorkflowFileRecord[]>;
+	listFilesByScopePrefix(
+		filter: ListWorkflowFilesByScopePrefixFilter,
+	): Promise<WorkflowFileRecord[]>;
 	getFile(id: string): Promise<WorkflowFileRecord | null>;
 	getFileContent(id: string): Promise<{ summary: WorkflowFileRecord; bytes: Buffer } | null>;
 	archiveFile(input: { id: string; userId: string }): Promise<boolean>;
@@ -1443,6 +1457,9 @@ export interface WorkflowDataService {
 		deduplicated: boolean;
 	}>;
 	listWorkflowFiles(filter: ListWorkflowFilesFilter): Promise<WorkflowFileRecord[]>;
+	listWorkflowFilesByScopePrefix(
+		filter: ListWorkflowFilesByScopePrefixFilter,
+	): Promise<WorkflowFileRecord[]>;
 	getWorkflowFile(id: string): Promise<WorkflowFileRecord | null>;
 	getWorkflowFileContent(
 		id: string,

@@ -36,6 +36,7 @@ import {
 } from "$lib/server/mcp-availability";
 import { costFor, MODEL_PRICING } from "$lib/server/pricing/model-pricing";
 import { persistRunDiff } from "$lib/server/workflows/run-diff";
+import { buildRuntimePreviewPath as buildRuntimePreviewPathHelper } from "$lib/server/workflows/runtime-preview-url";
 import { persistSourceBundle } from "$lib/server/workflows/source-bundle";
 import {
 	decryptObject,
@@ -142,6 +143,7 @@ import type {
 	ListProjectWorkflowRunsInput,
 	ListSessionEventsInput,
 	ListWorkflowFilesFilter,
+	ListWorkflowFilesByScopePrefixFilter,
 	PersistWorkflowRunDiffInput,
 	PersistWorkflowSourceBundleInput,
 	WorkflowDataService,
@@ -3169,6 +3171,20 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.workflowExecutions.getExecutionWorkspaceRoute(executionId);
 	}
 
+	/** Build the canonical runtime-preview path for an execution (keeps the
+	 * redirect route off the legacy `runtime-preview-url` module directly). */
+	buildRuntimePreviewPath(input: {
+		executionId: string;
+		workspaceSlug: string;
+		search?: string;
+	}): string {
+		return buildRuntimePreviewPathHelper(
+			input.executionId,
+			input.workspaceSlug,
+			input.search ?? "",
+		);
+	}
+
 	async listWorkspaces(input: {
 		userId: string;
 		currentProjectId: string;
@@ -5625,6 +5641,12 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	listWorkflowFiles(filter: ListWorkflowFilesFilter) {
 		return this.requireWorkflowFiles().listFiles(filter);
+	}
+
+	listWorkflowFilesByScopePrefix(
+		filter: ListWorkflowFilesByScopePrefixFilter,
+	) {
+		return this.requireWorkflowFiles().listFilesByScopePrefix(filter);
 	}
 
 	getWorkflowFile(id: string) {
