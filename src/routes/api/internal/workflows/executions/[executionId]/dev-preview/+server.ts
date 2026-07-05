@@ -49,6 +49,9 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			? body.mode
 			: undefined) as "preview-native" | "host-throwaway" | undefined,
 		adopt: typeof body.adopt === "boolean" ? body.adopt : undefined,
+		// Canonical ORIGIN override for the adopted pod (auth/CSRF/cookies must
+		// match the preview's own URL — see ProvisionDevPreviewParams.origin).
+		origin: typeof body.origin === "string" ? body.origin : undefined,
 	};
 	// Multi-service fan-out when `services: string[]` is given; `service` stays the
 	// single-service back-compat entry.

@@ -23,6 +23,12 @@ export type ApplicationAdapterConfig = {
 	previewProvisionerAdapter: PreviewProvisionerAdapter;
 	/** E1: the Dev-hub live preview run feed. Off by default. */
 	previewRunFeedEnabled: boolean;
+	/** D1: label-gated per-PR previews (`/api/internal/pr-previews`). Off by default. */
+	prPreviewsEnabled: boolean;
+	/** D2: dispatch the Playwright-critic verify pass on a ready PR preview. Off by default. */
+	prPreviewVerifyEnabled: boolean;
+	/** D2: Promote adds the `preview` label to the PRs it opens. Off by default. */
+	promoteAutoPreviewLabel: boolean;
 };
 
 function readFlag(
@@ -104,5 +110,8 @@ export function getApplicationAdapterConfig(
 			PREVIEW_PROVISIONER_ADAPTERS,
 		),
 		previewRunFeedEnabled: readFlag(source, "PREVIEW_RUN_FEED_ENABLED"),
+		prPreviewsEnabled: readFlag(source, "PR_PREVIEWS_ENABLED"),
+		prPreviewVerifyEnabled: readFlag(source, "PR_PREVIEW_VERIFY_ENABLED"),
+		promoteAutoPreviewLabel: readFlag(source, "PROMOTE_AUTO_PREVIEW_LABEL"),
 	};
 }

@@ -67,6 +67,17 @@ export function safePreviewName(name: string): string {
 		.slice(0, 40) || "preview";
 }
 
+/** SEA call failure carrying the HTTP status (e.g. 429 = capacity refusal). */
+export class VclusterPreviewHttpError extends Error {
+	constructor(
+		message: string,
+		public readonly status: number,
+	) {
+		super(message);
+		this.name = "VclusterPreviewHttpError";
+	}
+}
+
 async function call(
 	method: "POST" | "GET" | "DELETE",
 	path: string,
@@ -89,9 +100,28 @@ async function call(
 			typeof data.detail === "string"
 				? data.detail
 				: `vcluster-preview ${method} ${path} failed (HTTP ${res.status})`;
-		throw new Error(detail);
+		throw new VclusterPreviewHttpError(detail, res.status);
 	}
 	return data;
+}
+
+/** D1 PR-preview lifecycle fields (SEA contract: `origin`/`prNumber`/`ttlHours`
+ * label the preview namespace so the SEA reaper can TTL/evict PR previews —
+ * humans never). Optional everywhere; an older SEA simply ignores them. */
+export interface VclusterPreviewLifecycleParams {
+	origin?: "user" | "pr";
+	prNumber?: number;
+	ttlHours?: number;
+}
+
+function lifecycleFields(
+	params: VclusterPreviewLifecycleParams,
+): Record<string, unknown> {
+	return {
+		...(params.origin ? { origin: params.origin } : {}),
+		...(params.prNumber != null ? { prNumber: params.prNumber } : {}),
+		...(params.ttlHours != null ? { ttlHours: params.ttlHours } : {}),
+	};
 }
 
 function toPreview(d: Record<string, unknown>): VclusterPreview {
@@ -114,27 +144,39 @@ function toPreview(d: Record<string, unknown>): VclusterPreview {
  * when the pool is empty/off (SEA 404) — the caller then falls back to a cold provision. A
  * claim consumes an already-awake member, so it is not capacity-gated.
  */
-export async function claimVclusterPreview(params: {
-	name: string;
-	devMode?: boolean;
-	user?: string;
-}): Promise<VclusterPreview | null> {
+export async function claimVclusterPreview(
+	params: {
+		name: string;
+		devMode?: boolean;
+		user?: string;
+	} & VclusterPreviewLifecycleParams,
+): Promise<VclusterPreview | null> {
 	const baseUrl = sandboxExecutionApiUrl();
 	if (!baseUrl) throw new Error("SANDBOX_EXECUTION_API_URL not configured");
 	const name = safePreviewName(params.name);
 	const token = internalToken();
-	const res = await fetch(`${baseUrl}/internal/vcluster-preview/claim`, {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-			...(token ? { Authorization: `Bearer ${token}` } : {}),
-		},
-		body: JSON.stringify({
-			name,
-			...(params.devMode ? { devMode: true } : {}),
-			...(params.user ? { user: params.user } : {}),
-		}),
-	});
+	const post = async (extras: Record<string, unknown>) =>
+		fetch(`${baseUrl}/internal/vcluster-preview/claim`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				...(token ? { Authorization: `Bearer ${token}` } : {}),
+			},
+			body: JSON.stringify({
+				name,
+				...(params.devMode ? { devMode: true } : {}),
+				...(params.user ? { user: params.user } : {}),
+				...extras,
+			}),
+		});
+	const extras = lifecycleFields(params);
+	let res = await post(extras);
+	// Tolerate an SEA that predates the PR-preview lifecycle fields: a 422
+	// validation reject retries once WITHOUT them (labels/TTL are then absent —
+	// the GC backstop still tears the preview down on PR close).
+	if (res.status === 422 && Object.keys(extras).length > 0) {
+		res = await post({});
+	}
 	if (res.status === 404) return null; // no free member / pool off → cold-provision fallback
 	const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
 	if (!res.ok) {
@@ -142,33 +184,53 @@ export async function claimVclusterPreview(params: {
 			typeof data.detail === "string"
 				? data.detail
 				: `vcluster-preview claim failed (HTTP ${res.status})`;
-		throw new Error(detail);
+		throw new VclusterPreviewHttpError(detail, res.status);
 	}
 	return toPreview(data);
 }
 
 /** Cold-provision (or re-provision) a Tier-2 preview vcluster (ACTION=up). Returns immediately
  * (202). This is the fallback when the warm pool has no free member. */
-export async function provisionVclusterPreview(params: {
-	name: string;
-	daprVersion?: string;
-	tailnetHost?: string;
-	previewDb?: string;
-	/** Interactive dev preview: provision so the dev image can adopt the prod BFF
-	 * over HTTPS (runner sets EXPOSE_DEV_POD=false). The adopt:true dev/preview is
-	 * triggered separately after provisioning. */
-	devMode?: boolean;
-}): Promise<VclusterPreview> {
+export async function provisionVclusterPreview(
+	params: {
+		name: string;
+		daprVersion?: string;
+		tailnetHost?: string;
+		previewDb?: string;
+		/** Interactive dev preview: provision so the dev image can adopt the prod BFF
+		 * over HTTPS (runner sets EXPOSE_DEV_POD=false). The adopt:true dev/preview is
+		 * triggered separately after provisioning. */
+		devMode?: boolean;
+	} & VclusterPreviewLifecycleParams,
+): Promise<VclusterPreview> {
 	const name = safePreviewName(params.name);
-	const data = await call("POST", "/internal/vcluster-preview", {
+	const base: Record<string, unknown> = {
 		name,
 		action: "up",
 		...(params.daprVersion ? { daprVersion: params.daprVersion } : {}),
 		...(params.tailnetHost ? { tailnetHost: params.tailnetHost } : {}),
 		...(params.previewDb ? { previewDb: params.previewDb } : {}),
 		...(params.devMode ? { previewDevMode: true } : {}),
-	});
-	return toPreview(data);
+	};
+	const extras = lifecycleFields(params);
+	try {
+		const data = await call("POST", "/internal/vcluster-preview", {
+			...base,
+			...extras,
+		});
+		return toPreview(data);
+	} catch (err) {
+		// Pre-lifecycle SEA: retry once without the PR fields on a validation reject.
+		if (
+			err instanceof VclusterPreviewHttpError &&
+			err.status === 422 &&
+			Object.keys(extras).length > 0
+		) {
+			const data = await call("POST", "/internal/vcluster-preview", base);
+			return toPreview(data);
+		}
+		throw err;
+	}
 }
 
 /**
@@ -176,18 +238,23 @@ export async function provisionVclusterPreview(params: {
  * provision when the pool is empty/off. Returns immediately (202). Note: capacity admission for
  * the COLD fallback lives in the route (it must count awake members); a claim needs no cap.
  */
-export async function launchVclusterPreview(params: {
-	name: string;
-	daprVersion?: string;
-	tailnetHost?: string;
-	previewDb?: string;
-	devMode?: boolean;
-	user?: string;
-}): Promise<VclusterPreview> {
+export async function launchVclusterPreview(
+	params: {
+		name: string;
+		daprVersion?: string;
+		tailnetHost?: string;
+		previewDb?: string;
+		devMode?: boolean;
+		user?: string;
+	} & VclusterPreviewLifecycleParams,
+): Promise<VclusterPreview> {
 	const claimed = await claimVclusterPreview({
 		name: params.name,
 		devMode: params.devMode,
 		user: params.user,
+		origin: params.origin,
+		prNumber: params.prNumber,
+		ttlHours: params.ttlHours,
 	});
 	if (claimed) return claimed;
 	return provisionVclusterPreview(params);
@@ -247,4 +314,19 @@ export async function teardownVclusterPreview(
 		`/internal/vcluster-preview/${encodeURIComponent(safePreviewName(name))}`,
 	);
 	return toPreview(data);
+}
+
+/**
+ * D1 capacity relief: ask SEA to evict the oldest PR-ORIGIN preview (humans are
+ * never evicted — policy lives in SEA, sibling-owned `POST /internal/vcluster-preview/reap`).
+ * Returns false (never throws) when the endpoint is missing (older SEA) or
+ * nothing was reapable; the caller then surfaces `capacity_full`.
+ */
+export async function reapVclusterPreviews(): Promise<boolean> {
+	try {
+		const data = await call("POST", "/internal/vcluster-preview/reap");
+		return data.reaped !== false;
+	} catch {
+		return false;
+	}
 }

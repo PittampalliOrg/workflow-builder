@@ -353,6 +353,16 @@ import { ApplicationWorkflowExecutionStreamService } from "$lib/server/applicati
 import { ApplicationPreviewRunFeedService } from "$lib/server/application/preview-run-feed";
 import { NatsPreviewRunFeed } from "$lib/server/application/adapters/nats-preview-run-feed";
 import { listVclusterPreviews } from "$lib/server/workflows/vcluster-preview";
+import { ApplicationPrPreviewService } from "$lib/server/application/pr-previews";
+import {
+	GithubPrPreviewGateway,
+	HelperPodPrHeadSeeder,
+	PreviewBffDevPodGateway,
+	prPreviewRegistryEntries,
+	prPreviewSyncToken,
+	VclusterPrPreviewClusterGateway,
+	WorkflowDispatchPrPreviewVerifyRunner,
+} from "$lib/server/application/adapters/pr-previews";
 import { ApplicationWorkflowExecutionReadModelService } from "$lib/server/application/workflow-execution-read-model";
 import { ApplicationWorkflowCodeCheckpointService } from "$lib/server/application/workflow-code-checkpoints";
 import { ApplicationWorkflowCodeVersionService } from "$lib/server/application/workflow-code-versions";
@@ -613,6 +623,7 @@ export function getApplicationAdapters(
 		| ApplicationWorkflowExecutionStreamService
 		| undefined;
 	let previewRunFeed: ApplicationPreviewRunFeedService | undefined;
+	let prPreviews: ApplicationPrPreviewService | undefined;
 	let workflowExecutionReadModels:
 		| ApplicationWorkflowExecutionReadModelService
 		| undefined;
@@ -1258,6 +1269,17 @@ export function getApplicationAdapters(
 					// feed must key on pool (its alias `name` stays the display + deep-link).
 					.map((p) => ({ name: p.name, url: p.url, pool: p.pool })),
 		}));
+	const getPrPreviews = () =>
+		(prPreviews ??= new ApplicationPrPreviewService({
+			clusters: new VclusterPrPreviewClusterGateway(),
+			devPods: new PreviewBffDevPodGateway(),
+			seeder: new HelperPodPrHeadSeeder(),
+			pullRequests: new GithubPrPreviewGateway(),
+			verify: new WorkflowDispatchPrPreviewVerifyRunner(),
+			registry: prPreviewRegistryEntries(),
+			syncToken: prPreviewSyncToken,
+			verifyEnabled: config.prPreviewVerifyEnabled,
+		}));
 	const getWorkflowBrowserArtifacts = () =>
 		(workflowBrowserArtifacts ??=
 			new ApplicationWorkflowBrowserArtifactsService({
@@ -1278,7 +1300,10 @@ export function getApplicationAdapters(
 			new ApplicationWorkflowCodeVersionPromotionService({
 				workflowData: getWorkflowData(),
 				promotionGate: new WorkflowPromotionGateAdapter(),
-				runner: new HelperPodSourceBundlePromotionRunner(),
+				runner: new HelperPodSourceBundlePromotionRunner({
+					// D2: auto-label Promote-opened PRs `preview` (flag, default off).
+					addPreviewLabel: config.promoteAutoPreviewLabel,
+				}),
 			}));
 	const getWorkflowTriggerLifecycle = () =>
 		(workflowTriggerLifecycle ??=
@@ -1671,6 +1696,9 @@ export function getApplicationAdapters(
 		},
 		get previewRunFeed() {
 			return getPreviewRunFeed();
+		},
+		get prPreviews() {
+			return getPrPreviews();
 		},
 		get workflowBrowserArtifacts() {
 			return getWorkflowBrowserArtifacts();
