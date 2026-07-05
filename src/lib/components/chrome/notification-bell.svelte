@@ -232,7 +232,7 @@
 		{/if}
 
 		<a
-			href="/admin/gitops/system"
+			href="/admin/gitops"
 			onclick={() => (open = false)}
 			class="flex items-center justify-center gap-1 border-t border-border px-3 py-2 text-[0.66rem] font-medium text-primary transition hover:bg-accent/50"
 		>
