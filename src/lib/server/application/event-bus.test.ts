@@ -27,6 +27,9 @@ describe("getEventBusAdapter", () => {
 				workflowSchedulerAdapter: "dapr-workflow",
 				previewProvisionerAdapter: "sandbox-execution-api",
 				previewRunFeedEnabled: false,
+				prPreviewsEnabled: false,
+				prPreviewVerifyEnabled: false,
+				promoteAutoPreviewLabel: false,
 			}),
 		).toThrow("Unsupported event bus adapter: bogus");
 	});

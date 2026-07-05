@@ -11,7 +11,24 @@ describe("application adapter config", () => {
 			workflowSchedulerAdapter: "dapr-workflow",
 			previewProvisionerAdapter: "sandbox-execution-api",
 			previewRunFeedEnabled: false,
+			prPreviewsEnabled: false,
+			prPreviewVerifyEnabled: false,
+			promoteAutoPreviewLabel: false,
 		});
+	});
+
+	it("enables the D1/D2 pr-preview flags only when truthy", () => {
+		expect(getApplicationAdapterConfig({}).prPreviewsEnabled).toBe(false);
+		expect(
+			getApplicationAdapterConfig({ PR_PREVIEWS_ENABLED: "true" }).prPreviewsEnabled,
+		).toBe(true);
+		expect(
+			getApplicationAdapterConfig({ PR_PREVIEW_VERIFY_ENABLED: "1" }).prPreviewVerifyEnabled,
+		).toBe(true);
+		expect(
+			getApplicationAdapterConfig({ PROMOTE_AUTO_PREVIEW_LABEL: "on" })
+				.promoteAutoPreviewLabel,
+		).toBe(true);
 	});
 
 	it("enables the preview run feed only when the flag is truthy", () => {
@@ -49,6 +66,9 @@ describe("application adapter config", () => {
 			workflowSchedulerAdapter: "lite-stub",
 			previewProvisionerAdapter: "sandbox-execution-api",
 			previewRunFeedEnabled: false,
+			prPreviewsEnabled: false,
+			prPreviewVerifyEnabled: false,
+			promoteAutoPreviewLabel: false,
 		});
 	});
 

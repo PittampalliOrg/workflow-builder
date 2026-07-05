@@ -26,6 +26,14 @@ export class WorkflowPromotionGateAdapter
 export class HelperPodSourceBundlePromotionRunner
 	implements SourceBundlePromotionRunnerPort
 {
+	constructor(
+		private readonly opts: {
+			/** D2 (`PROMOTE_AUTO_PREVIEW_LABEL`): add the `preview` label to the
+			 * opened PR so the label-gated PR-preview loop auto-provisions. */
+			addPreviewLabel?: boolean;
+		} = {},
+	) {}
+
 	async promoteSourceBundle(
 		input: SourceBundlePromotionRunnerInput,
 	): Promise<SourceBundlePromotionRunnerResult> {
@@ -40,7 +48,7 @@ export class HelperPodSourceBundlePromotionRunner
 		}
 
 		const bundleUrl = `${internalBffBaseUrl()}/api/internal/files/${input.fileId}/content`;
-		const command = buildPromotionCommand(input, helper.token, bundleUrl);
+		const command = buildPromotionCommand(input, helper.token, bundleUrl, this.opts);
 		const result = await runHelperCommand(
 			helper.baseUrl,
 			helper.token,
@@ -78,10 +86,12 @@ export class HelperPodSourceBundlePromotionRunner
 	}
 }
 
-function buildPromotionCommand(
+/** Exported for tests (the shell is the single source of truth for the PR call). */
+export function buildPromotionCommand(
 	input: SourceBundlePromotionRunnerInput,
 	token: string,
 	bundleUrl: string,
+	opts: { addPreviewLabel?: boolean } = {},
 ) {
 	const overlayPaths = input.syncPaths.map(shQuote).join(" ");
 	const destSub = input.repoSubdir ? `/${input.repoSubdir}` : "";
@@ -118,6 +128,18 @@ function buildPromotionCommand(
 		`  PR=$(curl -fsS -X POST -H "Authorization: Bearer $GH" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/pulls" -d "{\\"title\\":\\"$TITLE\\",\\"head\\":\\"$BR\\",\\"base\\":\\"$BASE\\",\\"body\\":\\"Promoted from a workflow-builder code version (durable source bundle).\\"}" || echo '{}')`,
 		`  URL=$(printf '%s' "$PR" | grep -oE 'https://github.com/[^"]+/pull/[0-9]+' | head -1)`,
 		`  if [ -n "$URL" ]; then echo "PR_URL=$URL"; else echo "PR_ERR=$(printf '%s' "$PR" | grep -oE '"message"[^,}]*' | head -1)"; fi`,
+		// D2 (flagged): label the fresh PR `preview` so the label-gated Tekton
+		// pull_request trigger auto-provisions a preview. Best-effort — a label
+		// failure must never fail the promote (the PR already exists).
+		...(opts.addPreviewLabel
+			? [
+					`  if [ -n "$URL" ]; then`,
+					`    NUM="\${URL##*/}"`,
+					`    LBL=$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $GH" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/issues/$NUM/labels" -d '{"labels":["preview"]}' || echo 000)`,
+					`    echo "PREVIEW_LABEL_HTTP=$LBL"`,
+					`  fi`,
+				]
+			: []),
 		`else echo "BRANCH_PUSHED=$BR"; fi`,
 	].join("\n");
 }

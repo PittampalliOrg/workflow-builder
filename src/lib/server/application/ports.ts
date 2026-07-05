@@ -11,6 +11,7 @@ export * from "./ports/mcp";
 export * from "./ports/observability";
 export * from "./ports/pieces";
 export * from "./ports/platform";
+export * from "./ports/pr-previews";
 export * from "./ports/sandboxes";
 export * from "./ports/sessions";
 export * from "./ports/shared";
