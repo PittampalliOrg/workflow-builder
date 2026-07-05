@@ -162,7 +162,11 @@ export class ApplicationPrPreviewService {
 			prNumber,
 			alias,
 			url: info?.url ?? null,
-			state: info ? (info.ready ? "unknown" : "provisioning") : "absent",
+			// ready MUST map to a terminal state: with 2 BFF replicas the record
+			// lives only on the replica that ran the up, and conntrack pins the
+			// dispatcher's polls to ONE backend — a non-owner replica reporting
+			// "unknown" for a ready cluster kept the commit status pending forever.
+			state: info ? (info.ready ? "ready" : "provisioning") : "absent",
 			headSha: null,
 			services: [],
 			error: null,
