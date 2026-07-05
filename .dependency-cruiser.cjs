@@ -14,6 +14,23 @@
  * Run: pnpm check:boundaries
  */
 
+/**
+ * Request-scoped server helpers a route may still import directly (they are
+ * inbound-adapter concerns — auth gates, cookie/URL helpers, embedded-app and
+ * Headlamp reverse proxies — not domain services, so they don't belong behind
+ * an application port). Everything else under $lib/server must be reached
+ * through getApplicationAdapters(). Shrink only if one of these later moves
+ * behind a port; never grow it for new domain reach-ins.
+ */
+const ROUTE_SERVER_GUARD_ALLOWLIST = [
+	"^src/lib/server/internal-auth\\.ts$",
+	"^src/lib/server/platform-admin\\.ts$",
+	"^src/lib/server/auth-cookies\\.ts$",
+	"^src/lib/server/app-url\\.ts$",
+	"^src/lib/server/embedded-app-proxy\\.ts$",
+	"^src/lib/server/headlamp-proxy\\.ts$",
+];
+
 /** Legacy compat shims allowed to import application/adapters (ratchet — remove entries as slices land, never add). */
 const ADAPTER_IMPORT_ALLOWLIST = [
 	"^src/lib/server/agents/registry-sync\\.ts$",
@@ -81,6 +98,25 @@ module.exports = {
 			to: {
 				path: "^src/lib/server",
 				pathNot: ["^src/lib/server/application"],
+				dependencyTypesNot: ["type-only"],
+			},
+		},
+		{
+			name: "routes-through-application",
+			severity: "warn",
+			comment:
+				"Routes are inbound adapters: reach server-side state through application services (getApplicationAdapters()), not $lib/server domain modules directly. " +
+				"Burn-down ledger of the current runtime violator categories (drive each behind a port, then this rule flips to error): " +
+				"otel/observability tracing helpers; sessions provisioning + native-session plumbing; workflow helpers (workflow-data, run wrappers, spec/registry); " +
+				"kube/sandbox clients; scm/git + MCP gateways; files/registry + image-build helpers; dapr clients. " +
+				"TODO: promote severity to error once the ledger reaches zero.",
+			from: { path: "^src/routes" },
+			to: {
+				path: "^src/lib/server",
+				pathNot: [
+					"^src/lib/server/application",
+					...ROUTE_SERVER_GUARD_ALLOWLIST,
+				],
 				dependencyTypesNot: ["type-only"],
 			},
 		},
