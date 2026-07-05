@@ -4388,7 +4388,11 @@ def _vcluster_preview_job_manifest(
         "spec": {
             "backoffLimit": 0,
             "ttlSecondsAfterFinished": 1800,
-            "activeDeadlineSeconds": 1800,
+            # Teardown must reclaim its slot promptly, so a wedged down-Job gets a much shorter
+            # deadline than a provision (task #25 — a hung teardown was silently holding a
+            # preview slot for the full 30 min). runner.sh ACTION=down now bounds each hang-prone
+            # step with `timeout`; this deadline is the last-resort backstop.
+            "activeDeadlineSeconds": 900 if req.action == "down" else 1800,
             "template": {
                 "metadata": {"labels": {"app": "vcluster-preview"}},
                 "spec": {
