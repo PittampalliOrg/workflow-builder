@@ -6,6 +6,7 @@
 		Inbox as InboxIcon,
 		History,
 		Layers,
+		LayoutDashboard,
 		RefreshCw,
 		Workflow,
 	} from "@lucide/svelte";
@@ -14,6 +15,8 @@
 	import { goto } from "$app/navigation";
 	import { page } from "$app/state";
 
+	import OverviewTab from "$lib/components/gitops/OverviewTab.svelte";
+	import type { OverviewTabData } from "$lib/components/gitops/OverviewTab.svelte";
 	import InboxView from "$lib/components/promoter/InboxView.svelte";
 	import PipelineView from "$lib/components/promoter/PipelineView.svelte";
 	import TimelineView from "$lib/components/promoter/TimelineView.svelte";
@@ -24,13 +27,8 @@
 		buildServiceMatrix,
 		summarizeMatrix,
 	} from "$lib/gitops/service-matrix";
-	import {
-		GITOPS_EVENT_REFRESH_DEBOUNCE_MS,
-		gitOpsDeploymentMetadataUrl,
-		shouldRefreshGitOpsMetadata,
-	} from "$lib/gitops/event-driven-refresh";
+	import { gitOpsDeploymentMetadataUrl } from "$lib/gitops/event-driven-refresh";
 	import type { DeploymentMetadataResponse } from "$lib/types/deployment-metadata";
-	import type { GitOpsActivityEvent } from "$lib/types/gitops-activity";
 	import { relativeTime } from "$lib/utils/gitops-display";
 
 	import type { PageData } from "./$types";
@@ -40,16 +38,15 @@
 	type Props = { data: PageData };
 	let { data }: Props = $props();
 
-	type TabId = "pipelines" | "inbox" | "timeline" | "services";
-	const TAB_IDS: TabId[] = ["pipelines", "inbox", "timeline", "services"];
-	function isTab(s: string | null | undefined): s is TabId {
-		return !!s && (TAB_IDS as readonly string[]).includes(s);
+	type TabId = "overview" | "promotions" | "inbox" | "timeline" | "services";
+	const TAB_IDS: TabId[] = ["overview", "promotions", "inbox", "timeline", "services"];
+	/** Normalize a `?tab=` value; the legacy `pipelines` label maps to `promotions`. */
+	function normalizeTab(s: string | null | undefined): TabId {
+		if (s === "pipelines") return "promotions";
+		return !!s && (TAB_IDS as readonly string[]).includes(s) ? (s as TabId) : "overview";
 	}
 
-	const initialTab: TabId = (() => {
-		const fromUrl = page.url.searchParams.get("tab");
-		return isTab(fromUrl) ? fromUrl : "pipelines";
-	})();
+	const initialTab: TabId = normalizeTab(page.url.searchParams.get("tab"));
 
 	let metadata = $state<DeploymentMetadataResponse>(untrack(() => data.initial));
 	let promotions = $state<PromotionStrategiesResponse>(untrack(() => data.promotions));
@@ -59,18 +56,26 @@
 	let errorMessage = $state<string | null>(null);
 	let timer: ReturnType<typeof setInterval> | null = null;
 	let clockTimer: ReturnType<typeof setInterval> | null = null;
-	let eventRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-	let activityEventSource: EventSource | null = null;
-	let activityReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	let now = $state<number>(Date.now());
 
 	let tab = $state<TabId>(initialTab);
 
+	// The consolidated overview tab owns the single live activity EventSource (it
+	// needs the events for the pipeline overlay); the promoter tabs stay fresh via
+	// the fetch fallback poll below, so this page never opens a second stream.
+	const overviewData = $derived<OverviewTabData>({
+		initial: metadata,
+		promotions,
+		activityEvents: data.activityEvents ?? [],
+		prPreviews: data.prPreviews ?? [],
+		links: data.overviewLinks,
+		viewerEmail: data.viewerEmail,
+	});
+
 	// Sync tab ← URL for browser back/forward. The read/write of `tab` is
 	// untracked so this effect doesn't subscribe to its own write.
 	$effect(() => {
-		const fromUrl = page.url.searchParams.get("tab");
-		const next: TabId = isTab(fromUrl) ? fromUrl : "pipelines";
+		const next = normalizeTab(page.url.searchParams.get("tab"));
 		untrack(() => {
 			if (next !== tab) tab = next;
 		});
@@ -116,16 +121,14 @@
 	}
 
 	onMount(() => {
+		// 15s fetch fallback keeps the promoter tabs fresh. The live event stream
+		// belongs to the overview tab (single EventSource across the surface).
 		startFallbackPolling();
 		clockTimer = setInterval(() => (now = Date.now()), 30_000);
-		connectActivityStream();
 	});
 	onDestroy(() => {
 		stopFallbackPolling();
 		if (clockTimer) clearInterval(clockTimer);
-		if (eventRefreshTimer) clearTimeout(eventRefreshTimer);
-		closeActivityStream();
-		if (activityReconnectTimer) clearTimeout(activityReconnectTimer);
 	});
 
 	function startFallbackPolling() {
@@ -135,50 +138,6 @@
 	function stopFallbackPolling() {
 		if (timer) clearInterval(timer);
 		timer = null;
-	}
-
-	function scheduleEventRefresh(event: GitOpsActivityEvent) {
-		if (!shouldRefreshGitOpsMetadata(event)) return;
-		if (eventRefreshTimer) clearTimeout(eventRefreshTimer);
-		eventRefreshTimer = setTimeout(() => {
-			eventRefreshTimer = null;
-			void refresh({ fresh: true });
-		}, GITOPS_EVENT_REFRESH_DEBOUNCE_MS);
-	}
-
-	function closeActivityStream() {
-		activityEventSource?.close();
-		activityEventSource = null;
-	}
-
-	function connectActivityStream() {
-		closeActivityStream();
-		if (activityReconnectTimer) {
-			clearTimeout(activityReconnectTimer);
-			activityReconnectTimer = null;
-		}
-		const es = new EventSource("/api/v1/gitops/events/stream?since=latest");
-		activityEventSource = es;
-		es.onopen = () => {
-			stopFallbackPolling();
-		};
-		es.addEventListener("gitops.event", (event) => {
-			try {
-				scheduleEventRefresh(JSON.parse((event as MessageEvent<string>).data) as GitOpsActivityEvent);
-			} catch {
-				/* keep the fallback poll responsible for recovery */
-			}
-		});
-		es.onerror = () => {
-			es.close();
-			startFallbackPolling();
-			if (!activityReconnectTimer) {
-				activityReconnectTimer = setTimeout(() => {
-					activityReconnectTimer = null;
-					connectActivityStream();
-				}, 5_000);
-			}
-		};
 	}
 
 	const envLabel = $derived(metadata.environment.name ?? "unknown");
@@ -237,7 +196,7 @@
 	});
 
 	function handleGlobalKey(event: KeyboardEvent) {
-		// Press `1`–`4` to jump between tabs (without modifiers, outside inputs).
+		// Press `1`–`5` to jump between tabs (without modifiers, outside inputs).
 		const target = event.target as HTMLElement | null;
 		const isEditable =
 			target &&
@@ -246,23 +205,10 @@
 				target.isContentEditable);
 		if (isEditable) return;
 		if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-		switch (event.key) {
-			case "1":
-				event.preventDefault();
-				setTab("pipelines");
-				break;
-			case "2":
-				event.preventDefault();
-				setTab("inbox");
-				break;
-			case "3":
-				event.preventDefault();
-				setTab("timeline");
-				break;
-			case "4":
-				event.preventDefault();
-				setTab("services");
-				break;
+		const index = Number.parseInt(event.key, 10);
+		if (Number.isInteger(index) && index >= 1 && index <= TAB_IDS.length) {
+			event.preventDefault();
+			setTab(TAB_IDS[index - 1]!);
 		}
 	}
 
@@ -345,12 +291,22 @@
 			<button
 				type="button"
 				role="tab"
-				aria-selected={tab === "pipelines"}
-				onclick={() => setTab("pipelines")}
-				class="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium transition-colors {tab === 'pipelines' ? 'bg-background text-foreground shadow-sm' : 'hover:text-foreground'}"
+				aria-selected={tab === "overview"}
+				onclick={() => setTab("overview")}
+				class="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium transition-colors {tab === 'overview' ? 'bg-background text-foreground shadow-sm' : 'hover:text-foreground'}"
+			>
+				<LayoutDashboard class="size-3.5" />
+				Overview
+			</button>
+			<button
+				type="button"
+				role="tab"
+				aria-selected={tab === "promotions"}
+				onclick={() => setTab("promotions")}
+				class="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium transition-colors {tab === 'promotions' ? 'bg-background text-foreground shadow-sm' : 'hover:text-foreground'}"
 			>
 				<Workflow class="size-3.5" />
-				Pipelines
+				Promotions
 				{#if promoterIssues.failed > 0}
 					<Badge variant="destructive" class="ml-1 h-4 px-1 text-[0.6rem]">
 						{promoterIssues.failed}
@@ -399,7 +355,11 @@
 		</div>
 	</div>
 
-	{#if tab === "pipelines"}
+	{#if tab === "overview"}
+		<div class="flex flex-1 min-h-0 flex-col overflow-hidden">
+			<OverviewTab data={overviewData} />
+		</div>
+	{:else if tab === "promotions"}
 		<div class="flex flex-1 min-h-0 flex-col overflow-hidden">
 			<PipelineView
 				{promotions}
@@ -423,7 +383,7 @@
 					const url = new URL(page.url);
 					url.searchParams.set("strategy", name);
 					goto(url.pathname + url.search, { replaceState: true, noScroll: true, keepFocus: true });
-					setTab("pipelines");
+					setTab("promotions");
 				}}
 			/>
 		</div>

@@ -55,10 +55,22 @@
 		shortTag,
 		tektonPipelineRunUrl,
 	} from "$lib/utils/gitops-display";
+	import type { GitopsSystemPageLinks } from "$lib/gitops/links";
+	import type { GitOpsPrPreviewSummary } from "$lib/gitops/pr-preview-summary";
 
-	import type { PageData } from "./$types";
+	/** The GitOps pipeline-overview experience (formerly `/admin/gitops/system`),
+	 * extracted so the consolidated `/admin/gitops` page renders it as the default
+	 * tab. Owns the single activity EventSource for the whole surface. */
+	export type OverviewTabData = {
+		initial: DeploymentMetadataResponse;
+		promotions: PromotionStrategiesResponse;
+		activityEvents: GitOpsActivityEvent[];
+		prPreviews: GitOpsPrPreviewSummary[];
+		links: GitopsSystemPageLinks;
+		viewerEmail: string | null;
+	};
 
-	type Props = { data: PageData };
+	type Props = { data: OverviewTabData };
 	let { data }: Props = $props();
 
 	type EnvName = "dev" | "ryzen";
@@ -721,10 +733,6 @@
 		};
 	}
 </script>
-
-<svelte:head>
-	<title>GitOps system · Workflow Builder</title>
-</svelte:head>
 
 <div class="command-center flex h-full min-w-0 flex-col overflow-hidden bg-[#f7f6f2] text-[#232826]">
 	<header class="border-b border-[#d9d7cf] bg-[#fbfaf7] px-5 py-3">

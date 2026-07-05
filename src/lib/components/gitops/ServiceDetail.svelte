@@ -42,7 +42,7 @@
 		statusVariant,
 	} from "$lib/utils/gitops-display";
 
-	import type { GitopsPageLinks } from "../../../routes/(admin)/admin/gitops/+page.server";
+	import type { GitopsPageLinks } from "$lib/gitops/links";
 
 	type Props = {
 		row: ServiceRow;

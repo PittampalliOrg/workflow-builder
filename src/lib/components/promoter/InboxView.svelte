@@ -6,7 +6,7 @@
 	import { buildInboxRows, sortInboxRows, type InboxSortKey } from "$lib/promoter/inbox-view";
 	import type { PromotionStrategiesResponse } from "$lib/server/promoter/types";
 
-	import type { GitopsPageLinks } from "../../../routes/(admin)/admin/gitops/+page.server";
+	import type { GitopsPageLinks } from "$lib/gitops/links";
 
 	type Props = {
 		promotions: PromotionStrategiesResponse;

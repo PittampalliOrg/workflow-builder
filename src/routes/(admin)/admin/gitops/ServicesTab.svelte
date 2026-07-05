@@ -17,7 +17,7 @@
 	} from "$lib/gitops/service-matrix";
 	import type { DeploymentMetadataResponse } from "$lib/types/deployment-metadata";
 
-	import type { GitopsPageLinks } from "./+page.server";
+	import type { GitopsPageLinks } from "$lib/gitops/links";
 
 	type Props = {
 		metadata: DeploymentMetadataResponse;

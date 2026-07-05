@@ -9,7 +9,7 @@
 	import { buildTimelineView } from "$lib/promoter/timeline-view";
 	import type { PromotionStrategiesResponse } from "$lib/server/promoter/types";
 
-	import type { GitopsPageLinks } from "../../../routes/(admin)/admin/gitops/+page.server";
+	import type { GitopsPageLinks } from "$lib/gitops/links";
 
 	type Props = {
 		promotions: PromotionStrategiesResponse;
