@@ -28,9 +28,36 @@ describe("preview-gan-ui-feature fixture", () => {
 		const refine = spec().do.find((n: any) => n.refine).refine;
 		expect(refine.do.map((n: any) => Object.keys(n)[0])).toEqual([
 			"generate",
+			"gate",
 			"snapshot",
 			"critique",
+			"read_verdict",
 		]);
+	});
+
+	it("runs a deterministic gate and breaks the loop on accept-and-gate or stall", () => {
+		const refine = spec().do.find((n: any) => n.refine).refine;
+		const gate = refine.do.find((n: any) => n.gate).gate;
+		expect(gate.call).toBe("workspace/command");
+		expect(gate.with.cliWorkspace).toBe(true);
+		expect(gate.with.command).toContain("pnpm check");
+		expect(gate.with.command).toContain("pnpm test:unit");
+		expect(gate.with.command).toContain("OBJECTIVE PASS");
+		const readVerdict = refine.do.find((n: any) => n.read_verdict).read_verdict;
+		expect(readVerdict.with.command).toContain("stalled");
+		// while breaks on (critic-accept AND gate PASS) OR stalled
+		expect(refine.while).toContain("OBJECTIVE PASS");
+		expect(refine.while).toContain("stalled");
+		// iteration bound is configurable via .trigger.maxIterations (default 5)
+		expect(refine.for.in).toContain("maxIterations");
+	});
+
+	it("promotes a draft (not a silent clean PR) when the run is not accepted", () => {
+		const promote = spec().do.find((n: any) => n.promote).promote;
+		// the GitHub PR payload carries a real draft flag + a [draft] title prefix
+		expect(promote.with.command).toContain("'draft':draft");
+		expect(promote.with.command).toContain("[draft] ");
+		expect(promote.with.command).toContain("ENVISSUES");
 	});
 
 	it("adopts the workflow-builder preview (adopt:true)", () => {
