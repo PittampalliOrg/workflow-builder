@@ -3,6 +3,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Boxes, ChevronDown, ChevronRight, Plus, ExternalLink, Loader2, Trash2, Zap } from '@lucide/svelte';
 	import PreviewRunsPanel from '$lib/components/dev/preview-runs-panel.svelte';
+	import { teardownConfirmMessage } from '$lib/components/dev/vcluster-preview-teardown-confirm';
 
 	type Preview = {
 		name: string;
@@ -15,6 +16,8 @@
 		url: string | null;
 		/** A3: the backing warm-pool member id when this preview was CLAIMED (instant). */
 		pool?: string | null;
+		/** A4/D1 lifecycle origin: "user" | "pr" | null (legacy/human preview). */
+		origin?: string | null;
 	};
 
 	// E2: when the read proxy is enabled, each ready preview grows an
@@ -71,6 +74,10 @@
 	}
 
 	async function teardown(p: Preview) {
+		// #29: a one-click delete once took out a warm-pool member AND a claimed PR
+		// preview in a single session — always confirm, with the alias/backing-member/
+		// origin context spelled out.
+		if (!confirm(teardownConfirmMessage(p))) return;
 		busy = p.name;
 		try {
 			await fetch(`/api/dev-environments/vcluster/${encodeURIComponent(p.name)}`, {

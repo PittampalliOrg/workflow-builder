@@ -447,3 +447,121 @@ def test_resolve_preview_realname_maps_alias(monkeypatch) -> None:
     core = _FakeCore([_ns("pool-3", pool="claimed", alias="my-feature")])
     assert app_module._resolve_preview_realname(core, "my-feature") == "pool-3"
     assert app_module._resolve_preview_realname(core, "unclaimed") == "unclaimed"
+
+
+# ---- #29: pool members hidden from the user list ---------------------------
+
+
+def _pool_list_fixture(monkeypatch, namespaces):
+    """Wire _compute_vcluster_previews to fakes; every probe reports ready."""
+    monkeypatch.delenv("SANDBOX_EXECUTION_DRY_RUN", raising=False)
+    core = _FakeCore(namespaces)
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (_FakeBatch(), core))
+    monkeypatch.setattr(
+        app_module, "_vcluster_preview_phase", lambda *a, **k: ("ready", 0, 1, 0)
+    )
+    return core
+
+
+def test_compute_previews_hides_baking_labeled_members(monkeypatch) -> None:
+    """CONTRACT: the runner stamps vcluster-preview-pool=baking at up-Job START;
+    a mid-bake member must never show in the user list (the pool-1251 incident)."""
+    _pool_list_fixture(
+        monkeypatch,
+        [_ns("pool-ab12", pool="baking"), _ns("regular", pool=None)],
+    )
+    result = app_module._compute_vcluster_previews()
+    assert {p["name"] for p in result["previews"]} == {"regular"}
+    assert result["counts"]["baking"] == 1
+    assert result["counts"]["total"] == 2  # hidden members still count for capacity
+    assert result["counts"]["awake"] == 2
+
+
+def test_compute_previews_fallback_heuristic_hides_unlabeled_pool_names(monkeypatch) -> None:
+    """FALLBACK (pre-contract bakes): pool-<4hex> ns with NO pool label and NO alias
+    is classified baking and hidden."""
+    _pool_list_fixture(
+        monkeypatch,
+        [
+            _ns("pool-1251", pool=None),  # mid-bake under an old runner image
+            _ns("regular", pool=None),
+        ],
+    )
+    result = app_module._compute_vcluster_previews()
+    assert {p["name"] for p in result["previews"]} == {"regular"}
+    assert result["counts"]["baking"] == 1
+
+
+def test_compute_previews_fallback_heuristic_is_narrow(monkeypatch) -> None:
+    """The heuristic must NOT hide: names that aren't pool-<exactly 4 hex>, or members
+    with an alias label (claimed mid-personalization shows under its alias)."""
+    _pool_list_fixture(
+        monkeypatch,
+        [
+            _ns("pool-feature-x", pool=None),  # not 4 hex — a user's own name
+            _ns("pool-ab123", pool=None),  # 5 chars — not the generated shape
+            _ns("pool-9f", pool=None),  # 2 chars — not the generated shape
+            _ns("pool-ab12", pool="claimed", alias="my-feature"),
+        ],
+    )
+    result = app_module._compute_vcluster_previews()
+    names = {p["name"] for p in result["previews"]}
+    assert names == {"pool-feature-x", "pool-ab123", "pool-9f", "my-feature"}
+    assert result["counts"]["baking"] == 0
+
+
+def test_compute_previews_claimed_member_shows_alias_with_pool_state(monkeypatch) -> None:
+    _pool_list_fixture(monkeypatch, [_ns("pool-9", pool="claimed", alias="my-feature")])
+    result = app_module._compute_vcluster_previews()
+    (claimed,) = result["previews"]
+    assert claimed["name"] == "my-feature"
+    assert claimed["pool"] == "pool-9"
+    assert claimed["poolState"] == "claimed"
+    assert claimed["tailnetHost"] == "wfb-my-feature"
+
+
+def test_compute_previews_include_pool_shows_everything(monkeypatch) -> None:
+    """?includePool=true (admin/debug): every member listed under its raw id with its
+    poolState; unclaimed pool members carry NO url (no per-claim LB exists yet)."""
+    _pool_list_fixture(
+        monkeypatch,
+        [
+            _ns("pool-ab12", pool="baking"),
+            _ns("pool-cd34", pool="free"),
+            _ns("pool-ef56", pool="recycling"),
+            _ns("pool-9", pool="claimed", alias="my-feature"),
+            _ns("regular", pool=None),
+        ],
+    )
+    result = app_module._compute_vcluster_previews(include_pool=True)
+    by_name = {p["name"]: p for p in result["previews"]}
+    assert set(by_name) == {"pool-ab12", "pool-cd34", "pool-ef56", "my-feature", "regular"}
+    assert by_name["pool-cd34"]["poolState"] == "free"
+    assert by_name["pool-cd34"]["url"] is None
+    assert by_name["pool-cd34"]["tailnetHost"] is None
+    assert by_name["pool-ab12"]["poolState"] == "baking"
+    assert by_name["my-feature"]["poolState"] == "claimed"
+    assert by_name["my-feature"]["url"] is not None
+    assert "poolState" not in by_name["regular"]
+
+
+def test_list_endpoint_include_pool_bypasses_the_burst_cache(monkeypatch) -> None:
+    """The admin variant must neither read nor write the cache the user list uses."""
+    monkeypatch.delenv("SANDBOX_EXECUTION_API_TOKEN", raising=False)
+    monkeypatch.delenv("INTERNAL_API_TOKEN", raising=False)
+    _pool_list_fixture(
+        monkeypatch, [_ns("pool-cd34", pool="free"), _ns("regular", pool=None)]
+    )
+    app_module._invalidate_previews_cache()
+    try:
+        user_view = app_module.list_vcluster_previews(_no_auth_request())
+        assert {p["name"] for p in user_view["previews"]} == {"regular"}
+        admin_view = app_module.list_vcluster_previews(
+            _no_auth_request(), includePool=True
+        )
+        assert {p["name"] for p in admin_view["previews"]} == {"pool-cd34", "regular"}
+        # The cached user list is unchanged by the admin call.
+        cached = app_module.list_vcluster_previews(_no_auth_request())
+        assert {p["name"] for p in cached["previews"]} == {"regular"}
+    finally:
+        app_module._invalidate_previews_cache()

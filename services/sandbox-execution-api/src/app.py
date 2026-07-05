@@ -755,34 +755,70 @@ def build_job_manifest(
     }
 
 
-def _load_k8s_clients():
-    from kubernetes import client, config
+# ---- #32: ONE Kubernetes ApiClient per process --------------------------------------
+# Every `client.BatchV1Api()`-style no-arg constructor builds a private ApiClient, and
+# every ApiClient builds its own urllib3 PoolManager + TLS machinery (CA-bundle load,
+# fresh connections, native OpenSSL buffers). The pre-#32 loaders did exactly that on
+# EVERY call — per request handler, per 60s pool-manager tick, per reaper tick — so
+# under pool churn (bakes/claims/recycles + an 8s UI list poll fanning out to 8 probe
+# threads) the process churned connection pools + SSL contexts continuously. The Python
+# heap stayed bounded (objects were collectable) but the native allocation storm
+# fragments glibc arenas, which is RSS that never returns to the OS → the observed
+# OOMKills (at 512Mi 2026-07-05 ~04:0xZ; at 1Gi 06:15Z after only ~9min of extreme
+# churn — the container came up 06:06Z and was OOMKilled 06:15Z).
+#
+# The fix: build ONE ApiClient lazily and hand every caller a thin per-call API wrapper
+# (BatchV1Api(api) etc. hold no pools of their own — they are cheap). Correctness notes:
+#   - urllib3's PoolManager is thread-safe; the list endpoint already shared one client
+#     across its probe threads, so sharing process-wide adds no new assumption.
+#   - In-cluster SA token rotation keeps working: load_incluster_config() installs
+#     refresh_api_key_hook on the default Configuration, get_default_copy() deep-copies
+#     it (functions are atomic under deepcopy), and the hook re-reads the projected
+#     token file whenever the cached one is older than a minute.
+#   - The pool must fit the list endpoint's concurrent probes (≤8) plus the background
+#     threads, or urllib3 discards overflow connections (recreating the very TLS churn
+#     this cache removes) — floor connection_pool_maxsize at 16.
+_k8s_api_client: Any = None
+_k8s_api_client_lock = threading.Lock()
 
-    try:
-        config.load_incluster_config()
-    except Exception:
-        config.load_kube_config()
-    return client.BatchV1Api(), client.CoreV1Api()
+
+def _k8s_shared_api_client():
+    global _k8s_api_client
+    api = _k8s_api_client
+    if api is not None:
+        return api
+    with _k8s_api_client_lock:
+        if _k8s_api_client is None:
+            from kubernetes import client, config
+
+            try:
+                config.load_incluster_config()
+            except Exception:
+                config.load_kube_config()
+            configuration = client.Configuration.get_default_copy()
+            if (configuration.connection_pool_maxsize or 0) < 16:
+                configuration.connection_pool_maxsize = 16
+            _k8s_api_client = client.ApiClient(configuration)
+        return _k8s_api_client
+
+
+def _load_k8s_clients():
+    from kubernetes import client
+
+    api = _k8s_shared_api_client()
+    return client.BatchV1Api(api), client.CoreV1Api(api)
 
 
 def _load_k8s_custom_objects_client():
-    from kubernetes import client, config
+    from kubernetes import client
 
-    try:
-        config.load_incluster_config()
-    except Exception:
-        config.load_kube_config()
-    return client.CustomObjectsApi()
+    return client.CustomObjectsApi(_k8s_shared_api_client())
 
 
 def _load_k8s_apps_client():
-    from kubernetes import client, config
+    from kubernetes import client
 
-    try:
-        config.load_incluster_config()
-    except Exception:
-        config.load_kube_config()
-    return client.AppsV1Api()
+    return client.AppsV1Api(_k8s_shared_api_client())
 
 
 # Stashes a Deployment's replica count before preview-native adopt scales it to 0,
@@ -5111,6 +5147,37 @@ def _preview_member_from_ns(ns) -> PreviewMember:
     )
 
 
+# #29: pool-lifecycle states that are POOL PLUMBING, not user previews — hidden from the
+# user-facing list (still counted, and visible via ?includePool=true for admin/debug):
+#   baking    — up-Job still running; the runner stamps this at Job START (before the
+#               ~5min bringup) and flips it to `free` at completion
+#   free      — baked, claimable
+#   recycling — being torn down by the recycler/reaper
+_POOL_HIDDEN_STATES = ("baking", "free", "recycling")
+
+# The pool manager names members `pool-` + secrets.token_hex(2) → exactly 4 hex chars.
+_POOL_MEMBER_NAME_RE = re.compile(r"pool-[0-9a-f]{4}")
+
+
+def _member_effective_pool_state(member: PreviewMember) -> str | None:
+    """The pool state used to CLASSIFY a member in the list: the pool label when present.
+
+    FALLBACK HEURISTIC — remove once no live member predates the runner's stamp-baking-
+    at-Job-start change: older runner images only labeled the ns at bake COMPLETION
+    (`free`), leaving mid-bake members unlabeled for their whole ~5min bringup. Those
+    showed up in the user list as ordinary previews named pool-XXXX — the 2026-07-05
+    incident where a user's UI delete removed free member pool-1251. A member whose id
+    matches the pool-manager's generated shape (pool-<4 hex>) with NO pool label and NO
+    alias is therefore treated as baking (hidden). Trade-off: a user COLD preview
+    literally named e.g. `pool-ab12` would be mis-hidden from the list (it keeps
+    working and stays deletable by name via the API) until this fallback is removed."""
+    if member.pool_state:
+        return member.pool_state
+    if member.alias is None and _POOL_MEMBER_NAME_RE.fullmatch(member.real_name):
+        return "baking"
+    return None
+
+
 def _member_effective_expiry(
     member: PreviewMember, *, ttl_hours: int
 ) -> datetime | None:
@@ -5220,9 +5287,22 @@ def _preview_lifecycle_fields(member: PreviewMember) -> dict[str, Any]:
     }
 
 
-def _compute_vcluster_previews() -> dict[str, Any]:
+def _compute_vcluster_previews(*, include_pool: bool = False) -> dict[str, Any]:
+    """The list body. `include_pool=False` (the user list) hides pool plumbing —
+    members whose effective pool state is baking/free/recycling (#29) — while still
+    counting them; `include_pool=True` (admin/debug) lists EVERY member, with its raw
+    id, its `poolState`, and null tailnetHost/url for unclaimed pool members (the
+    per-claim wfb-<alias> LB only exists once a member is claimed)."""
     items: list[dict[str, Any]] = []
-    counts = {"awake": 0, "slept": 0, "total": 0, "free": 0, "claimed": 0, "recycling": 0}
+    counts = {
+        "awake": 0,
+        "slept": 0,
+        "total": 0,
+        "baking": 0,
+        "free": 0,
+        "claimed": 0,
+        "recycling": 0,
+    }
     counts["max"] = _vcluster_preview_max()
     counts["totalMax"] = _vcluster_preview_total_max()
     counts["poolSize"] = _vcluster_preview_pool_size()
@@ -5238,40 +5318,47 @@ def _compute_vcluster_previews() -> dict[str, Any]:
     # not the TTL-GC'd provisioning Jobs.
     nss = core.list_namespace(label_selector="app=vcluster-preview")
     # A claimed pool member is shown under the user's ALIAS but PROBED under its real member id
-    # (its ns is vcluster-<real>); a FREE/recycling member is a pool slot, hidden from the user
-    # list but counted for capacity. A4: `awake` counts only HOT members — a slept preview
-    # (control plane scaled down) holds no capacity, so it doesn't gate cold provisions;
-    # `total` (and totalMax) count everything.
-    visible: list[tuple[PreviewMember, str, str]] = []  # (member, display_name, host)
+    # (its ns is vcluster-<real>); a baking/free/recycling member is a pool slot, hidden from
+    # the user list but counted for capacity. A4: `awake` counts only HOT members — a slept
+    # preview (control plane scaled down) holds no capacity, so it doesn't gate cold
+    # provisions; `total` (and totalMax) count everything.
+    # (member, display_name, host|None, pool_state)
+    listed: list[tuple[PreviewMember, str, str | None, str | None]] = []
     for ns in nss.items:
         if _preview_ns_is_terminating(ns):
             continue
         member = _preview_member_from_ns(ns)
+        pool_state = _member_effective_pool_state(member)
         counts["total"] += 1
         if member.slept:
             counts["slept"] += 1
         else:
             counts["awake"] += 1
-        if member.pool_state in counts:
-            counts[member.pool_state] += 1
-        if member.pool_state in ("free", "recycling"):
-            continue  # a pool slot, not a user-facing preview
+        if pool_state in counts:
+            counts[pool_state] += 1
+        if pool_state in _POOL_HIDDEN_STATES:
+            if not include_pool:
+                continue  # a pool slot, not a user-facing preview (#29)
+            # Admin view: raw member id, no user-facing URL (no per-claim LB yet).
+            listed.append((member, member.real_name, None, pool_state))
+            continue
         display_name = (
             member.alias
-            if (member.pool_state == "claimed" and member.alias)
+            if (pool_state == "claimed" and member.alias)
             else member.real_name
         )
-        host = f"wfb-{display_name}"
-        visible.append((member, display_name, host))
+        listed.append((member, display_name, f"wfb-{display_name}", pool_state))
 
     # Each _vcluster_preview_phase does 2 serial K8s reads (job status + pod list); probe them
     # concurrently keyed on the real member id — the k8s client pool is thread-safe for reads.
     # A slept member is not probed at all: its pods are DELIBERATELY gone, so the probe would
     # just read "provisioning" (misleading) at the cost of 2 API calls — report phase "slept".
-    def _probe(entry: tuple[PreviewMember, str, str]) -> tuple[PreviewMember, str, str, str]:
-        member, display_name, host = entry
+    def _probe(
+        entry: tuple[PreviewMember, str, str | None, str | None],
+    ) -> tuple[PreviewMember, str, str | None, str | None, str]:
+        member, display_name, host, pool_state = entry
         if member.slept:
-            return member, display_name, host, "slept"
+            return member, display_name, host, pool_state, "slept"
         try:
             phase, _a, _s, _f = _vcluster_preview_phase(
                 batch,
@@ -5279,19 +5366,19 @@ def _compute_vcluster_previews() -> dict[str, Any]:
                 member.real_name,
                 request_timeout=_VCLUSTER_PREVIEW_PROBE_TIMEOUT,
             )
-            return member, display_name, host, phase
+            return member, display_name, host, pool_state, phase
         except Exception as exc:
             logger.warning(
                 "vcluster-previews: phase probe for %s failed: %s", member.real_name, exc
             )
-            return member, display_name, host, "absent"
+            return member, display_name, host, pool_state, "absent"
 
-    probed: list[tuple[PreviewMember, str, str, str]] = []
-    if visible:
-        with ThreadPoolExecutor(max_workers=min(8, len(visible))) as pool:
-            probed = list(pool.map(_probe, visible))
+    probed: list[tuple[PreviewMember, str, str | None, str | None, str]] = []
+    if listed:
+        with ThreadPoolExecutor(max_workers=min(8, len(listed))) as pool:
+            probed = list(pool.map(_probe, listed))
 
-    for member, display_name, host, phase in probed:
+    for member, display_name, host, pool_state, phase in probed:
         if phase == "absent":
             continue
         item = {
@@ -5299,27 +5386,64 @@ def _compute_vcluster_previews() -> dict[str, Any]:
             "phase": phase,
             "ready": phase == "ready",
             "tailnetHost": host,
-            "url": f"https://{host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}",
+            "url": f"https://{host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}" if host else None,
             **_preview_lifecycle_fields(member),
         }
+        if pool_state:
+            item["poolState"] = pool_state  # pool members only; absent on normal previews
         if member.real_name != display_name:
             item["pool"] = member.real_name  # the backing member id for claimed previews
         items.append(item)
     return {"previews": items, "counts": counts}
 
 
-@app.get("/internal/vcluster-previews")
-def list_vcluster_previews(request: Request) -> dict[str, Any]:
-    _require_internal(request)
-    now = time.monotonic()
+# #32: single-flight for the list compute. Without it, every cache expiry (and every
+# churn-driven _invalidate_previews_cache — claims/bakes/recycles fire constantly under
+# pool churn) let EVERY concurrent poller (UI 8s poll + BFF replicas + D1 dispatch
+# status polls, each on its own anyio worker thread) run a FULL _compute_vcluster_previews
+# simultaneously: N duplicate namespace lists, N×8 probe threads, N sets of deserialized
+# pod lists alive at once. Those synchronized allocation bursts are peak-RSS spikes that
+# glibc never returns to the OS (arena free lists), ratcheting RSS toward the limit —
+# the churn-window OOM shape. One caller computes; the rest briefly block and get the
+# cache the winner just refreshed.
+_vcluster_previews_compute_lock = threading.Lock()
+
+
+def _cached_vcluster_previews() -> dict[str, Any] | None:
     with _vcluster_previews_cache_lock:
         cached = _vcluster_previews_cache
         if (
             _VCLUSTER_PREVIEWS_CACHE_TTL > 0
             and cached["data"] is not None
-            and (now - cached["at"]) < _VCLUSTER_PREVIEWS_CACHE_TTL
+            and (time.monotonic() - cached["at"]) < _VCLUSTER_PREVIEWS_CACHE_TTL
         ):
             return cached["data"]
+    return None
+
+
+@app.get("/internal/vcluster-previews")
+def list_vcluster_previews(request: Request, includePool: bool = False) -> dict[str, Any]:
+    _require_internal(request)
+    # ?includePool=true (admin/debug, #29) bypasses the burst cache in BOTH directions:
+    # it must never be served the user-list variant, and its result must never poison
+    # the cache the user list reads.
+    if includePool:
+        return _compute_vcluster_previews(include_pool=True)
+    cached = _cached_vcluster_previews()
+    if cached is not None:
+        return cached
+    if _VCLUSTER_PREVIEWS_CACHE_TTL > 0:
+        # Single-flight (only meaningful with the cache on; TTL=0 debug keeps the
+        # old always-compute behavior).
+        with _vcluster_previews_compute_lock:
+            cached = _cached_vcluster_previews()
+            if cached is not None:
+                return cached  # the winner refreshed it while we waited
+            result = _compute_vcluster_previews()
+            with _vcluster_previews_cache_lock:
+                _vcluster_previews_cache["at"] = time.monotonic()
+                _vcluster_previews_cache["data"] = result
+            return result
 
     result = _compute_vcluster_previews()
 

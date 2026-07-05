@@ -76,6 +76,39 @@ List endpoint (`GET /internal/vcluster-previews`) now surfaces per preview: `sta
 surfaces the same fields; a slept preview reports `phase: "slept"` (its pods are
 deliberately gone — probing would misread "provisioning").
 
+## List classification (#29): pool members never masquerade as user previews
+
+Incident (2026-07-05): a mid-bake pool member showed in the Dev-hub previews panel as an
+ordinary preview named `pool-1251` and a user's one-click delete removed it (plus a claimed
+PR preview in the same session — the delete had no confirm). Two fixes:
+
+**SEA-side (the durable one).** `_compute_vcluster_previews` classifies every member by its
+*effective pool state* (`_member_effective_pool_state`):
+
+1. The `vcluster-preview-pool` label when present. Contract: the runner stamps `baking` at
+   up-Job START (before the ~5 min bringup) and flips it to `free` at completion; claims
+   CAS it to `claimed`; the recycler/reaper to `recycling`.
+2. FALLBACK heuristic for bakes started by runner images that predate the `baking` stamp:
+   a member whose id matches the pool-manager's generated shape (`pool-` + exactly 4 hex
+   chars, from `secrets.token_hex(2)`) with NO pool label and NO alias label is treated as
+   `baking`. Clearly commented in `app.py` for removal once no live member predates the
+   runner change. Trade-off: a user COLD preview literally named e.g. `pool-ab12` is
+   mis-hidden from the list (still works, still deletable by name) until then.
+
+States `baking` / `free` / `recycling` are HIDDEN from the user list but still counted
+(counts gain a `baking` key; `total`/`awake` capacity math unchanged). A `claimed` member
+shows under its alias with `pool` (backing member id) and `poolState: "claimed"`.
+`GET /internal/vcluster-previews?includePool=true` is the admin/debug escape hatch: every
+member under its raw id with its `poolState`; unclaimed pool members carry
+`tailnetHost`/`url: null` (the per-claim `wfb-<alias>` LB doesn't exist yet). The
+`includePool` variant bypasses the burst cache in both directions so it can never be
+served — or poison — the user list.
+
+**UI-side.** The previews panel teardown now requires a `confirm()` whose message spells
+out name + backing pool member + origin (`teardownConfirmMessage` in
+`src/lib/components/dev/vcluster-preview-teardown-confirm.ts`; PR-origin previews warn
+that PR close is the normal teardown path).
+
 ## Endpoints
 
 | Endpoint | Purpose |
@@ -167,6 +200,51 @@ against thread death, and the manual lever:
 kubectl -n workflow-builder patch cronjob preview-lifecycle-reap --type=merge -p '{"spec":{"suspend":false}}'
 kubectl -n workflow-builder create job --from=cronjob/preview-lifecycle-reap reap-now
 ```
+
+## SEA memory posture under pool churn (#32)
+
+Evidence: SEA OOMKilled at 512Mi (2026-07-05 ~04:0xZ, twice) and at 1Gi (06:15Z — the
+container came up 06:06Z and hit the limit in ~9 min of extreme churn: ~10
+bakes/recycles/claims per hour + reap passes + heavy list polling). Restarts clean;
+steady-state RSS afterwards ~360Mi.
+
+What the investigation found (2026-07-05, reading + local repro):
+
+- **No unbounded Python structure.** Module state is the bounded burst cache only; pod
+  lists are label-filtered; OTEL uses a bounded `BatchSpanProcessor` queue.
+  `tests/test_memory_regression.py` now locks this in: 400 churn cycles
+  (list+probe / includePool list / pool reconcile / reaper pass) must retain <1 MiB.
+- **Per-call kubernetes clients were pure churn** — every `_load_k8s_*` call built a
+  fresh `ApiClient` (own urllib3 `PoolManager`, CA-bundle load, new TLS handshakes) per
+  request handler AND per 60s background tick. Fixed: one process-cached `ApiClient`
+  (`_k8s_shared_api_client`, token-rotation-safe via `refresh_api_key_hook`,
+  `connection_pool_maxsize` floored at 16 for the 8-way probe fan-out). Honest
+  measurement (`scripts/memleak_probe.py`, read-only lists against dev): single-threaded,
+  fresh-vs-cached both plateau (~2.3 MiB warmup) — so this alone was NOT the leak; it is
+  a defensible churn-removal, not the smoking gun.
+- **The amplifier was the un-single-flighted list compute.** Under churn the burst cache
+  is invalidated on every claim/bake/recycle, and every concurrent poller (UI 8s poll,
+  BFF replicas, D1 dispatch status polls — each on its own anyio worker thread, pool of
+  40) then ran the FULL `_compute_vcluster_previews` simultaneously: N namespace lists +
+  N×8 fresh probe threads + N complete deserialized pod-list snapshots alive at once.
+  Synchronized allocation bursts like that set peak RSS, and glibc returns freed pages to
+  arena free lists — not the OS — so each burst ratchets RSS toward the limit. That
+  matches the observed shape exactly (fast climb under churn, clean restart, no leak at
+  rest). Fixed: the list endpoint single-flights its compute (one computes, concurrent
+  callers briefly block and read the refreshed cache; `?includePool=true` and the
+  cache-off `TTL=0` debug config keep the old behavior).
+
+Re-run the evidence probe (read-only; needs a reachable context):
+
+```sh
+cd services/sandbox-execution-api
+uv run python scripts/memleak_probe.py --mode fresh  --iterations 300 --context admin@dev
+uv run python scripts/memleak_probe.py --mode cached --iterations 300 --context admin@dev
+```
+
+Post-roll watch: `kubectl -n workflow-builder top pod -l app=sandbox-execution-api`
+during a churn window — expect the sub-1Gi sawtooth to flatten. Do NOT raise the limit
+further as a fix (1Gi already applied in stacks #3531).
 
 ## Live-validation checklist (lead actions — nothing here ran during the build)
 
