@@ -130,13 +130,19 @@ describe("preview-gan-ui-feature fixture", () => {
 		expect(p).toContain("You are the GENERATOR/builder");
 		expect(p).toContain("Never write verdict files; never grade");
 		// critic feedback is sourced from the parsed read_verdict stdout, never the
-		// raw critique node; the `| tojson` raw-object fallback is gone entirely
+		// raw critique node; the raw-object `.loop.last.critique | tojson` fallback
+		// is gone entirely (the only remaining tojson is the constructed
+		// {email,password} sign-in payload, a field serialization — asserted below)
 		expect(p).toContain("read_verdict");
-		expect(p).not.toContain("tojson");
 		expect(p).not.toContain(".loop.last.critique");
+		expect(p).not.toMatch(/critique[\s\S]{0,40}tojson/);
 		// read_verdict carries a (truncated) feedback field for exactly this
 		const readVerdict = refine.do.find((n: any) => n.read_verdict).read_verdict;
 		expect(readVerdict.with.command).toContain("[:2000]");
+		// authenticated-smoke recipe with LITERAL (jq-interpolated) credentials
+		expect(p).toContain("/api/v1/auth/sign-in");
+		expect(p).toContain(".trigger.previewLogin");
+		expect(p).toContain(".trigger.previewPassword");
 	});
 
 	it("adopts the workflow-builder preview (adopt:true)", () => {
