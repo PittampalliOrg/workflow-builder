@@ -236,6 +236,7 @@ function sampleSession(): SessionDetail {
 		createdAt: "2026-05-15T12:00:00.000Z",
 		updatedAt: "2026-05-15T12:00:00.000Z",
 		lastEventAt: null,
+		pendingInput: null,
 		completedAt: null,
 		archivedAt: null,
 		daprInstanceId: "child-1",

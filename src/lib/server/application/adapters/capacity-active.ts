@@ -6,6 +6,7 @@ import type {
 } from "$lib/server/application/capacity-active";
 import { db as defaultDb } from "$lib/server/db";
 import { sessionEvents, sessions } from "$lib/server/db/schema";
+import type { PendingInput } from "$lib/types/sessions";
 
 type Database = typeof defaultDb;
 
@@ -101,11 +102,16 @@ export class SessionFleetActivityAdapter implements CapacityFleetActivityPort {
 		// `last_event_at` column (migration 0095) still reflects when the session
 		// was last alive, which the reconciler/UI need to tell "quiet" from "dead".
 		const lastEventFallbackByKey = new Map<string, number>();
+		// Needs-input badge (migration 0096): the pending_input cache surfaces a
+		// parked session to the Fleet without an event scan. For a workflowRun key
+		// (many child sessions → one key), the FIRST parked child wins.
+		const pendingInputByKey = new Map<string, PendingInput>();
 		const usageRows = await database
 			.select({
 				id: sessions.id,
 				usage: sessions.usage,
 				lastEventAt: sessions.lastEventAt,
+				pendingInput: sessions.pendingInput,
 			})
 			.from(sessions)
 			.where(inArray(sessions.id, sessionIds));
@@ -124,6 +130,9 @@ export class SessionFleetActivityAdapter implements CapacityFleetActivityPort {
 					lastEventFallbackByKey.set(key, ts);
 				}
 			}
+			if (row.pendingInput && !pendingInputByKey.has(key)) {
+				pendingInputByKey.set(key, row.pendingInput as PendingInput);
+			}
 		}
 
 		const emptySeries = () =>
@@ -138,6 +147,7 @@ export class SessionFleetActivityAdapter implements CapacityFleetActivityPort {
 			...activityByKey.keys(),
 			...tokensByKey.keys(),
 			...lastEventFallbackByKey.keys(),
+			...pendingInputByKey.keys(),
 		])) {
 			const activity = activityByKey.get(key);
 			const tokens = tokensByKey.get(key) ?? { in: 0, out: 0 };
@@ -162,6 +172,7 @@ export class SessionFleetActivityAdapter implements CapacityFleetActivityPort {
 				tokens: tokens.in + tokens.out,
 				tokensIn: tokens.in,
 				tokensOut: tokens.out,
+				pendingInput: pendingInputByKey.get(key) ?? null,
 			};
 		}
 

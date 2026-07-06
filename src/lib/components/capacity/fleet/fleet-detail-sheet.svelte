@@ -14,6 +14,7 @@
 	import { createSessionStream, type SessionStreamState } from '$lib/stores/session-stream.svelte';
 	import { createExecutionStream, type ExecutionStreamState } from '$lib/stores/execution-stream.svelte';
 	import EventRow from '$lib/components/sessions/event-row.svelte';
+	import NeedsInputBadge from '$lib/components/sessions/needs-input-badge.svelte';
 	import RunLineageTree from '$lib/components/workflow/execution/run-lineage-tree.svelte';
 	import { page } from '$app/state';
 	import type { CapacityBusinessWorkItem } from '$lib/types/capacity';
@@ -144,6 +145,9 @@
 				</div>
 				<Sheet.Description class="flex items-center gap-2 text-xs">
 					<SharedStatusPill variant="text" status={item.status ?? ''} label={item.status ?? '—'} class="text-xs" />
+					{#if sessionState?.session?.pendingInput}
+						<NeedsInputBadge pendingInput={sessionState.session.pendingInput} />
+					{/if}
 					{#if item.model}<span class="truncate text-muted-foreground">{item.model}</span>{/if}
 					{#if item.href}
 						<a href={item.href} class="ml-auto inline-flex shrink-0 items-center gap-1 text-primary hover:underline">

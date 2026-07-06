@@ -12,6 +12,7 @@ import type {
 	AgentToolChoice,
 } from "$lib/types/agents";
 import type {
+	PendingInput,
 	SessionDetail,
 	SessionEventEnvelope,
 	SessionResource,
@@ -331,6 +332,17 @@ export interface SessionRepository {
 	 * a dead one WITHOUT scanning session_events. Must NOT touch `updated_at`.
 	 */
 	bumpSessionLastEventAt(sessionId: string): Promise<void>;
+	/**
+	 * Overwrite the `sessions.pending_input` needs-input cache (or clear it with
+	 * `null`). Maintained by the single serialized ingest writer alongside the
+	 * status writes so the session LIST + Fleet surfaces can badge a parked
+	 * session without scanning session_events. Pure cache — must NOT touch
+	 * `updated_at`. Session events remain the source of truth.
+	 */
+	setSessionPendingInput(
+		sessionId: string,
+		value: PendingInput | null,
+	): Promise<void>;
 }
 
 export type SessionProvisioningPhase =

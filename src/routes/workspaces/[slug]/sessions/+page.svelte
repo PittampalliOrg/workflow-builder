@@ -12,6 +12,7 @@
 	import ResourceTable from '$lib/components/console/resource-table.svelte';
 	import StatusPill from '$lib/components/shared/status-pill.svelte';
 	import StopReasonChip from '$lib/components/sessions/stop-reason-chip.svelte';
+	import NeedsInputBadge from '$lib/components/sessions/needs-input-badge.svelte';
 	import {
 		Boxes,
 		ExternalLink,
@@ -394,7 +395,9 @@
 			<td class="px-4 py-2.5">
 				<div class="flex items-center gap-1.5">
 					<StatusPill status={s.status} />
-					{#if s.stopReason}
+					{#if s.pendingInput}
+						<NeedsInputBadge pendingInput={s.pendingInput} />
+					{:else if s.stopReason}
 						<StopReasonChip stopReason={s.stopReason} />
 					{/if}
 				</div>

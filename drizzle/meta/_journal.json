@@ -631,6 +631,13 @@
       "when": 1783350000000,
       "tag": "0095_session_last_event_at",
       "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1783440000000,
+      "tag": "0096_session_pending_input",
+      "breakpoints": true
     }
   ]
 }

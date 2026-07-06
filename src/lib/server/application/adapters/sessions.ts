@@ -114,6 +114,7 @@ import {
 	agentRuntimeInvokeTarget,
 } from "$lib/server/agents/runtime-routing";
 import type {
+	PendingInput,
 	SessionDetail,
 	SessionResource,
 	SessionResourceType,
@@ -225,6 +226,7 @@ function rowToSessionSummary(
 		createdAt: row.createdAt.toISOString(),
 		updatedAt: row.updatedAt.toISOString(),
 		lastEventAt: row.lastEventAt ? row.lastEventAt.toISOString() : null,
+		pendingInput: (row.pendingInput as PendingInput | null) ?? null,
 		completedAt: row.completedAt ? row.completedAt.toISOString() : null,
 		archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
 	};
@@ -1207,6 +1209,20 @@ export class CurrentSessionRepository implements SessionRepository {
 					sql`(${sessions.lastEventAt} IS NULL OR ${sessions.lastEventAt} < now() - interval '5 seconds')`,
 				),
 			);
+	}
+
+	async setSessionPendingInput(
+		sessionId: string,
+		value: PendingInput | null,
+	): Promise<void> {
+		const database = requireDb(this.database);
+		// Pure cache write — like bumpSessionLastEventAt, deliberately does NOT
+		// touch updated_at (a needs-input transition isn't a status mutation). The
+		// ingest writer already serializes per session, so no guard is needed.
+		await database
+			.update(sessions)
+			.set({ pendingInput: (value as Record<string, unknown> | null) ?? null })
+			.where(eq(sessions.id, sessionId));
 	}
 }
 
