@@ -103,6 +103,8 @@ ${HEADLESS_RULE}
 
 HARD REQUIREMENT — satisfy the contract's acceptanceCriteria + designTokens + rubric and address the latest critic feedback. Wire REAL data via +page.server.ts from EXISTING repo endpoints (grep src for the real ones); NEVER fabricate data; guard EACH server-side source independently (try/catch or Promise.allSettled) and degrade THAT region to a graceful empty state — one failing source must never 500 the page. Keep hexagonal-architecture discipline. Keep existing functionality working; do NOT touch the sign-in/auth pages.
 
+KNOWN LANDMINE in this repo: list endpoints (dashboard recent-changes/agents/runs) can return entries with DUPLICATE ids (same resource, multiple versions). In Svelte 5 a keyed {#each} with a duplicate key throws each_key_duplicate during hydration and unmounts the entire subtree even though SSR looks fine. ALWAYS dedupe lists in the server load AND key {#each} blocks by a guaranteed-unique composite (id + version/index).
+
 Optionally read /sandbox/work/contract.json and /sandbox/work/design-review.json IF they exist (do NOT fail if missing).
 
 EXPORT_URL=__EXPORT_URL__
