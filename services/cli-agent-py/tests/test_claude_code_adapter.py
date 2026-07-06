@@ -15,6 +15,15 @@ from src.cli_adapters.claude_code import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_glm_gateway_env(monkeypatch):
+    """build_argv now reads ANTHROPIC_BASE_URL from os.environ to detect Z.AI
+    gateway mode (claude-code-cli-glm); clear it by default so the model-flag
+    tests are deterministic regardless of the ambient shell. The GLM tests re-set
+    it explicitly via monkeypatch."""
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+
+
 @pytest.fixture
 def seeded_dirs(tmp_path, monkeypatch):
     wfb_dir = tmp_path / "wfb"
@@ -307,6 +316,63 @@ def test_pane_env_passthrough_and_api_key_exclusion():
     assert "ANTHROPIC_API_KEY" not in env
     assert "CLAUDE_API_KEY" not in env
     assert "RANDOM_SECRET" not in env
+
+
+def test_build_argv_glm_gateway_omits_model(monkeypatch):
+    """Z.AI gateway mode (claude-code-cli-glm): with ANTHROPIC_BASE_URL injected,
+    the Opus/Sonnet/Haiku tiers come from ANTHROPIC_DEFAULT_*_MODEL, so build_argv
+    must NOT emit --model/--fallback-model — a normalized claude-* id (or the
+    DEFAULT_MODEL fallback applied to a zai/glm spec) would break the GLM gateway.
+    Non-model flags still apply."""
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic")
+    adapter = get_adapter("claude-code")
+    argv = adapter.build_argv(
+        {"modelSpec": "zai/glm-5.2", "fallbackModelSpec": "zai/glm-5.1"}, {}
+    )
+    assert "--model" not in argv
+    assert "--fallback-model" not in argv
+    assert "--dangerously-skip-permissions" in argv
+
+
+def test_build_argv_keeps_model_without_gateway():
+    """Without ANTHROPIC_BASE_URL (stock anthropic claude-code-cli) the modelSpec
+    still drives --model exactly as before."""
+    adapter = get_adapter("claude-code")
+    argv = adapter.build_argv({"modelSpec": "anthropic/claude-opus-4-8"}, {})
+    assert argv[argv.index("--model") + 1] == "claude-opus-4-8"
+
+
+def test_pane_env_forwards_glm_gateway_env_but_strips_api_key():
+    """The GLM variant forwards ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL /
+    ANTHROPIC_DEFAULT_*_MODEL / CLAUDE_CODE_AUTO_COMPACT_WINDOW to the pane, while
+    STILL stripping the billing-flipping ANTHROPIC_API_KEY / CLAUDE_API_KEY."""
+    adapter = get_adapter("claude-code")
+    env = adapter.pane_env(
+        {
+            "HOME": "/sandbox",
+            "ANTHROPIC_AUTH_TOKEN": "glm-key",
+            "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2[1m]",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.2[1m]",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-4.7",
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "API_TIMEOUT_MS": "3000000",
+            "ANTHROPIC_API_KEY": "sk-bad",
+            "CLAUDE_API_KEY": "sk-worse",
+        },
+        session_id="sess-glm",
+    )
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "glm-key"
+    assert env["ANTHROPIC_BASE_URL"] == "https://api.z.ai/api/anthropic"
+    assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "glm-5.2[1m]"
+    assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "glm-5.2[1m]"
+    assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "glm-4.7"
+    assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "1000000"
+    assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+    assert env["API_TIMEOUT_MS"] == "3000000"
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "CLAUDE_API_KEY" not in env
 
 
 def test_seed_no_transcript_store_leaves_projects_local(seeded_dirs, monkeypatch):

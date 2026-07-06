@@ -267,6 +267,64 @@
       }
     },
     {
+      "id": "claude-code-cli-glm",
+      "_comment": "GLM-5.2 variant of claude-code-cli: the SAME Claude Code TUI, cli-agent-py host image, and `claude-code` adapter — but pointed at Z.AI's Anthropic-compatible gateway (ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic) with the user's PERSONAL GLM Coding Plan key delivered as ANTHROPIC_AUTH_TOKEN, and the Opus/Sonnet/Haiku model tiers mapped to GLM models via cliModelEnv. Kept a DISTINCT runtime (NOT multiProvider) so the anthropic-subscription `claude-code-cli` path — and its 'no provider API key may reach the pod' billing guard — stays byte-for-byte untouched. The AUTH_TOKEN/BASE_URL exception is intentional and provider-scoped: there is no Anthropic subscription to protect here; billing is the user's own metered GLM plan via z.ai. See docs/interactive-cli-sessions.md.",
+      "appIdConfigKey": "CLAUDE_CODE_CLI_GLM_APP_ID",
+      "instancePrefix": "durable-claude-cli-glm",
+      "family": "interactive-cli",
+      "mainContainerName": "cli-agent-py",
+      "imageEnvKey": "AGENT_RUNTIME_CLAUDE_CLI_DEFAULT_IMAGE",
+      "agentMetadataFramework": "Claude Code CLI (GLM-5.2)",
+      "benchmarkEligible": true,
+      "capabilitiesVerified": false,
+      "executionClass": "interactive-cli",
+      "cliAdapter": "claude-code",
+      "cliAuth": {
+        "provider": "zai",
+        "tokenKind": "api_key",
+        "credentialKind": "env_token",
+        "loginStyle": "api_key",
+        "envVar": "ANTHROPIC_AUTH_TOKEN",
+        "apiBaseUrl": "https://api.z.ai/api/anthropic",
+        "setupCommand": "create a key at https://z.ai/manage-apikey/apikey-list"
+      },
+      "cliModelEnv": {
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2[1m]",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.2[1m]",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-4.7",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "API_TIMEOUT_MS": "3000000"
+      },
+      "capabilities": {
+        "durabilityGranularity": "per-session",
+        "workspaceBackend": "juicefs-shared",
+        "workflowDispatch": "auto-turn",
+        "retryMaxAttempts": 2,
+        "durableTurnTimer": false,
+        "supportsMcp": true,
+        "supportsSkills": true,
+        "supportsBuiltinOpenShellTools": false,
+        "supportsHooks": true,
+        "hookTiming": "live",
+        "eventDrivenInvocation": true,
+        "portableHooks": true,
+        "hookBlockingGranularity": "full",
+        "supportsPermissionGating": true,
+        "supportsPlugins": true,
+        "supportsCompaction": true,
+        "incrementalEvents": true,
+        "ownsSandbox": true,
+        "requiresWarmPool": false,
+        "requiresBrowserSidecars": false,
+        "multiProvider": false,
+        "supportedProviders": [
+          "zai"
+        ],
+        "interactiveTerminal": true
+      }
+    },
+    {
       "id": "codex-cli",
       "appIdConfigKey": "CODEX_CLI_APP_ID",
       "instancePrefix": "durable-codex-cli",

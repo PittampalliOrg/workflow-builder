@@ -5910,6 +5910,7 @@ export function buildSwebenchInstanceWorkflowGraph(): {
 const SWEBENCH_SOLVE_SANDBOX_REFERENCE_RUNTIMES: ReadonlySet<string> = new Set([
 	"claude-agent-py",
 	"claude-code-cli",
+	"claude-code-cli-glm",
 	"codex-cli",
 	"agy-cli",
 ]);

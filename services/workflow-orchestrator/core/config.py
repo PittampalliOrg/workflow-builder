@@ -62,6 +62,7 @@ class OrchestratorConfig:
     # All three CLI runtimes share ONE host image/service — distinct config keys
     # exist only because the runtime registry reader getattrs each appIdConfigKey.
     CLAUDE_CODE_CLI_APP_ID: str = "cli-agent-py"
+    CLAUDE_CODE_CLI_GLM_APP_ID: str = "cli-agent-py"
     CODEX_CLI_APP_ID: str = "cli-agent-py"
     AGY_CLI_APP_ID: str = "cli-agent-py"
     BROWSER_USE_AGENT_APP_ID: str = "browser-use-agent"
@@ -114,6 +115,7 @@ class OrchestratorConfig:
                 "ADK_AGENT_PY_APP_ID",
                 "CLAUDE_AGENT_PY_APP_ID",
                 "CLAUDE_CODE_CLI_APP_ID",
+                "CLAUDE_CODE_CLI_GLM_APP_ID",
                 "CODEX_CLI_APP_ID",
                 "AGY_CLI_APP_ID",
                 "CLAUDE_CODE_AGENT_APP_ID",
@@ -191,6 +193,10 @@ class OrchestratorConfig:
             ),
             "CLAUDE_CODE_CLI_APP_ID": (
                 "CLAUDE_CODE_CLI_APP_ID",
+                "cli-agent-py",
+            ),
+            "CLAUDE_CODE_CLI_GLM_APP_ID": (
+                "CLAUDE_CODE_CLI_GLM_APP_ID",
                 "cli-agent-py",
             ),
             "CODEX_CLI_APP_ID": ("CODEX_CLI_APP_ID", "cli-agent-py"),

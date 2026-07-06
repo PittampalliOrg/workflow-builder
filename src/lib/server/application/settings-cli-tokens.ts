@@ -10,7 +10,7 @@ export type CliRuntimeAuthReadModel = {
 	provider: string;
 	tokenKind: string;
 	credentialKind: "env_token" | "file" | "file_bundle" | "device_login";
-	loginStyle?: "browser_token" | "auth_file" | "device_code";
+	loginStyle?: "browser_token" | "auth_file" | "device_code" | "api_key";
 	envVar?: string;
 	credentialPath?: string;
 	setupCommand?: string;

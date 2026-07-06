@@ -108,12 +108,16 @@ NDJSON over Unix socket (`HERDR_SOCKET_PATH=/sandbox/run/herdr.sock`):
 
 ## Auth (personal OAuth — NOT cluster API keys)
 
-Each runtime's `cliAuth.credentialKind` picks ONE of three delivery models. All
-OAuth; all keep usage on the USER's personal subscription, never a cluster key.
+Each runtime's `cliAuth.credentialKind` picks ONE of a few delivery models. The
+subscription CLIs are all OAuth and keep usage on the USER's personal
+subscription, never a cluster key. The GLM variant (`claude-code-cli-glm`) is the
+one deliberate exception — `tokenKind: api_key` — because it targets a metered
+BYO-key gateway, not a subscription (see the invariant note below).
 
 | Runtime | provider | `credentialKind` | What the user does | Delivery |
 |---|---|---|---|---|
 | `claude-code-cli` | anthropic | `env_token` | `claude setup-token` → paste `sk-ant-oat…` | secret env `CLAUDE_CODE_OAUTH_TOKEN`, read directly by claude |
+| `claude-code-cli-glm` | zai | `env_token` (`tokenKind: api_key`) | create a key at z.ai/manage-apikey → paste it | secret env `ANTHROPIC_AUTH_TOKEN` + per-session `ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic` + `cliModelEnv` (Opus/Sonnet→`glm-5.2[1m]`, Haiku→`glm-4.7`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `API_TIMEOUT_MS=3000000`); the SAME `claude` binary talks to the Z.AI Anthropic-compatible gateway |
 | `codex-cli` | openai | `file` | `codex login` (browser ChatGPT OAuth) → paste `~/.codex/auth.json` | secret env `CODEX_AUTH_JSON` (the blob); the adapter `seed()` writes `$CODEX_HOME/auth.json` (0600) and STRIPS the env from the pane |
 | `agy-cli` | google | `file_bundle` | direct session: authenticate in terminal once; workflow: use captured `~/.gemini` bundle | secret env `AGY_AUTH_JSON` when available/required; adapter restores the login bundle |
 
@@ -145,6 +149,18 @@ OAuth; all keep usage on the USER's personal subscription, never a cluster key.
   Enforced structurally (`agentHostEnvFrom` class override excludes the shared
   agent secrets; `ExternalSecret cli-agent-py-secrets` carries ONLY
   `INTERNAL_API_TOKEN`) + each adapter's pane_env strip + a startup guard.
+- **GLM variant scope of the invariant** — the invariant protects a
+  *subscription* from being silently outranked by a metered API key. The
+  `claude-code-cli-glm` runtime has no Anthropic subscription to protect: it is a
+  BYO-key GLM Coding Plan session, so its per-user `ANTHROPIC_AUTH_TOKEN` (+
+  `ANTHROPIC_BASE_URL` → the Z.AI gateway) IS the intended metered auth and is
+  ALLOWED through the claude adapter's `pane_env`. The true billing-flip keys
+  (`ANTHROPIC_API_KEY`/`CLAUDE_API_KEY`) are STILL stripped, and the
+  cli-agent-py startup guard (`_FORBIDDEN_AUTH_ENV_VARS`) still refuses to boot
+  if either is present — so the anthropic-subscription `claude-code-cli` path is
+  unaffected. The distinction is provider-scoped and lives entirely in the
+  registry (`tokenKind: api_key` + `cliAuth.apiBaseUrl`), never in adapter
+  branching on runtime id.
 - **Credential paths in-pod** (writable sandbox emptyDir so auto-refresh
   persists for the session): codex `$CODEX_HOME=/sandbox/.codex`; agy
   `$HOME=/sandbox` -> `~/.gemini`.

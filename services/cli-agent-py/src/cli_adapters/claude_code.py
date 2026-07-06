@@ -17,10 +17,16 @@ Seeds per-session artifacts and builds the pane argv/env for the real
       only when non-empty.
   (d) permissions: CLI sandboxes are already isolated by Kubernetes, so starts
       use ``--dangerously-skip-permissions`` to avoid blocking on tool prompts.
-  (e) model: normalize_claude_model copied from claude_sdk_runner.py.
+  (e) model: normalize_claude_model copied from claude_sdk_runner.py. In Z.AI
+      gateway mode (claude-code-cli-glm, detected via ANTHROPIC_BASE_URL) the
+      model tiers come from ANTHROPIC_DEFAULT_*_MODEL, so build_argv omits
+      --model/--fallback-model (see is_glm_gateway_env).
   (g) pane_env: CLAUDE_CODE_OAUTH_TOKEN / CLAUDE_CONFIG_DIR / OTEL_* /
       CLAUDE_CODE_ENABLE_TELEMETRY pass-through + wfb.session.id resource
-      attribute; NEVER ANTHROPIC_API_KEY / CLAUDE_API_KEY.
+      attribute; NEVER ANTHROPIC_API_KEY / CLAUDE_API_KEY. The GLM gateway
+      variant additionally passes ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL /
+      ANTHROPIC_DEFAULT_*_MODEL / CLAUDE_CODE_AUTO_COMPACT_WINDOW (its personal
+      GLM key is the intended metered auth, not a subscription-outranking key).
 
 Hook wiring is written PER-SESSION at seed time into
 ``$CLAUDE_CONFIG_DIR/settings.json`` — NOT baked into the image (the image's
@@ -127,6 +133,18 @@ def normalize_claude_model(model_spec: Any) -> str | None:
     if fallback and fallback.startswith("anthropic/"):
         return fallback.split("/", 1)[1]
     return fallback
+
+
+def is_glm_gateway_env(env: Mapping[str, str]) -> bool:
+    """True when this session runs Claude Code against an Anthropic-COMPATIBLE
+    gateway (Z.AI GLM / the ``claude-code-cli-glm`` runtime), signalled by the
+    per-session ``ANTHROPIC_BASE_URL`` the BFF injects into the pod env
+    (session-secret-env.ts). In gateway mode the model is chosen via the
+    ``ANTHROPIC_DEFAULT_*_MODEL`` tier env (forwarded by pane_env), NOT a
+    ``--model`` flag — a normalized ``claude-*`` id (or the DEFAULT_MODEL
+    fallback) is meaningless to the GLM gateway and would be rejected. Absent for
+    the stock anthropic-subscription ``claude-code-cli`` path."""
+    return bool(clean_string(env.get("ANTHROPIC_BASE_URL")))
 
 
 def normalize_permission_mode(value: Any) -> str:
@@ -345,16 +363,24 @@ class ClaudeCodeAdapter(CliAdapter):
         # BFF sets continueSession only when the session re-mounts that subtree.
         if bool(agent_config.get("continueSession")):
             argv += ["--continue"]
-        model = normalize_claude_model(agent_config.get("modelSpec"))
-        if model:
-            argv += ["--model", model]
-        # Fallback model (used when the primary is overloaded). Only when set —
-        # normalize_claude_model falls back to DEFAULT_MODEL on empty input, so
-        # guard on presence to avoid injecting a spurious fallback.
-        if clean_string(agent_config.get("fallbackModelSpec")):
-            fallback = normalize_claude_model(agent_config.get("fallbackModelSpec"))
-            if fallback:
-                argv += ["--fallback-model", fallback]
+        # Model selection. In Z.AI gateway mode (claude-code-cli-glm) the
+        # Opus/Sonnet/Haiku tiers are bound to GLM models via
+        # ANTHROPIC_DEFAULT_*_MODEL (injected per-session, forwarded by pane_env),
+        # so we DON'T inject --model/--fallback-model: a normalized claude-* id —
+        # or the DEFAULT_MODEL fallback normalize_claude_model applies to a
+        # zai/glm-* spec — would be rejected by the GLM gateway. Otherwise honor
+        # the per-agent modelSpec as before.
+        if not is_glm_gateway_env(os.environ):
+            model = normalize_claude_model(agent_config.get("modelSpec"))
+            if model:
+                argv += ["--model", model]
+            # Fallback model (used when the primary is overloaded). Only when set —
+            # normalize_claude_model falls back to DEFAULT_MODEL on empty input, so
+            # guard on presence to avoid injecting a spurious fallback.
+            if clean_string(agent_config.get("fallbackModelSpec")):
+                fallback = normalize_claude_model(agent_config.get("fallbackModelSpec"))
+                if fallback:
+                    argv += ["--fallback-model", fallback]
         # Reasoning effort. `low|medium|high|xhigh` → `--effort <v>`; `ultracode`
         # → `--settings '{"ultracode": true}'` (a setting, not an effort level, so
         # NOT combined with --effort); `max` → the CLAUDE_CODE_EFFORT_LEVEL env in
@@ -406,6 +432,22 @@ class ClaudeCodeAdapter(CliAdapter):
             "TERM",
             "GITHUB_TOKEN",  # git clone/push + PR for coding workflows (NOT the LLM key)
             "PLAYWRIGHT_BROWSERS_PATH",  # /opt/pw-browsers — the critic's Playwright chromium
+            # Z.AI GLM gateway variant (claude-code-cli-glm): the personal GLM
+            # Coding Plan key + the Anthropic-COMPATIBLE gateway base URL + the
+            # Opus/Sonnet/Haiku→GLM tier mapping + the 1M-context compaction knob.
+            # Present ONLY when the GLM runtime injected them per-session (absent
+            # for the anthropic-subscription claude-code-cli path). Unlike an
+            # Anthropic API key, ANTHROPIC_AUTH_TOKEN here IS the intended metered
+            # billing credential — there is no Anthropic subscription to outrank,
+            # so it is ALLOWED through (the true API keys are still stripped below).
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+            "API_TIMEOUT_MS",
         )
         for key in passthrough:
             value = base_env.get(key)

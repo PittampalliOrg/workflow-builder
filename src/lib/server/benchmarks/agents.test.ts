@@ -24,6 +24,7 @@ describe("benchmark agent validation", () => {
 			"adk-agent-py",
 			"claude-agent-py",
 			"claude-code-cli",
+			"claude-code-cli-glm",
 			"codex-cli",
 			"agy-cli",
 		]);
@@ -71,6 +72,14 @@ describe("benchmark agent validation", () => {
 		});
 		expect(claude.runtime).toBe("claude-code-cli");
 		expect(claude.effectiveProvider).toBe("anthropic");
+
+		const glm = assertDaprAgentPyBenchmarkAgent({
+			...baseAgent,
+			runtime: "claude-code-cli-glm",
+			modelSpec: "zai/glm-5.2",
+		});
+		expect(glm.runtime).toBe("claude-code-cli-glm");
+		expect(glm.effectiveProvider).toBe("zai");
 
 		const codex = assertDaprAgentPyBenchmarkAgent({
 			...baseAgent,

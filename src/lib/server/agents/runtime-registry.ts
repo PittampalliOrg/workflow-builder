@@ -86,7 +86,16 @@ export type RuntimeCapabilities = {
  */
 export type RuntimeCliAuth = {
 	provider: string;
-	tokenKind: "subscription_oauth";
+	/**
+	 * `subscription_oauth` — a personal subscription OAuth token (anthropic/openai/
+	 * google CLIs; usage stays on the user's plan). `api_key` — a provider API key
+	 * for an Anthropic-compatible GATEWAY (claude-code-cli-glm → Z.AI GLM Coding
+	 * Plan): the token is the metered billing credential, delivered as
+	 * `envVar`=ANTHROPIC_AUTH_TOKEN alongside `apiBaseUrl`. Distinct from the
+	 * subscription CLIs' "never let a provider API key reach the pod" invariant —
+	 * here there is no subscription to protect, so the key IS the intended auth.
+	 */
+	tokenKind: "subscription_oauth" | "api_key";
 	/**
 	 * How the OAuth credential reaches the pod + is consumed in-pod:
 	 *  - `env_token`    — a single opaque token delivered as `envVar`, read
@@ -106,13 +115,20 @@ export type RuntimeCliAuth = {
 	 */
 	credentialKind: "env_token" | "file" | "file_bundle" | "device_login";
 	/** Settings-UI rendering hint for the enrollment instructions. */
-	loginStyle?: "browser_token" | "auth_file" | "device_code";
+	loginStyle?: "browser_token" | "auth_file" | "device_code" | "api_key";
 	/** Delivery env var (env_token + file). Absent for device_login. */
 	envVar?: string;
 	/** In-pod path the file blob is materialized to (file kind only). */
 	credentialPath?: string;
 	/** Command the user runs locally to mint the credential (na for device_login). */
 	setupCommand?: string;
+	/**
+	 * Anthropic-compatible GATEWAY base URL for `tokenKind: "api_key"` runtimes
+	 * (claude-code-cli-glm → https://api.z.ai/api/anthropic). Injected per-session
+	 * as ANTHROPIC_BASE_URL so the Claude Code CLI talks to the provider gateway
+	 * instead of api.anthropic.com. Absent for subscription CLIs.
+	 */
+	apiBaseUrl?: string;
 };
 
 export type RuntimeDescriptor = {
@@ -133,6 +149,15 @@ export type RuntimeDescriptor = {
 	 */
 	cliAdapter?: string;
 	cliAuth?: RuntimeCliAuth;
+	/**
+	 * Per-session, non-secret environment for gateway-backed CLI runtimes
+	 * (claude-code-cli-glm): the Claude Code model-tier → provider-model mapping
+	 * (ANTHROPIC_DEFAULT_OPUS/SONNET/HAIKU_MODEL) + gateway knobs like
+	 * CLAUDE_CODE_AUTO_COMPACT_WINDOW. Delivered alongside the credential via the
+	 * per-session env channel (session-secret-env.ts). Absent for stock CLIs,
+	 * which use Claude Code's baked-in Anthropic model defaults.
+	 */
+	cliModelEnv?: Record<string, string>;
 	capabilities: RuntimeCapabilities;
 };
 

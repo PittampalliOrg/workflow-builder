@@ -70,6 +70,7 @@ const TOOL_CAPABLE_BENCHMARK_PROVIDERS = new Set([
 	"alibaba",
 	"kimi",
 	"googleai",
+	"zai",
 ]);
 
 export function benchmarkRuntimeSupportsProvider(
