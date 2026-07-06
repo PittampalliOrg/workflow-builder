@@ -23,9 +23,6 @@ function gateScript(cfg: GanFixtureConfig): string {
 	return `IDX=__IDX__
 EXPORT_URL=__EXPORT_URL__
 export CI=1
-# svelte-check (9920 files) SIGABRTs V8 with the default heap under the pod's
-# ~6GiB cgroup — give every phase a properly sized old-space heap.
-export NODE_OPTIONS=--max-old-space-size=4096
 set +e
 mkdir -p /sandbox/work/gan /sandbox/scratch
 REPO=/sandbox/scratch/gate-repo
@@ -56,20 +53,29 @@ if ! curl -sS "$EXPORT_URL" | tar -xz -C "$REPO"; then
 fi
 cd "$REPO"
 [ -f "$NM_CACHE" ] && tar -xf "$NM_CACHE" -C "$REPO" 2>/dev/null
+# Run each phase HERMETICALLY. env -i strips leaked agent-pod secrets
+# (CLAUDE_CODE_OAUTH_TOKEN / CODEX_AUTH_JSON / AGY_AUTH_JSON / internal tokens /
+# MLflow env) that make the repo's env-isolation unit tests fail; it keeps only
+# PATH (carries /tmp/gan-npm/bin for pnpm@10), HOME, CI, a right-sized
+# NODE_OPTIONS heap (svelte-check SIGABRTs V8 under the ~6GiB cgroup otherwise),
+# and TMPDIR. The pnpm@10 bootstrap above stays OUTSIDE this sanitized env.
+run_phase() { # name timeout logfile cmd...
+  ph_name=$1; ph_to=$2; ph_log=$3; shift 3
+  env -i PATH="$PATH" HOME="$HOME" CI=1 NODE_OPTIONS=--max-old-space-size=4096 TMPDIR=/tmp timeout "$ph_to" "$@" >"$ph_log" 2>&1
+  ph_rc=$?
+  echo "--- $ph_name rc=$ph_rc"; tail -25 "$ph_log"
+  return $ph_rc
+}
 IRC=0
 if [ ! -d node_modules ]; then
-  timeout ${s.install} pnpm install --no-frozen-lockfile --ignore-scripts >/tmp/gate-install.log 2>&1; IRC=$?
-  echo "--- install rc=$IRC"; tail -25 /tmp/gate-install.log
+  run_phase install ${s.install} /tmp/gate-install.log pnpm install --no-frozen-lockfile --ignore-scripts; IRC=$?
   [ "$IRC" -eq 0 ] && tar -cf "$NM_CACHE" node_modules 2>/dev/null
 else
   echo "--- install rc=0 (cached node_modules)"
 fi
-CRC=0; timeout ${s.check} pnpm check >/tmp/gate-check.log 2>&1; CRC=$?
-echo "--- check rc=$CRC"; tail -25 /tmp/gate-check.log
-BRC=0; timeout ${s.boundaries} pnpm check:boundaries >/tmp/gate-bound.log 2>&1; BRC=$?
-echo "--- boundaries rc=$BRC"; tail -25 /tmp/gate-bound.log
-TRC=0; timeout ${s.testUnit} pnpm test:unit >/tmp/gate-test.log 2>&1; TRC=$?
-echo "--- test-unit rc=$TRC"; tail -25 /tmp/gate-test.log
+run_phase check ${s.check} /tmp/gate-check.log pnpm check; CRC=$?
+run_phase boundaries ${s.boundaries} /tmp/gate-bound.log pnpm check:boundaries; BRC=$?
+run_phase test-unit ${s.testUnit} /tmp/gate-test.log pnpm test:unit; TRC=$?
 export IRC CRC BRC TRC GATE_IDX=$IDX GATE_JSON
 python3 - <<'PYZZ'
 import json,os
