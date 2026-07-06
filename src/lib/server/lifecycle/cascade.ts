@@ -251,25 +251,46 @@ export function agentRuntimeTargetKey(target: AgentRuntimeTarget): string {
 
 /**
  * Decide whether a Stop has hit the cross-app child wedge and should be
- * force-finalized — evaluated PER still-RUNNING parent. The SW-interpreter parent
- * awaits a per-session agent child via ctx.call_child_workflow(app_id=…) — a
- * sub-orchestration on a SEPARATE Dapr task hub that Dapr's recursive terminate
- * can't reach, so the parent hangs RUNNING even after the cascade terminated the
- * child. We force-finalize ONLY on POSITIVE evidence the parent is parked at that
- * dead child, never on an inferred boolean:
- *   - a stop was actually requested and the grace has elapsed, AND
- *   - the parent's LIVE `currentNodeId` (from the orchestrator status) is a
- *     `durable/run` node whose child SESSION is DB-`terminated` (in
- *     `terminatedChildNodes`) — OR a `for`/loop node CONTAINING such a child
- *     (the SW loop `refine` dispatches children as `refine-generate-0-` /
- *     `refine-evaluate-0-`, sanitized from `<loop>/<sub>[<idx>]`, so the parent's
- *     currentNodeId is the bare loop name `refine` which won't exact-match), AND
- *   - NO child under that node is still active (never finalize mid-iteration).
- * Requiring the node-match fixes three false-positives the old agent-`closed`
- * boolean allowed: a parent that has moved on to a later non-agent node (its
- * currentNodeId won't match), a still-booting sandbox whose agent app-id merely
- * 404s (its session is not DB-`terminated`, so its node isn't listed), and a loop
- * with a still-running iteration. The caller passes only parents NOT closed.
+ * force-finalized — evaluated for a still-RUNNING parent. The SW-interpreter
+ * parent dispatches each `durable/run` step as a per-session agent child via
+ * ctx.call_child_workflow(app_id=…) — a sub-orchestration on a SEPARATE Dapr task
+ * hub that Dapr's recursive terminate can't reach, so the parent can hang RUNNING
+ * even after the cascade terminated (or the liveness reconciler crash-finalized)
+ * the child.
+ *
+ * Force-finalize is a pure DB-state cleanup of a run the user ALREADY asked to
+ * stop, so we require POSITIVE evidence the whole agent side is dead — never an
+ * inferred boolean:
+ *   1. a stop was actually requested and {@link WEDGE_FINALIZE_GRACE_MS} has
+ *      elapsed since — long enough for any normally-terminable parent to have
+ *      applied the terminate the cascade issued, so a run still RUNNING past it is
+ *      genuinely wedged rather than merely slow; AND
+ *   2. at least one `durable/run` child node is DB-terminal — every run-index
+ *      child of it `terminated` OR crash-`failed`+completedAt (in
+ *      `terminatedChildNodes`); without a dead agent child there is no cross-app
+ *      wedge to clean up; AND
+ *   3. NO child is still active ANYWHERE (`activeChildNodes` empty).
+ *
+ * (3) is the ABSOLUTE safety guard: a parent with ANY live cross-app child is
+ * NEVER force-finalized here. It may legitimately be awaiting/progressing that
+ * child — e.g. it crashed an EARLIER `durable/run` branch and ADVANCED to a later
+ * one that is now genuinely running — so we leave the live child to the cascade +
+ * cooperative cancel and let the normal parent+child-closed path finalize.
+ *
+ * Crucially this NO LONGER requires the parent's live `currentNodeId` to still
+ * match the dead child's node. The earlier cut did, which left a real class of
+ * wedge un-finalizable: a parent whose `durable/run` child was crash-finalized
+ * out-of-band (liveness reconciler → session `failed`+completedAt) while the
+ * parent's currentNodeId ADVANCED to a LATER approval-gate / non-agent node — the
+ * node no longer matched the terminated child, so `shouldForceFinalizeCrossAppWedge`
+ * never fired and the Stop polled "stopping" FOREVER. The child-evidence rule
+ * (2)+(3) covers that advanced-node case while (3) preserves the conservatism the
+ * old node-match provided. The old loop-nesting subtlety is subsumed: loop-nested
+ * children (`refine-generate-0-`, `refine-evaluate-0-`) already appear in
+ * `terminatedChildNodes`/`activeChildNodes` directly, so a mid-iteration loop is
+ * still protected by (3). `parentCurrentNode` is retained only for the caller's
+ * diagnostic log; it no longer gates the decision. The caller passes only a parent
+ * NOT closed (still RUNNING per Dapr).
  */
 export function shouldForceFinalizeCrossAppWedge(params: {
 	stopRequestedAt: Date | null;
@@ -281,20 +302,13 @@ export function shouldForceFinalizeCrossAppWedge(params: {
 }): boolean {
 	if (
 		params.stopRequestedAt == null ||
-		params.nowMs - params.stopRequestedAt.getTime() < params.graceMs ||
-		params.parentCurrentNode == null
+		params.nowMs - params.stopRequestedAt.getTime() < params.graceMs
 	) {
 		return false;
 	}
-	const parent = params.parentCurrentNode;
-	// A child node "belongs to" the parent currentNode when it IS that node (a
-	// direct durable/run node) or is loop-nested under it (`<loop>-<sub>-<idx>-`
-	// or `<loop>/<sub>`).
-	const under = (node: string): boolean =>
-		node === parent || node.startsWith(`${parent}-`) || node.startsWith(`${parent}/`);
-	const hasTerminatedChild = params.terminatedChildNodes.some(under);
-	const hasActiveChild = (params.activeChildNodes ?? []).some(under);
-	return hasTerminatedChild && !hasActiveChild;
+	const hasTerminatedChild = params.terminatedChildNodes.length > 0;
+	const hasActiveChildAnywhere = (params.activeChildNodes ?? []).length > 0;
+	return hasTerminatedChild && !hasActiveChildAnywhere;
 }
 
 /**
