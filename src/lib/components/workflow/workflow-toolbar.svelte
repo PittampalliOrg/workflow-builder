@@ -63,13 +63,19 @@
 		}
 	}
 
-	async function executeWorkflow(input: Record<string, unknown>) {
+	async function executeWorkflow(
+		input: Record<string, unknown>,
+		opts?: { budgetTotal?: number | null }
+	) {
 		if (!store.workflowId) return;
 		try {
 			const res = await fetch(`/api/workflows/${store.workflowId}/execute`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ input })
+				body: JSON.stringify({
+					input,
+					...(opts?.budgetTotal != null ? { budgetTotal: opts.budgetTotal } : {})
+				})
 			});
 			if (res.ok) {
 				const { executionId } = await res.json();

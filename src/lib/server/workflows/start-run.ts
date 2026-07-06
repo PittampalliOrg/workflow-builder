@@ -31,6 +31,7 @@ import {
 	injectWorkflowSessionHeaders
 } from '$lib/server/observability/workflow-session';
 import { prewarmWorkflowEntrySessions } from '$lib/server/sessions/prewarm';
+import { validateDynamicScriptSpec } from '$lib/server/workflows/dynamic-script-validation';
 
 export function isSWWorkflow(spec: unknown): boolean {
 	if (typeof spec !== 'object' || spec === null) return false;
@@ -85,6 +86,12 @@ export interface StartWorkflowOptions {
 	/** Resume/fork lineage: the source execution this run was forked from. */
 	rerunOfExecutionId?: string;
 	rerunSourceInstanceId?: string;
+	/** Dynamic-script resume-after-edit: the orchestrator imports this source
+	 *  execution's `done` journal rows so unchanged calls resolve without new
+	 *  sessions. */
+	journalImportFromExecutionId?: string;
+	/** Dynamic-script token budget for the run; overrides spec.defaults.budgetTotal. */
+	budgetTotal?: number | null;
 }
 
 export async function startWorkflowRun(
@@ -133,6 +140,13 @@ export async function startWorkflowRun(
 				reused: true
 			};
 		}
+	}
+
+	// Dynamic-script engine: a completely different start path from SW 1.0 — no
+	// agent-ref resolution, no trigger-field validation, no SW spec gate. The JS
+	// script runs in the orchestrator's re-execution pump against the evaluator.
+	if (workflow.engineType === "dynamic-script") {
+		return startDynamicScriptRun(app, workflow, opts);
 	}
 
 	let triggerData = opts.triggerData ?? {};
@@ -255,6 +269,117 @@ export async function startWorkflowRun(
 			ok: false,
 			status: 500,
 			error: err instanceof Error ? err.message : 'Failed to start workflow execution'
+		};
+	}
+
+	if (instanceId) {
+		await app.workflowExecutions.attachSchedulerInstance({
+			executionId: execution.id,
+			instanceId,
+			workflowSessionId: sessionId ?? execution.id
+		});
+	}
+
+	return {
+		ok: true,
+		executionId: execution.id,
+		instanceId: instanceId ?? null,
+		workflowId: workflow.id,
+		workflowName: workflow.name,
+		status: 'running',
+		reused: false
+	};
+}
+
+/**
+ * Start path for the dynamic-script engine. The workflow spec is
+ * `{engine:'dynamic-script', script, meta, defaults?}`; there is no SW 1.0 spec,
+ * no agent-ref resolution and no trigger-field validation. The `args` global is
+ * the trigger data. Project scoping still applies (execution row carries the
+ * workflow's projectId). The orchestrator's re-execution pump runs the script.
+ */
+async function startDynamicScriptRun(
+	app: ReturnType<typeof getApplicationAdapters>,
+	workflow: WorkflowDefinition,
+	opts: StartWorkflowOptions
+): Promise<StartWorkflowResult> {
+	const spec = (workflow.spec ?? null) as Record<string, unknown> | null;
+	const validation = validateDynamicScriptSpec(spec);
+	if (!validation.ok) {
+		return { ok: false, status: validation.status, error: validation.error };
+	}
+	const script = String((spec as Record<string, unknown>).script);
+	const meta = validation.meta;
+	const args = opts.triggerData ?? {};
+	const defaults = (spec as Record<string, unknown>).defaults as
+		| { budgetTotal?: number | null }
+		| undefined;
+	const budgetTotal =
+		opts.budgetTotal ?? (defaults?.budgetTotal != null ? defaults.budgetTotal : null);
+
+	const execution = await app.workflowExecutions.create({
+		...(opts.executionId ? { id: opts.executionId } : {}),
+		workflowId: workflow.id,
+		userId: opts.userId ?? workflow.userId,
+		projectId: workflow.projectId ?? null,
+		status: 'running',
+		phase: 'running',
+		progress: 0,
+		input: args,
+		executionIr: { engine: 'dynamic-script', script, meta, args, budgetTotal },
+		executionIrVersion: 'dynamic-script-1',
+		...(opts.triggerSource ? { triggerSource: opts.triggerSource } : {}),
+		...(opts.rerunOfExecutionId ? { rerunOfExecutionId: opts.rerunOfExecutionId } : {}),
+		...(opts.rerunSourceInstanceId
+			? { rerunSourceInstanceId: opts.rerunSourceInstanceId }
+			: {})
+	});
+
+	const orchestratorUrl = workflow.daprOrchestratorUrl || getOrchestratorUrl();
+	const sessionId = buildWorkflowSessionId(execution.id);
+
+	let instanceId: string | undefined;
+	try {
+		const headers = injectWorkflowSessionHeaders(
+			ensureWorkflowTraceparentHeader({ 'Content-Type': 'application/json' }),
+			{
+				sessionId,
+				workflowExecutionId: execution.id,
+				workflowId: workflow.id,
+				traceGroupId: execution.id
+			}
+		);
+		const traceContext = {
+			traceparent: headers.traceparent,
+			tracestate: headers.tracestate,
+			baggage: headers.baggage
+		};
+		const result = await app.workflowScheduler.startScriptWorkflow({
+			orchestratorUrl,
+			headers,
+			script,
+			meta: meta as Record<string, unknown>,
+			args,
+			budgetTotal,
+			...(opts.journalImportFromExecutionId
+				? { journalImportFromExecutionId: opts.journalImportFromExecutionId }
+				: {}),
+			dbExecutionId: execution.id,
+			workflowId: workflow.id,
+			userId: opts.userId ?? workflow.userId,
+			projectId: workflow.projectId ?? null,
+			traceContext
+		});
+		instanceId = result.instanceId;
+	} catch (err) {
+		await app.workflowExecutions.markStartFailed({
+			executionId: execution.id,
+			error: err instanceof Error ? err.message : 'Failed to start dynamic-script execution'
+		});
+		return {
+			ok: false,
+			status: 500,
+			error: err instanceof Error ? err.message : 'Failed to start dynamic-script execution'
 		};
 	}
 

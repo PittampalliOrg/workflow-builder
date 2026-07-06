@@ -1,0 +1,75 @@
+/**
+ * Application service for the dynamic-script call journal + budget aggregate.
+ *
+ * Routes (internal-token + user-scoped) reach the journal through this service
+ * (`getApplicationAdapters().scriptCalls`) rather than touching the DB directly —
+ * db access lives in `adapters/script-calls-store.ts`. The user-scoped read
+ * enforces workspace scope via `workflowData.getScopedExecutionById`.
+ */
+
+import type { WorkflowDataService } from "$lib/server/application/ports";
+import {
+	importScriptCalls,
+	listScriptCalls,
+	sumExecutionLlmUsage,
+	upsertScriptCall,
+	type ScriptCallRecord,
+	type ScriptCallUpsertInput,
+} from "$lib/server/application/adapters/script-calls-store";
+
+export type ScriptCallsListResult =
+	| { status: "ok"; body: { scriptCalls: ScriptCallRecord[] } }
+	| { status: "error"; httpStatus: number; message: string };
+
+export class ApplicationScriptCallsService {
+	constructor(
+		private readonly deps: {
+			workflowData: Pick<WorkflowDataService, "getScopedExecutionById">;
+		},
+	) {}
+
+	/** Internal (orchestrator) read — no scope check. */
+	async listInternal(executionId: string): Promise<ScriptCallRecord[]> {
+		return listScriptCalls(executionId);
+	}
+
+	/** Internal idempotent upsert of one journal row. */
+	async upsert(
+		executionId: string,
+		callId: string,
+		input: ScriptCallUpsertInput,
+	): Promise<ScriptCallRecord> {
+		return upsertScriptCall(executionId, callId, input);
+	}
+
+	/** Internal resume-after-edit journal import (`done` rows only). */
+	async import(input: {
+		toExecutionId: string;
+		fromExecutionId: string;
+	}): Promise<{ imported: number }> {
+		return importScriptCalls(input);
+	}
+
+	/** Internal budget aggregate — Σ tokensFromUsage over the execution's sessions. */
+	async llmUsage(executionId: string): Promise<{ totalTokens: number }> {
+		return sumExecutionLlmUsage(executionId);
+	}
+
+	/** User-scoped journal read for the run UI. 404s cross-workspace. */
+	async listForUser(input: {
+		executionId: string;
+		userId: string;
+		projectId?: string | null;
+	}): Promise<ScriptCallsListResult> {
+		const execution = await this.deps.workflowData.getScopedExecutionById({
+			executionId: input.executionId,
+			userId: input.userId,
+			projectId: input.projectId ?? null,
+		});
+		if (!execution) {
+			return { status: "error", httpStatus: 404, message: "Execution not found" };
+		}
+		const calls = await listScriptCalls(input.executionId);
+		return { status: "ok", body: { scriptCalls: calls } };
+	}
+}

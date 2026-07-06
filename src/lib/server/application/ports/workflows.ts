@@ -188,7 +188,7 @@ export type WorkflowRef = {
 
 export type WorkflowVisibility = "private" | "public";
 
-export type WorkflowEngineType = "vercel" | "dapr";
+export type WorkflowEngineType = "vercel" | "dapr" | "dynamic-script";
 
 export type WorkflowDefinition = {
 	id: string;
@@ -546,8 +546,33 @@ export type WorkflowStartRequest = {
 	seedWorkspaceFrom?: string;
 };
 
+/**
+ * Start request for a dynamic-script (engineType `dynamic-script`) workflow. The
+ * adapter computes `scriptSha256` (node:crypto) and fills the `defaults`/`limits`
+ * blocks (env-driven), so callers only supply the script + run context. Mirrors
+ * `WorkflowStartRequest` for the SW path.
+ */
+export type WorkflowScriptStartRequest = {
+	orchestratorUrl: string;
+	headers: HeadersInit;
+	script: string;
+	meta: Record<string, unknown>;
+	args: Record<string, unknown>;
+	budgetTotal?: number | null;
+	/** Resume-after-edit: the orchestrator imports this execution's `done` rows. */
+	journalImportFromExecutionId?: string;
+	dbExecutionId: string;
+	workflowId: string;
+	userId: string;
+	projectId: string | null;
+	traceContext?: Record<string, string | undefined>;
+};
+
 export interface WorkflowScheduler {
 	startSwWorkflow(input: WorkflowStartRequest): Promise<{ instanceId?: string }>;
+	startScriptWorkflow(
+		input: WorkflowScriptStartRequest,
+	): Promise<{ instanceId?: string }>;
 }
 
 export type WorkflowApprovalEventInput = {
@@ -560,9 +585,23 @@ export type WorkflowApprovalEventResult =
 	| { ok: true }
 	| { ok: false; status: number; detail: string };
 
+/** Generic external-event raise into a running workflow instance. */
+export type WorkflowRaiseEventInput = {
+	instanceId: string;
+	eventName: string;
+	eventData: Record<string, unknown>;
+};
+
 export interface WorkflowApprovalEventPort {
 	raiseApprovalEvent(
 		input: WorkflowApprovalEventInput,
+	): Promise<WorkflowApprovalEventResult>;
+	/**
+	 * Raise an arbitrary external event (name + data) into a running workflow
+	 * instance. Used by the dynamic-script skip control (`script.call.control`).
+	 */
+	raiseWorkflowEvent(
+		input: WorkflowRaiseEventInput,
 	): Promise<WorkflowApprovalEventResult>;
 }
 
@@ -578,6 +617,10 @@ export type WorkflowRunStartInput = {
 	rerunOfExecutionId?: string;
 	rerunSourceInstanceId?: string;
 	triggerSource?: string;
+	/** Dynamic-script resume-after-edit: import this source run's `done` journal. */
+	journalImportFromExecutionId?: string;
+	/** Dynamic-script token budget for the run. */
+	budgetTotal?: number | null;
 };
 
 export type WorkflowRunStartResult =

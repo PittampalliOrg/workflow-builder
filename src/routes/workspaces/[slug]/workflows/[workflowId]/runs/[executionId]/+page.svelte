@@ -133,6 +133,7 @@
 	import AnimatedEdge from '$lib/components/workflow/edges/animated-edge.svelte';
 	import LabeledEdge from '$lib/components/workflow/edges/labeled-edge.svelte';
 	import ExecutionCanvasSync from '$lib/components/workflow/execution-canvas-sync.svelte';
+	import ScriptRunPanel from '$lib/components/workflow/execution/script-run-panel.svelte';
 
 	let workflowId = $derived(page.params.workflowId ?? '');
 	let executionId = $derived(page.params.executionId ?? '');
@@ -192,6 +193,10 @@
 	let workflowNodes = $state<Node[]>([]);
 	let workflowEdges = $state<Edge[]>([]);
 	let workflowName = $state<string>('');
+	// Dynamic-script engine: when true, the Canvas tab renders the script-run
+	// panel (meta/phases/journal/budget) instead of the SW graph.
+	let isDynamicScript = $state(false);
+	let scriptExecutionIr = $state<Record<string, unknown> | null>(null);
 
 	// Logs
 	interface StepLog {
@@ -1440,8 +1445,17 @@
 					typeof executionData?.rerunOfExecutionId === 'string'
 						? executionData.rerunOfExecutionId
 						: null;
+				const ir = executionData?.executionIr;
+				if (
+					executionData?.executionIrVersion === 'dynamic-script-1' ||
+					(ir && typeof ir === 'object' && (ir as Record<string, unknown>).engine === 'dynamic-script')
+				) {
+					isDynamicScript = true;
+					scriptExecutionIr = (ir ?? null) as Record<string, unknown> | null;
+					renderedFromExecutionSpec = true;
+				}
 				const spec = executionData?.executionIr?.spec;
-				if (spec && typeof spec === 'object' && !Array.isArray(spec)) {
+				if (!isDynamicScript && spec && typeof spec === 'object' && !Array.isArray(spec)) {
 					const graph = specToGraph(spec as Record<string, unknown>, {});
 					if (graph) {
 						workflowNodes = graph.nodes;
@@ -3055,6 +3069,14 @@
 				<div class="flex h-full items-center justify-center">
 					<Loader2 size={24} class="animate-spin text-muted-foreground" />
 				</div>
+			{:else if isDynamicScript}
+				<ScriptRunPanel
+					{executionId}
+					{slug}
+					executionIr={scriptExecutionIr}
+					currentPhase={executionState.currentPhase ?? null}
+					{isRunning}
+				/>
 			{:else}
 				<SvelteFlow
 					nodes={canvasNodes}

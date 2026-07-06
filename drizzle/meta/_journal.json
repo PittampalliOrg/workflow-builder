@@ -638,6 +638,13 @@
       "when": 1783440000000,
       "tag": "0096_session_pending_input",
       "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1783530000000,
+      "tag": "0097_workflow_script_calls",
+      "breakpoints": true
     }
   ]
 }

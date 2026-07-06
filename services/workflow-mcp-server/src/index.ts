@@ -29,6 +29,10 @@ import {
 	type RegisteredTool,
 } from "./workflow-tools.js";
 import { registerGoalTools } from "./goal-tools.js";
+import {
+	registerScriptTools,
+	shouldSuppressScriptTools,
+} from "./script-tools.js";
 import { runWithGoalContext } from "./goal-context.js";
 import { UiSession } from "./ui/session.js";
 import { setSpanInput, setSpanOutput } from "./observability/content.js";
@@ -146,8 +150,19 @@ function parseBody(req: http.IncomingMessage): Promise<unknown> {
 	});
 }
 
+/** Options controlling which tool groups a server instance exposes. */
+type CreateMcpServerOptions = {
+	// Recursion guard: script-spawned sessions carry X-Wfb-Script-Depth, which
+	// suppresses run_workflow_script so a running script can't launch more.
+	suppressScriptTools?: boolean;
+};
+
 /** Create a new MCP Server instance with workflow tools. */
-function createMcpServer(userId?: string, uiSession?: UiSession): Server {
+function createMcpServer(
+	userId?: string,
+	uiSession?: UiSession,
+	opts?: CreateMcpServerOptions,
+): Server {
 	const mcpServer = new McpServer(
 		{ name: "workflow-builder-mcp", version: "1.0.0" },
 		{ capabilities: { tools: {}, resources: {} } },
@@ -160,6 +175,12 @@ function createMcpServer(userId?: string, uiSession?: UiSession): Server {
 	// can drive the Codex-/goal-parity loop. Session scope comes from the
 	// per-request X-Wfb-Session-Id header (see runWithGoalContext wraps below).
 	registerGoalTools(mcpServer);
+
+	// Dynamic workflow script tool — also UI-independent. Suppressed inside
+	// script-spawned sessions (recursion guard) via suppressScriptTools.
+	if (opts?.suppressScriptTools !== true) {
+		registerScriptTools(mcpServer);
+	}
 
 	return mcpServer.server;
 }
@@ -249,7 +270,12 @@ async function handleMcpPost(
 			}
 		};
 
-		const server = createMcpServer(userId, uiSession);
+		// Recursion guard: a present X-Wfb-Script-Depth header (stamped by the BFF
+		// on the MCP entry for script-spawned sessions) suppresses the dynamic
+		// script tool so a running script can't launch further scripts.
+		const suppressScriptTools = shouldSuppressScriptTools(req.headers);
+
+		const server = createMcpServer(userId, uiSession, { suppressScriptTools });
 		await server.connect(transport);
 	} else {
 		sendJson(res, 400, {
@@ -370,6 +396,18 @@ async function main(): Promise<void> {
 			{ capabilities: { tools: {} } },
 		);
 		registeredTools = [...registeredTools, ...registerGoalTools(dryGoalServer)];
+	}
+	// Count the dynamic workflow script tool (registered independently of the UI;
+	// suppressed only inside script-spawned sessions).
+	{
+		const dryScriptServer = new McpServer(
+			{ name: "dry-run-script", version: "0.0.0" },
+			{ capabilities: { tools: {} } },
+		);
+		registeredTools = [
+			...registeredTools,
+			...registerScriptTools(dryScriptServer),
+		];
 	}
 
 	// Start HTTP server

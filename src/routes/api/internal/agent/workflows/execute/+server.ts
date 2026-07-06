@@ -19,6 +19,8 @@ type ExecuteBody = {
 	workflowId?: string;
 	workflowName?: string;
 	triggerData?: Record<string, unknown>;
+	/** Dynamic-script token budget (forwarded to the start path for script workflows). */
+	budgetTotal?: number | null;
 };
 
 export const POST: RequestHandler = async ({ request }) => {
@@ -28,10 +30,15 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	const body = (await request.json().catch(() => ({}))) as ExecuteBody;
 
+	const budgetTotal =
+		typeof body.budgetTotal === 'number' && Number.isFinite(body.budgetTotal)
+			? body.budgetTotal
+			: undefined;
 	const result = await startWorkflowRun({
 		workflowId: body.workflowId,
 		workflowName: body.workflowName,
-		triggerData: body.triggerData ?? {}
+		triggerData: body.triggerData ?? {},
+		...(budgetTotal !== undefined ? { budgetTotal } : {})
 	});
 
 	if (!result.ok) {

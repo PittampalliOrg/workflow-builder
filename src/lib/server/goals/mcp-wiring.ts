@@ -67,3 +67,30 @@ export function stampGoalMcpSessionHeader<T>(servers: T, sessionId: string): T {
 		return { ...e, headers };
 	}) as T;
 }
+
+/**
+ * Recursion guard for dynamic-script runs: stamp `X-Wfb-Script-Depth: 1` on the
+ * workflow-mcp-server MCP entries of a session spawned BY a dynamic-script
+ * execution. The MCP server reads the header at `initialize` and suppresses the
+ * `run_workflow_script` tool, so a script-spawned agent cannot recursively start
+ * another script workflow. Scoped to the workflow-mcp-server entry (same matching
+ * as `stampGoalMcpSessionHeader`) so the depth marker never leaks to third-party
+ * MCP servers.
+ */
+export function stampScriptGuardHeader<T>(servers: T): T {
+	if (!Array.isArray(servers)) return servers;
+	return servers.map((entry) => {
+		if (!entry || typeof entry !== "object") return entry;
+		const e = entry as Record<string, unknown>;
+		const name = typeof e.name === "string" ? e.name.toLowerCase() : "";
+		const url = typeof e.url === "string" ? e.url : "";
+		const isWorkflowMcpServer =
+			/goal/.test(name) || /script/.test(name) || url.includes("workflow-mcp-server");
+		if (!isWorkflowMcpServer) return entry;
+		const headers = {
+			...((e.headers as Record<string, unknown> | undefined) ?? {}),
+			"X-Wfb-Script-Depth": "1",
+		};
+		return { ...e, headers };
+	}) as T;
+}

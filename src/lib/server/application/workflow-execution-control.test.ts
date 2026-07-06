@@ -42,6 +42,7 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 		};
 		approvalEvents = {
 			raiseApprovalEvent: vi.fn(async () => ({ ok: true as const })),
+			raiseWorkflowEvent: vi.fn(async () => ({ ok: true as const })),
 		};
 		coordinatorOwners = {
 			getCoordinatorOwner: vi.fn(async () => null),

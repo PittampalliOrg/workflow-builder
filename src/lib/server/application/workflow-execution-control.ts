@@ -97,10 +97,16 @@ export class ApplicationWorkflowExecutionControlService {
 			return workflowControlError(404, "Workflow not found");
 		}
 
+		const budgetTotalRaw = input.body?.budgetTotal;
+		const budgetTotal =
+			typeof budgetTotalRaw === "number" && Number.isFinite(budgetTotalRaw)
+				? budgetTotalRaw
+				: undefined;
 		const result = await this.deps.runStarter.startWorkflowRun({
 			workflowId: input.workflowId,
 			triggerData: asRecord(input.body?.input),
 			userId: input.userId,
+			...(budgetTotal !== undefined ? { budgetTotal } : {}),
 		});
 		if (!result.ok) {
 			return workflowControlError(result.status, result.error);
@@ -448,6 +454,42 @@ export class ApplicationWorkflowExecutionControlService {
 			lookup: "id",
 		});
 		if (!workflow) return workflowControlError(404, "Workflow not found");
+
+		// Dynamic-script resume-after-edit: there are no nodes to skip — resume
+		// starts a FRESH run of the CURRENT (possibly edited) script and imports the
+		// source run's `done` journal rows so unchanged calls resolve without new
+		// sessions. Only the changed calls re-dispatch. The source must be terminal
+		// (or a confirmed stop) so its journal is stable.
+		if (workflow.engineType === "dynamic-script") {
+			if (!isTerminalOrStopped(source)) {
+				return workflowControlError(
+					409,
+					"Source run is still active; stop it before resuming a dynamic-script run",
+				);
+			}
+			const result = await this.deps.runStarter.startWorkflowRun({
+				workflowId: source.workflowId,
+				triggerData: (source.input ?? {}) as Record<string, unknown>,
+				journalImportFromExecutionId: source.id,
+				rerunOfExecutionId: source.id,
+				rerunSourceInstanceId: source.daprInstanceId,
+				triggerSource: "resume",
+			});
+			if (!result.ok) {
+				return workflowControlError(result.status, result.error);
+			}
+			return {
+				status: "ok",
+				body: {
+					ok: true,
+					executionId: result.executionId,
+					sourceExecutionId: source.id,
+					newInstanceId: result.instanceId,
+					journalImportFromExecutionId: source.id,
+				},
+			};
+		}
+
 		const nodeIds = topLevelNodeIds(workflow.spec);
 
 		if (!fromNodeId) fromNodeId = source.currentNodeId ?? undefined;
@@ -489,6 +531,64 @@ export class ApplicationWorkflowExecutionControlService {
 				seedWorkspaceFrom,
 			},
 		};
+	}
+
+	/**
+	 * Skip a pending dynamic-script `agent()`/`workflow()` call. Raises the
+	 * `script.call.control` external event ({callId, action:'skip', requestedBy})
+	 * into the running workflow instance; the evaluator then resolves that call's
+	 * promise to null and the run proceeds. Scope + coordinator-owner guarded like
+	 * the stop route. Returns 202 (accepted — the effect is asynchronous).
+	 */
+	async skipScriptCall(
+		input: WorkflowExecutionControlInput & { callId: string },
+	): Promise<WorkflowExecutionControlResult> {
+		const execution = await this.deps.workflowData.getScopedExecutionById({
+			executionId: input.executionId,
+			userId: input.userId,
+			projectId: input.projectId ?? null,
+		});
+		if (!execution) {
+			return workflowControlError(404, "Execution not found");
+		}
+		if (!input.callId) {
+			return workflowControlError(400, "callId required");
+		}
+		if (!execution.daprInstanceId) {
+			return workflowControlError(409, "Run has no Dapr instance id");
+		}
+
+		const owner = await this.deps.coordinatorOwners.getCoordinatorOwner(
+			input.executionId,
+		);
+		if (owner) {
+			return {
+				status: "ok",
+				httpStatus: 409,
+				body: {
+					ok: false,
+					error: "coordinator_owned",
+					ownedBy: owner.kind,
+					runId: owner.runId,
+					message:
+						"This is a benchmark/eval instance — control it via the owning run instead.",
+				},
+			};
+		}
+
+		const raised = await this.deps.approvalEvents.raiseWorkflowEvent({
+			instanceId: execution.daprInstanceId,
+			eventName: "script.call.control",
+			eventData: {
+				callId: input.callId,
+				action: "skip",
+				requestedBy: input.userId,
+			},
+		});
+		if (!raised.ok) {
+			return workflowControlError(raised.status, raised.detail || "Failed to raise skip event");
+		}
+		return { status: "ok", httpStatus: 202, body: { ok: true } };
 	}
 
 	private async resolveWorkspaceExecutionId(
@@ -550,6 +650,21 @@ function approvalEventType(body: Record<string, unknown> | undefined): string {
 	return typeof value === "string" && value.trim()
 		? value.trim()
 		: "goal_spec_approval";
+}
+
+const TERMINAL_EXECUTION_STATUSES = new Set([
+	"success",
+	"error",
+	"cancelled",
+	"canceled",
+	"failed",
+	"completed",
+]);
+
+/** A run is safe to resume-from when it is terminal or a stop was confirmed. */
+function isTerminalOrStopped(source: WorkflowExecutionRecord): boolean {
+	if (source.stopRequestedAt) return true;
+	return TERMINAL_EXECUTION_STATUSES.has(String(source.status ?? "").toLowerCase());
 }
 
 function topLevelNodeIds(spec: unknown): string[] {

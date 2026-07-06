@@ -93,7 +93,10 @@
 	interface Props {
 		open: boolean;
 		onClose: () => void;
-		onExecute: (input: Record<string, unknown>) => void;
+		onExecute: (
+			input: Record<string, unknown>,
+			opts?: { budgetTotal?: number | null }
+		) => void;
 	}
 
 	interface SchemaProperty {
@@ -148,6 +151,63 @@
 	}
 
 	let unboundAgentTasks = $derived(findUnboundAgentTasks(store.spec));
+
+	// Dynamic-script engine: a distinct confirm panel (no SW trigger schema —
+	// the script's `args` global is free-form JSON). Detected from the spec.
+	let isDynamicScript = $derived(
+		(store.spec as Record<string, unknown> | null)?.engine === 'dynamic-script'
+	);
+	let scriptMeta = $derived.by(() => {
+		const m = ((store.spec as Record<string, unknown> | null)?.meta ?? {}) as Record<
+			string,
+			unknown
+		>;
+		const phasesRaw = Array.isArray(m.phases) ? m.phases : [];
+		const phases = phasesRaw
+			.map((p) =>
+				typeof p === 'string'
+					? p
+					: p && typeof p === 'object' && typeof (p as Record<string, unknown>).title === 'string'
+						? ((p as Record<string, unknown>).title as string)
+						: null
+			)
+			.filter((t): t is string => Boolean(t));
+		return {
+			name: typeof m.name === 'string' ? m.name : 'Dynamic script',
+			description: typeof m.description === 'string' ? m.description : null,
+			phases,
+			estimatedAgentCalls:
+				typeof m.estimatedAgentCalls === 'number' ? m.estimatedAgentCalls : null
+		};
+	});
+	let scriptArgsJson = $state('{}');
+	let scriptBudgetTotal = $state<string>('');
+
+	async function handleScriptSubmit() {
+		errorMsg = null;
+		isSubmitting = true;
+		try {
+			let input: Record<string, unknown>;
+			try {
+				input = scriptArgsJson.trim() ? JSON.parse(scriptArgsJson) : {};
+			} catch {
+				errorMsg = 'Invalid args JSON';
+				isSubmitting = false;
+				return;
+			}
+			const budgetTotal = scriptBudgetTotal.trim() ? Number(scriptBudgetTotal) : null;
+			if (budgetTotal != null && (!Number.isFinite(budgetTotal) || budgetTotal < 0)) {
+				errorMsg = 'Budget must be a non-negative number';
+				isSubmitting = false;
+				return;
+			}
+			onExecute(input, { budgetTotal });
+			handleClose();
+		} finally {
+			isSubmitting = false;
+		}
+	}
+
 	let rawJson = $state('{}');
 	let inputMode = $state<'form' | 'json'>('form');
 	let formValues = $state<Record<string, string>>({});
@@ -367,6 +427,60 @@
 			</Alert>
 		{/if}
 
+		{#if isDynamicScript}
+			<form onsubmit={(event) => { event.preventDefault(); handleScriptSubmit(); }}>
+				<div class="space-y-3 max-h-[450px] overflow-y-auto pr-1">
+					<div class="space-y-1">
+						<div class="text-sm font-semibold">{scriptMeta.name}</div>
+						{#if scriptMeta.description}
+							<p class="text-xs text-muted-foreground">{scriptMeta.description}</p>
+						{/if}
+					</div>
+					{#if scriptMeta.phases.length}
+						<div class="flex flex-wrap gap-1.5">
+							{#each scriptMeta.phases as phase (phase)}
+								<span class="rounded-md border px-2 py-0.5 text-xs text-muted-foreground">{phase}</span>
+							{/each}
+						</div>
+					{/if}
+					{#if scriptMeta.estimatedAgentCalls != null}
+						<p class="text-xs text-muted-foreground">
+							Estimated agent calls: <strong>{scriptMeta.estimatedAgentCalls}</strong>
+						</p>
+					{/if}
+					<div class="space-y-1.5">
+						<Label for="script-args">Args (JSON)</Label>
+						<Textarea
+							id="script-args"
+							bind:value={scriptArgsJson}
+							rows={6}
+							class="font-mono"
+							placeholder={'{"topic": "hello"}'}
+						/>
+					</div>
+					<div class="space-y-1.5">
+						<Label for="script-budget">Budget (tokens, optional)</Label>
+						<Input
+							id="script-budget"
+							type="number"
+							min="0"
+							bind:value={scriptBudgetTotal}
+							placeholder="e.g. 500000"
+						/>
+					</div>
+				</div>
+				<DialogFooter class="mt-4">
+					<Button variant="outline" type="button" onclick={handleClose}>Cancel</Button>
+					<Button type="submit" disabled={isSubmitting}>
+						{#if isSubmitting}
+							<Loader2 size={14} class="animate-spin" /> Starting...
+						{:else}
+							<Play size={14} /> Run script
+						{/if}
+					</Button>
+				</DialogFooter>
+			</form>
+		{:else}
 		<form onsubmit={(event) => { event.preventDefault(); handleSubmit(); }}>
 			{#if effectiveInputSchema}
 				<Tabs.Root bind:value={inputMode} class="min-h-0 gap-3">
@@ -519,5 +633,6 @@
 				</Button>
 			</DialogFooter>
 		</form>
+		{/if}
 	</DialogContent>
 </Dialog>

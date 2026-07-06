@@ -6,6 +6,7 @@ import type {
 	WorkflowEngineType,
 } from "$lib/server/application/ports";
 import { getRemovedSw10AgentCallsError } from "$lib/server/workflows/sw10-agent-validation";
+import { validateWithEvaluator } from "$lib/server/workflows/dynamic-script-validation";
 import { nanoid } from "nanoid";
 
 type WorkflowDefinitionCommandDataPort = {
@@ -48,21 +49,30 @@ export class ApplicationWorkflowDefinitionCommandService {
 		projectId: string;
 	}): Promise<WorkflowDefinitionCommandResult> {
 		const body = asRecord(input.body);
+		const engineType = (stringValue(body.engineType) || "dapr") as WorkflowEngineType;
+		let spec = body.spec;
+		if (engineType === "dynamic-script" && spec !== undefined) {
+			const validated = await this.validateAndStampDynamicScript(spec);
+			if (!validated.ok) {
+				return { status: "error", httpStatus: validated.httpStatus, body: validated.error };
+			}
+			spec = validated.spec;
+		}
 		const createInput: CreateWorkflowDefinitionInput = {
 			name: stringValue(body.name) || "Untitled Workflow",
 			nodes: (body.nodes as unknown[] | undefined) || [],
 			edges: (body.edges as unknown[] | undefined) || [],
-			engineType: (stringValue(body.engineType) || "dapr") as WorkflowEngineType,
+			engineType,
 			userId: input.userId,
 			projectId: input.projectId,
-			spec: body.spec,
+			spec,
 		};
 
 		const workflow = await this.deps.workflowData.createWorkflowDefinition(createInput);
 		await this.deps.connectionRefs.syncWorkflowConnectionRefs({
 			workflowId: workflow.id,
 			nodes: createInput.nodes,
-			spec: body.spec,
+			spec,
 		});
 
 		return { status: "ok", httpStatus: 201, body: workflow };
@@ -80,6 +90,23 @@ export class ApplicationWorkflowDefinitionCommandService {
 		};
 		if (body.spec !== undefined) {
 			updateData.spec = body.spec;
+			// Re-validate + re-stamp the spec when the workflow is (or is becoming) a
+			// dynamic-script — the meta persisted into spec.meta is evaluator-truth.
+			const existing = await this.deps.workflowData.getWorkflowByRef({
+				workflowId: input.workflowId,
+				lookup: "id",
+			});
+			const isDynamicScript =
+				stringValue(body.engineType) === "dynamic-script" ||
+				existing?.engineType === "dynamic-script" ||
+				asRecord(body.spec).engine === "dynamic-script";
+			if (isDynamicScript) {
+				const validated = await this.validateAndStampDynamicScript(body.spec);
+				if (!validated.ok) {
+					return { status: "error", httpStatus: validated.httpStatus, body: validated.error };
+				}
+				updateData.spec = validated.spec;
+			}
 		}
 
 		const updated = await this.deps.workflowData.updateWorkflowDefinition(
@@ -97,6 +124,37 @@ export class ApplicationWorkflowDefinitionCommandService {
 		});
 
 		return { status: "ok", body: updated };
+	}
+
+	/**
+	 * Validate a dynamic-script spec (static + authoritative evaluator) and stamp
+	 * the evaluator-truth meta + estimatedAgentCalls back into spec.meta. Returns
+	 * the spec to persist, or a 400 on validation failure.
+	 */
+	private async validateAndStampDynamicScript(
+		spec: unknown,
+	): Promise<
+		| { ok: true; spec: Record<string, unknown> }
+		| { ok: false; httpStatus: number; error: string }
+	> {
+		const record = asRecord(spec);
+		const script = stringValue(record.script);
+		if (!script) {
+			return { ok: false, httpStatus: 400, error: "spec.script must be a non-empty string" };
+		}
+		const result = await validateWithEvaluator(script);
+		if (!result.ok) {
+			return { ok: false, httpStatus: result.status, error: result.error };
+		}
+		return {
+			ok: true,
+			spec: {
+				...record,
+				engine: "dynamic-script",
+				script,
+				meta: { ...asRecord(record.meta), ...result.meta },
+			},
+		};
 	}
 
 	async deleteWorkflow(input: {

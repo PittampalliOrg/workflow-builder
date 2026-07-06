@@ -8,7 +8,8 @@
 		"build:ui": "cd ui && vite build --outDir ../dist/ui --emptyOutDir false",
 		"build:all": "pnpm run build:ui && pnpm run build",
 		"start": "node dist/index.js",
-		"type-check": "tsc --noEmit"
+		"type-check": "tsc --noEmit",
+		"test": "vitest run"
 	},
 	"dependencies": {
 		"@modelcontextprotocol/ext-apps": "^1.0.1",
@@ -41,6 +42,7 @@
 		"tsx": "^4.19.0",
 		"typescript": "^5",
 		"vite": "^6.0.0",
-		"vite-plugin-singlefile": "^2.0.0"
+		"vite-plugin-singlefile": "^2.0.0",
+		"vitest": "^2.1.0"
 	}
 }
