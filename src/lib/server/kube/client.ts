@@ -733,6 +733,43 @@ export async function getSessionRuntimePod(params: {
 	return slug ? getAgentRuntimePod(slug, namespace) : null;
 }
 
+/**
+ * Tri-state EXISTENCE probe for a per-session runtime pod — for the liveness
+ * reconciler, which must distinguish "provably gone" from "can't tell". Unlike
+ * {@link getSessionRuntimePod} this does NOT filter to `phase === "Running"` (a
+ * Pending / ContainerCreating pod still EXISTS → `present`) and it maps a kube
+ * API failure to `"unknown"` rather than the null-means-absent semantics the
+ * other callers rely on (a 5xx/RBAC/transport error is NOT proof of absence).
+ * Only a clean 200 with an empty item list is `"absent"`.
+ */
+export async function getSessionRuntimePodPresence(params: {
+	runtimeAppId: string;
+	namespace?: string;
+}): Promise<"present" | "absent" | "unknown"> {
+	const namespace = params.namespace ?? DEFAULT_AGENT_RUNTIME_NAMESPACE;
+	const appLabel = safeKubernetesLabelValue(params.runtimeAppId);
+	const selector = encodeURIComponent(
+		`app=agent-workflow-host,agent-app-id=${appLabel}`,
+	);
+	let res: Response;
+	try {
+		res = await kubeFetch(
+			`/api/v1/namespaces/${namespace}/pods?labelSelector=${selector}`,
+		);
+	} catch {
+		return "unknown";
+	}
+	if (!res.ok) return "unknown";
+	let body: { items?: unknown[] };
+	try {
+		body = (await res.json()) as { items?: unknown[] };
+	} catch {
+		return "unknown";
+	}
+	// ANY pod in ANY phase means the per-session runtime still exists.
+	return (body.items?.length ?? 0) > 0 ? "present" : "absent";
+}
+
 export async function getAgentRuntimePodIP(
 	agentSlug: string,
 	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,

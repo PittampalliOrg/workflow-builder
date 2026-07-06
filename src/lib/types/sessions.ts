@@ -5,6 +5,12 @@ export type SessionStatus =
 	// Paused via Dapr suspend_workflow — the run is held (non-terminal) and
 	// resumable on demand. Set/cleared by the lifecycle pause/resume controls.
 	| "paused"
+	// A turn failed (runtime StopFailure edge) or the liveness reconciler
+	// converged a crashed/orphaned session. Distinct from `terminated`:
+	// NON-terminal for a `status_errored` ingest (a later `status_running`
+	// may legitimately flip failed→running), terminal when the reconciler
+	// finalizes it with completedAt + stopReason:{type:"crashed"}.
+	| "failed"
 	| "terminated";
 
 export type SessionStopReasonType =
@@ -12,7 +18,15 @@ export type SessionStopReasonType =
 	| "requires_action"
 	| "retries_exhausted"
 	| "interrupted"
-	| "terminated";
+	| "terminated"
+	// A turn failed (runtime StopFailure edge). Interactive sessions publish a
+	// `session.status_idle{stop_reason:{type:"error"}}` for this; it MUST stay
+	// distinct from `end_turn` so the goal loop does NOT auto-continue a failed
+	// turn (the goal parks until the user intervenes).
+	| "error"
+	// Set by the session liveness reconciler when it converges a dead/orphaned
+	// session through the Lifecycle Controller (row lands `failed`).
+	| "crashed";
 
 export type SessionStopReason = {
 	type: SessionStopReasonType;
@@ -63,6 +77,10 @@ export type SessionSummary = {
 	agentEphemeral: boolean;
 	createdAt: string;
 	updatedAt: string;
+	/** Last time ANY session event was ingested (throttled bump, ~5s
+	 * granularity). Drives liveness/silence checks without mutating updatedAt.
+	 * Null for rows predating migration 0095 that have since completed. */
+	lastEventAt: string | null;
 	completedAt: string | null;
 	archivedAt: string | null;
 };

@@ -808,6 +808,9 @@ export class ApplicationSessionCommandService {
 			status: source.status,
 			stopReason: source.stopReason,
 			errorMessage: source.errorMessage,
+			// completedAt distinguishes a finalized crash (resumable) from a LIVE
+			// turn-level `failed` (pod/TUI still up → resuming would duplicate).
+			completedAt: source.completedAt,
 		});
 		if (!resumeDecision.allowed) {
 			const status = isInteractiveCliRuntime(sourceRuntime)

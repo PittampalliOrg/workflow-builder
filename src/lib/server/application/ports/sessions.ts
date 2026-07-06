@@ -282,6 +282,18 @@ export interface SessionRepository {
 		executionId: string;
 		limit: number;
 	}): Promise<CliWorkspaceSessionCandidateRecord[]>;
+	/**
+	 * Non-archived sessions whose DB row is still non-terminal
+	 * (running/idle/rescheduling/paused) and untouched for ≥ `minAgeSeconds` —
+	 * the candidate set for the session liveness reconciler. Oldest-first,
+	 * capped. Carries the benchmark/eval ownership flag (so the pure decider can
+	 * skip coordinator-owned instances) plus everything the crash/auto-resume
+	 * paths need without a second query.
+	 */
+	listLivenessReconcileCandidates(input: {
+		minAgeSeconds: number;
+		limit: number;
+	}): Promise<LivenessReconcileCandidateRecord[]>;
 	listWorkflowExecutionSessionRuntimes(input: {
 		workflowExecutionId: string;
 	}): Promise<WorkflowExecutionSessionRuntimeRecord[]>;
@@ -312,6 +324,13 @@ export interface SessionRepository {
 	updateSessionStatusUnlessTerminated(
 		input: UpdateSessionStatusUnlessTerminatedInput,
 	): Promise<void>;
+	/**
+	 * Throttled liveness stamp: set `last_event_at = now()` at most once per 5s
+	 * window. Fired on EVERY ingested event (including turn heartbeats) so the
+	 * silence/liveness reconciler can distinguish a live-but-quiet session from
+	 * a dead one WITHOUT scanning session_events. Must NOT touch `updated_at`.
+	 */
+	bumpSessionLastEventAt(sessionId: string): Promise<void>;
 }
 
 export type SessionProvisioningPhase =
@@ -509,6 +528,34 @@ export type CliWorkspaceSessionCandidateRecord = {
 export type WorkflowExecutionSessionRuntimeRecord = {
 	sessionId: string;
 	agentRuntime: string | null;
+};
+
+export type LivenessReconcileCandidateRecord = {
+	id: string;
+	status: string;
+	agentId: string;
+	agentVersion: number | null;
+	agentSlug: string | null;
+	/** agents.runtime → the reconciler resolves the runtime descriptor to gate on CLI family. */
+	agentRuntime: string | null;
+	userId: string;
+	projectId: string | null;
+	title: string | null;
+	/** Interactive-cli resume lineage (auto-resume restart-budget walk). */
+	resumedFromSessionId: string | null;
+	/** null ⇒ never provisioned (no per-session runtime app-id yet). */
+	runtimeAppId: string | null;
+	/** Dapr instance id (falls back to session id) — the Dapr runtime-status probe key. */
+	daprInstanceId: string | null;
+	/** Per-session Sandbox CR name — the K8s CR-presence evidence key. */
+	runtimeSandboxName: string | null;
+	pauseRequestedAt: Date | null;
+	stopRequestedAt: Date | null;
+	/** true ⇒ a benchmark/eval coordinator owns this instance (skip; single stop authority). */
+	coordinatorOwned: boolean;
+	updatedAt: Date;
+	/** Throttled liveness stamp (migration 0095); null ⇒ no event ever ingested. */
+	lastEventAt: Date | null;
 };
 
 export type SessionRuntimeTargetSource = "persisted" | "agent" | "legacy";

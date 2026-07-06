@@ -23,10 +23,24 @@ export type DurableRunTarget =
 
 export type DurableTargetScope = { projectId: string | null; userId: string };
 
+/**
+ * Terminal shape a `finalizeDb` closure should write. `terminated` is the normal
+ * user/stop-driven end; `crashed` is set by the liveness reconciler when it
+ * converges a dead session (→ row `failed` + stopReason:{type:"crashed"}).
+ */
+export type FinalizeOutcome = "terminated" | "crashed";
+
 export type ResolvedDurableTarget = {
 	notFound: boolean;
 	/** DB row indicates a non-terminal (still-running) durable run. */
 	dbActive: boolean;
+	/**
+	 * Raw DB status string of the resolved row (session/exec/eval). Distinct from
+	 * `dbActive`: a `failed` session is still `dbActive` (its pod may be alive, so
+	 * Stop/archive gating must still treat it as live) but is NOT a valid pause
+	 * target. Populated for sessions; optional/omitted where a verb doesn't need it.
+	 */
+	dbStatus?: string | null;
 	/**
 	 * When the durable stop-intent was persisted (stop_requested_at /
 	 * cancel_requested_at), or null if no stop has been requested. Lets the
@@ -40,8 +54,14 @@ export type ResolvedDurableTarget = {
 	/** Per-session Sandbox CR names to delete on purge/reset. */
 	sandboxNames: string[];
 	statePurgeInstanceIds: string[];
-	/** Flip owning DB rows terminal. Only invoked once the cascade confirms closure. */
-	finalizeDb: (reason: string) => Promise<void>;
+	/**
+	 * Flip owning DB rows terminal. Only invoked once the cascade confirms closure.
+	 * `outcome` selects the terminal shape (default `terminated`): the session
+	 * liveness reconciler passes `crashed` so a converged dead/orphaned session
+	 * lands `failed` + stopReason:{type:"crashed"} instead of `terminated`. Only
+	 * the session resolver honors `crashed`; workflow/eval resolvers ignore it.
+	 */
+	finalizeDb: (reason: string, outcome?: FinalizeOutcome) => Promise<void>;
 	/**
 	 * Node ids of `durable/run` child sessions that are DB-`terminated`. Used to
 	 * confirm a cross-app wedge with POSITIVE evidence: only force-finalize when
@@ -82,6 +102,7 @@ export function notFoundLifecycleTarget(): ResolvedDurableTarget {
 	return {
 		notFound: true,
 		dbActive: false,
+		dbStatus: null,
 		stopRequestedAt: null,
 		terminatedChildNodes: [],
 		activeChildNodes: [],

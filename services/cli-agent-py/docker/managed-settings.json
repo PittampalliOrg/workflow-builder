@@ -2,7 +2,7 @@
   "env": {
     "CLAUDE_CODE_ENABLE_TELEMETRY": "1"
   },
-  "_comment": "Mirroring/lifecycle hooks are BAKED here (managed-settings = highest precedence, always enforced) so turn-completion is DETERMINISTIC: the Stop hook is the authoritative turn-end signal (relayed to the cli-agent-py hooks receiver on :8002), NOT herdr idle detection (which surfaced an interactive idle_prompt and wedged one-shot durable/run loops). No 'matcher' fields on purpose: omitting the matcher means 'always run' (a 'matcher':'*' entry silently suppressed SessionStart on the ryzen E2E). The two BLOCKING permission hooks (PermissionRequest/PermissionDenied) are deliberately NOT baked here \u2014 they return ask/deny and would strand one-shot autoTerminateAfterEndTurn runs that have no human to approve; they are written PER-SESSION for INTERACTIVE sessions only by cli_adapters/claude_code.py::_seed_runtime_hooks.",
+  "_comment": "Mirroring/lifecycle hooks are BAKED here (managed-settings = highest precedence, always enforced) so turn-completion is DETERMINISTIC: the Stop hook is the authoritative turn-end signal and StopFailure the authoritative turn-FAILURE signal (both relayed to the cli-agent-py hooks receiver on :8002), NOT herdr idle detection (which surfaced an interactive idle_prompt and wedged one-shot durable/run loops). StopFailure is ALSO registered per-session by _seed_runtime_hooks (belt-and-suspenders: the bake survives a failed per-session seed; double registration is harmless — Stop/StopFailure share an exactly-once (instance_id, turn) completion key). No 'matcher' fields on purpose: omitting the matcher means 'always run' (a 'matcher':'*' entry silently suppressed SessionStart on the ryzen E2E). The two BLOCKING permission hooks (PermissionRequest/PermissionDenied) are deliberately NOT baked here \u2014 they return ask/deny and would strand one-shot autoTerminateAfterEndTurn runs that have no human to approve; they are written PER-SESSION for INTERACTIVE sessions only by cli_adapters/claude_code.py::_seed_runtime_hooks.",
   "hooks": {
     "SessionStart": [
       {
@@ -25,6 +25,16 @@
       }
     ],
     "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8002/internal/hooks/claude"
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
       {
         "hooks": [
           {

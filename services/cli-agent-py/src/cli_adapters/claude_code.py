@@ -47,6 +47,7 @@ from typing import Any, Mapping
 
 from src.cli_adapters.base import CliAdapter, SeedResult, link_transcript_subtree
 from src.capability_compiler import emit_claude_code_cli_servers, materialize_skills_local
+from src.env_flags import CLI_TURN_FAILED_EDGE_ENABLED
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,16 @@ _MIRROR_HOOK_EVENTS = (
 # INTERACTIVE sessions; a one-shot workflow run omits them (no human → it would
 # strand) and relies on --dangerously-skip-permissions.
 _BLOCKING_HOOK_EVENTS = ("PermissionRequest", "PermissionDenied")
+# FAILURE edge — StopFailure fires when a turn ends in error; the receiver raises
+# ``turn.failed`` so a one-shot run fails deterministically instead of hanging.
+# Unlike Stop/mirroring, StopFailure is NOT baked into managed-settings.json, so it
+# must be written per-session here for BOTH one-shot and interactive runs (merges
+# with the baked hooks). Follow-up at the next image rebuild: bake it into
+# docker/managed-settings.json + drop this per-session write.
+_FAILURE_HOOK_EVENTS = ("StopFailure",)
+# CLI_TURN_FAILED_EDGE_ENABLED (default ON) is imported from the leaf
+# src.env_flags — shared with the hooks receiver without the hooks_api →
+# cli_adapters import cycle. When off, the StopFailure relay is not registered.
 
 # Modes the Claude Code CLI's --permission-mode flag accepts.
 _CLI_PERMISSION_MODES = {"default", "acceptEdits", "plan", "bypassPermissions"}
@@ -269,10 +280,16 @@ class ClaudeCodeAdapter(CliAdapter):
         import json
 
         one_shot = bool(session_input.get("autoTerminateAfterEndTurn"))
-        # Only interactive sessions add the blocking permission hooks on top of the
-        # baked mirroring set; one-shot runs add none (managed Stop still fires).
-        blocking = [] if one_shot else list(_BLOCKING_HOOK_EVENTS)
         entry = [{"hooks": [{"type": "http", "url": HOOK_RELAY_URL}]}]
+        # StopFailure (the turn-FAILURE edge) is always registered — for one-shot
+        # AND interactive — because it is NOT baked into managed-settings.json. The
+        # blocking permission hooks are added ONLY for interactive sessions (a
+        # one-shot run has no human → they would strand it).
+        hook_events: list[str] = []
+        if CLI_TURN_FAILED_EDGE_ENABLED:
+            hook_events += list(_FAILURE_HOOK_EVENTS)
+        if not one_shot:
+            hook_events += list(_BLOCKING_HOOK_EVENTS)
 
         config_dir = _claude_config_dir()
         config_dir.mkdir(parents=True, exist_ok=True)
@@ -285,11 +302,13 @@ class ClaudeCodeAdapter(CliAdapter):
                     existing = loaded
             except Exception:  # noqa: BLE001 — never fail seeding on a bad file
                 existing = {}
-        if blocking:
-            existing["hooks"] = {ev: entry for ev in blocking}
+        if hook_events:
+            # settings.json hooks MERGE with the baked managed mirroring/Stop hooks,
+            # so the always-on Stop/mirroring relay keeps firing alongside these.
+            existing["hooks"] = {ev: entry for ev in hook_events}
         else:
-            # No per-session hooks for one-shot runs — leave the baked managed
-            # mirroring/Stop hooks as the sole (deterministic) wiring.
+            # Nothing to add per-session (one-shot with the failure edge disabled) —
+            # leave the baked managed mirroring/Stop hooks as the sole wiring.
             existing.pop("hooks", None)
         # Pre-accept the bypass-mode dialog so --dangerously-skip-permissions boots
         # straight into work (claude would otherwise write this itself on first run).
@@ -297,8 +316,8 @@ class ClaudeCodeAdapter(CliAdapter):
         settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         result.paths["settingsPath"] = str(settings_path)
         logger.info(
-            "[claude] runtime hooks written: blocking=%s (one_shot=%s; mirroring/Stop baked in managed-settings)",
-            blocking,
+            "[claude] runtime hooks written: events=%s (one_shot=%s; mirroring/Stop baked in managed-settings)",
+            hook_events,
             one_shot,
         )
 
@@ -489,6 +508,12 @@ class ClaudeCodeAdapter(CliAdapter):
             data["summary"] = reason
         return data
 
-    # Turn completion is owned EXCLUSIVELY by the Stop hook (base defaults). These
+    def is_turn_failure_hook(self, event_name: str) -> bool:
+        """Claude's ``StopFailure`` hook is the authoritative turn-FAILURE edge
+        (raised as ``turn.failed``) — the failure counterpart of the ``Stop`` edge."""
+        return event_name == "StopFailure"
+
+    # Turn completion is owned EXCLUSIVELY by the Stop hook (base defaults); its
+    # failure counterpart is StopFailure (is_turn_failure_hook above). These
     # single-turn autoTerminate runs have no native /goal loop, so a Stop is the
     # authoritative turn-end. The transcript is read only for CONTENT.

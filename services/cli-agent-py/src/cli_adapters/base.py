@@ -242,6 +242,13 @@ class CliAdapter(abc.ABC):
         workflow-mode ``autoTerminateAfterEndTurn`` runs."""
         return event_name == "Stop"
 
+    def is_turn_failure_hook(self, event_name: str) -> bool:
+        """True when this hook event is the adapter's authoritative turn-FAILURE
+        edge — the receiver then raises ``turn.failed`` (deduped against the same
+        turn as the completion edge). Default off: an adapter must opt in (claude
+        maps ``StopFailure``); codex/agy have no failure hook yet."""
+        return False
+
     def stop_hook_completes_turn(self) -> bool:
         """Whether a generic Stop hook should synthesize ``turn.completed``.
 

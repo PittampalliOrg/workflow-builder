@@ -624,6 +624,13 @@
       "when": 1783241092157,
       "tag": "0094_pr_previews",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1783350000000,
+      "tag": "0095_session_last_event_at",
+      "breakpoints": true
     }
   ]
 }

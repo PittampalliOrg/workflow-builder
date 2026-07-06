@@ -826,6 +826,58 @@ def session_workflow(
                     status, reason = "completed", "turn_completed"
                     break
                 continue
+            if event_type == "turn.failed":
+                # Authoritative turn-FAILURE edge (claude StopFailure hook →
+                # hooks_api). Rides the SAME lifecycle lane as turn.completed;
+                # dedup is enforced on the agent side (one edge per turn).
+                turn_count += 1
+                error_text = _clean_string(event.get("error")) or "the turn failed"
+                # Only overwrite the last good assistant text if the failure edge
+                # carried partial output — a bare failure keeps the prior answer.
+                text = _clean_string(
+                    event.get("lastAssistantText") or event.get("content")
+                )
+                if text:
+                    last_assistant_text = text
+                # status_errored (always) and the error-flavored status_idle
+                # (interactive only) carry the SAME payload — the publisher copies
+                # its data arg, so one local is safe to reuse for both.
+                errored_data = {
+                    "stop_reason": {"type": "error", "message": error_text},
+                    "turn": turn_count,
+                    "turnId": f"{ctx.instance_id}:turn:{turn_count}",
+                    "workflowInstanceId": ctx.instance_id,
+                    "agentRuntime": agent_runtime,
+                }
+                if session_id and not ctx.is_replaying:
+                    publish_session_event(
+                        session_id,
+                        "session.status_errored",
+                        errored_data,
+                        source_event_id=(
+                            f"{ctx.instance_id}:turn:{turn_count}:errored"
+                        ),
+                        blocking=True,
+                    )
+                if auto_terminate:
+                    # One-shot workflow run: a failed turn fails the run, exactly
+                    # like a non-zero cli.exited (same teardown + failed contract).
+                    status, reason = "failed", "turn_failed"
+                    break
+                # Interactive session: the TUI is still alive, so emit an
+                # error-flavored idle to un-stick the UI and keep looping — the
+                # user can retry in the terminal.
+                if session_id and not ctx.is_replaying:
+                    publish_session_event(
+                        session_id,
+                        "session.status_idle",
+                        errored_data,
+                        source_event_id=(
+                            f"{ctx.instance_id}:turn:{turn_count}:errored-idle"
+                        ),
+                        blocking=True,
+                    )
+                continue
             if event_type in ("cli.session_end", "cli.exited"):
                 exit_code = event.get("exitCode")
                 status = "completed" if exit_code in (None, 0) else "failed"

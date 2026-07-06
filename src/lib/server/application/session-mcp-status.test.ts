@@ -183,6 +183,7 @@ function sessionDetail(overrides: Partial<SessionDetail> = {}): SessionDetail {
 		agentEphemeral: false,
 		createdAt: "2026-01-01T00:00:00.000Z",
 		updatedAt: "2026-01-01T00:00:00.000Z",
+		lastEventAt: null,
 		completedAt: null,
 		archivedAt: null,
 		daprInstanceId: "session-1",

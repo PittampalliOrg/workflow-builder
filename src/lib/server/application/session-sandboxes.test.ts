@@ -222,6 +222,7 @@ function sessionDetail(
 		agentEphemeral: false,
 		createdAt: "2026-01-01T00:00:00.000Z",
 		updatedAt: "2026-01-01T00:00:00.000Z",
+		lastEventAt: null,
 		completedAt: "2026-01-01T00:00:00.000Z",
 		archivedAt: null,
 		daprInstanceId: null,

@@ -10,6 +10,7 @@ import {
 import {
 	agentTargetForSession,
 	compactLifecycleIds,
+	type FinalizeOutcome,
 	type LifecycleTargetResolver,
 	notFoundLifecycleTarget,
 	nodeIdFromChildSessionId,
@@ -40,6 +41,7 @@ export function createPostgresLifecycleTargetResolver(
 			.select({
 				id: sessions.id,
 				status: sessions.status,
+				completedAt: sessions.completedAt,
 				daprInstanceId: sessions.daprInstanceId,
 				runtimeAppId: sessions.runtimeAppId,
 				runtimeSandboxName: sessions.runtimeSandboxName,
@@ -57,7 +59,14 @@ export function createPostgresLifecycleTargetResolver(
 			if (!node) continue;
 			const entry = nodeChildCounts.get(node) ?? { total: 0, terminated: 0 };
 			entry.total += 1;
-			if (s.status === "terminated") entry.terminated += 1;
+			// A child is terminal for the cross-app wedge when it is `terminated` OR
+			// crash-FINALIZED by the liveness reconciler (`failed` + completed_at set).
+			// Without the latter, a reconciler-converged child would land in
+			// activeChildNodes and permanently BLOCK the force-finalize the crash path
+			// now depends on.
+			if (s.status === "terminated" || (s.status === "failed" && s.completedAt != null)) {
+				entry.terminated += 1;
+			}
 			nodeChildCounts.set(node, entry);
 		}
 		const terminatedChildNodes = compactLifecycleIds(
@@ -101,7 +110,15 @@ export function createPostgresLifecycleTargetResolver(
 				...childSessions.map((s) => s.daprInstanceId),
 				...agentRuns.flatMap((r) => [r.daprInstanceId, r.agentWorkflowId]),
 			]),
-			finalizeDb: async (reason: string) => {
+			finalizeDb: async (reason: string, outcome: FinalizeOutcome = "terminated") => {
+				if (outcome === "crashed") {
+					// Documented no-op: the workflow-execution finalize writes `cancelled`
+					// (its own terminal vocabulary); the `crashed` outcome only shapes the
+					// per-SESSION resolver. No behavior change — just make the drop visible.
+					console.warn(
+						`[lifecycle-resolver] finalizeDb(crashed) dropped for workflowExecution ${id} — workflow finalize writes 'cancelled'`,
+					);
+				}
 				const now = new Date();
 				await database.transaction(async (tx) => {
 					await tx
@@ -183,6 +200,7 @@ export function createPostgresLifecycleTargetResolver(
 		return {
 			notFound: false,
 			dbActive: session.status !== "terminated",
+			dbStatus: session.status,
 			stopRequestedAt: session.stopRequestedAt ?? null,
 			terminatedChildNodes: [],
 			activeChildNodes: [],
@@ -193,13 +211,22 @@ export function createPostgresLifecycleTargetResolver(
 			statePurgeInstanceIds: compactLifecycleIds([
 				session.daprInstanceId ?? session.id,
 			]),
-			finalizeDb: async (reason: string) => {
+			finalizeDb: async (reason: string, outcome: FinalizeOutcome = "terminated") => {
 				const now = new Date();
+				const crashed = outcome === "crashed";
 				await database
 					.update(sessions)
 					.set({
-						status: "terminated",
-						stopReason: { reason, source: "lifecycle_controller" },
+						// A reconciler-converged crash lands `failed` + a `crashed` stop
+						// reason (so the row + UI read "Crashed", the resume affordance
+						// appears, and it is distinguishable from a clean stop); a normal
+						// stop lands `terminated`. Both stamp completedAt (terminal).
+						status: crashed ? "failed" : "terminated",
+						stopReason: {
+							type: crashed ? "crashed" : undefined,
+							reason,
+							source: "lifecycle_controller",
+						},
 						completedAt: now,
 						updatedAt: now,
 					})
@@ -241,7 +268,16 @@ export function createPostgresLifecycleTargetResolver(
 			agentRuntimeTargets: [],
 			sandboxNames: [],
 			statePurgeInstanceIds: compactLifecycleIds([run.coordinatorExecutionId]),
-			finalizeDb: async () => {},
+			finalizeDb: async (_reason: string, outcome?: FinalizeOutcome) => {
+				if (outcome === "crashed") {
+					// Documented no-op: eval DB flips are owned by
+					// evaluations/service.ts::cancelEvaluationRun; the resolver only drives
+					// the coordinator's durable terminate/purge here.
+					console.warn(
+						`[lifecycle-resolver] finalizeDb(crashed) dropped for evalRun ${id} — eval finalize is owned by cancelEvaluationRun`,
+					);
+				}
+			},
 			markStopRequested: async () => {
 				await database
 					.update(evaluationRuns)

@@ -551,7 +551,9 @@ function normalizeSessionStopReason(value: unknown): SessionStopReason | null {
 		t === "requires_action" ||
 		t === "retries_exhausted" ||
 		t === "interrupted" ||
-		t === "terminated"
+		t === "terminated" ||
+		t === "error" ||
+		t === "crashed"
 			? t
 			: "end_turn";
 	return {
@@ -5538,6 +5540,12 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			producerEpoch: input.producerEpoch,
 		});
 
+		// Liveness stamp for EVERY ingested event (heartbeats included). Throttled
+		// to one UPDATE per 5s window inside the adapter; never touches updatedAt.
+		// Best-effort — the reconciler has other evidence, so a transient failure
+		// must not reject the ingest nor spam unhandled rejections.
+		void sessions.bumpSessionLastEventAt(input.sessionId).catch(() => {});
+
 		let cleanupSessionSandbox = false;
 		if (input.type === "session.status_starting" || input.type === "session.status_running") {
 			await sessions.updateSessionStatusUnlessTerminated({
@@ -5570,6 +5578,30 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			await sessions.updateSessionStatusUnlessTerminated({
 				id: input.sessionId,
 				status: "rescheduling",
+			});
+		} else if (input.type === "session.status_errored") {
+			// A turn failed (runtime StopFailure edge). NON-terminal: the pod may
+			// still be alive (interactive TUI, or a retry), so we route through
+			// updateSessionStatusUnlessTerminated — a later status_running
+			// legitimately flips failed→running, and an already-`terminated` row
+			// stays sticky (no-op). No markCompleted: only status_terminated (or
+			// the liveness reconciler) finalizes.
+			const erroredStopReason = isRecord(input.data?.stop_reason)
+				? input.data.stop_reason
+				: null;
+			const errorMessage =
+				stringOrNull(erroredStopReason?.message) ??
+				stringOrNull(input.data?.reason) ??
+				stringOrNull(input.data?.message);
+			await sessions.updateSessionStatusUnlessTerminated({
+				id: input.sessionId,
+				status: "failed",
+				stopReason: normalizeSessionStopReason(input.data?.stop_reason),
+				errorMessage,
+			});
+			void this.deps.sessionTraceLifecycle?.patchInteractiveSessionTraces({
+				sessionId: input.sessionId,
+				status: "ERROR",
 			});
 		}
 

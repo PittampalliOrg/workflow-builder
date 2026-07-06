@@ -27,6 +27,7 @@ import {
 import {
 	type DurableRunTarget,
 	type DurableTargetScope,
+	type FinalizeOutcome,
 } from "./resolvers";
 
 export type { DurableRunTarget, DurableTargetScope } from "./resolvers";
@@ -60,6 +61,13 @@ export type StopDurableRunOptions = {
 	reason?: string;
 	/** Graceful cooperative-cancel wait before forceful terminate (ms). 0 = skip graceful. */
 	graceMs?: number;
+	/**
+	 * Terminal shape the DB finalize writes (default `terminated`). The liveness
+	 * reconciler passes `crashed` (via {@link convergeCrashedSession}) so a
+	 * converged session lands `failed` + stopReason `crashed` instead of
+	 * `terminated`. Only honored on the purge/reset finalize path.
+	 */
+	finalizeOutcome?: FinalizeOutcome;
 };
 
 export type StopDurableRunResult = {
@@ -294,7 +302,7 @@ export async function stopDurableRun(
 
 	let dbOk = true;
 	try {
-		await resolved.finalizeDb(reason);
+		await resolved.finalizeDb(reason, opts.finalizeOutcome);
 		steps.push({ name: "finalize-db", result: "ok" });
 	} catch (err) {
 		dbOk = false;
@@ -449,4 +457,25 @@ export async function confirmDurableStop(
 	}
 
 	return { state: "stopping", scope: resolved.scope };
+}
+
+/**
+ * Converge a session the liveness reconciler has determined is CRASHED (its Dapr
+ * instance is gone AND its Sandbox CR + pod are absent). This is a thin alias for
+ * the ONE purge path — `stopDurableRun` in `reset` mode (purge + force-delete the
+ * scoped state rows, since the worker is provably gone so a terminate can't apply,
+ * no cooperative wait) — with the `crashed` finalize outcome so the row lands
+ * `failed` + stopReason `{type:"crashed"}` + completedAt instead of `terminated`.
+ * No bespoke DB flip: Dapr and DB converge together.
+ */
+export function convergeCrashedSession(
+	target: DurableRunTarget,
+	opts: { reason?: string } = {},
+): Promise<StopDurableRunResult> {
+	return stopDurableRun(target, {
+		mode: "reset",
+		reason: opts.reason?.trim() || "Converged crashed session (liveness reconciler)",
+		finalizeOutcome: "crashed",
+		graceMs: 0,
+	});
 }

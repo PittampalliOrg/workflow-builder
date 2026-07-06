@@ -82,6 +82,7 @@
 		'idle',
 		'paused',
 		'rescheduling',
+		'failed',
 		'terminated'
 	];
 

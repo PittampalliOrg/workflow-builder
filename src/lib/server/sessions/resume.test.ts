@@ -64,11 +64,32 @@ describe("isNonGracefulExit", () => {
 });
 
 describe("canResumeCliSession", () => {
-	it("RELAXATION: a crashed/failed (non-graceful) CLI session IS resumable", () => {
-		// status 'failed' — the old `status === "terminated"` gate REJECTED this.
-		const failed = canResumeCliSession({ runtime: cliRuntime, status: "failed" });
-		expect(failed.allowed).toBe(true);
-		expect(failed.nonGraceful).toBe(true);
+	it("resumes a FINALIZED non-graceful CLI session but NOT a live turn-failure", () => {
+		// A `failed` row WITHOUT completedAt is a LIVE turn-level failure (pod/TUI
+		// still up) — resuming would duplicate the session, so it is rejected.
+		const liveFailed = canResumeCliSession({ runtime: cliRuntime, status: "failed" });
+		expect(liveFailed.allowed).toBe(false);
+		expect(liveFailed.reason).toMatch(/still live/);
+		expect(liveFailed.nonGraceful).toBe(true);
+
+		// The SAME row once FINALIZED (completedAt stamped by the reconciler /
+		// controller) IS resumable.
+		const finalizedFailed = canResumeCliSession({
+			runtime: cliRuntime,
+			status: "failed",
+			completedAt: "2026-07-06T00:00:00.000Z",
+		});
+		expect(finalizedFailed.allowed).toBe(true);
+		expect(finalizedFailed.nonGraceful).toBe(true);
+
+		// A live turn-failure with POSITIVE runtimeGone evidence is resumable
+		// (the auto-resume reconciler path, before the DB status converges).
+		const goneFailed = canResumeCliSession({
+			runtime: cliRuntime,
+			status: "failed",
+			runtimeGone: true,
+		});
+		expect(goneFailed.allowed).toBe(true);
 
 		// terminated-but-crashed (non-end_turn stopReason) is resumable + flagged.
 		const crashed = canResumeCliSession({

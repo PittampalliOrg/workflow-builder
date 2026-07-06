@@ -48,11 +48,35 @@ async function runBackfills(): Promise<void> {
 
 let startupPromise: Promise<void> | null = null;
 
+/**
+ * Schedule the recurring session-liveness reconcile on the BFF's Dapr sidecar.
+ * FIRE-AND-FORGET on purpose: `scheduleSessionReconcilerJob` runs its own bounded
+ * background retry (daprd may not be ready at boot), so it must NOT be awaited
+ * inside the request-gating startup promise — that would block first-request
+ * readiness on a 5s sidecar fetch AND, being attempted exactly once, would leave
+ * the reconciler dead for the pod's lifetime on a boot race. Dynamic import keeps
+ * the reconciler's runtime deps off the request hot path.
+ */
+function scheduleReconciler(): void {
+	void (async () => {
+		try {
+			const { scheduleSessionReconcilerJob } = await import(
+				"$lib/server/application/session-reconciler-service"
+			);
+			await scheduleSessionReconcilerJob();
+		} catch (err) {
+			console.warn("[startup] session-reconciler job schedule failed:", err);
+		}
+	})();
+}
+
 export function ensureStartupReady(): Promise<void> {
 	if (!startupPromise) {
 		startupPromise = (async () => {
 			try {
 				await runBackfills();
+				// Fire-and-forget — never gate request readiness on the sidecar schedule.
+				scheduleReconciler();
 			} catch (err) {
 				console.error(
 					"[startup] boot sequence failed — requests may 500 until fixed:",

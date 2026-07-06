@@ -205,7 +205,7 @@
 				</div>
 			{:else if displayEvents.length === 0}
 				<div class="px-4 py-16 text-center text-sm text-muted-foreground">
-					{session?.status === 'terminated'
+					{session?.status === 'terminated' || session?.status === 'failed'
 						? 'Session ended with no events.'
 						: 'Waiting for the agent to start…'}
 				</div>

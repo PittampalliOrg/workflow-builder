@@ -639,6 +639,7 @@ function fakeSessions(): SessionRepository {
 			agentSlug: "browser-agent",
 		})),
 		listCliWorkspaceSessionCandidates: vi.fn(async () => []),
+		listLivenessReconcileCandidates: vi.fn(async () => []),
 		listWorkflowExecutionSessionRuntimes: vi.fn(async () => []),
 		listSandboxSessionOwners: vi.fn(async () => []),
 		getWorkflowEnsureSession: vi.fn(async () => ({
@@ -682,6 +683,7 @@ function fakeSessions(): SessionRepository {
 		})),
 		updateSessionStatus: vi.fn(async () => undefined),
 		updateSessionStatusUnlessTerminated: vi.fn(async () => undefined),
+		bumpSessionLastEventAt: vi.fn(async () => undefined),
 	};
 }
 
@@ -712,6 +714,7 @@ function sampleSessionDetail(): SessionDetail {
 		agentEphemeral: false,
 		createdAt: "2026-05-15T12:00:00.000Z",
 		updatedAt: "2026-05-15T12:00:00.000Z",
+		lastEventAt: null,
 		completedAt: null,
 		archivedAt: null,
 		daprInstanceId: null,
@@ -2205,6 +2208,161 @@ describe("ApplicationWorkflowDataService", () => {
 				toolName: null,
 			},
 		});
+	});
+
+	it("marks a session failed on session.status_errored and extracts the error message", async () => {
+		const sessions = fakeSessions();
+		const sessionEvents = fakeSessionEvents();
+		const sessionTraceLifecycle = fakeSessionTraceLifecycle();
+		const { service } = makeService({ sessions, sessionEvents, sessionTraceLifecycle });
+
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "session.status_errored",
+			data: {
+				stop_reason: { type: "error", message: "turn aborted: exit 137" },
+				reason: "turn_failed",
+			},
+			sourceEventId: "agent-event-err",
+		});
+
+		// Routed through the terminated-guarded update (never updateSessionStatus /
+		// markCompleted), so an already-`terminated` row stays sticky and no
+		// completedAt is stamped — the pod may still be alive (interactive TUI).
+		expect(sessions.updateSessionStatus).not.toHaveBeenCalled();
+		expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenCalledWith(
+			expect.objectContaining({
+				id: "session-1",
+				status: "failed",
+				errorMessage: "turn aborted: exit 137",
+			}),
+		);
+		// `error` is on the whitelist → PRESERVED (not coerced to end_turn), so the
+		// failed row's stopReason stays distinct and no consumer of the normalized
+		// value (e.g. the goal loop) mistakes a failed turn for a normal end_turn.
+		expect(
+			sessions.updateSessionStatusUnlessTerminated,
+		).toHaveBeenCalledWith(
+			expect.objectContaining({ stopReason: { type: "error" } }),
+		);
+		// Interactive traces flip to ERROR (mirrors the terminated branch's OK patch).
+		expect(sessionTraceLifecycle.patchInteractiveSessionTraces).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			status: "ERROR",
+		});
+	});
+
+	it("falls back to data.reason then data.message for the errored errorMessage", async () => {
+		const sessions = fakeSessions();
+		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "session.status_errored",
+			data: { reason: "sync_timeout" },
+		});
+		expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenCalledWith(
+			expect.objectContaining({ status: "failed", errorMessage: "sync_timeout" }),
+		);
+
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "session.status_errored",
+			data: { message: "no stop_reason or reason" },
+		});
+		expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				status: "failed",
+				errorMessage: "no stop_reason or reason",
+			}),
+		);
+	});
+
+	it("preserves a crashed stop reason through normalization (whitelist)", async () => {
+		const sessions = fakeSessions();
+		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "session.status_errored",
+			data: { stop_reason: { type: "crashed", message: "pod deleted" } },
+		});
+
+		expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenCalledWith(
+			expect.objectContaining({
+				status: "failed",
+				stopReason: { type: "crashed" },
+				errorMessage: "pod deleted",
+			}),
+		);
+	});
+
+	it("keeps an error stop reason on a status_idle (interactive turn.failed)", async () => {
+		// The interactive turn.failed edge publishes status_idle{stop_reason:error}.
+		// `error` must survive normalization (NOT coerce to end_turn) so the row's
+		// stopReason stays distinct and the goal loop does not auto-continue.
+		const sessions = fakeSessions();
+		const { service } = makeService({
+			sessions,
+			sessionEvents: fakeSessionEvents(),
+			sessionTraceLifecycle: fakeSessionTraceLifecycle(),
+		});
+
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "session.status_idle",
+			data: { stop_reason: { type: "error" } },
+		});
+
+		expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenCalledWith({
+			id: "session-1",
+			status: "idle",
+			stopReason: { type: "error" },
+		});
+	});
+
+	it("re-activates a failed session on the next session.status_running event", async () => {
+		// `failed` is NON-terminal: a later status_running must legitimately flip
+		// it back to running (only `terminated` sticks). The service routes both
+		// through updateSessionStatusUnlessTerminated so the DB guard allows it.
+		const sessions = fakeSessions();
+		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "session.status_running",
+			data: {},
+		});
+
+		expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenCalledWith({
+			id: "session-1",
+			status: "running",
+		});
+		expect(sessions.updateSessionStatus).not.toHaveBeenCalled();
+	});
+
+	it("bumps last_event_at for every ingested event, including heartbeats", async () => {
+		const sessions = fakeSessions();
+		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+
+		// A heartbeat carries no status transition, but must still refresh the
+		// liveness stamp so the reconciler can tell quiet-but-alive from dead.
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "session.turn_heartbeat",
+			data: {},
+		});
+		expect(sessions.bumpSessionLastEventAt).toHaveBeenCalledWith("session-1");
+		expect(sessions.updateSessionStatus).not.toHaveBeenCalled();
+		expect(sessions.updateSessionStatusUnlessTerminated).not.toHaveBeenCalled();
+
+		// It also fires alongside a real status transition.
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "session.status_running",
+			data: {},
+		});
+		expect(sessions.bumpSessionLastEventAt).toHaveBeenCalledTimes(2);
 	});
 
 	it("resolves interactive CLI workspace command candidates through session ports", async () => {
