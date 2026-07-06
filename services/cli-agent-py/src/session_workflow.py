@@ -720,6 +720,11 @@ def session_workflow(
     status: str | None = None
     reason: str | None = None
     iterations = 0
+    # Instrumentation (data only): the NON-terminal background-task count the
+    # hooks layer stamped on the last turn.completed edge, if any. Carried so the
+    # terminal status can also surface it (relevant for auto-terminate runs, which
+    # emit no idle event). None = no data; never affects control flow.
+    last_background_task_count: int | None = None
     # Subscribe to the lifecycle external-event lane ONCE and reuse the same task
     # across idle-probe iterations, re-arming only after an event is consumed.
     # Recreating wait_for_external_event every loop (the prior bug) leaked a fresh
@@ -788,6 +793,14 @@ def session_workflow(
                 )
                 if text:
                     last_assistant_text = text
+                # Instrumentation (data only): the hooks layer stamps an int
+                # backgroundTaskCount on the completion edge when Claude Code
+                # reported background_tasks; absent = no data. Bool guard because
+                # ``isinstance(True, int)`` is True. Deterministic from the event,
+                # so it is replay-safe to read outside the is_replaying guard.
+                raw_bg_count = event.get("backgroundTaskCount")
+                if isinstance(raw_bg_count, int) and not isinstance(raw_bg_count, bool):
+                    last_background_task_count = raw_bg_count
                 if session_id and not ctx.is_replaying:
                     publish_session_event(
                         session_id,
@@ -807,16 +820,19 @@ def session_workflow(
                         blocking=True,
                     )
                     if not auto_terminate:
+                        idle_data: dict[str, Any] = {
+                            "stop_reason": {"type": "end_turn"},
+                            "turn": turn_count,
+                            "turnId": f"{ctx.instance_id}:turn:{turn_count}",
+                            "workflowInstanceId": ctx.instance_id,
+                            "agentRuntime": agent_runtime,
+                        }
+                        if last_background_task_count is not None:
+                            idle_data["background_task_count"] = last_background_task_count
                         publish_session_event(
                             session_id,
                             "session.status_idle",
-                            {
-                                "stop_reason": {"type": "end_turn"},
-                                "turn": turn_count,
-                                "turnId": f"{ctx.instance_id}:turn:{turn_count}",
-                                "workflowInstanceId": ctx.instance_id,
-                                "agentRuntime": agent_runtime,
-                            },
+                            idle_data,
                             source_event_id=(
                                 f"{ctx.instance_id}:turn:{turn_count}:idle"
                             ),
@@ -903,18 +919,25 @@ def session_workflow(
     )
 
     if session_id and not ctx.is_replaying:
+        terminated_data: dict[str, Any] = {
+            "reason": reason or status,
+            "stop_reason": _terminal_stop_reason(status, reason),
+            "status": status,
+            "success": status not in ("failed",),
+            "turnCount": turn_count,
+            "agentRuntime": agent_runtime,
+            "workflowInstanceId": ctx.instance_id,
+        }
+        # Instrumentation (data only): carry the last completion edge's
+        # background-task count onto the terminal status so auto-terminate runs —
+        # which emit no idle event, and are exactly the case a future drain would
+        # target — still surface whether background work was left running.
+        if last_background_task_count is not None:
+            terminated_data["background_task_count"] = last_background_task_count
         publish_session_event(
             session_id,
             "session.status_terminated",
-            {
-                "reason": reason or status,
-                "stop_reason": _terminal_stop_reason(status, reason),
-                "status": status,
-                "success": status not in ("failed",),
-                "turnCount": turn_count,
-                "agentRuntime": agent_runtime,
-                "workflowInstanceId": ctx.instance_id,
-            },
+            terminated_data,
         )
     output_sync_result = None
     patch_result = None

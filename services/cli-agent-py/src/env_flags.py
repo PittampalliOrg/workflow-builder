@@ -36,3 +36,13 @@ def env_bool(name: str, default: bool | None = None) -> bool | None:
 # deterministically instead of hanging until the pod's activeDeadline. Only an
 # explicit falsy value disables it; unknown/unset → enabled.
 CLI_TURN_FAILED_EDGE_ENABLED: bool = bool(env_bool("CLI_TURN_FAILED_EDGE_ENABLED", True))
+
+# background_task_count instrumentation master switch (default ON): at the Stop
+# (turn.completed) edge, count the NON-terminal ``background_tasks[]`` Claude Code
+# reports and ride the number on ``session.status_idle`` as
+# ``background_task_count``. PURE DATA — no drain / auto-terminate / behavior
+# change; it exists only to measure whether background work is left running at
+# turn end. Only an explicit falsy value disables it; unknown/unset → enabled.
+CLI_BACKGROUND_TASK_COUNT_ENABLED: bool = bool(
+    env_bool("CLI_BACKGROUND_TASK_COUNT_ENABLED", True)
+)

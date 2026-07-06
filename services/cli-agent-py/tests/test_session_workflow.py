@@ -804,3 +804,128 @@ def test_start_cli_activity_receives_seed_user_message(monkeypatch):
         c for name, c in ctx.activity_calls if name == "start_cli_activity"
     )
     assert start_call["seedUserMessage"] == "kick"
+
+
+# ---------------------------------------------------------------------------
+# background_task_count instrumentation (data only; no drain / behavior change)
+# ---------------------------------------------------------------------------
+
+
+def _publish_capture(monkeypatch):
+    published: list[tuple[str, str, dict, dict]] = []
+    monkeypatch.setattr(
+        sw,
+        "publish_session_event",
+        lambda sid, etype, data, **kw: published.append((sid, etype, data, kw)),
+    )
+    return published
+
+
+def test_status_idle_includes_background_task_count(monkeypatch):
+    """An interactive (non-auto-terminate) turn.completed carrying
+    backgroundTaskCount rides it onto session.status_idle AND the terminal
+    status as background_task_count."""
+    published = _publish_capture(monkeypatch)
+    ctx = FakeCtx()
+    driver = WorkflowDriver(ctx, dict(BASE_INPUT), monkeypatch)  # interactive
+    _start_to_first_when_any(driver)
+    event_task = driver.event_task()
+    event_task.result = {
+        "events": [
+            {
+                "type": "turn.completed",
+                "lastAssistantText": "the answer",
+                "backgroundTaskCount": 2,
+            }
+        ]
+    }
+    when_any = driver.gen.send(event_task)
+    assert when_any.kind == "when_any"  # loop keeps running
+    status_idle = next(e for e in published if e[1] == "session.status_idle")
+    assert status_idle[2]["background_task_count"] == 2
+
+    # Clean exit → the terminal status carries the last completion edge's count.
+    event_task = driver.event_task()
+    event_task.result = {"events": [{"type": "cli.exited", "exitCode": 0}]}
+    yielded = driver.gen.send(event_task)
+    with pytest.raises(StopIteration):
+        _drive_terminal_to_result(driver, yielded)
+    terminated = next(e for e in published if e[1] == "session.status_terminated")
+    assert terminated[2]["background_task_count"] == 2
+
+
+def test_status_idle_includes_zero_background_task_count(monkeypatch):
+    """A real zero (all background tasks terminal) is DATA and rides as 0 — the
+    `is not None` guard must not drop it like the absent (no-data) case."""
+    published = _publish_capture(monkeypatch)
+    ctx = FakeCtx()
+    driver = WorkflowDriver(ctx, dict(BASE_INPUT), monkeypatch)
+    _start_to_first_when_any(driver)
+    event_task = driver.event_task()
+    event_task.result = {
+        "events": [
+            {"type": "turn.completed", "lastAssistantText": "x", "backgroundTaskCount": 0}
+        ]
+    }
+    driver.gen.send(event_task)
+    status_idle = next(e for e in published if e[1] == "session.status_idle")
+    assert status_idle[2]["background_task_count"] == 0
+
+
+def test_status_idle_omits_background_task_count_when_absent(monkeypatch):
+    """No backgroundTaskCount on the edge (Claude Code reported no background_tasks)
+    → status_idle omits the field entirely (no data)."""
+    published = _publish_capture(monkeypatch)
+    ctx = FakeCtx()
+    driver = WorkflowDriver(ctx, dict(BASE_INPUT), monkeypatch)
+    _start_to_first_when_any(driver)
+    event_task = driver.event_task()
+    event_task.result = {
+        "events": [{"type": "turn.completed", "lastAssistantText": "the answer"}]
+    }
+    driver.gen.send(event_task)
+    status_idle = next(e for e in published if e[1] == "session.status_idle")
+    assert "background_task_count" not in status_idle[2]
+
+
+def test_auto_terminate_terminal_status_carries_background_task_count(monkeypatch):
+    """Auto-terminate runs emit NO idle event, so the terminal status is where the
+    count surfaces — exactly the case a future drain would target. Control flow is
+    unchanged: the run still terminates at turn end."""
+    published = _publish_capture(monkeypatch)
+    ctx = FakeCtx()
+    driver = WorkflowDriver(
+        ctx, {**BASE_INPUT, "autoTerminateAfterEndTurn": True}, monkeypatch
+    )
+    _start_to_first_when_any(driver)
+    event_task = driver.event_task()
+    event_task.result = {
+        "events": [
+            {"type": "turn.completed", "content": "done", "backgroundTaskCount": 3}
+        ]
+    }
+    yielded = driver.gen.send(event_task)
+    with pytest.raises(StopIteration) as stop:
+        _drive_terminal_to_result(driver, yielded)
+    assert stop.value.value["status"] == "completed"  # behavior unchanged
+    assert not any(e[1] == "session.status_idle" for e in published)
+    terminated = next(e for e in published if e[1] == "session.status_terminated")
+    assert terminated[2]["background_task_count"] == 3
+
+
+def test_non_int_background_task_count_is_ignored(monkeypatch):
+    """A malformed backgroundTaskCount (bool / non-int) is dropped, not surfaced —
+    the workflow only threads a genuine int."""
+    published = _publish_capture(monkeypatch)
+    ctx = FakeCtx()
+    driver = WorkflowDriver(ctx, dict(BASE_INPUT), monkeypatch)
+    _start_to_first_when_any(driver)
+    event_task = driver.event_task()
+    event_task.result = {
+        "events": [
+            {"type": "turn.completed", "lastAssistantText": "x", "backgroundTaskCount": True}
+        ]
+    }
+    driver.gen.send(event_task)
+    status_idle = next(e for e in published if e[1] == "session.status_idle")
+    assert "background_task_count" not in status_idle[2]

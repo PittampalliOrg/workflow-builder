@@ -43,7 +43,7 @@ from typing import Any, Callable, Mapping
 from fastapi import APIRouter, Request
 
 from src.cli_adapters import get_adapter
-from src.env_flags import CLI_TURN_FAILED_EDGE_ENABLED
+from src.env_flags import CLI_BACKGROUND_TASK_COUNT_ENABLED, CLI_TURN_FAILED_EDGE_ENABLED
 from src.event_publisher import publish_session_event
 from src.session_supervisor import get_supervisor
 from src.taskhub import raise_lifecycle_events
@@ -99,6 +99,35 @@ ONE_SHOT_ASK_DENY_REASON = (
     "questions or wait for input. Write your diagnosis/summary as your final "
     "message and end the turn."
 )
+
+# Per-task ``status`` values that mark a background task as DONE. Claude Code's
+# Stop-hook payload carries a ``background_tasks`` array; a task is LIVE unless
+# its status is one of these. Anything else — including a missing/unknown status
+# — is treated as LIVE so the count can never under-report a still-running shell.
+_TERMINAL_BACKGROUND_TASK_STATUSES = frozenset(
+    {"completed", "failed", "stopped", "killed"}
+)
+
+
+def _count_live_background_tasks(payload: Mapping[str, Any]) -> int | None:
+    """Count NON-terminal background tasks reported in a Stop hook payload.
+
+    Returns ``None`` when ``background_tasks`` is absent/None (or not a list) —
+    "no data", which a consumer must distinguish from a genuine zero. Otherwise
+    returns the number of entries whose ``status`` (lowercased/stripped) is NOT in
+    ``_TERMINAL_BACKGROUND_TASK_STATUSES``, treating a missing/unknown status —
+    and any non-dict entry — as LIVE. Pure instrumentation; no side effects.
+    """
+    tasks = payload.get("background_tasks")
+    if not isinstance(tasks, list):
+        return None
+    live = 0
+    for task in tasks:
+        status = task.get("status") if isinstance(task, Mapping) else None
+        normalized = status.strip().lower() if isinstance(status, str) else None
+        if normalized not in _TERMINAL_BACKGROUND_TASK_STATUSES:
+            live += 1
+    return live
 
 
 def _clean(value: Any) -> str | None:
@@ -570,6 +599,14 @@ class HookProcessor:
             event: dict[str, Any] = {"type": "turn.completed"}
             if last_text:
                 event["lastAssistantText"] = last_text
+            # Instrumentation (data only): how many NON-terminal background tasks
+            # Claude Code still reports at turn end. Rides ONLY the completion
+            # edge — a failed turn's background state is not meaningful. None (no
+            # data) is omitted so a real zero stays distinguishable downstream.
+            if CLI_BACKGROUND_TASK_COUNT_ENABLED:
+                background_task_count = _count_live_background_tasks(payload)
+                if background_task_count is not None:
+                    event["backgroundTaskCount"] = background_task_count
             # Shared exactly-once turn-edge commit (also used by the failure edge).
             # A transcript-only adapter (should_complete_from_hook False) or an
             # already-raised turn suppresses the raise.
