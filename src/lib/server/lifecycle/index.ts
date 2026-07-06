@@ -428,9 +428,10 @@ export async function confirmDurableStop(
 	}
 	if (wedged) {
 		console.warn(
-			`confirmDurableStop: cross-app child wedge on ${target.kind} ${target.id} — ` +
+			`[wedge-eval] ${target.kind} ${target.id} FORCE-FINALIZE: cross-app child wedge — ` +
 				`agent child terminal but parent(s) [${resolved.parentInstanceIds.join(", ")}] ` +
-				`stuck RUNNING (live currentNode=${wedgedParentNode ?? "unknown"}); ` +
+				`stuck RUNNING (live currentNode=${wedgedParentNode ?? "unknown"}, ` +
+				`terminatedChildNodes=${resolved.terminatedChildNodes.length}); ` +
 				`force-deleting parent durable state and finalizing`,
 		);
 		try {
@@ -460,6 +461,30 @@ export async function confirmDurableStop(
 			}
 		}
 		return finalized;
+	}
+
+	// Still stopping — log WHY so a run in "stopping" limbo is diagnosable at a
+	// glance (grep `[wedge-eval]`). Only for stop-requested runs; a confirm poll on
+	// a run with no stop intent is not interesting. This is the counterpart to the
+	// FORCE-FINALIZE line above: together they explain every wedge decision.
+	if (resolved.stopRequestedAt != null) {
+		const graceElapsedMs = Date.now() - resolved.stopRequestedAt.getTime();
+		const reason = parentClosed
+			? "parent durable tree closed; waiting on agent child to reach terminal"
+			: resolved.terminatedChildNodes.length === 0
+				? "no terminal durable/run child — parent still doing real work, not a dead-agent wedge"
+				: resolved.activeChildNodes.length > 0
+					? `a durable/run child is still active ([${resolved.activeChildNodes.join(", ")}]) — not finalizing over live work`
+					: graceElapsedMs < WEDGE_FINALIZE_GRACE_MS
+						? `wedge condition met; holding for grace (${Math.round(graceElapsedMs / 1000)}s/${Math.round(WEDGE_FINALIZE_GRACE_MS / 1000)}s)`
+						: "wedge condition met + grace elapsed but not force-finalized (unexpected — investigate)";
+		console.info(
+			`[wedge-eval] ${target.kind} ${target.id} still stopping: ` +
+				`parentClosed=${parentClosed} agentClosed=${agentClosed} ` +
+				`terminatedChildNodes=${resolved.terminatedChildNodes.length} ` +
+				`activeChildNodes=${resolved.activeChildNodes.length} ` +
+				`graceElapsed=${Math.round(graceElapsedMs / 1000)}s → ${reason}`,
+		);
 	}
 
 	return { state: "stopping", scope: resolved.scope };
