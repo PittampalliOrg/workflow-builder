@@ -31,6 +31,10 @@ from src.event_publisher import publish_session_event
 logger = logging.getLogger(__name__)
 
 TAIL_POLL_SECONDS = float(os.environ.get("CLI_TRANSCRIPT_POLL_SECONDS", "2"))
+# Upper bound on the Stop-hook drain-to-quiescence wait (see
+# TailerManager.drain_quiescent). Overridable so a slow JuiceFS flush can be
+# given more room without a redeploy.
+STOP_DRAIN_MAX_SECONDS = float(os.environ.get("CLI_STOP_DRAIN_MAX_SECONDS", "5"))
 
 
 def _text_of_content_blocks(blocks: Any) -> str:
@@ -93,6 +97,13 @@ class TranscriptTailer:
 
     def flush(self) -> int:
         return self.poll()
+
+    @property
+    def ingest_offset(self) -> int:
+        """Total transcript bytes read so far (advances even for lines that emit
+        no event, and for a buffered partial trailing line). Used as the
+        quiescence signal by the Stop-hook drain."""
+        return self._offset
 
     def _handle_line(self, raw_line: bytes) -> int:
         text = raw_line.decode("utf-8", errors="replace").strip()
@@ -289,6 +300,52 @@ class TailerManager:
     def flush_now(self) -> None:
         if self._tailer is not None:
             self._tailer.flush()
+
+    async def drain_quiescent(
+        self,
+        *,
+        max_wait: float | None = None,
+        quiet_period: float = 0.75,
+        poll_seconds: float = 0.1,
+    ) -> None:
+        """Flush the active tailer repeatedly until the transcript has been
+        quiescent (no new bytes ingested) for ``quiet_period`` seconds, capped
+        at ``max_wait``.
+
+        Some CLIs fire their Stop hook while the FINAL transcript line is still
+        being written (observed live: the real final message — carrying the
+        machine-parsed verdict — landed 0.5–1.3s after the Stop hook, so a stale
+        mid-turn message was captured instead). Draining lets the tailer ingest
+        and publish that final ``agent.message`` (and advance
+        ``last_assistant_text``) BEFORE the Stop branch reads it or raises
+        ``turn.completed``, which keeps the publication order sane.
+        """
+        tailer = self._tailer
+        if tailer is None:
+            return
+        if max_wait is None:
+            max_wait = STOP_DRAIN_MAX_SECONDS
+        quiet_period = max(0.0, quiet_period)
+        poll_seconds = max(0.01, poll_seconds)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, max_wait)
+        # Prime once so a line already fully on disk at Stop is ingested (and
+        # published) immediately without waiting a poll interval.
+        await asyncio.to_thread(tailer.flush)
+        last_offset = tailer.ingest_offset
+        last_change = loop.time()
+        while loop.time() < deadline:
+            if loop.time() - last_change >= quiet_period:
+                return
+            await asyncio.sleep(poll_seconds)
+            await asyncio.to_thread(tailer.flush)
+            offset = tailer.ingest_offset
+            if offset != last_offset:
+                last_offset = offset
+                last_change = loop.time()
+        # Deadline hit while still growing — one last flush so bytes written
+        # during the final sleep are ingested before the caller reads.
+        await asyncio.to_thread(tailer.flush)
 
     async def wait_for_assistant_text(
         self, *, timeout: float, poll_seconds: float = 0.2

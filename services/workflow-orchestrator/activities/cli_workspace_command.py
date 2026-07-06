@@ -40,6 +40,16 @@ def cli_workspace_command(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     node_id = node_id.strip() if isinstance(node_id, str) and node_id.strip() else None
     workflow_id = input_data.get("workflowId")
     workflow_id = workflow_id.strip() if isinstance(workflow_id, str) and workflow_id.strip() else None
+    # helperPod: pin to the dedicated `__cliws` workspace-helper pod (skip the
+    # nondeterministic "most-recent live session pod" scan) so a GAN loop's
+    # gate/promote always runs on a stable pod with the build toolchain + warm
+    # caches. helperTimeoutMinutes optionally extends that pod's lifetime.
+    helper_pod = input_data.get("helperPod")
+    helper_pod = bool(helper_pod) if isinstance(helper_pod, bool) else None
+    try:
+        helper_timeout_minutes = int(input_data.get("helperTimeoutMinutes") or 0)
+    except (TypeError, ValueError):
+        helper_timeout_minutes = 0
 
     # The node's timeoutMs governs slow gate commands (install/build on JuiceFS).
     # The HTTP read timeout must EXCEED the downstream subprocess budget so the
@@ -78,6 +88,10 @@ def cli_workspace_command(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 payload["nodeId"] = node_id
             if workflow_id:
                 payload["workflowId"] = workflow_id
+            if helper_pod is not None:
+                payload["helperPod"] = helper_pod
+            if helper_timeout_minutes > 0:
+                payload["helperTimeoutMinutes"] = helper_timeout_minutes
             response = requests.post(
                 f"{url}/api/internal/workflows/executions/{execution_id}/cli-workspace-command",
                 json=payload,

@@ -5829,10 +5829,10 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 		const rows = await this.database.execute<Row>(sql`
 			SELECT
 				coalesce(se.data->>'model', se.data->>'providerModel', 'unknown') AS model_spec,
-				coalesce(sum((se.data->>'input_tokens')::bigint), 0) AS input_tokens,
-				coalesce(sum((se.data->>'output_tokens')::bigint), 0) AS output_tokens,
-				coalesce(sum((se.data->>'cache_read_input_tokens')::bigint), 0) AS cache_read,
-				coalesce(sum((se.data->>'cache_creation_input_tokens')::bigint), 0) AS cache_create
+				coalesce(sum(floor(nullif(se.data->>'input_tokens', '')::numeric)), 0)::bigint AS input_tokens,
+				coalesce(sum(floor(nullif(se.data->>'output_tokens', '')::numeric)), 0)::bigint AS output_tokens,
+				coalesce(sum(floor(nullif(se.data->>'cache_read_input_tokens', '')::numeric)), 0)::bigint AS cache_read,
+				coalesce(sum(floor(nullif(se.data->>'cache_creation_input_tokens', '')::numeric)), 0)::bigint AS cache_create
 			FROM session_events se
 			JOIN sessions s ON s.id = se.session_id
 			WHERE s.workflow_execution_id = ANY(${execIds})

@@ -1,6 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { queryClickHouse, CLICKHOUSE_DB } from '$lib/server/otel/clickhouse';
+import { queryClickHouse, CLICKHOUSE_DB, isClickHouseConfigured } from '$lib/server/otel/clickhouse';
 import { assertTraceInScope } from './trace-access';
 
 /**
@@ -9,6 +9,14 @@ import { assertTraceInScope } from './trace-access';
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	const { traceId } = params;
+	// No ClickHouse (e.g. a vcluster preview): degrade to 503 rather than 500 from
+	// the access check / query hitting a non-existent host.
+	if (!isClickHouseConfigured()) {
+		return json(
+			{ configured: false, traceId, spans: [], totalDuration: 0, startTime: '', spanCount: 0, services: [] },
+			{ status: 503 }
+		);
+	}
 	await assertTraceInScope(traceId, locals.session);
 
 	try {

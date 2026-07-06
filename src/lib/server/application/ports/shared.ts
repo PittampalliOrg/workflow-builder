@@ -132,6 +132,12 @@ export type SourceBundlePromotionRunnerInput = {
 	tier: string;
 	repoSubdir: string;
 	syncPaths: string[];
+	/** Branch-name prefix (`<prefix>-<epoch>`). Default `wfb-promote`. */
+	branchPrefix?: string;
+	/** Open the PR as a draft (pr mode only). */
+	draft?: boolean;
+	/** PR body markdown. Defaults to a generic "promoted from a code version" note. */
+	prBody?: string;
 };
 
 export type SourceBundlePromotionRunnerResult =

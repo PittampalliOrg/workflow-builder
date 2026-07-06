@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
-from src.transcript_tailer import TranscriptTailer
+from src.transcript_tailer import TailerManager, TranscriptTailer
 
 
 def _assistant_line(uuid: str, text: str, *, model: str = "claude-opus-4-8") -> str:
@@ -114,6 +115,72 @@ def test_assistant_line_without_text_still_emits_usage(tmp_path):
     assert tailer.poll() == 1
     assert published[0][1] == "agent.llm_usage"
     assert tailer.last_assistant_text is None
+
+
+def test_drain_captures_late_final_line_over_stale_mid_turn(tmp_path):
+    """The Stop-hook race: a stale mid-turn message is present when the drain
+    starts, and the REAL final line (the verdict) is still being streamed. The
+    drain must keep waiting through the streaming writes and end with the FINAL
+    line as last_assistant_text — not the stale mid-turn one."""
+    path = tmp_path / "t.jsonl"
+    path.write_text(_assistant_line("u1", "mid-turn message") + "\n")
+    _tailer, published = _make_tailer(path)
+    manager = TailerManager()
+    manager._tailer = _tailer
+
+    async def scenario():
+        # Prime: the tailer already holds the stale mid-turn message at Stop.
+        await asyncio.to_thread(_tailer.flush)
+        assert _tailer.last_assistant_text == "mid-turn message"
+
+        async def stream_then_final():
+            # Keep the transcript growing so the drain does not declare
+            # quiescence early, then append the FINAL assistant line last.
+            for i in range(3):
+                await asyncio.sleep(0.12)
+                with open(path, "a") as handle:
+                    handle.write(json.dumps({"type": "progress", "i": i}) + "\n")
+                    handle.flush()
+            await asyncio.sleep(0.12)
+            with open(path, "a") as handle:
+                handle.write(_assistant_line("u2", "FINAL verdict message") + "\n")
+                handle.flush()
+
+        writer = asyncio.create_task(stream_then_final())
+        await manager.drain_quiescent(max_wait=5, quiet_period=0.3, poll_seconds=0.05)
+        await writer
+
+    asyncio.run(scenario())
+    assert _tailer.last_assistant_text == "FINAL verdict message"
+    # The final agent.message was published (the verdict is not lost). Each
+    # assistant line emits agent.message THEN agent.llm_usage, so look up the
+    # message rather than the trailing event.
+    messages = [data for _sid, etype, data, _src in published if etype == "agent.message"]
+    assert messages[-1]["content"] == [{"type": "text", "text": "FINAL verdict message"}]
+
+
+def test_drain_returns_promptly_when_already_quiescent(tmp_path):
+    path = tmp_path / "t.jsonl"
+    path.write_text(_assistant_line("u1", "done") + "\n")
+    tailer, _published = _make_tailer(path)
+    manager = TailerManager()
+    manager._tailer = tailer
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        # max_wait deliberately large: a quiescent file must NOT block for it.
+        await manager.drain_quiescent(max_wait=5, quiet_period=0.2, poll_seconds=0.05)
+        return loop.time() - start
+
+    elapsed = asyncio.run(scenario())
+    assert elapsed < 0.2 + 0.2  # ~quiet_period, not the 5s cap
+    assert tailer.last_assistant_text == "done"
+
+
+def test_drain_without_active_tailer_is_a_noop():
+    manager = TailerManager()
+    asyncio.run(manager.drain_quiescent(max_wait=1, quiet_period=0.1))
 
 
 def test_adapter_transcript_mapping_can_raise_turn_completed(tmp_path):
