@@ -788,6 +788,7 @@ function fakeSessions(): SessionRepository {
 		getSessionRuntimeDebugTarget: vi.fn(async () => null),
 		getBrowserSessionTarget: vi.fn(async () => null),
 		listCliWorkspaceSessionCandidates: vi.fn(async () => []),
+		listLivenessReconcileCandidates: vi.fn(async () => []),
 		listWorkflowExecutionSessionRuntimes: vi.fn(async () => []),
 		listSandboxSessionOwners: vi.fn(async () => []),
 		getWorkflowEnsureSession: vi.fn(async () => null),
@@ -805,6 +806,7 @@ function fakeSessions(): SessionRepository {
 		getSessionWorkflowContext: vi.fn(async () => null),
 		updateSessionStatus: vi.fn(async () => undefined),
 		updateSessionStatusUnlessTerminated: vi.fn(async () => undefined),
+		bumpSessionLastEventAt: vi.fn(async () => undefined),
 	};
 }
 
@@ -939,6 +941,7 @@ function sampleSession(): SessionDetail {
 		agentEphemeral: false,
 		createdAt: "2026-05-15T12:00:00.000Z",
 		updatedAt: "2026-05-15T12:00:00.000Z",
+		lastEventAt: null,
 		completedAt: null,
 		archivedAt: null,
 		daprInstanceId: null,

@@ -39,7 +39,7 @@ export type ApplicationAdapterConfig = {
 	previewArchiveOnTeardownEnabled: boolean;
 };
 
-function readFlag(
+export function readFlag(
 	source: Record<string, string | undefined>,
 	key: string,
 	fallback = false,
@@ -49,7 +49,7 @@ function readFlag(
 	return ["1", "true", "yes", "on"].includes(raw);
 }
 
-function readAdapter<T extends string>(
+export function readAdapter<T extends string>(
 	source: Record<string, string | undefined>,
 	key: string,
 	fallback: T,

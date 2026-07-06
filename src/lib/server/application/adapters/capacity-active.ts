@@ -96,8 +96,17 @@ export class SessionFleetActivityAdapter implements CapacityFleetActivityPort {
 		}
 
 		const tokensByKey = new Map<string, { in: number; out: number }>();
+		// Fallback liveness stamp for sessions whose last event predates the 60s
+		// activity window (so `activityByKey` has no row): the throttled
+		// `last_event_at` column (migration 0095) still reflects when the session
+		// was last alive, which the reconciler/UI need to tell "quiet" from "dead".
+		const lastEventFallbackByKey = new Map<string, number>();
 		const usageRows = await database
-			.select({ id: sessions.id, usage: sessions.usage })
+			.select({
+				id: sessions.id,
+				usage: sessions.usage,
+				lastEventAt: sessions.lastEventAt,
+			})
 			.from(sessions)
 			.where(inArray(sessions.id, sessionIds));
 		for (const row of usageRows) {
@@ -108,6 +117,13 @@ export class SessionFleetActivityAdapter implements CapacityFleetActivityPort {
 			tokens.in += Number(usage.input_tokens) || 0;
 			tokens.out += Number(usage.output_tokens) || 0;
 			tokensByKey.set(key, tokens);
+			if (row.lastEventAt) {
+				const ts = row.lastEventAt.getTime();
+				const existing = lastEventFallbackByKey.get(key);
+				if (existing === undefined || ts > existing) {
+					lastEventFallbackByKey.set(key, ts);
+				}
+			}
 		}
 
 		const emptySeries = () =>
@@ -121,13 +137,17 @@ export class SessionFleetActivityAdapter implements CapacityFleetActivityPort {
 		for (const key of new Set<string>([
 			...activityByKey.keys(),
 			...tokensByKey.keys(),
+			...lastEventFallbackByKey.keys(),
 		])) {
 			const activity = activityByKey.get(key);
 			const tokens = tokensByKey.get(key) ?? { in: 0, out: 0 };
+			const fallbackLast = lastEventFallbackByKey.get(key);
 			out[key] = {
 				lastEventAt: activity?.last
 					? new Date(activity.last).toISOString()
-					: null,
+					: fallbackLast !== undefined
+						? new Date(fallbackLast).toISOString()
+						: null,
 				recentCount: activity
 					? activity.series.reduce((sum, value) => sum + value, 0)
 					: 0,

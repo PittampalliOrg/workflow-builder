@@ -47,6 +47,18 @@
 					text: 'Terminated',
 					variant: 'outline' as const
 				};
+			case 'error':
+				return {
+					icon: AlertTriangle,
+					text: 'Turn failed',
+					variant: 'destructive' as const
+				};
+			case 'crashed':
+				return {
+					icon: AlertTriangle,
+					text: 'Crashed',
+					variant: 'destructive' as const
+				};
 			default:
 				return null;
 		}

@@ -8,6 +8,7 @@ import type {
 	CreateSessionGoalInput,
 	GoalLoopStore,
 	CreateWorkflowEnsureSessionInput,
+	LivenessReconcileCandidateRecord,
 	PeerSessionRecord,
 	SessionAgentConfigCommandPort,
 	SessionAgentConfigPatchResult,
@@ -47,10 +48,12 @@ import type {
 	WorkflowExecutionSessionRuntimeRecord,
 	WorkflowSessionRuntimeHostRecord,
 } from "$lib/server/application/ports";
-import { and, asc, desc, eq, ilike, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
 import {
 	agents,
+	benchmarkRunInstances,
+	evaluationRunItems,
 	projects,
 	sessionEvents,
 	sessionResources,
@@ -221,6 +224,7 @@ function rowToSessionSummary(
 		agentEphemeral: agentTags.includes("workflow-ephemeral"),
 		createdAt: row.createdAt.toISOString(),
 		updatedAt: row.updatedAt.toISOString(),
+		lastEventAt: row.lastEventAt ? row.lastEventAt.toISOString() : null,
 		completedAt: row.completedAt ? row.completedAt.toISOString() : null,
 		archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
 	};
@@ -250,6 +254,30 @@ function rowToSessionDetail(
  * the historical default unless a caller overrides it.
  */
 const DEFAULT_SANDBOX_NAME = "dapr-agent-py";
+
+// In-process throttle for the liveness `last_event_at` bump. Every ingested
+// event calls bumpSessionLastEventAt; the SQL WHERE already caps the write to one
+// per 5s window, but ISSUING the UPDATE still costs a round-trip. This gate skips
+// the statement entirely when THIS pod bumped the session inside the window. The
+// SQL guard remains the cross-pod correctness backstop; this is a pure hot-path
+// optimization. Bounded via a periodic sweep so the map can't grow unboundedly.
+const LAST_EVENT_BUMP_WINDOW_MS = 5_000;
+const LAST_EVENT_BUMP_SWEEP_MS = 60_000;
+const lastEventBumpAt = new Map<string, number>();
+let lastEventBumpSweepAt = 0;
+
+function shouldSkipLastEventBump(sessionId: string, nowMs: number): boolean {
+	const prev = lastEventBumpAt.get(sessionId);
+	if (prev !== undefined && nowMs - prev < LAST_EVENT_BUMP_WINDOW_MS) return true;
+	lastEventBumpAt.set(sessionId, nowMs);
+	if (nowMs - lastEventBumpSweepAt > LAST_EVENT_BUMP_SWEEP_MS) {
+		lastEventBumpSweepAt = nowMs;
+		for (const [id, ts] of lastEventBumpAt) {
+			if (nowMs - ts >= LAST_EVENT_BUMP_WINDOW_MS) lastEventBumpAt.delete(id);
+		}
+	}
+	return false;
+}
 
 export class CurrentSessionRepository implements SessionRepository {
 	constructor(private readonly database?: Database) {}
@@ -791,6 +819,82 @@ export class CurrentSessionRepository implements SessionRepository {
 			.limit(limit);
 	}
 
+	async listLivenessReconcileCandidates(input: {
+		minAgeSeconds: number;
+		limit: number;
+	}): Promise<LivenessReconcileCandidateRecord[]> {
+		const database = requireDb(this.database);
+		const minAge = Math.max(0, Math.trunc(input.minAgeSeconds || 0));
+		const limit = Math.max(1, Math.min(Math.trunc(input.limit || 10), 200));
+		// A benchmark/eval INSTANCE is coordinator-owned (single stop authority) —
+		// flag it here so the pure decider can skip it without a second round-trip.
+		// The candidate keys MUST match the canonical getSessionCoordinatorOwner
+		// (adapters/lifecycle-ownership.ts): the session's workflow_execution_id,
+		// dapr_instance_id, AND its raw id. Per-column IN lists (rather than an
+		// 8-way OR) keep it index-friendly.
+		const ownerCandidates = sql`(${sessions.workflowExecutionId}, ${sessions.daprInstanceId}, ${sessions.id})`;
+		const coordinatorOwned = sql<boolean>`(
+			EXISTS (
+				SELECT 1 FROM ${benchmarkRunInstances}
+				WHERE ${benchmarkRunInstances.workflowExecutionId} IN ${ownerCandidates}
+					OR ${benchmarkRunInstances.daprInstanceId} IN ${ownerCandidates}
+			)
+			OR EXISTS (
+				SELECT 1 FROM ${evaluationRunItems}
+				WHERE ${evaluationRunItems.workflowExecutionId} IN ${ownerCandidates}
+					OR ${evaluationRunItems.daprInstanceId} IN ${ownerCandidates}
+			)
+		)`;
+		const rows = await database
+			.select({
+				id: sessions.id,
+				status: sessions.status,
+				agentId: sessions.agentId,
+				agentVersion: sessions.agentVersion,
+				agentSlug: agents.slug,
+				agentRuntime: agents.runtime,
+				userId: sessions.userId,
+				projectId: sessions.projectId,
+				title: sessions.title,
+				resumedFromSessionId: sessions.resumedFromSessionId,
+				runtimeAppId: sessions.runtimeAppId,
+				daprInstanceId: sessions.daprInstanceId,
+				runtimeSandboxName: sessions.runtimeSandboxName,
+				pauseRequestedAt: sessions.pauseRequestedAt,
+				stopRequestedAt: sessions.stopRequestedAt,
+				updatedAt: sessions.updatedAt,
+				lastEventAt: sessions.lastEventAt,
+				coordinatorOwned,
+			})
+			.from(sessions)
+			.innerJoin(agents, eq(agents.id, sessions.agentId))
+			.where(
+				and(
+					// `failed` is a NON-terminal ingest state (turn StopFailure leaves no
+					// completedAt) — the reconciler is its only finalizer, so a pod that
+					// dies right after status_errored must be scanned. The completedAt
+					// guard excludes rows already finalized (crash-converged or otherwise)
+					// so we never re-process a terminal `failed` row.
+					inArray(sessions.status, [
+						"running",
+						"idle",
+						"rescheduling",
+						"paused",
+						"failed",
+					]),
+					isNull(sessions.completedAt),
+					isNull(sessions.archivedAt),
+					sql`${sessions.updatedAt} < now() - make_interval(secs => ${minAge})`,
+				),
+			)
+			.orderBy(asc(sessions.updatedAt))
+			.limit(limit);
+		return rows.map((row) => ({
+			...row,
+			coordinatorOwned: Boolean(row.coordinatorOwned),
+		}));
+	}
+
 	async listWorkflowExecutionSessionRuntimes(input: {
 		workflowExecutionId: string;
 	}): Promise<WorkflowExecutionSessionRuntimeRecord[]> {
@@ -1073,7 +1177,36 @@ export class CurrentSessionRepository implements SessionRepository {
 		await database
 			.update(sessions)
 			.set(patch)
-			.where(and(eq(sessions.id, input.id), sql`${sessions.status} <> 'terminated'`));
+			// Sticky-terminal guard: never flip a `terminated` row, and never
+			// RESURRECT a crash-FINALIZED row (status='failed' AND completed_at set —
+			// the liveness reconciler already purged its durable state). An
+			// ingest-`failed` row (turn StopFailure, completed_at NULL) stays
+			// non-sticky so a legitimate later status_running still recovers it.
+			.where(
+				and(
+					eq(sessions.id, input.id),
+					sql`${sessions.status} <> 'terminated'`,
+					sql`NOT (${sessions.status} = 'failed' AND ${sessions.completedAt} IS NOT NULL)`,
+				),
+			);
+	}
+
+	async bumpSessionLastEventAt(sessionId: string): Promise<void> {
+		// Skip the round-trip when this pod already bumped inside the window.
+		if (shouldSkipLastEventBump(sessionId, Date.now())) return;
+		const database = requireDb(this.database);
+		// Deliberately only sets last_event_at (never updated_at): this is a
+		// liveness marker, not a mutation. The 5s guard caps it at one extra
+		// UPDATE per session per window even under heartbeat-heavy ingest.
+		await database
+			.update(sessions)
+			.set({ lastEventAt: sql`now()` })
+			.where(
+				and(
+					eq(sessions.id, sessionId),
+					sql`(${sessions.lastEventAt} IS NULL OR ${sessions.lastEventAt} < now() - interval '5 seconds')`,
+				),
+			);
 	}
 }
 

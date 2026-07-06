@@ -15,6 +15,7 @@ const SESSION_STATUSES: SessionStatus[] = [
 	"running",
 	"idle",
 	"paused",
+	"failed",
 	"terminated",
 ];
 

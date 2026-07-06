@@ -103,7 +103,13 @@ export async function applyPauseResume(
 ): Promise<PauseResumeResult> {
 	const resolved = await deps.resolve(target);
 	if (resolved.notFound) return { ok: false, notFound: true, scope: null };
-	if (verb === "pause" && !resolved.dbActive) {
+	// Pause (suspend_workflow) needs a live, healthy run to hold. Reject when the
+	// run is not active (terminated) OR is `failed` — a failed session (turn
+	// StopFailure, or a reconciler-converged crash) has no in-flight turn to
+	// suspend at a yield point, and holding a broken instance is meaningless.
+	// Stop/terminate stays available; resume of a genuinely paused run is
+	// unaffected (this only gates the pause verb).
+	if (verb === "pause" && (!resolved.dbActive || resolved.dbStatus === "failed")) {
 		return { ok: false, notFound: false, scope: resolved.scope, reason: "not_active" };
 	}
 	const targets = resolved.agentRuntimeTargets;

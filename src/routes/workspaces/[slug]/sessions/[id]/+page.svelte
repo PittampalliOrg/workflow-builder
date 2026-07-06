@@ -313,7 +313,12 @@
 	// first status_running event arrives (or the pod reports Active).
 	const queuedForCapacity = $derived.by(() => {
 		if (!isInteractiveCli || !session) return false;
-		if (session.status === 'terminated' || session.status === 'idle') return false;
+		if (
+			session.status === 'terminated' ||
+			session.status === 'idle' ||
+			session.status === 'failed'
+		)
+			return false;
 		if (runtimeFlags?.phase === 'Active') return false;
 		return !events.some((e) => e.type === 'session.status_running');
 	});

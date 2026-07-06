@@ -28,6 +28,8 @@ export const TRANSCRIPT_HIDDEN_TYPES: ReadonlySet<string> = new Set([
 	'session.status_running',
 	'session.status_idle',
 	'session.status_rescheduled',
+	'session.status_errored',
+	'session.reconciler_action',
 	'session.runtime_config',
 	'session.turn_started',
 	'session.instructions_applied',

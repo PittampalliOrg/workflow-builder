@@ -54,6 +54,7 @@ function snapshot(): AggregateMetricsSnapshot {
 			idle: 0,
 			rescheduling: 0,
 			terminated: 0,
+			failed: 0,
 			uniqueActiveAgents: 1,
 		},
 		tokens: {

@@ -272,6 +272,7 @@ function createRawSessionStream(sessionId: string): SessionStreamStore {
 			"session.status_idle",
 			"session.status_rescheduled",
 			"session.status_terminated",
+			"session.status_errored",
 			"session.turn_timeout",
 			"session.error",
 			"session.runtime_config",

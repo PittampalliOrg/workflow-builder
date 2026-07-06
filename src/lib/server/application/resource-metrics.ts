@@ -49,6 +49,7 @@ export type AggregateMetricsSnapshot = {
 		idle: number;
 		rescheduling: number;
 		terminated: number;
+		failed: number;
 		uniqueActiveAgents: number;
 	};
 	tokens: {

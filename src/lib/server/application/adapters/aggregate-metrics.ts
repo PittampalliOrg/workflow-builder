@@ -37,6 +37,7 @@ export interface AggregateMetricsSnapshot {
 		idle: number;
 		rescheduling: number;
 		terminated: number;
+		failed: number;
 		uniqueActiveAgents: number;
 	};
 	/**
@@ -97,6 +98,7 @@ export async function getAggregateMetrics(): Promise<AggregateMetricsSnapshot> {
 					count(*) FILTER (WHERE status = 'idle')         AS idle,
 					count(*) FILTER (WHERE status = 'rescheduling') AS rescheduling,
 					count(*) FILTER (WHERE status = 'terminated')   AS terminated,
+					count(*) FILTER (WHERE status = 'failed')       AS failed,
 					count(DISTINCT agent_id) FILTER (WHERE status IN ('running', 'rescheduling')) AS unique_active_agents
 				FROM sessions
 				WHERE updated_at > now() - interval '1 hour'
@@ -142,6 +144,7 @@ export async function getAggregateMetrics(): Promise<AggregateMetricsSnapshot> {
 			idle: num(ss.idle),
 			rescheduling: num(ss.rescheduling),
 			terminated: num(ss.terminated),
+			failed: num(ss.failed),
 			uniqueActiveAgents: num(ss.unique_active_agents),
 		},
 		tokens: {

@@ -99,6 +99,14 @@ export function canResumeCliSession(input: {
 	status: string;
 	stopReason?: StopReasonLike;
 	errorMessage?: string | null;
+	/**
+	 * The row's terminal timestamp. A non-graceful status (`failed`/`error`/
+	 * `crashed`) is only FINALIZED — and therefore resumable — once this is set
+	 * (the lifecycle reconciler/controller stamps it). A `failed` row WITHOUT it is
+	 * a LIVE turn-level failure: the pod/TUI is still up, so resuming would spawn a
+	 * duplicate concurrent session on the same transcript.
+	 */
+	completedAt?: string | Date | null;
 	/** Positive evidence the runtime/sandbox is gone even if status hasn't converged. */
 	runtimeGone?: boolean;
 }): ResumeDecision {
@@ -115,13 +123,21 @@ export function canResumeCliSession(input: {
 		stopReason: input.stopReason,
 		errorMessage: input.errorMessage,
 	});
+	const finalized = input.completedAt != null;
 	const terminal =
 		status === "terminated" ||
-		(NON_GRACEFUL_TERMINAL_STATUSES as readonly string[]).includes(status);
+		// A non-graceful status is resume-terminal only once finalized (completedAt
+		// set). A live turn-level `failed` (completedAt NULL) is NOT terminal — it
+		// requires positive runtimeGone evidence to resume.
+		((NON_GRACEFUL_TERMINAL_STATUSES as readonly string[]).includes(status) &&
+			finalized);
 	if (!terminal && input.runtimeGone !== true) {
 		return {
 			allowed: false,
-			reason: "can only resume a terminated or crashed interactive-cli session",
+			reason:
+				nonGraceful && !finalized
+					? "session is still live (the failure was turn-level, not a crash) — stop it or wait for it to end before resuming"
+					: "can only resume a terminated or crashed interactive-cli session",
 			nonGraceful,
 		};
 	}

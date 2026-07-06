@@ -3160,6 +3160,11 @@ export const sessions = pgTable(
 		errorMessage: text("error_message"),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+		// Throttled liveness stamp (migration 0095): last time ANY session event
+		// was ingested, bumped at most once per 5s. Distinct from updatedAt (which
+		// only moves on status/usage mutations) so the liveness reconciler can tell
+		// a quiet-but-alive session from a dead one without scanning session_events.
+		lastEventAt: timestamp("last_event_at"),
 		completedAt: timestamp("completed_at"),
 		archivedAt: timestamp("archived_at"),
 	},
