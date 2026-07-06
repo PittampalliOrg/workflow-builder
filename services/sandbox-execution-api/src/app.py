@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -299,6 +300,13 @@ class ExecutionClassConfig(BaseModel):
     # plaintext into the Sandbox CR. Per-service envFrom is normally supplied on
     # the request (from the dev-preview registry), not the shared class.
     serviceEnvFrom: list[dict[str, Any]] | None = None
+    # Git-synced image-pins ConfigMap (workflow-builder-image-pins) mounted as a
+    # DIRECTORY at /etc/workflow-builder/image-pins on the dev container (files
+    # classes.json + runtime-images.json). When set, the builder also stamps
+    # SANDBOX_EXECUTION_CLASSES_FILE + WORKFLOW_BUILDER_IMAGE_PINS_FILE so the dev
+    # pod's own app reads pins file-first (a re-provision picks up the latest pins
+    # without a re-render). None (default) = today's env-only behavior.
+    imagePinsConfigMap: str | None = None
 
 
 class AgentWorkflowHostRequest(BaseModel):
@@ -455,6 +463,56 @@ def _safe_resource_name(value: str, *, max_length: int = 63) -> str:
     return f"{prefix}-{digest}"
 
 
+_EXECUTION_CLASSES_FILE_WARNED = False
+
+
+def _warn_execution_classes_file_once(reason: str, path: str) -> None:
+    """Log a broken SANDBOX_EXECUTION_CLASSES_FILE mount ONCE (this reader runs per
+    request); after the first line the caller silently falls back to the env JSON."""
+    global _EXECUTION_CLASSES_FILE_WARNED
+    if _EXECUTION_CLASSES_FILE_WARNED:
+        return
+    _EXECUTION_CLASSES_FILE_WARNED = True
+    logger.warning(
+        "execution classes file %s %s; falling back to SANDBOX_EXECUTION_CLASSES_JSON",
+        path,
+        reason,
+    )
+
+
+def _execution_classes_override() -> dict[str, Any] | None:
+    """The execution-classes override object, file-first: the git-synced classes.json
+    (env SANDBOX_EXECUTION_CLASSES_FILE) wins over the inline
+    SANDBOX_EXECUTION_CLASSES_JSON env. A missing/unreadable/invalid file logs ONCE
+    and falls through to the env JSON (which itself falls through to defaults when
+    unset/invalid), so a broken mount degrades to today's behavior. None when neither
+    source yields a JSON object."""
+    path = os.environ.get("SANDBOX_EXECUTION_CLASSES_FILE", "").strip()
+    if path:
+        raw = ""
+        try:
+            raw = Path(path).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            _warn_execution_classes_file_once(f"unreadable ({exc})", path)
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                _warn_execution_classes_file_once(f"is invalid JSON ({exc})", path)
+            else:
+                if isinstance(parsed, dict):
+                    return parsed
+                _warn_execution_classes_file_once("is not a JSON object", path)
+    raw = os.environ.get("SANDBOX_EXECUTION_CLASSES_JSON", "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _load_execution_classes() -> dict[str, ExecutionClassConfig]:
     defaults = {
         "benchmark-fast": ExecutionClassConfig(localQueue="benchmark-fast"),
@@ -466,13 +524,7 @@ def _load_execution_classes() -> dict[str, ExecutionClassConfig]:
             ),
         ),
     }
-    raw = os.environ.get("SANDBOX_EXECUTION_CLASSES_JSON", "").strip()
-    if not raw:
-        return defaults
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return defaults
+    parsed = _execution_classes_override()
     if not isinstance(parsed, dict):
         return defaults
     merged = defaults.copy()
@@ -2820,6 +2872,13 @@ DEFAULT_DEV_PREVIEW_IMAGE = os.environ.get(
     "ghcr.io/pittampalliorg/workflow-builder-dev:latest",
 )
 
+# Directory a class-declared image-pins ConfigMap is mounted at on the dev
+# container; the git-synced pin files (classes.json + runtime-images.json) live
+# here and the dev pod's app reads them file-first (see image-pins.ts / the
+# SANDBOX_EXECUTION_CLASSES_FILE reader).
+IMAGE_PINS_MOUNT_PATH = "/etc/workflow-builder/image-pins"
+IMAGE_PINS_VOLUME_NAME = "image-pins"
+
 # #40: pod-localhost port of the app-container exec bridge (the dev images'
 # entrypoints start it; the dev-sync-sidecar proxies /__run there). Stamped
 # into BOTH containers so the two defaults can never drift per-pod.
@@ -2998,6 +3057,24 @@ def build_dev_preview_sandbox_manifest(
             {
                 "name": "WFB_DEV_SYNC_RESTART_SIGNAL",
                 "value": f"{workdir}/.dev-sync-restart-request.json",
+            }
+        )
+    # Git-synced image-pins mount: point the dev pod's app at the mounted pin files
+    # so it reads pins file-first. Added to the BASE env list here so it lands in the
+    # `overridden` set below (request.env / serviceEnv can't clobber the paths) and
+    # wins over any inherited prod env in the adopt merge. The volume + mount are
+    # attached to the pod below.
+    if class_config.imagePinsConfigMap:
+        env.append(
+            {
+                "name": "SANDBOX_EXECUTION_CLASSES_FILE",
+                "value": f"{IMAGE_PINS_MOUNT_PATH}/classes.json",
+            }
+        )
+        env.append(
+            {
+                "name": "WORKFLOW_BUILDER_IMAGE_PINS_FILE",
+                "value": f"{IMAGE_PINS_MOUNT_PATH}/runtime-images.json",
             }
         )
     # Dapr-shadow defaults (P3.1): lowest priority, so request.env can override.
@@ -3292,6 +3369,23 @@ def build_dev_preview_sandbox_manifest(
                 },
             ]
         )
+    # Git-synced image-pins ConfigMap → directory mount on the dev container (the
+    # SANDBOX_EXECUTION_CLASSES_FILE / WORKFLOW_BUILDER_IMAGE_PINS_FILE env above
+    # point at these files). Read-only; keys land as classes.json + runtime-images.json.
+    if class_config.imagePinsConfigMap:
+        container.setdefault("volumeMounts", []).append(
+            {
+                "name": IMAGE_PINS_VOLUME_NAME,
+                "mountPath": IMAGE_PINS_MOUNT_PATH,
+                "readOnly": True,
+            }
+        )
+        pod_spec.setdefault("volumes", []).append(
+            {
+                "name": IMAGE_PINS_VOLUME_NAME,
+                "configMap": {"name": class_config.imagePinsConfigMap},
+            }
+        )
     pod_labels = {
         "app": "wfb-dev-preview",
         "dev-preview-service": service_label,
@@ -3398,6 +3492,80 @@ def build_dev_preview_sandbox_manifest(
         "metadata": cr_metadata,
         "spec": sandbox_spec,
     }
+
+
+def _dev_preview_manifest_image(manifest: dict[str, Any]) -> str | None:
+    """The `dev` container image in a dev-preview Sandbox manifest (the one this
+    builder just produced). None if the structure is unexpected."""
+    try:
+        containers = manifest["spec"]["podTemplate"]["spec"]["containers"]
+    except (KeyError, TypeError):
+        return None
+    for c in containers or []:
+        if isinstance(c, dict) and c.get("name") == "dev":
+            img = c.get("image")
+            return img if isinstance(img, str) else None
+    return None
+
+
+def _dev_preview_cr_image(custom: Any, namespace: str, name: str) -> str | None:
+    """The `dev` container image of the EXISTING dev-preview Sandbox CR (read live via
+    the custom objects API). None if unreadable or the container is absent — the caller
+    then conservatively adopts (never recreates on a transient read error)."""
+    try:
+        existing = custom.get_namespaced_custom_object(
+            group="agents.x-k8s.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="sandboxes",
+            name=name,
+        )
+    except Exception as exc:
+        logger.warning("dev-preview CR %s read failed during 409 check: %s", name, exc)
+        return None
+    return _dev_preview_manifest_image(existing or {})
+
+
+def _delete_dev_preview_cr_and_wait(
+    custom: Any, namespace: str, name: str, timeout_s: float = 30.0
+) -> None:
+    """Foreground-delete a dev-preview Sandbox CR and wait for it to disappear (so the
+    deterministic name is free to recreate). Modeled on _delete_agent_host_cr_and_wait."""
+    try:
+        custom.delete_namespaced_custom_object(
+            group="agents.x-k8s.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="sandboxes",
+            name=name,
+            body={
+                "apiVersion": "v1",
+                "kind": "DeleteOptions",
+                "propagationPolicy": "Foreground",
+            },
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) != 404:
+            logger.warning("dev-preview CR %s delete failed: %s", name, exc)
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            custom.get_namespaced_custom_object(
+                group="agents.x-k8s.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="sandboxes",
+                name=name,
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                return
+        time.sleep(1.0)
+    logger.warning(
+        "dev-preview CR %s still present after %ss; proceeding to recreate",
+        name,
+        timeout_s,
+    )
 
 
 def _wait_for_dev_preview_ready(
@@ -3776,9 +3944,36 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
         except Exception as exc:
             if getattr(exc, "status", None) != 409:
                 raise
-            # Deterministic per-execution name already exists → idempotent adopt
-            # (same run re-requesting its own preview).
-            logger.info("dev-preview CR %s already exists; adopting", sandbox_name)
+            # Deterministic per-execution name already exists. Adopt it only when its
+            # dev image MATCHES the manifest we just built; otherwise the existing
+            # preview is stale (image drift on a re-provision), so delete + recreate.
+            requested_image = _dev_preview_manifest_image(manifest)
+            existing_image = _dev_preview_cr_image(custom, namespace, sandbox_name)
+            if (
+                requested_image
+                and existing_image
+                and existing_image != requested_image
+            ):
+                logger.warning(
+                    "dev-preview image drift: existing=%s requested=%s; recreating %s",
+                    existing_image,
+                    requested_image,
+                    sandbox_name,
+                )
+                _delete_dev_preview_cr_and_wait(custom, namespace, sandbox_name)
+                custom.create_namespaced_custom_object(
+                    group="agents.x-k8s.io",
+                    version="v1alpha1",
+                    namespace=namespace,
+                    plural="sandboxes",
+                    body=manifest,
+                )
+            else:
+                # Same image (or an unreadable existing CR) → idempotent adopt (same
+                # run re-requesting its own preview).
+                logger.info(
+                    "dev-preview CR %s already exists; adopting", sandbox_name
+                )
         # Preview-native: DEFER the prod Deployment scale-to-0 to a background thread
         # that waits for the dev pod to be Ready (+grace) then scales. Doing it now
         # would kill the BFF pod serving this very request (the BFF adopts its own
@@ -5083,8 +5278,15 @@ _VCLUSTER_PREVIEW_POOL_LABEL = "vcluster-preview-pool"
 _VCLUSTER_PREVIEW_ALIAS_LABEL = "vcluster-preview-alias"  # a claimed member's user-facing name
 _VCLUSTER_PREVIEW_CLAIMED_BY_ANNOTATION = "vcluster-preview-claimed-by"
 _VCLUSTER_PREVIEW_CLAIMED_AT_ANNOTATION = "vcluster-preview-claimed-at"
-# Baked image-pin signature (bff=…;orch=…;fr=…;sea=…) the recycler diffs vs the live host images.
+# LEGACY baked image-pin signature (bff=…;orch=…;fr=…;sea=…). Superseded by the
+# bake-inputs hash below; still read for the one-time migration turnover (a member
+# carrying only this and no bake-hash is treated as stale exactly once).
 _VCLUSTER_PREVIEW_IMAGE_PINS_ANNOTATION = "vcluster-preview-image-pins"
+# Bake-inputs signature the runner stamps on each baked member: sha256 over the
+# mounted `vcluster-preview-runner` ConfigMap (the same bytes the runner hashes with
+# `cat /config/* | sha256sum`). The recycler diffs this vs `_bake_inputs_hash()` to
+# detect a member baked from stale inputs (pins, template DB, runner script).
+_VCLUSTER_PREVIEW_BAKE_HASH_ANNOTATION = "vcluster-preview-bake-hash"
 
 # ---- A4/D1 lifecycle contract (labels + annotations on the host preview ns) ----
 # vcluster-preview-state: absent/hot = running; slept = control plane + workloads scaled
@@ -5507,10 +5709,29 @@ _VCLUSTER_PREVIEW_CLAIM_ATTEMPTS = int(
 )
 
 
-def _claim_bump_stale_enabled() -> bool:
-    """Re-author a claimed member's Application with current host images if it drifted. OFF by
-    default: it triggers a rollout (slow), and the recycler already keeps free members fresh."""
-    return os.environ.get("VCLUSTER_PREVIEW_CLAIM_BUMP_STALE", "false").lower() == "true"
+def _bake_inputs_hash(core) -> str | None:
+    """The bake-inputs signature a freshly baked member should carry as
+    `vcluster-preview-bake-hash`.
+
+    Contract with the runner: the runner mounts the `vcluster-preview-runner`
+    ConfigMap at /config and computes `cat /config/* | sha256sum`. A ConfigMap key
+    becomes one file in /config, and the shell glob sorts by filename, so `cat
+    /config/*` is the concatenation of the VALUES of the sorted keys. We reproduce
+    that exactly here: sha256 over the values of the sorted keys. The `template-db-pin`
+    key, when the renderer includes it, is one of those keys and so participates in
+    the hash automatically. Returns None if the ConfigMap can't be read (so the
+    recycler never false-recycles on a transient API error)."""
+    ns = _agent_workflow_host_namespace()
+    try:
+        cm = core.read_namespaced_config_map(name="vcluster-preview-runner", namespace=ns)
+    except Exception as exc:
+        logger.warning("pool: reading vcluster-preview-runner ConfigMap failed: %s", exc)
+        return None
+    data = dict(getattr(cm, "data", None) or {})
+    if not data:
+        return None
+    payload = "".join(data[key] for key in sorted(data))
+    return sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _pool_recycle_deadline_seconds() -> int:
@@ -5557,10 +5778,36 @@ def _member_image_pins(core, real_name: str) -> str | None:
     return ann.get(_VCLUSTER_PREVIEW_IMAGE_PINS_ANNOTATION)
 
 
-def _member_is_stale(core, apps, real_name: str) -> bool:
-    host = _host_image_pins(apps)
-    member = _member_image_pins(core, real_name)
-    return bool(host and member and host != member)
+def _bake_hash_is_stale(
+    *, member_hash: str | None, member_legacy_pins: str | None, want: str | None
+) -> bool:
+    """Pure staleness decision for a baked member (exhaustively unit-testable):
+      * want is None (bake inputs unreadable) → never stale (no false-recycle);
+      * member carries a bake-hash → stale iff it differs from `want`;
+      * member has no bake-hash but has the LEGACY image-pins annotation → stale once
+        (one-time turnover of pre-bake-hash members);
+      * neither annotation → not a re-key candidate (leave it)."""
+    if not want:
+        return False
+    if member_hash:
+        return member_hash != want
+    return bool(member_legacy_pins)
+
+
+def _member_is_stale(core, real_name: str) -> bool:
+    want = _bake_inputs_hash(core)
+    if not want:
+        return False
+    try:
+        ns = core.read_namespace(name=f"vcluster-{real_name}")
+    except Exception:
+        return False
+    ann = (ns.metadata.annotations or {}) if ns.metadata else {}
+    return _bake_hash_is_stale(
+        member_hash=ann.get(_VCLUSTER_PREVIEW_BAKE_HASH_ANNOTATION),
+        member_legacy_pins=ann.get(_VCLUSTER_PREVIEW_IMAGE_PINS_ANNOTATION),
+        want=want,
+    )
 
 
 def _claim_free_member(
@@ -5669,12 +5916,12 @@ def _vcluster_claim_job_manifest(
     claim_user: str,
     *,
     dev_mode: bool | None,
-    bump_images: bool,
     namespace: str,
 ) -> dict[str, Any]:
     """The ACTION=claim Job manifest. Reuses the up-Job's env defaulting (ENROLL_MODE/
-    PREVIEW_DB_MODE/TARGET_REVISION/PREVIEW_DEV_MODE/…) so the runner resolves the member's DB +
-    (optionally) re-authors it, then appends the claim-specific env."""
+    PREVIEW_DB_MODE/TARGET_REVISION/PREVIEW_DEV_MODE/…) so the runner resolves the member's DB,
+    then appends the claim-specific env. Image freshness is owned by the recycler (free members
+    are recycled on bake-inputs drift), so a claim no longer re-authors images."""
     req = VclusterPreviewRequest(name=pool_name, action="claim", previewDevMode=dev_mode)
     manifest = _vcluster_preview_job_manifest(req, namespace=namespace)
     env = manifest["spec"]["template"]["spec"]["containers"][0]["env"]
@@ -5683,7 +5930,6 @@ def _vcluster_claim_job_manifest(
             {"name": "POOL_NAME", "value": pool_name},
             {"name": "ALIAS", "value": alias},
             {"name": "CLAIM_USER", "value": claim_user},
-            {"name": "CLAIM_BUMP_IMAGES", "value": "true" if bump_images else "false"},
         ]
     )
     return manifest
@@ -5743,18 +5989,11 @@ def claim_vcluster_preview(
         }
         set_current_span_io("output", response)
         return response
-    bump = False
-    if _claim_bump_stale_enabled():
-        try:
-            bump = _member_is_stale(core, _load_k8s_apps_client(), pool_name)
-        except Exception as exc:
-            logger.warning("claim: staleness check for %s failed: %s", pool_name, exc)
     manifest = _vcluster_claim_job_manifest(
         pool_name,
         alias,
         claim_user,
         dev_mode=body.devMode,
-        bump_images=bump,
         namespace=namespace,
     )
     _create_preview_job(batch, namespace=namespace, manifest=manifest)
@@ -6133,12 +6372,15 @@ def _pool_reconcile_once(batch, core, apps) -> dict[str, int]:
 
     recycled = 0
     if recycle_on and free_members:
-        host_pins = _host_image_pins(apps)
-        if host_pins:
+        want_hash = _bake_inputs_hash(core)
+        if want_hash:
             for ns in free_members:
                 ann = (ns.metadata.annotations or {}) if ns.metadata else {}
-                member_pins = ann.get(_VCLUSTER_PREVIEW_IMAGE_PINS_ANNOTATION)
-                if member_pins and member_pins != host_pins:
+                if _bake_hash_is_stale(
+                    member_hash=ann.get(_VCLUSTER_PREVIEW_BAKE_HASH_ANNOTATION),
+                    member_legacy_pins=ann.get(_VCLUSTER_PREVIEW_IMAGE_PINS_ANNOTATION),
+                    want=want_hash,
+                ):
                     real_name = _preview_realname_from_ns(ns)
                     if _recycle_free_member(batch, core, ns, real_name, namespace):
                         recycled += 1

@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { env } from "$env/dynamic/private";
 import { isPlaywrightMcpEntry } from "$lib/server/agents/mcp-sidecar";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
+import { resolveImagePin } from "$lib/server/execution/image-pins";
 import { getAgentWorkflowHostPod } from "$lib/server/kube/client";
 import { responseBodyForSpan } from "$lib/server/dapr-client";
 import { setSpanValue } from "$lib/server/observability/content";
@@ -432,7 +433,9 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	const agentImage = ((): string | null => {
 		const key = runtimeDescriptor?.imageEnvKey;
 		if (!key) return null;
-		return env[key] ?? process.env[key] ?? null;
+		// File-first: the git-synced pin file wins over the pod env, so a
+		// re-provisioned session picks up the latest runtime image.
+		return resolveImagePin(key, env) ?? resolveImagePin(key, process.env);
 	})();
 	const sessionSecretEnv =
 		params.sessionSecretEnv && Object.keys(params.sessionSecretEnv).length > 0

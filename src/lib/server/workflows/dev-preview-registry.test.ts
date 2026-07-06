@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	DEFAULT_SYNC_PATHS,
@@ -5,6 +8,7 @@ import {
 	devPreviewCommands,
 	devPreviewSyncPaths,
 	resolveDevPreviewDescriptor,
+	resolveDevPreviewImage,
 } from "./dev-preview-registry";
 
 describe("dev-preview registry", () => {
@@ -97,5 +101,23 @@ describe("dev-preview registry", () => {
 
 	it("throws on an unknown service", () => {
 		expect(() => resolveDevPreviewDescriptor("nope", {})).toThrow(/Unknown dev-preview service/);
+	});
+
+	it("resolves the dev image file-first, then env, then the descriptor fallback", () => {
+		const d = DEV_PREVIEW_SERVICES["workflow-builder"];
+		const dir = mkdtempSync(join(tmpdir(), "dpr-"));
+		const pinFile = join(dir, "runtime-images.json");
+		writeFileSync(pinFile, JSON.stringify({ [d.imageEnvKey]: "img:file" }));
+		// file wins over the env pin
+		expect(
+			resolveDevPreviewImage(d, {
+				WORKFLOW_BUILDER_IMAGE_PINS_FILE: pinFile,
+				[d.imageEnvKey]: "img:env",
+			}),
+		).toBe("img:file");
+		// no file → env pin
+		expect(resolveDevPreviewImage(d, { [d.imageEnvKey]: "img:env" })).toBe("img:env");
+		// neither → descriptor fallback
+		expect(resolveDevPreviewImage(d, {})).toBe(d.imageFallback);
 	});
 });

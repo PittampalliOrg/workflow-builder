@@ -1112,3 +1112,59 @@ def test_long_resource_names_keep_unique_suffixes() -> None:
     assert len(second_job["metadata"]["name"]) <= 63
     assert len(first_configmap["metadata"]["name"]) <= 63
     assert len(second_configmap["metadata"]["name"]) <= 63
+
+
+# ---------------------------------------------------------------------------
+# File-first execution classes (preview image freshness Phase 0): the git-synced
+# classes.json (SANDBOX_EXECUTION_CLASSES_FILE) wins over SANDBOX_EXECUTION_CLASSES_JSON,
+# and a missing/invalid file falls back to the env JSON (then defaults). Merge-over-
+# defaults semantics are unchanged regardless of the source.
+# ---------------------------------------------------------------------------
+
+
+def test_execution_classes_file_wins_over_env(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "classes.json"
+    path.write_text(json.dumps({"benchmark-fast": {"cpu": "111m"}}))
+    monkeypatch.setenv("SANDBOX_EXECUTION_CLASSES_FILE", str(path))
+    monkeypatch.setenv(
+        "SANDBOX_EXECUTION_CLASSES_JSON", json.dumps({"benchmark-fast": {"cpu": "222m"}})
+    )
+    classes = app_module._load_execution_classes()
+    assert classes["benchmark-fast"].cpu == "111m"  # file wins over env
+    assert "secure-gvisor" in classes  # merge-over-defaults preserved
+
+
+def test_execution_classes_bad_file_falls_back_to_env(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "classes.json"
+    path.write_text("{ this is not json")
+    monkeypatch.setenv("SANDBOX_EXECUTION_CLASSES_FILE", str(path))
+    monkeypatch.setenv(
+        "SANDBOX_EXECUTION_CLASSES_JSON", json.dumps({"benchmark-fast": {"cpu": "333m"}})
+    )
+    classes = app_module._load_execution_classes()
+    assert classes["benchmark-fast"].cpu == "333m"  # invalid file → env fallback
+
+
+def test_execution_classes_missing_file_falls_back_to_env(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_CLASSES_FILE", str(tmp_path / "absent.json"))
+    monkeypatch.setenv(
+        "SANDBOX_EXECUTION_CLASSES_JSON", json.dumps({"benchmark-fast": {"cpu": "444m"}})
+    )
+    assert app_module._load_execution_classes()["benchmark-fast"].cpu == "444m"
+
+
+def test_execution_classes_no_sources_returns_defaults(monkeypatch) -> None:
+    monkeypatch.delenv("SANDBOX_EXECUTION_CLASSES_FILE", raising=False)
+    monkeypatch.delenv("SANDBOX_EXECUTION_CLASSES_JSON", raising=False)
+    classes = app_module._load_execution_classes()
+    assert set(classes) == {"benchmark-fast", "secure-gvisor"}
+
+
+def test_execution_classes_file_merges_over_defaults(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "classes.json"
+    path.write_text(json.dumps({"dev-preview": {"localQueue": "", "serviceImage": "img:v9"}}))
+    monkeypatch.setenv("SANDBOX_EXECUTION_CLASSES_FILE", str(path))
+    monkeypatch.delenv("SANDBOX_EXECUTION_CLASSES_JSON", raising=False)
+    classes = app_module._load_execution_classes()
+    assert classes["dev-preview"].serviceImage == "img:v9"
+    assert classes["benchmark-fast"].localQueue == "benchmark-fast"  # default kept

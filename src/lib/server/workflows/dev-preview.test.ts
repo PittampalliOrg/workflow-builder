@@ -363,4 +363,58 @@ describe("dev-preview portability boundary", () => {
 			PREVIEW_SOURCE_DATABASE_URL: "postgres://source-db",
 		});
 	});
+
+	it("persists the resolved image and reuses it over a newer pin on re-entry", async () => {
+		// function-router is a non-functional (no-DB) preview, so it needs no DB provisioner.
+		vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+		const fetchMock = vi.fn(
+			async (_url: string, _init?: RequestInit) =>
+				new Response(
+					JSON.stringify({
+						sandboxName: "wfb-dev-preview-function-router-exec-1",
+						podIP: "10.0.0.14",
+						port: 8080,
+						syncPort: 8001,
+						ready: true,
+						status: "running",
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		// First provision: no persisted row, env pins the image → resolver used + persisted.
+		vi.stubEnv("FUNCTION_ROUTER_DEV_IMAGE", "img:v1");
+		const persistence = fakePersistence();
+		const first = await provisionDevPreview(
+			{ executionId: "exec-1", service: "function-router" },
+			persistence,
+		);
+		expect(first.image).toBe("img:v1");
+		expect(persistence.upsertWorkflowWorkspaceSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sandboxState: { details: expect.objectContaining({ image: "img:v1" }) },
+			}),
+		);
+
+		// Re-entry: a persisted row exists AND the env pin moved to a newer image. The
+		// persisted image must WIN over the fresh resolution (run stability).
+		vi.stubEnv("FUNCTION_ROUTER_DEV_IMAGE", "img:v2-newer");
+		const reentry = fakePersistence();
+		reentry.listWorkflowWorkspaceSessionsByExecutionId = vi.fn(async () => [
+			{
+				workspaceRef: "wfb-dev-preview-function-router-exec-1",
+				sandboxState: { details: { service: "function-router", image: "img:v1" } },
+			},
+		]);
+		const second = await provisionDevPreview(
+			{ executionId: "exec-1", service: "function-router" },
+			reentry,
+		);
+		expect(second.image).toBe("img:v1");
+		const body = JSON.parse(
+			String((fetchMock.mock.calls.at(-1)?.[1] as RequestInit).body),
+		);
+		expect(body.image).toBe("img:v1");
+	});
 });

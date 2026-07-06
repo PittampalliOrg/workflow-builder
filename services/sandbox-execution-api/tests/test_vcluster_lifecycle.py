@@ -135,6 +135,11 @@ class _FakeCore:
             raise _ApiExc(404)
         return self._ns[name]
 
+    def read_namespaced_config_map(self, name, namespace):
+        # No runner ConfigMap in these lifecycle scenarios → _bake_inputs_hash returns
+        # None (empty data) so a reconcile never recycles here (behavior unchanged).
+        return SimpleNamespace(metadata=SimpleNamespace(name=name), data={})
+
 
 def _job(name: str, action: str, active: int = 1):
     return SimpleNamespace(

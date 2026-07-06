@@ -7,6 +7,7 @@ import {
 	type KubeNode,
 	type KubePod,
 } from "$lib/server/kube/client";
+import { loadExecutionClassesJson } from "$lib/server/execution/image-pins";
 
 export type BenchmarkSandboxCapacitySnapshot = {
 	sampledAt: string;
@@ -371,7 +372,7 @@ export function kueueInstanceRequestModeFromEnv(): BenchmarkKueueInstanceRequest
 }
 
 function executionClassConfigFromEnv(): Record<string, unknown> | null {
-	const raw = process.env.SANDBOX_EXECUTION_CLASSES_JSON;
+	const raw = loadExecutionClassesJson();
 	if (!raw?.trim()) return null;
 	const classNames = [
 		process.env.BENCHMARK_EXECUTION_CLASS,

@@ -865,3 +865,137 @@ def test_restore_orphans_continues_past_a_failing_restore() -> None:
 
     assert result["restored"] == ["workflow-orchestrator"]
     assert [name for name, _ in patched] == ["workflow-orchestrator"]
+
+
+# ---------------------------------------------------------------------------
+# 409 recreate-on-mismatch (preview image freshness Phase 0): a create-409 adopts
+# the existing dev-preview CR only when its `dev` container image matches the
+# manifest we just built; on image drift it deletes + recreates.
+# ---------------------------------------------------------------------------
+
+
+class _Api4xx(Exception):
+    def __init__(self, status: int) -> None:
+        super().__init__(f"api status {status}")
+        self.status = status
+
+
+class _FakeCustom409:
+    """Create raises 409 on the FIRST call (name already exists); get returns an
+    existing CR carrying `existing_image`; delete flips exists so the wait loop
+    returns immediately and a subsequent recreate succeeds."""
+
+    def __init__(self, existing_image: str) -> None:
+        self.existing_image = existing_image
+        self.exists = True
+        self.create_calls = 0
+        self.recreates: list[dict] = []
+        self.deletes: list[str] = []
+
+    def create_namespaced_custom_object(self, *, group, version, namespace, plural, body):
+        self.create_calls += 1
+        if self.create_calls == 1 and self.exists:
+            raise _Api4xx(409)
+        self.recreates.append(body)
+        return body
+
+    def get_namespaced_custom_object(self, *, group, version, namespace, plural, name):
+        if not self.exists:
+            raise _Api4xx(404)
+        return {
+            "spec": {
+                "podTemplate": {
+                    "spec": {"containers": [{"name": "dev", "image": self.existing_image}]}
+                }
+            }
+        }
+
+    def delete_namespaced_custom_object(
+        self, *, group, version, namespace, plural, name, body=None
+    ):
+        self.deletes.append(name)
+        self.exists = False
+
+
+def _provision_409_harness(monkeypatch, *, class_image: str, existing_image: str):
+    fake_custom = _FakeCustom409(existing_image)
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "token")
+    monkeypatch.setattr(
+        app_module,
+        "_load_execution_classes",
+        lambda: {"dev-preview": ExecutionClassConfig(localQueue="", serviceImage=class_image)},
+    )
+    monkeypatch.setattr(app_module, "_load_k8s_apps_client", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        app_module, "_load_k8s_clients", lambda: (SimpleNamespace(), SimpleNamespace())
+    )
+    monkeypatch.setattr(
+        app_module, "_load_k8s_custom_objects_client", lambda: fake_custom
+    )
+    monkeypatch.setattr(
+        app_module, "_wait_for_dev_preview_ready", lambda *_a, **_k: ("ready", "10.0.0.9")
+    )
+    return fake_custom
+
+
+def test_provision_409_adopts_when_image_matches(monkeypatch) -> None:
+    fake_custom = _provision_409_harness(
+        monkeypatch, class_image="img:v1", existing_image="img:v1"
+    )
+    response = app_module.provision_dev_preview(
+        SimpleNamespace(headers={"authorization": "Bearer token"}),
+        DevPreviewRequest(executionId="exec-1", service="workflow-builder"),
+    )
+    assert response["ready"] is True
+    assert fake_custom.deletes == []  # adopted, not recreated
+    assert fake_custom.recreates == []
+    assert fake_custom.create_calls == 1
+
+
+def test_provision_409_recreates_when_image_drifts(monkeypatch) -> None:
+    fake_custom = _provision_409_harness(
+        monkeypatch, class_image="img:v2", existing_image="img:v1"
+    )
+    response = app_module.provision_dev_preview(
+        SimpleNamespace(headers={"authorization": "Bearer token"}),
+        DevPreviewRequest(executionId="exec-1", service="workflow-builder"),
+    )
+    assert response["ready"] is True
+    assert len(fake_custom.deletes) == 1  # drifted → deleted
+    assert len(fake_custom.recreates) == 1  # then recreated with the new image
+    assert app_module._dev_preview_manifest_image(fake_custom.recreates[0]) == "img:v2"
+
+
+def test_provision_forces_image_pins_mount_when_class_declares_it() -> None:
+    cfg = ExecutionClassConfig(localQueue="", imagePinsConfigMap="workflow-builder-image-pins")
+    manifest = build_dev_preview_sandbox_manifest(
+        DevPreviewRequest(executionId="exec-1", service="workflow-builder"),
+        namespace="workflow-builder",
+        class_config=cfg,
+    )
+    pod = manifest["spec"]["podTemplate"]["spec"]
+    dev = next(c for c in pod["containers"] if c["name"] == "dev")
+    env = {e["name"]: e.get("value") for e in dev["env"]}
+    assert env["SANDBOX_EXECUTION_CLASSES_FILE"] == "/etc/workflow-builder/image-pins/classes.json"
+    assert (
+        env["WORKFLOW_BUILDER_IMAGE_PINS_FILE"]
+        == "/etc/workflow-builder/image-pins/runtime-images.json"
+    )
+    mount = next(m for m in dev["volumeMounts"] if m["name"] == "image-pins")
+    assert mount["mountPath"] == "/etc/workflow-builder/image-pins"
+    vol = next(v for v in pod["volumes"] if v["name"] == "image-pins")
+    assert vol["configMap"]["name"] == "workflow-builder-image-pins"
+
+
+def test_manifest_has_no_image_pins_mount_by_default() -> None:
+    manifest = build_dev_preview_sandbox_manifest(
+        DevPreviewRequest(executionId="exec-1", service="workflow-builder"),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(localQueue=""),
+    )
+    pod = manifest["spec"]["podTemplate"]["spec"]
+    dev = next(c for c in pod["containers"] if c["name"] == "dev")
+    env = {e["name"] for e in dev["env"]}
+    assert "SANDBOX_EXECUTION_CLASSES_FILE" not in env
+    assert "WORKFLOW_BUILDER_IMAGE_PINS_FILE" not in env
+    assert not any(v.get("name") == "image-pins" for v in pod.get("volumes", []))

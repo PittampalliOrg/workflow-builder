@@ -22,6 +22,7 @@ def _ns(
     pool: str | None = None,
     alias: str | None = None,
     pins: str | None = None,
+    bake_hash: str | None = None,
     phase: str = "Active",
     rv: str = "1",
     created: datetime | None = None,
@@ -34,6 +35,8 @@ def _ns(
     annotations = {}
     if pins is not None:
         annotations["vcluster-preview-image-pins"] = pins
+    if bake_hash is not None:
+        annotations["vcluster-preview-bake-hash"] = bake_hash
     meta = SimpleNamespace(
         name=f"vcluster-{real_name}",
         labels=labels,
@@ -51,12 +54,34 @@ def _sel_match(ns, selector: str | None) -> bool:
     return (ns.metadata.labels or {}).get(key) == value
 
 
+def _runner_cm(data: dict[str, str]):
+    """A `vcluster-preview-runner` ConfigMap object as _bake_inputs_hash reads it."""
+    return SimpleNamespace(
+        metadata=SimpleNamespace(name="vcluster-preview-runner"), data=dict(data)
+    )
+
+
+def _expected_bake_hash(data: dict[str, str]) -> str:
+    """The hash _bake_inputs_hash must produce for this ConfigMap data — equivalent to
+    the runner's `cat /config/* | sha256sum` (concat the values of the sorted keys)."""
+    from hashlib import sha256
+
+    payload = "".join(data[k] for k in sorted(data))
+    return sha256(payload.encode("utf-8")).hexdigest()
+
+
 class _FakeCore:
-    def __init__(self, namespaces) -> None:
+    def __init__(self, namespaces, configmaps=None) -> None:
         self._ns = {n.metadata.name: n for n in namespaces}
+        self._configmaps = dict(configmaps or {})
         self.replaced: list = []
         self.patched: list = []
         self.replace_conflicts: set[str] = set()
+
+    def read_namespaced_config_map(self, name, namespace):
+        if name not in self._configmaps:
+            raise _ApiExc(404)
+        return self._configmaps[name]
 
     def list_namespace(self, label_selector=None):
         items = [n for n in self._ns.values() if _sel_match(n, label_selector)]
@@ -162,7 +187,6 @@ def test_claim_job_manifest_carries_claim_env() -> None:
         "my-feature",
         "vpittamp",
         dev_mode=True,
-        bump_images=False,
         namespace="workflow-builder",
     )
     env = _job_env(m)
@@ -170,7 +194,8 @@ def test_claim_job_manifest_carries_claim_env() -> None:
     assert env["POOL_NAME"] == "pool-abcd"
     assert env["ALIAS"] == "my-feature"
     assert env["CLAIM_USER"] == "vpittamp"
-    assert env["CLAIM_BUMP_IMAGES"] == "false"
+    # Image freshness moved to the recycler; a claim no longer bumps images.
+    assert "CLAIM_BUMP_IMAGES" not in env
     assert env["PREVIEW_DEV_MODE"] == "true"
     assert m["metadata"]["name"] == "vcpreview-claim-pool-abcd"
 
@@ -274,16 +299,58 @@ def test_host_image_pins_none_when_a_deployment_missing() -> None:
     assert app_module._host_image_pins(_FakeApps(missing)) is None
 
 
-def test_member_is_stale_detects_pin_drift() -> None:
-    core = _FakeCore([_ns("pool-1", pool="free", pins="bff=old;orch=x;fr=y;sea=z")])
-    apps = _FakeApps(_HOST_IMAGES)
-    assert app_module._member_is_stale(core, apps, "pool-1") is True
+_RUNNER_DATA = {
+    "pins.env": "bff=git-aaa\n",
+    "runner.sh": "#!/bin/sh\n",
+    "template-db-pin": "sha-123\n",
+}
 
 
-def test_member_not_stale_when_pins_match() -> None:
-    core = _FakeCore([_ns("pool-1", pool="free", pins=_HOST_PINS)])
-    apps = _FakeApps(_HOST_IMAGES)
-    assert app_module._member_is_stale(core, apps, "pool-1") is False
+def test_bake_inputs_hash_matches_cat_config_sha256() -> None:
+    # Equivalent to the runner's `cat /config/* | sha256sum`: concat the VALUES of the
+    # sorted keys (each ConfigMap key is one glob-sorted file in /config).
+    core = _FakeCore([], configmaps={"vcluster-preview-runner": _runner_cm(_RUNNER_DATA)})
+    assert app_module._bake_inputs_hash(core) == _expected_bake_hash(_RUNNER_DATA)
+
+
+def test_bake_inputs_hash_none_when_configmap_missing() -> None:
+    # Unreadable inputs → None so the recycler never false-recycles on a transient error.
+    assert app_module._bake_inputs_hash(_FakeCore([])) is None
+
+
+def test_member_is_stale_detects_bake_hash_drift() -> None:
+    core = _FakeCore(
+        [_ns("pool-1", pool="free", bake_hash="stale-hash")],
+        configmaps={"vcluster-preview-runner": _runner_cm(_RUNNER_DATA)},
+    )
+    assert app_module._member_is_stale(core, "pool-1") is True
+
+
+def test_member_not_stale_when_bake_hash_matches() -> None:
+    want = _expected_bake_hash(_RUNNER_DATA)
+    core = _FakeCore(
+        [_ns("pool-1", pool="free", bake_hash=want)],
+        configmaps={"vcluster-preview-runner": _runner_cm(_RUNNER_DATA)},
+    )
+    assert app_module._member_is_stale(core, "pool-1") is False
+
+
+def test_member_with_legacy_pins_and_no_bake_hash_is_stale_once() -> None:
+    # Migration turnover: a pre-bake-hash member (legacy image-pins, no bake-hash) is
+    # recycled exactly once so its replacement carries the new annotation.
+    core = _FakeCore(
+        [_ns("pool-legacy", pool="free", pins="bff=old;orch=x;fr=y;sea=z")],
+        configmaps={"vcluster-preview-runner": _runner_cm(_RUNNER_DATA)},
+    )
+    assert app_module._member_is_stale(core, "pool-legacy") is True
+
+
+def test_member_with_no_annotations_is_not_stale() -> None:
+    core = _FakeCore(
+        [_ns("pool-bare", pool="free")],
+        configmaps={"vcluster-preview-runner": _runner_cm(_RUNNER_DATA)},
+    )
+    assert app_module._member_is_stale(core, "pool-bare") is False
 
 
 # ---- pool reconcile --------------------------------------------------------
@@ -386,12 +453,15 @@ def test_pool_reconcile_no_fill_when_already_full(monkeypatch) -> None:
     assert stats["created"] == 0
 
 
-def test_pool_reconcile_recycles_pin_drifted_free_member(monkeypatch) -> None:
+def test_pool_reconcile_recycles_bake_drifted_free_member(monkeypatch) -> None:
     monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_SIZE", "1")
     monkeypatch.setenv("VCLUSTER_PREVIEW_MAX", "6")
     monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_RECYCLE_DEADLINE", "900")
     batch = _FakeBatch()
-    core = _FakeCore([_ns("pool-old", pool="free", pins="bff=stale;orch=x;fr=y;sea=z")])
+    core = _FakeCore(
+        [_ns("pool-old", pool="free", bake_hash="stale-hash")],
+        configmaps={"vcluster-preview-runner": _runner_cm(_RUNNER_DATA)},
+    )
     stats = app_module._pool_reconcile_once(batch, core, _FakeApps(_HOST_IMAGES))
     assert stats["recycled"] == 1
     # relabeled off `free` so a claim can't grab a member mid-teardown
@@ -405,7 +475,10 @@ def test_pool_reconcile_keeps_fresh_free_member(monkeypatch) -> None:
     monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_SIZE", "1")
     monkeypatch.setenv("VCLUSTER_PREVIEW_MAX", "6")
     batch = _FakeBatch()
-    core = _FakeCore([_ns("pool-fresh", pool="free", pins=_HOST_PINS)])
+    core = _FakeCore(
+        [_ns("pool-fresh", pool="free", bake_hash=_expected_bake_hash(_RUNNER_DATA))],
+        configmaps={"vcluster-preview-runner": _runner_cm(_RUNNER_DATA)},
+    )
     stats = app_module._pool_reconcile_once(batch, core, _FakeApps(_HOST_IMAGES))
     assert stats["recycled"] == 0
     assert stats["created"] == 0

@@ -113,13 +113,17 @@ def test_list_endpoint_single_flights_concurrent_cache_misses(monkeypatch) -> No
 
 
 def _ns(real_name: str, *, pool: str | None = None, alias: str | None = None,
-        pins: str | None = None):
+        pins: str | None = None, bake_hash: str | None = None):
     labels = {"app": "vcluster-preview", "vcluster-preview-name": real_name}
     if pool is not None:
         labels["vcluster-preview-pool"] = pool
     if alias is not None:
         labels["vcluster-preview-alias"] = alias
-    annotations = {"vcluster-preview-image-pins": pins} if pins else {}
+    annotations = {}
+    if pins:
+        annotations["vcluster-preview-image-pins"] = pins
+    if bake_hash:
+        annotations["vcluster-preview-bake-hash"] = bake_hash
     meta = SimpleNamespace(
         name=f"vcluster-{real_name}",
         labels=labels,
@@ -131,14 +135,18 @@ def _ns(real_name: str, *, pool: str | None = None, alias: str | None = None,
 
 
 class _FakeCore:
-    def __init__(self, namespaces) -> None:
+    def __init__(self, namespaces, runner_data=None) -> None:
         self._ns = {n.metadata.name: n for n in namespaces}
+        self._runner_data = dict(runner_data or {})
 
     def list_namespace(self, label_selector=None):
         return SimpleNamespace(items=list(self._ns.values()))
 
     def read_namespace(self, name):
         return self._ns[name]
+
+    def read_namespaced_config_map(self, name, namespace):
+        return SimpleNamespace(metadata=SimpleNamespace(name=name), data=self._runner_data)
 
 
 class _FakeBatch:
@@ -164,31 +172,31 @@ def test_hot_paths_hold_no_memory_across_churn_cycles(monkeypatch) -> None:
     monkeypatch.setenv("VCLUSTER_PREVIEW_TTL_HOURS", "0")
     monkeypatch.setenv("VCLUSTER_PREVIEW_SLEEP_AFTER_MINUTES", "0")
     monkeypatch.setenv("VCLUSTER_PREVIEW_TOTAL_MAX", "0")
-    pins = "bff=b;orch=o;fr=f;sea=s"
+    from hashlib import sha256
+
+    runner_data = {"pins.env": "bff=b\n", "runner.sh": "#!/bin/sh\n"}
+    fresh_hash = sha256(
+        "".join(runner_data[k] for k in sorted(runner_data)).encode("utf-8")
+    ).hexdigest()
     # A realistically-mixed fleet: pool slots in every state + user previews. Pool is
-    # exactly at target (2 free) with matching pins so a reconcile pass is a steady-state
-    # no-op — any allocation it makes anyway must be transient.
+    # exactly at target (2 free) with a matching bake-hash so a reconcile pass is a
+    # steady-state no-op — any allocation it makes anyway must be transient.
     namespaces = [
-        _ns("pool-aa11", pool="free", pins=pins),
-        _ns("pool-bb22", pool="free", pins=pins),
+        _ns("pool-aa11", pool="free", bake_hash=fresh_hash),
+        _ns("pool-bb22", pool="free", bake_hash=fresh_hash),
         _ns("pool-cc33", pool="baking"),
         _ns("pool-dd44", pool="recycling"),
-        _ns("pool-ee55", pool="claimed", alias="claimed-a", pins=pins),
-        _ns("pool-ff66", pool="claimed", alias="claimed-b", pins=pins),
+        _ns("pool-ee55", pool="claimed", alias="claimed-a", bake_hash=fresh_hash),
+        _ns("pool-ff66", pool="claimed", alias="claimed-b", bake_hash=fresh_hash),
         *[_ns(f"user-{i}") for i in range(6)],
     ]
-    core = _FakeCore(namespaces)
+    core = _FakeCore(namespaces, runner_data=runner_data)
     batch = _FakeBatch()
     apps = _FakeApps()
     monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
     monkeypatch.setattr(app_module, "_load_k8s_apps_client", lambda: apps)
     monkeypatch.setattr(
         app_module, "_vcluster_preview_phase", lambda *a, **k: ("ready", 0, 1, 0)
-    )
-    monkeypatch.setattr(
-        app_module,
-        "_host_image_pins",
-        lambda _apps: pins,
     )
 
     def one_cycle() -> None:
