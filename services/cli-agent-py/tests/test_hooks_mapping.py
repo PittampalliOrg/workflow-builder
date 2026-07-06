@@ -973,3 +973,137 @@ def test_stop_failure_ignored_entirely_when_flag_disabled(monkeypatch):
     assert response == {}
     assert raised == []
     assert all(etype != "turn.failed" for _sid, etype, _data in published)
+
+
+# ---------------------------------------------------------------------------
+# background_task_count instrumentation (data only; no drain / behavior change)
+# ---------------------------------------------------------------------------
+
+
+def test_count_live_background_tasks_absent_or_non_list_returns_none():
+    from src.hooks_api import _count_live_background_tasks
+
+    # Absent / None / non-list is "no data" (None) — NOT a genuine zero.
+    assert _count_live_background_tasks({}) is None
+    assert _count_live_background_tasks({"background_tasks": None}) is None
+    assert _count_live_background_tasks({"background_tasks": "oops"}) is None
+    assert _count_live_background_tasks({"background_tasks": {"status": "running"}}) is None
+
+
+def test_count_live_background_tasks_counts_unknown_status_as_live():
+    from src.hooks_api import _count_live_background_tasks
+
+    tasks = [
+        {"status": "running"},   # live
+        {"status": "COMPLETED"},  # terminal (case-insensitive)
+        {"status": " killed "},   # terminal (stripped)
+        {"status": "queued"},    # unknown → live
+        {"status": None},        # non-string status → live
+        {},                       # missing status key → live
+        "not-a-dict",            # non-dict entry → live
+    ]
+    # running + queued + None + {} + "not-a-dict" = 5 live; COMPLETED + killed = terminal.
+    assert _count_live_background_tasks({"background_tasks": tasks}) == 5
+
+
+def test_count_live_background_tasks_all_terminal_returns_zero():
+    from src.hooks_api import _count_live_background_tasks
+
+    tasks = [
+        {"status": "completed"},
+        {"status": "failed"},
+        {"status": "stopped"},
+        {"status": "killed"},
+    ]
+    assert _count_live_background_tasks({"background_tasks": tasks}) == 0
+
+
+def test_count_live_background_tasks_empty_list_is_zero_not_none():
+    from src.hooks_api import _count_live_background_tasks
+
+    assert _count_live_background_tasks({"background_tasks": []}) == 0
+
+
+def test_stop_turn_completed_carries_background_task_count():
+    processor, _published, raised, _supervisor, _manager = _processor()
+    asyncio.run(
+        processor.process(
+            _hook(
+                "Stop",
+                background_tasks=[
+                    {"status": "running"},    # live
+                    {"status": "completed"},  # terminal
+                    {},                        # unknown status → live
+                ],
+            )
+        )
+    )
+    assert raised == [
+        (
+            "inst-1",
+            [
+                {
+                    "type": "turn.completed",
+                    "lastAssistantText": "final answer",
+                    "backgroundTaskCount": 2,
+                }
+            ],
+        )
+    ]
+
+
+def test_stop_without_background_tasks_omits_count():
+    processor, _published, raised, _supervisor, _manager = _processor()
+    asyncio.run(processor.process(_hook("Stop")))
+    assert raised == [
+        ("inst-1", [{"type": "turn.completed", "lastAssistantText": "final answer"}])
+    ]
+    assert "backgroundTaskCount" not in raised[0][1][0]
+
+
+def test_stop_all_terminal_background_tasks_carries_zero_count():
+    """A genuine zero (all tasks terminal) rides as 0 — distinct from the absent
+    (no-data) case, which omits the field."""
+    processor, _published, raised, _supervisor, _manager = _processor()
+    asyncio.run(
+        processor.process(_hook("Stop", background_tasks=[{"status": "completed"}]))
+    )
+    assert raised[0][1][0]["backgroundTaskCount"] == 0
+
+
+def test_stop_failure_does_not_carry_background_task_count():
+    """The failure edge never carries the count — a failed turn's background state
+    is not meaningful, and only the completion edge computes it."""
+    processor, _published, raised, _supervisor, _manager = _claude_processor()
+    asyncio.run(
+        processor.process(
+            _hook("StopFailure", error="boom", background_tasks=[{"status": "running"}])
+        )
+    )
+    assert raised == [
+        (
+            "inst-1",
+            [
+                {
+                    "type": "turn.failed",
+                    "error": "boom",
+                    "lastAssistantText": "final answer",
+                }
+            ],
+        )
+    ]
+    assert "backgroundTaskCount" not in raised[0][1][0]
+
+
+def test_stop_omits_background_task_count_when_flag_disabled(monkeypatch):
+    import src.hooks_api as hooks_api
+
+    monkeypatch.setattr(hooks_api, "CLI_BACKGROUND_TASK_COUNT_ENABLED", False)
+    processor, _published, raised, _supervisor, _manager = _processor()
+    asyncio.run(
+        processor.process(_hook("Stop", background_tasks=[{"status": "running"}]))
+    )
+    assert raised == [
+        ("inst-1", [{"type": "turn.completed", "lastAssistantText": "final answer"}])
+    ]
+    assert "backgroundTaskCount" not in raised[0][1][0]
