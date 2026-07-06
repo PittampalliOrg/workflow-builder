@@ -25,6 +25,12 @@ export interface DevPreviewInfo {
 	sandboxName: string;
 	executionId: string;
 	service: string;
+	/**
+	 * The container image this preview was provisioned with. Persisted per
+	 * (executionId, service) and made to WIN over a fresh resolution on re-entry so
+	 * a mid-run re-provision never silently picks up a newer pin (run stability).
+	 */
+	image: string;
 	podIP: string | null;
 	port: number;
 	syncPort: number;
@@ -207,8 +213,18 @@ export async function provisionDevPreview(
 		...process.env,
 		...env,
 	});
+	// Run stability: a previously persisted image for this (executionId, service)
+	// WINS over a fresh resolution, so a mid-run re-provision (e.g. a GAN re-entry)
+	// never picks up a newer pin than the one this run started on. An explicit
+	// params.image (deliberate caller override) still takes precedence.
+	const persistedImage = await persistedDevPreviewImage(
+		params.executionId,
+		descriptor.service,
+		persistence,
+	);
 	const image =
 		params.image ||
+		persistedImage ||
 		resolveDevPreviewImage(descriptor, { ...process.env, ...env });
 	const token = internalToken();
 
@@ -326,6 +342,7 @@ export async function provisionDevPreview(
 		sandboxName: String(body.sandboxName ?? ""),
 		executionId: params.executionId,
 		service: descriptor.service,
+		image,
 		podIP: typeof body.podIP === "string" ? body.podIP : null,
 		port: typeof body.port === "number" ? body.port : descriptor.port,
 		syncPort:
@@ -393,6 +410,43 @@ export async function provisionDevPreviews(
 	};
 }
 
+/**
+ * The image a prior provision of this (executionId, service) was pinned to, read
+ * back from the persisted workspace-session row's `sandboxState.details.image`.
+ * Null when no persistence, no matching row, or no stored image — the caller then
+ * falls through to the fresh resolver. Best-effort: a read failure never blocks a
+ * provision (it just forgoes the run-stability guard).
+ */
+async function persistedDevPreviewImage(
+	executionId: string,
+	service: string,
+	persistence?: DevPreviewPersistence,
+): Promise<string | null> {
+	if (!persistence) return null;
+	try {
+		const rows = await persistence.listWorkflowWorkspaceSessionsByExecutionId({
+			executionId,
+			limit: 8,
+		});
+		for (const row of rows) {
+			const details = asRecord(asRecord(row.sandboxState)?.details);
+			if (
+				details?.service === service &&
+				typeof details.image === "string" &&
+				details.image.trim()
+			) {
+				return details.image.trim();
+			}
+		}
+	} catch (err) {
+		console.error(
+			`[dev-preview] failed reading persisted image (execId=${executionId}, service=${service}):`,
+			err instanceof Error ? err.message : err,
+		);
+	}
+	return null;
+}
+
 async function persistDevPreviewSession(
 	info: DevPreviewInfo,
 	persistence?: DevPreviewPersistence,
@@ -403,6 +457,9 @@ async function persistDevPreviewSession(
 		sandboxName: info.sandboxName,
 		name: info.sandboxName,
 		service: info.service,
+		// Per-run image pin: read back on re-entry so re-provision reuses it (see
+		// persistedDevPreviewImage) rather than resolving a possibly-newer pin.
+		image: info.image,
 		podIP: info.podIP,
 		port: info.port,
 		syncPort: info.syncPort,

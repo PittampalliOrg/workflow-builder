@@ -26,6 +26,8 @@
  * pins them (digest) without a code change; the literals are dev fallbacks.
  */
 
+import { resolveImagePin } from "$lib/server/execution/image-pins";
+
 export type DevPreviewSyncMode = "plugin" | "sidecar";
 
 /** Language family — drives the DEFAULT syncPaths when a descriptor omits them. */
@@ -347,10 +349,13 @@ export function resolveDevPreviewDescriptor(
 	return d;
 }
 
-/** Resolve the dev image: stacks-pinned env var, else the descriptor fallback. */
+/**
+ * Resolve the dev image: the git-synced pin file wins, else the stacks-pinned env
+ * var, else the descriptor fallback (see image-pins.ts for the file-first precedence).
+ */
 export function resolveDevPreviewImage(
 	d: DevPreviewDescriptor,
 	env: Record<string, string | undefined>,
 ): string {
-	return (env[d.imageEnvKey] || "").trim() || d.imageFallback;
+	return resolveImagePin(d.imageEnvKey, env) || d.imageFallback;
 }
