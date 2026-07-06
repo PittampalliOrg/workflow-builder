@@ -28,7 +28,15 @@ mkdir -p /sandbox/work/gan /sandbox/scratch
 REPO=/sandbox/scratch/gate-repo
 NM_CACHE=/sandbox/work/gan/gate-node-modules.tar
 GATE_JSON=/sandbox/work/gan/gate-$IDX.json
-command -v pnpm >/dev/null 2>&1 || (corepack enable || npm i -g pnpm) >/dev/null 2>&1
+# pnpm bootstrap for the NON-ROOT cli-agent user: the workspace pod has
+# node/npm/corepack but no pnpm, and the user cannot write /usr/local/bin or the
+# global npm prefix — so install into user-writable /tmp dirs and put them on
+# PATH BEFORE any phase runs.
+export PATH=/tmp/gan-bin:/tmp/gan-npm/bin:$PATH
+if ! command -v pnpm >/dev/null 2>&1; then
+  mkdir -p /tmp/gan-bin /tmp/gan-npm
+  corepack enable --install-directory /tmp/gan-bin >/dev/null 2>&1 || npm i -g --prefix /tmp/gan-npm pnpm >/dev/null 2>&1
+fi
 rm -rf "$REPO"
 if ! git clone --depth 1 --single-branch https://x-access-token:\${GITHUB_TOKEN}@github.com/${cfg.promote.repoUrl}.git "$REPO"; then
   echo "OBJECTIVE FAIL: clone failed"
