@@ -1330,8 +1330,17 @@ class AntigravityAdapter(CliAdapter):
     # -- argv -----------------------------------------------------------------
 
     def build_argv(
-        self, agent_config: Mapping[str, Any], seed_paths: Mapping[str, str]
+        self,
+        agent_config: Mapping[str, Any],
+        seed_paths: Mapping[str, str],
+        *,
+        one_shot: bool = False,
     ) -> list[str]:
+        # NOTE: agy (gemini CLI) exposes no per-tool disallow for a discrete
+        # human-input tool — its interactivity is approval prompts, already
+        # neutralized via --dangerously-skip-permissions + the managed
+        # settings.json permission mode. `one_shot` is accepted for protocol
+        # parity but adds no flag here.
         sandbox_root = os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
         argv: list[str] = [
             AGY_BIN,

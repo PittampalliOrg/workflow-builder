@@ -225,6 +225,10 @@ class SessionSupervisor:
         self._pane_ref: str | None = None
         self._transcript_path: str | None = None
         self._turn_started_count = 0
+        # True for headless autoTerminateAfterEndTurn workflow runs (no human in
+        # the pane). Exposed via get_session so the hook layer can deny
+        # interactive tools like AskUserQuestion that would strand the run.
+        self._one_shot = False
         self._injected_prompt_hashes: set[str] = set()
 
         # Zero-width prefix stamped on injected prompts so a Claude-style
@@ -398,11 +402,17 @@ class SessionSupervisor:
     # -- session registry ------------------------------------------------------
 
     def register_session(
-        self, *, session_id: str | None, instance_id: str | None, pane_ref: str | None
+        self,
+        *,
+        session_id: str | None,
+        instance_id: str | None,
+        pane_ref: str | None,
+        one_shot: bool = False,
     ) -> None:
         self._session_id = session_id
         self._instance_id = instance_id
         self._pane_ref = pane_ref
+        self._one_shot = bool(one_shot)
         self._exit_raised = False
         self._idle_since = None
         self._turn_started_count = 0
@@ -429,6 +439,7 @@ class SessionSupervisor:
             "transcriptPath": self._transcript_path,
             "cliSessionId": self._cli_session_id,
             "turnStartedCount": self._turn_started_count,
+            "oneShot": self._one_shot,
         }
 
     def consume_injected_prompt(self, prompt: str) -> bool:

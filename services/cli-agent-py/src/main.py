@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
 import subprocess
 import sys
 from contextlib import asynccontextmanager
@@ -331,6 +332,40 @@ def _tail(text: str | None) -> str:
     return encoded[-_OUTPUT_TAIL_BYTES:].decode("utf-8", errors="replace")
 
 
+def _decode_stream(value: Any) -> str:
+    """Normalize a subprocess stream to str. On the TimeoutExpired raise path
+    the captured partial output is BYTES even with text=True, so a naive
+    isinstance(str) check dropped it — decode bytes here so timeout tails carry
+    the partial output."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _kill_process_group(proc: "subprocess.Popen[Any]") -> None:
+    """SIGTERM the child's process group, then SIGKILL after a short grace, so
+    grandchildren (pnpm/node/git spawned by the bash -lc command) die with the
+    timed-out command instead of surviving as orphans."""
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, OSError):
+        return
+    for sig, grace in ((signal.SIGTERM, 2.0), (signal.SIGKILL, None)):
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, OSError):
+            return
+        if grace is None:
+            return
+        try:
+            proc.wait(timeout=grace)
+            return  # exited on SIGTERM; no SIGKILL needed
+        except subprocess.TimeoutExpired:
+            continue
+
+
 @app.post("/internal/workspace/command")
 async def workspace_command_endpoint(request: Request) -> dict[str, Any]:
     expected = os.environ.get("INTERNAL_API_TOKEN", "")
@@ -377,31 +412,46 @@ async def workspace_command_endpoint(request: Request) -> dict[str, Any]:
     command = "mkdir -p /sandbox/scratch/.npm /sandbox/scratch/.pnpm-store /sandbox/scratch/tmp 2>/dev/null||true; " + command
 
     def _run() -> dict[str, Any]:
+        # start_new_session=True puts the command in its own process group so a
+        # timeout can kill the whole tree (bash -lc + pnpm/node/git children),
+        # not just the direct bash child (which orphaned them under the old
+        # subprocess.run path).
+        proc = subprocess.Popen(
+            ["bash", "-lc", command],
+            cwd=cwd or os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox"),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
         try:
-            completed = subprocess.run(
-                ["bash", "-lc", command],
-                cwd=cwd or os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox"),
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-            )
+            stdout, stderr = proc.communicate(timeout=timeout_seconds)
+            return {
+                "ok": proc.returncode == 0,
+                "exit_code": proc.returncode,
+                "stdout_tail": _tail(_decode_stream(stdout)),
+                "stderr_tail": _tail(_decode_stream(stderr)),
+            }
         except subprocess.TimeoutExpired as exc:
+            _kill_process_group(proc)
+            # Reap the killed group and drain whatever partial output made it to
+            # the pipes; fall back to the exception's captured (bytes) output.
+            drained_out, drained_err = "", ""
+            try:
+                drained_out, drained_err = proc.communicate(timeout=5)
+            except Exception:  # noqa: BLE001
+                pass
+            stdout = _decode_stream(drained_out) or _decode_stream(exc.stdout)
+            stderr = _decode_stream(drained_err) or _decode_stream(exc.stderr)
             return {
                 "ok": False,
                 "exit_code": None,
-                "stdout_tail": _tail(exc.stdout if isinstance(exc.stdout, str) else ""),
+                "stdout_tail": _tail(stdout),
                 "stderr_tail": _tail(
-                    (exc.stderr if isinstance(exc.stderr, str) else "")
-                    + f"\ncommand timed out after {timeout_seconds:.0f}s"
+                    stderr + f"\ncommand timed out after {timeout_seconds:.0f}s"
                 ),
             }
-        return {
-            "ok": completed.returncode == 0,
-            "exit_code": completed.returncode,
-            "stdout_tail": _tail(completed.stdout),
-            "stderr_tail": _tail(completed.stderr),
-        }
 
     return await asyncio.to_thread(_run)
 

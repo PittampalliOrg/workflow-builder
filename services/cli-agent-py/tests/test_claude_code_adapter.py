@@ -195,6 +195,21 @@ def test_build_argv(seeded_dirs):
     assert argv[argv.index("--append-system-prompt-file") + 1] == "/sandbox/.wfb/system-prompt.md"
 
 
+def test_build_argv_one_shot_disallows_ask_user_question():
+    """Headless one-shot runs must disable AskUserQuestion — no human in the
+    pane to answer it, so the tool call would block until the pod deadline."""
+    adapter = get_adapter("claude-code")
+    argv = adapter.build_argv({}, {}, one_shot=True)
+    assert argv[argv.index("--disallowedTools") + 1] == "AskUserQuestion"
+
+
+def test_build_argv_interactive_keeps_ask_user_question():
+    """Interactive (default) sessions have a human, so AskUserQuestion stays."""
+    adapter = get_adapter("claude-code")
+    assert "--disallowedTools" not in adapter.build_argv({}, {})
+    assert "--disallowedTools" not in adapter.build_argv({}, {}, one_shot=False)
+
+
 def test_build_argv_omits_optional_flags():
     adapter = get_adapter("claude-code")
     argv = adapter.build_argv({}, {})

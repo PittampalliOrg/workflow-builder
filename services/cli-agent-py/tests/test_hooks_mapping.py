@@ -165,6 +165,7 @@ class FakeSupervisor:
         self.turn_started_count = 1
         self.injected_prompts: set[str] = set()
         self.suppress_idle_calls = 0
+        self.one_shot = False
 
     def get_session(self):
         return {
@@ -172,6 +173,7 @@ class FakeSupervisor:
             "instanceId": "inst-1",
             "paneRef": "p1",
             "turnStartedCount": self.turn_started_count,
+            "oneShot": self.one_shot,
         }
 
     def register_transcript(self, path, cli_session_id):
@@ -524,6 +526,149 @@ def test_agy_stop_hook_continues_when_output_contract_missing(tmp_path, monkeypa
             },
         )
     ]
+
+
+def test_stop_drains_late_final_transcript_line_into_turn_completed(tmp_path, monkeypatch):
+    """End-to-end race regression: a stale mid-turn message is present when the
+    Stop hook fires, and the REAL final line (the machine-parsed verdict) is
+    still streaming to the transcript. turn.completed MUST carry the FINAL line,
+    not the stale mid-turn one (which corrupted GAN critic verdicts)."""
+    import json as _json
+
+    import src.hooks_api as hooks_api
+    from src.transcript_tailer import TailerManager, TranscriptTailer
+
+    # Keep the drain fast but still span the simulated stream.
+    monkeypatch.setattr(hooks_api, "STOP_DRAIN_QUIET_SECONDS", 0.3)
+    monkeypatch.setattr(hooks_api, "STOP_DRAIN_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(hooks_api, "STOP_DRAIN_MAX_SECONDS", 5)
+
+    def _line(uuid: str, text: str) -> str:
+        return _json.dumps(
+            {
+                "type": "assistant",
+                "uuid": uuid,
+                "message": {
+                    "model": "claude-opus-4-8",
+                    "content": [{"type": "text", "text": text}],
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            }
+        )
+
+    path = tmp_path / "t.jsonl"
+    path.write_text(_line("u1", "mid-turn message") + "\n")
+
+    published: list[tuple[str, dict]] = []
+    raised: list[tuple[str, list[dict]]] = []
+
+    def publish(sid, etype, data, **_kw):
+        published.append((etype, data))
+
+    manager = TailerManager()
+    manager._tailer = TranscriptTailer(str(path), "sess-1", publish=publish)
+    processor = HookProcessor(
+        publish=publish,
+        raise_lifecycle=lambda iid, events: raised.append((iid, events)),
+        supervisor_getter=lambda: FakeSupervisor(),
+        tailer_manager=manager,
+    )
+
+    async def scenario():
+        await asyncio.to_thread(manager._tailer.flush)  # stale message present at Stop
+        assert manager._tailer.last_assistant_text == "mid-turn message"
+
+        async def stream_then_final():
+            for i in range(3):
+                await asyncio.sleep(0.1)
+                with open(path, "a") as handle:
+                    handle.write(_json.dumps({"type": "progress", "i": i}) + "\n")
+                    handle.flush()
+            await asyncio.sleep(0.1)
+            with open(path, "a") as handle:
+                handle.write(_line("u2", "FINAL verdict message") + "\n")
+                handle.flush()
+
+        writer = asyncio.create_task(stream_then_final())
+        # transcript_path must match the registered tailer's path, else the
+        # per-hook _register_transcript would swap in a fresh tailer.
+        await processor.process(_hook("Stop", transcript_path=str(path)))
+        await writer
+
+    asyncio.run(scenario())
+
+    assert raised == [
+        (
+            "inst-1",
+            [{"type": "turn.completed", "lastAssistantText": "FINAL verdict message"}],
+        )
+    ]
+    # The final agent.message was published by the tailer BEFORE turn.completed
+    # was raised, and the Stop branch did not re-publish a duplicate.
+    agent_messages = [data for etype, data in published if etype == "agent.message"]
+    assert agent_messages[-1]["content"] == [
+        {"type": "text", "text": "FINAL verdict message"}
+    ]
+    assert len(agent_messages) == 2  # mid-turn + final, no hook-side duplicate
+
+
+def test_pretooluse_ask_user_question_denied_in_one_shot_session():
+    processor, published, raised, supervisor, _manager = _processor()
+    supervisor.one_shot = True
+
+    response = asyncio.run(
+        processor.process(_hook("PreToolUse", tool_name="AskUserQuestion"))
+    )
+
+    # Blocking deny in both the generic and claude hookSpecificOutput shapes.
+    assert response["decision"] == "block"
+    assert response["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert response["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "headless automated run" in response["reason"]
+    assert "no human present" in response["hookSpecificOutput"]["permissionDecisionReason"]
+    # A hook.decision is mirrored; the tool never runs (no agent.tool_use), and
+    # no turn completion is raised.
+    assert published == [
+        (
+            "sess-1",
+            "hook.decision",
+            {
+                "hook_event": "PreToolUse",
+                "decision": "deny",
+                "reason": response["reason"],
+                "tool_name": "AskUserQuestion",
+                "source": "one-shot-ask-guard",
+            },
+        )
+    ]
+    assert raised == []
+
+
+def test_pretooluse_ask_user_question_allowed_in_interactive_session():
+    processor, published, _raised, supervisor, _manager = _processor()
+    assert supervisor.one_shot is False  # interactive default
+
+    response = asyncio.run(
+        processor.process(_hook("PreToolUse", tool_name="AskUserQuestion"))
+    )
+
+    # Not denied: default (empty) response and the tool_use is mirrored normally.
+    assert response.get("decision") != "block"
+    assert any(etype == "agent.tool_use" for _sid, etype, _data in published)
+
+
+def test_pretooluse_other_tool_not_denied_in_one_shot_session():
+    """The guard is scoped to AskUserQuestion — other tools run normally even in
+    a one-shot run (they don't wait on a human)."""
+    processor, published, _raised, supervisor, _manager = _processor()
+    supervisor.one_shot = True
+
+    response = asyncio.run(
+        processor.process(_hook("PreToolUse", tool_name="Bash", tool_input={"command": "ls"}))
+    )
+
+    assert response.get("decision") != "block"
+    assert any(etype == "agent.tool_use" for _sid, etype, _data in published)
 
 
 def test_session_end_raises_cli_session_end():

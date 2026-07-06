@@ -74,6 +74,26 @@ COMPLETION_TEXT_WAIT_SECONDS = float(
 COMPLETION_TEXT_POLL_SECONDS = float(
     os.environ.get("CLI_COMPLETION_TEXT_POLL_SECONDS", "0.2")
 )
+# Stop-hook drain-to-quiescence knobs. On Stop we ALWAYS drain the tailer until
+# the transcript has been quiet for STOP_DRAIN_QUIET_SECONDS (capped at
+# STOP_DRAIN_MAX_SECONDS) before reading last_assistant_text — otherwise a stale
+# mid-turn message present at Stop is captured while the real final line (with
+# the verdict) is still being written 0.5–1.3s later.
+STOP_DRAIN_MAX_SECONDS = float(os.environ.get("CLI_STOP_DRAIN_MAX_SECONDS", "5"))
+STOP_DRAIN_QUIET_SECONDS = float(os.environ.get("CLI_STOP_DRAIN_QUIET_SECONDS", "0.75"))
+STOP_DRAIN_POLL_SECONDS = float(os.environ.get("CLI_STOP_DRAIN_POLL_SECONDS", "0.1"))
+
+# Belt-and-suspenders behind the claude argv `--disallowedTools AskUserQuestion`
+# (build_argv, one-shot only): a headless run has no human to answer, so this
+# tool call blocks until the pod's activeDeadline kills it (wedging the parent
+# workflow). If a CLI version ignores/renames the argv flag, the PreToolUse hook
+# still denies the call here.
+ASK_USER_QUESTION_TOOL = "AskUserQuestion"
+ONE_SHOT_ASK_DENY_REASON = (
+    "This is a headless automated run with no human present. Do not ask "
+    "questions or wait for input. Write your diagnosis/summary as your final "
+    "message and end the turn."
+)
 
 
 def _clean(value: Any) -> str | None:
@@ -408,6 +428,15 @@ class HookProcessor:
         except Exception:  # noqa: BLE001
             return {}
 
+    @staticmethod
+    def _session_is_one_shot(session: Mapping[str, Any]) -> bool:
+        """True for a headless autoTerminateAfterEndTurn run. Reads the supervisor's
+        `oneShot` flag, falling back to a raw autoTerminateAfterEndTurn key."""
+        value = session.get("oneShot")
+        if isinstance(value, bool):
+            return value
+        return bool(session.get("autoTerminateAfterEndTurn"))
+
     async def process(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, Mapping):
             return {}
@@ -466,7 +495,11 @@ class HookProcessor:
                         },
                     )
                 return response
-            await asyncio.to_thread(self._tailer_manager.flush_now)
+            # ALWAYS drain the tailer to quiescence first so the FINAL
+            # transcript line (published as agent.message and reflected in
+            # last_assistant_text) is ingested BEFORE we read it — the Stop hook
+            # routinely fires while that line is still being written.
+            await self._drain_tailer_to_quiescence()
             tailer = self._tailer_manager.current()
             last_text = tailer.last_assistant_text if tailer is not None else None
             if not last_text:
@@ -538,6 +571,31 @@ class HookProcessor:
                 }
                 await asyncio.to_thread(self._safe_raise, instance_id, [event])
             return {}
+
+        # Belt-and-suspenders human-input guard: in a headless one-shot run, deny
+        # AskUserQuestion at the PreToolUse hook (covers CLI versions that ignore
+        # or rename the argv --disallowedTools flag). PreToolUse is a blocking
+        # event, so this deny response reaches the CLI and stops the tool call.
+        if (
+            name == "PreToolUse"
+            and _clean(payload.get("tool_name")) == ASK_USER_QUESTION_TOOL
+            and self._session_is_one_shot(session)
+        ):
+            if session_id:
+                self._publish(
+                    session_id,
+                    "hook.decision",
+                    {
+                        "hook_event": name,
+                        "decision": "deny",
+                        "reason": ONE_SHOT_ASK_DENY_REASON,
+                        "tool_name": ASK_USER_QUESTION_TOOL,
+                        "source": "one-shot-ask-guard",
+                    },
+                )
+            return _merge_portable_hook_decision(
+                {}, name, "deny", ONE_SHOT_ASK_DENY_REASON, []
+            )
 
         if name == "UserPromptSubmit":
             # Deterministic submit ack: the hook firing proves the CLI accepted a
@@ -658,6 +716,23 @@ class HookProcessor:
                 continue
             events.append({"type": event_type, "data": item.get("data") or {}})
         return events
+
+    async def _drain_tailer_to_quiescence(self) -> None:
+        """Drain the tailer until the transcript stops growing (Stop-hook race
+        fix). Falls back to a single flush for tailer managers that predate the
+        drain capability."""
+        drain = getattr(self._tailer_manager, "drain_quiescent", None)
+        if callable(drain):
+            try:
+                await drain(
+                    max_wait=STOP_DRAIN_MAX_SECONDS,
+                    quiet_period=STOP_DRAIN_QUIET_SECONDS,
+                    poll_seconds=STOP_DRAIN_POLL_SECONDS,
+                )
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[hooks] tailer drain failed: %s", exc)
+        await asyncio.to_thread(self._tailer_manager.flush_now)
 
     async def _wait_for_tailer_completion_text(self) -> str | None:
         wait = getattr(self._tailer_manager, "wait_for_assistant_text", None)

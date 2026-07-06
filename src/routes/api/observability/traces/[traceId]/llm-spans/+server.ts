@@ -1,14 +1,20 @@
-import { json, type RequestHandler } from '@sveltejs/kit';
+import { json, isHttpError, type RequestHandler } from '@sveltejs/kit';
 import {
 	enrichLlmSpansWithRawTraceAttributes,
 	normalizeRawTraceSpans
 } from '$lib/server/observability/trace-span-normalization';
-import { getTraceLlmSpans, getTraceSpans } from '$lib/server/otel/clickhouse';
+import { getTraceLlmSpans, getTraceSpans, isClickHouseConfigured } from '$lib/server/otel/clickhouse';
 import { assertTraceInScope } from '../trace-access';
 
 export const GET: RequestHandler = async ({ params, locals }) => {
-	await assertTraceInScope(params.traceId ?? '', locals.session);
+	if (!isClickHouseConfigured()) {
+		return json({ configured: false, traceId: params.traceId ?? '', spans: [], spanCount: 0 }, { status: 503 });
+	}
 	try {
+		// assertTraceInScope queries ClickHouse, so it lives inside the try — an
+		// unreachable-but-configured ClickHouse degrades to 503, scope rejections
+		// (HttpError) still propagate.
+		await assertTraceInScope(params.traceId ?? '', locals.session);
 		const traceId = params.traceId ?? '';
 		let spans = await getTraceLlmSpans(traceId);
 		let source: 'derived' | 'raw-fallback' = 'derived';
@@ -26,11 +32,17 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 			source
 		});
 	} catch (err) {
-		return json({
-			traceId: params.traceId ?? '',
-			spans: [],
-			spanCount: 0,
-			error: `Failed to query ClickHouse: ${err instanceof Error ? err.message : String(err)}`
-		});
+		if (isHttpError(err)) throw err;
+		return json(
+			{
+				configured: true,
+				available: false,
+				traceId: params.traceId ?? '',
+				spans: [],
+				spanCount: 0,
+				error: `Failed to query ClickHouse: ${err instanceof Error ? err.message : String(err)}`
+			},
+			{ status: 503 }
+		);
 	}
 };

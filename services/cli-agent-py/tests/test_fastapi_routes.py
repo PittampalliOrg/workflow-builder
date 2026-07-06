@@ -14,6 +14,7 @@ app through the router does.
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
 
@@ -124,3 +125,57 @@ def test_hook_post_tolerates_garbage_body(client):
     )
     assert res.status_code == 200
     assert res.json() == {}
+
+
+def test_decode_stream_recovers_bytes_stdout():
+    """On the TimeoutExpired raise path exc.stdout is BYTES even with text=True;
+    the old isinstance(str) guard dropped it. _decode_stream must decode it."""
+    from src.main import _decode_stream
+
+    assert _decode_stream(b"partial timeout output") == "partial timeout output"
+    assert _decode_stream("already str") == "already str"
+    assert _decode_stream(None) == ""
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def test_workspace_command_timeout_returns_partial_output_and_kills_children(
+    client, tmp_path
+):
+    pidfile = tmp_path / "child.pid"
+    # Emit output, spawn a background child (records its PID), then block past the
+    # timeout. The timeout path must: report exit_code None, carry the partial
+    # stdout, flag the timeout in stderr, and kill the whole process group.
+    command = (
+        "echo STARTED-OUTPUT; "
+        f"sleep 30 & echo $! > {pidfile}; "
+        "wait"
+    )
+    res = client.post(
+        "/internal/workspace/command",
+        json={"command": command, "cwd": str(tmp_path), "timeout": 0.7},
+        headers={"X-Internal-Token": TOKEN},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is False
+    assert body["exit_code"] is None
+    assert "STARTED-OUTPUT" in body["stdout_tail"]
+    assert "timed out" in body["stderr_tail"]
+
+    child_pid = int(pidfile.read_text().strip())
+    # The background child dies with the killed process group (poll briefly to
+    # absorb signal-delivery latency).
+    for _ in range(50):
+        if not _pid_alive(child_pid):
+            break
+        time.sleep(0.05)
+    assert not _pid_alive(child_pid), f"orphaned child {child_pid} survived timeout"

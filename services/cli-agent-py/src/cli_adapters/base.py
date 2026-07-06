@@ -195,9 +195,19 @@ class CliAdapter(abc.ABC):
 
     @abc.abstractmethod
     def build_argv(
-        self, agent_config: Mapping[str, Any], seed_paths: Mapping[str, str]
+        self,
+        agent_config: Mapping[str, Any],
+        seed_paths: Mapping[str, str],
+        *,
+        one_shot: bool = False,
     ) -> list[str]:
-        """Build the TUI launch argv from agentConfig + seeded paths."""
+        """Build the TUI launch argv from agentConfig + seeded paths.
+
+        ``one_shot`` is True for headless ``autoTerminateAfterEndTurn`` workflow
+        runs (no human in the pane) — the same distinction that gates the
+        blocking permission hooks. Adapters use it to disable interactive
+        human-input tools that would otherwise strand an unattended run.
+        """
 
     @abc.abstractmethod
     def pane_env(

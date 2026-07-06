@@ -703,7 +703,7 @@ async function executeSessionSpawn(
  */
 async function executeDevPreview(
   input: Record<string, unknown>,
-  mode: "ensure" | "teardown" | "snapshot",
+  mode: "ensure" | "teardown" | "snapshot" | "promote",
 ): Promise<ExecuteResponse> {
   const started = Date.now();
   const executionId =
@@ -745,6 +745,31 @@ async function executeDevPreview(
           "X-Internal-Token": INTERNAL_API_TOKEN,
         },
         body: JSON.stringify(snap),
+      });
+    } else if (mode === "promote") {
+      // Promote-from-best: open a PR from a durable per-iteration source bundle
+      // (or a freshly captured live export). Forwards the node's with-params.
+      const promo: Record<string, unknown> = {};
+      for (const key of [
+        "iteration",
+        "bestIteration",
+        "draft",
+        "title",
+        "bodyMarkdown",
+        "repoUrl",
+        "baseBranch",
+        "branchPrefix",
+      ]) {
+        if (input[key] !== undefined && input[key] !== null)
+          promo[key] = input[key];
+      }
+      res = await fetch(`${url}/promote`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Internal-Token": INTERNAL_API_TOKEN,
+        },
+        body: JSON.stringify(promo),
       });
     } else {
       const payload: Record<string, unknown> = {};
@@ -1496,7 +1521,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
     if (
       functionSlug === "dev/preview" ||
       functionSlug === "dev/preview-teardown" ||
-      functionSlug === "dev/preview-snapshot"
+      functionSlug === "dev/preview-snapshot" ||
+      functionSlug === "dev/preview-promote"
     ) {
       const devResponse = await executeDevPreview(
         body.input as Record<string, unknown>,
@@ -1504,7 +1530,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
           ? "teardown"
           : functionSlug === "dev/preview-snapshot"
             ? "snapshot"
-            : "ensure",
+            : functionSlug === "dev/preview-promote"
+              ? "promote"
+              : "ensure",
       );
       return reply.status(devResponse.success ? 200 : 502).send(devResponse);
     }
