@@ -115,11 +115,13 @@ EXPORT_URL=__EXPORT_URL__
 SYNC_URL=__SYNC_URL__
 PREVIEW_URL=__PREVIEW_URL__
 TARGET_ROUTES=__ROUTES__
+LOGIN_EMAIL=__LOGIN_EMAIL__
+LOGIN_PASSWORD=__LOGIN_PASSWORD__
 
 FEATURE/INTENT:
 __INTENT__
 
-STEPS each turn: (1) ${SCRATCH_SELECT} Then rm -rf "$SCRATCH/repo" && mkdir -p "$SCRATCH/repo" && curl -sS "$EXPORT_URL" | tar -xz -C "$SCRATCH/repo" (cumulative). (2) edit ONLY files under "$SCRATCH/repo/src" to satisfy the contract for the target routes. (3) push live: cd "$SCRATCH/repo" && tar -czf - src | curl -sS -X POST --data-binary @- -H 'content-type: application/gzip' "$SYNC_URL". (4) SMOKE before you STOP — this preview has NO /__run endpoint, so NEVER call /__run (it 404s and checks nothing): instead curl $PREVIEW_URL and EACH route in TARGET_ROUTES and confirm HTTP 200 (not 500) with no top-level ReferenceError; if a route 500s or crashes on mount, fix it (usually an unguarded server load or a missing import) before you STOP. A deterministic gate step then runs pnpm check + check:boundaries + test-unit against a full checkout of your synced src, and a separate Playwright critic grades the live routes — you do NOT self-grade.
+STEPS each turn: (1) ${SCRATCH_SELECT} Then rm -rf "$SCRATCH/repo" && mkdir -p "$SCRATCH/repo" && curl -sS "$EXPORT_URL" | tar -xz -C "$SCRATCH/repo" (cumulative). (2) edit ONLY files under "$SCRATCH/repo/src" to satisfy the contract for the target routes. (3) push live: cd "$SCRATCH/repo" && tar -czf - src | curl -sS -X POST --data-binary @- -H 'content-type: application/gzip' "$SYNC_URL". (4) SMOKE before you STOP — this preview has NO /__run endpoint, so NEVER call /__run (it 404s and checks nothing). A 302 → /auth/sign-in on app routes is HEALTHY (the auth guard), never a failure — do NOT go investigate it. For an AUTHENTICATED smoke (preferred): sign in ONCE to get a cookie jar — curl -sS -c /tmp/cj -H 'content-type: application/json' -d '{"email":"$LOGIN_EMAIL","password":"$LOGIN_PASSWORD"}' $PREVIEW_URL/api/v1/auth/sign-in — then curl -b /tmp/cj each route in TARGET_ROUTES and confirm HTTP 200 with no top-level ReferenceError and no each_key_duplicate in the served HTML; if a route 500s or crashes on mount, fix it (usually an unguarded server load or a missing import) before you STOP. Do NOT touch the sign-in page code itself. A deterministic gate step then runs pnpm check + check:boundaries + test-unit against a full checkout of your synced src, and a separate Playwright critic grades the live routes — you do NOT self-grade.
 
 Deterministic gate result from your LAST synced src (fix any check / boundaries / test-unit failures in src/ this turn; empty on the first turn):
 __GATE_RESULT__
@@ -134,6 +136,8 @@ __CRITIC_FEEDBACK__`;
 		__SYNC_URL__: SUBS.SYNC_URL,
 		__PREVIEW_URL__: SUBS.PREVIEW_URL,
 		__ROUTES__: SUBS.ROUTES,
+		__LOGIN_EMAIL__: SUBS.LOGIN_EMAIL,
+		__LOGIN_PASSWORD__: SUBS.LOGIN_PASSWORD,
 		__INTENT__: SUBS.INTENT,
 		__GATE_RESULT__: SUBS.GATE_RESULT,
 		__PREV_ATTEMPT__: SUBS.PREV_ATTEMPT,
