@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => {
 			};
 		}),
 		workflowData: {
+			getWorkflowByRef: vi.fn(async () => null),
 			getWorkflowExecutionSessionOwnerContext: vi.fn(async () => null),
 			checkBenchmarkSessionProvisioningGate: vi.fn(async () => ({
 				ok: true,

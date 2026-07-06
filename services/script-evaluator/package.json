@@ -1,0 +1,35 @@
+{
+	"name": "script-evaluator",
+	"version": "1.0.0",
+	"private": true,
+	"packageManager": "pnpm@9.15.0",
+	"scripts": {
+		"dev": "cross-env NODE_OPTIONS=--experimental-vm-modules tsx watch src/index.ts",
+		"build": "node build.mjs",
+		"start": "node --experimental-vm-modules dist/index.js",
+		"test": "cross-env NODE_OPTIONS=--experimental-vm-modules vitest run",
+		"test:watch": "cross-env NODE_OPTIONS=--experimental-vm-modules vitest",
+		"gen:vectors": "cross-env NODE_OPTIONS=--experimental-vm-modules tsx scripts/generate-vectors.ts",
+		"type-check": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@opentelemetry/api": "^1.9.0",
+		"@opentelemetry/auto-instrumentations-node": "^0.69.0",
+		"@opentelemetry/exporter-metrics-otlp-http": "^0.212.0",
+		"@opentelemetry/exporter-trace-otlp-http": "^0.212.0",
+		"@opentelemetry/resources": "^2.5.1",
+		"@opentelemetry/sdk-metrics": "^2.5.1",
+		"@opentelemetry/sdk-node": "^0.212.0",
+		"@opentelemetry/semantic-conventions": "^1.39.0",
+		"ajv": "^8.17.1",
+		"ajv-formats": "^3.0.1"
+	},
+	"devDependencies": {
+		"@types/node": "^24",
+		"cross-env": "^7.0.3",
+		"esbuild": "^0.24.0",
+		"tsx": "^4.19.0",
+		"typescript": "^5",
+		"vitest": "^2.1.0"
+	}
+}

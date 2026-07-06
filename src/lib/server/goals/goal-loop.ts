@@ -47,7 +47,7 @@ const defaultGoalLoopStore = new PostgresGoalLoopStore();
  * agentic loops that run 95%+ cached (observed: a $0.03 turn consuming 300k
  * of "budget").
  */
-function tokensFromUsage(data: Record<string, unknown> | undefined): number {
+export function tokensFromUsage(data: Record<string, unknown> | undefined): number {
 	const n = (key: string): number => {
 		const v = Math.round(Number(data?.[key] ?? 0));
 		return Number.isFinite(v) && v > 0 ? v : 0;

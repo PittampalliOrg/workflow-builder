@@ -485,6 +485,9 @@ function fakeWorkflowScheduler(): WorkflowScheduler {
 		startSwWorkflow: vi.fn(async () => ({
 			instanceId: "sw-example-exec-exec-1",
 		})),
+		startScriptWorkflow: vi.fn(async () => ({
+			instanceId: "dsw-example-exec-exec-1",
+		})),
 	};
 }
 
@@ -5665,6 +5668,9 @@ describe("ApplicationWorkflowDataService", () => {
 			startSwWorkflow: vi.fn(async () => {
 				throw new Error("orchestrator unavailable");
 			}),
+			startScriptWorkflow: vi.fn(async () => {
+				throw new Error("orchestrator unavailable");
+			}),
 		} satisfies WorkflowScheduler;
 		const service = new ApplicationWorkflowDataService({
 			workflowDefinitions,
@@ -5749,6 +5755,7 @@ describe("ApplicationWorkflowDataService", () => {
 		const workflowExecutions = fakeWorkflowExecutions();
 		const workflowScheduler = {
 			startSwWorkflow: vi.fn(async () => ({})),
+			startScriptWorkflow: vi.fn(async () => ({})),
 		} satisfies WorkflowScheduler;
 		const service = new ApplicationWorkflowDataService({
 			workflowDefinitions,

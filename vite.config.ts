@@ -349,14 +349,20 @@ export default defineConfig({
 			// glob would otherwise pick them up and fail with "No test suite found".
 			'services/dev-sync-sidecar/**/*.test.mjs',
 			'scripts/dev-sync/sync.test.mjs',
-			// CI-only: these two import service-local deps (@activepieces/*,
-			// function-router's runtime stack) that the root install does not
-			// provide; locally they run against services/*/node_modules.
+			// script-evaluator needs node --experimental-vm-modules (vm.SourceTextModule);
+			// the root runner never sets it. Runs via its own lane:
+			// `cd services/script-evaluator && pnpm test` (cross-env NODE_OPTIONS).
+			'services/script-evaluator/**',
+			// CI-only: these import service-local deps (@activepieces/*,
+			// function-router's runtime stack, workflow-mcp-server's zod) that the
+			// root install does not provide; locally they run against
+			// services/*/node_modules.
 			// Follow-up: service-owned test lanes.
 			...(process.env.CI
 				? [
 						'services/piece-mcp-server/src/metadata-catalog.test.ts',
-						'services/function-router/src/routes/execute.test.ts'
+						'services/function-router/src/routes/execute.test.ts',
+						'services/workflow-mcp-server/src/script-tools.test.ts'
 					]
 				: [])
 		]

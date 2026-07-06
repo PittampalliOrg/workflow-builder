@@ -176,7 +176,9 @@ export const workflows = pgTable("workflows", {
 		.default("private")
 		.$type<WorkflowVisibility>(),
 	// Dapr workflow fields
-	engineType: text("engine_type").default("dapr").$type<"vercel" | "dapr">(),
+	engineType: text("engine_type")
+		.default("dapr")
+		.$type<"vercel" | "dapr" | "dynamic-script">(),
 	daprWorkflowName: text("dapr_workflow_name"), // Registered Dapr workflow name
 	daprOrchestratorUrl: text("dapr_orchestrator_url"), // URL of the Dapr orchestrator service
 	mlflowExperimentId: text("mlflow_experiment_id"),
@@ -582,6 +584,50 @@ export const workflowExecutions = pgTable(
 		}).onDelete("set null"),
 	}),
 );
+
+/**
+ * Journal of `agent()`/`workflow()` calls issued by a dynamic-script (engineType
+ * `dynamic-script`) execution. One row per resolved/pending script call, keyed on
+ * `(workflow_execution_id, call_id)` so the orchestrator's `record_script_call_result`
+ * activity UPSERTs idempotently across Dapr replays. This is the resume-after-edit
+ * store: a fresh execution imports the `done` rows of a source execution so the
+ * evaluator resolves unchanged calls instantly (0 new sessions).
+ *
+ * `status`: running | done | null | error | skipped. `result` holds the parsed
+ * agent output (schema'd object or content string). See
+ * docs/dynamic-script-workflows (drizzle 0097).
+ */
+export const workflowScriptCalls = pgTable(
+	"workflow_script_calls",
+	{
+		workflowExecutionId: text("workflow_execution_id")
+			.notNull()
+			.references(() => workflowExecutions.id, { onDelete: "cascade" }),
+		callId: text("call_id").notNull(),
+		seq: integer("seq").notNull(),
+		kind: text("kind").notNull().default("agent"),
+		baseHash: text("base_hash"),
+		occurrence: integer("occurrence").notNull().default(0),
+		label: text("label"),
+		phase: text("phase"),
+		promptSha256: text("prompt_sha256"),
+		status: text("status").notNull(),
+		sessionId: text("session_id"),
+		// biome-ignore lint/suspicious/noExplicitAny: JSONB type - parsed agent output
+		result: jsonb("result").$type<any>(),
+		errorCode: text("error_code"),
+		retries: integer("retries").notNull().default(0),
+		tokensUsed: integer("tokens_used").notNull().default(0),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		pk: primaryKey({ columns: [table.workflowExecutionId, table.callId] }),
+	}),
+);
+
+export type WorkflowScriptCall = typeof workflowScriptCalls.$inferSelect;
+export type NewWorkflowScriptCall = typeof workflowScriptCalls.$inferInsert;
 
 /**
  * Event-driven workflow triggers. One row = one configured trigger on a workflow.

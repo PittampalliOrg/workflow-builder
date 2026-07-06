@@ -342,6 +342,7 @@ import { ApplicationWorkflowExportService } from "$lib/server/application/workfl
 import { ApplicationWorkflowBrowserArtifactsService } from "$lib/server/application/workflow-browser-artifacts";
 import { ApplicationWorkflowExecutionArtifactDiffService } from "$lib/server/application/workflow-execution-artifact-diff";
 import { ApplicationWorkflowExecutionArtifactsService } from "$lib/server/application/workflow-execution-artifacts";
+import { ApplicationScriptCallsService } from "$lib/server/application/script-calls";
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
 import { ApplicationTriggeredWorkflowStartService } from "$lib/server/application/triggered-workflow-start";
 import { ApplicationWorkflowExecutionFilesService } from "$lib/server/application/workflow-execution-files";
@@ -612,6 +613,7 @@ export function getApplicationAdapters(
 	let workflowExecutionArtifacts:
 		| ApplicationWorkflowExecutionArtifactsService
 		| undefined;
+	let scriptCalls: ApplicationScriptCallsService | undefined;
 	let workflowExecutionFiles:
 		| ApplicationWorkflowExecutionFilesService
 		| undefined;
@@ -1228,6 +1230,11 @@ export function getApplicationAdapters(
 			new ApplicationWorkflowExecutionArtifactsService({
 				workflowData: getWorkflowData(),
 			}));
+	const getScriptCalls = () =>
+		(scriptCalls ??=
+			new ApplicationScriptCallsService({
+				workflowData: getWorkflowData(),
+			}));
 	const getWorkflowExecutionArtifactDiff = () =>
 		(workflowExecutionArtifactDiff ??=
 			new ApplicationWorkflowExecutionArtifactDiffService({
@@ -1738,6 +1745,9 @@ export function getApplicationAdapters(
 		},
 		get workflowExecutionArtifacts() {
 			return getWorkflowExecutionArtifacts();
+		},
+		get scriptCalls() {
+			return getScriptCalls();
 		},
 		get workflowExecutionArtifactDiff() {
 			return getWorkflowExecutionArtifactDiff();

@@ -50,6 +50,10 @@ from core.resume_event_resolver import (
 )
 from workflows.sw_workflow import sw_workflow
 from workflows.sw_workflow import wfr
+from workflows.dynamic_script_workflow import (
+    dynamic_script_workflow,
+    DYNAMIC_SCRIPT_WORKFLOW_NAME,
+)
 from activities.metadata import get_activity_metadata
 from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
 from content_tracing import io_attributes
@@ -1139,6 +1143,18 @@ async def lifespan(app: FastAPI):
     logger.info(
         "[Workflow Orchestrator] Registered workflows: %s@1.0.0",
         SW_WORKFLOW_NAME,
+    )
+
+    # Register the dynamic-script engine (re-execution pump).
+    wfr.register_versioned_workflow(
+        dynamic_script_workflow,
+        name=DYNAMIC_SCRIPT_WORKFLOW_NAME,
+        version_name="1.0.0",
+        is_latest=True,
+    )
+    logger.info(
+        "[Workflow Orchestrator] Registered workflows: %s@1.0.0",
+        DYNAMIC_SCRIPT_WORKFLOW_NAME,
     )
 
     # Start the workflow runtime
@@ -3062,6 +3078,166 @@ class ExecuteSWWorkflowRequest(BaseModel):
     workspaceExecutionId: str | None = None
     # Hermetic fork: seed this run's fresh workspace from the source run's subPath.
     seedWorkspaceFrom: str | None = None
+
+
+class ScriptWorkflowRequest(BaseModel):
+    """Request body for executing a dynamic-script workflow (engine `dynamic-script`)."""
+    script: str = Field(..., description="User-authored JS orchestration script")
+    scriptSha256: str = ""
+    meta: dict = Field(default_factory=dict)
+    args: dict = Field(default_factory=dict)
+    budgetTotal: int | None = None
+    journalImportFromExecutionId: str | None = None
+    nested: bool = False
+    dbExecutionId: str | None = None
+    workflowId: str | None = None
+    userId: str | None = None
+    projectId: str | None = None
+    defaults: dict = Field(default_factory=dict)
+    limits: dict = Field(default_factory=dict)
+    triggerData: dict = Field(default_factory=dict)
+    traceContext: dict | None = None
+
+
+@app.post("/api/v2/script-workflows", response_model=StartWorkflowResponse)
+def execute_script_workflow(request: ScriptWorkflowRequest, http_request: Request):
+    """
+    Execute a dynamic-script workflow.
+
+    POST /api/v2/script-workflows
+
+    Mirrors ``execute_sw_workflow`` but starts the ``dynamic_script_workflow_v1``
+    re-execution pump. Instance id ``dsw-<meta.name>-exec-<dbExecutionId>``.
+    """
+    try:
+        runtime_ready, runtime_status = _get_workflow_runtime_status(
+            timeout_seconds=1.0,
+            require_workflow_workers=True,
+        )
+        if not runtime_ready:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "workflow_runtime_unavailable",
+                    "error": "Dapr workflow runtime is not ready",
+                    "operation": "execute_script_workflow",
+                    "runtimeStatus": runtime_status,
+                },
+            )
+
+        db_execution_id = request.dbExecutionId
+        if not db_execution_id:
+            workflow_id = str(request.workflowId or "").strip()
+            if not workflow_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "workflowId is required when dbExecutionId is omitted."
+                    ),
+                )
+            workflow_record = _fetch_workflow_from_db(workflow_id)
+            db_execution_id = _create_workflow_execution(
+                workflow_id=workflow_record["id"],
+                user_id=workflow_record["userId"],
+                trigger_data=request.triggerData,
+                project_id=workflow_record.get("projectId"),
+            )
+
+        meta = request.meta if isinstance(request.meta, dict) else {}
+        workflow_name = str(meta.get("name") or request.workflowId or "script")
+
+        otel_ctx = _merge_otel_context(http_request, isolate_trace=True)
+        request_trace_context = (
+            request.traceContext if isinstance(request.traceContext, dict) else {}
+        )
+        explicit_trace_id = _trace_id_from_traceparent(
+            request_trace_context.get("traceparent")
+        )
+        if explicit_trace_id:
+            for key in ("traceparent", "tracestate", "baggage"):
+                value = request_trace_context.get(key)
+                if isinstance(value, str) and value.strip():
+                    otel_ctx[key] = value.strip()
+            otel_ctx["traceId"] = explicit_trace_id
+        session_id = workflow_session_id(db_execution_id) or extract_session_id(otel_ctx)
+        if session_id:
+            otel_ctx["sessionId"] = session_id
+            otel_ctx["session.id"] = session_id
+            otel_ctx["workflow.execution.id"] = session_id
+
+        workflow_input = {
+            "executionId": db_execution_id,
+            "dbExecutionId": db_execution_id,
+            "script": request.script,
+            "scriptSha256": request.scriptSha256,
+            "meta": meta,
+            "args": request.args if isinstance(request.args, dict) else {},
+            "budgetTotal": request.budgetTotal,
+            "journalImportFromExecutionId": request.journalImportFromExecutionId,
+            "nested": bool(request.nested),
+            "limits": request.limits if isinstance(request.limits, dict) else {},
+            "defaults": request.defaults if isinstance(request.defaults, dict) else {},
+            "workflowId": request.workflowId,
+            "userId": request.userId,
+            "projectId": request.projectId,
+            "_otel": otel_ctx,
+        }
+
+        import re
+        safe_name = re.sub(r"[^a-z0-9-]", "-", workflow_name.lower()).strip("-")[:40]
+        instance_id = f"dsw-{safe_name}-exec-{db_execution_id}"
+
+        logger.info(
+            "[Script Workflow] Starting: %s (%s)",
+            workflow_name,
+            instance_id,
+        )
+
+        existing_instance_id = (
+            _existing_live_execution_instance(db_execution_id)
+            if request.dbExecutionId
+            else None
+        )
+        if existing_instance_id:
+            logger.info(
+                "[Script Workflow] Execution %s already has live instance %s; returning existing",
+                db_execution_id,
+                existing_instance_id,
+            )
+            return StartWorkflowResponse(
+                instanceId=existing_instance_id,
+                workflowId=workflow_name,
+                status="started",
+                workflowVersion="1.0.0",
+            )
+
+        result_id = _idempotent_schedule(
+            workflow_name=DYNAMIC_SCRIPT_WORKFLOW_NAME,
+            instance_id=instance_id,
+            workflow_input=workflow_input,
+            workflow_version="1.0.0",
+            parent_trace_context=otel_ctx,
+        )
+
+        if db_execution_id:
+            _mark_workflow_execution_started(
+                db_execution_id,
+                result_id,
+                otel_ctx.get("traceId"),
+            )
+
+        return StartWorkflowResponse(
+            instanceId=result_id,
+            workflowId=workflow_name,
+            status="started",
+            workflowVersion="1.0.0",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Script Workflow] Failed to execute: {e}")
+        _raise_workflow_route_error("execute_script_workflow", e)
 
 
 @app.post("/api/v2/sw-workflows", response_model=StartWorkflowResponse)

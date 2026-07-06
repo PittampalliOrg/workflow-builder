@@ -33,6 +33,7 @@ import {
 import {
 	ensureGoalMcpServer,
 	stampGoalMcpSessionHeader,
+	stampScriptGuardHeader,
 } from "$lib/server/goals/mcp-wiring";
 
 /**
@@ -330,7 +331,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	// Evaluator-mode goal sessions auto-wire the goal MCP server (+ session
 	// header) so the agent can call update_goal to self-complete — same helper the
 	// direct-spawn path uses. (Single-shot + native-`/goal` runs are untouched.)
-	const dispatchAgentConfig: AgentConfig = evaluatorGoal
+	let dispatchAgentConfig: AgentConfig = evaluatorGoal
 		? ({
 				...baseDispatchAgentConfig,
 				mcpServers: stampGoalMcpSessionHeader(
@@ -344,7 +345,22 @@ export const POST: RequestHandler = async ({ request }) => {
 				),
 			} as AgentConfig)
 		: baseDispatchAgentConfig;
-	// Goal-mode sessions run multi-turn (no auto-terminate) capped by the goal's
+	// Recursion guard: when the SPAWNING workflow is a dynamic-script, stamp the
+		// script-depth header on the session's workflow-mcp-server entries so the MCP
+		// server suppresses `run_workflow_script` — a script-spawned agent can't
+		// recursively launch another script workflow. Server-truth DB lookup.
+		const spawningWorkflow = await getApplicationAdapters()
+			.workflowData.getWorkflowByRef({ workflowId, lookup: "id" })
+			.catch(() => null);
+		if (spawningWorkflow?.engineType === "dynamic-script") {
+			dispatchAgentConfig = {
+				...dispatchAgentConfig,
+				mcpServers: stampScriptGuardHeader(
+					(dispatchAgentConfig as { mcpServers?: unknown[] }).mcpServers ?? [],
+				),
+			} as AgentConfig;
+		}
+		// Goal-mode sessions run multi-turn (no auto-terminate) capped by the goal's
 	// maxIterations; native-`/goal` runs get the objective as a `/goal` kickoff.
 	const effectiveMaxIterations = goalMode
 		? (bridgeGoal?.maxIterations ?? bridgeMaxIterations)

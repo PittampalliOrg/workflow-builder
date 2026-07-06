@@ -7,6 +7,7 @@ import {
 import type {
 	EventBus,
 	WorkflowScheduler,
+	WorkflowScriptStartRequest,
 	WorkflowStartRequest,
 } from "$lib/server/application/ports";
 
@@ -65,6 +66,19 @@ export class LiteStubWorkflowScheduler implements WorkflowScheduler {
 		const instanceId = `${LITE_WORKFLOW_INSTANCE_PREFIX}${randomUUID()}`;
 		console.warn(
 			`[lite] ${LITE_WORKFLOW_NOT_EXECUTED_MESSAGE} (workflowId=${input.workflowId}, dbExecutionId=${input.dbExecutionId}, instanceId=${instanceId})`,
+		);
+		return { instanceId };
+	}
+
+	async startScriptWorkflow(
+		input: WorkflowScriptStartRequest,
+	): Promise<{ instanceId?: string }> {
+		// Dynamic-script workflows likewise need the Python orchestrator + Dapr +
+		// the stateless script-evaluator — none run in lite. Explicit stub, not a
+		// fake: record intent + return a lite-prefixed instance id.
+		const instanceId = `${LITE_WORKFLOW_INSTANCE_PREFIX}${randomUUID()}`;
+		console.warn(
+			`[lite] ${LITE_WORKFLOW_NOT_EXECUTED_MESSAGE} (dynamic-script; workflowId=${input.workflowId}, dbExecutionId=${input.dbExecutionId}, instanceId=${instanceId})`,
 		);
 		return { instanceId };
 	}

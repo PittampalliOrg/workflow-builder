@@ -1,0 +1,322 @@
+"""``record_script_call_result`` + ``import_script_journal`` activities.
+
+``record_script_call_result`` is the single point where a finished child result is
+normalized into an ``agent()`` return value + a persisted ``workflow_script_calls``
+row (idempotent PUT). It owns the structured-output contract: fence-strip the
+model's text, pull the first balanced JSON object, validate against the call's
+schema, and decide done / null / error / retry_structured.
+
+Normalization (design §Architecture, plan §Workstream 2):
+  * user skip                                   -> status ``skipped`` (agent()->null)
+  * cancelled / success:false / exception / timeout / empty -> status ``null``
+  * schema present + valid                      -> status ``done``, result = object
+  * schema present + invalid + retries < cap    -> return ``retry_structured`` +
+        refresh a ``running`` row (NO terminal row) so the pump re-dispatches
+  * schema present + invalid + retries >= cap   -> status ``error``,
+        error_code ``error_max_structured_output_retries``
+  * no schema                                   -> status ``done``, result = text (cap 256 KB)
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
+from jsonschema import Draft202012Validator
+
+from activities.script_journal_client import script_journal_client
+from tracing import apply_workflow_activity_context, start_activity_span
+
+logger = logging.getLogger(__name__)
+
+_MAX_RESULT_BYTES = 256 * 1024
+_MAX_FEEDBACK_CHARS = 2000
+_DEFAULT_MAX_STRUCTURED_RETRIES = 5
+_ERROR_MAX_STRUCTURED_RETRIES = "error_max_structured_output_retries"
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        if isinstance(value, bool):
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _extract_content(raw: Any) -> str:
+    """Best-effort final-text extraction from a session_workflow child result."""
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, dict):
+        for key in ("content", "output", "finalOutput", "final_output", "text", "message", "result"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        # Nested { output: { content } } shapes.
+        output = raw.get("output")
+        if isinstance(output, dict):
+            for key in ("content", "text", "message"):
+                value = output.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+        return ""
+    return str(raw)
+
+
+def _strip_code_fences(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        # Drop the opening fence line (``` or ```json) and the trailing fence.
+        newline = stripped.find("\n")
+        if newline != -1:
+            stripped = stripped[newline + 1 :]
+        if stripped.rstrip().endswith("```"):
+            stripped = stripped.rstrip()[: -3]
+    return stripped
+
+
+def _first_balanced_json_object(text: str) -> Any | None:
+    """Return the first balanced top-level JSON value ({...} or [...]) in *text*.
+
+    Scans for the first ``{`` or ``[`` and walks matching brackets while honoring
+    string literals + escapes, so prose surrounding the JSON is ignored.
+    """
+    candidate = _strip_code_fences(text)
+    # Fast path: the whole (fence-stripped) payload is JSON.
+    try:
+        return json.loads(candidate)
+    except (ValueError, TypeError):
+        pass
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = candidate.find(opener)
+        if start == -1:
+            continue
+        depth = 0
+        in_string = False
+        escaped = False
+        for idx in range(start, len(candidate)):
+            ch = candidate[idx]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == opener:
+                depth += 1
+            elif ch == closer:
+                depth -= 1
+                if depth == 0:
+                    fragment = candidate[start : idx + 1]
+                    try:
+                        return json.loads(fragment)
+                    except (ValueError, TypeError):
+                        break
+    return None
+
+
+def _validation_errors(schema: dict[str, Any], instance: Any) -> list[str]:
+    validator = Draft202012Validator(schema)
+    messages: list[str] = []
+    for error in sorted(validator.iter_errors(instance), key=lambda e: list(e.path)):
+        location = "/".join(str(p) for p in error.path) or "<root>"
+        messages.append(f"{location}: {error.message}")
+    return messages
+
+
+def _cap_result(value: Any) -> Any:
+    if isinstance(value, str) and len(value.encode("utf-8", "ignore")) > _MAX_RESULT_BYTES:
+        # Truncate on a byte boundary that stays valid UTF-8.
+        return value.encode("utf-8", "ignore")[:_MAX_RESULT_BYTES].decode("utf-8", "ignore")
+    return value
+
+
+def _session_id_from_raw(raw: Any) -> str | None:
+    if not isinstance(raw, dict):
+        return None
+    for key in ("sessionId", "daprInstanceId", "agentWorkflowId"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _tokens_from_raw(raw: Any) -> int:
+    if not isinstance(raw, dict):
+        return 0
+    for key in ("tokensUsed", "totalTokens"):
+        if key in raw:
+            return _as_int(raw.get(key))
+    usage = raw.get("usage")
+    if isinstance(usage, dict):
+        return _as_int(usage.get("totalTokens") or usage.get("total_tokens"))
+    return 0
+
+
+def _is_null_result(raw: Any) -> bool:
+    if raw is None:
+        return True
+    if not isinstance(raw, dict):
+        return False
+    if raw.get("skipped"):
+        return False
+    if raw.get("cancelled"):
+        return True
+    if "success" in raw and not raw.get("success"):
+        return True
+    if raw.get("error") and not raw.get("content"):
+        return True
+    return False
+
+
+def record_script_call_result(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
+    """Normalize + journal one finished script call.
+
+    Input: ``{executionId, callId, seq?, spec:{kind,label,phase,promptSha256,
+    baseHash,occurrence,schema,retries,maxStructuredRetries}, raw}``.
+
+    Returns ``{status, feedback?, errorCode?}`` for the pump. ``retry_structured``
+    is the ONLY non-terminal status (no terminal journal row written).
+    """
+    execution_id = str(input_data.get("executionId") or "").strip()
+    call_id = str(input_data.get("callId") or "").strip()
+    if not execution_id or not call_id:
+        return {"status": "null", "error": "executionId and callId are required"}
+
+    spec = input_data.get("spec") if isinstance(input_data.get("spec"), dict) else {}
+    raw = input_data.get("raw")
+    schema = spec.get("schema") if isinstance(spec.get("schema"), dict) else None
+    retries = _as_int(spec.get("retries"))
+    max_structured_retries = _as_int(
+        spec.get("maxStructuredRetries"), _DEFAULT_MAX_STRUCTURED_RETRIES
+    )
+    otel = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else {}
+    otel = apply_workflow_activity_context(otel)
+
+    def _base_row(status: str) -> dict[str, Any]:
+        return {
+            "seq": _as_int(input_data.get("seq")),
+            "kind": spec.get("kind") or "agent",
+            "baseHash": spec.get("baseHash"),
+            "occurrence": _as_int(spec.get("occurrence")),
+            "label": spec.get("label"),
+            "phase": spec.get("phase"),
+            "promptSha256": spec.get("promptSha256"),
+            "status": status,
+            "sessionId": _session_id_from_raw(raw),
+            "retries": retries,
+            "tokensUsed": _tokens_from_raw(raw),
+        }
+
+    def _persist(row: dict[str, Any]) -> None:
+        try:
+            script_journal_client.put_script_call(execution_id, call_id, row)
+        except Exception as exc:  # noqa: BLE001 — journal write is best-effort within retries
+            logger.warning(
+                "[record_script_call_result] journal PUT failed for %s/%s: %s",
+                execution_id,
+                call_id,
+                exc,
+            )
+            raise
+
+    attrs = {
+        "action.type": "record_script_call_result",
+        "workflow.db_execution_id": execution_id,
+        "script.call_id": call_id,
+        "script.has_schema": bool(schema),
+        "script.retries": retries,
+    }
+
+    with start_activity_span("activity.record_script_call_result", otel, attrs):
+        # 1. Skip (user control event).
+        if isinstance(raw, dict) and raw.get("skipped"):
+            row = _base_row("skipped")
+            row["result"] = None
+            _persist(row)
+            return {"status": "skipped"}
+
+        # 2. Death / cancel / failure / timeout -> null.
+        if _is_null_result(raw):
+            row = _base_row("null")
+            row["result"] = None
+            _persist(row)
+            return {"status": "null"}
+
+        content = _extract_content(raw)
+
+        # 3. No schema -> done with the raw text.
+        if not schema:
+            row = _base_row("done")
+            row["result"] = _cap_result(content)
+            _persist(row)
+            return {"status": "done"}
+
+        # 4. Schema present -> extract + validate.
+        parsed = _first_balanced_json_object(content)
+        errors: list[str]
+        if parsed is None:
+            errors = ["<root>: no JSON value found in model output"]
+        else:
+            errors = _validation_errors(schema, parsed)
+
+        if not errors:
+            row = _base_row("done")
+            row["result"] = parsed
+            _persist(row)
+            return {"status": "done"}
+
+        # Invalid structured output.
+        if retries < max_structured_retries:
+            feedback = "\n".join(errors)[:_MAX_FEEDBACK_CHARS]
+            # Refresh a NON-terminal running row; the pump re-dispatches this call.
+            row = _base_row("running")
+            row["result"] = None
+            try:
+                _persist(row)
+            except Exception:
+                pass  # non-terminal bookkeeping — never block the retry decision
+            return {"status": "retry_structured", "feedback": feedback}
+
+        # Exhausted structured-output retries.
+        row = _base_row("error")
+        row["result"] = None
+        row["errorCode"] = _ERROR_MAX_STRUCTURED_RETRIES
+        _persist(row)
+        return {"status": "error", "errorCode": _ERROR_MAX_STRUCTURED_RETRIES}
+
+
+def import_script_journal(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
+    """Import ``done`` journal rows from a prior execution (resume-after-edit)."""
+    execution_id = str(input_data.get("executionId") or "").strip()
+    from_execution_id = str(input_data.get("fromExecutionId") or "").strip()
+    if not execution_id or not from_execution_id:
+        return {"success": False, "error": "executionId and fromExecutionId are required"}
+
+    otel = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else {}
+    otel = apply_workflow_activity_context(otel)
+    attrs = {
+        "action.type": "import_script_journal",
+        "workflow.db_execution_id": execution_id,
+        "script.import_from": from_execution_id,
+    }
+    with start_activity_span("activity.import_script_journal", otel, attrs):
+        try:
+            result = script_journal_client.import_script_calls(execution_id, from_execution_id)
+            return {"success": True, "imported": _as_int(result.get("imported"))}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[import_script_journal] import failed for %s from %s: %s",
+                execution_id,
+                from_execution_id,
+                exc,
+            )
+            return {"success": False, "error": str(exc)}
