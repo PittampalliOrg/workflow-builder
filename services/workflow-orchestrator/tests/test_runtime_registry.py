@@ -62,6 +62,11 @@ def _reference_targets() -> dict[str, dict[str, str]]:
             "app_id": config.CLAUDE_CODE_CLI_APP_ID,
             "instance_prefix": "durable-claude-cli",
         },
+        "claude-code-cli-glm": {
+            "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
+            "app_id": config.CLAUDE_CODE_CLI_GLM_APP_ID,
+            "instance_prefix": "durable-claude-cli-glm",
+        },
         "codex-cli": {
             "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
             "app_id": config.CODEX_CLI_APP_ID,
@@ -197,8 +202,8 @@ def test_unknown_runtime_no_slug_raises_same_message():
     assert str(new_exc.value) == str(ref_exc.value)
     assert (
         "adk-agent-py, agy-cli, browser-use-agent, claude-agent-py, "
-        "claude-code-cli, codex-cli, dapr-agent-py, dapr-agent-py-juicefs, "
-        "dapr-agent-py-testing"
+        "claude-code-cli, claude-code-cli-glm, codex-cli, dapr-agent-py, "
+        "dapr-agent-py-juicefs, dapr-agent-py-testing"
     ) in str(new_exc.value)
 
 
@@ -213,6 +218,7 @@ def test_benchmark_runtimes():
         "adk-agent-py",
         "claude-agent-py",
         "claude-code-cli",
+        "claude-code-cli-glm",
         "codex-cli",
         "agy-cli",
     }

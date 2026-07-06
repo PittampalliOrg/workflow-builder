@@ -26,6 +26,7 @@ export type AgentRuntime =
 	| "adk-agent-py"
 	| "claude-agent-py"
 	| "claude-code-cli"
+	| "claude-code-cli-glm"
 	| "codex-cli"
 	| "agy-cli"
 	| "browser-use-agent";

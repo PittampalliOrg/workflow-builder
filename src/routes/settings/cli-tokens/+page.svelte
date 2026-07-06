@@ -27,7 +27,7 @@
 			provider: string;
 			tokenKind: string;
 			credentialKind: 'env_token' | 'file' | 'file_bundle' | 'device_login';
-			loginStyle?: 'browser_token' | 'auth_file' | 'device_code';
+			loginStyle?: 'browser_token' | 'auth_file' | 'device_code' | 'api_key';
 			envVar?: string;
 			credentialPath?: string;
 			setupCommand?: string;
@@ -160,6 +160,7 @@
 		{@const isFile = kind === 'file'}
 		{@const isAutoCapture = kind === 'file_bundle'}
 		{@const isTerminalLogin = kind === 'device_login' || kind === 'file_bundle'}
+		{@const isApiKey = runtime.cliAuth.loginStyle === 'api_key'}
 		<Card>
 			<CardHeader>
 				<CardTitle class="text-base flex items-center gap-2 flex-wrap">
@@ -206,6 +207,10 @@
 					{:else if kind === 'file'}
 						OAuth login file ({runtime.cliAuth.provider}) materialized in your session pod at
 						<code class="text-[11px]">{runtime.cliAuth.credentialPath}</code>.
+					{:else if isApiKey}
+						GLM Coding Plan API key ({runtime.cliAuth.provider}) delivered to the session pod as
+						<code class="text-[11px]">{runtime.cliAuth.envVar}</code> — Claude Code runs against
+						the Z.AI Anthropic-compatible gateway and bills your GLM plan.
 					{:else}
 						Subscription OAuth token ({runtime.cliAuth.provider}) delivered to the session pod as
 						<code class="text-[11px]">{runtime.cliAuth.envVar}</code>.
@@ -246,7 +251,11 @@
 						<div class="text-xs text-muted-foreground space-y-0.5">
 							<div>
 								Credential: <code class="font-mono"
-									>{kind === 'file' ? 'auth.json ••••••' : 'sk-ant-oat••••••••••••'}</code
+									>{kind === 'file'
+										? 'auth.json ••••••'
+										: isApiKey
+											? 'glm-key ••••••••••••'
+											: 'sk-ant-oat••••••••••••'}</code
 								>
 							</div>
 							<div>
@@ -274,6 +283,20 @@
 									subscription.
 								</li>
 								<li>Codex auto-refreshes the token inside the session; re-paste if it ever expires.</li>
+							</ol>
+						{:else if isApiKey}
+							<ol class="list-decimal list-inside space-y-1 text-muted-foreground">
+								<li>
+									{runtime.cliAuth.setupCommand} (Z.AI Open Platform → API Keys).
+								</li>
+								<li>
+									Paste the key below. It is delivered to the session pod as
+									<code class="rounded bg-muted px-1 py-0.5">{runtime.cliAuth.envVar}</code> and
+									Claude Code talks to the Z.AI Anthropic-compatible gateway (Opus/Sonnet tiers →
+									<code class="rounded bg-muted px-1 py-0.5">glm-5.2[1m]</code>, 1M auto-compact
+									window, extended API timeout).
+								</li>
+								<li>Usage is metered on your GLM Coding Plan — not an Anthropic subscription.</li>
 							</ol>
 						{:else}
 							<ol class="list-decimal list-inside space-y-1 text-muted-foreground">

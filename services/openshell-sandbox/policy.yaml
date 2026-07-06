@@ -39,6 +39,10 @@ network_policies:
     name: claude-code
     endpoints:
       - { host: api.anthropic.com, port: 443, protocol: rest, enforcement: enforce, access: full, tls: terminate }
+      # Z.AI GLM Coding Plan gateway — the same claude binary reaches this
+      # Anthropic-compatible endpoint for the claude-code-cli-glm runtime
+      # (ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic).
+      - { host: api.z.ai, port: 443, protocol: rest, enforcement: enforce, access: full, tls: terminate }
       - { host: statsig.anthropic.com, port: 443 }
       - { host: sentry.io, port: 443 }
       - { host: raw.githubusercontent.com, port: 443 }

@@ -3,6 +3,7 @@ export const BENCHMARK_AGENT_RUNTIMES = [
 	"adk-agent-py",
 	"claude-agent-py",
 	"claude-code-cli",
+	"claude-code-cli-glm",
 	"codex-cli",
 	"agy-cli",
 ] as const;

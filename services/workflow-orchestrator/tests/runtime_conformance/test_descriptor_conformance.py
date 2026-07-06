@@ -114,6 +114,19 @@ EXPECTED: dict[str, dict[str, object]] = {
         "supportsMcp": True,
         "capabilitiesVerified": False,
     },
+    "claude-code-cli-glm": {
+        # Same cli-agent-py Claude Code host/adapter as claude-code-cli, but
+        # configured for Z.AI's Anthropic-compatible GLM gateway.
+        "family": "interactive-cli",
+        "durabilityGranularity": "per-session",
+        "workflowDispatch": "auto-turn",
+        "multiProvider": False,
+        "ownsSandbox": True,
+        "requiresWarmPool": False,
+        "requiresBrowserSidecars": False,
+        "supportsMcp": True,
+        "capabilitiesVerified": False,
+    },
     "codex-cli": {
         "family": "interactive-cli",
         "durabilityGranularity": "per-session",

@@ -34,7 +34,7 @@ describe("runtime registry — drift guard", () => {
 });
 
 describe("runtime registry — readers", () => {
-	it("exposes the registered agent runtimes (incl. 3 interactive-cli)", () => {
+	it("exposes the registered agent runtimes (incl. 4 interactive-cli)", () => {
 		expect(listRuntimeIds().sort()).toEqual(
 			[
 				"adk-agent-py",
@@ -42,6 +42,7 @@ describe("runtime registry — readers", () => {
 				"browser-use-agent",
 				"claude-agent-py",
 				"claude-code-cli",
+				"claude-code-cli-glm",
 				"codex-cli",
 				"dapr-agent-py",
 				"dapr-agent-py-juicefs",
@@ -70,6 +71,7 @@ describe("runtime registry — readers", () => {
 				"agy-cli",
 				"claude-agent-py",
 				"claude-code-cli",
+				"claude-code-cli-glm",
 				"codex-cli",
 				"dapr-agent-py",
 				"dapr-agent-py-juicefs",

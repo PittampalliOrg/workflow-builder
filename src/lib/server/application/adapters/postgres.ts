@@ -5766,7 +5766,12 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			.orderBy(desc(files.createdAt))
 			.limit(500);
 
-		const cliSlugs = new Set(["claude-code-cli", "codex-cli", "agy-cli"]);
+		const cliSlugs = new Set([
+			"claude-code-cli",
+			"claude-code-cli-glm",
+			"codex-cli",
+			"agy-cli",
+		]);
 		const cliWorkspace = sessionRows.some(
 			(session) =>
 				cliSlugs.has(String(session.sandboxName ?? "")) ||

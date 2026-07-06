@@ -15,6 +15,7 @@ import {
 	waitForAgentWorkflowHostAppReady,
 } from "$lib/server/sessions/agent-workflow-host";
 import { resolveSessionRuntimeTarget } from "$lib/server/sessions/runtime-target";
+import { buildCliSessionSecretEnv } from "$lib/server/sessions/session-secret-env";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { evaluateSwap } from "$lib/server/agents/swap-safety";
 import { CliTokenError } from "$lib/server/application/cli-credentials";
@@ -411,7 +412,15 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 						`Re-enroll under Settings → CLI tokens (${setupHint}).`,
 				);
 			}
-			sessionSecretEnv = { [envVar]: credential.token };
+			if (!swapTarget) {
+				throw new Error(
+					`Runtime auth descriptor resolved for ${provider}, but no runtime target was selected`,
+				);
+			}
+			sessionSecretEnv = buildCliSessionSecretEnv(
+				swapTarget,
+				credential.token,
+			);
 		}
 	}
 
