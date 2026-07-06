@@ -210,6 +210,8 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		persistBrowserVideo?: unknown;
 		nodeId?: unknown;
 		workflowId?: unknown;
+		helperPod?: unknown;
+		helperTimeoutMinutes?: unknown;
 	} = {};
 	try {
 		body = await request.json();
@@ -242,6 +244,19 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			: null;
 	const artifactNodeId =
 		typeof body.nodeId === "string" && body.nodeId.trim() ? body.nodeId.trim() : "publish_shot";
+	// `helperPod`: pin execution to a dedicated `__cliws` workspace-helper pod
+	// instead of the nondeterministic "most-recent live session pod" scan. A GAN
+	// loop's deterministic gate/promote must NOT run on whichever agent pod happens
+	// to be live (e.g. a Playwright critic pod lacking pnpm) — with this set we skip
+	// the candidate scan entirely and adopt-or-provision the stable helper.
+	const helperPod = body.helperPod === true;
+	// Optional helper lifetime (minutes). A pinned helper survives between loop
+	// iterations to keep warm caches; default matches today's 30, capped at 240.
+	const rawHelperTimeoutMinutes =
+		typeof body.helperTimeoutMinutes === "number" ? body.helperTimeoutMinutes : NaN;
+	const helperTimeoutMinutes = Number.isFinite(rawHelperTimeoutMinutes)
+		? Math.min(Math.max(Math.floor(rawHelperTimeoutMinutes), 1), 240)
+		: 30;
 
 	let execution:
 		| Awaited<ReturnType<typeof workflowData.getExecutionById>>
@@ -257,30 +272,35 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		return execution;
 	}
 
-	// Resolve the execution's most-recent interactive-cli session with a live pod.
-	let rows;
-	try {
-		rows = await workflowData.listCliWorkspaceCommandCandidates({
-			executionId,
-			limit: 8,
-		});
-	} catch (err) {
-		if (isDatabaseNotConfigured(err)) return error(503, "Database not configured");
-		throw err;
-	}
-
 	let baseUrl: string | null = null;
 	let ownerUserId: string | null = null;
-	for (const row of rows) {
+	// Resolve the execution's most-recent interactive-cli session with a live pod —
+	// UNLESS the caller pinned the workspace helper (`helperPod`), in which case we
+	// skip the nondeterministic scan and fall through to the adopt-or-provision
+	// `__cliws` helper path below.
+	if (!helperPod) {
+		let rows;
 		try {
-			const ready = await waitForAgentWorkflowHostAppReady({ agentAppId: row.appId });
-			if (ready?.baseUrl) {
-				baseUrl = ready.baseUrl;
-				ownerUserId = row.userId ?? null;
-				break;
+			rows = await workflowData.listCliWorkspaceCommandCandidates({
+				executionId,
+				limit: 8,
+			});
+		} catch (err) {
+			if (isDatabaseNotConfigured(err)) return error(503, "Database not configured");
+			throw err;
+		}
+
+		for (const row of rows) {
+			try {
+				const ready = await waitForAgentWorkflowHostAppReady({ agentAppId: row.appId });
+				if (ready?.baseUrl) {
+					baseUrl = ready.baseUrl;
+					ownerUserId = row.userId ?? null;
+					break;
+				}
+			} catch {
+				/* try the next candidate */
 			}
-		} catch {
-			/* try the next candidate */
 		}
 	}
 	// No live agent pod between turns. Some CLIs (codex, agy) reap their per-turn
@@ -321,7 +341,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 					workflowExecutionId: executionId,
 					benchmarkRunId: null,
 					benchmarkInstanceId: null,
-					timeoutMinutes: 30,
+					timeoutMinutes: helperTimeoutMinutes,
 					sessionSecretEnv: ghToken ? { GITHUB_TOKEN: ghToken } : null,
 					sharedWorkspaceKey,
 				});

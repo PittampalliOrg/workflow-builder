@@ -29,6 +29,17 @@ function toNullableNumber(value: unknown): number | null {
 			: null;
 }
 
+/**
+ * Cheap "is ClickHouse wired up" check. The connection constants above always
+ * carry an in-cluster default, so on an environment WITHOUT ClickHouse (e.g. a
+ * vcluster preview) the `CLICKHOUSE_URL` env var is simply unset — treat that as
+ * not-configured so trace routes can degrade to 503 instead of throwing 500 when
+ * the fetch to a non-existent host fails.
+ */
+export function isClickHouseConfigured(): boolean {
+	return Boolean(env.CLICKHOUSE_URL && env.CLICKHOUSE_URL.trim());
+}
+
 export async function queryClickHouse(sql: string): Promise<Record<string, unknown>[]> {
 	const res = await fetch(CLICKHOUSE_URL, {
 		method: 'POST',
