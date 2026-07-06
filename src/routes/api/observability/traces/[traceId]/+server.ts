@@ -1,4 +1,4 @@
-import { json, error } from '@sveltejs/kit';
+import { json, error, isHttpError } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { queryClickHouse, CLICKHOUSE_DB, isClickHouseConfigured } from '$lib/server/otel/clickhouse';
 import { assertTraceInScope } from './trace-access';
@@ -17,9 +17,13 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 			{ status: 503 }
 		);
 	}
-	await assertTraceInScope(traceId, locals.session);
-
 	try {
+		// Scope check queries ClickHouse too, so it lives INSIDE the try — an
+		// unreachable-but-configured ClickHouse (central host, no route from a
+		// vcluster) throws a transport error here that must degrade to 503, while a
+		// deliberate scope rejection (HttpError 403/404) still propagates.
+		await assertTraceInScope(traceId, locals.session);
+
 		const rows = await queryClickHouse(`
 			SELECT
 				TraceId,
@@ -96,14 +100,23 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 			services: serviceNames
 		});
 	} catch (err) {
-		return json({
-			traceId,
-			spans: [],
-			totalDuration: 0,
-			startTime: '',
-			spanCount: 0,
-			services: [],
-			error: `Failed to query ClickHouse: ${err instanceof Error ? err.message : String(err)}`
-		});
+		// Deliberate scope rejection (403/404) or the "Trace not found" 404 above —
+		// let SvelteKit render it unchanged.
+		if (isHttpError(err)) throw err;
+		// ClickHouse transport/query failure → soft 503 (not a 500 that trips the UI).
+		return json(
+			{
+				configured: true,
+				available: false,
+				traceId,
+				spans: [],
+				totalDuration: 0,
+				startTime: '',
+				spanCount: 0,
+				services: [],
+				error: `Failed to query ClickHouse: ${err instanceof Error ? err.message : String(err)}`
+			},
+			{ status: 503 }
+		);
 	}
 };
