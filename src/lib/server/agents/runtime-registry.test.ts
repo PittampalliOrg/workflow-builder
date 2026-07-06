@@ -111,6 +111,15 @@ describe("runtime registry — readers", () => {
 		expect(getRuntimeDescriptor("codex-cli")?.capabilities.supportsHooks).toBe(true);
 		expect(getRuntimeDescriptor("agy-cli")?.capabilities.supportsHooks).toBe(true);
 	});
+
+	it("maps Claude Code GLM to a model id accepted by the Z.AI Anthropic gateway", () => {
+		const glm = getRuntimeDescriptor("claude-code-cli-glm");
+		expect(glm?.cliAuth?.provider).toBe("zai");
+		expect(glm?.cliAuth?.apiBaseUrl).toBe("https://api.z.ai/api/anthropic");
+		expect(glm?.cliModelEnv?.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("glm-5.2");
+		expect(glm?.cliModelEnv?.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("glm-5.2");
+		expect(glm?.cliModelEnv?.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("glm-4.7");
+	});
 });
 
 import { validateAgentMetadata } from "./application-state";

@@ -293,8 +293,7 @@
 									Paste the key below. It is delivered to the session pod as
 									<code class="rounded bg-muted px-1 py-0.5">{runtime.cliAuth.envVar}</code> and
 									Claude Code talks to the Z.AI Anthropic-compatible gateway (Opus/Sonnet tiers →
-									<code class="rounded bg-muted px-1 py-0.5">glm-5.2[1m]</code>, 1M auto-compact
-									window, extended API timeout).
+									<code class="rounded bg-muted px-1 py-0.5">glm-5.2</code>, extended API timeout).
 								</li>
 								<li>Usage is metered on your GLM Coding Plan — not an Anthropic subscription.</li>
 							</ol>
