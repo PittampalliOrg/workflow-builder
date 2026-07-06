@@ -289,8 +289,8 @@
         "setupCommand": "create a key at https://z.ai/manage-apikey/apikey-list"
       },
       "cliModelEnv": {
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2[1m]",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.2[1m]",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.2",
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-4.7",
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
