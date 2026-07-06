@@ -193,7 +193,12 @@ async def _start_cli(input_data: dict[str, Any]) -> dict[str, Any]:
         str(k): str(v) for k, v in _record(seed.get("paths")).items() if v is not None
     }
     adapter = get_adapter(adapter_name_for(input_data))
-    argv = adapter.build_argv(agent_config, seed_paths)
+    # Headless workflow runs (autoTerminateAfterEndTurn) have no human in the
+    # pane — same distinction that gates the blocking permission hooks — so the
+    # adapter disables interactive human-input tools (e.g. claude's
+    # AskUserQuestion) that would otherwise strand the run.
+    one_shot = bool(input_data.get("autoTerminateAfterEndTurn"))
+    argv = adapter.build_argv(agent_config, seed_paths, one_shot=one_shot)
     env = adapter.pane_env(os.environ, session_id=session_id, agent_config=agent_config)
     cwd = _sandbox_root()
 

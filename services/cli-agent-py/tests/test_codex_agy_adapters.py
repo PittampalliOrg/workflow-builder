@@ -171,6 +171,14 @@ def test_codex_build_argv_default_mode(codex_home):
     assert "--model" in argv and "gpt-5.5" in argv
 
 
+def test_codex_build_argv_one_shot_accepted_no_disallow_flag(codex_home):
+    """codex has no per-tool human-input disallow (interactivity = approval
+    prompts, already bypassed); one_shot is accepted but adds no flag."""
+    one_shot = get_adapter("codex").build_argv(SESSION["agentConfig"], {}, one_shot=True)
+    assert "--disallowedTools" not in one_shot
+    assert one_shot == get_adapter("codex").build_argv(SESSION["agentConfig"], {})
+
+
 def test_codex_build_argv_bypass_mode(codex_home):
     cfg = {**SESSION["agentConfig"], "permissionMode": "bypass"}
     argv = get_adapter("codex").build_argv(cfg, {})
@@ -833,6 +841,16 @@ def test_agy_build_argv():
     assert "--dangerously-skip-permissions" in argv
     assert "--sandbox=false" in argv
     assert argv[argv.index("--add-dir") + 1].endswith("sandbox")
+
+
+def test_agy_build_argv_one_shot_accepted_no_disallow_flag(agy_home):
+    """agy has no per-tool human-input disallow; one_shot is accepted but adds
+    no flag (argv byte-identical to the interactive baseline)."""
+    argv = get_adapter("antigravity").build_argv(
+        AGY_SESSION["agentConfig"], {}, one_shot=True
+    )
+    assert "--disallowedTools" not in argv
+    assert argv == get_adapter("antigravity").build_argv(AGY_SESSION["agentConfig"], {})
 
 
 def test_agy_build_argv_effort_is_noop(agy_home):

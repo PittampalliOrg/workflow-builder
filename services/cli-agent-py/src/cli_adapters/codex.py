@@ -706,8 +706,16 @@ class CodexAdapter(CliAdapter):
     # -- argv -----------------------------------------------------------------
 
     def build_argv(
-        self, agent_config: Mapping[str, Any], seed_paths: Mapping[str, str]
+        self,
+        agent_config: Mapping[str, Any],
+        seed_paths: Mapping[str, str],
+        *,
+        one_shot: bool = False,
     ) -> list[str]:
+        # NOTE: codex has no per-tool disallow for a discrete human-input tool
+        # (its interactivity is approval prompts, already bypassed below via
+        # --dangerously-bypass-approvals-and-sandbox), so `one_shot` is accepted
+        # for protocol parity but adds no flag here.
         # `--dangerously-bypass-approvals-and-sandbox` (vs the narrower `--yolo`)
         # ALSO skips codex 0.139's startup "Do you trust the contents of this
         # directory?" onboarding prompt — which the config.toml `[projects].trust_level`

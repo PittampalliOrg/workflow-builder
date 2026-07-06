@@ -332,7 +332,11 @@ class ClaudeCodeAdapter(CliAdapter):
     # -- argv -----------------------------------------------------------------
 
     def build_argv(
-        self, agent_config: Mapping[str, Any], seed_paths: Mapping[str, str]
+        self,
+        agent_config: Mapping[str, Any],
+        seed_paths: Mapping[str, str],
+        *,
+        one_shot: bool = False,
     ) -> list[str]:
         argv: list[str] = [CLI_BIN]
         # Resume: the durable transcript subtree of the original conversation is
@@ -363,6 +367,14 @@ class ClaudeCodeAdapter(CliAdapter):
         # The pod is the isolation boundary for managed CLI sessions; permission
         # prompts otherwise strand unattended workflow runs.
         argv += ["--dangerously-skip-permissions"]
+        # A one-shot workflow run is headless — there is no human in the pane to
+        # answer an AskUserQuestion prompt, so the tool call blocks forever until
+        # the pod's activeDeadline kills it (which also wedges the parent
+        # workflow — observed live). Disallow the interactive human-input tool so
+        # the model cannot strand on it. Interactive sessions keep it (a human is
+        # present to answer). --disallowedTools takes a space-separated list.
+        if one_shot:
+            argv += ["--disallowedTools", "AskUserQuestion"]
         mcp_path = clean_string(seed_paths.get("mcpConfigPath"))
         if mcp_path:
             argv += ["--mcp-config", mcp_path]

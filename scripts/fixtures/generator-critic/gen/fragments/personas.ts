@@ -28,6 +28,22 @@ const SUBS = {
 		'if .loop.last.critique then (.loop.last.critique.feedback // (.loop.last.critique | tojson)) else "(none yet — make your first improvement)" end',
 };
 
+/**
+ * Headless-run guardrail. An intermittent shared-pool pod once lacked
+ * /sandbox/scratch; the generator concluded it couldn't stage and called
+ * AskUserQuestion, which blocks forever (no human, no turn-timer) until the pod's
+ * activeDeadline killed it and wedged the loop. Every agent phase carries this.
+ */
+export const HEADLESS_RULE =
+	"This is a HEADLESS automated run — there is NO human. NEVER use AskUserQuestion, NEVER wait for permission or input. When you are blocked, write a concise diagnosis as your final message and STOP the turn; the harness reads your message and the loop continues.";
+
+/**
+ * Scratch-workdir selection the staging STEPS use so a pod without
+ * /sandbox/scratch falls back to /tmp/scratch instead of giving up.
+ */
+const SCRATCH_SELECT =
+	'FIRST pick a writable scratch root: run `SCRATCH=/sandbox/scratch; [ -w /sandbox/scratch ] || SCRATCH=/tmp/scratch; mkdir -p "$SCRATCH"` and use "$SCRATCH/repo" as your staging dir for the rest of these steps (never assume /sandbox/scratch exists).';
+
 // ---- instruction strings (plain) ---------------------------------------------
 
 /**
@@ -36,7 +52,8 @@ const SUBS = {
  * validates instead.
  */
 export const PLANNER_GENERATOR_INSTRUCTIONS =
-	"You are the PLANNER/GENERATOR (a senior product engineer) in a GAN UI-feature loop on the workflow-builder app. The body prompt tells you whether to PLAN (write the testable contract, no app code) or BUILD (implement the feature against the live preview via /__export + /__sync, then SMOKE-check the routes — this preview has NO /__run endpoint, so NEVER call /__run; a separate deterministic gate runs check + check:boundaries + test-unit against a full checkout of your synced src). Keep hexagonal-architecture discipline; wire REAL data with guarded server loads; keep existing functionality intact; never touch the sign-in/auth pages.";
+	"You are the PLANNER/GENERATOR (a senior product engineer) in a GAN UI-feature loop on the workflow-builder app. The body prompt tells you whether to PLAN (write the testable contract, no app code) or BUILD (implement the feature against the live preview via /__export + /__sync, then SMOKE-check the routes — this preview has NO /__run endpoint, so NEVER call /__run; a separate deterministic gate runs check + check:boundaries + test-unit against a full checkout of your synced src). Keep hexagonal-architecture discipline; wire REAL data with guarded server loads; keep existing functionality intact; never touch the sign-in/auth pages. " +
+	HEADLESS_RULE;
 
 export const DESIGN_REVIEW_INSTRUCTIONS =
 	'You are an exacting design lead doing the SECOND pass of a two-pass design review (frontend-design skill): you review the proposed token system BEFORE any code. You do NOT write code. Read the contract, review its designTokens + rubric against the request, REJECT generic/AI-default looks, and write a strict-JSON verdict {"approved": boolean, "feedback": string} to /sandbox/work/design-review.json.';
@@ -44,12 +61,15 @@ export const DESIGN_REVIEW_INSTRUCTIONS =
 export const CRITIC_INSTRUCTIONS =
 	"You are an exacting, INDEPENDENT visual + functional critic (skeptical-evaluator pattern). You do NOT edit code; you boot the LIVE authenticated app with Playwright MCP, log in, visit each evaluation route at desktop AND mobile widths, and grade against the contract + rubric, defaulting to NOT satisfied. Poll each route back to HTTP 200 after the sync-triggered restart before grading it. Distinguish agent regressions from preview-ENVIRONMENT failures (out-of-scope 5xx / infra) and record the latter under envIssues WITHOUT lowering the score. FIRST write your strict-JSON verdict (with the extra keys \"iteration\" and \"schema\":\"" +
 	VERDICT_SCHEMA +
-	"\") to /sandbox/work/gan/verdict-<iteration>.json (mkdir -p /sandbox/work/gan), THEN emit the identical JSON as your FINAL message (the file is the primary loop-exit signal, the message is the fallback). Your FINAL message MUST be ONLY the strict JSON verdict (no prose, no fences) including an envIssues array.";
+	"\") to /sandbox/work/gan/verdict-<iteration>.json (mkdir -p /sandbox/work/gan), THEN emit the identical JSON as your FINAL message (the file is the primary loop-exit signal, the message is the fallback). Your FINAL message MUST be ONLY the strict JSON verdict (no prose, no fences) including an envIssues array. " +
+	HEADLESS_RULE;
 
 // ---- body prompts (jq expressions) -------------------------------------------
 
 export function planPrompt(): string {
 	const raw = `You are the PLANNER for a UI feature/refactor on the workflow-builder app (Anthropic GAN harness). Stay HIGH-LEVEL.
+
+${HEADLESS_RULE}
 
 === HARD RULE: DO NOT WRITE APP CODE ===
 This step does NOT sync anything. Any edits to app source live only in throwaway /sandbox/scratch and are DISCARDED — a separate GENERATOR builds the real code later. Read the current UI for understanding ONLY. Your ONE persistent deliverable is /sandbox/work/contract.json.
@@ -60,7 +80,7 @@ __INTENT_OR_IMPROVE__
 Routes to evaluate: __ROUTES__
 EXPORT_URL=__EXPORT_URL__
 
-STEPS: (1) rm -rf /sandbox/scratch/repo && mkdir -p /sandbox/scratch/repo && curl -sS "$EXPORT_URL" | tar -xz -C /sandbox/scratch/repo and READ the current source for the evaluation routes under /sandbox/scratch/repo/src (understand the data/links/forms/components to preserve) — do not edit. (2) mkdir -p /sandbox/work and WRITE /sandbox/work/contract.json (strict JSON), then cat it to verify. The contract has keys: objective (one sentence); subject, audience, featureJob; acceptanceCriteria (array of 5-8 {id,description,verify} TESTABLE on the live page — cover the feature's core behavior, REAL data with graceful empty states, existing functionality staying intact, accessibility (AA contrast + visible keyboard focus), responsiveness down to mobile, and visual/interaction quality); designTokens {palette:4-6 {name,hex} (deliberate, NOT a generic AI default), typography {display,body,utility}, wireframe (ASCII), signature (the one memorable element)}; rubric (string: penalize AI-default looks; require deliberate type/spacing/contrast, real data with graceful empty states, active-voice copy, and hexagonal-architecture discipline for any server/data code). (3) STOP after writing + verifying the file. Do NOT write app code.`;
+STEPS: (1) ${SCRATCH_SELECT} Then rm -rf "$SCRATCH/repo" && mkdir -p "$SCRATCH/repo" && curl -sS "$EXPORT_URL" | tar -xz -C "$SCRATCH/repo" and READ the current source for the evaluation routes under "$SCRATCH/repo/src" (understand the data/links/forms/components to preserve) — do not edit. (2) mkdir -p /sandbox/work and WRITE /sandbox/work/contract.json (strict JSON), then cat it to verify. The contract has keys: objective (one sentence); subject, audience, featureJob; acceptanceCriteria (array of 5-8 {id,description,verify} TESTABLE on the live page — cover the feature's core behavior, REAL data with graceful empty states, existing functionality staying intact, accessibility (AA contrast + visible keyboard focus), responsiveness down to mobile, and visual/interaction quality); designTokens {palette:4-6 {name,hex} (deliberate, NOT a generic AI default), typography {display,body,utility}, wireframe (ASCII), signature (the one memorable element)}; rubric (string: penalize AI-default looks; require deliberate type/spacing/contrast, real data with graceful empty states, active-voice copy, and hexagonal-architecture discipline for any server/data code). (3) STOP after writing + verifying the file. Do NOT write app code.`;
 	return buildCommand(raw, {
 		__INTENT_OR_IMPROVE__: SUBS.INTENT_OR_IMPROVE,
 		__ROUTES__: SUBS.ROUTES,
@@ -79,6 +99,8 @@ Read /sandbox/work/contract.json, review its designTokens against the rubric, an
 export function generatePrompt(): string {
 	const raw = `Implement the requested UI feature/refactor on the workflow-builder app and PUSH it live.
 
+${HEADLESS_RULE}
+
 HARD REQUIREMENT — satisfy the contract's acceptanceCriteria + designTokens + rubric and address the latest critic feedback. Wire REAL data via +page.server.ts from EXISTING repo endpoints (grep src for the real ones); NEVER fabricate data; guard EACH server-side source independently (try/catch or Promise.allSettled) and degrade THAT region to a graceful empty state — one failing source must never 500 the page. Keep hexagonal-architecture discipline. Keep existing functionality working; do NOT touch the sign-in/auth pages.
 
 Optionally read /sandbox/work/contract.json and /sandbox/work/design-review.json IF they exist (do NOT fail if missing).
@@ -91,7 +113,7 @@ TARGET_ROUTES=__ROUTES__
 FEATURE/INTENT:
 __INTENT__
 
-STEPS each turn: (1) rm -rf /sandbox/scratch/repo && mkdir -p /sandbox/scratch/repo && curl -sS "$EXPORT_URL" | tar -xz -C /sandbox/scratch/repo (cumulative). (2) edit ONLY files under src/ to satisfy the contract for the target routes. (3) push live: cd /sandbox/scratch/repo && tar -czf - src | curl -sS -X POST --data-binary @- -H 'content-type: application/gzip' "$SYNC_URL". (4) SMOKE before you STOP — this preview has NO /__run endpoint, so NEVER call /__run (it 404s and checks nothing): instead curl $PREVIEW_URL and EACH route in TARGET_ROUTES and confirm HTTP 200 (not 500) with no top-level ReferenceError; if a route 500s or crashes on mount, fix it (usually an unguarded server load or a missing import) before you STOP. A deterministic gate step then runs pnpm check + check:boundaries + test-unit against a full checkout of your synced src, and a separate Playwright critic grades the live routes — you do NOT self-grade.
+STEPS each turn: (1) ${SCRATCH_SELECT} Then rm -rf "$SCRATCH/repo" && mkdir -p "$SCRATCH/repo" && curl -sS "$EXPORT_URL" | tar -xz -C "$SCRATCH/repo" (cumulative). (2) edit ONLY files under "$SCRATCH/repo/src" to satisfy the contract for the target routes. (3) push live: cd "$SCRATCH/repo" && tar -czf - src | curl -sS -X POST --data-binary @- -H 'content-type: application/gzip' "$SYNC_URL". (4) SMOKE before you STOP — this preview has NO /__run endpoint, so NEVER call /__run (it 404s and checks nothing): instead curl $PREVIEW_URL and EACH route in TARGET_ROUTES and confirm HTTP 200 (not 500) with no top-level ReferenceError; if a route 500s or crashes on mount, fix it (usually an unguarded server load or a missing import) before you STOP. A deterministic gate step then runs pnpm check + check:boundaries + test-unit against a full checkout of your synced src, and a separate Playwright critic grades the live routes — you do NOT self-grade.
 
 Deterministic gate result from your LAST synced src (fix any check / boundaries / test-unit failures in src/ this turn; empty on the first turn):
 __GATE_RESULT__
@@ -115,6 +137,8 @@ __CRITIC_FEEDBACK__`;
 
 export function critiquePrompt(): string {
 	const raw = `Grade the LIVE app after the feature/refactor using your Playwright MCP tools. The app is AUTHENTICATED — log in FIRST.
+
+${HEADLESS_RULE}
 
 PREVIEW_URL=__PREVIEW_URL__
 EVAL_ROUTES=__ROUTES__
