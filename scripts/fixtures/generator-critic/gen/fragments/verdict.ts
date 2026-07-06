@@ -105,7 +105,7 @@ else:
     best_i,best_score=idx,score
 terminal=("satisfied" if accepted else ("stalled" if stalled else None))
 json.dump(prog,open(P,"w"))
-print(json.dumps({"schema":"gan.verdict/v1","iteration":idx,"verdict_source":source,"meets_criteria":meets,"score":score,"gate_pass":gate_pass,"accepted":accepted,"stalled":stalled,"best_score":best_score,"best_iteration":best_i,"terminal":terminal,"iterations":len(prog["log"]),"feedback":feedback,"envIssues":env_issues},separators=(",",":")))
+print(json.dumps({"schema":"gan.verdict/v1","iteration":idx,"verdict_source":source,"meets_criteria":meets,"score":score,"gate_pass":gate_pass,"accepted":accepted,"stalled":stalled,"best_score":best_score,"best_iteration":best_i,"terminal":terminal,"iterations":len(prog["log"]),"feedback":(feedback or "")[:2000],"envIssues":env_issues},separators=(",",":")))
 PYZZ
 `;
 }

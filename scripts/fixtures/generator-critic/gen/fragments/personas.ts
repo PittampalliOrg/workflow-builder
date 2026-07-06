@@ -7,7 +7,7 @@
  * agents the node-level instructions are IGNORED at runtime — the seeded persona
  * (scripts/seed-workflows.ts) is authoritative — but we keep them consistent.
  */
-import { buildCommand } from "../jq";
+import { buildCommand, READ_VERDICT_OBJ } from "../jq";
 import { VERDICT_SCHEMA } from "./verdict";
 
 // ---- shared jq token substitutions -------------------------------------------
@@ -24,8 +24,10 @@ const SUBS = {
 	GATE_RESULT:
 		'((.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // "") | if . == "" then "(gate not run yet)" else . end)',
 	PREV_ATTEMPT: '.loop.last.generate.content // "(first attempt)"',
-	CRITIC_FEEDBACK:
-		'if .loop.last.critique then (.loop.last.critique.feedback // (.loop.last.critique | tojson)) else "(none yet — make your first improvement)" end',
+	// Read the critic feedback ONLY from the parsed read_verdict stdout — NEVER a
+	// `| tojson` of the raw critique node (that dumped critic-voiced metadata into
+	// the prompt and role-drifted the generator into acting as the critic).
+	CRITIC_FEEDBACK: `((${READ_VERDICT_OBJ}) | (.feedback // "")) as $f | (if $f == "" then "(none yet — make your first improvement)" else $f end)`,
 };
 
 /**
@@ -97,7 +99,9 @@ Read /sandbox/work/contract.json, review its designTokens against the rubric, an
 }
 
 export function generatePrompt(): string {
-	const raw = `Implement the requested UI feature/refactor on the workflow-builder app and PUSH it live.
+	const raw = `You are the GENERATOR/builder. You are NOT the critic; a separate critic session grades your work. Never write verdict files; never grade.
+
+Implement the requested UI feature/refactor on the workflow-builder app and PUSH it live.
 
 ${HEADLESS_RULE}
 

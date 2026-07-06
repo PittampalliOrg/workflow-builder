@@ -121,6 +121,24 @@ describe("preview-gan-ui-feature fixture", () => {
 		expect(summary.set.gatePass).toContain("read_verdict");
 	});
 
+	it("feeds the generator critic feedback from read_verdict only (no raw-node tojson) and anchors its role", () => {
+		const s = spec();
+		const refine = s.do.find((n: any) => n.refine).refine;
+		const generate = refine.do.find((n: any) => n.generate).generate;
+		const p = generate.with.body.prompt;
+		// role anchor so an unparsed/critic-voiced feedback blob can't role-drift it
+		expect(p).toContain("You are the GENERATOR/builder");
+		expect(p).toContain("Never write verdict files; never grade");
+		// critic feedback is sourced from the parsed read_verdict stdout, never the
+		// raw critique node; the `| tojson` raw-object fallback is gone entirely
+		expect(p).toContain("read_verdict");
+		expect(p).not.toContain("tojson");
+		expect(p).not.toContain(".loop.last.critique");
+		// read_verdict carries a (truncated) feedback field for exactly this
+		const readVerdict = refine.do.find((n: any) => n.read_verdict).read_verdict;
+		expect(readVerdict.with.command).toContain("[:2000]");
+	});
+
 	it("adopts the workflow-builder preview (adopt:true)", () => {
 		const enter = spec().do.find((n: any) => n.enter_dev_mode).enter_dev_mode;
 		expect(enter.with.adopt).toBe(true);
