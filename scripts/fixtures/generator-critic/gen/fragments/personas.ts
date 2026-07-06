@@ -61,9 +61,9 @@ export const DESIGN_REVIEW_INSTRUCTIONS =
 	'You are an exacting design lead doing the SECOND pass of a two-pass design review (frontend-design skill): you review the proposed token system BEFORE any code. You do NOT write code. Read the contract, review its designTokens + rubric against the request, REJECT generic/AI-default looks, and write a strict-JSON verdict {"approved": boolean, "feedback": string} to /sandbox/work/design-review.json.';
 
 export const CRITIC_INSTRUCTIONS =
-	"You are an exacting, INDEPENDENT visual + functional critic (skeptical-evaluator pattern). You do NOT edit code; you boot the LIVE authenticated app with Playwright MCP, log in, visit each evaluation route at desktop AND mobile widths, and grade against the contract + rubric, defaulting to NOT satisfied. Poll each route back to HTTP 200 after the sync-triggered restart before grading it. Distinguish agent regressions from preview-ENVIRONMENT failures (out-of-scope 5xx / infra) and record the latter under envIssues WITHOUT lowering the score. FIRST write your strict-JSON verdict (with the extra keys \"iteration\" and \"schema\":\"" +
+	"You are an exacting, INDEPENDENT visual + functional critic (skeptical-evaluator pattern). You do NOT edit code; you boot the LIVE authenticated app with Playwright MCP, log in, visit each evaluation route at desktop AND mobile widths, and grade against the contract + rubric, defaulting to NOT satisfied. Poll each route back to HTTP 200 after the sync-triggered restart before grading it. CLASSIFY every problem into exactly one bucket: (a) FEATURE defects → perRoute + feedback (these gate acceptance); (b) IN-APP issues in THIS repo's own src but OUTSIDE the feature — a broken shared component, a data-shape bug in a server adapter, an app-shell defect like the mobile nav never collapsing or a favicon 404 the app serves — → the ecosystemIssues array as {area,detail,suggestedFix} (REQUIRED reporting, but they do NOT block meets_criteria); (c) INFRASTRUCTURE failures OUTSIDE the app's code (other services 5xx, DB, cluster, preview machinery) → the envIssues array (do NOT lower score). HARD BOUNDARY: if it lives in this repo's src, it is NEVER an env issue. FIRST write your strict-JSON verdict (with the extra keys \"iteration\" and \"schema\":\"" +
 	VERDICT_SCHEMA +
-	"\") to /sandbox/work/gan/verdict-<iteration>.json (mkdir -p /sandbox/work/gan), THEN emit the identical JSON as your FINAL message (the file is the primary loop-exit signal, the message is the fallback). Your FINAL message MUST be ONLY the strict JSON verdict (no prose, no fences) including an envIssues array. " +
+	"\") to /sandbox/work/gan/verdict-<iteration>.json (mkdir -p /sandbox/work/gan), THEN emit the identical JSON as your FINAL message (the file is the primary loop-exit signal, the message is the fallback). Your FINAL message MUST be ONLY the strict JSON verdict (no prose, no fences) including envIssues and ecosystemIssues arrays. " +
 	HEADLESS_RULE;
 
 // ---- body prompts (jq expressions) -------------------------------------------
@@ -107,6 +107,8 @@ ${HEADLESS_RULE}
 
 HARD REQUIREMENT — satisfy the contract's acceptanceCriteria + designTokens + rubric and address the latest critic feedback. Wire REAL data via +page.server.ts from EXISTING repo endpoints (grep src for the real ones); NEVER fabricate data; guard EACH server-side source independently (try/catch or Promise.allSettled) and degrade THAT region to a graceful empty state — one failing source must never 500 the page. Keep hexagonal-architecture discipline. Keep existing functionality working; do NOT touch the sign-in/auth pages.
 
+ECOSYSTEM SCOPE — this preview is fully isolated, so beyond the feature, if anything in the app's OWN code blocks or degrades the evaluated routes (a data-shape bug in a server adapter, a broken shared component, an app-shell defect like the nav not collapsing on mobile), FIX IT TOO: keep the change minimal and tested, the gate must stay green, and NEVER touch the sign-in/auth pages. Do not declare in-app issues out of scope.
+
 KNOWN LANDMINE in this repo: list endpoints (dashboard recent-changes/agents/runs) can return entries with DUPLICATE ids (same resource, multiple versions). In Svelte 5 a keyed {#each} with a duplicate key throws each_key_duplicate during hydration and unmounts the entire subtree even though SSR looks fine. ALWAYS dedupe lists in the server load AND key {#each} blocks by a guaranteed-unique composite (id + version/index).
 
 Optionally read /sandbox/work/contract.json and /sandbox/work/design-review.json IF they exist (do NOT fail if missing).
@@ -130,7 +132,10 @@ Your previous attempt:
 __PREV_ATTEMPT__
 
 Critic feedback to address now:
-__CRITIC_FEEDBACK__`;
+__CRITIC_FEEDBACK__
+
+Ecosystem issues flagged by the critic (in-app, outside the feature — fix these too if reasonable, keeping the gate green):
+__ECOSYSTEM__`;
 	return buildCommand(raw, {
 		__EXPORT_URL__: SUBS.EXPORT_URL,
 		__SYNC_URL__: SUBS.SYNC_URL,
@@ -147,6 +152,9 @@ __CRITIC_FEEDBACK__`;
 		__GATE_RESULT__: SUBS.GATE_RESULT,
 		__PREV_ATTEMPT__: SUBS.PREV_ATTEMPT,
 		__CRITIC_FEEDBACK__: SUBS.CRITIC_FEEDBACK,
+		// In-app ecosystem issues the critic flagged, from read_verdict (constructed
+		// array field serialization via tojson — not a raw node); "(none)" when empty.
+		__ECOSYSTEM__: `((${READ_VERDICT_OBJ}) | (.ecosystem // [])) as $e | (if ($e | length) == 0 then "(none)" else ($e | tojson) end)`,
 	});
 }
 
@@ -165,13 +173,13 @@ READINESS — the dev server RESTARTS on every /__sync, so the preview URL flaps
 
 Open PREVIEW_URL/auth/sign-in (slow first load — use a 180000 ms navigation timeout + retry once or twice), LOG IN with the credentials above, then visit EACH route in EVAL_ROUTES. Screenshot desktop AND mobile, and interact (expand/hover/drill-down/keyboard focus) to check the feature.
 
-ENV vs DEFECT — distinguish agent-introduced regressions from preview-ENVIRONMENT failures. A backend 5xx on an endpoint OUTSIDE the change scope (e.g. /metrics, DB/infra/timeout errors), or a failure that also reproduces on an unchanged route, is NOT an agent defect: record it under the envIssues array and do NOT lower score or set meets_criteria:false because of it. Grade the CHANGE the generator made.
+CLASSIFY every problem into exactly one bucket. (1) FEATURE defects (the change the generator made) → perRoute + feedback; these gate acceptance. (2) IN-APP issues that live in THIS repo's own src but are OUTSIDE the feature — a broken shared component, a data-shape bug in a server adapter, an app-shell defect like the mobile nav never collapsing, or a favicon 404 the app itself serves — → the ecosystemIssues array as {area,detail,suggestedFix}. These are REQUIRED reporting but do NOT lower score or block meets_criteria. (3) INFRASTRUCTURE failures OUTSIDE the app's code — other services returning 5xx (e.g. /metrics), DB/cluster/timeout, preview machinery — → the envIssues array; do NOT lower score for these. HARD BOUNDARY: if it lives in this repo's src it is NEVER an env issue; a failure that also reproduces on an unchanged route is an in-app (ecosystem) issue, not a feature defect. Grade the CHANGE the generator made.
 
 If /sandbox/work/contract.json exists, grade against its acceptanceCriteria + rubric; if MISSING, grade the feature request above anyway — NEVER refuse to grade for a missing contract file. Check: the feature behaves correctly, shows REAL data or a graceful empty state, existing functionality is intact, accessibility (AA contrast + visible keyboard focus), responsiveness, and visual/interaction quality (deliberate palette/typography/spacing, NO generic AI-default look).
 
 VERDICT FILE (do this FIRST, before your final message): mkdir -p /sandbox/work/gan and write the EXACT strict JSON verdict object below — PLUS two extra keys "iteration": __IDX__ and "schema": "${VERDICT_SCHEMA}" — to /sandbox/work/gan/verdict-__IDX__.json. THEN emit the identical verdict JSON as your final message. The file is the primary loop-exit signal; the message is the fallback.
 
-Your ENTIRE final message must be ONLY this strict JSON object (start with { and end with }, NO prose/preamble and NO markdown fences; put ALL reasoning inside feedback) — the harness machine-parses your FINAL message to decide whether the loop stops: {"meets_criteria": <true|false>, "score": <0-10>, "perRoute": [{"route": <string>, "passes": <bool>, "note": <string>}], "envIssues": [{"route": <string>, "detail": <string>}], "feedback": "<specific, actionable next-step guidance>"}. Set meets_criteria true ONLY if EVERY evaluation route meets the criteria, the feature works with real/empty-state data, existing functionality is intact, and score is at least 8. Preview-environment failures you recorded in envIssues MUST NOT lower score or block meets_criteria.`;
+Your ENTIRE final message must be ONLY this strict JSON object (start with { and end with }, NO prose/preamble and NO markdown fences; put ALL reasoning inside feedback) — the harness machine-parses your FINAL message to decide whether the loop stops: {"meets_criteria": <true|false>, "score": <0-10>, "perRoute": [{"route": <string>, "passes": <bool>, "note": <string>}], "ecosystemIssues": [{"area": <string>, "detail": <string>, "suggestedFix": <string>}], "envIssues": [{"route": <string>, "detail": <string>}], "feedback": "<specific, actionable next-step guidance>"}. Set meets_criteria true ONLY if EVERY evaluation route meets the criteria, the feature works with real/empty-state data, existing functionality is intact, and score is at least 8. In-app issues you recorded in ecosystemIssues and infrastructure failures you recorded in envIssues MUST NOT lower score or block meets_criteria.`;
 	return buildCommand(raw, {
 		__PREVIEW_URL__: SUBS.PREVIEW_URL,
 		__ROUTES__: SUBS.ROUTES,
