@@ -802,6 +802,7 @@
 							lastEventAt={activity[item.key]?.lastEventAt ?? null}
 							series={activity[item.key]?.series ?? []}
 							nowMs={now}
+							pendingInput={activity[item.key]?.pendingInput ?? null}
 						/>
 
 						<span

@@ -262,6 +262,7 @@ function sampleSession(overrides: Partial<SessionDetail> = {}): SessionDetail {
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     lastEventAt: null,
+    pendingInput: null,
     completedAt: null,
     archivedAt: null,
     daprInstanceId: null,

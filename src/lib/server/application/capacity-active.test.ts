@@ -20,6 +20,7 @@ describe("ApplicationCapacityActiveService", () => {
 					tokens: 12,
 					tokensIn: 5,
 					tokensOut: 7,
+					pendingInput: null,
 				},
 			})),
 		};
@@ -46,6 +47,7 @@ describe("ApplicationCapacityActiveService", () => {
 				tokens: 12,
 				tokensIn: 5,
 				tokensOut: 7,
+				pendingInput: null,
 			},
 		});
 		expect(fleetActivity.summarize).toHaveBeenCalledWith(items, "project-1");

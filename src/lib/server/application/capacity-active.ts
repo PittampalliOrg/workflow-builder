@@ -1,3 +1,5 @@
+import type { PendingInput } from "$lib/types/sessions";
+
 export type CapacityFleetActivityItem = { key: string; kind: string; id: string };
 
 export type CapacityFleetActivity = {
@@ -7,6 +9,10 @@ export type CapacityFleetActivity = {
 	tokens: number;
 	tokensIn: number;
 	tokensOut: number;
+	/** Non-null when a mapped session is waiting on a human (sessions.pending_input).
+	 * For a workflowRun key, set if ANY child session is parked. Drives the Fleet
+	 * "Needs input" badge without a per-row event scan. */
+	pendingInput: PendingInput | null;
 };
 
 export type CapacityFleetActivityPort = {

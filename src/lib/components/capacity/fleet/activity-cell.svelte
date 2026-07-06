@@ -7,15 +7,21 @@
 	 * avoid one timer per row.
 	 */
 	import MetricSparkline from '$lib/components/metrics/MetricSparkline.svelte';
+	import NeedsInputBadge from '$lib/components/sessions/needs-input-badge.svelte';
+	import type { PendingInput } from '$lib/types/sessions';
 
 	type Props = {
 		status: string;
 		lastEventAt?: string | null;
 		series?: { t: string; value: number }[];
 		nowMs: number;
+		// Set when a mapped session is parked waiting on a human — surfaces the
+		// amber "Needs input" badge inline so a blocked row is visible without
+		// opening the session (fed by the batched getFleetActivity summary).
+		pendingInput?: PendingInput | null;
 	};
 
-	let { status, lastEventAt, series = [], nowMs }: Props = $props();
+	let { status, lastEventAt, series = [], nowMs, pendingInput = null }: Props = $props();
 
 	const LIVE = new Set(['running', 'rescheduling', 'idle', 'active', 'starting', 'queued']);
 	const isLive = $derived(LIVE.has(status.toLowerCase()));
@@ -62,4 +68,7 @@
 	</span>
 	<MetricSparkline {points} width={56} height={16} strokeColor={sparkColor} fillColor={phase === 'idle' ? undefined : sparkColor} ariaLabel="activity" />
 	<span class="w-12 shrink-0 text-[10px] tabular-nums text-muted-foreground">{ageLabel(ageMs)}</span>
+	{#if pendingInput}
+		<NeedsInputBadge {pendingInput} />
+	{/if}
 </div>

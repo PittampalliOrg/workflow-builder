@@ -684,6 +684,7 @@ function fakeSessions(): SessionRepository {
 		updateSessionStatus: vi.fn(async () => undefined),
 		updateSessionStatusUnlessTerminated: vi.fn(async () => undefined),
 		bumpSessionLastEventAt: vi.fn(async () => undefined),
+		setSessionPendingInput: vi.fn(async () => undefined),
 	};
 }
 
@@ -715,6 +716,7 @@ function sampleSessionDetail(): SessionDetail {
 		createdAt: "2026-05-15T12:00:00.000Z",
 		updatedAt: "2026-05-15T12:00:00.000Z",
 		lastEventAt: null,
+		pendingInput: null,
 		completedAt: null,
 		archivedAt: null,
 		daprInstanceId: null,
@@ -2363,6 +2365,132 @@ describe("ApplicationWorkflowDataService", () => {
 			data: {},
 		});
 		expect(sessions.bumpSessionLastEventAt).toHaveBeenCalledTimes(2);
+	});
+
+	it("SETs pending_input on a blocked idle with the kind derived from the reason", async () => {
+		const sessions = fakeSessions();
+		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "session.status_idle",
+			data: { blocked: true, reason: "permission_prompt" },
+		});
+		expect(sessions.setSessionPendingInput).toHaveBeenCalledWith("session-1", {
+			kind: "permission",
+			prompt: "permission_prompt",
+			eventId: "event-1",
+			since: "2026-01-01T00:00:00.000Z",
+		});
+
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "session.status_idle",
+			data: { blocked: true, reason: "awaiting_input" },
+		});
+		expect(sessions.setSessionPendingInput).toHaveBeenLastCalledWith(
+			"session-1",
+			expect.objectContaining({ kind: "question", prompt: "awaiting_input" }),
+		);
+
+		// An auth block (or any unrecognized reason) is a generic "blocked" kind.
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "session.status_idle",
+			data: { blocked: true, reason: "auth" },
+		});
+		expect(sessions.setSessionPendingInput).toHaveBeenLastCalledWith(
+			"session-1",
+			expect.objectContaining({ kind: "blocked", prompt: "auth" }),
+		);
+	});
+
+	it("SETs pending_input on a permission request (hook.decision ask) + ADK confirmation", async () => {
+		const sessions = fakeSessions();
+		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "hook.decision",
+			data: { decision: "ask", tool_name: "Bash", tool_use_id: "tool-9" },
+		});
+		expect(sessions.setSessionPendingInput).toHaveBeenLastCalledWith(
+			"session-1",
+			expect.objectContaining({
+				kind: "permission",
+				toolUseId: "tool-9",
+				prompt: "Bash",
+			}),
+		);
+
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "adk.tool_confirmation_request",
+			data: { requested_tool_confirmations: { "call-42": { toolName: "delete" } } },
+		});
+		expect(sessions.setSessionPendingInput).toHaveBeenLastCalledWith(
+			"session-1",
+			expect.objectContaining({ kind: "permission", toolUseId: "call-42" }),
+		);
+	});
+
+	it("does NOT set pending_input on a non-'ask' hook.decision", async () => {
+		const sessions = fakeSessions();
+		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "hook.decision",
+			data: { decision: "allow", tool_name: "Read" },
+		});
+		expect(sessions.setSessionPendingInput).not.toHaveBeenCalled();
+	});
+
+	it("CLEARs pending_input on running / terminated / errored and on user answers", async () => {
+		for (const event of [
+			{ type: "session.status_running", data: {} },
+			{ type: "session.status_terminated", data: {} },
+			{ type: "session.status_errored", data: {} },
+			{ type: "user.message", data: { content: [{ type: "text", text: "yes" }] } },
+			{ type: "user.tool_confirmation", data: { tool_use_id: "t1", result: "allow" } },
+			{ type: "user.custom_tool_result", data: { tool_use_id: "t1" } },
+			{ type: "user.interrupt", data: {} },
+		]) {
+			const sessions = fakeSessions();
+			const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+			await service.ingestSessionEvent({ sessionId: "session-1", ...event });
+			expect(sessions.setSessionPendingInput).toHaveBeenCalledWith("session-1", null);
+		}
+	});
+
+	it("CLEARs pending_input on a normal end_turn idle and does NOT set it", async () => {
+		const sessions = fakeSessions();
+		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "session.status_idle",
+			data: { stop_reason: { type: "end_turn" } },
+		});
+		// A normal turn-completion idle isn't a block → the cache is CLEARed (null),
+		// never SET to a PendingInput value.
+		expect(sessions.setSessionPendingInput).toHaveBeenCalledWith("session-1", null);
+		expect(sessions.setSessionPendingInput).not.toHaveBeenCalledWith(
+			"session-1",
+			expect.objectContaining({ kind: expect.anything() }),
+		);
+	});
+
+	it("leaves pending_input untouched for irrelevant events (heartbeat, tool_use)", async () => {
+		const sessions = fakeSessions();
+		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "agent.tool_use",
+			data: { tool_name: "Read" },
+		});
+		expect(sessions.setSessionPendingInput).not.toHaveBeenCalled();
 	});
 
 	it("resolves interactive CLI workspace command candidates through session ports", async () => {

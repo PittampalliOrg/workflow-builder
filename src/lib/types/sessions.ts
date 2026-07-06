@@ -33,6 +33,29 @@ export type SessionStopReason = {
 	event_ids?: string[];
 };
 
+/**
+ * A rebuildable "this session is waiting on a human" snapshot cached on
+ * `sessions.pending_input` by the single ingest writer, so the session LIST +
+ * Fleet surfaces can badge a parked/blocked session without scanning
+ * session_events. Session events remain the source of truth.
+ *
+ * - `permission` — a tool wants approval (permission prompt / tool-confirmation
+ *   request / `hook.decision{decision:"ask"}`).
+ * - `question` — the agent is awaiting a free-form answer.
+ * - `blocked` — some other block (auth, unknown reason).
+ */
+export type PendingInput = {
+	kind: "permission" | "question" | "blocked";
+	/** The tool awaiting confirmation, when the block is a permission/tool prompt. */
+	toolUseId?: string;
+	/** Coarse reason or a short prompt hint carried by the blocking event. */
+	prompt?: string;
+	/** The session_event id that set this (dedup / links back to the event). */
+	eventId: string;
+	/** ISO timestamp the block was first observed. */
+	since: string;
+};
+
 export type SessionUsage = {
 	input_tokens?: number;
 	output_tokens?: number;
@@ -81,6 +104,9 @@ export type SessionSummary = {
 	 * granularity). Drives liveness/silence checks without mutating updatedAt.
 	 * Null for rows predating migration 0095 that have since completed. */
 	lastEventAt: string | null;
+	/** Non-null while the session is waiting on a human (see PendingInput).
+	 * Rebuildable cache maintained by the ingest writer for list/fleet badges. */
+	pendingInput: PendingInput | null;
 	completedAt: string | null;
 	archivedAt: string | null;
 };

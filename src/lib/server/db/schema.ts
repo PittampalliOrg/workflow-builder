@@ -3165,6 +3165,13 @@ export const sessions = pgTable(
 		// only moves on status/usage mutations) so the liveness reconciler can tell
 		// a quiet-but-alive session from a dead one without scanning session_events.
 		lastEventAt: timestamp("last_event_at"),
+		// Needs-input cache (migration 0096): a rebuildable snapshot of "this
+		// session is waiting on a human" maintained by the single ingest writer —
+		// SET on a blocked idle / permission / tool-confirmation request, CLEARed on
+		// resume/terminate/error/answer. Lets the session LIST + Fleet surfaces
+		// badge a parked session without scanning session_events. Shape = PendingInput
+		// ($lib/types/sessions); events stay the source of truth.
+		pendingInput: jsonb("pending_input").$type<Record<string, unknown>>(),
 		completedAt: timestamp("completed_at"),
 		archivedAt: timestamp("archived_at"),
 	},

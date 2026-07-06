@@ -227,7 +227,12 @@ import type {
 } from "$lib/server/application/ports";
 import type { AgentConfig } from "$lib/types/agents";
 import type { BenchmarkInstanceRow } from "$lib/types/benchmark-instance";
-import type { SessionDetail, SessionStopReason, UserEvent } from "$lib/types/sessions";
+import type {
+	PendingInput,
+	SessionDetail,
+	SessionStopReason,
+	UserEvent,
+} from "$lib/types/sessions";
 import {
 	applyWorkflowInputDefaults,
 	getPromptExpansionConfig,
@@ -564,6 +569,88 @@ function normalizeSessionStopReason(value: unknown): SessionStopReason | null {
 				)
 			: undefined,
 	};
+}
+
+/**
+ * Derive the `sessions.pending_input` cache transition for an ingested event.
+ * Returns:
+ *   - a {@link PendingInput} → SET the cache (session is waiting on a human),
+ *   - `null` → CLEAR the cache (session resumed / terminated / errored / answered),
+ *   - `undefined` → leave the cache untouched (event is irrelevant to needs-input).
+ *
+ * Events remain the source of truth; this is a pure, rebuildable projection.
+ * Kept side-effect-free + total so it's trivially unit-testable and safe to run
+ * inside the single serialized ingest writer.
+ */
+function computePendingInputUpdate(
+	eventType: string,
+	data: Record<string, unknown> | undefined,
+	event: { id: string; createdAt: string },
+): PendingInput | null | undefined {
+	switch (eventType) {
+		case "session.status_idle": {
+			// The interactive-cli host mirrors a blocked TUI as status_idle{blocked}.
+			// A normal end_turn idle carries no `blocked` flag → CLEAR (the turn
+			// finished; nothing is waiting on the user).
+			if (data?.blocked !== true) return null;
+			const reason = stringOrNull(data?.reason);
+			const kind: PendingInput["kind"] =
+				reason === "permission_prompt"
+					? "permission"
+					: reason === "awaiting_input"
+						? "question"
+						: "blocked";
+			return {
+				kind,
+				prompt: reason ?? undefined,
+				eventId: event.id,
+				since: event.createdAt,
+			};
+		}
+		case "hook.decision": {
+			// PermissionRequest → hook.decision{decision:"ask"} (paired with a
+			// blocked status_idle). Only "ask" blocks; "allow"/"deny" resolve it.
+			if (stringOrNull(data?.decision) !== "ask") return undefined;
+			return {
+				kind: "permission",
+				toolUseId:
+					stringOrNull(data?.tool_use_id) ?? stringOrNull(data?.toolUseId) ?? undefined,
+				prompt: stringOrNull(data?.tool_name) ?? undefined,
+				eventId: event.id,
+				since: event.createdAt,
+			};
+		}
+		case "adk.tool_confirmation_request": {
+			// ADK requests a tool confirmation — a permission block keyed by the
+			// function_call_id(s) in requested_tool_confirmations.
+			const confirmations = isRecord(data?.tool_confirmation_request)
+				? data?.tool_confirmation_request
+				: isRecord(data?.requested_tool_confirmations)
+					? data?.requested_tool_confirmations
+					: null;
+			const toolUseId = confirmations
+				? stringOrNull(Object.keys(confirmations)[0])
+				: null;
+			return {
+				kind: "permission",
+				toolUseId: toolUseId ?? undefined,
+				eventId: event.id,
+				since: event.createdAt,
+			};
+		}
+		// Any of these unambiguously means the session is no longer parked:
+		// it resumed, ended, failed, or the user supplied an answer.
+		case "session.status_running":
+		case "session.status_terminated":
+		case "session.status_errored":
+		case "user.message":
+		case "user.interrupt":
+		case "user.tool_confirmation":
+		case "user.custom_tool_result":
+			return null;
+		default:
+			return undefined;
+	}
 }
 
 function checkpointRemoteWarning(value: unknown): Record<string, unknown> | null {
@@ -5603,6 +5690,25 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				sessionId: input.sessionId,
 				status: "ERROR",
 			});
+		}
+
+		// Needs-input cache (migration 0096): maintained ALONGSIDE the status
+		// writes on the same serialized ingest path. A rebuildable projection of
+		// "this session is waiting on a human" so the session LIST + Fleet can
+		// badge a parked session without scanning session_events. `undefined`
+		// leaves the column alone; a value SETs, `null` CLEARs. Best-effort — a
+		// transient failure must never reject the ingest (events stay the source
+		// of truth), so it's awaited-with-catch to stay deterministic yet safe.
+		const pendingInputUpdate = computePendingInputUpdate(input.type, input.data, {
+			id: input.sourceEventId ?? envelope.id,
+			createdAt: envelope.createdAt,
+		});
+		if (pendingInputUpdate !== undefined) {
+			await sessions
+				.setSessionPendingInput(input.sessionId, pendingInputUpdate)
+				.catch((err) => {
+					console.warn("[session-ingest] pending_input cache update failed:", err);
+				});
 		}
 
 		if (isRecord(input.data) && isRecord(input.data.codeCheckpoint)) {

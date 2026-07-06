@@ -807,6 +807,7 @@ function fakeSessions(): SessionRepository {
 		updateSessionStatus: vi.fn(async () => undefined),
 		updateSessionStatusUnlessTerminated: vi.fn(async () => undefined),
 		bumpSessionLastEventAt: vi.fn(async () => undefined),
+		setSessionPendingInput: vi.fn(async () => undefined),
 	};
 }
 
@@ -942,6 +943,7 @@ function sampleSession(): SessionDetail {
 		createdAt: "2026-05-15T12:00:00.000Z",
 		updatedAt: "2026-05-15T12:00:00.000Z",
 		lastEventAt: null,
+		pendingInput: null,
 		completedAt: null,
 		archivedAt: null,
 		daprInstanceId: null,
