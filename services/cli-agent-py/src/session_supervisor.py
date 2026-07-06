@@ -268,6 +268,16 @@ class SessionSupervisor:
         self._turn_completion_pending = False
         self._debounce_task: asyncio.Task | None = None
         self._exit_raised = False
+        # Set once the idle reaper has COMMITTED to a graceful /exit (under the
+        # pane-write lock, after re-confirming _should_reap). While set, a
+        # concurrent inject_user_text / _send_to_pane refuses so we never type into
+        # a session on its way out — closes the select→act TOCTOU in the idle reaper.
+        self._reaping = False
+        # In-flight inject_user_text count. A queued/awaiting injection bumps this so
+        # the reaper's under-lock _should_reap() recheck DEFERS rather than racing an
+        # injection that has not yet reached the pane-write lock (belt-and-suspenders
+        # to the under-lock _reaping refusal in _send_to_pane).
+        self._pending_injections = 0
 
         # Kickoff (seed) injection — armed once by start_cli, injected once the
         # readiness gate clears. `_seed_pending` is set synchronously by
@@ -717,6 +727,10 @@ class SessionSupervisor:
             return False
         if self._attach_count > 0:
             return False
+        # An in-flight injection (queued or awaiting readiness) is imminent work —
+        # treat it like an attached client so the reaper defers instead of racing it.
+        if self._pending_injections > 0:
+            return False
         now = time.monotonic()
         if now - self._idle_since < CLI_IDLE_TTL_SECONDS:
             return False
@@ -728,15 +742,41 @@ class SessionSupervisor:
             return False
         return True
 
+    async def _send_exit_command(self, pane: str) -> None:
+        """Send '/exit' + Enter to the pane, tolerating a dead pane/socket."""
+        try:
+            await self._client.pane_send_text(pane, "/exit")
+            await self._client.pane_submit_enter(pane)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[supervisor] graceful /exit send failed: %s", exc)
+
     async def request_graceful_exit(self, *, reason: str) -> None:
         """Cooperatively end the TUI: '/exit' + Enter, bounded wait, then signal."""
         pane = self._pane_ref
         if pane and not self._disabled:
-            try:
-                await self._client.pane_send_text(pane, "/exit")
-                await self._client.pane_submit_enter(pane)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[supervisor] graceful /exit send failed: %s", exc)
+            if reason == "idle_timeout":
+                # TOCTOU guard: _idle_reaper decided to reap OUTSIDE the pane-write
+                # lock, so a client could attach or a new turn / injection could
+                # start between that decision and this /exit. Take the pane-write
+                # lock (serializing against any concurrent injection's _send_to_pane),
+                # RE-CONFIRM _should_reap() under it (which now also sees in-flight
+                # injections), and abort if it no longer holds — so we never /exit
+                # (or raise cli.exited for) a session that just became active. Only
+                # _reaping + the send happen between the recheck and the send.
+                if self._pane_write_lock is None:
+                    self._pane_write_lock = asyncio.Lock()
+                async with self._pane_write_lock:
+                    if not self._should_reap():
+                        logger.info(
+                            "[supervisor] idle reap aborted — session became active "
+                            "between the reap decision and /exit (attach/turn/injection)"
+                        )
+                        return
+                    # Committed: refuse further injections, then /exit under the lock.
+                    self._reaping = True
+                    await self._send_exit_command(pane)
+            else:
+                await self._send_exit_command(pane)
             deadline = time.monotonic() + CLI_GRACEFUL_EXIT_WAIT_SECONDS
             while time.monotonic() < deadline and not self._exit_raised:
                 await asyncio.sleep(1.0)
@@ -932,6 +972,14 @@ class SessionSupervisor:
         # Hold the lock across the text+Enter pair so two senders (seed vs a
         # concurrent injection) never interleave keystrokes on the pane.
         async with self._pane_write_lock:
+            # Idle-reaper TOCTOU: the reaper may have committed to /exit (set
+            # _reaping + sent /exit under THIS lock) while we waited for it. Re-check
+            # under the lock and refuse rather than type into a session on its way
+            # out — this is the primary guard; inject_user_text's entry check and the
+            # _pending_injections deferral are the belt-and-suspenders around it.
+            if self._reaping:
+                logger.info("[supervisor] pane write refused — session is reaping (idle /exit)")
+                return False
             send_text = _normalize_pane_text(text)
             prompt_digests = _prompt_digest_variants(text) | _prompt_digest_variants(
                 send_text
@@ -1297,12 +1345,26 @@ class SessionSupervisor:
         safe)."""
         if self._disabled:
             return False
-        await self._await_seed_first()
-        if not await_ready:
-            return await self._send_to_pane(text, marker, source="injection")
-        return await self._gated_send(
-            text, marker, CLI_INJECT_READY_TIMEOUT, what="injection"
-        )
+        # The idle reaper has committed to a graceful /exit — refuse rather than
+        # type into a session that is on its way out (idle-reaper TOCTOU guard).
+        if self._reaping:
+            logger.info(
+                "[supervisor] injection refused — session is reaping (idle /exit in progress)"
+            )
+            return False
+        # Count this injection as in-flight for the WHOLE attempt (seed wait +
+        # readiness gate + send) so a concurrent reaper's _should_reap() recheck
+        # defers instead of racing us to the pane-write lock.
+        self._pending_injections += 1
+        try:
+            await self._await_seed_first()
+            if not await_ready:
+                return await self._send_to_pane(text, marker, source="injection")
+            return await self._gated_send(
+                text, marker, CLI_INJECT_READY_TIMEOUT, what="injection"
+            )
+        finally:
+            self._pending_injections -= 1
 
 
 def pick_exit_code(event: Mapping[str, Any]) -> int | None:

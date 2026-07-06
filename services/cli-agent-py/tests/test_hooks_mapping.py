@@ -6,6 +6,7 @@ import asyncio
 import time
 from typing import Any
 
+from src.cli_adapters import get_adapter
 from src.hooks_api import (
     INJECTION_MARKER,
     HookProcessor,
@@ -242,7 +243,7 @@ class DelayedTailerManager(FakeTailerManager):
         return self.tailer.last_assistant_text
 
 
-def _processor():
+def _processor(adapter=None):
     published: list[tuple[str | None, str, dict]] = []
     raised: list[tuple[str, list[dict]]] = []
     supervisor = FakeSupervisor()
@@ -252,8 +253,17 @@ def _processor():
         raise_lifecycle=lambda iid, events: raised.append((iid, events)),
         supervisor_getter=lambda: supervisor,
         tailer_manager=manager,
+        adapter=adapter,
     )
     return processor, published, raised, supervisor, manager
+
+
+def _claude_processor():
+    """A processor wired with the REAL claude adapter, which DECLARES the
+    StopFailure turn-failure edge (``is_turn_failure_hook``). The shared
+    HookProcessor keys the failure branch off that adapter method, so the failure
+    edge is only exercised when an adapter opts in (mirrors the completion edge)."""
+    return _processor(adapter=get_adapter("claude-code"))
 
 
 def test_session_start_registers_transcript_and_starts_tailer():
@@ -334,6 +344,9 @@ def test_stop_hook_can_be_transcript_only_without_duplicate_completion():
         def is_turn_completion_hook(self, event_name):
             return False
 
+        def is_turn_failure_hook(self, event_name):
+            return False
+
         def extract_completion_text(self, payload):
             return "should not raise"
 
@@ -408,6 +421,9 @@ def test_processor_publishes_adapter_internal_events_and_strips_response():
         def is_turn_completion_hook(self, event_name):
             return False
 
+        def is_turn_failure_hook(self, event_name):
+            return False
+
         def map_hook_event(self, payload):
             return [
                 {
@@ -451,6 +467,9 @@ def test_processor_keeps_event_loop_responsive_during_blocking_hook_response():
         name = "blocking-adapter"
 
         def is_turn_completion_hook(self, event_name):
+            return False
+
+        def is_turn_failure_hook(self, event_name):
             return False
 
         def map_hook_event(self, payload):
@@ -682,6 +701,9 @@ def test_adapter_specific_completion_hook_raises_turn_completed():
         def is_turn_completion_hook(self, event_name):
             return event_name == "PostTurn"
 
+        def is_turn_failure_hook(self, event_name):
+            return False
+
         def extract_completion_text(self, payload):
             return payload.get("response")
 
@@ -739,6 +761,9 @@ def test_hook_owned_injected_user_prompt_submit_records_turn_without_duplicate_m
         hook_reports_prompt_submit = True
 
         def is_turn_completion_hook(self, event_name):
+            return False
+
+        def is_turn_failure_hook(self, event_name):
             return False
 
         def map_hook_event(self, payload):
@@ -827,3 +852,124 @@ def test_processor_registers_tailer_from_any_hook_payload():
         ("/sandbox/.claude/projects/-sandbox/x.jsonl", None)
     ]
     assert "user.message" in published
+
+
+# ---------------------------------------------------------------------------
+# StopFailure → turn.failed edge (W3a)
+# ---------------------------------------------------------------------------
+
+
+def test_stop_failure_raises_turn_failed_with_error_text():
+    processor, _published, raised, supervisor, manager = _claude_processor()
+    response = asyncio.run(processor.process(_hook("StopFailure", error="model overloaded")))
+    assert response == {}
+    # Drained like Stop; supervisor idle echo suppressed so the failure isn't
+    # masked by a stale idle mirror.
+    assert manager.tailer.flushes == 1
+    assert supervisor.suppress_idle_calls == 1
+    assert raised == [
+        (
+            "inst-1",
+            [
+                {
+                    "type": "turn.failed",
+                    "error": "model overloaded",
+                    "lastAssistantText": "final answer",
+                }
+            ],
+        )
+    ]
+
+
+def test_stop_failure_error_text_falls_back_to_reason():
+    processor, _published, raised, _supervisor, _manager = _claude_processor()
+    asyncio.run(processor.process(_hook("StopFailure", reason="max turns exceeded")))
+    assert raised == [
+        (
+            "inst-1",
+            [
+                {
+                    "type": "turn.failed",
+                    "error": "max turns exceeded",
+                    "lastAssistantText": "final answer",
+                }
+            ],
+        )
+    ]
+
+
+def test_stop_then_stop_failure_same_turn_deduped():
+    """Stop wins the turn first → its completion key blocks a same-turn StopFailure
+    (whichever edge lands first wins; the other no-ops)."""
+    processor, _published, raised, _supervisor, _manager = _claude_processor()
+    asyncio.run(processor.process(_hook("Stop")))
+    asyncio.run(processor.process(_hook("StopFailure", error="boom")))
+    assert raised == [
+        ("inst-1", [{"type": "turn.completed", "lastAssistantText": "final answer"}])
+    ]
+
+
+def test_stop_failure_then_stop_same_turn_deduped():
+    """StopFailure lands first → its completion key blocks a same-turn Stop."""
+    processor, _published, raised, _supervisor, _manager = _claude_processor()
+    asyncio.run(processor.process(_hook("StopFailure", error="boom")))
+    asyncio.run(processor.process(_hook("Stop")))
+    assert raised == [
+        (
+            "inst-1",
+            [{"type": "turn.failed", "error": "boom", "lastAssistantText": "final answer"}],
+        )
+    ]
+
+
+def test_subagent_stop_failure_is_ignored():
+    """A finishing subagent (Task tool) writes its transcript under .../subagents/
+    — its StopFailure must NOT end the parent turn."""
+    processor, _published, raised, _supervisor, _manager = _claude_processor()
+    response = asyncio.run(
+        processor.process(
+            _hook(
+                "StopFailure",
+                error="boom",
+                transcript_path="/sandbox/.claude/projects/-x/subagents/sub.jsonl",
+            )
+        )
+    )
+    assert response == {}
+    assert raised == []
+
+
+def test_subagent_stop_is_ignored():
+    processor, _published, raised, _supervisor, _manager = _claude_processor()
+    asyncio.run(
+        processor.process(
+            _hook(
+                "Stop",
+                transcript_path="/sandbox/.claude/projects/-x/subagents/sub.jsonl",
+            )
+        )
+    )
+    assert raised == []
+
+
+def test_subagent_hook_does_not_repoint_the_tailer():
+    """The subagent guard runs BEFORE _register_transcript, so a subagent
+    Stop/StopFailure must NOT re-point the tailer at the subagent transcript
+    (which would then mirror subagent content as the parent's)."""
+    sub_path = "/sandbox/.claude/projects/-x/subagents/sub.jsonl"
+    processor, _published, raised, _supervisor, manager = _claude_processor()
+    asyncio.run(processor.process(_hook("Stop", transcript_path=sub_path)))
+    asyncio.run(processor.process(_hook("StopFailure", error="x", transcript_path=sub_path)))
+    assert manager.started == []  # tailer never started/re-pointed at the subagent
+    assert raised == []
+
+
+def test_stop_failure_ignored_entirely_when_flag_disabled(monkeypatch):
+    import src.hooks_api as hooks_api
+
+    monkeypatch.setattr(hooks_api, "CLI_TURN_FAILED_EDGE_ENABLED", False)
+    processor, published, raised, _supervisor, _manager = _claude_processor()
+    response = asyncio.run(processor.process(_hook("StopFailure", error="boom")))
+    assert response == {}
+    assert raised == []
+    assert all(etype != "turn.failed" for _sid, etype, _data in published)

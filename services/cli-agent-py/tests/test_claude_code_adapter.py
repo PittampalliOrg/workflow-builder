@@ -398,24 +398,44 @@ def test_managed_settings_bakes_exactly_the_mirroring_hooks():
         assert cfgs == [{"hooks": [{"type": "http", "url": HOOK_RELAY_URL}]}]
 
 
-def test_seed_one_shot_writes_no_per_session_hooks(seeded_dirs):
-    """A one-shot autoTerminate run must not register ANY per-session hooks —
-    the baked managed Stop is its turn-end; blocking hooks would strand it."""
+def test_seed_one_shot_registers_only_the_failure_edge(seeded_dirs):
+    """A one-shot autoTerminate run registers ONLY the StopFailure edge per-session
+    (mirroring/Stop stay baked); the blocking permission hooks would strand it."""
+    from src.cli_adapters.claude_code import _BLOCKING_HOOK_EVENTS, _FAILURE_HOOK_EVENTS
+
     _, config_dir = seeded_dirs
     adapter = get_adapter("claude-code")
     adapter.seed({"agentConfig": {}, "autoTerminateAfterEndTurn": True})
     settings = json.loads((config_dir / "settings.json").read_text(encoding="utf-8"))
-    assert "hooks" not in settings  # mirroring/Stop come from managed-settings
+    assert set(settings["hooks"].keys()) == set(_FAILURE_HOOK_EVENTS)  # StopFailure only
+    for ev in _BLOCKING_HOOK_EVENTS:
+        assert ev not in settings["hooks"]  # no human → would strand
+    assert "Stop" not in settings["hooks"]  # baked, not duplicated per-session
 
 
-def test_seed_interactive_adds_only_blocking_hooks(seeded_dirs):
-    """An interactive session adds ONLY the blocking permission hooks per-session
-    (mirroring/Stop stay baked)."""
-    from src.cli_adapters.claude_code import _BLOCKING_HOOK_EVENTS
+def test_seed_interactive_adds_blocking_hooks_and_failure_edge(seeded_dirs):
+    """An interactive session adds the blocking permission hooks AND the StopFailure
+    failure edge per-session (mirroring/Stop stay baked)."""
+    from src.cli_adapters.claude_code import _BLOCKING_HOOK_EVENTS, _FAILURE_HOOK_EVENTS
 
     _, config_dir = seeded_dirs
     adapter = get_adapter("claude-code")
     adapter.seed({"agentConfig": {}})  # no autoTerminate → interactive
     settings = json.loads((config_dir / "settings.json").read_text(encoding="utf-8"))
-    assert set(settings["hooks"].keys()) == set(_BLOCKING_HOOK_EVENTS)
+    assert set(settings["hooks"].keys()) == set(_BLOCKING_HOOK_EVENTS) | set(
+        _FAILURE_HOOK_EVENTS
+    )
     assert "Stop" not in settings["hooks"]  # baked, not duplicated per-session
+
+
+def test_seed_one_shot_writes_no_hooks_when_failure_edge_disabled(seeded_dirs, monkeypatch):
+    """With CLI_TURN_FAILED_EDGE_ENABLED off, a one-shot run falls back to the old
+    behavior: no per-session hooks (only the baked managed Stop/mirroring)."""
+    import src.cli_adapters.claude_code as cc
+
+    monkeypatch.setattr(cc, "CLI_TURN_FAILED_EDGE_ENABLED", False)
+    _, config_dir = seeded_dirs
+    adapter = get_adapter("claude-code")
+    adapter.seed({"agentConfig": {}, "autoTerminateAfterEndTurn": True})
+    settings = json.loads((config_dir / "settings.json").read_text(encoding="utf-8"))
+    assert "hooks" not in settings  # nothing per-session; managed Stop is the edge

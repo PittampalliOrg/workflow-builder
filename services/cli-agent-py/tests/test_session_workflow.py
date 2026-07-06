@@ -105,6 +105,37 @@ def _complete_bounded_stop(driver, yielded, *, stop_result=None):
     return driver.gen.send(stop_act)
 
 
+# A completed/terminated run ends with three timer-bounded BEST-EFFORT syncs
+# (browser video, workspace diff, source bundle), each a ``_yield_bounded``
+# when_any yielded after stop/output-sync/patch. They don't touch the result
+# contract; the tests just have to drive them to reach the return. (A failed run
+# skips all three, so its tests still end right after stop.)
+_BEST_EFFORT_SYNC_ACTIVITIES = (
+    "activity:sync_browser_video_activity",
+    "activity:sync_workspace_diff_activity",
+    "activity:sync_source_bundle_activity",
+)
+
+
+def _drain_best_effort_syncs(driver, yielded):
+    """Drive the three best-effort post-loop syncs in order by handing each
+    activity task back as the winner. The final send returns the workflow result
+    (raising StopIteration) — call inside ``pytest.raises(StopIteration)``."""
+    for kind in _BEST_EFFORT_SYNC_ACTIVITIES:
+        act = _bounded_winner(driver, yielded, kind)
+        act.result = {"ok": True}
+        yielded = driver.gen.send(act)
+    return yielded
+
+
+def _drive_terminal_to_result(driver, yielded):
+    """Drive a completed/terminated run with no declared outputSync / swebench
+    patch: cooperative stop → the three best-effort syncs. Raises StopIteration
+    carrying the workflow result (call inside ``pytest.raises(StopIteration)``)."""
+    yielded = _complete_bounded_stop(driver, yielded)
+    _drain_best_effort_syncs(driver, yielded)
+
+
 def test_auto_terminate_stops_after_first_turn_completed(monkeypatch):
     ctx = FakeCtx()
     driver = WorkflowDriver(
@@ -117,7 +148,7 @@ def test_auto_terminate_stops_after_first_turn_completed(monkeypatch):
     }
     yielded = driver.gen.send(event_task)
     with pytest.raises(StopIteration) as stop:
-        _complete_bounded_stop(driver, yielded)
+        _drive_terminal_to_result(driver, yielded)
     result = stop.value.value
     assert result["success"] is True
     assert result["status"] == "completed"
@@ -151,7 +182,7 @@ def test_happy_path_turn_then_clean_exit(monkeypatch):
     event_task.result = {"events": [{"type": "cli.exited", "exitCode": 0}]}
     yielded = driver.gen.send(event_task)
     with pytest.raises(StopIteration) as stop:
-        _complete_bounded_stop(driver, yielded)
+        _drive_terminal_to_result(driver, yielded)
     result = stop.value.value
     assert result["success"] is True
     assert result["status"] == "completed"
@@ -201,7 +232,7 @@ def test_result_contract_reports_selected_cli_runtime(monkeypatch):
     event_task.result = {"events": [{"type": "turn.completed", "content": "done"}]}
     yielded = driver.gen.send(event_task)
     with pytest.raises(StopIteration) as stop:
-        _complete_bounded_stop(driver, yielded)
+        _drive_terminal_to_result(driver, yielded)
     assert stop.value.value["agentRuntime"] == "codex-cli"
 
 
@@ -231,7 +262,8 @@ def test_completed_run_syncs_declared_outputs(monkeypatch):
     assert sync_act.detail["outputSync"]["paths"][0]["source"] == "/sandbox/app"
     sync_act.result = {"ok": True, "copied": []}
     with pytest.raises(StopIteration) as stop:
-        driver.gen.send(sync_act)
+        yielded = driver.gen.send(sync_act)
+        _drain_best_effort_syncs(driver, yielded)
     result = stop.value.value
     assert result["success"] is True
     assert result["outputSync"]["ok"] is True
@@ -270,7 +302,8 @@ def test_completed_swebench_run_extracts_model_patch(monkeypatch):
         "patchFilesTouched": ["pkg.py"],
     }
     with pytest.raises(StopIteration) as stop:
-        driver.gen.send(patch_act)
+        yielded = driver.gen.send(patch_act)
+        _drain_best_effort_syncs(driver, yielded)
     result = stop.value.value
     assert result["modelPatch"] == "diff --git a/pkg.py b/pkg.py\n"
     assert result["patchBytes"] == 28
@@ -440,7 +473,7 @@ def test_propagated_history_is_reduced_to_bounded_provenance(monkeypatch):
     event_task.result = {"events": [{"type": "turn.completed", "content": "done"}]}
     yielded = driver.gen.send(event_task)
     with pytest.raises(StopIteration) as stop:
-        _complete_bounded_stop(driver, yielded)
+        _drive_terminal_to_result(driver, yielded)
 
     result = stop.value.value
     propagation = result["provenance"]["workflowHistoryPropagation"]
@@ -539,7 +572,7 @@ def test_terminate_event_breaks_terminated(monkeypatch):
     event_task.result = {"events": [{"type": "session.terminate"}]}
     yielded = driver.gen.send(event_task)
     with pytest.raises(StopIteration) as stop:
-        _complete_bounded_stop(driver, yielded)
+        _drive_terminal_to_result(driver, yielded)
     assert stop.value.value["status"] == "terminated"
     assert stop.value.value["success"] is True
 
@@ -584,7 +617,7 @@ def test_persisted_cancel_flag_terminates_on_probe_path(monkeypatch):
         {"cancelled": True, "request": {"type": "session.terminate"}}
     )
     with pytest.raises(StopIteration) as stop:
-        _complete_bounded_stop(driver, yielded)
+        _drive_terminal_to_result(driver, yielded)
     assert stop.value.value["status"] == "terminated"
 
 
@@ -632,9 +665,102 @@ def test_carried_input_skips_seed_and_start(monkeypatch):
     stop_act = _bounded_winner(driver, yielded, "activity:stop_cli_activity")
     assert stop_act.detail["paneRef"] == "p7"
     with pytest.raises(StopIteration) as stop:
-        _complete_bounded_stop(driver, yielded)
+        _drive_terminal_to_result(driver, yielded)
     assert stop.value.value["turnCount"] == 5
     assert stop.value.value["output"] == "carried answer"
+
+
+def test_turn_failed_fails_one_shot_run(monkeypatch):
+    """A turn.failed edge fails a one-shot run exactly like a non-zero cli.exited:
+    status_errored is published, then the standard failed teardown/contract."""
+    published: list[tuple[str, str, dict, dict]] = []
+    monkeypatch.setattr(
+        sw,
+        "publish_session_event",
+        lambda sid, etype, data, **kw: published.append((sid, etype, data, kw)),
+    )
+    ctx = FakeCtx()
+    driver = WorkflowDriver(
+        ctx, {**BASE_INPUT, "autoTerminateAfterEndTurn": True}, monkeypatch
+    )
+    _start_to_first_when_any(driver)
+    event_task = driver.event_task()
+    event_task.result = {
+        "events": [{"type": "turn.failed", "error": "model overloaded"}]
+    }
+    yielded = driver.gen.send(event_task)
+    with pytest.raises(StopIteration) as stop:
+        _complete_bounded_stop(driver, yielded)
+    result = stop.value.value
+    assert result["success"] is False
+    assert result["status"] == "failed"
+    assert result["turnCount"] == 1
+    errored = next(e for e in published if e[1] == "session.status_errored")
+    assert errored[2]["stop_reason"] == {"type": "error", "message": "model overloaded"}
+    assert errored[2]["turn"] == 1
+    assert errored[2]["agentRuntime"] == "claude-code-cli"
+    assert errored[3]["blocking"] is True
+    assert errored[3]["source_event_id"] == "inst-test-1:turn:1:errored"
+    # No un-stick idle for a one-shot run (it terminates instead).
+    assert not any(e[1] == "session.status_idle" for e in published)
+    assert published[-1][1] == "session.status_terminated"
+    assert published[-1][2]["status"] == "failed"
+    assert published[-1][2]["success"] is False
+
+
+def test_turn_failed_keeps_interactive_session_alive(monkeypatch):
+    """An interactive session survives a failed turn: status_errored + an
+    error-flavored status_idle un-stick the UI, and the loop keeps running."""
+    published: list[tuple[str, str, dict, dict]] = []
+    monkeypatch.setattr(
+        sw,
+        "publish_session_event",
+        lambda sid, etype, data, **kw: published.append((sid, etype, data, kw)),
+    )
+    ctx = FakeCtx()
+    driver = WorkflowDriver(ctx, dict(BASE_INPUT), monkeypatch)  # interactive
+    _start_to_first_when_any(driver)
+    event_task = driver.event_task()
+    event_task.result = {"events": [{"type": "turn.failed", "error": "boom"}]}
+    when_any = driver.gen.send(event_task)
+    # The loop continues (another when_any yields), not a terminal teardown.
+    assert when_any.kind == "when_any"
+    errored = next(e for e in published if e[1] == "session.status_errored")
+    assert errored[2]["stop_reason"] == {"type": "error", "message": "boom"}
+    idle = next(e for e in published if e[1] == "session.status_idle")
+    assert idle[2]["stop_reason"] == {"type": "error", "message": "boom"}
+    assert idle[2]["turn"] == 1
+    assert idle[3]["source_event_id"] == "inst-test-1:turn:1:errored-idle"
+    assert idle[3]["blocking"] is True
+    # errored is published before the un-stick idle.
+    assert published.index(errored) < published.index(idle)
+    # No terminal was published — the session is still live.
+    assert not any(e[1] == "session.status_terminated" for e in published)
+
+
+def test_turn_failed_does_not_publish_on_replay(monkeypatch):
+    """Replay-safety: the status_errored/idle publishes are guarded by
+    not ctx.is_replaying, but the workflow still resolves to a failed contract."""
+    published: list[str] = []
+    monkeypatch.setattr(
+        sw,
+        "publish_session_event",
+        lambda sid, etype, data, **kw: published.append(etype),
+    )
+    ctx = FakeCtx()
+    ctx.is_replaying = True
+    driver = WorkflowDriver(
+        ctx, {**BASE_INPUT, "autoTerminateAfterEndTurn": True}, monkeypatch
+    )
+    _start_to_first_when_any(driver)
+    event_task = driver.event_task()
+    event_task.result = {"events": [{"type": "turn.failed", "error": "boom"}]}
+    yielded = driver.gen.send(event_task)
+    with pytest.raises(StopIteration) as stop:
+        _complete_bounded_stop(driver, yielded)
+    assert stop.value.value["status"] == "failed"
+    assert "session.status_errored" not in published
+    assert "session.status_terminated" not in published
 
 
 def test_seed_user_message_extracted_from_initial_events():

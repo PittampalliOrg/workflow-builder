@@ -43,6 +43,7 @@ from typing import Any, Callable, Mapping
 from fastapi import APIRouter, Request
 
 from src.cli_adapters import get_adapter
+from src.env_flags import CLI_TURN_FAILED_EDGE_ENABLED
 from src.event_publisher import publish_session_event
 from src.session_supervisor import get_supervisor
 from src.taskhub import raise_lifecycle_events
@@ -82,6 +83,10 @@ COMPLETION_TEXT_POLL_SECONDS = float(
 STOP_DRAIN_MAX_SECONDS = float(os.environ.get("CLI_STOP_DRAIN_MAX_SECONDS", "5"))
 STOP_DRAIN_QUIET_SECONDS = float(os.environ.get("CLI_STOP_DRAIN_QUIET_SECONDS", "0.75"))
 STOP_DRAIN_POLL_SECONDS = float(os.environ.get("CLI_STOP_DRAIN_POLL_SECONDS", "0.1"))
+
+# CLI_TURN_FAILED_EDGE_ENABLED (turn-FAILURE edge master switch, default ON) is
+# imported from the leaf src.env_flags at the top of the module — shared with the
+# claude adapter without the hooks_api → cli_adapters import cycle.
 
 # Belt-and-suspenders behind the claude argv `--disallowedTools AskUserQuestion`
 # (build_argv, one-shot only): a headless run has no human to answer, so this
@@ -457,6 +462,32 @@ class HookProcessor:
             instance_id,
         )
 
+        # Classify the hook up front via the adapter seam (keeps concrete event
+        # names like "StopFailure" out of this CLI-agnostic layer): which events
+        # are the adapter's authoritative turn-COMPLETION vs turn-FAILURE edges.
+        adapter_turn_done = bool(
+            self._adapter is not None and name and self._adapter.is_turn_completion_hook(name)
+        )
+        adapter_turn_failed = bool(
+            self._adapter is not None and name and self._adapter.is_turn_failure_hook(name)
+        )
+        is_turn_terminal = name == "Stop" or adapter_turn_done or adapter_turn_failed
+
+        # SUBAGENT guard — BEFORE any transcript registration. A finishing subagent
+        # (Task tool) reports its OWN transcript under ``.../subagents/``; if
+        # _register_transcript ran first it would re-point the tailer at that
+        # subagent transcript and mirror its content as the PARENT's — the exact
+        # thing this guard exists to block. Claude routes subagent completion
+        # through the distinct ``SubagentStop`` event, so this is defensive; logged
+        # if it ever fires in the wild.
+        if is_turn_terminal and self._is_subagent_transcript(payload):
+            logger.info(
+                "[hooks] ignoring subagent %s (transcript_path=%s) — not a parent turn edge",
+                name,
+                _clean(payload.get("transcript_path")),
+            )
+            return {}
+
         # EVERY hook payload carries transcript_path — register the tailer
         # opportunistically from any event, never only from SessionStart
         # (observed live: SessionStart did not fire under the early
@@ -472,9 +503,16 @@ class HookProcessor:
                 self._completion_fallback_started_turn = False
             return {}  # registration handled above; no published event
 
-        adapter_turn_done = bool(
-            self._adapter is not None and name and self._adapter.is_turn_completion_hook(name)
-        )
+        # Turn-FAILURE edge (adapter-declared, e.g. claude StopFailure) → raise
+        # ``turn.failed`` on the SAME lifecycle lane as Stop's ``turn.completed``,
+        # deduped against the SAME (instance_id, turn_count) key (whichever of the
+        # completion/failure edges lands first wins, the other no-ops). Inert when
+        # the flag is off.
+        if adapter_turn_failed:
+            if not CLI_TURN_FAILED_EDGE_ENABLED:
+                return {}
+            return await self._process_stop_failure(payload, session, instance_id)
+
         stop_hook_completes = True
         if self._adapter is not None and name == "Stop":
             stop_hook_completes = bool(self._adapter.stop_hook_completes_turn())
@@ -495,15 +533,12 @@ class HookProcessor:
                         },
                     )
                 return response
-            # ALWAYS drain the tailer to quiescence first so the FINAL
-            # transcript line (published as agent.message and reflected in
-            # last_assistant_text) is ingested BEFORE we read it — the Stop hook
-            # routinely fires while that line is still being written.
-            await self._drain_tailer_to_quiescence()
-            tailer = self._tailer_manager.current()
-            last_text = tailer.last_assistant_text if tailer is not None else None
-            if not last_text:
-                last_text = await self._wait_for_tailer_completion_text()
+            # ALWAYS drain the tailer to quiescence first so the FINAL transcript
+            # line (published as agent.message + reflected in last_assistant_text)
+            # is ingested BEFORE we read it — the Stop hook routinely fires while
+            # that line is still being written. Extend the tailer text with the
+            # completion-specific adapter/generic fallbacks.
+            tailer, last_text = await self._drain_and_resolve_text()
             if not last_text and self._adapter is not None:
                 try:
                     last_text = self._adapter.extract_completion_text(payload)
@@ -532,34 +567,27 @@ class HookProcessor:
             already_completed = bool(
                 tailer is not None and getattr(tailer, "turn_completion_raised", False)
             )
-            turn_count = self._ensure_turn_started_before_completion(session)
-            completion_key = (
-                (instance_id, turn_count)
-                if isinstance(instance_id, str) and instance_id
-                else None
-            )
-            if completion_key is not None and completion_key in self._completion_keys_raised:
-                already_completed = True
-            will_complete = bool(
-                instance_id and should_complete_from_hook and not already_completed
+            event: dict[str, Any] = {"type": "turn.completed"}
+            if last_text:
+                event["lastAssistantText"] = last_text
+            # Shared exactly-once turn-edge commit (also used by the failure edge).
+            # A transcript-only adapter (should_complete_from_hook False) or an
+            # already-raised turn suppresses the raise.
+            will_complete, _turn_count, completion_key = await self._raise_turn_edge(
+                instance_id=instance_id,
+                session=session,
+                event=event,
+                already_raised=already_completed or not should_complete_from_hook,
             )
             logger.info(
                 "[hooks] completion-decision event=%r should_complete=%s "
-                "already_completed=%s key=%s -> raising=%s",
+                "already=%s key=%s -> raising=%s",
                 name,
                 should_complete_from_hook,
                 already_completed,
                 completion_key,
                 will_complete,
             )
-            if will_complete:
-                event: dict[str, Any] = {"type": "turn.completed"}
-                if last_text:
-                    event["lastAssistantText"] = last_text
-                self._suppress_supervisor_idle_echo()
-                await asyncio.to_thread(self._safe_raise, instance_id, [event])
-                if completion_key is not None:
-                    self._completion_keys_raised.add(completion_key)
             return response
 
         if name == "SessionEnd":
@@ -788,6 +816,104 @@ class HookProcessor:
             self._completion_fallback_started_turn = True
             return started
         return _turn_started_count(self._session())
+
+    @staticmethod
+    def _is_subagent_transcript(payload: Mapping[str, Any]) -> bool:
+        """True when the hook's transcript belongs to a subagent (Task tool) run —
+        claude writes those under a ``subagents/`` directory. A subagent turn edge
+        must not be treated as the parent turn's completion/failure."""
+        path = _clean(payload.get("transcript_path")) or _clean(
+            payload.get("transcriptPath")
+        )
+        return bool(path and "/subagents/" in path)
+
+    async def _drain_and_resolve_text(self) -> tuple[Any, str | None]:
+        """Drain the tailer to quiescence and resolve the current assistant text
+        from it — shared by the Stop (turn.completed) and StopFailure (turn.failed)
+        edges. Returns ``(tailer, last_text)``; the Stop path extends ``last_text``
+        with its own adapter/generic fallbacks."""
+        await self._drain_tailer_to_quiescence()
+        tailer = self._tailer_manager.current()
+        last_text = tailer.last_assistant_text if tailer is not None else None
+        if not last_text:
+            last_text = await self._wait_for_tailer_completion_text()
+        return tailer, last_text
+
+    async def _raise_turn_edge(
+        self,
+        *,
+        instance_id: Any,
+        session: Mapping[str, Any],
+        event: dict[str, Any],
+        already_raised: bool,
+    ) -> tuple[bool, int, tuple[Any, int] | None]:
+        """Exactly-once turn-edge raise shared by the Stop (turn.completed) and
+        StopFailure (turn.failed) branches: resolve the turn count, enforce the
+        ``(instance_id, turn_count)`` dedup key, and — unless this turn already
+        produced an edge — suppress the supervisor idle echo and raise ``event``
+        onto the lifecycle lane. Returns ``(raised, turn_count, completion_key)``."""
+        turn_count = self._ensure_turn_started_before_completion(session)
+        completion_key = (
+            (instance_id, turn_count)
+            if isinstance(instance_id, str) and instance_id
+            else None
+        )
+        already = already_raised or (
+            completion_key is not None and completion_key in self._completion_keys_raised
+        )
+        will_raise = bool(instance_id and not already)
+        if will_raise:
+            self._suppress_supervisor_idle_echo()
+            await asyncio.to_thread(self._safe_raise, instance_id, [event])
+            if completion_key is not None:
+                self._completion_keys_raised.add(completion_key)
+        return will_raise, turn_count, completion_key
+
+    async def _process_stop_failure(
+        self,
+        payload: Mapping[str, Any],
+        session: Mapping[str, Any],
+        instance_id: Any,
+    ) -> dict[str, Any]:
+        """Raise a ``turn.failed`` lifecycle edge from an adapter-declared failure
+        hook (claude StopFailure).
+
+        Shares the Stop edge's drain + exactly-once protocol via
+        ``_drain_and_resolve_text`` + ``_raise_turn_edge``, so a Stop and a
+        StopFailure for the SAME turn dedup against ONE ``(instance_id,
+        turn_count)`` completion key — whichever lands first wins, the other
+        no-ops. Error text comes from the payload (``error``/``reason``/
+        ``message``) falling back to the last tailer line; unlike Stop it does not
+        publish a partial ``agent.message`` (the error carries the signal)."""
+        tailer, last_text = await self._drain_and_resolve_text()
+        error_text = (
+            _clean(payload.get("error"))
+            or _clean(payload.get("reason"))
+            or _clean(payload.get("message"))
+            or last_text
+            or "the turn failed"
+        )
+        # A turn already completed (native transcript OR a prior Stop/StopFailure
+        # for this turn) means this failure edge is a duplicate → no-op.
+        already_done = bool(
+            tailer is not None and getattr(tailer, "turn_completion_raised", False)
+        )
+        event: dict[str, Any] = {"type": "turn.failed", "error": error_text}
+        if last_text:
+            event["lastAssistantText"] = last_text
+        will_fail, _turn_count, completion_key = await self._raise_turn_edge(
+            instance_id=instance_id,
+            session=session,
+            event=event,
+            already_raised=already_done,
+        )
+        logger.info(
+            "[hooks] failure-decision event=StopFailure already=%s key=%s -> raising=%s",
+            already_done,
+            completion_key,
+            will_fail,
+        )
+        return {}
 
     def _suppress_supervisor_idle_echo(self) -> None:
         supervisor = self._supervisor_getter()

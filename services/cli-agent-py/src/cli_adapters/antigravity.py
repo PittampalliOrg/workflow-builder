@@ -42,9 +42,9 @@ from typing import Any, Mapping
 from src.agy_capture import TOKEN_REL, restore_bundle, start_capture_watcher
 from src.agy_stop_guard import (
     evaluate_stop_guard,
-    has_stop_guard_config,
     write_stop_guard_config,
 )
+from src.env_flags import env_bool
 from src.cli_adapters.base import (
     CliAdapter,
     SeedResult,
@@ -560,16 +560,6 @@ def _tool_output_from(payload: Mapping[str, Any]) -> str:
     return ""
 
 
-def _env_bool(name: str, default: bool | None = None) -> bool | None:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    value = raw.strip().lower()
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off"}:
-        return False
-    return default
 
 
 def _env_int(name: str, default: int) -> int:
@@ -580,7 +570,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _should_shim_run_command() -> bool:
-    explicit = _env_bool("CLI_AGENT_AGY_RUN_COMMAND_SHIM")
+    explicit = env_bool("CLI_AGENT_AGY_RUN_COMMAND_SHIM")
     if explicit is not None:
         return explicit
     return True
@@ -638,7 +628,7 @@ def _looks_like_dev_server_command(command: str) -> bool:
 def _should_infer_persistent_run_command(
     command: str, tool_input: Mapping[str, Any]
 ) -> bool:
-    explicit = _env_bool("CLI_AGENT_AGY_RUN_COMMAND_INFER_PERSISTENT")
+    explicit = env_bool("CLI_AGENT_AGY_RUN_COMMAND_INFER_PERSISTENT")
     if explicit is False:
         return False
     return _run_command_wait_ms(tool_input, 0) > 0 and _looks_like_dev_server_command(
