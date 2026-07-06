@@ -111,21 +111,35 @@ export function buildPromotionCommand(
 					`git checkout -q -b "$BR" "$TGT"`
 				: `git clone -q /tmp/v.bundle /tmp/promote && cd /tmp/promote && git checkout -q -b "$BR"`;
 
+	// Branch prefix (`<prefix>-<epoch>`), sanitized to a safe git ref segment. The
+	// GAN dev/preview-promote flow passes `gan-ui-feature`; default stays `wfb-promote`.
+	const branchPrefix = sanitizeBranchPrefix(input.branchPrefix) || "wfb-promote";
+	// PR title/body are embedded inside a JSON payload built in-shell; pre-escape
+	// them to valid JSON-inner strings (handles quotes/newlines) so a multi-line
+	// markdown body can't break the JSON. TITLE (raw) stays the git commit subject.
+	const prTitleJson = jsonInner(input.title);
+	const prBodyJson = jsonInner(
+		input.prBody ?? "Promoted from a workflow-builder code version (durable source bundle).",
+	);
+	const draftFrag = input.draft ? `,\\"draft\\":true` : "";
+
 	return [
 		`set -e`,
 		`TOK=${shQuote(token)}`,
 		`REPO=${shQuote(input.repo)}; BASE=${shQuote(input.base)}; MODE=${shQuote(input.mode)}; TITLE=${shQuote(input.title)}`,
+		`PR_TITLE=${shQuote(prTitleJson)}; PR_BODY=${shQuote(prBodyJson)}`,
 		`GH="$GITHUB_TOKEN"`,
 		`[ -n "$GH" ] || { echo "ERR=no_github_token"; exit 0; }`,
 		`rm -rf /tmp/promote /tmp/v.bundle`,
 		`curl -fsS -H "X-Internal-Token: $TOK" ${shQuote(bundleUrl)} -o /tmp/v.bundle || { echo "ERR=bundle_fetch_failed"; exit 0; }`,
 		`git config --global --add safe.directory '*' 2>/dev/null || true`,
-		`BR="wfb-promote-$(date +%s)"`,
+		`BR="${branchPrefix}-$(date +%s)"`,
 		cloneStep,
 		`git config user.email agent@workflow-builder.local; git config user.name 'workflow-builder'`,
 		`git push -q "https://x-access-token:$GH@github.com/$REPO.git" HEAD:"$BR" || { echo "ERR=push_failed"; exit 0; }`,
+		`echo "BRANCH_PUSHED=$BR"`,
 		`if [ "$MODE" = pr ]; then`,
-		`  PR=$(curl -fsS -X POST -H "Authorization: Bearer $GH" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/pulls" -d "{\\"title\\":\\"$TITLE\\",\\"head\\":\\"$BR\\",\\"base\\":\\"$BASE\\",\\"body\\":\\"Promoted from a workflow-builder code version (durable source bundle).\\"}" || echo '{}')`,
+		`  PR=$(curl -fsS -X POST -H "Authorization: Bearer $GH" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/pulls" -d "{\\"title\\":\\"$PR_TITLE\\",\\"head\\":\\"$BR\\",\\"base\\":\\"$BASE\\",\\"body\\":\\"$PR_BODY\\"${draftFrag}}" || echo '{}')`,
 		`  URL=$(printf '%s' "$PR" | grep -oE 'https://github.com/[^"]+/pull/[0-9]+' | head -1)`,
 		`  if [ -n "$URL" ]; then echo "PR_URL=$URL"; else echo "PR_ERR=$(printf '%s' "$PR" | grep -oE '"message"[^,}]*' | head -1)"; fi`,
 		// D2 (flagged): label the fresh PR `preview` so the label-gated Tekton
@@ -140,10 +154,27 @@ export function buildPromotionCommand(
 					`  fi`,
 				]
 			: []),
-		`else echo "BRANCH_PUSHED=$BR"; fi`,
+		`fi`,
 	].join("\n");
 }
 
 function shQuote(value: string): string {
 	return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+/** Escape a string to a JSON-inner literal (no surrounding quotes) so it can be
+ * safely spliced into a JSON payload assembled in-shell (quotes/newlines handled). */
+function jsonInner(value: string): string {
+	const encoded = JSON.stringify(String(value ?? ""));
+	return encoded.slice(1, -1);
+}
+
+/** Reduce a caller-supplied branch prefix to a safe git ref segment. */
+function sanitizeBranchPrefix(raw: unknown): string {
+	if (typeof raw !== "string") return "";
+	return raw
+		.trim()
+		.replace(/[^A-Za-z0-9._/-]+/g, "-")
+		.replace(/^[-/]+|[-/]+$/g, "")
+		.slice(0, 80);
 }

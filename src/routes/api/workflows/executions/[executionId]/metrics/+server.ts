@@ -17,11 +17,23 @@ import { getApplicationAdapters } from "$lib/server/application";
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
-	const result = await getApplicationAdapters().workflowExecutionMetrics.getMetrics({
-		executionId: params.executionId,
-		userId: locals.session.userId,
-		projectId: locals.session.projectId,
-	});
+	let result;
+	try {
+		result = await getApplicationAdapters().workflowExecutionMetrics.getMetrics({
+			executionId: params.executionId,
+			userId: locals.session.userId,
+			projectId: locals.session.projectId,
+		});
+	} catch (err) {
+		// The aggregate lives behind session-event JSON casts; a malformed usage
+		// row (or an unreachable DB on a preview) must degrade to a soft 503, not a
+		// 500 that trips the run page's metrics panel.
+		console.error(
+			`[metrics] aggregate failed for execution ${params.executionId}:`,
+			err instanceof Error ? err.message : err,
+		);
+		return json({ available: false, error: "metrics_unavailable" }, { status: 503 });
+	}
 	if (result.status === "error") {
 		return error(result.httpStatus, result.message);
 	}

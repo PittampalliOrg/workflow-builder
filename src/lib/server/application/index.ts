@@ -655,6 +655,10 @@ export function getApplicationAdapters(
 	let workflowCodeVersionPromotion:
 		| ApplicationWorkflowCodeVersionPromotionService
 		| undefined;
+	// Bare source-bundle promotion runner (no D2 auto-preview-label, no gate) for
+	// the internal dev/preview-promote "promote-from-best" flow, where the GAN loop
+	// node is the gate.
+	let sourceBundlePromotionRunner: HelperPodSourceBundlePromotionRunner | undefined;
 	let workflowTriggerLifecycle:
 		| ApplicationWorkflowTriggerLifecycleService
 		| undefined;
@@ -1362,6 +1366,8 @@ export function getApplicationAdapters(
 					addPreviewLabel: config.promoteAutoPreviewLabel,
 				}),
 			}));
+	const getSourceBundlePromotionRunner = () =>
+		(sourceBundlePromotionRunner ??= new HelperPodSourceBundlePromotionRunner());
 	const getWorkflowTriggerLifecycle = () =>
 		(workflowTriggerLifecycle ??=
 			new ApplicationWorkflowTriggerLifecycleService({
@@ -1747,6 +1753,9 @@ export function getApplicationAdapters(
 		},
 		get workflowExecutionMetrics() {
 			return getWorkflowExecutionMetrics();
+		},
+		get sourceBundlePromotionRunner() {
+			return getSourceBundlePromotionRunner();
 		},
 		get workflowExecutionSessions() {
 			return getWorkflowExecutionSessions();

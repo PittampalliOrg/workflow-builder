@@ -3,10 +3,13 @@ import {
 	enrichLlmSpansWithRawTraceAttributes,
 	normalizeRawTraceSpans
 } from '$lib/server/observability/trace-span-normalization';
-import { getTraceLlmSpans, getTraceSpans } from '$lib/server/otel/clickhouse';
+import { getTraceLlmSpans, getTraceSpans, isClickHouseConfigured } from '$lib/server/otel/clickhouse';
 import { assertTraceInScope } from '../trace-access';
 
 export const GET: RequestHandler = async ({ params, locals }) => {
+	if (!isClickHouseConfigured()) {
+		return json({ configured: false, traceId: params.traceId ?? '', spans: [], spanCount: 0 }, { status: 503 });
+	}
 	await assertTraceInScope(params.traceId ?? '', locals.session);
 	try {
 		const traceId = params.traceId ?? '';
