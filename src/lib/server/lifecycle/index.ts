@@ -391,41 +391,47 @@ export async function confirmDurableStop(
 		return finalizeConfirmedStop(resolved, "stop confirmed");
 	}
 
-	// Cross-app child wedge: a still-RUNNING parent that is parked at a durable/run
-	// node whose agent child is already DB-terminated (the cascade stopped it; no
-	// runaway compute) but which a bare terminate/purge can never bring terminal.
-	// We force-finalize ONLY on positive evidence — the parent's live currentNodeId
-	// matches a terminated child's node — gated by the grace. This deliberately
-	// will NOT fire for a parent that moved on to a later non-agent node (node
-	// won't match) nor a still-booting sandbox (its session isn't DB-terminated, so
-	// its node isn't listed) — the two false-positives a coarse boolean allowed.
+	// Cross-app child wedge: a still-RUNNING parent whose durable/run agent
+	// child(ren) are all DB-terminal — terminated by the cascade OR crash-finalized
+	// out-of-band by the liveness reconciler (session `failed`+completedAt) — but
+	// which a bare terminate/purge can never bring terminal (the child
+	// sub-orchestration lives on a separate Dapr task hub). We force-finalize on
+	// POSITIVE evidence the whole agent side is dead: a stop was requested + the
+	// grace elapsed + at least one durable/run child node is terminal + NO child is
+	// still active ANYWHERE. That last guard is what keeps a healthy multi-branch
+	// run safe (a parent legitimately awaiting a LATER live agent child is never
+	// finalized). Crucially it does NOT require the parent's live currentNodeId to
+	// still match the dead child's node: a parent that crashed an earlier
+	// durable/run child and ADVANCED to a later approval-gate / non-agent node is
+	// just as wedged, and the old currentNodeId-exact-match left it polling
+	// "stopping" forever. `getParentCurrentNode` is fetched for the diagnostic log
+	// only. See shouldForceFinalizeCrossAppWedge.
 	let wedged = false;
+	let wedgedParentNode: string | null = null;
 	if (!parentClosed && resolved.terminatedChildNodes.length > 0) {
-		const nowMs = Date.now();
-		for (let i = 0; i < resolved.parentInstanceIds.length; i++) {
-			if (parentClosedFlags[i]) continue;
-			const node =
-				(await cascadeDeps.getParentCurrentNode?.(resolved.parentInstanceIds[i])) ?? null;
-			if (
-				shouldForceFinalizeCrossAppWedge({
-					stopRequestedAt: resolved.stopRequestedAt,
-					nowMs,
-					graceMs: WEDGE_FINALIZE_GRACE_MS,
-					parentCurrentNode: node,
-					terminatedChildNodes: resolved.terminatedChildNodes,
-					activeChildNodes: resolved.activeChildNodes,
-				})
-			) {
-				wedged = true;
-				break;
-			}
+		wedged = shouldForceFinalizeCrossAppWedge({
+			stopRequestedAt: resolved.stopRequestedAt,
+			nowMs: Date.now(),
+			graceMs: WEDGE_FINALIZE_GRACE_MS,
+			parentCurrentNode: null,
+			terminatedChildNodes: resolved.terminatedChildNodes,
+			activeChildNodes: resolved.activeChildNodes,
+		});
+		if (wedged) {
+			const firstRunning = resolved.parentInstanceIds.find(
+				(_id, i) => !parentClosedFlags[i],
+			);
+			wedgedParentNode = firstRunning
+				? ((await cascadeDeps.getParentCurrentNode?.(firstRunning)) ?? null)
+				: null;
 		}
 	}
 	if (wedged) {
 		console.warn(
 			`confirmDurableStop: cross-app child wedge on ${target.kind} ${target.id} — ` +
 				`agent child terminal but parent(s) [${resolved.parentInstanceIds.join(", ")}] ` +
-				`stuck RUNNING; force-deleting parent durable state and finalizing`,
+				`stuck RUNNING (live currentNode=${wedgedParentNode ?? "unknown"}); ` +
+				`force-deleting parent durable state and finalizing`,
 		);
 		try {
 			await cascadeDeps.purgeStateRows?.(

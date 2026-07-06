@@ -116,16 +116,21 @@ describe("daprStateKeyMatchPattern (GAP-4: boundary-anchored, no sibling over-de
 describe("shouldForceFinalizeCrossAppWedge", () => {
 	const now = 1_000_000;
 	const graceMs = 180_000;
-	// Positive evidence: parent parked at a node whose child session is terminated.
+	// Positive evidence: a durable/run child node is DB-terminal and no child is
+	// still active anywhere. `parentCurrentNode` no longer gates the decision (it is
+	// diagnostic-only) — the child-evidence rule + the grace do.
 	const base = {
 		stopRequestedAt: new Date(now - graceMs - 1),
 		nowMs: now,
 		graceMs,
 		parentCurrentNode: "build_3b1b_animation",
 		terminatedChildNodes: ["build_3b1b_animation"],
+		activeChildNodes: [] as string[],
 	};
 
-	it("fires: parent parked at a terminated child's node, grace elapsed", () => {
+	// --- Grace / stop-intent gating (unchanged) --------------------------------
+
+	it("fires: a terminated durable/run child, no active child, grace elapsed", () => {
 		expect(shouldForceFinalizeCrossAppWedge(base)).toBe(true);
 	});
 
@@ -142,26 +147,108 @@ describe("shouldForceFinalizeCrossAppWedge", () => {
 		expect(shouldForceFinalizeCrossAppWedge({ ...base, stopRequestedAt: null })).toBe(false);
 	});
 
-	it("GAP-1: does not fire when the parent moved on to a later non-agent node", () => {
-		// currentNode is a later node, not the terminated durable/run node.
+	// --- Core child-evidence matrix (the fix) ----------------------------------
+
+	it("(a) fires when currentNodeId still MATCHES the terminated child's node", () => {
+		// The classic wedge — the pre-fix behavior, kept green.
 		expect(
-			shouldForceFinalizeCrossAppWedge({ ...base, parentCurrentNode: "browser_validate_capture" }),
+			shouldForceFinalizeCrossAppWedge({
+				...base,
+				parentCurrentNode: "build_3b1b_animation",
+				terminatedChildNodes: ["build_3b1b_animation"],
+				activeChildNodes: [],
+			}),
+		).toBe(true);
+	});
+
+	it("(b) fires when currentNodeId has ADVANCED past the terminated child, no active child", () => {
+		// THE FIX: `plan` durable/run child crash-finalized while the parent advanced
+		// to a later approval-gate `approve_goal_spec`. currentNodeId no longer matches
+		// the dead child's node, but the run is still wedged → force-finalize.
+		expect(
+			shouldForceFinalizeCrossAppWedge({
+				...base,
+				parentCurrentNode: "approve_goal_spec",
+				terminatedChildNodes: ["plan"],
+				activeChildNodes: [],
+			}),
+		).toBe(true);
+	});
+
+	it("(c) does NOT fire when a terminated child is under one node but an ACTIVE child is under another", () => {
+		// A parent that crashed an earlier durable/run branch (`plan`) but is now
+		// legitimately running a LATER one (`solve`) with a live child — the absolute
+		// "no active child anywhere" guard protects it.
+		expect(
+			shouldForceFinalizeCrossAppWedge({
+				...base,
+				parentCurrentNode: "solve",
+				terminatedChildNodes: ["plan"],
+				activeChildNodes: ["solve"],
+			}),
 		).toBe(false);
 	});
 
-	it("GAP-2: does not fire while a still-booting child has no terminated node", () => {
-		// Booting sandbox 404s but its session is not DB-terminated → node not listed.
-		expect(shouldForceFinalizeCrossAppWedge({ ...base, terminatedChildNodes: [] })).toBe(false);
+	it("(d) a crash-finalized (failed+completedAt) child node finalizes; a not-yet-completed failed one does not", () => {
+		// The resolver (lifecycle-resolver.ts, PR #441) classifies a child that is
+		// `failed` WITH completedAt as terminal → its node lands in terminatedChildNodes
+		// → the wedge finalizes. A child that is `failed` WITHOUT completedAt is not yet
+		// crash-finalized → its node stays in activeChildNodes → the guard blocks. We
+		// model both resolver outputs at the predicate boundary here.
+		expect(
+			shouldForceFinalizeCrossAppWedge({
+				...base,
+				terminatedChildNodes: ["plan"],
+				activeChildNodes: [],
+			}),
+		).toBe(true);
+		expect(
+			shouldForceFinalizeCrossAppWedge({
+				...base,
+				terminatedChildNodes: [],
+				activeChildNodes: ["plan"],
+			}),
+		).toBe(false);
 	});
 
-	it("does not fire when the parent's current node is unknown (null)", () => {
-		expect(shouldForceFinalizeCrossAppWedge({ ...base, parentCurrentNode: null })).toBe(false);
+	it("(e) does NOT fire when there are no terminated children at all", () => {
+		// A still-booting sandbox that merely 404s has no DB-terminal child → no node
+		// listed → no cross-app wedge to clean up.
+		expect(
+			shouldForceFinalizeCrossAppWedge({ ...base, terminatedChildNodes: [], activeChildNodes: [] }),
+		).toBe(false);
 	});
 
-	it("GAP-3: fires for a for/loop node whose loop-nested durable/run children are terminated", () => {
-		// GAN harness: parent currentNodeId is the bare loop name `refine`; its
-		// durable/run children dispatch as `refine-generate-0-` / `refine-evaluate-0-`,
-		// so an exact match never hit and the parent wedged RUNNING.
+	// --- currentNodeId is diagnostic-only: same child evidence, any node --------
+
+	it.each([
+		["matches the dead child", "build_3b1b_animation"],
+		["advanced to a later node", "approve_goal_spec"],
+		["is unknown (null / status unavailable)", null],
+		["is a prefix-sibling of the dead node", "build_3b1b_animation_summary"],
+	])(
+		"decides on child evidence regardless of currentNodeId (%s)",
+		(_label, node) => {
+			// Given the SAME positive evidence (a terminated child, no active child), the
+			// outcome is identical no matter what the parent's live currentNodeId is —
+			// the whole point of the fix. Before it, a null/advanced/sibling node blocked
+			// finalization and the Stop polled "stopping" forever.
+			expect(
+				shouldForceFinalizeCrossAppWedge({
+					...base,
+					parentCurrentNode: node,
+					terminatedChildNodes: ["build_3b1b_animation"],
+					activeChildNodes: [],
+				}),
+			).toBe(true);
+		},
+	);
+
+	// --- Loop/for nodes: mid-iteration protection (unchanged) ------------------
+
+	it("fires for a for/loop node whose loop-nested durable/run children are terminated", () => {
+		// GAN harness: the loop `refine` dispatches durable/run children as
+		// `refine-generate-0-` / `refine-evaluate-0-`; both terminal, none active → fire.
 		expect(
 			shouldForceFinalizeCrossAppWedge({
 				...base,
@@ -172,25 +259,13 @@ describe("shouldForceFinalizeCrossAppWedge", () => {
 		).toBe(true);
 	});
 
-	it("GAP-3: does NOT fire while a loop iteration is still active under the parent", () => {
+	it("does NOT fire while a loop iteration is still active anywhere", () => {
 		expect(
 			shouldForceFinalizeCrossAppWedge({
 				...base,
 				parentCurrentNode: "refine",
 				terminatedChildNodes: ["refine-generate-0-"],
 				activeChildNodes: ["refine-generate-1-"],
-			}),
-		).toBe(false);
-	});
-
-	it("does not loop-prefix-match an unrelated sibling node", () => {
-		// `refine` must not match a sibling like `refine_summary` (no `-`/`/` boundary).
-		expect(
-			shouldForceFinalizeCrossAppWedge({
-				...base,
-				parentCurrentNode: "refine",
-				terminatedChildNodes: ["refine_summary"],
-				activeChildNodes: [],
 			}),
 		).toBe(false);
 	});
