@@ -380,17 +380,24 @@ def _managed_settings() -> dict:
 
 def test_managed_settings_bakes_exactly_the_mirroring_hooks():
     """managed-settings.json must bake all mirroring/lifecycle hooks (incl Stop)
-    and must NOT bake the blocking permission hooks (those strand one-shot runs)."""
+    plus the StopFailure turn-failure edge (belt-and-suspenders vs the per-session
+    seed — the bake survives a failed _seed_runtime_hooks; double registration is
+    harmless via the shared (instance_id, turn) completion key), and must NOT bake
+    the blocking permission hooks (those strand one-shot runs)."""
     from src.cli_adapters.claude_code import (
         _BLOCKING_HOOK_EVENTS,
+        _FAILURE_HOOK_EVENTS,
         _MIRROR_HOOK_EVENTS,
         HOOK_RELAY_URL,
     )
 
     settings = _managed_settings()
     baked = set(settings.get("hooks", {}).keys())
-    assert baked == set(_MIRROR_HOOK_EVENTS), "managed-settings drifted from _MIRROR_HOOK_EVENTS"
+    assert baked == set(_MIRROR_HOOK_EVENTS) | set(_FAILURE_HOOK_EVENTS), (
+        "managed-settings drifted from _MIRROR_HOOK_EVENTS + _FAILURE_HOOK_EVENTS"
+    )
     assert "Stop" in baked, "deterministic Stop turn-end hook must be baked"
+    assert "StopFailure" in baked, "the turn-failure edge must be baked"
     for ev in _BLOCKING_HOOK_EVENTS:
         assert ev not in baked, f"{ev} must NOT be baked (strands one-shot runs)"
     # every baked hook relays to the cli-agent-py hooks receiver, matcher-less
