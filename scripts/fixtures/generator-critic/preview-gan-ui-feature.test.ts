@@ -99,6 +99,27 @@ describe("preview-gan-ui-feature fixture", () => {
 		expect(critique.with.body.prompt).toContain("before your final message");
 	});
 
+	it("carries ecosystem scope: critic classifies in-app issues, read_verdict relays them, generator fixes them", () => {
+		const refine = spec().do.find((n: any) => n.refine).refine;
+		const critique = refine.do.find((n: any) => n.critique).critique;
+		const readVerdict = refine.do.find((n: any) => n.read_verdict).read_verdict;
+		const generate = refine.do.find((n: any) => n.generate).generate;
+		// critic verdict schema v1 gains ecosystemIssues [{area,detail,suggestedFix}]
+		// and a hard env-vs-ecosystem boundary
+		expect(critique.with.body.prompt).toContain("ecosystemIssues");
+		expect(critique.with.body.prompt).toContain("suggestedFix");
+		expect(critique.with.body.prompt).toContain("HARD BOUNDARY");
+		expect(critique.with.agentConfig.instructions).toContain("ecosystemIssues");
+		// read_verdict serializes the (bounded) ecosystem list into its stdout JSON
+		expect(readVerdict.with.command).toContain("ECOSYSTEM");
+		expect(readVerdict.with.command).toContain("ecosystem");
+		expect(readVerdict.with.command).toContain("1500");
+		// generator gets an explicit ecosystem-scope mandate + the relayed list
+		expect(generate.with.body.prompt).toContain("ECOSYSTEM SCOPE");
+		expect(generate.with.body.prompt).toContain("Ecosystem issues flagged by the critic");
+		expect(generate.with.body.prompt).toContain(".ecosystem");
+	});
+
 	it("promotes via the dev/preview-promote action (no inline git shell), draft when not accepted", () => {
 		const promote = spec().do.find((n: any) => n.promote).promote;
 		expect(promote.call).toBe("dev/preview-promote");

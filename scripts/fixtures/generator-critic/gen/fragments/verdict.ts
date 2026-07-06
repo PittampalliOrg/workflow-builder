@@ -42,6 +42,7 @@ export MEETS=__MEETS__
 export CRIT_PRESENT=__CRIT_PRESENT__
 export FEEDBACK=__FEEDBACK_SH__
 export ENVISSUES=__ENVISSUES_SH__
+export ECOSYSTEM=__ECOSYSTEM_SH__
 mkdir -p /sandbox/work/gan
 GATE_JSON=/sandbox/work/gan/gate-$IDX.json
 export GATE_PASS=$(python3 -c 'import json,sys
@@ -61,7 +62,7 @@ except Exception: K=2
 if K<1: K=1
 gate_pass=(os.environ.get("GATE_PASS","false")=="true")
 # ---- FILE FIRST: verdict-<idx>.json with a matching iteration wins ----
-source="missing"; meets=False; score=0.0; feedback=""; env_issues=[]
+source="missing"; meets=False; score=0.0; feedback=""; env_issues=[]; eco_issues=[]
 data=None
 try:
     with open(os.environ.get("VERDICT_FILE","")) as fh: data=json.load(fh)
@@ -74,6 +75,8 @@ if isinstance(data,dict) and str(data.get("iteration"))==str(idx):
     feedback=str(data.get("feedback") or "")
     ei=data.get("envIssues")
     if isinstance(ei,list): env_issues=ei
+    eco=data.get("ecosystemIssues")
+    if isinstance(eco,list): eco_issues=eco
 elif os.environ.get("CRIT_PRESENT","false")=="true":
     # ---- fall back to the env-injected message-parsed verdict ----
     source="message"
@@ -85,7 +88,17 @@ elif os.environ.get("CRIT_PRESENT","false")=="true":
         ei=json.loads(os.environ.get("ENVISSUES","[]") or "[]")
         if isinstance(ei,list): env_issues=ei
     except Exception: env_issues=[]
+    try:
+        eco=json.loads(os.environ.get("ECOSYSTEM","[]") or "[]")
+        if isinstance(eco,list): eco_issues=eco
+    except Exception: eco_issues=[]
 if score>10: score=score/10.0
+# bound the ecosystem list to ~1500 chars of serialized issues (still a valid array)
+eco_out=[]; _tot=0
+for _it in eco_issues:
+    _s=json.dumps(_it)
+    if _tot+len(_s)>1500: break
+    eco_out.append(_it); _tot+=len(_s)
 # ---- progress log (append this iteration) ----
 P="/sandbox/work/gan/progress.json"
 try: prog=json.load(open(P))
@@ -105,7 +118,7 @@ else:
     best_i,best_score=idx,score
 terminal=("satisfied" if accepted else ("stalled" if stalled else None))
 json.dump(prog,open(P,"w"))
-print(json.dumps({"schema":"gan.verdict/v1","iteration":idx,"verdict_source":source,"meets_criteria":meets,"score":score,"gate_pass":gate_pass,"accepted":accepted,"stalled":stalled,"best_score":best_score,"best_iteration":best_i,"terminal":terminal,"iterations":len(prog["log"]),"feedback":(feedback or "")[:2000],"envIssues":env_issues},separators=(",",":")))
+print(json.dumps({"schema":"gan.verdict/v1","iteration":idx,"verdict_source":source,"meets_criteria":meets,"score":score,"gate_pass":gate_pass,"accepted":accepted,"stalled":stalled,"best_score":best_score,"best_iteration":best_i,"terminal":terminal,"iterations":len(prog["log"]),"feedback":(feedback or "")[:2000],"envIssues":env_issues,"ecosystem":eco_out},separators=(",",":")))
 PYZZ
 `;
 }
@@ -121,6 +134,7 @@ export function buildReadVerdictNode(cfg: GanFixtureConfig): Record<string, unkn
 			'(((.loop.last.critique) != null) and (((.loop.last.critique) | type) == "object")) | tostring',
 		__FEEDBACK_SH__: '(.loop.last.critique.feedback // "") | @sh',
 		__ENVISSUES_SH__: "(.loop.last.critique.envIssues // []) | tojson | @sh",
+		__ECOSYSTEM_SH__: "(.loop.last.critique.ecosystemIssues // []) | tojson | @sh",
 	});
 	return {
 		read_verdict: {
