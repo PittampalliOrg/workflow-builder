@@ -23,6 +23,9 @@ function gateScript(cfg: GanFixtureConfig): string {
 	return `IDX=__IDX__
 EXPORT_URL=__EXPORT_URL__
 export CI=1
+# svelte-check (9920 files) SIGABRTs V8 with the default heap under the pod's
+# ~6GiB cgroup — give every phase a properly sized old-space heap.
+export NODE_OPTIONS=--max-old-space-size=4096
 set +e
 mkdir -p /sandbox/work/gan /sandbox/scratch
 REPO=/sandbox/scratch/gate-repo
@@ -31,11 +34,14 @@ GATE_JSON=/sandbox/work/gan/gate-$IDX.json
 # pnpm bootstrap for the NON-ROOT cli-agent user: the workspace pod has
 # node/npm/corepack but no pnpm, and the user cannot write /usr/local/bin or the
 # global npm prefix — so install into user-writable /tmp dirs and put them on
-# PATH BEFORE any phase runs.
-export PATH=/tmp/gan-bin:/tmp/gan-npm/bin:$PATH
+# PATH BEFORE any phase runs. Pin pnpm@10 (the repo Dockerfile's version): the
+# repo has NO packageManager pin, and corepack's pnpm 11 refuses dependency build
+# scripts (ERR_PNPM_IGNORED_BUILDS). /tmp/gan-npm/bin is FIRST on PATH so the
+# pinned pnpm@10 wins over any corepack shim.
+export PATH=/tmp/gan-npm/bin:/tmp/gan-bin:$PATH
 if ! command -v pnpm >/dev/null 2>&1; then
   mkdir -p /tmp/gan-bin /tmp/gan-npm
-  corepack enable --install-directory /tmp/gan-bin >/dev/null 2>&1 || npm i -g --prefix /tmp/gan-npm pnpm >/dev/null 2>&1
+  npm i -g --prefix /tmp/gan-npm pnpm@10 >/dev/null 2>&1 || corepack enable --install-directory /tmp/gan-bin >/dev/null 2>&1
 fi
 rm -rf "$REPO"
 if ! git clone --depth 1 --single-branch https://x-access-token:\${GITHUB_TOKEN}@github.com/${cfg.promote.repoUrl}.git "$REPO"; then
@@ -52,17 +58,17 @@ cd "$REPO"
 [ -f "$NM_CACHE" ] && tar -xf "$NM_CACHE" -C "$REPO" 2>/dev/null
 IRC=0
 if [ ! -d node_modules ]; then
-  timeout ${s} pnpm install --no-frozen-lockfile >/tmp/gate-install.log 2>&1; IRC=$?
+  timeout ${s.install} pnpm install --no-frozen-lockfile --ignore-scripts >/tmp/gate-install.log 2>&1; IRC=$?
   echo "--- install rc=$IRC"; tail -25 /tmp/gate-install.log
   [ "$IRC" -eq 0 ] && tar -cf "$NM_CACHE" node_modules 2>/dev/null
 else
   echo "--- install rc=0 (cached node_modules)"
 fi
-CRC=0; timeout ${s} pnpm check >/tmp/gate-check.log 2>&1; CRC=$?
+CRC=0; timeout ${s.check} pnpm check >/tmp/gate-check.log 2>&1; CRC=$?
 echo "--- check rc=$CRC"; tail -25 /tmp/gate-check.log
-BRC=0; timeout ${s} pnpm check:boundaries >/tmp/gate-bound.log 2>&1; BRC=$?
+BRC=0; timeout ${s.boundaries} pnpm check:boundaries >/tmp/gate-bound.log 2>&1; BRC=$?
 echo "--- boundaries rc=$BRC"; tail -25 /tmp/gate-bound.log
-TRC=0; timeout ${s} pnpm test:unit >/tmp/gate-test.log 2>&1; TRC=$?
+TRC=0; timeout ${s.testUnit} pnpm test:unit >/tmp/gate-test.log 2>&1; TRC=$?
 echo "--- test-unit rc=$TRC"; tail -25 /tmp/gate-test.log
 export IRC CRC BRC TRC GATE_IDX=$IDX GATE_JSON
 python3 - <<'PYZZ'

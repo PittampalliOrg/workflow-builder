@@ -10,13 +10,20 @@
 export type GanGrounding = "preview-adopted" | "preview-service" | "clone";
 export type GanDomain = "ui-web";
 
+export interface GatePhaseSeconds {
+	install: number;
+	check: number;
+	boundaries: number;
+	testUnit: number;
+}
+
 export interface GanTimeouts {
 	/** dev/preview ensure wait, seconds. */
 	previewWaitReadySeconds: number;
 	/** dev/preview lease, seconds. */
 	previewTimeoutSeconds: number;
-	/** per-gate-phase `timeout` wrapper, seconds. */
-	gatePhaseSeconds: number;
+	/** per-gate-phase `timeout` wrapper, seconds (svelte-check is the long pole). */
+	gatePhaseSeconds: GatePhaseSeconds;
 	/** overall gate node timeout, ms. */
 	gateTimeoutMs: number;
 	/** helper-pod pin lease for cliWorkspace command nodes, minutes. */
@@ -60,8 +67,9 @@ export interface GanFixtureConfig {
 export const DEFAULT_TIMEOUTS: GanTimeouts = {
 	previewWaitReadySeconds: 240,
 	previewTimeoutSeconds: 86400,
-	gatePhaseSeconds: 240,
-	gateTimeoutMs: 900000,
+	// svelte-check on 9920 files is the long pole (~94s); install ~30s cold.
+	gatePhaseSeconds: { install: 300, check: 420, boundaries: 180, testUnit: 420 },
+	gateTimeoutMs: 1500000,
 	helperTimeoutMinutes: 240,
 };
 
