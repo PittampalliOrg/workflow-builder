@@ -251,7 +251,10 @@ async def _start_cli(input_data: dict[str, Any]) -> dict[str, Any]:
         supervisor = get_supervisor()
         if supervisor is not None:
             supervisor.register_session(
-                session_id=session_id, instance_id=instance_id, pane_ref=pane_ref
+                session_id=session_id,
+                instance_id=instance_id,
+                pane_ref=pane_ref,
+                one_shot=one_shot,
             )
             # Adapter background work (e.g. agy's ~/.gemini login-bundle capture
             # watcher). Best-effort; must not break session start.

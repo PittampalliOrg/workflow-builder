@@ -165,6 +165,7 @@ class FakeSupervisor:
         self.turn_started_count = 1
         self.injected_prompts: set[str] = set()
         self.suppress_idle_calls = 0
+        self.one_shot = False
 
     def get_session(self):
         return {
@@ -172,6 +173,7 @@ class FakeSupervisor:
             "instanceId": "inst-1",
             "paneRef": "p1",
             "turnStartedCount": self.turn_started_count,
+            "oneShot": self.one_shot,
         }
 
     def register_transcript(self, path, cli_session_id):
@@ -608,6 +610,65 @@ def test_stop_drains_late_final_transcript_line_into_turn_completed(tmp_path, mo
         {"type": "text", "text": "FINAL verdict message"}
     ]
     assert len(agent_messages) == 2  # mid-turn + final, no hook-side duplicate
+
+
+def test_pretooluse_ask_user_question_denied_in_one_shot_session():
+    processor, published, raised, supervisor, _manager = _processor()
+    supervisor.one_shot = True
+
+    response = asyncio.run(
+        processor.process(_hook("PreToolUse", tool_name="AskUserQuestion"))
+    )
+
+    # Blocking deny in both the generic and claude hookSpecificOutput shapes.
+    assert response["decision"] == "block"
+    assert response["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert response["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "headless automated run" in response["reason"]
+    assert "no human present" in response["hookSpecificOutput"]["permissionDecisionReason"]
+    # A hook.decision is mirrored; the tool never runs (no agent.tool_use), and
+    # no turn completion is raised.
+    assert published == [
+        (
+            "sess-1",
+            "hook.decision",
+            {
+                "hook_event": "PreToolUse",
+                "decision": "deny",
+                "reason": response["reason"],
+                "tool_name": "AskUserQuestion",
+                "source": "one-shot-ask-guard",
+            },
+        )
+    ]
+    assert raised == []
+
+
+def test_pretooluse_ask_user_question_allowed_in_interactive_session():
+    processor, published, _raised, supervisor, _manager = _processor()
+    assert supervisor.one_shot is False  # interactive default
+
+    response = asyncio.run(
+        processor.process(_hook("PreToolUse", tool_name="AskUserQuestion"))
+    )
+
+    # Not denied: default (empty) response and the tool_use is mirrored normally.
+    assert response.get("decision") != "block"
+    assert any(etype == "agent.tool_use" for _sid, etype, _data in published)
+
+
+def test_pretooluse_other_tool_not_denied_in_one_shot_session():
+    """The guard is scoped to AskUserQuestion — other tools run normally even in
+    a one-shot run (they don't wait on a human)."""
+    processor, published, _raised, supervisor, _manager = _processor()
+    supervisor.one_shot = True
+
+    response = asyncio.run(
+        processor.process(_hook("PreToolUse", tool_name="Bash", tool_input={"command": "ls"}))
+    )
+
+    assert response.get("decision") != "block"
+    assert any(etype == "agent.tool_use" for _sid, etype, _data in published)
 
 
 def test_session_end_raises_cli_session_end():
