@@ -1,8 +1,11 @@
 <script lang="ts">
 	/**
-	 * Live YAML spec editor with syntax highlighting via CodeMirror 6.
-	 * Editing the YAML updates the canvas (spec is the source of truth).
-	 * Canvas changes are reflected back in the editor.
+	 * Live spec editor with syntax highlighting via CodeMirror 6.
+	 *
+	 * SW 1.0 workflows edit the spec as YAML; dynamic-script workflows edit
+	 * the JS script directly (the script IS the spec) with JavaScript
+	 * highlighting — edits re-render the canvas structure preview live.
+	 * Canvas/AI changes are reflected back into the editor.
 	 */
 	import { onMount, getContext } from 'svelte';
 	import { Copy, Wand2, Check } from '@lucide/svelte';
@@ -23,6 +26,9 @@
 	let saved = $state(true);
 	let applyTimeout: ReturnType<typeof setTimeout> | null = null;
 
+	// Dynamic-script: the JS source IS the spec; edit it directly.
+	const isScript = $derived(store.isDynamicScript);
+
 	// Convert current spec to YAML string
 	function specToYaml(): string {
 		if (!store.spec) return '';
@@ -31,6 +37,10 @@
 		} catch {
 			return '';
 		}
+	}
+
+	function currentDocSource(): string {
+		return isScript ? store.scriptSource : specToYaml();
 	}
 
 	// Initialize CodeMirror when tab first becomes visible
@@ -50,16 +60,31 @@
 		}
 	});
 
+	// The language extension is chosen at init, but the workflow (and thus
+	// isDynamicScript) loads async — if the mode flips after init (e.g. the
+	// Spec tab was already active during load), rebuild the editor in the
+	// right language.
+	let initializedMode = $state<boolean | null>(null);
+	$effect(() => {
+		const mode = isScript;
+		if (!editorInitialized || !editorView || initializedMode === mode) return;
+		editorView.destroy();
+		editorView = null;
+		requestAnimationFrame(() => initEditor());
+	});
+
 	async function initEditor() {
 		const { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, highlightActiveLine } = await import('@codemirror/view');
 		const { EditorState } = await import('@codemirror/state');
 		const { yaml: yamlLang } = await import('@codemirror/lang-yaml');
+		const { javascript } = await import('@codemirror/lang-javascript');
 		const { oneDark } = await import('@codemirror/theme-one-dark');
 		const { defaultKeymap, history, historyKeymap, indentWithTab } = await import('@codemirror/commands');
 		const { syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldGutter, indentOnInput } = await import('@codemirror/language');
 		const { closeBrackets } = await import('@codemirror/autocomplete');
 
-		const initialYaml = specToYaml();
+		initializedMode = isScript;
+		const initialYaml = currentDocSource();
 		lastAppliedYaml = initialYaml;
 
 		const updateListener = EditorView.updateListener.of((update) => {
@@ -68,7 +93,7 @@
 				saved = false;
 				// Debounce: apply spec after 800ms of no typing
 				if (applyTimeout) clearTimeout(applyTimeout);
-				applyTimeout = setTimeout(() => applyYamlToCanvas(), 800);
+				applyTimeout = setTimeout(() => applyEditorToCanvas(), 800);
 			}
 		});
 
@@ -123,7 +148,7 @@
 					bracketMatching(),
 					closeBrackets(),
 					highlightActiveLine(),
-					yamlLang(),
+					isScript ? javascript() : yamlLang(),
 					oneDark,
 					appTheme,
 					syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
@@ -131,7 +156,7 @@
 						...defaultKeymap,
 						...historyKeymap,
 						indentWithTab,
-						{ key: 'Mod-s', run: () => { applyYamlToCanvas(); return true; } },
+						{ key: 'Mod-s', run: () => { applyEditorToCanvas(); return true; } },
 					]),
 					updateListener,
 					EditorView.lineWrapping,
@@ -153,7 +178,7 @@
 
 	// Watch for external spec changes (from AI agent, canvas edits, etc.)
 	$effect(() => {
-		const currentYaml = specToYaml();
+		const currentYaml = currentDocSource();
 		if (!editorView || currentYaml === lastAppliedYaml) return;
 
 		// External change — update editor content
@@ -168,6 +193,30 @@
 		}
 		isInternalUpdate = false;
 	});
+
+	async function applyEditorToCanvas() {
+		if (!editorView) return;
+		if (isScript) {
+			await applyScriptToStore();
+			return;
+		}
+		await applyYamlToCanvas();
+	}
+
+	async function applyScriptToStore() {
+		const text = editorView.state.doc.toString();
+		if (text === lastAppliedYaml) { saved = true; return; }
+		if (!text.trim()) {
+			toast.error('Script is empty');
+			return;
+		}
+		// The script IS the spec — update spec.script in place; the ScriptCanvas
+		// re-parses the structure preview from store.scriptSource. Validation of
+		// the dialect happens server-side (validate_workflow_script) / at run.
+		await store.applySpecAndRebuild({ ...(store.spec ?? {}), engine: 'dynamic-script', script: text });
+		lastAppliedYaml = text;
+		saved = true;
+	}
 
 	async function applyYamlToCanvas() {
 		if (!editorView) return;
@@ -203,7 +252,7 @@
 	function handleCopy() {
 		if (!editorView) return;
 		navigator.clipboard.writeText(editorView.state.doc.toString());
-		toast.success('YAML copied to clipboard');
+		toast.success(isScript ? 'Script copied to clipboard' : 'YAML copied to clipboard');
 	}
 
 	function handleFormat() {
@@ -230,16 +279,19 @@
 	<!-- Footer toolbar -->
 	<div class="flex items-center justify-between border-t border-border px-2 py-1">
 		<div class="flex items-center gap-1">
-			<Button variant="ghost" size="sm" class="h-6 text-[10px] px-2 gap-1" onclick={handleFormat}>
-				<Wand2 size={10} />
-				Format
-			</Button>
+			{#if !isScript}
+				<Button variant="ghost" size="sm" class="h-6 text-[10px] px-2 gap-1" onclick={handleFormat}>
+					<Wand2 size={10} />
+					Format
+				</Button>
+			{/if}
 			<Button variant="ghost" size="sm" class="h-6 text-[10px] px-2 gap-1" onclick={handleCopy}>
 				<Copy size={10} />
 				Copy
 			</Button>
 		</div>
 		<div class="flex items-center gap-1 text-[10px] text-muted-foreground">
+			<span class="mr-2 opacity-60">{isScript ? 'JavaScript · dynamic-script' : 'YAML · SW 1.0'}</span>
 			{#if saved}
 				<Check size={10} class="text-green-500" />
 				<span>Saved</span>

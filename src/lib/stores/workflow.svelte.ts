@@ -490,6 +490,9 @@ export function createWorkflowStore() {
   /** Rebuild nodes/edges from spec, preserving cached catalog metadata */
   async function rebuildGraphFromSpec() {
     if (!spec) return;
+    // Dynamic-script specs have no SW 1.0 `do` graph — the ScriptCanvas
+    // derives its structure preview from spec.script directly.
+    if ((spec as Record<string, unknown>).engine === "dynamic-script") return;
     try {
       const { specToGraph } = await import("$lib/utils/spec-graph-adapter");
       const graph = specToGraph(spec, taskMetadata);
