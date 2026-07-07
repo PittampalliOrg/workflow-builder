@@ -800,3 +800,28 @@ def test_unresolvable_workflow_ref_loops_instead_of_stalling():
     assert "not found" in raw["error"]
     # ...and NO child workflow was ever created.
     assert ctx.children == {}
+
+
+def test_nested_run_never_persists_to_the_shared_execution_row():
+    """LIVE-CAUGHT regression: a workflow() child shares the ROOT run's
+    executionId; its terminal persist_results_to_db clobbered the shared row
+    (success + the CHILD's returnValue) while the parent was still running, and
+    the parent's later patch could not land. Nested pumps must return their
+    result WITHOUT persisting — the parent journals it via
+    record_script_call_result."""
+    ctx = FakeCtx(evaluator=make_evaluator([], {"child": True}))
+    result = drive(
+        dynamic_script_workflow(ctx, base_input(nested=True)), ctx, steps=[]
+    )
+    assert result["success"] is True
+    assert result["returnValue"] == {"child": True}
+    persists = [a for a in ctx.action_log if a[0] == "activity" and a[1] == "persist_results_to_db"]
+    assert persists == []
+
+
+def test_root_run_still_persists_terminal_results():
+    ctx = FakeCtx(evaluator=make_evaluator([], {"root": True}))
+    result = drive(dynamic_script_workflow(ctx, base_input()), ctx, steps=[])
+    assert result["success"] is True
+    persists = [a for a in ctx.action_log if a[0] == "activity" and a[1] == "persist_results_to_db"]
+    assert len(persists) == 1
