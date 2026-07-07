@@ -397,3 +397,25 @@ def test_resolve_llm_metadata_without_response_json_schema_is_safe():
     # a non-dict responseJsonSchema is dropped, not propagated
     llm = resolve_llm_metadata(agent_config={"modelSpec": "zai/glm-5.2", "responseJsonSchema": "nope"})
     assert "responseJsonSchema" not in llm
+
+
+def test_resolve_llm_metadata_carries_structured_output_mode():
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    llm = resolve_llm_metadata(
+        agent_config={
+            "modelSpec": "zai/glm-5.2",
+            "responseJsonSchema": schema,
+            "structuredOutputMode": "tool",
+        }
+    )
+    assert llm["structuredOutputMode"] == "tool"
+    assert llm["responseJsonSchema"] == schema
+
+
+def test_resolve_llm_metadata_drops_unknown_structured_output_mode():
+    llm = resolve_llm_metadata(
+        agent_config={"modelSpec": "zai/glm-5.2", "structuredOutputMode": "bogus"}
+    )
+    assert "structuredOutputMode" not in llm
+    llm = resolve_llm_metadata(agent_config={"modelSpec": "zai/glm-5.2"})
+    assert "structuredOutputMode" not in llm

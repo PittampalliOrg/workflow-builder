@@ -21,6 +21,9 @@ dependencies = [
     # mlflow-skinny excludes scikit-learn / pandas / etc. — we only need
     # the tracing module.
     "mlflow-skinny>=3.6",
+    # StructuredOutput tool validation (src/structured_output.py) — already a
+    # transitive dependency; pinned explicitly because runtime code imports it.
+    "jsonschema>=4.0",
     "markdownify>=0.12",
     "ddgs>=7.0",
     "anthropic>=0.51",

@@ -358,6 +358,12 @@ def resolve_llm_metadata(
     response_schema = config.get("responseJsonSchema")
     if isinstance(response_schema, dict) and response_schema:
         out["responseJsonSchema"] = response_schema
+    # How the schema is enforced on providers without a strict json_schema
+    # mode: "tool" = inject the synthetic StructuredOutput tool (Claude Code
+    # mechanism); absent = provider-native/json_object per adapter.
+    structured_mode = (_string(config.get("structuredOutputMode")) or "").lower()
+    if structured_mode == "tool":
+        out["structuredOutputMode"] = "tool"
     return out
 
 

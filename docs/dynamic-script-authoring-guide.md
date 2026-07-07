@@ -253,10 +253,18 @@ same `opts.schema`; the return contract is identical regardless of which tier fi
   default `openai/gpt-5.5`) and enforced with strict constrained decoding — essentially guaranteed
   schema-valid on the first attempt (no retries). This is **hybrid routing**: only *schema'd* calls
   move to OpenAI; open-ended (non-schema) calls stay on GLM.
-- **Tier 2 — GLM `json_object`.** If you route a schema'd call to GLM explicitly (`opts.model:
-  'zai/glm-5.2'` or a per-phase model), GLM forces valid JSON via `json_object` (GLM has no strict
-  json_schema mode) — not shape-enforced, but it kills "prose instead of JSON" failures, and GLM's
-  thinking stays on.
+- **Tier 2 — GLM `StructuredOutput` tool (the Claude Code mechanism).** If you route a schema'd
+  call to GLM explicitly (`opts.model: 'zai/glm-5.2'` or a per-phase model) and the schema is
+  object-shaped, the runtime injects a synthetic **`StructuredOutput` tool whose parameters ARE
+  your schema** into the request; the agent delivers its result by *calling the tool* (it can use
+  Read/Bash/WebSearch etc. first). Invalid arguments come back as a tool error with the exact
+  validation failures, so the model corrects **in the same session** (a new turn, not a new
+  session); a model that tries to finish in plain text is re-prompted (up to 5 nudges — the durable
+  equivalent of Claude Code's Stop-hook enforcement). A valid call ends the session with the
+  canonical JSON as its final output. GLM's API honors only `tool_choice: "auto"`, so this is
+  availability + prompt + loop-guard — exactly Claude Code's own design. Non-object schemas (and
+  `DYNAMIC_SCRIPT_STRUCTURED_TOOL=false`) fall back to `json_object` (valid JSON, not
+  shape-enforced; note `json_object` never applies to tool-carrying sessions anyway).
 - **Tier 3 — universal fallback (always on).** The `<output-contract>` prompt block +
   `jsonschema` validation + **corrective retry session** (up to `maxStructuredRetries`, default **5**;
   then `null` with `error_max_structured_output_retries`) run for *every* schema'd call regardless of
@@ -267,7 +275,8 @@ same `opts.schema`; the return contract is identical regardless of which tier fi
 Tier-1 routing — set it to keep a schema'd call on GLM (Tier 2), or to pick a different strict model.
 Because Tier-1 routes schema'd calls to OpenAI, **schema'd calls bill OpenAI** (open-ended calls stay
 on the cheap GLM default). The whole native path is behind `DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT`
-(default on) — set it off to revert every schema'd call to GLM + the prompt-contract.
+(default on) — set it off to revert every schema'd call to GLM + the prompt-contract; the Tier-2 tool
+mode alone is behind `DYNAMIC_SCRIPT_STRUCTURED_TOOL` (default on).
 
 ## Validate before you run
 

@@ -941,3 +941,68 @@ def test_native_structured_gated_to_dapr_agent_py(monkeypatch):
     cfg = d._build_agent_config({"schema": schema}, {"model": "zai/glm-5.2"}, "claude-agent-py", {})
     assert "responseJsonSchema" not in cfg
     assert "modelSpec" not in cfg
+
+# ---------------------------------------------------------------------------
+# StructuredOutput TOOL mode (Tier-2 upgrade): a schema'd call resolved to GLM
+# stamps structuredOutputMode=tool and gets the tool-flavored output contract.
+# ---------------------------------------------------------------------------
+def test_glm_schema_call_gets_structured_tool_mode(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
+    monkeypatch.delenv("DYNAMIC_SCRIPT_STRUCTURED_TOOL", raising=False)
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    cfg = d._build_agent_config({"schema": schema, "model": "zai/glm-5.2"}, {}, "dapr-agent-py", {})
+    assert cfg["structuredOutputMode"] == "tool"
+    assert cfg["responseJsonSchema"] == schema
+
+
+def test_openai_schema_call_never_gets_tool_mode(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
+    monkeypatch.delenv("DYNAMIC_SCRIPT_STRUCTURED_TOOL", raising=False)
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    # hybrid default routes to OpenAI strict json_schema (stronger than the tool)
+    cfg = d._build_agent_config({"schema": schema}, {"model": "zai/glm-5.2"}, "dapr-agent-py", {})
+    assert cfg["modelSpec"].startswith("openai/")
+    assert "structuredOutputMode" not in cfg
+
+
+def test_structured_tool_kill_switch_reverts_to_json_object(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
+    monkeypatch.setenv("DYNAMIC_SCRIPT_STRUCTURED_TOOL", "false")
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    cfg = d._build_agent_config({"schema": schema, "model": "zai/glm-5.2"}, {}, "dapr-agent-py", {})
+    # schema still stamped (json_object fallback) but no tool mode
+    assert cfg["responseJsonSchema"] == schema
+    assert "structuredOutputMode" not in cfg
+
+
+def test_non_object_schema_never_rides_the_tool(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
+    monkeypatch.delenv("DYNAMIC_SCRIPT_STRUCTURED_TOOL", raising=False)
+    schema = {"type": "array", "items": {"type": "string"}}
+    # tool args are always JSON objects — an array schema can't ride the tool
+    cfg = d._build_agent_config({"schema": schema, "model": "zai/glm-5.2"}, {}, "dapr-agent-py", {})
+    assert cfg["responseJsonSchema"] == schema
+    assert "structuredOutputMode" not in cfg
+
+
+def test_tool_mode_output_contract_instructs_tool_call():
+    import workflows.script_agent_dispatch as d
+
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    spec = {"prompt": "Do the thing.", "opts": {"schema": schema}}
+    tool_msg = d._build_initial_message(spec, structured_tool=True)
+    assert "StructuredOutput" in tool_msg
+    assert "fenced" not in tool_msg
+    default_msg = d._build_initial_message(spec)
+    assert "StructuredOutput" not in default_msg
+    assert "```json" in default_msg
+    # deterministic given the same inputs (replay safety)
+    assert tool_msg == d._build_initial_message(spec, structured_tool=True)

@@ -186,6 +186,13 @@ from src.effective_agent_config import (
     resolve_llm_metadata,
     runtime_context_audit_cache_fields,
 )
+from src.structured_output import (
+    MAX_STRUCTURED_OUTPUT_NUDGES,
+    STRUCTURED_OUTPUT_NUDGE,
+    STRUCTURED_OUTPUT_TOOL_NAME,
+    evaluate_structured_output_call,
+    structured_output_success_content,
+)
 from src.tool_batching import (
     max_tool_concurrency,
     partition_tool_calls,
@@ -1724,6 +1731,35 @@ class OpenShellDurableAgent(DurableAgent):
             retry_policy=self._retry_policy,
         )
 
+        # Structured-output tool enforcement (dynamic-script agent(..., {schema})
+        # routed to a tool-mode provider). Derived from the workflow INPUT (not
+        # in-memory context) so every replay makes the same decisions. Plays the
+        # role of Claude Code's Stop hook: a model that tries to finish without
+        # a valid StructuredOutput call is re-prompted (capped); a valid call
+        # ends the loop with the canonical JSON as the session's final output.
+        _msg_agent_config = (
+            message.get("agentConfig")
+            if isinstance(message.get("agentConfig"), dict)
+            else {}
+        )
+        _msg_effective_llm = {}
+        if isinstance(message.get("effectiveAgentConfig"), dict):
+            _candidate_llm = message["effectiveAgentConfig"].get("llm")
+            if isinstance(_candidate_llm, dict):
+                _msg_effective_llm = _candidate_llm
+        structured_tool_active = (
+            (
+                _msg_agent_config.get("structuredOutputMode") == "tool"
+                or _msg_effective_llm.get("structuredOutputMode") == "tool"
+            )
+            and (
+                isinstance(_msg_agent_config.get("responseJsonSchema"), dict)
+                or isinstance(_msg_effective_llm.get("responseJsonSchema"), dict)
+            )
+        )
+        structured_final: str | None = None
+        structured_nudges = 0
+
         final_message: dict[str, Any] = {}
         turn = 0
         workflow_exc: Exception | None = None
@@ -1781,6 +1817,28 @@ class OpenShellDurableAgent(DurableAgent):
                 )
                 tool_calls = assistant_response.get("tool_calls") or []
                 if not tool_calls:
+                    if (
+                        structured_tool_active
+                        and structured_final is None
+                        and structured_nudges < MAX_STRUCTURED_OUTPUT_NUDGES
+                    ):
+                        # The Stop-hook role: don't accept a plain-text finish
+                        # while a StructuredOutput result is required — inject a
+                        # corrective user message and run another turn. Bounded
+                        # by MAX_STRUCTURED_OUTPUT_NUDGES (and max_iterations);
+                        # on exhaustion the Tier-3 journal retry takes over.
+                        structured_nudges += 1
+                        task = STRUCTURED_OUTPUT_NUDGE
+                        if not ctx.is_replaying:
+                            logger.info(
+                                "Agent %s finished without StructuredOutput on turn %d — nudge %d/%d (instance=%s)",
+                                self.name,
+                                turn,
+                                structured_nudges,
+                                MAX_STRUCTURED_OUTPUT_NUDGES,
+                                ctx.instance_id,
+                            )
+                        continue
                     final_message = assistant_response
                     logger.debug(
                         "Agent %s produced final response on turn %d (instance=%s)",
@@ -1978,6 +2036,36 @@ class OpenShellDurableAgent(DurableAgent):
                     retry_policy=self._retry_policy,
                 )
                 task = None
+                if structured_tool_active:
+                    # A valid StructuredOutput call ends the session: its
+                    # canonical JSON becomes the final output text (which the
+                    # orchestrator's journal validates unchanged). Success is
+                    # detected deterministically from the recorded activity
+                    # result (failure content is a non-JSON "Error: ..."). The
+                    # last valid call in the turn wins.
+                    for _tr in tool_results:
+                        if (
+                            isinstance(_tr, dict)
+                            and _tr.get("name") == STRUCTURED_OUTPUT_TOOL_NAME
+                        ):
+                            _so_content = structured_output_success_content(
+                                _tr.get("content")
+                            )
+                            if _so_content is not None:
+                                structured_final = _so_content
+                    if structured_final is not None:
+                        final_message = {
+                            "role": "assistant",
+                            "content": structured_final,
+                        }
+                        if not ctx.is_replaying:
+                            logger.info(
+                                "Agent %s delivered StructuredOutput on turn %d (instance=%s)",
+                                self.name,
+                                turn,
+                                ctx.instance_id,
+                            )
+                        break
             else:
                 base = final_message.get("content") or ""
                 if base:
@@ -2798,6 +2886,7 @@ class OpenShellDurableAgent(DurableAgent):
         # GLM json_object). The prompt <output-contract> + jsonschema validation
         # remain the universal fallback.
         response_json_schema = None
+        structured_output_mode = None
         _ctx_effective = context.get("effectiveAgentConfig")
         if isinstance(_ctx_effective, dict):
             _ctx_llm = _ctx_effective.get("llm")
@@ -2806,6 +2895,8 @@ class OpenShellDurableAgent(DurableAgent):
                     reasoning_effort = _ctx_llm["reasoningEffort"]
                 if isinstance(_ctx_llm.get("responseJsonSchema"), dict):
                     response_json_schema = _ctx_llm["responseJsonSchema"]
+                if _ctx_llm.get("structuredOutputMode") == "tool":
+                    structured_output_mode = "tool"
         _runtime, runtime_token = self._bind_openshell_runtime_for_instance(inst_id)
         self._activate_instance_skills(inst_id)
         self._ensure_mcp_client(inst_id)
@@ -3004,6 +3095,7 @@ class OpenShellDurableAgent(DurableAgent):
                 previous_component = getattr(self.llm, "_llm_component", None)
                 previous_reasoning_effort = getattr(self.llm, "_reasoning_effort", None)
                 previous_response_json_schema = getattr(self.llm, "_response_json_schema", None)
+                previous_structured_output_mode = getattr(self.llm, "_structured_output_mode", None)
                 previous_prompt_state = _capture_prompt_state(self)
                 saved_tool_choice = None
                 try:
@@ -3011,6 +3103,7 @@ class OpenShellDurableAgent(DurableAgent):
                         self.llm._llm_component = component
                     self.llm._reasoning_effort = reasoning_effort
                     self.llm._response_json_schema = response_json_schema
+                    self.llm._structured_output_mode = structured_output_mode
                     _apply_instruction_prompt_state(
                         self,
                         context.get("instructionBundle")
@@ -3052,6 +3145,7 @@ class OpenShellDurableAgent(DurableAgent):
                     self.llm._llm_component = previous_component
                     self.llm._reasoning_effort = previous_reasoning_effort
                     self.llm._response_json_schema = previous_response_json_schema
+                    self.llm._structured_output_mode = previous_structured_output_mode
                     _restore_prompt_state(self, previous_prompt_state)
                     if saved_tool_choice is not None:
                         self.execution.tool_choice = saved_tool_choice
@@ -3407,7 +3501,10 @@ class OpenShellDurableAgent(DurableAgent):
 
             self._first_tool_at_by_instance[inst_id] = _time.monotonic()
 
-        if not self._is_tool_allowed_for_instance(inst_id, tool_name):
+        # StructuredOutput is a synthetic result-delivery tool (never a real
+        # capability) — exempt from the per-run allow-list so a narrowed
+        # allowedTools config can't block a schema'd call's final result.
+        if tool_name != STRUCTURED_OUTPUT_TOOL_NAME and not self._is_tool_allowed_for_instance(inst_id, tool_name):
             reason = f"Tool {tool_name} is disabled by this run's tool policy"
             try:
                 publish_session_event(
@@ -3621,13 +3718,58 @@ class OpenShellDurableAgent(DurableAgent):
           except Exception as exc:  # noqa: BLE001
               logger.warning("[telemetry] tool.execution start failed: %s", exc)
           try:
-              self._activate_instance_skills(inst_id)
-              if inst_id and not (self._mcp_tools_by_instance.get(inst_id) or {}):
-                  self._ensure_mcp_client(inst_id)
-              mcp_tool = (self._mcp_tools_by_instance.get(inst_id) or {}).get(
-                  _normalize_tool_lookup_name(tool_name)
-              )
-              if mcp_tool is not None:
+              if tool_name == STRUCTURED_OUTPUT_TOOL_NAME:
+                  # Synthetic structured-output tool (the Claude Code
+                  # mechanism): validate the args against the session's
+                  # responseJsonSchema. Valid -> content is the canonical JSON
+                  # (the agent loop finalizes the session with it); invalid ->
+                  # "Error: ..." content so the model corrects and retries
+                  # in-loop. Not registered on the tool executor — its
+                  # per-request definition is injected adapter-side.
+                  _so_schema = None
+                  _so_effective = context.get("effectiveAgentConfig")
+                  if isinstance(_so_effective, dict) and isinstance(
+                      _so_effective.get("llm"), dict
+                  ):
+                      _so_schema = _so_effective["llm"].get("responseJsonSchema")
+                  _so_valid, _so_content = evaluate_structured_output_call(
+                      _so_schema, tool_args
+                  )
+                  _so_msg = ToolMessage(
+                      content=_so_content,
+                      role="tool",
+                      name=tool_name,
+                      tool_call_id=tool_call["id"],
+                  )
+                  try:
+                      self.text_formatter.print_message(_so_msg)
+                  except Exception:
+                      pass
+                  try:
+                      publish_session_event(
+                          sess_id,
+                          "structured_output.validation",
+                          {
+                              "toolCallId": tool_call_id,
+                              "valid": _so_valid,
+                              "error": None if _so_valid else _so_content[:500],
+                          },
+                          source_event_id=(
+                              f"{tool_call_id}:structured" if tool_call_id else None
+                          ),
+                          instance_id=inst_id,
+                      )
+                  except Exception:
+                      pass
+                  result = _so_msg.model_dump()
+              else:
+                self._activate_instance_skills(inst_id)
+                if inst_id and not (self._mcp_tools_by_instance.get(inst_id) or {}):
+                    self._ensure_mcp_client(inst_id)
+                mcp_tool = (self._mcp_tools_by_instance.get(inst_id) or {}).get(
+                    _normalize_tool_lookup_name(tool_name)
+                )
+                if mcp_tool is not None:
                   async def _execute_mcp_tool():
                       return await mcp_tool.arun(**tool_args)
 
@@ -3724,8 +3866,8 @@ class OpenShellDurableAgent(DurableAgent):
                   except Exception:
                       pass
                   result = tool_result.model_dump()
-              else:
-                  result = super().run_tool(ctx, payload)
+                else:
+                    result = super().run_tool(ctx, payload)
               _exec_error = _tool_result_error(result)
               _exec_success = _exec_error is None
           except Exception as exc:
@@ -4180,6 +4322,10 @@ class OpenShellDurableAgent(DurableAgent):
             snapshot_llm.get("responseJsonSchema")
             if isinstance(snapshot_llm.get("responseJsonSchema"), dict)
             else None
+        )
+        previous_structured_output_mode = getattr(self.llm, "_structured_output_mode", None)
+        self.llm._structured_output_mode = (
+            "tool" if snapshot_llm.get("structuredOutputMode") == "tool" else None
         )
         if not ctx.is_replaying:
             logger.info("[model-select] Using LLM component: %s", llm_component)
@@ -5031,6 +5177,7 @@ class OpenShellDurableAgent(DurableAgent):
                 self.llm._llm_component = previous_component
                 self.llm._reasoning_effort = previous_reasoning_effort
                 self.llm._response_json_schema = previous_response_json_schema
+                self.llm._structured_output_mode = previous_structured_output_mode
                 _restore_prompt_state(self, previous_prompt_state)
                 skill_registry.clear_instance_skills()
             # End the claude_code.interaction span + reset session context only
