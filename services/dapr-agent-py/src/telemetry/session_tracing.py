@@ -73,6 +73,32 @@ def _is_enabled() -> bool:
     return get_tracer() is not None
 
 
+def _fallback_parent_ctx() -> Any:
+    """Parent context for spans with no in-process parent handle.
+
+    Prefer the ambient current context when it already carries a VALID span
+    (e.g. inside an instrumented request). Otherwise fall back to the inbound
+    orchestrator trace context extracted from WORKFLOW_BUILDER_TRACEPARENT —
+    Dapr activity gRPC worker threads start with an EMPTY contextvars Context,
+    so the startup `attach()` is invisible there and a bare `get_current()`
+    would root a fresh, disconnected trace (the shattered-trace bug).
+    """
+    from opentelemetry import context as otel_context
+    from opentelemetry import trace as otel_trace
+
+    current = otel_context.get_current()
+    try:
+        span = otel_trace.get_current_span(current)
+        if span is not None and span.get_span_context().is_valid:
+            return current
+    except Exception:  # noqa: BLE001
+        pass
+    from .providers import inbound_trace_context
+
+    inbound = inbound_trace_context()
+    return inbound if inbound is not None else current
+
+
 def _duration_ms(handle: _SpanHandle) -> int:
     return int((time.monotonic() - handle.start_monotonic) * 1000)
 
@@ -279,7 +305,9 @@ def start_interaction_span(user_prompt: str) -> Any:
         },
     )
 
-    span = tracer.start_span("claude_code.interaction", attributes=attrs)
+    span = tracer.start_span(
+        "claude_code.interaction", attributes=attrs, context=_fallback_parent_ctx()
+    )
     beta.add_interaction_attributes(span, user_prompt)
     _set_io_value(span, "input", {"user_prompt": user_prompt})
 
@@ -368,7 +396,7 @@ def start_llm_request_span(
     parent_ctx = (
         otel_trace.set_span_in_context(interaction_handle.span)
         if interaction_handle is not None
-        else otel_context.get_current()
+        else _fallback_parent_ctx()
     )
     span = tracer.start_span(
         "claude_code.llm_request", attributes=attrs, context=parent_ctx
@@ -524,7 +552,7 @@ def start_tool_span(
     parent_ctx = (
         otel_trace.set_span_in_context(interaction_handle.span)
         if interaction_handle is not None
-        else otel_context.get_current()
+        else _fallback_parent_ctx()
     )
     span = tracer.start_span(
         "claude_code.tool", attributes=attrs, context=parent_ctx
@@ -618,7 +646,7 @@ def start_tool_blocked_on_user_span() -> Any:
     parent_ctx = (
         otel_trace.set_span_in_context(tool_handle.span)
         if tool_handle is not None
-        else otel_context.get_current()
+        else _fallback_parent_ctx()
     )
     span = tracer.start_span(
         "claude_code.tool.blocked_on_user", attributes=attrs, context=parent_ctx
@@ -671,7 +699,7 @@ def start_tool_execution_span() -> Any:
     parent_ctx = (
         otel_trace.set_span_in_context(tool_handle.span)
         if tool_handle is not None
-        else otel_context.get_current()
+        else _fallback_parent_ctx()
     )
     span = tracer.start_span(
         "claude_code.tool.execution", attributes=attrs, context=parent_ctx
@@ -752,7 +780,7 @@ def start_hook_span(
     parent_ctx = (
         otel_trace.set_span_in_context(parent_handle.span)
         if parent_handle is not None
-        else otel_context.get_current()
+        else _fallback_parent_ctx()
     )
     span = tracer.start_span(
         "claude_code.hook", attributes=attrs, context=parent_ctx

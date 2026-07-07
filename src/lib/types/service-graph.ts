@@ -55,6 +55,14 @@ export interface ServiceGraphNode {
 	/** Worst observed status across contributing spans/steps — drives the node ring. */
 	status: 'ok' | 'error' | 'idle';
 	red: RedMetrics;
+	/** Lane/group label (dynamic-script: the phase() title). Drives hue + legend. */
+	group?: string | null;
+	/** Sub-kind detail (dynamic-script: 'agent' | 'parallel' | 'pipeline' | 'workflow'). */
+	detail?: string | null;
+	/** Call is still in flight — the node renders a live pulse. */
+	live?: boolean;
+	/** Child session id (dynamic-script agent calls) for click-through. */
+	sessionId?: string | null;
 }
 
 export interface ServiceGraphEdge {

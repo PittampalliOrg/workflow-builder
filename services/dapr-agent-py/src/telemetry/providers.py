@@ -381,15 +381,32 @@ def set_mlflow_trace_experiment_for_context(experiment_id: str | None) -> bool:
         return False
 
 
+# Cached inbound (orchestrator/BFF) trace context extracted from the
+# WORKFLOW_BUILDER_TRACEPARENT downward-API env. `attach()` at startup only
+# covers threads that inherit the startup contextvars — Dapr activity gRPC
+# worker threads DON'T (Python threads start with an empty Context), which is
+# how per-turn `claude_code.interaction` spans ended up rooting fresh traces
+# while their children (created on inheriting threads) joined the primary
+# trace. Span creators use `inbound_trace_context()` as an explicit parent
+# fallback instead of relying on ambient context.
+_inbound_trace_context: Any = None
+
+
+def inbound_trace_context() -> Any:
+    """The extracted W3C context from the sandbox env, or None."""
+    return _inbound_trace_context
+
+
 def _attach_inbound_trace_context() -> None:
     """Honor WORKFLOW_BUILDER_TRACEPARENT/TRACESTATE downward-API env vars.
 
     When the BFF forwards a W3C traceparent on the inbound provisioning call,
     sandbox-execution-api stamps it on the Sandbox metadata.annotations and
-    surfaces it here as env. We extract it once at startup and attach the
-    resulting context globally; later spans (without an explicit parent) chain
-    to the BFF root and Tempo / Phoenix can render the full trace.
+    surfaces it here as env. We extract it once at startup, CACHE it for
+    explicit parenting (see `inbound_trace_context`), and attach it globally
+    as a best-effort ambient default for inheriting threads.
     """
+    global _inbound_trace_context
     traceparent = (os.environ.get("WORKFLOW_BUILDER_TRACEPARENT") or "").strip()
     if not traceparent:
         return
@@ -405,6 +422,7 @@ def _attach_inbound_trace_context() -> None:
         if baggage:
             carrier["baggage"] = baggage
         parent_ctx = extract(carrier)
+        _inbound_trace_context = parent_ctx
         otel_context.attach(parent_ctx)
         logger.info(
             "Attached inbound trace context from BFF (traceparent prefix=%s)",

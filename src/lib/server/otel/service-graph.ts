@@ -604,6 +604,180 @@ async function buildStepGraphSingleExec(
 }
 
 // ---------------------------------------------------------------------------
+// combo 3b — step × execution for DYNAMIC-SCRIPT runs (workflow_script_calls)
+// ---------------------------------------------------------------------------
+
+/** Journal row subset the route passes in for dynamic-script executions. */
+export type ServiceGraphScriptCallRow = {
+	callId: string;
+	seq: number;
+	kind: string;
+	label: string | null;
+	phase: string | null;
+	status: string;
+	sessionId: string | null;
+	retries: number;
+	errorCode: string | null;
+};
+
+/**
+ * Build the step graph for a dynamic-script execution from its call journal.
+ * The script's spec is JS (no SW `do` graph), so steps = journal calls grouped
+ * into phase lanes: every call in phase i feeds every call in phase i+1 (the
+ * script's dataflow — later phases consume earlier results). Per-call RED is
+ * derived from the run's spans via the deterministic child `session.id`
+ * attribute; tokens/cost from LLM spans by sessionId.
+ */
+export function buildStepGraphDynamicScript(
+	calls: ServiceGraphScriptCallRow[],
+	spans: ObservabilityTraceSpan[],
+	llmSpans: ObservabilityLlmSpan[]
+): { nodes: ServiceGraphNode[]; edges: ServiceGraphEdge[]; insights: ServiceGraphInsights } {
+	const ordered = [...calls].sort((a, b) => a.seq - b.seq);
+
+	// Per-session span windows → per-call durations/errors.
+	const spanAgg = new Map<string, { startMs: number; endMs: number; errors: number }>();
+	for (const s of spans) {
+		const sessionId = s.attributes?.['session.id'];
+		if (!sessionId) continue;
+		const key = String(sessionId);
+		const start = Date.parse(s.startTime);
+		if (!Number.isFinite(start)) continue;
+		const end = start + (s.duration || 0);
+		const agg = spanAgg.get(key) ?? { startMs: Infinity, endMs: -Infinity, errors: 0 };
+		agg.startMs = Math.min(agg.startMs, start);
+		agg.endMs = Math.max(agg.endMs, end);
+		if (isError(s)) agg.errors += 1;
+		spanAgg.set(key, agg);
+	}
+
+	const nodes: ServiceGraphNode[] = ordered.map((call) => {
+		const agg = call.sessionId ? spanAgg.get(call.sessionId) : undefined;
+		const durationMs =
+			agg && Number.isFinite(agg.startMs) && agg.endMs > agg.startMs ? agg.endMs - agg.startMs : 0;
+		const failed = call.status === 'error';
+		const live = call.status === 'running';
+		const attempts = 1 + Math.max(0, call.retries);
+		return {
+			id: call.callId,
+			label: call.label || `${call.kind} #${call.seq + 1}`,
+			kind: 'step',
+			status: failed ? 'error' : live || call.status === 'done' ? 'ok' : 'idle',
+			group: call.phase ?? null,
+			detail: call.kind || 'agent',
+			live,
+			sessionId: call.sessionId ?? null,
+			red: {
+				total: attempts,
+				errors: failed ? 1 : 0,
+				errorRate: failed ? 1 / attempts : 0,
+				rate: attempts,
+				p50: durationMs,
+				p95: durationMs,
+				p99: durationMs,
+				selfMs: durationMs
+			}
+		};
+	});
+
+	// Phase lanes in first-seen (seq) order; unphased calls form their own lane.
+	const laneOf = (c: ServiceGraphScriptCallRow) => c.phase ?? '__unphased__';
+	const laneOrder: string[] = [];
+	const byLane = new Map<string, ServiceGraphScriptCallRow[]>();
+	for (const c of ordered) {
+		const lane = laneOf(c);
+		if (!byLane.has(lane)) {
+			byLane.set(lane, []);
+			laneOrder.push(lane);
+		}
+		byLane.get(lane)!.push(c);
+	}
+
+	const nodeIndex = new Map(nodes.map((n) => [n.id, n]));
+	const edges: ServiceGraphEdge[] = [];
+	const MAX_LANE_EDGES = 32;
+	for (let i = 0; i + 1 < laneOrder.length; i++) {
+		const from = byLane.get(laneOrder[i])!;
+		const to = byLane.get(laneOrder[i + 1])!;
+		if (from.length * to.length > MAX_LANE_EDGES) {
+			// Fan-out too wide to draw fully — connect first of each pair so the
+			// lane ordering still reads; the phase hue carries the grouping.
+			const src = from[0];
+			const tgt = to[0];
+			if (src && tgt) {
+				edges.push(dynamicEdge(src.callId, tgt.callId, nodeIndex));
+			}
+			continue;
+		}
+		for (const src of from) {
+			for (const tgt of to) {
+				edges.push(dynamicEdge(src.callId, tgt.callId, nodeIndex));
+			}
+		}
+	}
+
+	// Insights: tokens/cost per call via the LLM spans' sessionId; retries +
+	// error samples straight from the journal.
+	const nodeInsights: Record<string, NodeInsight> = {};
+	const ensure = (id: string): NodeInsight => (nodeInsights[id] ??= {});
+	const callBySession = new Map(
+		ordered.filter((c) => c.sessionId).map((c) => [c.sessionId as string, c])
+	);
+	for (const s of llmSpans) {
+		const call = s.sessionId ? callBySession.get(s.sessionId) : undefined;
+		if (!call) continue;
+		const ins = ensure(call.callId);
+		const t = (ins.tokens ??= { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, total: 0 });
+		const inputTokens = s.promptTokens ?? 0;
+		const outputTokens = s.completionTokens ?? 0;
+		const cacheReadTokens = s.cacheReadInputTokens ?? 0;
+		const cacheCreateTokens = s.cacheCreationInputTokens ?? 0;
+		t.input += inputTokens;
+		t.output += outputTokens;
+		t.cacheRead += cacheReadTokens;
+		t.cacheCreate += cacheCreateTokens;
+		t.total += s.totalTokens ?? inputTokens + outputTokens;
+		ins.costUsd =
+			(ins.costUsd ?? 0) +
+			costFor(s.modelName, { inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens });
+	}
+	for (const call of ordered) {
+		if (call.retries > 0) ensure(call.callId).retries = call.retries;
+		if (call.errorCode) {
+			(ensure(call.callId).errorSamples ??= []).push({ message: call.errorCode });
+		}
+	}
+
+	return {
+		nodes,
+		edges,
+		insights: { nodes: nodeInsights, edges: {}, criticalPath: computeCriticalPath(nodes, edges) }
+	};
+}
+
+function dynamicEdge(
+	source: string,
+	target: string,
+	nodeIndex: Map<string, ServiceGraphNode>
+): ServiceGraphEdge {
+	const tgt = nodeIndex.get(target);
+	return {
+		id: `${source}__${target}`,
+		source,
+		target,
+		red: {
+			total: 1,
+			errors: 0,
+			errorRate: 0,
+			rate: 1,
+			p50: tgt?.red.p50 ?? 0,
+			p95: tgt?.red.p95 ?? 0,
+			p99: tgt?.red.p99 ?? 0
+		}
+	};
+}
+
+// ---------------------------------------------------------------------------
 // combo 4 — step × window (aggregate logs across recent runs of a workflow)
 // ---------------------------------------------------------------------------
 
@@ -908,6 +1082,8 @@ export interface BuildServiceGraphInput {
 	execution?: ExecutionRow | null;
 	workflow?: ServiceGraphWorkflowContext | null;
 	stepLogs?: ServiceGraphStepLogRow[];
+	/** Dynamic-script executions: the call journal (steps ARE the calls). */
+	scriptCalls?: ServiceGraphScriptCallRow[];
 }
 
 export async function buildServiceGraph(input: BuildServiceGraphInput): Promise<ServiceGraphPayload> {
@@ -959,6 +1135,25 @@ export async function buildServiceGraph(input: BuildServiceGraphInput): Promise<
 
 		if (query.mode === 'step' && query.scope === 'execution') {
 			if (!execution) return emptyServiceGraph(query, { warnings: ['Execution not found'] });
+			// Dynamic-script runs have no SW step logs — their step graph IS the
+			// call journal, enriched with per-session span timing + LLM usage.
+			if (input.scriptCalls && input.scriptCalls.length > 0) {
+				const traceIds = await resolveExecutionTraceIds(execution);
+				const spans = traceIds.length ? await getMultiTraceSpans(traceIds) : [];
+				const llmSpans = traceIds.length ? await getMultiTraceLlmSpans(traceIds) : [];
+				const { nodes, edges, insights } = buildStepGraphDynamicScript(
+					input.scriptCalls,
+					spans,
+					llmSpans
+				);
+				return {
+					...base,
+					nodes,
+					edges,
+					insights,
+					meta: { spanCount: spans.length, traceCount: traceIds.length, warnings: [] }
+				};
+			}
 			if (!workflow) return emptyServiceGraph(query, { warnings: ['Workflow not found'] });
 			const { nodes, edges, logs } = await buildStepGraphSingleExec(workflow, input.stepLogs ?? []);
 			const traceIds = await resolveExecutionTraceIds(execution);
