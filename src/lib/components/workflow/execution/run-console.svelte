@@ -27,6 +27,7 @@
 		type RunMetricsOutcome
 	} from '$lib/components/workflow/execution/run-metrics-bar.svelte';
 	import ProvisioningStepper from '$lib/components/workflow/execution/provisioning-stepper.svelte';
+	import ScriptPhaseRail from '$lib/components/workflow/execution/script-phase-rail.svelte';
 	import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '$lib/components/ui/collapsible';
 	import { fmtTokens } from '$lib/utils/format-tokens';
 	import {
@@ -54,9 +55,12 @@
 		details?: Snippet;
 		/** Deep-link: focus this node (its step or owning session) on mount/change. */
 		focusNode?: string | null;
+		/** Dynamic-script runs: the executionIr — renders the phase graph in the
+		 *  left rail so the graph is visible alongside the live session view. */
+		scriptIr?: Record<string, unknown> | null;
 	}
 
-	let { executionId, slug, workflowId, nodes = [], edges = [], details, focusNode = null }: Props =
+	let { executionId, slug, workflowId, nodes = [], edges = [], details, focusNode = null, scriptIr = null }: Props =
 		$props();
 
 	type SessionRow = {
@@ -270,6 +274,21 @@
 		});
 		if (sess) focusSession(sess.id);
 		else if (steps.some((s) => s.stepName === fn)) selectStep(fn);
+	});
+
+	// ── Dynamic-script phase graph (left-rail drawer) ──────────────────────
+	let graphOpen = $state(true);
+	const scriptPhases = $derived.by(() => {
+		const m = (scriptIr?.meta ?? {}) as Record<string, unknown>;
+		const raw = m.phases;
+		if (!Array.isArray(raw)) return [] as string[];
+		const out: string[] = [];
+		for (const p of raw) {
+			if (typeof p === 'string') out.push(p);
+			else if (p && typeof p === 'object' && typeof (p as Record<string, unknown>).title === 'string')
+				out.push((p as Record<string, unknown>).title as string);
+		}
+		return out;
 	});
 
 	// ── Focus / auto-follow ────────────────────────────────────────────────
@@ -735,6 +754,33 @@
 				</div>
 
 				<div class="min-h-0 flex-1 overflow-y-auto p-1.5">
+					{#if scriptIr}
+						<Collapsible bind:open={graphOpen} class="mb-1.5">
+							<CollapsibleTrigger
+								class="flex w-full items-center justify-between rounded px-1.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 hover:bg-muted/50"
+							>
+								Script graph
+								<ChevronDown class="size-3 transition-transform {graphOpen ? 'rotate-180' : ''}" />
+							</CollapsibleTrigger>
+							<CollapsibleContent>
+								<div class="px-0.5 pb-1">
+									<ScriptPhaseRail
+										{executionId}
+										declaredPhases={scriptPhases}
+										currentPhase={snapshot?.phase ?? null}
+										isRunning={runActive}
+										focusedSessionId={focusedId}
+										onSelect={(call) => {
+											if (call.sessionId) {
+												pinnedId = call.sessionId;
+												selectedStep = null;
+											}
+										}}
+									/>
+								</div>
+							</CollapsibleContent>
+						</Collapsible>
+					{/if}
 					{#if hasSpine}
 						{#each steps as st (st.stepName)}
 							{@render stepRow(st)}

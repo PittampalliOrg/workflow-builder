@@ -2473,7 +2473,7 @@
 
 		<!-- Tab 1: Overview -->
 		<TabsContent value="overview" class="flex-1 overflow-hidden p-0">
-			<RunConsole {executionId} {slug} {workflowId} nodes={workflowNodes} edges={workflowEdges} focusNode={deepLinkNode}>
+			<RunConsole {executionId} {slug} {workflowId} nodes={workflowNodes} edges={workflowEdges} focusNode={deepLinkNode} scriptIr={isDynamicScript ? scriptExecutionIr : null}>
 				{#snippet details()}
 				{#if primaryAppPreviewUrl}
 					<Card>

@@ -35,7 +35,11 @@ from activities.aggregate_script_usage import aggregate_script_usage
 from activities.evaluate_script import evaluate_script
 from activities.append_script_logs import append_script_logs
 from activities.persist_results_to_db import persist_results_to_db
-from activities.script_call_journal import record_script_call_result, import_script_journal
+from activities.script_call_journal import (
+    import_script_journal,
+    record_script_call_dispatch,
+    record_script_call_result,
+)
 from activities.track_agent_run import (
     track_agent_run_scheduled,
     track_agent_run_completed,
@@ -427,6 +431,29 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             outstanding[cid] = child_task
             dispatched += 1
             dispatched_this_round += 1
+
+            # Journal a non-terminal `running` row NOW so the run UI shows the
+            # in-flight call and (for agent() calls) can attach the child
+            # session's live transcript — the child instance id IS the session
+            # id and is deterministic at dispatch. workflow() children have no
+            # session (they are executions); their row still lights up the lane.
+            yield ctx.call_activity(
+                record_script_call_dispatch,
+                input=_freeze(
+                    {
+                        "executionId": exec_id,
+                        "callId": cid,
+                        "seq": spec["seq"],
+                        "sessionId": (
+                            child_instance_id
+                            if (spec.get("kind") or "agent") == "agent"
+                            else None
+                        ),
+                        "spec": _spec_for_journal(spec),
+                        "_otel": otel,
+                    }
+                ),
+            )
 
             # Keep workflow_executions.current_node_id fresh + light up the Agents tab.
             yield ctx.call_activity(
