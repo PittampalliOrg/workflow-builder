@@ -34,6 +34,7 @@ from dapr.ext.workflow import when_any as wf_when_any
 from activities.aggregate_script_usage import aggregate_script_usage
 from activities.evaluate_script import evaluate_script
 from activities.append_script_logs import append_script_logs
+from activities.persist_results_to_db import persist_results_to_db
 from activities.script_call_journal import record_script_call_result, import_script_journal
 from activities.track_agent_run import (
     track_agent_run_scheduled,
@@ -258,9 +259,26 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             seen_log_count += len(new_logs)
         _set_status(current_phase or "running", budget)
 
-        # Terminal outcomes.
+        # Terminal outcomes. Each persists output/status to workflow_executions
+        # first — the read-model reconciler maps Dapr COMPLETED→success blindly,
+        # so a returned-but-failed run (script_error/cancelled) would otherwise
+        # read as success with null output (found in dev verification).
         if status == "done":
             _set_status(current_phase or "completed", budget)
+            yield ctx.call_activity(
+                persist_results_to_db,
+                input=_freeze(
+                    {
+                        "executionId": ctx.instance_id,
+                        "dbExecutionId": exec_id,
+                        "success": True,
+                        "workflowOutput": plan.get("returnValue"),
+                        "outputs": {"returnValue": plan.get("returnValue")},
+                        "phase": current_phase or "completed",
+                        "_otel": otel,
+                    }
+                ),
+            )
             return {
                 "success": True,
                 "status": "completed",
@@ -274,6 +292,19 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
         if status == "script_error":
             error = plan.get("error") if isinstance(plan.get("error"), dict) else {}
             _set_status(current_phase or "failed", budget)
+            yield ctx.call_activity(
+                persist_results_to_db,
+                input=_freeze(
+                    {
+                        "executionId": ctx.instance_id,
+                        "dbExecutionId": exec_id,
+                        "success": False,
+                        "error": error.get("message") or "script error",
+                        "phase": current_phase or "failed",
+                        "_otel": otel,
+                    }
+                ),
+            )
             return {
                 "success": False,
                 "status": "script_error",
@@ -402,6 +433,19 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
         if not outstanding:
             if lifetime_exceeded or dispatched_this_round:
                 continue
+            yield ctx.call_activity(
+                persist_results_to_db,
+                input=_freeze(
+                    {
+                        "executionId": ctx.instance_id,
+                        "dbExecutionId": exec_id,
+                        "success": False,
+                        "error": "evaluator returned 'need' with no dispatchable work",
+                        "phase": current_phase or "failed",
+                        "_otel": otel,
+                    }
+                ),
+            )
             return {
                 "success": False,
                 "status": "script_error",
@@ -420,6 +464,19 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             event = event if isinstance(event, dict) else {}
             reason = event.get("reason") or "workflow cancelled"
             _set_status("cancelled", budget)
+            yield ctx.call_activity(
+                persist_results_to_db,
+                input=_freeze(
+                    {
+                        "executionId": ctx.instance_id,
+                        "dbExecutionId": exec_id,
+                        "success": False,
+                        "error": str(reason),
+                        "phase": "cancelled",
+                        "_otel": otel,
+                    }
+                ),
+            )
             return {
                 "success": False,
                 "status": "cancelled",

@@ -66,8 +66,9 @@ def _build_agent_config(
     agent_runtime: str = "",
 ) -> dict[str, Any]:
     agent_config: dict[str, Any] = {}
+    model = ""
     if isinstance(opts.get("model"), str) and opts.get("model").strip():
-        agent_config["model"] = opts["model"].strip()
+        model = opts["model"].strip()
     elif (
         isinstance((defaults or {}).get("model"), str)
         and (defaults or {}).get("model").strip()
@@ -76,7 +77,15 @@ def _build_agent_config(
         # defaults.model applies ONLY to the multi-provider dapr-agent-py
         # runtime — a per-call agentType (e.g. claude-agent-py, Anthropic-only)
         # must never inherit a cross-provider default model key.
-        agent_config["model"] = (defaults or {})["model"].strip()
+        model = (defaults or {})["model"].strip()
+    if model:
+        # `modelSpec` is the key dapr-agent-py's LLM selection actually reads
+        # (effective_agent_config.resolve_llm_metadata: agentConfig.modelSpec →
+        # metadata.model → message.model → default; agents/markdown.ts maps
+        # frontmatter `model` → modelSpec the same way). Keep `model` too for
+        # UI/agent-record parity.
+        agent_config["model"] = model
+        agent_config["modelSpec"] = model
     if isinstance(opts.get("effort"), str) and opts.get("effort").strip():
         agent_config["reasoningEffort"] = opts["effort"].strip()
     return agent_config
