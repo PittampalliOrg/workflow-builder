@@ -452,6 +452,7 @@ def _call_openai_responses(
     response_format: Any = None,
     cache_key: str | None = None,
     reasoning_effort: str | None = None,
+    native_json_schema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     model = _get_openai_model(component)
     # Strip the bundle's static/dynamic boundary sentinel before sending —
@@ -570,6 +571,23 @@ def _call_openai_responses(
                     "type": "json_schema",
                     "name": response_format.__name__,
                     "schema": schema,
+                    "strict": True,
+                }
+            }
+        except Exception:
+            request_body["text"] = {"format": {"type": "json_object"}}
+    elif native_json_schema is not None:
+        # dynamic-script agent(..., {schema}) — enforce the raw JSON Schema with
+        # OpenAI strict constrained decoding (near-100% first-pass). The reply
+        # comes back as TEXT and is validated by the journal (the universal
+        # authority + fallback); we do NOT parse it to a model here. Fall back
+        # to generic json_object if the schema can't be made strict.
+        try:
+            request_body["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "structured_output",
+                    "schema": strict_json_schema(native_json_schema),
                     "strict": True,
                 }
             }
@@ -742,6 +760,14 @@ def patch_for_openai(llm_client: Any) -> None:
                 # the client by call_llm alongside _llm_component; the env
                 # default applies only when unset.
                 reasoning_effort=getattr(self, "_reasoning_effort", None),
+                # Per-agent raw JSON Schema (dynamic-script structured output) —
+                # only honored when the Pydantic response_format kwarg (memory
+                # path) is absent, so the two never collide.
+                native_json_schema=(
+                    getattr(self, "_response_json_schema", None)
+                    if response_format is None
+                    else None
+                ),
             )
 
             if response_format is not None:

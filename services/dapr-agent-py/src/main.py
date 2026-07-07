@@ -2791,11 +2791,21 @@ class OpenShellDurableAgent(DurableAgent):
         # chat client alongside _llm_component so the provider adapters can map
         # it onto their reasoning knobs (env defaults apply when unset).
         reasoning_effort = None
+        # Per-agent response JSON Schema for provider-native structured output
+        # (dynamic-script agent(..., {schema})) — resolved into
+        # effectiveAgentConfig.llm by resolve_llm_metadata; stamped alongside
+        # _llm_component so the adapter enforces it (OpenAI strict json_schema /
+        # GLM json_object). The prompt <output-contract> + jsonschema validation
+        # remain the universal fallback.
+        response_json_schema = None
         _ctx_effective = context.get("effectiveAgentConfig")
         if isinstance(_ctx_effective, dict):
             _ctx_llm = _ctx_effective.get("llm")
-            if isinstance(_ctx_llm, dict) and isinstance(_ctx_llm.get("reasoningEffort"), str):
-                reasoning_effort = _ctx_llm["reasoningEffort"]
+            if isinstance(_ctx_llm, dict):
+                if isinstance(_ctx_llm.get("reasoningEffort"), str):
+                    reasoning_effort = _ctx_llm["reasoningEffort"]
+                if isinstance(_ctx_llm.get("responseJsonSchema"), dict):
+                    response_json_schema = _ctx_llm["responseJsonSchema"]
         _runtime, runtime_token = self._bind_openshell_runtime_for_instance(inst_id)
         self._activate_instance_skills(inst_id)
         self._ensure_mcp_client(inst_id)
@@ -2993,12 +3003,14 @@ class OpenShellDurableAgent(DurableAgent):
                 previous_active_instance = self._active_llm_instance_id
                 previous_component = getattr(self.llm, "_llm_component", None)
                 previous_reasoning_effort = getattr(self.llm, "_reasoning_effort", None)
+                previous_response_json_schema = getattr(self.llm, "_response_json_schema", None)
                 previous_prompt_state = _capture_prompt_state(self)
                 saved_tool_choice = None
                 try:
                     if component:
                         self.llm._llm_component = component
                     self.llm._reasoning_effort = reasoning_effort
+                    self.llm._response_json_schema = response_json_schema
                     _apply_instruction_prompt_state(
                         self,
                         context.get("instructionBundle")
@@ -3039,6 +3051,7 @@ class OpenShellDurableAgent(DurableAgent):
                     self._active_llm_instance_id = previous_active_instance
                     self.llm._llm_component = previous_component
                     self.llm._reasoning_effort = previous_reasoning_effort
+                    self.llm._response_json_schema = previous_response_json_schema
                     _restore_prompt_state(self, previous_prompt_state)
                     if saved_tool_choice is not None:
                         self.execution.tool_choice = saved_tool_choice
@@ -4159,6 +4172,15 @@ class OpenShellDurableAgent(DurableAgent):
         self.llm._reasoning_effort = (
             str(snapshot_llm.get("reasoningEffort") or "").strip() or None
         )
+        # Per-agent response JSON Schema for provider-native structured output
+        # (same per-turn snapshot); adapters enforce it per provider. Restored
+        # with the component on workflow_terminal.
+        previous_response_json_schema = getattr(self.llm, "_response_json_schema", None)
+        self.llm._response_json_schema = (
+            snapshot_llm.get("responseJsonSchema")
+            if isinstance(snapshot_llm.get("responseJsonSchema"), dict)
+            else None
+        )
         if not ctx.is_replaying:
             logger.info("[model-select] Using LLM component: %s", llm_component)
             logger.info("[metadata] model=%s", metadata.get("model"))
@@ -5008,6 +5030,7 @@ class OpenShellDurableAgent(DurableAgent):
                 self.execution.max_iterations = previous_max_iterations
                 self.llm._llm_component = previous_component
                 self.llm._reasoning_effort = previous_reasoning_effort
+                self.llm._response_json_schema = previous_response_json_schema
                 _restore_prompt_state(self, previous_prompt_state)
                 skill_registry.clear_instance_skills()
             # End the claude_code.interaction span + reset session context only

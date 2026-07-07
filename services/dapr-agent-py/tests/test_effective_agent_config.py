@@ -382,3 +382,18 @@ def test_resolve_llm_metadata_carries_valid_reasoning_effort():
         agent_config={"modelSpec": "zai/glm-5.2", "reasoningEffort": "bogus"}
     )
     assert "reasoningEffort" not in llm
+
+
+def test_resolve_llm_metadata_carries_response_json_schema():
+    schema = {"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean"}}}
+    llm = resolve_llm_metadata(agent_config={"modelSpec": "openai/gpt-5.5", "responseJsonSchema": schema})
+    assert llm["responseJsonSchema"] == schema
+    assert llm["modelSpec"] == "openai/gpt-5.5"
+
+
+def test_resolve_llm_metadata_without_response_json_schema_is_safe():
+    llm = resolve_llm_metadata(agent_config={"modelSpec": "zai/glm-5.2"})
+    assert "responseJsonSchema" not in llm
+    # a non-dict responseJsonSchema is dropped, not propagated
+    llm = resolve_llm_metadata(agent_config={"modelSpec": "zai/glm-5.2", "responseJsonSchema": "nope"})
+    assert "responseJsonSchema" not in llm

@@ -244,11 +244,30 @@ syntax (type annotations/interfaces/generics fail to parse).
 
 ## Structured output
 
-Pass `opts.schema` (a JSON Schema) to force a validated object. The engine appends an
-`<output-contract>` to the prompt, then fence-strips and validates the reply. On mismatch it
-dispatches a **corrective retry session** (up to `maxStructuredRetries`, default **5**); if it
-still fails, the call resolves to `null` (error code `error_max_structured_output_retries`). So:
-schema'd `agent()` returns a valid object or `null` — never an invalid object.
+Pass `opts.schema` (a JSON Schema) to get a validated object back. `agent(prompt, {schema})` returns
+a schema-valid object or `null` — never an invalid object. Enforcement is layered (all keyed off the
+same `opts.schema`; the return contract is identical regardless of which tier fires):
+
+- **Tier 1 — OpenAI strict `json_schema` (the default for schema'd calls).** By default a schema'd
+  call is **routed to a configured OpenAI structured model** (`DYNAMIC_SCRIPT_STRUCTURED_MODEL`,
+  default `openai/gpt-5.5`) and enforced with strict constrained decoding — essentially guaranteed
+  schema-valid on the first attempt (no retries). This is **hybrid routing**: only *schema'd* calls
+  move to OpenAI; open-ended (non-schema) calls stay on GLM.
+- **Tier 2 — GLM `json_object`.** If you route a schema'd call to GLM explicitly (`opts.model:
+  'zai/glm-5.2'` or a per-phase model), GLM forces valid JSON via `json_object` (GLM has no strict
+  json_schema mode) — not shape-enforced, but it kills "prose instead of JSON" failures, and GLM's
+  thinking stays on.
+- **Tier 3 — universal fallback (always on).** The `<output-contract>` prompt block +
+  `jsonschema` validation + **corrective retry session** (up to `maxStructuredRetries`, default **5**;
+  then `null` with `error_max_structured_output_retries`) run for *every* schema'd call regardless of
+  provider. This is the response-side authority — native enforcement (Tiers 1-2) is a request-side
+  optimization that just makes it pass first try.
+
+**Controls & cost:** a per-call `opts.model` (or per-phase `meta.phases[].model`) always wins over the
+Tier-1 routing — set it to keep a schema'd call on GLM (Tier 2), or to pick a different strict model.
+Because Tier-1 routes schema'd calls to OpenAI, **schema'd calls bill OpenAI** (open-ended calls stay
+on the cheap GLM default). The whole native path is behind `DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT`
+(default on) — set it off to revert every schema'd call to GLM + the prompt-contract.
 
 ## Validate before you run
 
@@ -282,3 +301,28 @@ Compose freely; these map onto the primitives (and have fixtures):
 Barrier vs pipeline: default to `pipeline()`. Reach for a `parallel()` barrier only when a later
 stage genuinely needs ALL prior results at once (dedup/merge across the full set, early-exit on
 zero, or "compare against the others").
+
+## Recipes: mimicking the built-in Claude Code workflows
+
+The two flagship built-ins port directly onto these primitives — and, importantly, our
+dapr-agent-py GLM agents ship the **full Claude Code tool set** (`WebSearch`, `WebFetch`, `Read`,
+`Grep`, `Glob`, `Bash`, …), so the research recipe does *genuine* web research, not just knowledge
+synthesis. (Script-spawned `agent()`s set no `allowedTools`, so they get every default tool.)
+
+- **deep-research** (`deep-research.js`) — decompose → parallel web sweep (`WebSearch`+`WebFetch`)
+  → completeness critic → loop until saturated/budget → synthesize a sourced brief. Shape:
+  `agent(plan, schema)` → `while (rounds && budget) { parallel(research) → agent(critic, schema) }`
+  → `agent(synthesize)`. The critic (`{saturated, gaps}`) is what makes it *deep* — gaps become the
+  next round's sub-questions. Verified live on GLM 5.2: cited real URLs, 4 phases, saturated in 1
+  round on a well-scoped question.
+- **code-review** (`code-review.js`) — the canonical `pipeline()` pattern: one finder per review
+  DIMENSION (correctness/security/perf/tests/readability), each finding then challenged by N
+  **adversarial skeptics** (`parallel` of refuters, majority-`real` survives), then a severity-ranked
+  report of only the confirmed findings. `pipeline(DIMENSIONS, finder(schema), review =>
+  parallel(findings → parallel(refuters)))`. Reviews inline code via `args.code` (or point the finder
+  prompt at `Read`/`Grep` on a mounted repo). Mind the lifetime-agent cap: dimensions × findings ×
+  votes + report must stay under the deployment cap (dev 50) — trim dimensions or `verifyVotes` for
+  large diffs.
+
+Both default to GLM 5.2 (the platform `DYNAMIC_SCRIPT_DEFAULT_MODEL`); set `agent(..., {model})` or
+a per-phase `meta.phases[].model` to run a heavier synthesis/verify step on a different key.

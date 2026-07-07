@@ -558,6 +558,7 @@ def _apply_zai_output_mode(
     structured: bool,
     tool_chat: bool = False,
     reasoning_effort: str | None = None,
+    native_json_schema: dict[str, Any] | None = None,
 ) -> None:
     if structured:
         request_body["thinking"] = {"type": "disabled"}
@@ -568,6 +569,14 @@ def _apply_zai_output_mode(
         return
     request_body["thinking"] = {"type": "enabled"}
     request_body["reasoning_effort"] = _reasoning_effort(reasoning_effort)
+    # Tier-2 structured output for dynamic-script agent(..., {schema}) routed to
+    # GLM: GLM's "structured output" is only json_object (valid JSON, NOT
+    # schema-shape enforced — GLM has no strict json_schema mode). Force valid
+    # JSON while KEEPING thinking on (distinct from the thinking-off `structured`
+    # path above), so verify/critic reasoning is preserved. The prompt
+    # <output-contract> conveys the shape and the journal validates it.
+    if native_json_schema is not None:
+        request_body["response_format"] = {"type": "json_object"}
 
 
 def _messages_contain_json_instruction(messages: list[dict[str, Any]]) -> bool:
@@ -601,6 +610,7 @@ def _call_zai_chat(
     response_format: Any = None,
     tool_choice: Any = None,
     reasoning_effort: str | None = None,
+    native_json_schema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     model = _get_zai_model(component)
     converted_tools = _convert_tools_for_zai_chat(tools)
@@ -674,6 +684,10 @@ def _call_zai_chat(
         structured=response_format is not None,
         tool_chat="tools" in request_body,
         reasoning_effort=reasoning_effort,
+        # Only honored when the Pydantic response_format (memory path) is absent,
+        # so the thinking-off `structured` path and this thinking-on native path
+        # never collide.
+        native_json_schema=native_json_schema if response_format is None else None,
     )
 
     image_msgs = sum(
@@ -971,6 +985,14 @@ def patch_for_zai(llm_client: Any) -> None:
                 # the client by call_llm alongside _llm_component; the env
                 # default applies only when unset.
                 reasoning_effort=getattr(self, "_reasoning_effort", None),
+                # Tier-2 structured output (dynamic-script schema on GLM): force
+                # json_object with thinking kept on. Returns text → journal
+                # validates. Only when the Pydantic response_format is absent.
+                native_json_schema=(
+                    getattr(self, "_response_json_schema", None)
+                    if response_format is None
+                    else None
+                ),
             )
 
             if response_format is not None:

@@ -140,6 +140,87 @@ def test_response_format_schema_is_sent_as_strict_json_schema(monkeypatch) -> No
     assert nested_schema["required"] == ["name"]
 
 
+def test_native_json_schema_sent_as_strict_and_returns_text(monkeypatch) -> None:
+    """dynamic-script agent(..., {schema}): a RAW JSON Schema dict is enforced as
+    OpenAI strict json_schema, and the reply comes back as TEXT (the journal
+    validates it) — NOT parsed to a Pydantic model here."""
+    bodies: list[dict] = []
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        adapter, "_auth_headers", lambda: ({"Authorization": "Bearer sk-test"}, "openai-api-key")
+    )
+
+    def urlopen(req, timeout: int):
+        bodies.append(json.loads(req.data.decode()))
+        return _Response({
+            "id": "resp_test",
+            "status": "completed",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": '{"real": true}'}]}],
+        })
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+
+    raw_schema = {
+        "type": "object",
+        "required": ["real"],
+        "properties": {"real": {"type": "boolean"}, "reason": {"type": "string"}},
+    }
+    result = adapter._call_openai_responses(
+        "llm-openai-gpt5",
+        [{"role": "user", "content": "verify"}],
+        None,
+        native_json_schema=raw_schema,
+    )
+
+    fmt = bodies[0]["text"]["format"]
+    assert fmt["type"] == "json_schema"
+    assert fmt["strict"] is True
+    assert fmt["name"] == "structured_output"
+    assert fmt["schema"]["additionalProperties"] is False  # strict normalization
+    assert fmt["schema"]["properties"]["real"]["type"] == "boolean"
+    # Returns raw text content (validated downstream by the journal), not a model.
+    assert result["content"] == '{"real": true}'
+
+
+def test_pydantic_response_format_wins_over_native_schema(monkeypatch) -> None:
+    """The memory-path Pydantic response_format takes precedence; native_json_schema
+    is a request-side no-op when both are (defensively) supplied."""
+    bodies: list[dict] = []
+
+    class S:
+        __name__ = "S"
+
+        @staticmethod
+        def model_json_schema() -> dict:
+            return {"type": "object", "properties": {"a": {"type": "string"}}}
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        adapter, "_auth_headers", lambda: ({"Authorization": "Bearer sk-test"}, "openai-api-key")
+    )
+
+    def urlopen(req, timeout: int):
+        bodies.append(json.loads(req.data.decode()))
+        return _Response({
+            "id": "r",
+            "status": "completed",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "{}"}]}],
+        })
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+
+    adapter._call_openai_responses(
+        "llm-openai-gpt5",
+        [{"role": "user", "content": "x"}],
+        None,
+        response_format=S,
+        native_json_schema={"type": "object", "properties": {"b": {"type": "number"}}},
+    )
+    fmt = bodies[0]["text"]["format"]
+    assert fmt["name"] == "S"  # from the Pydantic model, not "structured_output"
+    assert "a" in fmt["schema"]["properties"]
+
+
 def test_openai_llm_usage_event_includes_effective_config_audit_fields(monkeypatch) -> None:
     events: list[tuple[str, str, dict, str | None]] = []
     publisher = importlib.import_module("src.event_publisher")

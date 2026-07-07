@@ -883,3 +883,61 @@ def test_agent_dispatch_stamps_resolved_runtime_on_agent_config(monkeypatch):
     # Existing stamps unchanged.
     assert agent_config["modelSpec"] == "zai/glm-5.2"
     assert agent_config["reasoningEffort"] == "low"
+
+
+# ---------------------------------------------------------------------------
+# Provider-native structured output: hybrid routing + responseJsonSchema stamp
+# (script_agent_dispatch._build_agent_config).
+# ---------------------------------------------------------------------------
+def test_schema_call_routes_to_structured_model_and_stamps_schema(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
+    monkeypatch.setenv("DYNAMIC_SCRIPT_STRUCTURED_MODEL", "openai/gpt-5.5")
+    schema = {"type": "object", "required": ["real"], "properties": {"real": {"type": "boolean"}}}
+    # schema'd call, no explicit model -> route to the structured model + stamp
+    cfg = d._build_agent_config({"schema": schema}, {"model": "zai/glm-5.2"}, "dapr-agent-py", {})
+    assert cfg["modelSpec"] == "openai/gpt-5.5"
+    assert cfg["responseJsonSchema"] == schema
+
+
+def test_schema_call_explicit_model_wins_still_stamps_schema(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    # per-call opts.model wins (GLM) -> Tier-2 json_object; schema still stamped
+    cfg = d._build_agent_config({"schema": schema, "model": "zai/glm-5.2"}, {}, "dapr-agent-py", {})
+    assert cfg["modelSpec"] == "zai/glm-5.2"
+    assert cfg["responseJsonSchema"] == schema
+
+
+def test_non_schema_call_stays_on_default_model(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
+    cfg = d._build_agent_config({}, {"model": "zai/glm-5.2"}, "dapr-agent-py", {})
+    assert cfg["modelSpec"] == "zai/glm-5.2"
+    assert "responseJsonSchema" not in cfg
+
+
+def test_kill_switch_off_disables_native_structured(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.setenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", "false")
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    cfg = d._build_agent_config({"schema": schema}, {"model": "zai/glm-5.2"}, "dapr-agent-py", {})
+    # reverts to GLM default + no native stamp (today's prompt-contract behavior)
+    assert cfg["modelSpec"] == "zai/glm-5.2"
+    assert "responseJsonSchema" not in cfg
+
+
+def test_native_structured_gated_to_dapr_agent_py(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    # non-dapr runtime (e.g. claude-agent-py, Anthropic-only) -> no routing/stamp
+    cfg = d._build_agent_config({"schema": schema}, {"model": "zai/glm-5.2"}, "claude-agent-py", {})
+    assert "responseJsonSchema" not in cfg
+    assert "modelSpec" not in cfg
