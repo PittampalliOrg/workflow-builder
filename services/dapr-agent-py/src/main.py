@@ -16,6 +16,7 @@ import urllib.request
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from datetime import timedelta
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -5232,6 +5233,10 @@ class OpenShellDurableAgent(DurableAgent):
         super().register_workflows(runtime)
         runtime.register_workflow(self.session_workflow)
         runtime.register_workflow(self.call_peer_session_workflow)
+        # Workflow-tool bridge: the agent-spawnable dynamic-script runner
+        # (src/tools/workflow_script). Same Approach-B shape as CallAgent —
+        # a no-op unless the LLM emits a Workflow tool_call.
+        runtime.register_workflow(self.run_workflow_script_bridge)
         # Activity that populates self._mcp_configs_by_instance[instance_id]
         # for the current session workflow turn. Yielded by session_workflow
         # before the inline agent turn so call_llm finds pre-seeded MCP configs
@@ -5246,6 +5251,8 @@ class OpenShellDurableAgent(DurableAgent):
         # custom activities so every activity registration is agent-scoped.
         for activity in (
             self.create_peer_session_row,
+            self.start_script_execution,
+            self.poll_script_execution,
             self.seed_mcp_for_instance,
             self.seed_runtime_context_for_instance,
             self.check_cancellation_for_instance,
@@ -5392,6 +5399,216 @@ class OpenShellDurableAgent(DurableAgent):
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(
                 f"spawn-peer returned non-JSON: {text[:200]!r}"
+            ) from exc
+
+    @workflow_entry
+    def run_workflow_script_bridge(self, ctx, message: dict):
+        """Durable bridge for the agent-spawnable Workflow tool.
+
+        Input (built by src/tools/workflow_script._schedule_workflow_script):
+            { executionId, attachOnly, script|workflowName, hasArgs, args,
+              budgetTotal, timeoutMinutes, parentInstanceId, sourceAgent }
+
+        Flow (every yield is Dapr event-sourced — the wait survives pod
+        death; the stranded-host rescuer + replay resume it):
+          1. yield start_script_execution — POSTs the BFF's internal
+             execute-script/execute route with the caller-supplied
+             executionId; an activity retry re-POSTs the same id and the BFF
+             short-circuits (reused). A VALIDATION rejection (HTTP 4xx)
+             returns {rejected} instead of raising, so the model sees the
+             validator's message as the tool result and can fix the script
+             in-loop (the StructuredOutput retry pattern).
+          2. Poll loop: read-only poll_script_execution + a durable timer,
+             until the run is terminal or this call's deadline passes. On
+             timeout the run KEEPS GOING server-side; the tool result tells
+             the model to re-attach with {executionId}.
+        """
+        from src.tools.workflow_script.workflow_tool import digest_output
+
+        execution_id = str(message.get("executionId") or "")
+        if not execution_id:
+            raise ValueError("run_workflow_script_bridge requires executionId")
+        if not message.get("attachOnly"):
+            started = yield ctx.call_activity(
+                self._activity_name(self.start_script_execution),
+                input=message,
+                retry_policy=self._retry_policy,
+            )
+            if isinstance(started, dict) and started.get("rejected"):
+                return {
+                    "status": "rejected",
+                    "executionId": execution_id,
+                    "error": started.get("error"),
+                }
+        timeout_minutes = message.get("timeoutMinutes")
+        try:
+            timeout_minutes = max(1, min(120, int(timeout_minutes)))
+        except (TypeError, ValueError):
+            timeout_minutes = 30
+        deadline = ctx.current_utc_datetime + timedelta(minutes=timeout_minutes)
+        poll_seconds = max(
+            5, int(os.environ.get("AGENT_WORKFLOW_TOOL_POLL_SECONDS", "15") or 15)
+        )
+        last_phase = None
+        while True:
+            poll = yield ctx.call_activity(
+                self._activity_name(self.poll_script_execution),
+                input={"executionId": execution_id},
+                retry_policy=self._retry_policy,
+            )
+            if isinstance(poll, dict) and poll.get("terminal"):
+                return {
+                    "status": poll.get("status"),
+                    "executionId": execution_id,
+                    "output": digest_output(poll.get("output")),
+                    "error": poll.get("error"),
+                }
+            if isinstance(poll, dict):
+                last_phase = poll.get("phase") or last_phase
+                if not ctx.is_replaying:
+                    try:
+                        ctx.set_custom_status(
+                            f"workflow-tool:{execution_id}:{poll.get('status')}"
+                        )
+                    except Exception:  # noqa: BLE001 — heartbeat is best-effort
+                        pass
+            if ctx.current_utc_datetime >= deadline:
+                return {
+                    "status": "timeout",
+                    "executionId": execution_id,
+                    "phase": last_phase,
+                    "error": (
+                        f"still running after {timeout_minutes}m — the run "
+                        "continues server-side; call Workflow again with "
+                        "{executionId} to re-attach and keep waiting"
+                    ),
+                }
+            yield ctx.create_timer(timedelta(seconds=poll_seconds))
+
+    def start_script_execution(self, ctx, payload: dict) -> dict:
+        """Activity: start the dynamic-script execution through the BFF's
+        internal route, idempotent by the caller-supplied executionId (a
+        retried activity re-POSTs the same id → the BFF returns ``reused``).
+
+        HTTP 4xx (validation / unknown workflowName) returns ``{rejected}``
+        rather than raising — the model should SEE the reason and correct the
+        script; only transport/5xx failures raise into the Dapr retry policy.
+        """
+        import urllib.error
+        import urllib.request
+
+        from src.tools.workflow_script.workflow_tool import build_start_request
+
+        token = os.environ.get("INTERNAL_API_TOKEN", "").strip()
+        if not token:
+            raise RuntimeError("INTERNAL_API_TOKEN not configured on dapr-agent-py")
+        method_path, body = build_start_request(payload)
+
+        # Attribute the run to THIS session's owner (user + project): the BFF
+        # resolves the owner from X-Wfb-Session-Id. The session id comes from
+        # the parent agent instance's runtime context (state-store backed).
+        parent_instance = str(payload.get("parentInstanceId") or "")
+        context = self._runtime_context_for_instance(parent_instance)
+        session_id = (
+            str(context.get("sessionId") or "").strip()
+            or self._session_id_by_instance.get(parent_instance)
+            or ""
+        )
+        if not session_id and parent_instance:
+            # Interactive sessions: instance id IS the session id (turn
+            # suffixes stripped by the candidate-id helper).
+            candidates = _runtime_context_candidate_ids(parent_instance)
+            session_id = candidates[0] if candidates else parent_instance
+
+        app_id = os.environ.get("WORKFLOW_BUILDER_APP_ID", "workflow-builder")
+        dapr_http = os.environ.get("DAPR_HTTP_PORT", "3500")
+        url = f"http://localhost:{dapr_http}/v1.0/invoke/{app_id}/method/{method_path}"
+        headers = {
+            "Content-Type": "application/json",
+            "X-Internal-Token": token,
+        }
+        if session_id:
+            headers["X-Wfb-Session-Id"] = session_id
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:1200]
+            if 400 <= exc.code < 500:
+                try:
+                    detail = json.loads(detail).get("error") or detail
+                except Exception:  # noqa: BLE001
+                    pass
+                return {"rejected": True, "error": f"HTTP {exc.code}: {detail}"}
+            raise RuntimeError(
+                f"workflow start failed (HTTP {exc.code}): {detail[:400]}"
+            ) from exc
+        try:
+            started = json.loads(text)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"workflow start returned non-JSON: {text[:200]!r}"
+            ) from exc
+        logger.info(
+            "[workflow-tool] started execution %s (reused=%s) for session %s",
+            payload.get("executionId"),
+            bool(started.get("reused")) if isinstance(started, dict) else False,
+            session_id or "?",
+        )
+        return {"ok": True, "started": started}
+
+    def poll_script_execution(self, ctx, payload: dict) -> dict:
+        """Activity: read-only status poll for a dynamic-script execution via
+        the BFF's internal status route. Raises on transport errors (Dapr
+        retry policy re-runs it — reads are safe at-least-once)."""
+        import urllib.error
+        import urllib.request
+
+        from src.tools.workflow_script.workflow_tool import classify_poll
+
+        execution_id = str(payload.get("executionId") or "").strip()
+        if not execution_id:
+            raise ValueError("poll_script_execution requires executionId")
+        token = os.environ.get("INTERNAL_API_TOKEN", "").strip()
+        if not token:
+            raise RuntimeError("INTERNAL_API_TOKEN not configured on dapr-agent-py")
+        app_id = os.environ.get("WORKFLOW_BUILDER_APP_ID", "workflow-builder")
+        dapr_http = os.environ.get("DAPR_HTTP_PORT", "3500")
+        url = (
+            f"http://localhost:{dapr_http}/v1.0/invoke/{app_id}"
+            f"/method/api/internal/agent/workflows/executions/{execution_id}/status"
+        )
+        req = urllib.request.Request(
+            url,
+            headers={"X-Internal-Token": token},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return {
+                    "status": "error",
+                    "terminal": True,
+                    "output": None,
+                    "error": f"execution {execution_id} not found",
+                }
+            detail = exc.read().decode("utf-8", errors="replace")[:400]
+            raise RuntimeError(
+                f"status poll failed (HTTP {exc.code}): {detail}"
+            ) from exc
+        try:
+            return classify_poll(json.loads(text))
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"status poll returned non-JSON: {text[:200]!r}"
             ) from exc
 
     def seed_mcp_for_instance(
