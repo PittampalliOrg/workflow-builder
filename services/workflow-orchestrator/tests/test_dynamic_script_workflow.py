@@ -212,6 +212,13 @@ class FakeCtx:
         task.complete(result)
         return task
 
+    def create_timer(self, fire_after) -> CompletableTask:
+        # Usage-settle gate (budget-bounded runs): fires immediately in tests.
+        self.action_log.append(("timer", str(fire_after)))
+        task = CompletableTask()
+        task.complete(None)
+        return task
+
     def call_child_workflow(self, name, *, input=None, instance_id=None, **kwargs) -> CompletableTask:
         self.action_log.append(("child", name, instance_id))
         task = CompletableTask()
