@@ -12,31 +12,39 @@ def _load_code_checkpoint_module():
     # Stub openshell_runtime so we can import code_checkpoint without Dapr deps.
     # Build a `src` package pointing at the real services/dapr-agent-py/src dir
     # so that `from src.openshell_runtime import ...` resolves to our stub.
+    # Snapshot + restore every src* module so the stub swap cannot leak into
+    # other test files (permanent replacement poisoned later collection).
     import importlib.util
     from pathlib import Path
 
     src_dir = Path(__file__).resolve().parent.parent / "src"
+    saved = {k: v for k, v in sys.modules.items() if k == "src" or k.startswith("src.")}
+    try:
+        # Register a minimal `src` package
+        src_pkg = types.ModuleType("src")
+        src_pkg.__path__ = [str(src_dir)]
+        sys.modules["src"] = src_pkg
 
-    # Register a minimal `src` package
-    src_pkg = types.ModuleType("src")
-    src_pkg.__path__ = [str(src_dir)]
-    sys.modules["src"] = src_pkg
+        stub = types.ModuleType("src.openshell_runtime")
+        stub.DEFAULT_CWD = "/sandbox"
 
-    stub = types.ModuleType("src.openshell_runtime")
-    stub.DEFAULT_CWD = "/sandbox"
+        class _RT:  # minimal placeholder
+            pass
 
-    class _RT:  # minimal placeholder
-        pass
+        stub.OpenShellRuntime = _RT
+        sys.modules["src.openshell_runtime"] = stub
 
-    stub.OpenShellRuntime = _RT
-    sys.modules["src.openshell_runtime"] = stub
-
-    spec = importlib.util.spec_from_file_location(
-        "src.code_checkpoint", src_dir / "code_checkpoint.py"
-    )
-    code_checkpoint = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(code_checkpoint)
-    return code_checkpoint
+        spec = importlib.util.spec_from_file_location(
+            "src.code_checkpoint", src_dir / "code_checkpoint.py"
+        )
+        code_checkpoint = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(code_checkpoint)
+        return code_checkpoint
+    finally:
+        for key in [k for k in sys.modules if k == "src" or k.startswith("src.")]:
+            if key not in saved:
+                del sys.modules[key]
+        sys.modules.update(saved)
 
 
 def _load_cap_files():

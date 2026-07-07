@@ -17,25 +17,37 @@ from pathlib import Path
 
 def _load_code_checkpoint_module():
     src_dir = Path(__file__).resolve().parent.parent / "src"
-    src_pkg = types.ModuleType("src")
-    src_pkg.__path__ = [str(src_dir)]
-    sys.modules["src"] = src_pkg
+    # Snapshot every src* module so the stub swap below cannot leak into other
+    # test files: this loader runs at IMPORT time, and permanently replacing
+    # sys.modules["src"]/"src.openshell_runtime" poisoned every file collected
+    # after this one (test_local_workspace_runtime failed collection, and
+    # file_edit/instruction_bundle tests failed as ordering collateral).
+    saved = {k: v for k, v in sys.modules.items() if k == "src" or k.startswith("src.")}
+    try:
+        src_pkg = types.ModuleType("src")
+        src_pkg.__path__ = [str(src_dir)]
+        sys.modules["src"] = src_pkg
 
-    stub = types.ModuleType("src.openshell_runtime")
-    stub.DEFAULT_CWD = "/sandbox"
+        stub = types.ModuleType("src.openshell_runtime")
+        stub.DEFAULT_CWD = "/sandbox"
 
-    class _RT:  # minimal placeholder
-        pass
+        class _RT:  # minimal placeholder
+            pass
 
-    stub.OpenShellRuntime = _RT
-    sys.modules["src.openshell_runtime"] = stub
+        stub.OpenShellRuntime = _RT
+        sys.modules["src.openshell_runtime"] = stub
 
-    spec = importlib.util.spec_from_file_location(
-        "src.code_checkpoint", src_dir / "code_checkpoint.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+        spec = importlib.util.spec_from_file_location(
+            "src.code_checkpoint", src_dir / "code_checkpoint.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        for key in [k for k in sys.modules if k == "src" or k.startswith("src.")]:
+            if key not in saved:
+                del sys.modules[key]
+        sys.modules.update(saved)
 
 
 cc = _load_code_checkpoint_module()
