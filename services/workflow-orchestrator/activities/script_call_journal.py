@@ -251,6 +251,15 @@ def record_script_call_result(ctx, input_data: dict[str, Any]) -> dict[str, Any]
             _persist(row)
             return {"status": "null"}
 
+        # 2b. Nested workflow() child -> resolve to the child's returnValue object
+        #     (a dynamic_script_workflow_v1 result is {returnValue, status, ...},
+        #     which _extract_content can't reach — it only pulls string keys).
+        if (spec.get("kind") or "agent") == "workflow":
+            row = _base_row("done")
+            row["result"] = raw.get("returnValue") if isinstance(raw, dict) else None
+            _persist(row)
+            return {"status": "done"}
+
         content = _extract_content(raw)
 
         # 3. No schema -> done with the raw text.
