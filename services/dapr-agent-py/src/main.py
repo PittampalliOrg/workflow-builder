@@ -5429,11 +5429,21 @@ class OpenShellDurableAgent(DurableAgent):
         if not execution_id:
             raise ValueError("run_workflow_script_bridge requires executionId")
         if not message.get("attachOnly"):
-            started = yield ctx.call_activity(
-                self._activity_name(self.start_script_execution),
-                input=message,
-                retry_policy=self._retry_policy,
-            )
+            # A start failure (transport hard-down after activity retries) must
+            # surface as the TOOL RESULT, not kill the parent session — the
+            # model can retry or route around it (Claude Code semantics).
+            try:
+                started = yield ctx.call_activity(
+                    self._activity_name(self.start_script_execution),
+                    input=message,
+                    retry_policy=self._retry_policy,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "status": "bridge_error",
+                    "executionId": execution_id,
+                    "error": f"workflow start failed: {str(exc)[:600]}",
+                }
             if isinstance(started, dict) and started.get("rejected"):
                 return {
                     "status": "rejected",
@@ -5451,11 +5461,23 @@ class OpenShellDurableAgent(DurableAgent):
         )
         last_phase = None
         while True:
-            poll = yield ctx.call_activity(
-                self._activity_name(self.poll_script_execution),
-                input={"executionId": execution_id},
-                retry_policy=self._retry_policy,
-            )
+            try:
+                poll = yield ctx.call_activity(
+                    self._activity_name(self.poll_script_execution),
+                    input={"executionId": execution_id},
+                    retry_policy=self._retry_policy,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # The run may still be fine server-side — hand the agent the
+                # executionId so it can re-attach once the transport recovers.
+                return {
+                    "status": "bridge_error",
+                    "executionId": execution_id,
+                    "error": (
+                        f"status poll failed: {str(exc)[:400]} — the run may "
+                        "still be in progress; re-attach with {executionId}"
+                    ),
+                }
             if isinstance(poll, dict) and poll.get("terminal"):
                 return {
                     "status": poll.get("status"),
@@ -5520,9 +5542,16 @@ class OpenShellDurableAgent(DurableAgent):
             candidates = _runtime_context_candidate_ids(parent_instance)
             session_id = candidates[0] if candidates else parent_instance
 
-        app_id = os.environ.get("WORKFLOW_BUILDER_APP_ID", "workflow-builder")
-        dapr_http = os.environ.get("DAPR_HTTP_PORT", "3500")
-        url = f"http://localhost:{dapr_http}/v1.0/invoke/{app_id}/method/{method_path}"
+        # Direct cluster-DNS HTTP to the BFF — the transport every sandbox pod
+        # already exercises each turn (event_publisher session-ingest). Dapr
+        # service-invoke from per-session sandboxes to the BFF is NOT reliable
+        # (live-caught: the sandbox daprd dialed the BFF pod's app channel on a
+        # refused port and the start activity exhausted its retries).
+        base_url = os.environ.get(
+            "WORKFLOW_BUILDER_URL",
+            "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
+        ).rstrip("/")
+        url = f"{base_url}/{method_path}"
         headers = {
             "Content-Type": "application/json",
             "X-Internal-Token": token,
@@ -5578,11 +5607,15 @@ class OpenShellDurableAgent(DurableAgent):
         token = os.environ.get("INTERNAL_API_TOKEN", "").strip()
         if not token:
             raise RuntimeError("INTERNAL_API_TOKEN not configured on dapr-agent-py")
-        app_id = os.environ.get("WORKFLOW_BUILDER_APP_ID", "workflow-builder")
-        dapr_http = os.environ.get("DAPR_HTTP_PORT", "3500")
+        # Direct HTTP (see start_script_execution — sandbox→BFF service-invoke
+        # is not reliable; the session-ingest transport is).
+        base_url = os.environ.get(
+            "WORKFLOW_BUILDER_URL",
+            "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
+        ).rstrip("/")
         url = (
-            f"http://localhost:{dapr_http}/v1.0/invoke/{app_id}"
-            f"/method/api/internal/agent/workflows/executions/{execution_id}/status"
+            f"{base_url}/api/internal/agent/workflows/executions/"
+            f"{execution_id}/status"
         )
         req = urllib.request.Request(
             url,
