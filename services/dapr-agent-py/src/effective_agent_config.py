@@ -317,7 +317,7 @@ def resolve_llm_metadata(
     message: Mapping[str, Any] | None = None,
     metadata: Mapping[str, Any] | None = None,
     agent_config: Mapping[str, Any] | None = None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Resolve modelSpec, Dapr component, provider, and provider model.
 
     Priority matches the runtime path:
@@ -350,6 +350,14 @@ def resolve_llm_metadata(
     effort = (_string(config.get("reasoningEffort")) or "").lower()
     if effort in {"low", "medium", "high", "xhigh", "max"}:
         out["reasoningEffort"] = effort
+    # Per-agent response JSON Schema for provider-native structured output
+    # (dynamic-script agent(..., {schema}) → dispatch stamps responseJsonSchema).
+    # Rides the llm snapshot so call_llm can stamp it onto the chat client; each
+    # adapter enforces it per provider (OpenAI strict json_schema / GLM
+    # json_object). A dict here — guard so a non-dict never propagates.
+    response_schema = config.get("responseJsonSchema")
+    if isinstance(response_schema, dict) and response_schema:
+        out["responseJsonSchema"] = response_schema
     return out
 
 

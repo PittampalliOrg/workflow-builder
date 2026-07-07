@@ -100,6 +100,29 @@ Five Workflow-tool alignment gaps were closed (evaluator 1.1.0 + orchestrator + 
 - **meta.phases[].model is honored**: `_build_agent_config` resolves
   `opts.model → meta.phases[task.phase].model → defaults.model` (last gated to dapr-agent-py).
 
+## Structured output — provider-native (2026-07)
+
+Schema'd `agent(..., {schema})` calls get **provider-native** structured output on top of the
+prompt-contract, keyed off the existing `opts.schema` (no callId/contract change):
+
+- **Hybrid routing** (`script_agent_dispatch._build_agent_config`): a schema'd call with no explicit
+  model routes to `DYNAMIC_SCRIPT_STRUCTURED_MODEL` (default `openai/gpt-5.5`) instead of the GLM
+  default; per-call `opts.model` / per-phase model still wins; gated by
+  `DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT` (default on), dapr-agent-py only.
+- **Threading:** dispatch stamps `agentConfig.responseJsonSchema` → `effective_agent_config.resolve_llm_metadata`
+  carries it into `llm.responseJsonSchema` → `main.py call_llm` stamps `self.llm._response_json_schema`
+  at BOTH seams (set/restore alongside `_llm_component`/`_reasoning_effort`) → adapters enforce it.
+- **Adapters:** `openai_adapter` sets `text.format={type:json_schema, strict:true}` from the raw dict
+  (near-100% first pass) and **returns text** (no Pydantic parse); `zai_adapter` sets
+  `response_format={type:json_object}` keeping thinking on. Both only when the memory-path Pydantic
+  `response_format` kwarg is absent.
+- **The journal validation + corrective-retry stays the universal authority/fallback** — native
+  enforcement is request-side only, so the `agent()`-returns-object-or-null contract is unchanged.
+  Effect: schema'd calls on OpenAI show `workflow_script_calls.retries ≈ 0` (vs GLM's 1/2/3).
+- Prereq: `OPENAI_API_KEY` (in `dapr-agent-py-secrets`) injected into the per-session sandbox pods;
+  cost note — schema'd calls bill OpenAI (kill-switch + per-call override mitigate). Rejected: the
+  Dapr Conversation API (we bypass that alpha building block by design).
+
 ## Gotchas (each cost real debugging time — do not regress)
 
 - **`agentConfig.modelSpec` is the model key dapr-agent-py actually reads**
@@ -127,6 +150,17 @@ Five Workflow-tool alignment gaps were closed (evaluator 1.1.0 + orchestrator + 
   and run panel both read that key.
 - Dev-rollout verification: check POD-level image+env, not Deployment spec — two
   verification rounds were invalidated by stale-pod generations.
+- **Mid-run orchestrator restart can wedge a pump with cross-app children in flight**
+  (live-observed 2026-07: an orchestrator roll landed while an audit-fanout run had
+  agents outstanding; the children completed on their per-session task hubs but the
+  completion events never reached the replayed parent — custom status froze at a stale
+  `dispatched`/`outstanding` snapshot; same task-hub-boundary root cause as the stop
+  wedge). Detection: journal rows all terminal / sessions all `terminated` while the
+  execution stays `running` and custom status stops moving. Remediation (verified):
+  **stop (`{mode:'terminate'}`) + resume** — resume-after-edit imports the `done`
+  journal rows and re-dispatches ONLY the lost calls; per-call **skip** also wakes the
+  pump when the outstanding callId is known. Avoid rolling the orchestrator while
+  long agent fan-outs are mid-flight on dev.
 
 ## Verifying (dev)
 

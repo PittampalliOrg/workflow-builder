@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from typing import Any
 
@@ -60,6 +61,19 @@ def script_child_instance_id(parent_instance_id: str, call_id: str, retries: int
     return f"{parent_instance_id}__durable-script__{fragment}__run__{int(retries or 0)}"
 
 
+def _native_structured_enabled() -> bool:
+    """Kill-switch for provider-native structured output (default ON)."""
+    raw = os.environ.get("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", "true").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _structured_model() -> str:
+    """The model schema'd calls route to for first-class structured output
+    (OpenAI strict json_schema by default). Read per-call so tests/env can
+    override; empty falls back to the OpenAI default."""
+    return os.environ.get("DYNAMIC_SCRIPT_STRUCTURED_MODEL", "openai/gpt-5.5").strip() or "openai/gpt-5.5"
+
+
 def _phase_model(meta: dict[str, Any] | None, phase: Any) -> str:
     """Model declared on the task's meta.phases entry (spec: per-phase model).
 
@@ -90,12 +104,29 @@ def _build_agent_config(
     agent_config: dict[str, Any] = {}
     model = ""
     phase_model = _phase_model(meta, opts.get("phase"))
+    # A schema'd call on the multi-provider runtime gets provider-native
+    # structured output (Tier 1 OpenAI strict json_schema / Tier 2 GLM
+    # json_object). The <output-contract> prompt block + jsonschema validation
+    # remain the universal Tier-3 authority/fallback either way.
+    schema = opts.get("schema") if isinstance(opts.get("schema"), dict) else None
+    native_structured = (
+        schema is not None
+        and agent_runtime == "dapr-agent-py"
+        and _native_structured_enabled()
+    )
     if isinstance(opts.get("model"), str) and opts.get("model").strip():
         model = opts["model"].strip()
     elif phase_model:
         # meta.phases[].model — explicit author intent scoped to the phase
         # (same trust level as opts.model; applies regardless of runtime).
         model = phase_model
+    elif native_structured:
+        # Hybrid routing: a schema'd call with no explicit model defaults to the
+        # configured structured model (OpenAI strict json_schema) instead of the
+        # GLM default, so the schema is enforced by constrained decoding. A
+        # per-call opts.model / phase model above still wins; a per-call model
+        # pointed at GLM keeps json_object (Tier 2).
+        model = _structured_model()
     elif (
         isinstance((defaults or {}).get("model"), str)
         and (defaults or {}).get("model").strip()
@@ -115,6 +146,11 @@ def _build_agent_config(
         agent_config["modelSpec"] = model
     if isinstance(opts.get("effort"), str) and opts.get("effort").strip():
         agent_config["reasoningEffort"] = opts["effort"].strip()
+    if native_structured:
+        # The raw JSON Schema the adapter enforces provider-side (OpenAI strict
+        # json_schema; GLM json_object). Read back in call_llm and stamped on the
+        # chat client alongside _llm_component / _reasoning_effort.
+        agent_config["responseJsonSchema"] = schema
     return agent_config
 
 
