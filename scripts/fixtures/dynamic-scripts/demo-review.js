@@ -18,7 +18,27 @@ export const meta = {
 	phases: [{ title: 'Review' }, { title: 'Verify' }, { title: 'Summarize' }]
 };
 
-const target = (args && args.target) || 'the target codebase';
+const target = (args && args.target) || 'the sample function below';
+// Self-contained review material: agents review INLINE code passed in the
+// prompt (args.code overrides). Per-session sandboxes start EMPTY, so a
+// "review the codebase" prompt would only invite doomed file exploration —
+// give the reviewers the code directly.
+const code =
+	(args && args.code) ||
+	[
+		'function dedupeUsers(users) {',
+		'  var seen = {};',
+		'  var out = [];',
+		'  for (var i = 0; i <= users.length; i++) {',
+		'    var u = users[i];',
+		'    if (!seen[u.email]) {',
+		'      seen[u.email] = 1;',
+		'      out.push(u);',
+		'    }',
+		'  }',
+		'  return out;',
+		'}'
+	].join('\n');
 const dimensions = ['correctness', 'readability'];
 
 // Phase 1 — Review: pipeline maps each dimension through a review agent. No
@@ -26,10 +46,13 @@ const dimensions = ['correctness', 'readability'];
 phase('Review');
 log(`Reviewing ${target} across ${dimensions.length} dimensions`);
 const reviews = await pipeline(dimensions, (dimension) =>
-	agent(`Review ${target} for ${dimension}. Give 2-3 concrete, actionable findings.`, {
-		label: `review:${dimension}`,
-		phase: 'Review'
-	})
+	agent(
+		`Review ${target} for ${dimension}. Give 2-3 concrete, actionable findings.\n\nCode:\n\`\`\`js\n${code}\n\`\`\`\nDo NOT use any tools — review the code above directly.`,
+		{
+			label: `review:${dimension}`,
+			phase: 'Review'
+		}
+	)
 );
 
 // Phase 2 — Verify: parallel verification with a JSON schema (barrier — all
