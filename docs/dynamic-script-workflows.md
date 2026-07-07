@@ -161,6 +161,19 @@ prompt-contract, keyed off the existing `opts.schema` (no callId/contract change
   journal rows and re-dispatches ONLY the lost calls; per-call **skip** also wakes the
   pump when the outstanding callId is known. Avoid rolling the orchestrator while
   long agent fan-outs are mid-flight on dev.
+- **A session host pod that EXITS mid-run is auto-rescued by the liveness reconciler**
+  (live-observed 2026-07-07: SIGTERM → uvicorn graceful exit 0 → pod phase `Succeeded`;
+  per-session pods are `restartPolicy: Never` and the Sandbox controller does not
+  recreate a terminal pod, so the durable session sat `running` with an intact journal
+  and no host). The reconciler's `rescue_stranded_host` action detects pod-EXITED +
+  Sandbox-CR-present + session-live, deletes the exited pod (the controller recreates
+  it, `spec.replicas=1`), and the durabletask worker resumes the workflow via REPLAY —
+  same instance, completed activities from history, no re-execution. Attempts are
+  capped per session (`SESSION_RECONCILER_MAX_RESCUES`, default 3; each attempt leaves
+  a `session.host_rescued` event) and then degrade to an audit-only warn. Note the
+  reconciler runs DRY-RUN by default (`SESSION_RECONCILER_DRY_RUN`); manual trigger:
+  `POST /api/internal/sessions/reconcile {"dryRun":false}` with `INTERNAL_API_TOKEN`.
+  Manual fallback remains `kubectl delete pod <agent-host-…>` on the Completed pod.
 
 ## Verifying (dev)
 
