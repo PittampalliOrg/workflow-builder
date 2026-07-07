@@ -60,10 +60,23 @@ def script_child_instance_id(parent_instance_id: str, call_id: str, retries: int
     return f"{parent_instance_id}__durable-script__{fragment}__run__{int(retries or 0)}"
 
 
-def _build_agent_config(opts: dict[str, Any]) -> dict[str, Any]:
+def _build_agent_config(
+    opts: dict[str, Any],
+    defaults: dict[str, Any] | None = None,
+    agent_runtime: str = "",
+) -> dict[str, Any]:
     agent_config: dict[str, Any] = {}
     if isinstance(opts.get("model"), str) and opts.get("model").strip():
         agent_config["model"] = opts["model"].strip()
+    elif (
+        isinstance((defaults or {}).get("model"), str)
+        and (defaults or {}).get("model").strip()
+        and agent_runtime == "dapr-agent-py"
+    ):
+        # defaults.model applies ONLY to the multi-provider dapr-agent-py
+        # runtime — a per-call agentType (e.g. claude-agent-py, Anthropic-only)
+        # must never inherit a cross-provider default model key.
+        agent_config["model"] = (defaults or {})["model"].strip()
     if isinstance(opts.get("effort"), str) and opts.get("effort").strip():
         agent_config["reasoningEffort"] = opts["effort"].strip()
     return agent_config
@@ -170,7 +183,7 @@ def _start_script_call(
         agent_runtime = defaults["agentRuntime"].strip()
 
     flattened_args = {"agentRuntime": agent_runtime} if agent_runtime else {}
-    agent_config = _build_agent_config(opts)
+    agent_config = _build_agent_config(opts, defaults, agent_runtime)
     # Runtime resolution + the workflowDispatch=="auto-turn" guard (sw_workflow L1090-1118).
     _name, target = _resolve_native_agent_runtime(flattened_args, agent_config)
 

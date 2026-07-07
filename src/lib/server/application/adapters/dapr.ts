@@ -78,6 +78,12 @@ export class DaprWorkflowScheduler implements WorkflowScheduler {
 				defaults: {
 					agentRuntime: DYNAMIC_SCRIPT_DEFAULT_RUNTIME,
 					timeoutMinutes: DYNAMIC_SCRIPT_DEFAULT_TIMEOUT_MINUTES,
+					// Default model for dapr-agent-py dispatches only (the orchestrator
+					// guards non-dapr-agent-py runtimes from inheriting it). Per-call
+					// agent(..., {model}) always wins.
+					...(env.DYNAMIC_SCRIPT_DEFAULT_MODEL?.trim()
+						? { model: env.DYNAMIC_SCRIPT_DEFAULT_MODEL.trim() }
+						: {}),
 				},
 				limits: {
 					maxConcurrentAgents: dynamicScriptMaxConcurrency(),
