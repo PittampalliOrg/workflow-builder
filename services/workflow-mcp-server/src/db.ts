@@ -185,18 +185,36 @@ export async function getWorkflow(id: string): Promise<WorkflowRow | null> {
   };
 }
 
+/** Resolve a session's owner (user + project) for attribution — the same
+ * model the BFF's internal agent routes use (X-Wfb-Session-Id lineage). */
+export async function getSessionOwner(
+  sessionId: string,
+): Promise<{ userId: string | null; projectId: string | null } | null> {
+  const result = await pool.query(
+    `SELECT user_id, project_id FROM sessions WHERE id = $1 LIMIT 1`,
+    [sessionId],
+  );
+  if (result.rows.length === 0) return null;
+  return {
+    userId: result.rows[0].user_id ?? null,
+    projectId: result.rows[0].project_id ?? null,
+  };
+}
+
 export async function createWorkflow(
   name: string,
   description?: string,
   userId?: string,
+  projectId?: string,
 ): Promise<WorkflowRow> {
   const id = generateId();
   const triggerNode = createDefaultTriggerNode();
   const userIdFilter = userId ?? process.env.USER_ID;
+  const projectIdFilter = projectId ?? process.env.PROJECT_ID;
 
   const result = await pool.query(
-    `INSERT INTO workflows (id, name, description, nodes, edges, user_id)
-		 VALUES ($1, $2, $3, $4::jsonb, '[]'::jsonb, $5)
+    `INSERT INTO workflows (id, name, description, nodes, edges, user_id, project_id)
+		 VALUES ($1, $2, $3, $4::jsonb, '[]'::jsonb, $5, $6)
 		 RETURNING id, name, description, nodes, edges, visibility, created_at, updated_at`,
     [
       id,
@@ -204,6 +222,7 @@ export async function createWorkflow(
       description ?? null,
       JSON.stringify([triggerNode]),
       userIdFilter ?? null,
+      projectIdFilter ?? null,
     ],
   );
   const r = result.rows[0];
@@ -585,9 +604,12 @@ export type ExecutionLogEntry = {
 export async function getExecutionByInstanceId(
   instanceId: string,
 ): Promise<ExecutionRow | null> {
+  // Accept EITHER the Dapr instance id OR the execution row id — callers
+  // (agents digesting a Workflow tool result) commonly hold the execution id
+  // (e.g. `wfs…`), and the two are 1:1.
   const result = await pool.query(
     `SELECT id, workflow_id, status, phase, error, started_at, completed_at, duration
-		 FROM workflow_executions WHERE dapr_instance_id = $1 LIMIT 1`,
+		 FROM workflow_executions WHERE dapr_instance_id = $1 OR id = $1 LIMIT 1`,
     [instanceId],
   );
   if (result.rows.length === 0) return null;

@@ -61,7 +61,10 @@ Write plain JavaScript (NOT TypeScript). The script starts with a PURE-LITERAL
 inside it), then a body using these globals/hooks. The engine RE-EXECUTES the whole script
 each round, so it must be deterministic.
 
-PRIMITIVES (identical to Claude Code):
+PRIMITIVES (identical to Claude Code). The script body is ASYNC — every hook returns a
+Promise and MUST be awaited (\`const x = await agent(...)\`, \`const [a, b] = await
+parallel([...])\`). A forgotten await is a hard script_error (the engine detects completed
+scripts with un-awaited calls, Promises in the returnValue, and "[object Promise]" in prompts):
 - agent(prompt, opts?) -> final text (string), or schema-validated object (with opts.schema),
   or null (skipped/died/exceeded structured-retry cap). .filter(Boolean) fanned-out results.
 - parallel(thunks) -> BARRIER; runs all, a throwing thunk becomes null, never rejects.
@@ -424,6 +427,70 @@ export function registerScriptTools(
 	tools.push({
 		name: "validate_workflow_script",
 		description: "Validate a dynamic workflow script without running it",
+	});
+
+	// ── save_workflow_script — persist a REUSABLE dynamic-script workflow ───
+	(server as any).registerTool(
+		"save_workflow_script",
+		{
+			title: "Save Workflow Script",
+			description:
+				"Save (upsert) a dynamic workflow script as a REUSABLE named workflow WITHOUT running it — the persistence step of author → validate → save → run-by-name. The workflow is owned by this session's user + project and appears in the Workflows UI. An existing dynamic-script workflow with the same name in the same project is updated in place; otherwise a new one is created. Validation runs on save (a 400 carries the validator's reason — fix the script and retry). Run it later with run_workflow_script { workflowName } or your native Workflow tool. Do NOT use create_workflow for scripts — that builds canvas (SW 1.0) workflows.",
+			inputSchema: {
+				script: z.string().describe("Dynamic workflow script source to save."),
+				name: z
+					.string()
+					.optional()
+					.describe("Workflow name (defaults to the script's meta.name)."),
+			},
+		},
+		async (rawArgs: unknown) => {
+			const script =
+				rawArgs && typeof (rawArgs as any).script === "string"
+					? (rawArgs as any).script
+					: "";
+			const name =
+				rawArgs && typeof (rawArgs as any).name === "string"
+					? (rawArgs as any).name
+					: undefined;
+			if (!script.trim()) return errorResult("script is required");
+			if (!INTERNAL_API_TOKEN) {
+				return errorResult(
+					"INTERNAL_API_TOKEN is not configured; cannot save a workflow script.",
+				);
+			}
+			if (!currentGoalSessionId()) {
+				return errorResult(
+					"No session context (X-Wfb-Session-Id) — a saved workflow must be " +
+						"attributed to the calling session's user + project.",
+				);
+			}
+			try {
+				const resp = await fetchImpl(
+					`${WORKFLOW_BUILDER_URL}/api/internal/agent/workflows/save-script`,
+					{
+						method: "POST",
+						headers: internalHeaders(),
+						body: JSON.stringify({ script, ...(name ? { name } : {}) }),
+					},
+				);
+				const data = (await resp.json().catch(() => null)) as
+					| { workflowId?: string; name?: string; action?: string; error?: string }
+					| null;
+				if (!resp.ok) {
+					return errorResult(
+						`Failed to save workflow script (HTTP ${resp.status}): ${data?.error ?? "unknown error"}`,
+					);
+				}
+				return textResult(data);
+			} catch (err) {
+				return errorResult(`Failed to save workflow script: ${err}`);
+			}
+		},
+	);
+	tools.push({
+		name: "save_workflow_script",
+		description: "Save a dynamic workflow script as a reusable named workflow",
 	});
 
 	// ── get_workflow_script_spec — serve the dialect reference ──────────────

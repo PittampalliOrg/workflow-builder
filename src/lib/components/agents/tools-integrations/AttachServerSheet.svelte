@@ -14,10 +14,13 @@
 	import { Check, ExternalLink, Globe, Plug, Plus, Search } from '@lucide/svelte';
 	import {
 		attachPieceServerConfig,
+		attachWorkspaceServerConfig,
 		serverMatchesEntry,
+		serverMatchesWorkspaceServer,
 		serverKey,
 		BROWSER_MCP_PRESETS,
-		type McpAvailabilityEntryLite
+		type McpAvailabilityEntryLite,
+		type McpWorkspaceServerLite
 	} from '$lib/connections/agent-mcp';
 	import type { McpServerProfileConfig } from '$lib/server/agent-profiles';
 
@@ -28,13 +31,39 @@
 		value: McpServerProfileConfig[];
 		/** Project availability entries (piece catalog). */
 		entries: McpAvailabilityEntryLite[];
+		/** Non-piece workspace connections (custom URLs + platform-shared servers). */
+		workspaceServers?: McpWorkspaceServerLite[];
 		/** Logo lookup by piece name. */
 		logoFor: (pieceName: string) => string | null;
 		slug: string;
 		onAttach: (server: McpServerProfileConfig) => void;
 	}
 
-	let { open, onOpenChange, value, entries, logoFor, slug, onAttach }: Props = $props();
+	let {
+		open,
+		onOpenChange,
+		value,
+		entries,
+		workspaceServers = [],
+		logoFor,
+		slug,
+		onAttach
+	}: Props = $props();
+
+	function isWorkspaceServerAttached(row: McpWorkspaceServerLite): boolean {
+		return value.some((s) => serverMatchesWorkspaceServer(s, row));
+	}
+	function attachWorkspaceServer(row: McpWorkspaceServerLite) {
+		if (isWorkspaceServerAttached(row)) return;
+		onAttach(attachWorkspaceServerConfig(row));
+	}
+	function workspaceServerDescription(row: McpWorkspaceServerLite): string {
+		const metadata = (row.metadata ?? {}) as { description?: string };
+		if (typeof metadata.description === 'string' && metadata.description) {
+			return metadata.description;
+		}
+		return row.serverUrl ?? row.sourceType;
+	}
 
 	let search = $state('');
 	let newName = $state('');
@@ -125,6 +154,43 @@
 			</TabsList>
 
 			<TabsContent value="catalog" class="flex-1 min-h-0 overflow-auto space-y-3 pt-3">
+				{#if workspaceServers.length > 0}
+					<div class="space-y-2">
+						<div class="text-[10px] uppercase tracking-wider text-muted-foreground">
+							Workspace servers
+						</div>
+						{#each workspaceServers as row (row.id)}
+							{@const attached = isWorkspaceServerAttached(row)}
+							<div class="rounded-lg border p-3 flex items-center justify-between gap-3">
+								<div class="flex items-start gap-2 min-w-0">
+									<div class="size-7 rounded bg-muted flex items-center justify-center shrink-0">
+										<Plug class="size-3.5 text-muted-foreground" />
+									</div>
+									<div class="min-w-0">
+										<div class="text-sm font-medium truncate">{row.displayName}</div>
+										<div class="text-[10px] text-muted-foreground truncate">
+											{workspaceServerDescription(row)}
+										</div>
+									</div>
+								</div>
+								{#if attached}
+									<Badge variant="secondary" class="text-[10px] shrink-0">
+										<Check class="size-3" /> Attached
+									</Badge>
+								{:else}
+									<Button
+										variant="outline"
+										size="sm"
+										class="h-7 text-[11px] shrink-0"
+										onclick={() => attachWorkspaceServer(row)}
+									>
+										<Plus class="size-3" /> Attach
+									</Button>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				{/if}
 				<div class="relative">
 					<Search
 						class="size-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"
