@@ -17,6 +17,7 @@ from .agent_tool.tool import agent_spawn
 from .ask_user.tool import ask_user
 from .call_agent.tool import call_agent
 from .call_agent.workflow_tool import build_call_agent_workflow_tool
+from .workflow_script.workflow_tool import build_workflow_script_tool
 from .bash_tool.tool import bash_run
 from .file_edit.tool import file_edit
 from .file_read.tool import file_read
@@ -94,6 +95,21 @@ if _is_native_call_agent_enabled():
     all_tools.append(build_call_agent_workflow_tool())
 else:
     all_tools.append(_tool(call_agent, "CallAgent"))
+
+
+def _is_workflow_tool_enabled() -> bool:
+    raw = (os.environ.get("AGENT_WORKFLOW_TOOL") or "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+# Agent-spawnable dynamic-script workflows (the Claude Code Workflow tool
+# mirror). Approach-B WorkflowContextInjectedTool: the agent loop yields a
+# local bridge workflow that starts the run through the BFF's internal API
+# and durably polls to the result — see src/tools/workflow_script. Enabled
+# by default; kill with AGENT_WORKFLOW_TOOL=0. Depth-1 recursion guard lives
+# in the tool executor (script-spawned sessions are refused).
+if _is_workflow_tool_enabled():
+    all_tools.append(build_workflow_script_tool())
 
 
 # ---------------------------------------------------------------------------

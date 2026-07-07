@@ -23,7 +23,13 @@ type ExecuteBody = {
 	triggerData?: unknown;
 	/** Dynamic-script token budget (forwarded to the start path for script workflows). */
 	budgetTotal?: number | null;
+	/** Deterministic execution id for at-least-once callers (e.g. the dapr-agent-py
+	 * Workflow tool's start activity, which Dapr may retry). An existing row with
+	 * this id short-circuits as a no-op instead of double-starting. */
+	executionId?: string;
 };
+
+const EXECUTION_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
 export const POST: RequestHandler = async ({ request }) => {
 	if (!validateInternalToken(request)) {
@@ -31,6 +37,13 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	const body = (await request.json().catch(() => ({}))) as ExecuteBody;
+	const executionId =
+		typeof body.executionId === 'string' && EXECUTION_ID_RE.test(body.executionId)
+			? body.executionId
+			: undefined;
+	if (body.executionId !== undefined && executionId === undefined) {
+		return json({ error: 'executionId must match ^[A-Za-z0-9_-]{8,64}$' }, { status: 400 });
+	}
 
 	const budgetTotal =
 		typeof body.budgetTotal === 'number' && Number.isFinite(body.budgetTotal)
@@ -42,7 +55,8 @@ export const POST: RequestHandler = async ({ request }) => {
 		// Verbatim: dynamic-script accepts any JSON value (undefined = no args);
 		// the SW start path coerces non-objects to {} itself.
 		triggerData: body.triggerData,
-		...(budgetTotal !== undefined ? { budgetTotal } : {})
+		...(budgetTotal !== undefined ? { budgetTotal } : {}),
+		...(executionId ? { executionId, idempotent: true } : {})
 	});
 
 	if (!result.ok) {

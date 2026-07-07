@@ -60,6 +60,19 @@ Dapr replay = crash resume. **callId** (frozen by
   `docs/dynamic-script-authoring-guide.md`). Recursion guard: `ensure-for-workflow` stamps
   `X-Wfb-Script-Depth: 1` on workflow-mcp-server MCP entries of script-spawned sessions → all
   three tools are suppressed there.
+- **Agent-native `Workflow` tool** (dapr-agent-py, `src/tools/workflow_script/`): the Claude Code
+  Workflow-tool mirror — any dapr-agent-py agent (interactive/goal/SW-node) can author + run a
+  dynamic-script workflow and digest its returnValue as the tool result, in one durable turn.
+  Approach-B shape (like native CallAgent): the agent loop yields the local
+  `run_workflow_script_bridge` child workflow = idempotent start activity (POST the internal
+  execute-script/execute route with a caller-supplied `executionId`; the BFF short-circuits
+  `reused` on activity retry) + durable poll loop (`create_timer` + read-only status activity).
+  Blocks up to `timeoutMinutes` (default 30, max 120); on timeout the run continues server-side
+  and the agent re-attaches with `{executionId}`. Validation rejections (HTTP 4xx) come back as
+  the tool result so the model fixes the script in-loop. Depth-1 guard: script-spawned sessions
+  (`__durable-script__` instance ids) are refused — scripts compose via `workflow()`. Kill with
+  `AGENT_WORKFLOW_TOOL=0`. The tool description embeds the platform dialect guide (kept in sync
+  with the MCP server's copy).
 
 ## Operations
 

@@ -290,6 +290,13 @@ execution). Author → validate → run:
   it returns `{ ok, meta, estimatedAgentCalls, error }`. Call `get_workflow_script_spec` for a
   compact copy of this dialect reference. Then `run_workflow_script` with `script` (inline) or
   `workflowName` (saved).
+- **dapr-agent-py agents (native `Workflow` tool):** the runtime ships a built-in `Workflow` tool
+  (the Claude Code Workflow-tool mirror; its description embeds this dialect) — pass ONE of
+  `script` / `workflowName` / `executionId` (re-attach after a timeout result), plus optional
+  `args`, `budgetTotal`, `timeoutMinutes`. It blocks durably (a child-workflow bridge, not a
+  fragile HTTP wait) and returns `{status, output}` — validation failures come back as the tool
+  result, so fix the script and call again. One nesting level: agents inside a workflow don't get
+  the tool; scripts compose via `workflow()`.
 - **Humans/CLI:** `POST {SCRIPT_EVALUATOR_URL}/validate { script }`, or
   `node scripts/upsert-dynamic-script-workflow.mjs --file <file.js>` (create/update also validates),
   then execute via the UI or `POST /api/workflows/[id]/execute { input, budgetTotal? }`.
