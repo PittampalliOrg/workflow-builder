@@ -191,6 +191,7 @@ class FakeCtx:
         self.child_inputs: dict[str, dict] = {}
         self.events: dict[str, list[CompletableTask]] = {}
         self.record_inputs: list[dict] = []
+        self.dispatch_inputs: list[dict] = []
 
     # -- deterministic side effects captured for assertions ----------------
     def set_custom_status(self, status: str) -> None:
@@ -243,13 +244,16 @@ class FakeCtx:
         if name == "record_script_call_result":
             self.record_inputs.append(inp)
             return self._record_fn(inp)
+        if name == "record_script_call_dispatch":
+            self.dispatch_inputs.append(inp)
+            return {"success": True}
         # append_script_logs / update_execution_node / track_agent_run_* / import
         return {"success": True}
 
     def _log_key(self, name: str, inp: dict) -> str:
         if name == "evaluate_script":
             return "known=" + ",".join(inp.get("knownCallIds") or [])
-        if name == "record_script_call_result":
+        if name in ("record_script_call_result", "record_script_call_dispatch"):
             return str(inp.get("callId"))
         if name in ("update_execution_node", "track_agent_run_scheduled"):
             return str(inp.get("nodeId") or inp.get("id"))
@@ -1034,3 +1038,62 @@ def test_tool_mode_output_contract_instructs_tool_call():
     assert "```json" in default_msg
     # deterministic given the same inputs (replay safety)
     assert tool_msg == d._build_initial_message(spec, structured_tool=True)
+
+
+def test_dispatch_journals_running_row_before_result():
+    """A `running` journal row is written AT dispatch, carrying the
+    deterministic child session id for agent() calls — this is what lets the
+    run UI attach the live transcript while the call is still in flight."""
+    cid_a = "a" * 40 + "_0"
+    cid_b = "b" * 40 + "_0"
+    tasks = [agent_task(cid_a, label="A", phase="P1"), agent_task(cid_b, label="B")]
+    ctx = FakeCtx(evaluator=make_evaluator(tasks, {"ok": True}))
+
+    def complete_all(c: FakeCtx):
+        c.complete_child(cid_a, {"success": True, "content": "first"})
+        c.complete_child(cid_b, {"success": True, "content": "second"})
+
+    result = drive(dynamic_script_workflow(ctx, base_input()), ctx, [complete_all])
+    assert result["success"] is True
+
+    # One dispatch row per call, in dispatch order.
+    assert [d["callId"] for d in ctx.dispatch_inputs] == [cid_a, cid_b]
+    row_a = ctx.dispatch_inputs[0]
+    assert row_a["sessionId"] == script_child_instance_id(ctx.instance_id, cid_a, 0)
+    assert row_a["seq"] == 0
+    assert row_a["spec"]["kind"] == "agent"
+    assert row_a["spec"]["label"] == "A"
+    assert row_a["spec"]["phase"] == "P1"
+
+    # Ordering: each call's dispatch write precedes ANY result write (clobber
+    # safety relies on this happens-before).
+    log = ctx.action_log
+    dispatch_i = next(
+        i for i, a in enumerate(log)
+        if a[0] == "activity" and a[1] == "record_script_call_dispatch" and a[2] == cid_a
+    )
+    result_i = next(
+        i for i, a in enumerate(log)
+        if a[0] == "activity" and a[1] == "record_script_call_result" and a[2] == cid_a
+    )
+    assert dispatch_i < result_i
+
+
+def test_dispatch_journal_omits_session_id_for_workflow_calls():
+    """workflow() children are executions, not sessions — their running row
+    must not claim a sessionId."""
+    cid = "c" * 40 + "_0"
+    tasks = [workflow_task(cid, "child-wf")]
+    ctx = FakeCtx(
+        evaluator=make_evaluator(tasks, {"ok": True}),
+        resolve_result={"success": True, "script": "return 1", "scriptSha256": "abc", "meta": {"name": "child"}},
+    )
+
+    def complete_all(c: FakeCtx):
+        c.complete_child(cid, {"success": True, "returnValue": {"x": 1}})
+
+    result = drive(dynamic_script_workflow(ctx, base_input()), ctx, [complete_all])
+    assert result["success"] is True
+    assert [d["callId"] for d in ctx.dispatch_inputs] == [cid]
+    assert ctx.dispatch_inputs[0]["sessionId"] is None
+    assert ctx.dispatch_inputs[0]["spec"]["kind"] == "workflow"

@@ -182,6 +182,64 @@ def _is_null_result(raw: Any) -> bool:
     return False
 
 
+def record_script_call_dispatch(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
+    """Journal a non-terminal ``running`` row the moment a call is dispatched.
+
+    Terminal rows are written only by ``record_script_call_result``; this row
+    exists so the run UI can show in-flight calls (and, for agent() calls,
+    attach the child session's live transcript via ``sessionId`` — the child
+    instance id is deterministic and known at dispatch). Clobber safety comes
+    from activity ordering: for a given call the dispatch write always
+    happens-before its result write, and Dapr replay returns recorded results
+    without re-executing. Best-effort — a failed write never blocks dispatch.
+
+    Input: ``{executionId, callId, seq, sessionId?, spec:{kind,label,phase,
+    promptSha256,baseHash,occurrence,retries}}``.
+    """
+    execution_id = str(input_data.get("executionId") or "").strip()
+    call_id = str(input_data.get("callId") or "").strip()
+    if not execution_id or not call_id:
+        return {"success": False, "error": "executionId and callId are required"}
+
+    spec = input_data.get("spec") if isinstance(input_data.get("spec"), dict) else {}
+    session_id = input_data.get("sessionId")
+    otel = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else {}
+    otel = apply_workflow_activity_context(otel)
+
+    row = {
+        "seq": _as_int(input_data.get("seq")),
+        "kind": spec.get("kind") or "agent",
+        "baseHash": spec.get("baseHash"),
+        "occurrence": _as_int(spec.get("occurrence")),
+        "label": spec.get("label"),
+        "phase": spec.get("phase"),
+        "promptSha256": spec.get("promptSha256"),
+        "status": "running",
+        "sessionId": session_id if isinstance(session_id, str) and session_id else None,
+        "retries": _as_int(spec.get("retries")),
+        "tokensUsed": 0,
+        "result": None,
+    }
+
+    attrs = {
+        "action.type": "record_script_call_dispatch",
+        "workflow.db_execution_id": execution_id,
+        "script.call_id": call_id,
+    }
+    with start_activity_span("activity.record_script_call_dispatch", otel, attrs):
+        try:
+            script_journal_client.put_script_call(execution_id, call_id, row)
+        except Exception as exc:  # noqa: BLE001 — in-flight visibility is best-effort
+            logger.warning(
+                "[record_script_call_dispatch] journal PUT failed for %s/%s: %s",
+                execution_id,
+                call_id,
+                exc,
+            )
+            return {"success": False, "error": str(exc)}
+    return {"success": True}
+
+
 def record_script_call_result(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """Normalize + journal one finished script call.
 

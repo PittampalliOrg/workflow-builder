@@ -13,36 +13,12 @@
   summary shows a call-progress ring, not a token ring.
 -->
 <script lang="ts">
-	import {
-		Loader2,
-		ExternalLink,
-		Ban,
-		SkipForward,
-		Bot,
-		GitFork,
-		ArrowRight,
-		Layers,
-		CheckCircle2,
-		CircleDashed,
-		XCircle,
-		SkipForward as SkipIcon,
-		Radio,
-		MessageSquare
-	} from '@lucide/svelte';
+	import { Loader2, Bot, Radio, MessageSquare } from '@lucide/svelte';
 	import SessionTranscript from '$lib/components/sessions/session-transcript.svelte';
-
-	type ScriptCall = {
-		callId: string;
-		seq: number;
-		kind: string;
-		label: string | null;
-		phase: string | null;
-		status: string;
-		sessionId: string | null;
-		tokensUsed: number;
-		errorCode: string | null;
-		retries: number;
-	};
+	import ScriptPhaseRail, {
+		scriptCallLabel,
+		type ScriptCall
+	} from './script-phase-rail.svelte';
 
 	interface Props {
 		executionId: string;
@@ -85,7 +61,6 @@
 	let calls = $state<ScriptCall[]>([]);
 	let loaded = $state(false);
 	let error = $state<string | null>(null);
-	let pending = $state<Record<string, boolean>>({});
 
 	// Selection + follow-along. The user's explicit click lands in
 	// manualCallId; the EFFECTIVE selection is derived — when followLatest is
@@ -111,34 +86,6 @@
 				)
 			: 0
 	);
-
-	// Lanes: declared meta.phases first, then journal-only phases, then unphased.
-	const lanes = $derived.by(() => {
-		const byPhase = new Map<string, ScriptCall[]>();
-		const order: string[] = [];
-		const ensure = (key: string) => {
-			if (!byPhase.has(key)) {
-				byPhase.set(key, []);
-				order.push(key);
-			}
-		};
-		for (const p of meta.phases) ensure(p);
-		for (const c of calls) ensure(c.phase ?? '__unphased__');
-		for (const c of calls) byPhase.get(c.phase ?? '__unphased__')!.push(c);
-		return order.map((key) => ({
-			key,
-			title: key === '__unphased__' ? '(no phase)' : key,
-			calls: (byPhase.get(key) ?? []).sort((a, b) => a.seq - b.seq)
-		}));
-	});
-
-	function laneStatus(phaseCalls: ScriptCall[]): 'idle' | 'running' | 'error' | 'done' {
-		if (phaseCalls.length === 0) return 'idle';
-		if (phaseCalls.some((c) => c.status === 'error')) return 'error';
-		if (phaseCalls.some((c) => c.status === 'running')) return 'running';
-		if (phaseCalls.every((c) => c.status === 'done' || c.status === 'skipped')) return 'done';
-		return 'idle';
-	}
 
 	const selectedCallId = $derived.by(() => {
 		if (!followLatest) return manualCallId;
@@ -179,58 +126,6 @@
 		const t = setInterval(fetchCalls, 3000);
 		return () => clearInterval(t);
 	});
-
-	function callLabel(call: ScriptCall): string {
-		if (call.label) return call.label;
-		return `${call.kind} #${call.seq + 1}`;
-	}
-
-	const KIND_STYLE: Record<
-		string,
-		{ ring: string; bg: string; fg: string; Icon: typeof Bot; name: string }
-	> = {
-		agent: { ring: 'border-teal-400/40', bg: 'bg-teal-500/10', fg: 'text-teal-300', Icon: Bot, name: 'agent' },
-		parallel: { ring: 'border-amber-400/40', bg: 'bg-amber-500/10', fg: 'text-amber-300', Icon: GitFork, name: 'parallel' },
-		pipeline: { ring: 'border-sky-400/40', bg: 'bg-sky-500/10', fg: 'text-sky-300', Icon: ArrowRight, name: 'pipeline' },
-		workflow: { ring: 'border-indigo-400/40', bg: 'bg-indigo-500/10', fg: 'text-indigo-300', Icon: Layers, name: 'workflow' }
-	};
-	function kindStyle(kind: string) {
-		return KIND_STYLE[kind] ?? KIND_STYLE.agent;
-	}
-
-	async function killSession(call: ScriptCall) {
-		if (!call.sessionId) return;
-		if (!confirm(`Kill the session for "${callLabel(call)}"? The call resolves to null.`)) return;
-		pending = { ...pending, [call.callId]: true };
-		try {
-			await fetch(`/api/v1/sessions/${encodeURIComponent(call.sessionId)}/stop`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ mode: 'interrupt' })
-			});
-			await fetchCalls();
-		} finally {
-			pending = { ...pending, [call.callId]: false };
-		}
-	}
-
-	async function skipCall(call: ScriptCall) {
-		if (!confirm(`Skip "${callLabel(call)}"? The script sees null for this call.`)) return;
-		pending = { ...pending, [call.callId]: true };
-		try {
-			await fetch(
-				`/api/workflows/executions/${encodeURIComponent(executionId)}/script-calls/${encodeURIComponent(call.callId)}/skip`,
-				{ method: 'POST' }
-			);
-			await fetchCalls();
-		} finally {
-			pending = { ...pending, [call.callId]: false };
-		}
-	}
-
-	function sessionHref(sessionId: string): string {
-		return `/workspaces/${encodeURIComponent(slug)}/sessions/${encodeURIComponent(sessionId)}`;
-	}
 
 	const R = 26;
 	const CIRC = 2 * Math.PI * R;
@@ -297,124 +192,18 @@
 				{error}
 			</div>
 		{:else}
-			<div class="space-y-2.5 p-3">
-				{#each lanes as lane (lane.key)}
-					{@const st = laneStatus(lane.calls)}
-					{@const isCurrent = currentPhase != null && lane.key === currentPhase}
-					<div class="overflow-hidden rounded-lg border {isCurrent ? 'border-primary/40 bg-primary/[0.03]' : 'border-border'}">
-						<div class="flex items-center gap-2 border-l-2 px-2.5 py-1.5
-							{st === 'error' ? 'border-l-destructive bg-destructive/5' : st === 'running' ? 'border-l-primary bg-primary/5' : st === 'done' ? 'border-l-emerald-500 bg-emerald-500/[0.04]' : 'border-l-muted-foreground/30 bg-muted/20'}">
-							{#if st === 'running'}
-								<Loader2 class="size-3.5 animate-spin text-primary" />
-							{:else if st === 'done'}
-								<CheckCircle2 class="size-3.5 text-emerald-400" />
-							{:else if st === 'error'}
-								<XCircle class="size-3.5 text-destructive" />
-							{:else}
-								<CircleDashed class="size-3.5 text-muted-foreground/60" />
-							{/if}
-							<span class="truncate text-xs font-semibold uppercase tracking-wide">{lane.title}</span>
-							<span class="ml-auto shrink-0 text-[10px] text-muted-foreground">{lane.calls.length}</span>
-						</div>
-
-						{#if lane.calls.length === 0}
-							<div class="px-2.5 py-1.5 text-[11px] italic text-muted-foreground/60">waiting…</div>
-						{:else}
-							<div class="divide-y divide-border/50">
-								{#each lane.calls as call (call.callId)}
-									{@const ks = kindStyle(call.kind)}
-									{@const isSel = call.callId === selectedCallId}
-									{@const clickable = !!call.sessionId}
-									<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-									<div
-										class="group flex items-center gap-2 px-2.5 py-1.5 {clickable ? 'cursor-pointer hover:bg-accent/40' : ''} {isSel ? 'bg-primary/10' : ''}"
-										onclick={() => selectCall(call)}
-										role={clickable ? 'button' : undefined}
-										tabindex={clickable ? 0 : -1}
-										onkeydown={(e) => {
-											if (clickable && (e.key === 'Enter' || e.key === ' ')) {
-												e.preventDefault();
-												selectCall(call);
-											}
-										}}
-									>
-										<div class="flex size-6 shrink-0 items-center justify-center rounded-md border {ks.ring} {ks.bg}">
-											<ks.Icon class="size-3 {ks.fg}" />
-										</div>
-										<div class="min-w-0 flex-1">
-											<div class="flex items-center gap-1">
-												<span class="text-[9px] font-medium uppercase tracking-wide {ks.fg}">{ks.name}</span>
-												{#if call.retries > 0}
-													<span class="rounded bg-amber-500/15 px-1 text-[9px] text-amber-300">↻{call.retries}</span>
-												{/if}
-											</div>
-											<div class="truncate text-xs font-medium" title={callLabel(call)}>{callLabel(call)}</div>
-											{#if call.errorCode}
-												<div class="truncate text-[10px] text-destructive">{call.errorCode}</div>
-											{/if}
-										</div>
-
-										<!-- status -->
-										{#if call.status === 'running'}
-											<Loader2 class="size-3.5 shrink-0 animate-spin text-primary" />
-										{:else if call.status === 'done'}
-											<CheckCircle2 class="size-3.5 shrink-0 text-emerald-400" />
-										{:else if call.status === 'error'}
-											<XCircle class="size-3.5 shrink-0 text-destructive" />
-										{:else if call.status === 'skipped'}
-											<SkipIcon class="size-3.5 shrink-0 text-muted-foreground" />
-										{:else}
-											<CircleDashed class="size-3.5 shrink-0 text-muted-foreground/50" />
-										{/if}
-
-										<div class="flex shrink-0 items-center opacity-0 transition group-hover:opacity-100">
-											{#if call.sessionId}
-												<a
-													href={sessionHref(call.sessionId)}
-													class="rounded p-1 hover:bg-accent"
-													title="Open session (full page)"
-													onclick={(e) => e.stopPropagation()}
-												>
-													<ExternalLink class="size-3.5" />
-												</a>
-												<button
-													class="rounded p-1 hover:bg-accent hover:text-destructive disabled:opacity-50"
-													disabled={pending[call.callId]}
-													onclick={(e) => {
-														e.stopPropagation();
-														killSession(call);
-													}}
-													title="Kill session"
-												>
-													<Ban class="size-3.5" />
-												</button>
-											{/if}
-											{#if call.status === 'running'}
-												<button
-													class="rounded p-1 hover:bg-accent disabled:opacity-50"
-													disabled={pending[call.callId]}
-													onclick={(e) => {
-														e.stopPropagation();
-														skipCall(call);
-													}}
-													title="Skip call"
-												>
-													<SkipForward class="size-3.5" />
-												</button>
-											{/if}
-										</div>
-									</div>
-								{/each}
-							</div>
-						{/if}
-					</div>
-				{/each}
-
-				{#if lanes.length === 0}
-					<div class="rounded-md border px-3 py-8 text-center text-sm text-muted-foreground">
-						No calls issued yet.
-					</div>
-				{/if}
+			<div class="p-3">
+				<ScriptPhaseRail
+					{executionId}
+					{slug}
+					{calls}
+					declaredPhases={meta.phases}
+					{currentPhase}
+					{isRunning}
+					focusedSessionId={selectedSessionId}
+					onSelect={selectCall}
+					showActions
+				/>
 			</div>
 		{/if}
 	</div>
@@ -425,7 +214,7 @@
 			<div class="flex min-w-0 items-center gap-2 text-xs">
 				<MessageSquare class="size-3.5 shrink-0 text-muted-foreground" />
 				{#if selectedCall}
-					<span class="truncate font-medium">{callLabel(selectedCall)}</span>
+					<span class="truncate font-medium">{scriptCallLabel(selectedCall)}</span>
 					{#if selectedCall.phase}
 						<span class="shrink-0 text-muted-foreground">· {selectedCall.phase}</span>
 					{/if}
