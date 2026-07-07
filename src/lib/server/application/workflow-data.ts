@@ -3884,8 +3884,11 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 					: "workflow";
 			return {
 				id: execution.id,
-				label: `${workflow} \u00b7 ${execution.status} \u00b7 ${when}`,
+				label: `${workflow} · ${execution.status} · ${when}`,
 				workflowId: execution.workflowId,
+				workflowName: workflow ?? "workflow",
+				status: execution.status,
+				startedAt: execution.startedAt.toISOString(),
 			};
 		});
 		return {
