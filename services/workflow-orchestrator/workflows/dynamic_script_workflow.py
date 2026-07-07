@@ -56,6 +56,9 @@ DEFAULT_MAX_CONCURRENCY = int(os.environ.get("DYNAMIC_SCRIPT_MAX_CONCURRENCY", "
 DEFAULT_MAX_AGENT_CALLS = int(os.environ.get("DYNAMIC_SCRIPT_MAX_AGENT_CALLS", "50") or "50")
 DEFAULT_MAX_LIFETIME_AGENTS = 1000
 DEFAULT_MAX_STRUCTURED_RETRIES = 5
+# Post-drain settle delay before the next budget aggregate (see the
+# usage-settle gate in the pump loop). Only applies to budget-bounded runs.
+USAGE_SETTLE_SECONDS = int(os.environ.get("DYNAMIC_SCRIPT_USAGE_SETTLE_SECONDS", "3") or "3")
 
 # Retry policy for the evaluate_script activity (cloned from sw_workflow._AP_RETRY_POLICY):
 # transport / 5xx failures RAISE and are retried; 4xx are returned as script_error
@@ -508,6 +511,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
 
         # 6. Drain ALL completed children (validated SDK semantics: events processed
         #    one-at-a-time in persisted order — replay-deterministic).
+        drained_done = 0
         for cid, task in list(outstanding.items()):
             if not _task_is_complete(task):
                 continue
@@ -540,6 +544,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                 queue.insert(0, cid)  # re-queue at FRONT (corrective session)
             else:
                 resolved.add(cid)
+                drained_done += 1
             if run_id:
                 yield ctx.call_activity(
                     track_agent_run_completed,
@@ -553,6 +558,16 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                         }
                     ),
                 )
+
+        # Usage-settle gate: agent.llm_usage events are ingested asynchronously
+        # (runtime → CMA ingest → session_events), so a fast child can complete
+        # BEFORE its tokens are queryable — the next aggregate would read a
+        # stale sum and under-enforce the budget (observed on dev: a fast GLM
+        # first call let a 50-token budget dispatch its second call). When the
+        # run is budget-bounded and this round resolved ≥1 call, park on a
+        # deterministic timer so the aggregate sees the settled usage.
+        if budget_total is not None and drained_done > 0:
+            yield ctx.create_timer(timedelta(seconds=USAGE_SETTLE_SECONDS))
         # loop
 
 
