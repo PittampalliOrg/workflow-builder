@@ -401,3 +401,27 @@ def test_deepseek_reasoning_effort_mapping() -> None:
     assert adapter._reasoning_effort("max") == "max"
     # unknown override falls through to the terminal default
     assert adapter._reasoning_effort("bogus") == "max"
+
+
+# ---------------------------------------------------------------------------
+# StructuredOutput TOOL mode: per-request tool definition carrying the schema.
+# ---------------------------------------------------------------------------
+def test_with_structured_output_tool_appends_schema_definition():
+    schema = {"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean"}}}
+    tools = adapter._with_structured_output_tool(
+        [{"type": "function", "function": {"name": "Read", "description": "r", "parameters": {}}}],
+        schema,
+    )
+    names = [t["function"]["name"] for t in tools]
+    assert names == sorted(names)
+    assert "StructuredOutput" in names and "Read" in names
+    so = next(t for t in tools if t["function"]["name"] == "StructuredOutput")
+    assert so["function"]["parameters"] == schema
+
+
+def test_with_structured_output_tool_from_empty_toolset():
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    tools = adapter._with_structured_output_tool(None, schema)
+    assert len(tools) == 1
+    assert tools[0]["function"]["name"] == "StructuredOutput"
+    assert tools[0]["function"]["parameters"] == schema

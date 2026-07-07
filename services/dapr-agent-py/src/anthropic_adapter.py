@@ -158,6 +158,29 @@ def _convert_tools_for_anthropic(tools: list[Any] | None) -> list[dict] | None:
     return anthropic_tools
 
 
+def _with_structured_output_tool(
+    anthropic_tools: list[dict] | None,
+    schema: dict,
+) -> list[dict]:
+    """Append the synthetic StructuredOutput tool whose input_schema IS the
+    call's JSON Schema (per-request definition — the tool is never registered
+    on the executor; src/main.py's run_tool intercepts it by name). Replaces a
+    same-named entry defensively and keeps the deterministic name sort."""
+    from src.structured_output import (
+        STRUCTURED_OUTPUT_TOOL_NAME,
+        structured_output_tool_definition_anthropic,
+    )
+
+    merged = [
+        tool
+        for tool in (anthropic_tools or [])
+        if tool.get("name") != STRUCTURED_OUTPUT_TOOL_NAME
+    ]
+    merged.append(structured_output_tool_definition_anthropic(schema))
+    merged.sort(key=lambda t: t.get("name") or "")
+    return merged
+
+
 def _cache_control(cache_ttl: str = "5m") -> dict[str, Any]:
     """Return the Anthropic `cache_control` value for the requested TTL.
 
@@ -809,6 +832,15 @@ def _call_anthropic_sdk(
     raw_cache_ttl = kwargs.get("cache_ttl")
     cache_ttl = "1h" if raw_cache_ttl == "1h" else "5m"
     anthropic_tools = _convert_tools_for_anthropic(tools)
+    # Structured-output TOOL mode (agentConfig.structuredOutputMode == "tool"):
+    # deliver the schema as a first-class tool definition (input_schema ARE the
+    # call's JSON Schema); enforcement is availability + prompt + the agent-
+    # loop guard (the Claude Code design — tool_choice stays unforced, which
+    # also keeps adaptive thinking enabled). Injected BEFORE the cache
+    # breakpoint below so cache_control still lands on the last tool.
+    _so_schema = kwargs.get("native_json_schema")
+    if kwargs.get("structured_output_tool") and isinstance(_so_schema, dict):
+        anthropic_tools = _with_structured_output_tool(anthropic_tools, _so_schema)
     if anthropic_tools:
         # Cache breakpoint on the last tool — when system + tools are stable
         # turn-to-turn, breakpoint A (static system) hits even if the tool
@@ -1269,6 +1301,19 @@ def patch_for_anthropic(llm_client: Any) -> None:
                     max_tokens=max_tokens,
                     system=system_prompt,
                     cache_ttl=cache_ttl,
+                    # Tool mode (structuredOutputMode == "tool"): inject the
+                    # StructuredOutput tool definition carrying the schema; the
+                    # agent loop enforces + finalizes. Only when the Pydantic
+                    # response_format (memory path) is absent.
+                    native_json_schema=(
+                        getattr(self, "_response_json_schema", None)
+                        if response_format is None
+                        else None
+                    ),
+                    structured_output_tool=(
+                        getattr(self, "_structured_output_mode", None) == "tool"
+                        and response_format is None
+                    ),
                 )
 
                 # If response_format is set (structured output), parse the

@@ -962,11 +962,39 @@ def test_openai_schema_call_never_gets_tool_mode(monkeypatch):
 
     monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
     monkeypatch.delenv("DYNAMIC_SCRIPT_STRUCTURED_TOOL", raising=False)
+    # env-routed to OpenAI -> strict json_schema (stronger than the tool)
+    monkeypatch.setenv("DYNAMIC_SCRIPT_STRUCTURED_MODEL", "openai/gpt-5.5")
     schema = {"type": "object", "properties": {"x": {"type": "string"}}}
-    # hybrid default routes to OpenAI strict json_schema (stronger than the tool)
     cfg = d._build_agent_config({"schema": schema}, {"model": "zai/glm-5.2"}, "dapr-agent-py", {})
     assert cfg["modelSpec"].startswith("openai/")
     assert "structuredOutputMode" not in cfg
+
+
+def test_default_schema_routing_is_glm_tool_mode(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
+    monkeypatch.delenv("DYNAMIC_SCRIPT_STRUCTURED_TOOL", raising=False)
+    monkeypatch.delenv("DYNAMIC_SCRIPT_STRUCTURED_MODEL", raising=False)
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    # schema'd call with no explicit model: default is GLM + StructuredOutput
+    # tool (42/42 spike; keeps schema'd calls on the cheap default provider)
+    cfg = d._build_agent_config({"schema": schema}, {"model": "zai/glm-5.2"}, "dapr-agent-py", {})
+    assert cfg["modelSpec"] == "zai/glm-5.2"
+    assert cfg["structuredOutputMode"] == "tool"
+    assert cfg["responseJsonSchema"] == schema
+
+
+def test_anthropic_and_deepseek_schema_calls_get_tool_mode(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
+    monkeypatch.delenv("DYNAMIC_SCRIPT_STRUCTURED_TOOL", raising=False)
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    for spec in ("anthropic/claude-opus-4-8", "deepseek/deepseek-chat"):
+        cfg = d._build_agent_config({"schema": schema, "model": spec}, {}, "dapr-agent-py", {})
+        assert cfg["structuredOutputMode"] == "tool", spec
+        assert cfg["responseJsonSchema"] == schema, spec
 
 
 def test_structured_tool_kill_switch_reverts_to_json_object(monkeypatch):
