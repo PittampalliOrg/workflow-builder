@@ -84,16 +84,44 @@ describe("quiescence classification", () => {
 		expect(res.error?.message).toContain("deadlock");
 	});
 
-	it("done drops orphan pendings with an evaluator warning", async () => {
-		// agent() is called but never awaited → orphan on completion.
+	it("script_error on completion with un-awaited hook calls (forgotten-await guard)", async () => {
+		// agent() is called but never awaited → previously silent-dropped with a
+		// warning; now a validation-grade error (live-caught: silent garbage
+		// reached returnValues and real agent prompts).
 		const res = await evaluateScript(
 			req(META + "agent('orphan'); return { ok: true }"),
 		);
-		expect(res.status).toBe("done");
-		expect(res.returnValue).toEqual({ ok: true });
-		expect(res.newLogs.some((l) => l.startsWith("[evaluator] dropped orphan"))).toBe(
-			true,
+		expect(res.status).toBe("script_error");
+		expect(res.error?.message).toContain("un-awaited agent()");
+		expect(res.error?.message).toContain("await");
+	});
+
+	it("script_error when returnValue contains an un-awaited Promise", async () => {
+		// The journal has the result, so re-execution resolves agent() instantly —
+		// but the script still forgot the await and returns the Promise itself.
+		const id = acid("p1");
+		const res = await evaluateScript(
+			req(META + "const v = agent('p1'); return { verdict: v }", {
+				completedResults: { [id]: { status: "done", value: "text" } },
+			}),
 		);
+		expect(res.status).toBe("script_error");
+		expect(res.error?.message).toContain("un-awaited Promise");
+	});
+
+	it("script_error when a prompt interpolates '[object Promise]'", async () => {
+		const id = acid("p2");
+		const res = await evaluateScript(
+			req(
+				META +
+					"const a = agent('p2'); const b = await agent('judge: ' + a); return { b }",
+				{
+					completedResults: { [id]: { status: "done", value: "x" } },
+				},
+			),
+		);
+		expect(res.status).toBe("script_error");
+		expect(res.error?.message).toContain("[object Promise]");
 	});
 
 	it("need with empty tasks when the only pending call is already known (in-flight)", async () => {

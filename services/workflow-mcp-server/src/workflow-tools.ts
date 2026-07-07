@@ -14,6 +14,7 @@ import {
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import * as db from "./db.js";
+import { currentGoalSessionId } from "./goal-context.js";
 import type { UiSession } from "./ui/session.js";
 import { registerUiTools } from "./ui/tools.js";
 import { setSpanOutput } from "./observability/content.js";
@@ -194,7 +195,8 @@ export function registerWorkflowTools(
     "create_workflow",
     {
       title: "Create Workflow",
-      description: "Create a new workflow with a default manual trigger node.",
+      description:
+        "Create a new CANVAS (SW 1.0) workflow with a default manual trigger node — for node/edge workflows built with add_node/connect_nodes. To save a dynamic-script workflow, use save_workflow_script instead.",
       inputSchema: {
         name: z.string().describe("Workflow name"),
         description: z.string().optional().describe("Workflow description"),
@@ -203,10 +205,30 @@ export function registerWorkflowTools(
     },
     async (args: { name: string; description?: string }) => {
       try {
+        // Ownership: workflows.user_id + project_id are NOT NULL. Prefer the
+        // registration-time identity (UI attachments send X-User-Id), else
+        // resolve the calling SESSION's owner (agent attachments carry
+        // X-Wfb-Session-Id — the same attribution the BFF agent routes use).
+        let userId = effectiveUserId ?? null;
+        let projectId = process.env.PROJECT_ID ?? null;
+        if (!userId || !projectId) {
+          const sessionId = currentGoalSessionId();
+          const owner = sessionId ? await db.getSessionOwner(sessionId) : null;
+          userId = userId ?? owner?.userId ?? null;
+          projectId = projectId ?? owner?.projectId ?? null;
+        }
+        if (!userId || !projectId) {
+          return errorResult(
+            "Cannot attribute the workflow: no user/project resolvable from " +
+              "this connection (needs X-User-Id at initialize, or a session " +
+              "with a project via X-Wfb-Session-Id).",
+          );
+        }
         const wf = await db.createWorkflow(
           args.name,
           args.description,
-          effectiveUserId,
+          userId,
+          projectId,
         );
         return textResult(wf);
       } catch (err) {
@@ -760,11 +782,13 @@ export function registerWorkflowTools(
     {
       title: "Get Execution Results",
       description:
-        "Get per-node execution results with input/output data for a completed workflow run.",
+        "Get per-node execution results with input/output data for a completed workflow run. Accepts either the Dapr instanceId or the executionId (e.g. from a Workflow tool result).",
       inputSchema: {
         instance_id: z
           .string()
-          .describe("Dapr workflow instanceId (from execute_workflow result)"),
+          .describe(
+            "Dapr workflow instanceId OR the executionId (they are 1:1; both resolve)",
+          ),
       },
       _meta: uiMeta,
     },

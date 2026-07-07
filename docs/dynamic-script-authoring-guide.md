@@ -54,7 +54,12 @@ Working, idiomatic exemplars live in `scripts/fixtures/dynamic-scripts/`:
 
 ## Primitives (identical to the Claude Code spec)
 
-These behave exactly as the upstream spec describes — no deltas:
+These behave exactly as the upstream spec describes — no deltas. **The script body is
+async and every hook returns a Promise — always `await`** (`const x = await agent(...)`,
+`const [a, b] = await parallel([...])`). A forgotten `await` is a hard `script_error`:
+the engine rejects completed scripts with un-awaited calls, Promises inside the
+`returnValue`, and `"[object Promise]"` interpolated into prompts (live-caught 2026-07-07 —
+previously these "succeeded" with silent garbage).
 
 | Primitive | Contract |
 | --- | --- |

@@ -135,6 +135,55 @@ export function attachPieceServerConfig(
 	};
 }
 
+/** A non-piece workspace MCP connection (custom URL / shared platform server)
+ * as returned in the availability read model's `customConnections`. */
+export type McpWorkspaceServerLite = {
+	id: string;
+	displayName: string;
+	sourceType: string;
+	serverKey?: string | null;
+	registryRef?: string | null;
+	serverUrl?: string | null;
+	status?: string | null;
+	metadata?: Record<string, unknown> | null;
+};
+
+/** Attach config for a workspace (non-piece) MCP connection — e.g. the
+ * platform-provided "Workflow Builder MCP" (shared-workflow-mcp-server). */
+export function attachWorkspaceServerConfig(
+	row: McpWorkspaceServerLite
+): McpServerProfileConfig {
+	const metadata = (row.metadata ?? {}) as { transport?: string };
+	const base = row.serverKey || row.displayName || row.id;
+	return {
+		server_name: normalizeName(base),
+		displayName: row.displayName,
+		sourceType: row.sourceType,
+		serverKey: row.serverKey ?? null,
+		registryRef: row.registryRef ?? null,
+		mcpConnectionExternalId: row.id,
+		transport: typeof metadata.transport === 'string' ? metadata.transport : 'streamable_http',
+		...(row.serverUrl ? { url: row.serverUrl } : {})
+	};
+}
+
+/** True when an attached server already represents this workspace connection. */
+export function serverMatchesWorkspaceServer(
+	server: McpServerProfileConfig,
+	row: McpWorkspaceServerLite
+): boolean {
+	if (server.mcpConnectionExternalId && server.mcpConnectionExternalId === row.id) return true;
+	if (
+		row.serverKey &&
+		(server.serverKey === row.serverKey || server.server_name === normalizeName(row.serverKey))
+	) {
+		return true;
+	}
+	return Boolean(
+		row.serverUrl && (server.url === row.serverUrl || server.serverUrl === row.serverUrl)
+	);
+}
+
 /** True when an attached server already represents this availability entry. */
 export function serverMatchesEntry(
 	server: McpServerProfileConfig,

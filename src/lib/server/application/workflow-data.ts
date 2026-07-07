@@ -1902,10 +1902,67 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return { entries };
 	}
 
+	/**
+	 * Platform-provided shared server: make the in-cluster workflow-mcp-server
+	 * (dynamic-script authoring + goal + workflow CRUD tools) discoverable in
+	 * every project's Tools & Integrations picker. Lazily ensured on
+	 * availability reads so NEW projects get it without a migration; the unique
+	 * (projectId, sourceType, serverKey) index makes concurrent ensures safe.
+	 * The `shared-workflow-mcp-server` registryRef is already special-cased by
+	 * mcp-resolution's URL qualification (short host → cluster-local FQDN).
+	 * Kill switch: WORKFLOW_MCP_SHARED_CONNECTION=false.
+	 */
+	private async ensureSharedWorkflowMcpConnection(projectId: string): Promise<void> {
+		const flag = (process.env.WORKFLOW_MCP_SHARED_CONNECTION ?? "").trim().toLowerCase();
+		if (flag === "false" || flag === "0" || flag === "off") return;
+		try {
+			const rows = await this.deps.mcpConnections.listProjectConnections(projectId);
+			if (
+				rows.some(
+					(row) =>
+						row.serverKey === "workflow-mcp-server" ||
+						row.registryRef === "shared-workflow-mcp-server",
+				)
+			) {
+				return;
+			}
+			await this.deps.mcpConnections.createProjectConnection({
+				id: `mcp-shared-workflow-${projectId}`,
+				projectId,
+				sourceType: "nimble_shared",
+				pieceName: null,
+				serverKey: "workflow-mcp-server",
+				connectionExternalId: null,
+				displayName: "Workflow Builder MCP",
+				registryRef: "shared-workflow-mcp-server",
+				// Full cluster-local FQDN: correct under EVERY resolution path (the
+				// qualifier only expands short hostnames; a dotted host passes as-is).
+				serverUrl:
+					"http://workflow-mcp-server.workflow-builder.svc.cluster.local:3200/mcp",
+				status: "ENABLED",
+				metadata: {
+					transport: "streamable_http",
+					description:
+						"Platform workflow tools: author/validate/save/run dynamic-script workflows, workflow CRUD, execution status, session goals.",
+				},
+				createdBy: null,
+				updatedBy: null,
+			});
+		} catch (err) {
+			// Best-effort (a concurrent ensure hitting the unique index lands here) —
+			// availability must never fail because the seed row already exists.
+			console.warn(
+				`[mcp-availability] shared workflow-mcp-server ensure skipped for ${projectId}:`,
+				err instanceof Error ? err.message : err,
+			);
+		}
+	}
+
 	async getMcpAvailability(input: {
 		projectId: string;
 		platformId?: string | null;
 	}): Promise<McpAvailabilityReadModel> {
+		await this.ensureSharedWorkflowMcpConnection(input.projectId);
 		const [
 			{ entries: registeredEntries, path: catalogPath },
 			pieces,

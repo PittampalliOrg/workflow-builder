@@ -9,7 +9,8 @@
 		serverMatchesEntry,
 		serverKey,
 		normalizePiece,
-		type McpAvailabilityEntryLite
+		type McpAvailabilityEntryLite,
+		type McpWorkspaceServerLite
 	} from '$lib/connections/agent-mcp';
 	import { toolSelectionFromMetadata } from '$lib/connections/piece-mcp';
 	import type { McpServerProfileConfig } from '$lib/server/agent-profiles';
@@ -36,6 +37,7 @@
 	};
 
 	let availabilityEntries = $state<McpAvailabilityEntryLite[]>([]);
+	let workspaceServers = $state<McpWorkspaceServerLite[]>([]);
 	let catalogLogos = $state<Record<string, string | null>>({});
 	let vaults = $state<VaultSummary[]>([]);
 	let credentialsByVault = $state<Record<string, VaultCredentialSummary[]>>({});
@@ -63,8 +65,16 @@
 				fetch('/api/v1/vaults')
 			]);
 			if (availabilityRes.ok) {
-				const body = (await availabilityRes.json()) as { entries?: McpAvailabilityEntryLite[] };
+				const body = (await availabilityRes.json()) as {
+					entries?: McpAvailabilityEntryLite[];
+					customConnections?: McpWorkspaceServerLite[];
+				};
 				availabilityEntries = body.entries ?? [];
+				// Non-piece workspace servers (custom URLs + platform-shared servers
+				// like the Workflow Builder MCP) — offered in the attach sheet.
+				workspaceServers = (body.customConnections ?? []).filter(
+					(row) => row.status !== 'DISABLED'
+				);
 			} else {
 				error = `Failed to load MCP availability (${availabilityRes.status})`;
 			}
@@ -302,6 +312,7 @@
 	onOpenChange={(o) => (sheetOpen = o)}
 	{value}
 	entries={availabilityEntries}
+	{workspaceServers}
 	logoFor={logoForPiece}
 	{slug}
 	onAttach={attachServer}

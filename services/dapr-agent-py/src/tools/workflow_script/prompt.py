@@ -16,7 +16,10 @@ Write plain JavaScript (NOT TypeScript). The script starts with a PURE-LITERAL
 inside it), then a body using these globals/hooks. The engine RE-EXECUTES the whole script
 each round, so it must be deterministic.
 
-PRIMITIVES (identical to Claude Code):
+PRIMITIVES (identical to Claude Code). The script body is ASYNC — every hook returns a
+Promise and MUST be awaited (`const x = await agent(...)`, `const [a, b] = await
+parallel([...])`). A forgotten await is a hard script_error (the engine detects completed
+scripts with un-awaited calls, Promises in the returnValue, and "[object Promise]" in prompts):
 - agent(prompt, opts?) -> final text (string), or schema-validated object (with opts.schema),
   or null (skipped/died/exceeded structured-retry cap). .filter(Boolean) fanned-out results.
 - parallel(thunks) -> BARRIER; runs all, a throwing thunk becomes null, never rejects.

@@ -8,7 +8,9 @@
  * A quiescence pump drains microtasks until the run reaches a stable state,
  * then classifies it:
  *
- *   module resolved                    -> done   (orphan pendings dropped w/ warn)
+ *   module resolved                    -> done   (orphan pendings / a Promise in
+ *                                                 returnValue -> script_error:
+ *                                                 the forgotten-await guard)
  *   module rejected                    -> script_error
  *   module pending  AND pendings > 0   -> need   (tasks = pendings ∉ knownCallIds)
  *   module pending  AND pendings == 0  -> script_error (deadlock)
@@ -130,6 +132,28 @@ function jsonSafe(value: unknown): unknown {
 	} catch {
 		return null;
 	}
+}
+
+/** Deep thenable scan for the forgotten-await guard. Cycle-safe, bounded.
+ * Hook promises are HOST-realm objects (the injected globals are host
+ * closures), so both the instanceof and the duck-typed `.then` check work. */
+function containsThenable(value: unknown, depth = 0, seen = new Set<object>()): boolean {
+	if (value === null || typeof value !== "object") return false;
+	if (depth > 32 || seen.has(value)) return false;
+	seen.add(value);
+	if (
+		value instanceof Promise ||
+		typeof (value as { then?: unknown }).then === "function"
+	) {
+		return true;
+	}
+	if (Array.isArray(value)) {
+		return value.some((v) => containsThenable(v, depth + 1, seen));
+	}
+	for (const v of Object.values(value)) {
+		if (containsThenable(v, depth + 1, seen)) return true;
+	}
+	return false;
 }
 
 function stringifyLogArg(arg: unknown): string {
@@ -450,6 +474,15 @@ export async function evaluateScript(
 		if (typeof prompt !== "string") {
 			throw new TypeError("agent(prompt, opts): prompt must be a string");
 		}
+		if (prompt.includes("[object Promise]")) {
+			// A prior hook result was interpolated without await — this prompt
+			// would bill a real agent with garbage. Deterministic (same script
+			// → same prompt → same throw), so replay-safe.
+			throw new TypeError(
+				'agent(prompt): prompt contains "[object Promise]" — a previous ' +
+					"agent()/parallel()/workflow() result was used without `await`.",
+			);
+		}
 		if (opts !== undefined && (typeof opts !== "object" || opts === null)) {
 			throw new TypeError("agent(prompt, opts): opts must be an object");
 		}
@@ -700,19 +733,46 @@ export async function evaluateScript(
 	}
 
 	if (settled && !rejected) {
-		// done: any still-pending registration is an orphan (script finished
-		// without awaiting it) — drop with an evaluator warning.
-		const orphanWarnings = state.pendings.map(
-			(p) =>
-				`[evaluator] dropped orphan ${p.kind}() call ${p.callId} (script completed without awaiting it)`,
-		);
+		// Forgotten-await guards. A script that completes with un-awaited hook
+		// calls (or returns a Promise inside its value) used to "succeed" with
+		// silent garbage — `{}` / "[object Promise]" reached real agent prompts
+		// and returnValues (live-caught 2026-07-07). Fail loudly instead: the
+		// author gets a validation-grade error naming the fix.
+		if (state.pendings.length > 0) {
+			const kinds = [...new Set(state.pendings.map((p) => `${p.kind}()`))].join(
+				", ",
+			);
+			return scriptErrorResponse(
+				`script completed with ${state.pendings.length} un-awaited ${kinds} ` +
+					"call(s). Every hook returns a Promise — add `await` " +
+					"(e.g. `const x = await agent(...)`, " +
+					"`const [a, b] = await parallel([...])`).",
+				null,
+				phasesResult,
+				newLogs,
+				logCount,
+				totalCallsSeen,
+			);
+		}
+		if (containsThenable(sandbox.__result)) {
+			return scriptErrorResponse(
+				"returnValue contains an un-awaited Promise. Every hook returns a " +
+					"Promise — add `await` before agent()/parallel()/pipeline()/" +
+					"workflow() results you return.",
+				null,
+				phasesResult,
+				newLogs,
+				logCount,
+				totalCallsSeen,
+			);
+		}
 		return {
 			status: "done",
 			tasks: [],
 			returnValue: jsonSafe(sandbox.__result),
 			error: null,
 			phases: phasesResult,
-			newLogs: newLogs.concat(orphanWarnings),
+			newLogs,
 			logCount,
 			counts: { totalCallsSeen },
 			evaluatorVersion: EVALUATOR_VERSION,
