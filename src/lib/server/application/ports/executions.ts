@@ -20,6 +20,9 @@ export type ServiceGraphExecutionOption = {
 	id: string;
 	label: string;
 	workflowId: string | null;
+	workflowName: string;
+	status: string;
+	startedAt: string;
 };
 
 export type WorkflowMonitorFallbackExecutionReadModel = {

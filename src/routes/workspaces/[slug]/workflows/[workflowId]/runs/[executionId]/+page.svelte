@@ -60,6 +60,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
 	import RunConsole from '$lib/components/workflow/execution/run-console.svelte';
+	import ServiceGraphRunView from '$lib/components/observability/service-graph-run-view.svelte';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { Separator } from '$lib/components/ui/separator';
 	import * as Breadcrumb from '$lib/components/ui/breadcrumb';
@@ -2476,6 +2477,7 @@
 				{#if hasBrowserTab}<TabsTrigger value="browser">Browser</TabsTrigger>{/if}
 				{#if hasFilesTab}<TabsTrigger value="files">Files{#if filesSummary.count > 0}<span class="ml-1.5 text-xs text-muted-foreground">{filesSummary.count}</span>{/if}</TabsTrigger>{/if}
 				{#if hasPreviewTab}<TabsTrigger value="preview">Preview</TabsTrigger>{/if}
+				<TabsTrigger value="graph">Graph</TabsTrigger>
 				<TabsTrigger value="trace">Trace</TabsTrigger>
 			</TabsList>
 		</div>
@@ -3326,6 +3328,12 @@
 		</TabsContent>
 
 		<!-- Tab 9: Trace -->
+		<!-- Tab: Graph — the run's service graph (flow lens auto-detects
+		     dynamic-script journals vs SW steps; live-polls while running). -->
+		<TabsContent value="graph" class="flex-1 overflow-hidden">
+			<ServiceGraphRunView {executionId} active={isRunning} />
+		</TabsContent>
+
 		<TabsContent value="trace" class="flex-1 overflow-y-auto px-4 py-4 xl:px-5 2xl:px-6">
 			<div class="w-full">
 				<InvestigationStudio
