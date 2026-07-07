@@ -775,3 +775,28 @@ def test_phase_model_fallback_resolution_order():
     # unmatched phase title -> no phase model
     cfg = d._build_agent_config({"phase": "Nope"}, {}, "", meta)
     assert "modelSpec" not in cfg
+
+
+def test_unresolvable_workflow_ref_loops_instead_of_stalling():
+    """LIVE-CAUGHT regression (dev parity-probe): a workflow() call with an
+    unknown ref is journaled as workflow_child_error AT DISPATCH (no child
+    task), so the round dispatches nothing — the pump must LOOP so the next
+    evaluate observes the journaled row (the script's try/catch sees the
+    throw), NOT fail with "no dispatchable work"."""
+    wtask = workflow_task("w" * 40 + "_0", "this-workflow-does-not-exist")
+    ctx = FakeCtx(
+        evaluator=make_evaluator([wtask], {"caught": "workflow() could not resolve"}),
+        resolve_result={"success": False, "error": "not found"},
+    )
+    result = drive(dynamic_script_workflow(ctx, base_input()), ctx, steps=[])
+
+    assert result["success"] is True
+    assert result["returnValue"] == {"caught": "workflow() could not resolve"}
+    # The failed call was journaled with the dispatch-error reason...
+    assert len(ctx.record_inputs) == 1
+    raw = ctx.record_inputs[0]["raw"]
+    assert raw["success"] is False
+    assert "this-workflow-does-not-exist" in raw["error"]
+    assert "not found" in raw["error"]
+    # ...and NO child workflow was ever created.
+    assert ctx.children == {}

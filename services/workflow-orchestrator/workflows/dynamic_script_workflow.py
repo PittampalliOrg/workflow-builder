@@ -359,6 +359,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
 
         # 4. Dispatch under caps.
         dispatched_this_round = 0
+        resolved_at_dispatch = 0  # calls journaled terminal AT dispatch (no child)
         while queue and len(outstanding) < limits["maxConcurrentAgents"]:
             if dispatched >= limits["maxLifetimeAgents"]:
                 lifetime_exceeded = True
@@ -411,6 +412,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                     ),
                 )
                 resolved.add(cid)
+                resolved_at_dispatch += 1
                 continue
 
             outstanding[cid] = child_task
@@ -448,10 +450,14 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
 
         _set_status(current_phase or "running", budget)
 
-        # No in-flight children: either lifetime cap stalled dispatch (evaluator
-        # will synthesize throws next round) or a genuine no-progress stall.
+        # No in-flight children: either the lifetime cap stalled dispatch (the
+        # evaluator will synthesize throws next round), or calls resolved
+        # SYNCHRONOUSLY at dispatch (dispatchError / bridge refusal journaled a
+        # terminal row the next evaluate observes — e.g. a workflow() call with
+        # an unknown ref whose throw the script catches), or a genuine
+        # no-progress stall.
         if not outstanding:
-            if lifetime_exceeded or dispatched_this_round:
+            if lifetime_exceeded or dispatched_this_round or resolved_at_dispatch:
                 continue
             yield ctx.call_activity(
                 persist_results_to_db,
