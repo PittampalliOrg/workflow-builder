@@ -239,6 +239,137 @@ describe("determinism bans", () => {
 	});
 });
 
+describe("workflow() failure semantics (throws, not null)", () => {
+	it("a journaled error resolves workflow() by THROWING the stored message", async () => {
+		const id = wcid("missing-child");
+		const res = await evaluateScript(
+			req(
+				META +
+					"try { await workflow('missing-child'); return { caught: null } } catch (e) { return { caught: e.message } }",
+				{
+					completedResults: {
+						[id]: {
+							status: "error",
+							value: { message: "workflow() could not resolve 'missing-child': not found" },
+							errorCode: "workflow_child_error",
+						},
+					},
+					knownCallIds: [id],
+				},
+			),
+		);
+		expect(res.status).toBe("done");
+		expect(res.returnValue).toEqual({
+			caught: "workflow() could not resolve 'missing-child': not found",
+		});
+	});
+
+	it("a legacy 'null' workflow row also throws (generic message)", async () => {
+		const id = wcid("dead-child");
+		const res = await evaluateScript(
+			req(
+				META +
+					"try { await workflow('dead-child'); return { caught: null } } catch (e) { return { caught: e.message } }",
+				{
+					completedResults: { [id]: { status: "null", value: null } },
+					knownCallIds: [id],
+				},
+			),
+		);
+		expect(res.status).toBe("done");
+		expect(res.returnValue).toEqual({ caught: "workflow() child failed" });
+	});
+
+	it("an UNCAUGHT workflow() child error rejects the script (script_error)", async () => {
+		const id = wcid("dead-child");
+		const res = await evaluateScript(
+			req(META + "const r = await workflow('dead-child'); return { r }", {
+				completedResults: {
+					[id]: {
+						status: "error",
+						value: { message: "child died" },
+						errorCode: "workflow_child_error",
+					},
+				},
+				knownCallIds: [id],
+			}),
+		);
+		expect(res.status).toBe("script_error");
+		expect(res.error?.message).toBe("child died");
+	});
+
+	it("a skipped workflow() still resolves null (user skip)", async () => {
+		const id = wcid("skipped-child");
+		const res = await evaluateScript(
+			req(META + "const r = await workflow('skipped-child'); return { r }", {
+				completedResults: { [id]: { status: "skipped", value: null } },
+				knownCallIds: [id],
+			}),
+		);
+		expect(res.status).toBe("done");
+		expect(res.returnValue).toEqual({ r: null });
+	});
+});
+
+describe("args semantics (verbatim any-JSON, undefined when absent)", () => {
+	it("array args pass verbatim (args.map works)", async () => {
+		const res = await evaluateScript(
+			req(META + "return { n: args.length, upper: args.map((f) => f.toUpperCase()) }", {
+				args: ["a.ts", "b.ts"],
+			}),
+		);
+		expect(res.status).toBe("done");
+		expect(res.returnValue).toEqual({ n: 2, upper: ["A.TS", "B.TS"] });
+	});
+
+	it("scalar (string) args pass verbatim", async () => {
+		const res = await evaluateScript(
+			req(META + "return { q: args, t: typeof args }", { args: "a research question" }),
+		);
+		expect(res.status).toBe("done");
+		expect(res.returnValue).toEqual({ q: "a research question", t: "string" });
+	});
+
+	it("absent args -> the args global is undefined", async () => {
+		const request = req(META + "return { t: typeof args, isUndef: args === undefined }");
+		delete (request as Record<string, unknown>).args;
+		const res = await evaluateScript(request);
+		expect(res.status).toBe("done");
+		expect(res.returnValue).toEqual({ t: "undefined", isUndef: true });
+	});
+
+	it("explicit null args stay null (distinct from absent)", async () => {
+		const res = await evaluateScript(
+			req(META + "return { isNull: args === null }", { args: null }),
+		);
+		expect(res.status).toBe("done");
+		expect(res.returnValue).toEqual({ isNull: true });
+	});
+});
+
+describe("log / console", () => {
+	it("log() and console.log write to the same log sink", async () => {
+		const res = await evaluateScript(
+			req(META + "log('a'); console.log('b', 1); return {}"),
+		);
+		expect(res.status).toBe("done");
+		expect(res.newLogs).toContain("a");
+		expect(res.newLogs).toContain("b 1");
+	});
+
+	it("console.error/warn/info/debug are shimmed (do not throw) and log", async () => {
+		const res = await evaluateScript(
+			req(
+				META +
+					"console.error('e'); console.warn('w'); console.info('i'); console.debug('d'); return { ok: true }",
+			),
+		);
+		expect(res.status).toBe("done");
+		expect(res.returnValue).toEqual({ ok: true });
+		for (const m of ["e", "w", "i", "d"]) expect(res.newLogs).toContain(m);
+	});
+});
+
 describe("budget / lifetime", () => {
 	it("throws BudgetExhaustedError only at UNRESOLVED calls", async () => {
 		// resolved call still resolves under exhaustion

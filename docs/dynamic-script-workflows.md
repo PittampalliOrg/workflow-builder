@@ -6,6 +6,16 @@ executed durably on Dapr. Scripts use `agent()`, `parallel()` (barrier), `pipeli
 globals `args` + `budget {total, spent(), remaining()}`. Shipped wfb #446–#449 + stacks
 #3613/#3614/#3619; verified end-to-end on dev 2026-07-07.
 
+> **Authoring** (how to write a correct script here): `docs/dynamic-script-authoring-guide.md`
+> is the platform-dialect SSOT — the primitives PLUS the deltas from the upstream Claude Code
+> spec that change what a script observes (`opts.model` is a platform model KEY not a tier alias;
+> `opts.agentType` selects the agent RUNTIME not a persona; `opts.isolation:'shared'` is the only
+> meaningful value, `'worktree'` is a no-op; `budget` counts input+output+cache_creation not
+> output-only; caps are deployment-configured). The verbatim upstream contract is in
+> `docs/claude-code-workflow-tool-spec.md`. Agents author via the MCP tools `get_workflow_script_spec`
+> (serves the dialect reference) + `validate_workflow_script` (syntactic check, no run) before
+> `run_workflow_script`.
+
 ## Architecture — the re-execution pump
 
 The JS script cannot run inside the Python generator orchestrator, so
@@ -40,11 +50,16 @@ Dapr replay = crash resume. **callId** (frozen by
   `src/lib/server/workflows/dynamic-script-validation.ts`; start branch in `start-run.ts`;
   journal table `workflow_script_calls` (drizzle 0097) + internal routes
   `…/executions/[id]/script-calls[…]` + `…/llm-usage`; run UI `script-run-panel.svelte`
-- MCP: `run_workflow_script` (workflow-mcp-server) — saved (`workflowName`) or inline
-  (`script`) via `POST /api/internal/agent/workflows/execute-script` (X-Wfb-Session-Id
-  REQUIRED for owner attribution). Recursion guard: `ensure-for-workflow` stamps
-  `X-Wfb-Script-Depth: 1` on workflow-mcp-server MCP entries of script-spawned sessions →
-  the tool is suppressed there.
+- MCP (workflow-mcp-server, `services/workflow-mcp-server/src/script-tools.ts`): three tools —
+  `run_workflow_script` (saved `workflowName` or inline `script` via
+  `POST /api/internal/agent/workflows/execute-script`; X-Wfb-Session-Id REQUIRED for owner
+  attribution), `validate_workflow_script` (author-time syntactic check via
+  `POST /api/internal/agent/workflows/validate-script` → `validateWithEvaluator` → evaluator
+  `/validate`; returns `{ok, meta, estimatedAgentCalls}` or `{ok:false, error}`), and
+  `get_workflow_script_spec` (returns the embedded platform-dialect guide, kept in sync with
+  `docs/dynamic-script-authoring-guide.md`). Recursion guard: `ensure-for-workflow` stamps
+  `X-Wfb-Script-Depth: 1` on workflow-mcp-server MCP entries of script-spawned sessions → all
+  three tools are suppressed there.
 
 ## Operations
 
@@ -60,6 +75,30 @@ Dapr replay = crash resume. **callId** (frozen by
 - **Stop**: normal Lifecycle Controller (`POST …/stop {mode}`) — no special handling; child
   instance ids match the `__durable-script__<callId[:16]>__run__<N>` wedge-finalize shape.
 - **Cancel event**: `workflow.cancel` external event → pump returns cancelled + persists.
+
+## Spec-parity fixes (2026-07, contract 1.1.0)
+
+Five Workflow-tool alignment gaps were closed (evaluator 1.1.0 + orchestrator + BFF + dapr-agent-py):
+
+- **args is verbatim any-JSON** (object/array/scalar/null) end-to-end, with KEY-ABSENCE meaning
+  "not provided" → the script's `args` global is `undefined`. Layers: app.py `model_fields_set`,
+  pump `has_args`, evaluate activity conditional key, sandbox `"args" in req`. Same for
+  `workflow(name, args)` child args.
+- **workflow() THROWS on child failure** (unknown ref / child script_error / failed run): the
+  journal writes status `error` + errorCode `workflow_child_error` with the reason in
+  `result.message` (checked BEFORE the null short-circuit), the dispatch returns a
+  `{dispatchError}` marker for unresolvable refs, and the sandbox throws the message into the
+  script. User-skip still resolves null. agent() failure semantics unchanged (null).
+- **Nested workflow() children share the parent budget**: dispatch propagates `budgetTotal`; since
+  usage aggregates by the shared executionId, the child's `budget.spent()` is tree-wide.
+  Concurrency/lifetime caps remain per-level.
+- **opts.effort is honored on dapr-agent-py**: stamped `agentConfig.reasoningEffort` →
+  `resolve_llm_metadata` → `effectiveAgentConfig.llm.reasoningEffort` → call_llm stamps
+  `self.llm._reasoning_effort` (set/restored alongside `_llm_component` at BOTH seams) → zai/
+  deepseek/openai adapters take it as an override to their env default ({low,medium,high}→high,
+  {xhigh,max}→max on GLM/DeepSeek; low/medium/high on OpenAI). Anthropic/Kimi ignore it.
+- **meta.phases[].model is honored**: `_build_agent_config` resolves
+  `opts.model → meta.phases[task.phase].model → defaults.model` (last gated to dapr-agent-py).
 
 ## Gotchas (each cost real debugging time — do not regress)
 

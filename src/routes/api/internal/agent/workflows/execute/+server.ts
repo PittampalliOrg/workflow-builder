@@ -18,7 +18,9 @@ import { startWorkflowRun } from '$lib/server/workflows/start-run';
 type ExecuteBody = {
 	workflowId?: string;
 	workflowName?: string;
-	triggerData?: Record<string, unknown>;
+	/** SW 1.0: an object of trigger fields. Dynamic-script: ANY JSON value,
+	 *  passed verbatim as the script's `args` global (absent = undefined). */
+	triggerData?: unknown;
 	/** Dynamic-script token budget (forwarded to the start path for script workflows). */
 	budgetTotal?: number | null;
 };
@@ -37,7 +39,9 @@ export const POST: RequestHandler = async ({ request }) => {
 	const result = await startWorkflowRun({
 		workflowId: body.workflowId,
 		workflowName: body.workflowName,
-		triggerData: body.triggerData ?? {},
+		// Verbatim: dynamic-script accepts any JSON value (undefined = no args);
+		// the SW start path coerces non-objects to {} itself.
+		triggerData: body.triggerData,
 		...(budgetTotal !== undefined ? { budgetTotal } : {})
 	});
 

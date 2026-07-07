@@ -8,6 +8,10 @@ schema, and decide done / null / error / retry_structured.
 
 Normalization (design §Architecture, plan §Workstream 2):
   * user skip                                   -> status ``skipped`` (agent()->null)
+  * kind=workflow + child success               -> status ``done``, result = child returnValue
+  * kind=workflow + child failure/unresolved    -> status ``error``,
+        error_code ``workflow_child_error``, result = {message} — the evaluator
+        THROWS this into the script (workflow() throws, agent() nulls)
   * cancelled / success:false / exception / timeout / empty -> status ``null``
   * schema present + valid                      -> status ``done``, result = object
   * schema present + invalid + retries < cap    -> return ``retry_structured`` +
@@ -34,6 +38,7 @@ _MAX_RESULT_BYTES = 256 * 1024
 _MAX_FEEDBACK_CHARS = 2000
 _DEFAULT_MAX_STRUCTURED_RETRIES = 5
 _ERROR_MAX_STRUCTURED_RETRIES = "error_max_structured_output_retries"
+_ERROR_WORKFLOW_CHILD = "workflow_child_error"
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -244,32 +249,53 @@ def record_script_call_result(ctx, input_data: dict[str, Any]) -> dict[str, Any]
             _persist(row)
             return {"status": "skipped"}
 
-        # 2. Death / cancel / failure / timeout -> null.
+        # 2. Nested workflow() child — checked BEFORE the null short-circuit
+        #    because workflow() failure semantics differ from agent(): per the
+        #    Workflow-tool contract, workflow() THROWS on an unresolvable ref /
+        #    child error (so authors can try/catch), while agent() resolves null.
+        #    Success resolves to the child's returnValue object (a
+        #    dynamic_script_workflow_v1 result is {returnValue, status, ...},
+        #    which _extract_content can't reach — it only pulls string keys).
+        if (spec.get("kind") or "agent") == "workflow":
+            if isinstance(raw, dict) and raw.get("success") and not _is_null_result(raw):
+                row = _base_row("done")
+                row["result"] = raw.get("returnValue")
+                _persist(row)
+                return {"status": "done"}
+            message = None
+            if isinstance(raw, dict):
+                err = raw.get("error")
+                if isinstance(err, str) and err.strip():
+                    message = err.strip()
+                elif raw.get("cancelled"):
+                    message = "workflow() child was cancelled"
+            if not message:
+                message = "workflow() child failed"
+            row = _base_row("error")
+            # The message rides in result so the evaluator can throw it verbatim
+            # into the script (no journal-schema change needed).
+            row["result"] = {"message": message}
+            row["errorCode"] = _ERROR_WORKFLOW_CHILD
+            _persist(row)
+            return {"status": "error", "errorCode": _ERROR_WORKFLOW_CHILD}
+
+        # 3. Death / cancel / failure / timeout -> null.
         if _is_null_result(raw):
             row = _base_row("null")
             row["result"] = None
             _persist(row)
             return {"status": "null"}
 
-        # 2b. Nested workflow() child -> resolve to the child's returnValue object
-        #     (a dynamic_script_workflow_v1 result is {returnValue, status, ...},
-        #     which _extract_content can't reach — it only pulls string keys).
-        if (spec.get("kind") or "agent") == "workflow":
-            row = _base_row("done")
-            row["result"] = raw.get("returnValue") if isinstance(raw, dict) else None
-            _persist(row)
-            return {"status": "done"}
-
         content = _extract_content(raw)
 
-        # 3. No schema -> done with the raw text.
+        # 4. No schema -> done with the raw text.
         if not schema:
             row = _base_row("done")
             row["result"] = _cap_result(content)
             _persist(row)
             return {"status": "done"}
 
-        # 4. Schema present -> extract + validate.
+        # 5. Schema present -> extract + validate.
         parsed = _first_balanced_json_object(content)
         errors: list[str]
         if parsed is None:

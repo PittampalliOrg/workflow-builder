@@ -28,7 +28,7 @@ import {
 	workflowSemanticOpts,
 } from "./call-id.js";
 
-export const EVALUATOR_VERSION = "1.0.0";
+export const EVALUATOR_VERSION = "1.1.0";
 
 /** Response cap: no /evaluate response may carry more than this many tasks. */
 export const MAX_TASKS_PER_RESPONSE = 4096;
@@ -366,6 +366,22 @@ function makeAgentLimitError(): Error {
 	e.name = "AgentLimitError";
 	return e;
 }
+/** Message thrown into the script for a failed workflow() child. The journal
+ * stores the human reason in result.message (status 'error',
+ * errorCode 'workflow_child_error'); fall back to the errorCode. */
+function workflowChildErrorMessage(cr: CompletedResult): string {
+	const value = cr.value as { message?: unknown } | null | undefined;
+	if (
+		value &&
+		typeof value === "object" &&
+		typeof value.message === "string" &&
+		value.message.length > 0
+	) {
+		return value.message;
+	}
+	if (cr.errorCode) return String(cr.errorCode);
+	return "workflow() child failed";
+}
 
 // ── The evaluator ────────────────────────────────────────────────────────────
 
@@ -471,7 +487,18 @@ export async function evaluateScript(
 		const callId = deriveCallId(baseHash, occurrence);
 
 		const cr = completedResults[callId];
-		if (cr) return resolveFromJournal(cr);
+		if (cr) {
+			// workflow() failure semantics differ from agent(): the Workflow-tool
+			// contract says workflow() THROWS on an unknown name / unreadable ref /
+			// child error so authors can try/catch — agent() resolves null instead.
+			// done -> child returnValue; skipped (user skip) -> null; error/null ->
+			// throw the journaled message (journal stores it as result.message).
+			if (cr.status === "done" || cr.status === "skipped") {
+				return resolveFromJournal(cr);
+			}
+			state.progress++;
+			throw new Error(workflowChildErrorMessage(cr));
+		}
 		if (budgetExhausted) throw makeBudgetError();
 		if (lifetimeExceeded) throw makeAgentLimitError();
 
@@ -548,11 +575,21 @@ export async function evaluateScript(
 		state.progress++;
 	}
 
+	// console.log AND the other console.* methods all route to the same log sink.
+	// The Claude Code spec only guarantees log()/console.log, but scripts ported
+	// from that habit commonly use console.error/warn/info/debug — mapping them all
+	// (rather than leaving them undefined, which would throw a TypeError and abort
+	// the script) is a strict superset that keeps such scripts running.
+	const consoleWrite = (...consoleArgs: unknown[]) => {
+		state.logs.push(consoleArgs.map(stringifyLogArg).join(" "));
+		state.progress++;
+	};
 	const consoleShim = Object.freeze({
-		log: (...consoleArgs: unknown[]) => {
-			state.logs.push(consoleArgs.map(stringifyLogArg).join(" "));
-			state.progress++;
-		},
+		log: consoleWrite,
+		error: consoleWrite,
+		warn: consoleWrite,
+		info: consoleWrite,
+		debug: consoleWrite,
 	});
 
 	const budgetGlobal = Object.freeze({
@@ -562,7 +599,15 @@ export async function evaluateScript(
 			budgetTotal == null ? Infinity : Math.max(0, budgetTotal - budgetSpent),
 	});
 
-	const argsGlobal = deepFreeze(jsonSafe(req.args ?? {}));
+	// args is the run's VERBATIM input — any JSON value (object/array/scalar/
+	// null), deep-frozen. Key-absence is meaningful: no `args` key -> the
+	// script's `args` global is undefined (Workflow-tool parity: "undefined if
+	// not provided"). JSON.parse never produces undefined, so `"args" in req`
+	// is the reliable presence signal.
+	const argsGlobal =
+		"args" in req && req.args !== undefined
+			? deepFreeze(jsonSafe(req.args))
+			: undefined;
 
 	// ── Build the sandbox context ──
 	const sandbox: Record<string, unknown> = Object.create(null);
@@ -744,7 +789,10 @@ function toTask(p: Pending): EvaluateTask {
 			baseHash: p.baseHash,
 			occurrence: p.occurrence,
 			workflowRef: jsonSafe(p.workflowRef),
-			args: jsonSafe(p.args),
+			// Omit args entirely when the parent passed nothing so the child's
+			// `args` global is undefined (jsonSafe(undefined) would coerce to null,
+			// losing the distinction the contract preserves).
+			...(p.args === undefined ? {} : { args: jsonSafe(p.args) }),
 		};
 	}
 	const o = p.optsRaw ?? {};

@@ -367,8 +367,17 @@ def _publish_llm_usage(
         logger.debug("[session-event] deepseek llm_usage emit failed: %s", exc)
 
 
-def _reasoning_effort() -> str:
-    effort = os.environ.get("DEEPSEEK_REASONING_EFFORT", "max").strip().lower()
+def _reasoning_effort(override: str | None = None) -> str:
+    """Resolve the DeepSeek reasoning_effort value.
+
+    ``override`` is the per-agent ``agentConfig.reasoningEffort`` (e.g. from a
+    dynamic-script ``agent(..., {effort})`` opt) and WINS over the env default.
+    The endpoint accepts high|max here, so the Claude Code vocabulary collapses:
+    {xhigh,max} -> max, {low,medium,high} -> high.
+    """
+    effort = (
+        override or os.environ.get("DEEPSEEK_REASONING_EFFORT", "max")
+    ).strip().lower()
     if effort in {"xhigh", "max"}:
         return "max"
     if effort in {"low", "medium", "high"}:
@@ -381,6 +390,7 @@ def _apply_deepseek_output_mode(
     *,
     structured: bool,
     tool_chat: bool = False,
+    reasoning_effort: str | None = None,
 ) -> None:
     if structured:
         request_body["thinking"] = {"type": "disabled"}
@@ -390,7 +400,7 @@ def _apply_deepseek_output_mode(
         request_body["thinking"] = {"type": "disabled"}
         return
     request_body["thinking"] = {"type": "enabled"}
-    request_body["reasoning_effort"] = _reasoning_effort()
+    request_body["reasoning_effort"] = _reasoning_effort(reasoning_effort)
 
 
 def _messages_contain_json_instruction(messages: list[dict[str, Any]]) -> bool:
@@ -423,6 +433,7 @@ def _call_deepseek_chat(
     max_tokens: int | None = None,
     response_format: Any = None,
     tool_choice: Any = None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     model = _get_deepseek_model(component)
     converted_tools = _convert_tools_for_deepseek_chat(tools)
@@ -484,6 +495,7 @@ def _call_deepseek_chat(
         request_body,
         structured=response_format is not None,
         tool_chat="tools" in request_body,
+        reasoning_effort=reasoning_effort,
     )
 
     logger.info(
@@ -746,6 +758,10 @@ def patch_for_deepseek(llm_client: Any) -> None:
                 max_tokens=max_tokens,
                 response_format=response_format,
                 tool_choice=tool_choice,
+                # Per-agent effort (agentConfig.reasoningEffort) — stamped onto
+                # the client by call_llm alongside _llm_component; the env
+                # default applies only when unset.
+                reasoning_effort=getattr(self, "_reasoning_effort", None),
             )
 
             if response_format is not None:

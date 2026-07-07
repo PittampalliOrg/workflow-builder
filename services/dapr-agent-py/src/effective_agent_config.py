@@ -342,6 +342,12 @@ def resolve_llm_metadata(
         out["modelSpec"] = model_spec
     if provider.get("providerModel"):
         out["providerModel"] = provider["providerModel"]
+    # Per-agent reasoning effort (Claude Code vocabulary). Rides the llm
+    # snapshot so call_llm can stamp it onto the chat client alongside
+    # _llm_component; each adapter maps it to its provider's accepted values.
+    effort = _string(config.get("reasoningEffort")).lower()
+    if effort in {"low", "medium", "high", "xhigh", "max"}:
+        out["reasoningEffort"] = effort
     return out
 
 

@@ -557,7 +557,10 @@ export type WorkflowScriptStartRequest = {
 	headers: HeadersInit;
 	script: string;
 	meta: Record<string, unknown>;
-	args: Record<string, unknown>;
+	/** The script's verbatim input — any JSON value; undefined = not provided
+	 *  (JSON.stringify drops the key, so the orchestrator omits `args` and the
+	 *  script's `args` global is undefined). */
+	args?: unknown;
 	budgetTotal?: number | null;
 	/** Resume-after-edit: the orchestrator imports this execution's `done` rows. */
 	journalImportFromExecutionId?: string;
@@ -609,7 +612,11 @@ export type WorkflowRunStartInput = {
 	workflowId?: string;
 	workflowName?: string;
 	userId?: string;
-	triggerData: Record<string, unknown>;
+	/** Run input. SW 1.0 requires an object (trigger fields; non-objects are
+	 *  coerced to {}); dynamic-script accepts ANY JSON value verbatim, with
+	 *  undefined meaning "not provided" (the script's `args` global is
+	 *  undefined). */
+	triggerData?: unknown;
 	executionId?: string;
 	idempotent?: boolean;
 	resumeFromNode?: string;

@@ -92,10 +92,14 @@ describe("shouldSuppressScriptTools", () => {
 });
 
 // ── run_workflow_script handler behaviour ─────────────────────
-describe("run_workflow_script tool registration", () => {
-	it("registers exactly one tool named run_workflow_script", () => {
+describe("script tools registration", () => {
+	it("registers run + validate + spec tools", () => {
 		const { tools } = getHandler();
-		expect(tools.map((t) => t.name)).toEqual(["run_workflow_script"]);
+		expect(tools.map((t) => t.name)).toEqual([
+			"run_workflow_script",
+			"validate_workflow_script",
+			"get_workflow_script_spec",
+		]);
 	});
 
 	it("handler validation rejects neither/both via the tool surface", async () => {
@@ -104,6 +108,61 @@ describe("run_workflow_script tool registration", () => {
 		expect(both.isError).toBe(true);
 		const neither = await tool.handler({});
 		expect(neither.isError).toBe(true);
+	});
+});
+
+// ── validate_workflow_script + get_workflow_script_spec ───────
+describe("validate_workflow_script tool", () => {
+	function getTool(name: string, ctx?: ScriptToolsContext) {
+		const { server, captured } = fakeServer();
+		registerScriptTools(server as any, ctx);
+		return captured.find((t) => t.name === name)!;
+	}
+
+	it("rejects an empty script without calling the BFF", async () => {
+		const fetchImpl = vi.fn();
+		const tool = getTool("validate_workflow_script", { fetchImpl: fetchImpl as any });
+		const res = await tool.handler({ script: "   " });
+		expect(res.isError).toBe(true);
+		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+
+	it("forwards the script to the validate route and returns the result", async () => {
+		const fetchImpl = vi
+			.fn()
+			.mockResolvedValue(
+				jsonResponse(200, { ok: true, meta: { name: "x" }, estimatedAgentCalls: 3 }),
+			);
+		const tool = getTool("validate_workflow_script", { fetchImpl: fetchImpl as any });
+		const res = await tool.handler({ script: "export const meta = { name: 'x' }\nawait agent('hi')" });
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+		const [url, init] = fetchImpl.mock.calls[0];
+		expect(String(url)).toContain("/api/internal/agent/workflows/validate-script");
+		expect(JSON.parse((init as any).body).script).toContain("export const meta");
+		expect(parseResult(res)).toEqual({ ok: true, meta: { name: "x" }, estimatedAgentCalls: 3 });
+	});
+
+	it("surfaces a validation failure body (ok:false) as a normal result", async () => {
+		const fetchImpl = vi
+			.fn()
+			.mockResolvedValue(jsonResponse(200, { ok: false, error: "Date.now() is banned" }));
+		const tool = getTool("validate_workflow_script", { fetchImpl: fetchImpl as any });
+		const res = await tool.handler({ script: "Date.now()" });
+		expect(res.isError).toBeUndefined();
+		expect(parseResult(res)).toEqual({ ok: false, error: "Date.now() is banned" });
+	});
+});
+
+describe("get_workflow_script_spec tool", () => {
+	it("returns the dialect guide text with the platform deltas", async () => {
+		const { server, captured } = fakeServer();
+		registerScriptTools(server as any);
+		const tool = captured.find((t) => t.name === "get_workflow_script_spec")!;
+		const res = await tool.handler({});
+		const text = res.content[0].text;
+		expect(text).toContain("PLATFORM DELTAS");
+		expect(text).toContain("agentType");
+		expect(text).toContain("isolation");
 	});
 });
 

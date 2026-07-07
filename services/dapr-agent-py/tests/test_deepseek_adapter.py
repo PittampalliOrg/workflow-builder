@@ -362,3 +362,42 @@ def test_deepseek_normalizer_collapses_invalid_tool_history() -> None:
     assert messages[1]["role"] == "user"
     assert "tool-call ordering was invalid" in messages[1]["content"]
     assert "[tool] file contents" in messages[1]["content"]
+
+
+def test_deepseek_reasoning_effort_override_wins_over_env(monkeypatch) -> None:
+    """Per-agent agentConfig.reasoningEffort (threaded as reasoning_effort=) beats
+    the env default; the Claude Code vocabulary collapses to the provider's set
+    ({low,medium,high} -> high, {xhigh,max} -> max)."""
+    bodies: list[dict] = []
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-test")
+    monkeypatch.setenv("DEEPSEEK_REASONING_EFFORT", "max")
+
+    def urlopen(req, timeout: int):
+        bodies.append(json.loads(req.data.decode()))
+        return _Response({
+            "id": "chatcmpl_test",
+            "choices": [{
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+        })
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+
+    adapter._call_deepseek_chat(
+        "llm-deepseek-v4-pro",
+        [{"role": "user", "content": "hello"}],
+        reasoning_effort="low",
+    )
+    assert bodies[0]["reasoning_effort"] == "high"  # low -> high, env max ignored
+
+
+def test_deepseek_reasoning_effort_mapping() -> None:
+    assert adapter._reasoning_effort("low") == "high"
+    assert adapter._reasoning_effort("medium") == "high"
+    assert adapter._reasoning_effort("high") == "high"
+    assert adapter._reasoning_effort("xhigh") == "max"
+    assert adapter._reasoning_effort("max") == "max"
+    # unknown override falls through to the terminal default
+    assert adapter._reasoning_effort("bogus") == "max"

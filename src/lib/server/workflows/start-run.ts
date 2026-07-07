@@ -64,7 +64,10 @@ export type StartWorkflowResult =
 export interface StartWorkflowOptions {
 	workflowId?: string;
 	workflowName?: string;
-	triggerData?: Record<string, unknown>;
+	/** Run input. SW 1.0 requires an object (trigger fields); dynamic-script
+	 *  accepts ANY JSON value verbatim (the script's `args` global) and treats
+	 *  `undefined` as "not provided" (args global is undefined). */
+	triggerData?: unknown;
 	/** Deterministic execution id for idempotent (at-least-once) callers. */
 	executionId?: string;
 	/** When true + executionId set: a pre-existing row short-circuits as a no-op. */
@@ -149,7 +152,11 @@ export async function startWorkflowRun(
 		return startDynamicScriptRun(app, workflow, opts);
 	}
 
-	let triggerData = opts.triggerData ?? {};
+	// SW 1.0 trigger inputs are field-keyed objects; coerce non-objects to {}.
+	let triggerData: Record<string, unknown> =
+		opts.triggerData && typeof opts.triggerData === 'object' && !Array.isArray(opts.triggerData)
+			? (opts.triggerData as Record<string, unknown>)
+			: {};
 	let spec = workflow.spec as Record<string, unknown> | null;
 	if (spec && isSWWorkflow(spec)) {
 		const removedAgentCallsError = getRemovedSw10AgentCallsError(spec);
@@ -310,7 +317,11 @@ async function startDynamicScriptRun(
 	}
 	const script = String((spec as Record<string, unknown>).script);
 	const meta = validation.meta;
-	const args = opts.triggerData ?? {};
+	// args is the script's VERBATIM input — any JSON value. undefined means "not
+	// provided": the key is omitted end-to-end so the script's `args` global is
+	// undefined (Workflow-tool parity). JSON serialization drops undefined keys,
+	// which is exactly the wire behavior the orchestrator expects.
+	const args = opts.triggerData;
 	const defaults = (spec as Record<string, unknown>).defaults as
 		| { budgetTotal?: number | null }
 		| undefined;
@@ -325,7 +336,7 @@ async function startDynamicScriptRun(
 		status: 'running',
 		phase: 'running',
 		progress: 0,
-		input: args,
+		input: (args ?? undefined) as Record<string, unknown> | undefined,
 		executionIr: { engine: 'dynamic-script', script, meta, args, budgetTotal },
 		executionIrVersion: 'dynamic-script-1',
 		...(opts.triggerSource ? { triggerSource: opts.triggerSource } : {}),
