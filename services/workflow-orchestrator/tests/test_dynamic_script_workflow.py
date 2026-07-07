@@ -825,3 +825,61 @@ def test_root_run_still_persists_terminal_results():
     assert result["success"] is True
     persists = [a for a in ctx.action_log if a[0] == "activity" and a[1] == "persist_results_to_db"]
     assert len(persists) == 1
+
+
+def test_agent_dispatch_stamps_resolved_runtime_on_agent_config(monkeypatch):
+    """LIVE-CAUGHT regression: the ensure-for-workflow bridge resolves the
+    runtime descriptor from agentConfig.runtime (swap-safety gate + the
+    per-session OpenShell auto-sandbox provision). The script dispatch never
+    stamped it, so script-spawned dapr-agent-py sessions got NO workspace
+    sandbox and every OpenShell tool failed with gRPC "sandbox not found"."""
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.setattr(
+        d,
+        "_resolve_native_agent_runtime",
+        lambda args, cfg: ("dapr-agent-py", {"app_id": "dapr-agent-py"}),
+    )
+
+    captured = {}
+
+    class _Ctx:
+        instance_id = "dsw-test-exec-e1"
+
+        def call_activity(self, fn, *, input=None, retry_policy=None):
+            name = getattr(fn, "__name__", str(fn))
+            if name == "spawn_session_for_workflow":
+                captured["bridge_payload"] = input
+            return ("activity", name, input)
+
+        def call_child_workflow(self, name, *, input=None, instance_id=None, **kw):
+            captured["child_input"] = input
+            return "CHILD_TASK"
+
+    gen = d._start_script_call(
+        _Ctx(),
+        call_id="a" * 40 + "_0",
+        spec={"kind": "agent", "prompt": "hi", "opts": {"effort": "low"}, "retries": 0},
+        exec_id="e1",
+        meta={"name": "probe"},
+        defaults={"agentRuntime": "dapr-agent-py", "model": "zai/glm-5.2"},
+        limits={},
+        budget_total=None,
+        workflow_id=None,
+        user_id=None,
+        project_id=None,
+        otel={},
+    )
+    next(gen)  # the spawn activity yield
+    result = None
+    try:
+        gen.send({"childInput": {"x": 1}, "agentAppId": "dapr-agent-py", "agentId": "ag1"})
+    except StopIteration as si:
+        result = si.value
+    assert result == "CHILD_TASK"
+
+    agent_config = captured["bridge_payload"]["agentConfig"]
+    assert agent_config["runtime"] == "dapr-agent-py"
+    # Existing stamps unchanged.
+    assert agent_config["modelSpec"] == "zai/glm-5.2"
+    assert agent_config["reasoningEffort"] == "low"

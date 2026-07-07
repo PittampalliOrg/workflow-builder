@@ -257,6 +257,14 @@ def _start_script_call(
             exc,
         )
         return None
+    # Stamp the RESOLVED runtime id onto the agent config. The bridge's
+    # ensure-for-workflow handler reads agentConfig.runtime to resolve the
+    # runtime descriptor — which gates BOTH the swap-safety check and the
+    # per-session OpenShell auto-sandbox provision. Without it, script-spawned
+    # dapr-agent-py sessions got NO workspace sandbox and every OpenShell tool
+    # failed with gRPC "sandbox not found" (live-caught: demo-review agents
+    # could not ls/glob and honestly reported the blocker instead of reviewing).
+    agent_config["runtime"] = _name
 
     label = str(opts.get("label") or "").strip() or str(call_id)[:8]
     workspace_ref = f"ws_script_{exec_id}" if opts.get("isolation") == "shared" else None
