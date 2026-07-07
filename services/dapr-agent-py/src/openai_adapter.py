@@ -425,6 +425,24 @@ def _publish_llm_usage(
         logger.debug("[session-event] openai llm_usage emit failed: %s", exc)
 
 
+def _openai_reasoning_effort(override: str | None = None) -> str:
+    """Resolve the Responses-API reasoning effort.
+
+    ``override`` is the per-agent ``agentConfig.reasoningEffort`` (e.g. from a
+    dynamic-script ``agent(..., {effort})`` opt) and WINS over the env default.
+    The Responses API accepts low|medium|high, so the Claude Code vocabulary
+    collapses: {xhigh,max} -> high.
+    """
+    effort = (
+        override or os.environ.get("OPENAI_REASONING_EFFORT", "medium")
+    ).strip().lower()
+    if effort in {"xhigh", "max"}:
+        return "high"
+    if effort in {"low", "medium", "high"}:
+        return effort
+    return "medium"
+
+
 def _call_openai_responses(
     component: str,
     messages: list[dict[str, Any]],
@@ -433,6 +451,7 @@ def _call_openai_responses(
     max_tokens: int | None = None,
     response_format: Any = None,
     cache_key: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     model = _get_openai_model(component)
     # Strip the bundle's static/dynamic boundary sentinel before sending —
@@ -537,7 +556,7 @@ def _call_openai_responses(
     if max_tokens:
         request_body["max_output_tokens"] = max_tokens
     if model.startswith("gpt-5") or model.startswith("o"):
-        effort = os.environ.get("OPENAI_REASONING_EFFORT", "medium")
+        effort = _openai_reasoning_effort(reasoning_effort)
         # summary="detailed" tells the Responses API to echo back reasoning
         # summaries in the output; without it we'd get reasoning tokens
         # charged but no visible content for agent.thinking.
@@ -719,6 +738,10 @@ def patch_for_openai(llm_client: Any) -> None:
                 max_tokens=max_tokens,
                 response_format=response_format,
                 cache_key=cache_key,
+                # Per-agent effort (agentConfig.reasoningEffort) — stamped onto
+                # the client by call_llm alongside _llm_component; the env
+                # default applies only when unset.
+                reasoning_effort=getattr(self, "_reasoning_effort", None),
             )
 
             if response_format is not None:

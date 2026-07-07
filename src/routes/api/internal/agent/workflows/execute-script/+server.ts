@@ -22,7 +22,8 @@ import { extractStaticMeta } from '$lib/server/workflows/dynamic-script-validati
 
 type ExecuteScriptBody = {
 	script?: string;
-	args?: Record<string, unknown>;
+	/** The script's verbatim input — any JSON value; absent = script sees undefined. */
+	args?: unknown;
 	budgetTotal?: number | null;
 };
 
@@ -95,7 +96,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			: undefined;
 	const result = await startWorkflowRun({
 		workflowId: workflow.id,
-		triggerData: body.args ?? {},
+		// Verbatim any-JSON args; undefined = not provided (script sees undefined).
+		triggerData: body.args,
 		userId: owner.userId,
 		...(budgetTotal !== undefined ? { budgetTotal } : {})
 	});

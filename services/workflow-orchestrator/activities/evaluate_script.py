@@ -113,7 +113,6 @@ def evaluate_script(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             "script": input_data.get("script") or "",
             "scriptSha256": input_data.get("scriptSha256") or "",
             "meta": input_data.get("meta") or {},
-            "args": input_data.get("args") or {},
             "nested": bool(input_data.get("nested")),
             "budget": input_data.get("budget")
             or {"total": None, "spent": 0, "exhausted": False, "lifetimeExceeded": False},
@@ -122,6 +121,10 @@ def evaluate_script(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             "seenLogCount": int(input_data.get("seenLogCount") or 0),
             "limits": input_data.get("limits") or {},
         }
+        # args is verbatim any-JSON; key-absence propagates so the script's
+        # `args` global is undefined when no input was provided.
+        if "args" in input_data:
+            request_body["args"] = input_data.get("args")
 
         endpoint = f"{_evaluator_url()}/evaluate"
         try:

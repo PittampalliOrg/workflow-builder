@@ -60,15 +60,42 @@ def script_child_instance_id(parent_instance_id: str, call_id: str, retries: int
     return f"{parent_instance_id}__durable-script__{fragment}__run__{int(retries or 0)}"
 
 
+def _phase_model(meta: dict[str, Any] | None, phase: Any) -> str:
+    """Model declared on the task's meta.phases entry (spec: per-phase model).
+
+    ``meta.phases`` entries are ``{title, model?, ...}``; the evaluator resolves
+    each task's phase (opts.phase ?? ambient phase()) into ``opts.phase``, so an
+    exact title match here applies the phase's model override.
+    """
+    if not phase or not isinstance(phase, str) or not isinstance(meta, dict):
+        return ""
+    phases = meta.get("phases")
+    if not isinstance(phases, list):
+        return ""
+    for entry in phases:
+        if isinstance(entry, dict) and entry.get("title") == phase:
+            model = entry.get("model")
+            if isinstance(model, str) and model.strip():
+                return model.strip()
+            return ""
+    return ""
+
+
 def _build_agent_config(
     opts: dict[str, Any],
     defaults: dict[str, Any] | None = None,
     agent_runtime: str = "",
+    meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     agent_config: dict[str, Any] = {}
     model = ""
+    phase_model = _phase_model(meta, opts.get("phase"))
     if isinstance(opts.get("model"), str) and opts.get("model").strip():
         model = opts["model"].strip()
+    elif phase_model:
+        # meta.phases[].model — explicit author intent scoped to the phase
+        # (same trust level as opts.model; applies regardless of runtime).
+        model = phase_model
     elif (
         isinstance((defaults or {}).get("model"), str)
         and (defaults or {}).get("model").strip()
@@ -138,12 +165,16 @@ def _start_script_call(
     meta: dict[str, Any],
     defaults: dict[str, Any],
     limits: dict[str, Any],
+    budget_total: Any = None,
     workflow_id: str | None,
     user_id: str | None,
     project_id: str | None,
     otel: dict[str, Any],
 ):
-    """Dispatch one call. Yields its spawn/resolve activity; returns a child Task or None."""
+    """Dispatch one call. Yields its spawn/resolve activity; returns a child
+    Task, ``None`` (bridge refused / bad agentType -> journal null), or
+    ``{"dispatchError": msg}`` (workflow() ref failure -> journal error so the
+    script's workflow() call THROWS, per the Workflow-tool contract)."""
     kind = spec.get("kind") or "agent"
     retries = int(spec.get("retries") or 0)
     child_instance_id = script_child_instance_id(ctx.instance_id, call_id, retries)
@@ -156,19 +187,29 @@ def _start_script_call(
             input=_freeze({"workflowRef": workflow_ref, "_otel": otel}),
         )
         if not isinstance(resolved, dict) or not resolved.get("success"):
+            reason = (
+                (resolved or {}).get("error") if isinstance(resolved, dict) else resolved
+            )
             logger.warning(
                 "[script-dispatch] workflow() ref %r could not be resolved: %s",
                 workflow_ref,
-                (resolved or {}).get("error") if isinstance(resolved, dict) else resolved,
+                reason,
             )
-            return None
+            return {
+                "dispatchError": (
+                    f"workflow() could not resolve {workflow_ref!r}"
+                    + (f": {reason}" if reason else "")
+                )
+            }
         child_input = {
             "executionId": exec_id,
             "script": resolved.get("script"),
             "scriptSha256": resolved.get("scriptSha256"),
             "meta": resolved.get("meta") or {},
-            "args": spec.get("args") if isinstance(spec.get("args"), dict) else {},
-            "budgetTotal": None,
+            # Shared token pool (Workflow-tool parity): the nested child sees the
+            # SAME budgetTotal and — because it aggregates usage by the SAME
+            # executionId — its budget.spent() is the whole tree's spend.
+            "budgetTotal": budget_total,
             "nested": True,
             "journalImportFromExecutionId": None,
             "limits": limits,
@@ -178,6 +219,10 @@ def _start_script_call(
             "projectId": project_id,
             "_otel": otel,
         }
+        # Child args: VERBATIM any-JSON value; omit the key entirely when the
+        # parent passed nothing so the child's `args` global is undefined.
+        if "args" in spec:
+            child_input["args"] = spec.get("args")
         return ctx.call_child_workflow(
             DYNAMIC_SCRIPT_WORKFLOW_NAME,
             input=_freeze(child_input),
@@ -192,9 +237,26 @@ def _start_script_call(
         agent_runtime = defaults["agentRuntime"].strip()
 
     flattened_args = {"agentRuntime": agent_runtime} if agent_runtime else {}
-    agent_config = _build_agent_config(opts, defaults, agent_runtime)
+    agent_config = _build_agent_config(opts, defaults, agent_runtime, meta)
     # Runtime resolution + the workflowDispatch=="auto-turn" guard (sw_workflow L1090-1118).
-    _name, target = _resolve_native_agent_runtime(flattened_args, agent_config)
+    # opts.agentType selects the agent RUNTIME (not a Claude Code persona); an
+    # unresolvable value (e.g. a persona name, or a typo'd runtime id) makes the
+    # registry raise. That raise must NOT crash the whole dynamic_script workflow —
+    # per the Workflow-tool contract a failed agent() call resolves to null. Catch
+    # it, log loudly, and return None so the pump journals THIS call as null and the
+    # script's siblings/`.filter(Boolean)` proceed.
+    try:
+        _name, target = _resolve_native_agent_runtime(flattened_args, agent_config)
+    except Exception as exc:  # noqa: BLE001 — a bad opts.agentType must not fail the run
+        logger.warning(
+            "[script-dispatch] agent() call %s: could not resolve agentType %r (%s); "
+            "journaling this call as null (agent() returns null on death). Valid values "
+            "are runtime ids from services/shared/runtime-registry.json.",
+            call_id,
+            agent_runtime or "(default)",
+            exc,
+        )
+        return None
 
     label = str(opts.get("label") or "").strip() or str(call_id)[:8]
     workspace_ref = f"ws_script_{exec_id}" if opts.get("isolation") == "shared" else None

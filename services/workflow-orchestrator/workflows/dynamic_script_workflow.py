@@ -137,7 +137,11 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
     script = input_data.get("script") or ""
     script_sha256 = input_data.get("scriptSha256") or ""
     meta = input_data.get("meta") if isinstance(input_data.get("meta"), dict) else {}
-    args = input_data.get("args") if isinstance(input_data.get("args"), dict) else {}
+    # args is the script's VERBATIM input — any JSON value (object/array/scalar/
+    # null). Key-absence is meaningful: no key -> the script's `args` global is
+    # undefined (Workflow-tool parity), so track presence rather than defaulting.
+    has_args = "args" in input_data
+    args = input_data.get("args")
     nested = bool(input_data.get("nested"))
     budget_total = input_data.get("budgetTotal")
     journal_import_from = input_data.get("journalImportFromExecutionId")
@@ -218,23 +222,23 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             }
 
         # 2. Evaluate (re-run the whole script; resolve journaled calls).
+        evaluate_input = {
+            "executionId": exec_id,
+            "script": script,
+            "scriptSha256": script_sha256,
+            "meta": meta,
+            "nested": nested,
+            "budget": budget,
+            "knownCallIds": sorted(resolved),
+            "seenLogCount": seen_log_count,
+            "limits": {"maxItemsPerCall": limits["maxItemsPerCall"]},
+            "_otel": otel,
+        }
+        if has_args:
+            evaluate_input["args"] = args
         plan = yield ctx.call_activity(
             evaluate_script,
-            input=_freeze(
-                {
-                    "executionId": exec_id,
-                    "script": script,
-                    "scriptSha256": script_sha256,
-                    "meta": meta,
-                    "args": args,
-                    "nested": nested,
-                    "budget": budget,
-                    "knownCallIds": sorted(resolved),
-                    "seenLogCount": seen_log_count,
-                    "limits": {"maxItemsPerCall": limits["maxItemsPerCall"]},
-                    "_otel": otel,
-                }
-            ),
+            input=_freeze(evaluate_input),
             retry_policy=_SCRIPT_EVAL_RETRY_POLICY,
         )
         plan = plan if isinstance(plan, dict) else {}
@@ -335,9 +339,12 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                     "baseHash": task.get("baseHash"),
                     "occurrence": task.get("occurrence"),
                     "workflowRef": task.get("workflowRef"),
-                    "args": task.get("args") if isinstance(task.get("args"), dict) else {},
                 }
             )
+            # workflow() child args: VERBATIM any-JSON value; key-absence means
+            # the parent passed nothing (child's `args` global -> undefined).
+            if "args" in task:
+                spec["args"] = task.get("args")
             opts = spec["opts"]
             spec["label"] = opts.get("label")
             spec["phase"] = opts.get("phase")
@@ -366,6 +373,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                 meta=meta,
                 defaults=defaults,
                 limits=limits,
+                budget_total=budget_total,
                 workflow_id=workflow_id,
                 user_id=user_id,
                 project_id=project_id,
@@ -378,8 +386,17 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             spec["seq"] = seq_counter
             seq_counter += 1
 
-            if child_task is None:
-                # Bridge refused -> journal null immediately (no tracking).
+            if child_task is None or (
+                isinstance(child_task, dict) and child_task.get("dispatchError")
+            ):
+                # Bridge refused / dispatch failed -> journal immediately (no
+                # tracking). A dispatchError carries the reason so a failed
+                # workflow() call THROWS a meaningful message into the script;
+                # a plain None (bridge refusal / bad agentType) journals null.
+                if isinstance(child_task, dict):
+                    raw = {"success": False, "error": str(child_task["dispatchError"])}
+                else:
+                    raw = {"success": False, "cancelled": True}
                 yield ctx.call_activity(
                     record_script_call_result,
                     input=_freeze(
@@ -388,7 +405,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                             "callId": cid,
                             "seq": spec["seq"],
                             "spec": _spec_for_journal(spec),
-                            "raw": {"success": False, "cancelled": True},
+                            "raw": raw,
                             "_otel": otel,
                         }
                     ),

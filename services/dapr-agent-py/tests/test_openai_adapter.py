@@ -579,3 +579,19 @@ def test_call_openai_responses_allows_parallel_tool_calls_by_env_opt_in(monkeypa
     )
 
     assert bodies[0]["parallel_tool_calls"] is True
+
+
+def test_openai_reasoning_effort_override_and_mapping(monkeypatch) -> None:
+    """Per-agent effort wins over env; Responses API accepts low|medium|high so
+    {xhigh,max} collapse to high; unknown values fall back to the env/default."""
+    monkeypatch.delenv("OPENAI_REASONING_EFFORT", raising=False)
+    assert adapter._openai_reasoning_effort("low") == "low"
+    assert adapter._openai_reasoning_effort("medium") == "medium"
+    assert adapter._openai_reasoning_effort("high") == "high"
+    assert adapter._openai_reasoning_effort("xhigh") == "high"
+    assert adapter._openai_reasoning_effort("max") == "high"
+    assert adapter._openai_reasoning_effort(None) == "medium"  # env default
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT", "high")
+    assert adapter._openai_reasoning_effort(None) == "high"
+    # override still wins over env
+    assert adapter._openai_reasoning_effort("low") == "low"

@@ -1,7 +1,7 @@
 {
   "$comment": "SSOT contract for the script-evaluator /evaluate exchange. Consumed by services/script-evaluator vitest suite and services/workflow-orchestrator pytest suite. Version bumps require updating BOTH suites. callId derivation is FROZEN by this contract: baseHash = sha256(prompt + '\\u0000' + canonicalJSON(semanticOpts)) hex; semanticOpts = {schema, model, effort, isolation, agentType, label} with undefined/null keys OMITTED and remaining keys sorted lexicographically at every nesting level (canonicalJSON); callId = baseHash[:40] + '_' + occurrence where occurrence is the per-baseHash encounter counter (0-based) in script issue order.",
-  "contractVersion": "1.0.0",
-  "evaluatorVersion": "1.0.0",
+  "contractVersion": "1.1.0",
+  "evaluatorVersion": "1.1.0",
   "limits": {
     "maxScriptBytes": 262144,
     "maxItemsPerCall": 4096,
@@ -29,6 +29,16 @@
     "skipped": "agent() resolves with null (user skip via script.call.control)",
     "error": "agent() resolves with null; errorCode may be error_max_structured_output_retries"
   },
+  "workflowCompletedResultSemantics": {
+    "$comment": "kind='workflow' calls diverge from agent() on failure (Workflow-tool contract: workflow() THROWS so authors can try/catch).",
+    "done": "workflow() resolves with value (the child run's returnValue)",
+    "skipped": "workflow() resolves with null (user skip)",
+    "error": "workflow() THROWS Error(value.message ?? errorCode) into the script; errorCode is workflow_child_error (unresolvable ref / child script_error / child failure)",
+    "null": "workflow() THROWS (legacy rows without a message throw 'workflow() child failed')"
+  },
+  "argsSemantics": {
+    "$comment": "request.args is the script's VERBATIM input — any JSON value (object, array, string, number, bool, null). KEY-ABSENCE is meaningful: when the request has no args key, the script's `args` global is undefined (Workflow-tool parity). The same applies to a kind='workflow' task's args field: omitted when the parent passed nothing."
+  },
   "response": {
     "need": {
       "status": "need",
@@ -48,7 +58,7 @@
       "newLogs": ["starting"],
       "logCount": 1,
       "counts": { "totalCallsSeen": 1 },
-      "evaluatorVersion": "1.0.0"
+      "evaluatorVersion": "1.1.0"
     },
     "done": {
       "status": "done",
@@ -59,7 +69,7 @@
       "newLogs": [],
       "logCount": 1,
       "counts": { "totalCallsSeen": 1 },
-      "evaluatorVersion": "1.0.0"
+      "evaluatorVersion": "1.1.0"
     },
     "script_error": {
       "status": "script_error",
@@ -70,7 +80,7 @@
       "newLogs": [],
       "logCount": 0,
       "counts": { "totalCallsSeen": 0 },
-      "evaluatorVersion": "1.0.0"
+      "evaluatorVersion": "1.1.0"
     }
   },
   "responseRules": [

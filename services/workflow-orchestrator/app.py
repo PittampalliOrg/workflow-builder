@@ -3085,7 +3085,10 @@ class ScriptWorkflowRequest(BaseModel):
     script: str = Field(..., description="User-authored JS orchestration script")
     scriptSha256: str = ""
     meta: dict = Field(default_factory=dict)
-    args: dict = Field(default_factory=dict)
+    # The script's verbatim input — ANY JSON value (object, array, string, number,
+    # bool, null), Workflow-tool parity. Absent -> the script's `args` global is
+    # undefined (see model_fields_set check in the handler).
+    args: Any = None
     budgetTotal: int | None = None
     journalImportFromExecutionId: str | None = None
     nested: bool = False
@@ -3171,7 +3174,6 @@ def execute_script_workflow(request: ScriptWorkflowRequest, http_request: Reques
             "script": request.script,
             "scriptSha256": request.scriptSha256,
             "meta": meta,
-            "args": request.args if isinstance(request.args, dict) else {},
             "budgetTotal": request.budgetTotal,
             "journalImportFromExecutionId": request.journalImportFromExecutionId,
             "nested": bool(request.nested),
@@ -3182,6 +3184,11 @@ def execute_script_workflow(request: ScriptWorkflowRequest, http_request: Reques
             "projectId": request.projectId,
             "_otel": otel_ctx,
         }
+        # args is passed VERBATIM (any JSON value); the key is omitted entirely
+        # when the caller didn't send it, so the script's `args` global resolves
+        # to undefined (Workflow-tool parity: "undefined if not provided").
+        if "args" in request.model_fields_set:
+            workflow_input["args"] = request.args
 
         import re
         safe_name = re.sub(r"[^a-z0-9-]", "-", workflow_name.lower()).strip("-")[:40]

@@ -49,6 +49,66 @@ const WAIT_POLL_INTERVAL_MS = parseInt(
 
 const TERMINAL_STATUSES = new Set(["success", "error", "cancelled", "failed"]);
 
+// Compact authoring reference for the dynamic-script (Claude Code Workflow) dialect
+// AS IT BEHAVES ON THIS PLATFORM. Served verbatim by `get_workflow_script_spec` so an
+// authoring agent knows the primitives AND the platform deltas that make a
+// spec-authored script behave differently here. Keep in sync with
+// docs/dynamic-script-authoring-guide.md (the human SSOT).
+export const PLATFORM_SCRIPT_DIALECT_GUIDE = `# Dynamic Script dialect (workflow-builder platform)
+
+Write plain JavaScript (NOT TypeScript). The script starts with a PURE-LITERAL
+\`export const meta = { name, description?, phases? }\` (name required; no variables/calls
+inside it), then a body using these globals/hooks. The engine RE-EXECUTES the whole script
+each round, so it must be deterministic.
+
+PRIMITIVES (identical to Claude Code):
+- agent(prompt, opts?) -> final text (string), or schema-validated object (with opts.schema),
+  or null (skipped/died/exceeded structured-retry cap). .filter(Boolean) fanned-out results.
+- parallel(thunks) -> BARRIER; runs all, a throwing thunk becomes null, never rejects.
+- pipeline(items, ...stages) -> per-item, NO barrier; stage gets (prevResult, originalItem, index);
+  a throwing stage drops that item to null + skips its remaining stages. DEFAULT for multi-stage.
+- phase(title); log(msg)/console.log(...).
+- workflow(nameOrRef, args?) -> runs another SAVED dynamic-script workflow, returns its returnValue.
+  THROWS on unknown name / child error (catch to handle gracefully); user-skip resolves null.
+  ONE LEVEL ONLY (nested workflow() throws). Nested children SHARE the parent's token budget.
+- args -> the run's VERBATIM input: ANY JSON value (object/array/string/number/bool/null),
+  deep-frozen; undefined when no input was provided (guard with args?.x / Array.isArray(args)).
+- budget -> { total:number|null, spent():number, remaining():number }.
+- Return a value at the end (bare top-level \`return {...}\`) — it becomes the run's output.
+
+PLATFORM DELTAS (differ from the Claude Code spec — get these right):
+1. opts.model = a platform MODEL KEY (e.g. 'zai/glm-5.2', 'anthropic/claude-opus-4-8'), NOT a tier
+   alias ('opus'/'sonnet' silently fall back to the default). Omit to inherit the run default.
+   meta.phases[].model IS honored as a fallback: opts.model > meta.phases[phase].model >
+   defaults.model (the last only on dapr-agent-py).
+2. opts.agentType = the agent RUNTIME id (dapr-agent-py | claude-agent-py | adk-agent-py |
+   browser-use-agent | claude-code-cli), NOT a Claude Code persona. Vary behavior via the prompt.
+   An unresolvable agentType makes THAT call resolve to null (logged), not crash the run.
+3. opts.isolation: use 'shared' to put agents on ONE shared workspace; default is per-agent isolated.
+   'worktree' is a no-op here.
+4. opts.effort ('low'|'medium'|'high'|'xhigh'|'max') is honored, clamped per provider:
+   GLM/DeepSeek {low,medium,high}->high, {xhigh,max}->max; OpenAI low/medium/high (xhigh/max->high);
+   Anthropic/Kimi ignore it (adaptive thinking). It is part of the resume cache key.
+5. budget.spent() counts input+output+cache_creation (net of cache reads), NOT output-only — a budget
+   sized for Claude Code is reached SOONER here. Exhaustion makes unresolved agent() calls throw;
+   in-flight agents still finish. Guard loops: while (budget.total && budget.remaining() > N) {...}.
+6. Caps: concurrency = deployment env (dev ~5); lifetime agents default 1000, narrowed per-deploy
+   (dev ~50); max 4096 items per parallel()/pipeline() call; script <= 256 KiB. Concurrency/lifetime
+   caps are per workflow LEVEL (a nested tree can reach 2x the per-level concurrency).
+
+DETERMINISM (these THROW): Date.now(), argless new Date(), Date(), Math.random(), import, require,
+fetch, process, timers, eval, new Function(), WebAssembly. Pure built-ins (JSON, Math except random,
+Array, Object, String, Number) are OK. log() and console.log/error/warn/info/debug all write to the
+run log. Need time/randomness -> pass via args or derive from the item index.
+
+STRUCTURED OUTPUT: pass opts.schema (JSON Schema). The engine enforces an output contract, validates,
+and retries a corrective session up to 5 times; still-invalid -> the call resolves to null.
+
+VALIDATE THEN RUN: call validate_workflow_script(script) first; fix any error; then run_workflow_script
+with { script } (inline) or { workflowName } (saved). Fixtures to pattern-match live in
+scripts/fixtures/dynamic-scripts/ (best-of-n, audit-fanout, iterate-until-approved, discover-until-dry,
+nested-parent + summarize-child, demo-review).`;
+
 /** Fetch implementation is injectable for tests; defaults to global fetch. */
 export type ScriptToolsContext = {
 	fetchImpl?: typeof fetch;
@@ -99,10 +159,10 @@ export const runWorkflowScriptShape = {
 			"Inline dynamic workflow script source (Claude Code Workflow dialect). Provide EITHER script OR workflowName, not both.",
 		),
 	args: z
-		.record(z.any())
+		.any()
 		.optional()
 		.describe(
-			"Optional input object exposed to the script as the `args` global (and as the trigger input for saved workflows).",
+			"Optional input exposed to the script as the `args` global — ANY JSON value (object, array, string, number, bool, null), passed verbatim. Omit it and the script's `args` global is undefined. For saved workflows this is also the trigger input.",
 		),
 	budgetTotal: z
 		.number()
@@ -199,7 +259,7 @@ export function registerScriptTools(
 		{
 			title: "Run Workflow Script",
 			description:
-				"Launch a DYNAMIC workflow script (Claude Code Workflow dialect: agent(), parallel() (barrier), pipeline() (streaming), phase()/log(), plus the `budget` and `args` globals) as a durable run. The orchestrator re-executes the script and FANS OUT agent sessions, each of which consumes the shared token budget. Provide EXACTLY ONE of `workflowName` (start a saved dynamic-script workflow) or `script` (inline source). Optionally pass `args` (exposed to the script) and `budgetTotal` (shared token cap). By default this returns immediately with the run identifiers; set `wait:true` to block (bounded) for the terminal status/output. NOTE: this tool is NOT available inside sessions that a script itself spawned (recursion guard) — a running agent cannot launch further scripts through it.",
+				"Launch a DYNAMIC workflow script (Claude Code Workflow dialect: agent(), parallel() (barrier), pipeline() (streaming), phase()/log(), plus the `budget` and `args` globals) as a durable run. The orchestrator re-executes the script and FANS OUT agent sessions, each of which consumes the shared token budget. Provide EXACTLY ONE of `workflowName` (start a saved dynamic-script workflow) or `script` (inline source). Optionally pass `args` (exposed to the script) and `budgetTotal` (shared token cap). By default this returns immediately with the run identifiers; set `wait:true` to block (bounded) for the terminal status/output. When authoring an inline `script`, FIRST call `get_workflow_script_spec` for the dialect + platform deltas (opts.model/agentType/isolation vocabulary, budget unit, caps) and `validate_workflow_script` to confirm it is syntactically correct. NOTE: this tool is NOT available inside sessions that a script itself spawned (recursion guard) — a running agent cannot launch further scripts through it.",
 			inputSchema: runWorkflowScriptShape,
 		},
 		async (rawArgs: unknown) => {
@@ -233,7 +293,9 @@ export function registerScriptTools(
 							headers: internalHeaders(),
 							body: JSON.stringify({
 								workflowName: args.workflowName,
-								triggerData: args.args ?? {},
+								// Verbatim any-JSON args; JSON.stringify drops the key when
+								// undefined so the script's `args` global is undefined.
+								triggerData: args.args,
 								budgetTotal: args.budgetTotal,
 							}),
 						},
@@ -262,7 +324,8 @@ export function registerScriptTools(
 							headers: internalHeaders(),
 							body: JSON.stringify({
 								script: args.script,
-								args: args.args ?? {},
+								// Verbatim any-JSON args; omitted entirely when not provided.
+								args: args.args,
 								budgetTotal: args.budgetTotal,
 							}),
 						},
@@ -311,6 +374,78 @@ export function registerScriptTools(
 	tools.push({
 		name: "run_workflow_script",
 		description: "Launch a dynamic workflow script (fans out agent sessions)",
+	});
+
+	// ── validate_workflow_script — author-time syntactic check ──────────────
+	(server as any).registerTool(
+		"validate_workflow_script",
+		{
+			title: "Validate Workflow Script",
+			description:
+				"Check a dynamic workflow script (Claude Code Workflow dialect) for syntactic correctness WITHOUT running it. Returns { ok, meta, estimatedAgentCalls } on success or { ok:false, error } with the reason (banned API like Date.now()/fetch/import, missing or non-literal `export const meta`, bad meta shape, size over the limit). Use this in an author→validate→fix loop before `run_workflow_script`. Call `get_workflow_script_spec` for the dialect rules + platform deltas.",
+			inputSchema: { script: z.string().describe("Dynamic workflow script source to validate.") },
+		},
+		async (rawArgs: unknown) => {
+			const script =
+				rawArgs && typeof (rawArgs as any).script === "string"
+					? (rawArgs as any).script
+					: "";
+			if (!script.trim()) return errorResult("script is required");
+			if (!INTERNAL_API_TOKEN) {
+				return errorResult(
+					"INTERNAL_API_TOKEN is not configured; cannot validate a workflow script.",
+				);
+			}
+			try {
+				const resp = await fetchImpl(
+					`${WORKFLOW_BUILDER_URL}/api/internal/agent/workflows/validate-script`,
+					{
+						method: "POST",
+						headers: internalHeaders(),
+						body: JSON.stringify({ script }),
+					},
+				);
+				const data = (await resp.json().catch(() => null)) as
+					| { ok?: boolean; error?: string; meta?: unknown; estimatedAgentCalls?: number }
+					| null;
+				if (!resp.ok && (!data || typeof data.ok !== "boolean")) {
+					return errorResult(
+						`Validation request failed (HTTP ${resp.status})`,
+					);
+				}
+				return textResult(
+					data ?? { ok: false, error: "empty validation response" },
+				);
+			} catch (err) {
+				return errorResult(`Failed to validate workflow script: ${err}`);
+			}
+		},
+	);
+	tools.push({
+		name: "validate_workflow_script",
+		description: "Validate a dynamic workflow script without running it",
+	});
+
+	// ── get_workflow_script_spec — serve the dialect reference ──────────────
+	(server as any).registerTool(
+		"get_workflow_script_spec",
+		{
+			title: "Get Workflow Script Spec",
+			description:
+				"Return the authoring reference for the dynamic workflow script dialect (Claude Code Workflow primitives + this platform's deltas: opts.model/agentType/isolation/effort vocabulary, the budget token unit, and the concurrency/lifetime/size caps). Read this BEFORE authoring an inline `script`, then use `validate_workflow_script` and `run_workflow_script`.",
+			inputSchema: {},
+		},
+		async () => {
+			return {
+				content: [
+					{ type: "text" as const, text: PLATFORM_SCRIPT_DIALECT_GUIDE },
+				],
+			};
+		},
+	);
+	tools.push({
+		name: "get_workflow_script_spec",
+		description: "Authoring reference for the dynamic workflow script dialect",
 	});
 
 	return tools;

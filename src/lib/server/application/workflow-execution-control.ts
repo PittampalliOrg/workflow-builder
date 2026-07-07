@@ -104,7 +104,9 @@ export class ApplicationWorkflowExecutionControlService {
 				: undefined;
 		const result = await this.deps.runStarter.startWorkflowRun({
 			workflowId: input.workflowId,
-			triggerData: asRecord(input.body?.input),
+			// Pass verbatim: dynamic-script accepts ANY JSON value (and undefined =
+			// "no args"); the SW path coerces non-objects to {} itself.
+			triggerData: input.body?.input,
 			userId: input.userId,
 			...(budgetTotal !== undefined ? { budgetTotal } : {}),
 		});
@@ -469,7 +471,10 @@ export class ApplicationWorkflowExecutionControlService {
 			}
 			const result = await this.deps.runStarter.startWorkflowRun({
 				workflowId: source.workflowId,
-				triggerData: (source.input ?? {}) as Record<string, unknown>,
+				// Verbatim: any JSON value. A null stored input (run started without
+				// args) resumes as undefined so the script's `args` global matches
+				// the original run.
+				triggerData: source.input ?? undefined,
 				journalImportFromExecutionId: source.id,
 				rerunOfExecutionId: source.id,
 				rerunSourceInstanceId: source.daprInstanceId,

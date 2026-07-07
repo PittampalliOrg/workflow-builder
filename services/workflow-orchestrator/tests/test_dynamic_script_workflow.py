@@ -624,3 +624,154 @@ def test_can_consume_callid_vector_task_specs():
                 assert built["callId"] == call_id
             seen += 1
     assert seen > 0
+
+
+# ---------------------------------------------------------------------------
+# Dispatch robustness: a bad opts.agentType must not crash the whole workflow
+# (spec-alignment audit regression — agent() returns null on death, not a run
+# failure). The registry raises on an unresolvable runtime id / persona value;
+# _start_script_call must catch it and return None so the pump journals THIS
+# call as null and its siblings proceed.
+# ---------------------------------------------------------------------------
+def test_bad_agent_type_returns_none_instead_of_crashing(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("Unsupported durable/run agentRuntime 'Explore'")
+
+    # The registry resolve is imported into the dispatch module's namespace.
+    monkeypatch.setattr(d, "_resolve_native_agent_runtime", _boom)
+
+    class _MiniCtx:
+        instance_id = "dsw-test-exec-e1"
+
+    gen = d._start_script_call(
+        _MiniCtx(),
+        call_id="c" * 40 + "_0",
+        spec={"kind": "agent", "prompt": "hi", "opts": {"agentType": "Explore"}},
+        exec_id="e1",
+        meta={"name": "x"},
+        defaults={},
+        limits={},
+        workflow_id=None,
+        user_id=None,
+        project_id=None,
+        otel={},
+    )
+    # The resolve raises BEFORE any yield, so the generator returns None
+    # immediately — driving it raises StopIteration whose value is None.
+    with pytest.raises(StopIteration) as si:
+        next(gen)
+    assert si.value.value is None
+
+
+# ---------------------------------------------------------------------------
+# Spec-alignment additions (gaps implemented 2026-07): nested budget sharing,
+# verbatim/absent workflow() args, workflow() dispatch-error channel, and the
+# meta.phases[].model fallback.
+# ---------------------------------------------------------------------------
+class _DispatchCtx:
+    """Minimal ctx for driving _start_script_call's workflow branch."""
+
+    instance_id = "dsw-test-exec-e1"
+
+    def __init__(self):
+        self.captured_child = None
+
+    def call_activity(self, fn, *, input=None, retry_policy=None):
+        return ("activity", getattr(fn, "__name__", str(fn)), input)
+
+    def call_child_workflow(self, name, *, input=None, instance_id=None, **kwargs):
+        self.captured_child = {"name": name, "input": input, "instance_id": instance_id}
+        return "CHILD_TASK"
+
+
+def _drive_workflow_dispatch(spec, *, budget_total=None, resolve_result=None):
+    import workflows.script_agent_dispatch as d
+
+    ctx = _DispatchCtx()
+    gen = d._start_script_call(
+        ctx,
+        call_id="w" * 40 + "_0",
+        spec=spec,
+        exec_id="e1",
+        meta={"name": "parent"},
+        defaults={},
+        limits={},
+        budget_total=budget_total,
+        workflow_id=None,
+        user_id=None,
+        project_id=None,
+        otel={},
+    )
+    next(gen)  # the resolve_script_workflow activity
+    result = None
+    try:
+        gen.send(
+            resolve_result
+            if resolve_result is not None
+            else {"success": True, "script": "s", "scriptSha256": "h", "meta": {"name": "c"}}
+        )
+    except StopIteration as si:
+        result = si.value
+    return ctx, result
+
+
+def test_nested_workflow_dispatch_shares_parent_budget_and_verbatim_args():
+    spec = {"kind": "workflow", "workflowRef": "child", "args": ["a", "b"], "retries": 0}
+    ctx, result = _drive_workflow_dispatch(spec, budget_total=500)
+    assert result == "CHILD_TASK"
+    child_input = ctx.captured_child["input"]
+    # Shared token pool: the nested child sees the SAME budgetTotal (and,
+    # aggregating by the same executionId, tree-wide spent()).
+    assert child_input["budgetTotal"] == 500
+    assert child_input["nested"] is True
+    # args pass VERBATIM — arrays (and scalars) are not coerced to {}.
+    assert child_input["args"] == ["a", "b"]
+
+
+def test_nested_workflow_dispatch_omits_absent_args():
+    spec = {"kind": "workflow", "workflowRef": "child", "retries": 0}
+    ctx, result = _drive_workflow_dispatch(spec, budget_total=None)
+    assert result == "CHILD_TASK"
+    child_input = ctx.captured_child["input"]
+    # Key-absence propagates: the child's `args` global must be undefined.
+    assert "args" not in child_input
+    assert child_input["budgetTotal"] is None
+
+
+def test_unresolved_workflow_ref_returns_dispatch_error():
+    spec = {"kind": "workflow", "workflowRef": "missing", "retries": 0}
+    ctx, result = _drive_workflow_dispatch(
+        spec, resolve_result={"success": False, "error": "not found"}
+    )
+    # The dispatch-error channel (NOT None): the pump journals it as a
+    # workflow_child_error so the script's workflow() call THROWS the reason.
+    assert isinstance(result, dict)
+    assert "missing" in result["dispatchError"]
+    assert "not found" in result["dispatchError"]
+    assert ctx.captured_child is None
+
+
+def test_phase_model_fallback_resolution_order():
+    import workflows.script_agent_dispatch as d
+
+    meta = {"phases": [{"title": "Heavy", "model": "zai/glm-5.2"}, {"title": "Light"}]}
+    # phase model applies when opts.model absent
+    cfg = d._build_agent_config({"phase": "Heavy"}, {}, "", meta)
+    assert cfg["modelSpec"] == "zai/glm-5.2"
+    assert cfg["model"] == "zai/glm-5.2"
+    # opts.model always wins over the phase model
+    cfg = d._build_agent_config(
+        {"phase": "Heavy", "model": "anthropic/claude-opus-4-8"}, {}, "", meta
+    )
+    assert cfg["modelSpec"] == "anthropic/claude-opus-4-8"
+    # a phase without a model falls through to defaults (dapr-agent-py gate)
+    cfg = d._build_agent_config({"phase": "Light"}, {"model": "zai/glm-5.2"}, "dapr-agent-py", meta)
+    assert cfg["modelSpec"] == "zai/glm-5.2"
+    # ...but NOT for other runtimes (cross-provider default guard unchanged)
+    cfg = d._build_agent_config({"phase": "Light"}, {"model": "zai/glm-5.2"}, "claude-agent-py", meta)
+    assert "modelSpec" not in cfg
+    # unmatched phase title -> no phase model
+    cfg = d._build_agent_config({"phase": "Nope"}, {}, "", meta)
+    assert "modelSpec" not in cfg

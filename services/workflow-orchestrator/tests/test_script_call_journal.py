@@ -34,10 +34,29 @@ def test_workflow_kind_resolves_to_child_return_value(captured):
     assert captured[-1]["kind"] == "workflow"
 
 
-def test_workflow_kind_null_when_failed(captured):
+def test_workflow_kind_failure_journals_error_so_workflow_throws(captured):
+    # Workflow-tool contract: workflow() THROWS on child failure (agent() nulls).
+    # The journal encodes that as status=error + errorCode=workflow_child_error,
+    # with the human reason in result.message for the evaluator to throw verbatim.
     res = _record({"kind": "workflow"}, {"success": False, "error": "child died"})
-    assert res["status"] == "null"
-    assert captured[-1]["result"] is None
+    assert res["status"] == "error"
+    assert res["errorCode"] == "workflow_child_error"
+    assert captured[-1]["status"] == "error"
+    assert captured[-1]["errorCode"] == "workflow_child_error"
+    assert captured[-1]["result"] == {"message": "child died"}
+
+
+def test_workflow_kind_cancelled_child_journals_error(captured):
+    res = _record({"kind": "workflow"}, {"success": False, "cancelled": True})
+    assert res["status"] == "error"
+    assert captured[-1]["result"] == {"message": "workflow() child was cancelled"}
+
+
+def test_workflow_kind_skip_still_resolves_null(captured):
+    # User skip stays a null resolution even for workflow() (spec: skip -> null).
+    res = _record({"kind": "workflow"}, {"skipped": True})
+    assert res["status"] == "skipped"
+    assert captured[-1]["status"] == "skipped"
 
 
 def test_agent_kind_no_schema_uses_content(captured):
