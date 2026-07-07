@@ -1,9 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getApplicationAdapters } from '$lib/server/application';
-import { db } from '$lib/server/db';
-import { agents } from '$lib/server/db/schema';
-import { and, eq } from 'drizzle-orm';
 
 // ---------------------------------------------------------------------------
 // POST /api/workflows/[workflowId]/author-session
@@ -83,11 +80,12 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 	// Ensure the per-project author agent exists (idempotent by project+slug).
 	let agentId: string | null = null;
 	try {
-		const [existing] = await db
-			.select({ id: agents.id })
-			.from(agents)
-			.where(and(eq(agents.projectId, projectId), eq(agents.slug, AUTHOR_SLUG)))
-			.limit(1);
+		const existing = (
+			await app.agentCatalog.listAgents({
+				query: { projectId, q: AUTHOR_SLUG },
+				currentProjectId: projectId
+			})
+		).find((agent) => agent.slug === AUTHOR_SLUG);
 		agentId = existing?.id ?? null;
 	} catch (err) {
 		console.error('[author-session] agent lookup failed:', err);

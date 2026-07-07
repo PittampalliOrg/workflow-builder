@@ -1,9 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getApplicationAdapters } from '$lib/server/application';
-import { db } from '$lib/server/db';
-import { agents } from '$lib/server/db/schema';
-import { and, eq } from 'drizzle-orm';
 
 // ---------------------------------------------------------------------------
 // POST /api/workflows/executions/[executionId]/analyst-session
@@ -83,11 +80,12 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 
 	let agentId: string | null = null;
 	try {
-		const [existing] = await db
-			.select({ id: agents.id })
-			.from(agents)
-			.where(and(eq(agents.projectId, projectId), eq(agents.slug, ANALYST_SLUG)))
-			.limit(1);
+		const existing = (
+			await app.agentCatalog.listAgents({
+				query: { projectId, q: ANALYST_SLUG },
+				currentProjectId: projectId
+			})
+		).find((agent) => agent.slug === ANALYST_SLUG);
 		agentId = existing?.id ?? null;
 	} catch (err) {
 		console.error('[analyst-session] agent lookup failed:', err);
