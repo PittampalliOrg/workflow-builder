@@ -54,6 +54,13 @@ export type ReconcileEvidence = {
 	sandboxCr: ReconcileEvidenceState;
 	/** Runtime pod: present = found; absent = not found; unknown = API error. */
 	pod: ReconcileEvidenceState;
+	/**
+	 * true when the pod EXISTS but its (newest) phase is terminal (Succeeded/
+	 * Failed). Per-session pods are `restartPolicy: Never` and the Sandbox
+	 * controller does not recreate a terminal pod — an exited pod means the
+	 * session's host is gone even though the pod object is `present`.
+	 */
+	podExited: boolean;
 };
 
 export type ReconcileCandidateView = {
@@ -73,6 +80,13 @@ export type ReconcileCandidateView = {
 	ageSeconds: number;
 	/** now − last_event_at, seconds; null when no event was ever ingested. */
 	silentSeconds: number | null;
+	/**
+	 * Prior stranded-host rescues for this session (count of
+	 * `session.host_rescued` events). Gathered only when the rescue evidence
+	 * matches; 0 otherwise. An unreadable count is reported as +Infinity by the
+	 * deps so the decider fails safe (cap exhausted, warn) rather than looping.
+	 */
+	rescueAttempts: number;
 };
 
 export type ReconcileActionKind =
@@ -80,7 +94,8 @@ export type ReconcileActionKind =
 	| "warn"
 	| "confirm_stop"
 	| "finalize_divergence"
-	| "converge_crashed";
+	| "converge_crashed"
+	| "rescue_stranded_host";
 
 export type ReconcileAction = { action: ReconcileActionKind; reason: string };
 
@@ -89,6 +104,7 @@ export type ReconcileDecisionInput = {
 	evidence: ReconcileEvidence;
 	minAgeSeconds: number;
 	silentWarnSeconds: number;
+	maxRescuesPerSession: number;
 };
 
 /**
@@ -105,6 +121,38 @@ export function decideSessionReconciliation(
 	// (1) Evidence-free hard skips — classes we never touch regardless of state.
 	if (c.paused) return { action: "skip", reason: "paused" };
 	if (c.coordinatorOwned) return { action: "skip", reason: "coordinator_owned" };
+
+	// (1b) Stranded host rescue — scoped by MECHANISM, not runtime family: any
+	//     provisioned per-session host (interactive-CLI or dapr-agent-py
+	//     sandbox) whose pod EXITED (terminal phase — restartPolicy Never, and
+	//     the Sandbox controller does not recreate a terminal pod) while its
+	//     Sandbox CR survives can be re-hosted: deleting the exited pod makes
+	//     the controller recreate it (spec.replicas=1) and the durabletask
+	//     worker resumes the durable workflow via REPLAY — verified live
+	//     2026-07-07. Sits AHEAD of the v1 CLI-family gate below (that gate
+	//     scopes the DB-mutating converge/finalize actions; the rescue only
+	//     deletes an already-exited pod) and AHEAD of the unknown-evidence
+	//     gate (an exited host is typically unaddressable via placement, so
+	//     Dapr evidence reads absent/unknown — the pod's own terminal phase is
+	//     the positive KNOWN signal). Explicit guards: a stop-intent row must
+	//     never get a new host (the user asked it to stop), and a
+	//     Dapr-TERMINAL workflow needs finalizing, not re-hosting. A host that
+	//     exits again after every recreate cannot flap forever: past
+	//     maxRescuesPerSession the decision degrades to an audit-only warn.
+	if (
+		c.provisioned &&
+		!c.stopRequested &&
+		!e.daprTerminal &&
+		e.pod === "present" &&
+		e.podExited &&
+		e.sandboxCr === "present" &&
+		c.ageSeconds >= input.minAgeSeconds
+	) {
+		return c.rescueAttempts >= input.maxRescuesPerSession
+			? { action: "warn", reason: "rescue_cap_exhausted" }
+			: { action: "rescue_stranded_host", reason: "pod_exited_session_live" };
+	}
+
 	if (!c.isCliFamily) return { action: "skip", reason: "non_cli_family" };
 	if (!c.provisioned) {
 		// Never provisioned: nothing to converge. Surface a warn only if it has been
@@ -191,7 +239,16 @@ export type ReconcileSessionsDeps = {
 	): Promise<ReconcileEvidenceState>;
 	probePod(
 		candidate: LivenessReconcileCandidateRecord,
-	): Promise<ReconcileEvidenceState>;
+	): Promise<{ state: ReconcileEvidenceState; exited: boolean }>;
+	/** Count prior stranded-host rescues (session.host_rescued events). */
+	countRescueAttempts(sessionId: string): Promise<number>;
+	/** Delete the session's EXITED pods so the Sandbox controller recreates the
+	 * host and the durable workflow resumes via replay. `attempt` is the
+	 * 0-based prior-rescue count (used for an idempotent per-attempt event). */
+	rescueStrandedHost(
+		candidate: LivenessReconcileCandidateRecord,
+		attempt: number,
+	): Promise<void>;
 	now(): number;
 	/** Append a `session.reconciler_action` audit event to the session's stream. */
 	appendAudit(sessionId: string, data: ReconcileAuditData): Promise<void>;
@@ -214,6 +271,8 @@ export type ReconcileOptions = {
 	silentWarnSeconds: number;
 	maxActionsPerRun: number;
 	autoResume: boolean;
+	/** Stranded-host rescue attempts allowed per session (0 disables rescue). */
+	maxRescuesPerSession: number;
 };
 
 export type ReconcileDecisionRecord = {
@@ -241,6 +300,7 @@ const UNKNOWN_EVIDENCE: ReconcileEvidence = {
 	daprTerminal: false,
 	sandboxCr: "unknown",
 	pod: "unknown",
+	podExited: false,
 };
 
 function daprStatusLabel(e: ReconcileEvidence): string {
@@ -293,10 +353,13 @@ export async function reconcileSessions(
 				silentSeconds: cand.lastEventAt
 					? Math.max(0, Math.floor((now - cand.lastEventAt.getTime()) / 1000))
 					: null,
+				rescueAttempts: 0,
 			};
 			let evidence = UNKNOWN_EVIDENCE;
+			// Non-CLI sessions with a per-session host (dapr-agent-py sandboxes)
+			// are probed too — they are eligible for the stranded-host rescue
+			// (mechanism-scoped), even though converge/finalize stay CLI-scoped.
 			const needsEvidence =
-				isCliFamily &&
 				!paused &&
 				!stopRequested &&
 				!cand.coordinatorOwned &&
@@ -307,9 +370,25 @@ export async function reconcileSessions(
 						.probeDaprRuntime(cand)
 						.catch(() => ({ runtime: "unknown" as const, terminal: false })),
 					deps.probeSandboxCr(cand).catch(() => "unknown" as const),
-					deps.probePod(cand).catch(() => "unknown" as const),
+					deps
+						.probePod(cand)
+						.catch(() => ({ state: "unknown" as const, exited: false })),
 				]);
-				evidence = { daprRuntime: dapr.runtime, daprTerminal: dapr.terminal, sandboxCr, pod };
+				evidence = {
+					daprRuntime: dapr.runtime,
+					daprTerminal: dapr.terminal,
+					sandboxCr,
+					pod: pod.state,
+					podExited: pod.exited,
+				};
+				// The rescue-cap count is only consulted when the rescue evidence
+				// matches; an unreadable count fails SAFE (Infinity ⇒ cap exhausted ⇒
+				// audit-only warn, never a rescue loop).
+				if (pod.state === "present" && pod.exited && sandboxCr === "present") {
+					view.rescueAttempts = await deps
+						.countRescueAttempts(cand.id)
+						.catch(() => Number.POSITIVE_INFINITY);
+				}
 			}
 			prepared[index] = { cand, view, evidence };
 		},
@@ -327,6 +406,7 @@ export async function reconcileSessions(
 			evidence,
 			minAgeSeconds: opts.minAgeSeconds,
 			silentWarnSeconds: opts.silentWarnSeconds,
+			maxRescuesPerSession: opts.maxRescuesPerSession,
 		});
 
 		const record: ReconcileDecisionRecord = {
@@ -352,7 +432,7 @@ export async function reconcileSessions(
 				// Action cap reached: leave the rest for the next tick.
 				record.reason = `${decision.reason}:action_cap_reached`;
 			} else {
-				await executeAction(deps, cand, decision, evidence, opts, record);
+				await executeAction(deps, cand, view, decision, evidence, opts, record);
 				record.executed = true;
 				if (consumesBudget) actionsTaken += 1;
 			}
@@ -372,6 +452,7 @@ export async function reconcileSessions(
 async function executeAction(
 	deps: ReconcileSessionsDeps,
 	cand: LivenessReconcileCandidateRecord,
+	view: ReconcileCandidateView,
 	decision: ReconcileAction,
 	evidence: ReconcileEvidence,
 	opts: ReconcileOptions,
@@ -424,6 +505,18 @@ async function executeAction(
 					.catch(() => ({ resumed: false, reason: "auto_resume_error" }));
 				record.autoResumed = resumed.resumed;
 			}
+			break;
+		case "rescue_stranded_host":
+			// The cap was already enforced by the pure decider; view.rescueAttempts
+			// is the 0-based attempt index for the idempotent per-attempt event.
+			await deps
+				.rescueStrandedHost(cand, Math.max(0, Math.trunc(view.rescueAttempts)))
+				.catch((err) => {
+					console.warn(
+						`[session-reconciler] rescueStrandedHost failed for ${cand.id}:`,
+						err instanceof Error ? err.message : err,
+					);
+				});
 			break;
 	}
 }

@@ -34,9 +34,11 @@ import {
 } from "$lib/server/lifecycle/session-reconciler";
 import { maybeAutoResumeSession } from "$lib/server/lifecycle/auto-resume";
 import {
+	deleteSessionRuntimeExitedPods,
 	getKubernetesSandbox,
-	getSessionRuntimePodPresence,
+	getSessionRuntimePodStatus,
 } from "$lib/server/kube/client";
+import { countEventsByType } from "$lib/server/application/adapters/session-events";
 import { daprFetch, getDaprSidecarUrl } from "$lib/server/dapr-client";
 import { cleanupSessionSandbox } from "$lib/server/sandboxes/provision";
 import { isInteractiveCliRuntime } from "$lib/server/sessions/resume";
@@ -54,6 +56,8 @@ export type ReconcilerConfig = {
 	maxActionsPerRun: number;
 	scanLimit: number;
 	tick: ReconcilerTickMode;
+	/** Stranded-host rescue attempts allowed per session (0 disables rescue). */
+	maxRescuesPerSession: number;
 };
 
 const TICK_MODES: readonly ReconcilerTickMode[] = ["dapr-job", "cronjob", "off"];
@@ -82,6 +86,7 @@ export function readReconcilerConfig(): ReconcilerConfig {
 		// Scan more than we'll act on so a run drains the backlog over ticks.
 		scanLimit: Math.max(50, Math.min(200, maxActionsPerRun * 5)),
 		tick: readAdapter(env, "SESSION_RECONCILER_TICK", "dapr-job", TICK_MODES),
+		maxRescuesPerSession: readInt("SESSION_RECONCILER_MAX_RESCUES", 3, 0, 20),
 	};
 }
 
@@ -174,11 +179,40 @@ export function createSessionReconcilerDeps(): ReconcileSessionsDeps {
 		},
 		probePod: async (cand) => {
 			const appId = (cand.runtimeAppId ?? "").trim();
-			if (!appId) return "unknown";
-			// Tri-state existence probe: counts a Pending pod as present and maps a
-			// kube API failure to `unknown` (NOT `absent`) — a transient error is not
+			if (!appId) return { state: "unknown", exited: false };
+			// Phase-aware tri-state probe: counts a Pending pod as present, flags an
+			// EXITED pod (terminal phase — the stranded-host signal), and maps a kube
+			// API failure to `unknown` (NOT `absent`) — a transient error is not
 			// proof the pod is gone.
-			return getSessionRuntimePodPresence({ runtimeAppId: appId });
+			const status = await getSessionRuntimePodStatus({ runtimeAppId: appId });
+			return { state: status.presence, exited: status.exited };
+		},
+		countRescueAttempts: async (sessionId) =>
+			countEventsByType(sessionId, "session.host_rescued"),
+		rescueStrandedHost: async (cand, attempt) => {
+			const appId = (cand.runtimeAppId ?? "").trim();
+			if (!appId) return;
+			// Delete only EXITED pods; the Sandbox controller (CR still present,
+			// spec.replicas=1) recreates the host and the durabletask worker resumes
+			// the session's durable workflow via replay. Verified live 2026-07-07.
+			const deleted = await deleteSessionRuntimeExitedPods({ runtimeAppId: appId });
+			// Per-attempt idempotent marker — this is what countRescueAttempts counts,
+			// so retried ticks with an unchanged attempt index never double-count.
+			await appendSessionEvent(cand.id, {
+				type: "session.host_rescued",
+				data: {
+					source: "session_liveness_reconciler",
+					attempt,
+					deletedPods: deleted,
+					sandboxName: cand.runtimeSandboxName,
+					reason: "pod_exited_session_live",
+				},
+				processedAt: null,
+				sourceEventId: `host-rescue:${cand.id}:${attempt}`,
+			});
+			console.info(
+				`[session-reconciler] rescued stranded host for ${cand.id}: deleted exited pod(s) ${deleted.join(", ") || "(none found)"} (attempt ${attempt + 1})`,
+			);
 		},
 		now: () => Date.now(),
 		appendAudit: async (sessionId, data) => {
@@ -330,6 +364,7 @@ export async function runSessionReconcile(
 		silentWarnSeconds: cfg.silentWarnSeconds,
 		maxActionsPerRun: cfg.maxActionsPerRun,
 		autoResume: cfg.autoResume,
+		maxRescuesPerSession: cfg.maxRescuesPerSession,
 	};
 	return reconcileSessions(createSessionReconcilerDeps(), opts);
 }

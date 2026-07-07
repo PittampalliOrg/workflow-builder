@@ -770,6 +770,104 @@ export async function getSessionRuntimePodPresence(params: {
 	return (body.items?.length ?? 0) > 0 ? "present" : "absent";
 }
 
+/** Terminal pod phases — the pod object exists but hosts nothing anymore.
+ * Per-session sandbox pods are `restartPolicy: Never`, so a pod in one of
+ * these phases will never run again on its own. */
+const POD_TERMINAL_PHASES = new Set(["Succeeded", "Failed"]);
+
+type SessionRuntimePodItem = {
+	metadata?: { name?: string; creationTimestamp?: string };
+	status?: { phase?: string };
+};
+
+function sessionRuntimePodSelector(runtimeAppId: string): string {
+	const appLabel = safeKubernetesLabelValue(runtimeAppId);
+	return encodeURIComponent(`app=agent-workflow-host,agent-app-id=${appLabel}`);
+}
+
+/**
+ * Phase-aware variant of {@link getSessionRuntimePodPresence} for the liveness
+ * reconciler's stranded-host detection: a per-session pod that EXITED (phase
+ * Succeeded/Failed) still exists — `presence: "present"` — but can never host
+ * the session again (`restartPolicy: Never`, and the Sandbox controller does
+ * not recreate a terminal pod on its own). `exited` is decided by the NEWEST
+ * pod (a recreated sandbox supersedes an old one), mirroring
+ * sessions/provisioning.ts. Same fail-safe mapping: any API failure ⇒ unknown.
+ */
+export async function getSessionRuntimePodStatus(params: {
+	runtimeAppId: string;
+	namespace?: string;
+}): Promise<{ presence: "present" | "absent" | "unknown"; exited: boolean }> {
+	const namespace = params.namespace ?? DEFAULT_AGENT_RUNTIME_NAMESPACE;
+	let res: Response;
+	try {
+		res = await kubeFetch(
+			`/api/v1/namespaces/${namespace}/pods?labelSelector=${sessionRuntimePodSelector(params.runtimeAppId)}`,
+		);
+	} catch {
+		return { presence: "unknown", exited: false };
+	}
+	if (!res.ok) return { presence: "unknown", exited: false };
+	let body: { items?: SessionRuntimePodItem[] };
+	try {
+		body = (await res.json()) as { items?: SessionRuntimePodItem[] };
+	} catch {
+		return { presence: "unknown", exited: false };
+	}
+	const pods = body.items ?? [];
+	if (pods.length === 0) return { presence: "absent", exited: false };
+	const newest = [...pods].sort((a, b) =>
+		(b.metadata?.creationTimestamp ?? "").localeCompare(
+			a.metadata?.creationTimestamp ?? "",
+		),
+	)[0];
+	return {
+		presence: "present",
+		exited: POD_TERMINAL_PHASES.has(newest.status?.phase ?? ""),
+	};
+}
+
+/**
+ * Delete a session runtime's EXITED pods (phase Succeeded/Failed only — a
+ * Running/Pending pod is never touched). With the Sandbox CR still present
+ * (spec.replicas defaults to 1) the controller recreates the pod, the
+ * durabletask worker reconnects, and the session's durable workflow resumes
+ * via replay — the stranded-host rescue verified live 2026-07-07. Returns the
+ * deleted pod names; a 404 on an individual pod (already gone) is tolerated.
+ */
+export async function deleteSessionRuntimeExitedPods(params: {
+	runtimeAppId: string;
+	namespace?: string;
+}): Promise<string[]> {
+	const namespace = params.namespace ?? DEFAULT_AGENT_RUNTIME_NAMESPACE;
+	const res = await kubeFetch(
+		`/api/v1/namespaces/${namespace}/pods?labelSelector=${sessionRuntimePodSelector(params.runtimeAppId)}`,
+	);
+	if (!res.ok) {
+		throw new Error(
+			`list session runtime pods for ${params.runtimeAppId} failed: ${res.status}`,
+		);
+	}
+	const body = (await res.json()) as { items?: SessionRuntimePodItem[] };
+	const deleted: string[] = [];
+	for (const pod of body.items ?? []) {
+		const name = pod.metadata?.name;
+		if (!name || !POD_TERMINAL_PHASES.has(pod.status?.phase ?? "")) continue;
+		const del = await kubeFetch(
+			`/api/v1/namespaces/${namespace}/pods/${encodeURIComponent(name)}`,
+			{ method: "DELETE" },
+		);
+		if (del.status === 404) continue;
+		if (!del.ok) {
+			throw new Error(
+				`delete exited pod ${name} failed: ${del.status} ${await del.text()}`,
+			);
+		}
+		deleted.push(name);
+	}
+	return deleted;
+}
+
 export async function getAgentRuntimePodIP(
 	agentSlug: string,
 	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,

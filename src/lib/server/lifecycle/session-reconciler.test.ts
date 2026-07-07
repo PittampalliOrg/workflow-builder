@@ -22,6 +22,7 @@ function view(overrides: Partial<ReconcileCandidateView> = {}): ReconcileCandida
 		provisioned: true,
 		ageSeconds: 600,
 		silentSeconds: 120,
+		rescueAttempts: 0,
 		...overrides,
 	};
 }
@@ -32,6 +33,7 @@ function evidence(overrides: Partial<ReconcileEvidence> = {}): ReconcileEvidence
 		daprTerminal: false,
 		sandboxCr: "present",
 		pod: "present",
+		podExited: false,
 		...overrides,
 	};
 }
@@ -41,12 +43,14 @@ function decide(
 	e: ReconcileEvidence,
 	minAgeSeconds = 300,
 	silentWarnSeconds = 900,
+	maxRescuesPerSession = 3,
 ) {
 	return decideSessionReconciliation({
 		candidate: c,
 		evidence: e,
 		minAgeSeconds,
 		silentWarnSeconds,
+		maxRescuesPerSession,
 	});
 }
 
@@ -121,6 +125,86 @@ describe("decideSessionReconciliation", () => {
 		expect(decide(view(), evidence()).reason).toBe("healthy_or_inconclusive");
 	});
 
+	it("rescues a stranded host: pod EXITED, CR present, session live", () => {
+		const stranded = evidence({
+			daprRuntime: "absent", // exited host is unaddressable via placement
+			pod: "present",
+			podExited: true,
+			sandboxCr: "present",
+		});
+		expect(decide(view({ ageSeconds: 600 }), stranded)).toEqual({
+			action: "rescue_stranded_host",
+			reason: "pod_exited_session_live",
+		});
+		// Dapr evidence UNKNOWN must not block the rescue (the pod's own terminal
+		// phase is the positive signal; deleting an exited pod is non-destructive).
+		expect(decide(view({ ageSeconds: 600 }), evidence({ ...stranded, daprRuntime: "unknown" })).action)
+			.toBe("rescue_stranded_host");
+		// Too young → skip (give a just-finished pod its normal teardown window).
+		expect(decide(view({ ageSeconds: 100 }), stranded).action).toBe("skip");
+	});
+
+	it("never rescues when the pod is running, the CR is gone, or Dapr says terminal", () => {
+		// Running pod (podExited=false) → not a strand.
+		expect(decide(view(), evidence({ pod: "present", podExited: false })).action).toBe("skip");
+		// CR gone → no controller to recreate the host; not a rescue case.
+		expect(
+			decide(view({ ageSeconds: 600 }), evidence({ pod: "present", podExited: true, sandboxCr: "absent" })).action,
+		).toBe("skip");
+		// A FINISHED workflow needs finalizing, not a new host.
+		expect(
+			decide(
+				view({ ageSeconds: 600 }),
+				evidence({ pod: "present", podExited: true, daprTerminal: true }),
+			).action,
+		).toBe("finalize_divergence");
+		// Stop-intent wins over rescue (the user asked for it to stop).
+		expect(
+			decide(
+				view({ ageSeconds: 600, stopRequested: true }),
+				evidence({ pod: "present", podExited: true }),
+			).action,
+		).toBe("confirm_stop");
+	});
+
+	it("rescues NON-CLI sessions too (mechanism-scoped: dapr-agent-py sandbox hosts)", () => {
+		const stranded = evidence({
+			daprRuntime: "unknown",
+			pod: "present",
+			podExited: true,
+			sandboxCr: "present",
+		});
+		// A dynamic-script dapr-agent-py session is not CLI-family, but its
+		// per-session sandbox host is rescueable all the same.
+		expect(decide(view({ isCliFamily: false, ageSeconds: 600 }), stranded)).toEqual({
+			action: "rescue_stranded_host",
+			reason: "pod_exited_session_live",
+		});
+		// Without the rescue evidence, non-CLI sessions keep the v1 scope skip —
+		// converge/finalize remain CLI-only.
+		expect(decide(view({ isCliFamily: false }), evidence()).reason).toBe("non_cli_family");
+		expect(
+			decide(
+				view({ isCliFamily: false, ageSeconds: 600 }),
+				evidence({ daprRuntime: "absent", sandboxCr: "absent", pod: "absent" }),
+			).reason,
+		).toBe("non_cli_family");
+	});
+
+	it("degrades to an audit-only warn once the rescue cap is exhausted", () => {
+		const stranded = evidence({ daprRuntime: "absent", pod: "present", podExited: true });
+		expect(decide(view({ ageSeconds: 600, rescueAttempts: 3 }), stranded)).toEqual({
+			action: "warn",
+			reason: "rescue_cap_exhausted",
+		});
+		// An unreadable rescue count arrives as +Infinity → fail safe (warn).
+		expect(
+			decide(view({ ageSeconds: 600, rescueAttempts: Number.POSITIVE_INFINITY }), stranded).action,
+		).toBe("warn");
+		// maxRescuesPerSession=0 disables the rescue entirely.
+		expect(decide(view({ ageSeconds: 600 }), stranded, 300, 900, 0).action).toBe("warn");
+	});
+
 	it("handles a status='failed' row identically to any other (no special-casing)", () => {
 		// A LIVE turn-failure `failed` row whose pod is still up is left alone.
 		expect(
@@ -180,7 +264,9 @@ function fakeDeps(
 		// Default probes report a crashed run (all gone).
 		probeDaprRuntime: vi.fn(async () => ({ runtime: "absent" as const, terminal: false })),
 		probeSandboxCr: vi.fn(async () => "absent" as const),
-		probePod: vi.fn(async () => "absent" as const),
+		probePod: vi.fn(async () => ({ state: "absent" as const, exited: false })),
+		countRescueAttempts: vi.fn(async () => 0),
+		rescueStrandedHost: vi.fn(async () => undefined),
 		now: () => Date.now(),
 		appendAudit: vi.fn(async () => undefined),
 		confirmStop: vi.fn(async () => undefined),
@@ -198,6 +284,7 @@ const OPTS: ReconcileOptions = {
 	silentWarnSeconds: 900,
 	maxActionsPerRun: 10,
 	autoResume: false,
+	maxRescuesPerSession: 3,
 };
 
 describe("reconcileSessions", () => {
@@ -268,7 +355,7 @@ describe("reconcileSessions", () => {
 		const deps = fakeDeps([candidateRecord()], {
 			probeDaprRuntime: vi.fn(async () => ({ runtime: "present" as const, terminal: true })),
 			probeSandboxCr: vi.fn(async () => "present" as const),
-			probePod: vi.fn(async () => "present" as const),
+			probePod: vi.fn(async () => ({ state: "present" as const, exited: false })),
 		});
 		const result = await reconcileSessions(deps, OPTS);
 		expect(result.decisions[0].action).toBe("finalize_divergence");
@@ -290,7 +377,7 @@ describe("reconcileSessions", () => {
 		const deps = fakeDeps([candidateRecord()], {
 			probeDaprRuntime: vi.fn(async () => ({ runtime: "present" as const, terminal: false })),
 			probeSandboxCr: vi.fn(async () => "present" as const),
-			probePod: vi.fn(async () => "present" as const),
+			probePod: vi.fn(async () => ({ state: "present" as const, exited: false })),
 		});
 		const result = await reconcileSessions(deps, OPTS);
 		expect(result.decisions[0].action).toBe("skip");
@@ -321,7 +408,11 @@ describe("reconcileSessions", () => {
 					: { runtime: "absent" as const, terminal: false },
 			),
 			probeSandboxCr: vi.fn(async (c) => (c.id === "warn-1" ? "present" : "absent")),
-			probePod: vi.fn(async (c) => (c.id === "warn-1" ? "present" : "absent")),
+			probePod: vi.fn(async (c) =>
+				c.id === "warn-1"
+					? { state: "present" as const, exited: false }
+					: { state: "absent" as const, exited: false },
+			),
 		});
 
 		const result = await reconcileSessions(deps, { ...OPTS, maxActionsPerRun: 1 });
@@ -337,5 +428,77 @@ describe("reconcileSessions", () => {
 		expect(deps.convergeCrashed).toHaveBeenCalledWith("crash-1", expect.any(String));
 		// Only the converge consumed the budget.
 		expect(result.actionsTaken).toBe(1);
+	});
+
+	it("rescues a stranded host through deps with the attempt index", async () => {
+		const deps = fakeDeps([candidateRecord()], {
+			probeDaprRuntime: vi.fn(async () => ({ runtime: "absent" as const, terminal: false })),
+			probeSandboxCr: vi.fn(async () => "present" as const),
+			probePod: vi.fn(async () => ({ state: "present" as const, exited: true })),
+			countRescueAttempts: vi.fn(async () => 1),
+		});
+		const result = await reconcileSessions(deps, OPTS);
+		expect(result.decisions[0]).toMatchObject({
+			action: "rescue_stranded_host",
+			executed: true,
+		});
+		expect(deps.rescueStrandedHost).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "s1" }),
+			1,
+		);
+		// A rescue never converges/stops anything.
+		expect(deps.convergeCrashed).not.toHaveBeenCalled();
+		expect(deps.confirmStop).not.toHaveBeenCalled();
+		// Rescue consumes the action budget (it is a real mutation).
+		expect(result.actionsTaken).toBe(1);
+	});
+
+	it("degrades to a warn (no rescue call) once the cap is exhausted", async () => {
+		const deps = fakeDeps([candidateRecord()], {
+			probeDaprRuntime: vi.fn(async () => ({ runtime: "absent" as const, terminal: false })),
+			probeSandboxCr: vi.fn(async () => "present" as const),
+			probePod: vi.fn(async () => ({ state: "present" as const, exited: true })),
+			countRescueAttempts: vi.fn(async () => 3),
+		});
+		const result = await reconcileSessions(deps, OPTS);
+		expect(result.decisions[0]).toMatchObject({
+			action: "warn",
+			reason: "rescue_cap_exhausted",
+		});
+		expect(deps.rescueStrandedHost).not.toHaveBeenCalled();
+		// warns never consume the action budget.
+		expect(result.actionsTaken).toBe(0);
+	});
+
+	it("fails safe when the rescue count is unreadable (warn, no rescue)", async () => {
+		const deps = fakeDeps([candidateRecord()], {
+			probeDaprRuntime: vi.fn(async () => ({ runtime: "absent" as const, terminal: false })),
+			probeSandboxCr: vi.fn(async () => "present" as const),
+			probePod: vi.fn(async () => ({ state: "present" as const, exited: true })),
+			countRescueAttempts: vi.fn(async () => {
+				throw new Error("db unavailable");
+			}),
+		});
+		const result = await reconcileSessions(deps, OPTS);
+		expect(result.decisions[0]).toMatchObject({
+			action: "warn",
+			reason: "rescue_cap_exhausted",
+		});
+		expect(deps.rescueStrandedHost).not.toHaveBeenCalled();
+	});
+
+	it("dry-run records a rescue decision without touching the pod", async () => {
+		const deps = fakeDeps([candidateRecord()], {
+			probeDaprRuntime: vi.fn(async () => ({ runtime: "absent" as const, terminal: false })),
+			probeSandboxCr: vi.fn(async () => "present" as const),
+			probePod: vi.fn(async () => ({ state: "present" as const, exited: true })),
+		});
+		const result = await reconcileSessions(deps, { ...OPTS, dryRun: true });
+		expect(result.decisions[0]).toMatchObject({
+			action: "rescue_stranded_host",
+			executed: false,
+		});
+		expect(deps.rescueStrandedHost).not.toHaveBeenCalled();
+		expect(deps.appendAudit).not.toHaveBeenCalled();
 	});
 });

@@ -245,6 +245,23 @@ export async function listEvents(
 }
 
 /**
+ * Count a session's events of one exact type. Used by the liveness
+ * reconciler's stranded-host rescue cap (counts `session.host_rescued`).
+ */
+export async function countEventsByType(
+	sessionId: string,
+	type: string,
+	database: Database = defaultDb,
+): Promise<number> {
+	database = requireDb(database);
+	const [row] = await database
+		.select({ count: sql<number>`count(*)::int` })
+		.from(sessionEvents)
+		.where(and(eq(sessionEvents.sessionId, sessionId), eq(sessionEvents.type, type)));
+	return Number(row?.count ?? 0);
+}
+
+/**
  * Fetch a single event by id. Returns the full (un-stripped) envelope. Used
  * by the debug panel's "Load full payload" affordance when the SSE stream
  * sent a preview-only shape.
