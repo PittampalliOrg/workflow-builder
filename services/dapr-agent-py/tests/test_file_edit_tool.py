@@ -31,9 +31,20 @@ def _load_tool(monkeypatch):
     fake_openshell.SandboxClient = object
     fake_openshell.SandboxSession = object
     monkeypatch.setitem(sys.modules, "openshell", fake_openshell)
-    _install_src_package()
-    sys.modules.pop("src.tools.file_edit.tool", None)
-    return importlib.import_module("src.tools.file_edit.tool")
+    # Snapshot + restore src* modules: the fake packages installed below must
+    # not leak into other test files (module-poisoning made suite results
+    # depend on collection order). The returned module object stays usable
+    # after its sys.modules entry is restored.
+    saved = {k: v for k, v in sys.modules.items() if k == "src" or k.startswith("src.")}
+    try:
+        _install_src_package()
+        sys.modules.pop("src.tools.file_edit.tool", None)
+        return importlib.import_module("src.tools.file_edit.tool")
+    finally:
+        for key in [k for k in sys.modules if k == "src" or k.startswith("src.")]:
+            if key not in saved:
+                del sys.modules[key]
+        sys.modules.update(saved)
 
 
 class FakeRuntime:

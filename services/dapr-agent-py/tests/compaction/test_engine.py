@@ -159,9 +159,16 @@ def test_user_boundary_survives_system_message_stripping():
     )
 
     assert result.compacted is True
-    stripped = [m for m in agent._infra.entry.messages if m.get("role") != "system"]
-    assert stripped[0]["role"] == "user"
-    assert stripped[0]["content"].startswith("__COMPACT_BOUNDARY__ ")
+
+    # entry.messages mixes plain dicts with typed AgentWorkflowMessage objects
+    # (the boundary marker) since the compaction hardening — read both shapes,
+    # same idiom as test_compact_summary above.
+    def _field(m, key):
+        return m.get(key) if isinstance(m, dict) else getattr(m, key, None)
+
+    stripped = [m for m in agent._infra.entry.messages if _field(m, "role") != "system"]
+    assert _field(stripped[0], "role") == "user"
+    assert str(_field(stripped[0], "content")).startswith("__COMPACT_BOUNDARY__ ")
 
 
 def test_idempotent_replay_skips_second_llm_call():

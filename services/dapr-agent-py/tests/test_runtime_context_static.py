@@ -181,11 +181,12 @@ def test_swebench_one_shot_turn_skips_replay_unsafe_agent_wrapper_mutations() ->
 
 def test_agent_runtime_has_no_leftover_hot_path_debug_probes() -> None:
     source = MAIN_SOURCE.read_text()
-    telemetry_kwargs_source = source[
-        source.index("def _telemetry_context_kwargs") : source.index(
-            "def _runtime_reachable_mcp_url"
-        )
-    ]
+    # Slice exactly the _telemetry_context_kwargs function: from its def to the
+    # next top-level def. (The old upper bound, _runtime_reachable_mcp_url, was
+    # removed in PR #136 and left this test permanently red.)
+    start = source.index("def _telemetry_context_kwargs")
+    end = source.index("\ndef ", start + 1)
+    telemetry_kwargs_source = source[start:end]
 
     assert "[call-llm-probe]" not in source
     assert "[mcp] get_llm_tools called" not in source
