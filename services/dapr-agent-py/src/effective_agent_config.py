@@ -345,7 +345,9 @@ def resolve_llm_metadata(
     # Per-agent reasoning effort (Claude Code vocabulary). Rides the llm
     # snapshot so call_llm can stamp it onto the chat client alongside
     # _llm_component; each adapter maps it to its provider's accepted values.
-    effort = _string(config.get("reasoningEffort")).lower()
+    # NOTE: _string returns None for a missing key — guard before .lower()
+    # (an unguarded .lower() crashed EVERY session without an effort opt).
+    effort = (_string(config.get("reasoningEffort")) or "").lower()
     if effort in {"low", "medium", "high", "xhigh", "max"}:
         out["reasoningEffort"] = effort
     return out

@@ -358,3 +358,27 @@ def test_runtime_context_cache_retains_snapshot_audit_fields() -> None:
     assert cached["provider"] == "openai"
     assert cached["providerModel"] == "gpt-5.5"
     assert cached["effectiveAgentConfig"] == snapshot
+
+
+def test_resolve_llm_metadata_without_reasoning_effort_does_not_crash():
+    """LIVE-CAUGHT regression: _string() returns None for a missing key, and an
+    unguarded .lower() crashed EVERY session whose agentConfig had no
+    reasoningEffort (only effort-carrying dynamic-script calls survived)."""
+    llm = resolve_llm_metadata(agent_config={"modelSpec": "zai/glm-5.2"})
+    assert "reasoningEffort" not in llm
+    assert llm["modelSpec"] == "zai/glm-5.2"
+    # Empty config too (the common direct-session path).
+    llm = resolve_llm_metadata(agent_config={})
+    assert "reasoningEffort" not in llm
+
+
+def test_resolve_llm_metadata_carries_valid_reasoning_effort():
+    llm = resolve_llm_metadata(
+        agent_config={"modelSpec": "zai/glm-5.2", "reasoningEffort": "LOW"}
+    )
+    assert llm["reasoningEffort"] == "low"
+    # Invalid values are dropped, not propagated.
+    llm = resolve_llm_metadata(
+        agent_config={"modelSpec": "zai/glm-5.2", "reasoningEffort": "bogus"}
+    )
+    assert "reasoningEffort" not in llm
