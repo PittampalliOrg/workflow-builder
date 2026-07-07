@@ -18,6 +18,7 @@
 	let maxRate = $derived((data?.maxRate as number) || 1);
 	let scope = $derived((data?.scope as string) || 'window');
 	let onCritical = $derived(Boolean(data?.onCritical));
+	let liveFlow = $derived(Boolean(data?.liveFlow));
 
 	let [edgePath, labelX, labelY] = $derived(
 		getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition })
@@ -58,8 +59,8 @@
 	{id}
 	path={edgePath}
 	markerEnd="url(#arrowclosed)"
-	style="stroke: {stroke}; stroke-width: {strokeWidth}; {onCritical ? 'stroke-dasharray: 7 5;' : ''}"
-	class="wb-sg-edge {onCritical ? 'wb-sg-edge--critical' : ''}"
+	style="stroke: {stroke}; stroke-width: {strokeWidth}; {onCritical || liveFlow ? 'stroke-dasharray: 7 5;' : ''}"
+	class="wb-sg-edge {onCritical ? 'wb-sg-edge--critical' : ''} {liveFlow ? 'wb-sg-edge--live' : ''}"
 />
 
 <EdgeLabel x={labelX} y={labelY} class="!bg-transparent !p-0">
@@ -120,5 +121,15 @@
 	}
 	:global(.wb-sg-edge--critical) {
 		filter: drop-shadow(0 0 4px color-mix(in oklch, var(--primary) 50%, transparent));
+	}
+	/* Live flow: marching ants toward the running call. */
+	:global(.wb-sg-edge--live) {
+		animation: wb-sg-flow 0.9s linear infinite;
+		filter: drop-shadow(0 0 4px color-mix(in oklch, var(--primary) 45%, transparent));
+	}
+	@keyframes wb-sg-flow {
+		to {
+			stroke-dashoffset: -12;
+		}
 	}
 </style>

@@ -622,3 +622,82 @@ def test_hook_span_gated_on_beta_flag(telemetry_with_in_memory, monkeypatch):
     assert hook_span.attributes["hook_event"] == "PreToolUse"
     assert hook_span.attributes["num_hooks"] == 2
     assert hook_span.attributes["num_success"] == 2
+
+
+def test_interaction_adopts_inbound_trace_context_on_bare_threads(
+    telemetry_with_in_memory, monkeypatch
+):
+    """`claude_code.interaction` must join the orchestrator's trace even when
+    created on a thread with an EMPTY otel context (Dapr activity gRPC workers)
+    — the shattered-trace bug: interaction roots forked fresh traces while
+    their children joined the primary trace via ambient context."""
+    import threading
+
+    from opentelemetry.propagate import extract
+
+    from src.telemetry import providers as providers_module
+    from src.telemetry.session_tracing import (
+        end_interaction_span,
+        start_interaction_span,
+    )
+
+    exporter, _ = telemetry_with_in_memory
+
+    inbound_trace_id = "9fc592127bf865aceab30f09a1b39ee0"
+    carrier = {"traceparent": f"00-{inbound_trace_id}-00f067aa0ba902b7-01"}
+    monkeypatch.setattr(
+        providers_module, "_inbound_trace_context", extract(carrier)
+    )
+
+    # A fresh thread starts with an empty contextvars Context — exactly the
+    # environment where the old code rooted a new trace.
+    def run_turn():
+        span = start_interaction_span("hello")
+        assert span is not None
+        end_interaction_span()
+
+    t = threading.Thread(target=run_turn)
+    t.start()
+    t.join()
+
+    spans = exporter.get_finished_spans()
+    interaction = next(
+        s for s in spans if s.name == "claude_code.interaction"
+    )
+    assert f"{interaction.context.trace_id:032x}" == inbound_trace_id
+    assert interaction.parent is not None
+    assert f"{interaction.parent.span_id:016x}" == "00f067aa0ba902b7"
+
+
+def test_interaction_prefers_ambient_span_over_inbound(
+    telemetry_with_in_memory, monkeypatch
+):
+    """When a valid span IS current (instrumented request path), the ambient
+    context stays authoritative — inbound env context is only a fallback."""
+    from opentelemetry import trace as otel_trace
+    from opentelemetry.propagate import extract
+
+    from src.telemetry import providers as providers_module
+    from src.telemetry.providers import get_tracer
+    from src.telemetry.session_tracing import (
+        end_interaction_span,
+        start_interaction_span,
+    )
+
+    exporter, _ = telemetry_with_in_memory
+    monkeypatch.setattr(
+        providers_module,
+        "_inbound_trace_context",
+        extract({"traceparent": "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-00f067aa0ba902b7-01"}),
+    )
+
+    tracer = get_tracer()
+    with tracer.start_as_current_span("ambient-parent") as parent:
+        span = start_interaction_span("hello")
+        assert span is not None
+        end_interaction_span()
+        ambient_trace_id = parent.get_span_context().trace_id
+
+    spans = exporter.get_finished_spans()
+    interaction = next(s for s in spans if s.name == "claude_code.interaction")
+    assert interaction.context.trace_id == ambient_trace_id

@@ -78,11 +78,35 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		return error(404, scope === 'execution' ? 'Execution not found' : 'Workflow not found');
 	}
 
+	// Dynamic-script executions carry no SW step logs — their step graph is the
+	// call journal. Loading it is cheap and returns [] for SW 1.0 runs, so we
+	// probe unconditionally for step × execution.
+	const scriptCalls =
+		mode === 'step' && scope === 'execution' && executionId
+			? await application.scriptCalls
+					.listInternal(executionId)
+					.then((rows) =>
+						rows.map((r) => ({
+							callId: r.callId,
+							seq: r.seq,
+							kind: r.kind,
+							label: r.label,
+							phase: r.phase,
+							status: r.status ?? 'null',
+							sessionId: r.sessionId,
+							retries: r.retries ?? 0,
+							errorCode: r.errorCode
+						}))
+					)
+					.catch(() => [])
+			: [];
+
 	const payload = await buildServiceGraph({
 		query,
 		execution: context.execution,
 		workflow: context.workflow,
-		stepLogs: stepLogs ?? undefined
+		stepLogs: stepLogs ?? undefined,
+		scriptCalls
 	});
 	return json(payload);
 };

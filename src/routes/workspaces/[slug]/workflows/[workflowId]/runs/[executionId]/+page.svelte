@@ -44,7 +44,8 @@
 		GitFork,
 		Play,
 		PencilLine,
-		Ellipsis
+		Ellipsis,
+		Waypoints
 	} from '@lucide/svelte';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import ForkDialog from '$lib/components/workflow/execution/fork-dialog.svelte';
@@ -2347,6 +2348,14 @@
 							<ExternalLink class="size-3.5" /> View full trace
 						</DropdownMenu.Item>
 					{/if}
+					<DropdownMenu.Item
+						onSelect={() =>
+							goto(
+								`/workspaces/${slug}/service-graph?mode=${isDynamicScript ? 'step' : 'service'}&scope=execution&executionId=${executionId}`
+							)}
+					>
+						<Waypoints class="size-3.5" /> Service graph for this run
+					</DropdownMenu.Item>
 					{#if instanceId}
 						<DropdownMenu.Separator />
 						<DropdownMenu.Label class="text-[10px] font-normal text-muted-foreground">
