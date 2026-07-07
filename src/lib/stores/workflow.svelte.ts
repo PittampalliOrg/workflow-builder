@@ -175,6 +175,7 @@ export function createWorkflowStore() {
   // Workflow metadata
   let workflowId = $state<string | null>(null);
   let workflowName = $state("Untitled Workflow");
+  let engineType = $state<string | null>(null);
   let isSaving = $state(false);
   let isLoading = $state(false);
   let publishedRuntime = $state<Record<string, unknown> | null>(null);
@@ -447,10 +448,16 @@ export function createWorkflowStore() {
     loadedNodes: WorkflowNode[],
     loadedEdges: WorkflowEdge[],
     loadedSpec?: Record<string, unknown> | null,
+    loadedEngineType?: string | null,
   ) {
     workflowId = id;
     workflowName = name;
     spec = loadedSpec || null;
+    engineType =
+      loadedEngineType ??
+      (spec && typeof (spec as Record<string, unknown>).engine === "string"
+        ? ((spec as Record<string, unknown>).engine as string)
+        : null);
     layoutConfig = createLayoutConfig({}, DEFAULT_LAYOUT_CONFIG);
     layoutConfigTouched = false;
     executionFollowMode = true;
@@ -627,6 +634,30 @@ export function createWorkflowStore() {
     },
     get workflowName() {
       return workflowName;
+    },
+    get engineType() {
+      return engineType;
+    },
+    /** Dynamic-script workflows: the spec IS a JS script (not an SW 1.0 node
+     * graph). Rendered via the read-only ScriptCanvas, not WorkflowCanvas. */
+    get isDynamicScript() {
+      return (
+        engineType === "dynamic-script" ||
+        (spec != null &&
+          (spec as Record<string, unknown>).engine === "dynamic-script")
+      );
+    },
+    /** The dynamic-script source (spec.script), or "" when absent. */
+    get scriptSource() {
+      const s = spec as { script?: unknown } | null;
+      return s && typeof s.script === "string" ? s.script : "";
+    },
+    /** The dynamic-script meta block (spec.meta), or null. */
+    get scriptMeta() {
+      const s = spec as { meta?: unknown } | null;
+      return s && s.meta && typeof s.meta === "object"
+        ? (s.meta as Record<string, unknown>)
+        : null;
     },
     set workflowName(v) {
       workflowName = v;
