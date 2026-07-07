@@ -74,6 +74,23 @@ def _structured_model() -> str:
     return os.environ.get("DYNAMIC_SCRIPT_STRUCTURED_MODEL", "openai/gpt-5.5").strip() or "openai/gpt-5.5"
 
 
+def _structured_tool_enabled() -> bool:
+    """Kill-switch for StructuredOutput TOOL mode on non-strict providers
+    (default ON). Off reverts schema'd GLM-routed calls to json_object +
+    prompt contract (the pre-tool behavior)."""
+    raw = os.environ.get("DYNAMIC_SCRIPT_STRUCTURED_TOOL", "true").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _schema_supports_structured_tool(schema: dict[str, Any]) -> bool:
+    """Tool arguments are always JSON objects — only object-shaped schemas
+    (type=object, or typeless with properties) can ride the tool."""
+    schema_type = schema.get("type")
+    if schema_type == "object":
+        return True
+    return schema_type is None and isinstance(schema.get("properties"), dict)
+
+
 def _phase_model(meta: dict[str, Any] | None, phase: Any) -> str:
     """Model declared on the task's meta.phases entry (spec: per-phase model).
 
@@ -151,12 +168,43 @@ def _build_agent_config(
         # json_schema; GLM json_object). Read back in call_llm and stamped on the
         # chat client alongside _llm_component / _reasoning_effort.
         agent_config["responseJsonSchema"] = schema
+        # Tier 2 tool mode: GLM has no strict json_schema mode, and json_object
+        # never applies to tool-carrying sessions — so a schema'd call resolved
+        # to GLM delivers its result via the synthetic StructuredOutput tool
+        # (Claude Code mechanism): the adapter injects a per-request tool
+        # definition whose parameters ARE the schema, the runtime validates the
+        # call args in-loop, and the agent loop finalizes the session with the
+        # canonical JSON. Object schemas only (tool args are JSON objects);
+        # OpenAI keeps strict json_schema (stronger).
+        if (
+            model.startswith("zai/")
+            and _structured_tool_enabled()
+            and _schema_supports_structured_tool(schema)
+        ):
+            agent_config["structuredOutputMode"] = "tool"
     return agent_config
 
 
-def _output_contract_block(schema: dict[str, Any]) -> str:
+def _output_contract_block(schema: dict[str, Any], structured_tool: bool = False) -> str:
     # Deterministic (sort_keys) so replay reproduces the same initialMessage.
     schema_json = json.dumps(schema, sort_keys=True, ensure_ascii=False)
+    if structured_tool:
+        # Tool mode: the runtime injects a StructuredOutput tool whose
+        # parameters are this schema; the model delivers the result by calling
+        # it (in-loop validation + retry). The journal still validates the
+        # final text (which the loop sets to the validated JSON) — Tier 3.
+        return (
+            "\n\n<output-contract>\n"
+            "A tool named StructuredOutput is available. When you have "
+            "completed the task, you MUST call the StructuredOutput tool "
+            "exactly once — its arguments are your final result and MUST be a "
+            "JSON object that validates against this JSON Schema:\n"
+            f"{schema_json}\n"
+            "Do NOT give your final answer as plain text; deliver it via the "
+            "StructuredOutput tool call. If the tool reports validation "
+            "errors, correct the arguments and call it again.\n"
+            "</output-contract>"
+        )
     return (
         "\n\n<output-contract>\n"
         "You MUST end your response with a single fenced ```json code block "
@@ -178,13 +226,13 @@ def _previous_attempt_block(retries: int, feedback: str) -> str:
     )
 
 
-def _build_initial_message(spec: dict[str, Any]) -> str:
+def _build_initial_message(spec: dict[str, Any], structured_tool: bool = False) -> str:
     prompt = str(spec.get("prompt") or "")
     opts = spec.get("opts") if isinstance(spec.get("opts"), dict) else {}
     schema = opts.get("schema") if isinstance(opts.get("schema"), dict) else None
     message = prompt
     if schema:
-        message += _output_contract_block(schema)
+        message += _output_contract_block(schema, structured_tool=structured_tool)
     retries = int(spec.get("retries") or 0)
     feedback = spec.get("feedback")
     if retries > 0 and isinstance(feedback, str) and feedback.strip():
@@ -319,7 +367,10 @@ def _start_script_call(
         "parentExecutionId": ctx.instance_id,
         "agentConfig": agent_config,
         "vaultIds": [],
-        "initialMessage": _build_initial_message(spec),
+        "initialMessage": _build_initial_message(
+            spec,
+            structured_tool=agent_config.get("structuredOutputMode") == "tool",
+        ),
         "title": f"{meta.get('name') or 'script'} · {label}",
         "workspaceRef": workspace_ref,
         # Single auto-turn per corrective session (structured retry = NEW session).

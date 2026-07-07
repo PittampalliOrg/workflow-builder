@@ -361,6 +361,29 @@ def _convert_tools_for_zai_chat(
     return converted
 
 
+def _with_structured_output_tool(
+    converted_tools: list[dict[str, Any]] | None,
+    schema: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Append the synthetic StructuredOutput tool whose parameters ARE the
+    call's JSON Schema (per-request definition — the tool is never registered
+    on the executor; src/main.py's run_tool intercepts it by name). Replaces a
+    same-named entry defensively and keeps the deterministic name sort."""
+    from src.structured_output import (
+        STRUCTURED_OUTPUT_TOOL_NAME,
+        structured_output_tool_definition,
+    )
+
+    tools = [
+        tool
+        for tool in (converted_tools or [])
+        if (tool.get("function") or {}).get("name") != STRUCTURED_OUTPUT_TOOL_NAME
+    ]
+    tools.append(structured_output_tool_definition(schema))
+    tools.sort(key=lambda item: item["function"].get("name") or "")
+    return tools
+
+
 def _extract_zai_response(
     response: dict[str, Any],
 ) -> tuple[str, list[dict[str, Any]], str | None, str]:
@@ -611,9 +634,19 @@ def _call_zai_chat(
     tool_choice: Any = None,
     reasoning_effort: str | None = None,
     native_json_schema: dict[str, Any] | None = None,
+    structured_output_tool: bool = False,
 ) -> dict[str, Any]:
     model = _get_zai_model(component)
     converted_tools = _convert_tools_for_zai_chat(tools)
+    # Structured-output TOOL mode (agentConfig.structuredOutputMode == "tool"):
+    # deliver the schema as a first-class tool definition instead of
+    # response_format json_object — GLM's tool_choice honors only "auto", so
+    # enforcement is availability + prompt + the agent-loop guard (exactly the
+    # Claude Code design). json_object stays the fallback mode below.
+    if structured_output_tool and isinstance(native_json_schema, dict):
+        converted_tools = _with_structured_output_tool(
+            converted_tools, native_json_schema
+        )
 
     llm_span = None
     llm_start = time.monotonic()
@@ -686,8 +719,14 @@ def _call_zai_chat(
         reasoning_effort=reasoning_effort,
         # Only honored when the Pydantic response_format (memory path) is absent,
         # so the thinking-off `structured` path and this thinking-on native path
-        # never collide.
-        native_json_schema=native_json_schema if response_format is None else None,
+        # never collide. Tool mode delivers the schema via the StructuredOutput
+        # tool definition instead — never combine it with json_object (the
+        # intermediate turns are tool calls, not JSON text).
+        native_json_schema=(
+            native_json_schema
+            if response_format is None and not structured_output_tool
+            else None
+        ),
     )
 
     image_msgs = sum(
@@ -992,6 +1031,13 @@ def patch_for_zai(llm_client: Any) -> None:
                     getattr(self, "_response_json_schema", None)
                     if response_format is None
                     else None
+                ),
+                # Tool mode (structuredOutputMode == "tool"): inject the
+                # StructuredOutput tool definition carrying the schema instead
+                # of json_object; the agent loop enforces + finalizes.
+                structured_output_tool=(
+                    getattr(self, "_structured_output_mode", None) == "tool"
+                    and response_format is None
                 ),
             )
 

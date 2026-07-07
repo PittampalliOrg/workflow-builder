@@ -47,3 +47,38 @@ def test_tool_chat_disables_thinking_and_ignores_native_schema():
     adapter._apply_zai_output_mode(body, structured=False, tool_chat=True, native_json_schema={"type": "object"})
     assert body["thinking"] == {"type": "disabled"}
     assert "response_format" not in body
+
+
+# ---------------------------------------------------------------------------
+# StructuredOutput TOOL mode: the per-request tool definition carries the
+# call's JSON Schema as parameters; json_object is never combined with it.
+# ---------------------------------------------------------------------------
+def test_with_structured_output_tool_appends_schema_definition():
+    schema = {"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean"}}}
+    tools = adapter._with_structured_output_tool(
+        [{"type": "function", "function": {"name": "Read", "description": "r", "parameters": {}}}],
+        schema,
+    )
+    names = [t["function"]["name"] for t in tools]
+    assert names == sorted(names)
+    assert "StructuredOutput" in names
+    so = next(t for t in tools if t["function"]["name"] == "StructuredOutput")
+    assert so["function"]["parameters"] == schema
+    # other tools preserved
+    assert "Read" in names
+
+
+def test_with_structured_output_tool_from_empty_toolset():
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    tools = adapter._with_structured_output_tool(None, schema)
+    assert len(tools) == 1
+    assert tools[0]["function"]["name"] == "StructuredOutput"
+    assert tools[0]["function"]["parameters"] == schema
+
+
+def test_with_structured_output_tool_replaces_same_named_entry():
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    fake = {"type": "function", "function": {"name": "StructuredOutput", "description": "fake", "parameters": {"type": "object"}}}
+    tools = adapter._with_structured_output_tool([fake], schema)
+    assert len(tools) == 1
+    assert tools[0]["function"]["parameters"] == schema
