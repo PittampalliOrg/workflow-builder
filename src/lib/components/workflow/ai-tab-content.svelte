@@ -11,6 +11,7 @@
 	import AiChatMessages from '$lib/components/ai-assistant/ai-chat-messages.svelte';
 	import AiChatInput from '$lib/components/ai-assistant/ai-chat-input.svelte';
 	import BuildWorkflowPanel from '$lib/components/ai-assistant/build-workflow-panel.svelte';
+	import DynamicScriptAuthorPanel from '$lib/components/workflow/dynamic-script-author-panel.svelte';
 
 	const assistant = getContext<ReturnType<typeof createAiAssistantStore>>('ai-assistant');
 	const buildAgent = getContext<ReturnType<typeof createBuildWorkflowStore>>('build-workflow');
@@ -52,6 +53,11 @@
 	const selectedTaskName = $derived(assistant.workflowContext?.selectedTaskName);
 </script>
 
+{#if store.isDynamicScript}
+	<!-- Dynamic-script workflows are authored by a real GLM-5.2 session using
+	     the workflow tools (not the SW-1.0 spec assistant). -->
+	<DynamicScriptAuthorPanel />
+{:else}
 <div class="flex flex-1 flex-col overflow-hidden">
 	{#if showBuildPanel}
 		<BuildWorkflowPanel />
@@ -135,3 +141,4 @@
 	<AiChatMessages />
 	<AiChatInput />
 </div>
+{/if}

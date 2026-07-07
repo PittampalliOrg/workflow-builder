@@ -8,6 +8,7 @@
 	import { getTask } from '$lib/helpers/spec-mutations';
 	import { getNodeIdForTaskName, getTaskNameFromNodeId } from '$lib/helpers/workflow-action-spec';
 	import WorkflowCanvas from '$lib/components/workflow/workflow-canvas.svelte';
+	import ScriptCanvas from '$lib/components/workflow/script-canvas.svelte';
 	import WorkflowToolbar from '$lib/components/workflow/workflow-toolbar.svelte';
 	import RightPanel from '$lib/components/workflow/right-panel.svelte';
 	import AppBreadcrumb from '$lib/components/console/app-breadcrumb.svelte';
@@ -66,7 +67,15 @@
 				return res.json();
 			})
 			.then((data) => {
-				store.loadWorkflow(data.id, data.name, data.nodes || [], data.edges || [], data.spec || null);
+				store.loadWorkflow(
+					data.id,
+					data.name,
+					data.nodes || [],
+					data.edges || [],
+					data.spec || null,
+					data.engineType || null
+				);
+				lastSeenUpdatedAt = data.updatedAt || null;
 			})
 			.catch((err) => {
 				console.error('Failed to load workflow:', err);
@@ -74,6 +83,33 @@
 			.finally(() => {
 				store.isLoading = false;
 			});
+	});
+
+	// Save-detection refresh for dynamic-script: the AI authoring session saves
+	// the workflow out-of-band (save_workflow_script updates this row), so poll
+	// the row's updatedAt while the AI panel is open and refetch the spec when
+	// it changes — the ScriptCanvas then re-renders the new structure.
+	let lastSeenUpdatedAt = $state<string | null>(null);
+	async function refetchSpec() {
+		if (!workflowId) return;
+		try {
+			const res = await fetch(`/api/workflows/${workflowId}`);
+			if (!res.ok) return;
+			const data = await res.json();
+			if (data.updatedAt && data.updatedAt !== lastSeenUpdatedAt) {
+				lastSeenUpdatedAt = data.updatedAt;
+				store.spec = data.spec || null;
+				const { toast } = await import('svelte-sonner');
+				toast.success('Workflow updated by the assistant');
+			}
+		} catch {
+			// best-effort
+		}
+	}
+	$effect(() => {
+		if (!store.isDynamicScript || ui.rightPanelTab !== 'ai' || !ui.rightPanelOpen) return;
+		const timer = setInterval(refetchSpec, 4000);
+		return () => clearInterval(timer);
 	});
 
 	// Sync workflow context (spec) to AI assistant store
@@ -177,7 +213,11 @@
 
 	<div class="relative flex flex-1 overflow-hidden">
 		<div class="flex-1">
-			<WorkflowCanvas />
+			{#if store.isDynamicScript}
+				<ScriptCanvas />
+			{:else}
+				<WorkflowCanvas />
+			{/if}
 		</div>
 
 		{#if ui.rightPanelOpen}
