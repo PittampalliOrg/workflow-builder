@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 from typing import Any, Mapping
@@ -77,9 +78,15 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
     "googleai/gemini-3.1-pro-preview": "llm-google-gemini",
     "google/gemini-3.1-pro-preview": "llm-google-gemini",
     "gemini-3.1-pro-preview": "llm-google-gemini",
-    # DeepSeek
+    # DeepSeek — v4-pro is the provider default: the bare provider name, the
+    # API-side family alias (deepseek-chat), and any unrecognized deepseek/*
+    # spec (see resolve_llm_component) all land on llm-deepseek-v4-pro.
+    # "deepseek/default" keeps pointing at the LEGACY llm-deepseek component —
+    # it is a UI-visible option with its own semantics (not SWE-bench capable).
     "deepseek/deepseek-v4-pro": "llm-deepseek-v4-pro",
     "deepseek-v4-pro": "llm-deepseek-v4-pro",
+    "deepseek": "llm-deepseek-v4-pro",
+    "deepseek/deepseek-chat": "llm-deepseek-v4-pro",
     "deepseek/deepseek-v4-flash": "llm-deepseek-v4-flash",
     "deepseek-v4-flash": "llm-deepseek-v4-flash",
     "deepseek/default": "llm-deepseek",
@@ -261,6 +268,18 @@ def resolve_llm_component(model_spec: str | None) -> str:
     normalized = model_spec.strip()
     component = MODEL_COMPONENT_MAP.get(normalized)
     if component is None:
+        # DeepSeek is the platform's fail-safe provider (see
+        # DEFAULT_LLM_COMPONENT): an unrecognized deepseek/* spec resolves to
+        # the v4-pro default instead of raising — a raise here kills the
+        # session ~2ms into the workflow body with the error visible only in
+        # pod logs (the dynamic-script journal shows a bare null).
+        if normalized.lower().startswith("deepseek/"):
+            logging.getLogger(__name__).warning(
+                "[model-select] unknown DeepSeek modelSpec %r — falling back "
+                "to llm-deepseek-v4-pro (the DeepSeek default)",
+                normalized,
+            )
+            return "llm-deepseek-v4-pro"
         raise ValueError(
             f"Unknown modelSpec {normalized!r}. "
             f"Available models: {', '.join(sorted(MODEL_COMPONENT_MAP.keys()))}"

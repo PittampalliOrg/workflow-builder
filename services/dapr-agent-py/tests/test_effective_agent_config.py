@@ -14,6 +14,7 @@ if root not in sys.path:
 from src.effective_agent_config import (  # noqa: E402
     build_effective_agent_config,
     effective_audit_fields,
+    resolve_llm_component,
     resolve_llm_metadata,
     runtime_context_audit_cache_fields,
 )
@@ -419,3 +420,26 @@ def test_resolve_llm_metadata_drops_unknown_structured_output_mode():
     assert "structuredOutputMode" not in llm
     llm = resolve_llm_metadata(agent_config={"modelSpec": "zai/glm-5.2"})
     assert "structuredOutputMode" not in llm
+
+
+def test_deepseek_default_is_v4_pro():
+    # Bare provider name + the API-side family alias land on the v4-pro default.
+    assert resolve_llm_component("deepseek") == "llm-deepseek-v4-pro"
+    assert resolve_llm_component("deepseek/deepseek-chat") == "llm-deepseek-v4-pro"
+    # Explicit specs unchanged; legacy deepseek/default keeps its component.
+    assert resolve_llm_component("deepseek/deepseek-v4-pro") == "llm-deepseek-v4-pro"
+    assert resolve_llm_component("deepseek/deepseek-v4-flash") == "llm-deepseek-v4-flash"
+    assert resolve_llm_component("deepseek/default") == "llm-deepseek"
+
+
+def test_unknown_deepseek_spec_falls_back_to_v4_pro():
+    # An unrecognized deepseek/* spec must NOT kill the session pre-turn —
+    # it resolves to the v4-pro default (with a warning).
+    assert resolve_llm_component("deepseek/deepseek-v9-ultra") == "llm-deepseek-v4-pro"
+
+
+def test_unknown_non_deepseek_spec_still_raises():
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError):
+        resolve_llm_component("zai/glm-99")
