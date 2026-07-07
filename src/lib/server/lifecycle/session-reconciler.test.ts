@@ -167,6 +167,30 @@ describe("decideSessionReconciliation", () => {
 		).toBe("confirm_stop");
 	});
 
+	it("rescues NON-CLI sessions too (mechanism-scoped: dapr-agent-py sandbox hosts)", () => {
+		const stranded = evidence({
+			daprRuntime: "unknown",
+			pod: "present",
+			podExited: true,
+			sandboxCr: "present",
+		});
+		// A dynamic-script dapr-agent-py session is not CLI-family, but its
+		// per-session sandbox host is rescueable all the same.
+		expect(decide(view({ isCliFamily: false, ageSeconds: 600 }), stranded)).toEqual({
+			action: "rescue_stranded_host",
+			reason: "pod_exited_session_live",
+		});
+		// Without the rescue evidence, non-CLI sessions keep the v1 scope skip —
+		// converge/finalize remain CLI-only.
+		expect(decide(view({ isCliFamily: false }), evidence()).reason).toBe("non_cli_family");
+		expect(
+			decide(
+				view({ isCliFamily: false, ageSeconds: 600 }),
+				evidence({ daprRuntime: "absent", sandboxCr: "absent", pod: "absent" }),
+			).reason,
+		).toBe("non_cli_family");
+	});
+
 	it("degrades to an audit-only warn once the rescue cap is exhausted", () => {
 		const stranded = evidence({ daprRuntime: "absent", pod: "present", podExited: true });
 		expect(decide(view({ ageSeconds: 600, rescueAttempts: 3 }), stranded)).toEqual({

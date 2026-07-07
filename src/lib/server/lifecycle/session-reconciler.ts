@@ -121,6 +121,38 @@ export function decideSessionReconciliation(
 	// (1) Evidence-free hard skips — classes we never touch regardless of state.
 	if (c.paused) return { action: "skip", reason: "paused" };
 	if (c.coordinatorOwned) return { action: "skip", reason: "coordinator_owned" };
+
+	// (1b) Stranded host rescue — scoped by MECHANISM, not runtime family: any
+	//     provisioned per-session host (interactive-CLI or dapr-agent-py
+	//     sandbox) whose pod EXITED (terminal phase — restartPolicy Never, and
+	//     the Sandbox controller does not recreate a terminal pod) while its
+	//     Sandbox CR survives can be re-hosted: deleting the exited pod makes
+	//     the controller recreate it (spec.replicas=1) and the durabletask
+	//     worker resumes the durable workflow via REPLAY — verified live
+	//     2026-07-07. Sits AHEAD of the v1 CLI-family gate below (that gate
+	//     scopes the DB-mutating converge/finalize actions; the rescue only
+	//     deletes an already-exited pod) and AHEAD of the unknown-evidence
+	//     gate (an exited host is typically unaddressable via placement, so
+	//     Dapr evidence reads absent/unknown — the pod's own terminal phase is
+	//     the positive KNOWN signal). Explicit guards: a stop-intent row must
+	//     never get a new host (the user asked it to stop), and a
+	//     Dapr-TERMINAL workflow needs finalizing, not re-hosting. A host that
+	//     exits again after every recreate cannot flap forever: past
+	//     maxRescuesPerSession the decision degrades to an audit-only warn.
+	if (
+		c.provisioned &&
+		!c.stopRequested &&
+		!e.daprTerminal &&
+		e.pod === "present" &&
+		e.podExited &&
+		e.sandboxCr === "present" &&
+		c.ageSeconds >= input.minAgeSeconds
+	) {
+		return c.rescueAttempts >= input.maxRescuesPerSession
+			? { action: "warn", reason: "rescue_cap_exhausted" }
+			: { action: "rescue_stranded_host", reason: "pod_exited_session_live" };
+	}
+
 	if (!c.isCliFamily) return { action: "skip", reason: "non_cli_family" };
 	if (!c.provisioned) {
 		// Never provisioned: nothing to converge. Surface a warn only if it has been
@@ -140,31 +172,6 @@ export function decideSessionReconciliation(
 	//     irrelevant here.
 	if (e.daprTerminal) {
 		return { action: "finalize_divergence", reason: "dapr_terminal_db_nonterminal" };
-	}
-
-	// (3b) Stranded host: the runtime pod EXITED (terminal phase — restartPolicy
-	//     Never, and the Sandbox controller does not recreate a terminal pod on
-	//     its own) while the Sandbox CR still exists and the session row is
-	//     live. The durable workflow state outlives its host: deleting the
-	//     exited pod makes the controller recreate it (spec.replicas=1) and the
-	//     durabletask worker resumes the session via REPLAY — verified live
-	//     2026-07-07. Sits ABOVE the unknown-evidence gate deliberately: an
-	//     exited host is typically unaddressable via placement, so Dapr
-	//     evidence reads absent/unknown here, yet the rescue is non-destructive
-	//     by construction (an exited pod hosts nothing) — the pod's own
-	//     terminal phase is the positive KNOWN signal. daprTerminal above still
-	//     wins (a FINISHED workflow needs finalizing, not a new host). A host
-	//     that exits again after every recreate cannot flap forever: past
-	//     maxRescuesPerSession the decision degrades to an audit-only warn.
-	if (
-		e.pod === "present" &&
-		e.podExited &&
-		e.sandboxCr === "present" &&
-		c.ageSeconds >= input.minAgeSeconds
-	) {
-		return c.rescueAttempts >= input.maxRescuesPerSession
-			? { action: "warn", reason: "rescue_cap_exhausted" }
-			: { action: "rescue_stranded_host", reason: "pod_exited_session_live" };
 	}
 
 	// (4) Fail-safe gate: any unknown evidence past this point ⇒ skip. A transient
@@ -349,8 +356,10 @@ export async function reconcileSessions(
 				rescueAttempts: 0,
 			};
 			let evidence = UNKNOWN_EVIDENCE;
+			// Non-CLI sessions with a per-session host (dapr-agent-py sandboxes)
+			// are probed too — they are eligible for the stranded-host rescue
+			// (mechanism-scoped), even though converge/finalize stay CLI-scoped.
 			const needsEvidence =
-				isCliFamily &&
 				!paused &&
 				!stopRequested &&
 				!cand.coordinatorOwned &&
