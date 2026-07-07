@@ -427,6 +427,55 @@
 			{/if}
 		{/if}
 
+	{:else if event.type === 'structured_output.validation'}
+		{@const v = data as {
+			valid?: boolean;
+			error?: string | null;
+			turn?: number;
+			toolCallId?: string;
+		}}
+		{#if variant === 'card'}
+			<div
+				class="flex items-center gap-2 rounded-md border px-3 py-1.5 text-[11px] {v.valid
+					? 'border-emerald-500/25 bg-emerald-500/5'
+					: 'border-red-500/25 bg-red-500/5'}"
+			>
+				{#if v.valid}
+					<CheckCircle2 class="size-3 text-emerald-400" />
+				{:else}
+					<AlertTriangle class="size-3 text-red-400" />
+				{/if}
+				<span class="font-mono {v.valid ? 'text-emerald-200' : 'text-red-200'}">StructuredOutput</span>
+				<span>·</span>
+				<span class="text-foreground/90">{v.valid ? 'schema valid' : 'schema invalid — model retries in-loop'}</span>
+				{#if v.turn != null}<span class="ml-auto font-mono text-muted-foreground">turn {v.turn}</span>{/if}
+			</div>
+			{#if !v.valid && v.error}
+				<div class="mt-1 whitespace-pre-wrap rounded-md border border-red-500/15 bg-red-500/5 px-3 py-1.5 text-[11px] text-red-300/90">{v.error}</div>
+			{/if}
+		{:else}
+			<div class="grid grid-cols-2 gap-3 text-xs">
+				<div>
+					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Result</div>
+					<div class="mt-1 font-mono">{v.valid ? 'valid' : 'invalid'}</div>
+				</div>
+				<div>
+					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Turn</div>
+					<div class="mt-1 font-mono">{v.turn ?? '-'}</div>
+				</div>
+				<div class="col-span-2">
+					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Tool call</div>
+					<div class="mt-1 font-mono truncate">{v.toolCallId ?? '-'}</div>
+				</div>
+			</div>
+			{#if v.error}
+				<div class="mt-3">
+					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Validation errors</div>
+					<div class="mt-1 whitespace-pre-wrap text-xs text-rose-300">{v.error}</div>
+				</div>
+			{/if}
+		{/if}
+
 	{:else if event.type === 'mcp.tool_call'}
 		{@const m = data as {
 			tool_name?: string;

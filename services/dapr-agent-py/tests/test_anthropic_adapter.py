@@ -95,3 +95,29 @@ def test_anthropic_sdk_requires_api_key(monkeypatch) -> None:
         assert str(exc) == "No Anthropic authentication configured. Set ANTHROPIC_API_KEY."
     else:
         raise AssertionError("Expected missing ANTHROPIC_API_KEY to raise RuntimeError")
+
+
+# ---------------------------------------------------------------------------
+# StructuredOutput TOOL mode: per-request tool definition (input_schema format).
+# ---------------------------------------------------------------------------
+def test_with_structured_output_tool_appends_input_schema_definition() -> None:
+    schema = {"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean"}}}
+    tools = adapter._with_structured_output_tool(
+        [{"name": "Read", "description": "r", "input_schema": {"type": "object"}}],
+        schema,
+    )
+    names = [t["name"] for t in tools]
+    assert names == sorted(names)
+    assert "StructuredOutput" in names and "Read" in names
+    so = next(t for t in tools if t["name"] == "StructuredOutput")
+    assert so["input_schema"] == schema
+    # Anthropic format: no OpenAI function envelope
+    assert "function" not in so
+
+
+def test_with_structured_output_tool_replaces_same_named_entry() -> None:
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    fake = {"name": "StructuredOutput", "description": "fake", "input_schema": {"type": "object"}}
+    tools = adapter._with_structured_output_tool([fake], schema)
+    assert len(tools) == 1
+    assert tools[0]["input_schema"] == schema

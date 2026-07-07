@@ -55,7 +55,8 @@ _TOOL_DESCRIPTION = (
 
 def structured_output_tool_definition(schema: dict[str, Any]) -> dict[str, Any]:
     """OpenAI-function-format tool definition whose parameters ARE the call's
-    JSON Schema (the Claude Code ``inputJSONSchema`` pattern)."""
+    JSON Schema (the Claude Code ``inputJSONSchema`` pattern). Used by the
+    OpenAI-compatible chat adapters (zai/GLM, DeepSeek)."""
     return {
         "type": "function",
         "function": {
@@ -63,6 +64,18 @@ def structured_output_tool_definition(schema: dict[str, Any]) -> dict[str, Any]:
             "description": _TOOL_DESCRIPTION,
             "parameters": schema,
         },
+    }
+
+
+def structured_output_tool_definition_anthropic(
+    schema: dict[str, Any],
+) -> dict[str, Any]:
+    """Anthropic Messages-API tool definition (input_schema instead of
+    function.parameters)."""
+    return {
+        "name": STRUCTURED_OUTPUT_TOOL_NAME,
+        "description": _TOOL_DESCRIPTION,
+        "input_schema": schema,
     }
 
 

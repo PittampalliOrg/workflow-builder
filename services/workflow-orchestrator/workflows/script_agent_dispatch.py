@@ -68,10 +68,13 @@ def _native_structured_enabled() -> bool:
 
 
 def _structured_model() -> str:
-    """The model schema'd calls route to for first-class structured output
-    (OpenAI strict json_schema by default). Read per-call so tests/env can
-    override; empty falls back to the OpenAI default."""
-    return os.environ.get("DYNAMIC_SCRIPT_STRUCTURED_MODEL", "openai/gpt-5.5").strip() or "openai/gpt-5.5"
+    """The model schema'd calls route to for first-class structured output.
+    Default is GLM + the StructuredOutput tool (spike: 42/42 first-try valid,
+    zero retries — and it keeps schema'd calls on the cheap default provider).
+    Set DYNAMIC_SCRIPT_STRUCTURED_MODEL=openai/gpt-5.5 to route schema'd calls
+    to OpenAI strict json_schema (constrained decoding) instead. Read per-call
+    so tests/env can override; empty falls back to the GLM default."""
+    return os.environ.get("DYNAMIC_SCRIPT_STRUCTURED_MODEL", "zai/glm-5.2").strip() or "zai/glm-5.2"
 
 
 def _structured_tool_enabled() -> bool:
@@ -138,11 +141,11 @@ def _build_agent_config(
         # (same trust level as opts.model; applies regardless of runtime).
         model = phase_model
     elif native_structured:
-        # Hybrid routing: a schema'd call with no explicit model defaults to the
-        # configured structured model (OpenAI strict json_schema) instead of the
-        # GLM default, so the schema is enforced by constrained decoding. A
-        # per-call opts.model / phase model above still wins; a per-call model
-        # pointed at GLM keeps json_object (Tier 2).
+        # Hybrid routing: a schema'd call with no explicit model defaults to
+        # the configured structured model — GLM + the StructuredOutput tool by
+        # default; DYNAMIC_SCRIPT_STRUCTURED_MODEL=openai/* buys strict
+        # constrained decoding instead. A per-call opts.model / phase model
+        # above still wins.
         model = _structured_model()
     elif (
         isinstance((defaults or {}).get("model"), str)
@@ -168,16 +171,15 @@ def _build_agent_config(
         # json_schema; GLM json_object). Read back in call_llm and stamped on the
         # chat client alongside _llm_component / _reasoning_effort.
         agent_config["responseJsonSchema"] = schema
-        # Tier 2 tool mode: GLM has no strict json_schema mode, and json_object
-        # never applies to tool-carrying sessions — so a schema'd call resolved
-        # to GLM delivers its result via the synthetic StructuredOutput tool
-        # (Claude Code mechanism): the adapter injects a per-request tool
-        # definition whose parameters ARE the schema, the runtime validates the
-        # call args in-loop, and the agent loop finalizes the session with the
-        # canonical JSON. Object schemas only (tool args are JSON objects);
-        # OpenAI keeps strict json_schema (stronger).
+        # Tier 2 tool mode: providers without a strict json_schema mode (GLM,
+        # Anthropic, DeepSeek) deliver the result via the synthetic
+        # StructuredOutput tool (Claude Code mechanism): the adapter injects a
+        # per-request tool definition whose parameters ARE the schema, the
+        # runtime validates the call args in-loop, and the agent loop finalizes
+        # the session with the canonical JSON. Object schemas only (tool args
+        # are JSON objects); OpenAI keeps strict json_schema (stronger).
         if (
-            model.startswith("zai/")
+            model.startswith(("zai/", "anthropic/", "deepseek/"))
             and _structured_tool_enabled()
             and _schema_supports_structured_tool(schema)
         ):
