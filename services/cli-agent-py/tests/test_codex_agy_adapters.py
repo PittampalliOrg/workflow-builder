@@ -802,7 +802,8 @@ def test_agy_seed_writes_gemini_md_and_settings(agy_home):
     ]
     assert settings["permissions"]["deny"] == []
     assert settings["permissions"]["ask"] == []
-    assert str(agy_home).endswith("sandbox") or settings["trustedWorkspaces"]
+    assert str(agy_home) in settings["trustedWorkspaces"]
+    assert str(agy_home / "work") in settings["trustedWorkspaces"]
 
 
 def test_agy_seed_overrides_restored_prompting_settings(agy_home):
@@ -832,6 +833,23 @@ def test_agy_seed_overrides_restored_prompting_settings(agy_home):
     assert settings["permissions"]["ask"] == []
     assert "/old" in settings["trustedWorkspaces"]
     assert str(agy_home) in settings["trustedWorkspaces"]
+    assert str(agy_home / "work") in settings["trustedWorkspaces"]
+
+
+def test_agy_seed_trusts_shared_workspace_mount(agy_home, monkeypatch):
+    shared = agy_home / "custom-work"
+    monkeypatch.setenv("CLI_SHARED_WORKSPACE_MOUNT", str(shared))
+    get_adapter("antigravity").seed(AGY_SESSION)
+    settings = json.loads(
+        (agy_home / ".gemini/antigravity-cli/settings.json").read_text()
+    )
+    assert str(agy_home) in settings["trustedWorkspaces"]
+    assert str(shared) in settings["trustedWorkspaces"]
+
+
+def test_agy_adapter_auto_accepts_workspace_trust_prompt():
+    adapter = get_adapter("antigravity")
+    assert "do you trust the contents of this project" in adapter.onboarding_accept_markers
 
 
 def test_agy_build_argv():

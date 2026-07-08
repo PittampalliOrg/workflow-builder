@@ -261,6 +261,9 @@ def _managed_agy_settings(
     keys are intentionally owned by workflow-builder on every seed.
     """
     sandbox_root = os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
+    shared_workspace = clean_string(
+        os.environ.get("CLI_SHARED_WORKSPACE_MOUNT")
+    ) or str(Path(sandbox_root) / "work")
     settings = dict(existing)
     settings.update(
         {
@@ -285,7 +288,7 @@ def _managed_agy_settings(
         }
     )
     settings["trustedWorkspaces"] = _merge_unique_strings(
-        settings.get("trustedWorkspaces"), [sandbox_root]
+        settings.get("trustedWorkspaces"), [sandbox_root, shared_workspace]
     )
     settings["permissions"] = {
         "allow": [
@@ -1214,6 +1217,10 @@ class AntigravityAdapter(CliAdapter):
     # agy's composer collapses a held multi-line draft to "↑ N more lines"; if
     # that's on screen after Enter, the submit was dropped → re-press.
     composer_draft_markers = ("more lines",)
+    # AGY 1.0.16 can still prompt for the exact pane cwd (/sandbox/work) even
+    # when the managed settings trust /sandbox. Auto-accept the workspace trust
+    # dialog before waiting for the composer marker.
+    onboarding_accept_markers = ("do you trust the contents of this project",)
 
     def __init__(self) -> None:
         self._last_user_input_text: str | None = None
