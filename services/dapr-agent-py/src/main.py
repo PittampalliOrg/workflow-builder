@@ -6764,6 +6764,18 @@ except Exception as exc:
 # FastAPI application
 # ---------------------------------------------------------------------------
 
+# Bound every MCP tool call with a total per-request read timeout. Upstream
+# leaves ClientSession.read_timeout_seconds unset, so a stalled streamable-HTTP
+# response (SSE stream kept alive with no final result) hangs the run_tool
+# activity forever — the failure mode behind a multi-minute reviewer wedge on a
+# stalled trace tool. Installed once at process start; also re-ensured on each
+# MCP connect. Tunable via DAPR_AGENT_MCP_TOOL_TIMEOUT_SECONDS (0 disables).
+try:
+    from src.mcp_tool_timeout import install_mcp_tool_call_timeout
+    install_mcp_tool_call_timeout()
+except Exception as exc:
+    logger.warning("MCP tool-call timeout install failed: %s", exc)
+
 # Patch DaprChatClient for Anthropic — the Dapr sidecar's langchaingo layer
 # sends tool_choice as a string even when None/not-passed, breaking Anthropic.
 # This is a Go-side bug that can't be fixed from Python.

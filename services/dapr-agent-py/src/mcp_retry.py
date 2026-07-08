@@ -86,6 +86,17 @@ async def connect_mcp_client_with_retries(
     """
 
     log = logger or logging.getLogger(__name__)
+    # Ensure every MCP tool call is bounded by a total per-request timeout before
+    # we connect any client. Upstream leaves ClientSession.read_timeout_seconds
+    # unset, so a stalled streamable-HTTP response (e.g. a slow trace tool whose
+    # SSE stream stays open) would otherwise hang the run_tool activity forever.
+    # Idempotent: the class is patched once for the process.
+    try:
+        from src.mcp_tool_timeout import install_mcp_tool_call_timeout
+
+        install_mcp_tool_call_timeout()
+    except Exception as exc:  # noqa: BLE001
+        log.debug("[mcp] could not install MCP tool-call timeout: %s", exc)
     attempts = (
         max_attempts
         if max_attempts is not None
