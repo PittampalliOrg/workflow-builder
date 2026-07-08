@@ -77,7 +77,7 @@ def test_seed_writes_mcp_system_prompt_and_skills(seeded_dirs):
 
 
 def test_seed_adds_structured_output_mcp_for_tool_mode(seeded_dirs):
-    wfb_dir, _config_dir = seeded_dirs
+    wfb_dir, config_dir = seeded_dirs
     adapter = get_adapter("claude-code")
     schema = {
         "type": "object",
@@ -95,13 +95,59 @@ def test_seed_adds_structured_output_mcp_for_tool_mode(seeded_dirs):
         }
     )
 
-    mcp = json.loads((wfb_dir / "mcp.json").read_text())
-    structured = mcp["mcpServers"]["structured"]
+    assert not (wfb_dir / "mcp.json").exists()
+    state = json.loads((config_dir / ".claude.json").read_text())
+    structured = state["mcpServers"]["structured"]
     assert structured["type"] == "stdio"
     assert structured["command"] == "python3"
     assert structured["args"] == ["-m", "src.structured_output_mcp"]
     assert json.loads(structured["env"]["CLI_STRUCTURED_OUTPUT_SCHEMA"]) == schema
+    assert "mcpConfigPath" not in result.paths
+    assert result.paths["claudeStructuredMcpConfigPath"] == str(
+        config_dir / ".claude.json"
+    )
+    assert json.loads((config_dir / "claude.json").read_text()) == state
+
+
+def test_seed_splits_project_mcp_from_structured_output_mcp(seeded_dirs):
+    wfb_dir, config_dir = seeded_dirs
+    adapter = get_adapter("claude-code")
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
+
+    result = adapter.seed(
+        {
+            "agentConfig": {
+                "mcpServers": [
+                    {
+                        "name": "github",
+                        "transport": "streamable_http",
+                        "url": "https://mcp.example/mcp",
+                    },
+                ],
+                "structuredOutputMode": "tool",
+                "responseJsonSchema": schema,
+            }
+        }
+    )
+
+    mcp = json.loads((wfb_dir / "mcp.json").read_text())
+    assert mcp == {
+        "mcpServers": {"github": {"type": "http", "url": "https://mcp.example/mcp"}}
+    }
+    state = json.loads((config_dir / ".claude.json").read_text())
+    assert set(state["mcpServers"].keys()) == {"structured"}
+    assert json.loads(
+        state["mcpServers"]["structured"]["env"]["CLI_STRUCTURED_OUTPUT_SCHEMA"]
+    ) == schema
     assert result.paths["mcpConfigPath"] == str(wfb_dir / "mcp.json")
+    assert result.paths["claudeStructuredMcpConfigPath"] == str(
+        config_dir / ".claude.json"
+    )
 
 
 def tmp_path_parent_has_escape(config_dir) -> bool:
@@ -147,6 +193,40 @@ def test_seed_never_clobbers_existing_claude_state(seeded_dirs):
     result = adapter.seed({"agentConfig": {}})
     assert "claudeStatePath" not in result.paths
     assert json.loads((config_dir / ".claude.json").read_text()) == existing
+
+
+def test_seed_structured_output_preserves_existing_claude_state(seeded_dirs):
+    import json
+
+    _wfb_dir, config_dir = seeded_dirs
+    config_dir.mkdir(parents=True, exist_ok=True)
+    existing = {
+        "hasCompletedOnboarding": True,
+        "oauthAccount": {"id": "user-x"},
+        "mcpServers": {"user_server": {"type": "stdio", "command": "existing"}},
+    }
+    (config_dir / ".claude.json").write_text(json.dumps(existing))
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
+    adapter = get_adapter("claude-code")
+    adapter.seed(
+        {
+            "agentConfig": {
+                "structuredOutputMode": "tool",
+                "responseJsonSchema": schema,
+            }
+        }
+    )
+    state = json.loads((config_dir / ".claude.json").read_text())
+    assert state["oauthAccount"] == existing["oauthAccount"]
+    assert state["mcpServers"]["user_server"] == existing["mcpServers"]["user_server"]
+    assert json.loads(
+        state["mcpServers"]["structured"]["env"]["CLI_STRUCTURED_OUTPUT_SCHEMA"]
+    ) == schema
 
 
 def test_detect_goal_completion_on_goal_achieved_attachment():

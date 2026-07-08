@@ -120,6 +120,9 @@ SKILL_MAX_FILE_BYTES = 128 * 1024
 SKILL_MAX_TOTAL_BYTES = 2 * 1024 * 1024
 SKILL_MAX_FILES = 80
 
+_STRUCTURED_OUTPUT_MCP_MODULE = "src.structured_output_mcp"
+_STRUCTURED_OUTPUT_SCHEMA_ENV = "CLI_STRUCTURED_OUTPUT_SCHEMA"
+
 
 def clean_string(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
@@ -179,6 +182,49 @@ def _claude_config_dir() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_DIR", "/sandbox/.claude"))
 
 
+def _is_structured_output_mcp_server(config: Mapping[str, Any]) -> bool:
+    args = config.get("args")
+    env = config.get("env")
+    return (
+        config.get("type") == "stdio"
+        and config.get("command") == "python3"
+        and isinstance(args, list)
+        and args == ["-m", _STRUCTURED_OUTPUT_MCP_MODULE]
+        and isinstance(env, Mapping)
+        and isinstance(env.get(_STRUCTURED_OUTPUT_SCHEMA_ENV), str)
+    )
+
+
+def _clone_mcp_server_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    cloned: dict[str, Any] = dict(config)
+    if isinstance(config.get("args"), list):
+        cloned["args"] = [str(arg) for arg in config["args"]]
+    if isinstance(config.get("env"), Mapping):
+        cloned["env"] = {
+            str(key): str(value)
+            for key, value in config["env"].items()
+            if str(key).strip() and value is not None
+        }
+    return cloned
+
+
+def _split_structured_output_mcp_servers(
+    servers: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    project_servers: dict[str, dict[str, Any]] = {}
+    structured_servers: dict[str, dict[str, Any]] = {}
+    for name, config in servers.items():
+        server_name = str(name).strip()
+        if not server_name:
+            continue
+        cloned = _clone_mcp_server_config(config)
+        if _is_structured_output_mcp_server(cloned):
+            structured_servers[server_name] = cloned
+        else:
+            project_servers[server_name] = cloned
+    return project_servers, structured_servers
+
+
 class ClaudeCodeAdapter(CliAdapter):
     name = "claude-code"
     # Content-gate the kickoff on the rendered REPL composer. Even though claude
@@ -213,14 +259,19 @@ class ClaudeCodeAdapter(CliAdapter):
         wfb_dir = _wfb_dir()
         wfb_dir.mkdir(parents=True, exist_ok=True)
 
-        # (a) MCP config in Claude Code .mcp.json shape.
+        # (a) MCP config in Claude Code .mcp.json shape. The synthetic
+        # StructuredOutput MCP server is trusted in Claude's user state below;
+        # project .mcp.json servers can remain pending approval in headless CLI
+        # runs, which made the structured tool invisible in live smoke tests.
         servers = emit_claude_code_cli_servers(agent_config)
-        if servers:
+        project_servers, structured_servers = _split_structured_output_mcp_servers(servers)
+        if project_servers:
             import json
 
             mcp_path = wfb_dir / "mcp.json"
             mcp_path.write_text(
-                json.dumps({"mcpServers": servers}, indent=2) + "\n", encoding="utf-8"
+                json.dumps({"mcpServers": project_servers}, indent=2) + "\n",
+                encoding="utf-8",
             )
             result.paths["mcpConfigPath"] = str(mcp_path)
 
@@ -247,6 +298,7 @@ class ClaudeCodeAdapter(CliAdapter):
         # `claude -p` in the same pod); pre-completing onboarding + trust for
         # the sandbox cwd boots the TUI straight into the REPL.
         self._seed_onboarding_state(result)
+        self._seed_structured_output_mcp_servers(structured_servers, result)
 
         # (i) Durable transcript store. When the sandbox mounts a per-session
         # JuiceFS subtree (CLI_TRANSCRIPT_MOUNT), redirect claude's transcript
@@ -356,6 +408,53 @@ class ClaudeCodeAdapter(CliAdapter):
         for path in state_paths:
             path.write_text(payload, encoding="utf-8")
         result.paths["claudeStatePath"] = str(state_paths[0])
+
+    def _seed_structured_output_mcp_servers(
+        self, servers: Mapping[str, Mapping[str, Any]], result: SeedResult
+    ) -> None:
+        """Trust only the internal StructuredOutput MCP server for this session.
+
+        ``claude mcp add-json -s user`` stores connected servers in
+        ``$CLAUDE_CONFIG_DIR/.claude.json``. We mirror that for the generated
+        StructuredOutput tool so one-shot workflow runs can call it without
+        approving arbitrary user/project MCP servers.
+        """
+        if not servers:
+            return
+
+        import json
+
+        config_dir = _claude_config_dir()
+        config_dir.mkdir(parents=True, exist_ok=True)
+        state_paths = [config_dir / ".claude.json", config_dir / "claude.json"]
+
+        state: dict[str, Any] = {}
+        for path in state_paths:
+            if not path.exists():
+                continue
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    state = loaded
+                    break
+            except Exception:  # noqa: BLE001 — never fail seeding on a bad state file
+                state = {}
+
+        existing = state.get("mcpServers")
+        if not isinstance(existing, dict):
+            existing = {}
+        state["mcpServers"] = {
+            **existing,
+            **{
+                str(name): _clone_mcp_server_config(config)
+                for name, config in servers.items()
+            },
+        }
+
+        payload = json.dumps(state, indent=2) + "\n"
+        for path in state_paths:
+            path.write_text(payload, encoding="utf-8")
+        result.paths["claudeStructuredMcpConfigPath"] = str(state_paths[0])
 
     def _materialize_skills(
         self, agent_config: Mapping[str, Any], warnings: list[str]
