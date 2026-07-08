@@ -128,6 +128,22 @@ describe("parseScriptStructure", () => {
     expect(m.phases).toEqual(["Real"]);
     expect(m.calls.map((c) => c.label)).toEqual(["R"]);
   });
+
+  it("ignores agent()/parallel()/pipeline() tokens inside prompt strings", () => {
+    // A prompt that documents the dialect must NOT spawn phantom calls (the
+    // real trace-deep-analysis synthesis prompt does exactly this).
+    const m = parseScriptStructure(
+      'phase("Go");\n' +
+        'const r = await agent(\n' +
+        '  "Follow the dialect: agent()/parallel()/pipeline()/phase()/log() — always await.",\n' +
+        '  { label: "worker", schema: { type: "object", properties: { ok: {} } } }\n' +
+        ');',
+    );
+    expect(m.calls.map((c) => c.kind)).toEqual(["agent"]);
+    expect(m.calls[0].label).toBe("worker");
+    expect(m.calls[0].schemaProps).toEqual(["ok"]);
+    expect(m.estimatedAgentCalls).toBe(1);
+  });
 });
 
 describe("scriptToGraph", () => {
