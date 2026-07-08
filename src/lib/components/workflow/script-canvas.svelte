@@ -10,7 +10,7 @@
 		type Edge
 	} from '@xyflow/svelte';
 	import { getContext } from 'svelte';
-	import { FileCode2, Sparkles, Info } from '@lucide/svelte';
+	import { FileCode2, Sparkles, Info, GitFork, Braces } from '@lucide/svelte';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 	import type { createUiStore } from '$lib/stores/ui.svelte';
 	import { scriptToGraph, type ScriptGraphModel } from '$lib/utils/script-graph-adapter';
@@ -25,33 +25,45 @@
 		ui.theme === 'dark' ? 'dark' : ui.theme === 'light' ? 'light' : 'system'
 	);
 
+	// Pure derivation of the structural preview from the script source (rebuilds
+	// when the authoring session saves → editor refetch → store.scriptSource).
+	const graph = $derived.by(() => {
+		const src = store.scriptSource;
+		if (!src) return null;
+		return scriptToGraph(src, store.scriptMeta);
+	});
+	const model = $derived<ScriptGraphModel | null>(graph?.model ?? null);
+	const styledEdges = $derived(
+		(graph?.edges ?? []).map((e) => {
+			const isParallel = Boolean((e.data as { parallel?: boolean } | undefined)?.parallel);
+			const isPipeline = e.label === 'then';
+			// Fan-out edges (parallel/pipeline) are animated + hued so concurrency
+			// reads instantly; the sequential spine stays quiet.
+			const stroke = isParallel
+				? 'oklch(0.78 0.15 75)' // amber
+				: isPipeline
+					? 'oklch(0.72 0.13 235)' // sky
+					: 'var(--muted-foreground)';
+			return {
+				...e,
+				type: 'smoothstep',
+				animated: isParallel || isPipeline,
+				markerEnd: { type: MarkerType.ArrowClosed, width: 15, height: 15, color: stroke },
+				style: `stroke: ${stroke}; stroke-width: ${isParallel || isPipeline ? 1.75 : 1.25}px; opacity: ${isParallel || isPipeline ? 0.85 : 0.4};`
+			};
+		})
+	);
+
+	// SvelteFlow's bind:nodes/bind:edges need mutable state (it writes selection
+	// back); sync the derived graph into the bindable stores.
 	let nodes = $state.raw<Node[]>([]);
 	let edges = $state.raw<Edge[]>([]);
-	let model = $state<ScriptGraphModel | null>(null);
-
-	// Rebuild the structural preview whenever the script source changes (the
-	// authoring session saves → editor refetch → store.scriptSource updates).
 	$effect(() => {
-		const src = store.scriptSource;
-		const meta = store.scriptMeta;
-		if (!src) {
-			nodes = [];
-			edges = [];
-			model = null;
-			return;
-		}
-		const graph = scriptToGraph(src, meta);
-		model = graph.model;
-		nodes = graph.nodes.map((n) => ({ ...n }));
-		edges = graph.edges.map((e) => ({
-			...e,
-			type: 'default',
-			markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
-			style: 'stroke: var(--muted-foreground); opacity: 0.35;'
-		}));
+		nodes = (graph?.nodes ?? []).map((n) => ({ ...n }));
+		edges = styledEdges.map((e) => ({ ...e }));
 	});
 
-	const isEmpty = $derived(nodes.length === 0);
+	const isEmpty = $derived((graph?.nodes.length ?? 0) === 0);
 </script>
 
 <div class="relative h-full w-full">
@@ -78,12 +90,27 @@
 			</button>
 		</div>
 	{:else}
-		<div class="pointer-events-none absolute left-3 top-3 z-10 flex items-center gap-2 rounded-md border border-border/50 bg-background/80 px-2.5 py-1 text-[11px] text-muted-foreground backdrop-blur">
+		<div class="pointer-events-none absolute left-3 top-3 z-10 flex items-center gap-2 rounded-lg border border-border/50 bg-background/80 px-2.5 py-1.5 text-[11px] text-muted-foreground shadow-sm backdrop-blur">
 			<Info class="size-3.5 text-fuchsia-300" />
-			<span>
-				Structure preview · {model?.phases.length ?? 0} phase{(model?.phases.length ?? 0) === 1 ? '' : 's'} ·
-				{model?.estimatedAgentCalls ?? 0} agent call{(model?.estimatedAgentCalls ?? 0) === 1 ? '' : 's'}
-			</span>
+			<span class="font-medium text-foreground/80">Structure preview</span>
+			<span class="text-muted-foreground/50">·</span>
+			<span>{model?.phases.length ?? 0} phase{(model?.phases.length ?? 0) === 1 ? '' : 's'}</span>
+			<span class="text-muted-foreground/50">·</span>
+			<span>{model?.estimatedAgentCalls ?? 0} agent call{(model?.estimatedAgentCalls ?? 0) === 1 ? '' : 's'}</span>
+		</div>
+		<div class="pointer-events-none absolute right-3 top-3 z-10 flex flex-col gap-1.5 rounded-lg border border-border/50 bg-background/80 px-2.5 py-2 text-[10px] shadow-sm backdrop-blur">
+			<div class="flex items-center gap-1.5">
+				<GitFork class="size-3 text-amber-300" />
+				<span class="text-muted-foreground">parallel — runs concurrently</span>
+			</div>
+			<div class="flex items-center gap-1.5">
+				<Braces class="size-3 text-teal-300" />
+				<span class="text-muted-foreground">typed — structured output</span>
+			</div>
+			<div class="flex items-center gap-1.5">
+				<span class="inline-block h-0 w-4 border-t-[1.5px] border-dashed border-amber-300"></span>
+				<span class="text-muted-foreground">fan-out / fan-in</span>
+			</div>
 		</div>
 		<SvelteFlow
 			bind:nodes
