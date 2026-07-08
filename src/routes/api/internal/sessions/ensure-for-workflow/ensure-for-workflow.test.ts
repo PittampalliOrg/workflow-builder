@@ -567,3 +567,46 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 		},
 	);
 });
+
+describe("dynamic-script spawn MCP wiring", () => {
+	beforeEach(() => {
+		mocks.state.hostCalls.length = 0;
+		mocks.workflowData.getWorkflowByRef.mockReset();
+		mocks.workflowData.getWorkflowByRef.mockResolvedValue(null);
+	});
+
+	it("wires the platform MCP server + session/guard headers for dynamic-script spawns", async () => {
+		// The spawning workflow is a dynamic-script — reviewers/agents spawned by
+		// the pump need the platform tools (trace_*, validate/save script); the
+		// depth header suppresses only run_workflow_script.
+		mocks.workflowData.getWorkflowByRef.mockResolvedValue({
+			engineType: "dynamic-script",
+		} as never);
+		const payload = await callEnsureForWorkflow({
+			runtime: "claude-code-cli",
+			modelSpec: "anthropic/claude-opus-4-8",
+			provider: "anthropic",
+			token: "claude-token",
+		});
+		const childInput = payload.childInput as Record<string, unknown>;
+		const config = childInput.agentConfig as { mcpServers?: Array<Record<string, unknown>> };
+		const servers = config.mcpServers ?? [];
+		expect(servers).toHaveLength(1);
+		expect(String(servers[0].url)).toContain("workflow-mcp-server");
+		const headers = servers[0].headers as Record<string, string>;
+		expect(headers["X-Wfb-Session-Id"]).toBe("sess-claude-code-cli");
+		expect(headers["X-Wfb-Script-Depth"]).toBe("1");
+	});
+
+	it("leaves single-shot SW-1.0 spawns without MCP wiring", async () => {
+		const payload = await callEnsureForWorkflow({
+			runtime: "claude-code-cli",
+			modelSpec: "anthropic/claude-opus-4-8",
+			provider: "anthropic",
+			token: "claude-token",
+		});
+		const childInput = payload.childInput as Record<string, unknown>;
+		const config = childInput.agentConfig as { mcpServers?: unknown[] };
+		expect(config.mcpServers ?? []).toEqual([]);
+	});
+});
