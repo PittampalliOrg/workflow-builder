@@ -5,12 +5,14 @@
  * (the Claude Code Workflow dialect: `phase()`, `agent()`, `parallel()`,
  * `pipeline()`, `workflow()`), not an SW 1.0 node graph. This adapter derives a
  * READ-ONLY structural preview of that script for the SvelteFlow canvas so a
- * dynamic-script workflow finally shows its shape (today it renders nothing).
+ * dynamic-script workflow shows its true SHAPE — including which steps fan out
+ * in parallel and what each step consumes / produces (prompt in, schema out).
  *
  * It is a lightweight STATIC scan, not an execution — the true call graph only
  * exists at run time (the journal). So it groups calls by the `phase()` marker
- * they appear under and renders one node per detected orchestration call,
- * clearly framed as a "structure preview". Dynamic loops / conditionals are
+ * they appear under, detects `parallel()` / `pipeline()` membership by paren
+ * nesting, and resolves `ARR.map(() => agent())` fan-outs to their element
+ * count + labels from the array literal. Dynamic loops/conditionals are
  * annotated (inLoop) rather than unrolled. The counterpart `specToGraph`
  * (spec-graph-adapter.ts) handles SW 1.0; this handles `engine: 'dynamic-script'`.
  */
@@ -41,6 +43,18 @@ export interface ScriptGraphCall {
   inLoop: boolean;
   /** Source order index (stable). */
   order: number;
+  /** id of the innermost enclosing parallel()/pipeline() group, else null. */
+  parentGroup: string | null;
+  /** For a parallel()/pipeline() call: its own group id (members reference it). */
+  groupId: string | null;
+  /** For a group junction: a resolved `ARR.map()` fan-out (count + labels). */
+  fanOut: { count: number; labels: string[] } | null;
+  /** A one-line preview of the agent()'s prompt (its "input"), or null. */
+  promptPreview: string | null;
+  /** Does the agent() carry an `opts.schema` (typed/structured output)? */
+  hasSchema: boolean;
+  /** Top-level output-schema property names, if statically resolvable. */
+  schemaProps: string[];
 }
 
 export interface ScriptGraphModel {
@@ -138,6 +152,32 @@ const PHASE_TITLES_FROM_META = (meta: unknown): string[] => {
   return out;
 };
 
+/** Index of the paren that matches the `(` at `open`, or src.length. */
+function matchParen(src: string, open: number): number {
+  let d = 0;
+  for (let i = open; i < src.length; i += 1) {
+    if (src[i] === "(") d += 1;
+    else if (src[i] === ")") {
+      d -= 1;
+      if (d === 0) return i;
+    }
+  }
+  return src.length;
+}
+
+/** Index of the brace matching the `{` at `open`, or src.length. */
+function matchBrace(src: string, open: number): number {
+  let d = 0;
+  for (let i = open; i < src.length; i += 1) {
+    if (src[i] === "{") d += 1;
+    else if (src[i] === "}") {
+      d -= 1;
+      if (d === 0) return i;
+    }
+  }
+  return src.length;
+}
+
 /** Read a string-literal argument starting at `open` (index of `(`). Returns
  * the literal text (without quotes) if the FIRST argument is a plain string /
  * template with no interpolation, else null. */
@@ -163,34 +203,206 @@ function firstStringArg(src: string, open: number): string | null {
   return null;
 }
 
-/** Read an `opts.label` string literal from the call's argument span. Scans
- * only up to the matching close paren so it never crosses into the next call. */
-function labelFromOpts(src: string, open: number): string | null {
-  let depth = 0;
-  for (let i = open; i < src.length; i += 1) {
+/** A prompt preview: the first string/template arg's leading static text (up to
+ * the first `${` interpolation), truncated. Reads a step's human "input". */
+function promptPreview(src: string, open: number): string | null {
+  let i = open + 1;
+  while (i < src.length && /\s/.test(src[i])) i += 1;
+  const q = src[i];
+  if (q !== "'" && q !== '"' && q !== "`") return null;
+  let out = "";
+  i += 1;
+  while (i < src.length) {
     const c = src[i];
-    if (c === "(") depth += 1;
-    else if (c === ")") {
-      depth -= 1;
-      if (depth === 0) break;
+    if (c === "\\") {
+      out += c === "\\" && src[i + 1] === "n" ? " " : (src[i + 1] ?? "");
+      i += 2;
+      continue;
     }
+    if (q === "`" && c === "$" && src[i + 1] === "{") break; // stop at interpolation
+    if (c === q) break;
+    out += c;
+    i += 1;
   }
-  // Bounded window from open to the close (or +2000 chars).
-  let end = open;
+  const clean = out.replace(/\s+/g, " ").trim();
+  return clean ? clean : null;
+}
+
+/** Read an `opts.label` string literal from the call's argument span. */
+function labelFromOpts(src: string, open: number): string | null {
+  const end = matchParen(src, open) + 1;
+  const span = src.slice(open, end);
+  const m = span.match(/label\s*:\s*(['"`])((?:\\.|(?!\1).)*)\1/);
+  return m ? m[2] : null;
+}
+
+/** Split the top-level (depth-0) elements of an object/array body `{...}`/`[...]`
+ * interior — used to count/label array elements and object keys. */
+function topLevelKeys(body: string): string[] {
+  const keys: string[] = [];
+  let depth = 0;
+  let i = 0;
+  let atElementStart = true;
+  const n = body.length;
+  while (i < n) {
+    const c = body[i];
+    if (c === "{" || c === "[" || c === "(") depth += 1;
+    else if (c === "}" || c === "]" || c === ")") depth -= 1;
+    else if (c === "'" || c === '"' || c === "`") {
+      // skip string
+      const q = c;
+      i += 1;
+      while (i < n && body[i] !== q) {
+        if (body[i] === "\\") i += 1;
+        i += 1;
+      }
+    } else if (depth === 0) {
+      if (atElementStart && /[A-Za-z_$'"]/.test(c)) {
+        // read an identifier or quoted key up to `:` or `,`
+        const m = body.slice(i).match(/^\s*(['"]?)([A-Za-z0-9_$]+)\1\s*:/);
+        if (m) keys.push(m[2]);
+        atElementStart = false;
+      }
+      if (c === ",") atElementStart = true;
+    }
+    i += 1;
+  }
+  return keys;
+}
+
+/** Count top-level elements in an array-literal interior `[ e0, e1, ... ]`. */
+function topLevelElements(body: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let cur = "";
+  let i = 0;
+  const n = body.length;
+  while (i < n) {
+    const c = body[i];
+    if (c === "{" || c === "[" || c === "(") depth += 1;
+    else if (c === "}" || c === "]" || c === ")") depth -= 1;
+    else if (c === "'" || c === '"' || c === "`") {
+      const q = c;
+      cur += c;
+      i += 1;
+      while (i < n && body[i] !== q) {
+        if (body[i] === "\\") {
+          cur += body[i] + (body[i + 1] ?? "");
+          i += 2;
+          continue;
+        }
+        cur += body[i];
+        i += 1;
+      }
+      cur += body[i] ?? "";
+      i += 1;
+      continue;
+    }
+    if (depth === 0 && c === ",") {
+      if (cur.trim()) parts.push(cur.trim());
+      cur = "";
+      i += 1;
+      continue;
+    }
+    cur += c;
+    i += 1;
+  }
+  if (cur.trim()) parts.push(cur.trim());
+  return parts;
+}
+
+/** A short label for one array element (an object's `key`/`name`/`id`, or a
+ * string literal, else null). */
+function elementLabel(el: string): string | null {
+  const key = el.match(/\b(?:key|name|id|slug|title)\s*:\s*(['"`])((?:\\.|(?!\1).)*)\1/);
+  if (key) return key[2];
+  const str = el.match(/^\s*(['"`])((?:\\.|(?!\1).)*)\1\s*$/);
+  if (str) return str[2];
+  return null;
+}
+
+/** Resolve a `parallel(IDENT.map(...))` fan-out from the array literal `IDENT`
+ * declared in the source: its element count + best-effort per-element labels. */
+function resolveFanOut(
+  src: string,
+  open: number,
+): { count: number; labels: string[] } | null {
+  const close = matchParen(src, open);
+  const argHead = src.slice(open + 1, Math.min(close, open + 200));
+  const m = argHead.match(/^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\.\s*map\s*\(/);
+  if (!m) return null;
+  const ident = m[1];
+  // Find `const IDENT = [ ... ]` (or let/var).
+  const declRe = new RegExp(
+    `\\b(?:const|let|var)\\s+${ident}\\s*=\\s*\\[`,
+  );
+  const dm = declRe.exec(src);
+  if (!dm) return null;
+  const bracketOpen = src.indexOf("[", dm.index);
+  if (bracketOpen < 0) return null;
+  // match the closing bracket
   let d = 0;
-  for (; end < src.length; end += 1) {
-    if (src[end] === "(") d += 1;
-    else if (src[end] === ")") {
+  let end = bracketOpen;
+  for (let i = bracketOpen; i < src.length; i += 1) {
+    if (src[i] === "[") d += 1;
+    else if (src[i] === "]") {
       d -= 1;
       if (d === 0) {
-        end += 1;
+        end = i;
         break;
       }
     }
   }
-  const span = src.slice(open, end);
-  const m = span.match(/label\s*:\s*(['"`])((?:\\.|(?!\1).)*)\1/);
-  return m ? m[2] : null;
+  const body = src.slice(bracketOpen + 1, end);
+  const els = topLevelElements(body);
+  if (els.length === 0) return null;
+  const labels = els.map((el, i) => elementLabel(el) ?? `#${i + 1}`);
+  return { count: els.length, labels };
+}
+
+/** Extract structured-output info from an agent()'s argument span: whether it
+ * carries `schema:` and, if resolvable, the top-level output property names. */
+function extractSchema(
+  src: string,
+  open: number,
+): { hasSchema: boolean; props: string[] } {
+  const close = matchParen(src, open);
+  const span = src.slice(open, close + 1);
+  const sm = span.match(/\bschema\s*:\s*/);
+  if (!sm) return { hasSchema: false, props: [] };
+  const at = open + (sm.index ?? 0) + sm[0].length;
+  // inline object schema: schema: { ... properties: { ... } }
+  if (src[at] === "{") {
+    const objEnd = matchBrace(src, at);
+    const obj = src.slice(at, objEnd + 1);
+    const pm = obj.match(/\bproperties\s*:\s*\{/);
+    if (pm) {
+      const pOpen = at + (pm.index ?? 0) + pm[0].length - 1;
+      const pEnd = matchBrace(src, pOpen);
+      return { hasSchema: true, props: topLevelKeys(src.slice(pOpen + 1, pEnd)) };
+    }
+    return { hasSchema: true, props: [] };
+  }
+  // named schema: schema: SOME_SCHEMA  → resolve its const definition
+  const idm = src.slice(at).match(/^\s*([A-Za-z_$][A-Za-z0-9_$]*)/);
+  if (idm) {
+    const ident = idm[1];
+    const declRe = new RegExp(`\\b(?:const|let|var)\\s+${ident}\\s*=\\s*\\{`);
+    const dm = declRe.exec(src);
+    if (dm) {
+      const braceOpen = src.indexOf("{", dm.index);
+      const braceEnd = matchBrace(src, braceOpen);
+      const obj = src.slice(braceOpen, braceEnd + 1);
+      const pm = obj.match(/\bproperties\s*:\s*\{/);
+      if (pm) {
+        const pOpen = braceOpen + (pm.index ?? 0) + pm[0].length - 1;
+        const pEnd = matchBrace(src, pOpen);
+        return { hasSchema: true, props: topLevelKeys(src.slice(pOpen + 1, pEnd)) };
+      }
+    }
+    return { hasSchema: true, props: [] };
+  }
+  return { hasSchema: true, props: [] };
 }
 
 function truncate(s: string, max = 48): string {
@@ -199,8 +411,8 @@ function truncate(s: string, max = 48): string {
 }
 
 /**
- * Parse a dynamic-script source into its structural model (phases + calls).
- * Pure + deterministic — safe to run anywhere (no execution).
+ * Parse a dynamic-script source into its structural model (phases + calls with
+ * group/fan-out/schema metadata). Pure + deterministic (no execution).
  */
 export function parseScriptStructure(
   script: string,
@@ -219,7 +431,6 @@ export function parseScriptStructure(
   const loopKw = /\b(while|for)\s*\(/g;
   let lm: RegExpExecArray | null;
   while ((lm = loopKw.exec(src))) {
-    // find the loop body `{ ... }` after the condition
     let i = lm.index + lm[0].length;
     let d = 1;
     for (; i < src.length && d > 0; i += 1) {
@@ -247,9 +458,18 @@ export function parseScriptStructure(
   let currentPhase: string | null = null;
   let order = 0;
   let tm: RegExpExecArray | null;
+  // Stack of open parallel/pipeline groups: a call's innermost enclosing group.
+  const groupStack: Array<{ id: string; close: number }> = [];
+
   while ((tm = tokenRe.exec(src))) {
     const kind = tm[1] as "phase" | ScriptGraphCallKind;
     const open = tm.index + tm[0].length - 1; // index of "("
+
+    // Pop groups we've scanned past.
+    while (groupStack.length && groupStack[groupStack.length - 1].close <= tm.index) {
+      groupStack.pop();
+    }
+
     if (kind === "phase") {
       const title = firstStringArg(src, open);
       if (title) {
@@ -258,28 +478,49 @@ export function parseScriptStructure(
       }
       continue;
     }
+
+    const parentGroup = groupStack.length
+      ? groupStack[groupStack.length - 1].id
+      : null;
+
     let label: string;
+    let promptText: string | null = null;
+    let schema = { hasSchema: false, props: [] as string[] };
+    let fanOut: { count: number; labels: string[] } | null = null;
+    let groupId: string | null = null;
+
     if (kind === "workflow") {
       const wfName = firstStringArg(src, open);
       label = wfName ? wfName : "workflow()";
+    } else if (kind === "parallel" || kind === "pipeline") {
+      groupId = `g${order}`;
+      fanOut = resolveFanOut(src, open);
+      label = kind === "parallel" ? "parallel" : "pipeline";
+      groupStack.push({ id: groupId, close: matchParen(src, open) });
     } else {
+      // agent()
       const optLabel = labelFromOpts(src, open);
+      promptText = promptPreview(src, open);
       if (optLabel) label = optLabel;
-      else {
-        const promptArg = firstStringArg(src, open);
-        label = promptArg ? truncate(promptArg) : `${kind}()`;
-      }
+      else label = promptText ? truncate(promptText) : "agent()";
+      schema = extractSchema(src, open);
     }
+
     calls.push({
       kind,
       label,
       phase: currentPhase,
       inLoop: inLoopAt(open),
       order: order++,
+      parentGroup,
+      groupId,
+      fanOut,
+      promptPreview: promptText,
+      hasSchema: schema.hasSchema,
+      schemaProps: schema.props,
     });
   }
 
-  // Union of declared + discovered phases, preserving declared order first.
   const phases: string[] = [...declaredPhases];
   for (const p of discoveredPhases) if (!phases.includes(p)) phases.push(p);
 
@@ -301,10 +542,18 @@ const VARIANT_ICON: Record<ScriptNodeVariant, string> = {
   end: "■",
 };
 
+// Layout geometry — a layered top-to-bottom flow. Every CALL node is a uniform
+// NODE_W-wide card; parallel members spread across centered columns.
+const NODE_W = 264;
+const COL_GAP = 296;
+const ROW_H = 176;
+const CENTER = 560;
+
 /**
  * Convert a dynamic-script source into a read-only SvelteFlow graph: Start →
- * phase lanes (each phase header followed by its calls in order) → End. Calls
- * with no enclosing phase collect under an implicit "(no phase)" lane.
+ * phase headers → their calls (sequential stacked, or parallel/pipeline members
+ * fanned across columns) → End. Parallel groups fan out from a junction and back
+ * in; `ARR.map()` fan-outs render one column per resolved element.
  */
 export function scriptToGraph(
   script: string,
@@ -313,47 +562,51 @@ export function scriptToGraph(
   const model = parseScriptStructure(script, meta);
   const nodes: Node[] = [];
   const edges: Edge[] = [];
-  const X = 260;
-  const XCALL = 300;
-  const Y_STEP = 96;
-  let y = 40;
 
-  const push = (
+  const pushNode = (
     id: string,
     variant: ScriptNodeVariant,
     label: string,
+    y: number,
+    centerX: number,
     extra: Record<string, unknown> = {},
-    x = X,
   ) => {
     nodes.push({
       id,
       type: SCRIPT_NODE_TYPE,
-      position: { x, y },
+      position: { x: Math.round(centerX - NODE_W / 2), y },
       data: {
         label,
         variant,
         icon: VARIANT_ICON[variant],
         status: "idle",
+        width: NODE_W,
         ...extra,
       },
       draggable: false,
       selectable: variant !== "start" && variant !== "end",
     });
-    y += Y_STEP;
   };
-  const link = (source: string, target: string, label?: string) => {
+  const link = (
+    source: string,
+    target: string,
+    opts: { parallel?: boolean; label?: string } = {},
+  ) => {
     edges.push({
       id: `${source}->${target}`,
       source,
       target,
-      ...(label ? { label } : {}),
+      data: { parallel: Boolean(opts.parallel) },
+      ...(opts.label ? { label: opts.label } : {}),
     });
   };
 
-  push("__start__", "start", model.name || "Start");
-  let prev = "__start__";
+  let y = 24;
+  pushNode("__start__", "start", model.name || "Start", y, CENTER);
+  let prev: string[] = ["__start__"];
+  y += 120;
 
-  // Group calls by phase in phase order; unphased calls go last under a lane.
+  // Group calls by phase (declared order first); unphased collect under a lane.
   const laneOrder: string[] = [...model.phases];
   const unphased = model.calls.filter((c) => c.phase === null);
   const byPhase = new Map<string, ScriptGraphCall[]>();
@@ -367,38 +620,118 @@ export function scriptToGraph(
     byPhase.get(c.phase)!.push(c);
   }
 
-  const emitCall = (c: ScriptGraphCall) => {
-    const id = `call-${c.order}`;
-    const suffix = c.inLoop ? " ↻" : "";
-    push(
-      id,
-      c.kind,
-      c.label + suffix,
-      { kind: c.kind, inLoop: c.inLoop, phase: c.phase },
-      XCALL,
-    );
-    link(prev, id);
-    prev = id;
+  const columnsFor = (junction: ScriptGraphCall, members: ScriptGraphCall[]) => {
+    // Explicit thunk members win; else an ARR.map() fan-out clones the single
+    // template across the resolved element labels (capped for sanity).
+    if (members.length > 1) {
+      return members.map((m) => ({
+        id: `call-${m.order}`,
+        label: m.label,
+        call: m,
+      }));
+    }
+    if (junction.fanOut && junction.fanOut.count > 1) {
+      const cap = Math.min(junction.fanOut.count, 8);
+      const template = members[0] ?? null;
+      return Array.from({ length: cap }, (_, i) => ({
+        id: `call-${junction.order}-fan-${i}`,
+        label: junction.fanOut!.labels[i] ?? `#${i + 1}`,
+        call: template,
+      }));
+    }
+    return members.map((m) => ({ id: `call-${m.order}`, label: m.label, call: m }));
+  };
+
+  const emitCallData = (c: ScriptGraphCall | null, labelOverride?: string) => ({
+    kind: c?.kind ?? "agent",
+    inLoop: c?.inLoop ?? false,
+    phase: c?.phase ?? null,
+    promptPreview: c?.promptPreview ?? null,
+    hasSchema: c?.hasSchema ?? false,
+    schemaProps: c?.schemaProps ?? [],
+    ...(labelOverride ? { memberLabel: labelOverride } : {}),
+  });
+
+  const emitPhaseCalls = (phaseCalls: ScriptGraphCall[]) => {
+    // Walk calls in order; a parallel/pipeline junction consumes its members.
+    const consumed = new Set<number>();
+    for (const c of phaseCalls) {
+      if (consumed.has(c.order)) continue;
+
+      if (c.kind === "parallel" || c.kind === "pipeline") {
+        const members = phaseCalls.filter((m) => m.parentGroup === c.groupId);
+        members.forEach((m) => consumed.add(m.order));
+        const cols = columnsFor(c, members);
+        const fanCount = cols.length || c.fanOut?.count || 0;
+
+        // Junction node (compact branch point).
+        const jid = `call-${c.order}`;
+        pushNode(jid, c.kind, c.label, y, CENTER, {
+          kind: c.kind,
+          fanCount,
+          fanOut: Boolean(c.fanOut),
+          inLoop: c.inLoop,
+        });
+        for (const p of prev) link(p, jid);
+        y += 132;
+
+        // Member columns (fan out from the junction).
+        const m = Math.max(1, cols.length);
+        const total = (m - 1) * COL_GAP;
+        const isPipeline = c.kind === "pipeline";
+        const colIds: string[] = [];
+        cols.forEach((col, i) => {
+          const cx = CENTER - total / 2 + i * COL_GAP;
+          const variant: ScriptNodeVariant = col.call?.kind ?? "agent";
+          pushNode(col.id, variant, col.label, y, cx, {
+            ...emitCallData(col.call, col.label),
+            label: col.label,
+            column: i,
+          });
+          colIds.push(col.id);
+          if (isPipeline && i > 0) {
+            link(colIds[i - 1], col.id, { label: "then" });
+          } else {
+            link(jid, col.id, { parallel: !isPipeline });
+          }
+        });
+        // Fan-in: the next node depends on all leaf columns (parallel) or the
+        // last stage (pipeline).
+        prev = isPipeline && colIds.length ? [colIds[colIds.length - 1]] : colIds;
+        y += ROW_H;
+        continue;
+      }
+
+      // Plain sequential call.
+      if (c.parentGroup) continue; // safety: members handled above
+      const id = `call-${c.order}`;
+      pushNode(id, c.kind, c.label, y, CENTER, emitCallData(c));
+      for (const p of prev) link(p, id);
+      prev = [id];
+      y += ROW_H;
+    }
   };
 
   for (const phase of laneOrder) {
     const phaseCalls = byPhase.get(phase) ?? [];
     const pid = `phase-${phase}`;
-    push(pid, "phase", phase, { callCount: phaseCalls.length });
-    link(prev, pid);
-    prev = pid;
-    for (const c of phaseCalls) emitCall(c);
+    pushNode(pid, "phase", phase, y, CENTER, { callCount: phaseCalls.length });
+    for (const p of prev) link(p, pid);
+    prev = [pid];
+    y += 116;
+    emitPhaseCalls(phaseCalls);
   }
   if (unphased.length > 0) {
     const pid = "phase-__unphased__";
-    push(pid, "phase", "(no phase)", { callCount: unphased.length });
-    link(prev, pid);
-    prev = pid;
-    for (const c of unphased) emitCall(c);
+    pushNode(pid, "phase", "(no phase)", y, CENTER, { callCount: unphased.length });
+    for (const p of prev) link(p, pid);
+    prev = [pid];
+    y += 116;
+    emitPhaseCalls(unphased);
   }
 
-  push("__end__", "end", "End");
-  link(prev, "__end__");
+  pushNode("__end__", "end", "End", y, CENTER);
+  for (const p of prev) link(p, "__end__");
 
   return { nodes, edges, model };
 }

@@ -1,6 +1,17 @@
 <script lang="ts">
 	import { Handle, Position } from '@xyflow/svelte';
-	import { Bot, GitFork, ArrowRight, Layers, Play, Square, Diamond, Repeat } from '@lucide/svelte';
+	import {
+		Bot,
+		GitFork,
+		ArrowRight,
+		Layers,
+		Play,
+		Square,
+		Diamond,
+		Repeat,
+		CornerDownRight,
+		Braces
+	} from '@lucide/svelte';
 	import type { ScriptNodeVariant } from '$lib/utils/script-graph-adapter';
 
 	interface Props {
@@ -14,65 +25,155 @@
 	const label = $derived((data.label as string) ?? '');
 	const inLoop = $derived(Boolean(data.inLoop));
 	const callCount = $derived(data.callCount as number | undefined);
+	const fanCount = $derived(data.fanCount as number | undefined);
+	const width = $derived((data.width as number | undefined) ?? 264);
+	const promptPreview = $derived(data.promptPreview as string | null);
+	const hasSchema = $derived(Boolean(data.hasSchema));
+	const schemaProps = $derived((data.schemaProps as string[] | undefined) ?? []);
 
-	// Per-variant visual identity — a distinct hue + icon so the phase lanes and
-	// call kinds read at a glance (the dynamic-script "shape preview").
+	// One accent per construct so phases and call kinds read at a glance while
+	// every card keeps the same footprint (uniform width + rhythm).
 	const STYLE: Record<
 		ScriptNodeVariant,
-		{ ring: string; bg: string; fg: string; Icon: typeof Bot; kind: string }
+		{ accent: string; ring: string; glow: string; chip: string; Icon: typeof Bot; kind: string }
 	> = {
-		start: { ring: 'border-emerald-400/40', bg: 'bg-emerald-500/10', fg: 'text-emerald-300', Icon: Play, kind: 'Start' },
-		phase: { ring: 'border-fuchsia-400/40', bg: 'bg-fuchsia-500/10', fg: 'text-fuchsia-300', Icon: Diamond, kind: 'Phase' },
-		agent: { ring: 'border-teal-400/40', bg: 'bg-teal-500/10', fg: 'text-teal-300', Icon: Bot, kind: 'agent()' },
-		parallel: { ring: 'border-amber-400/40', bg: 'bg-amber-500/10', fg: 'text-amber-300', Icon: GitFork, kind: 'parallel()' },
-		pipeline: { ring: 'border-sky-400/40', bg: 'bg-sky-500/10', fg: 'text-sky-300', Icon: ArrowRight, kind: 'pipeline()' },
-		workflow: { ring: 'border-indigo-400/40', bg: 'bg-indigo-500/10', fg: 'text-indigo-300', Icon: Layers, kind: 'workflow()' },
-		end: { ring: 'border-slate-400/40', bg: 'bg-slate-500/10', fg: 'text-slate-300', Icon: Square, kind: 'End' }
+		start: { accent: 'text-emerald-300', ring: 'border-emerald-400/40', glow: 'from-emerald-500/15', chip: 'bg-emerald-500/15 text-emerald-200', Icon: Play, kind: 'Start' },
+		phase: { accent: 'text-fuchsia-300', ring: 'border-fuchsia-400/40', glow: 'from-fuchsia-500/15', chip: 'bg-fuchsia-500/15 text-fuchsia-200', Icon: Diamond, kind: 'Phase' },
+		agent: { accent: 'text-teal-300', ring: 'border-teal-400/40', glow: 'from-teal-500/12', chip: 'bg-teal-500/15 text-teal-200', Icon: Bot, kind: 'agent' },
+		parallel: { accent: 'text-amber-300', ring: 'border-amber-400/40', glow: 'from-amber-500/15', chip: 'bg-amber-500/15 text-amber-200', Icon: GitFork, kind: 'parallel' },
+		pipeline: { accent: 'text-sky-300', ring: 'border-sky-400/40', glow: 'from-sky-500/15', chip: 'bg-sky-500/15 text-sky-200', Icon: ArrowRight, kind: 'pipeline' },
+		workflow: { accent: 'text-indigo-300', ring: 'border-indigo-400/40', glow: 'from-indigo-500/15', chip: 'bg-indigo-500/15 text-indigo-200', Icon: Layers, kind: 'workflow' },
+		end: { accent: 'text-slate-300', ring: 'border-slate-400/40', glow: 'from-slate-500/15', chip: 'bg-slate-500/15 text-slate-200', Icon: Square, kind: 'End' }
 	};
 	const s = $derived(STYLE[variant]);
+
 	const isPhase = $derived(variant === 'phase');
 	const isEndpoint = $derived(variant === 'start' || variant === 'end');
+	const isJunction = $derived(variant === 'parallel' || variant === 'pipeline');
+
+	const visibleProps = $derived(schemaProps.slice(0, 3));
+	const extraProps = $derived(Math.max(0, schemaProps.length - visibleProps.length));
 </script>
 
-<div
-	class="relative rounded-lg border {s.ring} {s.bg} shadow-sm transition
-		{selected ? 'ring-2 ring-primary/60' : ''}
-		{isPhase ? 'px-3 py-1.5 min-w-[220px]' : isEndpoint ? 'px-3 py-1.5' : 'px-3 py-2 min-w-[240px]'}"
->
-	{#if !isEndpoint || variant === 'end'}
-		<Handle type="target" position={Position.Top} class="!size-2 !border-none !bg-muted-foreground/40" />
+<div class="relative" style="width: {width}px">
+	{#if !(variant === 'start')}
+		<Handle
+			type="target"
+			position={Position.Top}
+			class="!size-2 !border !border-background !bg-muted-foreground/50"
+		/>
 	{/if}
 
-	{#if isPhase}
-		<div class="flex items-center gap-2">
-			<s.Icon class="size-3.5 {s.fg}" />
-			<span class="text-[11px] font-semibold uppercase tracking-wide {s.fg}">{label}</span>
+	{#if isEndpoint}
+		<!-- Start / End: a centered capsule -->
+		<div class="flex justify-center">
+			<div
+				class="inline-flex items-center gap-2 rounded-full border {s.ring} bg-gradient-to-b {s.glow} to-background/60 px-4 py-1.5 shadow-sm backdrop-blur"
+			>
+				<s.Icon class="size-3.5 {s.accent}" />
+				<span class="max-w-[180px] truncate text-xs font-semibold text-foreground/90">{label}</span>
+			</div>
+		</div>
+	{:else if isPhase}
+		<!-- Phase: a full-width lane header band -->
+		<div
+			class="flex items-center gap-2 rounded-lg border {s.ring} bg-gradient-to-r {s.glow} to-background/40 px-3 py-2 shadow-sm backdrop-blur
+				{selected ? 'ring-2 ring-primary/60' : ''}"
+		>
+			<div class="flex size-6 items-center justify-center rounded-md {s.chip}">
+				<s.Icon class="size-3.5" />
+			</div>
+			<div class="min-w-0 flex-1">
+				<div class="text-[9px] font-semibold uppercase tracking-[0.14em] {s.accent}">Phase</div>
+				<div class="truncate text-[13px] font-semibold text-foreground/90" title={label}>{label}</div>
+			</div>
 			{#if callCount != null}
-				<span class="ml-auto rounded-full bg-background/60 px-1.5 text-[10px] text-muted-foreground">
-					{callCount} call{callCount === 1 ? '' : 's'}
+				<span class="shrink-0 rounded-full bg-background/70 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+					{callCount} step{callCount === 1 ? '' : 's'}
 				</span>
 			{/if}
 		</div>
-	{:else}
-		<div class="flex items-start gap-2">
-			<div class="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md {s.bg} {s.ring} border">
-				<s.Icon class="size-3.5 {s.fg}" />
+	{:else if isJunction}
+		<!-- parallel() / pipeline(): a compact branch chip -->
+		<div class="flex justify-center">
+			<div
+				class="inline-flex items-center gap-1.5 rounded-full border {s.ring} bg-gradient-to-b {s.glow} to-background/60 px-3 py-1 shadow-sm backdrop-blur
+					{selected ? 'ring-2 ring-primary/60' : ''}"
+			>
+				<s.Icon class="size-3.5 {s.accent}" />
+				<span class="text-[11px] font-semibold {s.accent}">{s.kind}</span>
+				{#if fanCount}
+					<span class="rounded-full {s.chip} px-1.5 text-[10px] font-bold tabular-nums">×{fanCount}</span>
+				{/if}
+				{#if inLoop}
+					<Repeat class="size-3 text-muted-foreground" />
+				{/if}
 			</div>
-			<div class="min-w-0 flex-1">
-				<div class="flex items-center gap-1.5">
-					<span class="text-[10px] font-medium uppercase tracking-wide {s.fg}">{s.kind}</span>
+		</div>
+	{:else}
+		<!-- agent() / workflow(): a uniform call card with IN (prompt) / OUT (schema) -->
+		<div
+			class="overflow-hidden rounded-xl border {s.ring} bg-gradient-to-b {s.glow} to-card/80 shadow-md backdrop-blur transition
+				hover:-translate-y-0.5 hover:shadow-lg
+				{selected ? 'ring-2 ring-primary/60' : ''}"
+		>
+			<div class="flex items-center gap-2 border-b border-border/40 px-3 py-1.5">
+				<div class="flex size-6 shrink-0 items-center justify-center rounded-md {s.chip}">
+					<s.Icon class="size-3.5" />
+				</div>
+				<span class="text-[10px] font-semibold uppercase tracking-[0.12em] {s.accent}">{s.kind}()</span>
+				<div class="ml-auto flex items-center gap-1">
 					{#if inLoop}
-						<span class="inline-flex items-center gap-0.5 rounded bg-background/60 px-1 text-[9px] text-muted-foreground" title="Runs inside a loop">
+						<span class="inline-flex items-center gap-0.5 rounded bg-background/70 px-1 text-[9px] text-muted-foreground" title="Runs inside a loop">
 							<Repeat class="size-2.5" /> loop
 						</span>
 					{/if}
+					{#if hasSchema}
+						<span class="inline-flex items-center gap-0.5 rounded {s.chip} px-1 text-[9px] font-medium" title="Structured (schema-typed) output">
+							<Braces class="size-2.5" /> typed
+						</span>
+					{/if}
 				</div>
-				<div class="truncate text-xs font-medium text-foreground/90" title={label}>{label}</div>
+			</div>
+
+			<div class="px-3 py-2">
+				<div class="truncate text-[13px] font-semibold text-foreground/90" title={label}>{label}</div>
+
+				{#if promptPreview}
+					<div class="mt-1.5 flex items-start gap-1.5">
+						<span class="mt-[1px] shrink-0 rounded bg-background/70 px-1 text-[8px] font-bold uppercase tracking-wide text-muted-foreground/80">in</span>
+						<span class="line-clamp-1 text-[11px] leading-snug text-muted-foreground" title={promptPreview}>{promptPreview}</span>
+					</div>
+				{/if}
+
+				{#if hasSchema}
+					<div class="mt-1.5 flex items-start gap-1.5">
+						<span class="mt-[1px] shrink-0 rounded {s.chip} px-1 text-[8px] font-bold uppercase tracking-wide">out</span>
+						{#if visibleProps.length > 0}
+							<div class="flex flex-wrap items-center gap-1">
+								{#each visibleProps as p (p)}
+									<span class="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[10px] text-foreground/70">{p}</span>
+								{/each}
+								{#if extraProps > 0}
+									<span class="text-[10px] text-muted-foreground/70">+{extraProps}</span>
+								{/if}
+							</div>
+						{:else}
+							<span class="inline-flex items-center gap-1 text-[10px] text-muted-foreground/80">
+								<CornerDownRight class="size-2.5" /> structured object
+							</span>
+						{/if}
+					</div>
+				{/if}
 			</div>
 		</div>
 	{/if}
 
-	{#if !isEndpoint || variant === 'start'}
-		<Handle type="source" position={Position.Bottom} class="!size-2 !border-none !bg-muted-foreground/40" />
+	{#if !(variant === 'end')}
+		<Handle
+			type="source"
+			position={Position.Bottom}
+			class="!size-2 !border !border-background !bg-muted-foreground/50"
+		/>
 	{/if}
 </div>
