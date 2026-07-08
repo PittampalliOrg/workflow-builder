@@ -340,6 +340,50 @@ export async function getMultiTraceLogs(
 	return queryObservabilityLogs(`WHERE TraceId IN (${inClause}) ${serviceNameClause(serviceNames)}`);
 }
 
+/**
+ * SQL-side log search for the trace-analyst `/logs` route: pushes the SpanId /
+ * errorsOnly filters AND the row LIMIT into ClickHouse so a huge trace never
+ * ships all its log rows across the dev->hub egress (the un-bounded
+ * `getMultiTraceLogs` fetch-all-then-slice is a latency hazard on 16k-row
+ * traces). Mirrors `searchTraceSpans`; own query because `queryObservabilityLogs`
+ * appends `ORDER BY` after the caller's where-clause (can't inject LIMIT there).
+ */
+export async function searchTraceLogs(
+	traceIds: string[],
+	opts: { spanId?: string; errorsOnly?: boolean; limit?: number } = {}
+): Promise<ObservabilityLogEntry[]> {
+	const sanitized = sanitizeTraceIds(traceIds);
+	if (sanitized.length === 0) return [];
+	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
+	const clauses = [`TraceId IN (${inClause})`];
+	if (opts.spanId?.trim()) {
+		clauses.push(`SpanId = '${escapeClickHouseString(opts.spanId.trim())}'`);
+	}
+	if (opts.errorsOnly) {
+		clauses.push(
+			`(positionCaseInsensitive(SeverityText, 'error') > 0` +
+				` OR positionCaseInsensitive(SeverityText, 'fatal') > 0)`
+		);
+	}
+	const limit = Math.min(200, Math.max(1, opts.limit ?? 50));
+	const rows = await queryClickHouse(`
+		SELECT
+			Timestamp,
+			TraceId,
+			SpanId,
+			ServiceName,
+			SeverityText,
+			Body,
+			ResourceAttributes,
+			LogAttributes
+		FROM ${CLICKHOUSE_DB}.otel_logs
+		WHERE ${clauses.join(' AND ')}
+		ORDER BY Timestamp ASC
+		LIMIT ${limit}
+	`);
+	return rows.map(mapObservabilityLog);
+}
+
 export async function getSessionLogs(sessionId: string): Promise<ObservabilityLogEntry[]> {
 	const escaped = escapeClickHouseString(sessionId.trim());
 	if (!escaped) return [];
