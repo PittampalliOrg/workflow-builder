@@ -40,13 +40,19 @@ export function isClickHouseConfigured(): boolean {
 	return Boolean(env.CLICKHOUSE_URL && env.CLICKHOUSE_URL.trim());
 }
 
+/** Hard ceiling on any single ClickHouse round-trip. A stalled connection
+ * through the dev→hub egress must FAIL (callers degrade) rather than hang the
+ * request chain — a hung trace-tool fetch stalls an agent activity forever. */
+const CLICKHOUSE_TIMEOUT_MS = Number(process.env.CLICKHOUSE_TIMEOUT_MS) || 30_000;
+
 export async function queryClickHouse(sql: string): Promise<Record<string, unknown>[]> {
 	const res = await fetch(CLICKHOUSE_URL, {
 		method: 'POST',
 		headers: {
 			Authorization: `Basic ${Buffer.from(`${CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD}`).toString('base64')}`
 		},
-		body: `${sql} FORMAT JSONEachRow`
+		body: `${sql} FORMAT JSONEachRow`,
+		signal: AbortSignal.timeout(CLICKHOUSE_TIMEOUT_MS)
 	});
 	if (!res.ok) throw new Error(`ClickHouse error: ${res.status}`);
 	const text = await res.text();
@@ -366,6 +372,52 @@ export async function getMultiTraceSpans(
 	if (sanitized.length === 0) return [];
 	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
 	return queryTraceSpans(`WHERE TraceId IN (${inClause}) ${serviceNameClause(serviceNames)}`);
+}
+
+/**
+ * SQL-side span search for the trace-analyst tools: substring match over
+ * operation/service/status-message/session-id with LIMIT pushed into
+ * ClickHouse — a search must never require shipping the full trace bundle.
+ */
+export async function searchTraceSpans(
+	traceIds: string[],
+	opts: { query?: string; errorsOnly?: boolean; limit?: number } = {}
+): Promise<ObservabilityTraceSpan[]> {
+	const sanitized = sanitizeTraceIds(traceIds);
+	if (sanitized.length === 0) return [];
+	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
+	const clauses = [`TraceId IN (${inClause})`];
+	if (opts.errorsOnly) clauses.push(`StatusCode = 'Error'`);
+	if (opts.query?.trim()) {
+		const q = escapeClickHouseString(opts.query.trim());
+		clauses.push(
+			`(positionCaseInsensitive(SpanName, '${q}') > 0` +
+				` OR positionCaseInsensitive(ServiceName, '${q}') > 0` +
+				` OR positionCaseInsensitive(StatusMessage, '${q}') > 0` +
+				` OR positionCaseInsensitive(SpanAttributes['session.id'], '${q}') > 0)`
+		);
+	}
+	const limit = Math.min(200, Math.max(1, opts.limit ?? 40));
+	const rows = await queryClickHouse(`
+		SELECT
+			TraceId,
+			SpanId,
+			ParentSpanId,
+			SpanName,
+			SpanKind,
+			ServiceName,
+			Duration/1000000 AS DurationMs,
+			StatusCode,
+			StatusMessage,
+			Timestamp,
+			SpanAttributes,
+			ResourceAttributes
+		FROM ${CLICKHOUSE_DB}.otel_traces
+		WHERE ${clauses.join(' AND ')}
+		ORDER BY Timestamp ASC
+		LIMIT ${limit}
+	`);
+	return enrichTraceDepths(rows.map(mapObservabilityTraceSpan));
 }
 
 export async function getSessionTraceSpans(sessionId: string): Promise<ObservabilityTraceSpan[]> {

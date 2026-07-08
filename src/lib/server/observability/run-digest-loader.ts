@@ -24,7 +24,53 @@ export type DigestExecutionRow = {
 	workflowSessionId?: string | null;
 };
 
-export async function loadExecutionTraceBundle(execution: DigestExecutionRow) {
+type TraceBundle = {
+	calls: {
+		callId: string;
+		seq: number;
+		kind: string;
+		label: string | null;
+		phase: string | null;
+		status: string;
+		sessionId: string | null;
+		retries: number;
+		errorCode: string | null;
+	}[];
+	traceIds: string[];
+	spans: Awaited<ReturnType<typeof getMultiTraceSpans>>;
+	llmSpans: Awaited<ReturnType<typeof getMultiTraceLlmSpans>>;
+};
+
+// Short-TTL bundle cache: the run page polls the digest (6s) + graph (5s)
+// while trace tools fire in bursts — each used to re-fetch the FULL span
+// bundle from ClickHouse (~1MB over the dev→hub egress), and the resulting
+// concurrent streams are exactly what stalled a reviewer's tool call. One
+// fetch per execution per TTL window is plenty for eventually-consistent
+// telemetry.
+const BUNDLE_TTL_MS = Number(process.env.TRACE_BUNDLE_CACHE_TTL_MS) || 15_000;
+const BUNDLE_CACHE_MAX = 24;
+const bundleCache = new Map<string, { at: number; bundle: Promise<TraceBundle> }>();
+
+export async function loadExecutionTraceBundle(
+	execution: DigestExecutionRow
+): Promise<TraceBundle> {
+	const cached = bundleCache.get(execution.id);
+	if (cached && Date.now() - cached.at < BUNDLE_TTL_MS) return cached.bundle;
+	const bundle = loadExecutionTraceBundleUncached(execution).catch((err) => {
+		bundleCache.delete(execution.id);
+		throw err;
+	});
+	bundleCache.set(execution.id, { at: Date.now(), bundle });
+	if (bundleCache.size > BUNDLE_CACHE_MAX) {
+		const oldest = [...bundleCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+		if (oldest) bundleCache.delete(oldest[0]);
+	}
+	return bundle;
+}
+
+async function loadExecutionTraceBundleUncached(
+	execution: DigestExecutionRow
+): Promise<TraceBundle> {
 	const app = getApplicationAdapters();
 	const calls = await app.scriptCalls
 		.listInternal(execution.id)
@@ -47,7 +93,43 @@ export async function loadExecutionTraceBundle(execution: DigestExecutionRow) {
 	let spans: Awaited<ReturnType<typeof getMultiTraceSpans>> = [];
 	let llmSpans: Awaited<ReturnType<typeof getMultiTraceLlmSpans>> = [];
 	if (isClickHouseConfigured()) {
-		traceIds = await resolveExecutionTraceIds({
+		// Degrade, never throw: a slow/terminated ClickHouse egress must yield a
+		// journal-only digest (matching the traces-route 503-degradation
+		// convention), not a 500 on the run page's digest poll.
+		try {
+			traceIds = await resolveExecutionTraceIds({
+				id: execution.id,
+				output: execution.output,
+				primaryTraceId: execution.primaryTraceId,
+				workflowSessionId: execution.workflowSessionId ?? null,
+				startedAt: execution.startedAt ? new Date(execution.startedAt) : new Date(0),
+				completedAt: execution.completedAt ? new Date(execution.completedAt) : null
+			});
+			if (traceIds.length > 0) {
+				[spans, llmSpans] = await Promise.all([
+					getMultiTraceSpans(traceIds),
+					getMultiTraceLlmSpans(traceIds)
+				]);
+			}
+		} catch (err) {
+			console.warn(
+				`[trace-bundle] ClickHouse load degraded for ${execution.id}:`,
+				err instanceof Error ? err.message : err
+			);
+			spans = [];
+			llmSpans = [];
+		}
+	}
+	return { calls, traceIds, spans, llmSpans };
+}
+
+/** Trace ids only — for SQL-side span search (no bundle fetch). */
+export async function resolveTraceIdsForExecution(
+	execution: DigestExecutionRow
+): Promise<string[]> {
+	if (!isClickHouseConfigured()) return [];
+	try {
+		return await resolveExecutionTraceIds({
 			id: execution.id,
 			output: execution.output,
 			primaryTraceId: execution.primaryTraceId,
@@ -55,14 +137,9 @@ export async function loadExecutionTraceBundle(execution: DigestExecutionRow) {
 			startedAt: execution.startedAt ? new Date(execution.startedAt) : new Date(0),
 			completedAt: execution.completedAt ? new Date(execution.completedAt) : null
 		});
-		if (traceIds.length > 0) {
-			[spans, llmSpans] = await Promise.all([
-				getMultiTraceSpans(traceIds),
-				getMultiTraceLlmSpans(traceIds)
-			]);
-		}
+	} catch {
+		return [];
 	}
-	return { calls, traceIds, spans, llmSpans };
 }
 
 export async function buildRunDigestForExecution(

@@ -15,6 +15,7 @@ const WORKFLOW_BUILDER_URL =
 	process.env.WORKFLOW_BUILDER_URL ??
 	"http://workflow-builder.workflow-builder.svc.cluster.local:3000";
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN ?? "";
+const TRACE_TOOL_TIMEOUT_MS = Number(process.env.TRACE_TOOL_TIMEOUT_MS) || 45_000;
 
 function headers(): Record<string, string> {
 	const h: Record<string, string> = {
@@ -53,9 +54,12 @@ export function registerTraceTools(
 			throw new Error("No session context — trace tools require a session-scoped MCP connection");
 		}
 		const qs = params ? `?${new URLSearchParams(params)}` : "";
+		// Hard timeout: a stalled BFF/ClickHouse round-trip must surface as a tool
+		// ERROR the agent can react to — an un-timed-out fetch here hangs the
+		// agent's run_tool activity (and its whole session) indefinitely.
 		const resp = await fetchImpl(
 			`${WORKFLOW_BUILDER_URL}/api/internal/observability/executions/${encodeURIComponent(executionId)}${path}${qs}`,
-			{ headers: headers() },
+			{ headers: headers(), signal: AbortSignal.timeout(TRACE_TOOL_TIMEOUT_MS) },
 		);
 		const body = await resp.json().catch(() => ({}));
 		if (!resp.ok) {
