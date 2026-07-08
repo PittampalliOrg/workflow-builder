@@ -13,6 +13,8 @@ Run (no cluster, no grpc):
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import re
 import urllib.parse
@@ -349,3 +351,52 @@ def test_conn_ext_id_injected_for_all_targets():
     assert sdk["piece"]["headers"]["X-Connection-External-Id"] == "conn_123"
     dapr, _ = emit_dapr_agent_py(ac)
     assert dapr["piece"]["headers"]["X-Connection-External-Id"] == "conn_123"
+
+
+def _decode_schema_header(value: str) -> dict:
+    padded = value + ("=" * (-len(value) % 4))
+    return json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+
+
+def test_cli_structured_output_uses_workflow_mcp_server():
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
+    cli = emit_claude_code_cli_servers(
+        {
+            "structuredOutputMode": "tool",
+            "responseJsonSchema": schema,
+        }
+    )
+    assert set(cli) == {"structured"}
+    structured = cli["structured"]
+    assert structured["type"] == "http"
+    assert structured["url"] == "http://workflow-mcp-server.workflow-builder.svc.cluster.local:3200/mcp"
+    assert structured["headers"]["X-Wfb-Mcp-Mode"] == "structured-output"
+    assert (
+        _decode_schema_header(structured["headers"]["X-Wfb-Structured-Output-Schema-B64"])
+        == schema
+    )
+
+
+def test_cli_structured_output_dedups_existing_structured_server():
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+    cli = emit_claude_code_cli_servers(
+        {
+            "mcpServers": [
+                {
+                    "name": "structured",
+                    "transport": "streamable_http",
+                    "url": "https://example.com/mcp",
+                }
+            ],
+            "structuredOutputMode": "tool",
+            "responseJsonSchema": schema,
+        }
+    )
+    assert set(cli) == {"structured", "structured_2"}
+    assert cli["structured"]["url"] == "https://example.com/mcp"
+    assert cli["structured_2"]["headers"]["X-Wfb-Mcp-Mode"] == "structured-output"

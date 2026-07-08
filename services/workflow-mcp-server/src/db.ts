@@ -39,6 +39,8 @@ export type WorkflowSummary = {
   name: string;
   description: string | null;
   visibility: string;
+  engineType: string | null;
+  specVersion: string | null;
   created_at: string;
   updated_at: string;
   node_count: number;
@@ -52,6 +54,9 @@ export type WorkflowRow = {
   nodes: NodeData[];
   edges: EdgeData[];
   visibility: string;
+  engineType?: string | null;
+  specVersion?: string | null;
+  spec?: unknown;
   created_at: string;
   updated_at: string;
 };
@@ -64,11 +69,11 @@ export type ActionSummary = {
   source: "builtin" | "piece";
 };
 
-const OPENSHELL_DURABLE_AGENT_ACTION: ActionSummary = {
+const DURABLE_RUN_ACTION: ActionSummary = {
   slug: "durable/run",
-  name: "OpenShell Durable Agent",
+  name: "Durable Agent Run",
   description:
-    "Run the OpenShell-backed dapr-agent-py DurableAgent in a Serverless Workflow 1.0 call task",
+    "Run a workflow-builder agent through the durable/run Serverless Workflow action",
   category: "agent",
   source: "builtin",
 };
@@ -89,7 +94,7 @@ const REMOVED_AGENT_ACTION_PREFIXES = new Set([
 ]);
 
 function isRemovedAgentAction(slug: string): boolean {
-  if (slug === OPENSHELL_DURABLE_AGENT_ACTION.slug) return false;
+  if (slug === DURABLE_RUN_ACTION.slug) return false;
   const prefix = slug.split("/", 1)[0];
   return REMOVED_AGENT_ACTION_PREFIXES.has(prefix);
 }
@@ -116,7 +121,7 @@ export function initDb(): void {
   }
   if (!process.env.USER_ID) {
     console.warn(
-      "[wf-mcp] USER_ID not set — write operations (create/duplicate) will fail",
+      "[wf-mcp] USER_ID not set — workflow list reads are not user-scoped",
     );
   }
   pool = new pg.Pool({ connectionString: databaseUrl, max: 10 });
@@ -150,9 +155,9 @@ export async function listWorkflows(
 ): Promise<WorkflowSummary[]> {
   const userIdFilter = userId ?? process.env.USER_ID;
   let query = `
-		SELECT id, name, description, visibility, created_at, updated_at,
-			jsonb_array_length(nodes) as node_count,
-			jsonb_array_length(edges) as edge_count
+		SELECT id, name, description, visibility, engine_type, spec_version, created_at, updated_at,
+			jsonb_array_length(coalesce(nodes, '[]'::jsonb)) as node_count,
+			jsonb_array_length(coalesce(edges, '[]'::jsonb)) as edge_count
 		FROM workflows
 	`;
   const params: string[] = [];
@@ -164,7 +169,14 @@ export async function listWorkflows(
 
   const result = await pool.query(query, params);
   return result.rows.map((r) => ({
-    ...r,
+    id: r.id,
+    name: r.name,
+    description: r.description,
+    visibility: r.visibility,
+    engineType: r.engine_type ?? null,
+    specVersion: r.spec_version ?? null,
+    node_count: Number(r.node_count ?? 0),
+    edge_count: Number(r.edge_count ?? 0),
     created_at: r.created_at?.toISOString?.() ?? r.created_at,
     updated_at: r.updated_at?.toISOString?.() ?? r.updated_at,
   }));
@@ -172,14 +184,22 @@ export async function listWorkflows(
 
 export async function getWorkflow(id: string): Promise<WorkflowRow | null> {
   const result = await pool.query(
-    `SELECT id, name, description, nodes, edges, visibility, created_at, updated_at
+    `SELECT id, name, description, nodes, edges, visibility, engine_type, spec_version, spec, created_at, updated_at
 		 FROM workflows WHERE id = $1`,
     [id],
   );
   if (result.rows.length === 0) return null;
   const r = result.rows[0];
   return {
-    ...r,
+    id: r.id,
+    name: r.name,
+    description: r.description,
+    nodes: r.nodes ?? [],
+    edges: r.edges ?? [],
+    visibility: r.visibility,
+    engineType: r.engine_type ?? null,
+    specVersion: r.spec_version ?? null,
+    spec: r.spec ?? null,
     created_at: r.created_at?.toISOString?.() ?? r.created_at,
     updated_at: r.updated_at?.toISOString?.() ?? r.updated_at,
   };
@@ -657,8 +677,8 @@ export async function listAvailableActions(
   search?: string,
 ): Promise<ActionSummary[]> {
   const results: ActionSummary[] = [];
-  if (actionMatchesSearch(OPENSHELL_DURABLE_AGENT_ACTION, search)) {
-    results.push(OPENSHELL_DURABLE_AGENT_ACTION);
+  if (actionMatchesSearch(DURABLE_RUN_ACTION, search)) {
+    results.push(DURABLE_RUN_ACTION);
   }
 
   // Builtin functions from functions table

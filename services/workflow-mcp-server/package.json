@@ -5,14 +5,11 @@
 	"scripts": {
 		"dev": "tsx watch src/index.ts",
 		"build": "node build.mjs",
-		"build:ui": "cd ui && vite build --outDir ../dist/ui --emptyOutDir false",
-		"build:all": "pnpm run build:ui && pnpm run build",
 		"start": "node dist/index.js",
 		"type-check": "tsc --noEmit",
 		"test": "vitest run"
 	},
 	"dependencies": {
-		"@modelcontextprotocol/ext-apps": "^1.0.1",
 		"@modelcontextprotocol/sdk": "^1.26.0",
 		"@opentelemetry/api": "^1.9.0",
 		"@opentelemetry/auto-instrumentations-node": "^0.69.0",
@@ -22,8 +19,7 @@
 		"@opentelemetry/sdk-metrics": "^2.5.1",
 		"@opentelemetry/sdk-node": "^0.212.0",
 		"@opentelemetry/semantic-conventions": "^1.39.0",
-		"@remote-dom/core": "^1.10.1",
-		"@remote-dom/react": "^1.2.2",
+		"ajv": "^8.18.0",
 		"nanoid": "^5.0.0",
 		"pg": "^8.13.1",
 		"zod": "^3.23.8"
@@ -31,18 +27,9 @@
 	"devDependencies": {
 		"@types/node": "^24",
 		"@types/pg": "^8.11.6",
-		"@types/react": "^19.0.0",
-		"@types/react-dom": "^19.0.0",
-		"@vitejs/plugin-react": "^4.3.0",
-		"@xyflow/react": "^12.6.0",
-		"cross-env": "^7.0.3",
 		"esbuild": "^0.24.0",
-		"react": "^19.0.0",
-		"react-dom": "^19.0.0",
 		"tsx": "^4.19.0",
 		"typescript": "^5",
-		"vite": "^6.0.0",
-		"vite-plugin-singlefile": "^2.0.0",
 		"vitest": "^2.1.0"
 	}
 }

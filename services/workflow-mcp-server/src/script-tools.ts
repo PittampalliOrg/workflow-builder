@@ -435,7 +435,7 @@ export function registerScriptTools(
 		{
 			title: "Save Workflow Script",
 			description:
-				"Save (upsert) a dynamic workflow script as a REUSABLE named workflow WITHOUT running it — the persistence step of author → validate → save → run-by-name. The workflow is owned by this session's user + project and appears in the Workflows UI. An existing dynamic-script workflow with the same name in the same project is updated in place; otherwise a new one is created. Validation runs on save (a 400 carries the validator's reason — fix the script and retry). Run it later with run_workflow_script { workflowName } or your native Workflow tool. Do NOT use create_workflow for scripts — that builds canvas (SW 1.0) workflows.",
+				"Save (upsert) a dynamic workflow script as a REUSABLE named workflow WITHOUT running it — the persistence step of author → validate → save → run-by-name. The workflow is owned by this session's user + project and appears in the Workflows UI. An existing dynamic-script workflow with the same name in the same project is updated in place; otherwise a new one is created. Validation runs on save (a 400 carries the validator's reason — fix the script and retry). Run it later with run_workflow_script { workflowName } or your native Workflow tool.",
 			inputSchema: {
 				script: z.string().describe("Dynamic workflow script source to save."),
 				name: z

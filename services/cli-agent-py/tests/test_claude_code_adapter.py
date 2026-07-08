@@ -97,17 +97,22 @@ def test_seed_adds_structured_output_mcp_for_tool_mode(seeded_dirs):
 
     mcp = json.loads((wfb_dir / "mcp.json").read_text())
     structured = mcp["mcpServers"]["structured"]
-    assert structured["type"] == "stdio"
-    assert structured["command"] == "python3"
-    assert structured["args"] == ["-m", "src.structured_output_mcp"]
-    assert json.loads(structured["env"]["CLI_STRUCTURED_OUTPUT_SCHEMA"]) == schema
+    assert structured["type"] == "http"
+    assert structured["url"] == "http://workflow-mcp-server.workflow-builder.svc.cluster.local:3200/mcp"
+    assert structured["headers"]["X-Wfb-Mcp-Mode"] == "structured-output"
+    assert (
+        _decode_schema_header(structured["headers"]["X-Wfb-Structured-Output-Schema-B64"])
+        == schema
+    )
 
     state = json.loads((config_dir / ".claude.json").read_text())
     structured = state["mcpServers"]["structured"]
-    assert structured["type"] == "stdio"
-    assert structured["command"] == "python3"
-    assert structured["args"] == ["-m", "src.structured_output_mcp"]
-    assert json.loads(structured["env"]["CLI_STRUCTURED_OUTPUT_SCHEMA"]) == schema
+    assert structured["type"] == "http"
+    assert structured["headers"]["X-Wfb-Mcp-Mode"] == "structured-output"
+    assert (
+        _decode_schema_header(structured["headers"]["X-Wfb-Structured-Output-Schema-B64"])
+        == schema
+    )
     assert result.paths["mcpConfigPath"] == str(wfb_dir / "mcp.json")
     assert result.paths["claudeStructuredMcpConfigPath"] == str(
         config_dir / ".claude.json"
@@ -149,9 +154,14 @@ def test_seed_splits_project_mcp_from_structured_output_mcp(seeded_dirs):
     assert "structured" in mcp["mcpServers"]
     state = json.loads((config_dir / ".claude.json").read_text())
     assert set(state["mcpServers"].keys()) == {"structured"}
-    assert json.loads(
-        state["mcpServers"]["structured"]["env"]["CLI_STRUCTURED_OUTPUT_SCHEMA"]
-    ) == schema
+    assert (
+        _decode_schema_header(
+            state["mcpServers"]["structured"]["headers"][
+                "X-Wfb-Structured-Output-Schema-B64"
+            ]
+        )
+        == schema
+    )
     assert result.paths["mcpConfigPath"] == str(wfb_dir / "mcp.json")
     assert result.paths["claudeStructuredMcpConfigPath"] == str(
         config_dir / ".claude.json"
@@ -160,6 +170,11 @@ def test_seed_splits_project_mcp_from_structured_output_mcp(seeded_dirs):
 
 def tmp_path_parent_has_escape(config_dir) -> bool:
     return (config_dir / "skills" / ".." / "escape.md").resolve().exists()
+
+
+def _decode_schema_header(value: str) -> dict:
+    padded = value + ("=" * (-len(value) % 4))
+    return json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
 
 
 def test_seed_without_servers_or_prompt_writes_nothing(seeded_dirs):
@@ -232,9 +247,14 @@ def test_seed_structured_output_preserves_existing_claude_state(seeded_dirs):
     state = json.loads((config_dir / ".claude.json").read_text())
     assert state["oauthAccount"] == existing["oauthAccount"]
     assert state["mcpServers"]["user_server"] == existing["mcpServers"]["user_server"]
-    assert json.loads(
-        state["mcpServers"]["structured"]["env"]["CLI_STRUCTURED_OUTPUT_SCHEMA"]
-    ) == schema
+    assert (
+        _decode_schema_header(
+            state["mcpServers"]["structured"]["headers"][
+                "X-Wfb-Structured-Output-Schema-B64"
+            ]
+        )
+        == schema
+    )
 
 
 def test_detect_goal_completion_on_goal_achieved_attachment():

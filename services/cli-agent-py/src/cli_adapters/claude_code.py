@@ -120,8 +120,9 @@ SKILL_MAX_FILE_BYTES = 128 * 1024
 SKILL_MAX_TOTAL_BYTES = 2 * 1024 * 1024
 SKILL_MAX_FILES = 80
 
-_STRUCTURED_OUTPUT_MCP_MODULE = "src.structured_output_mcp"
-_STRUCTURED_OUTPUT_SCHEMA_ENV = "CLI_STRUCTURED_OUTPUT_SCHEMA"
+_STRUCTURED_OUTPUT_MODE_HEADER = "x-wfb-mcp-mode"
+_STRUCTURED_OUTPUT_SCHEMA_HEADER = "x-wfb-structured-output-schema-b64"
+_STRUCTURED_OUTPUT_MODE = "structured-output"
 
 
 def clean_string(value: Any) -> str | None:
@@ -183,15 +184,17 @@ def _claude_config_dir() -> Path:
 
 
 def _is_structured_output_mcp_server(config: Mapping[str, Any]) -> bool:
-    args = config.get("args")
-    env = config.get("env")
+    url = clean_string(config.get("url"))
+    headers = config.get("headers")
+    if config.get("type") != "http" or not url or not isinstance(headers, Mapping):
+        return False
+    normalized_headers = {str(key).lower(): value for key, value in headers.items()}
+    mode = clean_string(normalized_headers.get(_STRUCTURED_OUTPUT_MODE_HEADER))
+    schema = clean_string(normalized_headers.get(_STRUCTURED_OUTPUT_SCHEMA_HEADER))
     return (
-        config.get("type") == "stdio"
-        and config.get("command") == "python3"
-        and isinstance(args, list)
-        and args == ["-m", _STRUCTURED_OUTPUT_MCP_MODULE]
-        and isinstance(env, Mapping)
-        and isinstance(env.get(_STRUCTURED_OUTPUT_SCHEMA_ENV), str)
+        mode == _STRUCTURED_OUTPUT_MODE
+        and bool(schema)
+        and "workflow-mcp-server" in url
     )
 
 
@@ -203,6 +206,12 @@ def _clone_mcp_server_config(config: Mapping[str, Any]) -> dict[str, Any]:
         cloned["env"] = {
             str(key): str(value)
             for key, value in config["env"].items()
+            if str(key).strip() and value is not None
+        }
+    if isinstance(config.get("headers"), Mapping):
+        cloned["headers"] = {
+            str(key): str(value)
+            for key, value in config["headers"].items()
             if str(key).strip() and value is not None
         }
     return cloned

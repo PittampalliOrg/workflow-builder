@@ -2,23 +2,14 @@
  * Workflow MCP Server
  *
  * MCP server that exposes workflow builder tools over HTTP
- * (StreamableHTTP transport) with an interactive React UI.
+ * (StreamableHTTP transport).
  *
  * ENV: DATABASE_URL (required), PORT (default 3200)
  */
 
-// Remote DOM polyfill MUST be imported before any @remote-dom/core/elements
-// usage. esbuild's CJS bundling can hoist requires out of order, so we
-// import the polyfill at the very top of the entrypoint to guarantee that
-// HTMLElement, document, customElements etc. are defined in Node.js before
-// RemoteElement subclasses are evaluated.
-import "@remote-dom/core/polyfill";
-
 import "./otel.js";
 
 import http from "node:http";
-import fs from "node:fs";
-import path from "node:path";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -34,8 +25,12 @@ import {
 	registerScriptTools,
 	shouldSuppressScriptTools,
 } from "./script-tools.js";
+import {
+	createStructuredOutputMcpServer,
+	parseStructuredOutputContext,
+	STRUCTURED_OUTPUT_TOOL_NAME,
+} from "./structured-output-tools.js";
 import { runWithGoalContext } from "./goal-context.js";
-import { UiSession } from "./ui/session.js";
 import { setSpanInput, setSpanOutput } from "./observability/content.js";
 
 const PORT = parseInt(process.env.PORT || "3200", 10);
@@ -44,12 +39,9 @@ const RESPONSE_CAPTURE_MAX_BYTES = 60_000;
 
 // Session-scoped transports
 const sessions = new Map<string, StreamableHTTPServerTransport>();
-const uiSessions = new Map<string, UiSession>();
 
 // Loaded at startup
 let registeredTools: RegisteredTool[] = [];
-let uiHtmlPath: string | undefined;
-let hasUI = false;
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -161,7 +153,6 @@ type CreateMcpServerOptions = {
 /** Create a new MCP Server instance with workflow tools. */
 function createMcpServer(
 	userId?: string,
-	uiSession?: UiSession,
 	opts?: CreateMcpServerOptions,
 ): Server {
 	const mcpServer = new McpServer(
@@ -169,9 +160,9 @@ function createMcpServer(
 		{ capabilities: { tools: {}, resources: {} } },
 	);
 
-	if (hasUI && uiHtmlPath) {
-		registerWorkflowTools(mcpServer, uiHtmlPath, userId, uiSession);
-	}
+	// Current workflow tools are UI-independent. The legacy Remote DOM/canvas
+	// authoring tools are no longer registered by workflow-tools.ts.
+	registerWorkflowTools(mcpServer, undefined, userId);
 	// Goal tools register regardless of the UI so any MCP-capable agent runtime
 	// can drive the Codex-/goal-parity loop. Session scope comes from the
 	// per-request X-Wfb-Session-Id header (see runWithGoalContext wraps below).
@@ -210,7 +201,6 @@ async function handleRequest(
 			service: "workflow-builder-mcp",
 			tools: registeredTools.length,
 			toolNames: registeredTools.map((t) => t.name),
-			hasUI,
 		});
 		return;
 	}
@@ -247,13 +237,11 @@ async function handleMcpPost(
 		transport = sessions.get(sessionId)!;
 	} else if (!sessionId && isInitializeRequest(body)) {
 		const userId = (req.headers["x-user-id"] as string) || undefined;
-		const uiSession = hasUI ? new UiSession(userId) : undefined;
 
 		transport = new StreamableHTTPServerTransport({
 			sessionIdGenerator: () => crypto.randomUUID(),
 			onsessioninitialized: (sid) => {
 				sessions.set(sid, transport);
-				if (uiSession) uiSessions.set(sid, uiSession);
 				console.log(
 					`[wf-mcp] New session: ${sid}${userId ? ` (user: ${userId})` : ""}`,
 				);
@@ -262,11 +250,6 @@ async function handleMcpPost(
 
 		transport.onclose = () => {
 			if (transport.sessionId) {
-				const sessionUi = uiSessions.get(transport.sessionId);
-				if (sessionUi) {
-					sessionUi.dispose();
-					uiSessions.delete(transport.sessionId);
-				}
 				sessions.delete(transport.sessionId);
 				console.log(`[wf-mcp] Session closed: ${transport.sessionId}`);
 			}
@@ -277,7 +260,23 @@ async function handleMcpPost(
 		// script tool so a running script can't launch further scripts.
 		const suppressScriptTools = shouldSuppressScriptTools(req.headers);
 
-		const server = createMcpServer(userId, uiSession, { suppressScriptTools });
+		let structuredOutputContext;
+		try {
+			structuredOutputContext = parseStructuredOutputContext(req.headers);
+		} catch (error) {
+			sendJson(res, 400, {
+				error: {
+					message:
+						error instanceof Error
+							? error.message
+							: `Invalid structured-output MCP context: ${String(error)}`,
+				},
+			});
+			return;
+		}
+		const server = structuredOutputContext
+			? createStructuredOutputMcpServer(structuredOutputContext.schema)
+			: createMcpServer(userId, { suppressScriptTools });
 		await server.connect(transport);
 	} else {
 		sendJson(res, 400, {
@@ -335,63 +334,15 @@ async function main(): Promise<void> {
 	console.log("[wf-mcp] Initializing database connection...");
 	initDb();
 
-	// Check for UI HTML file
+	// Dry-run registration to count current workflow tools.
 	{
-		// In production, `__dirname` points at `dist/`, so this path resolves to the
-		// built, single-file UI (`dist/ui/workflow-builder/index.html`).
-		// In dev (`tsx watch`), `__dirname` points at `src/`, so we prefer an already
-		// built UI at `dist/ui/...` if present.
-		const builtUi = path.join(
-			__dirname,
-			"..",
-			"dist",
-			"ui",
-			"workflow-builder",
-			"index.html",
-		);
-		const uiCandidate = path.join(
-			__dirname,
-			"ui",
-			"workflow-builder",
-			"index.html",
-		);
-
-		if (fs.existsSync(builtUi)) {
-			uiHtmlPath = builtUi;
-			hasUI = true;
-		} else if (fs.existsSync(uiCandidate)) {
-			const html = fs.readFileSync(uiCandidate, "utf-8");
-			// Source UI references TS modules and won't work when served as an MCP app resource.
-			if (html.includes("main.tsx")) {
-				uiHtmlPath = undefined;
-				hasUI = false;
-				console.warn(
-					"[wf-mcp] UI source HTML found, but built UI is missing. Run `pnpm -C services/workflow-mcp-server build:ui` to enable interactive UI.",
-				);
-			} else {
-				uiHtmlPath = uiCandidate;
-				hasUI = true;
-			}
-		} else {
-			uiHtmlPath = undefined;
-			hasUI = false;
-			console.warn(
-				"[wf-mcp] UI HTML not found — tools will work without interactive UI",
-			);
-		}
-
-		if (hasUI && uiHtmlPath) console.log(`[wf-mcp] UI file: ${uiHtmlPath}`);
-	}
-
-	// Dry-run registration to count tools
-	if (hasUI && uiHtmlPath) {
 		const dryServer = new McpServer(
 			{ name: "dry-run", version: "0.0.0" },
 			{ capabilities: { tools: {}, resources: {} } },
 		);
-		registeredTools = registerWorkflowTools(dryServer, uiHtmlPath);
+		registeredTools = registerWorkflowTools(dryServer);
 	}
-	// Always count the goal tools (registered independently of the UI).
+	// Always count the goal tools.
 	{
 		const dryGoalServer = new McpServer(
 			{ name: "dry-run-goal", version: "0.0.0" },
@@ -399,8 +350,8 @@ async function main(): Promise<void> {
 		);
 		registeredTools = [...registeredTools, ...registerGoalTools(dryGoalServer)];
 	}
-	// Count the dynamic workflow script tool (registered independently of the UI;
-	// suppressed only inside script-spawned sessions).
+	// Count the dynamic workflow script tool (suppressed only inside
+	// script-spawned sessions).
 	{
 		const dryScriptServer = new McpServer(
 			{ name: "dry-run-script", version: "0.0.0" },
@@ -411,6 +362,13 @@ async function main(): Promise<void> {
 			...registerScriptTools(dryScriptServer),
 		];
 	}
+	registeredTools = [
+		...registeredTools,
+		{
+			name: STRUCTURED_OUTPUT_TOOL_NAME,
+			description: "Session-scoped structured-output tool",
+		},
+	];
 
 	// Start HTTP server
 	const httpServer = http.createServer(async (req, res) => {

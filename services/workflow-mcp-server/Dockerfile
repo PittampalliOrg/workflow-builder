@@ -20,8 +20,8 @@ COPY . ./
 
 ENV NODE_ENV=production
 
-# Build UI bundles (Vite single-file HTML) then server (esbuild)
-RUN pnpm run build:all
+# Build server bundle (esbuild)
+RUN pnpm run build
 
 # Stage 3: Runner
 FROM node:22-alpine AS runner

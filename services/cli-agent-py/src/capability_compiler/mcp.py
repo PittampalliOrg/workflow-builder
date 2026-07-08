@@ -25,11 +25,11 @@ today's per-runtime output. Each loop dedups over its OWN kept set.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import os
 from typing import Any, Mapping
-
-from src.structured_output import schema_supports_structured_output
 
 from .normalize import (
     derive_name_source,
@@ -49,7 +49,13 @@ _CLI_SDK_SUPPORTED_TRANSPORTS = {"streamable_http", "sse", "stdio"}
 _DAPR_ALLOWED_TRANSPORTS = {"streamable_http", "sse", "stdio", "websocket"}
 
 _STRUCTURED_OUTPUT_MCP_SERVER = "structured"
-_STRUCTURED_OUTPUT_SCHEMA_ENV = "CLI_STRUCTURED_OUTPUT_SCHEMA"
+_STRUCTURED_OUTPUT_MCP_URL = (
+    os.environ.get("WORKFLOW_MCP_SERVER_URL")
+    or "http://workflow-mcp-server.workflow-builder.svc.cluster.local:3200/mcp"
+)
+_STRUCTURED_OUTPUT_MODE_HEADER = "X-Wfb-Mcp-Mode"
+_STRUCTURED_OUTPUT_SCHEMA_HEADER = "X-Wfb-Structured-Output-Schema-B64"
+_STRUCTURED_OUTPUT_MODE = "structured-output"
 
 
 def _allowed_tool_patterns(server_name: str, item: Mapping[str, Any]) -> list[str]:
@@ -65,6 +71,21 @@ def _allowed_tool_patterns(server_name: str, item: Mapping[str, Any]) -> list[st
         if tools:
             return [f"mcp__{server_name}__{tool}" for tool in tools]
     return [f"mcp__{server_name}"]
+
+
+def _schema_supports_structured_output(schema: Any) -> bool:
+    """CLI structured finalization currently supports object-shaped schemas."""
+    if not isinstance(schema, dict) or not schema:
+        return False
+    schema_type = schema.get("type")
+    if schema_type == "object":
+        return True
+    return schema_type is None and isinstance(schema.get("properties"), dict)
+
+
+def _encode_structured_output_schema(schema: Mapping[str, Any]) -> str:
+    raw = json.dumps(dict(schema), sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
 def _emit_cli_sdk_shape(
@@ -150,19 +171,19 @@ def _add_structured_output_server(
     servers: dict[str, dict[str, Any]],
     agent_config: Mapping[str, Any] | None,
 ) -> dict[str, dict[str, Any]]:
-    """Add the per-session StructuredOutput MCP server for CLI tool mode.
+    """Add the workflow-mcp-server StructuredOutput MCP endpoint for CLI tool mode.
 
-    The server exposes exactly one tool, ``StructuredOutput``, whose input schema
-    is the dynamic-script call's ``responseJsonSchema``. This mirrors
-    dapr-agent-py's synthetic StructuredOutput tool, but uses the CLI's native
-    MCP channel.
+    Dapr-agent-py already provides its own synthetic StructuredOutput tool. CLI
+    runtimes need the same contract over their native MCP channel, so the
+    platform workflow-mcp-server switches into single-tool structured-output
+    mode when these headers are present.
     """
     if not isinstance(agent_config, Mapping):
         return servers
     if agent_config.get("structuredOutputMode") != "tool":
         return servers
     schema = agent_config.get("responseJsonSchema")
-    if not schema_supports_structured_output(schema):
+    if not _schema_supports_structured_output(schema):
         return servers
 
     name = _STRUCTURED_OUTPUT_MCP_SERVER
@@ -172,14 +193,11 @@ def _add_structured_output_server(
         suffix += 1
 
     servers[name] = {
-        "type": "stdio",
-        "command": "python3",
-        "args": ["-m", "src.structured_output_mcp"],
-        "env": {
-            _STRUCTURED_OUTPUT_SCHEMA_ENV: json.dumps(
-                schema, sort_keys=True, ensure_ascii=False
-            ),
-            "PYTHONUNBUFFERED": "1",
+        "type": "http",
+        "url": _STRUCTURED_OUTPUT_MCP_URL,
+        "headers": {
+            _STRUCTURED_OUTPUT_MODE_HEADER: _STRUCTURED_OUTPUT_MODE,
+            _STRUCTURED_OUTPUT_SCHEMA_HEADER: _encode_structured_output_schema(schema),
         },
     }
     return servers

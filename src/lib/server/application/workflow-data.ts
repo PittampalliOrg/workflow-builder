@@ -1904,7 +1904,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	/**
 	 * Platform-provided shared server: make the in-cluster workflow-mcp-server
-	 * (dynamic-script authoring + goal + workflow CRUD tools) discoverable in
+	 * (dynamic-script authoring + goal + workflow read/execution tools) discoverable in
 	 * every project's Tools & Integrations picker. Lazily ensured on
 	 * availability reads so NEW projects get it without a migration; the unique
 	 * (projectId, sourceType, serverKey) index makes concurrent ensures safe.
@@ -1943,7 +1943,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				metadata: {
 					transport: "streamable_http",
 					description:
-						"Platform workflow tools: author/validate/save/run dynamic-script workflows, workflow CRUD, execution status, session goals.",
+						"Platform workflow tools: author/validate/save/run dynamic-script workflows, read workflow metadata, execution status, session goals, trace diagnostics.",
 				},
 				createdBy: null,
 				updatedBy: null,
