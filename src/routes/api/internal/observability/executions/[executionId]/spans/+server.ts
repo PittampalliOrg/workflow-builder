@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { loadExecutionTraceBundle } from '$lib/server/observability/run-digest-loader';
+import { searchTraceSpans } from '$lib/server/otel/clickhouse';
+import { resolveTraceIdsForExecution } from '$lib/server/observability/run-digest-loader';
 import { guardAnalystAccess } from '../guard';
 
 /**
@@ -15,17 +16,11 @@ export const GET: RequestHandler = async ({ params, request, url }) => {
 	const errorsOnly = url.searchParams.get('errorsOnly') === 'true';
 	const limit = Math.min(100, Number(url.searchParams.get('limit')) || 40);
 
-	const { spans } = await loadExecutionTraceBundle(guard.execution);
-	const rows = spans
-		.filter((s) => {
-			if (errorsOnly && s.status !== 'error' && s.statusCode !== 'Error') return false;
-			if (!query) return true;
-			const hay =
-				`${s.operationName} ${s.serviceName} ${s.statusMessage ?? ''} ${s.attributes?.['session.id'] ?? ''}`.toLowerCase();
-			return hay.includes(query);
-		})
-		.slice(0, limit)
-		.map((s) => ({
+	const traceIds = await resolveTraceIdsForExecution(guard.execution);
+	const spans = traceIds.length
+		? await searchTraceSpans(traceIds, { query, errorsOnly, limit })
+		: [];
+	const rows = spans.map((s) => ({
 			spanId: s.spanId,
 			parentSpanId: s.parentSpanId,
 			traceId: s.traceId,
@@ -37,5 +32,5 @@ export const GET: RequestHandler = async ({ params, request, url }) => {
 			statusMessage: s.statusMessage ?? null,
 			sessionId: s.attributes?.['session.id'] ?? null
 		}));
-	return json({ spans: rows, total: spans.length });
+	return json({ spans: rows, total: rows.length, limited: rows.length >= limit });
 };
