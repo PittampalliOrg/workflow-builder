@@ -328,31 +328,41 @@ export const POST: RequestHandler = async ({ request }) => {
 		agentConfig,
 		swapTarget,
 	);
-	// Evaluator-mode goal sessions auto-wire the goal MCP server (+ session
-	// header) so the agent can call update_goal to self-complete — same helper the
-	// direct-spawn path uses. (Single-shot + native-`/goal` runs are untouched.)
-	let dispatchAgentConfig: AgentConfig = evaluatorGoal
-		? ({
-				...baseDispatchAgentConfig,
-				mcpServers: stampGoalMcpSessionHeader(
-					ensureGoalMcpServer(
-						(baseDispatchAgentConfig as { mcpServers?: unknown[] })
-							.mcpServers ?? [],
-						swapTarget?.capabilities?.supportsMcp ?? false,
-						false,
+	// Server-truth lookup of the spawning workflow: dynamic-script spawns get
+	// platform MCP wiring + the recursion guard below.
+	const spawningWorkflow = await getApplicationAdapters()
+		.workflowData.getWorkflowByRef({ workflowId, lookup: "id" })
+		.catch(() => null);
+	const isDynamicScriptSpawn = spawningWorkflow?.engineType === "dynamic-script";
+	// Auto-wire the platform MCP server (+ session header) for:
+	//   - evaluator-mode goal sessions (update_goal self-completion), and
+	//   - DYNAMIC-SCRIPT-spawned sessions — script agents rely on the platform
+	//     tools (trace_* analysis, validate/save script, goal reads); without
+	//     this they run with mcpServers: [] (the deep-analysis reviewers'
+	//     "trace tools aren't registered" failure). The recursion guard below
+	//     suppresses run_workflow_script on these sessions, exactly the state
+	//     stampScriptGuardHeader was designed for.
+	// Single-shot SW-1.0 runs + native-`/goal` CLIs stay untouched.
+	let dispatchAgentConfig: AgentConfig =
+		evaluatorGoal || isDynamicScriptSpawn
+			? ({
+					...baseDispatchAgentConfig,
+					mcpServers: stampGoalMcpSessionHeader(
+						ensureGoalMcpServer(
+							(baseDispatchAgentConfig as { mcpServers?: unknown[] })
+								.mcpServers ?? [],
+							swapTarget?.capabilities?.supportsMcp ?? false,
+							false,
+						),
+						sessionId,
 					),
-					sessionId,
-				),
-			} as AgentConfig)
-		: baseDispatchAgentConfig;
+				} as AgentConfig)
+			: baseDispatchAgentConfig;
 	// Recursion guard: when the SPAWNING workflow is a dynamic-script, stamp the
 		// script-depth header on the session's workflow-mcp-server entries so the MCP
 		// server suppresses `run_workflow_script` — a script-spawned agent can't
-		// recursively launch another script workflow. Server-truth DB lookup.
-		const spawningWorkflow = await getApplicationAdapters()
-			.workflowData.getWorkflowByRef({ workflowId, lookup: "id" })
-			.catch(() => null);
-		if (spawningWorkflow?.engineType === "dynamic-script") {
+		// recursively launch another script workflow.
+		if (isDynamicScriptSpawn) {
 			dispatchAgentConfig = {
 				...dispatchAgentConfig,
 				mcpServers: stampScriptGuardHeader(
