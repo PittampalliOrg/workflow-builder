@@ -134,6 +134,49 @@ function stripComments(src: string): string {
   return out;
 }
 
+/** Blank the CONTENTS of every string/template literal (keeping quotes,
+ * newlines, and exact length) so the structural token scan never matches
+ * `agent(` / `parallel(` etc. that appear inside a prompt STRING. Positions are
+ * preserved 1:1 with the comment-stripped source, so content readers still read
+ * the real text at the same offsets. */
+function maskStrings(src: string): string {
+  let out = "";
+  let i = 0;
+  const n = src.length;
+  type Mode = "code" | "sq" | "dq" | "tpl";
+  let mode: Mode = "code";
+  while (i < n) {
+    const c = src[i];
+    if (mode === "code") {
+      if (c === "'") mode = "sq";
+      else if (c === '"') mode = "dq";
+      else if (c === "`") mode = "tpl";
+      out += c;
+      i += 1;
+      continue;
+    }
+    // string mode: keep escapes (2 chars) and newlines as-is length, blank rest
+    if (c === "\\") {
+      out += "  ";
+      i += 2;
+      continue;
+    }
+    if (
+      (mode === "sq" && c === "'") ||
+      (mode === "dq" && c === '"') ||
+      (mode === "tpl" && c === "`")
+    ) {
+      mode = "code";
+      out += c;
+      i += 1;
+      continue;
+    }
+    out += c === "\n" ? "\n" : " ";
+    i += 1;
+  }
+  return out;
+}
+
 const PHASE_TITLES_FROM_META = (meta: unknown): string[] => {
   const phases = (meta as { phases?: unknown } | null | undefined)?.phases;
   if (!Array.isArray(phases)) return [];
@@ -228,10 +271,11 @@ function promptPreview(src: string, open: number): string | null {
   return clean ? clean : null;
 }
 
-/** Read an `opts.label` string literal from the call's argument span. */
-function labelFromOpts(src: string, open: number): string | null {
-  const end = matchParen(src, open) + 1;
-  const span = src.slice(open, end);
+/** Read an `opts.label` string literal from the call's argument span.
+ * `masked` bounds the span (structure); `real` supplies the label text. */
+function labelFromOpts(masked: string, real: string, open: number): string | null {
+  const end = matchParen(masked, open) + 1;
+  const span = real.slice(open, end);
   const m = span.match(/label\s*:\s*(['"`])((?:\\.|(?!\1).)*)\1/);
   return m ? m[2] : null;
 }
@@ -324,11 +368,12 @@ function elementLabel(el: string): string | null {
 /** Resolve a `parallel(IDENT.map(...))` fan-out from the array literal `IDENT`
  * declared in the source: its element count + best-effort per-element labels. */
 function resolveFanOut(
-  src: string,
+  masked: string,
+  real: string,
   open: number,
 ): { count: number; labels: string[] } | null {
-  const close = matchParen(src, open);
-  const argHead = src.slice(open + 1, Math.min(close, open + 200));
+  const close = matchParen(masked, open);
+  const argHead = masked.slice(open + 1, Math.min(close, open + 200));
   const m = argHead.match(/^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\.\s*map\s*\(/);
   if (!m) return null;
   const ident = m[1];
@@ -336,16 +381,17 @@ function resolveFanOut(
   const declRe = new RegExp(
     `\\b(?:const|let|var)\\s+${ident}\\s*=\\s*\\[`,
   );
-  const dm = declRe.exec(src);
+  const dm = declRe.exec(masked);
   if (!dm) return null;
-  const bracketOpen = src.indexOf("[", dm.index);
+  const bracketOpen = masked.indexOf("[", dm.index);
   if (bracketOpen < 0) return null;
-  // match the closing bracket
+  // match the closing bracket (on the masked source, so string-embedded
+  // brackets never unbalance it)
   let d = 0;
   let end = bracketOpen;
-  for (let i = bracketOpen; i < src.length; i += 1) {
-    if (src[i] === "[") d += 1;
-    else if (src[i] === "]") {
+  for (let i = bracketOpen; i < masked.length; i += 1) {
+    if (masked[i] === "[") d += 1;
+    else if (masked[i] === "]") {
       d -= 1;
       if (d === 0) {
         end = i;
@@ -353,7 +399,8 @@ function resolveFanOut(
       }
     }
   }
-  const body = src.slice(bracketOpen + 1, end);
+  // element labels come from the REAL source (key: 'perf' etc.)
+  const body = real.slice(bracketOpen + 1, end);
   const els = topLevelElements(body);
   if (els.length === 0) return null;
   const labels = els.map((el, i) => elementLabel(el) ?? `#${i + 1}`);
@@ -419,6 +466,10 @@ export function parseScriptStructure(
   meta?: unknown,
 ): ScriptGraphModel {
   const src = stripComments(String(script ?? ""));
+  // Structural scans run on `masked` (string contents blanked) so tokens/parens
+  // inside prompt strings are ignored; content readers use `src` at the same
+  // offsets (maskStrings preserves length 1:1).
+  const masked = maskStrings(src);
   const declaredPhases = PHASE_TITLES_FROM_META(meta);
   const name =
     (meta as { name?: unknown } | null | undefined)?.name &&
@@ -430,21 +481,21 @@ export function parseScriptStructure(
   const loopSpans: Array<[number, number]> = [];
   const loopKw = /\b(while|for)\s*\(/g;
   let lm: RegExpExecArray | null;
-  while ((lm = loopKw.exec(src))) {
+  while ((lm = loopKw.exec(masked))) {
     let i = lm.index + lm[0].length;
     let d = 1;
-    for (; i < src.length && d > 0; i += 1) {
-      if (src[i] === "(") d += 1;
-      else if (src[i] === ")") d -= 1;
+    for (; i < masked.length && d > 0; i += 1) {
+      if (masked[i] === "(") d += 1;
+      else if (masked[i] === ")") d -= 1;
     }
-    while (i < src.length && /\s/.test(src[i])) i += 1;
-    if (src[i] !== "{") continue;
+    while (i < masked.length && /\s/.test(masked[i])) i += 1;
+    if (masked[i] !== "{") continue;
     let bd = 1;
     const bodyStart = i;
     i += 1;
-    for (; i < src.length && bd > 0; i += 1) {
-      if (src[i] === "{") bd += 1;
-      else if (src[i] === "}") bd -= 1;
+    for (; i < masked.length && bd > 0; i += 1) {
+      if (masked[i] === "{") bd += 1;
+      else if (masked[i] === "}") bd -= 1;
     }
     loopSpans.push([bodyStart, i]);
   }
@@ -461,7 +512,7 @@ export function parseScriptStructure(
   // Stack of open parallel/pipeline groups: a call's innermost enclosing group.
   const groupStack: Array<{ id: string; close: number }> = [];
 
-  while ((tm = tokenRe.exec(src))) {
+  while ((tm = tokenRe.exec(masked))) {
     const kind = tm[1] as "phase" | ScriptGraphCallKind;
     const open = tm.index + tm[0].length - 1; // index of "("
 
@@ -494,16 +545,16 @@ export function parseScriptStructure(
       label = wfName ? wfName : "workflow()";
     } else if (kind === "parallel" || kind === "pipeline") {
       groupId = `g${order}`;
-      fanOut = resolveFanOut(src, open);
+      fanOut = resolveFanOut(masked, src, open);
       label = kind === "parallel" ? "parallel" : "pipeline";
-      groupStack.push({ id: groupId, close: matchParen(src, open) });
+      groupStack.push({ id: groupId, close: matchParen(masked, open) });
     } else {
       // agent()
-      const optLabel = labelFromOpts(src, open);
+      const optLabel = labelFromOpts(masked, src, open);
       promptText = promptPreview(src, open);
       if (optLabel) label = optLabel;
       else label = promptText ? truncate(promptText) : "agent()";
-      schema = extractSchema(src, open);
+      schema = extractSchema(masked, open);
     }
 
     calls.push({
