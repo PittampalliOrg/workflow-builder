@@ -484,6 +484,71 @@ def test_pretool_structured_output_wins_over_later_prose_stop():
     ]
 
 
+def test_duplicate_structured_output_observations_publish_one_validation():
+    processor, published, raised, supervisor, manager = _processor()
+    supervisor.one_shot = True
+    supervisor.agent_config = {
+        "structuredOutputMode": "tool",
+        "responseJsonSchema": {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+            "additionalProperties": False,
+        },
+    }
+    manager.tailer.last_assistant_text = "The structured-output tool was called."
+    tool_args = {"answer": "yes"}
+
+    asyncio.run(
+        processor.process(
+            _hook(
+                "PreToolUse",
+                tool_name="mcp__structured__StructuredOutput",
+                tool_input=tool_args,
+            )
+        )
+    )
+    asyncio.run(
+        processor.process(
+            _hook(
+                "PostToolUse",
+                tool_name="mcp__structured__StructuredOutput",
+                tool_input=tool_args,
+                tool_response='{"answer":"yes"}',
+            )
+        )
+    )
+    response = asyncio.run(processor.process(_hook("Stop")))
+
+    assert response == {}
+    assert supervisor.structured_output == {"answer": "yes"}
+    assert supervisor.structured_output_text == '{"answer": "yes"}'
+    assert [
+        (sid, etype, data)
+        for sid, etype, data in published
+        if etype == "structured_output.validation"
+    ] == [
+        (
+            "sess-1",
+            "structured_output.validation",
+            {"ok": True, "source": "tool_call"},
+        )
+    ]
+    assert raised == [
+        (
+            "inst-1",
+            [
+                {
+                    "type": "turn.completed",
+                    "lastAssistantText": '{"answer": "yes"}',
+                    "structuredOutput": {"answer": "yes"},
+                    "structuredOutputText": '{"answer": "yes"}',
+                }
+            ],
+        )
+    ]
+
+
 def test_mapped_tool_event_can_capture_structured_output_when_raw_payload_does_not():
     class CanonicalToolAdapter:
         def is_turn_completion_hook(self, event_name):

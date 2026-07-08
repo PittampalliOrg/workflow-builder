@@ -462,6 +462,9 @@ class HookProcessor:
         self._adapter = adapter
         self._completion_keys_raised: set[tuple[str, int]] = set()
         self._completion_fallback_started_turn = False
+        self._structured_validation_events_seen: set[
+            tuple[str, str, bool, str, int | None]
+        ] = set()
         self._process_lock = asyncio.Lock()
 
     def _session(self) -> dict[str, Any]:
@@ -873,6 +876,17 @@ class HookProcessor:
     ) -> None:
         if not session_id:
             return
+        payload_key = result.canonical_text or result.feedback or ""
+        key = (
+            str(session_id),
+            result.source or "",
+            bool(result.valid),
+            payload_key,
+            attempts,
+        )
+        if key in self._structured_validation_events_seen:
+            return
+        self._structured_validation_events_seen.add(key)
         data: dict[str, Any] = {
             "ok": result.valid,
             "source": result.source,
