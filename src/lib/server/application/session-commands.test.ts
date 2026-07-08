@@ -424,7 +424,7 @@ describe("ApplicationSessionCommandService", () => {
 	});
 
 	it("reaps terminal workflow session hosts through the sandbox destroyer port", async () => {
-		vi.mocked(sessions.listTerminalWorkflowSessionRuntimeHosts).mockResolvedValue([
+		vi.mocked(sessions.listReapableWorkflowSessionRuntimeHosts).mockResolvedValue([
 			{ sessionId: "old-session", runtimeAppId: "agent-session-old" },
 			{ sessionId: "session-1", runtimeAppId: "agent-session-current" },
 		]);
@@ -434,7 +434,7 @@ describe("ApplicationSessionCommandService", () => {
 			exceptSessionId: "session-1",
 		});
 
-		expect(sessions.listTerminalWorkflowSessionRuntimeHosts).toHaveBeenCalledWith({
+		expect(sessions.listReapableWorkflowSessionRuntimeHosts).toHaveBeenCalledWith({
 			workflowExecutionId: "execution-1",
 		});
 		expect(sandboxDestroyer.deleteRuntimeSandbox).toHaveBeenCalledWith(
@@ -794,7 +794,7 @@ function fakeSessions(): SessionRepository {
 		getWorkflowEnsureSession: vi.fn(async () => null),
 		createWorkflowEnsureSession: vi.fn(async () => undefined),
 		updateWorkflowEnsureSessionRuntime: vi.fn(async () => undefined),
-		listTerminalWorkflowSessionRuntimeHosts: vi.fn(async () => []),
+		listReapableWorkflowSessionRuntimeHosts: vi.fn(async () => []),
 		createSessionFork: vi.fn(async () => ({ id: "fork-1" })),
 		getPeerSession: vi.fn(async () => null),
 		createPeerSession: vi.fn(async () => {

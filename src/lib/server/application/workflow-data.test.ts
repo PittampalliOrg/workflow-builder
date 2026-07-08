@@ -657,7 +657,7 @@ function fakeSessions(): SessionRepository {
 		})),
 		createWorkflowEnsureSession: vi.fn(async () => undefined),
 		updateWorkflowEnsureSessionRuntime: vi.fn(async () => undefined),
-		listTerminalWorkflowSessionRuntimeHosts: vi.fn(async () => [
+		listReapableWorkflowSessionRuntimeHosts: vi.fn(async () => [
 			{ sessionId: "session-old", runtimeAppId: "agent-session-old" },
 		]),
 		createSessionFork: vi.fn(async () => ({ id: "fork-session-1" })),
@@ -2624,13 +2624,13 @@ describe("ApplicationWorkflowDataService", () => {
 		const { service } = makeService({ sessions });
 
 		await expect(
-			service.listTerminalWorkflowSessionRuntimeHosts({
+			service.listReapableWorkflowSessionRuntimeHosts({
 				workflowExecutionId: "exec-1",
 			}),
 		).resolves.toEqual([
 			{ sessionId: "session-old", runtimeAppId: "agent-session-old" },
 		]);
-		expect(sessions.listTerminalWorkflowSessionRuntimeHosts).toHaveBeenCalledWith({
+		expect(sessions.listReapableWorkflowSessionRuntimeHosts).toHaveBeenCalledWith({
 			workflowExecutionId: "exec-1",
 		});
 	});

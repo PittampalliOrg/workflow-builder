@@ -306,7 +306,7 @@ export interface SessionRepository {
 	updateWorkflowEnsureSessionRuntime(
 		input: UpdateWorkflowEnsureSessionRuntimeInput,
 	): Promise<void>;
-	listTerminalWorkflowSessionRuntimeHosts(input: {
+	listReapableWorkflowSessionRuntimeHosts(input: {
 		workflowExecutionId: string;
 	}): Promise<WorkflowSessionRuntimeHostRecord[]>;
 	createSessionFork(input: CreateSessionForkInput): Promise<{ id: string }>;

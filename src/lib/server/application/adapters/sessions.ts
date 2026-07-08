@@ -59,6 +59,7 @@ import {
 	sessionResources,
 	sessions,
 	threadGoals,
+	workflowScriptCalls,
 	workflowExecutions,
 	workflows,
 	type Session,
@@ -1008,18 +1009,36 @@ export class CurrentSessionRepository implements SessionRepository {
 			.where(eq(sessions.id, input.sessionId));
 	}
 
-	async listTerminalWorkflowSessionRuntimeHosts(input: {
+	async listReapableWorkflowSessionRuntimeHosts(input: {
 		workflowExecutionId: string;
 	}): Promise<WorkflowSessionRuntimeHostRecord[]> {
 		const database = requireDb(this.database);
+		// `sessions.status` is a user-facing lifecycle marker, not proof that the
+		// parent workflow has consumed the child workflow result. Dynamic-script
+		// runs make that parent boundary explicit in workflow_script_calls: only
+		// reap a session host once its journal row is terminal. Non-script workflow
+		// sessions have no journal row and keep the legacy terminal-session behavior.
 		const rows = await database
 			.select({ id: sessions.id, runtimeAppId: sessions.runtimeAppId })
 			.from(sessions)
+			.leftJoin(
+				workflowScriptCalls,
+				eq(workflowScriptCalls.sessionId, sessions.id),
+			)
 			.where(
 				and(
 					eq(sessions.workflowExecutionId, input.workflowExecutionId),
 					inArray(sessions.status, ["terminated", "failed"]),
 					isNotNull(sessions.runtimeAppId),
+					or(
+						isNull(workflowScriptCalls.callId),
+						inArray(workflowScriptCalls.status, [
+							"done",
+							"null",
+							"error",
+							"skipped",
+						]),
+					),
 				),
 			);
 		return rows.flatMap((row) =>

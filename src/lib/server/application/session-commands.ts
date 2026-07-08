@@ -625,7 +625,7 @@ export class ApplicationSessionCommandService {
 		input: ReapTerminatedWorkflowSessionRuntimeHostsCommand,
 	): Promise<void> {
 		if (!this.deps.sandboxDestroyer) return;
-		const rows = await this.deps.sessions.listTerminalWorkflowSessionRuntimeHosts({
+		const rows = await this.deps.sessions.listReapableWorkflowSessionRuntimeHosts({
 			workflowExecutionId: input.workflowExecutionId,
 		});
 		for (const row of rows) {

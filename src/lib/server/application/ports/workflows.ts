@@ -1261,7 +1261,7 @@ export interface WorkflowDataService {
 	updateWorkflowEnsureSessionRuntime(
 		input: UpdateWorkflowEnsureSessionRuntimeInput,
 	): Promise<void>;
-	listTerminalWorkflowSessionRuntimeHosts(input: {
+	listReapableWorkflowSessionRuntimeHosts(input: {
 		workflowExecutionId: string;
 	}): Promise<WorkflowSessionRuntimeHostRecord[]>;
 	checkBenchmarkSessionProvisioningGate(input: {

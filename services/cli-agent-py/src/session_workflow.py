@@ -355,7 +355,9 @@ def _swebench_workspace_request(input_data: Mapping[str, Any]) -> dict[str, Any]
     }
 
 
-def _workspace_under_local_root(workspace_root: str) -> tuple[Path, Path] | dict[str, Any]:
+def _workspace_under_local_root(
+    workspace_root: str,
+) -> tuple[Path, Path] | dict[str, Any]:
     repo = Path(workspace_root).resolve()
     local_root = Path(os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")).resolve()
     try:
@@ -456,7 +458,15 @@ def prepare_swebench_workspace_activity(
         _run_command(["git", "init", "-q"], cwd=tmp_path)
         _run_command(["git", "remote", "add", "origin", repo_url], cwd=tmp_path)
         fetch = _run_command(
-            ["git", "-c", "protocol.version=2", "fetch", "--depth=1", "origin", base_commit],
+            [
+                "git",
+                "-c",
+                "protocol.version=2",
+                "fetch",
+                "--depth=1",
+                "origin",
+                base_commit,
+            ],
             cwd=tmp_path,
             timeout=300,
             check=False,
@@ -530,9 +540,7 @@ def extract_model_patch_activity(
     if not isinstance(exclude_paths, list):
         exclude_paths = list(_SWEBENCH_PATCH_EXCLUDE_PATHS)
     pathspecs = [
-        str(path)
-        for path in exclude_paths
-        if isinstance(path, str) and path.strip()
+        str(path) for path in exclude_paths if isinstance(path, str) and path.strip()
     ]
     diff_cmd = ["git", "diff", "--binary", base_commit, "--", ".", *pathspecs]
     name_cmd = ["git", "diff", "--name-only", base_commit, "--", ".", *pathspecs]
@@ -568,9 +576,7 @@ def extract_model_patch_activity(
         }
     model_patch = diff.stdout or ""
     files_touched = [
-        line.strip()
-        for line in (names.stdout or "").splitlines()
-        if line.strip()
+        line.strip() for line in (names.stdout or "").splitlines() if line.strip()
     ]
     return {
         "ok": True,
@@ -620,9 +626,7 @@ def _result_contract(
             else []
         )
         result["patchExtraction"] = {
-            key: value
-            for key, value in patch.items()
-            if key not in {"modelPatch"}
+            key: value for key, value in patch.items() if key not in {"modelPatch"}
         }
     return result
 
@@ -676,14 +680,19 @@ def session_workflow(
                 input=workspace_request,
                 retry_policy=_SEED_RETRY_POLICY,
             )
-            if not isinstance(workspace_prepare, Mapping) or not workspace_prepare.get("ok"):
+            if not isinstance(workspace_prepare, Mapping) or not workspace_prepare.get(
+                "ok"
+            ):
                 status = "failed"
                 reason = "swebench_workspace_prepare_failed"
-                error_text = _clean_string(
-                    _record(workspace_prepare).get("error")
-                    if isinstance(workspace_prepare, Mapping)
-                    else None
-                ) or "SWE-bench workspace preparation failed"
+                error_text = (
+                    _clean_string(
+                        _record(workspace_prepare).get("error")
+                        if isinstance(workspace_prepare, Mapping)
+                        else None
+                    )
+                    or "SWE-bench workspace preparation failed"
+                )
                 if session_id and not ctx.is_replaying:
                     publish_session_event(
                         session_id,
@@ -841,7 +850,9 @@ def session_workflow(
                             "agentRuntime": agent_runtime,
                         }
                         if last_background_task_count is not None:
-                            idle_data["background_task_count"] = last_background_task_count
+                            idle_data["background_task_count"] = (
+                                last_background_task_count
+                            )
                         publish_session_event(
                             session_id,
                             "session.status_idle",
@@ -931,27 +942,6 @@ def session_workflow(
         timeout_seconds=CLI_STOP_TIMEOUT_SECONDS,
     )
 
-    if session_id and not ctx.is_replaying:
-        terminated_data: dict[str, Any] = {
-            "reason": reason or status,
-            "stop_reason": _terminal_stop_reason(status, reason),
-            "status": status,
-            "success": status not in ("failed",),
-            "turnCount": turn_count,
-            "agentRuntime": agent_runtime,
-            "workflowInstanceId": ctx.instance_id,
-        }
-        # Instrumentation (data only): carry the last completion edge's
-        # background-task count onto the terminal status so auto-terminate runs —
-        # which emit no idle event, and are exactly the case a future drain would
-        # target — still surface whether background work was left running.
-        if last_background_task_count is not None:
-            terminated_data["background_task_count"] = last_background_task_count
-        publish_session_event(
-            session_id,
-            "session.status_terminated",
-            terminated_data,
-        )
     output_sync_result = None
     patch_result = None
     patch_request = _swebench_patch_request(input_data)
@@ -994,9 +984,13 @@ def session_workflow(
                 if last_assistant_text
                 else "Output sync timed out"
             )
-        elif isinstance(output_sync_result, Mapping) and not output_sync_result.get("ok"):
+        elif isinstance(output_sync_result, Mapping) and not output_sync_result.get(
+            "ok"
+        ):
             status = "failed"
-            error = _clean_string(output_sync_result.get("error")) or "outputSync failed"
+            error = (
+                _clean_string(output_sync_result.get("error")) or "outputSync failed"
+            )
             last_assistant_text = (
                 f"{last_assistant_text}\n\nOutput sync failed: {error}"
                 if last_assistant_text
@@ -1014,7 +1008,8 @@ def session_workflow(
             ctx,
             sync_browser_video_activity,
             input={
-                "workflowId": input_data.get("workflowId") or metadata.get("workflowId"),
+                "workflowId": input_data.get("workflowId")
+                or metadata.get("workflowId"),
                 "workflowExecutionId": input_data.get("workflowExecutionId")
                 or input_data.get("dbExecutionId")
                 or input_data.get("executionId")
@@ -1045,7 +1040,8 @@ def session_workflow(
                 or metadata.get("workflowExecutionId")
                 or metadata.get("executionId"),
                 "nodeId": input_data.get("nodeId") or metadata.get("nodeId"),
-                "repoPath": input_data.get("workspaceDir") or input_data.get("repoPath"),
+                "repoPath": input_data.get("workspaceDir")
+                or input_data.get("repoPath"),
             },
             timeout_seconds=CLI_WORKSPACE_DIFF_SYNC_TIMEOUT_SECONDS,
         )
@@ -1065,12 +1061,35 @@ def session_workflow(
                 or metadata.get("workflowExecutionId")
                 or metadata.get("executionId"),
                 "nodeId": input_data.get("nodeId") or metadata.get("nodeId"),
-                "repoPath": input_data.get("workspaceDir") or input_data.get("repoPath"),
+                "repoPath": input_data.get("workspaceDir")
+                or input_data.get("repoPath"),
             },
             timeout_seconds=CLI_WORKSPACE_DIFF_SYNC_TIMEOUT_SECONDS,
         )
         if bundle_result is _ACTIVITY_TIMED_OUT:
             bundle_result = None
+
+    if session_id and not ctx.is_replaying:
+        terminated_data: dict[str, Any] = {
+            "reason": reason or status,
+            "stop_reason": _terminal_stop_reason(status, reason),
+            "status": status,
+            "success": status not in ("failed",),
+            "turnCount": turn_count,
+            "agentRuntime": agent_runtime,
+            "workflowInstanceId": ctx.instance_id,
+        }
+        # Emit terminal status only after all bounded durable sync work has
+        # completed. The workflow-builder host reaper treats this as the session
+        # workflow's near-return signal; publishing it earlier can delete the
+        # per-session Dapr host before the child result is committed to the parent.
+        if last_background_task_count is not None:
+            terminated_data["background_task_count"] = last_background_task_count
+        publish_session_event(
+            session_id,
+            "session.status_terminated",
+            terminated_data,
+        )
 
     return _result_contract(
         ctx=ctx,
@@ -1080,7 +1099,9 @@ def session_workflow(
         turn_count=turn_count,
         agent_runtime=agent_runtime,
         provenance=provenance,
-        output_sync=output_sync_result if isinstance(output_sync_result, Mapping) else None,
+        output_sync=output_sync_result
+        if isinstance(output_sync_result, Mapping)
+        else None,
         patch_result=patch_result if isinstance(patch_result, Mapping) else None,
         structured_output=last_structured_output,
     )

@@ -4929,8 +4929,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.requireSessions().updateWorkflowEnsureSessionRuntime(input);
 	}
 
-	listTerminalWorkflowSessionRuntimeHosts(input: { workflowExecutionId: string }) {
-		return this.requireSessions().listTerminalWorkflowSessionRuntimeHosts(input);
+	listReapableWorkflowSessionRuntimeHosts(input: { workflowExecutionId: string }) {
+		return this.requireSessions().listReapableWorkflowSessionRuntimeHosts(input);
 	}
 
 	async checkBenchmarkSessionProvisioningGate(input: {
