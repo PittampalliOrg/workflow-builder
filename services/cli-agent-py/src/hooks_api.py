@@ -738,7 +738,14 @@ class HookProcessor:
             else:
                 self._record_turn_started("hook:UserPromptSubmit")
         for event in events:
-            self._publish(session_id, event["type"], event.get("data") or {})
+            event_type = event["type"]
+            event_data = event.get("data") or {}
+            if isinstance(event_data, Mapping):
+                if self._capture_structured_output_event(
+                    event_type, event_data, session, session_id
+                ):
+                    session = self._session()
+            self._publish(session_id, event_type, event_data)
         response = await self._hook_response_async(name, payload, session)
         # P3: portable agentConfig.hooks — execute the run's user-declared command
         # hooks for this event and fold their decision into the response the CLI
@@ -746,7 +753,14 @@ class HookProcessor:
         # advisory). command-only; callbacks are dapr-agent-py-only.
         response = await self._apply_portable_hooks(name, payload, session_id, response)
         for event in self._pop_internal_events(response):
-            self._publish(session_id, event["type"], event.get("data") or {})
+            event_type = event["type"]
+            event_data = event.get("data") or {}
+            if isinstance(event_data, Mapping):
+                if self._capture_structured_output_event(
+                    event_type, event_data, session, session_id
+                ):
+                    session = self._session()
+            self._publish(session_id, event_type, event_data)
         return response
 
     async def _apply_portable_hooks(
@@ -883,6 +897,8 @@ class HookProcessor:
             return
         value = payload.get("tool_input")
         if not isinstance(value, Mapping):
+            value = payload.get("input")
+        if not isinstance(value, Mapping):
             value = self._structured_output_value_from_tool_response(payload)
         result = evaluate_structured_output(
             schema,
@@ -892,6 +908,33 @@ class HookProcessor:
         if result.valid:
             self._record_structured_output_result(result)
         self._publish_structured_output_validation(session_id, result)
+
+    def _capture_structured_output_event(
+        self,
+        event_type: str,
+        data: Mapping[str, Any],
+        session: Mapping[str, Any],
+        session_id: Any,
+    ) -> bool:
+        if event_type not in {"agent.tool_use", "agent.tool_result"}:
+            return False
+        payload = dict(data)
+        if event_type == "agent.tool_result":
+            if payload.get("ok") is False or payload.get("success") is False:
+                return False
+            if "tool_response" not in payload:
+                output = payload.get("output")
+                if output is None:
+                    output = payload.get("output_preview")
+                if output is not None:
+                    payload["tool_response"] = output
+        before = dict(session)
+        self._capture_structured_output_tool_call(payload, session, session_id)
+        after = self._session()
+        return (
+            before.get("structuredOutput") != after.get("structuredOutput")
+            or before.get("structuredOutputText") != after.get("structuredOutputText")
+        )
 
     @staticmethod
     def _structured_output_value_from_tool_response(
@@ -1205,12 +1248,22 @@ class HookProcessor:
                     self._suppress_supervisor_idle_echo()
                 self._safe_raise(str(instance_id), events)
 
+        def _observe_from_tailer(event_type: str, data: Mapping[str, Any]) -> None:
+            session = self._session()
+            self._capture_structured_output_event(
+                event_type,
+                data,
+                session,
+                session.get("sessionId") or session_id,
+            )
+
         self._tailer_manager.start(
             transcript_path,
             session_id,
             publish=self._publish,
             adapter=self._adapter,
             raise_lifecycle=_raise_from_tailer if instance_id else None,
+            event_observer=_observe_from_tailer,
         )
         logger.info("[hooks] transcript tailer started for %s", transcript_path)
 

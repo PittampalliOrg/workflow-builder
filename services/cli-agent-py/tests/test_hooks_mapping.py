@@ -409,7 +409,11 @@ def test_structured_output_tool_call_is_captured_when_present():
     assert response == {}
     assert supervisor.structured_output == {"answer": "yes"}
     assert supervisor.structured_output_text == '{"answer": "yes"}'
-    assert ("sess-1", "structured_output.validation", {"ok": True, "source": "tool_call"}) in published
+    assert (
+        "sess-1",
+        "structured_output.validation",
+        {"ok": True, "source": "tool_call"},
+    ) in published
 
 
 def test_pretool_structured_output_wins_over_later_prose_stop():
@@ -478,6 +482,50 @@ def test_pretool_structured_output_wins_over_later_prose_stop():
             ],
         )
     ]
+
+
+def test_mapped_tool_event_can_capture_structured_output_when_raw_payload_does_not():
+    class CanonicalToolAdapter:
+        def is_turn_completion_hook(self, event_name):
+            return False
+
+        def is_turn_failure_hook(self, event_name):
+            return False
+
+        def map_hook_event(self, payload):
+            if payload.get("hook_event_name") != "PreToolUse":
+                return []
+            return [
+                {
+                    "type": "agent.tool_use",
+                    "data": {
+                        "tool_name": "mcp__structured__StructuredOutput",
+                        "name": "mcp__structured__StructuredOutput",
+                        "tool_input": {"answer": "yes"},
+                        "input": {"answer": "yes"},
+                    },
+                }
+            ]
+
+    processor, published, _raised, supervisor, _manager = _processor(
+        adapter=CanonicalToolAdapter()
+    )
+    supervisor.one_shot = True
+    supervisor.agent_config = {
+        "structuredOutputMode": "tool",
+        "responseJsonSchema": {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        },
+    }
+
+    response = asyncio.run(processor.process(_hook("PreToolUse", raw="adapter-only")))
+
+    assert response == {}
+    assert supervisor.structured_output == {"answer": "yes"}
+    assert supervisor.structured_output_text == '{"answer": "yes"}'
+    assert ("sess-1", "structured_output.validation", {"ok": True, "source": "tool_call"}) in published
 
 
 def test_stop_records_missing_turn_start_before_completion():

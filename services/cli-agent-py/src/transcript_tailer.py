@@ -59,12 +59,14 @@ class TranscriptTailer:
         publish: Callable[..., None] = publish_session_event,
         adapter=None,
         raise_lifecycle: Callable[[list[dict[str, Any]]], None] | None = None,
+        event_observer: Callable[[str, Mapping[str, Any]], None] | None = None,
     ):
         self.path = path
         self.session_id = session_id
         self._publish = publish
         self._adapter = adapter
         self._raise_lifecycle = raise_lifecycle
+        self._event_observer = event_observer
         self._offset = 0
         self._partial = b""
         self.last_assistant_text: str | None = None
@@ -237,6 +239,7 @@ class TranscriptTailer:
                     self.last_assistant_text = text
                     self.assistant_message_published = True
             source_event_id = event.get("sourceEventId") or event.get("source_event_id")
+            self._observe(event_type, payload)
             self._publish(
                 self.session_id,
                 event_type,
@@ -246,6 +249,15 @@ class TranscriptTailer:
             emitted += 1
 
         return emitted
+
+    def _observe(self, event_type: str, payload: Mapping[str, Any]) -> None:
+        observer = self._event_observer
+        if observer is None:
+            return
+        try:
+            observer(event_type, payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[tailer] event observer failed: %s", exc)
 
 
 class TailerManager:
@@ -263,6 +275,7 @@ class TailerManager:
         publish: Callable[..., None] = publish_session_event,
         adapter=None,
         raise_lifecycle: Callable[[list[dict[str, Any]]], None] | None = None,
+        event_observer: Callable[[str, Mapping[str, Any]], None] | None = None,
     ) -> TranscriptTailer | None:
         if not path:
             return None
@@ -271,6 +284,8 @@ class TailerManager:
                 self._tailer._adapter = adapter
             if raise_lifecycle is not None:
                 self._tailer._raise_lifecycle = raise_lifecycle
+            if event_observer is not None:
+                self._tailer._event_observer = event_observer
             return self._tailer
         self.stop()
         self._tailer = TranscriptTailer(
@@ -279,6 +294,7 @@ class TailerManager:
             publish=publish,
             adapter=adapter,
             raise_lifecycle=raise_lifecycle,
+            event_observer=event_observer,
         )
         try:
             loop = asyncio.get_running_loop()

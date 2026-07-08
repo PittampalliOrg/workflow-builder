@@ -237,3 +237,62 @@ def test_adapter_transcript_mapping_can_raise_turn_completed(tmp_path):
     assert raised == []
     assert tailer.last_assistant_text == "final agy answer"
     assert tailer.turn_completion_raised is False
+
+
+def test_adapter_transcript_mapping_notifies_event_observer_before_publish(tmp_path):
+    path = tmp_path / "tool.jsonl"
+    path.write_text(json.dumps({"id": "tool-1"}) + "\n")
+    observed: list[tuple[str, dict]] = []
+    published: list[tuple[str | None, str, dict, str | None]] = []
+
+    class FakeAdapter:
+        def map_transcript_entry(self, _entry):
+            return [
+                {
+                    "type": "agent.tool_result",
+                    "data": {
+                        "tool_name": "mcp__structured__StructuredOutput",
+                        "name": "mcp__structured__StructuredOutput",
+                        "ok": True,
+                        "success": True,
+                        "output": '{"answer":"yes"}',
+                    },
+                    "sourceEventId": "fake:tool-1",
+                }
+            ]
+
+    def publish(session_id, event_type, data, *, source_event_id=None, **_kw):
+        published.append((session_id, event_type, data, source_event_id))
+
+    tailer = TranscriptTailer(
+        str(path),
+        "sess-1",
+        publish=publish,
+        adapter=FakeAdapter(),
+        event_observer=lambda event_type, data: observed.append((event_type, dict(data))),
+    )
+
+    assert tailer.poll() == 1
+    assert observed == [
+        (
+            "agent.tool_result",
+            {
+                "tool_name": "mcp__structured__StructuredOutput",
+                "name": "mcp__structured__StructuredOutput",
+                "ok": True,
+                "success": True,
+                "output": '{"answer":"yes"}',
+            },
+        )
+    ]
+    assert published[0][1:] == (
+        "agent.tool_result",
+        {
+            "tool_name": "mcp__structured__StructuredOutput",
+            "name": "mcp__structured__StructuredOutput",
+            "ok": True,
+            "success": True,
+            "output": '{"answer":"yes"}',
+        },
+        "fake:tool-1",
+    )
