@@ -429,35 +429,37 @@
 
 	{:else if event.type === 'structured_output.validation'}
 		{@const v = data as {
+			ok?: boolean;
 			valid?: boolean;
 			error?: string | null;
 			turn?: number;
 			toolCallId?: string;
 		}}
+		{@const validationOk = v.ok ?? v.valid ?? false}
 		{#if variant === 'card'}
 			<div
-				class="flex items-center gap-2 rounded-md border px-3 py-1.5 text-[11px] {v.valid
+				class="flex items-center gap-2 rounded-md border px-3 py-1.5 text-[11px] {validationOk
 					? 'border-emerald-500/25 bg-emerald-500/5'
 					: 'border-red-500/25 bg-red-500/5'}"
 			>
-				{#if v.valid}
+				{#if validationOk}
 					<CheckCircle2 class="size-3 text-emerald-400" />
 				{:else}
 					<AlertTriangle class="size-3 text-red-400" />
 				{/if}
-				<span class="font-mono {v.valid ? 'text-emerald-200' : 'text-red-200'}">StructuredOutput</span>
+				<span class="font-mono {validationOk ? 'text-emerald-200' : 'text-red-200'}">StructuredOutput</span>
 				<span>·</span>
-				<span class="text-foreground/90">{v.valid ? 'schema valid' : 'schema invalid — model retries in-loop'}</span>
+				<span class="text-foreground/90">{validationOk ? 'schema valid' : 'schema invalid — model retries in-loop'}</span>
 				{#if v.turn != null}<span class="ml-auto font-mono text-muted-foreground">turn {v.turn}</span>{/if}
 			</div>
-			{#if !v.valid && v.error}
+			{#if !validationOk && v.error}
 				<div class="mt-1 whitespace-pre-wrap rounded-md border border-red-500/15 bg-red-500/5 px-3 py-1.5 text-[11px] text-red-300/90">{v.error}</div>
 			{/if}
 		{:else}
 			<div class="grid grid-cols-2 gap-3 text-xs">
 				<div>
 					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Result</div>
-					<div class="mt-1 font-mono">{v.valid ? 'valid' : 'invalid'}</div>
+					<div class="mt-1 font-mono">{validationOk ? 'valid' : 'invalid'}</div>
 				</div>
 				<div>
 					<div class="text-[10px] uppercase tracking-wider text-muted-foreground">Turn</div>
