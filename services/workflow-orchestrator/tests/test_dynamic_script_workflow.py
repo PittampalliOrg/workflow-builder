@@ -946,12 +946,16 @@ def test_native_structured_gated_to_dapr_agent_py(monkeypatch):
     assert "modelSpec" not in cfg
 
 
-def test_claude_code_cli_schema_call_gets_tool_structured_mode(monkeypatch):
+@pytest.mark.parametrize(
+    "runtime",
+    ["claude-code-cli", "claude-code-cli-glm", "codex-cli", "agy-cli"],
+)
+def test_cli_schema_call_gets_tool_structured_mode(monkeypatch, runtime):
     import workflows.script_agent_dispatch as d
 
     monkeypatch.delenv("DYNAMIC_SCRIPT_CLI_STRUCTURED_OUTPUT", raising=False)
     schema = {"type": "object", "properties": {"x": {"type": "string"}}}
-    cfg = d._build_agent_config({"schema": schema}, {}, "claude-code-cli-glm", {})
+    cfg = d._build_agent_config({"schema": schema}, {}, runtime, {})
     assert cfg["responseJsonSchema"] == schema
     assert cfg["structuredOutputMode"] == "tool"
     # CLI runtimes do not inherit a multi-provider default model.
@@ -1063,6 +1067,7 @@ def test_tool_mode_output_contract_instructs_tool_call():
     spec = {"prompt": "Do the thing.", "opts": {"schema": schema}}
     tool_msg = d._build_initial_message(spec, structured_tool=True)
     assert "StructuredOutput" in tool_msg
+    assert "CLI MCP runtimes" in tool_msg
     assert "mcp__structured__StructuredOutput" in tool_msg
     assert "fenced" not in tool_msg
     default_msg = d._build_initial_message(spec)

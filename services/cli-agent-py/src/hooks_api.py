@@ -909,9 +909,7 @@ class HookProcessor:
         schema = self._structured_schema(session)
         if schema is None:
             return
-        value = payload.get("tool_input")
-        if not isinstance(value, Mapping):
-            value = payload.get("input")
+        value = self._structured_output_value_from_tool_input(payload)
         if not isinstance(value, Mapping):
             value = self._structured_output_value_from_tool_response(payload)
         result = evaluate_structured_output(
@@ -949,6 +947,40 @@ class HookProcessor:
             before.get("structuredOutput") != after.get("structuredOutput")
             or before.get("structuredOutputText") != after.get("structuredOutputText")
         )
+
+    @staticmethod
+    def _structured_output_value_from_tool_input(
+        payload: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        for key in ("tool_input", "input"):
+            value = payload.get(key)
+            if not isinstance(value, Mapping):
+                continue
+            is_mcp_wrapper = any(
+                marker in value
+                for marker in (
+                    "ServerName",
+                    "serverName",
+                    "server_name",
+                    "server",
+                    "ToolName",
+                    "toolName",
+                    "tool_name",
+                )
+            )
+            if is_mcp_wrapper:
+                for nested_key in (
+                    "arguments",
+                    "Arguments",
+                    "tool_arguments",
+                    "toolArguments",
+                    "ToolArguments",
+                ):
+                    nested = value.get(nested_key)
+                    if isinstance(nested, Mapping):
+                        return nested
+            return value
+        return None
 
     @staticmethod
     def _structured_output_value_from_tool_response(

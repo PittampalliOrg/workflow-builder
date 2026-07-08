@@ -100,8 +100,13 @@ def _schema_supports_structured_tool(schema: dict[str, Any]) -> bool:
     return schema_type is None and isinstance(schema.get("properties"), dict)
 
 
-def _is_claude_code_cli_runtime(agent_runtime: str) -> bool:
-    return agent_runtime in {"claude-code-cli", "claude-code-cli-glm"}
+def _is_cli_structured_runtime(agent_runtime: str) -> bool:
+    return agent_runtime in {
+        "claude-code-cli",
+        "claude-code-cli-glm",
+        "codex-cli",
+        "agy-cli",
+    }
 
 
 def _phase_model(meta: dict[str, Any] | None, phase: Any) -> str:
@@ -146,7 +151,7 @@ def _build_agent_config(
     )
     cli_structured = (
         schema is not None
-        and _is_claude_code_cli_runtime(agent_runtime)
+        and _is_cli_structured_runtime(agent_runtime)
         and _cli_structured_enabled()
         and _schema_supports_structured_tool(schema)
     )
@@ -221,7 +226,8 @@ def _output_contract_block(schema: dict[str, Any], structured_tool: bool = False
         return (
             "\n\n<output-contract>\n"
             "A structured-output tool is available. In Dapr runtimes it is named "
-            "StructuredOutput; in Claude Code MCP runtimes it is exposed as "
+            "StructuredOutput; in CLI MCP runtimes it is exposed through the "
+            "structured MCP server as StructuredOutput, commonly surfaced as "
             "mcp__structured__StructuredOutput. When you have completed the "
             "task, you MUST call that structured-output tool exactly once — "
             "its arguments are your final result and MUST be a JSON object "

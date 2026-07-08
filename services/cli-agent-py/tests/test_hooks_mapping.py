@@ -593,6 +593,58 @@ def test_mapped_tool_event_can_capture_structured_output_when_raw_payload_does_n
     assert ("sess-1", "structured_output.validation", {"ok": True, "source": "tool_call"}) in published
 
 
+def test_mapped_agy_mcp_wrapper_can_capture_structured_output():
+    class AgyMcpAdapter:
+        def is_turn_completion_hook(self, event_name):
+            return False
+
+        def is_turn_failure_hook(self, event_name):
+            return False
+
+        def map_hook_event(self, payload):
+            if payload.get("hook_event_name") != "PreToolUse":
+                return []
+            return [
+                {
+                    "type": "agent.tool_use",
+                    "data": {
+                        "tool_name": "mcp__structured__StructuredOutput",
+                        "name": "mcp__structured__StructuredOutput",
+                        "tool_input": {
+                            "ServerName": "structured",
+                            "ToolName": "StructuredOutput",
+                            "Arguments": {"answer": "yes"},
+                        },
+                        "input": {
+                            "ServerName": "structured",
+                            "ToolName": "StructuredOutput",
+                            "Arguments": {"answer": "yes"},
+                        },
+                    },
+                }
+            ]
+
+    processor, published, _raised, supervisor, _manager = _processor(
+        adapter=AgyMcpAdapter()
+    )
+    supervisor.one_shot = True
+    supervisor.agent_config = {
+        "structuredOutputMode": "tool",
+        "responseJsonSchema": {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        },
+    }
+
+    response = asyncio.run(processor.process(_hook("PreToolUse", raw="adapter-only")))
+
+    assert response == {}
+    assert supervisor.structured_output == {"answer": "yes"}
+    assert supervisor.structured_output_text == '{"answer": "yes"}'
+    assert ("sess-1", "structured_output.validation", {"ok": True, "source": "tool_call"}) in published
+
+
 def test_stop_records_missing_turn_start_before_completion():
     published: list[tuple[str | None, str, dict]] = []
     raised: list[tuple[str, list[dict]]] = []
