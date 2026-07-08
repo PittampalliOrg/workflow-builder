@@ -12,6 +12,8 @@ import { z } from "zod";
 import * as db from "./db.js";
 import { currentGoalSessionId } from "./goal-context.js";
 import { setSpanOutput } from "./observability/content.js";
+import { callRemoteWorkflowTargetTool } from "./remote-mcp.js";
+import { resolveWorkflowTarget } from "./targets.js";
 
 export type RegisteredTool = {
 	name: string;
@@ -22,6 +24,12 @@ const WORKFLOW_BUILDER_URL =
 	process.env.WORKFLOW_BUILDER_URL ??
 	"http://workflow-builder.workflow-builder.svc.cluster.local:3000";
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
+const targetInput = z
+	.string()
+	.optional()
+	.describe(
+		'Workflow runtime target. Omit or use "dev" for the host dev cluster; use "preview:<name>" for a vCluster preview.',
+	);
 
 /** Helper: JSON text response */
 function textResult(data: unknown) {
@@ -59,6 +67,22 @@ function resolveExecutionRef(args: {
 	return typeof ref === "string" && ref.trim() ? ref.trim() : null;
 }
 
+async function proxyTargetTool(
+	toolName: string,
+	args: Record<string, unknown>,
+	userId?: string,
+) {
+	const target = await resolveWorkflowTarget(
+		typeof args.target === "string" ? args.target : undefined,
+	);
+	if (target.local) return null;
+	return callRemoteWorkflowTargetTool(target, toolName, args, {
+		userId,
+		sessionId:
+			typeof args.sessionId === "string" ? args.sessionId : currentGoalSessionId(),
+	});
+}
+
 /**
  * Register current workflow tools on an McpServer instance.
  *
@@ -82,10 +106,18 @@ export function registerWorkflowTools(
 			title: "List Workflows",
 			description:
 				"List workflows with summary metadata, engine type, and node/edge counts. Does not return full spec/node data.",
-			inputSchema: {},
+			inputSchema: {
+				target: targetInput,
+			},
 		},
-		async () => {
+		async (args: { target?: string } = {}) => {
 			try {
+				const proxied = await proxyTargetTool(
+					"list_workflows",
+					args as Record<string, unknown>,
+					effectiveUserId,
+				);
+				if (proxied) return proxied;
 				const workflows = await db.listWorkflows(effectiveUserId);
 				return textResult(workflows);
 			} catch (err) {
@@ -107,10 +139,17 @@ export function registerWorkflowTools(
 				"Get a workflow by ID, including current spec metadata and legacy node/edge data when present.",
 			inputSchema: {
 				workflow_id: z.string().describe("The workflow ID"),
+				target: targetInput,
 			},
 		},
-		async (args: { workflow_id: string }) => {
+		async (args: { workflow_id: string; target?: string }) => {
 			try {
+				const proxied = await proxyTargetTool(
+					"get_workflow",
+					args as Record<string, unknown>,
+					effectiveUserId,
+				);
+				if (proxied) return proxied;
 				const wf = await db.getWorkflow(args.workflow_id);
 				if (!wf) return errorResult(`Workflow "${args.workflow_id}" not found`);
 				return textResult(wf);
@@ -136,10 +175,17 @@ export function registerWorkflowTools(
 					.string()
 					.optional()
 					.describe("Search filter (matches slug, name, description)"),
+				target: targetInput,
 			},
 		},
-		async (args: { search?: string }) => {
+		async (args: { search?: string; target?: string }) => {
 			try {
+				const proxied = await proxyTargetTool(
+					"list_available_actions",
+					args as Record<string, unknown>,
+					effectiveUserId,
+				);
+				if (proxied) return proxied;
 				const actions = await db.listAvailableActions(args.search);
 				return textResult(actions);
 			} catch (err) {
@@ -165,13 +211,21 @@ export function registerWorkflowTools(
 					.record(z.any())
 					.optional()
 					.describe("Input data for the workflow trigger"),
+				target: targetInput,
 			},
 		},
 		async (args: {
 			workflow_id: string;
 			trigger_data?: Record<string, unknown>;
+			target?: string;
 		}) => {
 			try {
+				const proxied = await proxyTargetTool(
+					"execute_workflow",
+					args as Record<string, unknown>,
+					effectiveUserId,
+				);
+				if (proxied) return proxied;
 				if (!INTERNAL_API_TOKEN) {
 					return errorResult(
 						"INTERNAL_API_TOKEN is not configured for workflow execution",
@@ -222,10 +276,21 @@ export function registerWorkflowTools(
 					.string()
 					.optional()
 					.describe("Legacy Dapr instanceId; resolved to execution_id when possible"),
+				target: targetInput,
 			},
 		},
-		async (args: { execution_id?: string; instance_id?: string }) => {
+		async (args: {
+			execution_id?: string;
+			instance_id?: string;
+			target?: string;
+		}) => {
 			try {
+				const proxied = await proxyTargetTool(
+					"get_execution_status",
+					args as Record<string, unknown>,
+					effectiveUserId,
+				);
+				if (proxied) return proxied;
 				if (!INTERNAL_API_TOKEN) {
 					return errorResult(
 						"INTERNAL_API_TOKEN is not configured for workflow status polling",
@@ -275,10 +340,21 @@ export function registerWorkflowTools(
 					.string()
 					.optional()
 					.describe("Legacy Dapr workflow instanceId"),
+				target: targetInput,
 			},
 		},
-		async (args: { execution_id?: string; instance_id?: string }) => {
+		async (args: {
+			execution_id?: string;
+			instance_id?: string;
+			target?: string;
+		}) => {
 			try {
+				const proxied = await proxyTargetTool(
+					"get_execution_results",
+					args as Record<string, unknown>,
+					effectiveUserId,
+				);
+				if (proxied) return proxied;
 				const ref = resolveExecutionRef(args);
 				if (!ref) {
 					return errorResult("Provide execution_id or instance_id.");

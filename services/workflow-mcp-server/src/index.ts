@@ -25,6 +25,7 @@ import {
 	registerScriptTools,
 	shouldSuppressScriptTools,
 } from "./script-tools.js";
+import { registerTargetTools } from "./target-tools.js";
 import {
 	createStructuredOutputMcpServer,
 	parseStructuredOutputContext,
@@ -168,6 +169,7 @@ function createMcpServer(
 
 	// Current workflow tools are UI-independent. The legacy Remote DOM/canvas
 	// authoring tools are no longer registered by workflow-tools.ts.
+	registerTargetTools(mcpServer);
 	registerWorkflowTools(mcpServer, undefined, userId);
 	// Goal tools register regardless of the UI so any MCP-capable agent runtime
 	// can drive the Codex-/goal-parity loop. Session scope comes from the
@@ -364,7 +366,10 @@ async function main(): Promise<void> {
 			{ name: "dry-run", version: "0.0.0" },
 			{ capabilities: { tools: {}, resources: {} } },
 		);
-		registeredTools = registerWorkflowTools(dryServer);
+		registeredTools = [
+			...registerTargetTools(dryServer),
+			...registerWorkflowTools(dryServer),
+		];
 	}
 	// Always count the goal tools.
 	{

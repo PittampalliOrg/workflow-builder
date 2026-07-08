@@ -26,6 +26,8 @@ import { z } from "zod";
 import { setSpanOutput } from "./observability/content.js";
 import type { RegisteredTool } from "./workflow-tools.js";
 import { currentGoalSessionId } from "./goal-context.js";
+import { callRemoteWorkflowTargetTool } from "./remote-mcp.js";
+import { resolveWorkflowTarget } from "./targets.js";
 
 // Same in-cluster BFF service the other tool modules target (the MCP server is
 // NOT co-located with the BFF, so localhost is wrong). The deployment does not
@@ -48,6 +50,12 @@ const WAIT_POLL_INTERVAL_MS = parseInt(
 );
 
 const TERMINAL_STATUSES = new Set(["success", "error", "cancelled", "failed"]);
+const targetInput = z
+	.string()
+	.optional()
+	.describe(
+		'Workflow runtime target. Omit or use "dev" for the host dev cluster; use "preview:<name>" for a vCluster preview.',
+	);
 
 // Compact authoring reference for the dynamic-script (Claude Code Workflow) dialect
 // AS IT BEHAVES ON THIS PLATFORM. Served verbatim by `get_workflow_script_spec` so an
@@ -182,6 +190,13 @@ export const runWorkflowScriptShape = {
 		.describe(
 			"When true, block (bounded) until the run reaches a terminal state and return its final status/output. Default false (returns immediately after start).",
 		),
+	target: targetInput,
+	sessionId: z
+		.string()
+		.optional()
+		.describe(
+			"Optional workflow-builder session id to forward as X-Wfb-Session-Id. Useful when targeting a preview session.",
+		),
 };
 
 export const runWorkflowScriptSchema = z
@@ -198,14 +213,14 @@ export type RunWorkflowScriptArgs = z.infer<typeof runWorkflowScriptSchema>;
 
 // ── Internal HTTP helpers ────────────────────────────────────
 
-function internalHeaders(): Record<string, string> {
+function internalHeaders(sessionIdOverride?: string | null): Record<string, string> {
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 		"X-Internal-Token": INTERNAL_API_TOKEN,
 	};
 	// Forward the spawning session (codex thread) for run lineage, exactly like
 	// the goal tools resolve it from the AsyncLocalStorage request context.
-	const sessionId = currentGoalSessionId();
+	const sessionId = sessionIdOverride ?? currentGoalSessionId();
 	if (sessionId) headers["X-Wfb-Session-Id"] = sessionId;
 	return headers;
 }
@@ -214,6 +229,7 @@ function internalHeaders(): Record<string, string> {
 async function waitForTerminal(
 	fetchImpl: typeof fetch,
 	executionId: string,
+	sessionId?: string | null,
 ): Promise<{ status: string; output?: unknown; timedOut?: boolean }> {
 	const deadline = Date.now() + WAIT_TIMEOUT_MS;
 	let lastStatus = "running";
@@ -225,7 +241,7 @@ async function waitForTerminal(
 				`${WORKFLOW_BUILDER_URL}/api/internal/agent/workflows/executions/${encodeURIComponent(
 					executionId,
 				)}/status`,
-				{ headers: internalHeaders() },
+				{ headers: internalHeaders(sessionId) },
 			);
 			if (resp.ok) {
 				const body = (await resp.json()) as {
@@ -246,6 +262,20 @@ async function waitForTerminal(
 		}
 		await new Promise((r) => setTimeout(r, WAIT_POLL_INTERVAL_MS));
 	}
+}
+
+async function maybeProxyScriptTool(
+	toolName: string,
+	args: Record<string, unknown>,
+) {
+	const target = await resolveWorkflowTarget(
+		typeof args.target === "string" ? args.target : undefined,
+	);
+	if (target.local) return null;
+	return callRemoteWorkflowTargetTool(target, toolName, args, {
+		sessionId:
+			typeof args.sessionId === "string" ? args.sessionId : currentGoalSessionId(),
+	});
 }
 
 // ── Registration ─────────────────────────────────────────────
@@ -274,6 +304,12 @@ export function registerScriptTools(
 			}
 			const args = parsed.data;
 
+			const proxied = await maybeProxyScriptTool(
+				"run_workflow_script",
+				args as Record<string, unknown>,
+			);
+			if (proxied) return proxied;
+
 			if (!INTERNAL_API_TOKEN) {
 				return errorResult(
 					"INTERNAL_API_TOKEN is not configured; cannot launch a workflow script.",
@@ -293,7 +329,7 @@ export function registerScriptTools(
 						`${WORKFLOW_BUILDER_URL}/api/internal/agent/workflows/execute`,
 						{
 							method: "POST",
-							headers: internalHeaders(),
+							headers: internalHeaders(args.sessionId),
 							body: JSON.stringify({
 								workflowName: args.workflowName,
 								// Verbatim any-JSON args; JSON.stringify drops the key when
@@ -324,7 +360,7 @@ export function registerScriptTools(
 						`${WORKFLOW_BUILDER_URL}/api/internal/agent/workflows/execute-script`,
 						{
 							method: "POST",
-							headers: internalHeaders(),
+							headers: internalHeaders(args.sessionId),
 							body: JSON.stringify({
 								script: args.script,
 								// Verbatim any-JSON args; omitted entirely when not provided.
@@ -350,7 +386,11 @@ export function registerScriptTools(
 				}
 
 				if (args.wait) {
-					const terminal = await waitForTerminal(fetchImpl, executionId);
+					const terminal = await waitForTerminal(
+						fetchImpl,
+						executionId,
+						args.sessionId,
+					);
 					return textResult({
 						executionId,
 						instanceId,
@@ -386,7 +426,14 @@ export function registerScriptTools(
 			title: "Validate Workflow Script",
 			description:
 				"Check a dynamic workflow script (Claude Code Workflow dialect) for syntactic correctness WITHOUT running it. Returns { ok, meta, estimatedAgentCalls } on success or { ok:false, error } with the reason (banned API like Date.now()/fetch/import, missing or non-literal `export const meta`, bad meta shape, size over the limit). Use this in an author→validate→fix loop before `run_workflow_script`. Call `get_workflow_script_spec` for the dialect rules + platform deltas.",
-			inputSchema: { script: z.string().describe("Dynamic workflow script source to validate.") },
+			inputSchema: {
+				script: z.string().describe("Dynamic workflow script source to validate."),
+				target: targetInput,
+				sessionId: z
+					.string()
+					.optional()
+					.describe("Optional workflow-builder session id to forward."),
+			},
 		},
 		async (rawArgs: unknown) => {
 			const script =
@@ -394,6 +441,20 @@ export function registerScriptTools(
 					? (rawArgs as any).script
 					: "";
 			if (!script.trim()) return errorResult("script is required");
+			const target =
+				rawArgs && typeof (rawArgs as any).target === "string"
+					? (rawArgs as any).target
+					: undefined;
+			const sessionId =
+				rawArgs && typeof (rawArgs as any).sessionId === "string"
+					? (rawArgs as any).sessionId
+					: undefined;
+			const proxied = await maybeProxyScriptTool("validate_workflow_script", {
+				script,
+				...(target ? { target } : {}),
+				...(sessionId ? { sessionId } : {}),
+			});
+			if (proxied) return proxied;
 			if (!INTERNAL_API_TOKEN) {
 				return errorResult(
 					"INTERNAL_API_TOKEN is not configured; cannot validate a workflow script.",
@@ -404,7 +465,7 @@ export function registerScriptTools(
 					`${WORKFLOW_BUILDER_URL}/api/internal/agent/workflows/validate-script`,
 					{
 						method: "POST",
-						headers: internalHeaders(),
+						headers: internalHeaders(sessionId),
 						body: JSON.stringify({ script }),
 					},
 				);
@@ -442,6 +503,11 @@ export function registerScriptTools(
 					.string()
 					.optional()
 					.describe("Workflow name (defaults to the script's meta.name)."),
+				target: targetInput,
+				sessionId: z
+					.string()
+					.optional()
+					.describe("Optional workflow-builder session id to forward."),
 			},
 		},
 		async (rawArgs: unknown) => {
@@ -453,13 +519,28 @@ export function registerScriptTools(
 				rawArgs && typeof (rawArgs as any).name === "string"
 					? (rawArgs as any).name
 					: undefined;
+			const target =
+				rawArgs && typeof (rawArgs as any).target === "string"
+					? (rawArgs as any).target
+					: undefined;
+			const sessionId =
+				rawArgs && typeof (rawArgs as any).sessionId === "string"
+					? (rawArgs as any).sessionId
+					: undefined;
 			if (!script.trim()) return errorResult("script is required");
+			const proxied = await maybeProxyScriptTool("save_workflow_script", {
+				script,
+				...(name ? { name } : {}),
+				...(target ? { target } : {}),
+				...(sessionId ? { sessionId } : {}),
+			});
+			if (proxied) return proxied;
 			if (!INTERNAL_API_TOKEN) {
 				return errorResult(
 					"INTERNAL_API_TOKEN is not configured; cannot save a workflow script.",
 				);
 			}
-			if (!currentGoalSessionId()) {
+			if (!sessionId && !currentGoalSessionId()) {
 				return errorResult(
 					"No session context (X-Wfb-Session-Id) — a saved workflow must be " +
 						"attributed to the calling session's user + project.",
@@ -470,7 +551,7 @@ export function registerScriptTools(
 					`${WORKFLOW_BUILDER_URL}/api/internal/agent/workflows/save-script`,
 					{
 						method: "POST",
-						headers: internalHeaders(),
+						headers: internalHeaders(sessionId),
 						body: JSON.stringify({ script, ...(name ? { name } : {}) }),
 					},
 				);
