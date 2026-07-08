@@ -11,8 +11,10 @@
  *  2. `validateWithEvaluator` — AUTHORITATIVE, async: POSTs the script to the
  *     script-evaluator `/validate` endpoint which re-runs the module in a vm
  *     sandbox for the server-truth `meta` + `estimatedAgentCalls`. When the
- *     evaluator is unreachable we DEGRADE to the static result (a save must not
- *     hard-fail because a stateless helper is down) — the start path re-validates.
+ *     evaluator is unreachable we usually DEGRADE to the static result (a save
+ *     must not hard-fail because a stateless helper is down); the start path
+ *     passes `degradeOnUnavailable:false` because execution requires the
+ *     evaluator anyway.
  *
  * Wired into workflow create/update (`workflow-definition-commands.ts`): a 400
  * on validation failure; on success the evaluator meta + estimatedAgentCalls are
@@ -153,7 +155,11 @@ type EvaluatorValidateResponse = {
  */
 export async function validateWithEvaluator(
 	script: string,
-	opts: { signal?: AbortSignal; baseUrl?: string } = {},
+	opts: {
+		signal?: AbortSignal;
+		baseUrl?: string;
+		degradeOnUnavailable?: boolean;
+	} = {},
 ): Promise<ValidateResult> {
 	const staticResult = validateDynamicScriptSpec({
 		engine: "dynamic-script",
@@ -178,6 +184,14 @@ export async function validateWithEvaluator(
 				const detail = await response.text().catch(() => "script validation failed");
 				return { ok: false, status: 400, error: detail || "script validation failed" };
 			}
+			if (opts.degradeOnUnavailable === false) {
+				const detail = await response.text().catch(() => "");
+				return {
+					ok: false,
+					status: 503,
+					error: detail || "script evaluator unavailable",
+				};
+			}
 			return staticResult;
 		}
 		const data = (await response.json().catch(() => null)) as EvaluatorValidateResponse | null;
@@ -195,9 +209,18 @@ export async function validateWithEvaluator(
 				: undefined;
 		if (estimatedAgentCalls !== undefined) meta.estimatedAgentCalls = estimatedAgentCalls;
 		return { ok: true, meta, estimatedAgentCalls };
-	} catch {
-		// Evaluator unreachable — degrade to the static result. The start path will
-		// re-validate before actually executing.
+	} catch (err) {
+		if (opts.degradeOnUnavailable === false) {
+			const detail =
+				err instanceof Error ? err.message : "script evaluator unavailable";
+			return {
+				ok: false,
+				status: 503,
+				error: `script evaluator unavailable: ${detail}`,
+			};
+		}
+		// Evaluator unreachable — degrade to the static result. The start path passes
+		// `degradeOnUnavailable:false` before actually executing.
 		return staticResult;
 	}
 }

@@ -208,6 +208,94 @@ function friendlyError(err: unknown, script: string): string {
 	return errMessage(err);
 }
 
+function maskStringsAndComments(source: string): string {
+	let out = "";
+	let i = 0;
+	let mode: "code" | "single" | "double" | "template" | "line" | "block" = "code";
+	while (i < source.length) {
+		const ch = source[i];
+		const next = source[i + 1];
+		if (mode === "code") {
+			if (ch === "'" || ch === '"' || ch === "`") {
+				mode = ch === "'" ? "single" : ch === '"' ? "double" : "template";
+				out += "0";
+				i++;
+				continue;
+			}
+			if (ch === "/" && next === "/") {
+				mode = "line";
+				out += "  ";
+				i += 2;
+				continue;
+			}
+			if (ch === "/" && next === "*") {
+				mode = "block";
+				out += "  ";
+				i += 2;
+				continue;
+			}
+			out += ch;
+			i++;
+			continue;
+		}
+		out += ch === "\n" ? "\n" : " ";
+		if ((mode === "single" && ch === "'") || (mode === "double" && ch === '"')) {
+			mode = "code";
+		} else if (mode === "template" && ch === "`") {
+			mode = "code";
+		} else if (mode === "line" && ch === "\n") {
+			mode = "code";
+		} else if (mode === "block" && ch === "*" && next === "/") {
+			out += " ";
+			i += 2;
+			mode = "code";
+			continue;
+		}
+		if ((mode === "single" || mode === "double" || mode === "template") && ch === "\\") {
+			out += next === "\n" ? "\n" : " ";
+			i += 2;
+			continue;
+		}
+		i++;
+	}
+	return out;
+}
+
+function dateFunctionCallError(masked: string): string | null {
+	const re = /(^|[^\w$])Date\s*\(/g;
+	let match: RegExpExecArray | null;
+	while ((match = re.exec(masked)) !== null) {
+		const dateIndex = match.index + match[1].length;
+		const prefix = masked.slice(0, dateIndex).trimEnd();
+		if (!prefix.endsWith("new")) {
+			return "Date() as a function is banned in workflow scripts (non-deterministic)";
+		}
+	}
+	return null;
+}
+
+function staticDeterminismError(script: string): string | null {
+	const masked = maskStringsAndComments(script);
+	return (
+		dateFunctionCallError(masked) ||
+		(/\bnew\s+Date\s*\(\s*\)/.test(masked)
+			? "new Date() with no arguments is banned in workflow scripts (non-deterministic)"
+			: null) ||
+		(/\bDate\s*\.\s*now\s*\(/.test(masked)
+			? "Date.now() is banned in workflow scripts (non-deterministic)"
+			: null) ||
+		(/\bMath\s*\.\s*random\s*\(/.test(masked)
+			? "Math.random() is banned in workflow scripts (non-deterministic)"
+			: null) ||
+		(/\b(?:setTimeout|setInterval|setImmediate|queueMicrotask|fetch|require|process)\b/.test(masked)
+			? "timers, fetch, require, and process are not available in workflow scripts"
+			: null) ||
+		(/\bimport\s*\(/.test(masked)
+			? "import is not available in workflow scripts"
+			: null)
+	);
+}
+
 // ── Wrapper source ───────────────────────────────────────────────────────────
 //
 // User scripts use the Claude Code dialect: bare top-level `return {...}` and a
@@ -910,6 +998,14 @@ function deepFreeze<T>(value: T): T {
 export async function validateScript(script: string): Promise<ValidateResponse> {
 	const extracted = extractMeta(script);
 	const estimatedAgentCalls = (script.match(/\bagent\s*\(/g) ?? []).length;
+	const lintError = staticDeterminismError(extracted.body);
+	if (lintError) {
+		return {
+			ok: false,
+			error: lintError,
+			evaluatorVersion: EVALUATOR_VERSION,
+		};
+	}
 	try {
 		const context = vm.createContext(Object.create(null) as object, {
 			name: "script-evaluator-validate",

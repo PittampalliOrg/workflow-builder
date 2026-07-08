@@ -106,6 +106,42 @@ describe("validateWithEvaluator", () => {
 		expect(result.meta.name).toBe("Demo");
 	});
 
+	it("can require evaluator availability for execution start", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				throw new Error("ECONNREFUSED");
+			}),
+		);
+		const result = await validateWithEvaluator(SCRIPT, {
+			baseUrl: "http://evaluator",
+			degradeOnUnavailable: false,
+		});
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.status).toBe(503);
+		expect(result.error).toMatch(/script evaluator unavailable/);
+	});
+
+	it("can treat 5xx evaluator failures as unavailable for execution start", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({
+				ok: false,
+				status: 503,
+				text: async () => "warming up",
+			})),
+		);
+		const result = await validateWithEvaluator(SCRIPT, {
+			baseUrl: "http://evaluator",
+			degradeOnUnavailable: false,
+		});
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.status).toBe(503);
+		expect(result.error).toContain("warming up");
+	});
+
 	it("propagates a 4xx evaluator rejection as a 400", async () => {
 		vi.stubGlobal(
 			"fetch",

@@ -191,6 +191,8 @@ class FakeCtx:
         self.events: dict[str, list[CompletableTask]] = {}
         self.record_inputs: list[dict] = []
         self.dispatch_inputs: list[dict] = []
+        self.prepare_inputs: list[dict] = []
+        self.stop_inputs: list[dict] = []
 
     # -- deterministic side effects captured for assertions ----------------
     def set_custom_status(self, status: str) -> None:
@@ -240,6 +242,12 @@ class FakeCtx:
             return self._spawn_result() if callable(self._spawn_result) else self._spawn_result
         if name == "resolve_script_workflow":
             return self._resolve_result
+        if name == "prepare_script_call":
+            self.prepare_inputs.append(inp)
+            return self._prepare_result(inp)
+        if name == "request_session_stop":
+            self.stop_inputs.append(inp)
+            return {"ok": True, "state": "stopping"}
         if name == "record_script_call_result":
             self.record_inputs.append(inp)
             return self._record_fn(inp)
@@ -260,7 +268,75 @@ class FakeCtx:
             return str(inp.get("id"))
         if name == "import_script_journal":
             return str(inp.get("fromExecutionId"))
+        if name in ("prepare_script_call", "request_session_stop"):
+            return str(inp.get("callId") or inp.get("sessionId"))
         return ""
+
+    def _prepare_result(self, inp: dict) -> dict:
+        cid = str(inp.get("callId") or "")
+        spec = inp.get("spec") if isinstance(inp.get("spec"), dict) else {}
+        child_instance_id = script_child_instance_id(
+            str(inp.get("parentInstanceId") or self.instance_id),
+            cid,
+            int(spec.get("retries") or 0),
+        )
+        kind = spec.get("kind") or "agent"
+        if kind == "workflow":
+            if not self._resolve_result.get("success"):
+                ref = spec.get("workflowRef")
+                return {
+                    "kind": "dispatchError",
+                    "callId": cid,
+                    "childInstanceId": child_instance_id,
+                    "dispatchError": f"workflow() could not resolve {ref!r}: {self._resolve_result.get('error')}",
+                }
+            child_input = {
+                "executionId": inp.get("executionId"),
+                "script": self._resolve_result.get("script"),
+                "scriptSha256": self._resolve_result.get("scriptSha256"),
+                "meta": self._resolve_result.get("meta") or {},
+                "budgetTotal": inp.get("budgetTotal"),
+                "nested": True,
+                "limits": inp.get("limits") or {},
+                "defaults": inp.get("defaults") or {},
+                "workflowId": inp.get("workflowId"),
+                "userId": inp.get("userId"),
+                "projectId": inp.get("projectId"),
+                "_otel": inp.get("_otel") or {},
+            }
+            if "args" in spec:
+                child_input["args"] = spec.get("args")
+            return {
+                "kind": "workflow",
+                "callId": cid,
+                "childInstanceId": child_instance_id,
+                "childWorkflowName": "dynamic_script_workflow_v1",
+                "childInput": child_input,
+            }
+        bridge = self._spawn_result() if callable(self._spawn_result) else self._spawn_result
+        child_input = {
+            **(bridge.get("childInput") if isinstance(bridge, dict) else {}),
+            "workflowId": inp.get("workflowId"),
+            "workflowExecutionId": inp.get("executionId"),
+            "dbExecutionId": inp.get("executionId"),
+            "nodeId": cid,
+            "nodeName": spec.get("label") or cid[:8],
+            "agentId": bridge.get("agentId") if isinstance(bridge, dict) else None,
+            "agentAppId": (
+                bridge.get("agentAppId") if isinstance(bridge, dict) else "dapr-agent-py"
+            ),
+            "_otel": inp.get("_otel") or {},
+        }
+        return {
+            "kind": "agent",
+            "callId": cid,
+            "childInstanceId": child_instance_id,
+            "childWorkflowName": "session_workflow",
+            "childInput": child_input,
+            "appId": (
+                bridge.get("agentAppId") if isinstance(bridge, dict) else "dapr-agent-py"
+            ),
+        }
 
     # -- test helpers to complete real child tasks -------------------------
     def complete_child(self, call_id: str, result: Any, *, retries: int = 0) -> None:
@@ -367,6 +443,46 @@ def test_drain_all_batches_completed_children():
     assert len(ctx.record_inputs) == 3
 
 
+def test_batch_v2_prepares_all_available_calls_before_scheduling_children():
+    tasks = [agent_task(f"{c*40}_0", label=c) for c in ("a", "b", "c")]
+    ctx = FakeCtx(evaluator=make_evaluator(tasks, "done"))
+    inp = base_input(dispatchMode="batch-v2", limits={"maxConcurrentAgents": 3})
+
+    def complete_all(c: FakeCtx):
+        for ch in ("a", "b", "c"):
+            c.complete_child(f"{ch*40}_0", {"success": True, "content": ch})
+
+    result = drive(dynamic_script_workflow(ctx, inp), ctx, [complete_all])
+    assert result["success"] is True
+    assert [p["callId"] for p in ctx.prepare_inputs] == [f"{c*40}_0" for c in ("a", "b", "c")]
+    first_child_i = next(i for i, a in enumerate(ctx.action_log) if a[0] == "child")
+    prepare_indices = [
+        i
+        for i, a in enumerate(ctx.action_log)
+        if a[0] == "activity" and a[1] == "prepare_script_call"
+    ]
+    assert len(prepare_indices) == 3
+    assert max(prepare_indices) < first_child_i
+    assert not any(a[0] == "activity" and a[1] == "spawn_session_for_workflow" for a in ctx.action_log)
+
+
+def test_default_serial_mode_preserves_legacy_spawn_path_for_replay_safety():
+    tasks = [agent_task("a" * 40 + "_0"), agent_task("b" * 40 + "_0")]
+    ctx = FakeCtx(evaluator=make_evaluator(tasks, "done"))
+
+    def complete_all(c: FakeCtx):
+        c.complete_child("a" * 40 + "_0", {"success": True, "content": "a"})
+        c.complete_child("b" * 40 + "_0", {"success": True, "content": "b"})
+
+    result = drive(dynamic_script_workflow(ctx, base_input()), ctx, [complete_all])
+    assert result["success"] is True
+    assert ctx.prepare_inputs == []
+    assert any(
+        a[0] == "activity" and a[1] == "spawn_session_for_workflow"
+        for a in ctx.action_log
+    )
+
+
 def test_child_failure_journals_null():
     cid = "a" * 40 + "_0"
     tasks = [agent_task(cid)]
@@ -420,6 +536,21 @@ def test_skip_control_event():
     skip_records = [r for r in ctx.record_inputs if r["raw"].get("skipped")]
     assert len(skip_records) == 1
     assert skip_records[0]["callId"] == cid
+
+
+def test_batch_v2_skip_requests_lifecycle_stop_for_agent_session():
+    cid = "a" * 40 + "_0"
+    ctx = FakeCtx(evaluator=make_evaluator([agent_task(cid)], "done"))
+
+    result = drive(
+        dynamic_script_workflow(ctx, base_input(dispatchMode="batch-v2")),
+        ctx,
+        [lambda c: c.fire_control(cid, "skip")],
+    )
+    assert result["success"] is True
+    assert len(ctx.stop_inputs) == 1
+    assert ctx.stop_inputs[0]["sessionId"] == script_child_instance_id(ctx.instance_id, cid, 0)
+    assert ctx.stop_inputs[0]["mode"] == "terminate"
 
 
 def test_structured_retry_requeue_then_cap():

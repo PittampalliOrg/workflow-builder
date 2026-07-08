@@ -571,4 +571,31 @@ describe("/validate", () => {
 		expect(res.ok).toBe(false);
 		expect(res.error).toContain("import is not available");
 	});
+
+	it("rejects non-deterministic APIs before execution", async () => {
+		for (const snippet of [
+			"const a = Date.now(); return { a }",
+			"const a = new Date(); return { a }",
+			"const a = Math.random(); return { a }",
+			"return fetch('/x')",
+		]) {
+			const res = await validateScript(META + snippet);
+			expect(res.ok).toBe(false);
+			expect(res.error?.toLowerCase()).toMatch(/banned|not available/);
+		}
+	});
+
+	it("does not reject banned API names inside strings or comments", async () => {
+		const res = await validateScript(
+			META + "const s = 'Date.now()'; // Math.random()\nreturn { s }",
+		);
+		expect(res.ok).toBe(true);
+	});
+
+	it("allows deterministic Date construction during validation", async () => {
+		const res = await validateScript(
+			META + "const d = new Date('2020-01-01T00:00:00Z'); return { d }",
+		);
+		expect(res.ok).toBe(true);
+	});
 });

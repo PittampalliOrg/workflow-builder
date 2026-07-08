@@ -563,6 +563,7 @@ export type WorkflowScriptStartRequest = {
 	args?: unknown;
 	budgetTotal?: number | null;
 	defaults?: Record<string, unknown>;
+	dispatchMode?: string;
 	/** Resume-after-edit: the orchestrator imports this execution's `done` rows. */
 	journalImportFromExecutionId?: string;
 	dbExecutionId: string;

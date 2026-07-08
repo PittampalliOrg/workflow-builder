@@ -3098,6 +3098,7 @@ class ScriptWorkflowRequest(BaseModel):
     projectId: str | None = None
     defaults: dict = Field(default_factory=dict)
     limits: dict = Field(default_factory=dict)
+    dispatchMode: str | None = None
     triggerData: dict = Field(default_factory=dict)
     traceContext: dict | None = None
 
@@ -3179,6 +3180,7 @@ def execute_script_workflow(request: ScriptWorkflowRequest, http_request: Reques
             "nested": bool(request.nested),
             "limits": request.limits if isinstance(request.limits, dict) else {},
             "defaults": request.defaults if isinstance(request.defaults, dict) else {},
+            "dispatchMode": request.dispatchMode,
             "workflowId": request.workflowId,
             "userId": request.userId,
             "projectId": request.projectId,

@@ -29,12 +29,15 @@ from datetime import timedelta
 from typing import Any
 
 import dapr.ext.workflow as wf
+from dapr.ext.workflow import when_all as wf_when_all
 from dapr.ext.workflow import when_any as wf_when_any
 
 from activities.aggregate_script_usage import aggregate_script_usage
 from activities.evaluate_script import evaluate_script
 from activities.append_script_logs import append_script_logs
 from activities.persist_results_to_db import persist_results_to_db
+from activities.prepare_script_call import prepare_script_call
+from activities.request_session_stop import request_session_stop
 from activities.script_call_journal import (
     import_script_journal,
     record_script_call_dispatch,
@@ -45,7 +48,11 @@ from activities.track_agent_run import (
     track_agent_run_completed,
 )
 from activities.log_node_execution import update_execution_node
-from workflows.script_agent_dispatch import _start_script_call, script_child_instance_id
+from workflows.script_agent_dispatch import (
+    _start_script_call,
+    script_child_instance_id,
+    start_prepared_script_call,
+)
 from workflows.sw_workflow import _freeze
 
 logger = logging.getLogger(__name__)
@@ -54,6 +61,8 @@ DYNAMIC_SCRIPT_WORKFLOW_NAME = "dynamic_script_workflow_v1"
 
 CANCEL_EVENT_NAME = "workflow.cancel"
 CONTROL_EVENT_NAME = "script.call.control"
+DISPATCH_MODE_SERIAL_V1 = "serial-v1"
+DISPATCH_MODE_BATCH_V2 = "batch-v2"
 
 # Politeness caps (above Kueue admission). Input limits are clamped by env.
 DEFAULT_MAX_CONCURRENCY = int(os.environ.get("DYNAMIC_SCRIPT_MAX_CONCURRENCY", "5") or "5")
@@ -157,6 +166,9 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
     user_id = input_data.get("userId")
     project_id = input_data.get("projectId")
     otel = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else {}
+    dispatch_mode = str(input_data.get("dispatchMode") or DISPATCH_MODE_SERIAL_V1).strip()
+    if dispatch_mode != DISPATCH_MODE_BATCH_V2:
+        dispatch_mode = DISPATCH_MODE_SERIAL_V1
     estimated = None
     if isinstance(meta.get("estimatedAgentCalls"), (int, float)):
         estimated = int(meta["estimatedAgentCalls"])
@@ -373,116 +385,246 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
         # 4. Dispatch under caps.
         dispatched_this_round = 0
         resolved_at_dispatch = 0  # calls journaled terminal AT dispatch (no child)
-        while queue and len(outstanding) < limits["maxConcurrentAgents"]:
-            if dispatched >= limits["maxLifetimeAgents"]:
-                lifetime_exceeded = True
-                break
-            cid = queue.pop(0)
-            spec = task_specs[cid]
-            child_task = yield from _start_script_call(
-                ctx,
-                call_id=cid,
-                spec=spec,
-                exec_id=exec_id,
-                meta=meta,
-                defaults=defaults,
-                limits=limits,
-                budget_total=budget_total,
-                workflow_id=workflow_id,
-                user_id=user_id,
-                project_id=project_id,
-                otel=otel,
-            )
-            child_instance_id = script_child_instance_id(
-                ctx.instance_id, cid, spec.get("retries", 0)
-            )
-            spec["_instance_id"] = child_instance_id
-            spec["seq"] = seq_counter
-            seq_counter += 1
+        if dispatch_mode == DISPATCH_MODE_BATCH_V2:
+            batch: list[str] = []
+            while queue and len(outstanding) + len(batch) < limits["maxConcurrentAgents"]:
+                if dispatched + len(batch) >= limits["maxLifetimeAgents"]:
+                    lifetime_exceeded = True
+                    break
+                batch.append(queue.pop(0))
 
-            if child_task is None or (
-                isinstance(child_task, dict) and child_task.get("dispatchError")
-            ):
-                # Bridge refused / dispatch failed -> journal immediately (no
-                # tracking). A dispatchError carries the reason so a failed
-                # workflow() call THROWS a meaningful message into the script;
-                # a plain None (bridge refusal / bad agentType) journals null.
-                if isinstance(child_task, dict):
-                    raw = {"success": False, "error": str(child_task["dispatchError"])}
-                else:
-                    raw = {"success": False, "cancelled": True}
+            if batch:
+                prepare_tasks = []
+                for cid in batch:
+                    spec = task_specs[cid]
+                    child_instance_id = script_child_instance_id(
+                        ctx.instance_id, cid, spec.get("retries", 0)
+                    )
+                    spec["_instance_id"] = child_instance_id
+                    spec["seq"] = seq_counter
+                    seq_counter += 1
+                    prepare_tasks.append(
+                        ctx.call_activity(
+                            prepare_script_call,
+                            input=_freeze(
+                                {
+                                    "parentInstanceId": ctx.instance_id,
+                                    "executionId": exec_id,
+                                    "callId": cid,
+                                    "spec": spec,
+                                    "meta": meta,
+                                    "defaults": defaults,
+                                    "limits": limits,
+                                    "budgetTotal": budget_total,
+                                    "workflowId": workflow_id,
+                                    "userId": user_id,
+                                    "projectId": project_id,
+                                    "_otel": otel,
+                                }
+                            ),
+                        )
+                    )
+
+                prepared_results = yield wf_when_all(prepare_tasks)
+                for cid, prepared in zip(batch, prepared_results):
+                    spec = task_specs[cid]
+                    child_instance_id = str(spec.get("_instance_id") or "")
+                    child_task = start_prepared_script_call(ctx, prepared)
+
+                    if child_task is None or (
+                        isinstance(child_task, dict) and child_task.get("dispatchError")
+                    ):
+                        # Bridge refused / dispatch failed -> journal immediately (no
+                        # tracking). A dispatchError carries the reason so a failed
+                        # workflow() call THROWS a meaningful message into the script;
+                        # a plain None (bridge refusal / bad agentType) journals null.
+                        if isinstance(child_task, dict):
+                            raw = {"success": False, "error": str(child_task["dispatchError"])}
+                        else:
+                            raw = {"success": False, "cancelled": True}
+                        yield ctx.call_activity(
+                            record_script_call_result,
+                            input=_freeze(
+                                {
+                                    "executionId": exec_id,
+                                    "callId": cid,
+                                    "seq": spec["seq"],
+                                    "spec": _spec_for_journal(spec),
+                                    "raw": raw,
+                                    "_otel": otel,
+                                }
+                            ),
+                        )
+                        resolved.add(cid)
+                        resolved_at_dispatch += 1
+                        continue
+
+                    outstanding[cid] = child_task
+                    dispatched += 1
+                    dispatched_this_round += 1
+
+                    # Journal a non-terminal `running` row NOW so the run UI shows the
+                    # in-flight call and (for agent() calls) can attach the child
+                    # session's live transcript — the child instance id IS the session
+                    # id and is deterministic at dispatch. workflow() children have no
+                    # session (they are executions); their row still lights up the lane.
+                    yield ctx.call_activity(
+                        record_script_call_dispatch,
+                        input=_freeze(
+                            {
+                                "executionId": exec_id,
+                                "callId": cid,
+                                "seq": spec["seq"],
+                                "sessionId": (
+                                    child_instance_id
+                                    if (spec.get("kind") or "agent") == "agent"
+                                    else None
+                                ),
+                                "spec": _spec_for_journal(spec),
+                                "_otel": otel,
+                            }
+                        ),
+                    )
+
+                    # Keep workflow_executions.current_node_id fresh + light up the Agents tab.
+                    yield ctx.call_activity(
+                        update_execution_node,
+                        input=_freeze(
+                            {
+                                "executionId": exec_id,
+                                "nodeId": cid,
+                                "nodeName": spec.get("label") or cid[:8],
+                                "_otel": otel,
+                            }
+                        ),
+                    )
+                    yield ctx.call_activity(
+                        track_agent_run_scheduled,
+                        input=_freeze(
+                            {
+                                "id": child_instance_id,
+                                "workflowExecutionId": exec_id,
+                                "workflowId": workflow_id or "",
+                                "nodeId": cid,
+                                "mode": "run",
+                                "agentWorkflowId": child_instance_id,
+                                "daprInstanceId": child_instance_id,
+                                "parentExecutionId": ctx.instance_id,
+                                "_otel": otel,
+                            }
+                        ),
+                    )
+        else:
+            while queue and len(outstanding) < limits["maxConcurrentAgents"]:
+                if dispatched >= limits["maxLifetimeAgents"]:
+                    lifetime_exceeded = True
+                    break
+                cid = queue.pop(0)
+                spec = task_specs[cid]
+                child_task = yield from _start_script_call(
+                    ctx,
+                    call_id=cid,
+                    spec=spec,
+                    exec_id=exec_id,
+                    meta=meta,
+                    defaults=defaults,
+                    limits=limits,
+                    budget_total=budget_total,
+                    workflow_id=workflow_id,
+                    user_id=user_id,
+                    project_id=project_id,
+                    otel=otel,
+                )
+                child_instance_id = script_child_instance_id(
+                    ctx.instance_id, cid, spec.get("retries", 0)
+                )
+                spec["_instance_id"] = child_instance_id
+                spec["seq"] = seq_counter
+                seq_counter += 1
+
+                if child_task is None or (
+                    isinstance(child_task, dict) and child_task.get("dispatchError")
+                ):
+                    # Bridge refused / dispatch failed -> journal immediately (no
+                    # tracking). A dispatchError carries the reason so a failed
+                    # workflow() call THROWS a meaningful message into the script;
+                    # a plain None (bridge refusal / bad agentType) journals null.
+                    if isinstance(child_task, dict):
+                        raw = {"success": False, "error": str(child_task["dispatchError"])}
+                    else:
+                        raw = {"success": False, "cancelled": True}
+                    yield ctx.call_activity(
+                        record_script_call_result,
+                        input=_freeze(
+                            {
+                                "executionId": exec_id,
+                                "callId": cid,
+                                "seq": spec["seq"],
+                                "spec": _spec_for_journal(spec),
+                                "raw": raw,
+                                "_otel": otel,
+                            }
+                        ),
+                    )
+                    resolved.add(cid)
+                    resolved_at_dispatch += 1
+                    continue
+
+                outstanding[cid] = child_task
+                dispatched += 1
+                dispatched_this_round += 1
+
+                # Journal a non-terminal `running` row NOW so the run UI shows the
+                # in-flight call and (for agent() calls) can attach the child
+                # session's live transcript — the child instance id IS the session
+                # id and is deterministic at dispatch. workflow() children have no
+                # session (they are executions); their row still lights up the lane.
                 yield ctx.call_activity(
-                    record_script_call_result,
+                    record_script_call_dispatch,
                     input=_freeze(
                         {
                             "executionId": exec_id,
                             "callId": cid,
                             "seq": spec["seq"],
+                            "sessionId": (
+                                child_instance_id
+                                if (spec.get("kind") or "agent") == "agent"
+                                else None
+                            ),
                             "spec": _spec_for_journal(spec),
-                            "raw": raw,
                             "_otel": otel,
                         }
                     ),
                 )
-                resolved.add(cid)
-                resolved_at_dispatch += 1
-                continue
 
-            outstanding[cid] = child_task
-            dispatched += 1
-            dispatched_this_round += 1
-
-            # Journal a non-terminal `running` row NOW so the run UI shows the
-            # in-flight call and (for agent() calls) can attach the child
-            # session's live transcript — the child instance id IS the session
-            # id and is deterministic at dispatch. workflow() children have no
-            # session (they are executions); their row still lights up the lane.
-            yield ctx.call_activity(
-                record_script_call_dispatch,
-                input=_freeze(
-                    {
-                        "executionId": exec_id,
-                        "callId": cid,
-                        "seq": spec["seq"],
-                        "sessionId": (
-                            child_instance_id
-                            if (spec.get("kind") or "agent") == "agent"
-                            else None
-                        ),
-                        "spec": _spec_for_journal(spec),
-                        "_otel": otel,
-                    }
-                ),
-            )
-
-            # Keep workflow_executions.current_node_id fresh + light up the Agents tab.
-            yield ctx.call_activity(
-                update_execution_node,
-                input=_freeze(
-                    {
-                        "executionId": exec_id,
-                        "nodeId": cid,
-                        "nodeName": spec.get("label") or cid[:8],
-                        "_otel": otel,
-                    }
-                ),
-            )
-            yield ctx.call_activity(
-                track_agent_run_scheduled,
-                input=_freeze(
-                    {
-                        "id": child_instance_id,
-                        "workflowExecutionId": exec_id,
-                        "workflowId": workflow_id or "",
-                        "nodeId": cid,
-                        "mode": "run",
-                        "agentWorkflowId": child_instance_id,
-                        "daprInstanceId": child_instance_id,
-                        "parentExecutionId": ctx.instance_id,
-                        "_otel": otel,
-                    }
-                ),
-            )
+                # Keep workflow_executions.current_node_id fresh + light up the Agents tab.
+                yield ctx.call_activity(
+                    update_execution_node,
+                    input=_freeze(
+                        {
+                            "executionId": exec_id,
+                            "nodeId": cid,
+                            "nodeName": spec.get("label") or cid[:8],
+                            "_otel": otel,
+                        }
+                    ),
+                )
+                yield ctx.call_activity(
+                    track_agent_run_scheduled,
+                    input=_freeze(
+                        {
+                            "id": child_instance_id,
+                            "workflowExecutionId": exec_id,
+                            "workflowId": workflow_id or "",
+                            "nodeId": cid,
+                            "mode": "run",
+                            "agentWorkflowId": child_instance_id,
+                            "daprInstanceId": child_instance_id,
+                            "parentExecutionId": ctx.instance_id,
+                            "_otel": otel,
+                        }
+                    ),
+                )
 
         _set_status(current_phase or "running", budget)
 
@@ -560,7 +702,24 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             target_call = str(event.get("callId") or "").strip()
             if action == "skip" and target_call:
                 if target_call in outstanding:
-                    # Stop tracking; do NOT await the child (v1: it self-reaps).
+                    if dispatch_mode == DISPATCH_MODE_BATCH_V2:
+                        spec = task_specs.get(target_call) or {}
+                        child_instance_id = str(spec.get("_instance_id") or "")
+                        if (spec.get("kind") or "agent") == "agent" and child_instance_id:
+                            yield ctx.call_activity(
+                                request_session_stop,
+                                input=_freeze(
+                                    {
+                                        "sessionId": child_instance_id,
+                                        "userId": user_id,
+                                        "projectId": project_id,
+                                        "mode": "terminate",
+                                        "reason": f"dynamic-script call {target_call} skipped",
+                                        "_otel": otel,
+                                    }
+                                ),
+                            )
+                    # Stop tracking; do NOT await the child result after skip.
                     del outstanding[target_call]
                     yield from _journal_skip(ctx, exec_id, target_call, task_specs, otel)
                     resolved.add(target_call)

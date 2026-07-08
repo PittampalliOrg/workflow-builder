@@ -115,6 +115,7 @@ describe("DaprWorkflowScheduler", () => {
 			agentRuntime: "codex-cli",
 			timeoutMinutes: 12,
 		});
+		expect(body.dispatchMode).toBe("batch-v2");
 	});
 });
 

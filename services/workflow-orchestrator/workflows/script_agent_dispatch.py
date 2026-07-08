@@ -453,3 +453,44 @@ def _start_script_call(
         instance_id=child_instance_id,
         app_id=bridge_app_id,
     )
+
+
+def start_prepared_script_call(ctx: wf.DaprWorkflowContext, prepared: dict[str, Any]):
+    """Schedule a child workflow from a prepared dispatch descriptor.
+
+    ``prepare_script_call`` runs as an activity and owns runtime resolution,
+    session provisioning, and workflow-ref lookup. The parent workflow calls this
+    helper after the activity result is recorded in history, so scheduling the
+    child remains deterministic and replayable.
+    """
+    if not isinstance(prepared, dict):
+        return {"dispatchError": "prepare_script_call returned a non-object result"}
+    kind = prepared.get("kind")
+    if kind == "dispatchError":
+        return {"dispatchError": str(prepared.get("dispatchError") or "dispatch failed")}
+    if kind == "null":
+        return None
+
+    child_instance_id = str(prepared.get("childInstanceId") or "").strip()
+    child_workflow_name = str(prepared.get("childWorkflowName") or "").strip()
+    child_input = prepared.get("childInput") if isinstance(prepared.get("childInput"), dict) else None
+    if not child_instance_id or not child_workflow_name or child_input is None:
+        return {"dispatchError": "prepare_script_call returned an invalid child descriptor"}
+
+    if kind == "workflow":
+        return ctx.call_child_workflow(
+            child_workflow_name,
+            input=_freeze(child_input),
+            instance_id=child_instance_id,
+        )
+
+    app_id = str(prepared.get("appId") or "").strip()
+    if not app_id:
+        return {"dispatchError": "prepare_script_call returned an agent without appId"}
+    return _call_child_workflow_with_history_propagation(
+        ctx,
+        child_workflow_name,
+        input=_freeze(child_input),
+        instance_id=child_instance_id,
+        app_id=app_id,
+    )

@@ -31,7 +31,10 @@ import {
 	injectWorkflowSessionHeaders
 } from '$lib/server/observability/workflow-session';
 import { prewarmWorkflowEntrySessions } from '$lib/server/sessions/prewarm';
-import { validateDynamicScriptSpec } from '$lib/server/workflows/dynamic-script-validation';
+import {
+	validateDynamicScriptSpec,
+	validateWithEvaluator
+} from '$lib/server/workflows/dynamic-script-validation';
 
 export function isSWWorkflow(spec: unknown): boolean {
 	if (typeof spec !== 'object' || spec === null) return false;
@@ -316,7 +319,18 @@ async function startDynamicScriptRun(
 		return { ok: false, status: validation.status, error: validation.error };
 	}
 	const script = String((spec as Record<string, unknown>).script);
-	const meta = validation.meta;
+	const evaluatorValidation = await validateWithEvaluator(script, {
+		degradeOnUnavailable: false
+	});
+	if (!evaluatorValidation.ok) {
+		return {
+			ok: false,
+			status: evaluatorValidation.status,
+			error: evaluatorValidation.error
+		};
+	}
+	const meta = evaluatorValidation.meta;
+	const dispatchMode = 'batch-v2';
 	// args is the script's VERBATIM input — any JSON value. undefined means "not
 	// provided": the key is omitted end-to-end so the script's `args` global is
 	// undefined (Workflow-tool parity). JSON serialization drops undefined keys,
@@ -337,8 +351,8 @@ async function startDynamicScriptRun(
 		phase: 'running',
 		progress: 0,
 		input: (args ?? undefined) as Record<string, unknown> | undefined,
-		executionIr: { engine: 'dynamic-script', script, meta, args, budgetTotal },
-		executionIrVersion: 'dynamic-script-1',
+		executionIr: { engine: 'dynamic-script', script, meta, args, budgetTotal, dispatchMode },
+		executionIrVersion: 'dynamic-script-2',
 		...(opts.triggerSource ? { triggerSource: opts.triggerSource } : {}),
 		...(opts.rerunOfExecutionId ? { rerunOfExecutionId: opts.rerunOfExecutionId } : {}),
 		...(opts.rerunSourceInstanceId
@@ -373,6 +387,7 @@ async function startDynamicScriptRun(
 			args,
 			budgetTotal,
 			...(defaults ? { defaults } : {}),
+			dispatchMode,
 			...(opts.journalImportFromExecutionId
 				? { journalImportFromExecutionId: opts.journalImportFromExecutionId }
 				: {}),
