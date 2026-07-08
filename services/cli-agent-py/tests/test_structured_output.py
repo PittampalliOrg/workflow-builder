@@ -101,6 +101,7 @@ def test_structured_output_mcp_validates_tool_call():
         schema,
     )
     assert valid["result"]["content"][0]["text"] == '{"answer": "yes"}'
+    assert valid["result"]["structuredContent"] == {"answer": "yes"}
     assert "isError" not in valid["result"]
 
     invalid = handle_request(

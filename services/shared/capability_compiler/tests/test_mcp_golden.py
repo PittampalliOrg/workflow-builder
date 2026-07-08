@@ -13,7 +13,6 @@ Run (no cluster, no grpc):
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import re
@@ -353,12 +352,23 @@ def test_conn_ext_id_injected_for_all_targets():
     assert dapr["piece"]["headers"]["X-Connection-External-Id"] == "conn_123"
 
 
-def _decode_schema_header(value: str) -> dict:
-    padded = value + ("=" * (-len(value) % 4))
-    return json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+def _expected_structured_stdio_server(schema: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "stdio",
+        "command": "/app/.venv/bin/python",
+        "args": ["-m", "src.structured_output_mcp"],
+        "env": {
+            "PYTHONPATH": "/app",
+            "CLI_STRUCTURED_OUTPUT_SCHEMA": json.dumps(
+                schema,
+                sort_keys=True,
+                ensure_ascii=False,
+            ),
+        },
+    }
 
 
-def test_cli_structured_output_uses_workflow_mcp_server():
+def test_cli_structured_output_uses_local_stdio_mcp_server():
     schema = {
         "type": "object",
         "properties": {"answer": {"type": "string"}},
@@ -372,14 +382,7 @@ def test_cli_structured_output_uses_workflow_mcp_server():
         }
     )
     assert set(cli) == {"structured"}
-    structured = cli["structured"]
-    assert structured["type"] == "http"
-    assert structured["url"] == "http://workflow-mcp-server.workflow-builder.svc.cluster.local:3200/mcp"
-    assert structured["headers"]["X-Wfb-Mcp-Mode"] == "structured-output"
-    assert (
-        _decode_schema_header(structured["headers"]["X-Wfb-Structured-Output-Schema-B64"])
-        == schema
-    )
+    assert cli["structured"] == _expected_structured_stdio_server(schema)
 
 
 def test_cli_structured_output_dedups_existing_structured_server():
@@ -399,4 +402,4 @@ def test_cli_structured_output_dedups_existing_structured_server():
     )
     assert set(cli) == {"structured", "structured_2"}
     assert cli["structured"]["url"] == "https://example.com/mcp"
-    assert cli["structured_2"]["headers"]["X-Wfb-Mcp-Mode"] == "structured-output"
+    assert cli["structured_2"] == _expected_structured_stdio_server(schema)

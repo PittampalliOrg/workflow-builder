@@ -120,9 +120,8 @@ SKILL_MAX_FILE_BYTES = 128 * 1024
 SKILL_MAX_TOTAL_BYTES = 2 * 1024 * 1024
 SKILL_MAX_FILES = 80
 
-_STRUCTURED_OUTPUT_MODE_HEADER = "x-wfb-mcp-mode"
-_STRUCTURED_OUTPUT_SCHEMA_HEADER = "x-wfb-structured-output-schema-b64"
-_STRUCTURED_OUTPUT_MODE = "structured-output"
+_STRUCTURED_OUTPUT_SCHEMA_ENV = "CLI_STRUCTURED_OUTPUT_SCHEMA"
+_STRUCTURED_OUTPUT_MODULE = "src.structured_output_mcp"
 
 
 def clean_string(value: Any) -> str | None:
@@ -184,18 +183,16 @@ def _claude_config_dir() -> Path:
 
 
 def _is_structured_output_mcp_server(config: Mapping[str, Any]) -> bool:
-    url = clean_string(config.get("url"))
-    headers = config.get("headers")
-    if config.get("type") != "http" or not url or not isinstance(headers, Mapping):
+    if config.get("type") != "stdio":
         return False
-    normalized_headers = {str(key).lower(): value for key, value in headers.items()}
-    mode = clean_string(normalized_headers.get(_STRUCTURED_OUTPUT_MODE_HEADER))
-    schema = clean_string(normalized_headers.get(_STRUCTURED_OUTPUT_SCHEMA_HEADER))
-    return (
-        mode == _STRUCTURED_OUTPUT_MODE
-        and bool(schema)
-        and "workflow-mcp-server" in url
-    )
+    args = config.get("args")
+    env = config.get("env")
+    if not isinstance(args, list) or not isinstance(env, Mapping):
+        return False
+    if _STRUCTURED_OUTPUT_MODULE not in {str(arg).strip() for arg in args}:
+        return False
+    schema = clean_string(env.get(_STRUCTURED_OUTPUT_SCHEMA_ENV))
+    return bool(schema)
 
 
 def _clone_mcp_server_config(config: Mapping[str, Any]) -> dict[str, Any]:

@@ -1,11 +1,12 @@
 /**
- * Structured-output MCP mode.
+ * Structured-output MCP HTTP mode.
  *
- * This is the architecture-aligned equivalent of dapr-agent-py's synthetic
- * StructuredOutput tool for CLI runtimes. The BFF/runtime compiler stamps a
- * workflow-mcp-server entry with X-Wfb-Mcp-Mode=structured-output and a
- * base64url-encoded JSON Schema header. At MCP initialize time this server
- * exposes exactly one tool: StructuredOutput, whose inputSchema is that schema.
+ * This is the service-hosted equivalent of dapr-agent-py's synthetic
+ * StructuredOutput tool. The production CLI path uses the local cli-agent-py
+ * stdio MCP server; this HTTP mode remains useful for platform/debug callers
+ * that stamp X-Wfb-Mcp-Mode=structured-output and a base64url-encoded JSON
+ * Schema header. At MCP initialize time this server exposes exactly one tool:
+ * StructuredOutput, whose inputSchema is that schema.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";

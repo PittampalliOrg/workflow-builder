@@ -37,10 +37,17 @@ def _load_schema() -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _text_result(text: str, *, is_error: bool = False) -> dict[str, Any]:
+def _text_result(
+    text: str,
+    *,
+    is_error: bool = False,
+    structured_content: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     result: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
     if is_error:
         result["isError"] = True
+    if structured_content is not None:
+        result["structuredContent"] = dict(structured_content)
     return result
 
 
@@ -137,7 +144,12 @@ def handle_request(
             return response(
                 _text_result(_validation_error_text(result.feedback), is_error=True)
             )
-        return response(_text_result(result.canonical_text))
+        return response(
+            _text_result(
+                result.canonical_text,
+                structured_content=result.value,
+            )
+        )
 
     return error(-32601, f"Method not found: {method}")
 

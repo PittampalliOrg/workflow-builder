@@ -42,6 +42,12 @@ const sessions = new Map<string, StreamableHTTPServerTransport>();
 
 // Loaded at startup
 let registeredTools: RegisteredTool[] = [];
+const STRUCTURED_OUTPUT_HEALTH_TOOLS: RegisteredTool[] = [
+	{
+		name: STRUCTURED_OUTPUT_TOOL_NAME,
+		description: "Session-scoped structured-output tool",
+	},
+];
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -197,10 +203,26 @@ async function handleRequest(
 	}
 
 	if (url === "/health" && method === "GET") {
+		let toolList = registeredTools;
+		try {
+			if (parseStructuredOutputContext(req.headers)) {
+				toolList = STRUCTURED_OUTPUT_HEALTH_TOOLS;
+			}
+		} catch (error) {
+			sendJson(res, 400, {
+				error: {
+					message:
+						error instanceof Error
+							? error.message
+							: `Invalid structured-output MCP context: ${String(error)}`,
+				},
+			});
+			return;
+		}
 		sendJson(res, 200, {
 			service: "workflow-builder-mcp",
-			tools: registeredTools.length,
-			toolNames: registeredTools.map((t) => t.name),
+			tools: toolList.length,
+			toolNames: toolList.map((t) => t.name),
 		});
 		return;
 	}
@@ -334,7 +356,9 @@ async function main(): Promise<void> {
 	console.log("[wf-mcp] Initializing database connection...");
 	initDb();
 
-	// Dry-run registration to count current workflow tools.
+	// Dry-run registration to count the normal-mode MCP surface. Structured
+	// output is a separate header-selected mode and is reported separately by
+	// /health when those headers are present.
 	{
 		const dryServer = new McpServer(
 			{ name: "dry-run", version: "0.0.0" },
@@ -350,6 +374,18 @@ async function main(): Promise<void> {
 		);
 		registeredTools = [...registeredTools, ...registerGoalTools(dryGoalServer)];
 	}
+	// Count trace tools, which are session-scoped but part of the normal MCP
+	// surface. They fail closed at call time if no X-Wfb-Session-Id is present.
+	{
+		const dryTraceServer = new McpServer(
+			{ name: "dry-run-trace", version: "0.0.0" },
+			{ capabilities: { tools: {} } },
+		);
+		registeredTools = [
+			...registeredTools,
+			...registerTraceTools(dryTraceServer),
+		];
+	}
 	// Count the dynamic workflow script tool (suppressed only inside
 	// script-spawned sessions).
 	{
@@ -362,13 +398,6 @@ async function main(): Promise<void> {
 			...registerScriptTools(dryScriptServer),
 		];
 	}
-	registeredTools = [
-		...registeredTools,
-		{
-			name: STRUCTURED_OUTPUT_TOOL_NAME,
-			description: "Session-scoped structured-output tool",
-		},
-	];
 
 	// Start HTTP server
 	const httpServer = http.createServer(async (req, res) => {
