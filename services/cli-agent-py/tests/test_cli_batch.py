@@ -58,3 +58,28 @@ def test_codex_batch_uses_output_schema_and_returns_structured_output(
     assert result["structuredOutput"] == {"answer": "yes"}
     assert ("sess-batch", "structured_output.validation", {"ok": True, "source": "native_schema"}) in published
     assert any(event[1] == "agent.message" for event in published)
+
+
+def test_claude_batch_terminates_variadic_mcp_config_before_prompt(tmp_path):
+    mcp_config = tmp_path / "mcp.json"
+    mcp_config.write_text('{"mcpServers":{}}\n', encoding="utf-8")
+    schema_path = tmp_path / "schema.json"
+    output_path = tmp_path / "last.txt"
+
+    argv = batch._batch_argv(
+        adapter_name="claude-code",
+        agent_config={
+            "runtime": "claude-code-cli",
+            "cliAdapter": "claude-code",
+        },
+        seed_paths={"mcpConfigPath": str(mcp_config)},
+        schema={"type": "object", "properties": {"ok": {"type": "boolean"}}},
+        schema_path=schema_path,
+        output_path=output_path,
+        prompt="Return {\"ok\": true}",
+    )
+
+    assert "--mcp-config" in argv
+    prompt_index = len(argv) - 1
+    assert argv[prompt_index - 1] == "--"
+    assert argv[prompt_index] == 'Return {"ok": true}'

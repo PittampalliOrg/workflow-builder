@@ -279,7 +279,10 @@ def _batch_argv(
         if schema is not None:
             argv += ["--json-schema", json.dumps(dict(schema), sort_keys=True)]
         argv += _claude_batch_args(base[1:])
-        argv.append(prompt)
+        # Claude Code's --mcp-config is variadic (<configs...>). Without an
+        # option terminator the final prompt is parsed as another MCP config
+        # path, so schema'd workflow runs fail before the model starts.
+        argv += ["--", prompt]
         return argv
     raise ValueError(f"batch mode is not supported for adapter {adapter_name!r}")
 
