@@ -260,17 +260,17 @@ class ClaudeCodeAdapter(CliAdapter):
         wfb_dir.mkdir(parents=True, exist_ok=True)
 
         # (a) MCP config in Claude Code .mcp.json shape. The synthetic
-        # StructuredOutput MCP server is trusted in Claude's user state below;
-        # project .mcp.json servers can remain pending approval in headless CLI
-        # runs, which made the structured tool invisible in live smoke tests.
+        # StructuredOutput MCP server is ALSO trusted in Claude's user state
+        # below, but it must remain in the launch --mcp-config file: Claude Code's
+        # TUI launch path uses that file as its visible MCP server set.
         servers = emit_claude_code_cli_servers(agent_config)
-        project_servers, structured_servers = _split_structured_output_mcp_servers(servers)
-        if project_servers:
+        _project_servers, structured_servers = _split_structured_output_mcp_servers(servers)
+        if servers:
             import json
 
             mcp_path = wfb_dir / "mcp.json"
             mcp_path.write_text(
-                json.dumps({"mcpServers": project_servers}, indent=2) + "\n",
+                json.dumps({"mcpServers": servers}, indent=2) + "\n",
                 encoding="utf-8",
             )
             result.paths["mcpConfigPath"] = str(mcp_path)

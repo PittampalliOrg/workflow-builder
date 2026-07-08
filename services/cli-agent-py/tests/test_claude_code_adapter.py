@@ -95,14 +95,20 @@ def test_seed_adds_structured_output_mcp_for_tool_mode(seeded_dirs):
         }
     )
 
-    assert not (wfb_dir / "mcp.json").exists()
+    mcp = json.loads((wfb_dir / "mcp.json").read_text())
+    structured = mcp["mcpServers"]["structured"]
+    assert structured["type"] == "stdio"
+    assert structured["command"] == "python3"
+    assert structured["args"] == ["-m", "src.structured_output_mcp"]
+    assert json.loads(structured["env"]["CLI_STRUCTURED_OUTPUT_SCHEMA"]) == schema
+
     state = json.loads((config_dir / ".claude.json").read_text())
     structured = state["mcpServers"]["structured"]
     assert structured["type"] == "stdio"
     assert structured["command"] == "python3"
     assert structured["args"] == ["-m", "src.structured_output_mcp"]
     assert json.loads(structured["env"]["CLI_STRUCTURED_OUTPUT_SCHEMA"]) == schema
-    assert "mcpConfigPath" not in result.paths
+    assert result.paths["mcpConfigPath"] == str(wfb_dir / "mcp.json")
     assert result.paths["claudeStructuredMcpConfigPath"] == str(
         config_dir / ".claude.json"
     )
@@ -136,9 +142,11 @@ def test_seed_splits_project_mcp_from_structured_output_mcp(seeded_dirs):
     )
 
     mcp = json.loads((wfb_dir / "mcp.json").read_text())
-    assert mcp == {
-        "mcpServers": {"github": {"type": "http", "url": "https://mcp.example/mcp"}}
+    assert mcp["mcpServers"]["github"] == {
+        "type": "http",
+        "url": "https://mcp.example/mcp",
     }
+    assert "structured" in mcp["mcpServers"]
     state = json.loads((config_dir / ".claude.json").read_text())
     assert set(state["mcpServers"].keys()) == {"structured"}
     assert json.loads(
