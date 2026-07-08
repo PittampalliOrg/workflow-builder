@@ -220,14 +220,16 @@ def _output_contract_block(schema: dict[str, Any], structured_tool: bool = False
         # final text (which the loop sets to the validated JSON) — Tier 3.
         return (
             "\n\n<output-contract>\n"
-            "A tool named StructuredOutput is available. When you have "
-            "completed the task, you MUST call the StructuredOutput tool "
-            "exactly once — its arguments are your final result and MUST be a "
-            "JSON object that validates against this JSON Schema:\n"
+            "A structured-output tool is available. In Dapr runtimes it is named "
+            "StructuredOutput; in Claude Code MCP runtimes it is exposed as "
+            "mcp__structured__StructuredOutput. When you have completed the "
+            "task, you MUST call that structured-output tool exactly once — "
+            "its arguments are your final result and MUST be a JSON object "
+            "that validates against this JSON Schema:\n"
             f"{schema_json}\n"
             "Do NOT give your final answer as plain text; deliver it via the "
-            "StructuredOutput tool call. If the tool reports validation "
-            "errors, correct the arguments and call it again.\n"
+            "structured-output tool call. If the tool reports validation "
+            "errors, correct the arguments and call the tool again.\n"
             "</output-contract>"
         )
     return (

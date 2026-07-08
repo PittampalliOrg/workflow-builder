@@ -1063,6 +1063,7 @@ def test_tool_mode_output_contract_instructs_tool_call():
     spec = {"prompt": "Do the thing.", "opts": {"schema": schema}}
     tool_msg = d._build_initial_message(spec, structured_tool=True)
     assert "StructuredOutput" in tool_msg
+    assert "mcp__structured__StructuredOutput" in tool_msg
     assert "fenced" not in tool_msg
     default_msg = d._build_initial_message(spec)
     assert "StructuredOutput" not in default_msg
