@@ -15,7 +15,7 @@
 		Route,
 		Gauge
 	} from '@lucide/svelte';
-	import type { RunDigest, RunIssue } from '$lib/server/observability/run-digest';
+	import type { RunDigest, RunIssue } from '$lib/types/run-digest';
 
 	let {
 		executionId,

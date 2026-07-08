@@ -1,4 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
+
+// The tools read INTERNAL_API_TOKEN at module load (const at top of
+// script-tools.ts) — hoist the stub so handlers reach their fetch calls
+// instead of short-circuiting on the token gate.
+vi.hoisted(() => {
+	process.env.INTERNAL_API_TOKEN = "test-token";
+});
 import {
 	registerScriptTools,
 	runWorkflowScriptSchema,
@@ -93,11 +100,12 @@ describe("shouldSuppressScriptTools", () => {
 
 // ── run_workflow_script handler behaviour ─────────────────────
 describe("script tools registration", () => {
-	it("registers run + validate + spec tools", () => {
+	it("registers run + validate + save + spec tools", () => {
 		const { tools } = getHandler();
 		expect(tools.map((t) => t.name)).toEqual([
 			"run_workflow_script",
 			"validate_workflow_script",
+			"save_workflow_script",
 			"get_workflow_script_spec",
 		]);
 	});
