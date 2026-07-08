@@ -180,6 +180,59 @@ def test_auto_terminate_returns_structured_output(monkeypatch):
     assert result["structuredOutput"] == {"answer": "yes"}
 
 
+def test_auto_terminate_batch_bypasses_herdr_start_and_stop(monkeypatch):
+    monkeypatch.setenv("CLI_AGENT_WORKFLOW_BATCH", "1")
+    published: list[tuple[str, str, dict, dict]] = []
+    monkeypatch.setattr(
+        sw,
+        "publish_session_event",
+        lambda sid, etype, data, **kw: published.append((sid, etype, data, kw)),
+    )
+    ctx = FakeCtx()
+    driver = WorkflowDriver(
+        ctx,
+        {
+            **BASE_INPUT,
+            "autoTerminateAfterEndTurn": True,
+            "initialEvents": [
+                {
+                    "type": "user.message",
+                    "content": [{"type": "text", "text": "return json"}],
+                }
+            ],
+        },
+        monkeypatch,
+    )
+
+    yielded = driver.gen.send(None)
+    assert yielded.kind == "activity:seed_session_activity"
+    yielded = driver.gen.send({"paths": {}, "warnings": []})
+    assert yielded.kind == "activity:run_cli_once_activity"
+    assert yielded.detail["seedUserMessage"] == "return json"
+    yielded = driver.gen.send(
+        {
+            "batch": True,
+            "status": "completed",
+            "reason": "batch_completed",
+            "turnCount": 1,
+            "lastAssistantText": '{"answer": "yes"}',
+            "structuredOutput": {"answer": "yes"},
+        }
+    )
+    with pytest.raises(StopIteration) as stop:
+        _drain_best_effort_syncs(driver, yielded)
+
+    activity_names = [name for name, _ in ctx.activity_calls]
+    assert "start_cli_activity" not in activity_names
+    assert "stop_cli_activity" not in activity_names
+    result = stop.value.value
+    assert result["status"] == "completed"
+    assert result["output"] == '{"answer": "yes"}'
+    assert result["structuredOutput"] == {"answer": "yes"}
+    assert result["turnCount"] == 1
+    assert any(event[1] == "session.turn_completed" for event in published)
+
+
 def test_happy_path_turn_then_clean_exit(monkeypatch):
     published: list[tuple[str, str, dict, dict]] = []
     monkeypatch.setattr(

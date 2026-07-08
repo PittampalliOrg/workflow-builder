@@ -28,6 +28,7 @@ from src.cancellation import TERMINAL_CONTROL_EVENT_TYPES, check_cancellation_ac
 from src.browser_video_sync import sync_browser_video_activity
 from src.workspace_diff_sync import sync_workspace_diff_activity
 from src.workspace_diff_sync import sync_source_bundle_activity
+from src.cli_batch import cli_batch_enabled, run_cli_once_activity
 from src.cli_lifecycle import probe_cli_activity, start_cli_activity, stop_cli_activity
 from src.event_publisher import publish_session_event
 from src.output_sync import sync_output_activity
@@ -664,6 +665,9 @@ def session_workflow(
         else None
     )
     pane_ref = _clean_string(carried.get("paneRef"))
+    batch_run = False
+    status: str | None = None
+    reason: str | None = None
 
     if not seeded:
         if session_id and not ctx.is_replaying:
@@ -717,26 +721,79 @@ def session_workflow(
                     agent_runtime=agent_runtime,
                     provenance=provenance,
                 )
-        start_result = yield ctx.call_activity(
-            start_cli_activity,
-            input={
-                "sessionId": session_id,
-                "instanceId": ctx.instance_id,
-                "agentConfig": _record(input_data.get("agentConfig")),
-                "autoTerminateAfterEndTurn": auto_terminate,
-                "seed": _record(seed_result),
-                # Kickoff prompt: start_cli arms a readiness-gated injection so
-                # it is typed into the TUI only once it has booted to its prompt.
-                "seedUserMessage": _extract_seed_user_message(input_data),
-                "workspaceRef": input_data.get("workspaceRef"),
-                "sandboxName": input_data.get("sandboxName"),
-            },
-            retry_policy=_START_RETRY_POLICY,
-        )
-        pane_ref = _clean_string(_record(start_result).get("paneRef"))
+        start_input = {
+            "sessionId": session_id,
+            "instanceId": ctx.instance_id,
+            "agentConfig": _record(input_data.get("agentConfig")),
+            "autoTerminateAfterEndTurn": auto_terminate,
+            "seed": _record(seed_result),
+            "seedUserMessage": _extract_seed_user_message(input_data),
+            "workspaceRef": input_data.get("workspaceRef"),
+            "sandboxName": input_data.get("sandboxName"),
+        }
+        if cli_batch_enabled(start_input):
+            batch_result = yield ctx.call_activity(
+                run_cli_once_activity,
+                input=start_input,
+            )
+            batch_data = _record(batch_result)
+            batch_run = True
+            status = _clean_string(batch_data.get("status")) or "failed"
+            reason = _clean_string(batch_data.get("reason")) or "batch_completed"
+            batch_turns = batch_data.get("turnCount")
+            if isinstance(batch_turns, int) and not isinstance(batch_turns, bool):
+                turn_count += max(0, batch_turns)
+            else:
+                turn_count += 1
+            text = _clean_string(batch_data.get("lastAssistantText"))
+            if text:
+                last_assistant_text = text
+            raw_structured = batch_data.get("structuredOutput")
+            if isinstance(raw_structured, Mapping):
+                last_structured_output = dict(raw_structured)
+            if session_id and not ctx.is_replaying:
+                turn_id = f"{ctx.instance_id}:turn:{turn_count}"
+                if status == "failed":
+                    publish_session_event(
+                        session_id,
+                        "session.status_errored",
+                        {
+                            "stop_reason": {
+                                "type": "error",
+                                "message": last_assistant_text or reason,
+                            },
+                            "turn": turn_count,
+                            "turnId": turn_id,
+                            "workflowInstanceId": ctx.instance_id,
+                            "agentRuntime": agent_runtime,
+                        },
+                        source_event_id=f"{turn_id}:errored",
+                        blocking=True,
+                    )
+                else:
+                    publish_session_event(
+                        session_id,
+                        "session.turn_completed",
+                        {
+                            "turn": turn_count,
+                            "turnId": turn_id,
+                            "workflowInstanceId": ctx.instance_id,
+                            "agentRuntime": agent_runtime,
+                            "reason": "turn_completed",
+                            "hasOutput": bool(last_assistant_text),
+                            "output_preview": last_assistant_text[:500],
+                        },
+                        source_event_id=f"{turn_id}:completed",
+                        blocking=True,
+                    )
+        else:
+            start_result = yield ctx.call_activity(
+                start_cli_activity,
+                input=start_input,
+                retry_policy=_START_RETRY_POLICY,
+            )
+            pane_ref = _clean_string(_record(start_result).get("paneRef"))
 
-    status: str | None = None
-    reason: str | None = None
     iterations = 0
     # Instrumentation (data only): the NON-terminal background-task count the
     # hooks layer stamped on the last turn.completed edge, if any. Carried so the
@@ -930,17 +987,18 @@ def session_workflow(
     # Cooperative close — idempotent; tolerates the pane already being gone.
     # Bounded by a durable timer: if stop hangs on a dead herdr socket, abandon
     # it and proceed (best-effort) rather than wedge the parent.
-    yield from _yield_bounded(
-        ctx,
-        stop_cli_activity,
-        input={
-            "paneRef": pane_ref,
-            "sessionId": session_id,
-            "instanceId": ctx.instance_id,
-            "reason": reason,
-        },
-        timeout_seconds=CLI_STOP_TIMEOUT_SECONDS,
-    )
+    if not batch_run:
+        yield from _yield_bounded(
+            ctx,
+            stop_cli_activity,
+            input={
+                "paneRef": pane_ref,
+                "sessionId": session_id,
+                "instanceId": ctx.instance_id,
+                "reason": reason,
+            },
+            timeout_seconds=CLI_STOP_TIMEOUT_SECONDS,
+        )
 
     output_sync_result = None
     patch_result = None

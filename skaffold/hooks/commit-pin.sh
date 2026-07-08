@@ -216,8 +216,9 @@ Co-Authored-By: Skaffold <noreply@anthropic.com>"
     exit 0
     ;;
   cli-agent-py-sandbox)
-    # The interactive-cli agentHostImage (the real Claude Code / codex / agy TUI
-    # + herdr server). NOT a Deployment of its own. ryzen reads it from the BASE
+    # The interactive-cli agentHostImage (Claude Code / codex / agy native batch
+    # runs; the source-level TUI fallback is disabled in the production image).
+    # NOT a Deployment of its own. ryzen reads it from the BASE
     # Deployment manifests directly — there is NO ryzen overlay (the render's main
     # loop renders ONLY the workflow-builder-ryzen-image Component for ryzen, and
     # that Component carries workflow-builder + workflow-mcp-server only, no cli

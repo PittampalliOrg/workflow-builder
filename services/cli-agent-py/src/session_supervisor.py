@@ -1,10 +1,13 @@
-"""SessionSupervisor — owns the headless herdr server child process, mirrors
-herdr's semantic agent state into CMA session events, and idle-reaps abandoned
-TUI sessions.
+"""SessionSupervisor — optional interactive fallback for CLI TUI sessions.
 
-Responsibilities (per the interactive-cli runtime design):
+Workflow-launched one-shot runs use ``cli_batch.run_cli_once_activity`` and do
+not depend on Herdr. When the fallback is enabled, this supervisor owns the
+headless Herdr server child process, mirrors Herdr's semantic agent state into
+CMA session events, and idle-reaps abandoned TUI sessions.
+
+Responsibilities (when HERDR_DISABLE is false):
   (a) spawn ``herdr server`` at app start (env HERDR_SOCKET_PATH); restart with
-      backoff if it dies; skipped entirely when HERDR_DISABLE=1 (unit tests).
+      backoff if it dies.
   (b) consume ``events.subscribe`` and map the registered claude pane's agent
       state → session events:
         working → session.status_running
@@ -316,11 +319,11 @@ class SessionSupervisor:
         self._loop = asyncio.get_running_loop()
         if self._disabled:
             logger.info("[supervisor] HERDR_DISABLE set — skipping herdr server")
-            return
         self._stopping = False
-        self._tasks.append(asyncio.ensure_future(self._run_server_loop()))
-        self._tasks.append(asyncio.ensure_future(self._event_loop()))
-        self._tasks.append(asyncio.ensure_future(self._idle_reaper()))
+        if not self._disabled:
+            self._tasks.append(asyncio.ensure_future(self._run_server_loop()))
+            self._tasks.append(asyncio.ensure_future(self._event_loop()))
+            self._tasks.append(asyncio.ensure_future(self._idle_reaper()))
         if PW_MCP_HTTP_ENABLED:
             self._tasks.append(asyncio.ensure_future(self._run_pw_mcp_loop()))
 

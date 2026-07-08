@@ -3,13 +3,14 @@ kind: Config
 metadata:
   name: cli-agent-py-sandbox
 
-# The interactive-cli agent-host image (the real Claude Code / codex / agy TUI +
-# herdr server) that sandbox-execution-api launches as the agentHostImage for
-# the interactive-cli execution classes. It is NOT a Deployment — outer-loop
-# only. `bash scripts/skaffold-deploy.sh cli-agent-py-sandbox` builds + pushes
-# the prod image, then commit-pin.sh pins it where ryzen actually reads it (the
-# workflow-builder Deployment's AGENT_RUNTIME_*_CLI_DEFAULT_IMAGE env — the
-# effective image via the BFF override — plus the sandbox-execution-api classes
+# The interactive-cli agent-host image (Claude Code / codex / agy native batch
+# runs, with the source-level TUI fallback disabled in the production image).
+# sandbox-execution-api launches it as the agentHostImage for the interactive-cli
+# execution classes. It is NOT a Deployment - outer-loop only.
+# `bash scripts/skaffold-deploy.sh cli-agent-py-sandbox` builds + pushes the prod
+# image, then commit-pin.sh pins it where ryzen actually reads it (the
+# workflow-builder Deployment's AGENT_RUNTIME_*_CLI_DEFAULT_IMAGE env - the
+# effective image via the BFF override - plus the sandbox-execution-api classes
 # JSON agentHostImage). The workflow-builder-ryzen-image Component does NOT carry
 # cli refs, so this uses a dedicated commit-pin case, not the flat-pins render.
 

@@ -1,12 +1,14 @@
 """cli-agent-py — FastAPI host for interactive-cli runtimes.
 
 Registers Dapr workflow ``session_workflow`` (lifecycle wrapper) + activities,
-supervises the headless herdr server + selected CLI TUI pane, receives CLI hook
-events, and serves the WS→PTY terminal bridge. Everything is on port 8002
+runs workflow-launched CLI turns through native batch mode when enabled,
+optionally supervises the headless herdr server + selected CLI TUI pane for
+interactive sessions, receives CLI hook events, and serves the WS→PTY terminal
+bridge. Everything is on port 8002
 (uvicorn src.main:app).
 
 Endpoint surface (parity with claude-agent-py where applicable):
-  GET  /healthz, GET /readyz (readyz also pings the herdr socket)
+  GET  /healthz, GET /readyz (readyz reports herdr as disabled when configured)
   POST /internal/sessions/spawn          {instanceId, payload}
   POST /internal/sessions/raise-event    {instanceId, eventName, payload}
   POST /internal/workspace/command       {command, env?, cwd?}  (X-Internal-Token)
@@ -87,6 +89,7 @@ from src.cli_lifecycle import (  # noqa: E402
     start_cli_activity,
     stop_cli_activity,
 )
+from src.cli_batch import run_cli_once_activity  # noqa: E402
 from src.hooks_api import build_router as build_hooks_router  # noqa: E402
 from src.playwright_mcp_proxy import (  # noqa: E402
     build_pw_proxy_router,
@@ -118,6 +121,7 @@ _runtime = WorkflowRuntime()
 _runtime.register_workflow(session_workflow, name="session_workflow")
 _runtime.register_activity(seed_session_activity)
 _runtime.register_activity(start_cli_activity)
+_runtime.register_activity(run_cli_once_activity)
 _runtime.register_activity(probe_cli_activity)
 _runtime.register_activity(stop_cli_activity)
 _runtime.register_activity(sync_output_activity)
