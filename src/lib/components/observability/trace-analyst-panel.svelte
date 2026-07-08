@@ -131,11 +131,22 @@
 	});
 
 	const CITE_RE = /\[(call|session|span):([A-Za-z0-9_.\-:]+)\]/g;
+	// Heuristic fallbacks: models sometimes quote ids in prose/backticks instead
+	// of bracket tokens — bare child-session ids (dsw-…__run__N) and journal
+	// callIds (40-hex_occurrence) still become evidence chips.
+	const SESSION_RE = /\b(dsw-[A-Za-z0-9_-]{8,}__run__\d+)\b/g;
+	const CALLID_RE = /\b([a-f0-9]{40}_\d+)\b/g;
 
 	const citations = $derived.by((): TraceCitation[] => {
 		if (!streamState) return [];
 		const seen = new Set<string>();
 		const out: TraceCitation[] = [];
+		const add = (kind: TraceCitation['kind'], id: string) => {
+			const key = `${kind}:${id}`;
+			if (seen.has(key)) return;
+			seen.add(key);
+			out.push({ kind, id });
+		};
 		for (const event of streamState.events) {
 			if (event.type !== 'agent.message') continue;
 			const content = (event.data as { content?: unknown })?.content;
@@ -143,12 +154,9 @@
 			for (const block of content) {
 				const text = (block as { text?: unknown })?.text;
 				if (typeof text !== 'string') continue;
-				for (const m of text.matchAll(CITE_RE)) {
-					const key = `${m[1]}:${m[2]}`;
-					if (seen.has(key)) continue;
-					seen.add(key);
-					out.push({ kind: m[1] as TraceCitation['kind'], id: m[2] });
-				}
+				for (const m of text.matchAll(CITE_RE)) add(m[1] as TraceCitation['kind'], m[2]);
+				for (const m of text.matchAll(SESSION_RE)) add('session', m[1]);
+				for (const m of text.matchAll(CALLID_RE)) add('call', m[1]);
 			}
 		}
 		return out.slice(-12); // most recent evidence wins the strip

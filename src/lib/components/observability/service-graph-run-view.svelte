@@ -9,13 +9,17 @@
 	 * manual refresh. Embeddable: used by the run cockpit's Graph tab and the
 	 * standalone service-graph page's Run view.
 	 */
-	import { RefreshCw, GitBranch, Server, MessageCircleQuestion } from '@lucide/svelte';
+	import { RefreshCw, GitBranch, Server, MessageCircleQuestion, Microscope, Loader2, Maximize2, Minimize2 } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import type { GraphSelection, ServiceGraphPayload } from '$lib/types/service-graph';
 	import ServiceGraphCanvas from './service-graph-canvas.svelte';
 	import ServiceGraphDrilldown from './service-graph-drilldown.svelte';
 	import RunDigestCard from './run-digest-card.svelte';
 	import TraceAnalystPanel, { type TraceCitation } from './trace-analyst-panel.svelte';
+	import TraceDeepReport from './trace-deep-report.svelte';
+	import { page } from '$app/state';
+	import { toast } from 'svelte-sonner';
+	import type { DeepAnalysisStart, TraceAnalysisReport } from '$lib/types/trace-analysis';
 
 	let {
 		executionId,
@@ -126,6 +130,104 @@
 	});
 
 	let askOpen = $state(false);
+	let askWide = $state(false);
+	const slug = $derived(page.params.slug as string);
+
+	// ── Deep analysis: the trace-deep-analysis dynamic workflow ─────────────
+	let analysis = $state<DeepAnalysisStart | null>(null);
+	let analysisStatus = $state<'idle' | 'starting' | 'running' | 'done' | 'failed'>('idle');
+	let report = $state<TraceAnalysisReport | null>(null);
+	let reportOpen = $state(false);
+	const analysisKey = $derived(`wb-deep-analysis:${executionId}`);
+
+	// Re-attach to a prior analysis run for this execution (survives reloads).
+	$effect(() => {
+		if (typeof localStorage === 'undefined') return;
+		const saved = localStorage.getItem(analysisKey);
+		if (saved && !analysis) {
+			try {
+				analysis = JSON.parse(saved) as DeepAnalysisStart;
+				analysisStatus = 'running';
+			} catch {
+				localStorage.removeItem(analysisKey);
+			}
+		}
+	});
+
+	async function startDeepAnalysis() {
+		if (analysisStatus === 'starting' || analysisStatus === 'running') return;
+		if (analysisStatus === 'done' && report) {
+			reportOpen = true;
+			return;
+		}
+		analysisStatus = 'starting';
+		try {
+			const res = await fetch(
+				`/api/observability/executions/${encodeURIComponent(executionId)}/deep-analysis`,
+				{ method: 'POST' }
+			);
+			const body = (await res.json().catch(() => ({}))) as DeepAnalysisStart & { message?: string };
+			if (!res.ok || !body.analysisExecutionId) {
+				analysisStatus = 'failed';
+				toast.error('Deep analysis failed to start', { description: body.message });
+				return;
+			}
+			analysis = body;
+			analysisStatus = 'running';
+			localStorage.setItem(analysisKey, JSON.stringify(body));
+			toast.success('Deep analysis started', {
+				description: '4 reviewer agents + a synthesizer are investigating this run.'
+			});
+		} catch (err) {
+			analysisStatus = 'failed';
+			toast.error('Deep analysis failed to start', {
+				description: err instanceof Error ? err.message : undefined
+			});
+		}
+	}
+
+	// Poll the analysis run to completion, then lift out the report.
+	$effect(() => {
+		if (analysisStatus !== 'running' || !analysis) return;
+		const id = analysis.analysisExecutionId;
+		let cancelled = false;
+		const tick = async () => {
+			try {
+				const res = await fetch(`/api/workflows/executions/${encodeURIComponent(id)}`);
+				if (!res.ok || cancelled) return;
+				const row = (await res.json()) as {
+					status?: string;
+					output?: { outputs?: { returnValue?: unknown }; workflowOutput?: unknown };
+				};
+				if (row.status === 'success') {
+					const value = (row.output?.outputs?.returnValue ?? row.output?.workflowOutput) as
+						| (TraceAnalysisReport & { error?: string })
+						| null;
+					if (value && !value.error && Array.isArray(value.findings)) {
+						report = value;
+						analysisStatus = 'done';
+						reportOpen = true;
+					} else {
+						analysisStatus = 'failed';
+						toast.error('Deep analysis produced no report', { description: value?.error });
+						localStorage.removeItem(analysisKey);
+					}
+				} else if (row.status === 'error' || row.status === 'cancelled') {
+					analysisStatus = 'failed';
+					toast.error(`Deep analysis run ${row.status}`);
+					localStorage.removeItem(analysisKey);
+				}
+			} catch {
+				/* transient — next tick retries */
+			}
+		};
+		tick();
+		const t = setInterval(tick, 6000);
+		return () => {
+			cancelled = true;
+			clearInterval(t);
+		};
+	});
 
 	// Citation → graph navigation: calls select their node directly; sessions
 	// resolve to the owning call node (nodes carry sessionId); spans fall back
@@ -173,6 +275,22 @@
 		</span>
 		<div class="ml-auto flex items-center gap-2">
 			<Button
+				variant={reportOpen ? 'default' : 'ghost'}
+				size="sm"
+				class="h-6 gap-1 px-2 text-xs"
+				onclick={startDeepAnalysis}
+				disabled={analysisStatus === 'starting'}
+				title="Run a multi-agent deep analysis of this trace (4 lens reviewers + synthesis)"
+			>
+				{#if analysisStatus === 'starting' || analysisStatus === 'running'}
+					<Loader2 class="size-3 animate-spin" /> Analyzing…
+				{:else if analysisStatus === 'done'}
+					<Microscope class="size-3" /> View report
+				{:else}
+					<Microscope class="size-3" /> Deep analysis
+				{/if}
+			</Button>
+			<Button
 				variant={askOpen ? 'default' : 'ghost'}
 				size="sm"
 				class="h-6 gap-1 px-2 text-xs"
@@ -181,6 +299,17 @@
 			>
 				<MessageCircleQuestion class="size-3" /> Ask AI
 			</Button>
+			{#if askOpen}
+				<Button
+					variant="ghost"
+					size="sm"
+					class="h-6 px-1.5"
+					onclick={() => (askWide = !askWide)}
+					title={askWide ? 'Narrow the chat pane' : 'Widen the chat pane'}
+				>
+					{#if askWide}<Minimize2 class="size-3" />{:else}<Maximize2 class="size-3" />{/if}
+				</Button>
+			{/if}
 			{#if polling}
 				<span class="inline-flex items-center gap-1.5 text-[11px] text-primary">
 					<span class="size-1.5 animate-pulse rounded-full bg-primary"></span> live
@@ -220,8 +349,19 @@
 			/>
 		{/if}
 		{#if askOpen}
-			<div class="flex w-[380px] shrink-0 flex-col border-l">
+			<div class="flex {askWide ? 'w-[640px]' : 'w-[380px]'} shrink-0 flex-col border-l transition-all">
 				<TraceAnalystPanel {executionId} onCite={handleCite} />
+			</div>
+		{/if}
+		{#if reportOpen && report}
+			<div class="relative flex w-[620px] shrink-0 flex-col border-l">
+				<TraceDeepReport
+					{report}
+					targetWorkflowId={analysis?.targetWorkflowId ?? null}
+					targetWorkflowName={analysis?.targetWorkflowName ?? null}
+					{slug}
+					onClose={() => (reportOpen = false)}
+				/>
 			</div>
 		{/if}
 	</div>
