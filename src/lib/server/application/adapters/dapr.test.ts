@@ -11,6 +11,7 @@ vi.mock("$lib/server/dapr-client", () => ({
 import {
 	DaprCredentialStore,
 	DaprEventBus,
+	DaprWorkflowScheduler,
 	DaprWorkflowApprovalEventPort,
 } from "$lib/server/application/adapters/dapr";
 
@@ -79,6 +80,41 @@ describe("DaprEventBus", () => {
 				body: JSON.stringify({ dedupKey: "k1" }),
 			},
 		);
+	});
+});
+
+describe("DaprWorkflowScheduler", () => {
+	beforeEach(() => {
+		daprFetchMock.mockReset();
+	});
+
+	it("forwards dynamic-script defaults over the environment defaults", async () => {
+		daprFetchMock.mockResolvedValueOnce(Response.json({ instanceId: "script-1" }));
+
+		const scheduler = new DaprWorkflowScheduler();
+		await expect(
+			scheduler.startScriptWorkflow({
+				orchestratorUrl: "http://workflow-orchestrator",
+				headers: { "x-test": "1" },
+				script: "return await agent('hi')",
+				meta: { name: "defaults-test" },
+				args: { target: "demo" },
+				dbExecutionId: "exec-1",
+				workflowId: "wf-1",
+				userId: "user-1",
+				projectId: "project-1",
+				defaults: {
+					agentRuntime: "codex-cli",
+					timeoutMinutes: 12,
+				},
+			}),
+		).resolves.toEqual({ instanceId: "script-1" });
+
+		const body = JSON.parse(String(daprFetchMock.mock.calls[0][1].body));
+		expect(body.defaults).toMatchObject({
+			agentRuntime: "codex-cli",
+			timeoutMinutes: 12,
+		});
 	});
 });
 

@@ -372,6 +372,7 @@ async function startDynamicScriptRun(
 			meta: meta as Record<string, unknown>,
 			args,
 			budgetTotal,
+			...(defaults ? { defaults } : {}),
 			...(opts.journalImportFromExecutionId
 				? { journalImportFromExecutionId: opts.journalImportFromExecutionId }
 				: {}),

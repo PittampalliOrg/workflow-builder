@@ -84,6 +84,7 @@ export class DaprWorkflowScheduler implements WorkflowScheduler {
 					...(env.DYNAMIC_SCRIPT_DEFAULT_MODEL?.trim()
 						? { model: env.DYNAMIC_SCRIPT_DEFAULT_MODEL.trim() }
 						: {}),
+					...(input.defaults ?? {}),
 				},
 				limits: {
 					maxConcurrentAgents: dynamicScriptMaxConcurrency(),

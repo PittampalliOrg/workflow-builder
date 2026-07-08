@@ -562,6 +562,7 @@ export type WorkflowScriptStartRequest = {
 	 *  script's `args` global is undefined). */
 	args?: unknown;
 	budgetTotal?: number | null;
+	defaults?: Record<string, unknown>;
 	/** Resume-after-edit: the orchestrator imports this execution's `done` rows. */
 	journalImportFromExecutionId?: string;
 	dbExecutionId: string;
