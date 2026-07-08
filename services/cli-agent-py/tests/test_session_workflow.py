@@ -830,6 +830,18 @@ def test_start_cli_activity_receives_seed_user_message(monkeypatch):
     assert start_call["seedUserMessage"] == "kick"
 
 
+def test_start_cli_activity_receives_auto_terminate_flag(monkeypatch):
+    ctx = FakeCtx()
+    driver = WorkflowDriver(
+        ctx, {**BASE_INPUT, "autoTerminateAfterEndTurn": True}, monkeypatch
+    )
+    _start_to_first_when_any(driver)
+    start_call = next(
+        c for name, c in ctx.activity_calls if name == "start_cli_activity"
+    )
+    assert start_call["autoTerminateAfterEndTurn"] is True
+
+
 # ---------------------------------------------------------------------------
 # background_task_count instrumentation (data only; no drain / behavior change)
 # ---------------------------------------------------------------------------

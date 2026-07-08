@@ -714,6 +714,7 @@ def session_workflow(
                 "sessionId": session_id,
                 "instanceId": ctx.instance_id,
                 "agentConfig": _record(input_data.get("agentConfig")),
+                "autoTerminateAfterEndTurn": auto_terminate,
                 "seed": _record(seed_result),
                 # Kickoff prompt: start_cli arms a readiness-gated injection so
                 # it is typed into the TUI only once it has booted to its prompt.
