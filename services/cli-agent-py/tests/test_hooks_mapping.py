@@ -412,6 +412,74 @@ def test_structured_output_tool_call_is_captured_when_present():
     assert ("sess-1", "structured_output.validation", {"ok": True, "source": "tool_call"}) in published
 
 
+def test_pretool_structured_output_wins_over_later_prose_stop():
+    processor, published, raised, supervisor, manager = _processor()
+    supervisor.one_shot = True
+    supervisor.agent_config = {
+        "structuredOutputMode": "tool",
+        "responseJsonSchema": {
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "agent": {"type": "string"},
+                "items": {"type": "array", "items": {"type": "string"}, "minItems": 2},
+            },
+            "required": ["ok", "agent", "items"],
+            "additionalProperties": False,
+        },
+    }
+    manager.tailer.last_assistant_text = "Delivered the required final object via the structured-output tool."
+
+    asyncio.run(
+        processor.process(
+            _hook(
+                "PreToolUse",
+                tool_name="mcp__structured__StructuredOutput",
+                tool_input={
+                    "ok": True,
+                    "agent": "claude-code-cli-glm",
+                    "items": ["mcp-tool", "schema-valid"],
+                },
+            )
+        )
+    )
+    response = asyncio.run(processor.process(_hook("Stop")))
+
+    assert response == {}
+    assert supervisor.structured_output == {
+        "ok": True,
+        "agent": "claude-code-cli-glm",
+        "items": ["mcp-tool", "schema-valid"],
+    }
+    assert supervisor.structured_output_text == (
+        '{"agent": "claude-code-cli-glm", "items": ["mcp-tool", "schema-valid"], "ok": true}'
+    )
+    assert ("sess-1", "structured_output.validation", {"ok": True, "source": "tool_call"}) in published
+    assert raised == [
+        (
+            "inst-1",
+            [
+                {
+                    "type": "turn.completed",
+                    "lastAssistantText": (
+                        '{"agent": "claude-code-cli-glm", '
+                        '"items": ["mcp-tool", "schema-valid"], "ok": true}'
+                    ),
+                    "structuredOutput": {
+                        "ok": True,
+                        "agent": "claude-code-cli-glm",
+                        "items": ["mcp-tool", "schema-valid"],
+                    },
+                    "structuredOutputText": (
+                        '{"agent": "claude-code-cli-glm", '
+                        '"items": ["mcp-tool", "schema-valid"], "ok": true}'
+                    ),
+                }
+            ],
+        )
+    ]
+
+
 def test_stop_records_missing_turn_start_before_completion():
     published: list[tuple[str | None, str, dict]] = []
     raised: list[tuple[str, list[dict]]] = []

@@ -701,8 +701,9 @@ class HookProcessor:
                 {}, name, "deny", ONE_SHOT_ASK_DENY_REASON, []
             )
 
-        if name == "PostToolUse":
+        if name in {"PreToolUse", "PostToolUse"}:
             self._capture_structured_output_tool_call(payload, session, session_id)
+            session = self._session()
 
         if name == "UserPromptSubmit":
             # Deterministic submit ack: the hook firing proves the CLI accepted a
@@ -880,14 +881,30 @@ class HookProcessor:
         schema = self._structured_schema(session)
         if schema is None:
             return
+        value = payload.get("tool_input")
+        if not isinstance(value, Mapping):
+            value = self._structured_output_value_from_tool_response(payload)
         result = evaluate_structured_output(
             schema,
-            payload.get("tool_input"),
+            value,
             source="tool_call",
         )
         if result.valid:
             self._record_structured_output_result(result)
         self._publish_structured_output_validation(session_id, result)
+
+    @staticmethod
+    def _structured_output_value_from_tool_response(
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        output = _flatten_tool_output(payload.get("tool_response"))
+        if not output:
+            return None
+        try:
+            parsed = json.loads(output)
+        except (TypeError, ValueError):
+            return None
+        return dict(parsed) if isinstance(parsed, Mapping) else None
 
     def _structured_output_for_completion(
         self,
