@@ -201,14 +201,12 @@ def _build_agent_config(
         ):
             agent_config["structuredOutputMode"] = "tool"
     elif cli_structured:
-        # Claude Code's native SyntheticOutput tool is currently wired only to
-        # its print/SDK path; workflow-launched CLI sessions use the TUI bridge
-        # so hooks/transcript/pane lifecycle remain intact. Stamp the schema so
-        # cli-agent-py's Stop hook can validate and canonicalize the final JSON
-        # before the one-shot child completes, while the prompt contract remains
-        # truthful (JSON text, not a fake tool).
+        # CLI sessions expose a per-session StructuredOutput MCP tool carrying
+        # this schema. The Stop hook still finalizes the turn and remains the
+        # fallback, but the primary path now matches dapr-agent-py's tool mode:
+        # the model delivers the final result by calling StructuredOutput.
         agent_config["responseJsonSchema"] = schema
-        agent_config["structuredOutputMode"] = "stopHook"
+        agent_config["structuredOutputMode"] = "tool"
     return agent_config
 
 

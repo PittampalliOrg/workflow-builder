@@ -946,14 +946,14 @@ def test_native_structured_gated_to_dapr_agent_py(monkeypatch):
     assert "modelSpec" not in cfg
 
 
-def test_claude_code_cli_schema_call_gets_stop_hook_structured_mode(monkeypatch):
+def test_claude_code_cli_schema_call_gets_tool_structured_mode(monkeypatch):
     import workflows.script_agent_dispatch as d
 
     monkeypatch.delenv("DYNAMIC_SCRIPT_CLI_STRUCTURED_OUTPUT", raising=False)
     schema = {"type": "object", "properties": {"x": {"type": "string"}}}
     cfg = d._build_agent_config({"schema": schema}, {}, "claude-code-cli-glm", {})
     assert cfg["responseJsonSchema"] == schema
-    assert cfg["structuredOutputMode"] == "stopHook"
+    assert cfg["structuredOutputMode"] == "tool"
     # CLI runtimes do not inherit a multi-provider default model.
     assert "modelSpec" not in cfg
 

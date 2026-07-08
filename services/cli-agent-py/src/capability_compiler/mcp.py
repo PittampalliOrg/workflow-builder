@@ -25,8 +25,11 @@ today's per-runtime output. Each loop dedups over its OWN kept set.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Mapping
+
+from src.structured_output import schema_supports_structured_output
 
 from .normalize import (
     derive_name_source,
@@ -44,6 +47,9 @@ _CLI_SDK_SUPPORTED_TRANSPORTS = {"streamable_http", "sse", "stdio"}
 
 # ``{transport, ...}`` transports dapr-agent-py's MCPClient accepts.
 _DAPR_ALLOWED_TRANSPORTS = {"streamable_http", "sse", "stdio", "websocket"}
+
+_STRUCTURED_OUTPUT_MCP_SERVER = "structured"
+_STRUCTURED_OUTPUT_SCHEMA_ENV = "CLI_STRUCTURED_OUTPUT_SCHEMA"
 
 
 def _allowed_tool_patterns(server_name: str, item: Mapping[str, Any]) -> list[str]:
@@ -140,12 +146,51 @@ def _emit_cli_sdk_shape(
     return servers, allowed_tools
 
 
+def _add_structured_output_server(
+    servers: dict[str, dict[str, Any]],
+    agent_config: Mapping[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    """Add the per-session StructuredOutput MCP server for CLI tool mode.
+
+    The server exposes exactly one tool, ``StructuredOutput``, whose input schema
+    is the dynamic-script call's ``responseJsonSchema``. This mirrors
+    dapr-agent-py's synthetic StructuredOutput tool, but uses the CLI's native
+    MCP channel.
+    """
+    if not isinstance(agent_config, Mapping):
+        return servers
+    if agent_config.get("structuredOutputMode") != "tool":
+        return servers
+    schema = agent_config.get("responseJsonSchema")
+    if not schema_supports_structured_output(schema):
+        return servers
+
+    name = _STRUCTURED_OUTPUT_MCP_SERVER
+    suffix = 2
+    while name in servers:
+        name = f"{_STRUCTURED_OUTPUT_MCP_SERVER}_{suffix}"
+        suffix += 1
+
+    servers[name] = {
+        "type": "stdio",
+        "command": "python3",
+        "args": ["-m", "src.structured_output_mcp"],
+        "env": {
+            _STRUCTURED_OUTPUT_SCHEMA_ENV: json.dumps(
+                schema, sort_keys=True, ensure_ascii=False
+            ),
+            "PYTHONUNBUFFERED": "1",
+        },
+    }
+    return servers
+
+
 def emit_claude_code_cli_servers(
     agent_config: Mapping[str, Any] | None,
 ) -> dict[str, dict[str, Any]]:
     """Reproduce cli-agent-py ``build_mcp_servers`` — ``{name: {type, ...}}``."""
     servers, _ = _emit_cli_sdk_shape(agent_config, collect_patterns=False)
-    return servers
+    return _add_structured_output_server(servers, agent_config)
 
 
 def emit_claude_agent_sdk_servers(

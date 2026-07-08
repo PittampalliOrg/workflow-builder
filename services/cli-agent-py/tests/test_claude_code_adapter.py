@@ -76,6 +76,34 @@ def test_seed_writes_mcp_system_prompt_and_skills(seeded_dirs):
     assert not (config_dir / "skills" / "slug-only-skill").exists()
 
 
+def test_seed_adds_structured_output_mcp_for_tool_mode(seeded_dirs):
+    wfb_dir, _config_dir = seeded_dirs
+    adapter = get_adapter("claude-code")
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
+
+    result = adapter.seed(
+        {
+            "agentConfig": {
+                "structuredOutputMode": "tool",
+                "responseJsonSchema": schema,
+            }
+        }
+    )
+
+    mcp = json.loads((wfb_dir / "mcp.json").read_text())
+    structured = mcp["mcpServers"]["structured"]
+    assert structured["type"] == "stdio"
+    assert structured["command"] == "python3"
+    assert structured["args"] == ["-m", "src.structured_output_mcp"]
+    assert json.loads(structured["env"]["CLI_STRUCTURED_OUTPUT_SCHEMA"]) == schema
+    assert result.paths["mcpConfigPath"] == str(wfb_dir / "mcp.json")
+
+
 def tmp_path_parent_has_escape(config_dir) -> bool:
     return (config_dir / "skills" / ".." / "escape.md").resolve().exists()
 

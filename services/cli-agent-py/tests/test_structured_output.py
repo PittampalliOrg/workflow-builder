@@ -5,6 +5,7 @@ from src.structured_output import (
     is_structured_output_tool,
     schema_supports_structured_output,
 )
+from src.structured_output_mcp import TOOL_DESCRIPTION, handle_request
 
 
 def test_extracts_and_canonicalizes_fenced_json_object():
@@ -57,3 +58,59 @@ def test_schema_and_tool_name_helpers():
     assert is_structured_output_tool("StructuredOutput")
     assert is_structured_output_tool("mcp__structured__StructuredOutput")
     assert not is_structured_output_tool("OtherTool")
+
+
+def test_structured_output_mcp_lists_schema_tool():
+    schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
+
+    response = handle_request(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        schema,
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "tools": [
+                {
+                    "name": "StructuredOutput",
+                    "description": TOOL_DESCRIPTION,
+                    "inputSchema": schema,
+                }
+            ]
+        },
+    }
+
+
+def test_structured_output_mcp_validates_tool_call():
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
+
+    valid = handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "StructuredOutput", "arguments": {"answer": "yes"}},
+        },
+        schema,
+    )
+    assert valid["result"]["content"][0]["text"] == '{"answer": "yes"}'
+    assert "isError" not in valid["result"]
+
+    invalid = handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "StructuredOutput", "arguments": {}},
+        },
+        schema,
+    )
+    assert invalid["result"]["isError"] is True
+    assert "failed schema validation" in invalid["result"]["content"][0]["text"]
