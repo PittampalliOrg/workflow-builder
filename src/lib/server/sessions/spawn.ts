@@ -278,11 +278,11 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 			ensureGoalMcpServer(
 				rewrittenMcp,
 				swapTarget?.capabilities?.supportsMcp ?? false,
-				// Always wire the goal MCP for goal-capable runtimes — the evaluator
-				// custom loop is the DEFAULT for every runtime now (incl. codex/claude),
-				// and update_goal is the agent's fast completion path. Opt-in native
-				// `/goal` (objective prefixed `/goal`) simply ignores it.
-				false,
+				// CLI agents should not inherit the platform goal MCP by default.
+				// They keep only explicitly configured MCP servers plus their
+				// runtime-internal tools, which avoids noisy goal tools in one-shot
+				// workflow runs.
+				swapTarget?.capabilities?.interactiveTerminal === true,
 			),
 			sessionId,
 		),

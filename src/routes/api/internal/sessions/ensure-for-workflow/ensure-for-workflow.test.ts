@@ -144,6 +144,16 @@ vi.mock("$lib/server/sessions/agent-workflow-host", () => ({
 	maybeProvisionAgentWorkflowHost: mocks.maybeProvisionAgentWorkflowHost,
 }));
 
+vi.mock("$lib/server/sandboxes/provision", () => ({
+	provisionSessionSandboxWithRetry: vi.fn(async () => ({
+		sandboxName: "openshell-test",
+		workspaceRef: "workspace/ws-test",
+	})),
+	sandboxProvisionFailureMessage: vi.fn((err: unknown) =>
+		err instanceof Error ? err.message : String(err),
+	),
+}));
+
 vi.mock("$lib/server/observability/mlflow-lifecycle", () => ({
 	registerAgentVersionInMlflow: vi.fn(async () => null),
 	safeCreateWorkflowAgentMlflowRun: vi.fn(async () => null),
@@ -450,6 +460,9 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 		expect(
 			(payload.childInput as Record<string, unknown>).autoTerminateAfterEndTurn,
 		).toBe(false);
+		const childAgentConfig = (payload.childInput as Record<string, unknown>)
+			.agentConfig as { mcpServers?: unknown[] };
+		expect(childAgentConfig.mcpServers ?? []).toEqual([]);
 	});
 
 	it("delegates workflow repository materialization to the session command service", async () => {
@@ -575,10 +588,7 @@ describe("dynamic-script spawn MCP wiring", () => {
 		mocks.workflowData.getWorkflowByRef.mockResolvedValue(null);
 	});
 
-	it("wires the platform MCP server + session/guard headers for dynamic-script spawns", async () => {
-		// The spawning workflow is a dynamic-script — reviewers/agents spawned by
-		// the pump need the platform tools (trace_*, validate/save script); the
-		// depth header suppresses only run_workflow_script.
+	it("leaves CLI dynamic-script spawns without default goal MCP wiring", async () => {
 		mocks.workflowData.getWorkflowByRef.mockResolvedValue({
 			engineType: "dynamic-script",
 		} as never);
@@ -591,10 +601,28 @@ describe("dynamic-script spawn MCP wiring", () => {
 		const childInput = payload.childInput as Record<string, unknown>;
 		const config = childInput.agentConfig as { mcpServers?: Array<Record<string, unknown>> };
 		const servers = config.mcpServers ?? [];
+		expect(servers).toEqual([]);
+	});
+
+	it("keeps platform MCP server + session/guard headers for non-CLI dynamic-script spawns", async () => {
+		mocks.workflowData.getWorkflowByRef.mockResolvedValue({
+			engineType: "dynamic-script",
+		} as never);
+		const payload = await callEnsureForWorkflow({
+			runtime: "dapr-agent-py",
+			modelSpec: "openai/gpt-5.5",
+			provider: "openai",
+			token: "unused",
+		});
+		const childInput = payload.childInput as Record<string, unknown>;
+		const config = childInput.agentConfig as {
+			mcpServers?: Array<Record<string, unknown>>;
+		};
+		const servers = config.mcpServers ?? [];
 		expect(servers).toHaveLength(1);
 		expect(String(servers[0].url)).toContain("workflow-mcp-server");
 		const headers = servers[0].headers as Record<string, string>;
-		expect(headers["X-Wfb-Session-Id"]).toBe("sess-claude-code-cli");
+		expect(headers["X-Wfb-Session-Id"]).toBe("sess-dapr-agent-py");
 		expect(headers["X-Wfb-Script-Depth"]).toBe("1");
 	});
 

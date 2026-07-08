@@ -334,17 +334,17 @@ export const POST: RequestHandler = async ({ request }) => {
 		.workflowData.getWorkflowByRef({ workflowId, lookup: "id" })
 		.catch(() => null);
 	const isDynamicScriptSpawn = spawningWorkflow?.engineType === "dynamic-script";
-	// Auto-wire the platform MCP server (+ session header) for:
+	const isCliRuntime = swapTarget?.capabilities?.interactiveTerminal === true;
+	// Auto-wire the platform goal MCP server (+ session header) only for non-CLI:
 	//   - evaluator-mode goal sessions (update_goal self-completion), and
-	//   - DYNAMIC-SCRIPT-spawned sessions — script agents rely on the platform
-	//     tools (trace_* analysis, validate/save script, goal reads); without
-	//     this they run with mcpServers: [] (the deep-analysis reviewers'
-	//     "trace tools aren't registered" failure). The recursion guard below
-	//     suppresses run_workflow_script on these sessions, exactly the state
-	//     stampScriptGuardHeader was designed for.
-	// Single-shot SW-1.0 runs + native-`/goal` CLIs stay untouched.
+	//   - DYNAMIC-SCRIPT-spawned non-CLI sessions that rely on platform tools.
+	// CLI agents should not inherit default goal tools; their callable schema
+	// should contain only explicitly configured MCP servers plus runtime-internal
+	// tools such as StructuredOutput. Single-shot SW-1.0 runs also stay untouched.
+	const shouldAutoWireGoalMcp =
+		(evaluatorGoal || isDynamicScriptSpawn) && !isCliRuntime;
 	let dispatchAgentConfig: AgentConfig =
-		evaluatorGoal || isDynamicScriptSpawn
+		shouldAutoWireGoalMcp
 			? ({
 					...baseDispatchAgentConfig,
 					mcpServers: stampGoalMcpSessionHeader(
@@ -352,25 +352,25 @@ export const POST: RequestHandler = async ({ request }) => {
 							(baseDispatchAgentConfig as { mcpServers?: unknown[] })
 								.mcpServers ?? [],
 							swapTarget?.capabilities?.supportsMcp ?? false,
-							false,
+							isCliRuntime,
 						),
 						sessionId,
 					),
 				} as AgentConfig)
 			: baseDispatchAgentConfig;
 	// Recursion guard: when the SPAWNING workflow is a dynamic-script, stamp the
-		// script-depth header on the session's workflow-mcp-server entries so the MCP
-		// server suppresses `run_workflow_script` — a script-spawned agent can't
-		// recursively launch another script workflow.
-		if (isDynamicScriptSpawn) {
-			dispatchAgentConfig = {
-				...dispatchAgentConfig,
-				mcpServers: stampScriptGuardHeader(
-					(dispatchAgentConfig as { mcpServers?: unknown[] }).mcpServers ?? [],
-				),
-			} as AgentConfig;
-		}
-		// Goal-mode sessions run multi-turn (no auto-terminate) capped by the goal's
+	// script-depth header on any explicitly configured workflow-mcp-server entries
+	// so the MCP server suppresses `run_workflow_script` — a script-spawned agent
+	// can't recursively launch another script workflow.
+	if (isDynamicScriptSpawn) {
+		dispatchAgentConfig = {
+			...dispatchAgentConfig,
+			mcpServers: stampScriptGuardHeader(
+				(dispatchAgentConfig as { mcpServers?: unknown[] }).mcpServers ?? [],
+			),
+		} as AgentConfig;
+	}
+	// Goal-mode sessions run multi-turn (no auto-terminate) capped by the goal's
 	// maxIterations; native-`/goal` runs get the objective as a `/goal` kickoff.
 	const effectiveMaxIterations = goalMode
 		? (bridgeGoal?.maxIterations ?? bridgeMaxIterations)

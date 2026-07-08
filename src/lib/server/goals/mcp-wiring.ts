@@ -3,8 +3,8 @@
  * (`src/lib/server/sessions/spawn.ts`) and the workflow→session bridge
  * (`/api/internal/sessions/ensure-for-workflow`). Auto-wires the goal MCP
  * server (create_goal/update_goal/get_goal) into MCP-capable, custom-loop goal
- * sessions so the agent can self-complete its goal, and stamps the session id
- * so the goal tools resolve which session they act on.
+ * sessions so non-CLI agents can self-complete their goals, and stamps the
+ * session id so the goal tools resolve which session they act on.
  */
 
 export const GOAL_MCP_SERVER_URL =
@@ -12,19 +12,20 @@ export const GOAL_MCP_SERVER_URL =
 	"http://workflow-mcp-server.workflow-builder.svc.cluster.local:3200/mcp";
 
 /**
- * Auto-wire the goal MCP server into every MCP-capable session so goals can
- * always self-complete — without the tools, a goal loop can only end via
- * budget/iteration caps or a manual pause. Skipped when the runtime doesn't
- * support MCP, when an entry already matches the goal server, when
- * GOAL_MCP_AUTO_WIRE=false, or for native-goal CLIs (they drive their OWN
- * `/goal` loop with its own completion harness).
+ * Auto-wire the goal MCP server into MCP-capable non-CLI sessions so goals can
+ * self-complete — without the tools, a goal loop can only end via
+ * budget/iteration caps or a manual pause. CLI agents intentionally do not get
+ * this default server; their tool schema should contain only explicitly
+ * configured MCP servers plus runtime-internal tools such as StructuredOutput.
+ * Also skipped when an entry already matches the goal server or when
+ * GOAL_MCP_AUTO_WIRE=false.
  */
 export function ensureGoalMcpServer<T>(
 	servers: T,
 	runtimeSupportsMcp: boolean,
-	isNativeGoalCli: boolean,
+	isCliRuntime: boolean,
 ): T {
-	if (!runtimeSupportsMcp || isNativeGoalCli) return servers;
+	if (!runtimeSupportsMcp || isCliRuntime) return servers;
 	if (process.env.GOAL_MCP_AUTO_WIRE === "false") return servers;
 	if (!Array.isArray(servers)) return servers;
 	const hasGoal = servers.some((entry) => {
