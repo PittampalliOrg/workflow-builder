@@ -9,11 +9,13 @@
 	 * manual refresh. Embeddable: used by the run cockpit's Graph tab and the
 	 * standalone service-graph page's Run view.
 	 */
-	import { RefreshCw, GitBranch, Server } from '@lucide/svelte';
+	import { RefreshCw, GitBranch, Server, MessageCircleQuestion } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import type { GraphSelection, ServiceGraphPayload } from '$lib/types/service-graph';
 	import ServiceGraphCanvas from './service-graph-canvas.svelte';
 	import ServiceGraphDrilldown from './service-graph-drilldown.svelte';
+	import RunDigestCard from './run-digest-card.svelte';
+	import TraceAnalystPanel, { type TraceCitation } from './trace-analyst-panel.svelte';
 
 	let {
 		executionId,
@@ -123,6 +125,22 @@
 		return '';
 	});
 
+	let askOpen = $state(false);
+
+	// Citation → graph navigation: calls select their node directly; sessions
+	// resolve to the owning call node (nodes carry sessionId); spans fall back
+	// to no-op (the analyst's prose still carries the id).
+	function handleCite(c: TraceCitation) {
+		if (c.kind === 'call' && payload?.nodes.some((n) => n.id === c.id)) {
+			setSelection({ kind: 'node', id: c.id, nodeKind: 'step' });
+			return;
+		}
+		if (c.kind === 'session') {
+			const node = payload?.nodes.find((n) => n.sessionId === c.id);
+			if (node) setSelection({ kind: 'node', id: node.id, nodeKind: node.kind });
+		}
+	}
+
 	function setLens(next: 'flow' | 'services') {
 		if (lens === next) return;
 		lens = next;
@@ -154,6 +172,15 @@
 			{lens === 'flow' ? 'The run’s calls and phases' : 'Infra topology touched by this run'}
 		</span>
 		<div class="ml-auto flex items-center gap-2">
+			<Button
+				variant={askOpen ? 'default' : 'ghost'}
+				size="sm"
+				class="h-6 gap-1 px-2 text-xs"
+				onclick={() => (askOpen = !askOpen)}
+				title="Ask the trace analyst about this run"
+			>
+				<MessageCircleQuestion class="size-3" /> Ask AI
+			</Button>
 			{#if polling}
 				<span class="inline-flex items-center gap-1.5 text-[11px] text-primary">
 					<span class="size-1.5 animate-pulse rounded-full bg-primary"></span> live
@@ -171,6 +198,12 @@
 		</div>
 	</div>
 
+	<RunDigestCard
+		{executionId}
+		{active}
+		onSelectCall={(callId) => setSelection({ kind: 'node', id: callId, nodeKind: 'step' })}
+	/>
+
 	<div class="flex min-h-0 flex-1">
 		<div class="min-h-0 flex-1">
 			<ServiceGraphCanvas {payload} {loading} onSelect={(s) => setSelection(s)} />
@@ -185,6 +218,11 @@
 				red={selectedNode?.red ?? selectedEdge?.red ?? null}
 				onClose={() => setSelection(null)}
 			/>
+		{/if}
+		{#if askOpen}
+			<div class="flex w-[380px] shrink-0 flex-col border-l">
+				<TraceAnalystPanel {executionId} onCite={handleCite} />
+			</div>
 		{/if}
 	</div>
 

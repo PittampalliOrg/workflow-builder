@@ -29,6 +29,7 @@ import {
 	type RegisteredTool,
 } from "./workflow-tools.js";
 import { registerGoalTools } from "./goal-tools.js";
+import { registerTraceTools } from "./trace-tools.js";
 import {
 	registerScriptTools,
 	shouldSuppressScriptTools,
@@ -175,6 +176,7 @@ function createMcpServer(
 	// can drive the Codex-/goal-parity loop. Session scope comes from the
 	// per-request X-Wfb-Session-Id header (see runWithGoalContext wraps below).
 	registerGoalTools(mcpServer);
+	registerTraceTools(mcpServer);
 
 	// Dynamic workflow script tool — also UI-independent. Suppressed inside
 	// script-spawned sessions (recursion guard) via suppressScriptTools.
