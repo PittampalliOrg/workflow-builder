@@ -225,10 +225,15 @@ class SessionSupervisor:
         self._pane_ref: str | None = None
         self._transcript_path: str | None = None
         self._turn_started_count = 0
+        self._agent_config: dict[str, Any] = {}
         # True for headless autoTerminateAfterEndTurn workflow runs (no human in
         # the pane). Exposed via get_session so the hook layer can deny
         # interactive tools like AskUserQuestion that would strand the run.
         self._one_shot = False
+        self._structured_output: dict[str, Any] | None = None
+        self._structured_output_text: str | None = None
+        self._structured_output_attempts = 0
+        self._structured_output_feedback: str | None = None
         self._injected_prompt_hashes: set[str] = set()
 
         # Zero-width prefix stamped on injected prompts so a Claude-style
@@ -418,11 +423,17 @@ class SessionSupervisor:
         instance_id: str | None,
         pane_ref: str | None,
         one_shot: bool = False,
+        agent_config: Mapping[str, Any] | None = None,
     ) -> None:
         self._session_id = session_id
         self._instance_id = instance_id
         self._pane_ref = pane_ref
         self._one_shot = bool(one_shot)
+        self._agent_config = dict(agent_config) if isinstance(agent_config, Mapping) else {}
+        self._structured_output = None
+        self._structured_output_text = None
+        self._structured_output_attempts = 0
+        self._structured_output_feedback = None
         self._exit_raised = False
         self._idle_since = None
         self._turn_started_count = 0
@@ -450,7 +461,28 @@ class SessionSupervisor:
             "cliSessionId": self._cli_session_id,
             "turnStartedCount": self._turn_started_count,
             "oneShot": self._one_shot,
+            "agentConfig": dict(self._agent_config),
+            "structuredOutput": (
+                dict(self._structured_output)
+                if isinstance(self._structured_output, dict)
+                else None
+            ),
+            "structuredOutputText": self._structured_output_text,
+            "structuredOutputAttempts": self._structured_output_attempts,
+            "structuredOutputFeedback": self._structured_output_feedback,
         }
+
+    def record_structured_output(
+        self, value: Mapping[str, Any], canonical_text: str
+    ) -> None:
+        self._structured_output = dict(value)
+        self._structured_output_text = canonical_text
+        self._structured_output_feedback = None
+
+    def note_structured_output_retry(self, feedback: str) -> int:
+        self._structured_output_attempts += 1
+        self._structured_output_feedback = feedback
+        return self._structured_output_attempts
 
     def consume_injected_prompt(self, prompt: str) -> bool:
         digests = _prompt_digest_variants(prompt)

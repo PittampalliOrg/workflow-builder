@@ -156,6 +156,30 @@ def test_auto_terminate_stops_after_first_turn_completed(monkeypatch):
     assert result["turnCount"] == 1
 
 
+def test_auto_terminate_returns_structured_output(monkeypatch):
+    ctx = FakeCtx()
+    driver = WorkflowDriver(
+        ctx, {**BASE_INPUT, "autoTerminateAfterEndTurn": True}, monkeypatch
+    )
+    _start_to_first_when_any(driver)
+    event_task = driver.event_task()
+    event_task.result = {
+        "events": [
+            {
+                "type": "turn.completed",
+                "lastAssistantText": '{"answer": "yes"}',
+                "structuredOutput": {"answer": "yes"},
+            }
+        ]
+    }
+    yielded = driver.gen.send(event_task)
+    with pytest.raises(StopIteration) as stop:
+        _drive_terminal_to_result(driver, yielded)
+    result = stop.value.value
+    assert result["output"] == '{"answer": "yes"}'
+    assert result["structuredOutput"] == {"answer": "yes"}
+
+
 def test_happy_path_turn_then_clean_exit(monkeypatch):
     published: list[tuple[str, str, dict, dict]] = []
     monkeypatch.setattr(

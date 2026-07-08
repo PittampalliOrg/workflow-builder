@@ -85,6 +85,12 @@ def _structured_tool_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+def _cli_structured_enabled() -> bool:
+    """Kill-switch for schema finalization in interactive CLI runtimes."""
+    raw = os.environ.get("DYNAMIC_SCRIPT_CLI_STRUCTURED_OUTPUT", "true").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
 def _schema_supports_structured_tool(schema: dict[str, Any]) -> bool:
     """Tool arguments are always JSON objects — only object-shaped schemas
     (type=object, or typeless with properties) can ride the tool."""
@@ -92,6 +98,10 @@ def _schema_supports_structured_tool(schema: dict[str, Any]) -> bool:
     if schema_type == "object":
         return True
     return schema_type is None and isinstance(schema.get("properties"), dict)
+
+
+def _is_claude_code_cli_runtime(agent_runtime: str) -> bool:
+    return agent_runtime in {"claude-code-cli", "claude-code-cli-glm"}
 
 
 def _phase_model(meta: dict[str, Any] | None, phase: Any) -> str:
@@ -133,6 +143,12 @@ def _build_agent_config(
         schema is not None
         and agent_runtime == "dapr-agent-py"
         and _native_structured_enabled()
+    )
+    cli_structured = (
+        schema is not None
+        and _is_claude_code_cli_runtime(agent_runtime)
+        and _cli_structured_enabled()
+        and _schema_supports_structured_tool(schema)
     )
     if isinstance(opts.get("model"), str) and opts.get("model").strip():
         model = opts["model"].strip()
@@ -184,6 +200,15 @@ def _build_agent_config(
             and _schema_supports_structured_tool(schema)
         ):
             agent_config["structuredOutputMode"] = "tool"
+    elif cli_structured:
+        # Claude Code's native SyntheticOutput tool is currently wired only to
+        # its print/SDK path; workflow-launched CLI sessions use the TUI bridge
+        # so hooks/transcript/pane lifecycle remain intact. Stamp the schema so
+        # cli-agent-py's Stop hook can validate and canonicalize the final JSON
+        # before the one-shot child completes, while the prompt contract remains
+        # truthful (JSON text, not a fake tool).
+        agent_config["responseJsonSchema"] = schema
+        agent_config["structuredOutputMode"] = "stopHook"
     return agent_config
 
 

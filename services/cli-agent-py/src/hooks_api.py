@@ -46,6 +46,17 @@ from src.cli_adapters import get_adapter
 from src.env_flags import CLI_BACKGROUND_TASK_COUNT_ENABLED, CLI_TURN_FAILED_EDGE_ENABLED
 from src.event_publisher import publish_session_event
 from src.session_supervisor import get_supervisor
+from src.structured_output import (
+    STRUCTURED_OUTPUT_MODE_STOP_HOOK,
+    STRUCTURED_OUTPUT_MODE_TOOL,
+    STRUCTURED_OUTPUT_NUDGE,
+    StructuredOutputResult,
+    evaluate_structured_output,
+    extract_structured_output_from_text,
+    is_structured_output_tool,
+    max_structured_output_nudges,
+    schema_supports_structured_output,
+)
 from src.taskhub import raise_lifecycle_events
 from src.transcript_tailer import get_tailer_manager
 
@@ -575,6 +586,31 @@ class HookProcessor:
                     logger.debug("[hooks] adapter completion extraction failed: %s", exc)
             if not last_text:
                 last_text = _generic_completion_text(payload)
+            structured_result = self._structured_output_for_completion(
+                session,
+                last_text,
+            )
+            if structured_result is not None and not structured_result.valid:
+                retry_response = self._structured_retry_response(
+                    structured_result,
+                    session_id,
+                    name,
+                )
+                if retry_response is not None:
+                    return retry_response
+            if structured_result is not None and structured_result.valid:
+                self._publish_structured_output_validation(session_id, structured_result)
+            structured_output = (
+                structured_result.value
+                if structured_result is not None and structured_result.valid
+                else None
+            )
+            if (
+                structured_result is not None
+                and structured_result.valid
+                and structured_result.canonical_text
+            ):
+                last_text = structured_result.canonical_text
             tailer_published_message = bool(
                 tailer is not None
                 and getattr(tailer, "assistant_message_published", False)
@@ -599,6 +635,9 @@ class HookProcessor:
             event: dict[str, Any] = {"type": "turn.completed"}
             if last_text:
                 event["lastAssistantText"] = last_text
+            if structured_output is not None:
+                event["structuredOutput"] = structured_output
+                event["structuredOutputText"] = last_text
             # Instrumentation (data only): how many NON-terminal background tasks
             # Claude Code still reports at turn end. Rides ONLY the completion
             # edge — a failed turn's background state is not meaningful. None (no
@@ -661,6 +700,9 @@ class HookProcessor:
             return _merge_portable_hook_decision(
                 {}, name, "deny", ONE_SHOT_ASK_DENY_REASON, []
             )
+
+        if name == "PostToolUse":
+            self._capture_structured_output_tool_call(payload, session, session_id)
 
         if name == "UserPromptSubmit":
             # Deterministic submit ack: the hook firing proves the CLI accepted a
@@ -781,6 +823,127 @@ class HookProcessor:
                 continue
             events.append({"type": event_type, "data": item.get("data") or {}})
         return events
+
+    def _structured_schema(self, session: Mapping[str, Any]) -> dict[str, Any] | None:
+        if not self._session_is_one_shot(session):
+            return None
+        agent_config = session.get("agentConfig")
+        if not isinstance(agent_config, Mapping):
+            return None
+        mode = agent_config.get("structuredOutputMode")
+        if mode not in {STRUCTURED_OUTPUT_MODE_STOP_HOOK, STRUCTURED_OUTPUT_MODE_TOOL}:
+            return None
+        schema = agent_config.get("responseJsonSchema")
+        if not schema_supports_structured_output(schema):
+            return None
+        return dict(schema)
+
+    def _record_structured_output_result(self, result: StructuredOutputResult) -> None:
+        if not result.valid or result.value is None or not result.canonical_text:
+            return
+        supervisor = self._supervisor_getter()
+        record = getattr(supervisor, "record_structured_output", None)
+        if callable(record):
+            try:
+                record(result.value, result.canonical_text)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[hooks] structured output record failed: %s", exc)
+
+    def _publish_structured_output_validation(
+        self,
+        session_id: Any,
+        result: StructuredOutputResult,
+        *,
+        attempts: int | None = None,
+    ) -> None:
+        if not session_id:
+            return
+        data: dict[str, Any] = {
+            "ok": result.valid,
+            "source": result.source,
+        }
+        if result.feedback:
+            data["feedback"] = result.feedback
+        if attempts is not None:
+            data["attempts"] = attempts
+        self._publish(session_id, "structured_output.validation", data)
+
+    def _capture_structured_output_tool_call(
+        self,
+        payload: Mapping[str, Any],
+        session: Mapping[str, Any],
+        session_id: Any,
+    ) -> None:
+        tool_name = _clean(payload.get("tool_name")) or _clean(payload.get("toolName"))
+        if not is_structured_output_tool(tool_name):
+            return
+        schema = self._structured_schema(session)
+        if schema is None:
+            return
+        result = evaluate_structured_output(
+            schema,
+            payload.get("tool_input"),
+            source="tool_call",
+        )
+        if result.valid:
+            self._record_structured_output_result(result)
+        self._publish_structured_output_validation(session_id, result)
+
+    def _structured_output_for_completion(
+        self,
+        session: Mapping[str, Any],
+        last_text: str | None,
+    ) -> StructuredOutputResult | None:
+        schema = self._structured_schema(session)
+        if schema is None:
+            return None
+        existing = session.get("structuredOutput")
+        existing_text = session.get("structuredOutputText")
+        if isinstance(existing, Mapping) and isinstance(existing_text, str) and existing_text:
+            return StructuredOutputResult(
+                valid=True,
+                value=dict(existing),
+                canonical_text=existing_text,
+                source="tool_call",
+            )
+        result = extract_structured_output_from_text(schema, last_text)
+        if result.valid:
+            self._record_structured_output_result(result)
+        return result
+
+    def _structured_retry_response(
+        self,
+        result: StructuredOutputResult,
+        session_id: Any,
+        hook_name: str | None,
+    ) -> dict[str, Any] | None:
+        supervisor = self._supervisor_getter()
+        attempts = 1
+        note_retry = getattr(supervisor, "note_structured_output_retry", None)
+        if callable(note_retry):
+            try:
+                attempts = int(note_retry(result.feedback or "invalid structured output"))
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[hooks] structured output retry note failed: %s", exc)
+        self._publish_structured_output_validation(session_id, result, attempts=attempts)
+        if attempts > max_structured_output_nudges():
+            return None
+        reason = "Structured output validation failed."
+        if result.feedback:
+            reason = f"{reason}\n{result.feedback}"
+        reason = f"{reason}\n\n{STRUCTURED_OUTPUT_NUDGE}"
+        if session_id:
+            self._publish(
+                session_id,
+                "hook.decision",
+                {
+                    "hook_event": hook_name,
+                    "decision": "continue",
+                    "reason": reason,
+                    "source": "structured-output-stop-hook",
+                },
+            )
+        return {"decision": "continue", "reason": reason}
 
     async def _drain_tailer_to_quiescence(self) -> None:
         """Drain the tailer until the transcript stops growing (Stop-hook race

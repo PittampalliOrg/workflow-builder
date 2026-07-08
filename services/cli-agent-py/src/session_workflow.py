@@ -592,6 +592,7 @@ def _result_contract(
     provenance: Mapping[str, Any],
     output_sync: Mapping[str, Any] | None = None,
     patch_result: Mapping[str, Any] | None = None,
+    structured_output: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     result = {
         "success": status not in ("failed",),
@@ -607,6 +608,8 @@ def _result_contract(
     }
     if output_sync is not None:
         result["outputSync"] = dict(output_sync)
+    if structured_output is not None:
+        result["structuredOutput"] = dict(structured_output)
     if patch_result is not None:
         patch = _record(patch_result)
         result["modelPatch"] = patch.get("modelPatch") or ""
@@ -651,6 +654,11 @@ def session_workflow(
     seeded = bool(carried.get("seeded"))
     turn_count = int(carried.get("turnCount") or 0)
     last_assistant_text = str(carried.get("lastAssistantText") or "")
+    last_structured_output = (
+        dict(carried.get("structuredOutput"))
+        if isinstance(carried.get("structuredOutput"), Mapping)
+        else None
+    )
     pane_ref = _clean_string(carried.get("paneRef"))
 
     if not seeded:
@@ -745,6 +753,7 @@ def session_workflow(
                         "seeded": True,
                         "turnCount": turn_count,
                         "lastAssistantText": last_assistant_text,
+                        "structuredOutput": last_structured_output,
                         "paneRef": pane_ref,
                         "provenance": provenance,
                     },
@@ -793,6 +802,9 @@ def session_workflow(
                 )
                 if text:
                     last_assistant_text = text
+                raw_structured = event.get("structuredOutput")
+                if isinstance(raw_structured, Mapping):
+                    last_structured_output = dict(raw_structured)
                 # Instrumentation (data only): the hooks layer stamps an int
                 # backgroundTaskCount on the completion edge when Claude Code
                 # reported background_tasks; absent = no data. Bool guard because
@@ -1069,4 +1081,5 @@ def session_workflow(
         provenance=provenance,
         output_sync=output_sync_result if isinstance(output_sync_result, Mapping) else None,
         patch_result=patch_result if isinstance(patch_result, Mapping) else None,
+        structured_output=last_structured_output,
     )

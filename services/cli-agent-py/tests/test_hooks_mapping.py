@@ -167,6 +167,11 @@ class FakeSupervisor:
         self.injected_prompts: set[str] = set()
         self.suppress_idle_calls = 0
         self.one_shot = False
+        self.agent_config: dict[str, Any] = {}
+        self.structured_output: dict[str, Any] | None = None
+        self.structured_output_text: str | None = None
+        self.structured_output_attempts = 0
+        self.structured_output_feedback: str | None = None
 
     def get_session(self):
         return {
@@ -175,6 +180,11 @@ class FakeSupervisor:
             "paneRef": "p1",
             "turnStartedCount": self.turn_started_count,
             "oneShot": self.one_shot,
+            "agentConfig": self.agent_config,
+            "structuredOutput": self.structured_output,
+            "structuredOutputText": self.structured_output_text,
+            "structuredOutputAttempts": self.structured_output_attempts,
+            "structuredOutputFeedback": self.structured_output_feedback,
         }
 
     def register_transcript(self, path, cli_session_id):
@@ -193,6 +203,15 @@ class FakeSupervisor:
 
     def suppress_next_idle_status(self):
         self.suppress_idle_calls += 1
+
+    def record_structured_output(self, value, canonical_text):
+        self.structured_output = dict(value)
+        self.structured_output_text = canonical_text
+
+    def note_structured_output_retry(self, feedback):
+        self.structured_output_attempts += 1
+        self.structured_output_feedback = feedback
+        return self.structured_output_attempts
 
 
 class FakeTailer:
@@ -295,6 +314,102 @@ def test_stop_flushes_tailer_then_raises_turn_completed():
     assert raised == [
         ("inst-1", [{"type": "turn.completed", "lastAssistantText": "final answer"}])
     ]
+
+
+def test_stop_canonicalizes_structured_output_before_completion():
+    processor, published, raised, supervisor, manager = _processor()
+    supervisor.one_shot = True
+    supervisor.agent_config = {
+        "structuredOutputMode": "stopHook",
+        "responseJsonSchema": {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+            "additionalProperties": False,
+        },
+    }
+    manager.tailer.last_assistant_text = '```json\n{"answer":"yes"}\n```'
+
+    response = asyncio.run(processor.process(_hook("Stop")))
+
+    assert response == {}
+    assert supervisor.structured_output == {"answer": "yes"}
+    assert supervisor.structured_output_text == '{"answer": "yes"}'
+    assert ("sess-1", "structured_output.validation", {"ok": True, "source": "assistant_text"}) in published
+    assert raised == [
+        (
+            "inst-1",
+            [
+                {
+                    "type": "turn.completed",
+                    "lastAssistantText": '{"answer": "yes"}',
+                    "structuredOutput": {"answer": "yes"},
+                    "structuredOutputText": '{"answer": "yes"}',
+                }
+            ],
+        )
+    ]
+
+
+def test_stop_continues_until_structured_output_is_valid():
+    processor, published, raised, supervisor, manager = _processor()
+    supervisor.one_shot = True
+    supervisor.agent_config = {
+        "structuredOutputMode": "stopHook",
+        "responseJsonSchema": {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        },
+    }
+    manager.tailer.last_assistant_text = "plain prose"
+
+    response = asyncio.run(processor.process(_hook("Stop")))
+
+    assert response["decision"] == "continue"
+    assert "Structured output validation failed" in response["reason"]
+    assert "Return only the corrected JSON object" in response["reason"]
+    assert raised == []
+    assert supervisor.structured_output_attempts == 1
+    assert any(
+        etype == "structured_output.validation" and data["ok"] is False
+        for _sid, etype, data in published
+    )
+    assert any(
+        etype == "hook.decision"
+        and data["decision"] == "continue"
+        and data["source"] == "structured-output-stop-hook"
+        for _sid, etype, data in published
+    )
+
+
+def test_structured_output_tool_call_is_captured_when_present():
+    processor, published, _raised, supervisor, _manager = _processor()
+    supervisor.one_shot = True
+    supervisor.agent_config = {
+        "structuredOutputMode": "tool",
+        "responseJsonSchema": {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        },
+    }
+
+    response = asyncio.run(
+        processor.process(
+            _hook(
+                "PostToolUse",
+                tool_name="StructuredOutput",
+                tool_input={"answer": "yes"},
+                tool_response="ok",
+            )
+        )
+    )
+
+    assert response == {}
+    assert supervisor.structured_output == {"answer": "yes"}
+    assert supervisor.structured_output_text == '{"answer": "yes"}'
+    assert ("sess-1", "structured_output.validation", {"ok": True, "source": "tool_call"}) in published
 
 
 def test_stop_records_missing_turn_start_before_completion():

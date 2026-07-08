@@ -255,6 +255,7 @@ async def _start_cli(input_data: dict[str, Any]) -> dict[str, Any]:
                 instance_id=instance_id,
                 pane_ref=pane_ref,
                 one_shot=one_shot,
+                agent_config=agent_config,
             )
             # Adapter background work (e.g. agy's ~/.gemini login-bundle capture
             # watcher). Best-effort; must not break session start.

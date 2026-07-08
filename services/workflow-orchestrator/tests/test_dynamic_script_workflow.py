@@ -14,7 +14,6 @@ and never executes the activity body).
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -945,6 +944,38 @@ def test_native_structured_gated_to_dapr_agent_py(monkeypatch):
     cfg = d._build_agent_config({"schema": schema}, {"model": "zai/glm-5.2"}, "claude-agent-py", {})
     assert "responseJsonSchema" not in cfg
     assert "modelSpec" not in cfg
+
+
+def test_claude_code_cli_schema_call_gets_stop_hook_structured_mode(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.delenv("DYNAMIC_SCRIPT_CLI_STRUCTURED_OUTPUT", raising=False)
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    cfg = d._build_agent_config({"schema": schema}, {}, "claude-code-cli-glm", {})
+    assert cfg["responseJsonSchema"] == schema
+    assert cfg["structuredOutputMode"] == "stopHook"
+    # CLI runtimes do not inherit a multi-provider default model.
+    assert "modelSpec" not in cfg
+
+
+def test_claude_code_cli_structured_mode_kill_switch(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.setenv("DYNAMIC_SCRIPT_CLI_STRUCTURED_OUTPUT", "false")
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    cfg = d._build_agent_config({"schema": schema}, {}, "claude-code-cli", {})
+    assert "responseJsonSchema" not in cfg
+    assert "structuredOutputMode" not in cfg
+
+
+def test_claude_code_cli_non_object_schema_stays_prompt_only(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.delenv("DYNAMIC_SCRIPT_CLI_STRUCTURED_OUTPUT", raising=False)
+    schema = {"type": "array", "items": {"type": "string"}}
+    cfg = d._build_agent_config({"schema": schema}, {}, "claude-code-cli", {})
+    assert "responseJsonSchema" not in cfg
+    assert "structuredOutputMode" not in cfg
 
 # ---------------------------------------------------------------------------
 # StructuredOutput TOOL mode (Tier-2 upgrade): a schema'd call resolved to GLM
