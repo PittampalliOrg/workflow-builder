@@ -32,6 +32,11 @@ import {
 	STRUCTURED_OUTPUT_TOOL_NAME,
 } from "./structured-output-tools.js";
 import { runWithGoalContext } from "./goal-context.js";
+import {
+	runWithTeamContext,
+	shouldSuppressTeamTools,
+} from "./team-context.js";
+import { registerTeamTools } from "./team-tools.js";
 import { setSpanInput, setSpanOutput } from "./observability/content.js";
 
 const PORT = parseInt(process.env.PORT || "3200", 10);
@@ -155,6 +160,9 @@ type CreateMcpServerOptions = {
 	// Recursion guard: script-spawned sessions carry X-Wfb-Script-Depth, which
 	// suppresses run_workflow_script so a running script can't launch more.
 	suppressScriptTools?: boolean;
+	// Nesting guard: teammate sessions carry X-Wfb-Team-Depth, which suppresses
+	// the team tools so a teammate can't spawn its own nested team.
+	suppressTeamTools?: boolean;
 };
 
 /** Create a new MCP Server instance with workflow tools. */
@@ -181,6 +189,14 @@ function createMcpServer(
 	// script-spawned sessions (recursion guard) via suppressScriptTools.
 	if (opts?.suppressScriptTools !== true) {
 		registerScriptTools(mcpServer);
+	}
+
+	// Team tools register for team members (lead + peers); suppressed for teammate
+	// sessions carrying X-Wfb-Team-Depth so nested teams can't form. Session scope
+	// comes from X-Wfb-Session-Id, team scope from X-Wfb-Team-Id (see the
+	// runWithTeamContext wraps below).
+	if (opts?.suppressTeamTools !== true) {
+		registerTeamTools(mcpServer);
 	}
 
 	return mcpServer.server;
@@ -283,6 +299,7 @@ async function handleMcpPost(
 		// on the MCP entry for script-spawned sessions) suppresses the dynamic
 		// script tool so a running script can't launch further scripts.
 		const suppressScriptTools = shouldSuppressScriptTools(req.headers);
+		const suppressTeamTools = shouldSuppressTeamTools(req.headers);
 
 		let structuredOutputContext;
 		try {
@@ -300,7 +317,7 @@ async function handleMcpPost(
 		}
 		const server = structuredOutputContext
 			? createStructuredOutputMcpServer(structuredOutputContext.schema)
-			: createMcpServer(userId, { suppressScriptTools });
+			: createMcpServer(userId, { suppressScriptTools, suppressTeamTools });
 		await server.connect(transport);
 	} else {
 		sendJson(res, 400, {
@@ -312,8 +329,11 @@ async function handleMcpPost(
 	// Bind the workflow-builder session (codex thread) for this request so the
 	// goal tools can resolve which session they act on.
 	const wfbSessionId = req.headers["x-wfb-session-id"] as string | undefined;
+	const wfbTeamId = req.headers["x-wfb-team-id"] as string | undefined;
 	await runWithGoalContext({ sessionId: wfbSessionId ?? null }, () =>
-		transport.handleRequest(req, res, body),
+		runWithTeamContext({ teamId: wfbTeamId ?? null }, () =>
+			transport.handleRequest(req, res, body),
+		),
 	);
 }
 
@@ -329,8 +349,11 @@ async function handleMcpGet(
 	}
 	const transport = sessions.get(sessionId)!;
 	const wfbSessionId = req.headers["x-wfb-session-id"] as string | undefined;
+	const wfbTeamId = req.headers["x-wfb-team-id"] as string | undefined;
 	await runWithGoalContext({ sessionId: wfbSessionId ?? null }, () =>
-		transport.handleRequest(req, res),
+		runWithTeamContext({ teamId: wfbTeamId ?? null }, () =>
+			transport.handleRequest(req, res),
+		),
 	);
 }
 
@@ -346,8 +369,11 @@ async function handleMcpDelete(
 	}
 	const transport = sessions.get(sessionId)!;
 	const wfbSessionId = req.headers["x-wfb-session-id"] as string | undefined;
+	const wfbTeamId = req.headers["x-wfb-team-id"] as string | undefined;
 	await runWithGoalContext({ sessionId: wfbSessionId ?? null }, () =>
-		transport.handleRequest(req, res),
+		runWithTeamContext({ teamId: wfbTeamId ?? null }, () =>
+			transport.handleRequest(req, res),
+		),
 	);
 }
 
@@ -401,6 +427,18 @@ async function main(): Promise<void> {
 		registeredTools = [
 			...registeredTools,
 			...registerScriptTools(dryScriptServer),
+		];
+	}
+	// Count the team tools (suppressed only for teammate sessions carrying
+	// X-Wfb-Team-Depth). Session/team scope resolves at call time.
+	{
+		const dryTeamServer = new McpServer(
+			{ name: "dry-run-team", version: "0.0.0" },
+			{ capabilities: { tools: {} } },
+		);
+		registeredTools = [
+			...registeredTools,
+			...registerTeamTools(dryTeamServer),
 		];
 	}
 
