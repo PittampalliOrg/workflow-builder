@@ -68,106 +68,7 @@ export async function appendSessionEvent(
 					.returning();
 				return inserted;
 			});
-			// Bench metrics aggregation (fire-and-forget). When dapr-agent-py
-			// emits an `agent.llm_usage` event for a session linked to a
-			// benchmark_run_instances row, atomically roll the call's tokens
-			// into that row's `usage` jsonb. The UPDATE is a no-op for
-			// non-benchmark sessions (no row matches the session_id).
-			if (event.type === "agent.llm_usage") {
-				await aggregateLlmUsageIntoBenchmarkInstance(
-					sessionId,
-					cleanData as Record<string, unknown>,
-					database,
-				);
-			}
-			if (event.type === "instance.metrics_summary") {
-				await applyInstanceMetricsSummaryToBenchmark(
-					sessionId,
-					cleanData as Record<string, unknown>,
-					database,
-				);
-			}
-			// Phase B (corrected): the metrics_summary emit from dapr-agent-py
-			// is unreliable because agent_workflow's finally block fires on every
-			// Dapr replay tick — it captures mid-flight counter snapshots and
-			// pops the dict, so peaks are never preserved. The truthful counts
-			// live in session_events itself. Prefer agent.llm_usage for rich
-			// token-aware turns, but fall back to llm_start/agent.iteration for
-			// providers that currently omit usage events.
-			//
-			// Run on each Phase-A-or-B-relevant event so the row stays current as
-			// events flow in (each call is idempotent — COUNT(*) over session_events).
-			// Also run on session.status_terminated as the canonical final pass,
-			// with a small delay to let concurrent agent.* event ingest transactions
-			// commit (we observed a race where status_terminated arrived first and
-			// my aggregator ran with 0 events visible).
-			if (
-				event.type === "agent.llm_usage" ||
-				event.type === "llm_start" ||
-				event.type === "agent.iteration" ||
-				event.type === "agent.tool_use"
-			) {
-				// Fire-and-forget — incremental updates while the run progresses.
-				void aggregateBenchmarkLifecycleFromSessionEvents(
-					sessionId,
-					{},
-					database,
-				);
-			}
-			if (
-				event.type === "agent.llm_usage" ||
-				event.type === "agent.tool_result" ||
-				event.type === "session.turn_heartbeat"
-			) {
-				// Fire-and-forget — timing rollups are advisory while the run is
-				// active and recomputeRunSummary performs the deterministic backstop.
-				void aggregateBenchmarkSessionTimings(sessionId);
-			}
-			if (event.type === "session.status_terminated") {
-				// 2s delay lets stragglers from concurrent transactions land before
-				// the canonical aggregation. recomputeRunSummary on evaluation-results
-				// is the deterministic backstop if even this misses anything.
-				setTimeout(
-					() =>
-						void aggregateBenchmarkLifecycleFromSessionEvents(
-							sessionId,
-							{
-								finalize: true,
-							},
-							database,
-						),
-					2000,
-				);
-				setTimeout(
-					() =>
-						void aggregateBenchmarkSessionTimings(sessionId, {
-							finalize: true,
-						}),
-					2000,
-				);
-			}
-			// Goal-loop driver (Codex /goal parity). On agent.llm_usage we accrue the
-			// turn's tokens into the session's goal; on an end_turn status_idle we
-			// drive the autonomous continuation. Lazy-imported to keep this hot
-			// module lean and to avoid the events<->goal-loop import cycle.
-			// Fire-and-forget; onSessionEvent swallows its own errors and is a no-op
-			// for sessions without a goal.
-			if (
-				event.type === "agent.llm_usage" ||
-				event.type === "session.status_idle" ||
-				event.type === "session.goal_completed"
-			) {
-				void import("$lib/server/goals/goal-loop")
-					.then((m) =>
-						m.onSessionEvent(sessionId, {
-							type: event.type,
-							data: cleanData as Record<string, unknown>,
-						}),
-					)
-					.catch((err) =>
-						console.warn("[goal-loop] event hook failed:", err),
-					);
-			}
+			await runSessionEventPostAppendHooks(sessionId, event.type, cleanData, database);
 			return rowToEnvelope(row);
 		} catch (err) {
 			// Unique violation on sequence should be rare with the advisory lock,
@@ -217,6 +118,100 @@ export async function appendSessionEvent(
 	throw new Error(
 		`Failed to insert event after retries for session ${sessionId}`,
 	);
+}
+
+export async function runSessionEventPostAppendHooks(
+	sessionId: string,
+	eventType: string,
+	cleanData: Record<string, unknown>,
+	database: Database = defaultDb,
+): Promise<void> {
+	// Bench metrics aggregation (fire-and-forget). When dapr-agent-py
+	// emits an `agent.llm_usage` event for a session linked to a
+	// benchmark_run_instances row, atomically roll the call's tokens
+	// into that row's `usage` jsonb. The UPDATE is a no-op for
+	// non-benchmark sessions (no row matches the session_id).
+	if (eventType === "agent.llm_usage") {
+		await aggregateLlmUsageIntoBenchmarkInstance(sessionId, cleanData, database);
+	}
+	if (eventType === "instance.metrics_summary") {
+		await applyInstanceMetricsSummaryToBenchmark(sessionId, cleanData, database);
+	}
+	// Phase B (corrected): the metrics_summary emit from dapr-agent-py
+	// is unreliable because agent_workflow's finally block fires on every
+	// Dapr replay tick — it captures mid-flight counter snapshots and
+	// pops the dict, so peaks are never preserved. The truthful counts
+	// live in session_events itself. Prefer agent.llm_usage for rich
+	// token-aware turns, but fall back to llm_start/agent.iteration for
+	// providers that currently omit usage events.
+	//
+	// Run on each Phase-A-or-B-relevant event so the row stays current as
+	// events flow in (each call is idempotent — COUNT(*) over session_events).
+	// Also run on session.status_terminated as the canonical final pass,
+	// with a small delay to let concurrent agent.* event ingest transactions
+	// commit (we observed a race where status_terminated arrived first and
+	// my aggregator ran with 0 events visible).
+	if (
+		eventType === "agent.llm_usage" ||
+		eventType === "llm_start" ||
+		eventType === "agent.iteration" ||
+		eventType === "agent.tool_use"
+	) {
+		// Fire-and-forget — incremental updates while the run progresses.
+		void aggregateBenchmarkLifecycleFromSessionEvents(sessionId, {}, database);
+	}
+	if (
+		eventType === "agent.llm_usage" ||
+		eventType === "agent.tool_result" ||
+		eventType === "session.turn_heartbeat"
+	) {
+		// Fire-and-forget — timing rollups are advisory while the run is
+		// active and recomputeRunSummary performs the deterministic backstop.
+		void aggregateBenchmarkSessionTimings(sessionId);
+	}
+	if (eventType === "session.status_terminated") {
+		// 2s delay lets stragglers from concurrent transactions land before
+		// the canonical aggregation. recomputeRunSummary on evaluation-results
+		// is the deterministic backstop if even this misses anything.
+		setTimeout(
+			() =>
+				void aggregateBenchmarkLifecycleFromSessionEvents(
+					sessionId,
+					{
+						finalize: true,
+					},
+					database,
+				),
+			2000,
+		);
+		setTimeout(
+			() =>
+				void aggregateBenchmarkSessionTimings(sessionId, {
+					finalize: true,
+				}),
+			2000,
+		);
+	}
+	// Goal-loop driver (Codex /goal parity). On agent.llm_usage we accrue the
+	// turn's tokens into the session's goal; on an end_turn status_idle we
+	// drive the autonomous continuation. Lazy-imported to keep this hot
+	// module lean and to avoid the events<->goal-loop import cycle.
+	// Fire-and-forget; onSessionEvent swallows its own errors and is a no-op
+	// for sessions without a goal.
+	if (
+		eventType === "agent.llm_usage" ||
+		eventType === "session.status_idle" ||
+		eventType === "session.goal_completed"
+	) {
+		void import("$lib/server/goals/goal-loop")
+			.then((m) =>
+				m.onSessionEvent(sessionId, {
+					type: eventType,
+					data: cleanData,
+				}),
+			)
+			.catch((err) => console.warn("[goal-loop] event hook failed:", err));
+	}
 }
 
 export async function listEvents(

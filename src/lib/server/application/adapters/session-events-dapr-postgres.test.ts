@@ -13,11 +13,15 @@ import type { SessionEventEnvelope } from "$lib/types/sessions";
 class FakeBindingClient {
 	calls: DaprPostgresBindingCall[] = [];
 	queryRows = new Map<string, unknown[][]>();
+	queryErrors = new Map<string, Error[]>();
 
 	async query(
 		input: Omit<DaprPostgresBindingCall, "operation">,
 	): Promise<DaprPostgresBindingResult> {
 		this.calls.push({ ...input, operation: "query" });
+		const errors = this.queryErrors.get(input.summary ?? "");
+		const error = errors?.shift();
+		if (error) throw error;
 		return {
 			metadata: {},
 			rows: this.queryRows.get(input.summary ?? "") ?? [],
@@ -135,14 +139,31 @@ describe("DaprPostgresSessionEventLog", () => {
 		});
 	});
 
-	it("delegates appends to the Postgres fallback until side effects are extracted", async () => {
+	it("appends session events through the binding and runs post-append hooks", async () => {
 		const client = new FakeBindingClient();
 		const fallback = fakeFallback();
-		const store = new DaprPostgresSessionEventLog(fallback, client);
+		const postAppendHook = vi.fn(async () => {});
+		client.queryRows.set("session_events.insert", [
+			eventRow({
+				id: "evt-appended",
+				sessionId: "session-1",
+				sequence: 2,
+				type: "agent.llm_usage",
+				data: { input_tokens: 10 },
+				sourceEventId: "source-1",
+			}),
+		]);
+		const store = new DaprPostgresSessionEventLog(
+			fallback,
+			client,
+			postAppendHook,
+		);
 
 		const event = await store.appendSessionEvent("session-1", {
 			type: "agent.llm_usage",
-			data: { input_tokens: 10 },
+			data: { input_tokens: 10, ignored: undefined },
+			sourceEventId: "source-1",
+			producerId: "agent-1",
 		});
 
 		expect(event).toMatchObject({
@@ -150,10 +171,81 @@ describe("DaprPostgresSessionEventLog", () => {
 			sessionId: "session-1",
 			type: "agent.llm_usage",
 		});
-		expect(fallback.appendSessionEvent).toHaveBeenCalledWith("session-1", {
+		expect(fallback.appendSessionEvent).not.toHaveBeenCalled();
+		expect(client.calls[0]).toMatchObject({
+			operation: "query",
+			summary: "session_events.insert",
+			collection: "session_events",
+			params: [
+				"session-1",
+				"agent.llm_usage",
+				JSON.stringify({ input_tokens: 10 }),
+				null,
+				"source-1",
+				"agent-1",
+				null,
+			],
+			spanParams: [
+				"session-1",
+				"agent.llm_usage",
+				{ input_tokens: 10 },
+				null,
+				"source-1",
+				"agent-1",
+				null,
+			],
+			paramNames: [
+				"session_id",
+				"type",
+				"data",
+				"processed_at",
+				"source_event_id",
+				"producer_id",
+				"producer_epoch",
+			],
+		});
+		expect(client.calls[0]?.sql).toContain("pg_advisory_xact_lock");
+		expect(client.calls[0]?.sql).toContain("RETURNING");
+		expect(postAppendHook).toHaveBeenCalledWith("session-1", "agent.llm_usage", {
+			input_tokens: 10,
+		});
+	});
+
+	it("returns an existing source event when a duplicate append races", async () => {
+		const client = new FakeBindingClient();
+		const duplicate = new Error(
+			'23505 duplicate key value violates unique constraint "uq_session_events_source"',
+		);
+		client.queryErrors.set("session_events.insert", [duplicate]);
+		client.queryRows.set("session_events.select_by_source_event", [
+			eventRow({
+				id: "evt-existing",
+				sessionId: "session-1",
+				sourceEventId: "source-1",
+			}),
+		]);
+		const postAppendHook = vi.fn(async () => {});
+		const store = new DaprPostgresSessionEventLog(
+			fakeFallback(),
+			client,
+			postAppendHook,
+		);
+
+		const event = await store.appendSessionEvent("session-1", {
 			type: "agent.llm_usage",
 			data: { input_tokens: 10 },
+			sourceEventId: "source-1",
 		});
-		expect(client.calls).toHaveLength(0);
+
+		expect(event).toMatchObject({
+			id: "evt-existing",
+			sessionId: "session-1",
+			sourceEventId: "source-1",
+		});
+		expect(client.calls.map((call) => call.summary)).toEqual([
+			"session_events.insert",
+			"session_events.select_by_source_event",
+		]);
+		expect(postAppendHook).not.toHaveBeenCalled();
 	});
 });

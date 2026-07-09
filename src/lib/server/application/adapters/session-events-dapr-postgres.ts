@@ -1,12 +1,16 @@
 import { DaprPostgresBindingClient } from "$lib/server/application/adapters/dapr-postgres-binding";
 import {
 	dateValue,
+	jsonParam,
 	jsonValue,
 	numberValue,
 	stringOrNull,
 	stringValue,
 } from "$lib/server/application/adapters/dapr-postgres-rows";
-import { PostgresSessionEventLog } from "$lib/server/application/adapters/session-events";
+import {
+	PostgresSessionEventLog,
+	runSessionEventPostAppendHooks,
+} from "$lib/server/application/adapters/session-events";
 import type {
 	AppendSessionEventInput,
 	ListSessionEventsInput,
@@ -14,6 +18,7 @@ import type {
 } from "$lib/server/application/ports";
 import {
 	rowToEnvelope,
+	sanitizeSessionEventDataForPostgres,
 	type SessionEventEnvelopeRow,
 } from "$lib/server/sessions/event-envelope";
 import type { SessionEventEnvelope } from "$lib/types/sessions";
@@ -22,6 +27,11 @@ type BindingClient = Pick<DaprPostgresBindingClient, "query">;
 type PostgresSessionEventDatabase = ConstructorParameters<
 	typeof PostgresSessionEventLog
 >[0];
+type PostAppendHook = (
+	sessionId: string,
+	eventType: string,
+	cleanData: Record<string, unknown>,
+) => Promise<void>;
 
 const SESSION_EVENT_COLUMNS = `
 	id,
@@ -51,20 +61,122 @@ function rowToSessionEvent(row: readonly unknown[]): SessionEventEnvelopeRow {
 	};
 }
 
+function isUniqueViolation(error: unknown): boolean {
+	const maybeError = error as {
+		code?: string;
+		cause?: unknown;
+		message?: string;
+	};
+	const cause = maybeError?.cause as { code?: string; message?: string } | undefined;
+	const message = `${maybeError?.message ?? ""} ${cause?.message ?? ""}`;
+	return (
+		maybeError?.code === "23505" ||
+		cause?.code === "23505" ||
+		message.includes("23505") ||
+		message.includes("uq_session_event_sequence") ||
+		message.includes("uq_session_events_source") ||
+		message.includes("duplicate key value")
+	);
+}
+
 export class DaprPostgresSessionEventLog implements SessionEventLog {
 	constructor(
-		private readonly postgresFallback: SessionEventLog,
+		_postgresFallback: SessionEventLog,
 		private readonly client: BindingClient = new DaprPostgresBindingClient(),
+		private readonly postAppendHook: PostAppendHook = async () => {},
 	) {}
 
-	appendSessionEvent(
+	async appendSessionEvent(
 		sessionId: string,
 		event: AppendSessionEventInput,
 	): Promise<SessionEventEnvelope> {
-		// Append still owns benchmark, timing, and goal-loop side effects in the
-		// Postgres implementation. Keep writes there until those effects are split
-		// behind a post-append hook that can safely run after a binding insert.
-		return this.postgresFallback.appendSessionEvent(sessionId, event);
+		const cleanData = sanitizeSessionEventDataForPostgres(event.data ?? {});
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			try {
+				const result = await this.client.query({
+					summary: "session_events.insert",
+					collection: "session_events",
+					sql: `
+						WITH lock AS (
+							SELECT pg_advisory_xact_lock(hashtext($1)::bigint)
+						), next_sequence AS (
+							SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence
+							FROM session_events
+							WHERE session_id = $1
+						), inserted AS (
+							INSERT INTO session_events (
+								session_id,
+								sequence,
+								type,
+								data,
+								processed_at,
+								source_event_id,
+								producer_id,
+								producer_epoch
+							)
+							SELECT
+								$1,
+								next_sequence.sequence,
+								$2,
+								$3::jsonb,
+								$4::timestamptz,
+								$5,
+								$6,
+								$7
+							FROM lock, next_sequence
+							RETURNING ${SESSION_EVENT_COLUMNS}
+						)
+						SELECT ${SESSION_EVENT_COLUMNS}
+						FROM inserted
+					`,
+					params: [
+						sessionId,
+						event.type,
+						jsonParam(cleanData),
+						event.processedAt?.toISOString() ?? null,
+						event.sourceEventId ?? null,
+						event.producerId ?? null,
+						event.producerEpoch ?? null,
+					],
+					spanParams: [
+						sessionId,
+						event.type,
+						cleanData,
+						event.processedAt?.toISOString() ?? null,
+						event.sourceEventId ?? null,
+						event.producerId ?? null,
+						event.producerEpoch ?? null,
+					],
+					paramNames: [
+						"session_id",
+						"type",
+						"data",
+						"processed_at",
+						"source_event_id",
+						"producer_id",
+						"producer_epoch",
+					],
+				});
+				const row = result.rows[0];
+				if (!row) {
+					throw new Error("Dapr PostgreSQL session event insert returned no row");
+				}
+				await this.postAppendHook(sessionId, event.type, cleanData);
+				return rowToEnvelope(rowToSessionEvent(row), { preview: false });
+			} catch (error) {
+				if (!isUniqueViolation(error)) throw error;
+				if (event.sourceEventId) {
+					const existing = await this.selectBySourceEventId(
+						sessionId,
+						event.sourceEventId,
+					);
+					if (existing) return existing;
+				}
+			}
+		}
+		throw new Error(
+			`Failed to insert event after retries for session ${sessionId}`,
+		);
 	}
 
 	async getSessionEvent(input: {
@@ -122,10 +234,35 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 			rowToEnvelope(rowToSessionEvent(row), { preview: input.preview }),
 		);
 	}
+
+	private async selectBySourceEventId(
+		sessionId: string,
+		sourceEventId: string,
+	): Promise<SessionEventEnvelope | null> {
+		const result = await this.client.query({
+			summary: "session_events.select_by_source_event",
+			collection: "session_events",
+			sql: `
+				SELECT ${SESSION_EVENT_COLUMNS}
+				FROM session_events
+				WHERE session_id = $1 AND source_event_id = $2
+				LIMIT 1
+			`,
+			params: [sessionId, sourceEventId],
+			paramNames: ["session_id", "source_event_id"],
+		});
+		const row = result.rows[0];
+		return row ? rowToEnvelope(rowToSessionEvent(row), { preview: false }) : null;
+	}
 }
 
 export function createDaprPostgresSessionEventLog(
 	database: PostgresSessionEventDatabase,
 ): DaprPostgresSessionEventLog {
-	return new DaprPostgresSessionEventLog(new PostgresSessionEventLog(database));
+	return new DaprPostgresSessionEventLog(
+		new PostgresSessionEventLog(database),
+		new DaprPostgresBindingClient(),
+		(sessionId, eventType, cleanData) =>
+			runSessionEventPostAppendHooks(sessionId, eventType, cleanData, database),
+	);
 }
