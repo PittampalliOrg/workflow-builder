@@ -22,7 +22,7 @@ import type {
 	WorkflowBrowserCaptureStepInput,
 } from "$lib/server/application/ports/workflows";
 
-type BindingClient = Pick<DaprPostgresBindingClient, "query">;
+type BindingClient = Pick<DaprPostgresBindingClient, "query" | "exec">;
 
 type BrowserArtifactBlobDatabase = {
 	insert: (table: typeof workflowBrowserArtifactBlobPayloads) => {
@@ -40,10 +40,12 @@ type BrowserArtifactBlobDatabase = {
 	select: () => {
 		from: (table: typeof workflowBrowserArtifactBlobPayloads) => {
 			where: (condition: SQL<unknown>) => {
-				limit: (limit: number) => Promise<Array<{
-					payloadText: string;
-					contentType: string;
-				}>>;
+				limit: (limit: number) => Promise<
+					Array<{
+						payloadText: string;
+						contentType: string;
+					}>
+				>;
 			};
 		};
 	};
@@ -55,7 +57,9 @@ type BrowserArtifactBlobPayloadStore = {
 		payloadBase64: string;
 		contentType: string;
 	}): Promise<void>;
-	getBlobPayload(storageRef: string): Promise<WorkflowBrowserBlobPayload | null>;
+	getBlobPayload(
+		storageRef: string,
+	): Promise<WorkflowBrowserBlobPayload | null>;
 };
 
 const BROWSER_ARTIFACT_BLOB_PREFIX = "workflow-browser-artifacts";
@@ -74,15 +78,21 @@ const WORKFLOW_BROWSER_ARTIFACT_COLUMNS = `
 	updated_at
 `;
 
-function browserArtifactContentType(asset: WorkflowBrowserArtifactAssetInput): string {
+function browserArtifactContentType(
+	asset: WorkflowBrowserArtifactAssetInput,
+): string {
 	if (asset.contentType?.trim()) return asset.contentType.trim();
 	if (asset.kind === "trace") return "application/zip";
-	if (asset.kind === "video" || asset.kind === "video-annotated") return "video/webm";
+	if (asset.kind === "video" || asset.kind === "video-annotated")
+		return "video/webm";
 	if (asset.kind === "caption") return "text/vtt";
 	return "image/png";
 }
 
-function browserArtifactExtension(contentType: string, fileName?: string): string {
+function browserArtifactExtension(
+	contentType: string,
+	fileName?: string,
+): string {
 	if (fileName && fileName.includes(".")) {
 		const ext = fileName.split(".").pop()?.trim().toLowerCase();
 		if (ext && /^[a-z0-9]{1,8}$/.test(ext)) return ext;
@@ -103,7 +113,10 @@ function browserArtifactStorageRef(input: {
 	contentType: string;
 	fileName?: string;
 }): string {
-	const safeExecution = input.workflowExecutionId.replace(/[^a-zA-Z0-9._-]/g, "-");
+	const safeExecution = input.workflowExecutionId.replace(
+		/[^a-zA-Z0-9._-]/g,
+		"-",
+	);
 	const ext = browserArtifactExtension(input.contentType, input.fileName);
 	return `${BROWSER_ARTIFACT_BLOB_PREFIX}/${safeExecution}/${input.artifactId}/${input.kind}-${input.index + 1}.${ext}`;
 }
@@ -131,7 +144,10 @@ function browserArtifactStep(
 	index: number,
 ): BrowserArtifactManifestStep {
 	return {
-		id: typeof input.id === "string" && input.id.trim() ? input.id.trim() : `step-${index + 1}`,
+		id:
+			typeof input.id === "string" && input.id.trim()
+				? input.id.trim()
+				: `step-${index + 1}`,
 		label:
 			typeof input.label === "string" && input.label.trim()
 				? input.label.trim()
@@ -146,7 +162,8 @@ function browserArtifactStep(
 		...(typeof input.title === "string" && input.title.trim()
 			? { title: input.title.trim() }
 			: {}),
-		...(typeof input.waitForSelector === "string" && input.waitForSelector.trim()
+		...(typeof input.waitForSelector === "string" &&
+		input.waitForSelector.trim()
 			? { waitForSelector: input.waitForSelector.trim() }
 			: {}),
 		...(typeof input.waitForText === "string" && input.waitForText.trim()
@@ -158,14 +175,16 @@ function browserArtifactStep(
 		...(typeof input.pauseMs === "number" && Number.isFinite(input.pauseMs)
 			? { pauseMs: input.pauseMs }
 			: {}),
-		...(typeof input.successCriteria === "string" && input.successCriteria.trim()
+		...(typeof input.successCriteria === "string" &&
+		input.successCriteria.trim()
 			? { successCriteria: input.successCriteria.trim() }
 			: {}),
 		...(typeof input.capturedAt === "string" && input.capturedAt.trim()
 			? { capturedAt: input.capturedAt.trim() }
 			: {}),
 		status: input.status === "failed" ? "failed" : "completed",
-		...(typeof input.screenshotStorageRef === "string" && input.screenshotStorageRef.trim()
+		...(typeof input.screenshotStorageRef === "string" &&
+		input.screenshotStorageRef.trim()
 			? { screenshotStorageRef: input.screenshotStorageRef.trim() }
 			: {}),
 		...(typeof input.error === "string" && input.error.trim()
@@ -174,7 +193,9 @@ function browserArtifactStep(
 	};
 }
 
-function rowToBrowserArtifact(row: readonly unknown[]): WorkflowBrowserArtifactRecord {
+function rowToBrowserArtifact(
+	row: readonly unknown[],
+): WorkflowBrowserArtifactRecord {
 	return {
 		id: stringValue(row[0]),
 		workflowExecutionId: stringValue(row[1]),
@@ -190,9 +211,7 @@ function rowToBrowserArtifact(row: readonly unknown[]): WorkflowBrowserArtifactR
 	};
 }
 
-export class PostgresWorkflowBrowserArtifactBlobPayloadStore
-	implements BrowserArtifactBlobPayloadStore
-{
+export class PostgresWorkflowBrowserArtifactBlobPayloadStore implements BrowserArtifactBlobPayloadStore {
 	constructor(private readonly database: BrowserArtifactBlobDatabase) {}
 
 	async upsertBlobPayload(input: {
@@ -216,7 +235,9 @@ export class PostgresWorkflowBrowserArtifactBlobPayloadStore
 			});
 	}
 
-	async getBlobPayload(storageRef: string): Promise<WorkflowBrowserBlobPayload | null> {
+	async getBlobPayload(
+		storageRef: string,
+	): Promise<WorkflowBrowserBlobPayload | null> {
 		const [row] = await this.database
 			.select()
 			.from(workflowBrowserArtifactBlobPayloads)
@@ -228,18 +249,20 @@ export class PostgresWorkflowBrowserArtifactBlobPayloadStore
 	}
 }
 
-export class DaprPostgresWorkflowBrowserArtifactStore
-	implements WorkflowBrowserArtifactStore
-{
+export class DaprPostgresWorkflowBrowserArtifactStore implements WorkflowBrowserArtifactStore {
 	constructor(
 		private readonly blobPayloads: BrowserArtifactBlobPayloadStore,
 		private readonly client: BindingClient = new DaprPostgresBindingClient(),
 	) {}
 
-	async save(input: SaveWorkflowBrowserArtifactInput): Promise<WorkflowBrowserArtifactRecord> {
+	async save(
+		input: SaveWorkflowBrowserArtifactInput,
+	): Promise<WorkflowBrowserArtifactRecord> {
 		const artifactId = `bwf_${nanoid(12)}`;
 		const now = new Date().toISOString();
-		const steps = input.steps.map((step, index) => browserArtifactStep(step, index));
+		const steps = input.steps.map((step, index) =>
+			browserArtifactStep(step, index),
+		);
 		const manifest: Record<string, unknown> = {
 			baseUrl: input.baseUrl,
 			startedAt: now,
@@ -302,7 +325,7 @@ export class DaprPostgresWorkflowBrowserArtifactStore
 			input.status,
 			jsonParam(manifest),
 		];
-		const result = await this.client.query({
+		await this.client.exec({
 			summary: "workflow_browser_artifacts.insert",
 			collection: "workflow_browser_artifacts",
 			sql: `
@@ -321,13 +344,9 @@ export class DaprPostgresWorkflowBrowserArtifactStore
 					$1, $2, $3, $4, $5, $6, $7, $8,
 					CAST($9 AS jsonb)
 				)
-				RETURNING ${WORKFLOW_BROWSER_ARTIFACT_COLUMNS}
 			`,
 			params,
-			spanParams: [
-				...params.slice(0, 8),
-				manifest,
-			],
+			spanParams: [...params.slice(0, 8), manifest],
 			paramNames: [
 				"id",
 				"workflow_execution_id",
@@ -339,6 +358,18 @@ export class DaprPostgresWorkflowBrowserArtifactStore
 				"status",
 				"manifest_json",
 			],
+		});
+		const result = await this.client.query({
+			summary: "workflow_browser_artifacts.select_by_id",
+			collection: "workflow_browser_artifacts",
+			sql: `
+				SELECT ${WORKFLOW_BROWSER_ARTIFACT_COLUMNS}
+				FROM workflow_browser_artifacts
+				WHERE id = $1
+				LIMIT 1
+			`,
+			params: [artifactId],
+			paramNames: ["id"],
 		});
 		const row = result.rows[0];
 		if (!row) throw new Error("Failed to save workflow browser artifact");
@@ -363,7 +394,9 @@ export class DaprPostgresWorkflowBrowserArtifactStore
 		return result.rows.map(rowToBrowserArtifact);
 	}
 
-	getBlobPayload(storageRef: string): Promise<WorkflowBrowserBlobPayload | null> {
+	getBlobPayload(
+		storageRef: string,
+	): Promise<WorkflowBrowserBlobPayload | null> {
 		return this.blobPayloads.getBlobPayload(storageRef);
 	}
 }

@@ -14,6 +14,21 @@ class FakeBindingClient {
 	calls: DaprPostgresBindingCall[] = [];
 	queryRows = new Map<string, unknown[][]>();
 	queryErrors = new Map<string, Error[]>();
+	execErrors = new Map<string, Error[]>();
+
+	async exec(
+		input: Omit<DaprPostgresBindingCall, "operation">,
+	): Promise<DaprPostgresBindingResult> {
+		this.calls.push({ ...input, operation: "exec" });
+		const errors = this.execErrors.get(input.summary ?? "");
+		const error = errors?.shift();
+		if (error) throw error;
+		return {
+			metadata: {},
+			rows: [],
+			rowsAffected: null,
+		};
+	}
 
 	async query(
 		input: Omit<DaprPostgresBindingCall, "operation">,
@@ -143,7 +158,7 @@ describe("DaprPostgresSessionEventLog", () => {
 		const client = new FakeBindingClient();
 		const fallback = fakeFallback();
 		const postAppendHook = vi.fn(async () => {});
-		client.queryRows.set("session_events.insert", [
+		client.queryRows.set("session_events.select_by_id", [
 			eventRow({
 				id: "evt-appended",
 				sessionId: "session-1",
@@ -173,7 +188,7 @@ describe("DaprPostgresSessionEventLog", () => {
 		});
 		expect(fallback.appendSessionEvent).not.toHaveBeenCalled();
 		expect(client.calls[0]).toMatchObject({
-			operation: "query",
+			operation: "exec",
 			summary: "session_events.insert",
 			collection: "session_events",
 			params: [
@@ -207,12 +222,22 @@ describe("DaprPostgresSessionEventLog", () => {
 				"producer_epoch",
 			],
 		});
-		expect(client.calls[0]?.sql).toContain("id,");
 		expect(client.calls[0]?.sql).toContain("pg_advisory_xact_lock");
-		expect(client.calls[0]?.sql).toContain("RETURNING");
-		expect(postAppendHook).toHaveBeenCalledWith("session-1", "agent.llm_usage", {
-			input_tokens: 10,
+		expect(client.calls[0]?.sql).not.toContain("RETURNING");
+		expect(client.calls[1]).toMatchObject({
+			operation: "query",
+			summary: "session_events.select_by_id",
+			collection: "session_events",
+			params: ["session-1", expect.any(String)],
+			paramNames: ["session_id", "id"],
 		});
+		expect(postAppendHook).toHaveBeenCalledWith(
+			"session-1",
+			"agent.llm_usage",
+			{
+				input_tokens: 10,
+			},
+		);
 	});
 
 	it("returns an existing source event when a duplicate append races", async () => {
@@ -220,7 +245,7 @@ describe("DaprPostgresSessionEventLog", () => {
 		const duplicate = new Error(
 			'23505 duplicate key value violates unique constraint "uq_session_events_source"',
 		);
-		client.queryErrors.set("session_events.insert", [duplicate]);
+		client.execErrors.set("session_events.insert", [duplicate]);
 		client.queryRows.set("session_events.select_by_source_event", [
 			eventRow({
 				id: "evt-existing",

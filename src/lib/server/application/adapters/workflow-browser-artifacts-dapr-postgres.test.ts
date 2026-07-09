@@ -9,26 +9,42 @@ import type { WorkflowBrowserBlobPayload } from "$lib/server/application/ports/w
 class FakeBindingClient {
 	calls: DaprPostgresBindingCall[] = [];
 	queryRows = new Map<string, unknown[][]>();
+	insertParams: unknown[] | null = null;
+
+	async exec(
+		input: Omit<DaprPostgresBindingCall, "operation">,
+	): Promise<DaprPostgresBindingResult> {
+		this.calls.push({ ...input, operation: "exec" });
+		if (input.summary === "workflow_browser_artifacts.insert") {
+			this.insertParams = input.params ?? [];
+		}
+		return {
+			metadata: {},
+			rows: [],
+			rowsAffected: null,
+		};
+	}
 
 	async query(
 		input: Omit<DaprPostgresBindingCall, "operation">,
 	): Promise<DaprPostgresBindingResult> {
 		this.calls.push({ ...input, operation: "query" });
-		if (input.summary === "workflow_browser_artifacts.insert") {
-			const manifest = JSON.parse(String(input.params?.[8] ?? "{}"));
+		if (input.summary === "workflow_browser_artifacts.select_by_id") {
+			const insertParams = this.insertParams ?? [];
+			const manifest = JSON.parse(String(insertParams[8] ?? "{}"));
 			return {
 				metadata: {},
 				rowsAffected: null,
 				rows: [
 					[
-						input.params?.[0],
-						input.params?.[1],
-						input.params?.[2],
-						input.params?.[3],
-						input.params?.[4],
-						input.params?.[5],
-						input.params?.[6],
-						input.params?.[7],
+						insertParams[0],
+						insertParams[1],
+						insertParams[2],
+						insertParams[3],
+						insertParams[4],
+						insertParams[5],
+						insertParams[6],
+						insertParams[7],
 						JSON.stringify(manifest),
 						"2026-07-09T12:00:00.000Z",
 						"2026-07-09T12:00:01.000Z",
@@ -60,7 +76,9 @@ class FakeBlobPayloads {
 		this.upserts.push(input);
 	}
 
-	async getBlobPayload(storageRef: string): Promise<WorkflowBrowserBlobPayload | null> {
+	async getBlobPayload(
+		storageRef: string,
+	): Promise<WorkflowBrowserBlobPayload | null> {
 		return this.payloads.get(storageRef) ?? null;
 	}
 }
@@ -140,7 +158,7 @@ describe("DaprPostgresWorkflowBrowserArtifactStore", () => {
 		);
 
 		expect(client.calls[0]).toMatchObject({
-			operation: "query",
+			operation: "exec",
 			summary: "workflow_browser_artifacts.insert",
 			collection: "workflow_browser_artifacts",
 			paramNames: [
@@ -156,10 +174,17 @@ describe("DaprPostgresWorkflowBrowserArtifactStore", () => {
 			],
 		});
 		expect(client.calls[0]?.sql).toContain("CAST($9 AS jsonb)");
-		expect(client.calls[0]?.sql).toContain("RETURNING");
+		expect(client.calls[0]?.sql).not.toContain("RETURNING");
 		expect(client.calls[0]?.spanParams?.[8]).toMatchObject({
 			baseUrl: "https://example.test",
 			status: "completed",
+		});
+		expect(client.calls[1]).toMatchObject({
+			operation: "query",
+			summary: "workflow_browser_artifacts.select_by_id",
+			collection: "workflow_browser_artifacts",
+			params: [record.id],
+			paramNames: ["id"],
 		});
 	});
 
@@ -192,8 +217,12 @@ describe("DaprPostgresWorkflowBrowserArtifactStore", () => {
 			status: "partial",
 			manifestJson: { steps: [] },
 		});
-		expect(records[0]?.createdAt.toISOString()).toBe("2026-07-09T12:00:00.000Z");
-		expect(records[0]?.updatedAt.toISOString()).toBe("2026-07-09T12:01:00.000Z");
+		expect(records[0]?.createdAt.toISOString()).toBe(
+			"2026-07-09T12:00:00.000Z",
+		);
+		expect(records[0]?.updatedAt.toISOString()).toBe(
+			"2026-07-09T12:01:00.000Z",
+		);
 		expect(client.calls[0]).toMatchObject({
 			operation: "query",
 			summary: "workflow_browser_artifacts.select_by_execution",

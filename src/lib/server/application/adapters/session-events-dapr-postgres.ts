@@ -24,7 +24,7 @@ import {
 } from "$lib/server/sessions/event-envelope";
 import type { SessionEventEnvelope } from "$lib/types/sessions";
 
-type BindingClient = Pick<DaprPostgresBindingClient, "query">;
+type BindingClient = Pick<DaprPostgresBindingClient, "query" | "exec">;
 type PostgresSessionEventDatabase = ConstructorParameters<
 	typeof PostgresSessionEventLog
 >[0];
@@ -68,7 +68,9 @@ function isUniqueViolation(error: unknown): boolean {
 		cause?: unknown;
 		message?: string;
 	};
-	const cause = maybeError?.cause as { code?: string; message?: string } | undefined;
+	const cause = maybeError?.cause as
+		| { code?: string; message?: string }
+		| undefined;
 	const message = `${maybeError?.message ?? ""} ${cause?.message ?? ""}`;
 	return (
 		maybeError?.code === "23505" ||
@@ -95,7 +97,7 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 		const eventId = generateId();
 		for (let attempt = 0; attempt < 5; attempt += 1) {
 			try {
-				const result = await this.client.query({
+				await this.client.exec({
 					summary: "session_events.insert",
 					collection: "session_events",
 					sql: `
@@ -125,10 +127,9 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 						) AS lock,
 						LATERAL (
 							SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence
-							FROM session_events
-							WHERE session_id = $2
+						FROM session_events
+						WHERE session_id = $2
 						) AS next_sequence
-						RETURNING ${SESSION_EVENT_COLUMNS}
 					`,
 					params: [
 						eventId,
@@ -161,12 +162,16 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 						"producer_epoch",
 					],
 				});
-				const row = result.rows[0];
-				if (!row) {
-					throw new Error("Dapr PostgreSQL session event insert returned no row");
-				}
+				const inserted = await this.getSessionEvent({
+					sessionId,
+					eventId,
+				});
+				if (!inserted)
+					throw new Error(
+						"Dapr PostgreSQL session event insert was not persisted",
+					);
 				await this.postAppendHook(sessionId, event.type, cleanData);
-				return rowToEnvelope(rowToSessionEvent(row), { preview: false });
+				return inserted;
 			} catch (error) {
 				if (!isUniqueViolation(error)) throw error;
 				if (event.sourceEventId) {
@@ -200,7 +205,9 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 			paramNames: ["session_id", "id"],
 		});
 		const row = result.rows[0];
-		return row ? rowToEnvelope(rowToSessionEvent(row), { preview: false }) : null;
+		return row
+			? rowToEnvelope(rowToSessionEvent(row), { preview: false })
+			: null;
 	}
 
 	async listSessionEvents(
@@ -208,7 +215,9 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 		input: ListSessionEventsInput = {},
 	): Promise<SessionEventEnvelope[]> {
 		const limit =
-			typeof input.limit === "number" ? Math.max(1, Math.trunc(input.limit)) : null;
+			typeof input.limit === "number"
+				? Math.max(1, Math.trunc(input.limit))
+				: null;
 		const result = await this.client.query({
 			summary: "session_events.select_by_session",
 			collection: "session_events",
@@ -256,7 +265,9 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 			paramNames: ["session_id", "source_event_id"],
 		});
 		const row = result.rows[0];
-		return row ? rowToEnvelope(rowToSessionEvent(row), { preview: false }) : null;
+		return row
+			? rowToEnvelope(rowToSessionEvent(row), { preview: false })
+			: null;
 	}
 }
 
