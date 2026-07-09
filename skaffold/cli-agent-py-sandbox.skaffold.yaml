@@ -4,7 +4,7 @@ metadata:
   name: cli-agent-py-sandbox
 
 # The interactive-cli agent-host image (Claude Code / codex / agy native batch
-# runs, with the source-level TUI fallback disabled in the production image).
+# runs plus Herdr-backed persistent TUI sessions).
 # sandbox-execution-api launches it as the agentHostImage for the interactive-cli
 # execution classes. It is NOT a Deployment - outer-loop only.
 # `bash scripts/skaffold-deploy.sh cli-agent-py-sandbox` builds + pushes the prod

@@ -1,8 +1,9 @@
 # cli-agent-py sandbox image — host for the `interactive-cli` runtime family
 # (claude-code-cli, codex-cli, agy-cli): native one-shot CLI batch execution for
-# workflow runs, Dapr workflow lifecycle host + hooks receiver + optional WS
-# terminal on :8002. ONE image hosts all three CLIs; the BFF stamps
-# agentConfig.cliAdapter so the host selects claude / codex / antigravity.
+# workflow runs plus headless herdr + real CLI TUI for persistent interactive
+# sessions, Dapr workflow lifecycle host + hooks receiver + WS terminal on :8002.
+# ONE image hosts all three CLIs; the BFF stamps agentConfig.cliAdapter so the
+# host selects claude / codex / antigravity.
 # Modeled on services/claude-agent-py/Dockerfile.sandbox.
 ARG OPENSHELL_SANDBOX_IMAGE=ghcr.io/pittampalliorg/openshell-sandbox:git-c390487a6bbcdd1a69cc6d7eb331a4aadaa9692c
 # Exact pin (reproducible TUI behavior; DISABLE_AUTOUPDATER below). Bump
@@ -21,6 +22,14 @@ ARG AGY_URL_AMD64=https://github.com/google-antigravity/antigravity-cli/releases
 ARG AGY_SHA256_AMD64=8ffc887002920b1b4ab42f6213f50a21aa7bb4ee14caa0ed563129a2ce39135d
 ARG AGY_URL_ARM64=https://github.com/google-antigravity/antigravity-cli/releases/download/1.0.16/agy_cli_linux_arm64.tar.gz
 ARG AGY_SHA256_ARM64=a66ae3e75e024c03aa79d6618ef8199a0a71ae0f43b9e5ee9e930a589ba0ca2f
+# herdr release binary (AGPL-3.0 — see /usr/share/doc/herdr/LICENSE-note.txt).
+# Asset naming verified against the GitHub API on 2026-06-10:
+#   https://github.com/ogulcancelik/herdr/releases/download/v<ver>/herdr-linux-x86_64
+# HERDR_SHA256 is the GitHub release asset digest for v0.6.8 herdr-linux-x86_64;
+# update BOTH args together when bumping (x86_64 only — aarch64 needs its own pair).
+ARG HERDR_VERSION=0.6.8
+ARG HERDR_SHA256=528d22e889814a6ccf22162801d59690d9dbd5dc64f96d7e1d1c7a8634b25535
+ARG HERDR_DOWNLOAD_URL=https://github.com/ogulcancelik/herdr/releases/download/v${HERDR_VERSION}/herdr-linux-x86_64
 FROM ghcr.io/astral-sh/uv:0.9.17 AS uv-bin
 
 FROM node:22-bookworm-slim AS node-bin
@@ -89,6 +98,15 @@ RUN set -eu; \
     rm -rf /tmp/agy.tar.gz /tmp/antigravity; \
     /usr/local/bin/agy --version
 
+# herdr: pinned release binary, sha256-verified, plus the AGPL-3.0 notice.
+ARG HERDR_VERSION
+ARG HERDR_SHA256
+ARG HERDR_DOWNLOAD_URL
+RUN curl -fsSL -o /usr/local/bin/herdr "${HERDR_DOWNLOAD_URL}" \
+    && echo "${HERDR_SHA256}  /usr/local/bin/herdr" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/herdr
+COPY docker/herdr-LICENSE-note.txt /usr/share/doc/herdr/LICENSE-note.txt
+
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --python /usr/bin/python3 --no-python-downloads --frozen --no-dev
@@ -106,7 +124,15 @@ RUN /usr/sbin/groupadd --gid 10001 cli-agent \
     && /usr/sbin/useradd --create-home --uid 10001 --gid 10001 --shell /bin/bash cli-agent \
     && mkdir -p /sandbox/run /sandbox/.claude /sandbox/.wfb \
         /sandbox/.codex /sandbox/.gemini/config /sandbox/.gemini/antigravity-cli \
+        /home/cli-agent/.config/herdr \
     && chown -R cli-agent:cli-agent /app /sandbox /home/cli-agent
+
+# Canonical config lives under /etc (HERDR_CONFIG_PATH) — the pod mounts an
+# emptyDir over ${XDG_CONFIG_HOME} (sandbox-execution-api `openshell-config`
+# volume at the agentHostUserHome config dir), which would shadow any config
+# baked into the home. herdr's runtime files (logs/session.json/socket dir
+# metadata) still land under ${XDG_CONFIG_HOME}/herdr inside the emptyDir.
+COPY --chown=cli-agent:cli-agent docker/herdr-config.toml /etc/herdr/config.toml
 
 ENV AGENT_SANDBOX_MODE=hybrid \
     AGENT_LOCAL_SANDBOX_ROOT=/sandbox \
@@ -118,7 +144,8 @@ ENV AGENT_SANDBOX_MODE=hybrid \
     CLI_AGENT_AGY_HOME=/sandbox \
     CODEX_HOME=/sandbox/.codex \
     DISABLE_AUTOUPDATER=1 \
-    HERDR_DISABLE=1 \
+    HERDR_SOCKET_PATH=/sandbox/run/herdr.sock \
+    HERDR_CONFIG_PATH=/etc/herdr/config.toml \
     CLAUDE_CONFIG_DIR=/sandbox/.claude \
     VIRTUAL_ENV=/app/.venv \
     HOME=/home/cli-agent \
