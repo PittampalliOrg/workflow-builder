@@ -18,6 +18,8 @@ export const POST: RequestHandler = async () => {
 	return json({ ok: true, ...result });
 };
 
-// Dapr's cron binding health-probes the endpoint with OPTIONS/GET on some
-// versions; accept a GET no-op so the binding registers cleanly.
+// Dapr confirms an input-binding subscription by probing OPTIONS /<name> and
+// requires a 2xx; without this SvelteKit returns 405 and Dapr never delivers the
+// cron events. Also accept GET as a no-op health probe.
+export const OPTIONS: RequestHandler = async () => new Response(null, { status: 200 });
 export const GET: RequestHandler = async () => json({ ok: true, nudged: 0 });

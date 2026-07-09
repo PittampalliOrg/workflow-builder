@@ -102,11 +102,14 @@ export async function runTeamDriverTick(
 	let nudged = 0;
 	for (const m of idle) {
 		if (m.role === "lead") continue;
+		// Only nudge when the member's team actually has claimable work — same
+		// loop-guard as the reactive path.
+		if ((await countClaimableTasks(db, m.team_id)) === 0) continue;
 		await injectTeamMessage({
 			recipientSessionId: m.session_id,
 			fromName: "team",
 			content:
-				"Lost-idle check: call claim_task to take the next unblocked task, or await a message.",
+				"Lost-idle check: call claim_task to take the next unblocked task.",
 			kind: "team-idle",
 			sourceEventId: `team-tick:${m.session_id}:${m.updated_at}`,
 		});
