@@ -262,7 +262,7 @@
             "prompt": "${ \"Task:\\n\" + (.trigger.intent // \"make the requested change\") + \"\\n\\nScope hint: \" + (.trigger.taskScope // \"\") + \"\\n\\nTarget repo: https://github.com/\" + (.trigger.repoUrl // \"jonschlinkert/is-number\") + \" (branch \" + (.trigger.repoRef // \"master\") + \")\" + \"\\nThe repo is ALREADY cloned at /sandbox/work/repo. READ it (entry points, package manifest, existing tests) and write a HIGH-LEVEL spec to /sandbox/work/SPEC.md (product/task context + the quality dimensions relevant to this task). Do NOT enumerate granular acceptance criteria (those are negotiated next). Do NOT edit the repo. End with a one-line summary.\" }",
             "overrides": {
               "cwd": "/sandbox/work",
-              "maxTurns": 25,
+              "maxTurns": 70,
               "timeoutMinutes": 60
             }
           }
@@ -275,9 +275,9 @@
         "with": {
           "cliWorkspace": true,
           "cwd": "/sandbox/work",
-          "command": "${ \"export WFB_EVAL_PROFILE=\" + ((.trigger.evaluationProfile // \"ui-web\") | @sh) + \"; export WFB_REPO=\" + ((.trigger.repoUrl // \"PittampalliOrg/sveltekit-landing-demo\") | @sh) + \"; export WFB_BASE=\" + ((.trigger.repoRef // \"main\") | @sh) + \"; export WFB_OUT=\" + ((.trigger.outputMode // \"pr\") | @sh) + \"; export WFB_INTENT=\" + ((.trigger.intent // \"automated change\") | @sh) + \"; export WFB_BUILD_OVERRIDE=\" + ((.trigger.buildCommand // \"\") | @sh) + \"; export WFB_INSTALL_OVERRIDE=\" + ((.trigger.installCommand // \"\") | @sh) + \"; export WFB_PREVIEW_OVERRIDE=\" + ((.trigger.previewCommand // \"\") | @sh) + \"; \" + \"WFB_INSTALL=\\\"$WFB_INSTALL_OVERRIDE\\\"; WFB_BUILD=\\\"$WFB_BUILD_OVERRIDE\\\"; WFB_PREVIEW=\\\"$WFB_PREVIEW_OVERRIDE\\\"\\ncd /sandbox/work/repo 2>/dev/null || true\\n# W1: build in a LOCAL copy \u2014 JuiceFS small-file I/O makes npm install ~11min vs ~4s on local.\\n# Source-of-truth stays on /sandbox/work/repo (agent edits + diff + Files tab); node_modules/build never touch JuiceFS.\\nWFB_WORKREPO=/sandbox/work/repo; WFB_BUILDREPO=/sandbox/scratch/repo\\nmkdir -p $WFB_BUILDREPO /sandbox/scratch/.npm\\nexport npm_config_cache=/sandbox/scratch/.npm; export TMPDIR=/sandbox/scratch/tmp\\ntar -C $WFB_WORKREPO --exclude=node_modules --exclude=.svelte-kit --exclude=build --exclude=.git -cf - . 2>/dev/null | tar -C $WFB_BUILDREPO -xf - 2>/dev/null || true\\ncd $WFB_BUILDREPO 2>/dev/null || true\\nif [ -z \\\"$WFB_INSTALL\\\" ] || [ \\\"$WFB_INSTALL\\\" = auto ]; then\\n  if [ -f pnpm-lock.yaml ]; then WFB_INSTALL='pnpm install --frozen-lockfile';\\n  elif [ -f package.json ]; then WFB_INSTALL='npm install --no-audit --no-fund';\\n  elif [ -f Cargo.toml ]; then WFB_INSTALL='cargo fetch';\\n  elif [ -f requirements.txt ]; then WFB_INSTALL='pip install -r requirements.txt';\\n  else WFB_INSTALL='true'; fi\\nfi\\nif [ -z \\\"$WFB_BUILD\\\" ] || [ \\\"$WFB_BUILD\\\" = auto ]; then\\n  if [ -f pnpm-lock.yaml ]; then WFB_BUILD='pnpm build';\\n  elif [ -f package.json ]; then WFB_BUILD='npm run build';\\n  elif [ -f Cargo.toml ]; then WFB_BUILD='cargo build --release';\\n  elif [ -f Makefile ] && grep -q '^build:' Makefile; then WFB_BUILD='make build';\\n  else WFB_BUILD='echo no-build-step'; fi\\nfi\\nif [ -z \\\"$WFB_PREVIEW\\\" ] || [ \\\"$WFB_PREVIEW\\\" = auto ]; then\\n  if [ -f package.json ]; then WFB_PREVIEW='npm run preview -- --host 127.0.0.1';\\n  else WFB_PREVIEW='true'; fi\\nfi\\nsh -c \\\"$WFB_INSTALL\\\" >/tmp/install.log 2>&1 || true\\nprintf '%s' \\\"$WFB_EVAL_PROFILE\\\" > /sandbox/work/.wfb_profile\\nprintf '%s' \\\"$WFB_REPO\\\" > /sandbox/work/.wfb_repo\\nprintf '%s' \\\"$WFB_BASE\\\" > /sandbox/work/.wfb_base\\nprintf '%s' \\\"$WFB_OUT\\\" > /sandbox/work/.wfb_out\\nprintf '%s' \\\"$WFB_INTENT\\\" > /sandbox/work/.wfb_intent\\nBASE=$(git rev-parse HEAD 2>/dev/null || echo unknown); printf '{\\\"baseline\\\":\\\"%s\\\",\\\"log\\\":[]}' \\\"$BASE\\\" > /sandbox/work/progress.json; cat /sandbox/work/progress.json\" }",
+          "command": "${ \"export WFB_EVAL_PROFILE=\" + ((.trigger.evaluationProfile // \"ui-web\") | @sh) + \"; export WFB_REPO=\" + ((.trigger.repoUrl // \"PittampalliOrg/sveltekit-landing-demo\") | @sh) + \"; export WFB_BASE=\" + ((.trigger.repoRef // \"main\") | @sh) + \"; export WFB_OUT=\" + ((.trigger.outputMode // \"pr\") | @sh) + \"; export WFB_INTENT=\" + ((.trigger.intent // \"automated change\") | @sh) + \"; export WFB_BUILD_OVERRIDE=\" + ((.trigger.buildCommand // \"\") | @sh) + \"; export WFB_INSTALL_OVERRIDE=\" + ((.trigger.installCommand // \"\") | @sh) + \"; export WFB_PREVIEW_OVERRIDE=\" + ((.trigger.previewCommand // \"\") | @sh) + \"; \" + \"test -s /sandbox/work/SPEC.md || { echo FATAL: SPEC.md missing or empty after plan - planner likely hit its iteration cap >&2; exit 78; }; WFB_INSTALL=\\\"$WFB_INSTALL_OVERRIDE\\\"; WFB_BUILD=\\\"$WFB_BUILD_OVERRIDE\\\"; WFB_PREVIEW=\\\"$WFB_PREVIEW_OVERRIDE\\\"\\ncd /sandbox/work/repo 2>/dev/null || true\\n# W1: build in a LOCAL copy \u2014 JuiceFS small-file I/O makes npm install ~11min vs ~4s on local.\\n# Source-of-truth stays on /sandbox/work/repo (agent edits + diff + Files tab); node_modules/build never touch JuiceFS.\\nWFB_WORKREPO=/sandbox/work/repo; WFB_BUILDREPO=/sandbox/scratch/repo\\nmkdir -p $WFB_BUILDREPO /sandbox/scratch/.npm\\nexport npm_config_cache=/sandbox/scratch/.npm; export TMPDIR=/sandbox/scratch/tmp\\ntar -C $WFB_WORKREPO --exclude=node_modules --exclude=.svelte-kit --exclude=build --exclude=.git -cf - . 2>/dev/null | tar -C $WFB_BUILDREPO -xf - 2>/dev/null || true\\ncd $WFB_BUILDREPO 2>/dev/null || true\\nif [ -z \\\"$WFB_INSTALL\\\" ] || [ \\\"$WFB_INSTALL\\\" = auto ]; then\\n  if [ -f pnpm-lock.yaml ]; then WFB_INSTALL='pnpm install --frozen-lockfile';\\n  elif [ -f package.json ]; then WFB_INSTALL='npm install --no-audit --no-fund';\\n  elif [ -f Cargo.toml ]; then WFB_INSTALL='cargo fetch';\\n  elif [ -f requirements.txt ]; then WFB_INSTALL='pip install -r requirements.txt';\\n  else WFB_INSTALL='true'; fi\\nfi\\nif [ -z \\\"$WFB_BUILD\\\" ] || [ \\\"$WFB_BUILD\\\" = auto ]; then\\n  if [ -f pnpm-lock.yaml ]; then WFB_BUILD='pnpm build';\\n  elif [ -f package.json ]; then WFB_BUILD='npm run build';\\n  elif [ -f Cargo.toml ]; then WFB_BUILD='cargo build --release';\\n  elif [ -f Makefile ] && grep -q '^build:' Makefile; then WFB_BUILD='make build';\\n  else WFB_BUILD='echo no-build-step'; fi\\nfi\\nif [ -z \\\"$WFB_PREVIEW\\\" ] || [ \\\"$WFB_PREVIEW\\\" = auto ]; then\\n  if [ -f package.json ]; then WFB_PREVIEW='npm run preview -- --host 127.0.0.1';\\n  else WFB_PREVIEW='true'; fi\\nfi\\nsh -c \\\"$WFB_INSTALL\\\" >/tmp/install.log 2>&1 || true\\nprintf '%s' \\\"$WFB_EVAL_PROFILE\\\" > /sandbox/work/.wfb_profile\\nprintf '%s' \\\"$WFB_REPO\\\" > /sandbox/work/.wfb_repo\\nprintf '%s' \\\"$WFB_BASE\\\" > /sandbox/work/.wfb_base\\nprintf '%s' \\\"$WFB_OUT\\\" > /sandbox/work/.wfb_out\\nprintf '%s' \\\"$WFB_INTENT\\\" > /sandbox/work/.wfb_intent\\nBASE=$(git rev-parse HEAD 2>/dev/null || echo unknown); printf '{\\\"baseline\\\":\\\"%s\\\",\\\"log\\\":[]}' \\\"$BASE\\\" > /sandbox/work/progress.json; cat /sandbox/work/progress.json\" }",
           "timeoutMs": 900000,
-          "allowFailure": true
+          "allowFailure": false
         }
       }
     },
@@ -329,7 +329,7 @@
                   "prompt": "${ \"Two-pass design (proposal). Intent: \" + (.trigger.intent // \"redesign the landing page\") + \"\n\nRead /sandbox/work/SPEC.md and, if present, /sandbox/work/design-review.json (prior objections). Write/revise /sandbox/work/design-tokens.json (4-6 named hex + display/body type + spacing + one bold motif) and /sandbox/work/wireframe.txt (ASCII layout). No code.\" }",
                   "overrides": {
                     "cwd": "/sandbox/work",
-                    "maxTurns": 15,
+                    "maxTurns": 30,
                     "timeoutMinutes": 45
                   }
                 }
@@ -354,7 +354,7 @@
                   "prompt": "${ \"Review the DESIGN PLAN (no code yet). Read /sandbox/work/SPEC.md, design-tokens.json, wireframe.txt. Write /sandbox/work/design-review.json {approved, feedback}. Reject generic/AI-slop direction; approve only a distinctive, coherent one.\" }",
                   "overrides": {
                     "cwd": "/sandbox/work",
-                    "maxTurns": 12,
+                    "maxTurns": 25,
                     "timeoutMinutes": 30
                   }
                 }
@@ -407,7 +407,7 @@
                   "prompt": "${ \"Contract negotiation (proposal). Intent: \" + (.trigger.intent // \"make the requested change\") + \"\\nScope: \" + (.trigger.taskScope // \"\") + \"\\nEvaluation profile: \" + (.trigger.evaluationProfile // \"ui-web\") + \"\\n\\nThe code under test is in /sandbox/work/repo \u2014 inspect source files THERE (e.g. /sandbox/work/repo/index.js, /sandbox/work/repo/test.js, /sandbox/work/repo/package.json), NOT at the /sandbox/work root. Read /sandbox/work/SPEC.md and, if it exists, /sandbox/work/contract-review.md (prior objections). Keep tool use MINIMAL \u2014 read what you need, do not exhaustively execute the code. Write/revise /sandbox/work/proposal.md with discrete changes, each with an acceptance criterion that is \" + (if (.trigger.evaluationProfile // \"ui-web\") == \"ui-web\" then \"BROWSER-verifiable (what a design reviewer sees and clicks on the rendered page)\" else \"COMMAND/TEST-verifiable \u2014 name the EXACT shell/test command or function-call assertion that proves it (e.g. `npm test` passes, `python -m pytest -q` passes, import the module and assert f(x)==expected, or curl an endpoint and assert the status). NO browser checks.\" end) + \". CRITERIA RULE: every acceptance criterion must state OBSERVABLE BEHAVIOR (what becomes true or visible to a user), NOT a code prescription \u2014 never say add this exact line/function to a specific file; the Generator chooses the implementation.\" }",
                   "overrides": {
                     "cwd": "/sandbox/work",
-                    "maxTurns": 20,
+                    "maxTurns": 40,
                     "timeoutMinutes": 60
                   }
                 }
@@ -432,7 +432,7 @@
                   "prompt": "${ \"Negotiate the acceptance contract for the '\" + (.trigger.evaluationProfile // \"ui-web\") + \"' profile. The code under test is in /sandbox/work/repo \u2014 inspect source files THERE (e.g. /sandbox/work/repo/index.js, /sandbox/work/repo/test.js), NOT at the /sandbox/work root. Read /sandbox/work/SPEC.md and /sandbox/work/proposal.md, write your objections to /sandbox/work/contract-review.md, and write/update /sandbox/work/contract.json (agreed + criteria, each kind/dimension/verify, passes:false) as STRICT JSON per your instructions. Each criterion must be \" + (if (.trigger.evaluationProfile // \"ui-web\") == \"ui-web\" then \"BROWSER-verifiable (what a design reviewer sees and clicks on the rendered page)\" else \"COMMAND/TEST-verifiable \u2014 name the EXACT shell/test command or function-call assertion that proves it (e.g. `npm test` passes, `python -m pytest -q` passes, import the module and assert f(x)==expected, or curl an endpoint and assert the status). NO browser checks.\" end) + \" Be decisive and EFFICIENT: judge criteria by READING the source + proposal \u2014 do NOT execute the code to verify. Use at most a few tool calls, then write the two files and STOP. Set agreed:true as soon as the criteria are specific and verifiable by the stated method; they need not be exhaustive.\" }",
                   "overrides": {
                     "cwd": "/sandbox/work",
-                    "maxTurns": 25,
+                    "maxTurns": 40,
                     "timeoutMinutes": 60
                   }
                 }
@@ -513,7 +513,7 @@
                   "prompt": "${ \"Task: \" + (.trigger.intent // \"make the requested change\") + \"\\nScope: \" + (.trigger.taskScope // \"\") + \"\\n\\nRepo: /sandbox/work/repo. Authoritative acceptance criteria: /sandbox/work/contract.json. Spec: /sandbox/work/SPEC.md. Memory: /sandbox/work/progress.json (read it + git log FIRST).\" + \"\\n\\nYour previous attempt:\\n\" + (.loop.last.generate.content // \"(first attempt)\") + \"\\n\\nBuild gate (must end OBJECTIVE PASS):\\n\" + ((.loop.last.gate.result.stdout // .loop.last.gate.stdout // .loop.last.gate.result.output // .loop.last.gate.output // \"\") // \"(not run yet)\") + \"\\n\\nEvaluator per-criterion feedback (from the browser):\\n\" + (try ((((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson?) // {}) | (.feedback // .summary // \"(none)\")) catch \"(none)\") + \"\\n\\nFailing criteria (fix each specifically):\\n\" + (try ((((.loop.last.read_verdict.result.stdout // .loop.last.read_verdict.stdout // .loop.last.read_verdict.result.output // .loop.last.read_verdict.output // \"{}\") | fromjson?) // {}) | (.failing // []) | map(\"- [\" + (.id|tostring) + \"] \" + (.description // \"\") + (if (.output // \"\") != \"\" then \" (observed: \" + .output + \")\" else \"\" end)) | join(\"\\n\")) catch \"\") + \"\\n\\nIMPORTANT: a fast deterministic gate installs + builds the project for you on local disk and reports OBJECTIVE PASS \\u2014 do NOT run ANY install/build/test command in /sandbox/work/repo - NO npm install, npm run build, npm run check, npm test, npx vitest, or tsc (/sandbox/work is a network filesystem where these are extremely slow, hit cross-user permission errors on node_modules, and will stall your turn; a fast deterministic gate already installs + builds + tests your changes in a LOCAL copy and reports OBJECTIVE PASS). Do NOT copy the repo elsewhere to build - just WRITE source files. ONLY edit source files to satisfy every FAILING contract criterion. CRITICAL: creating component or module files is NOT enough \\u2014 the app ENTRY POINT (e.g. src/routes/+page.svelte) MUST import and RENDER them so the running app actually shows your work; if the evaluator reports the app shows only the original scaffold or placeholder, your entry point is not wired \\u2014 fix the entry point FIRST. Then end with a brief summary.\" }",
                   "overrides": {
                     "cwd": "/sandbox/work/repo",
-                    "maxTurns": 50,
+                    "maxTurns": 90,
                     "timeoutMinutes": 120
                   }
                 }
@@ -550,7 +550,7 @@
                   "prompt": "${ \"Grade the redesigned app in /sandbox/work/repo against EACH criterion in /sandbox/work/contract.json by VIEWING + interacting with it in the browser (Playwright MCP), then WRITE /sandbox/work/verdict-0.json (per-criterion passes + allPass + meets_criteria + recommend_restart). Follow your instructions exactly.\" + \"\n\nPreview command for THIS run: \" + (.trigger.previewCommand // \"auto\") }",
                   "overrides": {
                     "cwd": "/sandbox/work/repo",
-                    "maxTurns": 35,
+                    "maxTurns": 55,
                     "timeoutMinutes": 60
                   }
                 }
@@ -576,7 +576,7 @@
                   "prompt": "${ \"Grade the artifact in /sandbox/work/repo against EACH criterion in /sandbox/work/contract.json by RUNNING it (tests / API / endpoints) per the '\" + (.trigger.evaluationProfile // \"library\") + \"' profile, then WRITE /sandbox/work/verdict-0.json (per-criterion passes + allPass + meets_criteria + recommend_restart). Follow your instructions exactly. Test command hint: \" + (.trigger.testCommand // \"auto\") }",
                   "overrides": {
                     "cwd": "/sandbox/work/repo",
-                    "maxTurns": 35,
+                    "maxTurns": 55,
                     "timeoutMinutes": 60
                   }
                 }
@@ -602,7 +602,7 @@
                   "prompt": "${ \"Grade the redesigned app in /sandbox/work/repo against EACH criterion in /sandbox/work/contract.json by VIEWING + interacting with it in the browser (Playwright MCP), then WRITE /sandbox/work/verdict-1.json (per-criterion passes + allPass + meets_criteria + recommend_restart). Follow your instructions exactly.\" + \"\n\nPreview command for THIS run: \" + (.trigger.previewCommand // \"auto\") }",
                   "overrides": {
                     "cwd": "/sandbox/work/repo",
-                    "maxTurns": 35,
+                    "maxTurns": 55,
                     "timeoutMinutes": 60
                   }
                 }
@@ -628,7 +628,7 @@
                   "prompt": "${ \"Grade the artifact in /sandbox/work/repo against EACH criterion in /sandbox/work/contract.json by RUNNING it (tests / API / endpoints) per the '\" + (.trigger.evaluationProfile // \"library\") + \"' profile, then WRITE /sandbox/work/verdict-1.json (per-criterion passes + allPass + meets_criteria + recommend_restart). Follow your instructions exactly. Test command hint: \" + (.trigger.testCommand // \"auto\") }",
                   "overrides": {
                     "cwd": "/sandbox/work/repo",
-                    "maxTurns": 35,
+                    "maxTurns": 55,
                     "timeoutMinutes": 60
                   }
                 }
