@@ -44,5 +44,15 @@ export async function injectTeamMessage(input: {
 		processedAt: null,
 		sourceEventId: input.sourceEventId,
 	});
-	await raiseSessionUserEvents(input.recipientSessionId, [userMessage]);
+	// Delivery into the live session is best-effort: the durable record is the
+	// appended event above. A recipient whose runtime is gone (terminated) must
+	// not fail the caller — the message is persisted and will be read on resume.
+	try {
+		await raiseSessionUserEvents(input.recipientSessionId, [userMessage]);
+	} catch (err) {
+		console.warn(
+			`[team] raise to ${input.recipientSessionId} failed (persisted anyway):`,
+			err instanceof Error ? err.message : err,
+		);
+	}
 }

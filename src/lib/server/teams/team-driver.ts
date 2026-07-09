@@ -42,9 +42,11 @@ export async function onTeamSessionEvent(
 		const member = await getMemberBySession(sessionId, db);
 		if (!member || member.role === "lead") return; // only teammates notify the lead
 
-		// Only an end_turn idle (the teammate finished its turn) is meaningful.
+		// Any idle means the teammate finished its turn and is now available/done —
+		// notify the lead regardless of the specific stop reason (end_turn,
+		// goal_stop, etc.). Unlike the goal loop (which only *continues* on
+		// end_turn), a team idle notice is informational.
 		const reason = (event.data?.stop_reason as { type?: string } | undefined)?.type;
-		if (reason && reason !== "end_turn") return;
 
 		await setMemberStatus(sessionId, "idle", db);
 
@@ -57,7 +59,7 @@ export async function onTeamSessionEvent(
 			await injectTeamMessage({
 				recipientSessionId: lead.session_id,
 				fromName: member.name,
-				content: `Teammate "${member.name}" is idle (finished its turn).`,
+				content: `Teammate "${member.name}" is idle${reason ? ` (${reason})` : ""}.`,
 				kind: "team-idle",
 				sourceEventId: `team-idle:${sessionId}:${member.updated_at}`,
 			});
