@@ -57,11 +57,11 @@ describe("getApplicationAdapters", () => {
 		expect(() =>
 			getApplicationAdapters(
 				getApplicationAdapterConfig({
-					WORKFLOW_ARTIFACTS_STORE_ADAPTER: "dapr-postgres-binding",
+					SESSION_EVENTS_STORE_ADAPTER: "dapr-postgres-binding",
 				}),
 			),
 		).toThrow(
-			"Dapr PostgreSQL binding adapters are not wired for: WORKFLOW_ARTIFACTS_STORE_ADAPTER",
+			"Dapr PostgreSQL binding adapters are not wired for: SESSION_EVENTS_STORE_ADAPTER",
 		);
 	});
 

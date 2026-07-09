@@ -2,7 +2,11 @@ import {
 	getApplicationAdapterConfig,
 	type ApplicationAdapterConfig,
 } from "$lib/server/application/config";
-import type { WorkflowExecutionRepository } from "$lib/server/application/ports";
+import type {
+	ArtifactStore,
+	WorkflowExecutionRepository,
+	WorkflowPlanArtifactStore,
+} from "$lib/server/application/ports";
 import {
 	PostgresArtifactStore,
 	PostgresAdminPieceRepository,
@@ -358,6 +362,10 @@ import { ApplicationPreviewRunFeedService } from "$lib/server/application/previe
 import { NatsPreviewRunFeed } from "$lib/server/application/adapters/nats-preview-run-feed";
 import { DaprPostgresScriptCallsStore } from "$lib/server/application/adapters/script-calls-dapr-postgres";
 import { DaprPostgresWorkflowExecutionRepository } from "$lib/server/application/adapters/workflow-executions-dapr-postgres";
+import {
+	DaprPostgresArtifactStore,
+	DaprPostgresWorkflowPlanArtifactStore,
+} from "$lib/server/application/adapters/workflow-artifacts-dapr-postgres";
 import { listVclusterPreviews } from "$lib/server/workflows/vcluster-preview";
 import { ApplicationPrPreviewService } from "$lib/server/application/pr-previews";
 import {
@@ -418,7 +426,6 @@ export function getApplicationAdapters(
 	// the workflowScheduler branch) and validated by getApplicationAdapterConfig;
 	// both families have a lite member, so no fixed-value guard here.
 	const stagedDaprAdapters = [
-		["WORKFLOW_ARTIFACTS_STORE_ADAPTER", config.workflowArtifactsStoreAdapter],
 		[
 			"WORKFLOW_BROWSER_ARTIFACTS_STORE_ADAPTER",
 			config.workflowBrowserArtifactsStoreAdapter,
@@ -500,10 +507,10 @@ export function getApplicationAdapters(
 	let workflowExecutions: WorkflowExecutionRepository | undefined;
 	let workflowFiles: PostgresWorkflowFileStore | undefined;
 	let sandboxInventory: PostgresSandboxInventoryRepository | undefined;
-	let artifactStore: PostgresArtifactStore | undefined;
+	let artifactStore: ArtifactStore | undefined;
 	let workspaceSessions: PostgresWorkspaceSessionStore | undefined;
 	let agentRuns: PostgresWorkflowAgentRunStore | undefined;
-	let planArtifacts: PostgresWorkflowPlanArtifactStore | undefined;
+	let planArtifacts: WorkflowPlanArtifactStore | undefined;
 	let traceLineage: PostgresTraceLineageStore | undefined;
 	let usageReporting: PostgresUsageReportingRepository | undefined;
 	let goalFlow: PostgresGoalFlowReadStore | undefined;
@@ -837,13 +844,19 @@ export function getApplicationAdapters(
 			getDatabase(),
 		));
 	const getArtifactStore = () =>
-		(artifactStore ??= new PostgresArtifactStore(getDatabase()));
+		(artifactStore ??=
+			config.workflowArtifactsStoreAdapter === "dapr-postgres-binding"
+				? new DaprPostgresArtifactStore()
+				: new PostgresArtifactStore(getDatabase()));
 	const getWorkspaceSessions = () =>
 		(workspaceSessions ??= new PostgresWorkspaceSessionStore(getDatabase()));
 	const getAgentRuns = () =>
 		(agentRuns ??= new PostgresWorkflowAgentRunStore(getDatabase()));
 	const getPlanArtifacts = () =>
-		(planArtifacts ??= new PostgresWorkflowPlanArtifactStore(getDatabase()));
+		(planArtifacts ??=
+			config.workflowArtifactsStoreAdapter === "dapr-postgres-binding"
+				? new DaprPostgresWorkflowPlanArtifactStore()
+				: new PostgresWorkflowPlanArtifactStore(getDatabase()));
 	const getTraceLineage = () =>
 		(traceLineage ??= new PostgresTraceLineageStore(getDatabase()));
 	const getUsageReporting = () =>
