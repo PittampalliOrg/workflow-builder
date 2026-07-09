@@ -56,6 +56,10 @@ __pycache__/
 
 # local claude-code settings
 .claude/
+# ...but keep the shared dynamic-workflow library tracked
+!.claude/
+.claude/*
+!.claude/workflows/
 
 # Lite profile (embedded PGlite) local data + dev keys
 .pglite-data/
