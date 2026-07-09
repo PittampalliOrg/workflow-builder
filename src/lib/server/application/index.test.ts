@@ -53,15 +53,15 @@ describe("getApplicationAdapters", () => {
 		expect(requirePostgresDb).not.toHaveBeenCalled();
 	});
 
-	it("fails fast when a staged Dapr product-data adapter is selected before wiring exists", () => {
+	it("fails fast when an unwired staged Dapr product-data adapter is selected", () => {
 		expect(() =>
 			getApplicationAdapters(
 				getApplicationAdapterConfig({
-					SESSION_EVENTS_STORE_ADAPTER: "dapr-postgres-binding",
+					WORKFLOW_DEFINITIONS_STORE_ADAPTER: "dapr-postgres-binding",
 				}),
 			),
 		).toThrow(
-			"Dapr PostgreSQL binding adapters are not wired for: SESSION_EVENTS_STORE_ADAPTER",
+			"Dapr PostgreSQL binding adapters are not wired for: WORKFLOW_DEFINITIONS_STORE_ADAPTER",
 		);
 	});
 

@@ -226,6 +226,7 @@ import {
 	WorkspaceSessionRepositoryMounter,
 } from "$lib/server/application/adapters/sessions";
 import { PostgresSessionEventLog } from "$lib/server/application/adapters/session-events";
+import { createDaprPostgresSessionEventLog } from "$lib/server/application/adapters/session-events-dapr-postgres";
 import { PostgresGoalLoopStore } from "$lib/server/application/adapters/goal-loop-store";
 import { PlaywrightMcpBrowserRuntimeClient } from "$lib/server/application/adapters/browser-runtime";
 import {
@@ -431,7 +432,6 @@ export function getApplicationAdapters(
 	// the workflowScheduler branch) and validated by getApplicationAdapterConfig;
 	// both families have a lite member, so no fixed-value guard here.
 	const stagedDaprAdapters = [
-		["SESSION_EVENTS_STORE_ADAPTER", config.sessionEventsStoreAdapter],
 		["WORKFLOW_DEFINITIONS_STORE_ADAPTER", config.workflowDefinitionsStoreAdapter],
 	].filter(([, adapter]) => adapter === "dapr-postgres-binding");
 	if (stagedDaprAdapters.length > 0) {
@@ -517,7 +517,10 @@ export function getApplicationAdapters(
 	let goalFlow: PostgresGoalFlowReadStore | undefined;
 	let sessions: CurrentSessionRepository | undefined;
 	let sessionProvisioning: KubernetesSessionProvisioningReader | undefined;
-	let sessionEvents: PostgresSessionEventLog | undefined;
+	let sessionEvents:
+		| PostgresSessionEventLog
+		| ReturnType<typeof createDaprPostgresSessionEventLog>
+		| undefined;
 	let sessionRuntimeConfigs: DefaultSessionRuntimeConfigReader | undefined;
 	let sessionRuntimeEvents: DaprSessionRuntimeEventRaiser | undefined;
 	let sessionAgentConfigCommands: SessionAgentConfigCommandAdapter | undefined;
@@ -872,7 +875,10 @@ export function getApplicationAdapters(
 	const getSessionProvisioning = () =>
 		(sessionProvisioning ??= new KubernetesSessionProvisioningReader());
 	const getSessionEvents = () =>
-		(sessionEvents ??= new PostgresSessionEventLog(getDatabase()));
+		(sessionEvents ??=
+			config.sessionEventsStoreAdapter === "dapr-postgres-binding"
+				? createDaprPostgresSessionEventLog(getDatabase())
+				: new PostgresSessionEventLog(getDatabase()));
 	const getSessionRuntimeConfigs = () =>
 		(sessionRuntimeConfigs ??= new DefaultSessionRuntimeConfigReader(
 			getDatabase(),
