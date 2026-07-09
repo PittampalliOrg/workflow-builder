@@ -227,7 +227,9 @@ function agentWorkflowHostTimeoutSeconds(params: {
 	timeoutMinutes: number | null;
 	workflowExecutionId: string | null;
 	benchmarkRunId: string | null;
+	persistentHost?: boolean;
 }): number | null {
+	if (params.persistentHost) return null;
 	if (
 		typeof params.timeoutMinutes === "number" &&
 		Number.isFinite(params.timeoutMinutes)
@@ -317,6 +319,11 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	benchmarkInstanceId: string | null;
 	benchmarkExecutionClass?: string | null;
 	timeoutMinutes: number | null;
+	/**
+	 * Keep a workflow-bound interactive host alive for follow-up messages. Normal
+	 * workflow and benchmark hosts remain bounded unless this is explicitly set.
+	 */
+	persistentHost?: boolean;
 	priorityClass?: string | null;
 	traceContext?: TraceContext | null;
 	/**

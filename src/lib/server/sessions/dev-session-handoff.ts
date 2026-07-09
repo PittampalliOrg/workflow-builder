@@ -31,6 +31,11 @@ export interface SpawnDevSessionParams {
 	/** claude-code-cli agent slug (persona). Default `cli-dev-agent`. */
 	agentSlug?: string | null;
 	title?: string | null;
+	/**
+	 * Keep the CLI host alive after the workflow handoff so users can send
+	 * follow-up messages. Defaults true for this handoff endpoint.
+	 */
+	persistent?: boolean;
 }
 
 export async function spawnDevSession(
@@ -54,9 +59,12 @@ export async function spawnDevSession(
 		);
 	}
 
-	// Start the interactive session_workflow (bounded wait for the pod to be
-	// ready); does not block on the session's lifetime.
-	await spawnSessionWorkflow(created.sessionId);
+	// Start the interactive session_workflow. Dev handoffs are persistent by
+	// default because the parent workflow is handing control to a human-driven
+	// session; callers can opt into the old bounded host with persistent:false.
+	await spawnSessionWorkflow(created.sessionId, {
+		persistentHost: params.persistent !== false,
+	});
 
 	return {
 		sessionId: created.sessionId,

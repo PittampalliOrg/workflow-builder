@@ -7,6 +7,7 @@ import type {
 	DevPreviewSidecarResult,
 	DevPreviewSidecarRunOutput,
 	DevPreviewSidecarStatus,
+	DevPreviewSidecarSyncOutput,
 } from "$lib/server/application/ports";
 import type { VclusterPreviewRecord } from "$lib/types/dev-previews";
 import {
@@ -24,6 +25,7 @@ import {
 	allowedSidecarCommands,
 	fetchSidecarStatus,
 	runSidecarCommand,
+	syncDevPreviewSource,
 } from "$lib/server/workflows/dev-preview-sidecar";
 
 /** Legacy `VclusterPreview` → the serializable gateway record (drops the
@@ -105,6 +107,14 @@ export class LegacyDevPreviewSidecarGateway implements DevPreviewSidecarPort {
 		cmd: string;
 	}): Promise<DevPreviewSidecarResult<DevPreviewSidecarRunOutput>> {
 		return runSidecarCommand(input);
+	}
+
+	sync(input: {
+		syncUrl: string | null | undefined;
+		archive: ArrayBuffer | Uint8Array;
+		contentType?: string | null;
+	}): Promise<DevPreviewSidecarResult<DevPreviewSidecarSyncOutput>> {
+		return syncDevPreviewSource(input);
 	}
 
 	allowedCommands(service: string): string[] {

@@ -71,7 +71,19 @@ async function resolveRunWorkspaceKey(executionId: string): Promise<string> {
  * Idempotent: if a workflow instance with the session's id already exists,
  * returns the existing instance without re-starting.
  */
-export async function spawnSessionWorkflow(sessionId: string): Promise<{
+export interface SpawnSessionWorkflowOptions {
+	/**
+	 * Keep the workflow host pod alive even when the session is linked to a
+	 * workflow execution. Used for workflow → interactive-session handoffs where
+	 * follow-up messages are expected after the parent workflow completes.
+	 */
+	persistentHost?: boolean;
+}
+
+export async function spawnSessionWorkflow(
+	sessionId: string,
+	options: SpawnSessionWorkflowOptions = {},
+): Promise<{
 	instanceId: string;
 	natsSubject: string;
 }> {
@@ -453,6 +465,7 @@ export async function spawnSessionWorkflow(sessionId: string): Promise<{
 		benchmarkRunId: null,
 		benchmarkInstanceId: null,
 		timeoutMinutes: null,
+		persistentHost: options.persistentHost === true,
 		sessionSecretEnv,
 		// Resume: the sandbox host keys the per-session transcript CSI subPath on
 		// this id, so the resumed pod re-mounts the original conversation's

@@ -43,6 +43,10 @@ const sidecar = (over: Partial<DevPreviewSidecarPort> = {}): DevPreviewSidecarPo
 			executedIn: "app" as const,
 		},
 	})),
+	sync: vi.fn(async ({ archive }) => ({
+		ok: true as const,
+		data: { ok: true, status: 200, bytes: archive.byteLength, body: { ok: true } },
+	})),
 	allowedCommands: vi.fn(() => ["deps", "test"]),
 	...over,
 });
@@ -139,6 +143,28 @@ describe("ApplicationDevPreviewSidecarService", () => {
 			cmd: "test",
 		});
 		expect(result?.cmd).toBe("test");
+		expect(result?.result.ok).toBe(true);
+	});
+
+	it("forwards sync archives to the resolved env's sync endpoint", async () => {
+		const sc = sidecar();
+		const archive = new Uint8Array([1, 2, 3]);
+		const svc = new ApplicationDevPreviewSidecarService({
+			sidecar: sc,
+			listEnvironments: vi.fn(async () => [env()]),
+		});
+		const result = await svc.sync({
+			executionId: "exec-1",
+			service: "workflow-builder",
+			projectId: "p1",
+			archive,
+			contentType: "application/gzip",
+		});
+		expect(sc.sync).toHaveBeenCalledWith({
+			syncUrl: "http://10.0.0.1:9001/__sync",
+			archive,
+			contentType: "application/gzip",
+		});
 		expect(result?.result.ok).toBe(true);
 	});
 

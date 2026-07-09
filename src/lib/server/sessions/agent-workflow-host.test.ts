@@ -140,6 +140,26 @@ describe("agent workflow host provisioning", () => {
 		expect(body.executionClass).toBe("interactive-agent");
 	});
 
+	it("omits timeoutSeconds for persistent workflow-driven interactive hosts", async () => {
+		await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-workflow-persistent-1",
+			agentConfig: { mcpServers: [] } as never,
+			workflowExecutionId: "exec-1",
+			benchmarkRunId: null,
+			benchmarkInstanceId: null,
+			timeoutMinutes: null,
+			persistentHost: true,
+		});
+
+		const call = vi.mocked(fetch).mock.calls[0];
+		const body = JSON.parse(String(call?.[1]?.body ?? "{}")) as Record<
+			string,
+			unknown
+		>;
+		expect(body).not.toHaveProperty("timeoutSeconds");
+		expect(body.executionClass).toBe("interactive-agent");
+	});
+
 	it("honors explicit host timeouts", async () => {
 		await maybeProvisionAgentWorkflowHost({
 			sessionId: "session-direct-2",

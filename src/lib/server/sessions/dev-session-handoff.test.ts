@@ -67,7 +67,21 @@ describe("spawnDevSession", () => {
 			instructions: "open the repo and run ./sync.sh",
 			title: "Dev handoff",
 		});
-		expect(spawnSessionWorkflowMock).toHaveBeenCalledWith("session-1");
+		expect(spawnSessionWorkflowMock).toHaveBeenCalledWith("session-1", {
+			persistentHost: true,
+		});
+	});
+
+	it("can opt into the bounded workflow-host behavior", async () => {
+		await spawnDevSession({
+			executionId: "exec-1",
+			instructions: "open the repo and run ./sync.sh",
+			persistent: false,
+		});
+
+		expect(spawnSessionWorkflowMock).toHaveBeenCalledWith("session-1", {
+			persistentHost: false,
+		});
 	});
 
 	it("rejects executions that workflow-data cannot resolve", async () => {

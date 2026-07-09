@@ -3353,7 +3353,7 @@ def build_dev_preview_sandbox_manifest(
                 ],
                 "resources": {
                     "requests": {"cpu": "10m", "memory": "32Mi"},
-                    "limits": {"memory": "128Mi"},
+                    "limits": {"cpu": "200m", "memory": "128Mi"},
                 },
             }
         )

@@ -827,7 +827,10 @@ export interface SessionRepositoryMounter {
 }
 
 export interface SessionWorkflowSpawner {
-	spawnSessionWorkflow(sessionId: string): Promise<{
+	spawnSessionWorkflow(
+		sessionId: string,
+		options?: { persistentHost?: boolean },
+	): Promise<{
 		instanceId: string;
 		natsSubject: string;
 	}>;

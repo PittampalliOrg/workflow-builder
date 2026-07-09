@@ -12,7 +12,9 @@ import { spawnDevSession } from "$lib/server/sessions/dev-session-handoff";
  * and starts it (fire-and-forget relative to the session's lifetime, so the
  * parent workflow completes). Returns the session id + UI url.
  *
- * Internal-token auth. Body: { instructions, agentSlug?, title? }
+ * Internal-token auth. Body: { instructions, agentSlug?, title?, persistent? }
+ * `persistent` defaults true. Set `persistent:false` for the legacy bounded
+ * workflow-host behavior.
  */
 export const POST: RequestHandler = async ({ params, request }) => {
 	requireInternal(request);
@@ -38,6 +40,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			instructions,
 			agentSlug: typeof body.agentSlug === "string" ? body.agentSlug : null,
 			title: typeof body.title === "string" ? body.title : null,
+			persistent: body.persistent !== false,
 		});
 		return json(result);
 	} catch (err) {

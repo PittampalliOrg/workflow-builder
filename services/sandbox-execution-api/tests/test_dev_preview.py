@@ -175,6 +175,24 @@ def test_preview_native_omits_internal_grpc_port_override() -> None:
     assert ann["dapr.io/enable-native-sidecar"] == "true"
 
 
+def test_preview_native_tls_terminator_has_admissible_cpu_limit() -> None:
+    manifest = build_dev_preview_sandbox_manifest(
+        DevPreviewRequest(
+            executionId="exec-1",
+            service="workflow-builder",
+            previewNative=True,
+            adoptTlsTerminator=True,
+        ),
+        namespace="workflow-builder",
+        class_config=_dev_class(),
+    )
+
+    pod = manifest["spec"]["podTemplate"]["spec"]
+    tls = next(c for c in pod["containers"] if c["name"] == "tls-terminator")
+    assert tls["resources"]["requests"]["cpu"] == "10m"
+    assert tls["resources"]["limits"]["cpu"] == "200m"
+
+
 def test_host_shadow_keeps_internal_grpc_port_override() -> None:
     # The host Dapr-shadow path (needsDapr, not previewNative) keeps the 3502 override
     # for agent-host parity.

@@ -1333,11 +1333,14 @@ export class DaprSessionRuntimeEventRaiser implements SessionRuntimeEventRaiser 
 }
 
 export class DaprSessionWorkflowSpawner implements SessionWorkflowSpawner {
-	spawnSessionWorkflow(sessionId: string): Promise<{
+	spawnSessionWorkflow(
+		sessionId: string,
+		options?: { persistentHost?: boolean },
+	): Promise<{
 		instanceId: string;
 		natsSubject: string;
 	}> {
-		return spawnSessionWorkflow(sessionId);
+		return spawnSessionWorkflow(sessionId, options);
 	}
 }
 

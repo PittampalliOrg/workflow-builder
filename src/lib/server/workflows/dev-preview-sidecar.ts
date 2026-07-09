@@ -44,8 +44,16 @@ export type SidecarRunOutput = {
 	executedIn: "app" | "sidecar" | null;
 };
 
+export type SidecarSyncOutput = {
+	ok: boolean;
+	status: number;
+	bytes: number;
+	body: unknown;
+};
+
 const STATUS_TIMEOUT_MS = 3_000;
 const RUN_TIMEOUT_MS = 180_000;
+const SYNC_TIMEOUT_MS = 180_000;
 
 function syncToken(): string {
 	return (env.WFB_DEV_SYNC_TOKEN ?? process.env.WFB_DEV_SYNC_TOKEN ?? "").trim();
@@ -201,4 +209,72 @@ export async function runSidecarCommand(input: {
 					: null,
 		},
 	};
+}
+
+export async function syncDevPreviewSource(input: {
+	syncUrl: string | null | undefined;
+	archive: ArrayBuffer | Uint8Array;
+	contentType?: string | null;
+	fetchImpl?: typeof fetch;
+	timeoutMs?: number;
+}): Promise<SidecarResult<SidecarSyncOutput>> {
+	const syncUrl = input.syncUrl?.trim();
+	if (!syncUrl) return { ok: false, reason: "no-sidecar", message: "no sync endpoint recorded" };
+	const archive = input.archive instanceof Uint8Array ? input.archive : new Uint8Array(input.archive);
+	const archiveBody = toArrayBuffer(archive);
+	const doFetch = input.fetchImpl ?? fetch;
+	const token = syncToken();
+	let response: Response;
+	try {
+		response = await doFetch(syncUrl, {
+			method: "POST",
+			headers: {
+				"content-type": input.contentType?.trim() || "application/gzip",
+				...(token ? { "x-sync-token": token } : {}),
+			},
+			body: new Blob([archiveBody]),
+			signal: AbortSignal.timeout(input.timeoutMs ?? SYNC_TIMEOUT_MS),
+		});
+	} catch (err) {
+		return {
+			ok: false,
+			reason: "unreachable",
+			message: err instanceof Error ? err.message : String(err),
+		};
+	}
+	if (response.status === 401) return { ok: false, reason: "forbidden", message: "sync token rejected" };
+	const body = await parseSyncResponse(response);
+	if (!response.ok) {
+		return {
+			ok: false,
+			reason: "bad-response",
+			message: `HTTP ${response.status}${typeof body === "string" && body ? `: ${body}` : ""}`,
+		};
+	}
+	return {
+		ok: true,
+		data: {
+			ok: true,
+			status: response.status,
+			bytes: archive.byteLength,
+			body,
+		},
+	};
+}
+
+async function parseSyncResponse(response: Response): Promise<unknown> {
+	const contentType = response.headers.get("content-type") ?? "";
+	try {
+		if (contentType.includes("application/json")) return await response.json();
+		const text = await response.text();
+		return text.length > 2_000 ? `${text.slice(0, 2_000)}...` : text;
+	} catch (err) {
+		return err instanceof Error ? err.message : String(err);
+	}
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+	const copy = new Uint8Array(bytes.byteLength);
+	copy.set(bytes);
+	return copy.buffer;
 }

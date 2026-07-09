@@ -3,6 +3,7 @@ import type {
 	DevEnvironmentSummaryReadModel,
 	DevPreviewSidecarPort,
 	DevPreviewSidecarRunOutput,
+	DevPreviewSidecarSyncOutput,
 } from "$lib/server/application/ports";
 
 /** The dev-service card view of a sidecar `/__status`: the raw `lastRun` parsed
@@ -29,6 +30,13 @@ export type DevSidecarRunView = {
 	cmd: string;
 	result:
 		| { ok: true; data: DevPreviewSidecarRunOutput }
+		| { ok: false; reason: string; message?: string };
+};
+
+export type DevSidecarSyncView = {
+	service: string;
+	result:
+		| { ok: true; data: DevPreviewSidecarSyncOutput }
 		| { ok: false; reason: string; message?: string };
 };
 
@@ -65,6 +73,10 @@ export type DevPreviewSidecarServiceDeps = {
  */
 export class ApplicationDevPreviewSidecarService {
 	constructor(private readonly deps: DevPreviewSidecarServiceDeps) {}
+
+	allowedCommands(service: string): string[] {
+		return this.deps.sidecar.allowedCommands(service);
+	}
 
 	private async resolve(input: {
 		executionId: string;
@@ -129,6 +141,28 @@ export class ApplicationDevPreviewSidecarService {
 		return {
 			service: environment.service,
 			cmd: input.cmd,
+			result: result.ok
+				? { ok: true, data: result.data }
+				: { ok: false, reason: result.reason, message: result.message },
+		};
+	}
+
+	async sync(input: {
+		executionId: string;
+		service: string;
+		projectId: string | null | undefined;
+		archive: ArrayBuffer | Uint8Array;
+		contentType?: string | null;
+	}): Promise<DevSidecarSyncView | null> {
+		const environment = await this.resolve(input);
+		if (!environment) return null;
+		const result = await this.deps.sidecar.sync({
+			syncUrl: environment.syncUrl,
+			archive: input.archive,
+			contentType: input.contentType,
+		});
+		return {
+			service: environment.service,
 			result: result.ok
 				? { ok: true, data: result.data }
 				: { ok: false, reason: result.reason, message: result.message },

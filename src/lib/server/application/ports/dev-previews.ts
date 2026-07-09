@@ -83,6 +83,13 @@ export type DevPreviewSidecarRunOutput = {
 	executedIn: "app" | "sidecar" | null;
 };
 
+export type DevPreviewSidecarSyncOutput = {
+	ok: boolean;
+	status: number;
+	bytes: number;
+	body: unknown;
+};
+
 /** Sidecar reachability outcome: unreachable/plugin-mode pods are data, not throws. */
 export type DevPreviewSidecarResult<T> =
 	| { ok: true; data: T }
@@ -103,6 +110,11 @@ export interface DevPreviewSidecarPort {
 		service: string;
 		cmd: string;
 	}): Promise<DevPreviewSidecarResult<DevPreviewSidecarRunOutput>>;
+	sync(input: {
+		syncUrl: string | null | undefined;
+		archive: ArrayBuffer | Uint8Array;
+		contentType?: string | null;
+	}): Promise<DevPreviewSidecarResult<DevPreviewSidecarSyncOutput>>;
 	/** Registry-declared allowlisted command names for a service (deny = []). */
 	allowedCommands(service: string): string[];
 }

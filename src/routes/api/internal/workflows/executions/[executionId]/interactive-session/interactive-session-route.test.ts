@@ -12,6 +12,7 @@ describe("internal workflow execution interactive-session route", () => {
 
 		expect(source).toContain("getApplicationAdapters");
 		expect(source).toContain("workflowData.resolveCanonicalExecutionId");
+		expect(source).toContain("persistent: body.persistent !== false");
 		expect(source).not.toContain("$lib/server/workflows/dev-environments");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
