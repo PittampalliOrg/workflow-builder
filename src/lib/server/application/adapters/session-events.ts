@@ -212,6 +212,21 @@ export async function runSessionEventPostAppendHooks(
 			)
 			.catch((err) => console.warn("[goal-loop] event hook failed:", err));
 	}
+
+	// Agent Teams driver. On a teammate's end_turn idle, notify the lead and
+	// (auto-claim mode) nudge the teammate to claim its next task. Lazy-imported
+	// + fire-and-forget for the same reasons as the goal loop; a no-op for
+	// sessions that are not team members.
+	if (eventType === "session.status_idle") {
+		void import("$lib/server/teams/team-driver")
+			.then((m) =>
+				m.onTeamSessionEvent(sessionId, {
+					type: eventType,
+					data: cleanData,
+				}),
+			)
+			.catch((err) => console.warn("[team-driver] event hook failed:", err));
+	}
 }
 
 export async function listEvents(

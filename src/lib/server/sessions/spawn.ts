@@ -3,6 +3,8 @@ import {
 	ensureGoalMcpServer,
 	stampGoalMcpSessionHeader,
 } from "$lib/server/goals/mcp-wiring";
+import { deriveLeadTeamId, stampTeamMcpHeaders } from "$lib/server/teams/mcp-wiring";
+import { getMemberBySession } from "$lib/server/teams/team-repo";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution-application";
 import { getApplicationAdapters } from "$lib/server/application";
@@ -284,19 +286,30 @@ export async function spawnSessionWorkflow(
 					return emptyPresetStack;
 				})
 		: emptyPresetStack;
+	// Agent Teams scope: a teammate (team_members row exists) carries the lead's
+	// team id + the X-Wfb-Team-Depth nesting guard; a potential lead derives its
+	// team id from its own session id and is stamped only when TEAM_MCP_AUTO_WIRE
+	// is enabled (teammates are always stamped). Best-effort — a lookup failure
+	// must never block a spawn.
+	const teamMember = await getMemberBySession(sessionId).catch(() => null);
+	const teamId = teamMember?.team_id ?? deriveLeadTeamId(sessionId);
+	const isTeammate = !!teamMember && teamMember.role !== "lead";
 	const agentConfigForDispatch = {
 		...resolvedAgentConfig,
-		mcpServers: stampGoalMcpSessionHeader(
-			ensureGoalMcpServer(
-				rewrittenMcp,
-				swapTarget?.capabilities?.supportsMcp ?? false,
-				// CLI agents should not inherit the platform goal MCP by default.
-				// They keep only explicitly configured MCP servers plus their
-				// runtime-internal tools, which avoids noisy goal tools in one-shot
-				// workflow runs.
-				swapTarget?.capabilities?.interactiveTerminal === true,
+		mcpServers: stampTeamMcpHeaders(
+			stampGoalMcpSessionHeader(
+				ensureGoalMcpServer(
+					rewrittenMcp,
+					swapTarget?.capabilities?.supportsMcp ?? false,
+					// CLI agents should not inherit the platform goal MCP by default.
+					// They keep only explicitly configured MCP servers plus their
+					// runtime-internal tools, which avoids noisy goal tools in one-shot
+					// workflow runs.
+					swapTarget?.capabilities?.interactiveTerminal === true,
+				),
+				sessionId,
 			),
-			sessionId,
+			{ teamId, isTeammate },
 		),
 		compiledStaticPresetSections: compiledPresetStack.static,
 		compiledDynamicPresetSections: compiledPresetStack.dynamic,
