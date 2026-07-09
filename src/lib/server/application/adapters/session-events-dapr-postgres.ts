@@ -97,37 +97,34 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 					summary: "session_events.insert",
 					collection: "session_events",
 					sql: `
-						WITH lock AS (
+						INSERT INTO session_events (
+							session_id,
+							sequence,
+							type,
+							data,
+							processed_at,
+							source_event_id,
+							producer_id,
+							producer_epoch
+						)
+						SELECT
+							$1,
+							next_sequence.sequence,
+							$2,
+							$3::jsonb,
+							$4::timestamptz,
+							$5,
+							$6,
+							$7
+						FROM (
 							SELECT pg_advisory_xact_lock(hashtext($1)::bigint)
-						), next_sequence AS (
+						) AS lock,
+						LATERAL (
 							SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence
 							FROM session_events
 							WHERE session_id = $1
-						), inserted AS (
-							INSERT INTO session_events (
-								session_id,
-								sequence,
-								type,
-								data,
-								processed_at,
-								source_event_id,
-								producer_id,
-								producer_epoch
-							)
-							SELECT
-								$1,
-								next_sequence.sequence,
-								$2,
-								$3::jsonb,
-								$4::timestamptz,
-								$5,
-								$6,
-								$7
-							FROM lock, next_sequence
-							RETURNING ${SESSION_EVENT_COLUMNS}
-						)
-						SELECT ${SESSION_EVENT_COLUMNS}
-						FROM inserted
+						) AS next_sequence
+						RETURNING ${SESSION_EVENT_COLUMNS}
 					`,
 					params: [
 						sessionId,
