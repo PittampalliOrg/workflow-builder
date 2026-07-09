@@ -101,6 +101,29 @@ export async function claimNextTask(
 	return firstRow(rows);
 }
 
+/**
+ * Count tasks that are claimable RIGHT NOW (pending, unassigned, all deps
+ * completed). The driver uses this to avoid the idle→nudge→idle loop: only nudge
+ * an idle teammate to claim when there is actually claimable work.
+ */
+export async function countClaimableTasks(
+	db: TeamTasksDb,
+	teamId: string,
+): Promise<number> {
+	const rows = await db.execute<{ n: number }>(sql`
+		SELECT count(*)::int AS n FROM team_tasks t
+		WHERE t.team_id = ${teamId}
+		  AND t.status = 'pending'
+		  AND t.assignee_session_id IS NULL
+		  AND NOT EXISTS (
+			SELECT 1 FROM jsonb_array_elements_text(t.depends_on) dep
+			JOIN team_tasks d ON d.id = dep WHERE d.status <> 'completed'
+		  )
+	`);
+	const list = rows as unknown as { n: number }[];
+	return Number(list[0]?.n ?? 0);
+}
+
 /** Mark a claimed task completed. Unblocks dependents on the next claim. */
 export async function completeTask(
 	db: TeamTasksDb,
