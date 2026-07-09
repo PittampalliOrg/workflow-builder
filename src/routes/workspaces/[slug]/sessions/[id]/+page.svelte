@@ -44,6 +44,7 @@
 	import EventTypePill from '$lib/components/sessions/event-type-pill.svelte';
 	import StopReasonChip from '$lib/components/sessions/stop-reason-chip.svelte';
 	import SessionGoalBadge from '$lib/components/sessions/session-goal-badge.svelte';
+	import TeamPanel from '$lib/components/sessions/team-panel.svelte';
 	import StatusPill from '$lib/components/shared/status-pill.svelte';
 	import GoalFlowTimeline from '$lib/components/observability/goal-flow-timeline.svelte';
 	import SessionPulse from '$lib/components/sessions/session-pulse.svelte';
@@ -1885,6 +1886,7 @@
 				: 'hidden'} border-l overflow-y-auto p-4 space-y-4 bg-muted/30"
 		>
 			{#if session}
+				<TeamPanel {sessionId} />
 				<Card>
 					<CardHeader class="pb-2">
 						<CardTitle class="text-sm flex items-center gap-2">

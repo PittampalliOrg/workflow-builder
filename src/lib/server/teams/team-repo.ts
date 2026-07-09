@@ -93,6 +93,43 @@ export async function listMembers(
 	return rows<TeamMemberRow>(r);
 }
 
+export type TeamRow = {
+	id: string;
+	name: string;
+	status: string;
+	lead_session_id: string;
+	token_budget: number | null;
+};
+
+export async function getTeam(
+	teamId: string,
+	db: TeamsDb = defaultDb as unknown as TeamsDb,
+): Promise<TeamRow | null> {
+	const r = await db.execute<TeamRow>(sql`
+		SELECT id, name, status, lead_session_id, token_budget FROM teams WHERE id = ${teamId}
+	`);
+	return rows<TeamRow>(r)[0] ?? null;
+}
+
+export async function listTeamTasks(
+	teamId: string,
+	db: TeamsDb = defaultDb as unknown as TeamsDb,
+): Promise<
+	Array<{
+		id: string;
+		title: string;
+		status: string;
+		assignee_session_id: string | null;
+		depends_on: string[];
+	}>
+> {
+	const r = await db.execute(sql`
+		SELECT id, title, status, assignee_session_id, depends_on
+		FROM team_tasks WHERE team_id = ${teamId} ORDER BY created_at ASC
+	`);
+	return rows(r);
+}
+
 export async function getMemberByName(
 	teamId: string,
 	name: string,
