@@ -135,16 +135,16 @@ export async function setMemberStatus(
 	`);
 }
 
-/** Resolve an agent slug to (id, version) within a project, for peer spawn. */
+/** Resolve an agent slug to its id within a project, for peer spawn. */
 export async function resolveAgentIdBySlug(
 	projectId: string,
 	slug: string,
 	db: TeamsDb = defaultDb as unknown as TeamsDb,
-): Promise<{ id: string; version: number } | null> {
-	const r = await db.execute<{ id: string; version: number }>(sql`
-		SELECT id, version FROM agents
+): Promise<{ id: string } | null> {
+	const r = await db.execute<{ id: string }>(sql`
+		SELECT id FROM agents
 		WHERE project_id = ${projectId} AND slug = ${slug}
-		ORDER BY version DESC LIMIT 1
+		LIMIT 1
 	`);
-	return rows<{ id: string; version: number }>(r)[0] ?? null;
+	return rows<{ id: string }>(r)[0] ?? null;
 }
