@@ -4,6 +4,7 @@ import {
 } from "$lib/server/application/config";
 import type {
 	ArtifactStore,
+	WorkflowBrowserArtifactStore,
 	WorkflowExecutionRepository,
 	WorkflowPlanArtifactStore,
 } from "$lib/server/application/ports";
@@ -58,6 +59,10 @@ import {
 	PostgresWorkspaceProjectRepository,
 	requirePostgresDb,
 } from "$lib/server/application/adapters/postgres";
+import {
+	DaprPostgresWorkflowBrowserArtifactStore,
+	PostgresWorkflowBrowserArtifactBlobPayloadStore,
+} from "$lib/server/application/adapters/workflow-browser-artifacts-dapr-postgres";
 import { KubernetesAgentRuntimeWarmPoolClient } from "$lib/server/application/adapters/agent-runtime-control";
 import {
 	DaprBenchmarkEvaluationEventNotifier,
@@ -426,10 +431,6 @@ export function getApplicationAdapters(
 	// the workflowScheduler branch) and validated by getApplicationAdapterConfig;
 	// both families have a lite member, so no fixed-value guard here.
 	const stagedDaprAdapters = [
-		[
-			"WORKFLOW_BROWSER_ARTIFACTS_STORE_ADAPTER",
-			config.workflowBrowserArtifactsStoreAdapter,
-		],
 		["SESSION_EVENTS_STORE_ADAPTER", config.sessionEventsStoreAdapter],
 		["WORKFLOW_DEFINITIONS_STORE_ADAPTER", config.workflowDefinitionsStoreAdapter],
 	].filter(([, adapter]) => adapter === "dapr-postgres-binding");
@@ -454,7 +455,7 @@ export function getApplicationAdapters(
 	let workspaceProjects: PostgresWorkspaceProjectRepository | undefined;
 	let pieceCatalog: PostgresPieceCatalogRepository | undefined;
 	let pieceExecutions: PostgresPieceExecutionRepository | undefined;
-	let browserArtifacts: PostgresWorkflowBrowserArtifactStore | undefined;
+	let browserArtifacts: WorkflowBrowserArtifactStore | undefined;
 	let codeFunctionCatalog: PostgresCodeFunctionCatalogRepository | undefined;
 	let benchmarkArtifactMetadata:
 		| PostgresBenchmarkArtifactMetadataRepository
@@ -736,9 +737,12 @@ export function getApplicationAdapters(
 	const getPieceExecutions = () =>
 		(pieceExecutions ??= new PostgresPieceExecutionRepository(getDatabase()));
 	const getBrowserArtifacts = () =>
-		(browserArtifacts ??= new PostgresWorkflowBrowserArtifactStore(
-			getDatabase(),
-		));
+		(browserArtifacts ??=
+			config.workflowBrowserArtifactsStoreAdapter === "dapr-postgres-binding"
+				? new DaprPostgresWorkflowBrowserArtifactStore(
+						new PostgresWorkflowBrowserArtifactBlobPayloadStore(getDatabase()),
+					)
+				: new PostgresWorkflowBrowserArtifactStore(getDatabase()));
 	const getCodeFunctionCatalog = () =>
 		(codeFunctionCatalog ??= new PostgresCodeFunctionCatalogRepository(
 			getDatabase(),
