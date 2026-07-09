@@ -7,6 +7,7 @@ export const ARTIFACT_STORE_ADAPTERS = ["postgres-metadata-object-data"] as cons
 export const WORKFLOW_SCHEDULER_ADAPTERS = ["dapr-workflow", "lite-stub"] as const;
 export const PREVIEW_PROVISIONER_ADAPTERS = ["sandbox-execution-api", "kro"] as const;
 export const SCRIPT_CALLS_STORE_ADAPTERS = ["postgres", "dapr-postgres-binding"] as const;
+export const PRODUCT_DATA_STORE_ADAPTERS = ["postgres", "dapr-postgres-binding"] as const;
 
 export type AppProfile = (typeof APP_PROFILES)[number];
 export type PersistenceAdapter = (typeof PERSISTENCE_ADAPTERS)[number];
@@ -15,6 +16,7 @@ export type ArtifactStoreAdapter = (typeof ARTIFACT_STORE_ADAPTERS)[number];
 export type WorkflowSchedulerAdapter = (typeof WORKFLOW_SCHEDULER_ADAPTERS)[number];
 export type PreviewProvisionerAdapter = (typeof PREVIEW_PROVISIONER_ADAPTERS)[number];
 export type ScriptCallsStoreAdapter = (typeof SCRIPT_CALLS_STORE_ADAPTERS)[number];
+export type ProductDataStoreAdapter = (typeof PRODUCT_DATA_STORE_ADAPTERS)[number];
 
 export type ApplicationAdapterConfig = {
 	appProfile: AppProfile;
@@ -24,6 +26,12 @@ export type ApplicationAdapterConfig = {
 	workflowSchedulerAdapter: WorkflowSchedulerAdapter;
 	previewProvisionerAdapter: PreviewProvisionerAdapter;
 	scriptCallsStoreAdapter: ScriptCallsStoreAdapter;
+	workflowExecutionsStoreAdapter: ProductDataStoreAdapter;
+	workflowExecutionLogsStoreAdapter: ProductDataStoreAdapter;
+	workflowArtifactsStoreAdapter: ProductDataStoreAdapter;
+	workflowBrowserArtifactsStoreAdapter: ProductDataStoreAdapter;
+	sessionEventsStoreAdapter: ProductDataStoreAdapter;
+	workflowDefinitionsStoreAdapter: ProductDataStoreAdapter;
 	/** E1: the Dev-hub live preview run feed. Off by default. */
 	previewRunFeedEnabled: boolean;
 	/** D1: label-gated per-PR previews (`/api/internal/pr-previews`). Off by default. */
@@ -125,6 +133,42 @@ export function getApplicationAdapterConfig(
 			"SCRIPT_CALLS_STORE_ADAPTER",
 			"postgres",
 			SCRIPT_CALLS_STORE_ADAPTERS,
+		),
+		workflowExecutionsStoreAdapter: readAdapter(
+			source,
+			"WORKFLOW_EXECUTIONS_STORE_ADAPTER",
+			"postgres",
+			PRODUCT_DATA_STORE_ADAPTERS,
+		),
+		workflowExecutionLogsStoreAdapter: readAdapter(
+			source,
+			"WORKFLOW_EXECUTION_LOGS_STORE_ADAPTER",
+			"postgres",
+			PRODUCT_DATA_STORE_ADAPTERS,
+		),
+		workflowArtifactsStoreAdapter: readAdapter(
+			source,
+			"WORKFLOW_ARTIFACTS_STORE_ADAPTER",
+			"postgres",
+			PRODUCT_DATA_STORE_ADAPTERS,
+		),
+		workflowBrowserArtifactsStoreAdapter: readAdapter(
+			source,
+			"WORKFLOW_BROWSER_ARTIFACTS_STORE_ADAPTER",
+			"postgres",
+			PRODUCT_DATA_STORE_ADAPTERS,
+		),
+		sessionEventsStoreAdapter: readAdapter(
+			source,
+			"SESSION_EVENTS_STORE_ADAPTER",
+			"postgres",
+			PRODUCT_DATA_STORE_ADAPTERS,
+		),
+		workflowDefinitionsStoreAdapter: readAdapter(
+			source,
+			"WORKFLOW_DEFINITIONS_STORE_ADAPTER",
+			"postgres",
+			PRODUCT_DATA_STORE_ADAPTERS,
 		),
 		previewRunFeedEnabled: readFlag(source, "PREVIEW_RUN_FEED_ENABLED"),
 		prPreviewsEnabled: readFlag(source, "PR_PREVIEWS_ENABLED"),

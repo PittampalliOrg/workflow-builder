@@ -53,6 +53,18 @@ describe("getApplicationAdapters", () => {
 		expect(requirePostgresDb).not.toHaveBeenCalled();
 	});
 
+	it("fails fast when a staged Dapr product-data adapter is selected before wiring exists", () => {
+		expect(() =>
+			getApplicationAdapters(
+				getApplicationAdapterConfig({
+					WORKFLOW_ARTIFACTS_STORE_ADAPTER: "dapr-postgres-binding",
+				}),
+			),
+		).toThrow(
+			"Dapr PostgreSQL binding adapters are not wired for: WORKFLOW_ARTIFACTS_STORE_ADAPTER",
+		);
+	});
+
 	it("initializes Postgres only when a Postgres-backed port is read", () => {
 		const app = getApplicationAdapters();
 

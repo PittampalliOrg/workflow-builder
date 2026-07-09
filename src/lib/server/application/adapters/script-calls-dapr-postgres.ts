@@ -1,5 +1,12 @@
 import { DaprPostgresBindingClient } from "$lib/server/application/adapters/dapr-postgres-binding";
 import {
+	isoTimestamp,
+	jsonParam,
+	numberValue,
+	stringOrNull,
+	stringValue,
+} from "$lib/server/application/adapters/dapr-postgres-rows";
+import {
 	type ScriptCallRecord,
 	type ScriptCallsStore,
 	type ScriptCallUpsertInput,
@@ -25,29 +32,6 @@ const SCRIPT_CALL_COLUMNS = `
 	updated_at
 `;
 
-function stringOrNull(value: unknown): string | null {
-	return value == null ? null : String(value);
-}
-
-function stringValue(value: unknown, fallback = ""): string {
-	return value == null ? fallback : String(value);
-}
-
-function numberValue(value: unknown, fallback = 0): number {
-	const parsed = typeof value === "number" ? value : Number(value);
-	return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function isoTimestamp(value: unknown): string {
-	if (value instanceof Date) return value.toISOString();
-	if (typeof value === "string" || typeof value === "number") {
-		const parsed = new Date(value);
-		if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
-		return String(value);
-	}
-	return new Date(0).toISOString();
-}
-
 function rowToScriptCall(row: unknown[]): ScriptCallRecord {
 	return {
 		callId: stringValue(row[0]),
@@ -67,11 +51,6 @@ function rowToScriptCall(row: unknown[]): ScriptCallRecord {
 		createdAt: isoTimestamp(row[14]),
 		updatedAt: isoTimestamp(row[15]),
 	};
-}
-
-function resultParam(value: unknown): string | null {
-	if (value == null) return null;
-	return JSON.stringify(value);
 }
 
 export class DaprPostgresScriptCallsStore implements ScriptCallsStore {
@@ -103,7 +82,7 @@ export class DaprPostgresScriptCallsStore implements ScriptCallsStore {
 		callId: string,
 		input: ScriptCallUpsertInput,
 	): Promise<ScriptCallRecord> {
-		const storedResult = resultParam(input.result ?? null);
+		const storedResult = jsonParam(input.result ?? null);
 		const params = [
 			executionId,
 			callId,

@@ -2,6 +2,7 @@ import {
 	getApplicationAdapterConfig,
 	type ApplicationAdapterConfig,
 } from "$lib/server/application/config";
+import type { WorkflowExecutionRepository } from "$lib/server/application/ports";
 import {
 	PostgresArtifactStore,
 	PostgresAdminPieceRepository,
@@ -356,6 +357,7 @@ import { ApplicationWorkflowExecutionStreamService } from "$lib/server/applicati
 import { ApplicationPreviewRunFeedService } from "$lib/server/application/preview-run-feed";
 import { NatsPreviewRunFeed } from "$lib/server/application/adapters/nats-preview-run-feed";
 import { DaprPostgresScriptCallsStore } from "$lib/server/application/adapters/script-calls-dapr-postgres";
+import { DaprPostgresWorkflowExecutionRepository } from "$lib/server/application/adapters/workflow-executions-dapr-postgres";
 import { listVclusterPreviews } from "$lib/server/workflows/vcluster-preview";
 import { ApplicationPrPreviewService } from "$lib/server/application/pr-previews";
 import {
@@ -415,6 +417,20 @@ export function getApplicationAdapters(
 	// Event bus + workflow scheduler are selected below (getEventBusAdapter /
 	// the workflowScheduler branch) and validated by getApplicationAdapterConfig;
 	// both families have a lite member, so no fixed-value guard here.
+	const stagedDaprAdapters = [
+		["WORKFLOW_ARTIFACTS_STORE_ADAPTER", config.workflowArtifactsStoreAdapter],
+		[
+			"WORKFLOW_BROWSER_ARTIFACTS_STORE_ADAPTER",
+			config.workflowBrowserArtifactsStoreAdapter,
+		],
+		["SESSION_EVENTS_STORE_ADAPTER", config.sessionEventsStoreAdapter],
+		["WORKFLOW_DEFINITIONS_STORE_ADAPTER", config.workflowDefinitionsStoreAdapter],
+	].filter(([, adapter]) => adapter === "dapr-postgres-binding");
+	if (stagedDaprAdapters.length > 0) {
+		throw new Error(
+			`Dapr PostgreSQL binding adapters are not wired for: ${stagedDaprAdapters.map(([key]) => key).join(", ")}`,
+		);
+	}
 
 	let database: ReturnType<typeof requirePostgresDb> | undefined;
 	let agentRuntimes: PostgresAgentRuntimeRepository | undefined;
@@ -481,7 +497,7 @@ export function getApplicationAdapters(
 	let dashboard: PostgresDashboardReadRepository | undefined;
 	let homePageReads: PostgresHomePageReadRepository | undefined;
 	let modelCatalog: PostgresModelCatalogRepository | undefined;
-	let workflowExecutions: PostgresWorkflowExecutionRepository | undefined;
+	let workflowExecutions: WorkflowExecutionRepository | undefined;
 	let workflowFiles: PostgresWorkflowFileStore | undefined;
 	let sandboxInventory: PostgresSandboxInventoryRepository | undefined;
 	let artifactStore: PostgresArtifactStore | undefined;
@@ -809,9 +825,11 @@ export function getApplicationAdapters(
 	const getModelCatalog = () =>
 		(modelCatalog ??= new PostgresModelCatalogRepository(getDatabase()));
 	const getWorkflowExecutions = () =>
-		(workflowExecutions ??= new PostgresWorkflowExecutionRepository(
-			getDatabase(),
-		));
+		(workflowExecutions ??=
+			config.workflowExecutionsStoreAdapter === "dapr-postgres-binding" ||
+			config.workflowExecutionLogsStoreAdapter === "dapr-postgres-binding"
+				? new DaprPostgresWorkflowExecutionRepository(getDatabase())
+				: new PostgresWorkflowExecutionRepository(getDatabase()));
 	const getWorkflowFiles = () =>
 		(workflowFiles ??= new PostgresWorkflowFileStore(getDatabase()));
 	const getSandboxInventory = () =>

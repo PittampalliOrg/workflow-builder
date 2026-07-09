@@ -11,6 +11,12 @@ describe("application adapter config", () => {
 			workflowSchedulerAdapter: "dapr-workflow",
 			previewProvisionerAdapter: "sandbox-execution-api",
 			scriptCallsStoreAdapter: "postgres",
+			workflowExecutionsStoreAdapter: "postgres",
+			workflowExecutionLogsStoreAdapter: "postgres",
+			workflowArtifactsStoreAdapter: "postgres",
+			workflowBrowserArtifactsStoreAdapter: "postgres",
+			sessionEventsStoreAdapter: "postgres",
+			workflowDefinitionsStoreAdapter: "postgres",
 			previewRunFeedEnabled: false,
 			prPreviewsEnabled: false,
 			prPreviewRepo: "PittampalliOrg/workflow-builder",
@@ -90,6 +96,12 @@ describe("application adapter config", () => {
 			workflowSchedulerAdapter: "lite-stub",
 			previewProvisionerAdapter: "sandbox-execution-api",
 			scriptCallsStoreAdapter: "postgres",
+			workflowExecutionsStoreAdapter: "postgres",
+			workflowExecutionLogsStoreAdapter: "postgres",
+			workflowArtifactsStoreAdapter: "postgres",
+			workflowBrowserArtifactsStoreAdapter: "postgres",
+			sessionEventsStoreAdapter: "postgres",
+			workflowDefinitionsStoreAdapter: "postgres",
 			previewRunFeedEnabled: false,
 			prPreviewsEnabled: false,
 			prPreviewRepo: "PittampalliOrg/workflow-builder",
@@ -145,5 +157,40 @@ describe("application adapter config", () => {
 		expect(() =>
 			getApplicationAdapterConfig({ SCRIPT_CALLS_STORE_ADAPTER: "raw-sql" }),
 		).toThrow("Unsupported SCRIPT_CALLS_STORE_ADAPTER='raw-sql'");
+	});
+
+	it("defaults staged product-data store adapters to postgres", () => {
+		const config = getApplicationAdapterConfig({});
+		expect(config.workflowExecutionsStoreAdapter).toBe("postgres");
+		expect(config.workflowExecutionLogsStoreAdapter).toBe("postgres");
+		expect(config.workflowArtifactsStoreAdapter).toBe("postgres");
+		expect(config.workflowBrowserArtifactsStoreAdapter).toBe("postgres");
+		expect(config.sessionEventsStoreAdapter).toBe("postgres");
+		expect(config.workflowDefinitionsStoreAdapter).toBe("postgres");
+	});
+
+	it("selects the Dapr PostgreSQL binding for staged product-data store adapters", () => {
+		const config = getApplicationAdapterConfig({
+			WORKFLOW_EXECUTIONS_STORE_ADAPTER: "dapr-postgres-binding",
+			WORKFLOW_EXECUTION_LOGS_STORE_ADAPTER: "dapr-postgres-binding",
+			WORKFLOW_ARTIFACTS_STORE_ADAPTER: "dapr-postgres-binding",
+			WORKFLOW_BROWSER_ARTIFACTS_STORE_ADAPTER: "dapr-postgres-binding",
+			SESSION_EVENTS_STORE_ADAPTER: "dapr-postgres-binding",
+			WORKFLOW_DEFINITIONS_STORE_ADAPTER: "dapr-postgres-binding",
+		});
+		expect(config.workflowExecutionsStoreAdapter).toBe("dapr-postgres-binding");
+		expect(config.workflowExecutionLogsStoreAdapter).toBe("dapr-postgres-binding");
+		expect(config.workflowArtifactsStoreAdapter).toBe("dapr-postgres-binding");
+		expect(config.workflowBrowserArtifactsStoreAdapter).toBe("dapr-postgres-binding");
+		expect(config.sessionEventsStoreAdapter).toBe("dapr-postgres-binding");
+		expect(config.workflowDefinitionsStoreAdapter).toBe("dapr-postgres-binding");
+	});
+
+	it("rejects unsupported staged product-data store adapters", () => {
+		expect(() =>
+			getApplicationAdapterConfig({
+				WORKFLOW_EXECUTIONS_STORE_ADAPTER: "raw-sql",
+			}),
+		).toThrow("Unsupported WORKFLOW_EXECUTIONS_STORE_ADAPTER='raw-sql'");
 	});
 });
