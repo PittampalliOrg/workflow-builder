@@ -354,15 +354,15 @@ export default defineConfig({
 			// `cd services/script-evaluator && pnpm test` (cross-env NODE_OPTIONS).
 			'services/script-evaluator/**',
 			// CI-only: these import service-local deps (@activepieces/*,
-			// function-router's runtime stack, workflow-mcp-server's zod) that the
-			// root install does not provide; locally they run against
-			// services/*/node_modules.
+			// function-router's runtime stack, workflow-mcp-server's MCP/pg/zod
+			// stack) that the root install does not provide; locally they run
+			// against services/*/node_modules.
 			// Follow-up: service-owned test lanes.
 			...(process.env.CI
 				? [
 						'services/piece-mcp-server/src/metadata-catalog.test.ts',
 						'services/function-router/src/routes/execute.test.ts',
-						'services/workflow-mcp-server/src/script-tools.test.ts'
+						'services/workflow-mcp-server/**'
 					]
 				: [])
 		]

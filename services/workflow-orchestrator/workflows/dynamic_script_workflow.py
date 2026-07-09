@@ -73,10 +73,17 @@ DEFAULT_MAX_STRUCTURED_RETRIES = 5
 # usage-settle gate in the pump loop). Only applies to budget-bounded runs.
 USAGE_SETTLE_SECONDS = int(os.environ.get("DYNAMIC_SCRIPT_USAGE_SETTLE_SECONDS", "3") or "3")
 
-# Retry policy for the evaluate_script activity (cloned from sw_workflow._AP_RETRY_POLICY):
-# transport / 5xx failures RAISE and are retried; 4xx are returned as script_error
-# (non-retryable) by the activity itself.
-_SCRIPT_EVAL_RETRY_POLICY = wf.RetryPolicy(
+# Retry policy applied to EVERY BFF-invoking activity (not just evaluate_script).
+# A transient BFF/daprd blip — e.g. a workflow-builder pod rollover deregistering
+# its sidecar mid-run — must NOT terminally fail an otherwise-durable run: without
+# a retry policy the raised ERR_DIRECT_INVOKE propagates out of the workflow
+# generator and the whole run goes FAILED (observed on dev 2026-07-09, a journal
+# write at record_script_call_result died on a BFF rollover). Semantics (cloned
+# from sw_workflow._AP_RETRY_POLICY): transport / 5xx failures RAISE and are
+# retried; 4xx are returned as (non-retryable) errors by the activity itself. All
+# journal/persist/track activities are idempotent PUTs/upserts (or read-only), so
+# re-invocation on retry is safe.
+_BFF_ACTIVITY_RETRY_POLICY = wf.RetryPolicy(
     first_retry_interval=timedelta(
         seconds=int(os.environ.get("SCRIPT_EVAL_RETRY_FIRST_INTERVAL_SECONDS", "2"))
     ),
@@ -86,6 +93,8 @@ _SCRIPT_EVAL_RETRY_POLICY = wf.RetryPolicy(
         seconds=int(os.environ.get("SCRIPT_EVAL_RETRY_MAX_INTERVAL_SECONDS", "60"))
     ),
 )
+# Backwards-compatible alias (evaluate_script's call site + docstrings keep working).
+_SCRIPT_EVAL_RETRY_POLICY = _BFF_ACTIVITY_RETRY_POLICY
 
 
 def _as_int(value: Any, default: int) -> int:
@@ -180,6 +189,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             input=_freeze(
                 {"executionId": exec_id, "fromExecutionId": journal_import_from, "_otel": otel}
             ),
+            retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
         )
 
     # ---- pump state (all deterministic) ------------------------------------
@@ -221,6 +231,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             usage = yield ctx.call_activity(
                 aggregate_script_usage,
                 input=_freeze({"executionId": exec_id, "_otel": otel}),
+                retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
             )
             spent = _as_int((usage or {}).get("totalTokens"), 0)
             budget = {
@@ -278,6 +289,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                         "_otel": otel,
                     }
                 ),
+                retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
             )
             seen_log_count += len(new_logs)
         _set_status(current_phase or "running", budget)
@@ -309,6 +321,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                             "_otel": otel,
                         }
                     ),
+                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                 )
             return {
                 "success": True,
@@ -336,6 +349,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                             "_otel": otel,
                         }
                     ),
+                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                 )
             return {
                 "success": False,
@@ -422,6 +436,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                                     "_otel": otel,
                                 }
                             ),
+                            retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                         )
                     )
 
@@ -454,6 +469,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                                     "_otel": otel,
                                 }
                             ),
+                            retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                         )
                         resolved.add(cid)
                         resolved_at_dispatch += 1
@@ -484,6 +500,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                                 "_otel": otel,
                             }
                         ),
+                        retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                     )
 
                     # Keep workflow_executions.current_node_id fresh + light up the Agents tab.
@@ -497,6 +514,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                                 "_otel": otel,
                             }
                         ),
+                        retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                     )
                     yield ctx.call_activity(
                         track_agent_run_scheduled,
@@ -513,6 +531,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                                 "_otel": otel,
                             }
                         ),
+                        retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                     )
         else:
             while queue and len(outstanding) < limits["maxConcurrentAgents"]:
@@ -565,6 +584,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                                 "_otel": otel,
                             }
                         ),
+                        retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                     )
                     resolved.add(cid)
                     resolved_at_dispatch += 1
@@ -595,6 +615,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                             "_otel": otel,
                         }
                     ),
+                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                 )
 
                 # Keep workflow_executions.current_node_id fresh + light up the Agents tab.
@@ -608,6 +629,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                             "_otel": otel,
                         }
                     ),
+                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                 )
                 yield ctx.call_activity(
                     track_agent_run_scheduled,
@@ -624,6 +646,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                             "_otel": otel,
                         }
                     ),
+                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                 )
 
         _set_status(current_phase or "running", budget)
@@ -650,6 +673,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                             "_otel": otel,
                         }
                     ),
+                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                 )
             return {
                 "success": False,
@@ -682,6 +706,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                             "_otel": otel,
                         }
                     ),
+                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                 )
             return {
                 "success": False,
@@ -718,6 +743,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                                         "_otel": otel,
                                     }
                                 ),
+                                retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                             )
                     # Stop tracking; do NOT await the child result after skip.
                     del outstanding[target_call]
@@ -753,6 +779,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                         "_otel": otel,
                     }
                 ),
+                retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
             )
             rec = rec if isinstance(rec, dict) else {}
             rec_status = rec.get("status")
@@ -777,6 +804,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                             "_otel": otel,
                         }
                     ),
+                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                 )
 
         # Usage-settle gate: agent.llm_usage events are ingested asynchronously
@@ -819,6 +847,7 @@ def _journal_skip(ctx, exec_id, call_id, task_specs, otel):
                 "_otel": otel,
             }
         ),
+        retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
     )
 
 
