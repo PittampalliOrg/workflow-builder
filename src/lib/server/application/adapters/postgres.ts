@@ -5831,6 +5831,10 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			cache_read: number;
 			cache_create: number;
 		};
+		const executionIdList = sql.join(
+			execIds.map((id) => sql`${id}`),
+			sql`, `,
+		);
 		const rows = await this.database.execute<Row>(sql`
 			SELECT
 				coalesce(se.data->>'model', se.data->>'providerModel', 'unknown') AS model_spec,
@@ -5840,7 +5844,7 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 				coalesce(sum(floor(nullif(se.data->>'cache_creation_input_tokens', '')::numeric)), 0)::bigint AS cache_create
 			FROM session_events se
 			JOIN sessions s ON s.id = se.session_id
-			WHERE s.workflow_execution_id = ANY(${execIds})
+			WHERE s.workflow_execution_id IN (${executionIdList})
 				AND se.type = 'agent.llm_usage'
 				${input.projectId ? sql`AND s.project_id = ${input.projectId}` : sql``}
 			GROUP BY coalesce(se.data->>'model', se.data->>'providerModel', 'unknown')
