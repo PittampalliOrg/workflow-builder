@@ -25,6 +25,7 @@ import {
 	type TeamsDb,
 } from "$lib/server/teams/team-repo";
 import { injectTeamMessage } from "$lib/server/teams/team-messaging";
+import { countClaimableTasks } from "$lib/server/teams/team-tasks";
 
 const AUTO_CLAIM = (process.env.TEAM_AUTO_CLAIM ?? "true") !== "false";
 
@@ -66,14 +67,17 @@ export async function onTeamSessionEvent(
 		}
 
 		// Auto-claim: offer the idle teammate its next unblocked task by nudging it
-		// to call claim_task. (The claim itself is agent-driven + atomic; the driver
-		// only prompts, so exactly-once stays owned by the SQL claim.)
-		if (AUTO_CLAIM) {
+		// to call claim_task — but ONLY when there is actually claimable work.
+		// Nudging on every idle regardless of work causes an idle→nudge→idle loop
+		// (the teammate wakes, finds nothing, idles, gets nudged again...). Gating
+		// on claimable count breaks that loop; the claim itself stays agent-driven
+		// + atomic, so exactly-once remains owned by the SQL claim.
+		if (AUTO_CLAIM && (await countClaimableTasks(db, member.team_id)) > 0) {
 			await injectTeamMessage({
 				recipientSessionId: sessionId,
 				fromName: "team",
 				content:
-					"You are idle. Call claim_task to take the next unblocked task; if it returns null, wait for a message.",
+					"You are idle and there is unclaimed work. Call claim_task to take the next unblocked task.",
 				kind: "team-idle",
 				sourceEventId: `team-claim-nudge:${sessionId}:${member.updated_at}`,
 			});
