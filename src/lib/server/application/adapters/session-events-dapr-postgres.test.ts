@@ -177,6 +177,7 @@ describe("DaprPostgresSessionEventLog", () => {
 			summary: "session_events.insert",
 			collection: "session_events",
 			params: [
+				expect.any(String),
 				"session-1",
 				"agent.llm_usage",
 				JSON.stringify({ input_tokens: 10 }),
@@ -186,6 +187,7 @@ describe("DaprPostgresSessionEventLog", () => {
 				null,
 			],
 			spanParams: [
+				expect.any(String),
 				"session-1",
 				"agent.llm_usage",
 				{ input_tokens: 10 },
@@ -195,6 +197,7 @@ describe("DaprPostgresSessionEventLog", () => {
 				null,
 			],
 			paramNames: [
+				"id",
 				"session_id",
 				"type",
 				"data",
@@ -204,6 +207,7 @@ describe("DaprPostgresSessionEventLog", () => {
 				"producer_epoch",
 			],
 		});
+		expect(client.calls[0]?.sql).toContain("id,");
 		expect(client.calls[0]?.sql).toContain("pg_advisory_xact_lock");
 		expect(client.calls[0]?.sql).toContain("RETURNING");
 		expect(postAppendHook).toHaveBeenCalledWith("session-1", "agent.llm_usage", {

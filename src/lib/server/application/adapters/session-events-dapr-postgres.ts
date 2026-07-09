@@ -16,6 +16,7 @@ import type {
 	ListSessionEventsInput,
 	SessionEventLog,
 } from "$lib/server/application/ports";
+import { generateId } from "$lib/server/utils/id";
 import {
 	rowToEnvelope,
 	sanitizeSessionEventDataForPostgres,
@@ -91,6 +92,7 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 		event: AppendSessionEventInput,
 	): Promise<SessionEventEnvelope> {
 		const cleanData = sanitizeSessionEventDataForPostgres(event.data ?? {});
+		const eventId = generateId();
 		for (let attempt = 0; attempt < 5; attempt += 1) {
 			try {
 				const result = await this.client.query({
@@ -98,6 +100,7 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 					collection: "session_events",
 					sql: `
 						INSERT INTO session_events (
+							id,
 							session_id,
 							sequence,
 							type,
@@ -109,24 +112,26 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 						)
 						SELECT
 							$1,
-							next_sequence.sequence,
 							$2,
-							$3::jsonb,
-							$4::timestamptz,
+							next_sequence.sequence,
+							$3,
+							$4::jsonb,
 							$5,
 							$6,
-							$7
+							$7,
+							$8
 						FROM (
-							SELECT pg_advisory_xact_lock(hashtext($1)::bigint)
+							SELECT pg_advisory_xact_lock(hashtext($2)::bigint)
 						) AS lock,
 						LATERAL (
 							SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence
 							FROM session_events
-							WHERE session_id = $1
+							WHERE session_id = $2
 						) AS next_sequence
 						RETURNING ${SESSION_EVENT_COLUMNS}
 					`,
 					params: [
+						eventId,
 						sessionId,
 						event.type,
 						jsonParam(cleanData),
@@ -136,6 +141,7 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 						event.producerEpoch ?? null,
 					],
 					spanParams: [
+						eventId,
 						sessionId,
 						event.type,
 						cleanData,
@@ -145,6 +151,7 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 						event.producerEpoch ?? null,
 					],
 					paramNames: [
+						"id",
 						"session_id",
 						"type",
 						"data",
