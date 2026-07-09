@@ -96,6 +96,15 @@ export type AgentConfig = {
 	systemPrompt?: string;
 
 	/**
+	 * Agent Teams opt-in. When true, a session running this agent receives the
+	 * team MCP tools (spawn_teammate/create_task/claim_task/...) so it can act as
+	 * a team lead. Teammates spawned into a team always get the tools regardless
+	 * of this flag (they carry X-Wfb-Team-Depth). Default off, so ordinary
+	 * one-shot/eval sessions don't gain the 8 team tools.
+	 */
+	teamsEnabled?: boolean;
+
+	/**
 	 * Version-pinned references to Prompt Workbench preset versions whose system
 	 * text gets rendered into the static prefix BEFORE persona. Resolved by the
 	 * BFF at session-spawn time via `compilePromptStack()` and stamped onto

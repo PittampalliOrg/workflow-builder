@@ -294,6 +294,9 @@ export async function spawnSessionWorkflow(
 	const teamMember = await getMemberBySession(sessionId).catch(() => null);
 	const teamId = teamMember?.team_id ?? deriveLeadTeamId(sessionId);
 	const isTeammate = !!teamMember && teamMember.role !== "lead";
+	// A lead opts into the team tools per-agent via agentConfig.teamsEnabled.
+	const teamsEnabled =
+		(resolvedAgentConfig as { teamsEnabled?: boolean }).teamsEnabled === true;
 	const agentConfigForDispatch = {
 		...resolvedAgentConfig,
 		mcpServers: stampTeamMcpHeaders(
@@ -309,7 +312,7 @@ export async function spawnSessionWorkflow(
 				),
 				sessionId,
 			),
-			{ teamId, isTeammate },
+			{ teamId, isTeammate, teamsEnabled },
 		),
 		compiledStaticPresetSections: compiledPresetStack.static,
 		compiledDynamicPresetSections: compiledPresetStack.dynamic,

@@ -35,10 +35,23 @@ export function currentTeamId(): string | null {
 	return teamId ? teamId : null;
 }
 
-/** True when the request carries X-Wfb-Team-Depth (a teammate) — suppress team tools. */
-export function shouldSuppressTeamTools(
+export type TeamRole = "none" | "lead" | "member";
+
+/**
+ * Resolve the session's team role from request headers (used at MCP init to
+ * decide which team tools to register):
+ *   • no X-Wfb-Team-Id            → "none"   (not in a team; register NO team tools)
+ *   • X-Wfb-Team-Id, no depth     → "lead"   (register ALL team tools)
+ *   • X-Wfb-Team-Id + Team-Depth  → "member" (worker tools only — no spawn_teammate/
+ *                                              shutdown_teammate; the nesting guard)
+ */
+export function teamRoleFromHeaders(
 	headers: http.IncomingHttpHeaders,
-): boolean {
+): TeamRole {
+	const teamId = headers["x-wfb-team-id"];
+	if (!teamId || String(teamId).trim().length === 0) return "none";
 	const depth = headers["x-wfb-team-depth"];
-	return depth !== undefined && depth !== null && String(depth).length > 0;
+	const isMember =
+		depth !== undefined && depth !== null && String(depth).length > 0;
+	return isMember ? "member" : "lead";
 }

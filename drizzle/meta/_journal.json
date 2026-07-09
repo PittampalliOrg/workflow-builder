@@ -645,6 +645,20 @@
       "when": 1783530000000,
       "tag": "0097_workflow_script_calls",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1783620000000,
+      "tag": "0098_agent_teams",
+      "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1783710000000,
+      "tag": "0099_agent_teams_lazy_tasks",
+      "breakpoints": true
     }
   ]
 }
