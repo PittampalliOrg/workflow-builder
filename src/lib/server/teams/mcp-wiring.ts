@@ -14,9 +14,10 @@
  * creates the row lazily on the first spawn_teammate. Teammates carry the lead's
  * team id (resolved from their team_members row) + the depth guard.
  *
- * Opt-in for non-teammates via TEAM_MCP_AUTO_WIRE (default off) so ordinary
- * one-shot / benchmark / eval sessions don't gain the 8 team tools — teammates
- * (a team_members row exists) are always stamped regardless of the flag.
+ * A lead opts in PER-AGENT via `agentConfig.teamsEnabled` (so only agents meant
+ * to lead teams gain the 8 tools). Teammates (a team_members row exists) are
+ * always stamped regardless. `TEAM_MCP_AUTO_WIRE=true` remains an optional global
+ * override (default off) for fleet-wide enablement.
  */
 
 export function deriveLeadTeamId(sessionId: string): string {
@@ -25,11 +26,15 @@ export function deriveLeadTeamId(sessionId: string): string {
 
 export function stampTeamMcpHeaders<T>(
 	servers: T,
-	opts: { teamId: string; isTeammate: boolean },
+	opts: { teamId: string; isTeammate: boolean; teamsEnabled?: boolean },
 ): T {
-	// Non-teammate sessions only get team tools when auto-wire is enabled.
-	if (!opts.isTeammate && process.env.TEAM_MCP_AUTO_WIRE === "false") return servers;
-	if (!opts.isTeammate && !process.env.TEAM_MCP_AUTO_WIRE) return servers;
+	// Stamp when: this is a teammate (always), the agent opted in
+	// (agentConfig.teamsEnabled), or the global override is on.
+	const enabled =
+		opts.isTeammate ||
+		opts.teamsEnabled === true ||
+		process.env.TEAM_MCP_AUTO_WIRE === "true";
+	if (!enabled) return servers;
 	if (!Array.isArray(servers)) return servers;
 	return servers.map((entry) => {
 		if (!entry || typeof entry !== "object") return entry;

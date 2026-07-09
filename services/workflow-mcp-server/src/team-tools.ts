@@ -93,11 +93,22 @@ async function callBff(
 	return { ok: resp.ok, status: resp.status, json, text };
 }
 
-export function registerTeamTools(server: McpServer): RegisteredTool[] {
+/**
+ * Register the team tools. `role` gates the lead-only management tools:
+ *   • "lead"   → all 8 tools
+ *   • "member" → worker tools only (no spawn_teammate / shutdown_teammate — a
+ *                teammate cannot spawn nested teams or shut peers down)
+ */
+export function registerTeamTools(
+	server: McpServer,
+	opts?: { role?: "lead" | "member" },
+): RegisteredTool[] {
+	const includeLeadTools = (opts?.role ?? "lead") !== "member";
 	const tools: RegisteredTool[] = [];
 	const reg = (server as any).registerTool.bind(server);
 
-	// ── spawn_teammate ──────────────────────────────────────
+	// ── spawn_teammate (lead only) ──────────────────────────
+	if (includeLeadTools) {
 	reg(
 		"spawn_teammate",
 		{
@@ -147,6 +158,7 @@ export function registerTeamTools(server: McpServer): RegisteredTool[] {
 		},
 	);
 	tools.push({ name: "spawn_teammate", description: "Spawn a peer teammate agent" });
+	}
 
 	// ── list_teammates ──────────────────────────────────────
 	reg(
@@ -326,7 +338,8 @@ export function registerTeamTools(server: McpServer): RegisteredTool[] {
 	);
 	tools.push({ name: "update_task", description: "Mark a task completed" });
 
-	// ── shutdown_teammate ───────────────────────────────────
+	// ── shutdown_teammate (lead only) ───────────────────────
+	if (includeLeadTools) {
 	reg(
 		"shutdown_teammate",
 		{
@@ -353,6 +366,7 @@ export function registerTeamTools(server: McpServer): RegisteredTool[] {
 		},
 	);
 	tools.push({ name: "shutdown_teammate", description: "Shut down a teammate" });
+	}
 
 	// Reference so the imported helper is used even before the driver lands.
 	void listTasks;

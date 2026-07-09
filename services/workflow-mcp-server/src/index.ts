@@ -32,10 +32,7 @@ import {
 	STRUCTURED_OUTPUT_TOOL_NAME,
 } from "./structured-output-tools.js";
 import { runWithGoalContext } from "./goal-context.js";
-import {
-	runWithTeamContext,
-	shouldSuppressTeamTools,
-} from "./team-context.js";
+import { runWithTeamContext, teamRoleFromHeaders } from "./team-context.js";
 import { registerTeamTools } from "./team-tools.js";
 import { setSpanInput, setSpanOutput } from "./observability/content.js";
 
@@ -160,9 +157,10 @@ type CreateMcpServerOptions = {
 	// Recursion guard: script-spawned sessions carry X-Wfb-Script-Depth, which
 	// suppresses run_workflow_script so a running script can't launch more.
 	suppressScriptTools?: boolean;
-	// Nesting guard: teammate sessions carry X-Wfb-Team-Depth, which suppresses
-	// the team tools so a teammate can't spawn its own nested team.
-	suppressTeamTools?: boolean;
+	// Team role (from X-Wfb-Team-Id / X-Wfb-Team-Depth): "none" registers no team
+	// tools, "lead" registers all, "member" registers worker tools only (no
+	// spawn_teammate/shutdown_teammate — the nesting guard).
+	teamRole?: "none" | "lead" | "member";
 };
 
 /** Create a new MCP Server instance with workflow tools. */
@@ -191,12 +189,11 @@ function createMcpServer(
 		registerScriptTools(mcpServer);
 	}
 
-	// Team tools register for team members (lead + peers); suppressed for teammate
-	// sessions carrying X-Wfb-Team-Depth so nested teams can't form. Session scope
-	// comes from X-Wfb-Session-Id, team scope from X-Wfb-Team-Id (see the
-	// runWithTeamContext wraps below).
-	if (opts?.suppressTeamTools !== true) {
-		registerTeamTools(mcpServer);
+	// Team tools register by role: none → no team tools (not in a team), lead →
+	// all, member → worker tools only (nesting guard). Role comes from
+	// X-Wfb-Team-Id / X-Wfb-Team-Depth (see handleMcpPost + runWithTeamContext).
+	if (opts?.teamRole && opts.teamRole !== "none") {
+		registerTeamTools(mcpServer, { role: opts.teamRole });
 	}
 
 	return mcpServer.server;
@@ -299,7 +296,7 @@ async function handleMcpPost(
 		// on the MCP entry for script-spawned sessions) suppresses the dynamic
 		// script tool so a running script can't launch further scripts.
 		const suppressScriptTools = shouldSuppressScriptTools(req.headers);
-		const suppressTeamTools = shouldSuppressTeamTools(req.headers);
+		const teamRole = teamRoleFromHeaders(req.headers);
 
 		let structuredOutputContext;
 		try {
@@ -317,7 +314,7 @@ async function handleMcpPost(
 		}
 		const server = structuredOutputContext
 			? createStructuredOutputMcpServer(structuredOutputContext.schema)
-			: createMcpServer(userId, { suppressScriptTools, suppressTeamTools });
+			: createMcpServer(userId, { suppressScriptTools, teamRole });
 		await server.connect(transport);
 	} else {
 		sendJson(res, 400, {
@@ -438,7 +435,7 @@ async function main(): Promise<void> {
 		);
 		registeredTools = [
 			...registeredTools,
-			...registerTeamTools(dryTeamServer),
+			...registerTeamTools(dryTeamServer, { role: "lead" }),
 		];
 	}
 
