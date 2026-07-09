@@ -14,6 +14,8 @@ const DEFAULT_MAX_RETRIES = 3;
 
 interface DaprRequestOptions extends RequestInit {
   maxRetries?: number;
+  spanInput?: unknown;
+  captureResponseBodyForSpan?: boolean;
 }
 
 type DaprFetchTarget = {
@@ -164,7 +166,12 @@ export async function daprFetch(
   url: string,
   options: DaprRequestOptions = {},
 ): Promise<Response> {
-  const { maxRetries = DEFAULT_MAX_RETRIES, ...fetchOptions } = options;
+  const {
+    maxRetries = DEFAULT_MAX_RETRIES,
+    spanInput,
+    captureResponseBodyForSpan = true,
+    ...fetchOptions
+  } = options;
   const method = (fetchOptions.method || "GET").toUpperCase();
   const target = describeDaprFetch(url);
 
@@ -177,11 +184,15 @@ export async function daprFetch(
       span.setAttribute("dapr.operation", target.operation);
       if (target.service) span.setAttribute("dapr.target_service", target.service);
       if (target.component) span.setAttribute("dapr.component", target.component);
-      setSpanValue(span, "input", {
-        method,
-        target,
-        body: requestBodyForSpan(fetchOptions.body),
-      });
+      setSpanValue(
+        span,
+        "input",
+        spanInput ?? {
+          method,
+          target,
+          body: requestBodyForSpan(fetchOptions.body),
+        },
+      );
 
       let lastError: Error | undefined;
 
@@ -201,12 +212,19 @@ export async function daprFetch(
             }
 
             span.setAttribute("http.response.status_code", response.status);
-            try {
-              setSpanValue(span, "output", await responseBodyForSpan(response));
-            } catch {
+            if (captureResponseBodyForSpan) {
+              try {
+                setSpanValue(span, "output", await responseBodyForSpan(response));
+              } catch {
+                setSpanValue(span, "output", {
+                  status: response.status,
+                  body: "[response capture failed]",
+                });
+              }
+            } else {
               setSpanValue(span, "output", {
                 status: response.status,
-                body: "[response capture failed]",
+                body: "[response body capture disabled]",
               });
             }
             if (!response.ok) {

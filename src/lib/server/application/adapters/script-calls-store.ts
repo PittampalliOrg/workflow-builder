@@ -58,6 +58,20 @@ export type ScriptCallUpsertInput = {
 	tokensUsed?: number;
 };
 
+export interface ScriptCallsStore {
+	listScriptCalls(executionId: string): Promise<ScriptCallRecord[]>;
+	upsertScriptCall(
+		executionId: string,
+		callId: string,
+		input: ScriptCallUpsertInput,
+	): Promise<ScriptCallRecord>;
+	importScriptCalls(input: {
+		toExecutionId: string;
+		fromExecutionId: string;
+	}): Promise<{ imported: number }>;
+	sumExecutionLlmUsage(executionId: string): Promise<{ totalTokens: number }>;
+}
+
 type Row = typeof workflowScriptCalls.$inferSelect;
 
 function requireDb() {
@@ -226,3 +240,30 @@ export async function sumExecutionLlmUsage(
 	}
 	return { totalTokens };
 }
+
+export class PostgresScriptCallsStore implements ScriptCallsStore {
+	listScriptCalls(executionId: string): Promise<ScriptCallRecord[]> {
+		return listScriptCalls(executionId);
+	}
+
+	upsertScriptCall(
+		executionId: string,
+		callId: string,
+		input: ScriptCallUpsertInput,
+	): Promise<ScriptCallRecord> {
+		return upsertScriptCall(executionId, callId, input);
+	}
+
+	importScriptCalls(input: {
+		toExecutionId: string;
+		fromExecutionId: string;
+	}): Promise<{ imported: number }> {
+		return importScriptCalls(input);
+	}
+
+	sumExecutionLlmUsage(executionId: string): Promise<{ totalTokens: number }> {
+		return sumExecutionLlmUsage(executionId);
+	}
+}
+
+export const postgresScriptCallsStore = new PostgresScriptCallsStore();

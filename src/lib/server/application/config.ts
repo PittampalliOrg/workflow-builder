@@ -6,6 +6,7 @@ export const EVENT_BUS_ADAPTERS = ["dapr-pubsub", "in-process"] as const;
 export const ARTIFACT_STORE_ADAPTERS = ["postgres-metadata-object-data"] as const;
 export const WORKFLOW_SCHEDULER_ADAPTERS = ["dapr-workflow", "lite-stub"] as const;
 export const PREVIEW_PROVISIONER_ADAPTERS = ["sandbox-execution-api", "kro"] as const;
+export const SCRIPT_CALLS_STORE_ADAPTERS = ["postgres", "dapr-postgres-binding"] as const;
 
 export type AppProfile = (typeof APP_PROFILES)[number];
 export type PersistenceAdapter = (typeof PERSISTENCE_ADAPTERS)[number];
@@ -13,6 +14,7 @@ export type EventBusAdapter = (typeof EVENT_BUS_ADAPTERS)[number];
 export type ArtifactStoreAdapter = (typeof ARTIFACT_STORE_ADAPTERS)[number];
 export type WorkflowSchedulerAdapter = (typeof WORKFLOW_SCHEDULER_ADAPTERS)[number];
 export type PreviewProvisionerAdapter = (typeof PREVIEW_PROVISIONER_ADAPTERS)[number];
+export type ScriptCallsStoreAdapter = (typeof SCRIPT_CALLS_STORE_ADAPTERS)[number];
 
 export type ApplicationAdapterConfig = {
 	appProfile: AppProfile;
@@ -21,6 +23,7 @@ export type ApplicationAdapterConfig = {
 	artifactStoreAdapter: ArtifactStoreAdapter;
 	workflowSchedulerAdapter: WorkflowSchedulerAdapter;
 	previewProvisionerAdapter: PreviewProvisionerAdapter;
+	scriptCallsStoreAdapter: ScriptCallsStoreAdapter;
 	/** E1: the Dev-hub live preview run feed. Off by default. */
 	previewRunFeedEnabled: boolean;
 	/** D1: label-gated per-PR previews (`/api/internal/pr-previews`). Off by default. */
@@ -116,6 +119,12 @@ export function getApplicationAdapterConfig(
 			"PREVIEW_PROVISIONER_ADAPTER",
 			"sandbox-execution-api",
 			PREVIEW_PROVISIONER_ADAPTERS,
+		),
+		scriptCallsStoreAdapter: readAdapter(
+			source,
+			"SCRIPT_CALLS_STORE_ADAPTER",
+			"postgres",
+			SCRIPT_CALLS_STORE_ADAPTERS,
 		),
 		previewRunFeedEnabled: readFlag(source, "PREVIEW_RUN_FEED_ENABLED"),
 		prPreviewsEnabled: readFlag(source, "PR_PREVIEWS_ENABLED"),

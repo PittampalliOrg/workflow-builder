@@ -9,11 +9,9 @@
 
 import type { WorkflowDataService } from "$lib/server/application/ports";
 import {
-	importScriptCalls,
-	listScriptCalls,
-	sumExecutionLlmUsage,
-	upsertScriptCall,
+	postgresScriptCallsStore,
 	type ScriptCallRecord,
+	type ScriptCallsStore,
 	type ScriptCallUpsertInput,
 } from "$lib/server/application/adapters/script-calls-store";
 
@@ -25,12 +23,17 @@ export class ApplicationScriptCallsService {
 	constructor(
 		private readonly deps: {
 			workflowData: Pick<WorkflowDataService, "getScopedExecutionById">;
+			store?: ScriptCallsStore;
 		},
 	) {}
 
+	private get store(): ScriptCallsStore {
+		return this.deps.store ?? postgresScriptCallsStore;
+	}
+
 	/** Internal (orchestrator) read — no scope check. */
 	async listInternal(executionId: string): Promise<ScriptCallRecord[]> {
-		return listScriptCalls(executionId);
+		return this.store.listScriptCalls(executionId);
 	}
 
 	/** Internal idempotent upsert of one journal row. */
@@ -39,7 +42,7 @@ export class ApplicationScriptCallsService {
 		callId: string,
 		input: ScriptCallUpsertInput,
 	): Promise<ScriptCallRecord> {
-		return upsertScriptCall(executionId, callId, input);
+		return this.store.upsertScriptCall(executionId, callId, input);
 	}
 
 	/** Internal resume-after-edit journal import (`done` rows only). */
@@ -47,12 +50,12 @@ export class ApplicationScriptCallsService {
 		toExecutionId: string;
 		fromExecutionId: string;
 	}): Promise<{ imported: number }> {
-		return importScriptCalls(input);
+		return this.store.importScriptCalls(input);
 	}
 
 	/** Internal budget aggregate — Σ tokensFromUsage over the execution's sessions. */
 	async llmUsage(executionId: string): Promise<{ totalTokens: number }> {
-		return sumExecutionLlmUsage(executionId);
+		return this.store.sumExecutionLlmUsage(executionId);
 	}
 
 	/** User-scoped journal read for the run UI. 404s cross-workspace. */
@@ -69,7 +72,7 @@ export class ApplicationScriptCallsService {
 		if (!execution) {
 			return { status: "error", httpStatus: 404, message: "Execution not found" };
 		}
-		const calls = await listScriptCalls(input.executionId);
+		const calls = await this.store.listScriptCalls(input.executionId);
 		return { status: "ok", body: { scriptCalls: calls } };
 	}
 }

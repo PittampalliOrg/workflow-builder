@@ -355,6 +355,7 @@ import { ApplicationWorkflowExecutionWorkspaceService } from "$lib/server/applic
 import { ApplicationWorkflowExecutionStreamService } from "$lib/server/application/workflow-execution-stream";
 import { ApplicationPreviewRunFeedService } from "$lib/server/application/preview-run-feed";
 import { NatsPreviewRunFeed } from "$lib/server/application/adapters/nats-preview-run-feed";
+import { DaprPostgresScriptCallsStore } from "$lib/server/application/adapters/script-calls-dapr-postgres";
 import { listVclusterPreviews } from "$lib/server/workflows/vcluster-preview";
 import { ApplicationPrPreviewService } from "$lib/server/application/pr-previews";
 import {
@@ -614,6 +615,7 @@ export function getApplicationAdapters(
 		| ApplicationWorkflowExecutionArtifactsService
 		| undefined;
 	let scriptCalls: ApplicationScriptCallsService | undefined;
+	let daprPostgresScriptCallsStore: DaprPostgresScriptCallsStore | undefined;
 	let workflowExecutionFiles:
 		| ApplicationWorkflowExecutionFilesService
 		| undefined;
@@ -1234,6 +1236,11 @@ export function getApplicationAdapters(
 		(scriptCalls ??=
 			new ApplicationScriptCallsService({
 				workflowData: getWorkflowData(),
+				store:
+					config.scriptCallsStoreAdapter === "dapr-postgres-binding"
+						? (daprPostgresScriptCallsStore ??=
+								new DaprPostgresScriptCallsStore())
+						: undefined,
 			}));
 	const getWorkflowExecutionArtifactDiff = () =>
 		(workflowExecutionArtifactDiff ??=

@@ -10,6 +10,7 @@ describe("application adapter config", () => {
 			artifactStoreAdapter: "postgres-metadata-object-data",
 			workflowSchedulerAdapter: "dapr-workflow",
 			previewProvisionerAdapter: "sandbox-execution-api",
+			scriptCallsStoreAdapter: "postgres",
 			previewRunFeedEnabled: false,
 			prPreviewsEnabled: false,
 			prPreviewRepo: "PittampalliOrg/workflow-builder",
@@ -88,6 +89,7 @@ describe("application adapter config", () => {
 			artifactStoreAdapter: "postgres-metadata-object-data",
 			workflowSchedulerAdapter: "lite-stub",
 			previewProvisionerAdapter: "sandbox-execution-api",
+			scriptCallsStoreAdapter: "postgres",
 			previewRunFeedEnabled: false,
 			prPreviewsEnabled: false,
 			prPreviewRepo: "PittampalliOrg/workflow-builder",
@@ -129,5 +131,19 @@ describe("application adapter config", () => {
 		expect(config.appProfile).toBe("full");
 		expect(config.eventBusAdapter).toBe("in-process");
 		expect(config.workflowSchedulerAdapter).toBe("lite-stub");
+	});
+
+	it("selects the Dapr PostgreSQL binding for the bounded script-call store", () => {
+		expect(
+			getApplicationAdapterConfig({
+				SCRIPT_CALLS_STORE_ADAPTER: "dapr-postgres-binding",
+			}).scriptCallsStoreAdapter,
+		).toBe("dapr-postgres-binding");
+	});
+
+	it("rejects unsupported script-call store adapters", () => {
+		expect(() =>
+			getApplicationAdapterConfig({ SCRIPT_CALLS_STORE_ADAPTER: "raw-sql" }),
+		).toThrow("Unsupported SCRIPT_CALLS_STORE_ADAPTER='raw-sql'");
 	});
 });
