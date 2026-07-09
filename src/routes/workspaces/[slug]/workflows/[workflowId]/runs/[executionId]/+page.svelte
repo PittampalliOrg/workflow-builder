@@ -217,6 +217,7 @@
 	let isLoadingInvestigation = $state(false);
 	let investigationError = $state<string | null>(null);
 	let investigationFetched = $state(false);
+	let investigationExecutionId = $state(page.params.executionId ?? '');
 
 
 	// Browser artifacts
@@ -1479,12 +1480,15 @@
 	}
 
 	async function fetchInvestigation() {
-		if (investigationFetched || !investigationSessionId) return;
+		if (investigationFetched || !executionId) return;
 		investigationFetched = true;
 		isLoadingInvestigation = true;
 		investigationError = null;
 		try {
-			const res = await fetch(`/api/observability/sessions/${encodeURIComponent(investigationSessionId)}/investigation`);
+			let res = await fetch(`/api/observability/executions/${encodeURIComponent(executionId)}/investigation`);
+			if (!res.ok && res.status === 404 && investigationSessionId) {
+				res = await fetch(`/api/observability/sessions/${encodeURIComponent(investigationSessionId)}/investigation`);
+			}
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const data = await res.json();
 			if (data.error) {
@@ -1500,9 +1504,17 @@
 	}
 
 	$effect(() => {
-		if (activeTab === 'trace' && investigationSessionId && !investigationFetched) {
+		if (activeTab === 'trace' && executionId && !investigationFetched) {
 			fetchInvestigation();
 		}
+	});
+
+	$effect(() => {
+		if (executionId === investigationExecutionId) return;
+		investigationExecutionId = executionId;
+		investigationFetched = false;
+		investigationPayload = null;
+		investigationError = null;
 	});
 
 	// (Spawned-session listing now lives in the RunConsole component on the Live

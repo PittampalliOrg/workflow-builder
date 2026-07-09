@@ -238,9 +238,16 @@ export async function resolveExecutionTraceIds(execution: ExecutionRow): Promise
 	const ids = new Set<string>();
 	if (execution.primaryTraceId) ids.add(execution.primaryTraceId.trim());
 	for (const id of extractExecutionTraceIds(execution.output)) ids.add(id);
-	for (const id of await traceIdsByExecutionAttr(execution.id)) ids.add(id);
-	if (execution.workflowSessionId) {
-		for (const id of await traceIdsByExecutionAttr(execution.workflowSessionId)) ids.add(id);
+	try {
+		for (const id of await traceIdsByExecutionAttr(execution.id)) ids.add(id);
+		if (execution.workflowSessionId) {
+			for (const id of await traceIdsByExecutionAttr(execution.workflowSessionId)) ids.add(id);
+		}
+	} catch (err) {
+		console.warn('[service-graph] Trace id attribute lookup failed', {
+			executionId: execution.id,
+			message: err instanceof Error ? err.message : String(err)
+		});
 	}
 
 	let resolved = sanitizeTraceIds([...ids]);
@@ -266,7 +273,7 @@ function isError(span: ObservabilityTraceSpan): boolean {
 
 export function virtualPeer(span: ObservabilityTraceSpan): { id: string; kind: ServiceGraphNodeKind; label: string } | null {
 	const attrs = span.attributes ?? {};
-	const dbSystem = attrs['db.system'] ?? attrs['db.namespace'];
+	const dbSystem = attrs['db.system.name'] ?? attrs['db.system'] ?? attrs['db.namespace'];
 	if (dbSystem) return { id: `db:${String(dbSystem)}`, kind: 'db', label: String(dbSystem) };
 	const peer = attrs['peer.service'] ?? attrs['server.address'] ?? attrs['net.peer.name'];
 	if (peer) return { id: `ext:${String(peer)}`, kind: 'external', label: String(peer) };
@@ -386,14 +393,24 @@ async function buildServiceGraphWindowed(
 		GROUP BY source, target HAVING total > 0
 		ORDER BY total DESC LIMIT ${EDGE_LIMIT + 1}`);
 
-	// DB edges: client spans carrying db.system → virtual db node (uninstrumented).
+	// DB edges: client spans carrying stable db.system.name or legacy db.system
+	// → virtual db node (uninstrumented).
 	const dbRows = await queryClickHouse(`
-		SELECT ServiceName source, SpanAttributes['db.system'] db, count() total,
+		SELECT ServiceName source,
+			if(
+				mapContains(SpanAttributes, 'db.system.name') AND SpanAttributes['db.system.name'] != '',
+				SpanAttributes['db.system.name'],
+				SpanAttributes['db.system']
+			) db,
+			count() total,
 			countIf(StatusCode='${ERROR_STATUS}') errors,
 			quantile(0.5)(Duration/1000000) p50, quantile(0.95)(Duration/1000000) p95, quantile(0.99)(Duration/1000000) p99
 		FROM ${CLICKHOUSE_DB}.otel_traces
 		WHERE Timestamp >= ${since} AND SpanKind IN ('Client','Producer')
-			AND mapContains(SpanAttributes, 'db.system') AND SpanAttributes['db.system'] != '' ${wfFilter}
+			AND (
+				(mapContains(SpanAttributes, 'db.system.name') AND SpanAttributes['db.system.name'] != '')
+				OR (mapContains(SpanAttributes, 'db.system') AND SpanAttributes['db.system'] != '')
+			) ${wfFilter}
 		GROUP BY source, db ORDER BY total DESC LIMIT 100`);
 
 	// User-entry edges: root server spans (no parent) → instrumented service.

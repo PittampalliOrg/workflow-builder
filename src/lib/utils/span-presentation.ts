@@ -58,7 +58,7 @@ export function categorizeSpan(span: SpanLike): SpanCategory {
 	const a = span.attributes ?? {};
 	if ('gen_ai.tool.name' in a) return 'tool';
 	if (hasPrefix(a, 'gen_ai.')) return 'llm';
-	if ('db.system' in a) return 'db';
+	if ('db.system.name' in a || 'db.system' in a) return 'db';
 	if ('http.method' in a || 'http.request.method' in a || 'url.full' in a || 'http.url' in a)
 		return 'http';
 	if ('rpc.system' in a) return 'rpc';

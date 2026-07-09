@@ -3,7 +3,8 @@ import type { ObservabilityTraceSpan } from '$lib/types/observability';
 import {
 	buildServiceGraphFromSpans,
 	buildStepGraphDynamicScript,
-	isBenignControlPlaneError
+	isBenignControlPlaneError,
+	virtualPeer
 } from './service-graph';
 
 function span(overrides: Partial<ObservabilityTraceSpan>): ObservabilityTraceSpan {
@@ -51,6 +52,39 @@ describe('service graph error classification', () => {
 		expect(agent?.status).toBe('ok');
 		expect(router?.red.errors).toBe(1);
 		expect(router?.status).toBe('error');
+	});
+});
+
+describe('service graph virtual peers', () => {
+	it('recognizes stable OpenTelemetry database semantic conventions', () => {
+		const peer = virtualPeer(
+			span({
+				spanKind: 'Client',
+				status: 'ok',
+				statusCode: 'Ok',
+				attributes: {
+					'db.system.name': 'postgresql'
+				}
+			})
+		);
+
+		expect(peer).toEqual({ id: 'db:postgresql', kind: 'db', label: 'postgresql' });
+	});
+
+	it('builds database edges from db.system.name spans', () => {
+		const graph = buildServiceGraphFromSpans([
+			span({
+				spanKind: 'Client',
+				status: 'ok',
+				statusCode: 'Ok',
+				attributes: {
+					'db.system.name': 'postgresql'
+				}
+			})
+		]);
+
+		expect(graph.nodes.some((node) => node.id === 'db:postgresql' && node.kind === 'db')).toBe(true);
+		expect(graph.edges.some((edge) => edge.source === 'service-a' && edge.target === 'db:postgresql')).toBe(true);
 	});
 });
 

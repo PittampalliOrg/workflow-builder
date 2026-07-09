@@ -162,8 +162,22 @@ function formatTraceBackendWarning(err: unknown): string {
 	return `Trace details unavailable: ${message}`;
 }
 
+function formatTraceBackendPartialWarning(
+	failures: { label: string; reason: unknown }[],
+	allFailed: boolean
+): string | null {
+	if (failures.length === 0) return null;
+	if (allFailed) return formatTraceBackendWarning(failures[0].reason);
+	const details = failures
+		.map(({ label, reason }) =>
+			`${label}: ${formatTraceBackendWarning(reason).replace(/^Trace details unavailable: /, '')}`
+		)
+		.join('; ');
+	return `Trace details partially unavailable: ${details}`;
+}
+
 function traceBackendWarningIssue(args: {
-	scope: 'session' | 'trace';
+	scope: 'session' | 'trace' | 'execution';
 	identifier: string;
 	warningMessage: string | null;
 	timestamp: string | null;
@@ -179,35 +193,92 @@ function traceBackendWarningIssue(args: {
 }
 
 async function loadSessionTraceBackend(sessionId: string): Promise<TraceBackendData> {
-	try {
-		const [traceSpans, logs, llmSpans, toolSpans] = await Promise.all([
-			getSessionTraceSpans(sessionId),
-			getSessionLogs(sessionId),
-			getSessionLlmSpans(sessionId),
-			getSessionToolSpans(sessionId)
-		]);
-		return { traceSpans, logs, llmSpans, toolSpans, warningMessage: null };
-	} catch (err) {
-		const warningMessage = formatTraceBackendWarning(err);
-		console.warn('[observability] Session trace backend query failed', { sessionId, warningMessage });
-		return emptyTraceBackendData(warningMessage);
-	}
+	return loadTraceBackendQueries({
+		scope: 'session',
+		identifier: sessionId,
+		queries: {
+			traceSpans: () => getSessionTraceSpans(sessionId),
+			logs: () => getSessionLogs(sessionId),
+			llmSpans: () => getSessionLlmSpans(sessionId),
+			toolSpans: () => getSessionToolSpans(sessionId)
+		}
+	});
 }
 
 async function loadTraceBackend(traceId: string): Promise<TraceBackendData> {
-	try {
-		const [traceSpans, logs, llmSpans, toolSpans] = await Promise.all([
-			getTraceSpans(traceId),
-			getTraceLogs(traceId),
-			getTraceLlmSpans(traceId),
-			getTraceToolSpans(traceId)
-		]);
-		return { traceSpans, logs, llmSpans, toolSpans, warningMessage: null };
-	} catch (err) {
-		const warningMessage = formatTraceBackendWarning(err);
-		console.warn('[observability] Trace backend query failed', { traceId, warningMessage });
-		return emptyTraceBackendData(warningMessage);
+	return loadTraceBackendQueries({
+		scope: 'trace',
+		identifier: traceId,
+		queries: {
+			traceSpans: () => getTraceSpans(traceId),
+			logs: () => getTraceLogs(traceId),
+			llmSpans: () => getTraceLlmSpans(traceId),
+			toolSpans: () => getTraceToolSpans(traceId)
+		}
+	});
+}
+
+async function loadExecutionTraceBackend(
+	executionId: string,
+	traceIds: string[],
+	serviceNames?: string[]
+): Promise<TraceBackendData> {
+	const ids = sanitizeTraceIds(traceIds);
+	if (ids.length === 0) return emptyTraceBackendData(null);
+	return loadTraceBackendQueries({
+		scope: 'execution',
+		identifier: executionId,
+		queries: {
+			traceSpans: () => getMultiTraceSpans(ids, serviceNames),
+			logs: () => getMultiTraceLogs(ids, serviceNames),
+			llmSpans: () => getMultiTraceLlmSpans(ids, serviceNames),
+			toolSpans: () => getMultiTraceToolSpans(ids, serviceNames)
+		}
+	});
+}
+
+async function loadTraceBackendQueries(args: {
+	scope: 'session' | 'trace' | 'execution';
+	identifier: string;
+	queries: {
+		traceSpans: () => Promise<ObservabilityTraceSpan[]>;
+		logs: () => Promise<ObservabilityLogEntry[]>;
+		llmSpans: () => Promise<ObservabilityLlmSpan[]>;
+		toolSpans: () => Promise<ObservabilityToolSpan[]>;
+	};
+}): Promise<TraceBackendData> {
+	const entries = [
+		['traceSpans', 'spans', args.queries.traceSpans],
+		['logs', 'logs', args.queries.logs],
+		['llmSpans', 'LLM spans', args.queries.llmSpans],
+		['toolSpans', 'tool spans', args.queries.toolSpans]
+	] as const;
+	const settled = await Promise.allSettled(entries.map(([, , run]) => run()));
+	const data = emptyTraceBackendData(null);
+	const failures: { label: string; reason: unknown }[] = [];
+
+	for (const [index, result] of settled.entries()) {
+		const [key, label] = entries[index];
+		if (result.status === 'fulfilled') {
+			if (key === 'traceSpans') data.traceSpans = result.value as ObservabilityTraceSpan[];
+			if (key === 'logs') data.logs = result.value as ObservabilityLogEntry[];
+			if (key === 'llmSpans') data.llmSpans = result.value as ObservabilityLlmSpan[];
+			if (key === 'toolSpans') data.toolSpans = result.value as ObservabilityToolSpan[];
+		} else {
+			failures.push({ label, reason: result.reason });
+		}
 	}
+
+	data.warningMessage = formatTraceBackendPartialWarning(failures, failures.length === entries.length);
+	if (data.warningMessage) {
+		console.warn('[observability] Trace backend query degraded', {
+			scope: args.scope,
+			identifier: args.identifier,
+			failed: failures.map((failure) => failure.label),
+			warningMessage: data.warningMessage
+		});
+	}
+	return data;
 }
 
 function firstNonEmptyMessage(messages: ObservabilityLlmMessage[]): string | null {
@@ -975,12 +1046,7 @@ export async function buildExecutionInvestigation(
 	const ids = sanitizeTraceIds(traceIds);
 	const [stepInfo, traceBackend] = await Promise.all([
 		workflowReader.getWorkflowSteps(executionId),
-		Promise.all([
-			getMultiTraceSpans(ids, serviceNames),
-			getMultiTraceLogs(ids, serviceNames),
-			getMultiTraceLlmSpans(ids, serviceNames),
-			getMultiTraceToolSpans(ids, serviceNames)
-		]).then(([traceSpans, logs, llmSpans, toolSpans]) => ({ traceSpans, logs, llmSpans, toolSpans }))
+		loadExecutionTraceBackend(executionId, ids, serviceNames)
 	]);
 	const { steps, status, startedAt, completedAt } = stepInfo;
 	const { traceSpans, logs, llmSpans, toolSpans } = traceBackend;
@@ -989,7 +1055,16 @@ export async function buildExecutionInvestigation(
 			'session.id'
 		]?.toString() ?? null;
 
-	const issues = buildIssues(traceSpans, logs, steps, toolSpans);
+	const traceBackendIssue = traceBackendWarningIssue({
+		scope: 'execution',
+		identifier: executionId,
+		warningMessage: traceBackend.warningMessage,
+		timestamp: startedAt ?? completedAt ?? traceSpans[0]?.startTime
+	});
+	const issues = [
+		...buildIssues(traceSpans, logs, steps, toolSpans),
+		...(traceBackendIssue ? [traceBackendIssue] : [])
+	];
 	const events = buildEvents({ traceSpans, logs, llmSpans, toolSpans, steps, issues });
 	const agentDecisionModel = buildAgentDecisionModel({ traceSpans, logs, llmSpans, toolSpans });
 	const workflowTimeline = buildWorkflowTimeline({ traceSpans, workflowSteps: steps });

@@ -57,7 +57,9 @@
 		if (http.status != null)
 			rows.push({ label: 'Status', value: String(http.status), tone: statusTone(http.status) });
 		const a = span.attributes ?? {};
-		if (typeof a['db.system'] === 'string') rows.push({ label: 'DB', value: String(a['db.system']) });
+		if (typeof a['db.system.name'] === 'string')
+			rows.push({ label: 'DB', value: String(a['db.system.name']) });
+		else if (typeof a['db.system'] === 'string') rows.push({ label: 'DB', value: String(a['db.system']) });
 		if (typeof a['gen_ai.request.model'] === 'string')
 			rows.push({ label: 'Model', value: String(a['gen_ai.request.model']) });
 		if (errored && span.statusMessage)
