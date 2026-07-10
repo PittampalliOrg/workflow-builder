@@ -41,6 +41,20 @@ _MAX_TIMEOUT_MINUTES = 120
 # driving a turn. `suspended` counts — a hibernated teammate is not working.
 _QUIESCENT_MEMBER_STATUSES = {"idle", "suspended", "shutdown", "failed"}
 
+# get_team_state raises on transport/5xx (team_ops.py contract) — retry those
+# instead of failing the join on one BFF blip. Same knobs as the pump's
+# _BFF_ACTIVITY_RETRY_POLICY; the poll is read-only so re-invocation is safe.
+_TEAM_STATE_RETRY_POLICY = wf.RetryPolicy(
+    first_retry_interval=timedelta(
+        seconds=int(os.environ.get("SCRIPT_EVAL_RETRY_FIRST_INTERVAL_SECONDS", "2"))
+    ),
+    max_number_of_attempts=int(os.environ.get("SCRIPT_EVAL_RETRY_MAX_ATTEMPTS", "5")),
+    backoff_coefficient=float(os.environ.get("SCRIPT_EVAL_RETRY_BACKOFF_COEFFICIENT", "2")),
+    max_retry_interval=timedelta(
+        seconds=int(os.environ.get("SCRIPT_EVAL_RETRY_MAX_INTERVAL_SECONDS", "60"))
+    ),
+)
+
 
 def _poll_seconds() -> int:
     try:
@@ -90,6 +104,7 @@ def team_join_workflow(ctx: wf.DaprWorkflowContext, input_data: dict):
         state = yield ctx.call_activity(
             get_team_state,
             input={"executionId": execution_id, "_otel": otel},
+            retry_policy=_TEAM_STATE_RETRY_POLICY,
         )
         if not isinstance(state, dict) or not state.get("success"):
             error = (state or {}).get("error") if isinstance(state, dict) else None
