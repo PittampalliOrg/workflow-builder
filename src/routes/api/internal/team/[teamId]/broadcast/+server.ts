@@ -2,17 +2,18 @@ import { randomUUID } from "node:crypto";
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { validateInternalToken } from "$lib/server/internal-auth";
-import { getMemberBySession, listMembers } from "$lib/server/teams/team-repo";
-import { injectTeamMessage } from "$lib/server/teams/team-messaging";
+import { getApplicationAdapters } from "$lib/server/application";
 
 /**
  * POST /api/internal/team/[teamId]/broadcast  { fromSessionId?, content }
  *
- * Team-wide fan-out: deliver the message to every member except the sender.
- * Each delivery rides the same raise-event path as a point-to-point message,
- * with a per-recipient deterministic sourceEventId derived from one broadcast id.
- * (A future optimization can move the fan-out onto NATS; the delivery into each
- * live session is always the raise-event.)
+ * Team-wide broadcast. Publishes ONE message to the `workflow.team-broadcast`
+ * pub/sub topic (NATS JetStream, via the EventBus) — a Dapr-idiomatic, decoupled,
+ * at-least-once distribution layer. The `Subscription-team-broadcast` delivery
+ * route (/api/internal/team/broadcast-deliver) receives it and fans out to each
+ * live teammate over the existing external-event path (injectTeamMessage), so
+ * delivery, `session_events` persistence, UI rendering, and the deterministic
+ * `sourceEventId` dedup are all preserved. See docs/agent-teams-phase1.md.
  */
 export const POST: RequestHandler = async ({ params, request }) => {
 	if (!validateInternalToken(request)) return error(401, "Unauthorized");
@@ -22,24 +23,12 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	};
 	if (!body.content) return error(400, "content is required");
 
-	const members = await listMembers(params.teamId);
-	const from = body.fromSessionId
-		? await getMemberBySession(body.fromSessionId)
-		: null;
 	const broadcastId = randomUUID();
-
-	let delivered = 0;
-	for (const m of members) {
-		if (m.session_id === body.fromSessionId) continue;
-		if (m.status === "shutdown") continue;
-		await injectTeamMessage({
-			recipientSessionId: m.session_id,
-			fromName: from?.name ?? "lead",
-			content: body.content,
-			kind: "team-broadcast",
-			sourceEventId: `team-broadcast:${broadcastId}:${m.session_id}`,
-		});
-		delivered++;
-	}
-	return json({ ok: true, delivered });
+	await getApplicationAdapters().eventBus.publish("workflow.team-broadcast", {
+		teamId: params.teamId,
+		fromSessionId: body.fromSessionId ?? null,
+		content: body.content,
+		broadcastId,
+	});
+	return json({ ok: true, published: true, broadcastId });
 };
