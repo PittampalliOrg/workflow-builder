@@ -293,6 +293,11 @@ test("workflow is always-on, base-pinned, and grants only bounded write authorit
   assert.match(workflow, /secrets\.PREVIEW_CONTROL_GITHUB_APP_PRIVATE_KEY/);
   assert.match(
     workflow,
+    /if \[\[ -z "\$\{PREVIEW_CONTROL_GITHUB_APP_PRIVATE_KEY\}" \]\]; then/,
+  );
+  assert.match(workflow, /Preview governance is post-POC/);
+  assert.match(
+    workflow,
     /actions\/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5/,
   );
   assert.match(

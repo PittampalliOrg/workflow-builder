@@ -25,8 +25,13 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Classify the exact PR tuple
-        run: node scripts/governance/initialize-preview-gate.mjs
+      - name: Classify the exact PR tuple when the gate is configured
+        run: |
+          if [[ -z "${PREVIEW_CONTROL_GITHUB_APP_PRIVATE_KEY}" ]]; then
+            echo "Preview governance is post-POC; GitHub App status publication is not configured."
+            exit 0
+          fi
+          node scripts/governance/initialize-preview-gate.mjs
         env:
           PREVIEW_CONTROL_GITHUB_APP_ID: "2970091"
           PREVIEW_CONTROL_GITHUB_APP_INSTALLATION_ID: "112998814"
