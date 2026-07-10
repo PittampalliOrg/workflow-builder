@@ -403,6 +403,7 @@ import {
 import { ApplicationVclusterPreviewService } from "$lib/server/application/vcluster-previews";
 import { ApplicationDevPreviewSidecarService } from "$lib/server/application/dev-preview-sidecar";
 import { ApplicationDevPreviewSourceCaptureService } from "$lib/server/application/dev-preview-source-capture";
+import { ApplicationPreviewSessionContinuationService } from "$lib/server/application/preview-session-continuation";
 import {
   LegacyVclusterPreviewGateway,
   LegacyDevPreviewSidecarGateway,
@@ -882,6 +883,9 @@ export function getApplicationAdapters(
   let devPreviewSidecar: ApplicationDevPreviewSidecarService | undefined;
   let devPreviewSourceCapture:
     | ApplicationDevPreviewSourceCaptureService
+    | undefined;
+  let previewSessionContinuation:
+    | ApplicationPreviewSessionContinuationService
     | undefined;
   let workflowExecutionReadModels:
     | ApplicationWorkflowExecutionReadModelService
@@ -2169,6 +2173,15 @@ export function getApplicationAdapters(
         sourceRepository: config.previewSourceRepository,
       }),
     }));
+  const getPreviewSessionContinuation = () =>
+    (previewSessionContinuation ??=
+      new ApplicationPreviewSessionContinuationService({
+        workflowData: getWorkflowData(),
+        identity: getPreviewLocalControlIdentity(),
+        capture: getDevPreviewSourceCapture(),
+        promotion: getPreviewSourcePromotion(),
+        acceptance: getPreviewAcceptanceBroker(),
+      }));
   const getPreviewAcceptanceBroker = () => {
     if (previewAcceptanceBroker) return previewAcceptanceBroker;
     const brokerMode =
@@ -2746,6 +2759,9 @@ export function getApplicationAdapters(
     },
     get previewSourcePromotionBroker() {
       return getPreviewSourcePromotionBroker();
+    },
+    get previewSessionContinuation() {
+      return getPreviewSessionContinuation();
     },
     get previewAcceptanceBroker() {
       return getPreviewAcceptanceBroker();
