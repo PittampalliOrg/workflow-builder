@@ -16,13 +16,13 @@
  * dual ingest dedupe (the same invariant the goal loop relies on).
  */
 
-import { db as defaultDb } from "$lib/server/db";
+import { getApplicationAdapters } from "$lib/server/application";
+import type { TeamStore } from "$lib/server/application/ports";
 import {
 	getMemberBySession,
 	listIdleMembers,
 	listMembers,
 	setMemberStatus,
-	type TeamsDb,
 } from "$lib/server/teams/team-repo";
 import { injectTeamMessage } from "$lib/server/teams/team-messaging";
 import { countClaimableTasks } from "$lib/server/teams/team-tasks";
@@ -37,11 +37,11 @@ const AUTO_CLAIM = (process.env.TEAM_AUTO_CLAIM ?? "true") !== "false";
 export async function onTeamSessionEvent(
 	sessionId: string,
 	event: { type: string; data?: Record<string, unknown> },
-	db: TeamsDb = defaultDb as unknown as TeamsDb,
+	store: TeamStore = getApplicationAdapters().teamStore,
 ): Promise<void> {
 	try {
 		if (event.type !== "session.status_idle") return;
-		const member = await getMemberBySession(sessionId, db);
+		const member = await getMemberBySession(sessionId, store);
 		if (!member || member.role === "lead") return; // only teammates notify the lead
 
 		// Any idle means the teammate finished its turn and is now available/done —
@@ -50,16 +50,16 @@ export async function onTeamSessionEvent(
 		// end_turn), a team idle notice is informational.
 		const reason = (event.data?.stop_reason as { type?: string } | undefined)?.type;
 
-		await setMemberStatus(sessionId, "idle", db);
+		await setMemberStatus(sessionId, "idle", store);
 
 		// Recompute the container run's status from team state so the Fleet/runs
 		// list reflects the team live (no-op for teams without an execution row).
-		await refreshTeamRunStatus(member.team_id, db);
+		await refreshTeamRunStatus(member.team_id, store);
 
 		// Notify the lead. Deterministic id keyed on the member + a coarse idle
 		// marker so repeated idles within the same turn dedupe. We include the
 		// updated_at to distinguish successive genuine idles.
-		const members = await listMembers(member.team_id, db);
+		const members = await listMembers(member.team_id, store);
 		const lead = members.find((m) => m.role === "lead");
 		if (lead) {
 			await injectTeamMessage({
@@ -77,7 +77,7 @@ export async function onTeamSessionEvent(
 		// (the teammate wakes, finds nothing, idles, gets nudged again...). Gating
 		// on claimable count breaks that loop; the claim itself stays agent-driven
 		// + atomic, so exactly-once remains owned by the SQL claim.
-		if (AUTO_CLAIM && (await countClaimableTasks(db, member.team_id)) > 0) {
+		if (AUTO_CLAIM && (await countClaimableTasks(member.team_id, store)) > 0) {
 			await injectTeamMessage({
 				recipientSessionId: sessionId,
 				fromName: "team",
@@ -101,15 +101,15 @@ export async function onTeamSessionEvent(
  * loop's tick reaper uses.
  */
 export async function runTeamDriverTick(
-	db: TeamsDb = defaultDb as unknown as TeamsDb,
+	store: TeamStore = getApplicationAdapters().teamStore,
 ): Promise<{ nudged: number }> {
-	const idle = await listIdleMembers(db);
+	const idle = await listIdleMembers(store);
 	let nudged = 0;
 	for (const m of idle) {
 		if (m.role === "lead") continue;
 		// Only nudge when the member's team actually has claimable work — same
 		// loop-guard as the reactive path.
-		if ((await countClaimableTasks(db, m.team_id)) === 0) continue;
+		if ((await countClaimableTasks(m.team_id, store)) === 0) continue;
 		await injectTeamMessage({
 			recipientSessionId: m.session_id,
 			fromName: "team",

@@ -1,8 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { validateInternalToken } from "$lib/server/internal-auth";
-import { db } from "$lib/server/db";
-import { claimNextTask, type TeamTasksDb } from "$lib/server/teams/team-tasks";
+import { claimNextTask } from "$lib/server/teams/team-tasks";
 
 /**
  * POST /api/internal/team/[teamId]/claim  { sessionId }
@@ -15,7 +14,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	if (!validateInternalToken(request)) return error(401, "Unauthorized");
 	const body = (await request.json().catch(() => ({}))) as { sessionId?: string };
 	if (!body.sessionId) return error(400, "sessionId is required");
-	const task = await claimNextTask(db as unknown as TeamTasksDb, {
+	const task = await claimNextTask({
 		teamId: params.teamId,
 		sessionId: body.sessionId,
 	});

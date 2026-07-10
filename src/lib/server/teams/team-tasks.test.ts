@@ -12,20 +12,17 @@
 import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPgliteDb } from "$lib/server/db/pglite-compat";
-import {
-	claimNextTask,
-	completeTask,
-	createTask,
-	type TeamTasksDb,
-} from "$lib/server/teams/team-tasks";
+import { PostgresTeamStore } from "$lib/server/application/adapters/team-store";
+import type { TeamStore } from "$lib/server/application/ports";
+import { claimNextTask, completeTask, createTask } from "$lib/server/teams/team-tasks";
 
 const TEAM = "team-1";
 
-async function freshDb(): Promise<TeamTasksDb> {
+/** A PGlite-backed TeamStore with the team_tasks schema created. */
+async function freshStore(): Promise<TeamStore> {
 	const { db } = createPgliteDb();
-	const typed = db as unknown as TeamTasksDb;
 	// Mirror the team_tasks columns from drizzle/00NN_agent_teams.sql.
-	await typed.execute(
+	await db.execute(
 		sql.raw(`
 		CREATE TABLE IF NOT EXISTS team_tasks (
 			id text PRIMARY KEY,
@@ -41,28 +38,28 @@ async function freshDb(): Promise<TeamTasksDb> {
 			completed_at timestamp
 		)`),
 	);
-	return typed;
+	return new PostgresTeamStore(() => db as never);
 }
 
 describe("team-tasks atomic claim", () => {
-	let db: TeamTasksDb;
+	let store: TeamStore;
 	beforeEach(async () => {
-		db = await freshDb();
+		store = await freshStore();
 	});
 
 	it("claims an eligible task and stamps status + assignee", async () => {
-		const t = await createTask(db, { teamId: TEAM, title: "A" });
-		const claimed = await claimNextTask(db, { teamId: TEAM, sessionId: "sess-x" });
+		const t = await createTask({ teamId: TEAM, title: "A" }, store);
+		const claimed = await claimNextTask({ teamId: TEAM, sessionId: "sess-x" }, store);
 		expect(claimed?.id).toBe(t.id);
 		expect(claimed?.status).toBe("in_progress");
 		expect(claimed?.assignee_session_id).toBe("sess-x");
 	});
 
 	it("never double-assigns a single task under concurrent claims", async () => {
-		await createTask(db, { teamId: TEAM, title: "only" });
+		await createTask({ teamId: TEAM, title: "only" }, store);
 		const [a, b] = await Promise.all([
-			claimNextTask(db, { teamId: TEAM, sessionId: "s1" }),
-			claimNextTask(db, { teamId: TEAM, sessionId: "s2" }),
+			claimNextTask({ teamId: TEAM, sessionId: "s1" }, store),
+			claimNextTask({ teamId: TEAM, sessionId: "s2" }, store),
 		]);
 		const winners = [a, b].filter(Boolean);
 		expect(winners).toHaveLength(1); // exactly one teammate got it
@@ -70,11 +67,11 @@ describe("team-tasks atomic claim", () => {
 
 	it("assigns each task at most once across more claims than tasks", async () => {
 		for (let i = 0; i < 5; i++) {
-			await createTask(db, { teamId: TEAM, title: `t${i}` });
+			await createTask({ teamId: TEAM, title: `t${i}` }, store);
 		}
 		const claims = await Promise.all(
 			Array.from({ length: 8 }, (_, i) =>
-				claimNextTask(db, { teamId: TEAM, sessionId: `s${i}` }),
+				claimNextTask({ teamId: TEAM, sessionId: `s${i}` }, store),
 			),
 		);
 		const ids = claims.filter(Boolean).map((c) => c!.id);
@@ -83,24 +80,23 @@ describe("team-tasks atomic claim", () => {
 	});
 
 	it("does not claim a task with an unmet dependency until it completes", async () => {
-		const dep = await createTask(db, { teamId: TEAM, title: "dep" });
-		const blocked = await createTask(db, {
-			teamId: TEAM,
-			title: "blocked",
-			dependsOn: [dep.id],
-		});
+		const dep = await createTask({ teamId: TEAM, title: "dep" }, store);
+		const blocked = await createTask(
+			{ teamId: TEAM, title: "blocked", dependsOn: [dep.id] },
+			store,
+		);
 
 		// First claim returns the dependency-free task, never the blocked one.
-		const first = await claimNextTask(db, { teamId: TEAM, sessionId: "s1" });
+		const first = await claimNextTask({ teamId: TEAM, sessionId: "s1" }, store);
 		expect(first?.id).toBe(dep.id);
 
 		// Blocked task is still not claimable (dep is in_progress, not completed).
-		const none = await claimNextTask(db, { teamId: TEAM, sessionId: "s2" });
+		const none = await claimNextTask({ teamId: TEAM, sessionId: "s2" }, store);
 		expect(none).toBeNull();
 
 		// Completing the dependency unblocks it.
-		await completeTask(db, { teamId: TEAM, taskId: dep.id });
-		const now = await claimNextTask(db, { teamId: TEAM, sessionId: "s2" });
+		await completeTask({ teamId: TEAM, taskId: dep.id }, store);
+		const now = await claimNextTask({ teamId: TEAM, sessionId: "s2" }, store);
 		expect(now?.id).toBe(blocked.id);
 	});
 });

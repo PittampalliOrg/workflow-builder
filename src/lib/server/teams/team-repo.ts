@@ -1,189 +1,97 @@
 /**
  * Agent Teams — BFF-side repo (teams / team_members).
  *
- * Raw `db.execute(sql\`...\`)` like goal-loop-store, so it runs against both
- * postgres-js and PGlite. The task list lives in team-tasks.ts (the claim). This
- * module owns team + membership rows and the name↔session resolution the BFF
- * team endpoints and the team-driver need.
+ * Thin domain facade over the `TeamStore` port: it forwards to
+ * `getApplicationAdapters().teamStore` so drizzle/`$lib/server/db` stay behind
+ * the adapter (the `db-only-in-adapters` boundary). Each function takes an
+ * optional `store` (defaulting to the app's Postgres adapter) so the unit tests
+ * can inject a PGlite-backed `PostgresTeamStore`. The task-list claim lives in
+ * team-tasks.ts; this module owns team + membership rows and the name↔session
+ * resolution the BFF team endpoints and the team-driver need.
  */
 
-import { sql } from "drizzle-orm";
-import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { nanoid } from "nanoid";
-import { db as defaultDb } from "$lib/server/db";
+import { getApplicationAdapters } from "$lib/server/application";
+import type {
+	AddMemberInput,
+	EnsureTeamInput,
+	TeamMemberRow,
+	TeamMemberStatus,
+	TeamRow,
+	TeamStore,
+	TeamTaskListItem,
+} from "$lib/server/application/ports";
 
-export type TeamsDb = PostgresJsDatabase<Record<string, never>>;
+// Re-export the row shapes so existing importers of these types keep working.
+export type { TeamMemberRow, TeamRow, TeamTaskListItem } from "$lib/server/application/ports";
 
-export type TeamMemberRow = {
-	id: string;
-	team_id: string;
-	session_id: string;
-	agent_slug: string | null;
-	name: string;
-	role: string;
-	model: string | null;
-	status: string;
-	plan_mode_required: boolean;
-	joined_at: string;
-	updated_at: string;
-};
-
-function rows<T>(r: unknown): T[] {
-	return r as T[];
-}
+const store = () => getApplicationAdapters().teamStore;
 
 /** Create the team row if missing (idempotent on the deterministic team id). */
-export async function ensureTeam(
-	input: {
-		teamId: string;
-		leadSessionId: string;
-		projectId: string;
-		name?: string;
-		workflowExecutionId?: string | null;
-	},
-	db: TeamsDb = defaultDb as unknown as TeamsDb,
+export function ensureTeam(
+	input: EnsureTeamInput,
+	s: TeamStore = store(),
 ): Promise<void> {
-	await db.execute(sql`
-		INSERT INTO teams (id, workflow_execution_id, project_id, name, lead_session_id)
-		VALUES (
-			${input.teamId}, ${input.workflowExecutionId ?? null}, ${input.projectId},
-			${input.name ?? `team-${input.teamId.slice(0, 8)}`}, ${input.leadSessionId}
-		)
-		ON CONFLICT (id) DO NOTHING
-	`);
-	// Ensure the lead is a member (role=lead). Its own session id is the member key.
-	await db.execute(sql`
-		INSERT INTO team_members (id, team_id, session_id, name, role, status)
-		VALUES (${nanoid()}, ${input.teamId}, ${input.leadSessionId}, 'lead', 'lead', 'working')
-		ON CONFLICT (session_id) DO NOTHING
-	`);
+	return s.ensureTeam(input);
 }
 
-export async function addMember(
-	input: {
-		teamId: string;
-		sessionId: string;
-		name: string;
-		agentSlug?: string | null;
-		model?: string | null;
-		planModeRequired?: boolean;
-	},
-	db: TeamsDb = defaultDb as unknown as TeamsDb,
+export function addMember(
+	input: AddMemberInput,
+	s: TeamStore = store(),
 ): Promise<TeamMemberRow> {
-	const r = await db.execute<TeamMemberRow>(sql`
-		INSERT INTO team_members
-			(id, team_id, session_id, agent_slug, name, role, model, plan_mode_required, status)
-		VALUES (
-			${nanoid()}, ${input.teamId}, ${input.sessionId}, ${input.agentSlug ?? null},
-			${input.name}, 'member', ${input.model ?? null}, ${input.planModeRequired ?? false}, 'working'
-		)
-		ON CONFLICT (session_id) DO UPDATE SET status = 'working', updated_at = now()
-		RETURNING *
-	`);
-	return rows<TeamMemberRow>(r)[0];
+	return s.addMember(input);
 }
 
-export async function listMembers(
+export function listMembers(
 	teamId: string,
-	db: TeamsDb = defaultDb as unknown as TeamsDb,
+	s: TeamStore = store(),
 ): Promise<TeamMemberRow[]> {
-	const r = await db.execute<TeamMemberRow>(sql`
-		SELECT * FROM team_members WHERE team_id = ${teamId} ORDER BY joined_at ASC
-	`);
-	return rows<TeamMemberRow>(r);
+	return s.listMembers(teamId);
 }
 
-export type TeamRow = {
-	id: string;
-	name: string;
-	status: string;
-	lead_session_id: string;
-	token_budget: number | null;
-};
+export function getTeam(teamId: string, s: TeamStore = store()): Promise<TeamRow | null> {
+	return s.getTeam(teamId);
+}
 
-export async function getTeam(
+export function listTeamTasks(
 	teamId: string,
-	db: TeamsDb = defaultDb as unknown as TeamsDb,
-): Promise<TeamRow | null> {
-	const r = await db.execute<TeamRow>(sql`
-		SELECT id, name, status, lead_session_id, token_budget FROM teams WHERE id = ${teamId}
-	`);
-	return rows<TeamRow>(r)[0] ?? null;
+	s: TeamStore = store(),
+): Promise<TeamTaskListItem[]> {
+	return s.listTeamTasks(teamId);
 }
 
-export async function listTeamTasks(
-	teamId: string,
-	db: TeamsDb = defaultDb as unknown as TeamsDb,
-): Promise<
-	Array<{
-		id: string;
-		title: string;
-		status: string;
-		assignee_session_id: string | null;
-		depends_on: string[];
-		updated_at: string;
-		completed_at: string | null;
-	}>
-> {
-	const r = await db.execute(sql`
-		SELECT id, title, status, assignee_session_id, depends_on, updated_at, completed_at
-		FROM team_tasks WHERE team_id = ${teamId} ORDER BY created_at ASC
-	`);
-	return rows(r);
-}
-
-export async function getMemberByName(
+export function getMemberByName(
 	teamId: string,
 	name: string,
-	db: TeamsDb = defaultDb as unknown as TeamsDb,
+	s: TeamStore = store(),
 ): Promise<TeamMemberRow | null> {
-	const r = await db.execute<TeamMemberRow>(sql`
-		SELECT * FROM team_members WHERE team_id = ${teamId} AND name = ${name} LIMIT 1
-	`);
-	return rows<TeamMemberRow>(r)[0] ?? null;
+	return s.getMemberByName(teamId, name);
 }
 
 /** All members currently idle (across active teams) — the tick's lost-idle set. */
-export async function listIdleMembers(
-	db: TeamsDb = defaultDb as unknown as TeamsDb,
-): Promise<TeamMemberRow[]> {
-	const r = await db.execute<TeamMemberRow>(sql`
-		SELECT * FROM team_members WHERE status = 'idle'
-	`);
-	return rows<TeamMemberRow>(r);
+export function listIdleMembers(s: TeamStore = store()): Promise<TeamMemberRow[]> {
+	return s.listIdleMembers();
 }
 
-export async function getMemberBySession(
+export function getMemberBySession(
 	sessionId: string,
-	db: TeamsDb = defaultDb as unknown as TeamsDb,
+	s: TeamStore = store(),
 ): Promise<TeamMemberRow | null> {
-	const r = await db.execute<TeamMemberRow>(sql`
-		SELECT * FROM team_members WHERE session_id = ${sessionId} LIMIT 1
-	`);
-	return rows<TeamMemberRow>(r)[0] ?? null;
+	return s.getMemberBySession(sessionId);
 }
 
-export async function setMemberStatus(
+export function setMemberStatus(
 	sessionId: string,
-	status: "working" | "idle" | "failed" | "shutdown",
-	db: TeamsDb = defaultDb as unknown as TeamsDb,
+	status: TeamMemberStatus,
+	s: TeamStore = store(),
 ): Promise<void> {
-	await db.execute(sql`
-		UPDATE team_members SET status = ${status}, updated_at = now()
-		WHERE session_id = ${sessionId}
-	`);
+	return s.setMemberStatus(sessionId, status);
 }
 
 /** Resolve an agent slug to its id within a project, for peer spawn. */
-export async function resolveAgentIdBySlug(
+export function resolveAgentIdBySlug(
 	projectId: string,
 	slug: string,
-	db: TeamsDb = defaultDb as unknown as TeamsDb,
+	s: TeamStore = store(),
 ): Promise<{ id: string } | null> {
-	const r = await db.execute<{ id: string }>(sql`
-		SELECT id FROM agents
-		WHERE project_id = ${projectId} AND slug = ${slug}
-		LIMIT 1
-	`);
-	return rows<{ id: string }>(r)[0] ?? null;
+	return s.resolveAgentIdBySlug(projectId, slug);
 }
