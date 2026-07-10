@@ -377,6 +377,7 @@ function previewStateToStepState(state: GitOpsPrPreviewSummary["state"]): Change
 			return "failed";
 		case "provisioning":
 		case "seeding":
+		case "tearing_down":
 			return "active";
 		case "capacity_full":
 			return "waiting";

@@ -1,4 +1,6 @@
 import {
+	devPreviewBrowseUrl,
+	devPreviewTailnetHost,
 	DEV_PREVIEW_SERVICES,
 	resolveDevPreviewDescriptor,
 } from "$lib/server/workflows/dev-preview-registry";
@@ -53,7 +55,7 @@ export function browseUrlFor(
 ): string | null {
 	if (stored) return stored;
 	const d = DEV_PREVIEW_SERVICES[service];
-	return d ? `http://${d.tailnetHost}` : null;
+	return d ? devPreviewBrowseUrl(d) : null;
 }
 
 /** Public, credential-free catalog of launchable services for the UI dropdown. */
@@ -61,15 +63,13 @@ export function devPreviewServiceCatalog() {
 	return Object.values(DEV_PREVIEW_SERVICES).map((d) => ({
 		service: d.service,
 		primaryCluster: "dev",
-		fallbackCluster: "ryzen",
-		deliveryRole: "dev-primary-ryzen-canary",
 		previewTier: "tier-1-hot-loop",
 		needsDapr: d.needsDapr === true,
 		port: d.port,
 		syncMode: d.syncMode,
 		repoUrl: d.repoUrl,
 		repoSubdir: d.repoSubdir,
-		tailnetHost: d.tailnetHost,
+		tailnetHost: devPreviewTailnetHost(d),
 	}));
 }
 

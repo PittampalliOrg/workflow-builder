@@ -13,8 +13,8 @@
  *  - writes a machine-readable /sandbox/work/gan/gate-<idx>.json the read_verdict
  *    step consumes, while still printing OBJECTIVE PASS/FAIL for humans.
  */
-import type { GanFixtureConfig } from "../gan-config";
-import { buildCommand } from "../jq";
+import type { GanFixtureConfig } from '../gan-config';
+import { buildCommand } from '../jq';
 
 function gateScript(cfg: GanFixtureConfig): string {
 	const s = cfg.defaults.timeouts.gatePhaseSeconds;
@@ -22,6 +22,7 @@ function gateScript(cfg: GanFixtureConfig): string {
 	// `__TOKEN__` splice points are replaced with jq expressions by buildCommand.
 	return `IDX=__IDX__
 EXPORT_URL=__EXPORT_URL__
+SYNC_TOKEN=__SYNC_TOKEN__
 export CI=1
 set +e
 mkdir -p /sandbox/work/gan /sandbox/scratch
@@ -46,7 +47,7 @@ if ! git clone --depth 1 --single-branch https://x-access-token:\${GITHUB_TOKEN}
   printf '{"pass":false,"phases":{"clone":1},"iteration":%s}' "$IDX" > "$GATE_JSON"
   exit 0
 fi
-if ! curl -sS "$EXPORT_URL" | tar -xz -C "$REPO"; then
+if ! curl -sS -H "x-sync-token: $SYNC_TOKEN" "$EXPORT_URL" | tar -xz -C "$REPO"; then
   echo "OBJECTIVE FAIL: export overlay failed"
   printf '{"pass":false,"phases":{"overlay":1},"iteration":%s}' "$IDX" > "$GATE_JSON"
   exit 0
@@ -93,12 +94,13 @@ fi
 
 export function buildGateNode(cfg: GanFixtureConfig): Record<string, unknown> {
 	const command = buildCommand(gateScript(cfg), {
-		__IDX__: ".idx | tostring",
+		__IDX__: '.idx | tostring',
 		__EXPORT_URL__: '(.enter_dev_mode.url // "") + "/__export"',
+		__SYNC_TOKEN__: '.enter_dev_mode.syncCapability // ""'
 	});
 	return {
 		gate: {
-			call: "workspace/command",
+			call: 'workspace/command',
 			with: {
 				cliWorkspace: true,
 				helperPod: true,
@@ -106,11 +108,11 @@ export function buildGateNode(cfg: GanFixtureConfig): Record<string, unknown> {
 				// cwd is applied BEFORE the script runs, so it must already exist on
 				// iteration 0 — use the JuiceFS mount root, not /sandbox/work/gan (which
 				// the script itself mkdir -p's). Scripts use absolute paths regardless.
-				cwd: "/sandbox/work",
+				cwd: '/sandbox/work',
 				command,
 				timeoutMs: cfg.defaults.timeouts.gateTimeoutMs,
-				allowFailure: true,
-			},
-		},
+				allowFailure: true
+			}
+		}
 	};
 }

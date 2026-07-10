@@ -6327,16 +6327,21 @@ export class PostgresArtifactStore implements ArtifactStore {
 		executionId: string;
 		artifactId: string;
 		metadata: Record<string, unknown> | null;
+		ifAbsentMetadataKey?: string;
 	}): Promise<WorkflowArtifactRecord | null> {
+		const conditions: SQL[] = [
+			eq(workflowArtifacts.id, input.artifactId),
+			eq(workflowArtifacts.workflowExecutionId, input.executionId),
+		];
+		if (input.ifAbsentMetadataKey) {
+			conditions.push(
+				sql`NOT (COALESCE(${workflowArtifacts.metadata}, '{}'::jsonb) ? ${input.ifAbsentMetadataKey})`,
+			);
+		}
 		const [row] = await this.database
 			.update(workflowArtifacts)
 			.set({ metadata: input.metadata })
-			.where(
-				and(
-					eq(workflowArtifacts.id, input.artifactId),
-					eq(workflowArtifacts.workflowExecutionId, input.executionId),
-				),
-			)
+			.where(and(...conditions))
 			.returning();
 		return row ? mapArtifact(row) : null;
 	}

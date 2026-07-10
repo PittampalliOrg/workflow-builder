@@ -23,43 +23,84 @@
 		syncMode: string;
 		repoUrl: string;
 		repoSubdir: string;
-		tailnetHost: string;
+		tailnetHost: string | null;
 	}
 
 	let {
 		open = $bindable(false),
 		services,
+		previewNativeServices = [],
+		previewEnvironment = null,
 		devWorkflowId,
 		devWorkflowName,
 		onlaunched
 	}: {
 		open?: boolean;
 		services: ServiceCatalogEntry[];
+		previewNativeServices?: readonly string[];
+		previewEnvironment?: {
+			id: string;
+			profile: string;
+			platformRevision: string | null;
+			sourceRevision: string | null;
+			origin: string | null;
+		} | null;
 		devWorkflowId: string | null;
 		devWorkflowName: string;
 		onlaunched: (executionId: string) => void;
 	} = $props();
 
 	let selectedService = $state(services[0]?.service ?? 'workflow-builder');
+	let selectedServices = $state<Record<string, boolean>>({});
 	let repoUrl = $state('');
 	let keepAlive = $state(true);
 	let launching = $state(false);
 	let errorMessage = $state<string | null>(null);
 
 	const descriptor = $derived(services.find((s) => s.service === selectedService) ?? null);
+	const insideAppPreview = $derived(
+		previewEnvironment?.profile === 'app-live' && previewNativeServices.length > 0
+	);
+	const selectedPreviewServices = $derived(
+		previewNativeServices.filter((service) => selectedServices[service] !== false)
+	);
+
+	$effect(() => {
+		const next = { ...selectedServices };
+		let changed = false;
+		for (const service of previewNativeServices) {
+			if (!(service in next)) {
+				next[service] = true;
+				changed = true;
+			}
+		}
+		if (changed) selectedServices = next;
+	});
 
 	async function launch() {
 		if (!devWorkflowId) {
 			errorMessage = `The "${devWorkflowName}" workflow isn't seeded in this workspace yet.`;
 			return;
 		}
+		const requestedServices = insideAppPreview ? selectedPreviewServices : [selectedService];
+		if (requestedServices.length === 0) {
+			errorMessage = 'Select at least one service';
+			return;
+		}
 		launching = true;
 		errorMessage = null;
 		try {
 			const input: Record<string, unknown> = {
-				service: selectedService,
+				service: requestedServices[0],
+				services: requestedServices,
+				mode: insideAppPreview ? 'preview-native' : 'host-throwaway',
 				keepPreview: keepAlive ? 'true' : 'false'
 			};
+			if (insideAppPreview && previewEnvironment) {
+				if (previewEnvironment.origin) input.previewOrigin = previewEnvironment.origin;
+				if (previewEnvironment.sourceRevision)
+					input.sourceRevision = previewEnvironment.sourceRevision;
+			}
 			if (repoUrl.trim()) input.repoUrl = repoUrl.trim();
 			const res = await fetch(`/api/workflows/${devWorkflowId}/execute`, {
 				method: 'POST',
@@ -102,29 +143,66 @@
 		{/if}
 
 		<div class="space-y-4 py-1">
-			<div class="space-y-1.5">
-				<Label for="dev-service">Service</Label>
-				<NativeSelect id="dev-service" bind:value={selectedService} class="w-full">
-					{#each services as svc (svc.service)}
-						<NativeSelectOption value={svc.service}>{svc.service}</NativeSelectOption>
-					{/each}
-				</NativeSelect>
-				{#if descriptor}
-					<div class="flex flex-wrap items-center gap-1.5 pt-1">
-						<Badge variant="outline" class="text-[10px] font-mono text-muted-foreground"
-							>:{descriptor.port} · {descriptor.syncMode}</Badge
-						>
-						{#if descriptor.needsDapr}
-							<Badge
-								variant="outline"
-								class="text-[10px] gap-1 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border-transparent"
-							>
-								<ShieldCheck class="size-3" /> Dapr-shadow (isolated app-id · pubsub-dev · real DB)
-							</Badge>
-						{/if}
+			{#if insideAppPreview && previewEnvironment}
+				<div class="grid gap-1.5 rounded-md border bg-muted/20 p-3 text-xs">
+					<div class="flex min-w-0 items-center justify-between gap-3">
+						<span class="font-medium">{previewEnvironment.id}</span>
+						<Badge variant="outline">preview-native</Badge>
 					</div>
-				{/if}
-			</div>
+					{#if previewEnvironment.platformRevision}
+						<code class="truncate text-[10px] text-muted-foreground" title={previewEnvironment.platformRevision}
+							>stacks {previewEnvironment.platformRevision}</code
+						>
+					{/if}
+					{#if previewEnvironment.sourceRevision}
+						<code class="truncate text-[10px] text-muted-foreground" title={previewEnvironment.sourceRevision}
+							>source {previewEnvironment.sourceRevision}</code
+						>
+					{/if}
+				</div>
+				<fieldset class="flex flex-wrap gap-x-4 gap-y-2">
+					<legend class="mb-1 text-sm font-medium">Services</legend>
+					{#each previewNativeServices as service (service)}
+						<label class="inline-flex items-center gap-2 text-xs">
+							<input
+								type="checkbox"
+								class="size-4 rounded border-input accent-primary"
+								checked={selectedServices[service] !== false}
+								onchange={(event) =>
+									(selectedServices = {
+										...selectedServices,
+										[service]: event.currentTarget.checked
+									})}
+							/>
+							{service}
+						</label>
+					{/each}
+				</fieldset>
+			{:else}
+				<div class="space-y-1.5">
+					<Label for="dev-service">Service</Label>
+					<NativeSelect id="dev-service" bind:value={selectedService} class="w-full">
+						{#each services as svc (svc.service)}
+							<NativeSelectOption value={svc.service}>{svc.service}</NativeSelectOption>
+						{/each}
+					</NativeSelect>
+					{#if descriptor}
+						<div class="flex flex-wrap items-center gap-1.5 pt-1">
+							<Badge variant="outline" class="text-[10px] font-mono text-muted-foreground"
+								>:{descriptor.port} · {descriptor.syncMode}</Badge
+							>
+							{#if descriptor.needsDapr}
+								<Badge
+									variant="outline"
+									class="text-[10px] gap-1 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border-transparent"
+								>
+									<ShieldCheck class="size-3" /> Dapr shadow
+								</Badge>
+							{/if}
+						</div>
+					{/if}
+				</div>
+			{/if}
 
 			<div class="space-y-1.5">
 				<Label for="dev-repo">Repo URL <span class="text-muted-foreground">(optional)</span></Label>
@@ -151,7 +229,10 @@
 
 		<DialogFooter>
 			<Button variant="ghost" onclick={() => (open = false)} disabled={launching}>Cancel</Button>
-			<Button onclick={launch} disabled={launching || !devWorkflowId}>
+			<Button
+				onclick={launch}
+				disabled={launching || !devWorkflowId || (insideAppPreview && selectedPreviewServices.length === 0)}
+			>
 				<Rocket class="size-4" />
 				{launching ? 'Launching…' : 'Launch'}
 			</Button>

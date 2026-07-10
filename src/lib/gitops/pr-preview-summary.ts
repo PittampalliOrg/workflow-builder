@@ -5,33 +5,34 @@
 // import it without pulling server code into the client bundle.
 
 export type GitOpsPrPreviewState =
-	| "provisioning"
-	| "seeding"
-	| "ready"
-	| "error"
-	| "capacity_full"
-	| "absent"
-	| "unknown";
+  | "provisioning"
+  | "seeding"
+  | "tearing_down"
+  | "ready"
+  | "error"
+  | "capacity_full"
+  | "absent"
+  | "unknown";
 
 export type GitOpsPrPreviewVerify = {
-	state: "started" | "skipped" | "completed" | "failed";
-	executionId: string | null;
-	reason: string | null;
-	verdict: string | null;
+  state: "started" | "skipped" | "completed" | "failed";
+  executionId: string | null;
+  reason: string | null;
+  verdict: string | null;
 } | null;
 
 export type GitOpsPrPreviewSummary = {
-	prNumber: number;
-	alias: string;
-	url: string | null;
-	state: GitOpsPrPreviewState;
-	headSha: string | null;
-	services: string[];
-	error: string | null;
-	verify: GitOpsPrPreviewVerify;
-	updatedAt: string | null;
-	/** GitHub PR URL, decorated in the load from `prPreviewRepo`. */
-	prUrl: string | null;
+  prNumber: number;
+  alias: string;
+  url: string | null;
+  state: GitOpsPrPreviewState;
+  headSha: string | null;
+  services: string[];
+  error: string | null;
+  verify: GitOpsPrPreviewVerify;
+  updatedAt: string | null;
+  /** GitHub PR URL, decorated in the load from `prPreviewRepo`. */
+  prUrl: string | null;
 };
 
 /** Shape of `prPreviews.listStatuses()` (application/pr-previews `PrPreviewStatus`)
@@ -41,13 +42,13 @@ export type PrPreviewStatusInput = Omit<GitOpsPrPreviewSummary, "prUrl">;
 /** Decorate resume-safe preview statuses with a GitHub PR URL. Pure; called from
  * the page load / remote fn so routes never reach the config directly. */
 export function mapPrPreviewStatuses(
-	statuses: readonly PrPreviewStatusInput[],
-	prPreviewRepo: string,
+  statuses: readonly PrPreviewStatusInput[],
+  prPreviewRepo: string,
 ): GitOpsPrPreviewSummary[] {
-	const base = prPreviewRepo.trim().replace(/\/+$/, "");
-	return statuses.map((status) => ({
-		...status,
-		services: [...status.services],
-		prUrl: base ? `https://github.com/${base}/pull/${status.prNumber}` : null,
-	}));
+  const base = prPreviewRepo.trim().replace(/\/+$/, "");
+  return statuses.map((status) => ({
+    ...status,
+    services: [...status.services],
+    prUrl: base ? `https://github.com/${base}/pull/${status.prNumber}` : null,
+  }));
 }

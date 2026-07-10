@@ -1,86 +1,89 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from 'vitest';
 import {
 	ApplicationPreviewArchiveService,
-	previewArchiveScopeId,
-} from "$lib/server/application/preview-archive";
+	previewArchiveScopeId
+} from '$lib/server/application/preview-archive';
 import type {
 	CreateWorkflowFileInput,
 	ListWorkflowFilesByScopePrefixFilter,
 	PreviewReadProxyPort,
-	WorkflowFileRecord,
-} from "$lib/server/application/ports";
+	WorkflowFileRecord
+} from '$lib/server/application/ports';
 
-const previews = [{ name: "myfeature", url: "https://wfb-myfeature.ts", pool: null }];
+const previews = [{ name: 'myfeature', url: 'https://wfb-myfeature.ts', pool: null }];
 
 const executionRows = [
 	{
-		id: "exec-1",
-		workflowId: "wf-1",
-		workflowName: "Smoke",
-		status: "success",
-		phase: "done",
+		id: 'exec-1',
+		workflowId: 'wf-1',
+		workflowName: 'Smoke',
+		status: 'success',
+		phase: 'done',
 		progress: 100,
 		error: null,
-		startedAt: "2026-07-04T10:00:00.000Z",
-		completedAt: "2026-07-04T10:00:30.000Z",
-		durationMs: 30_000,
+		startedAt: '2026-07-04T10:00:00.000Z',
+		completedAt: '2026-07-04T10:00:30.000Z',
+		durationMs: 30_000
 	},
 	{
-		id: "exec-2",
-		workflowId: "wf-2",
-		workflowName: "Dev session",
-		status: "running",
-		phase: "generate",
-		progress: 40,
+		id: 'exec-2',
+		workflowId: 'wf-2',
+		workflowName: 'Dev session',
+		status: 'success',
+		phase: 'done',
+		progress: 100,
 		error: null,
-		startedAt: "2026-07-04T11:00:00.000Z",
-		completedAt: null,
-		durationMs: null,
-	},
+		startedAt: '2026-07-04T11:00:00.000Z',
+		completedAt: '2026-07-04T11:00:30.000Z',
+		durationMs: 30_000
+	}
 ];
 
 function fakeProxy(over: Partial<PreviewReadProxyPort> = {}): PreviewReadProxyPort {
 	return {
 		listExecutions: vi.fn(async () => ({
 			ok: true as const,
-			data: { executions: executionRows, total: 2 },
+			data: { executions: executionRows, total: 2 }
 		})),
 		getExecution: vi.fn(async () => ({ ok: true as const, data: {} })),
 		listExecutionArtifacts: vi.fn(async ({ executionId }) => ({
 			ok: true as const,
 			data:
-				executionId === "exec-1"
+				executionId === 'exec-1'
 					? [
 							{
-								id: "art-unpromoted",
-								executionId: "exec-1",
-								kind: "source-bundle",
-								title: "v1",
-								fileId: "file-1",
-								contentType: "application/gzip",
+								id: 'art-unpromoted',
+								executionId: 'exec-1',
+								kind: 'source-bundle',
+								title: 'v1',
+								fileId: 'file-1',
+								contentType: 'application/gzip',
 								sizeBytes: 128,
-								metadata: { tier: "tar-overlay" },
-								createdAt: "2026-07-04T10:00:10.000Z",
+								metadata: { tier: 'tar-overlay' },
+								createdAt: '2026-07-04T10:00:10.000Z'
 							},
 							{
-								id: "art-promoted",
-								executionId: "exec-1",
-								kind: "source-bundle",
-								title: "v2",
-								fileId: "file-2",
-								contentType: "application/gzip",
+								id: 'art-promoted',
+								executionId: 'exec-1',
+								kind: 'source-bundle',
+								title: 'v2',
+								fileId: 'file-2',
+								contentType: 'application/gzip',
 								sizeBytes: 128,
-								metadata: { promotion: { prUrl: "https://github.com/x/pr/1" } },
-								createdAt: "2026-07-04T10:00:20.000Z",
-							},
+								metadata: { promotion: { prUrl: 'https://github.com/x/pr/1' } },
+								createdAt: '2026-07-04T10:00:20.000Z'
+							}
 						]
-					: [],
+					: []
 		})),
 		fetchFileContent: vi.fn(async () => ({
 			ok: true as const,
-			data: { bytes: Buffer.from("bundle-bytes"), contentType: "application/gzip" },
+			data: {
+				bytes: Buffer.from('bundle-bytes'),
+				contentType: 'application/gzip'
+			}
 		})),
-		...over,
+		...over
 	};
 }
 
@@ -99,19 +102,16 @@ function fakeFiles() {
 			// Distinct, monotonically-increasing timestamps so "latest summary"
 			// ordering is deterministic (files created within the same ms).
 			createdAt: new Date(Date.UTC(2026, 6, 4) + n).toISOString(),
-			archivedAt: null,
+			archivedAt: null
 		};
 		store.set(record.id, { record, bytes: input.bytes });
 		return { file: record, deduplicated: false };
 	});
-	const listFilesByScopePrefix = vi.fn(
-		async (filter: ListWorkflowFilesByScopePrefixFilter) =>
-			[...store.values()]
-				.map((entry) => entry.record)
-				.filter((record) =>
-					(record.scopeId ?? "").startsWith(filter.scopeIdPrefix),
-				)
-				.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+	const listFilesByScopePrefix = vi.fn(async (filter: ListWorkflowFilesByScopePrefixFilter) =>
+		[...store.values()]
+			.map((entry) => entry.record)
+			.filter((record) => (record.scopeId ?? '').startsWith(filter.scopeIdPrefix))
+			.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 	);
 	const getFileContent = vi.fn(async (id: string) => {
 		const entry = store.get(id);
@@ -122,168 +122,406 @@ function fakeFiles() {
 
 const listPreviews = async () => previews;
 
-describe("ApplicationPreviewArchiveService", () => {
-	it("archives run summary + un-promoted bundles to the host Files API", async () => {
+describe('ApplicationPreviewArchiveService', () => {
+	it('archives run summary + un-promoted bundles to the host Files API', async () => {
 		const proxy = fakeProxy();
 		const files = fakeFiles();
-		const service = new ApplicationPreviewArchiveService({ proxy, listPreviews, files });
+		const service = new ApplicationPreviewArchiveService({
+			proxy,
+			listPreviews,
+			files
+		});
 
 		const result = await service.archivePreview({
-			name: "myfeature",
-			userId: "user-1",
-			projectId: "project-1",
+			name: 'myfeature',
+			userId: 'user-1',
+			projectId: 'project-1'
 		});
 
 		expect(result.archived).toBe(true);
 		expect(result.executionCount).toBe(2);
 		expect(result.bundleCount).toBe(1); // promoted bundle skipped
 		expect(result.bundleErrors).toBe(0);
-		expect(result.summaryFileId).toBe("host-file-2");
+		expect(result.summaryFileId).toBe('host-file-2');
 
 		// Bundle copy, then summary — both tagged with the preview scope.
 		expect(files.createFile).toHaveBeenCalledTimes(2);
 		const bundleCall = files.createFile.mock.calls[0][0];
 		expect(bundleCall).toMatchObject({
-			userId: "user-1",
-			projectId: "project-1",
-			purpose: "output",
-			scopeId: previewArchiveScopeId("myfeature"),
-			name: "preview-myfeature/bundle-art-unpromoted.tar.gz",
-			contentType: "application/gzip",
+			userId: 'user-1',
+			projectId: 'project-1',
+			purpose: 'output',
+			scopeId: previewArchiveScopeId('myfeature'),
+			name: 'preview-myfeature/bundle-art-unpromoted.tar.gz',
+			contentType: 'application/gzip'
 		});
 		const summaryCall = files.createFile.mock.calls[1][0];
-		expect(summaryCall.scopeId).toBe("preview-archive:myfeature");
-		expect(summaryCall.contentType).toBe("application/json");
+		expect(summaryCall.scopeId).toBe('preview-archive:myfeature');
+		expect(summaryCall.contentType).toBe('application/json');
 		const summary = JSON.parse(summaryCall.bytes.toString());
-		expect(summary.schema).toBe("wfb.preview-archive/v1");
-		expect(summary.preview.name).toBe("myfeature");
+		expect(summary.schema).toBe('wfb.preview-archive/v1');
+		expect(summary.preview.name).toBe('myfeature');
 		expect(summary.executions).toHaveLength(2);
 		expect(summary.bundles).toEqual([
 			expect.objectContaining({
-				executionId: "exec-1",
-				artifactId: "art-unpromoted",
-				fileId: "host-file-1",
-			}),
+				executionId: 'exec-1',
+				artifactId: 'art-unpromoted',
+				fileId: 'host-file-1'
+			})
 		]);
 	});
 
-	it("reports archived:false (and writes nothing) when the preview is unreachable", async () => {
+	it('reports archived:false (and writes nothing) when the preview is unreachable', async () => {
 		const proxy = fakeProxy({
 			listExecutions: vi.fn(async () => ({
 				ok: false as const,
-				reason: "unreachable" as const,
-				message: "timeout",
-			})),
+				reason: 'unreachable' as const,
+				message: 'timeout'
+			}))
 		});
 		const files = fakeFiles();
-		const service = new ApplicationPreviewArchiveService({ proxy, listPreviews, files });
+		const service = new ApplicationPreviewArchiveService({
+			proxy,
+			listPreviews,
+			files
+		});
 
-		const result = await service.archivePreview({ name: "myfeature", userId: "u" });
+		const result = await service.archivePreview({
+			name: 'myfeature',
+			userId: 'u'
+		});
 		expect(result).toMatchObject({
 			archived: false,
-			reason: "executions-unreachable",
+			reason: 'executions-unreachable'
 		});
 		expect(files.createFile).not.toHaveBeenCalled();
 	});
 
-	it("reports archived:false for a preview SEA does not know", async () => {
+	it('reports archived:false for a preview SEA does not know', async () => {
 		const files = fakeFiles();
 		const service = new ApplicationPreviewArchiveService({
 			proxy: fakeProxy(),
 			listPreviews,
-			files,
+			files
 		});
-		const result = await service.archivePreview({ name: "ghost", userId: "u" });
-		expect(result).toMatchObject({ archived: false, reason: "preview-not-found" });
+		const result = await service.archivePreview({ name: 'ghost', userId: 'u' });
+		expect(result).toMatchObject({
+			archived: false,
+			reason: 'preview-not-found'
+		});
 		expect(files.createFile).not.toHaveBeenCalled();
 	});
 
-	it("still archives the summary when artifact listing is unavailable (older preview image)", async () => {
+	it('salvages a summary but refuses teardown proof when artifact listing is unavailable', async () => {
 		const proxy = fakeProxy({
 			listExecutionArtifacts: vi.fn(async () => ({
 				ok: false as const,
-				reason: "bad-response" as const,
-				message: "preview returned HTTP 405",
-			})),
+				reason: 'bad-response' as const,
+				message: 'preview returned HTTP 405'
+			}))
 		});
 		const files = fakeFiles();
-		const service = new ApplicationPreviewArchiveService({ proxy, listPreviews, files });
+		const service = new ApplicationPreviewArchiveService({
+			proxy,
+			listPreviews,
+			files
+		});
 
-		const result = await service.archivePreview({ name: "myfeature", userId: "u" });
-		expect(result.archived).toBe(true);
+		const result = await service.archivePreview({
+			name: 'myfeature',
+			userId: 'u'
+		});
+		expect(result).toMatchObject({
+			archived: false,
+			reason: 'incomplete:artifact-listing'
+		});
 		expect(result.bundleCount).toBe(0);
-		expect(result.notes?.join(" ")).toContain("artifact listing unavailable");
+		expect(result.notes?.join(' ')).toContain('artifact listing unavailable');
 		expect(files.createFile).toHaveBeenCalledTimes(1); // summary only
 		const summary = JSON.parse(files.createFile.mock.calls[0][0].bytes.toString());
 		expect(summary.artifactListingDegraded).toBe(true);
 	});
 
-	it("counts bundle fetch failures without failing the archive", async () => {
+	it('salvages a summary but refuses teardown proof when a bundle copy fails', async () => {
 		const proxy = fakeProxy({
 			fetchFileContent: vi.fn(async () => ({
 				ok: false as const,
-				reason: "unreachable" as const,
-			})),
+				reason: 'unreachable' as const
+			}))
 		});
 		const files = fakeFiles();
-		const service = new ApplicationPreviewArchiveService({ proxy, listPreviews, files });
+		const service = new ApplicationPreviewArchiveService({
+			proxy,
+			listPreviews,
+			files
+		});
 
-		const result = await service.archivePreview({ name: "myfeature", userId: "u" });
-		expect(result.archived).toBe(true);
+		const result = await service.archivePreview({
+			name: 'myfeature',
+			userId: 'u'
+		});
+		expect(result).toMatchObject({
+			archived: false,
+			reason: 'incomplete:bundle-copy'
+		});
 		expect(result.bundleCount).toBe(0);
 		expect(result.bundleErrors).toBe(1);
 	});
 
-	it("skips file creation entirely for an empty preview", async () => {
+	it('writes a durable complete summary for a verified zero-run inventory', async () => {
 		const proxy = fakeProxy({
 			listExecutions: vi.fn(async () => ({
 				ok: true as const,
-				data: { executions: [], total: 0 },
-			})),
+				data: { executions: [], total: 0 }
+			}))
 		});
 		const files = fakeFiles();
-		const service = new ApplicationPreviewArchiveService({ proxy, listPreviews, files });
+		const service = new ApplicationPreviewArchiveService({
+			proxy,
+			listPreviews,
+			files
+		});
 
-		const result = await service.archivePreview({ name: "myfeature", userId: "u" });
-		expect(result).toMatchObject({ archived: true, reason: "empty", executionCount: 0 });
-		expect(files.createFile).not.toHaveBeenCalled();
+		const result = await service.archivePreview({
+			name: 'myfeature',
+			userId: 'u'
+		});
+		expect(result).toMatchObject({
+			archived: true,
+			executionCount: 0,
+			bundleCount: 0,
+			bundleErrors: 0,
+			summaryFileId: 'host-file-1'
+		});
+		expect(files.createFile).toHaveBeenCalledOnce();
+		const summary = JSON.parse(files.createFile.mock.calls[0][0].bytes.toString());
+		expect(summary).toMatchObject({
+			schema: 'wfb.preview-archive/v1',
+			executionsTotal: 0,
+			executions: [],
+			archiveComplete: true,
+			incompleteReasons: []
+		});
+		expect(summary.notes).toContain('complete execution inventory contained zero runs');
 	});
 
-	it("stops copying bundles once the deadline is exceeded", async () => {
+	it('writes a durable forced-quarantine summary without claiming archive completeness', async () => {
+		const files = fakeFiles();
+		const service = new ApplicationPreviewArchiveService({
+			proxy: fakeProxy(),
+			listPreviews,
+			files
+		});
+		const result = await service.quarantinePreview({
+			preview: {
+				name: 'myfeature',
+				pool: null,
+				url: 'https://wfb-myfeature.ts',
+				expiresAt: '2026-07-04T09:00:00.000Z'
+			},
+			userId: 'user-1',
+			projectId: null,
+			reason: 'active-generation-unverified',
+			forcedAt: '2026-07-04T11:00:00.000Z',
+			graceExpiredAt: '2026-07-04T10:00:00.000Z',
+			attemptedArchive: {
+				archived: false,
+				preview: 'myfeature',
+				reason: 'incomplete:active-generation-unverified',
+				summaryFileId: 'partial-summary',
+				executionCount: 1
+			}
+		});
+		expect(result).toMatchObject({
+			archived: false,
+			quarantined: true,
+			reason: 'forced-quarantine:active-generation-unverified',
+			summaryFileId: 'host-file-1'
+		});
+		const summary = JSON.parse(files.createFile.mock.calls[0][0].bytes.toString());
+		expect(summary).toMatchObject({
+			archiveComplete: false,
+			incompleteReasons: ['active-generation-unverified'],
+			teardownDisposition: {
+				mode: 'forced-quarantine',
+				forcedAt: '2026-07-04T11:00:00.000Z',
+				graceExpiredAt: '2026-07-04T10:00:00.000Z',
+				priorSummaryFileId: 'partial-summary'
+			}
+		});
+	});
+
+	it('does not confirm an archive while an active session may have a newer live generation', async () => {
+		const active = {
+			...executionRows[1],
+			status: 'running',
+			phase: 'generate',
+			completedAt: null,
+			durationMs: null
+		};
+		const proxy = fakeProxy({
+			listExecutions: vi.fn(async () => ({
+				ok: true as const,
+				data: { executions: [active], total: 1 }
+			})),
+			// An older bundle exists, but the live receiver may have accepted a final
+			// generation after it. Presence of any bundle is not current-state proof.
+			listExecutionArtifacts: vi.fn(async () => ({
+				ok: true as const,
+				data: [
+					{
+						id: 'artifact-before-final-sync',
+						executionId: active.id,
+						kind: 'source-bundle',
+						title: 'old snapshot',
+						fileId: 'old-bundle-file',
+						contentType: 'application/gzip',
+						sizeBytes: 128,
+						metadata: { generation: 'generation-before-final-sync' },
+						createdAt: '2026-07-04T11:00:10.000Z'
+					}
+				]
+			}))
+		});
+		const files = fakeFiles();
+		const service = new ApplicationPreviewArchiveService({
+			proxy,
+			listPreviews,
+			files
+		});
+
+		const result = await service.archivePreview({
+			name: 'myfeature',
+			userId: 'u'
+		});
+		expect(result).toMatchObject({
+			archived: false,
+			reason: 'incomplete:active-generation-unverified'
+		});
+		expect(result.notes?.join(' ')).toContain('active execution source generation is not frozen');
+	});
+
+	it('refuses teardown proof when the archive deadline truncates discovery', async () => {
 		const proxy = fakeProxy();
 		const files = fakeFiles();
 		const service = new ApplicationPreviewArchiveService({
 			proxy,
 			listPreviews,
 			files,
-			deadlineMs: -1, // already expired
+			deadlineMs: -1 // already expired
 		});
-		const result = await service.archivePreview({ name: "myfeature", userId: "u" });
-		expect(result.archived).toBe(true);
+		const result = await service.archivePreview({
+			name: 'myfeature',
+			userId: 'u'
+		});
+		expect(result).toMatchObject({
+			archived: false,
+			reason: 'incomplete:deadline'
+		});
 		expect(result.bundleCount).toBe(0);
 		expect(proxy.fetchFileContent).not.toHaveBeenCalled();
 	});
-});
 
-describe("ApplicationPreviewArchiveService.listArchivedPreviews", () => {
-	it("groups archive files by scope into one item per preview", async () => {
-		const proxy = fakeProxy();
+	it('refuses teardown proof when the execution listing is truncated', async () => {
+		const proxy = fakeProxy({
+			listExecutions: vi.fn(async () => ({
+				ok: true as const,
+				data: { executions: [executionRows[0]], total: 2 }
+			}))
+		});
 		const files = fakeFiles();
 		const service = new ApplicationPreviewArchiveService({
 			proxy,
 			listPreviews,
 			files,
+			executionLimit: 1
 		});
-		await service.archivePreview({ name: "myfeature", userId: "user-1" });
 
-		const items = await service.listArchivedPreviews({ userId: "user-1" });
+		const result = await service.archivePreview({
+			name: 'myfeature',
+			userId: 'u'
+		});
+		expect(result).toMatchObject({
+			archived: false,
+			reason: 'incomplete:execution-limit',
+			executionCount: 1
+		});
+		expect(result.summaryFileId).toBeTruthy();
+	});
+
+	it('refuses teardown proof when the un-promoted bundle set exceeds the bound', async () => {
+		const proxy = fakeProxy({
+			listExecutionArtifacts: vi.fn(async ({ executionId }) => ({
+				ok: true as const,
+				data:
+					executionId === 'exec-1'
+						? [
+								{
+									id: 'art-unpromoted-1',
+									executionId,
+									kind: 'source-bundle',
+									title: 'v1',
+									fileId: 'file-1',
+									contentType: 'application/gzip',
+									sizeBytes: 128,
+									metadata: { tier: 'tar-overlay' },
+									createdAt: '2026-07-04T10:00:20.000Z'
+								},
+								{
+									id: 'art-unpromoted-2',
+									executionId,
+									kind: 'source-bundle',
+									title: 'v2',
+									fileId: 'file-2',
+									contentType: 'application/gzip',
+									sizeBytes: 128,
+									metadata: { tier: 'tar-overlay' },
+									createdAt: '2026-07-04T10:00:30.000Z'
+								}
+							]
+						: []
+			}))
+		});
+		const files = fakeFiles();
+		const service = new ApplicationPreviewArchiveService({
+			proxy,
+			listPreviews,
+			files,
+			bundleLimit: 1
+		});
+
+		const result = await service.archivePreview({
+			name: 'myfeature',
+			userId: 'u'
+		});
+		expect(result).toMatchObject({
+			archived: false,
+			reason: 'incomplete:bundle-limit',
+			bundleCount: 1
+		});
+		expect(result.summaryFileId).toBeTruthy();
+	});
+});
+
+describe('ApplicationPreviewArchiveService.listArchivedPreviews', () => {
+	it('groups archive files by scope into one item per preview', async () => {
+		const proxy = fakeProxy();
+		const files = fakeFiles();
+		const service = new ApplicationPreviewArchiveService({
+			proxy,
+			listPreviews,
+			files
+		});
+		await service.archivePreview({ name: 'myfeature', userId: 'user-1' });
+
+		const items = await service.listArchivedPreviews({ userId: 'user-1' });
 		expect(items).toHaveLength(1);
 		expect(items[0]).toMatchObject({
-			name: "myfeature",
-			scopeId: previewArchiveScopeId("myfeature"),
+			name: 'myfeature',
+			scopeId: previewArchiveScopeId('myfeature'),
 			summaryCount: 1,
 			bundleCount: 1,
-			fileCount: 2,
+			fileCount: 2
 		});
 		expect(items[0].totalBytes).toBeGreaterThan(0);
 		expect(items[0].lastArchivedAt).toBeTruthy();
@@ -291,119 +529,117 @@ describe("ApplicationPreviewArchiveService.listArchivedPreviews", () => {
 		expect(files.getFileContent).not.toHaveBeenCalled();
 	});
 
-	it("returns an empty list when nothing is archived", async () => {
+	it('returns an empty list when nothing is archived', async () => {
 		const service = new ApplicationPreviewArchiveService({
 			proxy: fakeProxy(),
 			listPreviews,
-			files: fakeFiles(),
+			files: fakeFiles()
 		});
-		expect(await service.listArchivedPreviews({ userId: "user-1" })).toEqual([]);
+		expect(await service.listArchivedPreviews({ userId: 'user-1' })).toEqual([]);
 	});
 });
 
-describe("ApplicationPreviewArchiveService.getArchivedPreview", () => {
-	it("parses the latest run-summary into executions + bundles", async () => {
+describe('ApplicationPreviewArchiveService.getArchivedPreview', () => {
+	it('parses the latest run-summary into executions + bundles', async () => {
 		const files = fakeFiles();
 		const service = new ApplicationPreviewArchiveService({
 			proxy: fakeProxy(),
 			listPreviews,
-			files,
+			files
 		});
-		await service.archivePreview({ name: "myfeature", userId: "user-1" });
+		await service.archivePreview({ name: 'myfeature', userId: 'user-1' });
 
 		const detail = await service.getArchivedPreview({
-			name: "myfeature",
-			userId: "user-1",
+			name: 'myfeature',
+			userId: 'user-1'
 		});
 		expect(detail.ok).toBe(true);
-		if (!detail.ok) throw new Error("expected ok");
-		expect(detail.executions.map((e) => e.id)).toEqual(["exec-1", "exec-2"]);
+		if (!detail.ok) throw new Error('expected ok');
+		expect(detail.executions.map((e) => e.id)).toEqual(['exec-1', 'exec-2']);
 		expect(detail.bundles).toHaveLength(1);
 		expect(detail.files).toHaveLength(2);
 		expect(detail.executionsTotal).toBe(2);
 	});
 
-	it("does not match a different preview whose name shares a prefix", async () => {
+	it('does not match a different preview whose name shares a prefix', async () => {
 		const files = fakeFiles();
 		const service = new ApplicationPreviewArchiveService({
 			proxy: fakeProxy(),
 			listPreviews: async () => [
-				{ name: "pr-4", url: null, pool: null },
-				{ name: "pr-42", url: null, pool: null },
+				{ name: 'pr-4', url: null, pool: null },
+				{ name: 'pr-42', url: null, pool: null }
 			],
-			files,
+			files
 		});
-		await service.archivePreview({ name: "pr-4", userId: "user-1" });
-		await service.archivePreview({ name: "pr-42", userId: "user-1" });
+		await service.archivePreview({ name: 'pr-4', userId: 'user-1' });
+		await service.archivePreview({ name: 'pr-42', userId: 'user-1' });
 
 		const detail = await service.getArchivedPreview({
-			name: "pr-4",
-			userId: "user-1",
+			name: 'pr-4',
+			userId: 'user-1'
 		});
 		expect(detail.ok).toBe(true);
 		// only pr-4's two files, not pr-42's
-		expect(detail.files.every((f) => f.name.startsWith("preview-pr-4/"))).toBe(
-			true,
-		);
+		expect(detail.files.every((f) => f.name.startsWith('preview-pr-4/'))).toBe(true);
 	});
 
-	it("returns a not-found error state for an unknown preview", async () => {
+	it('returns a not-found error state for an unknown preview', async () => {
 		const service = new ApplicationPreviewArchiveService({
 			proxy: fakeProxy(),
 			listPreviews,
-			files: fakeFiles(),
+			files: fakeFiles()
 		});
 		const detail = await service.getArchivedPreview({
-			name: "ghost",
-			userId: "user-1",
+			name: 'ghost',
+			userId: 'user-1'
 		});
-		expect(detail).toMatchObject({ ok: false, reason: "not-found", files: [] });
+		expect(detail).toMatchObject({ ok: false, reason: 'not-found', files: [] });
 	});
 
-	it("returns a malformed error state (but keeps files) on a bad summary", async () => {
+	it('returns a malformed error state (but keeps files) on a bad summary', async () => {
 		const files = fakeFiles();
 		await files.createFile({
-			userId: "user-1",
-			name: "preview-bad/run-summary-x.json",
-			purpose: "output",
-			scopeId: previewArchiveScopeId("bad"),
-			contentType: "application/json",
-			bytes: Buffer.from(JSON.stringify({ schema: "something/else" })),
+			userId: 'user-1',
+			name: 'preview-bad/run-summary-x.json',
+			purpose: 'output',
+			scopeId: previewArchiveScopeId('bad'),
+			contentType: 'application/json',
+			bytes: Buffer.from(JSON.stringify({ schema: 'something/else' }))
 		});
 		const service = new ApplicationPreviewArchiveService({
 			proxy: fakeProxy(),
 			listPreviews,
-			files,
+			files
 		});
 		const detail = await service.getArchivedPreview({
-			name: "bad",
-			userId: "user-1",
+			name: 'bad',
+			userId: 'user-1'
 		});
 		expect(detail.ok).toBe(false);
-		if (detail.ok) throw new Error("expected error state");
-		expect(detail.reason).toBe("malformed");
+		if (detail.ok) throw new Error('expected error state');
+		expect(detail.reason).toBe('malformed');
 		expect(detail.files).toHaveLength(1);
 	});
 
-	it("returns a no-summary error state when only bundles exist", async () => {
+	it('returns a no-summary error state when only bundles exist', async () => {
 		const files = fakeFiles();
 		await files.createFile({
-			userId: "user-1",
-			name: "preview-nb/bundle-x.tar.gz",
-			purpose: "output",
-			scopeId: previewArchiveScopeId("nb"),
-			contentType: "application/gzip",
-			bytes: Buffer.from("bytes"),
+			userId: 'user-1',
+			name: 'preview-nb/bundle-x.tar.gz',
+			purpose: 'output',
+			scopeId: previewArchiveScopeId('nb'),
+			contentType: 'application/gzip',
+			bytes: Buffer.from('bytes')
 		});
 		const service = new ApplicationPreviewArchiveService({
 			proxy: fakeProxy(),
 			listPreviews,
-			files,
+			files
 		});
 		const detail = await service.getArchivedPreview({
-			name: "nb",
-			userId: "user-1",
+			name: 'nb',
+			userId: 'user-1'
 		});
-		expect(detail).toMatchObject({ ok: false, reason: "no-summary" });
+		expect(detail).toMatchObject({ ok: false, reason: 'no-summary' });
 	});
 });

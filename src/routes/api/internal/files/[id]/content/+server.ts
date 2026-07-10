@@ -9,21 +9,21 @@
 
 import { error } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { requireInternal } from "$lib/server/internal-auth";
+import { requireInternalOrPreviewControlRead } from "$lib/server/internal-auth";
 import { getFileContent } from "$lib/server/files/registry";
 
 export const GET: RequestHandler = async ({ params, request }) => {
-	requireInternal(request);
-	const result = await getFileContent(params.id);
-	if (!result) return error(404, "File not found");
-	const { summary, bytes } = result;
-	return new Response(new Uint8Array(bytes), {
-		status: 200,
-		headers: {
-			"Content-Type": summary.contentType || "application/octet-stream",
-			"Content-Length": String(summary.sizeBytes),
-			"Content-Disposition": `attachment; filename="${encodeURIComponent(summary.name)}"`,
-			"Cache-Control": "private, max-age=300",
-		},
-	});
+  requireInternalOrPreviewControlRead(request);
+  const result = await getFileContent(params.id);
+  if (!result) return error(404, "File not found");
+  const { summary, bytes } = result;
+  return new Response(new Uint8Array(bytes), {
+    status: 200,
+    headers: {
+      "Content-Type": summary.contentType || "application/octet-stream",
+      "Content-Length": String(summary.sizeBytes),
+      "Content-Disposition": `attachment; filename="${encodeURIComponent(summary.name)}"`,
+      "Cache-Control": "private, max-age=300",
+    },
+  });
 };

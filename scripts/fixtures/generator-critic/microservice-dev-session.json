@@ -5,7 +5,7 @@
     "name": "microservice-dev-session",
     "version": "0.1.0",
     "title": "Microservice dev-session: provision a live dev preview, then hand off to an interactive coding agent",
-    "summary": "Generalizes the per-run live-sync loop to ANY microservice (workflow-builder/workflow-orchestrator/function-router). Provisions that service's per-run dev preview (kept alive, browsable at its tailnet URL), clones the repo into the shared /sandbox/work + writes a sync.sh helper, then ENDS INTO a persistent interactive coding-agent session bound to the same workspace + preview. Keep prompting the agent: it edits repo/, runs ./sync.sh to live-sync, you inspect. P3 of the agentic dev loop (docs/agentic-deploy-inspect-loop.md).",
+    "summary": "Runs the five catalog-backed workflow-builder microservices (workflow-builder, workflow-orchestrator, function-router, mcp-gateway, and workflow-mcp-server) in an isolated preview-native vCluster development environment. It clones one immutable source revision into /sandbox/work, writes the multi-service sync helper, then hands the shared workspace and live preview to a persistent interactive coding-agent session for hot-reload development and full-system inspection.",
     "x-workflow-builder": {
       "resumable": true
     }
@@ -20,13 +20,27 @@
             "type": "string",
             "title": "Microservice to develop",
             "default": "workflow-orchestrator",
-            "description": "workflow-builder | workflow-orchestrator | function-router (registered in the dev-preview registry)."
+            "description": "workflow-builder | workflow-orchestrator | function-router | mcp-gateway | workflow-mcp-server (catalog-backed preview services)."
+          },
+          "services": {
+            "type": "array",
+            "title": "Microservices to develop",
+            "items": {
+              "type": "string"
+            },
+            "default": [
+              "workflow-builder",
+              "workflow-orchestrator",
+              "function-router",
+              "mcp-gateway",
+              "workflow-mcp-server"
+            ]
           },
           "mode": {
             "type": "string",
             "title": "Dev-preview mode",
-            "default": "host-throwaway",
-            "description": "host-throwaway (legacy per-run preview on the host dev cluster) | preview-native (run INSIDE a Tier-2 vcluster preview: REPLACE the preview's prod pod with this dev server + adopt its Service, so the preview's own URL serves live edits). preview-native is for workflow-builder (the BFF) first."
+            "default": "preview-native",
+            "description": "preview-native runs inside an isolated Tier-2 vCluster and adopts each selected service for live edits. host-throwaway remains an explicit compatibility mode for legacy host-cluster sessions."
           },
           "keepPreview": {
             "type": "string",
@@ -37,6 +51,14 @@
             "type": "string",
             "title": "Repo (owner/repo)",
             "default": "PittampalliOrg/workflow-builder"
+          },
+          "sourceRevision": {
+            "type": "string",
+            "title": "Immutable source revision"
+          },
+          "previewOrigin": {
+            "type": "string",
+            "title": "Preview HTTPS origin"
           },
           "agentSlug": {
             "type": "string",
@@ -57,7 +79,9 @@
         "with": {
           "executionId": "${ .runtime.executionId }",
           "service": "${ .trigger.service // \"workflow-orchestrator\" }",
-          "mode": "${ .trigger.mode // \"host-throwaway\" }",
+          "services": "${ .trigger.services // (if .trigger.service then [.trigger.service] else [\"workflow-builder\", \"workflow-orchestrator\", \"function-router\", \"mcp-gateway\", \"workflow-mcp-server\"] end) }",
+          "mode": "${ .trigger.mode // \"preview-native\" }",
+          "origin": "${ .trigger.previewOrigin // \"\" }",
           "timeoutSeconds": "${ if (.trigger.keepPreview // \"true\") == \"true\" then 86400 else 3600 end }",
           "waitReadySeconds": 180
         },
@@ -76,7 +100,7 @@
         "call": "workspace/command",
         "with": {
           "cliWorkspace": true,
-          "command": "${ \"export REPOURL=\" + ((.trigger.repoUrl // \"PittampalliOrg/workflow-builder\") | @sh) + \"; export SUBDIR=\" + ((.provision_preview.repoSubdir // \".\") | @sh) + \"; export PATHS=\" + (((.provision_preview.syncPaths // [\"src\"]) | join(\" \")) | @sh) + \"; export SYNCURL=\" + ((.provision_preview.syncUrl // \"\") | @sh) + \"; export EXTRASYNC=\" + (((.provision_preview.extraSync // []) | map(.from + \":\" + .to) | join(\" \")) | @sh) + \";\" + \"\\nset -e\\ncd /sandbox/work\\nrm -rf repo\\ngit clone --depth 1 --single-branch https://x-access-token:${GITHUB_TOKEN}@github.com/$REPOURL.git repo\\nprintf 'SUBDIR=%s\\\\nPATHS=\\\"%s\\\"\\\\nSYNCURL=%s\\\\nEXTRASYNC=\\\"%s\\\"\\\\n' \\\"$SUBDIR\\\" \\\"$PATHS\\\" \\\"$SYNCURL\\\" \\\"$EXTRASYNC\\\" > /sandbox/work/.syncenv\\nif [ -f /sandbox/work/repo/scripts/dev-sync/sync.sh ]; then cp /sandbox/work/repo/scripts/dev-sync/sync.sh /sandbox/work/sync.sh; chmod +x /sandbox/work/sync.sh; echo 'sync.sh installed from repo'; else echo 'WARN: repo/scripts/dev-sync/sync.sh missing (stale checkout)'; fi\\necho CLONED $(git -C repo rev-parse --short HEAD); echo '--- .syncenv ---'; cat /sandbox/work/.syncenv\" }",
+          "command": "${ \"export REPOURL=\" + ((.trigger.repoUrl // \"PittampalliOrg/workflow-builder\") | @sh) + \"; export SOURCE_REVISION=\" + ((.trigger.sourceRevision // \"\") | @sh) + \"; export MODE=\" + ((.trigger.mode // \"preview-native\") | @sh) + \"; export PREVIEWS_B64=\" + (((.provision_preview.services // [{service: (.provision_preview.service // .trigger.service // \"workflow-orchestrator\"), ok: (.provision_preview.ready // false), info: .provision_preview}]) | @json | @base64) | @sh) + \";\" + \"\\nset -eu\\ncd /sandbox/work\\nrm -rf repo .syncenv .syncenv.d .preview-services.json\\nprintf '%s' \\\"$REPOURL\\\" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || { echo 'repoUrl must be owner/repo' >&2; exit 2; }\\ncase \\\"$MODE\\\" in host-throwaway|preview-native) ;; *) echo 'unsupported dev-preview mode' >&2; exit 2 ;; esac\\nif [ \\\"$MODE\\\" = preview-native ]; then printf '%s' \\\"$SOURCE_REVISION\\\" | grep -Eq '^[0-9a-f]{40}$' || { echo 'preview-native requires a lowercase 40-hex sourceRevision' >&2; exit 2; }; fi\\nif [ -n \\\"${GITHUB_TOKEN:-}\\\" ]; then CLONE_URL=\\\"https://x-access-token:${GITHUB_TOKEN}@github.com/$REPOURL.git\\\"; else CLONE_URL=\\\"https://github.com/$REPOURL.git\\\"; fi\\ngit clone --filter=blob:none \\\"$CLONE_URL\\\" repo\\nif [ -n \\\"$SOURCE_REVISION\\\" ]; then printf '%s' \\\"$SOURCE_REVISION\\\" | grep -Eq '^[0-9a-f]{40}$' || { echo 'sourceRevision must be a lowercase 40-hex Git SHA' >&2; exit 2; }; git -C repo fetch --no-tags --depth 1 origin \\\"$SOURCE_REVISION\\\"; git -C repo checkout --detach \\\"$SOURCE_REVISION\\\"; ACTUAL_REVISION=$(git -C repo rev-parse HEAD); test \\\"$ACTUAL_REVISION\\\" = \\\"$SOURCE_REVISION\\\" || { echo 'checked-out revision does not match sourceRevision' >&2; exit 3; }; fi\\nprintf '%s' \\\"$PREVIEWS_B64\\\" | base64 -d > .preview-services.json\\njq -e 'length > 0 and all(.[]; .ok == true and .info.ready == true and ((.info.syncUrl // \\\"\\\") | length) > 0)' .preview-services.json >/dev/null || { echo 'full preview service set is not ready' >&2; exit 4; }\\nmkdir -p .syncenv.d\\njq -c '.[] | select(.ok == true)' .preview-services.json | while IFS= read -r entry; do service=$(printf '%s' \\\"$entry\\\" | jq -r '.service'); printf '%s' \\\"$entry\\\" | jq -r '.service as $service | (.info // .) as $info | \\\"SERVICE=\\($service | @sh)\\\\nSUBDIR=\\(($info.repoSubdir // \\\".\\\") | @sh)\\\\nPATHS=\\((($info.syncPaths // [\\\"src\\\"]) | join(\\\" \\\")) | @sh)\\\\nSYNCURL=\\(($info.syncUrl // \\\"\\\") | @sh)\\\\nSYNC_TOKEN=\\(($info.syncCapability // \\\"\\\") | @sh)\\\\nEXTRASYNC=\\(((($info.extraSync // []) + ($info.captureOnly // [])) | map(.from + \\\":\\\" + .to) | join(\\\" \\\")) | @sh)\\\"' > \\\".syncenv.d/$service\\\"; done\\ncp repo/scripts/dev-sync/sync.sh /sandbox/work/sync.sh\\nchmod +x /sandbox/work/sync.sh\\necho CLONED $(git -C repo rev-parse HEAD)\\necho SERVICES $(jq -r '[.[] | select(.ok == true) | .service] | join(\\\",\\\")' .preview-services.json)\" }",
           "cwd": "/sandbox/work",
           "timeoutMs": 600000,
           "allowFailure": false
@@ -89,17 +113,16 @@
         "with": {
           "executionId": "${ .runtime.executionId }",
           "agentSlug": "${ .trigger.agentSlug // \"cli-dev-agent\" }",
-          "instructions": "${ \"You are an interactive developer for the microservice **\" + (.trigger.service // \"workflow-orchestrator\") + \"**.\\n\\n- The repo is cloned at /sandbox/work/repo. EDIT FILES UNDER /sandbox/work/repo/\" + (.provision_preview.repoSubdir // \".\") + \" (only paths under there are synced).\\n- A live dev preview of this service is ALREADY running with hot-reload.\\n- After you edit files, run /sandbox/work/sync.sh to push your changes to the preview; it hot-reloads in a few seconds. sync.sh also reinstalls dependencies in the pod automatically if you change a manifest like package.json or requirements.txt, and (when the service defines one) you can run an in-pod test lane by POSTing to the sidecar /__run — take the sync URL, replace /__sync with /__run, then POST ?cmd=contract.\\n- VERIFY from inside this sandbox by curling the in-cluster preview URL \" + (.provision_preview.url // \"\") + \" (e.g. curl \" + (.provision_preview.url // \"\") + \"/<your-route>). Do NOT curl the public URL \" + (.provision_preview.browseUrl // \"\") + \" from here — it is for the human to open in a browser and is NOT resolvable inside the cluster.\\n- The in-cluster sync endpoint is \" + (.provision_preview.syncUrl // \"\") + \" (sync.sh targets it).\\n\\nReply 'ready' and then wait for the user's next message describing the change to make. Then implement it under repo/\" + (.provision_preview.repoSubdir // \".\") + \", run /sandbox/work/sync.sh, and confirm it is live by curling the in-cluster preview URL.\" }"
+          "instructions": "${ \"You are the interactive developer for these microservices: **\" + ((.trigger.services // (if .trigger.service then [.trigger.service] else [\"workflow-builder\", \"workflow-orchestrator\", \"function-router\", \"mcp-gateway\", \"workflow-mcp-server\"] end)) | join(\", \")) + \"**.\\n\\n- One monorepo checkout is at /sandbox/work/repo. The per-service source mappings are in /sandbox/work/.syncenv.d/.\\n- The full isolated system is already running. Edit any selected service in that checkout, then run /sandbox/work/sync.sh once; it pushes one logical generation to every selected service and hot-reloads UI and backend processes.\\n- sync.sh detects dependency-manifest changes and runs the cataloged dependency action. Cataloged in-pod tests are available through each service's /__run endpoint. After syncing a workflow-builder drizzle/ change, run its allowlisted migrate action before testing the live schema.\\n- Run the relevant fast tests after edits, then inspect the functioning system at \" + (.trigger.previewOrigin // \"the provisioned browse URL\") + \". Exercise cross-service behavior, not only a standalone health route.\\n- Do not commit or push from the session. Atomic capture and PR promotion are separate workflow actions.\\n\\nReply 'ready' and wait for the requested feature. Then implement it across the selected services, run sync.sh, run the allowlisted tests, and verify the live system.\" }"
         }
       }
     },
     {
       "summary": {
         "set": {
-          "service": "${ .provision_preview.service // .trigger.service // \"workflow-orchestrator\" }",
-          "browseUrl": "${ .provision_preview.browseUrl // \"\" }",
-          "syncUrl": "${ .provision_preview.syncUrl // \"\" }",
-          "sandboxName": "${ .provision_preview.sandboxName // \"\" }",
+          "services": "${ .trigger.services // (if .trigger.service then [.trigger.service] else [\"workflow-builder\", \"workflow-orchestrator\", \"function-router\", \"mcp-gateway\", \"workflow-mcp-server\"] end) }",
+          "browseUrl": "${ .trigger.previewOrigin // .provision_preview.browseUrl // \"\" }",
+          "previewServices": "${ .provision_preview.services // [] }",
           "sessionId": "${ .handoff.sessionId // \"\" }",
           "sessionUrl": "${ .handoff.url // \"\" }",
           "keptAlive": "${ (.trigger.keepPreview // \"true\") == \"true\" }"

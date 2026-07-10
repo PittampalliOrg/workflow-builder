@@ -1,6 +1,9 @@
 import type {
-	PrPreviewClusterPort,
+	ImmutableGitSha,
+	PrPreviewAuthority,
+	PrPreviewCommandPort,
 	PrPreviewDevPodPort,
+	PrPreviewEnvironmentLaunchPort,
 	PrPreviewPullRequestPort,
 	PrPreviewRecord,
 	PrPreviewRecordStore,
@@ -9,529 +12,619 @@ import type {
 	PrPreviewSeedTarget,
 	PrPreviewStatus,
 	PrPreviewVerifyPort,
+	PreviewAcceptanceChangedServiceCatalogPort,
+	PreviewEnvironmentCleanupProof,
+	PreviewEnvironmentReadinessPort,
+	PreviewEnvironmentRevisionResolverPort,
+	PreviewEnvironmentTeardownPort,
 } from "$lib/server/application/ports";
 
-const DEFAULT_POLL_INTERVAL_MS = 10_000;
 const DEFAULT_READY_TIMEOUT_MS = 900_000;
+const DEFAULT_TEARDOWN_TIMEOUT_MS = 600_000;
 const DEFAULT_TTL_HOURS = 24;
 const DEFAULT_VERIFY_TIMEOUT_MS = 15 * 60_000;
-/** Heartbeat cadence for the durable record while a pipeline is in flight. */
 const DEFAULT_HEARTBEAT_MS = 30_000;
-/** A non-terminal record whose updatedAt is older than this is considered
- * orphaned (its owner replica died mid-run) and eligible for resume. Must be
- * comfortably larger than the heartbeat. */
 const DEFAULT_RESUME_STALE_MS = 120_000;
-/** BFF-owned sticky marker for the D2 verify verdict comment. The main
- * `<!-- pr-preview -->` status comment is owned by the hub Tekton dispatch Task. */
+const FULL_SHA = /^[0-9a-f]{40}$/;
+
 export const PR_PREVIEW_VERIFY_MARKER = "<!-- pr-preview-verify -->";
 
-export type PrPreviewUpInput = {
+export type PrPreviewUpInput = Readonly<{
 	prNumber: number;
+	/** Webhook observation only; GitHub must confirm this exact SHA. */
 	headSha: string;
-	headRef?: string | null;
-	/** Repo-relative changed paths; when omitted the PR gateway is queried. */
-	changedFiles?: string[] | null;
-	/** Resume path: reuse the services the interrupted run already computed
-	 * instead of re-querying the PR gateway (whose silent failure would re-map
-	 * everything onto the BFF only). */
-	presetServices?: string[] | null;
-	/** D2: request the Playwright-critic verify pass (still gated on the flag). */
 	verify?: boolean;
-};
+}>;
 
-export type PrPreviewDeps = {
-	clusters: PrPreviewClusterPort;
+export type PrPreviewDeps = Readonly<{
+	environments: PrPreviewEnvironmentLaunchPort;
+	readiness: PreviewEnvironmentReadinessPort;
+	teardown: PreviewEnvironmentTeardownPort;
+	platformRevisions: PreviewEnvironmentRevisionResolverPort;
+	pullRequests: PrPreviewPullRequestPort;
+	catalog: PreviewAcceptanceChangedServiceCatalogPort;
 	devPods: PrPreviewDevPodPort;
 	seeder: PrPreviewSeedPort;
-	pullRequests: PrPreviewPullRequestPort;
 	verify: PrPreviewVerifyPort;
-	/** Durable pipeline records (table `pr_previews`) — the cross-replica,
-	 * rollout-surviving source of truth for `status()`, with generation-fenced
-	 * writes so at most one pipeline ever owns a row. */
 	store: PrPreviewRecordStore;
-	/** Changed-path → service mapping table (from the dev-preview registry). */
-	registry: PrPreviewRegistryEntry[];
-	/** Deterministic per-preview sync token (stable across re-seeds — adopted
-	 * pods keep the token they were provisioned with). */
+	registry: readonly PrPreviewRegistryEntry[];
 	syncToken: (alias: string) => string;
-	/** D2 flag `PR_PREVIEW_VERIFY_ENABLED` (default off). */
+	platformRepository: string;
+	platformRef: string;
+	sourceRepository: string;
 	verifyEnabled?: boolean;
 	ttlHours?: number;
-	pollIntervalMs?: number;
 	readyTimeoutMs?: number;
+	teardownTimeoutMs?: number;
 	verifyTimeoutMs?: number;
 	heartbeatMs?: number;
 	resumeStaleMs?: number;
-};
+	now?: () => Date;
+	requestId?: () => string;
+}>;
+
+export type PrPreviewAdmissionErrorCode =
+	| "invalid-request"
+	| "github-verification-failed"
+	| "unsupported-change"
+	| "no-preview-service"
+	| "platform-resolution-failed"
+	| "teardown-failed";
+
+export class PrPreviewAdmissionError extends Error {
+	constructor(
+		public readonly code: PrPreviewAdmissionErrorCode,
+		message: string,
+		options?: ErrorOptions,
+	) {
+		super(message, options);
+		this.name = "PrPreviewAdmissionError";
+	}
+}
 
 export function prPreviewAlias(prNumber: number): string {
 	return `pr-${prNumber}`;
 }
 
 function log(prNumber: number, stage: string, detail?: string) {
-	console.info(`[pr-preview] pr=${prNumber} ${stage}${detail ? ` ${detail}` : ""}`);
-}
-
-function logError(prNumber: number, stage: string, err: unknown) {
-	console.error(
-		`[pr-preview] pr=${prNumber} ${stage} FAILED: ${
-			err instanceof Error ? err.message : String(err)
-		}`,
+	console.info(
+		`[pr-preview] pr=${prNumber} ${stage}${detail ? ` ${detail}` : ""}`,
 	);
 }
 
-/** Thrown by fenced writes when the pipeline's generation lost the row (a newer
- * up/resume took over, or down() deleted it): abort, write nothing further. */
+function logError(prNumber: number, stage: string, error: unknown) {
+	console.error(
+		`[pr-preview] pr=${prNumber} ${stage} FAILED: ${message(error)}`,
+	);
+}
+
+function message(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
 class PrPreviewDeposedError extends Error {
 	constructor(prNumber: number) {
-		super(`pr-preview pr=${prNumber} pipeline deposed (newer owner or torn down)`);
+		super(`pr-preview pr=${prNumber} pipeline deposed`);
 		this.name = "PrPreviewDeposedError";
 	}
 }
 
-/**
- * Map a PR's changed paths to dev-preview services: longest matching
- * `repoSubdir` prefix wins per file (the BFF's `.` root matches everything at
- * length 0, so `services/<x>/…` files land on their own service). Empty/unknown
- * input defaults to the BFF only.
- */
-export function mapChangedFilesToServices(
-	changedFiles: string[] | null | undefined,
-	registry: PrPreviewRegistryEntry[],
-	fallbackService = "workflow-builder",
-): string[] {
-	if (!changedFiles?.length) return [fallbackService];
-	const services = new Set<string>();
-	for (const file of changedFiles) {
-		let best: { service: string; depth: number } | null = null;
-		for (const entry of registry) {
-			const sub = entry.repoSubdir === "." ? "" : entry.repoSubdir.replace(/\/+$/, "");
-			if (sub && file !== sub && !file.startsWith(`${sub}/`)) continue;
-			const depth = sub.length;
-			if (!best || depth > best.depth) best = { service: entry.service, depth };
-		}
-		if (best) services.add(best.service);
-	}
-	if (services.size === 0) return [fallbackService];
-	return [...services];
+function sameAuthority(
+	left: PrPreviewAuthority | null,
+	right: PrPreviewAuthority,
+): boolean {
+	return Boolean(
+		left &&
+		left.repository === right.repository &&
+		left.baseRef === right.baseRef &&
+		left.baseSha === right.baseSha &&
+		left.headSha === right.headSha &&
+		left.platformRepository === right.platformRepository &&
+		left.platformRevision === right.platformRevision &&
+		left.catalogDigest === right.catalogDigest &&
+		JSON.stringify([...left.services].sort()) ===
+			JSON.stringify([...right.services].sort()) &&
+		JSON.stringify([...left.changedPaths].sort()) ===
+			JSON.stringify([...right.changedPaths].sort()),
+	);
 }
 
 /**
- * Label-gated per-PR previews (D1): idempotent `up` (provision-or-reuse + PR-head
- * re-seed), capacity-aware claim-first launch, `down` teardown by alias, and the
- * flagged D2 verify dispatch. `up`/`down` return immediately; the heavy pipeline
- * runs detached and is observed via `status()` (polled by the hub Tekton Task).
- *
- * State lives in the generation-fenced durable record store, NOT in this
- * instance: the dispatch Task's polls are conntrack-pinned to one BFF replica
- * while the pipeline runs on whichever replica took the up, and a Deployment
- * rollout can kill the pipeline mid-run. Ownership rules:
- *
- * - Every `up` bumps the row's generation — LATEST PUSH WINS. Any pipeline
- *   still running for an older generation (same or other replica) aborts at
- *   its next fenced write instead of clobbering the winner's state.
- * - The owner heartbeats its record; `status()` on any replica atomically
- *   claims a stale non-terminal record (`claimStale` bumps the generation, so
- *   even a merely-stalled previous owner is fenced out) and resumes the
- *   idempotent pipeline with the services the interrupted run computed.
- * - `down()` deletes the row; every fenced write from any surviving pipeline
- *   then fails → abort. A zombie preview from the narrow claim window is
- *   reaped by the SEA TTL/GC backstop (PR previews carry ttlHours).
+ * PR automation specialization over the unified PreviewEnvironment domain.
+ * GitHub and the canonical catalog establish authority synchronously; only that
+ * immutable authority is persisted and handed to the detached launch pipeline.
  */
 export class ApplicationPrPreviewService {
-	/** Local task handles for settled() (tests); ownership lives in the store. */
 	private readonly inFlight = new Map<number, Promise<void>>();
 
 	constructor(private readonly deps: PrPreviewDeps) {}
 
-	/** Start (or refresh) the preview for a PR. Returns the current snapshot;
-	 * the provision/seed pipeline continues in the background. A concurrent
-	 * older run (rapid synchronize pushes, either replica) is deposed by the
-	 * generation bump and aborts at its next write. */
 	async up(input: PrPreviewUpInput): Promise<PrPreviewStatus> {
-		const prNumber = input.prNumber;
-		const alias = prPreviewAlias(prNumber);
-		const existing = await this.deps.store.get(prNumber);
-		// Persist (and take ownership) BEFORE dispatching so every replica sees
-		// `provisioning` immediately (the pending commit status reads through here).
+		const authority = await this.authorize(input);
+		const existing = await this.deps.store.get(input.prNumber);
+		if (
+			existing &&
+			sameAuthority(existing.authority, authority) &&
+			["provisioning", "seeding", "ready"].includes(existing.state)
+		) {
+			log(input.prNumber, "up:idempotent", `state=${existing.state}`);
+			return this.snapshot(input.prNumber);
+		}
+
 		const record = await this.deps.store.upsert({
-			prNumber,
-			alias,
-			url: existing?.url ?? null,
+			prNumber: input.prNumber,
+			alias: prPreviewAlias(input.prNumber),
+			url: null,
 			state: "provisioning",
-			headSha: input.headSha,
-			services: existing?.services ?? [],
+			headSha: authority.headSha,
+			services: [...authority.services],
+			authority,
 			error: null,
 			verify: null,
 		});
-		log(prNumber, "up:accepted", `head=${input.headSha.slice(0, 10)} gen=${record.gen}`);
-		this.dispatch(input, record);
+		log(
+			input.prNumber,
+			"up:authorized",
+			`head=${authority.headSha.slice(0, 12)} platform=${authority.platformRevision.slice(0, 12)} gen=${record.gen}`,
+		);
+		this.dispatch(record, {
+			// `gen > 1` closes the race where another replica inserted between this
+			// replica's read and upsert: the winner must clean the losing generation.
+			replaceExisting: Boolean(existing) || record.gen > 1,
+			verify: input.verify !== false,
+		});
+		return this.snapshot(input.prNumber);
+	}
+
+	async down(input: {
+		prNumber: number;
+	}): Promise<{ state: "down" | "absent" }> {
+		const existing = await this.deps.store.get(input.prNumber);
+		if (!existing) return { state: "absent" };
+		const tombstone = await this.deps.store.upsert({
+			prNumber: input.prNumber,
+			alias: existing?.alias ?? prPreviewAlias(input.prNumber),
+			url: existing?.url ?? null,
+			state: "tearing_down",
+			headSha: existing?.headSha ?? null,
+			services: existing?.services ?? [],
+			authority: existing?.authority ?? null,
+			error: null,
+			verify: existing?.verify ?? null,
+		});
+		if (!tombstone.authority) {
+			const detail =
+				"preview cleanup refused because generation authority is unavailable";
+			await this.deps.store.patch(input.prNumber, tombstone.gen, {
+				state: "error",
+				error: detail,
+			});
+			throw new PrPreviewAdmissionError("teardown-failed", detail);
+		}
+		let cleanup: PreviewEnvironmentCleanupProof;
+		try {
+			cleanup = await this.teardownOwned(tombstone, {
+				mode: "owned",
+				requestId: tombstone.authority.requestId,
+				sourceRevision: tombstone.authority.headSha,
+			});
+		} catch (cause) {
+			const detail = `preview cleanup failed: ${message(cause)}`;
+			await this.deps.store.patch(input.prNumber, tombstone.gen, {
+				state: "error",
+				error: detail,
+			});
+			throw new PrPreviewAdmissionError("teardown-failed", detail, { cause });
+		}
+		if (!cleanup.complete) {
+			await this.deps.store.patch(input.prNumber, tombstone.gen, {
+				state: "error",
+				error: cleanup.message ?? "preview cleanup did not complete",
+			});
+			throw new PrPreviewAdmissionError(
+				"teardown-failed",
+				cleanup.message ?? "preview cleanup did not complete",
+			);
+		}
+		await this.deps.store.delete(input.prNumber, tombstone.gen);
+		log(input.prNumber, "down", cleanup.resourceName);
+		return { state: existing ? "down" : "absent" };
+	}
+
+	async status(prNumber: number): Promise<PrPreviewStatus> {
+		const record = await this.deps.store.get(prNumber);
+		if (record) await this.maybeResume(record);
 		return this.snapshot(prNumber);
 	}
 
-	/** Tear down the PR's preview (idempotent — absent is fine). Deleting the
-	 * record fences out any in-flight pipeline (its next write fails → abort);
-	 * the dispatcher's HTTP budget is short so we never wait for one. */
-	async down(input: { prNumber: number }): Promise<{ state: "down" | "absent" }> {
-		const alias = prPreviewAlias(input.prNumber);
-		await this.deps.store.delete(input.prNumber);
-		const exists = await this.deps.clusters.get(alias).catch(() => null);
-		if (!exists) {
-			log(input.prNumber, "down", "(already absent)");
-			return { state: "absent" };
-		}
-		await this.deps.clusters.teardown(alias);
-		log(input.prNumber, "down", "teardown dispatched");
-		return { state: "down" };
-	}
-
-	/** Current state of the PR's preview from the durable record (any replica),
-	 * else derived from the cluster. A stale non-terminal record — its owner
-	 * died or stalled mid-run — is atomically claimed and its pipeline resumed
-	 * here, so the dispatcher's next polls converge instead of pending forever. */
-	async status(prNumber: number): Promise<PrPreviewStatus> {
-		const record = await this.deps.store.get(prNumber);
-		if (record) {
-			await this.maybeResume(record);
-			return this.snapshot(prNumber);
-		}
-		const alias = prPreviewAlias(prNumber);
-		const info = await this.deps.clusters.get(alias).catch(() => null);
-		return {
-			prNumber,
-			alias,
-			url: info?.url ?? null,
-			// ready MUST map to a terminal state for the dispatcher's poll; a
-			// record-less ready preview (e.g. records wiped out-of-band) is ready.
-			state: info ? (info.ready ? "ready" : "provisioning") : "absent",
-			headSha: null,
-			services: [],
-			error: null,
-			verify: null,
-			updatedAt: null,
-		};
-	}
-
-	/** UI list read: recent PR-preview records as status snapshots. STRICTLY
-	 * read-only — no resume, no cluster probes (a browser poll must never kick a
-	 * pipeline; the dispatcher's `status()` keeps that job). */
 	async listStatuses(): Promise<PrPreviewStatus[]> {
-		const records = await this.deps.store.listActive();
-		return records.map((r) => ({
-			prNumber: r.prNumber,
-			alias: r.alias,
-			url: r.url,
-			state: r.state,
-			headSha: r.headSha,
-			services: [...r.services],
-			error: r.error,
-			verify: r.verify,
-			updatedAt: r.updatedAt,
-		}));
+		return (await this.deps.store.listActive()).map((record) =>
+			this.statusFromRecord(record),
+		);
 	}
 
-	/** UI single read: the record snapshot (or cluster-free `absent`). Same
-	 * resume-safety contract as `listStatuses()`. */
 	async peek(prNumber: number): Promise<PrPreviewStatus> {
 		return this.snapshot(prNumber);
 	}
 
-	/** Await the in-flight pipeline for a PR (test/synchronization hook). */
 	async settled(prNumber: number): Promise<void> {
-		await this.inFlight.get(prNumber)?.catch(() => {});
+		await this.inFlight.get(prNumber)?.catch(() => undefined);
 	}
 
-	/** Resume an orphaned pipeline: non-terminal record with no heartbeat for
-	 * `resumeStaleMs`. `claimStale` bumps the generation — exactly one replica
-	 * becomes the new owner AND a merely-stalled previous owner is fenced out.
-	 * The pipeline is idempotent (existing preview reused, recorded head
-	 * re-seeded into the services the interrupted run computed). */
-	private async maybeResume(record: PrPreviewRecord): Promise<void> {
-		if (record.state !== "provisioning" && record.state !== "seeding") return;
-		if (!record.headSha) return;
-		const staleMs = this.deps.resumeStaleMs ?? DEFAULT_RESUME_STALE_MS;
-		if (Date.now() - Date.parse(record.updatedAt) < staleMs) return;
-		const claimed = await this.deps.store
-			.claimStale(record.prNumber, staleMs)
-			.catch(() => null);
-		if (!claimed) return;
-		log(
-			record.prNumber,
-			"resume:claimed",
-			`state=${claimed.state} head=${claimed.headSha} gen=${claimed.gen}`,
-		);
-		this.dispatch(
-			{
-				prNumber: claimed.prNumber,
-				headSha: claimed.headSha ?? record.headSha,
-				presetServices: claimed.services.length ? claimed.services : null,
-				// The original verify request is not persisted; verify is flagged
-				// and best-effort, so a resumed run skips it.
-				verify: false,
-			},
-			claimed,
-		);
-	}
-
-	/** Kick the detached pipeline with a heartbeat keeping the record fresh
-	 * (fresh = not claimable by another replica's resume). The catch handler
-	 * never rejects — an unhandled rejection here would kill the BFF process. */
-	private dispatch(input: PrPreviewUpInput, record: PrPreviewRecord): void {
-		const prNumber = input.prNumber;
-		const heartbeat = setInterval(
-			() => {
-				void this.deps.store
-					.patch(prNumber, record.gen, {})
-					.then((owned) => {
-						if (!owned) {
-							log(prNumber, "heartbeat:deposed", `gen=${record.gen}`);
-							clearInterval(heartbeat);
-						}
-					})
-					.catch(() => {});
-			},
-			this.deps.heartbeatMs ?? DEFAULT_HEARTBEAT_MS,
-		);
-		// Never keep the process alive for a background heartbeat (Node-only API).
-		(heartbeat as unknown as { unref?: () => void }).unref?.();
-		const task = this.runUp(input, record)
-			.catch(async (err) => {
-				if (err instanceof PrPreviewDeposedError) {
-					// A newer up/resume owns the row (or down() removed it): their
-					// pipeline reports; this one just stops.
-					log(prNumber, "pipeline:deposed", `gen=${record.gen}`);
-					return;
-				}
-				logError(prNumber, `stage=${record.state}`, err);
-				try {
-					await this.deps.store.patch(prNumber, record.gen, {
-						state: "error",
-						error: err instanceof Error ? err.message : String(err),
-					});
-				} catch (patchErr) {
-					// Best effort — swallowing keeps the task promise resolved (an
-					// unhandled rejection would crash the replica).
-					logError(prNumber, "error-state write", patchErr);
-				}
-			})
-			.finally(() => {
-				clearInterval(heartbeat);
-				if (this.inFlight.get(prNumber) === task) this.inFlight.delete(prNumber);
+	private async authorize(
+		input: PrPreviewUpInput,
+	): Promise<PrPreviewAuthority> {
+		if (
+			!Number.isSafeInteger(input.prNumber) ||
+			input.prNumber < 1 ||
+			!FULL_SHA.test(input.headSha)
+		) {
+			throw new PrPreviewAdmissionError(
+				"invalid-request",
+				"PR preview requires a positive PR number and full lowercase head SHA",
+			);
+		}
+		let pullRequest;
+		try {
+			pullRequest = await this.deps.pullRequests.inspect({
+				prNumber: input.prNumber,
+				expectedHeadSha: input.headSha,
 			});
-		this.inFlight.set(prNumber, task);
-	}
-
-	private async snapshot(prNumber: number): Promise<PrPreviewStatus> {
-		const r = await this.deps.store.get(prNumber);
-		if (!r) {
-			return {
-				prNumber,
-				alias: prPreviewAlias(prNumber),
-				url: null,
-				state: "absent",
-				headSha: null,
-				services: [],
-				error: null,
-				verify: null,
-				updatedAt: null,
-			};
+		} catch (cause) {
+			throw new PrPreviewAdmissionError(
+				"github-verification-failed",
+				`GitHub did not verify PR #${input.prNumber}: ${message(cause)}`,
+				{ cause },
+			);
 		}
-		return {
-			prNumber: r.prNumber,
-			alias: r.alias,
-			url: r.url,
-			state: r.state,
-			headSha: r.headSha,
-			services: [...r.services],
-			error: r.error,
-			verify: r.verify,
-			updatedAt: r.updatedAt,
-		};
-	}
-
-	/** Fenced stage write: mutate the local record (in-run reads) AND persist.
-	 * Throws PrPreviewDeposedError when the row moved on without us. `{}` is
-	 * the pure ownership probe (used right before the seed POST). */
-	private async patch(record: PrPreviewRecord, changes: Partial<PrPreviewRecord>) {
-		Object.assign(record, changes, { updatedAt: new Date().toISOString() });
-		const { prNumber: _pr, gen: _gen, updatedAt: _ts, ...rest } = changes;
-		const owned = await this.deps.store.patch(record.prNumber, record.gen, rest);
-		if (!owned) throw new PrPreviewDeposedError(record.prNumber);
-	}
-
-	private async runUp(input: PrPreviewUpInput, record: PrPreviewRecord): Promise<void> {
-		const deps = this.deps;
-		const alias = record.alias;
-		const prNumber = input.prNumber;
-
-		// 1. Changed paths → services (registry repoSubdir longest-prefix). A
-		// resume reuses the interrupted run's mapping (presetServices).
-		const services =
-			input.presetServices?.length
-				? input.presetServices
-				: mapChangedFilesToServices(
-						input.changedFiles ??
-							(await deps.pullRequests.listChangedFiles(prNumber).catch(() => null)),
-						deps.registry,
-					);
-		await this.patch(record, { services });
-		log(prNumber, "stage=services", services.join(","));
-
-		// 2. Ensure the Tier-2 preview exists (idempotent: an existing preview —
-		// ready or still booting — is reused; synchronize only re-seeds).
-		const launch = {
-			alias,
-			prNumber,
-			ttlHours: deps.ttlHours ?? DEFAULT_TTL_HOURS,
-		};
-		let info = await deps.clusters.get(alias);
-		if (!info) {
-			const claimed = await deps.clusters.claim(launch);
-			if (claimed) {
-				log(prNumber, "stage=claimed", `url=${claimed.url ?? "pending"}`);
-			} else {
-				const admitted = await this.admitColdProvision(launch);
-				if (!admitted) {
-					log(prNumber, "stage=capacity_full");
-					await this.patch(record, {
-						state: "capacity_full",
-						error: "preview capacity is full (no free slot after PR-origin reap)",
-					});
-					return;
-				}
-				log(prNumber, "stage=cold-provisioned");
-			}
-		} else {
-			log(prNumber, "stage=reusing", `phase=${info.phase}`);
-		}
-
-		// 3. Wait for readiness (pool claims are near-instant; cold ≈ 5 min).
-		info = await this.waitReady(alias);
-		await this.patch(record, { url: info.url });
-		log(prNumber, "stage=cluster-ready", `url=${info.url ?? "n/a"}`);
-
-		// 4. Adopt dev-mode pods for the mapped services inside the preview.
-		await this.patch(record, { state: "seeding" });
-		const syncToken = deps.syncToken(alias);
-		const previewUrl = info.url ?? `https://wfb-${alias}.tail286401.ts.net`;
-		const pods = await deps.devPods.provision({
-			previewUrl,
-			alias,
-			services,
-			syncToken,
-		});
-		const targets: PrPreviewSeedTarget[] = [];
-		const podErrors: string[] = [];
-		for (const pod of pods) {
-			const entry = deps.registry.find((e) => e.service === pod.service);
-			if (pod.ok && pod.podIp && pod.syncPort && entry) {
-				targets.push({
-					service: pod.service,
-					repoSubdir: entry.repoSubdir,
-					syncPaths: entry.syncPaths,
-					extraSync: entry.extraSync,
-					podIp: pod.podIp,
-					syncPort: pod.syncPort,
-					// #41 readiness gate: poll the dev SERVER (not the sync receiver)
-					// before POSTing the seed, so cold provisions stop racing its boot.
-					appPort: entry.appPort,
-					healthPath: entry.healthPath,
-				});
-			} else {
-				podErrors.push(`${pod.service}: ${pod.error ?? "no pod address"}`);
-			}
-		}
-		log(
-			prNumber,
-			"stage=dev-pods",
-			`ok=${targets.length}/${pods.length}${podErrors.length ? ` errors=[${podErrors.join("; ")}]` : ""}`,
-		);
-		if (targets.length === 0) {
-			throw new Error(
-				`no dev-mode pod came up for ${services.join(", ")}${
-					podErrors.length ? ` (${podErrors.join("; ")})` : ""
-				}`,
+		if (pullRequest.repository !== this.deps.sourceRepository) {
+			throw new PrPreviewAdmissionError(
+				"github-verification-failed",
+				"GitHub returned a non-canonical repository",
 			);
 		}
 
-		// 5. Seed the PR head into every adopted pod (/__sync). The ownership
-		// probe just before the POST keeps a deposed pipeline from overwriting a
-		// newer run's freshly-seeded pods (the widest un-fenced gap otherwise).
-		await this.patch(record, {});
-		const seeded = await deps.seeder.seed({
-			prNumber,
-			headSha: input.headSha,
-			targets,
-			syncToken,
-		});
-		if (!seeded.ok) {
-			throw new Error(seeded.detail ?? "PR-head seed failed");
+		const classified = this.deps.catalog.deriveChangedServices(
+			pullRequest.changedPaths,
+		);
+		if (classified.unmappedRuntimePaths.length > 0) {
+			throw new PrPreviewAdmissionError(
+				"unsupported-change",
+				`PR changes unmapped runtime paths: ${classified.unmappedRuntimePaths.join(", ")}`,
+			);
 		}
-		await this.patch(record, {
-			state: "ready",
-			headSha: input.headSha,
-			error: podErrors.length ? `partial: ${podErrors.join("; ")}` : null,
-		});
-		log(prNumber, "stage=ready", `head=${input.headSha.slice(0, 10)}`);
+		if (classified.services.length === 0) {
+			throw new PrPreviewAdmissionError(
+				"no-preview-service",
+				"PR does not change a catalog-backed preview-native service",
+			);
+		}
 
-		// 6. D2: flagged Playwright-critic verify against the preview URL.
-		if (deps.verifyEnabled && input.verify !== false) {
-			await this.runVerify(record, previewUrl, input);
+		let platformRevision: string;
+		try {
+			platformRevision = await this.deps.platformRevisions.resolve({
+				repository: this.deps.platformRepository,
+				ref: this.deps.platformRef,
+			});
+		} catch (cause) {
+			throw new PrPreviewAdmissionError(
+				"platform-resolution-failed",
+				`Unable to resolve preview platform ${this.deps.platformRepository}@${this.deps.platformRef}`,
+				{ cause },
+			);
 		}
+		if (!FULL_SHA.test(platformRevision)) {
+			throw new PrPreviewAdmissionError(
+				"platform-resolution-failed",
+				"Preview platform resolver did not return a full lowercase Git SHA",
+			);
+		}
+
+		return Object.freeze({
+			repository: pullRequest.repository,
+			baseRef: "main",
+			baseSha: pullRequest.baseSha,
+			headSha: pullRequest.headSha,
+			changedPaths: Object.freeze([...pullRequest.changedPaths]),
+			services: Object.freeze([...classified.services]),
+			platformRepository: this.deps.platformRepository,
+			platformRevision: platformRevision as ImmutableGitSha,
+			catalogDigest: this.deps.catalog.currentDigest(),
+			requestId: this.deps.requestId?.() ?? globalThis.crypto.randomUUID(),
+			requestedAt: (this.deps.now?.() ?? new Date()).toISOString(),
+		});
 	}
 
-	/** Cold-provision admission: on a full cluster ask SEA to reap the oldest
-	 * PR-origin preview ONCE, then retry once (contract with the SEA lifecycle
-	 * sibling). Human previews are never evicted — that policy lives in SEA. */
-	private async admitColdProvision(launch: {
-		alias: string;
-		prNumber: number;
-		ttlHours: number;
-	}): Promise<boolean> {
-		const attempt = async (): Promise<"ok" | "capacity"> => {
-			const counts = await this.deps.clusters.counts().catch(() => null);
-			if (counts && counts.awake >= counts.max) return "capacity";
-			const res = await this.deps.clusters.provision(launch);
-			if (res.ok) return "ok";
-			if (res.capacity) return "capacity";
-			throw new Error(res.detail);
-		};
-		if ((await attempt()) === "ok") return true;
-		await this.deps.clusters.reap().catch(() => false);
-		return (await attempt()) === "ok";
+	private async maybeResume(record: PrPreviewRecord): Promise<void> {
+		if (record.state !== "provisioning" && record.state !== "seeding") return;
+		if (
+			Date.now() - Date.parse(record.updatedAt) <
+			(this.deps.resumeStaleMs ?? DEFAULT_RESUME_STALE_MS)
+		)
+			return;
+		const claimed = await this.deps.store.claimStale(
+			record.prNumber,
+			this.deps.resumeStaleMs ?? DEFAULT_RESUME_STALE_MS,
+		);
+		if (!claimed) return;
+		if (!claimed.authority) {
+			await this.deps.store.patch(claimed.prNumber, claimed.gen, {
+				state: "error",
+				error: "legacy PR preview record has no persisted server authority",
+			});
+			return;
+		}
+		log(claimed.prNumber, "resume:claimed", `gen=${claimed.gen}`);
+		this.dispatch(claimed, { replaceExisting: false, verify: false });
 	}
 
-	private async waitReady(alias: string) {
-		const interval = this.deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-		const deadline = Date.now() + (this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS);
-		for (;;) {
-			const info = await this.deps.clusters.get(alias);
-			if (info?.ready) return info;
-			if (info?.phase === "failed") {
-				throw new Error(`preview ${alias} provision failed`);
-			}
-			if (Date.now() >= deadline) {
+	private dispatch(
+		record: PrPreviewRecord,
+		options: Readonly<{ replaceExisting: boolean; verify: boolean }>,
+	): void {
+		const heartbeat = setInterval(() => {
+			void this.deps.store
+				.patch(record.prNumber, record.gen, {})
+				.then((owned) => {
+					if (!owned) clearInterval(heartbeat);
+				})
+				.catch(() => undefined);
+		}, this.deps.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
+		(heartbeat as unknown as { unref?: () => void }).unref?.();
+
+		const task = this.runUp(record, options)
+			.catch(async (error) => {
+				if (error instanceof PrPreviewDeposedError) return;
+				logError(record.prNumber, "pipeline", error);
+				let cleanup: Pick<
+					PreviewEnvironmentCleanupProof,
+					"complete" | "message"
+				>;
+				try {
+					const authority = record.authority;
+					if (!authority) throw new PrPreviewDeposedError(record.prNumber);
+					cleanup = await this.teardownOwned(record, {
+						mode: "owned",
+						requestId: authority.requestId,
+						sourceRevision: authority.headSha,
+					});
+				} catch (cleanupError) {
+					if (cleanupError instanceof PrPreviewDeposedError) return;
+					cleanup = {
+						complete: false,
+						message: message(cleanupError),
+					};
+				}
+				const cleanupDetail = cleanup.complete
+					? ""
+					: `; cleanup incomplete: ${cleanup.message ?? "unknown"}`;
+				await this.deps.store
+					.patch(record.prNumber, record.gen, {
+						state: "error",
+						error: `${message(error)}${cleanupDetail}`,
+					})
+					.catch(() => undefined);
+			})
+			.finally(() => {
+				clearInterval(heartbeat);
+				if (this.inFlight.get(record.prNumber) === task) {
+					this.inFlight.delete(record.prNumber);
+				}
+			});
+		this.inFlight.set(record.prNumber, task);
+	}
+
+	private async runUp(
+		record: PrPreviewRecord,
+		options: Readonly<{ replaceExisting: boolean; verify: boolean }>,
+	): Promise<void> {
+		const authority = record.authority;
+		if (!authority) throw new Error("PR preview has no server authority");
+		if (options.replaceExisting) {
+			const cleanup = await this.teardownOwned(record, {
+				mode: "superseded",
+				protectedRequestId: authority.requestId,
+			});
+			if (!cleanup.complete) {
 				throw new Error(
-					`preview ${alias} not ready after ${Math.round(
-						(this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS) / 1000,
-					)}s (phase=${info?.phase ?? "absent"})`,
+					cleanup.message ?? "previous PR preview cleanup did not complete",
 				);
 			}
-			await new Promise((r) => setTimeout(r, interval));
 		}
+		if (this.deps.catalog.currentDigest() !== authority.catalogDigest) {
+			throw new Error(
+				"PR preview catalog changed after authority was persisted; submit a new up request",
+			);
+		}
+
+		const owner = {
+			kind: "automation" as const,
+			id: `pr-preview:${record.prNumber}`,
+		};
+		const allocation = { kind: "cold" as const };
+		const launch = await this.deps.environments.launch({
+			name: record.alias,
+			profile: "app-live",
+			lane: "application",
+			capabilities: ["service-live-sync"],
+			platformRevision: authority.platformRevision,
+			sourceRevision: authority.headSha,
+			services: authority.services,
+			owner,
+			origin: {
+				kind: "pull-request",
+				reference: `${authority.repository}#${record.prNumber}`,
+			},
+			ttlHours: this.deps.ttlHours ?? DEFAULT_TTL_HOURS,
+			mode: "live",
+			lifecycle: "ephemeral",
+			allocation,
+			provenance: {
+				requestId: authority.requestId,
+				requestedAt: authority.requestedAt,
+				platformRepository: authority.platformRepository,
+				sourceRepository: authority.repository,
+			},
+		});
+		if (!launch.ok && launch.reason === "capacity") {
+			await this.patch(record, {
+				state: "capacity_full",
+				error: launch.message,
+			});
+			return;
+		}
+
+		const ready = await this.deps.readiness.waitReady({
+			name: record.alias,
+			platformRevision: authority.platformRevision,
+			sourceRevision: authority.headSha,
+			profile: "app-live",
+			lane: "application",
+			mode: "live",
+			services: authority.services,
+			owner,
+			origin: {
+				kind: "pull-request",
+				reference: `${authority.repository}#${record.prNumber}`,
+			},
+			lifecycle: "ephemeral",
+			allocation,
+			provenance: {
+				requestId: authority.requestId,
+				requestedAt: authority.requestedAt,
+				platformRepository: authority.platformRepository,
+				sourceRepository: authority.repository,
+			},
+			images: {},
+			catalogDigest: authority.catalogDigest,
+			timeoutMs: this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
+		});
+		if (!ready.ready || !ready.url) {
+			throw new Error(
+				`preview ${record.alias} did not become Ready at the verified contract (phase=${ready.phase})`,
+			);
+		}
+		await this.patch(record, { url: ready.url, state: "seeding" });
+
+		const syncToken = this.deps.syncToken(record.alias);
+		if (!syncToken) throw new Error("PR preview sync token is not configured");
+		const pods = await this.deps.devPods.provision({
+			previewUrl: ready.url,
+			alias: record.alias,
+			services: [...authority.services],
+			syncToken,
+			requestId: authority.requestId,
+			platformRevision: authority.platformRevision,
+			sourceRevision: authority.headSha,
+			catalogDigest: authority.catalogDigest,
+		});
+		const byService = new Map(pods.map((pod) => [pod.service, pod]));
+		const targets: PrPreviewSeedTarget[] = [];
+		const failures: string[] = [];
+		for (const service of authority.services) {
+			const pod = byService.get(service);
+			const entry = this.deps.registry.find(
+				(candidate) => candidate.service === service,
+			);
+			if (
+				!pod?.ok ||
+				!pod.podIp ||
+				!pod.syncPort ||
+				!pod.syncCapability ||
+				!entry
+			) {
+				failures.push(
+					`${service}: ${pod?.error ?? "missing pod or catalog sync metadata"}`,
+				);
+				continue;
+			}
+			targets.push({
+				service,
+				repoSubdir: entry.repoSubdir,
+				syncPaths: entry.syncPaths,
+				extraSync: entry.extraSync,
+				podIp: pod.podIp,
+				syncPort: pod.syncPort,
+				syncToken: pod.syncCapability,
+				appPort: entry.appPort,
+				healthPath: entry.healthPath,
+			});
+		}
+		if (failures.length > 0 || targets.length !== authority.services.length) {
+			throw new Error(`preview-native adoption failed: ${failures.join("; ")}`);
+		}
+
+		await this.patch(record, {});
+		const seeded = await this.deps.seeder.seed({
+			prNumber: record.prNumber,
+			headSha: authority.headSha,
+			targets,
+		});
+		if (!seeded.ok) throw new Error(seeded.detail ?? "PR head sync failed");
+		await this.patch(record, {
+			state: "ready",
+			headSha: authority.headSha,
+			error: null,
+		});
+		log(record.prNumber, "stage=ready", authority.headSha.slice(0, 12));
+		if (this.deps.verifyEnabled && options.verify) {
+			await this.runVerify(record, ready.url, authority);
+		}
+	}
+
+	private async patch(
+		record: PrPreviewRecord,
+		changes: Partial<PrPreviewRecord>,
+	): Promise<void> {
+		Object.assign(record, changes, { updatedAt: new Date().toISOString() });
+		const { prNumber: _pr, gen: _gen, updatedAt: _at, ...persisted } = changes;
+		if (
+			!(await this.deps.store.patch(record.prNumber, record.gen, persisted))
+		) {
+			throw new PrPreviewDeposedError(record.prNumber);
+		}
+	}
+
+	private async assertCurrent(record: PrPreviewRecord): Promise<void> {
+		const current = await this.deps.store.get(record.prNumber);
+		if (
+			!current ||
+			current.gen !== record.gen ||
+			!record.authority ||
+			!sameAuthority(current.authority, record.authority)
+		) {
+			throw new PrPreviewDeposedError(record.prNumber);
+		}
+	}
+
+	private async teardownOwned(
+		record: PrPreviewRecord,
+		guard:
+			| Readonly<{
+					mode: "owned";
+					requestId: string;
+					sourceRevision: ImmutableGitSha;
+			  }>
+			| Readonly<{ mode: "superseded"; protectedRequestId: string }>,
+	): Promise<PreviewEnvironmentCleanupProof> {
+		await this.assertCurrent(record);
+		return this.deps.teardown.teardown({
+			name: record.alias,
+			timeoutMs: this.deps.teardownTimeoutMs ?? DEFAULT_TEARDOWN_TIMEOUT_MS,
+			guard,
+		});
 	}
 
 	private async runVerify(
 		record: PrPreviewRecord,
 		previewUrl: string,
-		input: PrPreviewUpInput,
+		authority: PrPreviewAuthority,
 	): Promise<void> {
-		const deps = this.deps;
 		try {
-			const started = await deps.verify.start({
-				prNumber: input.prNumber,
+			const started = await this.deps.verify.start({
+				prNumber: record.prNumber,
 				previewUrl,
-				headSha: input.headSha,
+				headSha: authority.headSha,
 			});
 			if (!started.started) {
 				await this.patch(record, {
@@ -552,47 +645,138 @@ export class ApplicationPrPreviewService {
 					verdict: null,
 				},
 			});
-			log(input.prNumber, "stage=verify-started", started.executionId ?? "");
-			const result = await deps.verify.waitForVerdict({
+			const result = await this.deps.verify.waitForVerdict({
 				executionId: started.executionId ?? "",
-				timeoutMs: deps.verifyTimeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS,
+				timeoutMs: this.deps.verifyTimeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS,
 			});
-			const ok = result.status === "completed";
+			const completed = result.status === "completed";
 			await this.patch(record, {
 				verify: {
-					state: ok ? "completed" : "failed",
+					state: completed ? "completed" : "failed",
 					executionId: started.executionId ?? null,
-					reason: ok ? null : `verify run ${result.status}`,
+					reason: completed ? null : `verify run ${result.status}`,
 					verdict: result.verdict,
 				},
 			});
-			log(input.prNumber, "stage=verify-done", result.status);
-			await deps.pullRequests.upsertStickyComment({
-				prNumber: input.prNumber,
+			await this.deps.pullRequests.upsertStickyComment({
+				prNumber: record.prNumber,
 				marker: PR_PREVIEW_VERIFY_MARKER,
 				body: [
 					PR_PREVIEW_VERIFY_MARKER,
-					`### Preview verify (Playwright critic)`,
-					``,
+					"### Preview verify (Playwright critic)",
+					"",
 					`- Preview: ${previewUrl}`,
-					`- Head: \`${input.headSha}\``,
-					`- Run: ${started.executionId ?? "n/a"} — **${result.status}**`,
-					``,
+					`- Head: \`${authority.headSha}\``,
+					`- Run: ${started.executionId ?? "n/a"} - **${result.status}**`,
+					"",
 					result.verdict ?? "_no verdict output_",
 				].join("\n"),
 			});
-		} catch (err) {
-			if (err instanceof PrPreviewDeposedError) throw err;
-			// Verify is best-effort: never fail a ready preview over it.
-			logError(input.prNumber, "stage=verify", err);
+		} catch (error) {
+			if (error instanceof PrPreviewDeposedError) throw error;
+			logError(record.prNumber, "verify", error);
 			await this.patch(record, {
 				verify: {
 					state: "failed",
 					executionId: record.verify?.executionId ?? null,
-					reason: err instanceof Error ? err.message : String(err),
+					reason: message(error),
 					verdict: null,
 				},
 			});
 		}
 	}
+
+	private async snapshot(prNumber: number): Promise<PrPreviewStatus> {
+		const record = await this.deps.store.get(prNumber);
+		return record
+			? this.statusFromRecord(record)
+			: {
+					prNumber,
+					alias: prPreviewAlias(prNumber),
+					url: null,
+					state: "absent",
+					headSha: null,
+					services: [],
+					error: null,
+					verify: null,
+					updatedAt: null,
+				};
+	}
+
+	private statusFromRecord(record: PrPreviewRecord): PrPreviewStatus {
+		return {
+			prNumber: record.prNumber,
+			alias: record.alias,
+			url: record.url,
+			state: record.state,
+			headSha: record.headSha,
+			services: [...record.services],
+			error: record.error,
+			verify: record.verify,
+			updatedAt: record.updatedAt,
+		};
+	}
+}
+
+/**
+ * Stable composition surface used by the persistent BFF. Reads stay local to
+ * the shared durable store; every mutating/resuming command crosses the narrow
+ * command port to the immutable broker.
+ */
+export class ApplicationPrPreviewFacadeService {
+	constructor(
+		private readonly commands: PrPreviewCommandPort,
+		private readonly store: PrPreviewRecordStore,
+	) {}
+
+	up(input: PrPreviewUpInput): Promise<PrPreviewStatus> {
+		return this.commands.up(input);
+	}
+
+	down(input: { prNumber: number }): Promise<{ state: "down" | "absent" }> {
+		return this.commands.down(input);
+	}
+
+	status(prNumber: number): Promise<PrPreviewStatus> {
+		return this.commands.status(prNumber);
+	}
+
+	async listStatuses(): Promise<PrPreviewStatus[]> {
+		return (await this.store.listActive()).map(prPreviewStatusFromRecord);
+	}
+
+	async peek(prNumber: number): Promise<PrPreviewStatus> {
+		const record = await this.store.get(prNumber);
+		return record
+			? prPreviewStatusFromRecord(record)
+			: absentPrPreviewStatus(prNumber);
+	}
+}
+
+function prPreviewStatusFromRecord(record: PrPreviewRecord): PrPreviewStatus {
+	return {
+		prNumber: record.prNumber,
+		alias: record.alias,
+		url: record.url,
+		state: record.state,
+		headSha: record.headSha,
+		services: [...record.services],
+		error: record.error,
+		verify: record.verify,
+		updatedAt: record.updatedAt,
+	};
+}
+
+function absentPrPreviewStatus(prNumber: number): PrPreviewStatus {
+	return {
+		prNumber,
+		alias: prPreviewAlias(prNumber),
+		url: null,
+		state: "absent",
+		headSha: null,
+		services: [],
+		error: null,
+		verify: null,
+		updatedAt: null,
+	};
 }

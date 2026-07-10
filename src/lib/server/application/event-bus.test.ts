@@ -6,7 +6,9 @@ import { DaprEventBus } from "$lib/server/application/adapters/dapr";
 
 describe("getEventBusAdapter", () => {
 	it("returns the Dapr bus for the full profile default", () => {
-		expect(getEventBusAdapter(getApplicationAdapterConfig({}))).toBeInstanceOf(DaprEventBus);
+		expect(
+			getEventBusAdapter(getApplicationAdapterConfig({})),
+		).toBeInstanceOf(DaprEventBus);
 	});
 
 	it("returns a shared in-process bus in the lite profile", () => {
@@ -37,10 +39,16 @@ describe("getEventBusAdapter", () => {
 				prPreviewsEnabled: false,
 				prPreviewRepo: "PittampalliOrg/workflow-builder",
 				vclusterPreviewMax: 6,
+				previewPlatformRepository: "PittampalliOrg/stacks",
+				previewPlatformRef: "main",
+				previewSourceRepository: "PittampalliOrg/workflow-builder",
+				previewSourceRef: "main",
 				prPreviewVerifyEnabled: false,
 				promoteAutoPreviewLabel: false,
 				previewReadProxyEnabled: false,
 				previewArchiveOnTeardownEnabled: false,
+				previewTtlArchiveGraceMinutes: 60,
+				previewTtlFairnessWindowSeconds: 60,
 			}),
 		).toThrow("Unsupported event bus adapter: bogus");
 	});

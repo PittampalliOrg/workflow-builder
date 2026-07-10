@@ -42,11 +42,14 @@ describe("getApplicationAdapters", () => {
 		expect(app.eventBus).toBeTruthy();
 		expect(app.workflowScheduler).toBeTruthy();
 		expect(app.credentialStore).toBeTruthy();
+		expect(app.previewEnvironments).toBeTruthy();
 		expect(requirePostgresDb).not.toHaveBeenCalled();
 	});
 
 	it("wires the in-process bus and lite-stub scheduler in the lite profile", () => {
-		const app = getApplicationAdapters(getApplicationAdapterConfig({ APP_PROFILE: "lite" }));
+		const app = getApplicationAdapters(
+			getApplicationAdapterConfig({ APP_PROFILE: "lite" }),
+		);
 
 		expect(app.eventBus).toBeInstanceOf(InProcessEventBus);
 		expect(app.workflowScheduler).toBeInstanceOf(LiteStubWorkflowScheduler);
@@ -68,7 +71,9 @@ describe("getApplicationAdapters", () => {
 	it("initializes Postgres only when a Postgres-backed port is read", () => {
 		const app = getApplicationAdapters();
 
-		expect(() => app.workflowDefinitions).toThrow("Database should be initialized lazily");
+		expect(() => app.workflowDefinitions).toThrow(
+			"Database should be initialized lazily",
+		);
 		expect(requirePostgresDb).toHaveBeenCalledTimes(1);
 	});
 
@@ -81,8 +86,12 @@ describe("getApplicationAdapters", () => {
 		expect(source).toContain("new PostgresSessionGoalStore(getDatabase())");
 		expect(source).toContain("new PostgresSessionEventLog(getDatabase())");
 		expect(source).toContain("new PostgresGoalLoopStore(getDatabase)");
-		expect(source).toContain("new DaprSessionGoalLoopDriver(getGoalLoopStore())");
-		expect(source).toContain("new PostgresLifecycleCoordinatorOwnerStore(getDatabase)");
+		expect(source).toContain(
+			"new DaprSessionGoalLoopDriver(getGoalLoopStore())",
+		);
+		expect(source).toContain(
+			"new PostgresLifecycleCoordinatorOwnerStore(getDatabase)",
+		);
 		expect(source).toContain("new LifecycleSessionController(");
 		expect(source).toContain("getLifecycleCoordinatorOwners()");
 		expect(source).not.toContain("RepositorySessionGoalStore");

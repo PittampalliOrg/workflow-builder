@@ -317,6 +317,16 @@ export function getFunctionRouterUrl(): string {
 
 /** Get the workspace runtime base URL */
 export function getWorkspaceRuntimeUrl(): string {
+	if (
+		(
+			env.PREVIEW_HOST_RUNTIMES_DISABLED ??
+			process.env.PREVIEW_HOST_RUNTIMES_DISABLED ??
+			""
+		).trim().toLowerCase() === "true" &&
+		!(env.WORKSPACE_RUNTIME_URL ?? process.env.WORKSPACE_RUNTIME_URL)
+	) {
+		throw new Error("workspace-runtime is unavailable inside PreviewEnvironment");
+	}
   return (
     env.WORKSPACE_RUNTIME_URL ||
     "http://workspace-runtime.workflow-builder.svc.cluster.local:8001"

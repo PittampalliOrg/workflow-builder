@@ -7,7 +7,7 @@ import re
 import secrets
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -17,9 +17,15 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.content_tracing import set_current_span_io
+from src.preview_runner_identity import (
+    RUNNER_GENERATION_ANNOTATION,
+    PreviewRunnerIdentityAdapter,
+    PreviewRunnerIdentityError,
+    preview_runner_identity_name,
+)
 
 KUEUE_QUEUE_LABEL = "kueue.x-k8s.io/queue-name"
 KUEUE_PRIORITY_CLASS_LABEL = "kueue.x-k8s.io/priority-class"
@@ -39,6 +45,7 @@ WORKER_ENV_PASSTHROUGH = (
     "SANDBOX_EXECUTION_WORKFLOW_START_TIMEOUT_SECONDS",
 )
 DEFAULT_WORKER_IMAGE = "ghcr.io/pittampalliorg/sandbox-execution-api:latest"
+DEFAULT_MANIFEST_CANDIDATE_SURFACE_PATH = "/config/manifest-candidate-surface.json"
 
 logger = logging.getLogger("sandbox-execution-api")
 logging.basicConfig(
@@ -127,11 +134,13 @@ _init_otel()
 
 @asynccontextmanager
 async def _lifespan(_app: "FastAPI"):
-    # Start the A3 warm-pool reconcile thread iff enabled (VCLUSTER_PREVIEW_POOL_SIZE>0); a no-op
-    # otherwise. Defined here so it runs under uvicorn (not on bare import in tests).
+    # Compatibility tombstone: profiled preview pools are retired and the size
+    # helper is hard-disabled, so this cannot start a reconcile thread.
     try:
         _start_pool_manager()
-    except Exception as exc:  # pragma: no cover - never block startup on the optional pool
+    except (
+        Exception
+    ) as exc:  # pragma: no cover - never block startup on the optional pool
         logger.warning("pool-manager: startup failed: %s", exc)
     # A4 lifecycle reaper (sleep/TTL/capacity) — a no-op unless one of its flags is set
     # (VCLUSTER_PREVIEW_SLEEP_AFTER_MINUTES / _TTL_HOURS / _TOTAL_MAX > 0).
@@ -139,6 +148,10 @@ async def _lifespan(_app: "FastAPI"):
         _start_lifecycle_reaper()
     except Exception as exc:  # pragma: no cover - never block startup on the reaper
         logger.warning("lifecycle-reaper: startup failed: %s", exc)
+    try:
+        _start_preview_identity_cleanup_controller()
+    except Exception as exc:  # pragma: no cover - never block startup on cleanup
+        logger.warning("preview-identity-cleanup: startup failed: %s", exc)
     yield
 
 
@@ -355,8 +368,11 @@ class DevPreviewRequest(BaseModel):
     executionClass: str = Field(default="dev-preview")
     image: str | None = None
     port: int = Field(default=3000, ge=1, le=65535)
-    # Shared-secret echoed into WFB_DEV_SYNC_TOKEN so /__sync requires it.
-    syncToken: str | None = None
+    # Exact execution/service receiver leaf used by the dev-sync receiver.
+    syncToken: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    # Preview-scoped bearer returned to the unprivileged agent. Receivers retain
+    # only its SHA256 hash, while the plaintext grants access to this dev pod.
+    syncAgentToken: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     # Sandbox self-deletes after this many seconds (shutdownPolicy: Delete) as a
     # backstop if the workflow never tears it down.
     timeoutSeconds: int | None = Field(default=3600, ge=60, le=86400)
@@ -389,6 +405,12 @@ class DevPreviewRequest(BaseModel):
     # reinstall; other names are test lanes (e.g. `contract`). Populated by the
     # BFF from the dev-preview registry.
     devSyncCommands: dict[str, str] | None = None
+    # Exact receiver-owned replacement roots from the canonical service catalog.
+    # Every /__sync request must declare this complete set; archive omission of a
+    # root means deletion. The receiver validates path shape and exact equality.
+    devSyncAllowedRoots: list[str] | None = Field(
+        default=None, min_length=1, max_length=128
+    )
     # ----- Dapr-shadow mode (P3.1, for Dapr/DB-coupled services) -----
     # When True, the dev container gets a daprd sidecar (via standard injector
     # annotations) so services whose startup needs Dapr (secrets/state/workflow —
@@ -543,7 +565,9 @@ def _agent_host_start_timeout_seconds(request: AgentWorkflowHostRequest) -> str:
 
 
 def _agent_host_topic_env(agent_app_id: str) -> list[dict[str, str]]:
-    prefix = os.environ.get("SANDBOX_EXECUTION_AGENT_TOPIC_PREFIX", "").strip().strip(".")
+    prefix = (
+        os.environ.get("SANDBOX_EXECUTION_AGENT_TOPIC_PREFIX", "").strip().strip(".")
+    )
     if not prefix:
         return []
     return [
@@ -745,6 +769,7 @@ def build_job_manifest(
                         "ephemeral-storage": class_config.ephemeralStorage,
                     }
                 },
+                "securityContext": _restricted_container_security_context(),
             }
         ],
         "volumes": [
@@ -757,6 +782,8 @@ def build_job_manifest(
             }
         ],
     }
+    if class_config.podSecurityContext is not None:
+        pod_spec["securityContext"] = dict(class_config.podSecurityContext)
     if class_config.imagePullSecrets:
         pod_spec["imagePullSecrets"] = [
             {"name": name} for name in class_config.imagePullSecrets if name
@@ -875,9 +902,368 @@ def _load_k8s_apps_client():
     return client.AppsV1Api(_k8s_shared_api_client())
 
 
+def _load_k8s_coordination_client():
+    from kubernetes import client
+
+    return client.CoordinationV1Api(_k8s_shared_api_client())
+
+
+def _load_k8s_rbac_client():
+    from kubernetes import client
+
+    return client.RbacAuthorizationV1Api(_k8s_shared_api_client())
+
+
 # Stashes a Deployment's replica count before preview-native adopt scales it to 0,
 # so teardown can restore it (survives an SEA restart — state lives on the object).
 DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION = "wfb-dev-preview/original-replicas"
+
+_ADOPT_ENV_LITERAL_NAMES = frozenset(
+    {
+        "AGY_CLI_APP_ID",
+        "CLAUDE_CODE_CLI_APP_ID",
+        "CODEX_CLI_APP_ID",
+        "DEV_PREVIEW_CLUSTER_NAME",
+        "DEV_PREVIEW_PLATFORM_SCOPE",
+        "DEV_PREVIEW_TAILNET_SUFFIX",
+        "FUNCTION_ROUTER_DEV_IMAGE",
+        "OPENSHELL_AGENT_RUNTIME_API_BASE_URL",
+        "PREVIEW_CONTROL_BROKER_URL",
+        "SANDBOX_EXECUTION_API_URL",
+        "SANDBOX_EXECUTION_CLASSES_FILE",
+        "SANDBOX_EXECUTION_CLASSES_JSON",
+        "SANDBOX_TEMPLATE_IMAGES_JSON",
+        "WORKFLOW_BUILDER_DEV_IMAGE",
+        "WORKFLOW_BUILDER_IMAGE_PINS_FILE",
+        "WORKFLOW_ORCHESTRATOR_DEV_IMAGE",
+        "WORKSPACE_RUNTIME_URL",
+    }
+)
+_ADOPT_ENV_LITERAL_PREFIXES = (
+    "AGENT_PREWARM_",
+    "AGENT_RUNTIME_",
+    "AGENT_WARM_POOL_",
+    "AGENT_WORKFLOW_HOST_",
+    "DAPR_",
+)
+_ADOPT_ENV_SECRET_NAMES = frozenset(
+    {
+        "PREVIEW_ACTION_INTERNAL_TOKEN",
+        "PREVIEW_CONTROL_CAPABILITY_TOKEN",
+        "PREVIEW_DEV_SYNC_MINT_TOKEN",
+        "SANDBOX_EXECUTION_API_TOKEN",
+    }
+)
+_ADOPT_ENV_IDENTITY_NAMES = frozenset(
+    {
+        "PREVIEW_ENVIRONMENT_CATALOG_DIGEST",
+        "PREVIEW_ENVIRONMENT_NAME",
+        "PREVIEW_ENVIRONMENT_PLATFORM_REVISION",
+        "PREVIEW_ENVIRONMENT_REQUEST_ID",
+        "PREVIEW_ENVIRONMENT_SERVICES_JSON",
+        "PREVIEW_ENVIRONMENT_SOURCE_REVISION",
+    }
+)
+
+
+def _adopt_env_key_ref(value: Any, field: str) -> dict[str, Any] | None:
+    if not isinstance(value, dict) or set(value) - {field}:
+        return None
+    ref = value.get(field)
+    if not isinstance(ref, dict) or set(ref) - {"name", "key", "optional"}:
+        return None
+    name = ref.get("name")
+    key = ref.get("key")
+    optional = ref.get("optional")
+    if not isinstance(name, str) or not name or not isinstance(key, str) or not key:
+        return None
+    if optional is not None and not isinstance(optional, bool):
+        return None
+    return {
+        field: {
+            "name": name,
+            "key": key,
+            **({"optional": optional} if optional is not None else {}),
+        }
+    }
+
+
+def _filter_adopted_container_env(
+    entries: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    """Retain the adopted BFF's operational config and four scoped leaves only.
+
+    Mutable preview code must never inherit a dev-sync derivation root, raw agent
+    bearer, GitHub/write credential, or unrelated production capability through
+    the copied Deployment template.
+    """
+    retained: list[dict[str, Any]] = []
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        value = entry.get("value")
+        if (
+            isinstance(value, str)
+            and (
+                name in _ADOPT_ENV_LITERAL_NAMES
+                or name.startswith(_ADOPT_ENV_LITERAL_PREFIXES)
+            )
+            and set(entry) <= {"name", "value"}
+        ):
+            retained.append({"name": name, "value": value})
+            continue
+        value_from = entry.get("valueFrom")
+        if name in _ADOPT_ENV_SECRET_NAMES:
+            safe_ref = _adopt_env_key_ref(value_from, "secretKeyRef")
+        elif name in _ADOPT_ENV_IDENTITY_NAMES:
+            safe_ref = _adopt_env_key_ref(value_from, "configMapKeyRef")
+        else:
+            safe_ref = None
+        if safe_ref is not None and set(entry) <= {"name", "valueFrom"}:
+            retained.append({"name": name, "valueFrom": safe_ref})
+    return retained or None
+
+
+DEV_PREVIEW_ADOPTION_LEASE_LABEL = "wfb-dev-preview-adoption"
+DEV_PREVIEW_ADOPT_DEPLOYMENT_ANNOTATION = "wfb-dev-preview/adopt-deployment"
+DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION = "wfb-dev-preview/adopt-holder"
+DEV_PREVIEW_ADOPT_EXECUTION_ANNOTATION = "wfb-dev-preview/adopt-execution-id"
+DEV_PREVIEW_ADOPT_SERVICE_ANNOTATION = "wfb-dev-preview/adopt-service"
+_DEV_PREVIEW_ADOPTION_LEASE_SECONDS = 120
+
+
+def _adopt_value(value: Any, *names: str) -> Any:
+    if isinstance(value, dict):
+        for name in names:
+            if name in value:
+                return value[name]
+        return None
+    for name in names:
+        found = getattr(value, name, None)
+        if found is not None:
+            return found
+    return None
+
+
+def _adopt_lease_name(deployment: str) -> str:
+    return _safe_resource_name(
+        f"wfb-dev-adopt-{_safe_resource_name(deployment)}", max_length=63
+    )
+
+
+def _adopt_lease_holder(execution_id: str, service: str | None) -> str:
+    service_name = _dev_preview_service_label(service)
+    execution_prefix = _safe_name(execution_id, max_length=36)
+    execution_digest = sha256(execution_id.encode("utf-8")).hexdigest()[:12]
+    return f"adopt:{execution_prefix}:{execution_digest}:{service_name}"
+
+
+def _adopt_lease_body(
+    *,
+    namespace: str,
+    deployment: str,
+    execution_id: str,
+    service: str | None,
+) -> dict[str, Any]:
+    deployment_name = _safe_resource_name(deployment)
+    service_name = _dev_preview_service_label(service)
+    holder = _adopt_lease_holder(execution_id, service_name)
+    now = datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    return {
+        "apiVersion": "coordination.k8s.io/v1",
+        "kind": "Lease",
+        "metadata": {
+            "name": _adopt_lease_name(deployment_name),
+            "namespace": namespace,
+            "labels": {
+                "app": DEV_PREVIEW_ADOPTION_LEASE_LABEL,
+                DEV_PREVIEW_ADOPT_DEPLOYMENT_ANNOTATION: deployment_name,
+                "dev-preview-service": service_name,
+            },
+            "annotations": {
+                DEV_PREVIEW_ADOPT_DEPLOYMENT_ANNOTATION: deployment_name,
+                DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION: holder,
+                DEV_PREVIEW_ADOPT_EXECUTION_ANNOTATION: execution_id,
+                DEV_PREVIEW_ADOPT_SERVICE_ANNOTATION: service_name,
+            },
+        },
+        "spec": {
+            "holderIdentity": holder,
+            "leaseDurationSeconds": min(
+                3600,
+                _env_int(
+                    "DEV_PREVIEW_ADOPTION_LEASE_SECONDS",
+                    _DEV_PREVIEW_ADOPTION_LEASE_SECONDS,
+                    minimum=30,
+                ),
+            ),
+            "acquireTime": now,
+            "renewTime": now,
+        },
+    }
+
+
+def _adopt_lease_identity(lease: Any) -> tuple[str, str, str, str, str | None]:
+    metadata = _adopt_value(lease, "metadata")
+    annotations = _adopt_value(metadata, "annotations") or {}
+    spec = _adopt_value(lease, "spec")
+    return (
+        str(_adopt_value(metadata, "name") or ""),
+        str(_adopt_value(spec, "holder_identity", "holderIdentity") or ""),
+        str(annotations.get(DEV_PREVIEW_ADOPT_DEPLOYMENT_ANNOTATION) or ""),
+        str(annotations.get(DEV_PREVIEW_ADOPT_EXECUTION_ANNOTATION) or ""),
+        _adopt_value(metadata, "resource_version", "resourceVersion"),
+    )
+
+
+def _acquire_dev_preview_adoption_lease(
+    coordination: Any,
+    *,
+    namespace: str,
+    deployment: str,
+    execution_id: str,
+    service: str | None,
+) -> str:
+    """Atomically reserve an adopted Deployment for one execution/service."""
+    body = _adopt_lease_body(
+        namespace=namespace,
+        deployment=deployment,
+        execution_id=execution_id,
+        service=service,
+    )
+    name = body["metadata"]["name"]
+    holder = body["spec"]["holderIdentity"]
+    try:
+        coordination.create_namespaced_lease(namespace=namespace, body=body)
+        return holder
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"could not reserve adopted Deployment {deployment}",
+            ) from exc
+    try:
+        existing = coordination.read_namespaced_lease(name=name, namespace=namespace)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"adopted Deployment {deployment} already has an owner",
+        ) from exc
+    existing_name, existing_holder, existing_deployment, existing_execution, _ = (
+        _adopt_lease_identity(existing)
+    )
+    existing_metadata = _adopt_value(existing, "metadata")
+    existing_annotations = _adopt_value(existing_metadata, "annotations") or {}
+    existing_labels = _adopt_value(existing_metadata, "labels") or {}
+    service_name = _dev_preview_service_label(service)
+    if (
+        existing_name == name
+        and _adopt_value(existing_metadata, "namespace") == namespace
+        and existing_holder == holder
+        and existing_deployment == _safe_resource_name(deployment)
+        and existing_execution == execution_id
+        and existing_annotations.get(DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION) == holder
+        and existing_annotations.get(DEV_PREVIEW_ADOPT_SERVICE_ANNOTATION)
+        == service_name
+        and existing_labels.get("app") == DEV_PREVIEW_ADOPTION_LEASE_LABEL
+        and existing_labels.get(DEV_PREVIEW_ADOPT_DEPLOYMENT_ANNOTATION)
+        == _safe_resource_name(deployment)
+        and existing_labels.get("dev-preview-service") == service_name
+    ):
+        return holder
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"adopted Deployment {deployment} is owned by another dev preview",
+    )
+
+
+def _delete_dev_preview_adoption_lease(
+    coordination: Any,
+    *,
+    namespace: str,
+    deployment: str,
+    holder: str,
+    timeout_s: float = 30.0,
+) -> bool:
+    """Delete only the exact holder's Lease and observe its absence."""
+    name = _adopt_lease_name(deployment)
+    try:
+        lease = coordination.read_namespaced_lease(name=name, namespace=namespace)
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            return True
+        logger.warning("adopt: failed reading Lease %s for cleanup: %s", name, exc)
+        return False
+    (
+        existing_name,
+        existing_holder,
+        existing_deployment,
+        _execution,
+        resource_version,
+    ) = _adopt_lease_identity(lease)
+    metadata = _adopt_value(lease, "metadata")
+    annotations = _adopt_value(metadata, "annotations") or {}
+    if (
+        existing_name != name
+        or _adopt_value(metadata, "namespace") != namespace
+        or existing_holder != holder
+        or existing_deployment != _safe_resource_name(deployment)
+        or annotations.get(DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION) != holder
+        or not resource_version
+    ):
+        logger.warning("adopt: refusing mismatched Lease cleanup for %s", deployment)
+        return False
+    try:
+        coordination.delete_namespaced_lease(
+            name=name,
+            namespace=namespace,
+            body={
+                "apiVersion": "v1",
+                "kind": "DeleteOptions",
+                "preconditions": {"resourceVersion": resource_version},
+            },
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            return True
+        logger.warning("adopt: failed deleting Lease %s: %s", name, exc)
+        return False
+    deadline = time.monotonic() + max(timeout_s, 0)
+    while True:
+        try:
+            observed = coordination.read_namespaced_lease(
+                name=name, namespace=namespace
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                return True
+            logger.warning(
+                "adopt: failed proving Lease %s absence: %s", name, exc
+            )
+            return False
+        (
+            observed_name,
+            observed_holder,
+            observed_deployment,
+            _observed_execution,
+            _observed_resource_version,
+        ) = _adopt_lease_identity(observed)
+        if (
+            observed_name != name
+            or observed_holder != holder
+            or observed_deployment != _safe_resource_name(deployment)
+        ):
+            logger.warning(
+                "adopt: Lease %s changed identity before deletion was observed", name
+            )
+            return False
+        if time.monotonic() >= deadline:
+            logger.warning("adopt: Lease %s deletion was not observed", name)
+            return False
+        time.sleep(0.1)
 
 
 def _adopt_read_identity(
@@ -913,7 +1299,9 @@ def _adopt_read_identity(
         )
         if main.env:
             try:
-                container_env = apps.api_client.sanitize_for_serialization(main.env)
+                container_env = _filter_adopted_container_env(
+                    apps.api_client.sanitize_for_serialization(main.env)
+                )
             except Exception as exc:  # noqa: BLE001 — best-effort; fall back to envFrom only
                 logger.warning("adopt: failed to read %s container env: %s", name, exc)
                 container_env = None
@@ -926,20 +1314,23 @@ def _adopt_read_identity(
     }
 
 
-def _adopt_scale_deployment_down(apps: Any, *, namespace: str, name: str) -> None:
+def _adopt_scale_deployment_down(
+    apps: Any, *, namespace: str, name: str, timeout_s: float = 30.0
+) -> None:
     """Scale the adopted Deployment to 0 (freeing the Service endpoints), stashing
     its prior replica count in an annotation so teardown can restore it. Idempotent."""
     try:
         dep = apps.read_namespaced_deployment(name=name, namespace=namespace)
     except Exception as exc:
         if getattr(exc, "status", None) == 404:
-            logger.info("adopt: deployment %s not found; skip scale-down", name)
-            return
+            raise RuntimeError(f"adopted deployment {name} was not found") from exc
         raise
     dep_annotations = (dep.metadata.annotations or {}) if dep.metadata else {}
     current = dep.spec.replicas if dep.spec and dep.spec.replicas is not None else 1
     stashed = dep_annotations.get(DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION)
-    original = stashed if stashed is not None else (str(current) if current > 0 else "1")
+    original = (
+        stashed if stashed is not None else (str(current) if current > 0 else "1")
+    )
     apps.patch_namespaced_deployment(
         name=name,
         namespace=namespace,
@@ -950,26 +1341,47 @@ def _adopt_scale_deployment_down(apps: Any, *, namespace: str, name: str) -> Non
             "spec": {"replicas": 0},
         },
     )
+    deadline = time.monotonic() + max(timeout_s, 0)
+    while True:
+        observed = apps.read_namespaced_deployment(name=name, namespace=namespace)
+        observed_annotations = (
+            observed.metadata.annotations or {}
+        ) if observed.metadata else {}
+        observed_replicas = (
+            observed.spec.replicas
+            if observed.spec and observed.spec.replicas is not None
+            else 1
+        )
+        if (
+            observed_replicas == 0
+            and observed_annotations.get(DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION)
+            == original
+        ):
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"deployment {name} scale-down was not observed")
+        time.sleep(0.1)
     logger.info("adopt: scaled deployment %s to 0 (original=%s)", name, original)
 
 
 def _dev_pod_has_daprd(pod: Any) -> bool:
-    """True if the pod carries an injected daprd sidecar.
+    """True only if the injected daprd container is present and Ready.
 
     daprd can be a NATIVE sidecar (an init container with restartPolicy: Always) OR a
-    classic sidecar (a regular container); the injector also stamps the
-    `dapr.io/sidecar-injected=true` label. Check all three — auditing only
-    `.spec.containers` misses the native-sidecar case."""
+    classic sidecar (a regular container). The injector label alone is not readiness
+    evidence; auditing only `.spec.containers` misses the native-sidecar case."""
     status = getattr(pod, "status", None)
     for statuses in (
         getattr(status, "init_container_statuses", None),
         getattr(status, "container_statuses", None),
     ):
-        if any(getattr(cs, "name", "") == "daprd" for cs in (statuses or [])):
+        if any(
+            getattr(cs, "name", "") == "daprd"
+            and getattr(cs, "ready", False) is True
+            for cs in (statuses or [])
+        ):
             return True
-    meta = getattr(pod, "metadata", None)
-    labels = (getattr(meta, "labels", None) or {}) if meta else {}
-    return labels.get("dapr.io/sidecar-injected") == "true"
+    return False
 
 
 def _wait_for_dapr_injector_available(apps: Any, *, timeout_seconds: int = 60) -> bool:
@@ -1010,6 +1422,8 @@ def _adopt_deferred_scale_down(
     deployment: str,
     execution_id: str,
     wait_seconds: int,
+    sandbox_name: str | None = None,
+    holder: str | None = None,
     service: str | None = None,
     needs_dapr: bool = False,
 ) -> None:
@@ -1025,6 +1439,10 @@ def _adopt_deferred_scale_down(
     try:
         apps = _load_k8s_apps_client()
         _, core = _load_k8s_clients()
+        custom = _load_k8s_custom_objects_client() if sandbox_name and holder else None
+        coordination = (
+            _load_k8s_coordination_client() if sandbox_name and holder else None
+        )
     except Exception as exc:
         logger.warning("adopt: deferred scale-down could not load clients: %s", exc)
         return
@@ -1098,9 +1516,26 @@ def _adopt_deferred_scale_down(
                 # scale the BFF to 0 — otherwise the scale could still kill the pod
                 # mid-response.
                 time.sleep(15)
-                _adopt_scale_deployment_down(
-                    apps, namespace=namespace, name=deployment
-                )
+                if (
+                    sandbox_name
+                    and holder
+                    and custom is not None
+                    and coordination is not None
+                    and not _dev_preview_adoption_is_current(
+                    custom,
+                    coordination,
+                    namespace=namespace,
+                    sandbox_name=sandbox_name,
+                    deployment=deployment,
+                    holder=holder,
+                    )
+                ):
+                    logger.info(
+                        "adopt: cutover for %s was cancelled before scale-down",
+                        sandbox_name,
+                    )
+                    return
+                _adopt_scale_deployment_down(apps, namespace=namespace, name=deployment)
                 logger.info(
                     "adopt: dev pod ready (daprd ok) → scaled %s to 0 (exec %s)",
                     deployment,
@@ -1118,7 +1553,9 @@ def _adopt_deferred_scale_down(
     )
 
 
-def _adopt_restore_deployment(apps: Any, *, namespace: str, name: str) -> None:
+def _adopt_restore_deployment(
+    apps: Any, *, namespace: str, name: str, timeout_s: float = 30.0
+) -> None:
     """Restore a Deployment scaled down by preview-native adopt to its original
     replica count (from the stashed annotation; default 1). Best-effort."""
     try:
@@ -1129,8 +1566,15 @@ def _adopt_restore_deployment(apps: Any, *, namespace: str, name: str) -> None:
             return
         raise
     annotations = (dep.metadata.annotations or {}) if dep.metadata else {}
+    original = annotations.get(DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION)
+    if original is None:
+        logger.info(
+            "adopt: deployment %s was never scaled down; leaving replicas unchanged",
+            name,
+        )
+        return
     try:
-        replicas = int(annotations.get(DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION, "1"))
+        replicas = int(original)
     except (TypeError, ValueError):
         replicas = 1
     apps.patch_namespaced_deployment(
@@ -1143,11 +1587,141 @@ def _adopt_restore_deployment(apps: Any, *, namespace: str, name: str) -> None:
             "spec": {"replicas": max(replicas, 1)},
         },
     )
-    logger.info("adopt: restored deployment %s to %s replicas", name, max(replicas, 1))
+    target = max(replicas, 1)
+    deadline = time.monotonic() + max(timeout_s, 0)
+    while True:
+        observed = apps.read_namespaced_deployment(name=name, namespace=namespace)
+        observed_annotations = (
+            observed.metadata.annotations or {}
+        ) if observed.metadata else {}
+        observed_replicas = (
+            observed.spec.replicas
+            if observed.spec and observed.spec.replicas is not None
+            else 1
+        )
+        if (
+            observed_replicas == target
+            and DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION not in observed_annotations
+        ):
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"deployment {name} restoration was not observed")
+        time.sleep(0.1)
+    logger.info("adopt: restored deployment %s to %s replicas", name, target)
+
+
+def _dev_preview_adoption_is_current(
+    custom: Any,
+    coordination: Any,
+    *,
+    namespace: str,
+    sandbox_name: str,
+    deployment: str,
+    holder: str,
+) -> bool:
+    """Re-read both ownership objects immediately before a deferred cutover."""
+    try:
+        if (
+            _dev_preview_cr_adoption_holder(custom, namespace, sandbox_name)
+            != holder
+        ):
+            return False
+        lease = coordination.read_namespaced_lease(
+            name=_adopt_lease_name(deployment), namespace=namespace
+        )
+    except Exception:
+        return False
+    (
+        lease_name,
+        lease_holder,
+        lease_deployment,
+        _lease_execution,
+        _resource_version,
+    ) = _adopt_lease_identity(lease)
+    return (
+        lease_name == _adopt_lease_name(deployment)
+        and lease_holder == holder
+        and lease_deployment == _safe_resource_name(deployment)
+    )
+
+
+def _adopt_cleanup_stale_leases(
+    coordination: Any,
+    *,
+    namespace: str,
+    claimed_holders: dict[str, set[str]],
+    blocked_releases: set[str],
+    now: datetime | None = None,
+) -> list[str]:
+    try:
+        leases = coordination.list_namespaced_lease(
+            namespace=namespace,
+            label_selector=f"app={DEV_PREVIEW_ADOPTION_LEASE_LABEL}",
+        )
+    except Exception as exc:
+        logger.warning("adopt: stale Lease sweep skipped (list failed): %s", exc)
+        return []
+    released: list[str] = []
+    current_time = now or datetime.now(UTC)
+    for lease in _adopt_value(leases, "items") or []:
+        metadata = _adopt_value(lease, "metadata")
+        annotations = _adopt_value(metadata, "annotations") or {}
+        labels = _adopt_value(metadata, "labels") or {}
+        spec = _adopt_value(lease, "spec")
+        name, holder, deployment, execution_id, _resource_version = (
+            _adopt_lease_identity(lease)
+        )
+        service = str(annotations.get(DEV_PREVIEW_ADOPT_SERVICE_ANNOTATION) or "")
+        annotated_holder = str(
+            annotations.get(DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION) or ""
+        )
+        duration = int(
+            _adopt_value(spec, "lease_duration_seconds", "leaseDurationSeconds")
+            or _DEV_PREVIEW_ADOPTION_LEASE_SECONDS
+        )
+        renewed = _lease_timestamp(
+            _adopt_value(spec, "renew_time", "renewTime")
+            or _adopt_value(spec, "acquire_time", "acquireTime")
+        )
+        if (
+            not name
+            or name != _adopt_lease_name(deployment)
+            or _adopt_value(metadata, "namespace") != namespace
+            or not holder
+            or holder != annotated_holder
+            or not execution_id
+            or not service
+            or holder != _adopt_lease_holder(execution_id, service)
+            or labels.get("app") != DEV_PREVIEW_ADOPTION_LEASE_LABEL
+            or labels.get(DEV_PREVIEW_ADOPT_DEPLOYMENT_ANNOTATION) != deployment
+            or labels.get("dev-preview-service") != service
+            or renewed is None
+            or duration < 30
+        ):
+            logger.warning("adopt: refusing malformed stale Lease cleanup for %s", name)
+            continue
+        if deployment in claimed_holders:
+            continue
+        if deployment in blocked_releases:
+            continue
+        if current_time < renewed + timedelta(seconds=duration):
+            continue
+        if _delete_dev_preview_adoption_lease(
+            coordination,
+            namespace=namespace,
+            deployment=deployment,
+            holder=holder,
+        ):
+            released.append(name)
+    return released
 
 
 def _adopt_restore_orphans(
-    apps: Any, custom: Any, *, namespace: str
+    apps: Any,
+    custom: Any,
+    *,
+    namespace: str,
+    coordination: Any | None = None,
 ) -> dict[str, Any]:
     """B5 restore-all sweep: restore every Deployment still carrying the
     original-replicas annotation AT 0 REPLICAS that no live Sandbox CR claims
@@ -1174,18 +1748,24 @@ def _adopt_restore_orphans(
         logger.warning("adopt: orphan sweep skipped (sandbox list failed): %s", exc)
         return {"restored": [], "skipped": "sandbox-list-failed"}
     claimed: set[str] = set()
+    claimed_holders: dict[str, set[str]] = {}
     for item in (crs.get("items") or []) if isinstance(crs, dict) else []:
         metadata = (item.get("metadata") or {}) if isinstance(item, dict) else {}
         annotations = metadata.get("annotations") or {}
-        dep_name = annotations.get("wfb-dev-preview/adopt-deployment")
+        dep_name = annotations.get(DEV_PREVIEW_ADOPT_DEPLOYMENT_ANNOTATION)
         if dep_name:
             claimed.add(dep_name)
+            claimed_holders.setdefault(dep_name, set())
+            holder = annotations.get(DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION)
+            if isinstance(holder, str) and holder:
+                claimed_holders[dep_name].add(holder)
     try:
         deployments = apps.list_namespaced_deployment(namespace=namespace)
     except Exception as exc:
         logger.warning("adopt: orphan sweep skipped (deployment list failed): %s", exc)
         return {"restored": [], "skipped": "deployment-list-failed"}
     restored: list[str] = []
+    blocked_releases: set[str] = set()
     for dep in getattr(deployments, "items", None) or []:
         metadata = getattr(dep, "metadata", None)
         name = getattr(metadata, "name", None)
@@ -1201,18 +1781,30 @@ def _adopt_restore_orphans(
             _adopt_restore_deployment(apps, namespace=namespace, name=name)
             restored.append(name)
         except Exception as exc:
+            blocked_releases.add(name)
             logger.warning("adopt: orphan restore failed for %s: %s", name, exc)
     if restored:
         logger.info("adopt: orphan sweep restored %s", restored)
-    return {"restored": restored}
+    released_leases = (
+        _adopt_cleanup_stale_leases(
+            coordination,
+            namespace=namespace,
+            claimed_holders=claimed_holders,
+            blocked_releases=blocked_releases,
+        )
+        if coordination is not None
+        else []
+    )
+    return {"restored": restored, "releasedLeases": released_leases}
 
 
 def _require_internal(request: Request) -> None:
-    expected = os.environ.get("SANDBOX_EXECUTION_API_TOKEN") or os.environ.get(
-        "INTERNAL_API_TOKEN"
-    )
+    expected = (os.environ.get("SANDBOX_EXECUTION_API_TOKEN") or "").strip()
     if not expected:
-        return
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="sandbox execution API token is not configured",
+        )
     token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
     if token != expected:
         raise HTTPException(
@@ -1226,6 +1818,18 @@ def _agent_workflow_host_namespace() -> str:
     )
 
 
+def _vcluster_preview_control_namespace() -> str:
+    """Namespace for bounded preview runners and their coordination objects.
+
+    The workload namespace remains ``workflow-builder``. Keeping this separately
+    configurable lets dev run the broker-owned control plane in
+    ``preview-control-system`` without changing persistent agent-host behavior.
+    """
+    return (
+        os.environ.get("VCLUSTER_PREVIEW_CONTROL_NAMESPACE") or "preview-control-system"
+    ).strip() or "preview-control-system"
+
+
 def _image_pull_policy_for_agent_host(image: str) -> str:
     """Pull mutable agent-host images every time, keep immutable refs cached."""
     ref = (image or "").strip()
@@ -1235,6 +1839,13 @@ def _image_pull_policy_for_agent_host(image: str) -> str:
     if ":" not in last_segment or last_segment.rsplit(":", 1)[-1] == "latest":
         return "Always"
     return "IfNotPresent"
+
+
+def _restricted_container_security_context() -> dict[str, Any]:
+    return {
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+    }
 
 
 def _openshell_seed_init_container(image: str) -> dict[str, Any]:
@@ -1296,6 +1907,7 @@ chmod 600 "${MTLS_DIR}/tls.key"
             "requests": {"memory": "64Mi", "cpu": "50m"},
             "limits": {"memory": "256Mi", "cpu": "250m"},
         },
+        "securityContext": _restricted_container_security_context(),
         "volumeMounts": [
             {"name": "openshell-config", "mountPath": "/root/.config"},
             {
@@ -1353,9 +1965,7 @@ def _ensure_agent_host_cred_secret(
         ),
         "sandbox-execution-class": _safe_name(request.executionClass),
     }
-    string_data = {
-        key: value for key, value in request.sessionSecretEnv.items() if key
-    }
+    string_data = {key: value for key, value in request.sessionSecretEnv.items() if key}
     body = {
         "apiVersion": "v1",
         "kind": "Secret",
@@ -1456,6 +2066,209 @@ def _cli_transcript_enabled(class_config: ExecutionClassConfig) -> bool:
     return bool(class_config.transcriptStoreCsiDriver)
 
 
+@dataclass(frozen=True)
+class PreviewStorageContext:
+    scope_id: str
+    storage_class: str
+
+
+_PREVIEW_IDENTITY_ENV = (
+    "PREVIEW_ENVIRONMENT_NAME",
+    "PREVIEW_ENVIRONMENT_REQUEST_ID",
+    "PREVIEW_ENVIRONMENT_PLATFORM_REVISION",
+    "PREVIEW_ENVIRONMENT_SOURCE_REVISION",
+    "PREVIEW_ENVIRONMENT_CATALOG_DIGEST",
+    "PREVIEW_ENVIRONMENT_SERVICES_JSON",
+)
+
+
+def _preview_storage_context() -> PreviewStorageContext | None:
+    """Read the host-issued, non-secret preview storage binding.
+
+    A partial preview identity fails closed. The host runner derives ``scope_id``
+    from the tuple-bound storage capability and creates the matching StorageClass;
+    virtual workloads receive neither that capability nor the JuiceFS Secret.
+    """
+    storage_markers = _PREVIEW_IDENTITY_ENV + (
+        "PREVIEW_STORAGE_SCOPE_ID",
+        "PREVIEW_STORAGE_CLASS",
+    )
+    values = {name: (os.environ.get(name) or "").strip() for name in storage_markers}
+    if not any(values.values()):
+        return None
+    missing = [name for name in storage_markers if not values[name]]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"preview storage identity is incomplete: {', '.join(missing)}",
+        )
+    if not re.fullmatch(
+        r"[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?", values["PREVIEW_ENVIRONMENT_NAME"]
+    ):
+        raise HTTPException(status_code=503, detail="preview storage name is invalid")
+    if not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", values["PREVIEW_ENVIRONMENT_REQUEST_ID"]
+    ):
+        raise HTTPException(
+            status_code=503, detail="preview storage request id is invalid"
+        )
+    for key in (
+        "PREVIEW_ENVIRONMENT_PLATFORM_REVISION",
+        "PREVIEW_ENVIRONMENT_SOURCE_REVISION",
+    ):
+        if not re.fullmatch(r"[0-9a-f]{40}", values[key]):
+            raise HTTPException(status_code=503, detail=f"{key} is invalid")
+    if not re.fullmatch(
+        r"sha256:[0-9a-f]{64}", values["PREVIEW_ENVIRONMENT_CATALOG_DIGEST"]
+    ):
+        raise HTTPException(
+            status_code=503, detail="preview storage catalog digest is invalid"
+        )
+    try:
+        services = json.loads(values["PREVIEW_ENVIRONMENT_SERVICES_JSON"])
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=503, detail="preview storage services are invalid"
+        ) from exc
+    if (
+        not isinstance(services, list)
+        or len(services) > 16
+        or services != sorted(set(services))
+        or any(
+            not isinstance(service, str)
+            or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", service)
+            for service in services
+        )
+    ):
+        raise HTTPException(
+            status_code=503, detail="preview storage services are invalid"
+        )
+    scope_id = values["PREVIEW_STORAGE_SCOPE_ID"]
+    if not re.fullmatch(r"[0-9a-f]{32}", scope_id):
+        raise HTTPException(
+            status_code=503, detail="preview storage scope id is invalid"
+        )
+    expected_class = f"preview-jfs-{scope_id}"
+    if values["PREVIEW_STORAGE_CLASS"] != expected_class:
+        raise HTTPException(
+            status_code=503,
+            detail="preview storage class does not match the issued scope id",
+        )
+    return PreviewStorageContext(scope_id=scope_id, storage_class=expected_class)
+
+
+def _preview_storage_logical_key(value: str | None, *, field: str) -> str:
+    key = (value or "").strip()
+    if (
+        not key
+        or len(key) > 256
+        or key in {".", ".."}
+        or "/" in key
+        or "\\" in key
+        or key.lower().startswith("previews")
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,255}", key)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{field} must be an unprefixed logical key without path syntax",
+        )
+    return key
+
+
+def _preview_storage_pvc_name(kind: str, logical_key: str) -> str:
+    prefix = {"transcript": "ptx", "workspace": "pws"}.get(kind)
+    if prefix is None:
+        raise ValueError(f"unsupported preview storage kind {kind}")
+    return f"{prefix}-{sha256(logical_key.encode()).hexdigest()[:32]}"
+
+
+def _preview_dynamic_pvc_body(
+    *,
+    name: str,
+    namespace: str,
+    context: PreviewStorageContext,
+    kind: str,
+    capacity: str,
+) -> dict[str, Any]:
+    return {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "labels": {
+                "preview.stacks.io/storage-scope": context.scope_id,
+                "preview.stacks.io/storage-kind": kind,
+            },
+        },
+        "spec": {
+            "accessModes": ["ReadWriteMany"],
+            "storageClassName": context.storage_class,
+            "resources": {"requests": {"storage": capacity}},
+        },
+    }
+
+
+def _ensure_preview_dynamic_pvc(
+    core: Any,
+    *,
+    namespace: str,
+    context: PreviewStorageContext,
+    kind: str,
+    logical_key: str,
+    capacity: str,
+    create: bool = True,
+) -> str:
+    name = _preview_storage_pvc_name(kind, logical_key)
+    body = _preview_dynamic_pvc_body(
+        name=name,
+        namespace=namespace,
+        context=context,
+        kind=kind,
+        capacity=capacity,
+    )
+    if create:
+        try:
+            core.create_namespaced_persistent_volume_claim(
+                namespace=namespace, body=body
+            )
+            return name
+        except Exception as exc:
+            if getattr(exc, "status", None) != 409:
+                raise
+    try:
+        existing = core.read_namespaced_persistent_volume_claim(
+            name=name, namespace=namespace
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"preview {kind} source does not exist",
+            ) from exc
+        raise
+    spec = getattr(existing, "spec", None)
+    storage_class = (
+        getattr(spec, "storage_class_name", None)
+        or getattr(spec, "storageClassName", None)
+        or (spec.get("storageClassName") if isinstance(spec, dict) else None)
+    )
+    metadata = getattr(existing, "metadata", None)
+    labels = getattr(metadata, "labels", None) or (
+        metadata.get("labels", {}) if isinstance(metadata, dict) else {}
+    )
+    if (
+        storage_class != context.storage_class
+        or labels.get("preview.stacks.io/storage-scope") != context.scope_id
+        or labels.get("preview.stacks.io/storage-kind") != kind
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="preview storage PVC identity conflict",
+        )
+    return name
+
+
 def _cli_transcript_conversation_key(request: AgentWorkflowHostRequest) -> str:
     """Subtree key that ties a pod to its Postgres-backed transcript.
 
@@ -1496,6 +2309,19 @@ def _ensure_cli_transcript_volume(
     conversation_key = _cli_transcript_conversation_key(request)
     if not conversation_key:
         return None
+    preview_storage = _preview_storage_context()
+    if preview_storage is not None:
+        logical_key = _preview_storage_logical_key(
+            conversation_key, field="conversation key"
+        )
+        return _ensure_preview_dynamic_pvc(
+            core,
+            namespace=namespace,
+            context=preview_storage,
+            kind="transcript",
+            logical_key=logical_key,
+            capacity=class_config.transcriptStoreCapacity,
+        )
     # PV/PVC are named per-session (unique per attempt) while the CSI subPath is
     # the conversation key, so a resume gets a fresh PV bound to the SAME data.
     name = _cli_transcript_resource_name(request.sessionId)
@@ -1564,7 +2390,9 @@ def _ensure_cli_transcript_volume(
             existing = core.read_persistent_volume(name=name)
             phase = getattr(getattr(existing, "status", None), "phase", None)
             if phase in ("Released", "Available"):
-                core.patch_persistent_volume(name=name, body={"spec": {"claimRef": None}})
+                core.patch_persistent_volume(
+                    name=name, body={"spec": {"claimRef": None}}
+                )
         except Exception as patch_exc:  # best-effort; bind may still succeed
             logger.warning(
                 "cli-transcript pv %s: claimRef clear failed: %s", name, patch_exc
@@ -1593,6 +2421,10 @@ def _bind_cli_transcript_pvc_owner(
     The PVC's `pvc-protection` finalizer holds it until the pod exits; reclaim
     `Delete` then removes the (static, data-safe) PV. Best-effort.
     """
+    if _preview_storage_context() is not None:
+        # Dynamic preview PVCs persist for resume within the environment and are
+        # reclaimed with the host-enforced per-preview scope on teardown.
+        return
     uid = None
     if isinstance(sandbox, dict):
         uid = ((sandbox.get("metadata") or {}) or {}).get("uid")
@@ -1678,6 +2510,19 @@ def _ensure_cli_shared_workspace_volume(
     shared_key = (request.sharedWorkspaceKey or "").strip()
     if not shared_key:
         return None
+    preview_storage = _preview_storage_context()
+    if preview_storage is not None:
+        logical_key = _preview_storage_logical_key(
+            shared_key, field="shared workspace key"
+        )
+        return _ensure_preview_dynamic_pvc(
+            core,
+            namespace=namespace,
+            context=preview_storage,
+            kind="workspace",
+            logical_key=logical_key,
+            capacity=class_config.sharedWorkspaceStoreCapacity,
+        )
     name = _cli_shared_workspace_resource_name(request.sessionId)
     secret_namespace = class_config.sharedWorkspaceStoreSecretNamespace or namespace
     labels = {
@@ -1738,7 +2583,9 @@ def _ensure_cli_shared_workspace_volume(
             existing = core.read_persistent_volume(name=name)
             phase = getattr(getattr(existing, "status", None), "phase", None)
             if phase in ("Released", "Available"):
-                core.patch_persistent_volume(name=name, body={"spec": {"claimRef": None}})
+                core.patch_persistent_volume(
+                    name=name, body={"spec": {"claimRef": None}}
+                )
         except Exception as patch_exc:
             logger.warning(
                 "cli-shared-workspace pv %s: claimRef clear failed: %s", name, patch_exc
@@ -1809,7 +2656,7 @@ def _seed_clone_cmd() -> str:
         'if [ -d "$S/$f" ]; then mkdir -p "$D/$f"; '
         'for g in $(r "$S/$f"); do skip "$g" && continue; juicefs clone "$S/$f/$g" "$D/$f/$g" || rc=1; done; '
         'else juicefs clone "$S/$f" "$D/$f" || rc=1; fi; '
-        'done; '
+        "done; "
         # `mkdir -p` makes dirs root-owned 0755 and `juicefs clone` doesn't restore the
         # source's mode, so the cloned workspace is read-only to the NON-root sandbox pods
         # (a fresh workspace is 0777) → EACCES on any write (`mkdir /sandbox/work/vid`,
@@ -1836,12 +2683,28 @@ def _ensure_cli_seed_workspace_volume(
     seed_key = (request.seedWorkspaceFrom or "").strip()
     if not seed_key:
         return None
+    preview_storage = _preview_storage_context()
+    if preview_storage is not None:
+        logical_key = _preview_storage_logical_key(seed_key, field="seed workspace key")
+        return _ensure_preview_dynamic_pvc(
+            core,
+            namespace=namespace,
+            context=preview_storage,
+            kind="workspace",
+            logical_key=logical_key,
+            capacity=class_config.sharedWorkspaceStoreCapacity,
+            create=False,
+        )
     name = f"cli-seed-{_safe_name(request.sessionId, max_length=55)}"
     secret_namespace = class_config.sharedWorkspaceStoreSecretNamespace or namespace
     labels = {
         "app": "cli-seed-workspace",
-        "workflow-builder.cnoe.io/session-id": _safe_name(request.sessionId, max_length=63),
-        "workflow-builder.cnoe.io/seed-workspace-key": _safe_name(seed_key, max_length=63),
+        "workflow-builder.cnoe.io/session-id": _safe_name(
+            request.sessionId, max_length=63
+        ),
+        "workflow-builder.cnoe.io/seed-workspace-key": _safe_name(
+            seed_key, max_length=63
+        ),
     }
     pv_body = {
         "apiVersion": "v1",
@@ -1888,11 +2751,15 @@ def _ensure_cli_seed_workspace_volume(
             existing = core.read_persistent_volume(name=name)
             phase = getattr(getattr(existing, "status", None), "phase", None)
             if phase in ("Released", "Available"):
-                core.patch_persistent_volume(name=name, body={"spec": {"claimRef": None}})
+                core.patch_persistent_volume(
+                    name=name, body={"spec": {"claimRef": None}}
+                )
         except Exception as patch_exc:
             logger.warning("cli-seed pv %s claimRef clear failed: %s", name, patch_exc)
     try:
-        core.create_namespaced_persistent_volume_claim(namespace=namespace, body=pvc_body)
+        core.create_namespaced_persistent_volume_claim(
+            namespace=namespace, body=pvc_body
+        )
     except Exception as exc:
         if getattr(exc, "status", None) != 409:
             raise
@@ -1932,7 +2799,9 @@ def _agent_host_cr_owner_matches(
     except Exception as exc:
         logger.warning("agent-host CR %s read failed during 409 check: %s", name, exc)
         return True
-    annotations = ((existing or {}).get("metadata", {}) or {}).get("annotations", {}) or {}
+    annotations = ((existing or {}).get("metadata", {}) or {}).get(
+        "annotations", {}
+    ) or {}
     existing_owner = annotations.get(OWNER_RUN_ID_ANNOTATION)
     if not existing_owner:
         return True
@@ -1973,7 +2842,9 @@ def _delete_agent_host_cr_and_wait(
                 return
         time.sleep(1.0)
     logger.warning(
-        "agent-host CR %s still present after %ss; proceeding to recreate", name, timeout_s
+        "agent-host CR %s still present after %ss; proceeding to recreate",
+        name,
+        timeout_s,
     )
 
 
@@ -2224,6 +3095,7 @@ def build_agent_workflow_host_sandbox_manifest(
                     },
                     "limits": _agent_host_resource_limits(class_config),
                 },
+                "securityContext": _restricted_container_security_context(),
                 "startupProbe": {
                     "httpGet": {"path": "/healthz", "port": 8002},
                     "initialDelaySeconds": 10,
@@ -2297,7 +3169,10 @@ def build_agent_workflow_host_sandbox_manifest(
         pod_spec["containers"][0]["env"].append(
             {"name": "CLI_TRANSCRIPT_MOUNT", "value": mount_path}
         )
-    if _cli_shared_workspace_enabled(class_config) and (request.sharedWorkspaceKey or "").strip():
+    if (
+        _cli_shared_workspace_enabled(class_config)
+        and (request.sharedWorkspaceKey or "").strip()
+    ):
         # Per-EXECUTION shared workspace, mounted at a SUBDIR of /sandbox (the
         # emptyDir provides /sandbox + the CLI's config dirs; this PVC overlays
         # only the build subdir, shared across the workflow's CLI pods). Nested
@@ -2335,8 +3210,13 @@ def build_agent_workflow_host_sandbox_manifest(
                 "command": ["sh", "-c", _seed_copy_cmd("work-not-empty")],
                 "volumeMounts": [
                     {"name": "cli-shared-workspace", "mountPath": "/work"},
-                    {"name": "cli-seed-workspace", "mountPath": "/seed", "readOnly": True},
+                    {
+                        "name": "cli-seed-workspace",
+                        "mountPath": "/seed",
+                        "readOnly": True,
+                    },
                 ],
+                "securityContext": _restricted_container_security_context(),
             }
             pod_spec.setdefault("initContainers", []).insert(0, seed_init)
     for idx, raw_path in enumerate(class_config.localScratchMounts or []):
@@ -2578,7 +3458,9 @@ def _ensure_agent_host_component_scopes(namespace: str, app_id: str) -> None:
     # workflowstatestore is the only actorStateStore=true and stays unscoped.
     # Re-enable only with explicit opt-in (and only if a target is deliberately
     # scoped). Default off.
-    if os.environ.get("SANDBOX_EXECUTION_PATCH_COMPONENT_SCOPES", "false").strip().lower() not in {
+    if os.environ.get(
+        "SANDBOX_EXECUTION_PATCH_COMPONENT_SCOPES", "false"
+    ).strip().lower() not in {
         "1",
         "true",
         "yes",
@@ -3003,7 +3885,9 @@ def build_dev_preview_sandbox_manifest(
     exec_label = _safe_name(request.executionId, max_length=63)
     image = request.image or class_config.serviceImage or DEFAULT_DEV_PREVIEW_IMAGE
     port = request.port or class_config.servicePort or 3000
-    workdir = (request.workdir or class_config.serviceWorkdir or "/app").rstrip("/") or "/app"
+    workdir = (request.workdir or class_config.serviceWorkdir or "/app").rstrip(
+        "/"
+    ) or "/app"
     health_path = request.healthPath or class_config.serviceHealthPath or "/"
     sync_mode = (request.syncMode or "plugin").lower()
     use_sidecar = sync_mode == "sidecar"
@@ -3023,12 +3907,27 @@ def build_dev_preview_sandbox_manifest(
     env: list[dict[str, str]] = [{"name": "NODE_ENV", "value": "development"}]
     if not use_sidecar:
         env.append({"name": "WFB_DEV_SYNC_ENABLED", "value": "true"})
+        env.append({"name": "WFB_DEV_SYNC_SERVICE", "value": service_label})
+        if request.devSyncAllowedRoots:
+            env.append(
+                {
+                    "name": "WFB_DEV_SYNC_ALLOWED_ROOTS_JSON",
+                    "value": json.dumps(sorted(request.devSyncAllowedRoots)),
+                }
+            )
         if not functional:
             env.append(
                 {"name": "WORKFLOW_BUILDER_SKIP_STARTUP_MIGRATIONS", "value": "true"}
             )
         if request.syncToken:
             env.append({"name": "WFB_DEV_SYNC_TOKEN", "value": request.syncToken})
+        if request.syncAgentToken:
+            env.append(
+                {
+                    "name": "WFB_DEV_SYNC_AGENT_TOKEN_SHA256",
+                    "value": sha256(request.syncAgentToken.encode("utf-8")).hexdigest(),
+                }
+            )
     else:
         # #40 app-container exec bridge: the dev images start a tiny /__exec
         # server (127.0.0.1:8002, services/dev-sync-sidecar/exec-bridge.mjs or
@@ -3150,6 +4049,19 @@ def build_dev_preview_sandbox_manifest(
                 "ephemeral-storage": class_config.serviceEphemeralStorage,
             },
         },
+        **(
+            {
+                "securityContext": {
+                    "allowPrivilegeEscalation": False,
+                    "runAsNonRoot": True,
+                    "runAsUser": 1001,
+                    "runAsGroup": 1001,
+                    "capabilities": {"drop": ["ALL"]},
+                }
+            }
+            if request.previewNative
+            else {}
+        ),
         "startupProbe": {
             "httpGet": {"path": health_path, "port": port},
             "initialDelaySeconds": 5,
@@ -3183,7 +4095,9 @@ def build_dev_preview_sandbox_manifest(
         "terminationGracePeriodSeconds": 30,
         "containers": [container],
     }
-    # Pod-level securityContext: explicit class config wins, else default to root
+    # Pod-level securityContext: preview-native code runs on shared dev nodes and
+    # must satisfy their restricted Pod Security boundary. Host throwaway
+    # previews preserve the legacy class behavior.
     # for plain previews (vite/uvicorn/tsx run as the image's root user). For
     # needsDapr we must NOT set a pod-level runAsUser:0 — the Dapr injector gives
     # the daprd native sidecar `runAsNonRoot: true` (no explicit runAsUser), so a
@@ -3191,13 +4105,21 @@ def build_dev_preview_sandbox_manifest(
     # daprd ("runAsUser breaks non-root policy"). Strip runAsUser/runAsGroup for
     # needsDapr (mirrors the working agent-host pods, whose pod securityContext is
     # empty); the dev/seed/sync containers still run as their image's root user.
-    if class_config.podSecurityContext is not None:
+    if request.previewNative:
+        pod_security = {
+            "runAsNonRoot": True,
+            "runAsUser": 1001,
+            "runAsGroup": 1001,
+            "fsGroup": 1001,
+            "seccompProfile": {"type": "RuntimeDefault"},
+        }
+    elif class_config.podSecurityContext is not None:
         pod_security = dict(class_config.podSecurityContext)
     elif not request.needsDapr:
         pod_security = {"runAsUser": 0}
     else:
         pod_security = {}
-    if request.needsDapr:
+    if request.needsDapr and not request.previewNative:
         pod_security.pop("runAsUser", None)
         pod_security.pop("runAsGroup", None)
     if pod_security:
@@ -3226,7 +4148,7 @@ def build_dev_preview_sandbox_manifest(
                     "-c",
                     'set -e; if [ -z "$PREVIEW_SOURCE_DATABASE_URL" ]; then '
                     'echo "no source DB; skipping schema clone"; exit 0; fi; '
-                    'pg_dump --schema-only --no-owner --no-privileges '
+                    "pg_dump --schema-only --no-owner --no-privileges "
                     '"$PREVIEW_SOURCE_DATABASE_URL" | psql -v ON_ERROR_STOP=0 '
                     '"$DATABASE_URL"; echo "schema clone done"',
                 ],
@@ -3245,12 +4167,9 @@ def build_dev_preview_sandbox_manifest(
     # runs from the emptyDir; the dev-sync-sidecar untars /__sync pushes into the
     # SAME emptyDir → the dev server's watcher hot-reloads.
     if use_sidecar:
-        sidecar_image = (
-            class_config.syncSidecarImage
-            or os.environ.get(
-                "DEV_SYNC_SIDECAR_IMAGE",
-                "ghcr.io/pittampalliorg/dev-sync-sidecar:latest",
-            )
+        sidecar_image = class_config.syncSidecarImage or os.environ.get(
+            "DEV_SYNC_SIDECAR_IMAGE",
+            "ghcr.io/pittampalliorg/dev-sync-sidecar:latest",
         )
         pod_spec["volumes"] = [{"name": "dev-workdir", "emptyDir": {}}]
         container.setdefault("volumeMounts", []).append(
@@ -3265,21 +4184,48 @@ def build_dev_preview_sandbox_manifest(
                 # Copy the baked workdir (deps+source) into the emptyDir so the
                 # mount doesn't hide it. cp the contents (incl dotfiles via /.).
                 "args": [
-                    f"cp -a {workdir}/. /seed/ 2>/dev/null || true; "
-                    "echo seeded $(ls /seed | wc -l) entries"
+                    f"cp -R {workdir}/. /seed/; echo seeded $(ls /seed | wc -l) entries"
                 ],
                 "volumeMounts": [{"name": "dev-workdir", "mountPath": "/seed"}],
+                **(
+                    {
+                        "securityContext": {
+                            "allowPrivilegeEscalation": False,
+                            "runAsNonRoot": True,
+                            "runAsUser": 1001,
+                            "runAsGroup": 1001,
+                            "capabilities": {"drop": ["ALL"]},
+                        }
+                    }
+                    if request.previewNative
+                    else {}
+                ),
             }
         )
         sidecar_env = [
             {"name": "DEV_SYNC_PORT", "value": str(sync_port)},
             {"name": "DEV_SYNC_DEST", "value": workdir},
+            {"name": "DEV_SYNC_SERVICE", "value": service_label},
             # #40: where the app container's exec bridge listens (pod-localhost);
             # /__run proxies there first, falling back to local execution.
             {"name": "DEV_SYNC_EXEC_PORT", "value": str(DEV_SYNC_EXEC_BRIDGE_PORT)},
         ]
         if request.syncToken:
             sidecar_env.append({"name": "DEV_SYNC_TOKEN", "value": request.syncToken})
+        if request.syncAgentToken:
+            sidecar_env.append(
+                {
+                    "name": "DEV_SYNC_AGENT_TOKEN_SHA256",
+                    "value": sha256(request.syncAgentToken.encode("utf-8")).hexdigest(),
+                }
+            )
+        if request.devSyncAllowedRoots:
+            sidecar_env.append(
+                {
+                    "name": "DEV_SYNC_ALLOWED_ROOTS_JSON",
+                    "value": json.dumps(sorted(request.devSyncAllowedRoots)),
+                }
+            )
         # /__run allowlist: the named deps/test commands from the dev-preview
         # registry. The sidecar parses this ONCE at boot; only these names run.
         if request.devSyncCommands:
@@ -3301,6 +4247,19 @@ def build_dev_preview_sandbox_manifest(
                     "limits": {"memory": "256Mi"},
                 },
                 "volumeMounts": [{"name": "dev-workdir", "mountPath": workdir}],
+                **(
+                    {
+                        "securityContext": {
+                            "allowPrivilegeEscalation": False,
+                            "runAsNonRoot": True,
+                            "runAsUser": 1001,
+                            "runAsGroup": 1001,
+                            "capabilities": {"drop": ["ALL"]},
+                        }
+                    }
+                    if request.previewNative
+                    else {}
+                ),
                 "readinessProbe": {
                     "httpGet": {"path": "/healthz", "port": sync_port},
                     "periodSeconds": 10,
@@ -3327,7 +4286,7 @@ def build_dev_preview_sandbox_manifest(
     if request.adoptTlsTerminator:
         tls_image = os.environ.get(
             "DEV_PREVIEW_TLS_TERMINATOR_IMAGE",
-            "docker.io/nginxinc/nginx-unprivileged:1.27-alpine",
+            "docker.io/nginxinc/nginx-unprivileged@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0",
         )
         tls_secret = os.environ.get("DEV_PREVIEW_TLS_SECRET", "tailnet-wildcard-tls")
         tls_conf_cm = os.environ.get(
@@ -3354,6 +4313,13 @@ def build_dev_preview_sandbox_manifest(
                 "resources": {
                     "requests": {"cpu": "10m", "memory": "32Mi"},
                     "limits": {"cpu": "200m", "memory": "128Mi"},
+                },
+                "securityContext": {
+                    "allowPrivilegeEscalation": False,
+                    "runAsNonRoot": True,
+                    "runAsUser": 1001,
+                    "runAsGroup": 1001,
+                    "capabilities": {"drop": ["ALL"]},
                 },
             }
         )
@@ -3481,10 +4447,13 @@ def build_dev_preview_sandbox_manifest(
     # Record the adopted Deployment so teardown can restore it without the caller
     # re-supplying it (teardown only receives the Sandbox name).
     if request.previewNative and request.adoptDeployment:
+        deployment_name = _safe_resource_name(request.adoptDeployment)
         cr_metadata["annotations"] = {
-            "wfb-dev-preview/adopt-deployment": _safe_resource_name(
-                request.adoptDeployment
-            )
+            DEV_PREVIEW_ADOPT_DEPLOYMENT_ANNOTATION: deployment_name,
+            DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION: _adopt_lease_holder(
+                request.executionId, request.service
+            ),
+            "wfb-dev-preview/adopt-lease": _adopt_lease_name(deployment_name),
         }
     return {
         "apiVersion": "agents.x-k8s.io/v1alpha1",
@@ -3562,10 +4531,11 @@ def _delete_dev_preview_cr_and_wait(
                 return
         time.sleep(1.0)
     logger.warning(
-        "dev-preview CR %s still present after %ss; proceeding to recreate",
+        "dev-preview CR %s still present after %ss",
         name,
         timeout_s,
     )
+    raise RuntimeError(f"dev-preview CR {name} deletion was not observed")
 
 
 def _wait_for_dev_preview_ready(
@@ -3635,6 +4605,33 @@ def _wait_for_dev_preview_ready(
             detail=f"dev-preview {execution_id} not ready: {last_failure}",
         )
     return "queued", _pod_ip()
+
+
+def _ready_dev_preview_pod(
+    core: Any,
+    *,
+    namespace: str,
+    execution_id: str,
+    service: str | None,
+    pod_ip: str | None,
+) -> Any | None:
+    selector = (
+        f"workflow-execution-id={_safe_name(execution_id, max_length=63)},"
+        f"dev-preview-service={_dev_preview_service_label(service)}"
+    )
+    pods = core.list_namespaced_pod(namespace=namespace, label_selector=selector).items
+    return next(
+        (
+            pod
+            for pod in pods
+            if _pod_is_ready(pod)
+            and (
+                pod_ip is None
+                or getattr(getattr(pod, "status", None), "pod_ip", None) == pod_ip
+            )
+        ),
+        None,
+    )
 
 
 @app.post("/api/v1/agent-workflow-hosts", status_code=status.HTTP_202_ACCEPTED)
@@ -3708,7 +4705,9 @@ def submit_agent_workflow_host(
             # name was reused -- delete it and recreate so the new run gets a
             # clean sandbox instead of inheriting the prior pod's state.
             want_owner = _agent_host_owner_run_id(body)
-            if _agent_host_cr_owner_matches(custom, namespace, sandbox_name, want_owner):
+            if _agent_host_cr_owner_matches(
+                custom, namespace, sandbox_name, want_owner
+            ):
                 logger.info(
                     "agent-host CR %s already exists for the same run (%s); adopting",
                     sandbox_name,
@@ -3830,6 +4829,15 @@ def submit_agent_workflow_host(
 def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str, Any]:
     _require_internal(request)
     set_current_span_io("input", body.model_dump())
+    # This field is controller-owned. Never accept caller-provided valueFrom refs.
+    body.adoptInheritedEnv = None
+    if body.previewNative and (
+        os.environ.get("DEV_PREVIEW_PLATFORM_SCOPE", "").strip().lower() != "vcluster"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="previewNative dev adoption is allowed only inside a vCluster",
+        )
     # Preview-native runs REAL app-ids inside a Tier-2 vcluster (the vcluster IS the
     # isolation boundary). The Dapr-shadow defaults (PUBSUB_NAME=pubsub-dev,
     # DAPR_CONFIG_STORE=disabled-dev) are a HOST-only hack; injected here they point
@@ -3911,7 +4919,9 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
             # SA (RBAC-bound for daprd) + Dapr config the prod BFF used, and the
             # prod app-id.
             identity = _adopt_read_identity(
-                apps, namespace=namespace, name=_safe_resource_name(body.adoptDeployment)
+                apps,
+                namespace=namespace,
+                name=_safe_resource_name(body.adoptDeployment),
             )
             if identity:
                 if identity.get("serviceAccountName") and not body.daprServiceAccount:
@@ -3923,7 +4933,7 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
                 # Inherit the prod container's inline env so the adopted BFF can
                 # dispatch CLI agent sandboxes (CLI app-ids/images + DAPR_* knobs);
                 # the dev-specific env (NODE_ENV=development, WFB_DEV_SYNC*) overrides.
-                if identity.get("containerEnv") and not body.adoptInheritedEnv:
+                if identity.get("containerEnv"):
                     body.adoptInheritedEnv = identity["containerEnv"]
         manifest = build_dev_preview_sandbox_manifest(
             body,
@@ -3931,9 +4941,22 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
             class_config=class_config,
             adopt_selector=adopt_selector,
         )
-        if preview_secret_name:
-            _ensure_dev_preview_secret(core, body, namespace=namespace)
+        adoption_coordination: Any | None = None
+        adoption_holder: str | None = None
+        adoption_deployment: str | None = None
+        if body.previewNative and body.adoptDeployment:
+            adoption_deployment = _safe_resource_name(body.adoptDeployment)
+            adoption_coordination = _load_k8s_coordination_client()
+            adoption_holder = _acquire_dev_preview_adoption_lease(
+                adoption_coordination,
+                namespace=namespace,
+                deployment=adoption_deployment,
+                execution_id=body.executionId,
+                service=body.service,
+            )
         try:
+            if preview_secret_name:
+                _ensure_dev_preview_secret(core, body, namespace=namespace)
             custom.create_namespaced_custom_object(
                 group="agents.x-k8s.io",
                 version="v1alpha1",
@@ -3942,68 +4965,170 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
                 body=manifest,
             )
         except Exception as exc:
-            if getattr(exc, "status", None) != 409:
+            try:
+                if getattr(exc, "status", None) != 409:
+                    raise
+                if adoption_holder is not None:
+                    existing_holder = _dev_preview_cr_adoption_holder(
+                        custom, namespace, sandbox_name
+                    )
+                    if existing_holder != adoption_holder:
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="existing dev preview does not own the adoption Lease",
+                        )
+                # Deterministic per-execution name already exists. Adopt it only when its
+                # dev image MATCHES the manifest we just built; otherwise the existing
+                # preview is stale (image drift on a re-provision), so delete + recreate.
+                requested_image = _dev_preview_manifest_image(manifest)
+                existing_image = _dev_preview_cr_image(custom, namespace, sandbox_name)
+                if (
+                    requested_image
+                    and existing_image
+                    and existing_image != requested_image
+                ):
+                    if adoption_deployment == "workflow-builder":
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail=(
+                                "adopted workflow-builder image replacement is not "
+                                "synchronous; launch a fresh acceptance preview"
+                            ),
+                        )
+                    logger.warning(
+                        "dev-preview image drift: existing=%s requested=%s; recreating %s",
+                        existing_image,
+                        requested_image,
+                        sandbox_name,
+                    )
+                    _delete_dev_preview_cr_and_wait(custom, namespace, sandbox_name)
+                    custom.create_namespaced_custom_object(
+                        group="agents.x-k8s.io",
+                        version="v1alpha1",
+                        namespace=namespace,
+                        plural="sandboxes",
+                        body=manifest,
+                    )
+                else:
+                    # Same image (or an unreadable existing CR) → idempotent adopt (same
+                    # run re-requesting its own preview).
+                    logger.info(
+                        "dev-preview CR %s already exists; adopting", sandbox_name
+                    )
+            except Exception:
+                if adoption_holder and adoption_coordination and adoption_deployment:
+                    try:
+                        observed_holder = _dev_preview_cr_adoption_holder(
+                            custom, namespace, sandbox_name
+                        )
+                    except Exception:
+                        # Ambiguous API state: retain the Lease. Periodic cleanup will
+                        # release it only after the claim is definitively absent.
+                        observed_holder = adoption_holder
+                    if observed_holder is None:
+                        _delete_dev_preview_adoption_lease(
+                            adoption_coordination,
+                            namespace=namespace,
+                            deployment=adoption_deployment,
+                            holder=adoption_holder,
+                        )
                 raise
-            # Deterministic per-execution name already exists. Adopt it only when its
-            # dev image MATCHES the manifest we just built; otherwise the existing
-            # preview is stale (image drift on a re-provision), so delete + recreate.
-            requested_image = _dev_preview_manifest_image(manifest)
-            existing_image = _dev_preview_cr_image(custom, namespace, sandbox_name)
-            if (
-                requested_image
-                and existing_image
-                and existing_image != requested_image
-            ):
-                logger.warning(
-                    "dev-preview image drift: existing=%s requested=%s; recreating %s",
-                    existing_image,
-                    requested_image,
-                    sandbox_name,
-                )
-                _delete_dev_preview_cr_and_wait(custom, namespace, sandbox_name)
-                custom.create_namespaced_custom_object(
-                    group="agents.x-k8s.io",
-                    version="v1alpha1",
+        try:
+            readiness_status, pod_ip = _wait_for_dev_preview_ready(
+                core,
+                namespace=namespace,
+                execution_id=body.executionId,
+                wait_seconds=body.waitReadySeconds,
+                service=body.service,
+                failure_probe=lambda: _sandbox_failure_reason(
+                    custom, namespace=namespace, sandbox_name=sandbox_name
+                ),
+            )
+            if body.previewNative and body.adoptDeployment:
+                if readiness_status != "ready" or not pod_ip:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=(
+                            f"adopted dev-preview {body.executionId}/{body.service or 'workflow-builder'} "
+                            "did not become ready; the Sandbox was removed without cutover"
+                        ),
+                    )
+                ready_pod = _ready_dev_preview_pod(
+                    core,
                     namespace=namespace,
-                    plural="sandboxes",
-                    body=manifest,
+                    execution_id=body.executionId,
+                    service=body.service,
+                    pod_ip=pod_ip,
                 )
-            else:
-                # Same image (or an unreadable existing CR) → idempotent adopt (same
-                # run re-requesting its own preview).
-                logger.info(
-                    "dev-preview CR %s already exists; adopting", sandbox_name
-                )
-        # Preview-native: DEFER the prod Deployment scale-to-0 to a background thread
-        # that waits for the dev pod to be Ready (+grace) then scales. Doing it now
-        # would kill the BFF pod serving this very request (the BFF adopts its own
-        # Service) → 502. Started right after CR creation so it races the readiness
-        # wait below but only scales once the dev pod can take over (no downtime).
-        if body.previewNative and body.adoptDeployment:
-            import threading
+                if ready_pod is None or (
+                    body.needsDapr and not _dev_pod_has_daprd(ready_pod)
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=(
+                            f"adopted dev-preview {body.executionId}/{body.service or 'workflow-builder'} "
+                            "did not satisfy the complete readiness contract; the Sandbox was removed without cutover"
+                        ),
+                    )
+                # Only the workflow-builder cutover can terminate the BFF serving
+                # this request. Peer Deployments are scaled synchronously so the
+                # batch coordinator never receives success for a merely scheduled
+                # cutover that can race compensating teardown.
+                if adoption_deployment != "workflow-builder":
+                    _adopt_scale_deployment_down(
+                        apps,
+                        namespace=namespace,
+                        name=adoption_deployment,
+                    )
+        except Exception as readiness_error:
+            if body.previewNative and body.adoptDeployment:
+                try:
+                    context = _dev_preview_teardown_context(
+                        custom, namespace=namespace, sandbox_name=sandbox_name
+                    )
+                    _teardown_dev_preview_resources(
+                        namespace=namespace,
+                        sandbox_name=sandbox_name,
+                        context=context,
+                    )
+                except Exception as cleanup_error:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=(
+                            "adopted dev-preview readiness failed and compensating "
+                            "teardown could not be proven"
+                        ),
+                    ) from cleanup_error
+            if isinstance(readiness_error, HTTPException):
+                raise readiness_error
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="dev-preview readiness check failed before cutover",
+            ) from readiness_error
 
+        # Start cutover only after the synchronous request has proved the exact dev
+        # pod Ready (and daprd-present when required). A queued/timed-out request can
+        # therefore never cut production over minutes after its caller saw failure.
+        if (
+            body.previewNative
+            and adoption_deployment == "workflow-builder"
+            and adoption_holder is not None
+        ):
             threading.Thread(
                 target=_adopt_deferred_scale_down,
                 kwargs={
                     "namespace": namespace,
-                    "deployment": _safe_resource_name(body.adoptDeployment),
+                    "deployment": adoption_deployment,
                     "execution_id": body.executionId,
+                    "sandbox_name": sandbox_name,
+                    "holder": adoption_holder,
                     "wait_seconds": body.waitReadySeconds,
                     "service": body.service,
                     "needs_dapr": body.needsDapr,
                 },
                 daemon=True,
+                name=f"dev-preview-cutover-{sandbox_name}",
             ).start()
-        readiness_status, pod_ip = _wait_for_dev_preview_ready(
-            core,
-            namespace=namespace,
-            execution_id=body.executionId,
-            wait_seconds=body.waitReadySeconds,
-            service=body.service,
-            failure_probe=lambda: _sandbox_failure_reason(
-                custom, namespace=namespace, sandbox_name=sandbox_name
-            ),
-        )
     port = body.port or class_config.servicePort or 3000
     use_sidecar = (body.syncMode or "plugin").lower() == "sidecar"
     sync_port = body.syncPort or (8001 if use_sidecar else port)
@@ -4029,77 +5154,174 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
     return response
 
 
+def _dev_preview_teardown_context(
+    custom: Any, *, namespace: str, sandbox_name: str
+) -> dict[str, str | None]:
+    try:
+        cr = custom.get_namespaced_custom_object(
+            group="agents.x-k8s.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="sandboxes",
+            name=sandbox_name,
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            return {
+                "execution": None,
+                "service": None,
+                "deployment": None,
+                "holder": None,
+            }
+        raise
+    metadata = (cr.get("metadata", {}) or {}) if isinstance(cr, dict) else {}
+    labels = metadata.get("labels", {}) or {}
+    annotations = metadata.get("annotations", {}) or {}
+    return {
+        "execution": labels.get("workflow-execution-id"),
+        "service": labels.get("dev-preview-service"),
+        "deployment": annotations.get(DEV_PREVIEW_ADOPT_DEPLOYMENT_ANNOTATION),
+        "holder": annotations.get(DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION),
+    }
+
+
+def _teardown_dev_preview_resources(
+    *,
+    namespace: str,
+    sandbox_name: str,
+    context: dict[str, str | None],
+) -> None:
+    custom = _load_k8s_custom_objects_client()
+    execution = context.get("execution")
+    service = context.get("service")
+    deployment = context.get("deployment")
+    holder = context.get("holder")
+
+    # Preserve the Sandbox CR (and therefore its exact ownership tuple) until
+    # restoration and Lease release both succeed. Deleting it first turns a
+    # transient restore error into an ambiguous orphan with no retry context.
+    if deployment:
+        _adopt_restore_deployment(
+            _load_k8s_apps_client(), namespace=namespace, name=deployment
+        )
+        if holder:
+            coordination = _load_k8s_coordination_client()
+            if not _delete_dev_preview_adoption_lease(
+                coordination,
+                namespace=namespace,
+                deployment=deployment,
+                holder=holder,
+            ):
+                raise RuntimeError(
+                    f"adoption Lease release was not proven for {deployment}"
+                )
+
+    _delete_dev_preview_cr_and_wait(custom, namespace, sandbox_name)
+
+    if execution:
+        try:
+            _, core = _load_k8s_clients()
+            secret_selector = f"app=wfb-dev-preview,workflow-execution-id={execution}"
+            if service:
+                secret_selector += f",dev-preview-service={service}"
+            core.delete_collection_namespaced_secret(
+                namespace=namespace,
+                label_selector=secret_selector,
+            )
+        except Exception as exc:
+            logger.info("dev-preview secret cleanup skipped: %s", exc)
+
+    coordination: Any | None = None
+    try:
+        coordination = _load_k8s_coordination_client()
+    except Exception as exc:
+        logger.warning(
+            "adopt: coordination client unavailable during orphan sweep: %s", exc
+        )
+    try:
+        _adopt_restore_orphans(
+            _load_k8s_apps_client(),
+            custom,
+            namespace=namespace,
+            coordination=coordination,
+        )
+    except Exception as exc:
+        logger.warning("adopt: orphan sweep failed: %s", exc)
+
+
+def _deferred_dev_preview_teardown(
+    *,
+    namespace: str,
+    sandbox_name: str,
+    context: dict[str, str | None],
+) -> None:
+    delay = _env_int("DEV_PREVIEW_SELF_TEARDOWN_DELAY_SECONDS", 15, minimum=1)
+    time.sleep(delay)
+    try:
+        _teardown_dev_preview_resources(
+            namespace=namespace,
+            sandbox_name=sandbox_name,
+            context=context,
+        )
+    except Exception as exc:
+        logger.warning(
+            "dev-preview deferred teardown failed for %s: %s", sandbox_name, exc
+        )
+
+
 @app.delete("/internal/dev-preview/{name}")
 def teardown_dev_preview(request: Request, name: str) -> dict[str, Any]:
     _require_internal(request)
     namespace = _agent_workflow_host_namespace()
     safe_name = _safe_resource_name(name, max_length=63)
-    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
         "1",
         "true",
         "yes",
     }:
-        custom = _load_k8s_custom_objects_client()
-        # Clean up the per-preview Secret (labeled by exec id on the CR) before
-        # removing the Sandbox. Best-effort; the GC reaper is the backstop. Also
-        # capture the adopted Deployment (preview-native mode) so we restore it
-        # AFTER the dev pod is gone (avoids two pods sharing one Dapr app-id).
-        adopt_deployment: str | None = None
-        try:
-            _, core = _load_k8s_clients()
-            cr = custom.get_namespaced_custom_object(
-                group="agents.x-k8s.io",
-                version="v1alpha1",
-                namespace=namespace,
-                plural="sandboxes",
-                name=safe_name,
-            )
-            cr_metadata = (cr.get("metadata", {}) or {}) if cr else {}
-            cr_labels = cr_metadata.get("labels", {}) or {}
-            exec_label = cr_labels.get("workflow-execution-id")
-            service_label = cr_labels.get("dev-preview-service")
-            adopt_deployment = (cr_metadata.get("annotations", {}) or {}).get(
-                "wfb-dev-preview/adopt-deployment"
-            )
-            if exec_label:
-                # Scope the secret cleanup to THIS service so tearing down one dev
-                # pod doesn't delete a sibling service's per-preview Secret sharing the
-                # execution id. Old CRs predate the label → fall back to the
-                # exec-only selector (single-service, so nothing else to protect).
-                secret_selector = (
-                    f"app=wfb-dev-preview,workflow-execution-id={exec_label}"
-                )
-                if service_label:
-                    secret_selector += f",dev-preview-service={service_label}"
-                core.delete_collection_namespaced_secret(
-                    namespace=namespace,
-                    label_selector=secret_selector,
-                )
-        except Exception as exc:
-            logger.info("dev-preview secret cleanup skipped: %s", exc)
-        _delete_agent_host_cr_and_wait(custom, namespace, safe_name)
-        # Preview-native adopt: the dev pod is gone → restore the prod Deployment to
-        # its original replica count (it reclaims the Service + its Dapr app-id).
-        if adopt_deployment:
-            try:
-                apps = _load_k8s_apps_client()
-                _adopt_restore_deployment(
-                    apps, namespace=namespace, name=adopt_deployment
-                )
-            except Exception as exc:
-                logger.warning(
-                    "adopt: failed restoring deployment %s: %s", adopt_deployment, exc
-                )
-        # B5: opportunistic orphan sweep — the CR just deleted can no longer claim
-        # its Deployment, and any Deployment stranded at 0 replicas by an earlier
-        # SEA restart gets restored here too. Never fails the teardown.
-        try:
-            _adopt_restore_orphans(
-                _load_k8s_apps_client(), custom, namespace=namespace
-            )
-        except Exception as exc:
-            logger.warning("adopt: orphan sweep failed: %s", exc)
-    return {"sandboxName": safe_name, "deleted": True}
+        return {"sandboxName": safe_name, "deleted": True, "deferred": False}
+    custom = _load_k8s_custom_objects_client()
+    try:
+        context = _dev_preview_teardown_context(
+            custom, namespace=namespace, sandbox_name=safe_name
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="could not establish dev-preview teardown ownership",
+        ) from exc
+    self_adopt = (
+        context.get("service") == "workflow-builder"
+        and context.get("deployment") == "workflow-builder"
+    )
+    if self_adopt:
+        threading.Thread(
+            target=_deferred_dev_preview_teardown,
+            kwargs={
+                "namespace": namespace,
+                "sandbox_name": safe_name,
+                "context": context,
+            },
+            daemon=True,
+            name=f"dev-preview-teardown-{safe_name}",
+        ).start()
+        return {
+            "sandboxName": safe_name,
+            "accepted": True,
+            "deleted": False,
+            "deferred": True,
+        }
+    _teardown_dev_preview_resources(
+        namespace=namespace,
+        sandbox_name=safe_name,
+        context=context,
+    )
+    return {
+        "sandboxName": safe_name,
+        "accepted": True,
+        "deleted": True,
+        "deferred": False,
+    }
 
 
 @app.post("/internal/dev-preview/restore-orphans")
@@ -4121,6 +5343,7 @@ def restore_dev_preview_orphans(request: Request) -> dict[str, Any]:
         _load_k8s_apps_client(),
         _load_k8s_custom_objects_client(),
         namespace=namespace,
+        coordination=_load_k8s_coordination_client(),
     )
 
 
@@ -4169,8 +5392,10 @@ def list_dev_previews(request: Request, executionId: str) -> dict[str, Any]:
                 label_selector=selector,
             ).get("items", [])
         except Exception as exc:
-            logger.warning("dev-previews: sandbox list failed: %s", exc)
-            crs = []
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="dev-preview Sandbox inventory could not be established",
+            ) from exc
         for cr in crs:
             meta = cr.get("metadata", {}) or {}
             labels = meta.get("labels", {}) or {}
@@ -4191,7 +5416,7 @@ def list_dev_previews(request: Request, executionId: str) -> dict[str, Any]:
                     ),
                 }
             )
-    return {"executionId": executionId, "services": services}
+    return {"executionId": executionId, "complete": True, "services": services}
 
 
 class PurgeWorkspaceDataRequest(BaseModel):
@@ -4212,6 +5437,29 @@ def _resolve_juicefs_class(execution_class: str | None) -> ExecutionClassConfig 
         if cfg.sharedWorkspaceStoreCsiDriver:
             return cfg
     return None
+
+
+def _dev_preview_cr_adoption_holder(
+    custom: Any, namespace: str, name: str
+) -> str | None:
+    """Read the exact adoption holder, distinguishing absence from API ambiguity."""
+    try:
+        existing = custom.get_namespaced_custom_object(
+            group="agents.x-k8s.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="sandboxes",
+            name=name,
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            return None
+        raise
+    annotations = ((existing or {}).get("metadata", {}) or {}).get(
+        "annotations", {}
+    ) or {}
+    value = annotations.get(DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION)
+    return value if isinstance(value, str) and value else ""
 
 
 @app.post("/internal/workspace/purge-data", status_code=status.HTTP_202_ACCEPTED)
@@ -4237,6 +5485,89 @@ def purge_workspace_data(
         )
 
     namespace = _agent_workflow_host_namespace()
+    preview_storage = _preview_storage_context()
+    if preview_storage is not None:
+        logical_key = _preview_storage_logical_key(
+            shared_key, field="workspaceExecutionId"
+        )
+        pvc_name = _preview_storage_pvc_name("workspace", logical_key)
+        job_name = (
+            f"wspurge-{sha256(logical_key.encode()).hexdigest()[:16]}-{uuid4().hex[:6]}"
+        )
+        mount_path = class_config.sharedWorkspaceStoreMountPath or "/sandbox/work"
+        purge_cmd = (
+            f"find {mount_path} -mindepth 1 -delete 2>/dev/null; "
+            f"rm -rf {mount_path}/* {mount_path}/.[!.]* 2>/dev/null; echo purged; true"
+        )
+        job_body = {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": {
+                "name": job_name,
+                "namespace": namespace,
+                "labels": {
+                    "app": "workspace-purge",
+                    "preview.stacks.io/storage-scope": preview_storage.scope_id,
+                },
+            },
+            "spec": {
+                "backoffLimit": 1,
+                "ttlSecondsAfterFinished": 600,
+                "template": {
+                    "metadata": {
+                        "labels": {
+                            "app": "workspace-purge",
+                            "preview.stacks.io/storage-scope": preview_storage.scope_id,
+                        }
+                    },
+                    "spec": {
+                        "restartPolicy": "Never",
+                        "containers": [
+                            {
+                                "name": "purge",
+                                "image": "busybox:1.36",
+                                "command": ["sh", "-c", purge_cmd],
+                                "volumeMounts": [
+                                    {"name": "work", "mountPath": mount_path}
+                                ],
+                            }
+                        ],
+                        "volumes": [
+                            {
+                                "name": "work",
+                                "persistentVolumeClaim": {"claimName": pvc_name},
+                            }
+                        ],
+                    },
+                },
+            },
+        }
+        if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            return {"dryRun": True, "job": job_name}
+        batch, core = _load_k8s_clients()
+        try:
+            _ensure_preview_dynamic_pvc(
+                core,
+                namespace=namespace,
+                context=preview_storage,
+                kind="workspace",
+                logical_key=logical_key,
+                capacity=class_config.sharedWorkspaceStoreCapacity,
+                create=False,
+            )
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_409_CONFLICT and "does not exist" in str(
+                exc.detail
+            ):
+                return {"success": True, "skipped": "workspace_absent"}
+            raise
+        batch.create_namespaced_job(namespace=namespace, body=job_body)
+        return {"success": True, "job": job_name}
+
     secret_namespace = class_config.sharedWorkspaceStoreSecretNamespace or namespace
     mount_path = class_config.sharedWorkspaceStoreMountPath or "/sandbox/work"
     # Hash the (long) workspace key into resource names so the Job + its auto-injected
@@ -4326,11 +5657,15 @@ def purge_workspace_data(
             existing = core.read_persistent_volume(name=name)
             phase = getattr(getattr(existing, "status", None), "phase", None)
             if phase in ("Released", "Available"):
-                core.patch_persistent_volume(name=name, body={"spec": {"claimRef": None}})
+                core.patch_persistent_volume(
+                    name=name, body={"spec": {"claimRef": None}}
+                )
         except Exception as patch_exc:
             logger.warning("wspurge pv %s claimRef clear failed: %s", name, patch_exc)
     try:
-        core.create_namespaced_persistent_volume_claim(namespace=namespace, body=pvc_body)
+        core.create_namespaced_persistent_volume_claim(
+            namespace=namespace, body=pvc_body
+        )
     except Exception as exc:
         if getattr(exc, "status", None) != 409:
             raise
@@ -4348,6 +5683,11 @@ def _ensure_temp_subpath_pv(
 ) -> None:
     """Create a temp static PV+PVC (RWX, Retain) bound to one JuiceFS subPath, reusing
     the shared-workspace CSI shape. Idempotent (409 = present; clears released claimRef)."""
+    if _preview_storage_context() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="preview storage forbids static subPath PVs",
+        )
     secret_namespace = class_config.sharedWorkspaceStoreSecretNamespace or namespace
     pv_body = {
         "apiVersion": "v1",
@@ -4379,12 +5719,18 @@ def _ensure_temp_subpath_pv(
     pvc_body = {
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
-        "metadata": {"name": name, "namespace": namespace, "labels": {"app": "workspace-seed"}},
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "labels": {"app": "workspace-seed"},
+        },
         "spec": {
             "accessModes": ["ReadWriteMany"],
             "storageClassName": "",
             "volumeName": name,
-            "resources": {"requests": {"storage": class_config.sharedWorkspaceStoreCapacity}},
+            "resources": {
+                "requests": {"storage": class_config.sharedWorkspaceStoreCapacity}
+            },
         },
     }
     try:
@@ -4396,11 +5742,15 @@ def _ensure_temp_subpath_pv(
             existing = core.read_persistent_volume(name=name)
             phase = getattr(getattr(existing, "status", None), "phase", None)
             if phase in ("Released", "Available"):
-                core.patch_persistent_volume(name=name, body={"spec": {"claimRef": None}})
+                core.patch_persistent_volume(
+                    name=name, body={"spec": {"claimRef": None}}
+                )
         except Exception as patch_exc:
             logger.warning("wsseed pv %s claimRef clear failed: %s", name, patch_exc)
     try:
-        core.create_namespaced_persistent_volume_claim(namespace=namespace, body=pvc_body)
+        core.create_namespaced_persistent_volume_claim(
+            namespace=namespace, body=pvc_body
+        )
     except Exception as exc:
         if getattr(exc, "status", None) != 409:
             raise
@@ -4417,6 +5767,11 @@ def _ensure_root_pv(
     pod can see ALL run subPaths at once — required for `juicefs clone` (source + dest
     must live under ONE mount). Reused across clone Jobs (idempotent). Blast radius: the
     clone Job sees every workspace, acceptable for a short-lived internal-only Job."""
+    if _preview_storage_context() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="preview storage forbids root volume mounts",
+        )
     secret_namespace = class_config.sharedWorkspaceStoreSecretNamespace or namespace
     pv_body = {
         "apiVersion": "v1",
@@ -4445,12 +5800,18 @@ def _ensure_root_pv(
     pvc_body = {
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
-        "metadata": {"name": name, "namespace": namespace, "labels": {"app": "workspace-seed"}},
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "labels": {"app": "workspace-seed"},
+        },
         "spec": {
             "accessModes": ["ReadWriteMany"],
             "storageClassName": "",
             "volumeName": name,
-            "resources": {"requests": {"storage": class_config.sharedWorkspaceStoreCapacity}},
+            "resources": {
+                "requests": {"storage": class_config.sharedWorkspaceStoreCapacity}
+            },
         },
     }
     try:
@@ -4462,11 +5823,17 @@ def _ensure_root_pv(
             existing = core.read_persistent_volume(name=name)
             phase = getattr(getattr(existing, "status", None), "phase", None)
             if phase in ("Released", "Available"):
-                core.patch_persistent_volume(name=name, body={"spec": {"claimRef": None}})
+                core.patch_persistent_volume(
+                    name=name, body={"spec": {"claimRef": None}}
+                )
         except Exception as patch_exc:
-            logger.warning("wsseed root pv %s claimRef clear failed: %s", name, patch_exc)
+            logger.warning(
+                "wsseed root pv %s claimRef clear failed: %s", name, patch_exc
+            )
     try:
-        core.create_namespaced_persistent_volume_claim(namespace=namespace, body=pvc_body)
+        core.create_namespaced_persistent_volume_claim(
+            namespace=namespace, body=pvc_body
+        )
     except Exception as exc:
         if getattr(exc, "status", None) != 409:
             raise
@@ -4509,13 +5876,120 @@ def seed_workspace_data(
         )
 
     namespace = _agent_workflow_host_namespace()
+    preview_storage = _preview_storage_context()
+    if preview_storage is not None:
+        dest_key = _preview_storage_logical_key(dest, field="workspaceExecutionId")
+        source_key = _preview_storage_logical_key(src, field="seedWorkspaceFrom")
+        source_pvc = _preview_storage_pvc_name("workspace", source_key)
+        dest_pvc = _preview_storage_pvc_name("workspace", dest_key)
+        job_name = (
+            f"wsseed-{sha256(dest_key.encode()).hexdigest()[:12]}-{uuid4().hex[:6]}"
+        )
+        job_body = {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": {
+                "name": job_name,
+                "namespace": namespace,
+                "labels": {
+                    "app": "workspace-seed",
+                    "preview.stacks.io/storage-scope": preview_storage.scope_id,
+                },
+            },
+            "spec": {
+                "backoffLimit": 1,
+                "ttlSecondsAfterFinished": 600,
+                "template": {
+                    "metadata": {
+                        "labels": {
+                            "app": "workspace-seed",
+                            "preview.stacks.io/storage-scope": preview_storage.scope_id,
+                        }
+                    },
+                    "spec": {
+                        "restartPolicy": "Never",
+                        "containers": [
+                            {
+                                "name": "seed",
+                                "image": "busybox:1.36",
+                                "command": [
+                                    "sh",
+                                    "-c",
+                                    _seed_copy_cmd("already-populated"),
+                                ],
+                                "volumeMounts": [
+                                    {
+                                        "name": "seed",
+                                        "mountPath": "/seed",
+                                        "readOnly": True,
+                                    },
+                                    {"name": "work", "mountPath": "/work"},
+                                ],
+                            }
+                        ],
+                        "volumes": [
+                            {
+                                "name": "seed",
+                                "persistentVolumeClaim": {
+                                    "claimName": source_pvc,
+                                    "readOnly": True,
+                                },
+                            },
+                            {
+                                "name": "work",
+                                "persistentVolumeClaim": {"claimName": dest_pvc},
+                            },
+                        ],
+                    },
+                },
+            },
+        }
+        if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            return {"dryRun": True, "job": job_name}
+        batch, core = _load_k8s_clients()
+        _ensure_preview_dynamic_pvc(
+            core,
+            namespace=namespace,
+            context=preview_storage,
+            kind="workspace",
+            logical_key=source_key,
+            capacity=class_config.sharedWorkspaceStoreCapacity,
+            create=False,
+        )
+        _ensure_preview_dynamic_pvc(
+            core,
+            namespace=namespace,
+            context=preview_storage,
+            kind="workspace",
+            logical_key=dest_key,
+            capacity=class_config.sharedWorkspaceStoreCapacity,
+        )
+        batch.create_namespaced_job(namespace=namespace, body=job_body)
+        return {
+            "success": True,
+            "job": job_name,
+            "namespace": namespace,
+            "status": "running",
+            "done": False,
+        }
+
     root_pvc = "wsseed-root"
     job_name = f"wsseed-{sha256(dest.encode()).hexdigest()[:12]}-{uuid4().hex[:6]}"
-    seed_image = os.environ.get("WORKSPACE_SEED_JUICEFS_IMAGE", "juicedata/mount:ce-v1.3.1")
+    seed_image = os.environ.get(
+        "WORKSPACE_SEED_JUICEFS_IMAGE", "juicedata/mount:ce-v1.3.1"
+    )
     job_body = {
         "apiVersion": "batch/v1",
         "kind": "Job",
-        "metadata": {"name": job_name, "namespace": namespace, "labels": {"app": "workspace-seed"}},
+        "metadata": {
+            "name": job_name,
+            "namespace": namespace,
+            "labels": {"app": "workspace-seed"},
+        },
         "spec": {
             "backoffLimit": 1,
             "ttlSecondsAfterFinished": 600,
@@ -4536,7 +6010,10 @@ def seed_workspace_data(
                         }
                     ],
                     "volumes": [
-                        {"name": "root", "persistentVolumeClaim": {"claimName": root_pvc}},
+                        {
+                            "name": "root",
+                            "persistentVolumeClaim": {"claimName": root_pvc},
+                        },
                     ],
                 },
             },
@@ -4549,7 +6026,13 @@ def seed_workspace_data(
     batch, core = _load_k8s_clients()
     _ensure_root_pv(core, name=root_pvc, class_config=class_config, namespace=namespace)
     batch.create_namespaced_job(namespace=namespace, body=job_body)
-    return {"success": True, "job": job_name, "namespace": namespace, "status": "running", "done": False}
+    return {
+        "success": True,
+        "job": job_name,
+        "namespace": namespace,
+        "status": "running",
+        "done": False,
+    }
 
 
 class SeedWorkspaceStatusRequest(BaseModel):
@@ -4567,13 +6050,23 @@ def seed_workspace_data_status(
     if not job_name:
         raise HTTPException(status_code=400, detail="job required")
     namespace = (body.namespace or "").strip() or _agent_workflow_host_namespace()
+    if (
+        _preview_storage_context() is not None
+        and namespace != _agent_workflow_host_namespace()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="preview seed status cannot target another namespace",
+        )
     batch, _core = _load_k8s_clients()
     try:
         st = batch.read_namespaced_job_status(name=job_name, namespace=namespace).status
     except Exception as exc:
         if getattr(exc, "status", None) == 404:
             # TTL-reaped after success, or never created — treat as not-found.
-            raise HTTPException(status_code=404, detail=f"seed job {job_name} not found")
+            raise HTTPException(
+                status_code=404, detail=f"seed job {job_name} not found"
+            )
         raise
     succeeded = bool(getattr(st, "succeeded", None))
     failed = bool(getattr(st, "failed", None))
@@ -4587,12 +6080,12 @@ def seed_workspace_data_status(
 
 
 # ---------------------------------------------------------------------------
-# Tier-2 full-isolation previews (vcluster). The BFF (unprivileged) asks this
-# privileged service to create a Job that runs /config/runner.sh as the
-# cluster-admin `vcluster-preview-provisioner` SA: vcluster create + Dapr +
-# agent-sandbox + app-stack deploy + tailnet exposure (ACTION=up), or teardown
-# (ACTION=down). The runner blocks until rollouts are ready, so Job success ==
-# environment ready. See stacks .../workflow-builder-preview-vcluster/.
+# Tier-2 full-isolation previews (vcluster). The BFF asks the SEA controller to
+# establish one exact `vcpreview-<name>` identity and submit /config/runner.sh.
+# That identity is limited to the matching preview namespace and bounded control
+# resources; it is removed only after down succeeds and the namespace is absent.
+# The runner blocks until rollouts are ready, so Job success == environment ready.
+# See stacks .../workflow-builder-preview-vcluster/.
 # ---------------------------------------------------------------------------
 
 _VCLUSTER_PREVIEW_TAILNET_SUFFIX = os.environ.get(
@@ -4612,13 +6105,8 @@ def _vcluster_preview_max() -> int:
 
 
 def _vcluster_preview_pool_size() -> int:
-    """Target number of FREE (baked, claimable) warm-pool members. 0 (default) = pool OFF —
-    the whole A3 path stays dormant and previews cold-provision as before."""
-    try:
-        n = int(os.environ.get("VCLUSTER_PREVIEW_POOL_SIZE", "0"))
-    except (TypeError, ValueError):
-        n = 0
-    return max(0, n)
+    """PreviewEnvironment is cold-only; the legacy vCluster pool is retired."""
+    return 0
 
 
 def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
@@ -4655,8 +6143,35 @@ def _vcluster_preview_active_minutes() -> int:
     return _env_int("VCLUSTER_PREVIEW_ACTIVE_MINUTES", 30, minimum=1)
 
 
+class PreviewEnvironmentOwnerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str
+    id: str
+
+
+class PreviewEnvironmentOriginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str
+    reference: str | None = None
+
+
+class PreviewCapabilityBundleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    controlToken: str = Field(pattern=r"^[0-9a-f]{64}$")
+    syncToken: str = Field(pattern=r"^[0-9a-f]{64}$")
+    actionToken: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sandboxToken: str = Field(pattern=r"^[0-9a-f]{64}$")
+    runtimeToken: str = Field(pattern=r"^[0-9a-f]{64}$")
+    storageToken: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class VclusterPreviewRequest(BaseModel):
     """Provision (or tear down) a Tier-2 full-isolation preview vcluster."""
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=40)
     action: str = Field(default="up")  # up | down
@@ -4668,15 +6183,45 @@ class VclusterPreviewRequest(BaseModel):
     # Defaults from env so it can be flipped cluster-wide without an API change.
     enrollMode: str | None = None  # imperative | agent
     targetRevision: str | None = None  # git ref the in-vcluster controller fetches
+    # New PreviewEnvironment contract. `platformRevision` is the immutable stacks
+    # commit that owns the preview baseline; targetRevision remains a legacy alias
+    # during the delivery cutover. sourceRevision identifies application source
+    # that may subsequently be live-synced into adopted dev pods.
+    platformRevision: str | None = None
+    sourceRevision: str | None = None
+    catalogDigest: str | None = None
+    candidatePaths: list[str] = Field(default_factory=list, max_length=64)
+    delivery: str | None = None  # imperative | reconciler
+    profile: str | None = None  # app-live | manifest-candidate | host-candidate
+    lane: str | None = None  # application | management
+    mode: str | None = None  # live | reconciled
+    allocation: dict[str, str] | None = None
+    imageOverrides: dict[str, str] = Field(default_factory=dict, max_length=16)
+    lifecycle: str | None = None
+    owner: PreviewEnvironmentOwnerRequest | str | None = None
+    origin: PreviewEnvironmentOriginRequest | str | None = None
+    services: list[str] = Field(default_factory=list, max_length=16)
+    provenance: dict[str, Any] | None = None
+    trustedCode: bool = False
+    capabilityBundle: PreviewCapabilityBundleRequest | None = None
+    # Fresh reconciled candidates must never adopt or replace a previous preview.
+    # The SEA creates their provisioning Job without the legacy delete/recreate path,
+    # making the Kubernetes Job name an additional atomic reservation.
+    createOnly: bool = False
+    # Internal-only stable-alias teardown fence. DELETE populates these after
+    # validating the live PreviewEnvironment identity; the runner rechecks them.
+    teardownExpectedRequestId: str | None = None
+    teardownExpectedSourceRevision: str | None = None
+    teardownProtectedRequestId: str | None = None
+    teardownEnvironmentUid: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    )
+    teardownIntentId: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     # PREVIEW_DB_MODE=cnpg → per-preview isolated CloudNativePG Postgres inside the
     # vcluster (no shared host-Postgres connection ceiling). Defaults from env so it
     # can be flipped cluster-wide without an API change. cnpg | shared
     previewDbMode: str | None = None
-    # PREVIEW_DEV_MODE=true → interactive dev preview: the dev image replaces the prod
-    # BFF in-place via the adopt:true dev-preview Sandbox; the runner forces
-    # EXPOSE_DEV_POD=false so the prod tailnet LB fronts the adopted dev pod (its
-    # tls-terminator) over HTTPS. Defaults from env so it can be flipped without an API change.
-    previewDevMode: bool | None = None
     # PREVIEW_OBSERVABILITY=disabled|async → disabled (default) keeps previews behavior-
     # identical to today (OTEL SDK off); async re-enables async OTLP export to the host
     # otel-collector replicated into the vcluster. Defaults from env so it can be flipped
@@ -4690,15 +6235,14 @@ class VclusterPreviewRequest(BaseModel):
     # `preview_template` DB via CNPG import (cnpg mode) instead of empty-migrate+seed.
     # A2, flagged default-off (migrate); env-defaulted.
     previewDbBootstrap: str | None = None
-    # POOL=true (A3) → bake a GENERIC warm-pool member: the runner labels the host ns
-    # `vcluster-preview-pool=free`, records its image pins, and skips the (user-specific) CLI-
-    # cred copy (deferred to claim). Set only by the SEA pool manager, never by a user request.
+    # Legacy unprofiled compatibility only. Profiled previews reject this field
+    # and the pool manager is permanently disabled.
     pool: bool = False
     # ---- D1 lifecycle contract (all optional; absent = the legacy/human preview shape) ----
     # origin: who this preview belongs to — "user" (a human asked for it) or "pr" (a PR-preview
     # automation asked for it). Stamped as the `vcluster-preview-origin` ns label; PR-origin
     # previews are EVICTABLE by the A4 capacity logic, human ones are not.
-    origin: str | None = None  # user | pr
+    # Flat user|pr values remain accepted only for unprofiled legacy callers.
     # prNumber: the GitHub PR a pr-origin preview serves; stamped as `vcluster-preview-pr`.
     prNumber: int | None = None
     # ttlHours: per-preview lifetime. SEA computes now+ttlHours and stamps it as the
@@ -4708,19 +6252,60 @@ class VclusterPreviewRequest(BaseModel):
 
 
 class VclusterPreviewClaimRequest(BaseModel):
-    """Claim a pre-baked warm-pool member for a user (A3). `name` is the user's requested
-    preview name (becomes the alias + the wfb-<name> tailnet host); `devMode` optionally wires
-    the claim so the adopt:true dev image can replace the prod BFF; `user` is recorded on the
-    claimed namespace for attribution. origin/prNumber/ttlHours mirror VclusterPreviewRequest
-    (D1) — a PR preview claimed from the pool must carry the same lifecycle markers as a
-    cold-provisioned one."""
+    """Retired claim payload retained only for an explicit fail-closed response."""
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=40)
-    devMode: bool | None = None
     user: str | None = None
-    origin: str | None = None  # user | pr
     prNumber: int | None = None
     ttlHours: int | None = None
+    # A warm claim is valid only when the member was baked from this exact
+    # immutable platform revision. These fields mirror the profiled cold-create
+    # contract; Pydantic must not silently discard them at this trust boundary.
+    platformRevision: str | None = None
+    sourceRevision: str | None = None
+    catalogDigest: str | None = None
+    candidatePaths: list[str] = Field(default_factory=list, max_length=64)
+    delivery: str | None = None  # imperative | reconciler
+    enrollMode: str | None = None  # imperative | agent
+    profile: str | None = None  # app-live only; candidates are cold
+    mode: str | None = None  # live only for a warm claim
+    allocation: dict[str, str] | None = None
+    imageOverrides: dict[str, str] = Field(default_factory=dict, max_length=16)
+    lifecycle: str | None = None
+    owner: PreviewEnvironmentOwnerRequest | str | None = None
+    origin: PreviewEnvironmentOriginRequest | str | None = None
+    services: list[str] = Field(default_factory=list, max_length=16)
+    provenance: dict[str, Any] | None = None
+    trustedCode: bool = False
+    createOnly: bool = False
+
+
+class VclusterPreviewTeardownRequest(BaseModel):
+    """Infrastructure ownership fence for stable-alias teardown."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expectedRequestId: str | None = Field(default=None, min_length=1, max_length=256)
+    expectedSourceRevision: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    protectedRequestId: str | None = Field(default=None, min_length=1, max_length=256)
+    environmentUid: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    )
+    deletionIntentId: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class VclusterPreviewCleanupReceiptReleaseRequest(BaseModel):
+    """Exact completed Job identity accepted by the post-finalization pruner."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    jobUid: str = Field(
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    )
+    runnerGeneration: str = Field(pattern=r"^op:[0-9a-f]{32}$")
 
 
 def _vcluster_preview_job_name(name: str, action: str) -> str:
@@ -4731,40 +6316,266 @@ def _vcluster_preview_tailnet_host(req: VclusterPreviewRequest) -> str:
     return req.tailnetHost or f"wfb-{req.name}"
 
 
+def _vcluster_preview_database_name(name: str) -> str:
+    """Return the runner's only admissible shared-database name for a preview."""
+    if len(name) > 40 or not re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", name):
+        raise HTTPException(status_code=400, detail="preview name must be a DNS label")
+    database = f"preview_{re.sub(r'[^a-z0-9]', '', name)}"
+    if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", database):
+        raise HTTPException(
+            status_code=400, detail="derived preview database is invalid"
+        )
+    return database
+
+
+def _preview_owner(
+    value: PreviewEnvironmentOwnerRequest | str | None,
+) -> PreviewEnvironmentOwnerRequest | None:
+    return value if isinstance(value, PreviewEnvironmentOwnerRequest) else None
+
+
+def _preview_origin(
+    value: PreviewEnvironmentOriginRequest | str | None,
+) -> PreviewEnvironmentOriginRequest | None:
+    return value if isinstance(value, PreviewEnvironmentOriginRequest) else None
+
+
+def _legacy_preview_origin(
+    value: PreviewEnvironmentOriginRequest | str | None,
+) -> str | None:
+    if isinstance(value, str):
+        return value if value in {"user", "pr"} else None
+    if value is None:
+        return None
+    if value.kind == "pull-request":
+        return "pr"
+    if value.kind == "user":
+        return "user"
+    return None
+
+
 def _vcluster_preview_job_manifest(
-    req: VclusterPreviewRequest, *, namespace: str
+    req: VclusterPreviewRequest,
+    *,
+    namespace: str,
+    operation_holder: str | None = None,
 ) -> dict[str, Any]:
     job_name = _vcluster_preview_job_name(req.name, req.action)
+    preview_name = _safe_resource_name(req.name, max_length=40)
+    runner_labels = {
+        "app": "vcluster-preview",
+        "vcluster-preview-name": preview_name,
+        "vcluster-preview-action": req.action,
+        "preview.stacks.io/managed": "true",
+        "preview.stacks.io/preview-name": preview_name,
+    }
+    runner_annotations: dict[str, str] = (
+        {RUNNER_GENERATION_ANNOTATION: operation_holder}
+        if operation_holder is not None
+        else {}
+    )
+    if req.action == "down":
+        if req.teardownExpectedRequestId and req.teardownExpectedSourceRevision:
+            runner_annotations.update(
+                {
+                    "preview.stacks.io/teardown-request-id": (
+                        req.teardownExpectedRequestId
+                    ),
+                    "preview.stacks.io/teardown-source-revision": (
+                        req.teardownExpectedSourceRevision
+                    ),
+                }
+            )
+        elif req.teardownProtectedRequestId:
+            runner_annotations.update(
+                {
+                    "preview.stacks.io/teardown-protected-request-id": (
+                        req.teardownProtectedRequestId
+                    )
+                }
+            )
+        if req.teardownEnvironmentUid and req.teardownIntentId:
+            runner_annotations.update(
+                {
+                    "preview.stacks.io/teardown-environment-uid": (
+                        req.teardownEnvironmentUid
+                    ),
+                    "preview.stacks.io/teardown-intent-id": req.teardownIntentId,
+                }
+            )
     image = os.environ.get("VCLUSTER_PREVIEW_RUNNER_IMAGE", "alpine/k8s:1.31.0")
     env = [
         {"name": "NAME", "value": req.name},
         {"name": "ACTION", "value": req.action},
         {"name": "TS_HOST", "value": _vcluster_preview_tailnet_host(req)},
+        {"name": "HOME", "value": "/tmp"},
     ]
+    if operation_holder:
+        if not re.fullmatch(r"op:[0-9a-f]{32}", operation_holder):
+            raise ValueError("preview operation holder is invalid")
+        env.append({"name": "PREVIEW_OPERATION_HOLDER", "value": operation_holder})
     if req.daprVersion:
         env.append({"name": "DAPR_VERSION", "value": req.daprVersion})
-    if req.previewDb:
+    if req.action == "down":
+        env.append(
+            {"name": "PREVIEW_DB", "value": _vcluster_preview_database_name(req.name)}
+        )
+    elif req.previewDb:
         env.append({"name": "PREVIEW_DB", "value": req.previewDb})
-    # Agent-mode (GitOps deploy via argocd-agent): pass ENROLL_MODE + the git ref the
-    # in-vcluster controller fetches the overlay/bootstrap from. Both env-defaulted.
+    # Agent-mode is the default delivery path. TARGET_REVISION is meaningful only
+    # while creating or personalizing a vCluster; lifecycle Jobs must not carry it.
     enroll_mode = req.enrollMode or os.environ.get(
-        "VCLUSTER_PREVIEW_ENROLL_MODE", "imperative"
+        "VCLUSTER_PREVIEW_ENROLL_MODE", "agent"
     )
     env.append({"name": "ENROLL_MODE", "value": enroll_mode})
+    if req.capabilityBundle is not None and req.action in {"up", "claim"}:
+        bundle = req.capabilityBundle
+        env.extend(
+            [
+                {
+                    "name": "PREVIEW_CONTROL_CAPABILITY_TOKEN",
+                    "value": bundle.controlToken,
+                },
+                {
+                    "name": "PREVIEW_DEV_SYNC_MINT_TOKEN",
+                    "value": bundle.syncToken,
+                },
+                {"name": "PREVIEW_ACTION_INTERNAL_TOKEN", "value": bundle.actionToken},
+                {"name": "SANDBOX_EXECUTION_API_TOKEN", "value": bundle.sandboxToken},
+                {
+                    "name": "PREVIEW_RUNTIME_CAPABILITY_TOKEN",
+                    "value": bundle.runtimeToken,
+                },
+                {
+                    "name": "PREVIEW_STORAGE_CAPABILITY_TOKEN",
+                    "value": bundle.storageToken,
+                },
+            ]
+        )
+    if req.profile:
+        env.append(
+            {
+                "name": "PREVIEW_DELIVERY",
+                "value": req.delivery
+                or os.environ.get("VCLUSTER_PREVIEW_DELIVERY", "reconciler"),
+            }
+        )
+    elif req.delivery:
+        env.append({"name": "PREVIEW_DELIVERY", "value": req.delivery})
+    if req.profile:
+        env.append({"name": "PREVIEW_PROFILE", "value": req.profile})
+    if req.lane:
+        env.append({"name": "PREVIEW_LANE", "value": req.lane})
+    if req.mode:
+        env.append({"name": "PREVIEW_MODE", "value": req.mode})
+    if req.allocation is not None:
+        env.append(
+            {
+                "name": "PREVIEW_ALLOCATION",
+                "value": json.dumps(
+                    req.allocation, separators=(",", ":"), sort_keys=True
+                ),
+            }
+        )
+    if req.action == "down":
+        if req.teardownExpectedRequestId:
+            env.append(
+                {
+                    "name": "TEARDOWN_EXPECTED_REQUEST_ID",
+                    "value": req.teardownExpectedRequestId,
+                }
+            )
+        if req.teardownExpectedSourceRevision:
+            env.append(
+                {
+                    "name": "TEARDOWN_EXPECTED_SOURCE_REVISION",
+                    "value": req.teardownExpectedSourceRevision,
+                }
+            )
+        if req.teardownProtectedRequestId:
+            env.append(
+                {
+                    "name": "TEARDOWN_PROTECTED_REQUEST_ID",
+                    "value": req.teardownProtectedRequestId,
+                }
+            )
+    if req.imageOverrides:
+        env.append(
+            {
+                "name": "PREVIEW_IMAGES",
+                "value": json.dumps(
+                    req.imageOverrides, separators=(",", ":"), sort_keys=True
+                ),
+            }
+        )
+    owner = _preview_owner(req.owner)
+    if owner is not None:
+        env.extend(
+            [
+                {"name": "PREVIEW_OWNER_KIND", "value": owner.kind},
+                {"name": "PREVIEW_OWNER", "value": owner.id},
+            ]
+        )
+    elif isinstance(req.owner, str) and req.owner:
+        env.append({"name": "PREVIEW_OWNER", "value": req.owner})
+    origin = _preview_origin(req.origin)
+    if req.lifecycle:
+        env.append({"name": "PREVIEW_LIFECYCLE", "value": req.lifecycle})
+    if origin is not None:
+        env.append({"name": "PREVIEW_ORIGIN_KIND", "value": origin.kind})
+        if origin.reference:
+            env.append({"name": "PREVIEW_ORIGIN_REFERENCE", "value": origin.reference})
+    if req.catalogDigest:
+        env.append({"name": "PREVIEW_CATALOG_DIGEST", "value": req.catalogDigest})
+    if req.candidatePaths:
+        env.append(
+            {
+                "name": "PREVIEW_CANDIDATE_PATHS",
+                "value": json.dumps(req.candidatePaths, separators=(",", ":")),
+            }
+        )
+    if req.provenance is not None:
+        env.append(
+            {
+                "name": "PREVIEW_PROVENANCE",
+                "value": json.dumps(
+                    req.provenance, separators=(",", ":"), sort_keys=True
+                ),
+            }
+        )
+    if req.sourceRevision:
+        env.append({"name": "SOURCE_REVISION", "value": req.sourceRevision})
+    if req.services:
+        env.append(
+            {
+                "name": "PREVIEW_SERVICES",
+                "value": json.dumps(req.services, separators=(",", ":")),
+            }
+        )
+    if req.profile:
+        env.append(
+            {
+                "name": "TRUSTED_CODE",
+                "value": "true" if req.trustedCode else "false",
+            }
+        )
     # Per-preview DB backend (cnpg = isolated CloudNativePG inside the vcluster).
-    preview_db_mode = req.previewDbMode or os.environ.get(
-        "VCLUSTER_PREVIEW_DB_MODE", "shared"
+    preview_db_mode = (
+        "cnpg"
+        if req.profile
+        else req.previewDbMode or os.environ.get("VCLUSTER_PREVIEW_DB_MODE", "shared")
     )
     env.append({"name": "PREVIEW_DB_MODE", "value": preview_db_mode})
     # Preview observability mode (disabled = OTEL off, behavior-identical to today; async =
     # re-enable async OTLP export to the replicated host otel-collector). Env-defaulted for a
     # cluster-wide flip. The runner stages a preview-observability ConfigMap from this value.
-    preview_observability = req.previewObservability or os.environ.get(
-        "VCLUSTER_PREVIEW_OBSERVABILITY", "disabled"
+    preview_observability = (
+        "disabled"
+        if req.profile
+        else req.previewObservability
+        or os.environ.get("VCLUSTER_PREVIEW_OBSERVABILITY", "disabled")
     )
-    env.append(
-        {"name": "PREVIEW_OBSERVABILITY", "value": preview_observability}
-    )
+    env.append({"name": "PREVIEW_OBSERVABILITY", "value": preview_observability})
     # A2 cold-boot flags (default-off; env-defaulted for a cluster-wide flip). Parallel
     # bringup backgrounds the runner's independent infra installs; db-bootstrap=template
     # clones the pre-seeded host preview_template DB via CNPG import instead of migrate+seed.
@@ -4779,21 +6590,13 @@ def _vcluster_preview_job_manifest(
             "value": "true" if preview_parallel else "false",
         }
     )
-    preview_db_bootstrap = req.previewDbBootstrap or os.environ.get(
-        "VCLUSTER_PREVIEW_DB_BOOTSTRAP", "migrate"
+    preview_db_bootstrap = (
+        "migrate"
+        if req.profile
+        else req.previewDbBootstrap
+        or os.environ.get("VCLUSTER_PREVIEW_DB_BOOTSTRAP", "migrate")
     )
     env.append({"name": "PREVIEW_DB_BOOTSTRAP", "value": preview_db_bootstrap})
-    # Interactive dev preview (adopt:true dev image replaces the prod BFF): thread
-    # PREVIEW_DEV_MODE so the runner wires the prod LB to the adopted dev pod
-    # (EXPOSE_DEV_POD=false). Defaults from env for a cluster-wide flip.
-    preview_dev_mode = req.previewDevMode
-    if preview_dev_mode is None:
-        preview_dev_mode = (
-            os.environ.get("VCLUSTER_PREVIEW_DEV_MODE", "false") == "true"
-        )
-    env.append(
-        {"name": "PREVIEW_DEV_MODE", "value": "true" if preview_dev_mode else "false"}
-    )
     # A3 warm pool: bake a generic free member (runner labels the ns free + skips cred-copy).
     if req.pool:
         env.append({"name": "POOL", "value": "true"})
@@ -4801,41 +6604,74 @@ def _vcluster_preview_job_manifest(
     # (SEA can't stamp a COLD provision itself — the ns doesn't exist yet at accept time;
     # the CLAIM path stamps them SEA-side inside the atomic label flip instead). The expiry
     # is computed HERE (Python) so the runner never does busybox date math.
-    if req.origin in ("user", "pr"):
-        env.append({"name": "ORIGIN", "value": req.origin})
+    legacy_origin = _legacy_preview_origin(req.origin)
+    if legacy_origin is not None:
+        env.append({"name": "ORIGIN", "value": legacy_origin})
     if req.prNumber is not None and req.prNumber > 0:
         env.append({"name": "PR_NUMBER", "value": str(req.prNumber)})
-    if req.ttlHours is not None and req.ttlHours > 0:
-        expires_at = (
-            datetime.now(UTC) + timedelta(hours=req.ttlHours)
-        ).isoformat(timespec="seconds")
+    if req.ttlHours is not None and 1 <= req.ttlHours <= 168:
+        env.append({"name": "PREVIEW_TTL_HOURS", "value": str(req.ttlHours)})
+        if req.profile and isinstance(req.provenance, dict):
+            requested_at = req.provenance.get("requestedAt")
+            try:
+                expiry_base = datetime.fromisoformat(
+                    str(requested_at).removesuffix("Z") + "+00:00"
+                ).astimezone(UTC)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "profiled expiry requires provenance.requestedAt as an "
+                        "RFC3339 UTC timestamp"
+                    ),
+                ) from exc
+            expires_at = (
+                (expiry_base + timedelta(hours=req.ttlHours))
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+        else:
+            expires_at = (
+                (datetime.now(UTC) + timedelta(hours=req.ttlHours))
+                .isoformat(timespec="seconds")
+                .replace("+00:00", "Z")
+            )
         env.append({"name": "EXPIRES_AT", "value": expires_at})
-    if enroll_mode == "agent":
+    if enroll_mode == "agent" and req.action in {"up", "claim"}:
+        target_revision = (
+            req.platformRevision
+            or req.targetRevision
+            or os.environ.get("VCLUSTER_PREVIEW_TARGET_REVISION", "main")
+        )
+        if req.profile and not re.fullmatch(r"[0-9a-f]{40}", target_revision):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "profiled up/claim Jobs require TARGET_REVISION to be a full "
+                    "lowercase 40-character Git SHA"
+                ),
+            )
         env.append(
             {
                 "name": "TARGET_REVISION",
-                "value": req.targetRevision
-                or os.environ.get("VCLUSTER_PREVIEW_TARGET_REVISION", "main"),
+                "value": target_revision,
             }
         )
-        bff_image = os.environ.get("VCLUSTER_PREVIEW_BFF_IMAGE")
-        if bff_image:
-            env.append({"name": "BFF_IMAGE", "value": bff_image})
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {
             "name": job_name,
             "namespace": namespace,
-            "labels": {
-                "app": "vcluster-preview",
-                "vcluster-preview-name": _safe_resource_name(req.name),
-                "vcluster-preview-action": req.action,
-            },
+            "labels": dict(runner_labels),
+            **({"annotations": dict(runner_annotations)} if runner_annotations else {}),
         },
         "spec": {
             "backoffLimit": 0,
-            "ttlSecondsAfterFinished": 1800,
+            # A successful down Job is the durable cleanup receipt used by an
+            # idempotent repeated teardown after namespace and identity deletion.
+            # The next down replaces it. Non-destructive Jobs remain TTL-bounded.
+            **({} if req.action == "down" else {"ttlSecondsAfterFinished": 1800}),
             # Teardown must reclaim its slot promptly, so a wedged down-Job gets a much shorter
             # deadline than a provision (task #25 — a hung teardown was silently holding a
             # preview slot for the full 30 min). runner.sh ACTION=down now bounds each hang-prone
@@ -4846,30 +6682,83 @@ def _vcluster_preview_job_manifest(
                 req.action, 1800
             ),
             "template": {
-                "metadata": {"labels": {"app": "vcluster-preview"}},
+                "metadata": {
+                    "labels": dict(runner_labels),
+                    **(
+                        {"annotations": dict(runner_annotations)}
+                        if runner_annotations
+                        else {}
+                    ),
+                },
                 "spec": {
                     "restartPolicy": "Never",
-                    "serviceAccountName": "vcluster-preview-provisioner",
+                    "serviceAccountName": preview_runner_identity_name(preview_name),
+                    "automountServiceAccountToken": True,
+                    "enableServiceLinks": False,
+                    "securityContext": {
+                        "runAsNonRoot": True,
+                        "runAsUser": 1001,
+                        "runAsGroup": 1001,
+                        "fsGroup": 1001,
+                        "fsGroupChangePolicy": "OnRootMismatch",
+                        "seccompProfile": {"type": "RuntimeDefault"},
+                    },
                     # The custom runner image (with argocd-agentctl, for agent mode) is a
                     # PRIVATE ghcr package — stock alpine/k8s was public, so the Job had no
                     # pull secret. Harmless for the public default image.
-                    "imagePullSecrets": [{"name": "ghcr-pull-credentials"}],
+                    "imagePullSecrets": [{"name": "preview-ghcr-pull-credentials"}],
                     "containers": [
                         {
                             "name": "runner",
                             "image": image,
-                            "command": ["bash", "/config/runner.sh"],
+                            "command": [
+                                "bash",
+                                "/opt/preview-runner/runner.sh",
+                            ],
                             "env": env,
+                            "securityContext": {
+                                "allowPrivilegeEscalation": False,
+                                "readOnlyRootFilesystem": True,
+                                "capabilities": {"drop": ["ALL"]},
+                            },
+                            "resources": {
+                                "requests": {"cpu": "250m", "memory": "256Mi"},
+                                "limits": {"cpu": "2", "memory": "1Gi"},
+                            },
                             "volumeMounts": [
-                                {"name": "runner", "mountPath": "/config"}
+                                {
+                                    "name": "tmp",
+                                    "mountPath": "/tmp",
+                                },
+                                {
+                                    "name": "ghcr-pull",
+                                    "mountPath": (
+                                        "/var/run/preview-credentials/ghcr-pull"
+                                    ),
+                                    "readOnly": True,
+                                },
                             ],
                         }
                     ],
                     "volumes": [
                         {
-                            "name": "runner",
-                            "configMap": {"name": "vcluster-preview-runner"},
-                        }
+                            "name": "tmp",
+                            "emptyDir": {"sizeLimit": "1Gi"},
+                        },
+                        {
+                            "name": "ghcr-pull",
+                            "secret": {
+                                "secretName": "preview-ghcr-pull-credentials",
+                                "defaultMode": 0o400,
+                                "items": [
+                                    {
+                                        "key": ".dockerconfigjson",
+                                        "path": ".dockerconfigjson",
+                                        "mode": 0o400,
+                                    }
+                                ],
+                            },
+                        },
                     ],
                 },
             },
@@ -4877,13 +6766,143 @@ def _vcluster_preview_job_manifest(
     }
 
 
+def _preview_job_manifest_is_subset(desired: Any, actual: Any) -> bool:
+    if isinstance(desired, dict):
+        return isinstance(actual, dict) and all(
+            key in actual and _preview_job_manifest_is_subset(value, actual[key])
+            for key, value in desired.items()
+        )
+    if isinstance(desired, list):
+        return (
+            isinstance(actual, list)
+            and len(desired) == len(actual)
+            and all(
+                _preview_job_manifest_is_subset(expected, observed)
+                for expected, observed in zip(desired, actual)
+            )
+        )
+    return desired == actual
+
+
+def _serialize_preview_job(job: Any) -> dict[str, Any]:
+    if isinstance(job, dict):
+        return job
+    from kubernetes import client
+
+    return client.ApiClient().sanitize_for_serialization(job)
+
+
+def _preview_job_matches_manifest(job: Any, manifest: dict[str, Any]) -> bool:
+    return _preview_job_manifest_is_subset(manifest, _serialize_preview_job(job))
+
+
+def _preview_job_has_attempt_generation(job: Any, manifest: dict[str, Any]) -> bool:
+    actual = _serialize_preview_job(job)
+    desired_generation = (
+        manifest.get("metadata", {})
+        .get("annotations", {})
+        .get(RUNNER_GENERATION_ANNOTATION)
+    )
+    actual_generation = (
+        actual.get("metadata", {})
+        .get("annotations", {})
+        .get(RUNNER_GENERATION_ANNOTATION)
+    )
+    actual_pod_generation = (
+        actual.get("spec", {})
+        .get("template", {})
+        .get("metadata", {})
+        .get("annotations", {})
+        .get(RUNNER_GENERATION_ANNOTATION)
+    )
+    return (
+        isinstance(desired_generation, str)
+        and actual_generation == desired_generation
+        and actual_pod_generation == desired_generation
+    )
+
+
+def _resolve_ambiguous_preview_job_create(
+    batch: Any,
+    *,
+    namespace: str,
+    job_name: str,
+    manifest: dict[str, Any],
+    create_exc: Exception,
+) -> bool:
+    try:
+        current = batch.read_namespaced_job(name=job_name, namespace=namespace)
+    except Exception:
+        raise create_exc
+    if _preview_job_matches_manifest(current, manifest):
+        return True
+    if not _preview_job_has_attempt_generation(current, manifest):
+        raise PreviewRunnerIdentityError(
+            "ambiguous preview Job create did not produce the exact manifest"
+        ) from create_exc
+    try:
+        batch.delete_namespaced_job(
+            name=job_name,
+            namespace=namespace,
+            propagation_policy="Background",
+        )
+    except Exception as delete_exc:
+        if getattr(delete_exc, "status", None) != 404:
+            raise PreviewRunnerIdentityError(
+                "ambiguous preview Job create compensation failed"
+            ) from delete_exc
+    for _ in range(20):
+        try:
+            batch.read_namespaced_job(name=job_name, namespace=namespace)
+            time.sleep(0.1)
+        except Exception as read_exc:
+            if getattr(read_exc, "status", None) == 404:
+                raise PreviewRunnerIdentityError(
+                    "ambiguous preview Job create produced a mismatched object; "
+                    "the object was compensated"
+                ) from create_exc
+            raise PreviewRunnerIdentityError(
+                "ambiguous preview Job compensation could not prove absence"
+            ) from read_exc
+    raise PreviewRunnerIdentityError(
+        "ambiguous preview Job compensation did not remove the mismatched object"
+    ) from create_exc
+
+
 def _create_preview_job(
-    batch, *, namespace: str, manifest: dict[str, Any]
-) -> None:
+    batch,
+    *,
+    namespace: str,
+    manifest: dict[str, Any],
+    create_only: bool = False,
+) -> bool:
     """Idempotently (re)create a preview provisioning/claim/teardown Job: clear a prior
     same-name Job, wait for it to clear, then create. Shared by provision, claim, and the
-    A3 pool manager so all three get the same 409-safe delete→settle→create behavior."""
+    A3 pool manager so all three get the same delete→settle→create behavior. Failure to
+    confirm the replacement, including a persistent 409, is reported to the caller."""
     job_name = manifest["metadata"]["name"]
+    if create_only:
+        try:
+            batch.create_namespaced_job(namespace=namespace, body=manifest)
+            return True
+        except Exception as create_exc:
+            if getattr(create_exc, "status", None) == 409:
+                raise
+            if getattr(create_exc, "status", None) not in {
+                None,
+                500,
+                502,
+                503,
+                504,
+            }:
+                raise
+            return _resolve_ambiguous_preview_job_create(
+                batch,
+                namespace=namespace,
+                job_name=job_name,
+                manifest=manifest,
+                create_exc=create_exc,
+            )
     try:
         batch.delete_namespaced_job(
             name=job_name, namespace=namespace, propagation_policy="Background"
@@ -4901,9 +6920,1204 @@ def _create_preview_job(
                 break
     try:
         batch.create_namespaced_job(namespace=namespace, body=manifest)
-    except Exception as exc:
-        if getattr(exc, "status", None) != 409:
+    except Exception as create_exc:
+        if getattr(create_exc, "status", None) not in {None, 500, 502, 503, 504}:
             raise
+        return _resolve_ambiguous_preview_job_create(
+            batch,
+            namespace=namespace,
+            job_name=job_name,
+            manifest=manifest,
+            create_exc=create_exc,
+        )
+    return True
+
+
+def _submit_preview_job(
+    batch: Any,
+    core: Any,
+    *,
+    namespace: str,
+    manifest: dict[str, Any],
+    lifecycle: str | None = None,
+    create_only: bool = False,
+    allow_absent_down_bootstrap: bool = False,
+) -> bool:
+    """Establish the exact per-preview identity before handing work to Kubernetes."""
+    metadata = manifest.get("metadata") or {}
+    labels = metadata.get("labels") or {}
+    preview_name = labels.get("vcluster-preview-name")
+    action = labels.get("vcluster-preview-action")
+    if not isinstance(preview_name, str) or not isinstance(action, str):
+        raise PreviewRunnerIdentityError(
+            "preview Job is missing its exact name/action identity"
+        )
+    if action not in {"up", "down", "claim", "sleep", "resume"}:
+        raise PreviewRunnerIdentityError("preview Job action is not allowed")
+    if allow_absent_down_bootstrap and action != "down":
+        raise PreviewRunnerIdentityError(
+            "absent identity bootstrap is allowed only for down"
+        )
+    required_labels = {
+        "app": "vcluster-preview",
+        "vcluster-preview-name": preview_name,
+        "vcluster-preview-action": action,
+        "preview.stacks.io/managed": "true",
+        "preview.stacks.io/preview-name": preview_name,
+    }
+    pod_labels = (
+        manifest.get("spec", {}).get("template", {}).get("metadata", {}).get("labels")
+        or {}
+    )
+    if any(
+        labels.get(key) != value or pod_labels.get(key) != value
+        for key, value in required_labels.items()
+    ):
+        raise PreviewRunnerIdentityError(
+            "preview Job and pod labels do not match their identity"
+        )
+    if metadata.get("name") != _vcluster_preview_job_name(preview_name, action):
+        raise PreviewRunnerIdentityError("preview Job name does not match its identity")
+    expected_service_account = preview_runner_identity_name(preview_name)
+    actual_service_account = (
+        manifest.get("spec", {})
+        .get("template", {})
+        .get("spec", {})
+        .get("serviceAccountName")
+    )
+    if actual_service_account != expected_service_account:
+        raise PreviewRunnerIdentityError(
+            "preview Job serviceAccountName does not match its preview identity"
+        )
+    if namespace != _vcluster_preview_control_namespace():
+        raise PreviewRunnerIdentityError(
+            "preview Job must run in the preview control namespace"
+        )
+    if metadata.get("namespace") != namespace:
+        raise PreviewRunnerIdentityError(
+            "preview Job metadata namespace does not match its submission namespace"
+        )
+
+    annotations = metadata.setdefault("annotations", {})
+    pod_metadata = (
+        manifest.setdefault("spec", {})
+        .setdefault("template", {})
+        .setdefault("metadata", {})
+    )
+    pod_annotations = pod_metadata.setdefault("annotations", {})
+    job_generation = annotations.get(RUNNER_GENERATION_ANNOTATION)
+    pod_generation = pod_annotations.get(RUNNER_GENERATION_ANNOTATION)
+    if job_generation is None and pod_generation is None:
+        job_generation = f"op:{secrets.token_hex(16)}"
+        annotations[RUNNER_GENERATION_ANNOTATION] = job_generation
+        pod_annotations[RUNNER_GENERATION_ANNOTATION] = job_generation
+    if (
+        not isinstance(job_generation, str)
+        or not re.fullmatch(r"op:[0-9a-f]{32}", job_generation)
+        or pod_generation not in {None, job_generation}
+    ):
+        raise PreviewRunnerIdentityError(
+            "preview Job and pod runner generations do not match"
+        )
+    pod_annotations[RUNNER_GENERATION_ANNOTATION] = job_generation
+    operation_holder = next(
+        (
+            item.get("value")
+            for item in manifest["spec"]["template"]["spec"]["containers"][0].get(
+                "env", []
+            )
+            if item.get("name") == "PREVIEW_OPERATION_HOLDER"
+        ),
+        None,
+    )
+    if operation_holder is not None and operation_holder != job_generation:
+        raise PreviewRunnerIdentityError(
+            "preview Job generation does not match its operation Lease holder"
+        )
+
+    identity = PreviewRunnerIdentityAdapter(core, _load_k8s_rbac_client())
+    reservation = identity.ensure_for_job(
+        preview_name=preview_name,
+        action=action,
+        lifecycle=lifecycle,
+        runner_generation=job_generation,
+        allow_absent_down_bootstrap=allow_absent_down_bootstrap,
+    )
+    if reservation.identity_name != actual_service_account:
+        identity.rollback_before_job(reservation)
+        raise PreviewRunnerIdentityError(
+            "established preview identity does not match the Job"
+        )
+    try:
+        created = _create_preview_job(
+            batch,
+            namespace=namespace,
+            manifest=manifest,
+            create_only=create_only,
+        )
+    except Exception as job_exc:
+        try:
+            identity.rollback_before_job(reservation)
+        except PreviewRunnerIdentityError as rollback_exc:
+            raise PreviewRunnerIdentityError(
+                f"preview Job admission failed ({job_exc}); "
+                f"identity compensation incomplete ({rollback_exc})"
+            ) from job_exc
+        raise
+    try:
+        identity.mark_job_admitted(reservation)
+    except PreviewRunnerIdentityError as exc:
+        # The Job is already admitted and carries the operation Lease. The
+        # reservation reconciler repairs this marker after proving that exact Job;
+        # treating this as submission failure would release its Lease underneath it.
+        logger.warning(
+            "preview runner admission marker pending for %s: %s",
+            preview_name,
+            exc,
+        )
+    return created
+
+
+def _preview_down_receipt_succeeded(
+    batch: Any,
+    *,
+    namespace: str,
+    preview_name: str,
+    expected_request_id: str | None,
+    expected_source_revision: str | None,
+    protected_request_id: str | None,
+    environment_uid: str | None,
+    deletion_intent_id: str | None,
+) -> bool:
+    try:
+        job = batch.read_namespaced_job_status(
+            name=_vcluster_preview_job_name(preview_name, "down"),
+            namespace=namespace,
+            _request_timeout=_VCLUSTER_PREVIEW_PROBE_TIMEOUT,
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            return False
+        raise
+    if _down_job_identity(job) != preview_name:
+        return False
+    annotations = getattr(getattr(job, "metadata", None), "annotations", None) or {}
+    expected_annotations: dict[str, str] = {}
+    if expected_request_id and expected_source_revision:
+        expected_annotations = {
+            "preview.stacks.io/teardown-request-id": expected_request_id,
+            "preview.stacks.io/teardown-source-revision": expected_source_revision,
+        }
+    elif protected_request_id:
+        expected_annotations = {
+            "preview.stacks.io/teardown-protected-request-id": protected_request_id
+        }
+    if environment_uid and deletion_intent_id:
+        expected_annotations.update(
+            {
+                "preview.stacks.io/teardown-environment-uid": environment_uid,
+                "preview.stacks.io/teardown-intent-id": deletion_intent_id,
+            }
+        )
+    guard_keys = {
+        "preview.stacks.io/teardown-request-id",
+        "preview.stacks.io/teardown-source-revision",
+        "preview.stacks.io/teardown-protected-request-id",
+        "preview.stacks.io/teardown-environment-uid",
+        "preview.stacks.io/teardown-intent-id",
+    }
+    if {key: annotations.get(key) for key in guard_keys if key in annotations} != (
+        expected_annotations
+    ):
+        return False
+    succeeded, failed, _ = _preview_job_state(job)
+    return succeeded and not failed
+
+
+def _capacity_lease_name() -> str:
+    return (os.environ.get("DEV_PREVIEW_CAPACITY_LEASE_NAME") or "").strip()
+
+
+def _lease_timestamp(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return None
+
+
+def _lease_body(
+    lease: Any,
+    *,
+    name: str,
+    namespace: str,
+    holder: str | None,
+    duration_seconds: int,
+) -> dict[str, Any]:
+    metadata = getattr(lease, "metadata", None)
+    resource_version = getattr(metadata, "resource_version", None)
+    now = datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    return {
+        "apiVersion": "coordination.k8s.io/v1",
+        "kind": "Lease",
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "resourceVersion": resource_version,
+        },
+        "spec": {
+            "holderIdentity": holder,
+            "leaseDurationSeconds": duration_seconds,
+            "acquireTime": now if holder else None,
+            "renewTime": now if holder else None,
+        },
+    }
+
+
+@contextmanager
+def _preview_capacity_lease(coordination: Any, *, namespace: str):
+    """Serialize preview admission through one pre-created, narrowly RBAC-scoped Lease."""
+    name = _capacity_lease_name()
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="preview capacity Lease is not configured",
+        )
+    duration = _env_int("DEV_PREVIEW_CAPACITY_LEASE_SECONDS", 120, minimum=30)
+    wait_seconds = _env_int("DEV_PREVIEW_CAPACITY_LEASE_WAIT_SECONDS", 15, minimum=1)
+    holder = f"{os.environ.get('HOSTNAME', 'sandbox-execution-api')}-{uuid4().hex}"
+    deadline = time.monotonic() + wait_seconds
+    acquired = False
+    while time.monotonic() < deadline:
+        try:
+            lease = coordination.read_namespaced_lease(name=name, namespace=namespace)
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"preview capacity Lease {namespace}/{name} does not exist",
+                ) from exc
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="could not read preview capacity Lease",
+            ) from exc
+        spec = getattr(lease, "spec", None)
+        current_holder = getattr(spec, "holder_identity", None)
+        lease_duration = int(getattr(spec, "lease_duration_seconds", None) or duration)
+        renewed = _lease_timestamp(
+            getattr(spec, "renew_time", None) or getattr(spec, "acquire_time", None)
+        )
+        expired = (
+            not current_holder
+            or renewed is None
+            or datetime.now(UTC) >= renewed + timedelta(seconds=lease_duration)
+        )
+        if expired:
+            try:
+                coordination.replace_namespaced_lease(
+                    name=name,
+                    namespace=namespace,
+                    body=_lease_body(
+                        lease,
+                        name=name,
+                        namespace=namespace,
+                        holder=holder,
+                        duration_seconds=duration,
+                    ),
+                )
+                acquired = True
+                break
+            except Exception as exc:
+                if getattr(exc, "status", None) != 409:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="could not acquire preview capacity Lease",
+                    ) from exc
+        time.sleep(0.1)
+    if not acquired:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="preview capacity Lease is busy",
+        )
+    try:
+        yield
+    finally:
+        try:
+            lease = coordination.read_namespaced_lease(name=name, namespace=namespace)
+            spec = getattr(lease, "spec", None)
+            if getattr(spec, "holder_identity", None) == holder:
+                coordination.replace_namespaced_lease(
+                    name=name,
+                    namespace=namespace,
+                    body=_lease_body(
+                        lease,
+                        name=name,
+                        namespace=namespace,
+                        holder=None,
+                        duration_seconds=duration,
+                    ),
+                )
+        except Exception as exc:
+            logger.warning("preview capacity Lease release failed: %s", exc)
+
+
+_PREVIEW_OPERATION_LEASE_SECONDS = 90
+
+
+def _preview_operation_lease_name(real_name: str) -> str:
+    safe_name = _safe_resource_name(real_name, max_length=40)
+    if safe_name != real_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="preview operation Lease requires a canonical preview name",
+        )
+    return _safe_resource_name(f"vcpreview-op-{safe_name}", max_length=63)
+
+
+def _preview_operation_lease_body(
+    *,
+    name: str,
+    namespace: str,
+    holder: str,
+    resource_version: str | None = None,
+    transitions: int = 0,
+) -> dict[str, Any]:
+    if holder and not re.fullmatch(r"op:[0-9a-f]{32}", holder):
+        raise ValueError("preview operation holder is invalid")
+    now = datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    metadata: dict[str, str] = {"name": name, "namespace": namespace}
+    if resource_version:
+        metadata["resourceVersion"] = resource_version
+    return {
+        "apiVersion": "coordination.k8s.io/v1",
+        "kind": "Lease",
+        "metadata": metadata,
+        "spec": {
+            "holderIdentity": holder,
+            "leaseDurationSeconds": _PREVIEW_OPERATION_LEASE_SECONDS,
+            "acquireTime": now,
+            "renewTime": now,
+            "leaseTransitions": max(0, transitions),
+        },
+    }
+
+
+def _preview_operation_lease_fields(
+    lease: Any,
+) -> tuple[str, int, datetime | None, int]:
+    spec = getattr(lease, "spec", None)
+    holder = str(getattr(spec, "holder_identity", None) or "")
+    duration = int(
+        getattr(spec, "lease_duration_seconds", None)
+        or _PREVIEW_OPERATION_LEASE_SECONDS
+    )
+    renewed = _lease_timestamp(
+        getattr(spec, "renew_time", None) or getattr(spec, "acquire_time", None)
+    )
+    transitions = int(getattr(spec, "lease_transitions", None) or 0)
+    return holder, duration, renewed, transitions
+
+
+def _acquire_preview_operation_lease(
+    coordination: Any, *, namespace: str, real_name: str
+) -> str:
+    """CAS-reserve one preview before any mutable operation.
+
+    The runner receives the returned holder and renews the Lease for its entire
+    lifetime. SEA releases only when it fails before handing the operation to a Job.
+    """
+    name = _preview_operation_lease_name(real_name)
+    holder = f"op:{uuid4().hex}"
+    try:
+        lease = coordination.read_namespaced_lease(name=name, namespace=namespace)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 404:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"could not read preview operation Lease for {real_name}",
+            ) from exc
+        try:
+            coordination.create_namespaced_lease(
+                namespace=namespace,
+                body=_preview_operation_lease_body(
+                    name=name,
+                    namespace=namespace,
+                    holder=holder,
+                ),
+            )
+            return holder
+        except Exception as create_exc:
+            if getattr(create_exc, "status", None) == 409:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"preview {real_name} already has an operation in progress",
+                ) from create_exc
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"could not create preview operation Lease for {real_name}",
+            ) from create_exc
+
+    current, duration, renewed, transitions = _preview_operation_lease_fields(lease)
+    expired = (
+        not current
+        or renewed is None
+        or datetime.now(UTC) >= renewed + timedelta(seconds=duration)
+    )
+    if not expired:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"preview {real_name} already has an operation in progress",
+        )
+    metadata = getattr(lease, "metadata", None)
+    try:
+        coordination.replace_namespaced_lease(
+            name=name,
+            namespace=namespace,
+            body=_preview_operation_lease_body(
+                name=name,
+                namespace=namespace,
+                holder=holder,
+                resource_version=getattr(metadata, "resource_version", None),
+                transitions=transitions + (1 if current else 0),
+            ),
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) == 409:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"preview {real_name} already has an operation in progress",
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"could not acquire preview operation Lease for {real_name}",
+        ) from exc
+    return holder
+
+
+def _release_preview_operation_lease(
+    coordination: Any, *, namespace: str, real_name: str, holder: str
+) -> None:
+    """CAS-clear only the caller's reservation; never release a successor's Lease."""
+    name = _preview_operation_lease_name(real_name)
+    try:
+        lease = coordination.read_namespaced_lease(name=name, namespace=namespace)
+        current, _duration, _renewed, transitions = _preview_operation_lease_fields(
+            lease
+        )
+        if current != holder:
+            return
+        metadata = getattr(lease, "metadata", None)
+        coordination.replace_namespaced_lease(
+            name=name,
+            namespace=namespace,
+            body=_preview_operation_lease_body(
+                name=name,
+                namespace=namespace,
+                holder="",
+                resource_version=getattr(metadata, "resource_version", None),
+                transitions=transitions,
+            ),
+        )
+    except Exception as exc:
+        logger.warning(
+            "preview operation Lease release failed for %s (%s): %s",
+            real_name,
+            holder,
+            exc,
+        )
+
+
+def _delete_preview_operation_lease(
+    coordination: Any,
+    *,
+    namespace: str,
+    real_name: str,
+    holder: str,
+) -> bool:
+    """Delete only the caller-owned Lease using a resourceVersion precondition."""
+    name = _preview_operation_lease_name(real_name)
+    try:
+        lease = coordination.read_namespaced_lease(name=name, namespace=namespace)
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            return True
+        raise PreviewRunnerIdentityError(
+            f"could not read cleanup Lease for {real_name}: {exc}"
+        ) from exc
+    current, _duration, _renewed, _transitions = _preview_operation_lease_fields(lease)
+    if current != holder:
+        raise PreviewRunnerIdentityError(
+            f"cleanup Lease ownership changed for {real_name}"
+        )
+    metadata = getattr(lease, "metadata", None)
+    resource_version = getattr(metadata, "resource_version", None)
+    if not resource_version:
+        raise PreviewRunnerIdentityError(
+            f"cleanup Lease resourceVersion is missing for {real_name}"
+        )
+    try:
+        coordination.delete_namespaced_lease(
+            name=name,
+            namespace=namespace,
+            body={"preconditions": {"resourceVersion": resource_version}},
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            return True
+        raise PreviewRunnerIdentityError(
+            f"could not delete cleanup Lease for {real_name}: {exc}"
+        ) from exc
+    return True
+
+
+@dataclass(frozen=True)
+class _PreviewCapacitySnapshot:
+    names: frozenset[str]
+    awake: int
+    total: int
+
+
+def _preview_up_job_is_pending(job: Any) -> bool:
+    status_value = getattr(job, "status", None)
+    conditions = getattr(status_value, "conditions", None) or []
+    terminal = any(
+        getattr(condition, "type", None) in {"Complete", "Failed"}
+        and str(getattr(condition, "status", "")).lower() == "true"
+        for condition in conditions
+    )
+    return not terminal and not int(getattr(status_value, "succeeded", 0) or 0)
+
+
+def _preview_capacity_snapshot(
+    batch: Any, core: Any, *, namespace: str
+) -> _PreviewCapacitySnapshot:
+    names: set[str] = set()
+    real_names: set[str] = set()
+    awake_names: set[str] = set()
+    namespaces = core.list_namespace(label_selector="app=vcluster-preview")
+    for item in namespaces.items:
+        metadata = getattr(item, "metadata", None)
+        if getattr(metadata, "deletion_timestamp", None) is not None:
+            continue
+        labels = getattr(metadata, "labels", None) or {}
+        real_name = labels.get("vcluster-preview-name")
+        if not real_name:
+            raw_name = getattr(metadata, "name", "") or ""
+            real_name = raw_name.removeprefix("vcluster-")
+        if not real_name:
+            continue
+        names.add(real_name)
+        real_names.add(real_name)
+        alias = labels.get("vcluster-preview-alias")
+        if alias:
+            names.add(alias)
+        if labels.get("vcluster-preview-state") != "slept":
+            awake_names.add(real_name)
+
+    jobs = batch.list_namespaced_job(
+        namespace=namespace, label_selector="vcluster-preview-action=up"
+    )
+    for job in jobs.items:
+        if not _preview_up_job_is_pending(job):
+            continue
+        labels = getattr(getattr(job, "metadata", None), "labels", None) or {}
+        pending_name = labels.get("vcluster-preview-name")
+        if pending_name:
+            names.add(pending_name)
+            real_names.add(pending_name)
+            awake_names.add(pending_name)
+    return _PreviewCapacitySnapshot(
+        names=frozenset(names), awake=len(awake_names), total=len(real_names)
+    )
+
+
+def _namespace_exists(core: Any, name: str) -> bool:
+    try:
+        core.read_namespace(name=f"vcluster-{name}")
+        return True
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            return False
+        raise
+
+
+def _create_preview_with_capacity(
+    batch: Any,
+    core: Any,
+    *,
+    namespace: str,
+    request: VclusterPreviewRequest,
+    manifest: dict[str, Any],
+) -> None:
+    requested_name = _safe_resource_name(request.name, max_length=40)
+    snapshot = _preview_capacity_snapshot(batch, core, namespace=namespace)
+    exists = requested_name in snapshot.names
+    if request.createOnly and (exists or _namespace_exists(core, requested_name)):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"preview {requested_name} already exists",
+        )
+    if not exists:
+        maximum = _vcluster_preview_max()
+        if snapshot.awake >= maximum:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"awake preview capacity reached ({snapshot.awake}/{maximum})",
+            )
+        total_maximum = _vcluster_preview_total_max()
+        if total_maximum > 0 and snapshot.total >= total_maximum:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=(
+                    f"total preview capacity reached ({snapshot.total}/{total_maximum})"
+                ),
+            )
+    try:
+        _submit_preview_job(
+            batch,
+            core,
+            namespace=namespace,
+            manifest=manifest,
+            lifecycle=request.lifecycle or "ephemeral",
+            create_only=request.createOnly,
+        )
+    except Exception as exc:
+        if request.createOnly and getattr(exc, "status", None) == 409:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"preview {requested_name} already has a provisioning reservation",
+            ) from exc
+        raise
+
+
+def _resume_preview_with_capacity(
+    batch: Any,
+    core: Any,
+    *,
+    name: str,
+    namespace: str,
+    operation_holder: str | None = None,
+    coordination: Any | None = None,
+) -> tuple[PreviewMember, bool]:
+    coordination = coordination or _load_k8s_coordination_client()
+    initial = _read_preview_member(core, name)
+    holder = operation_holder or _acquire_preview_operation_lease(
+        coordination, namespace=namespace, real_name=initial.real_name
+    )
+    handed_to_runner = False
+    try:
+        with _preview_capacity_lease(coordination, namespace=namespace):
+            member = _read_preview_member(core, name)
+            if member.real_name != initial.real_name:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="preview alias changed while reserving resume",
+                )
+            if not member.slept:
+                return member, False
+            snapshot = _preview_capacity_snapshot(batch, core, namespace=namespace)
+            maximum = _vcluster_preview_max()
+            if snapshot.awake >= maximum:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"awake preview capacity reached ({snapshot.awake}/{maximum})",
+                )
+            if not _resume_member(
+                batch,
+                core,
+                member,
+                namespace,
+                operation_holder=holder,
+            ):
+                raise HTTPException(status_code=500, detail="preview resume failed")
+            handed_to_runner = True
+            return member, True
+    finally:
+        if not handed_to_runner:
+            _release_preview_operation_lease(
+                coordination,
+                namespace=namespace,
+                real_name=initial.real_name,
+                holder=holder,
+            )
+
+
+def _preview_service_catalog():
+    """Load the authoritative catalog at the SEA trust boundary.
+
+    Production mounts the catalog at /config. The repository-relative fallback
+    keeps local tests and operator validation on the exact same document.
+    """
+    from src.preview_environment_controller import (
+        DEFAULT_SERVICE_CATALOG_PATH,
+        SERVICE_CATALOG_PATH_ENV,
+        CatalogValidationError,
+        load_preview_service_catalog,
+    )
+
+    configured = (os.environ.get(SERVICE_CATALOG_PATH_ENV) or "").strip()
+    candidates = (
+        [Path(configured)] if configured else [Path(DEFAULT_SERVICE_CATALOG_PATH)]
+    )
+    if not configured:
+        candidates.append(
+            Path(__file__).resolve().parents[2]
+            / "shared"
+            / "dev-preview-service-catalog.json"
+        )
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            return load_preview_service_catalog(candidate)
+        except CatalogValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"preview service catalog is invalid: {exc}",
+            ) from exc
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="preview service catalog is not mounted",
+    )
+
+
+def _manifest_candidate_surface() -> dict[str, Any]:
+    path = os.environ.get(
+        "PREVIEW_MANIFEST_CANDIDATE_SURFACE_PATH",
+        DEFAULT_MANIFEST_CANDIDATE_SURFACE_PATH,
+    )
+    try:
+        document = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"manifest candidate surface contract is unavailable: {exc}",
+        ) from exc
+    if (
+        not isinstance(document, dict)
+        or document.get("schemaVersion") != 1
+        or document.get("profile") != "manifest-candidate"
+        or not isinstance(document.get("allowedSurfaces"), list)
+        or not document["allowedSurfaces"]
+        or not isinstance(document.get("routeRules"), list)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="manifest candidate surface contract is invalid",
+        )
+    return document
+
+
+def _path_matches_prefix(path: str, prefix: str) -> bool:
+    return path.startswith(prefix) if prefix.endswith("/") else path == prefix
+
+
+def _validate_candidate_paths(body: VclusterPreviewRequest) -> None:
+    paths = body.candidatePaths
+    if body.profile != "manifest-candidate":
+        if paths:
+            raise HTTPException(
+                status_code=400,
+                detail="candidatePaths are allowed only for manifest-candidate",
+            )
+        return
+    if not paths:
+        raise HTTPException(
+            status_code=400, detail="manifest-candidate requires candidatePaths"
+        )
+    if len(set(paths)) != len(paths):
+        raise HTTPException(
+            status_code=400, detail="candidatePaths must not duplicate paths"
+        )
+    for path in paths:
+        if (
+            not isinstance(path, str)
+            or not path
+            or len(path) > 512
+            or path.startswith("/")
+            or "\\" in path
+            or any(part in {"", ".", ".."} for part in path.split("/"))
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="candidatePaths must contain normalized repository-relative paths",
+            )
+    contract = _manifest_candidate_surface()
+    expected_lane = body.lane or "application"
+    for path in paths:
+        if expected_lane == "application" and any(
+            isinstance(entry, dict)
+            and isinstance(entry.get("pathPrefix"), str)
+            and _path_matches_prefix(path, entry["pathPrefix"])
+            for entry in contract["allowedSurfaces"]
+        ):
+            continue
+        route = next(
+            (
+                entry
+                for entry in contract["routeRules"]
+                if isinstance(entry, dict)
+                and isinstance(entry.get("pathPrefix"), str)
+                and _path_matches_prefix(path, entry["pathPrefix"])
+            ),
+            None,
+        )
+        if route:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"candidate path {path} requires {route.get('profile')} "
+                    f"lane {route.get('lane')}: "
+                    f"{route.get('reason')}"
+                ),
+            )
+        raise HTTPException(
+            status_code=400,
+            detail=f"candidate path {path} is outside the executable preview surface",
+        )
+
+
+def _validate_profiled_preview_request(body: VclusterPreviewRequest) -> None:
+    """Validate the new immutable PreviewEnvironment request without changing the
+    legacy vCluster API contract during the delivery cutover."""
+    if body.action != "up":
+        return
+    if body.profile is None:
+        raise HTTPException(
+            status_code=400,
+            detail="new preview creation requires the profiled PreviewEnvironment contract",
+        )
+    if body.name.startswith("pool-") or body.name in {
+        "mtxdev1",
+        "mtxtmpl1",
+        "preview6",
+        "ganpilot",
+        "ganvalidate",
+        "test3",
+    }:
+        raise HTTPException(
+            status_code=400,
+            detail="preview name is reserved for legacy preview retirement",
+        )
+    if body.profile not in {
+        "app-live",
+        "manifest-candidate",
+        "host-candidate",
+    }:
+        raise HTTPException(status_code=400, detail="invalid preview profile")
+    if body.profile == "host-candidate":
+        raise HTTPException(
+            status_code=400,
+            detail="host-candidate requires the leased physical-dev adapter, not vCluster",
+        )
+    if body.lane not in {"application", "management"}:
+        raise HTTPException(
+            status_code=400, detail="lane must be application|management"
+        )
+    if body.lane == "management" and body.profile != "manifest-candidate":
+        raise HTTPException(
+            status_code=400,
+            detail="only manifest-candidate can use the management lane",
+        )
+    if body.lane == "management":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "manifest-candidate lane management requires the isolated operator "
+                "management "
+                "adapter, not the standard vCluster lane"
+            ),
+        )
+    if not body.trustedCode:
+        raise HTTPException(
+            status_code=403,
+            detail="profiled preview environments require trustedCode=true",
+        )
+    if not body.platformRevision or not re.fullmatch(
+        r"[0-9a-f]{40}", body.platformRevision
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="platformRevision must be a full lowercase 40-character Git SHA",
+        )
+    if body.targetRevision and body.targetRevision != body.platformRevision:
+        raise HTTPException(
+            status_code=400,
+            detail="targetRevision must match platformRevision on profiled requests",
+        )
+    if body.profile == "manifest-candidate" and body.pool:
+        raise HTTPException(
+            status_code=400,
+            detail="manifest-candidate cannot claim or bake a moving warm-pool baseline",
+        )
+    if body.capabilityBundle is None:
+        raise HTTPException(
+            status_code=400,
+            detail="profiled previews require a broker-derived capabilityBundle",
+        )
+    if body.previewDb is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="profiled previews cannot select a shared preview database",
+        )
+    if body.previewDbMode not in {None, "cnpg"}:
+        raise HTTPException(
+            status_code=400,
+            detail="profiled previews require previewDbMode=cnpg",
+        )
+    if body.previewDbBootstrap not in {None, "migrate"}:
+        raise HTTPException(
+            status_code=400,
+            detail="profiled previews require previewDbBootstrap=migrate",
+        )
+    if body.previewObservability not in {None, "disabled"}:
+        raise HTTPException(
+            status_code=400,
+            detail="profiled previews require previewObservability=disabled",
+        )
+    _validate_candidate_paths(body)
+    if body.mode not in {"live", "reconciled"}:
+        raise HTTPException(
+            status_code=400, detail="mode must be live|reconciled on profiled requests"
+        )
+    if body.profile != "app-live" and body.mode != "reconciled":
+        raise HTTPException(
+            status_code=400, detail=f"{body.profile} requires reconciled mode"
+        )
+    if body.lifecycle not in {"ephemeral", "retained"}:
+        raise HTTPException(
+            status_code=400,
+            detail="profiled vCluster lifecycle must be ephemeral|retained",
+        )
+    if (
+        body.ttlHours is None
+        or isinstance(body.ttlHours, bool)
+        or not 1 <= body.ttlHours <= 168
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="ttlHours must be an integer between 1 and 168 on profiled requests",
+        )
+    allocation = body.allocation
+    if not isinstance(allocation, dict) or allocation.get("kind") != "cold":
+        raise HTTPException(
+            status_code=400,
+            detail="profiled PreviewEnvironment allocation is cold-only",
+        )
+    if set(allocation) != {"kind"}:
+        raise HTTPException(
+            status_code=400, detail="allocation contains unknown fields"
+        )
+    if body.pool:
+        raise HTTPException(
+            status_code=409,
+            detail="profiled warm pools are retired; use a cold preview",
+        )
+    if not body.createOnly:
+        raise HTTPException(
+            status_code=400,
+            detail="profiled cold previews require createOnly=true",
+        )
+    selected_services = set(body.services)
+    if any(
+        not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", service)
+        for service in body.services
+    ):
+        raise HTTPException(
+            status_code=400, detail="services contains an invalid service id"
+        )
+    if len(selected_services) != len(body.services):
+        raise HTTPException(
+            status_code=400, detail="services must not contain duplicates"
+        )
+    catalog = _preview_service_catalog()
+    if (
+        not isinstance(body.catalogDigest, str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", body.catalogDigest)
+        or body.catalogDigest != catalog.catalog_digest
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="catalogDigest must exactly match the mounted preview service catalog",
+        )
+    if body.profile == "app-live" and not selected_services:
+        raise HTTPException(
+            status_code=400, detail="app-live requires at least one service"
+        )
+    for service in body.services:
+        capability = catalog.services.get(service)
+        if capability is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"service {service} is not present in the preview service catalog",
+            )
+        if body.profile == "app-live" and not capability.preview_native:
+            raise HTTPException(
+                status_code=400,
+                detail=f"service {service} is not preview-native for app-live",
+            )
+    image_pattern = re.compile(
+        r"^ghcr\.io/pittampalliorg/[a-z0-9][a-z0-9._-]{0,126}[a-z0-9]"
+        r"@sha256:[0-9a-f]{64}$"
+    )
+    for service, image in body.imageOverrides.items():
+        if service not in body.services:
+            raise HTTPException(
+                status_code=400,
+                detail="imageOverrides keys must name a requested service",
+            )
+        if not image_pattern.fullmatch(image):
+            raise HTTPException(
+                status_code=400,
+                detail="imageOverrides must use immutable PittampalliOrg GHCR digests",
+            )
+        capability = catalog.services.get(service)
+        if capability is None or not capability.acceptance_build:
+            raise HTTPException(
+                status_code=400,
+                detail=f"service {service} has no catalog-backed acceptance build",
+            )
+    if body.mode == "live" and body.imageOverrides:
+        raise HTTPException(
+            status_code=400, detail="live mode cannot carry imageOverrides"
+        )
+    if (
+        body.profile == "app-live"
+        and body.mode == "reconciled"
+        and set(body.imageOverrides) != selected_services
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "reconciled app-live acceptance requires imageOverrides with exactly "
+                "one immutable image for every selected service"
+            ),
+        )
+    delivery = body.delivery or os.environ.get(
+        "VCLUSTER_PREVIEW_DELIVERY", "reconciler"
+    )
+    if delivery != "reconciler":
+        raise HTTPException(
+            status_code=400, detail="profiled previews require delivery=reconciler"
+        )
+    enroll_mode = body.enrollMode or os.environ.get(
+        "VCLUSTER_PREVIEW_ENROLL_MODE", "agent"
+    )
+    if enroll_mode != "agent":
+        raise HTTPException(
+            status_code=400,
+            detail="profiled previews require enrollMode=agent",
+        )
+    if not body.sourceRevision or not re.fullmatch(
+        r"[0-9a-f]{40}", body.sourceRevision
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="sourceRevision must be a full lowercase 40-character Git SHA",
+        )
+    owner = _preview_owner(body.owner)
+    if (
+        owner is None
+        or owner.kind not in {"user", "workflow", "session", "automation"}
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}", owner.id)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="owner must be a valid structured {kind,id} value",
+        )
+    origin = _preview_origin(body.origin)
+    if origin is None or origin.kind not in {
+        "user",
+        "pull-request",
+        "workflow",
+        "interactive-session",
+        "automation",
+    }:
+        raise HTTPException(
+            status_code=400,
+            detail="origin must be a valid structured {kind,reference?} value",
+        )
+    if origin.reference is not None and (
+        not origin.reference.strip()
+        or len(origin.reference) > 512
+        or re.search(r"[\x00-\x1f\x7f]", origin.reference)
+    ):
+        raise HTTPException(status_code=400, detail="origin.reference is invalid")
+    if origin.kind in {"pull-request", "workflow", "interactive-session"} and not (
+        origin.reference and origin.reference.strip()
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"origin.reference is required for {origin.kind}",
+        )
+    if (
+        body.profile == "app-live"
+        and body.mode == "live"
+        and not (
+            owner.kind == "user"
+            or (owner.kind == "automation" and origin.kind == "pull-request")
+        )
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "live app-live previews require a user owner or "
+                "pull-request automation owner"
+            ),
+        )
+    if body.provenance is None:
+        raise HTTPException(status_code=400, detail="provenance is required")
+    if len(json.dumps(body.provenance, separators=(",", ":"))) > 4096:
+        raise HTTPException(status_code=400, detail="provenance exceeds 4096 bytes")
+    for field in ("requestId", "platformRepository", "sourceRepository"):
+        value = body.provenance.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(
+                status_code=400,
+                detail=f"provenance.{field} is required",
+            )
+    if body.provenance.get("platformRepository") != "PittampalliOrg/stacks":
+        raise HTTPException(
+            status_code=400,
+            detail="provenance.platformRepository must be PittampalliOrg/stacks",
+        )
+    if body.provenance.get("sourceRepository") != "PittampalliOrg/workflow-builder":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "provenance.sourceRepository must be PittampalliOrg/workflow-builder"
+            ),
+        )
+    requested_at = body.provenance.get("requestedAt")
+    if not isinstance(requested_at, str) or not re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z",
+        requested_at,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="provenance.requestedAt must be an RFC3339 UTC timestamp ending in Z",
+        )
+    try:
+        datetime.fromisoformat(requested_at[:-1] + "+00:00")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="provenance.requestedAt must be a real timestamp",
+        ) from exc
+
+
+def _validate_profiled_preview_claim_request(
+    body: VclusterPreviewClaimRequest,
+) -> None:
+    """Warm claims are retired until a bake can prove the full immutable tuple."""
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="profiled warm pools are retired; use a cold preview",
+    )
 
 
 @app.post("/internal/vcluster-preview", status_code=status.HTTP_202_ACCEPTED)
@@ -4914,7 +8128,39 @@ def provision_vcluster_preview(
     set_current_span_io("input", body.model_dump())
     if body.action not in {"up", "down"}:
         raise HTTPException(status_code=400, detail="action must be up|down")
-    namespace = _agent_workflow_host_namespace()
+    if body.action == "down" and body.previewDb is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="down previewDb is server-derived and must not be supplied",
+        )
+    if body.action != "down" and (
+        body.teardownExpectedRequestId
+        or body.teardownExpectedSourceRevision
+        or body.teardownProtectedRequestId
+        or body.teardownEnvironmentUid
+        or body.teardownIntentId
+    ):
+        raise HTTPException(
+            status_code=400, detail="teardown ownership guards require action=down"
+        )
+    if body.action == "down" and bool(body.teardownEnvironmentUid) != bool(
+        body.teardownIntentId
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="teardown environment UID and deletion intent id must be supplied together",
+        )
+    if (
+        body.action == "down"
+        and body.teardownIntentId
+        and not (body.teardownExpectedRequestId and body.teardownExpectedSourceRevision)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="controller deletion intent requires exact owned teardown guards",
+        )
+    _validate_profiled_preview_request(body)
+    namespace = _vcluster_preview_control_namespace()
     manifest = _vcluster_preview_job_manifest(body, namespace=namespace)
     job_name = manifest["metadata"]["name"]
     tailnet_host = _vcluster_preview_tailnet_host(body)
@@ -4924,8 +8170,174 @@ def provision_vcluster_preview(
         "true",
         "yes",
     }:
-        batch, _ = _load_k8s_clients()
-        _create_preview_job(batch, namespace=namespace, manifest=manifest)
+        batch, core = _load_k8s_clients()
+        safe_name = _safe_resource_name(body.name, max_length=40)
+        allow_absent_down_bootstrap = False
+        if body.action == "down" and not _namespace_exists(core, safe_name):
+            try:
+                identity_absent = PreviewRunnerIdentityAdapter(
+                    core, _load_k8s_rbac_client()
+                ).is_absent(preview_name=safe_name)
+            except PreviewRunnerIdentityError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"could not prove preview runner identity absence: {exc}",
+                ) from exc
+            if identity_absent:
+                receipt_succeeded = _preview_down_receipt_succeeded(
+                    batch,
+                    namespace=namespace,
+                    preview_name=safe_name,
+                    expected_request_id=body.teardownExpectedRequestId,
+                    expected_source_revision=body.teardownExpectedSourceRevision,
+                    protected_request_id=body.teardownProtectedRequestId,
+                    environment_uid=body.teardownEnvironmentUid,
+                    deletion_intent_id=body.teardownIntentId,
+                )
+                if not receipt_succeeded and not (
+                    body.teardownEnvironmentUid and body.teardownIntentId
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "preview namespace and identity are absent without a "
+                            "successful down receipt"
+                        ),
+                    )
+                if receipt_succeeded:
+                    result = {
+                        "name": safe_name,
+                        "action": "down",
+                        "job": _vcluster_preview_job_name(safe_name, "down"),
+                        "status": "absent",
+                        "phase": "complete",
+                        "complete": True,
+                        "tailnetHost": tailnet_host,
+                        "url": None,
+                    }
+                    set_current_span_io("output", result)
+                    return result
+                # A failed cold launch can leave only the hub CR. Its exact
+                # controller intent is allowed to create a control-only runner
+                # identity so the normal down Job can emit durable absence proof.
+                allow_absent_down_bootstrap = True
+        coordination = _load_k8s_coordination_client()
+        operation_holder = _acquire_preview_operation_lease(
+            coordination, namespace=namespace, real_name=body.name
+        )
+        handed_to_runner = False
+        try:
+            # Build the Job only after admission so every mutable runner carries the
+            # exact Lease holder that fenced the SEA-side decision.
+            manifest = _vcluster_preview_job_manifest(
+                body,
+                namespace=namespace,
+                operation_holder=operation_holder,
+            )
+            job_name = manifest["metadata"]["name"]
+            if body.action == "up":
+                with _preview_capacity_lease(coordination, namespace=namespace):
+                    _create_preview_with_capacity(
+                        batch,
+                        core,
+                        namespace=namespace,
+                        request=body,
+                        manifest=manifest,
+                    )
+            else:
+                # DELETE performs an early user-facing check. Repeat it under the
+                # operation Lease so a replacement generation cannot land between
+                # the check and creation of the destructive runner. A retry may land
+                # after the first down attempt removed the namespace; exact ownership
+                # guards plus the pre-existing bounded identity preserve that recovery
+                # path without recreating the capacity-bearing namespace.
+                try:
+                    member = _read_preview_member(core, body.name)
+                except HTTPException as exc:
+                    if exc.status_code != status.HTTP_404_NOT_FOUND:
+                        raise
+                    member = None
+                if member is None:
+                    owned_guard = bool(
+                        body.teardownExpectedRequestId
+                        and body.teardownExpectedSourceRevision
+                    )
+                    superseded_guard = bool(body.teardownProtectedRequestId)
+                    if owned_guard == superseded_guard:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=(
+                                "residual preview teardown requires one exact owned "
+                                "or superseded ownership guard"
+                            ),
+                        )
+                else:
+                    observed_request_id = (
+                        member.provenance.get("requestId")
+                        if member.provenance is not None
+                        else None
+                    )
+                    owned_guard = bool(
+                        body.teardownExpectedRequestId
+                        and body.teardownExpectedSourceRevision
+                    )
+                    superseded_guard = bool(body.teardownProtectedRequestId)
+                    if _preview_member_is_controller_owned(member) and (
+                        owned_guard == superseded_guard
+                    ):
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=(
+                                "profiled preview teardown requires one exact owned "
+                                "or superseded ownership guard"
+                            ),
+                        )
+                    if _preview_member_requires_archive_teardown(member):
+                        _require_preview_archive_teardown_proof(request)
+                        if not (
+                            body.teardownExpectedRequestId
+                            and body.teardownExpectedSourceRevision
+                        ):
+                            raise HTTPException(
+                                status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=(
+                                    "mutable live preview teardown requires exact "
+                                    "requestId and sourceRevision ownership guards"
+                                ),
+                            )
+                    if body.teardownExpectedRequestId and (
+                        observed_request_id != body.teardownExpectedRequestId
+                        or member.source_revision != body.teardownExpectedSourceRevision
+                    ):
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="preview teardown ownership no longer matches",
+                        )
+                    if (
+                        body.teardownProtectedRequestId
+                        and observed_request_id == body.teardownProtectedRequestId
+                    ):
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="refusing to teardown the protected preview generation",
+                        )
+                _submit_preview_job(
+                    batch,
+                    core,
+                    namespace=namespace,
+                    manifest=manifest,
+                    lifecycle=member.lifecycle if member is not None else None,
+                    allow_absent_down_bootstrap=allow_absent_down_bootstrap,
+                )
+            handed_to_runner = True
+        finally:
+            if not handed_to_runner:
+                _release_preview_operation_lease(
+                    coordination,
+                    namespace=namespace,
+                    real_name=body.name,
+                    holder=operation_holder,
+                )
     response = {
         "name": body.name,
         "action": body.action,
@@ -4936,6 +8348,22 @@ def provision_vcluster_preview(
     }
     set_current_span_io("output", response)
     return response
+
+
+def _preview_reconciliation_marker_matches(
+    annotations: dict[str, str],
+) -> bool:
+    platform_revision = annotations.get("preview.stacks.io/target-revision")
+    source_revision = annotations.get("preview.stacks.io/source-revision")
+    return bool(
+        _parse_rfc3339(annotations.get("preview.stacks.io/reconciliation-succeeded-at"))
+        and re.fullmatch(r"[0-9a-f]{40}", platform_revision or "")
+        and re.fullmatch(r"[0-9a-f]{40}", source_revision or "")
+        and annotations.get("preview.stacks.io/reconciliation-platform-revision")
+        == platform_revision
+        and annotations.get("preview.stacks.io/reconciliation-source-revision")
+        == source_revision
+    )
 
 
 def _vcluster_preview_phase(
@@ -4949,16 +8377,22 @@ def _vcluster_preview_phase(
     `request_timeout` (seconds) bounds each K8s call so one slow/hung preview can't
     stall the caller (the list endpoint probes previews concurrently and treats a
     timed-out probe as not-ready rather than sinking the whole list)."""
-    namespace = _agent_workflow_host_namespace()
+    namespace = _vcluster_preview_control_namespace()
     job_name = _vcluster_preview_job_name(name, "up")
     active = succeeded = failed = 0
+    job_found = False
     try:
-        st = batch.read_namespaced_job_status(
+        job = batch.read_namespaced_job_status(
             name=job_name, namespace=namespace, _request_timeout=request_timeout
-        ).status
+        )
+        job_found = True
+        st = job.status
         active = int(getattr(st, "active", 0) or 0)
         succeeded = int(getattr(st, "succeeded", 0) or 0)
         failed = int(getattr(st, "failed", 0) or 0)
+        condition_succeeded, condition_failed, _ = _preview_job_state(job)
+        succeeded = max(succeeded, int(condition_succeeded))
+        failed = max(failed, int(condition_failed))
     except Exception as exc:
         if getattr(exc, "status", None) != 404:
             raise
@@ -4967,10 +8401,18 @@ def _vcluster_preview_phase(
     # preview name report "provisioning" — the D1 idempotent-up then skipped its
     # claim and polled that phantom forever.
     ns_exists = False
+    profiled = False
+    reconciliation_succeeded = False
     bff_ready = False
     try:
-        core.read_namespace(name=f"vcluster-{name}", _request_timeout=request_timeout)
+        preview_namespace = core.read_namespace(
+            name=f"vcluster-{name}", _request_timeout=request_timeout
+        )
         ns_exists = True
+        metadata = getattr(preview_namespace, "metadata", None)
+        annotations = getattr(metadata, "annotations", None) or {}
+        profiled = bool(annotations.get("preview.stacks.io/profile"))
+        reconciliation_succeeded = _preview_reconciliation_marker_matches(annotations)
     except Exception as exc:
         if getattr(exc, "status", None) != 404:
             raise
@@ -4980,7 +8422,15 @@ def _vcluster_preview_phase(
                 namespace=f"vcluster-{name}", _request_timeout=request_timeout
             )
             for p in pods.items:
-                if not (p.metadata.name or "").startswith("workflow-builder-"):
+                labels = (
+                    getattr(p.metadata, "labels", None) or {}
+                    if getattr(p, "metadata", None)
+                    else {}
+                )
+                if not (
+                    labels.get("app") == "workflow-builder"
+                    and labels.get("vcluster.loft.sh/namespace") == "workflow-builder"
+                ):
                     continue
                 conds = (p.status.conditions or []) if p.status else []
                 if any(
@@ -4993,7 +8443,20 @@ def _vcluster_preview_phase(
         except Exception as exc:
             if getattr(exc, "status", None) != 404:
                 raise
-    if bff_ready:
+    if profiled and failed:
+        phase = "failed"
+    elif profiled and active:
+        phase = "provisioning"
+    elif (
+        profiled
+        and bff_ready
+        and reconciliation_succeeded
+        and (succeeded or not job_found)
+    ):
+        phase = "ready"
+    elif profiled and ns_exists:
+        phase = "provisioning"
+    elif bff_ready:
         phase = "ready"  # BFF is up — stays ready even after the Job is GC'd
     elif active:
         phase = "provisioning"
@@ -5043,6 +8506,25 @@ def _resolve_preview_realname(core, name: str) -> str:
             continue
         return _preview_realname_from_ns(ns)
     return name
+
+
+def _resolve_preview_realname_strict(core: Any, name: str) -> str:
+    """Resolve aliases for authoritative operations without outage fallback."""
+    safe_name = _safe_resource_name(name, max_length=40)
+    nss = core.list_namespace(
+        label_selector=f"{_VCLUSTER_PREVIEW_ALIAS_LABEL}={safe_name}"
+    )
+    matches = [
+        _preview_realname_from_ns(ns)
+        for ns in nss.items
+        if not _preview_ns_is_terminating(ns)
+    ]
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="preview alias resolves to multiple active environments",
+        )
+    return matches[0] if matches else safe_name
 
 
 @app.get("/internal/vcluster-preview/{name}")
@@ -5101,12 +8583,799 @@ def get_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
     return result
 
 
+def _preview_pod_is_ready(pod: Any) -> bool:
+    status_value = getattr(pod, "status", None)
+    if getattr(status_value, "phase", None) != "Running":
+        return False
+    conditions = getattr(status_value, "conditions", None) or []
+    return any(
+        getattr(condition, "type", None) == "Ready"
+        and str(getattr(condition, "status", "")).lower() == "true"
+        for condition in conditions
+    )
+
+
+def _preview_pod_matches_service(pod: Any, service: str) -> bool:
+    metadata = getattr(pod, "metadata", None)
+    labels = getattr(metadata, "labels", None) or {}
+    if service in {
+        labels.get("app"),
+        labels.get("app.kubernetes.io/name"),
+        labels.get("app.kubernetes.io/component"),
+    }:
+        return True
+    pod_name = getattr(metadata, "name", None) or ""
+    return pod_name == service or pod_name.startswith(f"{service}-")
+
+
+def _preview_runtime_services(
+    pods: Any, services: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    """Project Kubernetes pod/container state into the narrow runtime-proof DTO."""
+    observations: list[dict[str, Any]] = []
+    for service in sorted(services):
+        containers: list[dict[str, Any]] = []
+        for pod in sorted(
+            getattr(pods, "items", None) or [],
+            key=lambda item: getattr(getattr(item, "metadata", None), "name", "") or "",
+        ):
+            if not _preview_pod_matches_service(pod, service):
+                continue
+            metadata = getattr(pod, "metadata", None)
+            pod_name = getattr(metadata, "name", None) or ""
+            spec_value = getattr(pod, "spec", None)
+            status_value = getattr(pod, "status", None)
+            statuses = {
+                getattr(item, "name", ""): item
+                for item in (getattr(status_value, "container_statuses", None) or [])
+            }
+            pod_ready = _preview_pod_is_ready(pod) and not bool(
+                getattr(metadata, "deletion_timestamp", None)
+            )
+            for container in getattr(spec_value, "containers", None) or []:
+                if getattr(container, "name", None) != service:
+                    continue
+                container_status = statuses.get(service)
+                containers.append(
+                    {
+                        "pod": pod_name,
+                        "image": getattr(container, "image", None) or "",
+                        "imageId": (
+                            getattr(container_status, "image_id", None)
+                            if container_status is not None
+                            else None
+                        ),
+                        "ready": pod_ready
+                        and bool(getattr(container_status, "ready", False)),
+                    }
+                )
+        observations.append({"service": service, "containers": containers})
+    return observations
+
+
+@app.get("/internal/vcluster-preview/{name}/runtime")
+def get_vcluster_preview_runtime(request: Request, name: str) -> dict[str, Any]:
+    """Read actual selected-service pod images from the host Kubernetes API."""
+    _require_internal(request)
+    safe_name = _safe_resource_name(name, max_length=40)
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        return {
+            "name": name,
+            "resourceName": safe_name,
+            "reconciliationSucceeded": True,
+            "services": [],
+        }
+    batch, core = _load_k8s_clients()
+    member = _read_preview_member(core, safe_name)
+    pods = core.list_namespaced_pod(
+        namespace=member.ns_name,
+        _request_timeout=_VCLUSTER_PREVIEW_PROBE_TIMEOUT,
+    )
+    up_job_found = False
+    up_job_active = False
+    up_job_succeeded = False
+    up_job_failed = False
+    try:
+        up_job = batch.read_namespaced_job_status(
+            name=_vcluster_preview_job_name(member.real_name, "up"),
+            namespace=_vcluster_preview_control_namespace(),
+            _request_timeout=_VCLUSTER_PREVIEW_PROBE_TIMEOUT,
+        )
+        up_job_found = True
+        up_job_active = bool(int(getattr(up_job.status, "active", 0) or 0))
+        up_job_succeeded, up_job_failed, _ = _preview_job_state(up_job)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 404:
+            raise
+    result = {
+        "name": name,
+        "resourceName": member.real_name,
+        "reconciliationSucceeded": bool(
+            member.reconciliation_succeeded_at
+            and member.reconciliation_platform_revision == member.platform_revision
+            and member.reconciliation_source_revision == member.source_revision
+            and (
+                (up_job_succeeded and not up_job_failed and not up_job_active)
+                or not up_job_found
+            )
+        ),
+        "services": _preview_runtime_services(pods, member.services or ()),
+    }
+    set_current_span_io("output", result)
+    return result
+
+
+def _preview_job_state(job: Any) -> tuple[bool, bool, str | None]:
+    status_value = getattr(job, "status", None)
+    succeeded = int(getattr(status_value, "succeeded", 0) or 0) > 0
+    failed = int(getattr(status_value, "failed", 0) or 0) > 0
+    message: str | None = None
+    for condition in getattr(status_value, "conditions", None) or []:
+        if str(getattr(condition, "status", "")).lower() != "true":
+            continue
+        condition_type = getattr(condition, "type", None)
+        if condition_type == "Complete":
+            succeeded = True
+        elif condition_type == "Failed":
+            failed = True
+            message = getattr(condition, "message", None) or getattr(
+                condition, "reason", None
+            )
+    return succeeded, failed, message
+
+
+_PREVIEW_IDENTITY_CLEANED_ANNOTATION = "preview.stacks.io/identity-cleaned"
+
+
+def _kube_field(value: Any, snake_name: str, camel_name: str | None = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(camel_name or snake_name)
+    return getattr(value, snake_name, None)
+
+
+def _runner_job_identity(job: Any) -> tuple[str, str] | None:
+    metadata = _kube_field(job, "metadata")
+    labels = _kube_field(metadata, "labels") or {}
+    preview_name = labels.get("vcluster-preview-name")
+    action = labels.get("vcluster-preview-action")
+    if not isinstance(preview_name, str) or action not in {
+        "up",
+        "down",
+        "claim",
+        "sleep",
+        "resume",
+    }:
+        return None
+    try:
+        expected_service_account = preview_runner_identity_name(preview_name)
+    except PreviewRunnerIdentityError:
+        return None
+    expected_labels = {
+        "app": "vcluster-preview",
+        "vcluster-preview-name": preview_name,
+        "vcluster-preview-action": action,
+        "preview.stacks.io/managed": "true",
+        "preview.stacks.io/preview-name": preview_name,
+    }
+    spec = _kube_field(job, "spec")
+    template = _kube_field(spec, "template")
+    template_metadata = _kube_field(template, "metadata")
+    pod_labels = _kube_field(template_metadata, "labels") or {}
+    pod_spec = _kube_field(template, "spec")
+    if (
+        _kube_field(metadata, "name")
+        != _vcluster_preview_job_name(preview_name, action)
+        or _kube_field(pod_spec, "service_account_name", "serviceAccountName")
+        != expected_service_account
+        or any(
+            labels.get(key) != value or pod_labels.get(key) != value
+            for key, value in expected_labels.items()
+        )
+    ):
+        return None
+    return preview_name, action
+
+
+def _down_job_identity(job: Any) -> str | None:
+    identity = _runner_job_identity(job)
+    if identity is None or identity[1] != "down" or _runner_job_generation(job) is None:
+        return None
+    return identity[0]
+
+
+def _runner_job_generation(job: Any) -> str | None:
+    metadata = _kube_field(job, "metadata")
+    annotations = _kube_field(metadata, "annotations") or {}
+    spec = _kube_field(job, "spec")
+    template = _kube_field(spec, "template")
+    template_metadata = _kube_field(template, "metadata")
+    pod_annotations = _kube_field(template_metadata, "annotations") or {}
+    generation = annotations.get(RUNNER_GENERATION_ANNOTATION)
+    if (
+        not isinstance(generation, str)
+        or not re.fullmatch(r"op:[0-9a-f]{32}", generation)
+        or pod_annotations.get(RUNNER_GENERATION_ANNOTATION) != generation
+    ):
+        return None
+    return generation
+
+
+def _preview_identity_cleanup_once(
+    batch: Any,
+    core: Any,
+    rbac: Any,
+    coordination: Any,
+    *,
+    namespace: str,
+) -> dict[str, int]:
+    stats = {"scanned": 0, "eligible": 0, "cleaned": 0, "busy": 0, "failed": 0}
+    jobs = batch.list_namespaced_job(
+        namespace=namespace,
+        label_selector="vcluster-preview-action=down,preview.stacks.io/managed=true",
+    )
+    for listed_job in jobs.items:
+        stats["scanned"] += 1
+        preview_name = _down_job_identity(listed_job)
+        succeeded, failed, _ = _preview_job_state(listed_job)
+        annotations = (
+            _kube_field(_kube_field(listed_job, "metadata"), "annotations") or {}
+        )
+        if (
+            preview_name is None
+            or not succeeded
+            or failed
+            or annotations.get(_PREVIEW_IDENTITY_CLEANED_ANNOTATION) == "true"
+        ):
+            continue
+        stats["eligible"] += 1
+        holder: str | None = None
+        try:
+            holder = _acquire_preview_operation_lease(
+                coordination, namespace=namespace, real_name=preview_name
+            )
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_409_CONFLICT:
+                stats["busy"] += 1
+                continue
+            stats["failed"] += 1
+            logger.warning(
+                "preview-identity-cleanup: lease acquire failed for %s: %s",
+                preview_name,
+                exc.detail,
+            )
+            continue
+        try:
+            current_job = batch.read_namespaced_job_status(
+                name=_vcluster_preview_job_name(preview_name, "down"),
+                namespace=namespace,
+                _request_timeout=_VCLUSTER_PREVIEW_PROBE_TIMEOUT,
+            )
+            current_name = _down_job_identity(current_job)
+            current_succeeded, current_failed, _ = _preview_job_state(current_job)
+            if (
+                current_name != preview_name
+                or not current_succeeded
+                or current_failed
+                or _namespace_exists(core, preview_name)
+            ):
+                continue
+            PreviewRunnerIdentityAdapter(core, rbac).cleanup_after_down(
+                preview_name=preview_name,
+                runner_succeeded=True,
+                target_namespace_absent=True,
+            )
+            batch.patch_namespaced_job(
+                name=_vcluster_preview_job_name(preview_name, "down"),
+                namespace=namespace,
+                body={
+                    "metadata": {
+                        "annotations": {_PREVIEW_IDENTITY_CLEANED_ANNOTATION: "true"}
+                    }
+                },
+            )
+            _delete_preview_operation_lease(
+                coordination,
+                namespace=namespace,
+                real_name=preview_name,
+                holder=holder,
+            )
+            holder = None
+            stats["cleaned"] += 1
+        except Exception as exc:
+            stats["failed"] += 1
+            logger.warning(
+                "preview-identity-cleanup: reconcile failed for %s: %s",
+                preview_name,
+                exc,
+            )
+        finally:
+            if holder is not None:
+                _release_preview_operation_lease(
+                    coordination,
+                    namespace=namespace,
+                    real_name=preview_name,
+                    holder=holder,
+                )
+    return stats
+
+
+def _preview_identity_orphan_cleanup_once(
+    batch: Any,
+    core: Any,
+    rbac: Any,
+    coordination: Any,
+    *,
+    namespace: str,
+) -> dict[str, int]:
+    stats = {"scanned": 0, "recovered": 0, "cleaned": 0, "busy": 0, "failed": 0}
+    namespaces = core.list_namespace(
+        label_selector=(
+            "preview.stacks.io/managed=true,preview.stacks.io/runner-admitted=false"
+        )
+    )
+    for item in namespaces.items:
+        stats["scanned"] += 1
+        metadata = _kube_field(item, "metadata")
+        labels = _kube_field(metadata, "labels") or {}
+        annotations = _kube_field(metadata, "annotations") or {}
+        preview_name = labels.get("preview.stacks.io/preview-name")
+        runner_generation = annotations.get(RUNNER_GENERATION_ANNOTATION)
+        if (
+            not isinstance(preview_name, str)
+            or _kube_field(metadata, "name") != f"vcluster-{preview_name}"
+            or labels.get("preview.stacks.io/identity-ready") != "true"
+            or not isinstance(runner_generation, str)
+            or not re.fullmatch(r"op:[0-9a-f]{32}", runner_generation)
+        ):
+            stats["failed"] += 1
+            continue
+        holder: str | None = None
+        cleaned = False
+        try:
+            holder = _acquire_preview_operation_lease(
+                coordination, namespace=namespace, real_name=preview_name
+            )
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_409_CONFLICT:
+                stats["busy"] += 1
+                continue
+            stats["failed"] += 1
+            continue
+        try:
+            current_namespace = core.read_namespace(name=f"vcluster-{preview_name}")
+            current_labels = (
+                _kube_field(_kube_field(current_namespace, "metadata"), "labels") or {}
+            )
+            current_annotations = (
+                _kube_field(_kube_field(current_namespace, "metadata"), "annotations")
+                or {}
+            )
+            if current_labels.get("preview.stacks.io/runner-admitted") != "false":
+                continue
+            if (
+                current_annotations.get(RUNNER_GENERATION_ANNOTATION)
+                != runner_generation
+            ):
+                continue
+            jobs = batch.list_namespaced_job(
+                namespace=namespace,
+                label_selector=(
+                    f"vcluster-preview-name={preview_name},"
+                    "preview.stacks.io/managed=true"
+                ),
+            )
+            identities = [(_runner_job_identity(job), job) for job in jobs.items]
+            if any(identity is None for identity, _job in identities):
+                raise PreviewRunnerIdentityError(
+                    f"unadmitted reservation {preview_name} has a malformed Job"
+                )
+            valid_jobs = [
+                job
+                for identity, job in identities
+                if identity is not None
+                and identity[0] == preview_name
+                and _runner_job_generation(job) == runner_generation
+            ]
+            if valid_jobs:
+                core.patch_namespace(
+                    name=f"vcluster-{preview_name}",
+                    body={
+                        "metadata": {
+                            "labels": {"preview.stacks.io/runner-admitted": "true"}
+                        }
+                    },
+                )
+                proved = core.read_namespace(name=f"vcluster-{preview_name}")
+                proved_labels = (
+                    _kube_field(_kube_field(proved, "metadata"), "labels") or {}
+                )
+                if proved_labels.get("preview.stacks.io/runner-admitted") != "true":
+                    raise PreviewRunnerIdentityError(
+                        f"runner admission marker for {preview_name} did not persist"
+                    )
+                stats["recovered"] += 1
+            else:
+                PreviewRunnerIdentityAdapter(core, rbac).cleanup_unadmitted(
+                    preview_name=preview_name
+                )
+                cleaned = True
+                _delete_preview_operation_lease(
+                    coordination,
+                    namespace=namespace,
+                    real_name=preview_name,
+                    holder=holder,
+                )
+                holder = None
+                stats["cleaned"] += 1
+        except Exception as exc:
+            stats["failed"] += 1
+            logger.warning(
+                "preview-identity-cleanup: orphan reconcile failed for %s: %s",
+                preview_name,
+                exc,
+            )
+        finally:
+            if holder is not None:
+                _release_preview_operation_lease(
+                    coordination,
+                    namespace=namespace,
+                    real_name=preview_name,
+                    holder=holder,
+                )
+        if cleaned:
+            _invalidate_previews_cache()
+    return stats
+
+
+_preview_identity_cleanup_started = False
+_preview_identity_cleanup_lock = threading.Lock()
+
+
+def _preview_periodic_cleanup_once() -> dict[str, Any]:
+    """Run independent conservative cleanup reconcilers for one periodic tick.
+
+    Adopted Deployment restoration must not be starved by an unrelated runner
+    identity failure: host Sandbox GC can remove the only claim without calling
+    explicit dev-preview teardown, leaving the production Deployment at zero.
+    """
+    result: dict[str, Any] = {
+        "identity": None,
+        "runnerOrphans": None,
+        "adoptOrphans": None,
+        "failures": [],
+    }
+    try:
+        batch, core = _load_k8s_clients()
+    except Exception as exc:
+        result["failures"].append("runner-client-load")
+        logger.warning("preview-identity-cleanup: client load failed: %s", exc)
+    else:
+        try:
+            stats = _preview_identity_cleanup_once(
+                batch,
+                core,
+                _load_k8s_rbac_client(),
+                _load_k8s_coordination_client(),
+                namespace=_vcluster_preview_control_namespace(),
+            )
+            result["identity"] = stats
+            if stats["failed"]:
+                logger.warning("preview-identity-cleanup: stats=%s", stats)
+        except Exception as exc:
+            result["failures"].append("identity")
+            logger.warning("preview-identity-cleanup: pass failed: %s", exc)
+        try:
+            orphan_stats = _preview_identity_orphan_cleanup_once(
+                batch,
+                core,
+                _load_k8s_rbac_client(),
+                _load_k8s_coordination_client(),
+                namespace=_vcluster_preview_control_namespace(),
+            )
+            result["runnerOrphans"] = orphan_stats
+            if orphan_stats["failed"]:
+                logger.warning(
+                    "preview-identity-cleanup: orphan stats=%s", orphan_stats
+                )
+        except Exception as exc:
+            result["failures"].append("runner-orphans")
+            logger.warning("preview-identity-cleanup: orphan pass failed: %s", exc)
+
+    try:
+        result["adoptOrphans"] = _adopt_restore_orphans(
+            _load_k8s_apps_client(),
+            _load_k8s_custom_objects_client(),
+            namespace=_agent_workflow_host_namespace(),
+            coordination=_load_k8s_coordination_client(),
+        )
+    except Exception as exc:
+        result["failures"].append("adopt-orphans")
+        logger.warning("adopt: periodic orphan sweep failed: %s", exc)
+    return result
+
+
+def _preview_identity_cleanup_loop() -> None:
+    interval = float(
+        os.environ.get("VCLUSTER_PREVIEW_IDENTITY_RECONCILE_SECONDS", "10") or 10
+    )
+    time.sleep(min(interval, 5.0))
+    logger.info("preview-identity-cleanup: started (interval=%.0fs)", interval)
+    while True:
+        try:
+            _preview_periodic_cleanup_once()
+        except Exception as exc:
+            logger.warning("preview-periodic-cleanup: unexpected pass failure: %s", exc)
+        time.sleep(interval)
+
+
+def _start_preview_identity_cleanup_controller() -> None:
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        return
+    global _preview_identity_cleanup_started
+    with _preview_identity_cleanup_lock:
+        if _preview_identity_cleanup_started:
+            return
+        _preview_identity_cleanup_started = True
+        threading.Thread(
+            target=_preview_identity_cleanup_loop,
+            daemon=True,
+            name="vcluster-preview-identity-cleanup",
+        ).start()
+
+
+@app.get("/internal/vcluster-preview/{name}/cleanup")
+def get_vcluster_preview_cleanup(request: Request, name: str) -> dict[str, Any]:
+    """Converge and prove teardown of the bounded per-preview runner identity."""
+    _require_internal(request)
+    safe_name = _safe_resource_name(name, max_length=40)
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        checks = {
+            "runnerSucceeded": True,
+            "previewEnvironmentAbsent": False,
+            "applicationAbsent": False,
+            "agentRegistrationAbsent": False,
+            "agentNamespacesAbsent": False,
+            "databaseAbsent": True,
+            "natsStreamAbsent": True,
+            "headlampRegistrationAbsent": False,
+            "tailnetEgressAbsent": True,
+            "hostNamespaceAbsent": True,
+            "storageScopeAbsent": True,
+            "runnerIdentityAbsent": True,
+        }
+        return {
+            "name": name,
+            "resourceName": safe_name,
+            "complete": True,
+            "phase": "complete",
+            "checks": checks,
+            "message": None,
+        }
+
+    batch, core = _load_k8s_clients()
+    real_name = _resolve_preview_realname_strict(core, safe_name)
+    succeeded = failed = False
+    message: str | None = None
+    job: Any | None = None
+    try:
+        job = batch.read_namespaced_job_status(
+            name=_vcluster_preview_job_name(real_name, "down"),
+            namespace=_vcluster_preview_control_namespace(),
+            _request_timeout=_VCLUSTER_PREVIEW_PROBE_TIMEOUT,
+        )
+        succeeded, failed, message = _preview_job_state(job)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 404:
+            raise
+
+    host_absent = not _namespace_exists(core, real_name)
+    runner_identity_absent = False
+    if succeeded and host_absent:
+        try:
+            runner_identity_absent = PreviewRunnerIdentityAdapter(
+                core, _load_k8s_rbac_client()
+            ).is_absent(preview_name=real_name)
+        except PreviewRunnerIdentityError as exc:
+            message = f"runner identity absence proof pending: {exc}"
+    # SEA proves only dev-side physical cleanup. The hub PreviewEnvironment remains
+    # finalizer-blocked until the broker records the tuple-bound teardownProof; hub
+    # Application/registration absence is a later controller phase.
+    checks = {
+        "runnerSucceeded": succeeded,
+        "previewEnvironmentAbsent": False,
+        "applicationAbsent": False,
+        "agentRegistrationAbsent": False,
+        "agentNamespacesAbsent": False,
+        "databaseAbsent": succeeded,
+        "natsStreamAbsent": succeeded,
+        "headlampRegistrationAbsent": False,
+        "tailnetEgressAbsent": succeeded,
+        "hostNamespaceAbsent": host_absent,
+        "storageScopeAbsent": succeeded,
+        "runnerIdentityAbsent": runner_identity_absent,
+    }
+    complete = succeeded and host_absent and runner_identity_absent
+    phase = "complete" if complete else "failed" if failed else "pending"
+    teardown_proof: dict[str, str] | None = None
+    if complete and job is not None:
+        job_metadata = _kube_field(job, "metadata")
+        job_annotations = _kube_field(job_metadata, "annotations") or {}
+        intent_id = job_annotations.get("preview.stacks.io/teardown-intent-id")
+        environment_uid = job_annotations.get(
+            "preview.stacks.io/teardown-environment-uid"
+        )
+        request_id = job_annotations.get("preview.stacks.io/teardown-request-id")
+        source_revision = job_annotations.get(
+            "preview.stacks.io/teardown-source-revision"
+        )
+        runner_generation = _runner_job_generation(job)
+        job_uid = _kube_field(job_metadata, "uid")
+        job_name = _kube_field(job_metadata, "name")
+        if (
+            isinstance(intent_id, str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", intent_id)
+            and isinstance(environment_uid, str)
+            and re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                environment_uid,
+            )
+            and isinstance(request_id, str)
+            and request_id
+            and isinstance(source_revision, str)
+            and re.fullmatch(r"[0-9a-f]{40}", source_revision)
+            and isinstance(job_name, str)
+            and job_name == _vcluster_preview_job_name(real_name, "down")
+            and isinstance(job_uid, str)
+            and re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                job_uid,
+            )
+            and runner_generation is not None
+        ):
+            teardown_proof = {
+                "intentId": intent_id,
+                "environmentUid": environment_uid,
+                "requestId": request_id,
+                "sourceRevision": source_revision,
+                "jobName": job_name,
+                "jobUid": job_uid,
+                "runnerGeneration": runner_generation,
+            }
+    result = {
+        "name": name,
+        "resourceName": real_name,
+        "complete": complete,
+        "phase": phase,
+        "checks": checks,
+        **({"teardownProof": teardown_proof} if teardown_proof is not None else {}),
+        "message": message,
+    }
+    set_current_span_io("output", result)
+    return result
+
+
+def _cleanup_receipt_from_job(job: Any, core: Any) -> dict[str, str] | None:
+    preview_name = _down_job_identity(job)
+    succeeded, failed, _ = _preview_job_state(job)
+    metadata = _kube_field(job, "metadata")
+    annotations = _kube_field(metadata, "annotations") or {}
+    job_name = _kube_field(metadata, "name")
+    job_uid = _kube_field(metadata, "uid")
+    generation = _runner_job_generation(job)
+    if (
+        preview_name is None
+        or not succeeded
+        or failed
+        or annotations.get(_PREVIEW_IDENTITY_CLEANED_ANNOTATION) != "true"
+        or _namespace_exists(core, preview_name)
+        or job_name != _vcluster_preview_job_name(preview_name, "down")
+        or not isinstance(job_uid, str)
+        or re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            job_uid,
+        )
+        is None
+        or generation is None
+    ):
+        return None
+    return {
+        "name": preview_name,
+        "jobName": job_name,
+        "jobUid": job_uid,
+        "runnerGeneration": generation,
+    }
+
+
+@app.get("/internal/vcluster-preview-cleanup-receipts")
+def list_vcluster_preview_cleanup_receipts(request: Request) -> dict[str, Any]:
+    """List durable down Jobs eligible for hub-absence-gated pruning."""
+
+    _require_internal(request)
+    batch, core = _load_k8s_clients()
+    jobs = batch.list_namespaced_job(
+        namespace=_vcluster_preview_control_namespace(),
+        label_selector="vcluster-preview-action=down,preview.stacks.io/managed=true",
+    )
+    receipts = [
+        receipt
+        for job in jobs.items
+        if (receipt := _cleanup_receipt_from_job(job, core)) is not None
+    ]
+    return {"receipts": sorted(receipts, key=lambda item: item["name"])}
+
+
+@app.delete("/internal/vcluster-preview-cleanup-receipts/{name}")
+def release_vcluster_preview_cleanup_receipt(
+    request: Request,
+    name: str,
+    body: VclusterPreviewCleanupReceiptReleaseRequest,
+) -> dict[str, Any]:
+    """Delete one exact receipt after the broker separately proved hub CR absence."""
+
+    _require_internal(request)
+    safe_name = _safe_resource_name(name, max_length=40)
+    batch, core = _load_k8s_clients()
+    job_name = _vcluster_preview_job_name(safe_name, "down")
+    try:
+        job = batch.read_namespaced_job_status(
+            name=job_name,
+            namespace=_vcluster_preview_control_namespace(),
+            _request_timeout=_VCLUSTER_PREVIEW_PROBE_TIMEOUT,
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            return {"name": safe_name, "jobName": job_name, "absent": True}
+        raise
+    receipt = _cleanup_receipt_from_job(job, core)
+    if (
+        receipt is None
+        or receipt["jobUid"] != body.jobUid
+        or receipt["runnerGeneration"] != body.runnerGeneration
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="cleanup receipt identity or absence proof no longer matches",
+        )
+    batch.delete_namespaced_job(
+        name=job_name,
+        namespace=_vcluster_preview_control_namespace(),
+        propagation_policy="Foreground",
+    )
+    for _ in range(30):
+        try:
+            batch.read_namespaced_job(
+                name=job_name,
+                namespace=_vcluster_preview_control_namespace(),
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                return {"name": safe_name, "jobName": job_name, "absent": True}
+            raise
+        time.sleep(0.1)
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="cleanup receipt deletion did not converge",
+    )
+
+
 def _read_preview_member(core, name: str) -> PreviewMember:
     """Resolve a user-facing name (alias or real) to its PreviewMember, 404-ing on
     anything that is not a live preview vcluster namespace. The app=vcluster-preview
     label check is the HARD safety rule: lifecycle endpoints can never act on an
     arbitrary namespace."""
-    real_name = _resolve_preview_realname(core, name)
+    real_name = _resolve_preview_realname_strict(core, name)
     try:
         ns = core.read_namespace(name=f"vcluster-{real_name}")
     except Exception as exc:
@@ -5136,9 +9405,25 @@ def touch_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
     now_iso = datetime.now(UTC).isoformat(timespec="seconds")
     resuming = False
     if member.slept:
-        resuming = _resume_member(batch, core, member, _agent_workflow_host_namespace())
+        member, resuming = _resume_preview_with_capacity(
+            batch,
+            core,
+            name=name,
+            namespace=_vcluster_preview_control_namespace(),
+        )
     else:
+        namespace = _vcluster_preview_control_namespace()
+        coordination = _load_k8s_coordination_client()
+        holder = _acquire_preview_operation_lease(
+            coordination, namespace=namespace, real_name=member.real_name
+        )
         try:
+            member = _read_preview_member(core, name)
+            if member.slept:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="preview state changed while reserving touch",
+                )
             core.patch_namespace(
                 name=member.ns_name,
                 body={
@@ -5149,9 +9434,20 @@ def touch_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
                     }
                 },
             )
+        except HTTPException:
+            raise
         except Exception as exc:
-            logger.warning("touch: last-active stamp %s failed: %s", member.real_name, exc)
+            logger.warning(
+                "touch: last-active stamp %s failed: %s", member.real_name, exc
+            )
             raise HTTPException(status_code=500, detail="touch failed") from exc
+        finally:
+            _release_preview_operation_lease(
+                coordination,
+                namespace=namespace,
+                real_name=member.real_name,
+                holder=holder,
+            )
     _invalidate_previews_cache()
     result = {
         "name": name,
@@ -5173,17 +9469,51 @@ def sleep_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
     if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {"1", "true", "yes"}:
         return {"name": name, "state": "slept", "job": None}
     batch, core = _load_k8s_clients()
-    member = _read_preview_member(core, name)
-    if member.protected:
-        raise HTTPException(status_code=409, detail="preview is protected")
-    if member.pool_state in ("free", "recycling"):
-        raise HTTPException(
-            status_code=409, detail="free pool members stay claim-ready (never slept)"
-        )
-    if member.slept:
-        return {"name": name, "state": "slept", "job": None, "alreadySlept": True}
-    if not _sleep_member(batch, core, member, _agent_workflow_host_namespace()):
-        raise HTTPException(status_code=500, detail="sleep failed")
+    initial = _read_preview_member(core, name)
+    namespace = _vcluster_preview_control_namespace()
+    coordination = _load_k8s_coordination_client()
+    holder = _acquire_preview_operation_lease(
+        coordination, namespace=namespace, real_name=initial.real_name
+    )
+    handed_to_runner = False
+    try:
+        member = _read_preview_member(core, name)
+        if member.real_name != initial.real_name:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="preview alias changed while reserving sleep",
+            )
+        if member.protected:
+            raise HTTPException(status_code=409, detail="preview is protected")
+        if member.pool_state in ("free", "recycling"):
+            raise HTTPException(
+                status_code=409,
+                detail="free pool members stay claim-ready (never slept)",
+            )
+        if member.slept:
+            return {
+                "name": name,
+                "state": "slept",
+                "job": None,
+                "alreadySlept": True,
+            }
+        if not _sleep_member(
+            batch,
+            core,
+            member,
+            namespace,
+            operation_holder=holder,
+        ):
+            raise HTTPException(status_code=500, detail="sleep failed")
+        handed_to_runner = True
+    finally:
+        if not handed_to_runner:
+            _release_preview_operation_lease(
+                coordination,
+                namespace=namespace,
+                real_name=initial.real_name,
+                holder=holder,
+            )
     _invalidate_previews_cache()
     result = {
         "name": name,
@@ -5207,7 +9537,7 @@ class VclusterPreviewReapRequest(BaseModel):
 def reap_vcluster_previews(
     request: Request, body: VclusterPreviewReapRequest | None = None
 ) -> dict[str, Any]:
-    """Run ONE A4 reaper pass synchronously (TTL teardown → capacity eviction → sleep) and
+    """Run one legacy A4 pass (expiry/capacity deferral or legacy cleanup, then sleep) and
     return its stats. The suspended preview-lifecycle-reap CronJob curls this every 30 min
     as the belt-and-suspenders backstop against SEA thread death; it is also the manual
     lever for live validation. Inert while all lifecycle flags are 0 (only explicit
@@ -5221,6 +9551,8 @@ def reap_vcluster_previews(
             "reapedExpired": 0,
             "evicted": 0,
             "sleptNow": 0,
+            "archiveRequired": 0,
+            "applicationReaperRequired": 0,
         }
     batch, core = _load_k8s_clients()
     need_room = body.needRoom if body and body.needRoom and body.needRoom > 0 else 0
@@ -5230,7 +9562,11 @@ def reap_vcluster_previews(
 
 
 @app.delete("/internal/vcluster-preview/{name}")
-def teardown_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
+def teardown_vcluster_preview(
+    request: Request,
+    name: str,
+    body: VclusterPreviewTeardownRequest | None = None,
+) -> dict[str, Any]:
     _require_internal(request)
     # Teardown == an ACTION=down Job (drops the per-preview DB + vcluster delete). Resolve an
     # alias to its backing pool member so tearing down a claimed preview reaps pool-<n>.
@@ -5241,9 +9577,74 @@ def teardown_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
         "yes",
     }:
         _, core = _load_k8s_clients()
-        real_name = _resolve_preview_realname(core, name)
-    body = VclusterPreviewRequest(name=real_name, action="down")
-    return provision_vcluster_preview(request, body)
+        if body is not None:
+            if bool(body.expectedRequestId) == bool(body.protectedRequestId):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "teardown requires exactly one of expectedRequestId or "
+                        "protectedRequestId"
+                    ),
+                )
+            if body.expectedRequestId and not body.expectedSourceRevision:
+                raise HTTPException(
+                    status_code=400,
+                    detail="owned teardown requires expectedSourceRevision",
+                )
+        try:
+            member = _read_preview_member(core, name)
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_404_NOT_FOUND:
+                raise
+            member = None
+        real_name = (
+            member.real_name
+            if member is not None
+            else _safe_resource_name(name, max_length=40)
+        )
+        if member is not None and _preview_member_is_controller_owned(member):
+            if body is None or bool(body.expectedRequestId) == bool(
+                body.protectedRequestId
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "profiled preview teardown requires one exact owned or "
+                        "superseded ownership guard"
+                    ),
+                )
+        if body is not None and member is not None:
+            observed_request_id = (
+                member.provenance.get("requestId")
+                if member.provenance is not None
+                else None
+            )
+            if body.expectedRequestId and (
+                observed_request_id != body.expectedRequestId
+                or member.source_revision != body.expectedSourceRevision
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="preview teardown ownership no longer matches",
+                )
+            if (
+                body.protectedRequestId
+                and observed_request_id == body.protectedRequestId
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="refusing to teardown the protected preview generation",
+                )
+    teardown = VclusterPreviewRequest(
+        name=real_name,
+        action="down",
+        teardownExpectedRequestId=(body.expectedRequestId if body else None),
+        teardownExpectedSourceRevision=(body.expectedSourceRevision if body else None),
+        teardownProtectedRequestId=(body.protectedRequestId if body else None),
+        teardownEnvironmentUid=(body.environmentUid if body else None),
+        teardownIntentId=(body.deletionIntentId if body else None),
+    )
+    return provision_vcluster_preview(request, teardown)
 
 
 # Short burst cache for the preview list. The E1 Dev-hub feed re-scans every 20s
@@ -5264,6 +9665,8 @@ def _invalidate_previews_cache() -> None:
     with _vcluster_previews_cache_lock:
         _vcluster_previews_cache["at"] = 0.0
         _vcluster_previews_cache["data"] = None
+
+
 # Per-preview K8s-call timeout (seconds) so one slow/hung preview can't stall the list.
 _VCLUSTER_PREVIEW_PROBE_TIMEOUT = float(
     os.environ.get("VCLUSTER_PREVIEW_PROBE_TIMEOUT_SECONDS", "10") or 10
@@ -5275,9 +9678,37 @@ _VCLUSTER_PREVIEW_NAME_LABEL = "vcluster-preview-name"  # the ns-backing member 
 # vcluster-preview-pool: free (baked, claimable) | claimed (personalized) | recycling
 # (being torn down by the recycler; excluded from claims). Absent = a normal (non-pool) preview.
 _VCLUSTER_PREVIEW_POOL_LABEL = "vcluster-preview-pool"
-_VCLUSTER_PREVIEW_ALIAS_LABEL = "vcluster-preview-alias"  # a claimed member's user-facing name
+_VCLUSTER_PREVIEW_ALIAS_LABEL = (
+    "vcluster-preview-alias"  # a claimed member's user-facing name
+)
 _VCLUSTER_PREVIEW_CLAIMED_BY_ANNOTATION = "vcluster-preview-claimed-by"
 _VCLUSTER_PREVIEW_CLAIMED_AT_ANNOTATION = "vcluster-preview-claimed-at"
+# Immutable PreviewEnvironment provenance stamped by runner.sh on the durable
+# host namespace. Warm admission compares the requested SHA to this value before
+# the atomic free -> claimed transition.
+_VCLUSTER_PREVIEW_PLATFORM_REVISION_ANNOTATION = "preview.stacks.io/target-revision"
+_VCLUSTER_PREVIEW_SOURCE_REVISION_ANNOTATION = "preview.stacks.io/source-revision"
+_VCLUSTER_PREVIEW_PROFILE_ANNOTATION = "preview.stacks.io/profile"
+_VCLUSTER_PREVIEW_LANE_ANNOTATION = "preview.stacks.io/lane"
+_VCLUSTER_PREVIEW_MODE_ANNOTATION = "preview.stacks.io/mode"
+_VCLUSTER_PREVIEW_OWNER_ANNOTATION = "preview.stacks.io/owner"
+_VCLUSTER_PREVIEW_ORIGIN_ANNOTATION = "preview.stacks.io/origin"
+_VCLUSTER_PREVIEW_LIFECYCLE_ANNOTATION = "preview.stacks.io/lifecycle"
+_VCLUSTER_PREVIEW_SERVICES_ANNOTATION = "preview.stacks.io/services"
+_VCLUSTER_PREVIEW_PROVENANCE_ANNOTATION = "preview.stacks.io/provenance"
+_VCLUSTER_PREVIEW_TRUSTED_CODE_ANNOTATION = "preview.stacks.io/trusted-code"
+_VCLUSTER_PREVIEW_ALLOCATION_ANNOTATION = "preview.stacks.io/allocation"
+_VCLUSTER_PREVIEW_IMAGES_ANNOTATION = "preview.stacks.io/images"
+_VCLUSTER_PREVIEW_CATALOG_DIGEST_ANNOTATION = "preview.stacks.io/catalog-digest"
+_VCLUSTER_PREVIEW_RECONCILIATION_SUCCEEDED_AT_ANNOTATION = (
+    "preview.stacks.io/reconciliation-succeeded-at"
+)
+_VCLUSTER_PREVIEW_RECONCILIATION_PLATFORM_REVISION_ANNOTATION = (
+    "preview.stacks.io/reconciliation-platform-revision"
+)
+_VCLUSTER_PREVIEW_RECONCILIATION_SOURCE_REVISION_ANNOTATION = (
+    "preview.stacks.io/reconciliation-source-revision"
+)
 # LEGACY baked image-pin signature (bff=…;orch=…;fr=…;sea=…). Superseded by the
 # bake-inputs hash below; still read for the one-time migration turnover (a member
 # carrying only this and no bake-hash is treated as stale exactly once).
@@ -5287,6 +9718,16 @@ _VCLUSTER_PREVIEW_IMAGE_PINS_ANNOTATION = "vcluster-preview-image-pins"
 # `cat /config/* | sha256sum`). The recycler diffs this vs `_bake_inputs_hash()` to
 # detect a member baked from stale inputs (pins, template DB, runner script).
 _VCLUSTER_PREVIEW_BAKE_HASH_ANNOTATION = "vcluster-preview-bake-hash"
+# Recycling is a durable state, not merely an in-process transition. These
+# annotations let a fresh SEA process determine whether teardown needs another
+# attempt without ever making the member claimable again.
+_VCLUSTER_PREVIEW_RECYCLING_AT_ANNOTATION = "vcluster-preview-recycling-at"
+_VCLUSTER_PREVIEW_RECYCLE_REASON_ANNOTATION = "vcluster-preview-recycle-reason"
+_VCLUSTER_PREVIEW_RECYCLE_ATTEMPT_ANNOTATION = "vcluster-preview-recycle-attempt"
+_VCLUSTER_PREVIEW_RECYCLE_LAST_ATTEMPT_ANNOTATION = (
+    "vcluster-preview-recycle-last-attempt"
+)
+_VCLUSTER_PREVIEW_RECYCLE_ERROR_ANNOTATION = "vcluster-preview-recycle-error"
 
 # ---- A4/D1 lifecycle contract (labels + annotations on the host preview ns) ----
 # vcluster-preview-state: absent/hot = running; slept = control plane + workloads scaled
@@ -5337,6 +9778,135 @@ def _parse_rfc3339(raw: Any) -> datetime | None:
     return dt
 
 
+def _safe_json_annotation(raw: Any, expected_type: type) -> Any | None:
+    if not isinstance(raw, str) or not raw or len(raw.encode("utf-8")) > 8192:
+        return None
+    try:
+        value = json.loads(
+            raw,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant {value}")
+            ),
+        )
+        encoded = json.dumps(value, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError, RecursionError):
+        return None
+    if not isinstance(value, expected_type) or len(encoded.encode("utf-8")) > 8192:
+        return None
+    return value
+
+
+def _safe_services_annotation(raw: Any) -> tuple[str, ...] | None:
+    values = _safe_json_annotation(raw, list)
+    if values is None or len(values) > 16:
+        return None
+    services: list[str] = []
+    for value in values:
+        if not isinstance(value, str) or not re.fullmatch(
+            r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", value
+        ):
+            return None
+        if value in services:
+            return None
+        services.append(value)
+    return tuple(services)
+
+
+def _safe_allocation_annotation(raw: Any) -> dict[str, str] | None:
+    value = _safe_json_annotation(raw, dict)
+    if value is None or set(value) - {"kind", "baselinePlatformRevision"}:
+        return None
+    kind = value.get("kind")
+    if kind not in {"cold", "warm"}:
+        return None
+    baseline = value.get("baselinePlatformRevision")
+    if kind == "cold" and baseline is not None:
+        return None
+    if kind == "warm" and (
+        not isinstance(baseline, str) or not re.fullmatch(r"[0-9a-f]{40}", baseline)
+    ):
+        return None
+    return {
+        "kind": kind,
+        **({"baselinePlatformRevision": baseline} if baseline is not None else {}),
+    }
+
+
+def _safe_images_annotation(raw: Any) -> dict[str, str] | None:
+    value = _safe_json_annotation(raw, dict)
+    if value is None or len(value) > 16:
+        return None
+    images: dict[str, str] = {}
+    image_pattern = re.compile(
+        r"^ghcr\.io/[a-z0-9]+(?:[._-][a-z0-9]+)*"
+        r"(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+"
+        r"@sha256:[0-9a-f]{64}$"
+    )
+    for service, image in value.items():
+        if not isinstance(service, str) or not re.fullmatch(
+            r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", service
+        ):
+            return None
+        if not isinstance(image, str) or not image_pattern.fullmatch(image):
+            return None
+        images[service] = image
+    return images
+
+
+def _safe_annotation(raw: Any, pattern: str, max_length: int = 512) -> str | None:
+    if (
+        not isinstance(raw, str)
+        or len(raw) > max_length
+        or not re.fullmatch(pattern, raw)
+    ):
+        return None
+    return raw
+
+
+def _safe_owner_contract(raw: Any) -> dict[str, str] | None:
+    value = _safe_json_annotation(raw, dict)
+    if value is None or set(value) != {"kind", "id"}:
+        return None
+    kind = value.get("kind")
+    owner_id = value.get("id")
+    if kind not in {"user", "workflow", "session", "automation"}:
+        return None
+    if not isinstance(owner_id, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}", owner_id
+    ):
+        return None
+    return {"kind": kind, "id": owner_id}
+
+
+def _safe_origin_contract(raw: Any) -> dict[str, str] | None:
+    value = _safe_json_annotation(raw, dict)
+    if value is None or set(value) - {"kind", "reference"}:
+        return None
+    kind = value.get("kind")
+    if kind not in {
+        "user",
+        "pull-request",
+        "workflow",
+        "interactive-session",
+        "automation",
+    }:
+        return None
+    reference = value.get("reference")
+    if reference is not None and (
+        not isinstance(reference, str)
+        or not reference.strip()
+        or len(reference) > 512
+        or re.search(r"[\x00-\x1f\x7f]", reference)
+    ):
+        return None
+    if kind in {"pull-request", "workflow", "interactive-session"} and not reference:
+        return None
+    return {
+        "kind": kind,
+        **({"reference": reference} if isinstance(reference, str) else {}),
+    }
+
+
 @dataclass
 class PreviewMember:
     """One preview vcluster's lifecycle-relevant state, parsed off its host namespace.
@@ -5349,18 +9919,107 @@ class PreviewMember:
     alias: str | None = None
     slept: bool = False
     origin: str | None = None  # user | pr | None (legacy/human)
+    lifecycle: str | None = None
+    owner_contract: dict[str, str] | None = None
+    origin_contract: dict[str, str] | None = None
     pr_number: int | None = None
     protected: bool = False
     terminating: bool = False
     created_at: datetime | None = None
     last_active: datetime | None = None
     expires_at: datetime | None = None  # the EXPLICIT annotation only
+    platform_revision: str | None = None
+    source_revision: str | None = None
+    profile: str | None = None
+    lane: str | None = None
+    mode: str | None = None
+    owner: str | None = None
+    services: tuple[str, ...] | None = None
+    provenance: dict[str, Any] | None = None
+    trusted_code: bool | None = None
+    allocation: dict[str, str] | None = None
+    images: dict[str, str] | None = None
+    catalog_digest: str | None = None
+    reconciliation_succeeded_at: datetime | None = None
+    reconciliation_platform_revision: str | None = None
+    reconciliation_source_revision: str | None = None
+
+
+def _preview_member_is_immutable_reconciled(member: PreviewMember) -> bool:
+    services = set(member.services or ())
+    images = member.images or {}
+    image_pattern = re.compile(
+        r"^ghcr\.io/pittampalliorg/[a-z0-9][a-z0-9._-]{0,126}[a-z0-9]"
+        r"@sha256:[0-9a-f]{64}$"
+    )
+    return bool(
+        member.profile == "app-live"
+        and member.mode == "reconciled"
+        and member.allocation == {"kind": "cold"}
+        and member.trusted_code is True
+        and re.fullmatch(r"[0-9a-f]{40}", member.platform_revision or "")
+        and re.fullmatch(r"[0-9a-f]{40}", member.source_revision or "")
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", member.catalog_digest or "")
+        and services
+        and set(images) == services
+        and all(image_pattern.fullmatch(image) for image in images.values())
+        and member.reconciliation_succeeded_at is not None
+        and member.reconciliation_platform_revision == member.platform_revision
+        and member.reconciliation_source_revision == member.source_revision
+    )
+
+
+def _preview_member_requires_archive_teardown(member: PreviewMember) -> bool:
+    """User/malformed live state requires archive; exact PR automation is reproducible."""
+    pull_request_automation = bool(
+        member.mode == "live"
+        and member.owner_contract is not None
+        and member.owner_contract.get("kind") == "automation"
+        and member.origin_contract is not None
+        and member.origin_contract.get("kind") == "pull-request"
+    )
+    return bool(
+        member.profile == "app-live"
+        and not pull_request_automation
+        and not _preview_member_is_immutable_reconciled(member)
+    )
+
+
+def _preview_member_is_controller_owned(member: PreviewMember) -> bool:
+    """Return previews whose teardown ordering is owned by the physical broker."""
+    return bool(
+        member.trusted_code is True
+        and member.allocation == {"kind": "cold"}
+        and member.profile in {"app-live", "manifest-candidate"}
+        and member.mode in {"live", "reconciled"}
+    )
+
+
+def _require_preview_archive_teardown_proof(request: Request) -> None:
+    expected = os.environ.get("PREVIEW_ARCHIVE_TEARDOWN_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="preview archive teardown proof is not configured",
+        )
+    supplied = request.headers.get("x-preview-archive-teardown-token", "")
+    if not secrets.compare_digest(supplied, expected):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="valid preview archive teardown proof is required",
+        )
 
 
 def _preview_member_from_ns(ns) -> PreviewMember:
     meta = getattr(ns, "metadata", None)
     labels = getattr(meta, "labels", None) or {}
     annotations = getattr(meta, "annotations", None) or {}
+    owner_contract = _safe_owner_contract(
+        annotations.get(_VCLUSTER_PREVIEW_OWNER_ANNOTATION)
+    )
+    origin_contract = _safe_origin_contract(
+        annotations.get(_VCLUSTER_PREVIEW_ORIGIN_ANNOTATION)
+    )
     pr_raw = labels.get(_VCLUSTER_PREVIEW_PR_LABEL)
     try:
         pr_number = int(pr_raw) if pr_raw is not None else None
@@ -5376,6 +10035,13 @@ def _preview_member_from_ns(ns) -> PreviewMember:
         alias=labels.get(_VCLUSTER_PREVIEW_ALIAS_LABEL),
         slept=labels.get(_VCLUSTER_PREVIEW_STATE_LABEL) == "slept",
         origin=labels.get(_VCLUSTER_PREVIEW_ORIGIN_LABEL),
+        lifecycle=_safe_annotation(
+            annotations.get(_VCLUSTER_PREVIEW_LIFECYCLE_ANNOTATION),
+            r"(?:ephemeral|retained)",
+            16,
+        ),
+        owner_contract=owner_contract,
+        origin_contract=origin_contract,
         pr_number=pr_number,
         protected=labels.get(_VCLUSTER_PREVIEW_PROTECTED_LABEL) == "true",
         terminating=_preview_ns_is_terminating(ns),
@@ -5385,6 +10051,81 @@ def _preview_member_from_ns(ns) -> PreviewMember:
         ),
         expires_at=_parse_rfc3339(
             annotations.get(_VCLUSTER_PREVIEW_EXPIRES_AT_ANNOTATION)
+        ),
+        platform_revision=_safe_annotation(
+            annotations.get(_VCLUSTER_PREVIEW_PLATFORM_REVISION_ANNOTATION),
+            r"[0-9a-f]{40}",
+            40,
+        ),
+        source_revision=_safe_annotation(
+            annotations.get(_VCLUSTER_PREVIEW_SOURCE_REVISION_ANNOTATION),
+            r"[0-9a-f]{40}",
+            40,
+        ),
+        profile=_safe_annotation(
+            annotations.get(_VCLUSTER_PREVIEW_PROFILE_ANNOTATION),
+            r"(?:app-live|manifest-candidate)",
+            32,
+        ),
+        lane=_safe_annotation(
+            annotations.get(_VCLUSTER_PREVIEW_LANE_ANNOTATION),
+            r"(?:application|management)",
+            16,
+        ),
+        mode=_safe_annotation(
+            annotations.get(_VCLUSTER_PREVIEW_MODE_ANNOTATION),
+            r"(?:live|reconciled)",
+            16,
+        ),
+        owner=(
+            owner_contract["id"]
+            if owner_contract is not None
+            else _safe_annotation(
+                annotations.get(_VCLUSTER_PREVIEW_OWNER_ANNOTATION),
+                r"[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}",
+                128,
+            )
+        ),
+        services=_safe_services_annotation(
+            annotations.get(_VCLUSTER_PREVIEW_SERVICES_ANNOTATION)
+        ),
+        provenance=_safe_json_annotation(
+            annotations.get(_VCLUSTER_PREVIEW_PROVENANCE_ANNOTATION), dict
+        ),
+        trusted_code=(
+            True
+            if annotations.get(_VCLUSTER_PREVIEW_TRUSTED_CODE_ANNOTATION) == "true"
+            else False
+            if annotations.get(_VCLUSTER_PREVIEW_TRUSTED_CODE_ANNOTATION) == "false"
+            else None
+        ),
+        allocation=_safe_allocation_annotation(
+            annotations.get(_VCLUSTER_PREVIEW_ALLOCATION_ANNOTATION)
+        ),
+        images=_safe_images_annotation(
+            annotations.get(_VCLUSTER_PREVIEW_IMAGES_ANNOTATION)
+        ),
+        catalog_digest=_safe_annotation(
+            annotations.get(_VCLUSTER_PREVIEW_CATALOG_DIGEST_ANNOTATION),
+            r"sha256:[0-9a-f]{64}",
+            71,
+        ),
+        reconciliation_succeeded_at=_parse_rfc3339(
+            annotations.get(_VCLUSTER_PREVIEW_RECONCILIATION_SUCCEEDED_AT_ANNOTATION)
+        ),
+        reconciliation_platform_revision=_safe_annotation(
+            annotations.get(
+                _VCLUSTER_PREVIEW_RECONCILIATION_PLATFORM_REVISION_ANNOTATION
+            ),
+            r"[0-9a-f]{40}",
+            40,
+        ),
+        reconciliation_source_revision=_safe_annotation(
+            annotations.get(
+                _VCLUSTER_PREVIEW_RECONCILIATION_SOURCE_REVISION_ANNOTATION
+            ),
+            r"[0-9a-f]{40}",
+            40,
         ),
     )
 
@@ -5434,9 +10175,7 @@ def _member_effective_expiry(
     return min(candidates) if candidates else None
 
 
-def _member_is_expired(
-    member: PreviewMember, *, now: datetime, ttl_hours: int
-) -> bool:
+def _member_is_expired(member: PreviewMember, *, now: datetime, ttl_hours: int) -> bool:
     expiry = _member_effective_expiry(member, ttl_hours=ttl_hours)
     return bool(expiry and now >= expiry)
 
@@ -5468,11 +10207,12 @@ def _select_preview_evictions(
                              keeps its claim-ready quota), oldest first
       3. TTL-expired       — expired non-free members (explicit expires-at, or creation+TTL
                              when the global flag is on), soonest-expired first
-      4. PR-origin         — non-expired origin=pr previews, oldest-created first
+      4. ephemeral         — non-expired ephemeral previews, oldest-created first;
+                             legacy origin=pr previews remain eligible during cutover
 
     NEVER returned, in any bucket: protected members, terminating members, members already
     recycling, RECENTLY-ACTIVE members (touched within active_minutes), and human previews
-    (origin absent or "user") that are not expired."""
+    with retained lifecycle that are not expired."""
     if need <= 0:
         return []
     eligible = [
@@ -5501,15 +10241,18 @@ def _select_preview_evictions(
         key=lambda m: _member_effective_expiry(m, ttl_hours=ttl_hours) or now,
     )
     expired_names = {m.real_name for m in expired}
-    pr_origin = sorted(
+    ephemeral = sorted(
         (
             m
             for m in non_free
-            if m.origin == "pr" and m.real_name not in expired_names
+            if m.real_name not in expired_names
+            and (
+                m.lifecycle == "ephemeral" or (m.lifecycle is None and m.origin == "pr")
+            )
         ),
         key=created_key,
     )
-    ordered = free_slept + free_hot_surplus + expired + pr_origin
+    ordered = free_slept + free_hot_surplus + expired + ephemeral
     return ordered[:need]
 
 
@@ -5518,7 +10261,24 @@ def _preview_lifecycle_fields(member: PreviewMember) -> dict[str, Any]:
     BFF PR-preview consumer): origin, prNumber, expiresAt, state (hot|slept), lastActive."""
     return {
         "state": "slept" if member.slept else "hot",
-        "origin": member.origin,
+        "lifecycle": member.lifecycle
+        or ("ephemeral" if member.origin == "pr" else "retained"),
+        "origin": member.origin_contract
+        or (
+            {
+                "kind": "pull-request",
+                **(
+                    {"reference": str(member.pr_number)}
+                    if member.pr_number is not None
+                    else {}
+                ),
+            }
+            if member.origin == "pr"
+            else {"kind": "user"}
+            if member.origin == "user"
+            else None
+        ),
+        "legacyOrigin": member.origin,
         "prNumber": member.pr_number,
         "protected": member.protected,
         "expiresAt": member.expires_at.isoformat(timespec="seconds")
@@ -5527,6 +10287,19 @@ def _preview_lifecycle_fields(member: PreviewMember) -> dict[str, Any]:
         "lastActive": member.last_active.isoformat(timespec="seconds")
         if member.last_active
         else None,
+        "platformRevision": member.platform_revision,
+        "sourceRevision": member.source_revision,
+        "profile": member.profile,
+        "lane": member.lane,
+        "mode": member.mode,
+        "owner": member.owner_contract
+        or ({"kind": "user", "id": member.owner} if member.owner else None),
+        "services": list(member.services) if member.services is not None else None,
+        "provenance": member.provenance,
+        "trustedCode": member.trusted_code,
+        "allocation": member.allocation,
+        "images": member.images,
+        "catalogDigest": member.catalog_digest,
     }
 
 
@@ -5612,7 +10385,9 @@ def _compute_vcluster_previews(*, include_pool: bool = False) -> dict[str, Any]:
             return member, display_name, host, pool_state, phase
         except Exception as exc:
             logger.warning(
-                "vcluster-previews: phase probe for %s failed: %s", member.real_name, exc
+                "vcluster-previews: phase probe for %s failed: %s",
+                member.real_name,
+                exc,
             )
             return member, display_name, host, pool_state, "absent"
 
@@ -5629,13 +10404,19 @@ def _compute_vcluster_previews(*, include_pool: bool = False) -> dict[str, Any]:
             "phase": phase,
             "ready": phase == "ready",
             "tailnetHost": host,
-            "url": f"https://{host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}" if host else None,
+            "url": f"https://{host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}"
+            if host
+            else None,
             **_preview_lifecycle_fields(member),
         }
         if pool_state:
-            item["poolState"] = pool_state  # pool members only; absent on normal previews
+            item["poolState"] = (
+                pool_state  # pool members only; absent on normal previews
+            )
         if member.real_name != display_name:
-            item["pool"] = member.real_name  # the backing member id for claimed previews
+            item["pool"] = (
+                member.real_name
+            )  # the backing member id for claimed previews
         items.append(item)
     return {"previews": items, "counts": counts}
 
@@ -5665,7 +10446,9 @@ def _cached_vcluster_previews() -> dict[str, Any] | None:
 
 
 @app.get("/internal/vcluster-previews")
-def list_vcluster_previews(request: Request, includePool: bool = False) -> dict[str, Any]:
+def list_vcluster_previews(
+    request: Request, includePool: bool = False
+) -> dict[str, Any]:
     _require_internal(request)
     # ?includePool=true (admin/debug, #29) bypasses the burst cache in BOTH directions:
     # it must never be served the user-list variant, and its result must never poison
@@ -5697,10 +10480,9 @@ def list_vcluster_previews(request: Request, includePool: bool = False) -> dict[
 
 
 # ===========================================================================
-# A3 warm vcluster pool: bake generic free members, claim one atomically for a
-# user (<90s — skips the whole cold path), and keep the pool full + fresh via a
-# background reconcile. Everything gates on VCLUSTER_PREVIEW_POOL_SIZE (default 0
-# = OFF); at 0 none of this runs and previews cold-provision exactly as before.
+# Retired A3 warm-vCluster implementation retained as a compatibility tombstone.
+# `_vcluster_preview_pool_size()` is hard-disabled, the public architecture is
+# cold-only, and profiled claim/bake requests fail before any mutation.
 # ===========================================================================
 
 # Read→compare-and-swap retry budget for a claim (a 409 = a concurrent claim won that member).
@@ -5721,11 +10503,15 @@ def _bake_inputs_hash(core) -> str | None:
     key, when the renderer includes it, is one of those keys and so participates in
     the hash automatically. Returns None if the ConfigMap can't be read (so the
     recycler never false-recycles on a transient API error)."""
-    ns = _agent_workflow_host_namespace()
+    ns = _vcluster_preview_control_namespace()
     try:
-        cm = core.read_namespaced_config_map(name="vcluster-preview-runner", namespace=ns)
+        cm = core.read_namespaced_config_map(
+            name="vcluster-preview-runner", namespace=ns
+        )
     except Exception as exc:
-        logger.warning("pool: reading vcluster-preview-runner ConfigMap failed: %s", exc)
+        logger.warning(
+            "pool: reading vcluster-preview-runner ConfigMap failed: %s", exc
+        )
         return None
     data = dict(getattr(cm, "data", None) or {})
     if not data:
@@ -5736,9 +10522,43 @@ def _bake_inputs_hash(core) -> str | None:
 
 def _pool_recycle_deadline_seconds() -> int:
     try:
-        return int(os.environ.get("VCLUSTER_PREVIEW_POOL_RECYCLE_DEADLINE", "900") or 900)
+        return int(
+            os.environ.get("VCLUSTER_PREVIEW_POOL_RECYCLE_DEADLINE", "900") or 900
+        )
     except (TypeError, ValueError):
         return 900
+
+
+def _pool_recycle_retry_base_seconds() -> int:
+    try:
+        value = int(
+            os.environ.get("VCLUSTER_PREVIEW_POOL_RECYCLE_RETRY_BASE_SECONDS", "60")
+            or 60
+        )
+    except (TypeError, ValueError):
+        value = 60
+    return max(1, value)
+
+
+def _pool_recycle_retry_max_seconds() -> int:
+    try:
+        value = int(
+            os.environ.get("VCLUSTER_PREVIEW_POOL_RECYCLE_RETRY_MAX_SECONDS", "900")
+            or 900
+        )
+    except (TypeError, ValueError):
+        value = 900
+    return max(_pool_recycle_retry_base_seconds(), value)
+
+
+def _pool_recycle_max_attempts() -> int:
+    try:
+        value = int(
+            os.environ.get("VCLUSTER_PREVIEW_POOL_RECYCLE_MAX_ATTEMPTS", "6") or 6
+        )
+    except (TypeError, ValueError):
+        value = 6
+    return max(1, value)
 
 
 def _deploy_container_image(apps, namespace: str, name: str) -> str:
@@ -5782,11 +10602,11 @@ def _bake_hash_is_stale(
     *, member_hash: str | None, member_legacy_pins: str | None, want: str | None
 ) -> bool:
     """Pure staleness decision for a baked member (exhaustively unit-testable):
-      * want is None (bake inputs unreadable) → never stale (no false-recycle);
-      * member carries a bake-hash → stale iff it differs from `want`;
-      * member has no bake-hash but has the LEGACY image-pins annotation → stale once
-        (one-time turnover of pre-bake-hash members);
-      * neither annotation → not a re-key candidate (leave it)."""
+    * want is None (bake inputs unreadable) → never stale (no false-recycle);
+    * member carries a bake-hash → stale iff it differs from `want`;
+    * member has no bake-hash but has the LEGACY image-pins annotation → stale once
+      (one-time turnover of pre-bake-hash members);
+    * neither annotation → not a re-key candidate (leave it)."""
     if not want:
         return False
     if member_hash:
@@ -5810,15 +10630,34 @@ def _member_is_stale(core, real_name: str) -> bool:
     )
 
 
+@dataclass(frozen=True)
+class _PreviewClaimReservation:
+    real_name: str
+    operation_holder: str
+
+
 def _claim_free_member(
     core,
     *,
     alias: str,
     claim_user: str,
     origin: str | None = None,
+    lifecycle: str | None = None,
+    owner_contract: PreviewEnvironmentOwnerRequest | None = None,
+    origin_contract: PreviewEnvironmentOriginRequest | None = None,
     pr_number: int | None = None,
     ttl_hours: int | None = None,
-) -> str | None:
+    platform_revision: str | None = None,
+    source_revision: str | None = None,
+    profile: str | None = None,
+    owner: str | None = None,
+    catalog_digest: str | None = None,
+    services: list[str] | None = None,
+    provenance: dict[str, Any] | None = None,
+    trusted_code: bool = False,
+    coordination: Any | None = None,
+    operation_namespace: str | None = None,
+) -> str | _PreviewClaimReservation | None:
     """Atomically hand a FREE warm-pool member to a claim. Returns the member's real id
     (pool-<n>) or None if none free. Idempotent: an alias already claimed reuses that member.
     The flip free→claimed is a resourceVersion-guarded replace, so two concurrent claims for
@@ -5832,7 +10671,32 @@ def _claim_free_member(
         )
         for ns in existing.items:
             if not _preview_ns_is_terminating(ns):
-                return _preview_realname_from_ns(ns)
+                if platform_revision:
+                    annotations = (ns.metadata.annotations or {}) if ns.metadata else {}
+                    actual = annotations.get(
+                        _VCLUSTER_PREVIEW_PLATFORM_REVISION_ANNOTATION
+                    )
+                    if actual != platform_revision:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                f'preview alias "{alias}" already uses platform '
+                                f"revision {actual or 'unknown'}; tear it down before "
+                                f"launching {platform_revision}"
+                            ),
+                        )
+                real_name = _preview_realname_from_ns(ns)
+                if coordination is None:
+                    return real_name
+                holder = _acquire_preview_operation_lease(
+                    coordination,
+                    namespace=operation_namespace
+                    or _vcluster_preview_control_namespace(),
+                    real_name=real_name,
+                )
+                return _PreviewClaimReservation(real_name, holder)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.warning("claim: alias lookup for %s failed: %s", alias, exc)
 
@@ -5848,6 +10712,7 @@ def _claim_free_member(
             logger.warning("claim: cold-name check for %s failed: %s", alias, exc)
 
     claimed_at = datetime.now(UTC).isoformat()
+    operation_busy = False
     for _ in range(_VCLUSTER_PREVIEW_CLAIM_ATTEMPTS):
         try:
             free = core.list_namespace(
@@ -5867,15 +10732,42 @@ def _claim_free_member(
                 _VCLUSTER_PREVIEW_STATE_LABEL
             )
             != "slept"
+            # A profiled warm claim may consume only a baseline baked from the
+            # exact requested stacks commit. Legacy callers omit the revision
+            # and retain the historical any-free-member behavior.
+            and (
+                not platform_revision
+                or (
+                    ((ns.metadata.annotations or {}) if ns.metadata else {}).get(
+                        _VCLUSTER_PREVIEW_PLATFORM_REVISION_ANNOTATION
+                    )
+                    == platform_revision
+                )
+            )
         ]
         if not candidates:
             return None
         # Oldest first — drain aging members before freshly-baked ones.
         candidates.sort(
-            key=lambda ns: (ns.metadata.creation_timestamp or datetime.now(UTC))
+            key=lambda ns: ns.metadata.creation_timestamp or datetime.now(UTC)
         )
         for ns in candidates:
             real_name = _preview_realname_from_ns(ns)
+            operation_holder: str | None = None
+            if coordination is not None:
+                try:
+                    operation_holder = _acquire_preview_operation_lease(
+                        coordination,
+                        namespace=(
+                            operation_namespace or _vcluster_preview_control_namespace()
+                        ),
+                        real_name=real_name,
+                    )
+                except HTTPException as exc:
+                    if exc.status_code == status.HTTP_409_CONFLICT:
+                        operation_busy = True
+                        continue
+                    raise
             meta = ns.metadata
             labels = dict(meta.labels or {})
             labels[_VCLUSTER_PREVIEW_POOL_LABEL] = "claimed"
@@ -5889,6 +10781,46 @@ def _claim_free_member(
             annotations[_VCLUSTER_PREVIEW_CLAIMED_BY_ANNOTATION] = claim_user
             annotations[_VCLUSTER_PREVIEW_CLAIMED_AT_ANNOTATION] = claimed_at
             annotations[_VCLUSTER_PREVIEW_LAST_ACTIVE_ANNOTATION] = claimed_at
+            if lifecycle in {"ephemeral", "retained"}:
+                annotations[_VCLUSTER_PREVIEW_LIFECYCLE_ANNOTATION] = lifecycle
+            if owner_contract is not None:
+                annotations[_VCLUSTER_PREVIEW_OWNER_ANNOTATION] = json.dumps(
+                    owner_contract.model_dump(), separators=(",", ":"), sort_keys=True
+                )
+            if origin_contract is not None:
+                annotations[_VCLUSTER_PREVIEW_ORIGIN_ANNOTATION] = json.dumps(
+                    origin_contract.model_dump(exclude_none=True),
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            if platform_revision:
+                annotations[_VCLUSTER_PREVIEW_PLATFORM_REVISION_ANNOTATION] = (
+                    platform_revision
+                )
+            if source_revision:
+                annotations[_VCLUSTER_PREVIEW_SOURCE_REVISION_ANNOTATION] = (
+                    source_revision
+                )
+            if profile:
+                annotations[_VCLUSTER_PREVIEW_PROFILE_ANNOTATION] = profile
+            if owner and owner_contract is None:
+                annotations[_VCLUSTER_PREVIEW_OWNER_ANNOTATION] = owner
+            if services is not None:
+                annotations[_VCLUSTER_PREVIEW_SERVICES_ANNOTATION] = json.dumps(
+                    services, separators=(",", ":")
+                )
+            if provenance is not None:
+                annotations[_VCLUSTER_PREVIEW_PROVENANCE_ANNOTATION] = json.dumps(
+                    provenance, separators=(",", ":"), sort_keys=True
+                )
+            if profile:
+                annotations[_VCLUSTER_PREVIEW_TRUSTED_CODE_ANNOTATION] = (
+                    "true" if trusted_code else "false"
+                )
+            if catalog_digest:
+                annotations[_VCLUSTER_PREVIEW_CATALOG_DIGEST_ANNOTATION] = (
+                    catalog_digest
+                )
             if ttl_hours is not None and ttl_hours > 0:
                 annotations[_VCLUSTER_PREVIEW_EXPIRES_AT_ANNOTATION] = (
                     datetime.now(UTC) + timedelta(hours=ttl_hours)
@@ -5901,12 +10833,28 @@ def _claim_free_member(
                 logger.info(
                     "claim: member %s → alias=%s by %s", real_name, alias, claim_user
                 )
+                if operation_holder is not None:
+                    return _PreviewClaimReservation(real_name, operation_holder)
                 return real_name
             except Exception as exc:
+                if operation_holder is not None:
+                    _release_preview_operation_lease(
+                        coordination,
+                        namespace=(
+                            operation_namespace or _vcluster_preview_control_namespace()
+                        ),
+                        real_name=real_name,
+                        holder=operation_holder,
+                    )
                 if getattr(exc, "status", None) == 409:
                     continue  # lost the race for this member; try another
                 logger.warning("claim: replace %s failed: %s", meta.name, exc)
                 continue
+    if coordination is not None and operation_busy:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="warm-pool members currently have operations in progress",
+        )
     return None
 
 
@@ -5915,15 +10863,40 @@ def _vcluster_claim_job_manifest(
     alias: str,
     claim_user: str,
     *,
-    dev_mode: bool | None,
     namespace: str,
+    request_body: VclusterPreviewClaimRequest | None = None,
+    operation_holder: str | None = None,
 ) -> dict[str, Any]:
     """The ACTION=claim Job manifest. Reuses the up-Job's env defaulting (ENROLL_MODE/
-    PREVIEW_DB_MODE/TARGET_REVISION/PREVIEW_DEV_MODE/…) so the runner resolves the member's DB,
+    PREVIEW_DB_MODE/TARGET_REVISION/…) so the runner resolves the member's DB,
     then appends the claim-specific env. Image freshness is owned by the recycler (free members
     are recycled on bake-inputs drift), so a claim no longer re-authors images."""
-    req = VclusterPreviewRequest(name=pool_name, action="claim", previewDevMode=dev_mode)
-    manifest = _vcluster_preview_job_manifest(req, namespace=namespace)
+    req = VclusterPreviewRequest(
+        name=pool_name,
+        action="claim",
+        enrollMode=request_body.enrollMode if request_body else None,
+        platformRevision=request_body.platformRevision if request_body else None,
+        sourceRevision=request_body.sourceRevision if request_body else None,
+        catalogDigest=request_body.catalogDigest if request_body else None,
+        candidatePaths=request_body.candidatePaths if request_body else [],
+        delivery=request_body.delivery if request_body else None,
+        profile=request_body.profile if request_body else None,
+        mode=request_body.mode if request_body else None,
+        allocation=request_body.allocation if request_body else None,
+        imageOverrides=request_body.imageOverrides if request_body else {},
+        lifecycle=request_body.lifecycle if request_body else None,
+        owner=request_body.owner if request_body else None,
+        origin=request_body.origin if request_body else None,
+        services=request_body.services if request_body else [],
+        provenance=request_body.provenance if request_body else None,
+        trustedCode=request_body.trustedCode if request_body else False,
+        createOnly=request_body.createOnly if request_body else False,
+        ttlHours=request_body.ttlHours if request_body else None,
+        prNumber=request_body.prNumber if request_body else None,
+    )
+    manifest = _vcluster_preview_job_manifest(
+        req, namespace=namespace, operation_holder=operation_holder
+    )
     env = manifest["spec"]["template"]["spec"]["containers"][0]["env"]
     env.extend(
         [
@@ -5944,27 +10917,55 @@ def claim_vcluster_preview(
     capacity), so it is NOT gated by VCLUSTER_PREVIEW_MAX."""
     _require_internal(request)
     set_current_span_io("input", body.model_dump())
+    _validate_profiled_preview_claim_request(body)
     alias = _safe_resource_name(body.name, max_length=40)
     claim_user = (body.user or "unknown").strip() or "unknown"
-    namespace = _agent_workflow_host_namespace()
+    namespace = _vcluster_preview_control_namespace()
     tailnet_host = f"wfb-{alias}"
     url = f"https://{tailnet_host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}"
     if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {"1", "true", "yes"}:
         # No real vclusters in dry-run → behave as an empty pool (BFF cold-path also dry-runs).
         raise HTTPException(status_code=404, detail="warm pool unavailable (dry-run)")
     batch, core = _load_k8s_clients()
-    pool_name = _claim_free_member(
+    coordination = _load_k8s_coordination_client()
+    claim = _claim_free_member(
         core,
         alias=alias,
         claim_user=claim_user,
-        origin=body.origin,
+        origin=_legacy_preview_origin(body.origin),
+        lifecycle=body.lifecycle,
+        owner_contract=_preview_owner(body.owner),
+        origin_contract=_preview_origin(body.origin),
         pr_number=body.prNumber,
         ttl_hours=body.ttlHours,
+        platform_revision=body.platformRevision,
+        source_revision=body.sourceRevision,
+        profile=body.profile,
+        owner=(
+            _preview_owner(body.owner).id
+            if _preview_owner(body.owner) is not None
+            else body.owner
+            if isinstance(body.owner, str)
+            else None
+        ),
+        catalog_digest=body.catalogDigest,
+        services=body.services,
+        provenance=body.provenance,
+        trusted_code=body.trustedCode,
+        coordination=coordination,
+        operation_namespace=namespace,
     )
-    if not pool_name:
+    if not claim:
         raise HTTPException(
             status_code=404, detail="no free warm-pool member available"
         )
+    if not isinstance(claim, _PreviewClaimReservation):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="warm-pool claim did not reserve its preview operation Lease",
+        )
+    pool_name = claim.real_name
+    operation_holder = claim.operation_holder
     # A4: an IDEMPOTENT re-claim can resolve to an already-claimed member that has since
     # been put to sleep — wake it instead of running the claim personalization again (the
     # claim-Job's vcluster connect would fail against a scaled-down control plane; the
@@ -5975,7 +10976,23 @@ def claim_vcluster_preview(
     except Exception:
         member = None
     if member is not None and member.slept:
-        _resume_member(batch, core, member, namespace)
+        try:
+            member, _ = _resume_preview_with_capacity(
+                batch,
+                core,
+                name=alias,
+                namespace=namespace,
+                operation_holder=operation_holder,
+                coordination=coordination,
+            )
+        except Exception:
+            _release_preview_operation_lease(
+                coordination,
+                namespace=namespace,
+                real_name=pool_name,
+                holder=operation_holder,
+            )
+            raise
         _invalidate_previews_cache()
         response = {
             "name": alias,
@@ -5993,10 +11010,26 @@ def claim_vcluster_preview(
         pool_name,
         alias,
         claim_user,
-        dev_mode=body.devMode,
         namespace=namespace,
+        request_body=body,
+        operation_holder=operation_holder,
     )
-    _create_preview_job(batch, namespace=namespace, manifest=manifest)
+    try:
+        _submit_preview_job(
+            batch,
+            core,
+            namespace=namespace,
+            manifest=manifest,
+            lifecycle=(member.lifecycle if member is not None else body.lifecycle),
+        )
+    except Exception:
+        _release_preview_operation_lease(
+            coordination,
+            namespace=namespace,
+            real_name=pool_name,
+            holder=operation_holder,
+        )
+        raise
     _invalidate_previews_cache()
     response = {
         "name": alias,
@@ -6007,35 +11040,192 @@ def claim_vcluster_preview(
         "status": "claiming",
         "tailnetHost": tailnet_host,
         "url": url,
+        "platformRevision": body.platformRevision,
     }
     set_current_span_io("output", response)
     return response
 
 
-def _recycle_free_member(batch, core, ns, real_name: str, namespace: str) -> bool:
-    """Recycle one pin-drifted free member: EXCLUDE it from claims first (flip free→recycling),
-    THEN create a deadline-bounded down-Job. Order matters — a claim must never grab a member
-    whose teardown is already in flight."""
+@dataclass(frozen=True)
+class _RecycleStartResult:
+    marked: bool
+    job_created: bool
+
+
+def _recycle_attempt_from_ns(ns) -> int:
+    annotations = (ns.metadata.annotations or {}) if ns.metadata else {}
+    try:
+        return max(
+            0,
+            int(annotations.get(_VCLUSTER_PREVIEW_RECYCLE_ATTEMPT_ANNOTATION, "0")),
+        )
+    except (TypeError, ValueError):
+        return 0
+
+
+def _recycle_error_text(value: Any) -> str:
+    return " ".join(str(value).split())[:512]
+
+
+def _patch_recycle_error(core, ns_name: str, real_name: str, error: str) -> None:
+    try:
+        core.patch_namespace(
+            name=ns_name,
+            body={
+                "metadata": {
+                    "annotations": {
+                        _VCLUSTER_PREVIEW_RECYCLE_ERROR_ANNOTATION: _recycle_error_text(
+                            error
+                        )
+                    }
+                }
+            },
+        )
+    except Exception as exc:
+        logger.warning("pool: recycle error stamp %s failed: %s", real_name, exc)
+
+
+def _launch_recycle_down_job(
+    batch,
+    core,
+    ns,
+    real_name: str,
+    namespace: str,
+    *,
+    reason: str,
+    operation_holder: str,
+) -> bool:
+    """Persist the next attempt before creating its Job. A failed create leaves the
+    member non-claimable with enough durable state for a later SEA process to retry."""
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    annotations = (ns.metadata.annotations or {}) if ns.metadata else {}
+    recycling_at = annotations.get(_VCLUSTER_PREVIEW_RECYCLING_AT_ANNOTATION) or now
+    attempt = _recycle_attempt_from_ns(ns) + 1
     try:
         core.patch_namespace(
             name=ns.metadata.name,
-            body={"metadata": {"labels": {_VCLUSTER_PREVIEW_POOL_LABEL: "recycling"}}},
+            body={
+                "metadata": {
+                    "annotations": {
+                        _VCLUSTER_PREVIEW_RECYCLING_AT_ANNOTATION: recycling_at,
+                        _VCLUSTER_PREVIEW_RECYCLE_REASON_ANNOTATION: reason,
+                        _VCLUSTER_PREVIEW_RECYCLE_ATTEMPT_ANNOTATION: str(attempt),
+                        _VCLUSTER_PREVIEW_RECYCLE_LAST_ATTEMPT_ANNOTATION: now,
+                        _VCLUSTER_PREVIEW_RECYCLE_ERROR_ANNOTATION: "",
+                    }
+                }
+            },
+        )
+    except Exception as exc:
+        error = f"attempt metadata update failed: {exc}"
+        logger.warning("pool: recycle %s %s", real_name, error)
+        _patch_recycle_error(core, ns.metadata.name, real_name, error)
+        return False
+
+    req = VclusterPreviewRequest(name=real_name, action="down")
+    manifest = _vcluster_preview_job_manifest(
+        req, namespace=namespace, operation_holder=operation_holder
+    )
+    manifest["spec"]["activeDeadlineSeconds"] = _pool_recycle_deadline_seconds()
+    try:
+        _submit_preview_job(
+            batch,
+            core,
+            namespace=namespace,
+            manifest=manifest,
+            lifecycle=_preview_member_from_ns(ns).lifecycle,
+        )
+    except Exception as exc:
+        error = f"down Job create failed: {exc}"
+        logger.warning("pool: recycle %s %s", real_name, error)
+        _patch_recycle_error(core, ns.metadata.name, real_name, error)
+        return False
+    return True
+
+
+def _start_member_recycling(
+    batch,
+    core,
+    ns,
+    real_name: str,
+    namespace: str,
+    *,
+    reason: str,
+    operation_holder: str | None = None,
+) -> _RecycleStartResult:
+    """Atomically exclude a pool member from claims, then start bounded teardown."""
+    coordination = _load_k8s_coordination_client()
+    holder = operation_holder
+    if holder is None:
+        try:
+            holder = _acquire_preview_operation_lease(
+                coordination, namespace=namespace, real_name=real_name
+            )
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_409_CONFLICT:
+                return _RecycleStartResult(marked=False, job_created=False)
+            raise
+    handed_to_runner = False
+    recycling_at = datetime.now(UTC).isoformat(timespec="seconds")
+    try:
+        core.patch_namespace(
+            name=ns.metadata.name,
+            body={
+                "metadata": {
+                    "labels": {_VCLUSTER_PREVIEW_POOL_LABEL: "recycling"},
+                    "annotations": {
+                        _VCLUSTER_PREVIEW_RECYCLING_AT_ANNOTATION: recycling_at,
+                        _VCLUSTER_PREVIEW_RECYCLE_REASON_ANNOTATION: reason,
+                        _VCLUSTER_PREVIEW_RECYCLE_ATTEMPT_ANNOTATION: "0",
+                        _VCLUSTER_PREVIEW_RECYCLE_ERROR_ANNOTATION: "",
+                    },
+                }
+            },
         )
     except Exception as exc:
         logger.warning("pool: recycle relabel %s failed: %s", real_name, exc)
-        return False
-    req = VclusterPreviewRequest(name=real_name, action="down")
-    manifest = _vcluster_preview_job_manifest(req, namespace=namespace)
-    # Scoped subset of the teardown-watchdog gap (#25): a recycler down-Job gets a TIGHTER
-    # deadline than the default 1800s so a hung teardown can't wedge a pool slot for 30 minutes.
-    manifest["spec"]["activeDeadlineSeconds"] = _pool_recycle_deadline_seconds()
-    try:
-        _create_preview_job(batch, namespace=namespace, manifest=manifest)
-    except Exception as exc:
-        logger.warning("pool: recycle down-job %s failed: %s", real_name, exc)
-        return False
-    logger.info("pool: recycling stale member %s (image-pin drift)", real_name)
-    return True
+        _release_preview_operation_lease(
+            coordination,
+            namespace=namespace,
+            real_name=real_name,
+            holder=holder,
+        )
+        return _RecycleStartResult(marked=False, job_created=False)
+    created = _launch_recycle_down_job(
+        batch,
+        core,
+        ns,
+        real_name,
+        namespace,
+        reason=reason,
+        operation_holder=holder,
+    )
+    handed_to_runner = created
+    if not handed_to_runner:
+        _release_preview_operation_lease(
+            coordination,
+            namespace=namespace,
+            real_name=real_name,
+            holder=holder,
+        )
+    return _RecycleStartResult(marked=True, job_created=created)
+
+
+def _recycle_free_member(
+    batch, core, ns, real_name: str, namespace: str
+) -> _RecycleStartResult:
+    """Recycle one bake-drifted free member. Exclusion always precedes teardown."""
+    result = _start_member_recycling(
+        batch,
+        core,
+        ns,
+        real_name,
+        namespace,
+        reason="bake-drift",
+    )
+    if result.job_created:
+        logger.info("pool: recycling stale member %s (bake drift)", real_name)
+    return result
 
 
 # ===========================================================================
@@ -6047,20 +11237,45 @@ def _recycle_free_member(batch, core, ns, real_name: str, namespace: str) -> boo
 # ===========================================================================
 
 
-def _lifecycle_job(batch, member: PreviewMember, namespace: str, action: str) -> bool:
+def _lifecycle_job(
+    batch,
+    core,
+    member: PreviewMember,
+    namespace: str,
+    action: str,
+    *,
+    operation_holder: str | None = None,
+) -> bool:
     """Create a sleep/resume Job for a member (the runner is the mechanism; SEA only
     decides). Returns False (logged) on failure — callers revert their label flip."""
     req = VclusterPreviewRequest(name=member.real_name, action=action)
-    manifest = _vcluster_preview_job_manifest(req, namespace=namespace)
+    manifest = _vcluster_preview_job_manifest(
+        req, namespace=namespace, operation_holder=operation_holder
+    )
     try:
-        _create_preview_job(batch, namespace=namespace, manifest=manifest)
+        _submit_preview_job(
+            batch,
+            core,
+            namespace=namespace,
+            manifest=manifest,
+            lifecycle=member.lifecycle,
+        )
     except Exception as exc:
-        logger.warning("lifecycle: %s job for %s failed: %s", action, member.real_name, exc)
+        logger.warning(
+            "lifecycle: %s job for %s failed: %s", action, member.real_name, exc
+        )
         return False
     return True
 
 
-def _sleep_member(batch, core, member: PreviewMember, namespace: str) -> bool:
+def _sleep_member(
+    batch,
+    core,
+    member: PreviewMember,
+    namespace: str,
+    *,
+    operation_holder: str | None = None,
+) -> bool:
     """Sleep one preview: flip the state label FIRST (claims/touch must see the transition
     immediately — mirrors the recycler's exclude-then-teardown order), then create the
     sleep-Job. A failed Job create reverts the label so a preview never reads slept while
@@ -6072,16 +11287,21 @@ def _sleep_member(batch, core, member: PreviewMember, namespace: str) -> bool:
             body={
                 "metadata": {
                     "labels": {_VCLUSTER_PREVIEW_STATE_LABEL: "slept"},
-                    "annotations": {
-                        _VCLUSTER_PREVIEW_SLEPT_AT_ANNOTATION: slept_at
-                    },
+                    "annotations": {_VCLUSTER_PREVIEW_SLEPT_AT_ANNOTATION: slept_at},
                 }
             },
         )
     except Exception as exc:
         logger.warning("lifecycle: sleep relabel %s failed: %s", member.real_name, exc)
         return False
-    if not _lifecycle_job(batch, member, namespace, "sleep"):
+    if not _lifecycle_job(
+        batch,
+        core,
+        member,
+        namespace,
+        "sleep",
+        operation_holder=operation_holder,
+    ):
         try:
             core.patch_namespace(
                 name=member.ns_name,
@@ -6096,7 +11316,53 @@ def _sleep_member(batch, core, member: PreviewMember, namespace: str) -> bool:
     return True
 
 
-def _resume_member(batch, core, member: PreviewMember, namespace: str) -> bool:
+def _sleep_member_with_operation_lease(
+    batch, core, member: PreviewMember, namespace: str
+) -> bool:
+    coordination = _load_k8s_coordination_client()
+    try:
+        holder = _acquire_preview_operation_lease(
+            coordination, namespace=namespace, real_name=member.real_name
+        )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_409_CONFLICT:
+            return False
+        raise
+    handed_to_runner = False
+    try:
+        current = _read_preview_member(core, member.real_name)
+        if (
+            current.slept
+            or current.protected
+            or current.pool_state in ("free", "recycling")
+        ):
+            return False
+        handed_to_runner = _sleep_member(
+            batch,
+            core,
+            current,
+            namespace,
+            operation_holder=holder,
+        )
+        return handed_to_runner
+    finally:
+        if not handed_to_runner:
+            _release_preview_operation_lease(
+                coordination,
+                namespace=namespace,
+                real_name=member.real_name,
+                holder=holder,
+            )
+
+
+def _resume_member(
+    batch,
+    core,
+    member: PreviewMember,
+    namespace: str,
+    *,
+    operation_holder: str | None = None,
+) -> bool:
     """Wake a slept preview: flip the state label to hot + stamp last-active (the resume
     IS activity), then create the resume-Job. A failed Job create reverts the label to
     slept — otherwise the preview would READ hot while actually down and a later
@@ -6108,15 +11374,20 @@ def _resume_member(batch, core, member: PreviewMember, namespace: str) -> bool:
             body={
                 "metadata": {
                     "labels": {_VCLUSTER_PREVIEW_STATE_LABEL: "hot"},
-                    "annotations": {
-                        _VCLUSTER_PREVIEW_LAST_ACTIVE_ANNOTATION: now_iso
-                    },
+                    "annotations": {_VCLUSTER_PREVIEW_LAST_ACTIVE_ANNOTATION: now_iso},
                 }
             },
         )
     except Exception as exc:
         logger.warning("lifecycle: resume relabel %s failed: %s", member.real_name, exc)
-    if not _lifecycle_job(batch, member, namespace, "resume"):
+    if not _lifecycle_job(
+        batch,
+        core,
+        member,
+        namespace,
+        "resume",
+        operation_holder=operation_holder,
+    ):
         try:
             core.patch_namespace(
                 name=member.ns_name,
@@ -6137,29 +11408,74 @@ def _reap_teardown_member(
     """Tear one member down for the reaper (TTL-expired or capacity eviction). Pool
     members (free OR claimed) are excluded from claims FIRST (flip to recycling — the
     proven recycler order), then a deadline-bounded down-Job does the teardown."""
+    if _preview_member_is_controller_owned(member):
+        logger.info(
+            "lifecycle: deferring controller-owned preview %s (%s) to application reaper",
+            member.real_name,
+            reason,
+        )
+        return False
+    if _preview_member_requires_archive_teardown(member):
+        logger.info(
+            "lifecycle: refusing unarchived mutable live teardown for %s (%s)",
+            member.real_name,
+            reason,
+        )
+        return False
+    if member.pool_state == "recycling":
+        # The pool recovery reconciler owns retries and backoff after the initial
+        # transition. The lifecycle reaper must not create an untracked parallel Job.
+        return False
     if member.pool_state in ("free", "claimed"):
         try:
-            core.patch_namespace(
-                name=member.ns_name,
-                body={
-                    "metadata": {
-                        "labels": {_VCLUSTER_PREVIEW_POOL_LABEL: "recycling"}
-                    }
-                },
-            )
+            ns = core.read_namespace(name=member.ns_name)
         except Exception as exc:
             logger.warning(
-                "lifecycle: reap relabel %s failed: %s", member.real_name, exc
+                "lifecycle: recycle read %s failed: %s", member.real_name, exc
             )
             return False
+        result = _start_member_recycling(
+            batch,
+            core,
+            ns,
+            member.real_name,
+            namespace,
+            reason=reason,
+        )
+        if not result.job_created:
+            logger.warning(
+                "lifecycle: recycle start %s failed (%s)", member.real_name, reason
+            )
+        return result.job_created
+    coordination = _load_k8s_coordination_client()
+    try:
+        operation_holder = _acquire_preview_operation_lease(
+            coordination, namespace=namespace, real_name=member.real_name
+        )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_409_CONFLICT:
+            return False
+        raise
     req = VclusterPreviewRequest(name=member.real_name, action="down")
-    manifest = _vcluster_preview_job_manifest(req, namespace=namespace)
+    manifest = _vcluster_preview_job_manifest(
+        req, namespace=namespace, operation_holder=operation_holder
+    )
     manifest["spec"]["activeDeadlineSeconds"] = _pool_recycle_deadline_seconds()
     try:
-        _create_preview_job(batch, namespace=namespace, manifest=manifest)
+        _submit_preview_job(
+            batch,
+            core,
+            namespace=namespace,
+            manifest=manifest,
+            lifecycle=member.lifecycle,
+        )
     except Exception as exc:
-        logger.warning(
-            "lifecycle: reap down-job %s failed: %s", member.real_name, exc
+        logger.warning("lifecycle: reap down-job %s failed: %s", member.real_name, exc)
+        _release_preview_operation_lease(
+            coordination,
+            namespace=namespace,
+            real_name=member.real_name,
+            holder=operation_holder,
         )
         return False
     logger.info("lifecycle: tearing down preview %s (%s)", member.real_name, reason)
@@ -6191,15 +11507,17 @@ def _preview_jobs_in_flight(batch, namespace: str) -> set[str]:
 
 def _lifecycle_reap_once(batch, core, *, need_room: int = 0) -> dict[str, int]:
     """One A4 reaper pass, in leverage order:
-      1. TTL teardown  — members past their effective expiry (explicit expires-at always;
+      1. TTL handling  — members past their effective expiry (explicit expires-at always;
                          creation+VCLUSTER_PREVIEW_TTL_HOURS only when that flag is on)
       2. capacity      — evict (via the PURE selector) down to VCLUSTER_PREVIEW_TOTAL_MAX,
                          plus any explicit need_room the caller asked for
       3. sleep         — activity-tracked members idle past VCLUSTER_PREVIEW_SLEEP_AFTER_MINUTES
                          (free/recycling pool members and untracked previews are exempt)
-    HARD RULES enforced here + in the selector: only namespaces labeled app=vcluster-preview
-    are ever considered; protected members are never touched; members with an in-flight
-    down/sleep/resume Job are skipped for the tick. Returns a stats dict (endpoint + tests)."""
+    Profiled trusted cold environments are never directly torn down here; the
+    application reaper must delete/finalize hub desired state first. HARD RULES
+    enforced here + in the selector: only namespaces labeled app=vcluster-preview
+    are considered; protected members are never touched; members with an in-flight
+    down/sleep/resume Job are skipped for the tick. Returns a stats dict."""
     stats = {
         "total": 0,
         "awake": 0,
@@ -6207,8 +11525,10 @@ def _lifecycle_reap_once(batch, core, *, need_room: int = 0) -> dict[str, int]:
         "reapedExpired": 0,
         "evicted": 0,
         "sleptNow": 0,
+        "archiveRequired": 0,
+        "applicationReaperRequired": 0,
     }
-    namespace = _agent_workflow_host_namespace()
+    namespace = _vcluster_preview_control_namespace()
     now = datetime.now(UTC)
     ttl_hours = _vcluster_preview_ttl_hours()
     sleep_after = _vcluster_preview_sleep_after_minutes()
@@ -6228,12 +11548,45 @@ def _lifecycle_reap_once(batch, core, *, need_room: int = 0) -> dict[str, int]:
 
     in_flight = _preview_jobs_in_flight(batch, namespace)
     reaped: set[str] = set()
+    archive_blocked: set[str] = set()
+    application_blocked: set[str] = set()
+
+    def defer_mutable_live(member: PreviewMember, *, reason: str) -> None:
+        archive_blocked.add(member.real_name)
+        stats["archiveRequired"] += 1
+        if not member.slept and _sleep_member_with_operation_lease(
+            batch, core, member, namespace
+        ):
+            stats["sleptNow"] += 1
+        logger.info(
+            "lifecycle: mutable live preview %s requires archive before %s teardown",
+            member.real_name,
+            reason,
+        )
+
+    def defer_controller_owned(member: PreviewMember, *, reason: str) -> None:
+        application_blocked.add(member.real_name)
+        stats["applicationReaperRequired"] += 1
+        if _preview_member_requires_archive_teardown(member):
+            defer_mutable_live(member, reason=reason)
+            return
+        logger.info(
+            "lifecycle: controller-owned preview %s awaits application reaper (%s)",
+            member.real_name,
+            reason,
+        )
 
     # 1) TTL teardown.
     for m in live:
         if m.protected or m.real_name in in_flight:
             continue
         if _member_is_expired(m, now=now, ttl_hours=ttl_hours):
+            if _preview_member_is_controller_owned(m):
+                defer_controller_owned(m, reason="ttl-expired")
+                continue
+            if _preview_member_requires_archive_teardown(m):
+                defer_mutable_live(m, reason="ttl-expired")
+                continue
             if _reap_teardown_member(batch, core, m, namespace, reason="ttl-expired"):
                 stats["reapedExpired"] += 1
                 reaped.add(m.real_name)
@@ -6241,19 +11594,32 @@ def _lifecycle_reap_once(batch, core, *, need_room: int = 0) -> dict[str, int]:
     # 2) Capacity eviction: TOTAL_MAX overflow + explicit need_room (both via the pure
     # selector, so the locked eviction order is the ONLY order).
     remaining = [
-        m for m in live if m.real_name not in reaped and m.real_name not in in_flight
+        m
+        for m in live
+        if m.real_name not in reaped
+        and m.real_name not in archive_blocked
+        and m.real_name not in application_blocked
+        and m.real_name not in in_flight
     ]
     overflow = (len(remaining) - total_max) if total_max > 0 else 0
     need = max(0, overflow) + max(0, need_room)
     if need > 0:
         for m in _select_preview_evictions(
             remaining,
-            need=need,
+            need=len(remaining),
             pool_size=pool_size,
             now=now,
             ttl_hours=ttl_hours,
             active_minutes=active_minutes,
         ):
+            if stats["evicted"] >= need:
+                break
+            if _preview_member_is_controller_owned(m):
+                defer_controller_owned(m, reason="capacity")
+                continue
+            if _preview_member_requires_archive_teardown(m):
+                defer_mutable_live(m, reason="capacity")
+                continue
             if _reap_teardown_member(batch, core, m, namespace, reason="capacity"):
                 stats["evicted"] += 1
                 reaped.add(m.real_name)
@@ -6265,7 +11631,12 @@ def _lifecycle_reap_once(batch, core, *, need_room: int = 0) -> dict[str, int]:
     if sleep_after > 0:
         idle = timedelta(minutes=sleep_after)
         for m in live:
-            if m.real_name in reaped or m.real_name in in_flight:
+            if (
+                m.real_name in reaped
+                or m.real_name in archive_blocked
+                or m.real_name in application_blocked
+                or m.real_name in in_flight
+            ):
                 continue
             if m.protected or m.slept or m.terminating:
                 continue
@@ -6274,7 +11645,7 @@ def _lifecycle_reap_once(batch, core, *, need_room: int = 0) -> dict[str, int]:
             if m.last_active is None:
                 continue
             if now - m.last_active >= idle:
-                if _sleep_member(batch, core, m, namespace):
+                if _sleep_member_with_operation_lease(batch, core, m, namespace):
                     stats["sleptNow"] += 1
 
     if stats["reapedExpired"] or stats["evicted"] or stats["sleptNow"]:
@@ -6334,11 +11705,211 @@ def _start_lifecycle_reaper() -> None:
         ).start()
 
 
+def _recycle_retry_delay_seconds(attempt: int) -> int:
+    base = _pool_recycle_retry_base_seconds()
+    maximum = _pool_recycle_retry_max_seconds()
+    exponent = min(20, max(0, attempt - 1))
+    return min(maximum, base * (2**exponent))
+
+
+def _recycle_job_phase(job) -> str:
+    status_obj = getattr(job, "status", None)
+    if int(getattr(status_obj, "active", 0) or 0) > 0:
+        return "active"
+    if int(getattr(status_obj, "failed", 0) or 0) > 0:
+        return "failed"
+    if int(getattr(status_obj, "succeeded", 0) or 0) > 0:
+        return "succeeded"
+    conditions = getattr(status_obj, "conditions", None) or []
+    for condition in conditions:
+        if str(getattr(condition, "status", "")).lower() != "true":
+            continue
+        if getattr(condition, "type", "") == "Failed":
+            return "failed"
+        if getattr(condition, "type", "") == "Complete":
+            return "succeeded"
+    # A just-created Job can have all counters at zero. It is still in flight and
+    # must not be replaced by another reconcile tick.
+    return "active"
+
+
+def _recycle_down_jobs(batch, namespace: str) -> dict[str, list[Any]]:
+    jobs = batch.list_namespaced_job(
+        namespace=namespace, label_selector="vcluster-preview-action=down"
+    )
+    by_member: dict[str, list[Any]] = {}
+    for job in jobs.items:
+        metadata = getattr(job, "metadata", None)
+        labels = getattr(metadata, "labels", None) or {}
+        real_name = labels.get(_VCLUSTER_PREVIEW_NAME_LABEL)
+        if labels.get("vcluster-preview-action") != "down" or not real_name:
+            continue
+        by_member.setdefault(real_name, []).append(job)
+    return by_member
+
+
+def _recycle_jobs_phase(jobs: list[Any]) -> str:
+    phases = {_recycle_job_phase(job) for job in jobs}
+    if "active" in phases:
+        return "active"
+    if "succeeded" in phases:
+        return "succeeded"
+    return "failed"
+
+
+def _ensure_recycling_metadata(
+    core, ns, now: datetime
+) -> tuple[str, int, datetime | None] | None:
+    annotations = (ns.metadata.annotations or {}) if ns.metadata else {}
+    reason = annotations.get(_VCLUSTER_PREVIEW_RECYCLE_REASON_ANNOTATION) or "recovery"
+    attempt = _recycle_attempt_from_ns(ns)
+    last_attempt = _parse_rfc3339(
+        annotations.get(_VCLUSTER_PREVIEW_RECYCLE_LAST_ATTEMPT_ANNOTATION)
+    )
+    recycling_at = annotations.get(_VCLUSTER_PREVIEW_RECYCLING_AT_ANNOTATION)
+    if not recycling_at:
+        created = getattr(ns.metadata, "creation_timestamp", None)
+        if created is not None and created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+        recycling_at = (created or now).isoformat(timespec="seconds")
+
+    required = {
+        _VCLUSTER_PREVIEW_RECYCLING_AT_ANNOTATION: recycling_at,
+        _VCLUSTER_PREVIEW_RECYCLE_REASON_ANNOTATION: reason,
+        _VCLUSTER_PREVIEW_RECYCLE_ATTEMPT_ANNOTATION: str(attempt),
+        _VCLUSTER_PREVIEW_RECYCLE_ERROR_ANNOTATION: annotations.get(
+            _VCLUSTER_PREVIEW_RECYCLE_ERROR_ANNOTATION, ""
+        ),
+    }
+    if any(annotations.get(key) != value for key, value in required.items()):
+        try:
+            core.patch_namespace(
+                name=ns.metadata.name,
+                body={"metadata": {"annotations": required}},
+            )
+        except Exception as exc:
+            logger.warning(
+                "pool: recycling metadata repair %s failed: %s",
+                _preview_realname_from_ns(ns),
+                exc,
+            )
+            return None
+    return reason, attempt, last_attempt
+
+
+def _reconcile_recycling_members(
+    batch, core, members: list[Any], namespace: str
+) -> dict[str, int]:
+    """Recover recycling members after SEA restarts, failed Job creation, or terminal
+    teardown Jobs. Members stay non-claimable for the entire retry lifecycle."""
+    stats = {
+        "recycling": len(members),
+        "recoveryRetried": 0,
+        "recoveryActive": 0,
+        "recoveryWaiting": 0,
+        "recoveryBackoff": 0,
+        "recoveryExhausted": 0,
+        "recoveryFailed": 0,
+        "recoveryScanFailed": 0,
+    }
+    if not members:
+        return stats
+    try:
+        jobs_by_member = _recycle_down_jobs(batch, namespace)
+    except Exception as exc:
+        logger.warning("pool: recycle recovery Job scan failed: %s", exc)
+        stats["recoveryScanFailed"] = 1
+        return stats
+
+    now = datetime.now(UTC)
+    max_attempts = _pool_recycle_max_attempts()
+    for ns in members:
+        real_name = _preview_realname_from_ns(ns)
+        repaired = _ensure_recycling_metadata(core, ns, now)
+        if repaired is None:
+            stats["recoveryFailed"] += 1
+            continue
+        reason, attempt, last_attempt = repaired
+        jobs = jobs_by_member.get(real_name, [])
+        phase = _recycle_jobs_phase(jobs) if jobs else "absent"
+        if phase == "active":
+            stats["recoveryActive"] += 1
+            continue
+        if phase == "succeeded":
+            # Namespace deletion can trail Job completion. If teardown did not
+            # actually remove it, Job TTL eventually makes it absent and retryable.
+            stats["recoveryWaiting"] += 1
+            continue
+
+        trigger = "terminal down Job" if phase == "failed" else "missing down Job"
+        if attempt >= max_attempts:
+            error = f"retry limit reached after {attempt} attempts ({trigger})"
+            _patch_recycle_error(core, ns.metadata.name, real_name, error)
+            stats["recoveryExhausted"] += 1
+            continue
+        if last_attempt is not None:
+            retry_at = last_attempt + timedelta(
+                seconds=_recycle_retry_delay_seconds(attempt)
+            )
+            if now < retry_at:
+                _patch_recycle_error(core, ns.metadata.name, real_name, trigger)
+                stats["recoveryBackoff"] += 1
+                continue
+
+        coordination = _load_k8s_coordination_client()
+        try:
+            operation_holder = _acquire_preview_operation_lease(
+                coordination, namespace=namespace, real_name=real_name
+            )
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_409_CONFLICT:
+                stats["recoveryActive"] += 1
+                continue
+            raise
+        retried = _launch_recycle_down_job(
+            batch,
+            core,
+            ns,
+            real_name,
+            namespace,
+            reason=reason,
+            operation_holder=operation_holder,
+        )
+        if retried:
+            logger.info(
+                "pool: recycle recovery retried %s after %s", real_name, trigger
+            )
+            stats["recoveryRetried"] += 1
+        else:
+            _release_preview_operation_lease(
+                coordination,
+                namespace=namespace,
+                real_name=real_name,
+                holder=operation_holder,
+            )
+            stats["recoveryFailed"] += 1
+    return stats
+
+
 def _pool_reconcile_once(batch, core, apps) -> dict[str, int]:
     """One reconcile pass: recycle pin-drifted free members, then top the pool up toward
     VCLUSTER_PREVIEW_POOL_SIZE — bounded by VCLUSTER_PREVIEW_MAX awake and the per-tick fill
     batch. Returns a small stats dict (used by tests)."""
-    stats = {"awake": 0, "free": 0, "baking": 0, "created": 0, "recycled": 0}
+    stats = {
+        "awake": 0,
+        "free": 0,
+        "baking": 0,
+        "created": 0,
+        "recycled": 0,
+        "recycling": 0,
+        "recoveryRetried": 0,
+        "recoveryActive": 0,
+        "recoveryWaiting": 0,
+        "recoveryBackoff": 0,
+        "recoveryExhausted": 0,
+        "recoveryFailed": 0,
+        "recoveryScanFailed": 0,
+    }
     pool_size = _vcluster_preview_pool_size()
     if pool_size <= 0:
         return stats
@@ -6350,25 +11921,37 @@ def _pool_reconcile_once(batch, core, apps) -> dict[str, int]:
     recycle_on = (
         os.environ.get("VCLUSTER_PREVIEW_POOL_RECYCLE", "true").lower() != "false"
     )
-    namespace = _agent_workflow_host_namespace()
+    namespace = _vcluster_preview_control_namespace()
 
     nss = core.list_namespace(label_selector="app=vcluster-preview")
     free_members = []
+    recycling_members = []
+    existing_names: set[str] = set()
     awake = 0
     free = 0
     for ns in nss.items:
         if _preview_ns_is_terminating(ns):
             continue
         labels = (ns.metadata.labels or {}) if ns.metadata else {}
+        real_name = labels.get(_VCLUSTER_PREVIEW_NAME_LABEL)
+        if real_name:
+            existing_names.add(real_name)
         # A4: a SLEPT preview holds no compute — it doesn't count against the awake cap,
         # so the pool can keep filling while user previews sleep. (A slept FREE member —
         # manual force-sleep only — still counts as free to avoid an overshoot when it
         # wakes; claims skip it.)
         if labels.get(_VCLUSTER_PREVIEW_STATE_LABEL) != "slept":
             awake += 1
-        if labels.get(_VCLUSTER_PREVIEW_POOL_LABEL) == "free":
+        pool_state = labels.get(_VCLUSTER_PREVIEW_POOL_LABEL)
+        if pool_state == "free":
             free += 1
             free_members.append(ns)
+        elif pool_state == "recycling":
+            recycling_members.append(ns)
+
+    stats.update(
+        _reconcile_recycling_members(batch, core, recycling_members, namespace)
+    )
 
     recycled = 0
     if recycle_on and free_members:
@@ -6382,9 +11965,15 @@ def _pool_reconcile_once(batch, core, apps) -> dict[str, int]:
                     want=want_hash,
                 ):
                     real_name = _preview_realname_from_ns(ns)
-                    if _recycle_free_member(batch, core, ns, real_name, namespace):
+                    result = _recycle_free_member(batch, core, ns, real_name, namespace)
+                    if result.marked:
                         recycled += 1
-                        free -= 1  # no longer claimable (relabeled recycling); still awake
+                        free -= (
+                            1  # no longer claimable (relabeled recycling); still awake
+                        )
+                        stats["recycling"] += 1
+                        if not result.job_created:
+                            stats["recoveryFailed"] += 1
 
     # In-flight bakes: pool up-Jobs still Running. A baking member is counted in `awake` but NOT
     # in `free` (the free label lands only at the END of its ~277s bringup), so without counting
@@ -6394,16 +11983,22 @@ def _pool_reconcile_once(batch, core, apps) -> dict[str, int]:
     # manager still sees the in-flight bake) and self-clears on a failed bake (a labelless
     # half-baked namespace would otherwise count as in-flight forever → permanent under-fill).
     baking = 0
+    pending_names: set[str] = set()
     try:
         jobs = batch.list_namespaced_job(
             namespace=namespace, label_selector="vcluster-preview-action=up"
         )
         for j in jobs.items:
             jname = (j.metadata.name or "") if j.metadata else ""
-            if jname.startswith("vcpreview-up-pool-") and int(
-                getattr(j.status, "active", 0) or 0
-            ) > 0:
+            if (
+                jname.startswith("vcpreview-up-pool-")
+                and int(getattr(j.status, "active", 0) or 0) > 0
+            ):
                 baking += 1
+                labels = getattr(getattr(j, "metadata", None), "labels", None) or {}
+                pending_name = labels.get(_VCLUSTER_PREVIEW_NAME_LABEL)
+                if pending_name:
+                    pending_names.add(pending_name)
     except Exception as exc:
         # Fail-open toward the pre-#33 behavior (may overshoot, never under-fill).
         logger.warning("pool: in-flight bake count failed: %s", exc)
@@ -6411,16 +12006,39 @@ def _pool_reconcile_once(batch, core, apps) -> dict[str, int]:
 
     # Fill: aim for pool_size free members, counting in-flight bakes so we don't over-provision;
     # never past max_awake, and at most fill_batch per tick (bounds the IO/enrollment burst).
+    pending_without_namespace = pending_names - existing_names
+    awake += len(pending_without_namespace)
+    total = len(existing_names | pending_names)
     need = pool_size - (free + baking)
     room = max_awake - awake
+    total_max = _vcluster_preview_total_max()
+    if total_max > 0:
+        room = min(room, total_max - total)
     to_create = max(0, min(need, room, fill_batch))
     created = 0
     for _ in range(to_create):
         name = f"pool-{secrets.token_hex(2)}"
         req = VclusterPreviewRequest(name=name, action="up", pool=True)
-        manifest = _vcluster_preview_job_manifest(req, namespace=namespace)
+        coordination = _load_k8s_coordination_client()
+        operation_holder: str | None = None
+        handed_to_runner = False
         try:
-            _create_preview_job(batch, namespace=namespace, manifest=manifest)
+            operation_holder = _acquire_preview_operation_lease(
+                coordination, namespace=namespace, real_name=name
+            )
+            manifest = _vcluster_preview_job_manifest(
+                req,
+                namespace=namespace,
+                operation_holder=operation_holder,
+            )
+            _submit_preview_job(
+                batch,
+                core,
+                namespace=namespace,
+                manifest=manifest,
+                lifecycle="ephemeral",
+            )
+            handed_to_runner = True
             created += 1
             logger.info(
                 "pool: baking member %s (free=%d baking=%d awake=%d target=%d max=%d)",
@@ -6433,8 +12051,16 @@ def _pool_reconcile_once(batch, core, apps) -> dict[str, int]:
             )
         except Exception as exc:
             logger.warning("pool: failed to create member %s: %s", name, exc)
+        finally:
+            if operation_holder is not None and not handed_to_runner:
+                _release_preview_operation_lease(
+                    coordination,
+                    namespace=namespace,
+                    real_name=name,
+                    holder=operation_holder,
+                )
 
-    if created or recycled:
+    if created or recycled or stats["recoveryRetried"]:
         _invalidate_previews_cache()
     stats.update(
         awake=awake, free=free, baking=baking, created=created, recycled=recycled
@@ -6461,16 +12087,26 @@ def _pool_manager_loop() -> None:
         try:
             batch, core = _load_k8s_clients()
             apps = _load_k8s_apps_client()
-            _pool_reconcile_once(batch, core, apps)
+            coordination = _load_k8s_coordination_client()
+            with _preview_capacity_lease(
+                coordination, namespace=_vcluster_preview_control_namespace()
+            ):
+                stats = _pool_reconcile_once(batch, core, apps)
+            if (
+                stats["recoveryFailed"]
+                or stats["recoveryExhausted"]
+                or stats["recoveryScanFailed"]
+            ):
+                logger.warning("pool-manager: recycle recovery stats=%s", stats)
+            elif stats["recoveryRetried"]:
+                logger.info("pool-manager: recycle recovery stats=%s", stats)
         except Exception as exc:
             logger.warning("pool-manager: reconcile failed: %s", exc)
         time.sleep(interval)
 
 
 def _start_pool_manager() -> None:
-    """Start the singleton reconcile thread iff the pool is enabled (size>0) and not dry-run.
-    SEA runs replicas=1 so a single in-process thread is the whole coordinator — no Lease
-    needed; the module-level guard keeps a double startup event from spawning two."""
+    """Start the local pool loop iff enabled; the cluster Lease serializes all replicas."""
     if _vcluster_preview_pool_size() <= 0:
         return
     if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {"1", "true", "yes"}:

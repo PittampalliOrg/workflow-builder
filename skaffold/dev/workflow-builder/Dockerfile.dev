@@ -15,8 +15,8 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-# Run as root so Skaffold's `kubectl exec -- tar` sync can write into /app.
-# (devspace.yaml does the same via the runAsUser: 0 securityContext patch.)
+# Build dependencies as root, then hand the writable development tree to the
+# restricted runtime UID used by preview namespaces.
 USER root
 
 # Enable pnpm via corepack.
@@ -57,12 +57,18 @@ COPY services/shared/workflow-data-contract ./services/shared/workflow-data-cont
 # fails closed without DEV_SYNC_COMMANDS_JSON (plain `skaffold dev` unaffected).
 COPY services/dev-sync-sidecar/exec-bridge.mjs /devtools/exec-bridge.mjs
 
+RUN addgroup -g 1001 dev-runtime \
+    && adduser -D -u 1001 -G dev-runtime dev-runtime \
+    && chown -R 1001:1001 /app /devtools
+
 ENV NODE_ENV=development
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 ENV npm_config_store_dir=/app/.pnpm-store
 
 EXPOSE 3000 24678
+
+USER 1001:1001
 
 # vite is installed under node_modules/.bin by pnpm above.
 # --host 0.0.0.0 binds inside the pod; the Service forwards from cluster

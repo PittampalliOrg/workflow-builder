@@ -1,5 +1,6 @@
 import type { Handle } from "@sveltejs/kit";
 import { sequence } from "@sveltejs/kit/hooks";
+import { env } from "$env/dynamic/private";
 import { SpanStatusCode, trace, type Span } from "@opentelemetry/api";
 import { ensureStartupReady } from "$lib/server/startup";
 import { getApplicationAdapters } from "$lib/server/application";
@@ -17,11 +18,99 @@ import {
 // Kick the boot sequence at module load (runs once per server process). We
 // don't await at module level so request handling isn't blocked if the DB is
 // slow to answer — the startupHandle below gates every request on it.
-ensureStartupReady().catch(() => {
-  /* already logged */
-});
+if (!previewControlBrokerModeEnabled()) {
+  ensureStartupReady().catch(() => {
+    /* already logged */
+  });
+}
+
+export function previewControlBrokerModeEnabled(): boolean {
+  return (
+    (env.PREVIEW_CONTROL_BROKER_MODE ?? process.env.PREVIEW_CONTROL_BROKER_MODE)
+      ?.trim()
+      .toLowerCase() === "true"
+  );
+}
+
+/** Exact physical-control-plane surface. Preview-local reverse calls stay excluded. */
+export const PREVIEW_CONTROL_BROKER_ROUTES = Object.freeze([
+  ["POST", "/api/internal/preview-control/artifacts"],
+  ["POST", "/api/internal/preview-control/accepted-images/reuse"],
+  ["POST", "/api/internal/preview-control/activation-images"],
+  ["POST", "/api/internal/preview-control/dev-sync-credentials"],
+  ["POST", "/api/internal/preview-control/development-build"],
+  ["POST", "/api/internal/preview-control/environment"],
+  ["POST", "/api/internal/preview-control/deletion-intents/reconcile"],
+  ["POST", "/api/internal/preview-control/infrastructure-candidate"],
+  ["POST", "/api/internal/preview-control/pr-preview"],
+  ["POST", "/api/internal/preview-control/acceptance"],
+  ["POST", "/api/internal/preview-control/read"],
+  ["POST", "/api/internal/preview-control/promotion"],
+  ["POST", "/api/internal/preview-runtime/v1/chat/completions"],
+] as const);
+
+const PREVIEW_CONTROL_BROKER_DYNAMIC_ROUTES = Object.freeze([
+  [
+    "POST",
+    /^\/api\/internal\/preview-control\/environment\/[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\/teardown$/,
+  ],
+  [
+    "GET",
+    /^\/api\/internal\/preview-control\/environment\/[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\/cleanup$/,
+  ],
+] as const);
+
+const previewControlBrokerRouteKeys = new Set(
+  PREVIEW_CONTROL_BROKER_ROUTES.map(
+    ([routeMethod, routePath]) => `${routeMethod} ${routePath}`,
+  ),
+);
+
+/** Return a response only when broker mode itself owns the request. */
+export function previewControlBrokerModeResponse(
+  pathname: string,
+  method: string,
+  enabled: boolean,
+): Response | null {
+  if (!enabled) return null;
+  if (pathname === "/healthz") {
+    if (method !== "GET" && method !== "HEAD") {
+      return new Response(null, { status: 405 });
+    }
+    return new Response(
+      method === "HEAD" ? null : JSON.stringify({ ok: true }),
+      {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "cache-control": "no-store",
+        },
+      },
+    );
+  }
+  if (
+    previewControlBrokerRouteKeys.has(`${method.toUpperCase()} ${pathname}`) ||
+    PREVIEW_CONTROL_BROKER_DYNAMIC_ROUTES.some(
+      ([routeMethod, pattern]) =>
+        routeMethod === method.toUpperCase() && pattern.test(pathname),
+    )
+  ) {
+    return null;
+  }
+  return new Response("Not found", { status: 404 });
+}
+
+const previewControlBrokerHandle: Handle = async ({ event, resolve }) => {
+  const response = previewControlBrokerModeResponse(
+    event.url.pathname,
+    event.request.method,
+    previewControlBrokerModeEnabled(),
+  );
+  return response ?? resolve(event);
+};
 
 const startupHandle: Handle = async ({ event, resolve }) => {
+  if (previewControlBrokerModeEnabled()) return resolve(event);
   try {
     await ensureStartupReady();
   } catch {
@@ -31,6 +120,10 @@ const startupHandle: Handle = async ({ event, resolve }) => {
 };
 
 const authHandle: Handle = async ({ event, resolve }) => {
+  if (previewControlBrokerModeEnabled()) {
+    event.locals.session = null;
+    return resolve(event);
+  }
   const adapters = getApplicationAdapters();
   const session = await adapters.authSession.getSession({
     request: event.request,
@@ -63,7 +156,10 @@ const authHandle: Handle = async ({ event, resolve }) => {
           userId: event.locals.session.userId,
           currentProjectId: event.locals.session.projectId,
         });
-      if (resolvedProjectId && resolvedProjectId !== event.locals.session.projectId) {
+      if (
+        resolvedProjectId &&
+        resolvedProjectId !== event.locals.session.projectId
+      ) {
         event.locals.session = {
           ...event.locals.session,
           projectId: resolvedProjectId,
@@ -201,6 +297,7 @@ const apiIoHandle: Handle = async ({ event, resolve }) => {
 };
 
 export const handle = sequence(
+  previewControlBrokerHandle,
   startupHandle,
   authHandle,
   apiIoHandle,

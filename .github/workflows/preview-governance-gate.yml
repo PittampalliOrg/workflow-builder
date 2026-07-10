@@ -1,0 +1,37 @@
+name: Preview Governance Gate
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-gate-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  initialize-preview-gate:
+    name: Initialize preview/gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout the trusted PR base
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Classify the exact PR tuple
+        run: node scripts/governance/initialize-preview-gate.mjs
+        env:
+          PREVIEW_CONTROL_GITHUB_APP_ID: "2970091"
+          PREVIEW_CONTROL_GITHUB_APP_INSTALLATION_ID: "112998814"
+          PREVIEW_CONTROL_GITHUB_APP_PRIVATE_KEY: ${{ secrets.PREVIEW_CONTROL_GITHUB_APP_PRIVATE_KEY }}
+          PREVIEW_GATE_REPOSITORY: ${{ github.repository }}
+          PREVIEW_GATE_PULL_REQUEST: ${{ github.event.pull_request.number }}
+          PREVIEW_GATE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PREVIEW_GATE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}

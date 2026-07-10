@@ -1,5 +1,10 @@
 # Dev-sync normalization + contract loop (B2 / B4)
 
+For the current end-to-end agent workflow, strict multi-service capture,
+GitHub promotion, and immutable acceptance replay, start with
+[`preview-environment-agent-development.md`](preview-environment-agent-development.md).
+This document remains the detailed transport and contract-loop reference.
+
 Extends the agentic dev loop (`docs/agentic-deploy-inspect-loop.md`) so the
 `dev-sync-sidecar` — not the BFF's in-process Vite plugin — is THE dev-loop
 transport for every microservice, and so a TS↔Python **workflow-data contract**
@@ -12,11 +17,11 @@ an `emptyDir` at the dev pod's workdir. It now serves the full surface the Vite
 plugin only gave the BFF (all token-gated with `x-sync-token`, like `/__sync`; no
 new trust boundary — `/__sync` already delivers code the dev server executes):
 
-| Endpoint | Purpose |
-|---|---|
-| `POST /__sync` | untar an uploaded `tar.gz` into the workdir → inotify → HMR (unchanged) |
-| `GET /__export?paths=…` | stream a `tar.gz` of the live workdir source — **version capture parity** (`captureDevPreviewSource` guards on the gzip magic bytes, so the wire format matches the plugin: `tar -czf -`, busybox-relative; non-existent paths are filtered first) |
-| `GET /__status` | `{lastSyncAt, lastSyncBytes, lastRun, commands}` diagnostics (`lastRun.executedIn` says where the last `/__run` executed) |
+| Endpoint                 | Purpose                                                                                                                                                                                                                                                                                       |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /__sync`           | untar an uploaded `tar.gz` into the workdir → inotify → HMR (unchanged)                                                                                                                                                                                                                       |
+| `GET /__export?paths=…`  | stream a `tar.gz` of the live workdir source — **version capture parity** (`captureDevPreviewSource` guards on the gzip magic bytes, so the wire format matches the plugin: `tar -czf -`, busybox-relative; non-existent paths are filtered first)                                            |
+| `GET /__status`          | `{lastSyncAt, lastSyncBytes, lastRun, commands}` diagnostics (`lastRun.executedIn` says where the last `/__run` executed)                                                                                                                                                                     |
 | `POST /__run?cmd=<name>` | run an **allowlisted** named command in the workdir; output capped, exit code returned. The allowlist is `DEV_SYNC_COMMANDS_JSON` (parsed once at boot); an unknown name 404s, a malformed allowlist fails closed. Executes in the **app container** via the exec bridge when present (below) |
 
 `DEV_SYNC_COMMANDS_JSON` is stamped by `sandbox-execution-api` from the dev-preview
@@ -24,10 +29,15 @@ registry: the reserved name `deps` = `depsCommand`, plus each `testCommands` ent
 under its own name. The sidecar never runs an arbitrary command string from a
 request.
 
+For workflow-builder, `cmd=migrate` runs the allowlisted
+`node scripts/db-migrate-runtime.mjs` against the preview-local `DATABASE_URL`.
+This is the explicit follow-up to hot-syncing `drizzle/`; the migration ledger
+and PostgreSQL advisory lock make repeated or concurrent calls idempotent.
+
 ## `/__run` executes in the APP container — the exec bridge (#40)
 
 **The problem (live repro 2026-07-05):** the sidecar image is node-only, so a
-`/__run` executed *in the sidecar container* runs in the wrong runtime — the
+`/__run` executed _in the sidecar container_ runs in the wrong runtime — the
 orchestrator's `cmd=contract` exited 127 (`sh: python: not found`); the node
 services' `deps` (`pnpm install`) had the same class of problem (no pnpm in the
 sidecar). The commands belong in the **app container**, where the service's
@@ -140,7 +150,7 @@ the sidecar keeps an inline twin covered by its node:test e2e).
   plain sidecar dev pod (no `functional`/`envFrom`), so a functional/adopt preview
   must wire the prod secret via `envFrom` — a live-pass item.
 - **sandbox-execution-api self-adopt** (SEA developing itself in a preview) is a
-  proven pattern BUT SEA *is* the provisioner: if its dev pod dies mid-session
+  proven pattern BUT SEA _is_ the provisioner: if its dev pod dies mid-session
   there is no restorer, and `vcluster delete` is the only backstop. Not added to
   the registry tonight — document + decide before enabling.
 - **fn-system** is Knative (immutable revisions), not adoptable by the dev-pod

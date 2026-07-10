@@ -1,6 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { validateInternalToken } from '$lib/server/internal-auth';
+import { validateInternalOrPreviewControlRead } from '$lib/server/internal-auth';
 import { getApplicationAdapters } from '$lib/server/application';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
 
@@ -8,10 +8,10 @@ import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
  * GET /api/internal/agent/workflows/executions/[executionId]/status
  *
  * Returns execution status from DB + orchestrator runtime.
- * Security: Validated via X-Internal-Token header.
+ * Security: service-internal auth or the tuple-bound preview read capability.
  */
 export const GET: RequestHandler = async ({ request, params }) => {
-	if (!validateInternalToken(request)) {
+	if (!validateInternalOrPreviewControlRead(request)) {
 		return error(401, 'Unauthorized');
 	}
 
@@ -42,8 +42,7 @@ export const GET: RequestHandler = async ({ request, params }) => {
 
 	if (execution.daprInstanceId) {
 		try {
-			const orchestratorUrl =
-				workflow?.daprOrchestratorUrl || getOrchestratorUrl();
+			const orchestratorUrl = workflow?.daprOrchestratorUrl || getOrchestratorUrl();
 			const res = await daprFetch(
 				`${orchestratorUrl}/api/v2/workflows/${execution.daprInstanceId}/status`
 			);
@@ -83,9 +82,7 @@ export const GET: RequestHandler = async ({ request, params }) => {
 				progress: (runtime.progress as number) ?? execution.progress,
 				output: (runtime.outputs as Record<string, unknown>) ?? execution.output,
 				error: effectiveError,
-				...(shouldComplete && !execution.completedAt
-					? { completedAt: new Date() }
-					: {})
+				...(shouldComplete && !execution.completedAt ? { completedAt: new Date() } : {})
 			});
 		}
 	}

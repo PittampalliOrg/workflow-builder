@@ -90,7 +90,9 @@ function rowToArtifact(row: readonly unknown[]): WorkflowArtifactRecord {
 	};
 }
 
-function rowToPlanArtifact(row: readonly unknown[]): WorkflowPlanArtifactRecord {
+function rowToPlanArtifact(
+	row: readonly unknown[],
+): WorkflowPlanArtifactRecord {
 	return {
 		artifactRef: stringValue(row[0]),
 		workflowExecutionId: stringValue(row[1]),
@@ -117,7 +119,9 @@ export class DaprPostgresArtifactStore implements ArtifactStore {
 		private readonly client: BindingClient = new DaprPostgresBindingClient(),
 	) {}
 
-	async upsertWorkflowArtifact(input: WorkflowArtifactInput): Promise<{ id: string }> {
+	async upsertWorkflowArtifact(
+		input: WorkflowArtifactInput,
+	): Promise<{ id: string }> {
 		const params = [
 			input.id,
 			input.workflowExecutionId,
@@ -194,7 +198,9 @@ export class DaprPostgresArtifactStore implements ArtifactStore {
 		return { id: input.id };
 	}
 
-	async listWorkflowArtifactsByExecutionId(executionId: string): Promise<WorkflowArtifactRecord[]> {
+	async listWorkflowArtifactsByExecutionId(
+		executionId: string,
+	): Promise<WorkflowArtifactRecord[]> {
 		const result = await this.client.query({
 			summary: "workflow_artifacts.select_by_execution",
 			collection: "workflow_artifacts",
@@ -217,7 +223,9 @@ export class DaprPostgresArtifactStore implements ArtifactStore {
 		return result.rows.map(rowToArtifact);
 	}
 
-	async listSourceBundleArtifactsByWorkflowId(workflowId: string): Promise<WorkflowArtifactRecord[]> {
+	async listSourceBundleArtifactsByWorkflowId(
+		workflowId: string,
+	): Promise<WorkflowArtifactRecord[]> {
 		const result = await this.client.query({
 			summary: "workflow_artifacts.select_source_bundles_by_workflow",
 			collection: "workflow_artifacts",
@@ -257,23 +265,40 @@ export class DaprPostgresArtifactStore implements ArtifactStore {
 		executionId: string;
 		artifactId: string;
 		metadata: Record<string, unknown> | null;
+		ifAbsentMetadataKey?: string;
 	}): Promise<WorkflowArtifactRecord | null> {
-		await this.client.exec({
-			summary: "workflow_artifacts.update_metadata",
+		const conditional = Boolean(input.ifAbsentMetadataKey);
+		const result = await this.client.exec({
+			summary: conditional
+				? "workflow_artifacts.update_metadata_if_absent"
+				: "workflow_artifacts.update_metadata",
 			collection: "workflow_artifacts",
 			sql: `
 				UPDATE workflow_artifacts
 				SET metadata = CAST($3 AS jsonb)
 				WHERE workflow_execution_id = $1 AND id = $2
+				${conditional ? "AND NOT (COALESCE(metadata, '{}'::jsonb) ? $4)" : ""}
 			`,
 			params: [
 				input.executionId,
 				input.artifactId,
 				jsonParam(input.metadata ?? null),
+				...(conditional ? [input.ifAbsentMetadataKey] : []),
 			],
-			spanParams: [input.executionId, input.artifactId, input.metadata ?? null],
-			paramNames: ["workflow_execution_id", "id", "metadata"],
+			spanParams: [
+				input.executionId,
+				input.artifactId,
+				input.metadata ?? null,
+				...(conditional ? [input.ifAbsentMetadataKey] : []),
+			],
+			paramNames: [
+				"workflow_execution_id",
+				"id",
+				"metadata",
+				...(conditional ? ["if_absent_metadata_key"] : []),
+			],
 		});
+		if (conditional && result.rowsAffected !== 1) return null;
 		return this.getWorkflowArtifactForExecution(input);
 	}
 }
@@ -446,7 +471,9 @@ export class DaprPostgresWorkflowPlanArtifactStore implements WorkflowPlanArtifa
 		return { artifactRef: input.artifactRef, status: input.status };
 	}
 
-	async getPlanArtifact(artifactRef: string): Promise<WorkflowPlanArtifactRecord | null> {
+	async getPlanArtifact(
+		artifactRef: string,
+	): Promise<WorkflowPlanArtifactRecord | null> {
 		const result = await this.client.query({
 			summary: "workflow_plan_artifacts.select_by_id",
 			collection: "workflow_plan_artifacts",

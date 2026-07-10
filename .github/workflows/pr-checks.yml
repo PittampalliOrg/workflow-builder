@@ -52,7 +52,10 @@ jobs:
         run: pnpm type-check
 
       - name: Run import-boundary check
-        run: pnpm check:boundaries
+        run: pnpm check:boundaries:ratchet
+
+      - name: Validate preview governance gate
+        run: node --test scripts/architecture/check-dependency-boundaries.node-test.mjs scripts/governance/preview-gate.node-test.mjs
 
       - name: Run unit tests
         run: pnpm test:unit --run
@@ -80,4 +83,3 @@ jobs:
       - name: Run orchestrator tests
         working-directory: services/workflow-orchestrator
         run: uv run pytest tests/ -q
-

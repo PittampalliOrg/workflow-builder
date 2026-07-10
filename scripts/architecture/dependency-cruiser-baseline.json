@@ -1,0 +1,2364 @@
+{
+  "schemaVersion": 1,
+  "generatedFromCommit": "f8e49c71f0cd027f74e75c55305e51a567bd5d72",
+  "command": "pnpm exec depcruise src/lib/server src/routes --config .dependency-cruiser.cjs --output-type json",
+  "counts": {
+    "error": 0,
+    "warn": 196,
+    "info": 0
+  },
+  "violations": [
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/agent-import-export.ts",
+      "to": "src/lib/server/agents/markdown.ts",
+      "unresolvedTo": "$lib/server/agents/markdown",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/agent-profiles.ts",
+      "to": "src/lib/server/agent-profiles.ts",
+      "unresolvedTo": "$lib/server/agent-profiles",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/agent-runtime-control.ts",
+      "to": "src/lib/server/agents/runtime-routing.ts",
+      "unresolvedTo": "$lib/server/agents/runtime-routing",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/benchmark-environment-validation.ts",
+      "to": "src/lib/server/benchmarks/inference-environments.ts",
+      "unresolvedTo": "$lib/server/benchmarks/inference-environments",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/benchmark-environment-validation.ts",
+      "to": "src/lib/server/benchmarks/swebench.ts",
+      "unresolvedTo": "$lib/server/benchmarks/swebench",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/benchmark-environment-validation.ts",
+      "to": "src/lib/server/environments/swebench-environment-ensure.ts",
+      "unresolvedTo": "$lib/server/environments/swebench-environment-ensure",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/benchmark-environment-validation.ts",
+      "to": "src/lib/server/environments/swebench-environment-spec.ts",
+      "unresolvedTo": "$lib/server/environments/swebench-environment-spec",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/benchmark-evaluation-results.ts",
+      "to": "src/lib/server/benchmarks/patch-compare.ts",
+      "unresolvedTo": "$lib/server/benchmarks/patch-compare",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/benchmark-run-instance-detail.ts",
+      "to": "src/lib/server/benchmarks/contamination.ts",
+      "unresolvedTo": "$lib/server/benchmarks/contamination",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/benchmark-run-instance-detail.ts",
+      "to": "src/lib/server/benchmarks/harness-result.ts",
+      "unresolvedTo": "$lib/server/benchmarks/harness-result",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/benchmark-run-instance-detail.ts",
+      "to": "src/lib/server/benchmarks/patch-compare.ts",
+      "unresolvedTo": "$lib/server/benchmarks/patch-compare",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/capability-bundles.ts",
+      "to": "src/lib/server/agents/config-hash.ts",
+      "unresolvedTo": "$lib/server/agents/config-hash",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/capability-bundles.ts",
+      "to": "src/lib/server/capabilities/flatten.ts",
+      "unresolvedTo": "$lib/server/capabilities/flatten",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/cli-credentials.ts",
+      "to": "src/lib/server/agents/runtime-registry.ts",
+      "unresolvedTo": "$lib/server/agents/runtime-registry",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/index.ts",
+      "to": "src/lib/server/otel/clickhouse.ts",
+      "unresolvedTo": "$lib/server/otel/clickhouse",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/index.ts",
+      "to": "src/lib/server/pricing/model-pricing.ts",
+      "unresolvedTo": "$lib/server/pricing/model-pricing",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/index.ts",
+      "to": "src/lib/server/workflows/run-diff.ts",
+      "unresolvedTo": "$lib/server/workflows/run-diff",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/index.ts",
+      "to": "src/lib/server/workflows/vcluster-preview.ts",
+      "unresolvedTo": "$lib/server/workflows/vcluster-preview",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/prompt-presets.ts",
+      "to": "src/lib/server/prompt-presets.ts",
+      "unresolvedTo": "$lib/server/prompt-presets",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/sandbox-preview.ts",
+      "to": "src/lib/server/workflows/runtime-preview-url.ts",
+      "unresolvedTo": "$lib/server/workflows/runtime-preview-url",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/session-commands.ts",
+      "to": "src/lib/server/agents/runtime-registry.ts",
+      "unresolvedTo": "$lib/server/agents/runtime-registry",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/session-commands.ts",
+      "to": "src/lib/server/sandboxes/provision.ts",
+      "unresolvedTo": "$lib/server/sandboxes/provision",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/session-commands.ts",
+      "to": "src/lib/server/sessions/resume.ts",
+      "unresolvedTo": "$lib/server/sessions/resume",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/agents/mcp-resolution.ts",
+      "unresolvedTo": "$lib/server/agents/mcp-resolution",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/agents/runtime-registry.ts",
+      "unresolvedTo": "$lib/server/agents/runtime-registry",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/agents/runtime-routing.ts",
+      "unresolvedTo": "$lib/server/agents/runtime-routing",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/app-connection-scope.ts",
+      "unresolvedTo": "$lib/server/app-connection-scope",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/app-connections/oauth2.ts",
+      "unresolvedTo": "$lib/server/app-connections/oauth2",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/benchmarks/agents.ts",
+      "unresolvedTo": "$lib/server/benchmarks/agents",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/benchmarks/execution-plane.ts",
+      "unresolvedTo": "$lib/server/benchmarks/execution-plane",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/benchmarks/inference-environments.ts",
+      "unresolvedTo": "$lib/server/benchmarks/inference-environments",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/benchmarks/runtime-capacity.ts",
+      "unresolvedTo": "$lib/server/benchmarks/runtime-capacity",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/benchmarks/swebench.ts",
+      "unresolvedTo": "$lib/server/benchmarks/swebench",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/dapr-client.ts",
+      "unresolvedTo": "$lib/server/dapr-client",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/environments/swebench-environment-spec.ts",
+      "unresolvedTo": "$lib/server/environments/swebench-environment-spec",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/mcp-availability.ts",
+      "unresolvedTo": "$lib/server/mcp-availability",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/mcp-catalog.ts",
+      "unresolvedTo": "$lib/server/mcp-catalog",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/observability/goal-flow.ts",
+      "unresolvedTo": "$lib/server/observability/goal-flow",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/pricing/model-pricing.ts",
+      "unresolvedTo": "$lib/server/pricing/model-pricing",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/security/encryption.ts",
+      "unresolvedTo": "$lib/server/security/encryption",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/types/app-connection.ts",
+      "unresolvedTo": "$lib/server/types/app-connection",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/utils/id.ts",
+      "unresolvedTo": "$lib/server/utils/id",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/workflows/greenfield-prompt.ts",
+      "unresolvedTo": "$lib/server/workflows/greenfield-prompt",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/workflows/run-diff.ts",
+      "unresolvedTo": "$lib/server/workflows/run-diff",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/workflows/runtime-preview-url.ts",
+      "unresolvedTo": "$lib/server/workflows/runtime-preview-url",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/workflows/source-bundle.ts",
+      "unresolvedTo": "$lib/server/workflows/source-bundle",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-data.ts",
+      "to": "src/lib/server/workflows/trigger-validation.ts",
+      "unresolvedTo": "$lib/server/workflows/trigger-validation",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-definition-commands.ts",
+      "to": "src/lib/server/workflows/dynamic-script-validation.ts",
+      "unresolvedTo": "$lib/server/workflows/dynamic-script-validation",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-definition-commands.ts",
+      "to": "src/lib/server/workflows/sw10-agent-validation.ts",
+      "unresolvedTo": "$lib/server/workflows/sw10-agent-validation",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-plan.ts",
+      "to": "src/lib/server/utils/id.ts",
+      "unresolvedTo": "$lib/server/utils/id",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-trigger-management.ts",
+      "to": "src/lib/server/utils/id.ts",
+      "unresolvedTo": "$lib/server/utils/id",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "application-core-pure",
+      "type": "dependency",
+      "from": "src/lib/server/application/workflow-trigger-management.ts",
+      "to": "src/lib/server/workflows/trigger-registry.ts",
+      "unresolvedTo": "$lib/server/workflows/trigger-registry",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/admin/agent-skills/import/zip/+server.ts",
+      "to": "src/lib/server/skill-ingest.ts",
+      "unresolvedTo": "$lib/server/skill-ingest",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/ai-assistant/build-workflow/+server.ts",
+      "to": "src/lib/server/ai-assistant/build-prompt.ts",
+      "unresolvedTo": "$lib/server/ai-assistant/build-prompt",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/ai-assistant/build-workflow/+server.ts",
+      "to": "src/lib/server/ai/openai-gateway.ts",
+      "unresolvedTo": "$lib/server/ai/openai-gateway",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/ai-assistant/build-workflow/+server.ts",
+      "to": "src/lib/server/workflows/trigger-validation.ts",
+      "unresolvedTo": "$lib/server/workflows/trigger-validation",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/ai-assistant/chat/+server.ts",
+      "to": "src/lib/server/ai-assistant/spec-operations.ts",
+      "unresolvedTo": "$lib/server/ai-assistant/spec-operations",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/ai-assistant/chat/+server.ts",
+      "to": "src/lib/server/ai-assistant/system-prompt.ts",
+      "unresolvedTo": "$lib/server/ai-assistant/system-prompt",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/ai-assistant/chat/+server.ts",
+      "to": "src/lib/server/ai-assistant/tools.ts",
+      "unresolvedTo": "$lib/server/ai-assistant/tools",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/ai-assistant/chat/+server.ts",
+      "to": "src/lib/server/ai/openai-gateway.ts",
+      "unresolvedTo": "$lib/server/ai/openai-gateway",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/app-connections/oauth2/complete/+server.ts",
+      "to": "src/lib/server/mcp-connections.ts",
+      "unresolvedTo": "$lib/server/mcp-connections",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/benchmarks/environments/validate/+server.ts",
+      "to": "src/lib/server/benchmarks/swebench.ts",
+      "unresolvedTo": "$lib/server/benchmarks/swebench",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/benchmarks/instances/[suiteSlug]/[instanceId]/+server.ts",
+      "to": "src/lib/server/benchmarks/contamination.ts",
+      "unresolvedTo": "$lib/server/benchmarks/contamination",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/dapr-system/events/+server.ts",
+      "to": "src/lib/server/dapr-event-stream.ts",
+      "unresolvedTo": "$lib/server/dapr-event-stream",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/dev-environments/[executionId]/+server.ts",
+      "to": "src/lib/server/lifecycle/index.ts",
+      "unresolvedTo": "$lib/server/lifecycle",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/events/ingest/+server.ts",
+      "to": "src/lib/server/dapr-client.ts",
+      "unresolvedTo": "$lib/server/dapr-client",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/events/ingest/+server.ts",
+      "to": "src/lib/server/workflows/external-event-registry.ts",
+      "unresolvedTo": "$lib/server/workflows/external-event-registry",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/agent-runtimes/[slug]/+server.ts",
+      "to": "src/lib/server/kube/client.ts",
+      "unresolvedTo": "$lib/server/kube/client",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/agent-runtimes/[slug]/sleep/+server.ts",
+      "to": "src/lib/server/kube/client.ts",
+      "unresolvedTo": "$lib/server/kube/client",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/agent-runtimes/[slug]/wake/+server.ts",
+      "to": "src/lib/server/kube/client.ts",
+      "unresolvedTo": "$lib/server/kube/client",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/agent/workflows/execute-script/+server.ts",
+      "to": "src/lib/server/workflows/dynamic-script-validation.ts",
+      "unresolvedTo": "$lib/server/workflows/dynamic-script-validation",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/agent/workflows/execute-script/+server.ts",
+      "to": "src/lib/server/workflows/start-run.ts",
+      "unresolvedTo": "$lib/server/workflows/start-run",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/agent/workflows/execute/+server.ts",
+      "to": "src/lib/server/workflows/start-run.ts",
+      "unresolvedTo": "$lib/server/workflows/start-run",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/agent/workflows/executions/[executionId]/status/+server.ts",
+      "to": "src/lib/server/dapr-client.ts",
+      "unresolvedTo": "$lib/server/dapr-client",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/agent/workflows/save-script/+server.ts",
+      "to": "src/lib/server/workflows/dynamic-script-validation.ts",
+      "unresolvedTo": "$lib/server/workflows/dynamic-script-validation",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/agent/workflows/validate-script/+server.ts",
+      "to": "src/lib/server/workflows/dynamic-script-validation.ts",
+      "unresolvedTo": "$lib/server/workflows/dynamic-script-validation",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/benchmarks/environments/validate/+server.ts",
+      "to": "src/lib/server/benchmarks/swebench.ts",
+      "unresolvedTo": "$lib/server/benchmarks/swebench",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/benchmarks/runs/[runId]/artifacts/[...artifactPath]/+server.ts",
+      "to": "src/lib/server/benchmarks/artifact-storage.ts",
+      "unresolvedTo": "$lib/server/benchmarks/artifact-storage",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/benchmarks/runs/+server.ts",
+      "to": "src/lib/server/benchmarks/launch-stability.ts",
+      "unresolvedTo": "$lib/server/benchmarks/launch-stability",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/benchmarks/runs/+server.ts",
+      "to": "src/lib/server/benchmarks/swebench.ts",
+      "unresolvedTo": "$lib/server/benchmarks/swebench",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/dapr/sandbox-events/+server.ts",
+      "to": "src/lib/server/dapr-event-stream.ts",
+      "unresolvedTo": "$lib/server/dapr-event-stream",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/dapr/sandbox-events/+server.ts",
+      "to": "src/lib/server/sandbox-event-bus.ts",
+      "unresolvedTo": "$lib/server/sandbox-event-bus",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/dapr/system-events/+server.ts",
+      "to": "src/lib/server/dapr-event-stream.ts",
+      "unresolvedTo": "$lib/server/dapr-event-stream",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/environments/ensure/+server.ts",
+      "to": "src/lib/server/environments/swebench-environment-ensure.ts",
+      "unresolvedTo": "$lib/server/environments/swebench-environment-ensure",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/environments/ensure/environment-ensure-route.test.ts",
+      "to": "src/lib/server/environments/swebench-environment-ensure.ts",
+      "unresolvedTo": "$lib/server/environments/swebench-environment-ensure",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/executions/[id]/ap-resume/[requestId]/+server.ts",
+      "to": "src/lib/server/dapr-client.ts",
+      "unresolvedTo": "$lib/server/dapr-client",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/files/[id]/content/+server.ts",
+      "to": "src/lib/server/files/registry.ts",
+      "unresolvedTo": "$lib/server/files/registry",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/goals/plan/+server.ts",
+      "to": "src/lib/server/goals/plan-goal.ts",
+      "unresolvedTo": "$lib/server/goals/plan-goal",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/observability/executions/[executionId]/digest/+server.ts",
+      "to": "src/lib/server/observability/run-digest-loader.ts",
+      "unresolvedTo": "$lib/server/observability/run-digest-loader",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/observability/executions/[executionId]/llm-turn/+server.ts",
+      "to": "src/lib/server/observability/run-digest-loader.ts",
+      "unresolvedTo": "$lib/server/observability/run-digest-loader",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/observability/executions/[executionId]/logs/+server.ts",
+      "to": "src/lib/server/observability/run-digest-loader.ts",
+      "unresolvedTo": "$lib/server/observability/run-digest-loader",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/observability/executions/[executionId]/logs/+server.ts",
+      "to": "src/lib/server/otel/clickhouse.ts",
+      "unresolvedTo": "$lib/server/otel/clickhouse",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/observability/executions/[executionId]/spans/+server.ts",
+      "to": "src/lib/server/observability/run-digest-loader.ts",
+      "unresolvedTo": "$lib/server/observability/run-digest-loader",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/observability/executions/[executionId]/spans/+server.ts",
+      "to": "src/lib/server/otel/clickhouse.ts",
+      "unresolvedTo": "$lib/server/otel/clickhouse",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/sessions/[id]/events/ingest/+server.ts",
+      "to": "src/lib/server/sandboxes/provision.ts",
+      "unresolvedTo": "$lib/server/sandboxes/provision",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/sessions/ensure-for-workflow/+server.ts",
+      "to": "src/lib/server/agents/mcp-sidecar.ts",
+      "unresolvedTo": "$lib/server/agents/mcp-sidecar",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/sessions/ensure-for-workflow/+server.ts",
+      "to": "src/lib/server/agents/runtime-registry.ts",
+      "unresolvedTo": "$lib/server/agents/runtime-registry",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/sessions/ensure-for-workflow/+server.ts",
+      "to": "src/lib/server/agents/runtime-routing.ts",
+      "unresolvedTo": "$lib/server/agents/runtime-routing",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/sessions/ensure-for-workflow/+server.ts",
+      "to": "src/lib/server/agents/swap-safety.ts",
+      "unresolvedTo": "$lib/server/agents/swap-safety",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/sessions/ensure-for-workflow/+server.ts",
+      "to": "src/lib/server/goals/mcp-wiring.ts",
+      "unresolvedTo": "$lib/server/goals/mcp-wiring",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/sessions/ensure-for-workflow/+server.ts",
+      "to": "src/lib/server/kube/client.ts",
+      "unresolvedTo": "$lib/server/kube/client",
+      "dependencyTypes": [
+        "dynamic-import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/sessions/ensure-for-workflow/+server.ts",
+      "to": "src/lib/server/sandboxes/provision.ts",
+      "unresolvedTo": "$lib/server/sandboxes/provision",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/sessions/ensure-for-workflow/+server.ts",
+      "to": "src/lib/server/sessions/agent-workflow-host.ts",
+      "unresolvedTo": "$lib/server/sessions/agent-workflow-host",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/sessions/ensure-for-workflow/+server.ts",
+      "to": "src/lib/server/sessions/runtime-target.ts",
+      "unresolvedTo": "$lib/server/sessions/runtime-target",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/sessions/ensure-for-workflow/+server.ts",
+      "to": "src/lib/server/sessions/session-secret-env.ts",
+      "unresolvedTo": "$lib/server/sessions/session-secret-env",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/team/[teamId]/+server.ts",
+      "to": "src/lib/server/teams/team-view.ts",
+      "unresolvedTo": "$lib/server/teams/team-view",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/team/[teamId]/claim/+server.ts",
+      "to": "src/lib/server/teams/team-tasks.ts",
+      "unresolvedTo": "$lib/server/teams/team-tasks",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/team/[teamId]/message/+server.ts",
+      "to": "src/lib/server/teams/team-messaging.ts",
+      "unresolvedTo": "$lib/server/teams/team-messaging",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/team/[teamId]/message/+server.ts",
+      "to": "src/lib/server/teams/team-repo.ts",
+      "unresolvedTo": "$lib/server/teams/team-repo",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/team/[teamId]/shutdown/+server.ts",
+      "to": "src/lib/server/lifecycle/index.ts",
+      "unresolvedTo": "$lib/server/lifecycle",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/team/[teamId]/shutdown/+server.ts",
+      "to": "src/lib/server/teams/team-repo.ts",
+      "unresolvedTo": "$lib/server/teams/team-repo",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/team/[teamId]/spawn/+server.ts",
+      "to": "src/lib/server/teams/team-repo.ts",
+      "unresolvedTo": "$lib/server/teams/team-repo",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/team/[teamId]/spawn/+server.ts",
+      "to": "src/lib/server/teams/team-run.ts",
+      "unresolvedTo": "$lib/server/teams/team-run",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/team/broadcast-deliver/+server.ts",
+      "to": "src/lib/server/teams/team-messaging.ts",
+      "unresolvedTo": "$lib/server/teams/team-messaging",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/team/broadcast-deliver/+server.ts",
+      "to": "src/lib/server/teams/team-repo.ts",
+      "unresolvedTo": "$lib/server/teams/team-repo",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/team/message-deliver/+server.ts",
+      "to": "src/lib/server/teams/team-delivery.ts",
+      "unresolvedTo": "$lib/server/teams/team-delivery",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/team/tick/+server.ts",
+      "to": "src/lib/server/teams/team-driver.ts",
+      "unresolvedTo": "$lib/server/teams/team-driver",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/workflows/executions/[executionId]/cli-workspace-command/+server.ts",
+      "to": "src/lib/server/sessions/agent-workflow-host.ts",
+      "unresolvedTo": "$lib/server/sessions/agent-workflow-host",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/workflows/executions/[executionId]/cli-workspace-command/+server.ts",
+      "to": "src/lib/server/workflows/github-token.ts",
+      "unresolvedTo": "$lib/server/workflows/github-token",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/workflows/executions/[executionId]/interactive-session/+server.ts",
+      "to": "src/lib/server/sessions/dev-session-handoff.ts",
+      "unresolvedTo": "$lib/server/sessions/dev-session-handoff",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/workflows/triggers/github/[triggerId]/+server.ts",
+      "to": "src/lib/server/lifecycle/github-webhook.ts",
+      "unresolvedTo": "$lib/server/lifecycle/github-webhook",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/kueueviz/[...endpoint]/+server.ts",
+      "to": "src/lib/server/kueueviz/index.ts",
+      "unresolvedTo": "$lib/server/kueueviz",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/kueueviz/yaml/+server.ts",
+      "to": "src/lib/server/kueueviz/index.ts",
+      "unresolvedTo": "$lib/server/kueueviz",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/mcp-connections/availability/+server.ts",
+      "to": "src/lib/server/mcp-connections.ts",
+      "unresolvedTo": "$lib/server/mcp-connections",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/executions/[executionId]/deep-analysis/+server.ts",
+      "to": "src/lib/server/observability/trace-analysis-workflow.ts",
+      "unresolvedTo": "$lib/server/observability/trace-analysis-workflow",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/executions/[executionId]/digest/+server.ts",
+      "to": "src/lib/server/observability/run-digest-loader.ts",
+      "unresolvedTo": "$lib/server/observability/run-digest-loader",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/executions/[executionId]/investigation/+server.ts",
+      "to": "src/lib/server/observability/investigation.ts",
+      "unresolvedTo": "$lib/server/observability/investigation",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/executions/[executionId]/investigation/+server.ts",
+      "to": "src/lib/server/otel/service-graph.ts",
+      "unresolvedTo": "$lib/server/otel/service-graph",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/service-graph/+server.ts",
+      "to": "src/lib/server/otel/service-graph.ts",
+      "unresolvedTo": "$lib/server/otel/service-graph",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/service-graph/drilldown/+server.ts",
+      "to": "src/lib/server/observability/drilldown.ts",
+      "unresolvedTo": "$lib/server/observability/drilldown",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/service-graph/drilldown/+server.ts",
+      "to": "src/lib/server/observability/investigation.ts",
+      "unresolvedTo": "$lib/server/observability/investigation",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/service-graph/drilldown/+server.ts",
+      "to": "src/lib/server/otel/service-graph.ts",
+      "unresolvedTo": "$lib/server/otel/service-graph",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/sessions/[sessionId]/agent-decisions/+server.ts",
+      "to": "src/lib/server/observability/investigation.ts",
+      "unresolvedTo": "$lib/server/observability/investigation",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/sessions/[sessionId]/agent-diagram/+server.ts",
+      "to": "src/lib/server/observability/investigation.ts",
+      "unresolvedTo": "$lib/server/observability/investigation",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/sessions/[sessionId]/investigation/+server.ts",
+      "to": "src/lib/server/observability/investigation.ts",
+      "unresolvedTo": "$lib/server/observability/investigation",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/sessions/[sessionId]/llm-spans/+server.ts",
+      "to": "src/lib/server/otel/clickhouse.ts",
+      "unresolvedTo": "$lib/server/otel/clickhouse",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/sessions/[sessionId]/logs/+server.ts",
+      "to": "src/lib/server/otel/clickhouse.ts",
+      "unresolvedTo": "$lib/server/otel/clickhouse",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/sessions/[sessionId]/tool-spans/+server.ts",
+      "to": "src/lib/server/otel/clickhouse.ts",
+      "unresolvedTo": "$lib/server/otel/clickhouse",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/traces/[traceId]/+server.ts",
+      "to": "src/lib/server/otel/clickhouse.ts",
+      "unresolvedTo": "$lib/server/otel/clickhouse",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/traces/[traceId]/investigation/+server.ts",
+      "to": "src/lib/server/observability/investigation.ts",
+      "unresolvedTo": "$lib/server/observability/investigation",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/traces/[traceId]/investigation/+server.ts",
+      "to": "src/lib/server/otel/clickhouse.ts",
+      "unresolvedTo": "$lib/server/otel/clickhouse",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/traces/[traceId]/llm-spans/+server.ts",
+      "to": "src/lib/server/observability/trace-span-normalization.ts",
+      "unresolvedTo": "$lib/server/observability/trace-span-normalization",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/traces/[traceId]/llm-spans/+server.ts",
+      "to": "src/lib/server/otel/clickhouse.ts",
+      "unresolvedTo": "$lib/server/otel/clickhouse",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/traces/[traceId]/logs/+server.ts",
+      "to": "src/lib/server/otel/clickhouse.ts",
+      "unresolvedTo": "$lib/server/otel/clickhouse",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/traces/[traceId]/tool-spans/+server.ts",
+      "to": "src/lib/server/observability/trace-span-normalization.ts",
+      "unresolvedTo": "$lib/server/observability/trace-span-normalization",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/traces/[traceId]/tool-spans/+server.ts",
+      "to": "src/lib/server/otel/clickhouse.ts",
+      "unresolvedTo": "$lib/server/otel/clickhouse",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/traces/+server.ts",
+      "to": "src/lib/server/otel/clickhouse.ts",
+      "unresolvedTo": "$lib/server/otel/clickhouse",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/traces/multi/+server.ts",
+      "to": "src/lib/server/otel/clickhouse.ts",
+      "unresolvedTo": "$lib/server/otel/clickhouse",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/traces/multi/logs/+server.ts",
+      "to": "src/lib/server/otel/clickhouse.ts",
+      "unresolvedTo": "$lib/server/otel/clickhouse",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/observability/workflows/[executionId]/activity-rate/+server.ts",
+      "to": "src/lib/server/otel/metrics.ts",
+      "unresolvedTo": "$lib/server/otel/metrics",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/openshell/sessions/[id]/+server.ts",
+      "to": "src/lib/server/openshell-sessions.ts",
+      "unresolvedTo": "$lib/server/openshell-sessions",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/openshell/sessions/[id]/close/+server.ts",
+      "to": "src/lib/server/openshell-runtime.ts",
+      "unresolvedTo": "$lib/server/openshell-runtime",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/openshell/sessions/[id]/close/+server.ts",
+      "to": "src/lib/server/openshell-sessions.ts",
+      "unresolvedTo": "$lib/server/openshell-sessions",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/openshell/sessions/[id]/terminal/[terminalId]/resolve/+server.ts",
+      "to": "src/lib/server/openshell-sessions.ts",
+      "unresolvedTo": "$lib/server/openshell-sessions",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/openshell/sessions/+server.ts",
+      "to": "src/lib/server/openshell-sessions.ts",
+      "unresolvedTo": "$lib/server/openshell-sessions",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/runtime/introspect/+server.ts",
+      "to": "src/lib/server/dapr-client.ts",
+      "unresolvedTo": "$lib/server/dapr-client",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/[name]/+server.ts",
+      "to": "src/lib/server/agent-runtime-sandboxes.ts",
+      "unresolvedTo": "$lib/server/agent-runtime-sandboxes",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/[name]/+server.ts",
+      "to": "src/lib/server/kube/client.ts",
+      "unresolvedTo": "$lib/server/kube/client",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/[name]/+server.ts",
+      "to": "src/lib/server/openshell-runtime.ts",
+      "unresolvedTo": "$lib/server/openshell-runtime",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/[name]/+server.ts",
+      "to": "src/lib/server/workflows/project-scope.ts",
+      "unresolvedTo": "$lib/server/workflows/project-scope",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/[name]/exec/+server.ts",
+      "to": "src/lib/server/openshell-runtime.ts",
+      "unresolvedTo": "$lib/server/openshell-runtime",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/[name]/files/+server.ts",
+      "to": "src/lib/server/openshell-runtime.ts",
+      "unresolvedTo": "$lib/server/openshell-runtime",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/[name]/logs/+server.ts",
+      "to": "src/lib/server/openshell-runtime.ts",
+      "unresolvedTo": "$lib/server/openshell-runtime",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/[name]/stream/+server.ts",
+      "to": "src/lib/server/agent-runtime-sandboxes.ts",
+      "unresolvedTo": "$lib/server/agent-runtime-sandboxes",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/[name]/stream/+server.ts",
+      "to": "src/lib/server/openshell-runtime.ts",
+      "unresolvedTo": "$lib/server/openshell-runtime",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/[name]/stream/+server.ts",
+      "to": "src/lib/server/sandbox-event-bus.ts",
+      "unresolvedTo": "$lib/server/sandbox-event-bus",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/[name]/terminal/[sessionId]/+server.ts",
+      "to": "src/lib/server/openshell-runtime.ts",
+      "unresolvedTo": "$lib/server/openshell-runtime",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/+server.ts",
+      "to": "src/lib/server/agent-runtime-sandboxes.ts",
+      "unresolvedTo": "$lib/server/agent-runtime-sandboxes",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/+server.ts",
+      "to": "src/lib/server/openshell-runtime.ts",
+      "unresolvedTo": "$lib/server/openshell-runtime",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/batch/+server.ts",
+      "to": "src/lib/server/openshell-runtime.ts",
+      "unresolvedTo": "$lib/server/openshell-runtime",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/stream/+server.ts",
+      "to": "src/lib/server/agent-runtime-sandboxes.ts",
+      "unresolvedTo": "$lib/server/agent-runtime-sandboxes",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/stream/+server.ts",
+      "to": "src/lib/server/openshell-runtime.ts",
+      "unresolvedTo": "$lib/server/openshell-runtime",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/stream/+server.ts",
+      "to": "src/lib/server/sandbox-event-bus.ts",
+      "unresolvedTo": "$lib/server/sandbox-event-bus",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/sandboxes/stream/+server.ts",
+      "to": "src/lib/server/sandbox-sessions.ts",
+      "unresolvedTo": "$lib/server/sandbox-sessions",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/scm/accounts/+server.ts",
+      "to": "src/lib/server/scm-connections.ts",
+      "unresolvedTo": "$lib/server/scm-connections",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/scm/issues/+server.ts",
+      "to": "src/lib/server/scm-connections.ts",
+      "unresolvedTo": "$lib/server/scm-connections",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/scm/repos/+server.ts",
+      "to": "src/lib/server/scm-connections.ts",
+      "unresolvedTo": "$lib/server/scm-connections",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/v1/agents/templates/+server.ts",
+      "to": "src/lib/server/agent-templates/catalog.ts",
+      "unresolvedTo": "$lib/server/agent-templates/catalog",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/v1/files/[id]/+server.ts",
+      "to": "src/lib/server/files/registry.ts",
+      "unresolvedTo": "$lib/server/files/registry",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/v1/files/[id]/content/+server.ts",
+      "to": "src/lib/server/files/registry.ts",
+      "unresolvedTo": "$lib/server/files/registry",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/v1/files/+server.ts",
+      "to": "src/lib/server/files/registry.ts",
+      "unresolvedTo": "$lib/server/files/registry",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/v1/goals/plan/+server.ts",
+      "to": "src/lib/server/goals/plan-goal.ts",
+      "unresolvedTo": "$lib/server/goals/plan-goal",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/v1/logs/model-requests/+server.ts",
+      "to": "src/lib/server/otel/clickhouse.ts",
+      "unresolvedTo": "$lib/server/otel/clickhouse",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/v1/pricing/+server.ts",
+      "to": "src/lib/server/pricing/model-pricing.ts",
+      "unresolvedTo": "$lib/server/pricing/model-pricing",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/v1/sessions/[id]/team/+server.ts",
+      "to": "src/lib/server/teams/team-view.ts",
+      "unresolvedTo": "$lib/server/teams/team-view",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/v1/teams/[teamId]/+server.ts",
+      "to": "src/lib/server/teams/team-view.ts",
+      "unresolvedTo": "$lib/server/teams/team-view",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/v1/workspaces/[id]/+server.ts",
+      "to": "src/lib/server/workspaces/registry.ts",
+      "unresolvedTo": "$lib/server/workspaces/registry",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/v1/workspaces/+server.ts",
+      "to": "src/lib/server/workspaces/registry.ts",
+      "unresolvedTo": "$lib/server/workspaces/registry",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/workflows/[workflowId]/versions/+server.ts",
+      "to": "src/lib/server/workflows/project-scope.ts",
+      "unresolvedTo": "$lib/server/workflows/project-scope",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/workflows/generate-from-prompt/+server.ts",
+      "to": "src/lib/server/ai/openai-gateway.ts",
+      "unresolvedTo": "$lib/server/ai/openai-gateway",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/sandboxes/data.remote.ts",
+      "to": "src/lib/server/agent-runtime-sandboxes.ts",
+      "unresolvedTo": "$lib/server/agent-runtime-sandboxes",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/sandboxes/data.remote.ts",
+      "to": "src/lib/server/openshell-runtime.ts",
+      "unresolvedTo": "$lib/server/openshell-runtime",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/sandboxes/data.remote.ts",
+      "to": "src/lib/server/otel/metrics.ts",
+      "unresolvedTo": "$lib/server/otel/metrics",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/sandboxes/data.remote.ts",
+      "to": "src/lib/server/sandbox-sessions.ts",
+      "unresolvedTo": "$lib/server/sandbox-sessions",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/team-driver-tick/+server.ts",
+      "to": "src/lib/server/teams/team-driver.ts",
+      "unresolvedTo": "$lib/server/teams/team-driver",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/workspaces/[slug]/+layout.server.ts",
+      "to": "src/lib/server/workspaces/resolve.ts",
+      "unresolvedTo": "$lib/server/workspaces/resolve",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,6 +9,93 @@ import type { Plugin, ViteDevServer } from 'vite';
 import { configDefaults, defineConfig } from 'vitest/config';
 // Relative import on purpose: $lib aliases don't resolve at config-load time.
 import { detectAddedRouteFiles } from './src/lib/server/dev-sync/added-routes';
+import {
+	applyAtomicDevSync,
+	DevSyncTransactionError,
+	parseAllowedSyncRoots,
+	parseDeclaredSyncRoots
+} from './src/lib/server/dev-sync/atomic-sync';
+
+const DEV_SYNC_STATE_FILE = '.dev-sync-state.json';
+const DEV_SYNC_GENERATION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const DEV_SYNC_SERVICE_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+type DevSyncState = {
+	generation: string | null;
+	service: string | null;
+	lastSyncAt: string | null;
+	lastSyncBytes: number;
+	contentSha256: string | null;
+};
+
+function headerText(value: string | string[] | undefined): string {
+	return (Array.isArray(value) ? value[0] : (value ?? '')).trim();
+}
+
+function devSyncTokenEquals(left: string, right: string): boolean {
+	if (!/^[a-f0-9]{64}$/.test(left) || !/^[a-f0-9]{64}$/.test(right)) return false;
+	return timingSafeEqual(Buffer.from(left, 'hex'), Buffer.from(right, 'hex'));
+}
+
+function acceptsDevSyncToken(
+	presented: string | string[] | undefined,
+	receiverToken: string,
+	agentTokenSha256: string
+): boolean {
+	const value = headerText(presented);
+	return (
+		devSyncTokenEquals(value, receiverToken) ||
+		devSyncTokenEquals(createHash('sha256').update(value).digest('hex'), agentTokenSha256)
+	);
+}
+
+function readDevSyncState(root: string): DevSyncState {
+	try {
+		const parsed = JSON.parse(
+			fs.readFileSync(path.join(root, DEV_SYNC_STATE_FILE), 'utf8')
+		) as Partial<DevSyncState>;
+		return {
+			generation:
+				typeof parsed.generation === 'string' && DEV_SYNC_GENERATION_PATTERN.test(parsed.generation)
+					? parsed.generation
+					: null,
+			service:
+				typeof parsed.service === 'string' && DEV_SYNC_SERVICE_PATTERN.test(parsed.service)
+					? parsed.service
+					: null,
+			lastSyncAt: typeof parsed.lastSyncAt === 'string' ? parsed.lastSyncAt : null,
+			lastSyncBytes:
+				typeof parsed.lastSyncBytes === 'number' && parsed.lastSyncBytes >= 0
+					? parsed.lastSyncBytes
+					: 0,
+			contentSha256:
+				typeof parsed.contentSha256 === 'string' &&
+				/^sha256:[0-9a-f]{64}$/.test(parsed.contentSha256)
+					? parsed.contentSha256
+					: null
+		};
+	} catch {
+		return {
+			generation: null,
+			service: null,
+			lastSyncAt: null,
+			lastSyncBytes: 0,
+			contentSha256: null
+		};
+	}
+}
+
+function persistDevSyncState(root: string, state: DevSyncState): void {
+	const target = path.join(root, DEV_SYNC_STATE_FILE);
+	const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		fs.writeFileSync(tmp, JSON.stringify(state));
+		fs.renameSync(tmp, target);
+	} catch (error) {
+		fs.rmSync(tmp, { force: true });
+		throw error;
+	}
+}
 
 /**
  * Dev-only live-sync endpoint for the `workflow-builder-dev` preview pod.
@@ -41,7 +129,9 @@ function scheduleRouteAddRestart(server: ViteDevServer, addedRoutes: string[], w
 	console.log(
 		`[wfb-dev-live-sync] ${why}: ${addedRoutes.length} new route file(s) [${addedRoutes
 			.slice(0, 5)
-			.join(', ')}${addedRoutes.length > 5 ? ', …' : ''}] — full dev-server restart to register them`
+			.join(
+				', '
+			)}${addedRoutes.length > 5 ? ', …' : ''}] — full dev-server restart to register them`
 	);
 	setTimeout(() => {
 		server.restart().catch((e: unknown) => {
@@ -52,28 +142,24 @@ function scheduleRouteAddRestart(server: ViteDevServer, addedRoutes: string[], w
 	}, 100);
 }
 
-/** List the members of a tar.gz (`tar -tzf`); null on any failure (detection
- * is then skipped — the sync itself still applies). */
-function listTarEntries(file: string): Promise<string[] | null> {
-	return new Promise((resolve) => {
-		const tar = spawn('tar', ['-tzf', file], { stdio: ['ignore', 'pipe', 'ignore'] });
-		let out = '';
-		let overflow = false;
-		tar.stdout.on('data', (d) => {
-			out += String(d);
-			if (out.length > 8 * 1024 * 1024) {
-				overflow = true;
-				tar.kill();
-			}
-		});
-		tar.on('error', () => resolve(null));
-		tar.on('close', (code) =>
-			resolve(code === 0 && !overflow ? out.split('\n').filter((l) => l.trim()) : null)
-		);
-	});
-}
-
 function devLiveSyncPlugin(): Plugin {
+	let syncState: DevSyncState = {
+		generation: null,
+		service: null,
+		lastSyncAt: null,
+		lastSyncBytes: 0,
+		contentSha256: null
+	};
+	let lastExportSha256: string | null = null;
+	let sourceOperation: 'sync' | 'export' | null = null;
+	const beginSourceOperation = (operation: 'sync' | 'export') => {
+		if (sourceOperation) return false;
+		sourceOperation = operation;
+		return true;
+	};
+	const endSourceOperation = (operation: 'sync' | 'export') => {
+		if (sourceOperation === operation) sourceOperation = null;
+	};
 	return {
 		name: 'wfb-dev-live-sync',
 		apply: 'serve',
@@ -113,7 +199,19 @@ function devLiveSyncPlugin(): Plugin {
 
 			if (process.env.WFB_DEV_SYNC_ENABLED !== 'true') return;
 			const token = process.env.WFB_DEV_SYNC_TOKEN ?? '';
+			const agentTokenSha256 = process.env.WFB_DEV_SYNC_AGENT_TOKEN_SHA256 ?? '';
 			const root = server.config.root;
+			const configuredService = process.env.WFB_DEV_SYNC_SERVICE ?? 'workflow-builder';
+			let allowedRoots: string[] = [];
+			let allowedRootsError: string | null = null;
+			try {
+				allowedRoots = parseAllowedSyncRoots(process.env.WFB_DEV_SYNC_ALLOWED_ROOTS_JSON ?? '');
+			} catch (error) {
+				allowedRootsError = (error as Error).message;
+				console.error(`[wfb-dev-live-sync] invalid allowed-root contract: ${allowedRootsError}`);
+			}
+			syncState = readDevSyncState(root);
+			if (!syncState.service) syncState.service = configuredService;
 			server.middlewares.use('/__sync', (req, res) => {
 				let replied = false;
 				const json = (code: number, body: Record<string, unknown>) => {
@@ -128,8 +226,62 @@ function devLiveSyncPlugin(): Plugin {
 					}
 				};
 				if (req.method !== 'POST') return json(405, { ok: false, error: 'POST only' });
-				if (token && req.headers['x-sync-token'] !== token)
+				if (!acceptsDevSyncToken(req.headers['x-sync-token'], token, agentTokenSha256))
 					return json(401, { ok: false, error: 'unauthorized' });
+				if (allowedRootsError) {
+					req.resume();
+					return json(503, {
+						ok: false,
+						error: `receiver allowed-root contract invalid: ${allowedRootsError}`
+					});
+				}
+				const generation = headerText(req.headers['x-sync-generation']);
+				if (!DEV_SYNC_GENERATION_PATTERN.test(generation)) {
+					req.resume();
+					return json(400, {
+						ok: false,
+						error: 'valid x-sync-generation required'
+					});
+				}
+				const service = headerText(req.headers['x-sync-service']) || configuredService;
+				if (!DEV_SYNC_SERVICE_PATTERN.test(service)) {
+					req.resume();
+					return json(400, {
+						ok: false,
+						error: 'valid x-sync-service required'
+					});
+				}
+				if (service !== configuredService) {
+					req.resume();
+					return json(409, {
+						ok: false,
+						error: `x-sync-service ${service} does not match ${configuredService}`
+					});
+				}
+				let declaredRoots: string[];
+				try {
+					declaredRoots = parseDeclaredSyncRoots(
+						headerText(req.headers['x-sync-roots']),
+						allowedRoots
+					);
+				} catch (error) {
+					req.resume();
+					return json(400, { ok: false, error: (error as Error).message });
+				}
+				if (!beginSourceOperation('sync')) {
+					req.resume();
+					return json(409, {
+						ok: false,
+						error: `source ${sourceOperation} in progress`
+					});
+				}
+				let bodyComplete = false;
+				let released = false;
+				const release = () => {
+					if (released) return;
+					released = true;
+					endSourceOperation('sync');
+				};
 
 				// BUFFER the whole body first (do NOT pipe the request straight into
 				// tar.stdin — if tar dies on a partial/streamed gzip the broken pipe
@@ -141,9 +293,11 @@ function devLiveSyncPlugin(): Plugin {
 				const MAX = 64 * 1024 * 1024;
 				req.on('error', () => {
 					aborted = true;
+					if (!bodyComplete) release();
 				});
 				req.on('aborted', () => {
 					aborted = true;
+					if (!bodyComplete) release();
 				});
 				req.on('data', (c: Buffer) => {
 					total += c.length;
@@ -155,14 +309,25 @@ function devLiveSyncPlugin(): Plugin {
 					chunks.push(c);
 				});
 				req.on('end', () => {
-					if (aborted) return json(400, { ok: false, error: 'aborted or too large' });
-					const tmp = path.join(os.tmpdir(), `wfb-sync-${process.pid}-${total}.tgz`);
+					bodyComplete = true;
+					if (aborted) {
+						release();
+						return json(400, {
+							ok: false,
+							error: 'aborted or too large'
+						});
+					}
+					const tmp = path.join(os.tmpdir(), `wfb-sync-${process.pid}-${randomUUID()}.tgz`);
 					let buf: Buffer;
 					try {
 						buf = Buffer.concat(chunks);
 						fs.writeFileSync(tmp, buf);
 					} catch (e) {
-						return json(500, { ok: false, error: `buffer/write: ${(e as Error).message}` });
+						release();
+						return json(500, {
+							ok: false,
+							error: `buffer/write: ${(e as Error).message}`
+						});
 					}
 					const cleanup = () => {
 						try {
@@ -171,50 +336,115 @@ function devLiveSyncPlugin(): Plugin {
 							/* ignore */
 						}
 					};
-					// #41 hook 1: list the archive BEFORE extracting — entries under
-					// src/routes/ that don't exist yet need a full restart to register
-					// (edits to existing files stay plain HMR). Listing failures only
-					// disable detection; the sync still applies.
-					void listTarEntries(tmp).then((entries) => {
-						const addedRoutes = entries
-							? detectAddedRouteFiles(entries, (rel) => fs.existsSync(path.join(root, rel)))
-							: [];
-						// Extract from the FILE (not a stream) into the project root. The dev
-						// image is node:22-alpine → BUSYBOX tar, which rejects GNU long flags
-						// (--no-same-owner/--no-absolute-names) and strips leading '/' itself;
-						// the producer archives only relative `src/`. `-o` = don't restore
-						// user:group (busybox + GNU compatible). Vite's watcher then HMRs.
-						const tar = spawn('tar', ['-xzf', tmp, '-C', root, '-o'], {
-							stdio: ['ignore', 'ignore', 'pipe']
+					const contentSha256 = `sha256:${createHash('sha256').update(buf).digest('hex')}`;
+					if (syncState.generation === generation) {
+						cleanup();
+						release();
+						if (syncState.contentSha256 === contentSha256) {
+							return json(200, {
+								ok: true,
+								idempotent: true,
+								bytes: buf.length,
+								generation,
+								service,
+								contentSha256
+							});
+						}
+						return json(409, {
+							ok: false,
+							error: 'sync generation already committed with different content'
 						});
-						let errout = '';
-						tar.stderr.on('data', (d) => (errout += String(d)));
-						tar.on('error', (e) => {
+					}
+
+					const nextState: DevSyncState = {
+						generation,
+						service,
+						lastSyncAt: new Date().toISOString(),
+						lastSyncBytes: buf.length,
+						contentSha256
+					};
+					let addedRoutes: string[] = [];
+					void applyAtomicDevSync({
+						root,
+						archivePath: tmp,
+						declaredRoots,
+						nextState,
+						stateFile: DEV_SYNC_STATE_FILE,
+						persistState: (state) => persistDevSyncState(root, state as DevSyncState),
+						beforeCommit: (entries) => {
+							addedRoutes = detectAddedRouteFiles(entries, (rel) =>
+								fs.existsSync(path.join(root, rel))
+							);
+						}
+					})
+						.then(() => {
 							cleanup();
-							json(500, { ok: false, error: `tar spawn: ${e.message}` });
-						});
-						tar.on('close', (code) => {
-							cleanup();
-							if (code === 0) {
-								console.log(`[wfb-dev-live-sync] applied src sync (${buf.length}B) → Vite HMR`);
-								// Respond FIRST so the producer's POST completes, THEN restart
-								// (the restart tears the connection handling down).
-								json(200, {
-									ok: true,
-									bytes: buf.length,
-									...(addedRoutes.length
-										? { routesAdded: addedRoutes.slice(0, 50), willRestart: true }
-										: {})
-								});
-								if (addedRoutes.length) {
-									scheduleRouteAddRestart(server, addedRoutes, 'sync added routes');
-								}
-							} else {
-								json(500, { ok: false, error: errout.slice(0, 500) || `tar exit ${code}` });
+							syncState = nextState;
+							console.log(
+								`[wfb-dev-live-sync] atomically applied ${declaredRoots.join(',')} (${buf.length}B) -> Vite HMR`
+							);
+							release();
+							json(200, {
+								ok: true,
+								bytes: buf.length,
+								generation,
+								service,
+								contentSha256,
+								...(addedRoutes.length
+									? {
+											routesAdded: addedRoutes.slice(0, 50),
+											willRestart: true
+										}
+									: {})
+							});
+							if (addedRoutes.length) {
+								scheduleRouteAddRestart(server, addedRoutes, 'sync added routes');
 							}
+						})
+						.catch((error: unknown) => {
+							cleanup();
+							syncState = readDevSyncState(root);
+							if (!syncState.service) syncState.service = configuredService;
+							release();
+							json(
+								error instanceof DevSyncTransactionError && error.phase === 'commit' ? 500 : 400,
+								{
+									ok: false,
+									error: error instanceof Error ? error.message : String(error)
+								}
+							);
 						});
-					});
 				});
+			});
+
+			server.middlewares.use('/__status', (req, res) => {
+				if (req.method !== 'GET') {
+					res.statusCode = 405;
+					res.setHeader('content-type', 'application/json');
+					res.end(JSON.stringify({ ok: false, error: 'GET only' }));
+					return;
+				}
+				if (!acceptsDevSyncToken(req.headers['x-sync-token'], token, agentTokenSha256)) {
+					res.statusCode = 401;
+					res.setHeader('content-type', 'application/json');
+					res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+					return;
+				}
+				res.statusCode = 200;
+				res.setHeader('content-type', 'application/json');
+				res.end(
+					JSON.stringify({
+						ok: true,
+						transport: 'vite-plugin',
+						service: syncState.service,
+						generation: syncState.generation,
+						lastSyncAt: syncState.lastSyncAt,
+						lastSyncBytes: syncState.lastSyncBytes,
+						contentSha256: syncState.contentSha256,
+						allowedRoots,
+						lastExportSha256
+					})
+				);
 			});
 
 			// Read-back counterpart to /__sync: GET /__export streams a `tar.gz` of the
@@ -230,47 +460,135 @@ function devLiveSyncPlugin(): Plugin {
 					res.end(JSON.stringify({ ok: false, error: 'GET only' }));
 					return;
 				}
-				if (token && req.headers['x-sync-token'] !== token) {
+				if (!acceptsDevSyncToken(req.headers['x-sync-token'], token, agentTokenSha256)) {
 					res.statusCode = 401;
 					res.setHeader('content-type', 'application/json');
 					res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
 					return;
 				}
-				// `?paths=src,static` (default `src`); reject absolute / parent-escaping paths.
+				// Export only catalog-owned roots. With no query, export the complete
+				// replacement set so a pull/edit/push loop cannot accidentally delete
+				// roots it did not fetch.
 				const url = new URL(req.url ?? '/__export', 'http://localhost');
-				const paths = (url.searchParams.get('paths') ?? 'src')
-					.split(',')
-					.map((p) => p.trim())
-					.filter((p) => p && !p.startsWith('/') && !p.split('/').includes('..'));
+				const rawPaths = url.searchParams.get('paths');
+				let requestedPaths: string[];
+				try {
+					requestedPaths =
+						rawPaths === null
+							? [...allowedRoots]
+							: parseDeclaredSyncRoots(
+									JSON.stringify(rawPaths.split(',').map((entry) => entry.trim())),
+									allowedRoots
+								);
+				} catch (error) {
+					res.statusCode = 400;
+					res.setHeader('content-type', 'application/json');
+					res.end(
+						JSON.stringify({
+							ok: false,
+							error: error instanceof Error ? error.message : String(error)
+						})
+					);
+					return;
+				}
+				const paths = requestedPaths.filter((entry) => fs.existsSync(path.join(root, entry)));
 				if (paths.length === 0) {
 					res.statusCode = 400;
 					res.setHeader('content-type', 'application/json');
-					res.end(JSON.stringify({ ok: false, error: 'no valid paths' }));
+					res.end(
+						JSON.stringify({
+							ok: false,
+							error: 'no existing paths'
+						})
+					);
 					return;
 				}
-				res.statusCode = 200;
-				res.setHeader('content-type', 'application/gzip');
-				// `-czf -` to stdout; relative paths under root (busybox + GNU compatible).
-				const tar = spawn('tar', ['-czf', '-', '-C', root, ...paths], {
-					stdio: ['ignore', 'pipe', 'pipe']
+				if (!beginSourceOperation('export')) {
+					res.statusCode = 409;
+					res.setHeader('content-type', 'application/json');
+					res.end(
+						JSON.stringify({
+							ok: false,
+							error: `source ${sourceOperation} in progress`
+						})
+					);
+					return;
+				}
+				let released = false;
+				const release = () => {
+					if (released) return;
+					released = true;
+					endSourceOperation('export');
+				};
+				const tmp = path.join(os.tmpdir(), `wfb-export-${process.pid}-${randomUUID()}.tgz`);
+				// Materialize first so metadata hashes the exact gzip bytes returned.
+				const tar = spawn('tar', ['-czf', tmp, '-C', root, ...paths], {
+					stdio: ['ignore', 'ignore', 'pipe']
 				});
+				let spawnFailed = false;
 				let errout = '';
 				tar.stderr.on('data', (d) => (errout += String(d)));
-				tar.stdout.pipe(res);
 				tar.on('error', () => {
+					spawnFailed = true;
+					release();
 					try {
-						res.destroy();
+						fs.rmSync(tmp, { force: true });
 					} catch {
-						/* socket gone */
+						/* ignore */
 					}
+					res.statusCode = 500;
+					res.end();
 				});
 				tar.on('close', (code) => {
-					if (code === 0) {
-						console.log(`[wfb-dev-live-sync] exported ${paths.join(',')} (tar.gz)`);
-					} else {
+					if (spawnFailed) return;
+					release();
+					if (code !== 0) {
+						try {
+							fs.rmSync(tmp, { force: true });
+						} catch {
+							/* ignore */
+						}
 						console.warn(`[wfb-dev-live-sync] export tar exit ${code}: ${errout.slice(0, 200)}`);
+						res.statusCode = 500;
+						res.setHeader('content-type', 'application/json');
+						res.end(
+							JSON.stringify({
+								ok: false,
+								error: errout.slice(0, 500) || `tar exit ${code}`
+							})
+						);
+						return;
 					}
-					// stdout pipe already ended `res`; nothing else to do.
+					try {
+						const bytes = fs.readFileSync(tmp);
+						const contentSha256 = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+						lastExportSha256 = contentSha256;
+						res.statusCode = 200;
+						res.setHeader('content-type', 'application/gzip');
+						res.setHeader('x-content-sha256', contentSha256);
+						res.setHeader('x-sync-roots', JSON.stringify(allowedRoots));
+						if (syncState.generation) res.setHeader('x-sync-generation', syncState.generation);
+						if (syncState.service) res.setHeader('x-sync-service', syncState.service);
+						res.end(bytes);
+						console.log(
+							`[wfb-dev-live-sync] exported ${paths.join(',')} (${bytes.length}B ${contentSha256})`
+						);
+					} catch (e) {
+						res.statusCode = 500;
+						res.setHeader('content-type', 'application/json');
+						res.end(
+							JSON.stringify({
+								ok: false,
+								error: `export read: ${(e as Error).message}`
+							})
+						);
+					} finally {
+						try {
+							fs.rmSync(tmp, { force: true });
+						} catch {
+							/* ignore */
+						}
+					}
 				});
 				// Abort the tar if the client disconnects mid-stream.
 				req.on('aborted', () => {
@@ -289,21 +607,20 @@ function wsUpgradeProxy(): Plugin {
 	return {
 		name: 'ws-upgrade-proxy',
 		configureServer(server) {
+			// Middleware-mode servers (including Vitest) intentionally have no HTTP
+			// server. Retrying forever leaks a timer and keeps every test process open.
+			const httpServer = server.httpServer;
+			if (!httpServer) return;
 			const attach = () => {
-				if (!server.httpServer) {
-					setTimeout(attach, 100);
-					return;
-				}
-				server.httpServer.on('upgrade', (req, socket, head) => {
-					const pathname = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).pathname;
+				httpServer.on('upgrade', (req, socket, head) => {
+					const pathname = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
+						.pathname;
 					const isTerminal =
 						pathname.startsWith('/api/sandboxes/') && pathname.includes('/terminal/');
 					const isOpenShellSessionTerminal =
 						pathname.startsWith('/api/openshell/sessions/') && pathname.includes('/terminal/');
 					const isShell = /^\/api\/v1\/sessions\/[^/]+\/shell$/.test(pathname);
-					const isCliTerminal = /^\/api\/v1\/sessions\/[^/]+\/cli-terminal\/[^/]+$/.test(
-						pathname
-					);
+					const isCliTerminal = /^\/api\/v1\/sessions\/[^/]+\/cli-terminal\/[^/]+$/.test(pathname);
 					if (!isTerminal && !isOpenShellSessionTerminal && !isShell && !isCliTerminal) return;
 					const modPath = isShell
 						? '/src/lib/server/ws-kube-exec-proxy.ts'
@@ -316,7 +633,7 @@ function wsUpgradeProxy(): Plugin {
 							const fn = mod.handleUpgrade as (
 								req: unknown,
 								socket: unknown,
-								head: unknown,
+								head: unknown
 							) => boolean | Promise<boolean>;
 							const r = fn(req, socket, head);
 							if (r instanceof Promise) r.catch(() => {});

@@ -31,6 +31,18 @@ export type SourceBundleMeta = {
 	repoSubdir?: string | null;
 	syncPaths?: string[] | null;
 	iteration?: number | null;
+	manifestVersion?: number | null;
+	captureId?: string | null;
+	capturedAt?: string | null;
+	serviceCount?: number | null;
+	services?: string[] | null;
+	captureProtocol?: string | null;
+	acceptanceEligible?: boolean | null;
+	generation?: string | null;
+	overlayDigests?: Record<string, string> | null;
+	catalogDigest?: string | null;
+	sourceRevision?: string | null;
+	platformRevision?: string | null;
 };
 
 export type PersistSourceBundleInput = {
@@ -51,19 +63,22 @@ export type SourceBundlePersistence = Pick<WorkflowFileStore, "createFile"> &
 	Pick<ArtifactStore, "upsertWorkflowArtifact">;
 
 /**
- * Deterministic id so a node re-capture UPSERTs the same version row. When an
- * `iteration` is supplied (dev-pod-as-source per-iteration snapshots), it is part
- * of the key so each iteration is a DISTINCT version; runs without an iteration
- * keep their original `${exec}|${node}|${kind}` id (backward compatible).
+ * Legacy captures keep the deterministic per-node/per-iteration id. Atomic
+ * capture sets carry a random captureId in metadata; including it in the key
+ * makes repeated captures of the same iteration distinct immutable artifacts.
  */
 function sourceBundleArtifactId(
 	executionId: string,
 	nodeId: string | null,
 	iteration: number | null,
+	captureId: string | null,
 ): string {
 	const iterSeg = iteration == null ? "" : `iter${iteration}|`;
+	const captureSeg = captureId ? `capture${captureId}|` : "";
 	return createHash("sha256")
-		.update(`${executionId}|${nodeId ?? ""}|${iterSeg}${SOURCE_BUNDLE_KIND}`)
+		.update(
+			`${executionId}|${nodeId ?? ""}|${iterSeg}${captureSeg}${SOURCE_BUNDLE_KIND}`,
+		)
 		.digest("hex")
 		.slice(0, 24);
 }
@@ -73,7 +88,13 @@ export async function persistSourceBundle(
 	persistence: SourceBundlePersistence,
 ): Promise<{ id: string; fileId: string; bytes: number }> {
 	const iteration = input.iteration ?? input.meta?.iteration ?? null;
-	const id = sourceBundleArtifactId(input.executionId, input.nodeId ?? null, iteration);
+	const captureId = input.meta?.captureId?.trim() || null;
+	const id = sourceBundleArtifactId(
+		input.executionId,
+		input.nodeId ?? null,
+		iteration,
+		captureId,
+	);
 	const sizeBytes = input.bytes.byteLength;
 	const contentType = input.contentType?.trim() || "application/x-git-bundle";
 
@@ -109,11 +130,48 @@ export async function persistSourceBundle(
 			repoSubdir: input.meta?.repoSubdir ?? null,
 			syncPaths: input.meta?.syncPaths ?? null,
 			iteration,
+			...(input.meta?.manifestVersion != null
+				? { manifestVersion: input.meta.manifestVersion }
+				: {}),
+			...(input.meta?.captureId
+				? { captureId: input.meta.captureId }
+				: {}),
+			...(input.meta?.capturedAt
+				? { capturedAt: input.meta.capturedAt }
+				: {}),
+			...(input.meta?.serviceCount != null
+				? { serviceCount: input.meta.serviceCount }
+				: {}),
+			...(input.meta?.services ? { services: input.meta.services } : {}),
+			...(input.meta?.captureProtocol
+				? { captureProtocol: input.meta.captureProtocol }
+				: {}),
+			...(input.meta?.acceptanceEligible != null
+				? { acceptanceEligible: input.meta.acceptanceEligible }
+				: {}),
+			...(input.meta?.generation
+				? { generation: input.meta.generation }
+				: {}),
+			...(input.meta?.overlayDigests
+				? { overlayDigests: input.meta.overlayDigests }
+				: {}),
+			...(input.meta?.catalogDigest
+				? { catalogDigest: input.meta.catalogDigest }
+				: {}),
+			...(input.meta?.sourceRevision
+				? { sourceRevision: input.meta.sourceRevision }
+				: {}),
+			...(input.meta?.platformRevision
+				? { platformRevision: input.meta.platformRevision }
+				: {}),
 		} as unknown,
 		fileId: file.id,
 		contentType,
 		sizeBytes,
-		metadata: { createdBy: "source-bundle", capturedAt: new Date().toISOString() },
+		metadata: {
+			createdBy: "source-bundle",
+			capturedAt: new Date().toISOString(),
+		},
 	});
 
 	return { id, fileId: file.id, bytes: sizeBytes };

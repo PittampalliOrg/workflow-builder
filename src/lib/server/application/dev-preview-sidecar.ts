@@ -1,10 +1,10 @@
-import type { SidecarLastRunView } from "$lib/types/dev-previews";
+import type { SidecarLastRunView } from '$lib/types/dev-previews';
 import type {
 	DevEnvironmentSummaryReadModel,
 	DevPreviewSidecarPort,
 	DevPreviewSidecarRunOutput,
-	DevPreviewSidecarSyncOutput,
-} from "$lib/server/application/ports";
+	DevPreviewSidecarSyncOutput
+} from '$lib/server/application/ports';
 
 /** The dev-service card view of a sidecar `/__status`: the raw `lastRun` parsed
  * into a stable shape, everything else forwarded. */
@@ -43,16 +43,16 @@ export type DevSidecarSyncView = {
 /** Parse the sidecar's raw `lastRun` ({ name, exitCode, durationMs, executedIn,
  * finishedAt }) into the UI view. Returns null for absent/garbage. */
 export function parseSidecarLastRun(raw: unknown): SidecarLastRunView | null {
-	if (!raw || typeof raw !== "object") return null;
+	if (!raw || typeof raw !== 'object') return null;
 	const r = raw as Record<string, unknown>;
-	const cmd = typeof r.name === "string" ? r.name : typeof r.cmd === "string" ? r.cmd : null;
+	const cmd = typeof r.name === 'string' ? r.name : typeof r.cmd === 'string' ? r.cmd : null;
 	if (!cmd) return null;
 	return {
 		cmd,
-		exitCode: typeof r.exitCode === "number" ? r.exitCode : null,
-		durationMs: typeof r.durationMs === "number" ? r.durationMs : null,
-		executedIn: r.executedIn === "app" || r.executedIn === "sidecar" ? r.executedIn : null,
-		finishedAt: typeof r.finishedAt === "string" ? r.finishedAt : null,
+		exitCode: typeof r.exitCode === 'number' ? r.exitCode : null,
+		durationMs: typeof r.durationMs === 'number' ? r.durationMs : null,
+		executedIn: r.executedIn === 'app' || r.executedIn === 'sidecar' ? r.executedIn : null,
+		finishedAt: typeof r.finishedAt === 'string' ? r.finishedAt : null
 	};
 }
 
@@ -83,10 +83,12 @@ export class ApplicationDevPreviewSidecarService {
 		service: string;
 		projectId: string | null | undefined;
 	}): Promise<DevEnvironmentSummaryReadModel | null> {
-		const environments = await this.deps.listEnvironments({ projectId: input.projectId });
+		const environments = await this.deps.listEnvironments({
+			projectId: input.projectId
+		});
 		return (
 			environments.find(
-				(e) => e.executionId === input.executionId && e.service === input.service,
+				(e) => e.executionId === input.executionId && e.service === input.service
 			) ?? null
 		);
 	}
@@ -98,13 +100,17 @@ export class ApplicationDevPreviewSidecarService {
 	}): Promise<DevSidecarStatusView | null> {
 		const environment = await this.resolve(input);
 		if (!environment) return null;
-		const status = await this.deps.sidecar.status({ syncUrl: environment.syncUrl });
+		const status = await this.deps.sidecar.status({
+			syncUrl: environment.syncUrl,
+			executionId: environment.executionId,
+			service: environment.service
+		});
 		const allowedCommands = this.deps.sidecar.allowedCommands(environment.service);
 		if (!status.ok) {
 			return {
 				service: environment.service,
 				status: { ok: false, reason: status.reason, message: status.message },
-				allowedCommands,
+				allowedCommands
 			};
 		}
 		const d = status.data;
@@ -118,10 +124,10 @@ export class ApplicationDevPreviewSidecarService {
 					lastSyncAt: d.lastSyncAt ?? null,
 					lastSyncBytes: d.lastSyncBytes ?? null,
 					commands: d.commands ?? [],
-					lastRun: parseSidecarLastRun(d.lastRun),
-				},
+					lastRun: parseSidecarLastRun(d.lastRun)
+				}
 			},
-			allowedCommands,
+			allowedCommands
 		};
 	}
 
@@ -135,15 +141,16 @@ export class ApplicationDevPreviewSidecarService {
 		if (!environment) return null;
 		const result = await this.deps.sidecar.run({
 			syncUrl: environment.syncUrl,
+			executionId: environment.executionId,
 			service: environment.service,
-			cmd: input.cmd,
+			cmd: input.cmd
 		});
 		return {
 			service: environment.service,
 			cmd: input.cmd,
 			result: result.ok
 				? { ok: true, data: result.data }
-				: { ok: false, reason: result.reason, message: result.message },
+				: { ok: false, reason: result.reason, message: result.message }
 		};
 	}
 
@@ -158,14 +165,16 @@ export class ApplicationDevPreviewSidecarService {
 		if (!environment) return null;
 		const result = await this.deps.sidecar.sync({
 			syncUrl: environment.syncUrl,
+			executionId: environment.executionId,
+			service: environment.service,
 			archive: input.archive,
-			contentType: input.contentType,
+			contentType: input.contentType
 		});
 		return {
 			service: environment.service,
 			result: result.ok
 				? { ok: true, data: result.data }
-				: { ok: false, reason: result.reason, message: result.message },
+				: { ok: false, reason: result.reason, message: result.message }
 		};
 	}
 }

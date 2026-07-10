@@ -2,8 +2,6 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { validateInternalToken } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
-import { getMemberByName } from "$lib/server/teams/team-repo";
-import { refreshTeamRunStatus } from "$lib/server/teams/team-run";
 
 /**
  * POST /api/internal/team/[teamId]/tasks
@@ -27,15 +25,16 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		createdBySessionId?: string;
 	};
 	if (!body.title || !body.title.trim()) return error(400, "title is required");
+	const store = getApplicationAdapters().teamStore;
 
 	let assigneeSessionId: string | null = null;
 	if (body.assignTo) {
-		const member = await getMemberByName(params.teamId, body.assignTo);
+		const member = await store.getMemberByName(params.teamId, body.assignTo);
 		if (!member) return error(404, `no teammate '${body.assignTo}' in this team`);
 		assigneeSessionId = member.session_id;
 	}
 
-	const task = await getApplicationAdapters().teamStore.createTask({
+	const task = await store.createTask({
 		teamId: params.teamId,
 		title: body.title.trim(),
 		description: body.description ?? null,
@@ -47,7 +46,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 
 	// Keep the (synthetic) container run's progress current; a no-op for
 	// adopted script executions (engine guard in refreshTeamRunStatus).
-	await refreshTeamRunStatus(params.teamId).catch(() => {});
+	await store.refreshTeamRunStatus(params.teamId).catch(() => {});
 
 	return json({ ok: true, task });
 };

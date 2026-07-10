@@ -1,0 +1,928 @@
+{
+  "catalogDigest": "sha256:ca04bd654b42d317715c51c5d9a1ea85d58f8d640f90374be885507d5a415fab",
+  "pathPolicy": {
+    "ignoredPathPrefixes": [
+      ".dependency-cruiser.cjs",
+      ".gitignore",
+      "AGENTS.md",
+      "CLAUDE.md",
+      "GANs.md",
+      "LICENSE",
+      "README.md",
+      "docs",
+      "playwright.config.ts",
+      "tsconfig.depcruise.json"
+    ],
+    "unmatchedPathPolicy": "unsupported",
+    "unsupportedPathPrefixes": [
+      ".github/CODEOWNERS",
+      ".github/actions",
+      ".github/workflows",
+      "drizzle/0102_preview_accepted_image_receipts.sql",
+      "scripts/governance",
+      "scripts/sync-dev-preview-service-catalog.ts",
+      "services/shared/dev-preview-service-catalog.json",
+      "src/lib/server/application/adapters/preview-accepted-images.ts",
+      "src/lib/server/application/adapters/preview-control.ts",
+      "src/lib/server/application/adapters/preview-github-app.ts",
+      "src/lib/server/application/index.ts",
+      "src/lib/server/application/ports/preview-accepted-images.ts",
+      "src/lib/server/application/ports/preview-control.ts",
+      "src/lib/server/application/preview-acceptance-broker.ts",
+      "src/lib/server/application/preview-accepted-image-reuse.ts",
+      "src/lib/server/application/preview-accepted-images.ts",
+      "src/lib/server/application/preview-activation-gate.ts",
+      "src/lib/server/application/preview-gate-reconciler.ts",
+      "src/lib/server/application/preview-gate-requirements.ts",
+      "src/lib/server/db/schema.ts",
+      "src/lib/server/internal-auth.ts",
+      "src/lib/server/preview-control-capability.ts",
+      "src/lib/server/workflows/dev-preview-registry.ts",
+      "src/routes/api/internal/preview-control"
+    ]
+  },
+  "schemaVersion": 3,
+  "services": [
+    {
+      "acceptance": null,
+      "activation": {
+        "context": "services/dev-sync-sidecar",
+        "dockerfile": "services/dev-sync-sidecar/Dockerfile",
+        "image": "ghcr.io/pittampalliorg/dev-sync-sidecar",
+        "pipeline": "build-dev-sync-sidecar-activation",
+        "statusContext": "preview/activation-images"
+      },
+      "capabilities": {
+        "acceptanceBuild": false,
+        "acceptanceReplay": false,
+        "activationBuild": true,
+        "hostThrowaway": false,
+        "hotSync": false,
+        "previewNative": false
+      },
+      "development": null,
+      "service": "dev-sync-sidecar",
+      "source": {
+        "baseBranch": "main",
+        "captureMappings": [],
+        "captureOnly": [],
+        "changedPaths": [
+          "services/dev-sync-sidecar"
+        ],
+        "extraSync": [],
+        "repository": "PittampalliOrg/workflow-builder",
+        "repoSubdir": "services/dev-sync-sidecar",
+        "syncPaths": []
+      },
+      "stacksRequirements": {
+        "devImagePin": null,
+        "externalRoutes": [],
+        "workloadAdoption": null
+      }
+    },
+    {
+      "acceptance": {
+        "context": ".",
+        "dockerfile": "services/function-router/Dockerfile",
+        "image": "ghcr.io/pittampalliorg/function-router"
+      },
+      "activation": null,
+      "capabilities": {
+        "acceptanceBuild": true,
+        "acceptanceReplay": true,
+        "activationBuild": false,
+        "hostThrowaway": true,
+        "hotSync": true,
+        "previewNative": true
+      },
+      "development": {
+        "applyDaprShadowDefaults": false,
+        "build": {
+          "context": ".",
+          "dockerfile": "skaffold/dev/function-router/Dockerfile.dev",
+          "image": "ghcr.io/pittampalliorg/function-router-dev"
+        },
+        "depsCommand": "pnpm install --no-frozen-lockfile && touch src/index.ts",
+        "env": {},
+        "envFrom": [],
+        "functional": false,
+        "healthPath": "/healthz",
+        "imageEnvKey": "FUNCTION_ROUTER_DEV_IMAGE",
+        "language": "node",
+        "needsDapr": true,
+        "port": 8080,
+        "pubsubName": null,
+        "syncMode": "sidecar",
+        "syncPort": 8001,
+        "testCommands": {},
+        "workdir": "/app"
+      },
+      "service": "function-router",
+      "source": {
+        "baseBranch": "main",
+        "captureMappings": [
+          {
+            "from": "config",
+            "to": "services/function-router/config"
+          },
+          {
+            "from": ".preview-capture/production.Dockerfile",
+            "to": "services/function-router/Dockerfile"
+          },
+          {
+            "from": "package.json",
+            "to": "services/function-router/package.json"
+          },
+          {
+            "from": "pnpm-lock.yaml",
+            "to": "services/function-router/pnpm-lock.yaml"
+          },
+          {
+            "from": "src",
+            "to": "services/function-router/src"
+          },
+          {
+            "from": ".preview-capture/development.Dockerfile",
+            "to": "skaffold/dev/function-router/Dockerfile.dev"
+          }
+        ],
+        "captureOnly": [
+          {
+            "from": "Dockerfile",
+            "to": ".preview-capture/production.Dockerfile"
+          },
+          {
+            "from": "../../skaffold/dev/function-router/Dockerfile.dev",
+            "to": ".preview-capture/development.Dockerfile"
+          }
+        ],
+        "changedPaths": [
+          ".dockerignore",
+          "services/function-router",
+          "services/function-router/Dockerfile",
+          "services/function-router/config",
+          "services/function-router/package.json",
+          "services/function-router/pnpm-lock.yaml",
+          "services/function-router/src",
+          "skaffold/dev/function-router/Dockerfile.dev"
+        ],
+        "extraSync": [],
+        "repository": "PittampalliOrg/workflow-builder",
+        "repoSubdir": "services/function-router",
+        "syncPaths": [
+          "src",
+          "config",
+          "package.json",
+          "pnpm-lock.yaml"
+        ]
+      },
+      "stacksRequirements": {
+        "devImagePin": {
+          "envKey": "FUNCTION_ROUTER_DEV_IMAGE",
+          "image": "ghcr.io/pittampalliorg/function-router-dev",
+          "policy": "digest-or-git-sha",
+          "required": true
+        },
+        "externalRoutes": [],
+        "workloadAdoption": {
+          "daprAppId": "function-router",
+          "deployment": "function-router",
+          "service": "function-router"
+        }
+      }
+    },
+    {
+      "acceptance": {
+        "context": ".",
+        "dockerfile": "services/mcp-gateway/Dockerfile",
+        "image": "ghcr.io/pittampalliorg/mcp-gateway"
+      },
+      "activation": null,
+      "capabilities": {
+        "acceptanceBuild": true,
+        "acceptanceReplay": true,
+        "activationBuild": false,
+        "hostThrowaway": true,
+        "hotSync": true,
+        "previewNative": true
+      },
+      "development": {
+        "applyDaprShadowDefaults": null,
+        "build": {
+          "context": ".",
+          "dockerfile": "skaffold/dev/mcp-gateway/Dockerfile.dev",
+          "image": "ghcr.io/pittampalliorg/mcp-gateway-dev"
+        },
+        "depsCommand": "pnpm install --no-frozen-lockfile && touch src/index.ts",
+        "env": {
+          "OTEL_SDK_DISABLED": "true",
+          "WORKFLOW_BUILDER_URL": "http://workflow-builder.workflow-builder.svc.cluster.local:3000"
+        },
+        "envFrom": [
+          {
+            "secretRef": {
+              "name": "workflow-builder-secrets"
+            }
+          }
+        ],
+        "functional": false,
+        "healthPath": "/health",
+        "imageEnvKey": "MCP_GATEWAY_DEV_IMAGE",
+        "language": "node",
+        "needsDapr": false,
+        "port": 8080,
+        "pubsubName": null,
+        "syncMode": "sidecar",
+        "syncPort": 8001,
+        "testCommands": {},
+        "workdir": "/app"
+      },
+      "service": "mcp-gateway",
+      "source": {
+        "baseBranch": "main",
+        "captureMappings": [
+          {
+            "from": "config",
+            "to": "services/mcp-gateway/config"
+          },
+          {
+            "from": ".preview-capture/production.Dockerfile",
+            "to": "services/mcp-gateway/Dockerfile"
+          },
+          {
+            "from": "package.json",
+            "to": "services/mcp-gateway/package.json"
+          },
+          {
+            "from": "pnpm-lock.yaml",
+            "to": "services/mcp-gateway/pnpm-lock.yaml"
+          },
+          {
+            "from": "src",
+            "to": "services/mcp-gateway/src"
+          },
+          {
+            "from": ".preview-capture/development.Dockerfile",
+            "to": "skaffold/dev/mcp-gateway/Dockerfile.dev"
+          }
+        ],
+        "captureOnly": [
+          {
+            "from": "Dockerfile",
+            "to": ".preview-capture/production.Dockerfile"
+          },
+          {
+            "from": "../../skaffold/dev/mcp-gateway/Dockerfile.dev",
+            "to": ".preview-capture/development.Dockerfile"
+          }
+        ],
+        "changedPaths": [
+          ".dockerignore",
+          "services/mcp-gateway",
+          "services/mcp-gateway/Dockerfile",
+          "services/mcp-gateway/config",
+          "services/mcp-gateway/package.json",
+          "services/mcp-gateway/pnpm-lock.yaml",
+          "services/mcp-gateway/src",
+          "skaffold/dev/mcp-gateway/Dockerfile.dev"
+        ],
+        "extraSync": [],
+        "repository": "PittampalliOrg/workflow-builder",
+        "repoSubdir": "services/mcp-gateway",
+        "syncPaths": [
+          "src",
+          "config",
+          "package.json",
+          "pnpm-lock.yaml"
+        ]
+      },
+      "stacksRequirements": {
+        "devImagePin": {
+          "envKey": "MCP_GATEWAY_DEV_IMAGE",
+          "image": "ghcr.io/pittampalliorg/mcp-gateway-dev",
+          "policy": "digest-or-git-sha",
+          "required": true
+        },
+        "externalRoutes": [],
+        "workloadAdoption": {
+          "daprAppId": null,
+          "deployment": "mcp-gateway",
+          "service": "mcp-gateway"
+        }
+      }
+    },
+    {
+      "acceptance": {
+        "context": "services/sandbox-execution-api",
+        "dockerfile": "services/sandbox-execution-api/Dockerfile",
+        "image": "ghcr.io/pittampalliorg/sandbox-execution-api"
+      },
+      "activation": null,
+      "capabilities": {
+        "acceptanceBuild": true,
+        "acceptanceReplay": true,
+        "activationBuild": false,
+        "hostThrowaway": false,
+        "hotSync": false,
+        "previewNative": false
+      },
+      "development": null,
+      "service": "sandbox-execution-api",
+      "source": {
+        "baseBranch": "main",
+        "captureMappings": [],
+        "captureOnly": [],
+        "changedPaths": [
+          "services/sandbox-execution-api"
+        ],
+        "extraSync": [],
+        "repository": "PittampalliOrg/workflow-builder",
+        "repoSubdir": "services/sandbox-execution-api",
+        "syncPaths": []
+      },
+      "stacksRequirements": {
+        "devImagePin": null,
+        "externalRoutes": [],
+        "workloadAdoption": {
+          "daprAppId": null,
+          "deployment": "sandbox-execution-api",
+          "service": "sandbox-execution-api"
+        }
+      }
+    },
+    {
+      "acceptance": {
+        "context": "services/swebench-coordinator",
+        "dockerfile": "services/swebench-coordinator/Dockerfile",
+        "image": "ghcr.io/pittampalliorg/swebench-coordinator"
+      },
+      "activation": null,
+      "capabilities": {
+        "acceptanceBuild": true,
+        "acceptanceReplay": false,
+        "activationBuild": false,
+        "hostThrowaway": true,
+        "hotSync": true,
+        "previewNative": false
+      },
+      "development": {
+        "applyDaprShadowDefaults": null,
+        "build": {
+          "context": ".",
+          "dockerfile": "skaffold/dev/swebench-coordinator/Dockerfile.dev",
+          "image": "ghcr.io/pittampalliorg/swebench-coordinator-dev"
+        },
+        "depsCommand": "pip install -e . && touch src/app.py",
+        "env": {},
+        "envFrom": [],
+        "functional": false,
+        "healthPath": "/healthz",
+        "imageEnvKey": "SWEBENCH_COORDINATOR_DEV_IMAGE",
+        "language": "python",
+        "needsDapr": true,
+        "port": 8080,
+        "pubsubName": "pubsub-dev",
+        "syncMode": "sidecar",
+        "syncPort": 8001,
+        "testCommands": {},
+        "workdir": "/app"
+      },
+      "service": "swebench-coordinator",
+      "source": {
+        "baseBranch": "main",
+        "captureMappings": [
+          {
+            "from": ".preview-capture/production.Dockerfile",
+            "to": "services/swebench-coordinator/Dockerfile"
+          },
+          {
+            "from": "pyproject.toml",
+            "to": "services/swebench-coordinator/pyproject.toml"
+          },
+          {
+            "from": "src",
+            "to": "services/swebench-coordinator/src"
+          },
+          {
+            "from": ".preview-capture/development.Dockerfile",
+            "to": "skaffold/dev/swebench-coordinator/Dockerfile.dev"
+          }
+        ],
+        "captureOnly": [
+          {
+            "from": "Dockerfile",
+            "to": ".preview-capture/production.Dockerfile"
+          },
+          {
+            "from": "../../skaffold/dev/swebench-coordinator/Dockerfile.dev",
+            "to": ".preview-capture/development.Dockerfile"
+          }
+        ],
+        "changedPaths": [
+          ".dockerignore",
+          "services/swebench-coordinator",
+          "services/swebench-coordinator/Dockerfile",
+          "services/swebench-coordinator/pyproject.toml",
+          "services/swebench-coordinator/src",
+          "skaffold/dev/swebench-coordinator/Dockerfile.dev"
+        ],
+        "extraSync": [],
+        "repository": "PittampalliOrg/workflow-builder",
+        "repoSubdir": "services/swebench-coordinator",
+        "syncPaths": [
+          "src",
+          "pyproject.toml"
+        ]
+      },
+      "stacksRequirements": {
+        "devImagePin": {
+          "envKey": "SWEBENCH_COORDINATOR_DEV_IMAGE",
+          "image": "ghcr.io/pittampalliorg/swebench-coordinator-dev",
+          "policy": "digest-or-git-sha",
+          "required": true
+        },
+        "externalRoutes": [],
+        "workloadAdoption": null
+      }
+    },
+    {
+      "acceptance": {
+        "context": ".",
+        "dockerfile": "Dockerfile",
+        "image": "ghcr.io/pittampalliorg/workflow-builder"
+      },
+      "activation": null,
+      "capabilities": {
+        "acceptanceBuild": true,
+        "acceptanceReplay": true,
+        "activationBuild": false,
+        "hostThrowaway": true,
+        "hotSync": true,
+        "previewNative": true
+      },
+      "development": {
+        "applyDaprShadowDefaults": false,
+        "build": {
+          "context": ".",
+          "dockerfile": "skaffold/dev/workflow-builder/Dockerfile.dev",
+          "image": "ghcr.io/pittampalliorg/workflow-builder-dev"
+        },
+        "depsCommand": "pnpm install --no-frozen-lockfile",
+        "env": {},
+        "envFrom": [
+          {
+            "configMapRef": {
+              "name": "workflow-builder-otel-config",
+              "optional": true
+            }
+          },
+          {
+            "configMapRef": {
+              "name": "workflow-builder-flipt-config",
+              "optional": true
+            }
+          },
+          {
+            "secretRef": {
+              "name": "workflow-builder-secrets"
+            }
+          }
+        ],
+        "functional": true,
+        "healthPath": "/",
+        "imageEnvKey": "WORKFLOW_BUILDER_DEV_IMAGE",
+        "language": "node",
+        "needsDapr": true,
+        "port": 3000,
+        "pubsubName": null,
+        "syncMode": "plugin",
+        "syncPort": 3000,
+        "testCommands": {
+          "boundaries": "pnpm check:boundaries",
+          "check": "pnpm check",
+          "contract": "node_modules/.bin/vitest run src/routes/api/internal/workflow-data/workflow-data-contract.test.ts",
+          "migrate": "node scripts/db-migrate-runtime.mjs",
+          "test-unit": "pnpm test:unit"
+        },
+        "workdir": "/app"
+      },
+      "service": "workflow-builder",
+      "source": {
+        "baseBranch": "main",
+        "captureMappings": [
+          {
+            "from": ".npmrc",
+            "to": ".npmrc"
+          },
+          {
+            "from": "components.json",
+            "to": "components.json"
+          },
+          {
+            "from": ".preview-capture/production.Dockerfile",
+            "to": "Dockerfile"
+          },
+          {
+            "from": "drizzle",
+            "to": "drizzle"
+          },
+          {
+            "from": "drizzle.config.ts",
+            "to": "drizzle.config.ts"
+          },
+          {
+            "from": "lib",
+            "to": "lib"
+          },
+          {
+            "from": "package.json",
+            "to": "package.json"
+          },
+          {
+            "from": "pnpm-lock.yaml",
+            "to": "pnpm-lock.yaml"
+          },
+          {
+            "from": "scripts",
+            "to": "scripts"
+          },
+          {
+            "from": "server-prod.js",
+            "to": "server-prod.js"
+          },
+          {
+            "from": "services/shared/workflow-data-contract",
+            "to": "services/shared/workflow-data-contract"
+          },
+          {
+            "from": ".preview-capture/development.Dockerfile",
+            "to": "skaffold/dev/workflow-builder/Dockerfile.dev"
+          },
+          {
+            "from": "src",
+            "to": "src"
+          },
+          {
+            "from": "static",
+            "to": "static"
+          },
+          {
+            "from": "svelte.config.js",
+            "to": "svelte.config.js"
+          },
+          {
+            "from": "tsconfig.json",
+            "to": "tsconfig.json"
+          },
+          {
+            "from": "vite.config.ts",
+            "to": "vite.config.ts"
+          }
+        ],
+        "captureOnly": [
+          {
+            "from": "Dockerfile",
+            "to": ".preview-capture/production.Dockerfile"
+          },
+          {
+            "from": "skaffold/dev/workflow-builder/Dockerfile.dev",
+            "to": ".preview-capture/development.Dockerfile"
+          }
+        ],
+        "changedPaths": [
+          ".dockerignore",
+          ".npmrc",
+          "Dockerfile",
+          "components.json",
+          "drizzle",
+          "drizzle.config.ts",
+          "lib",
+          "package.json",
+          "pnpm-lock.yaml",
+          "scripts",
+          "server-prod.js",
+          "services/shared/workflow-data-contract",
+          "skaffold/dev/workflow-builder/Dockerfile.dev",
+          "src",
+          "static",
+          "svelte.config.js",
+          "tsconfig.json",
+          "vite.config.ts"
+        ],
+        "extraSync": [],
+        "repository": "PittampalliOrg/workflow-builder",
+        "repoSubdir": ".",
+        "syncPaths": [
+          "src",
+          "static",
+          "drizzle",
+          "lib",
+          "scripts",
+          "services/shared/workflow-data-contract",
+          "package.json",
+          "pnpm-lock.yaml",
+          ".npmrc",
+          "svelte.config.js",
+          "vite.config.ts",
+          "tsconfig.json",
+          "components.json",
+          "drizzle.config.ts",
+          "server-prod.js"
+        ]
+      },
+      "stacksRequirements": {
+        "devImagePin": {
+          "envKey": "WORKFLOW_BUILDER_DEV_IMAGE",
+          "image": "ghcr.io/pittampalliorg/workflow-builder-dev",
+          "policy": "digest-or-git-sha",
+          "required": true
+        },
+        "externalRoutes": [
+          {
+            "backendPort": 3000,
+            "backendService": "workflow-builder",
+            "pathPrefix": "/",
+            "tlsTermination": "host"
+          }
+        ],
+        "workloadAdoption": {
+          "daprAppId": "workflow-builder",
+          "deployment": "workflow-builder",
+          "service": "workflow-builder"
+        }
+      }
+    },
+    {
+      "acceptance": {
+        "context": "services/workflow-mcp-server",
+        "dockerfile": "services/workflow-mcp-server/Dockerfile",
+        "image": "ghcr.io/pittampalliorg/workflow-mcp-server"
+      },
+      "activation": null,
+      "capabilities": {
+        "acceptanceBuild": true,
+        "acceptanceReplay": true,
+        "activationBuild": false,
+        "hostThrowaway": true,
+        "hotSync": true,
+        "previewNative": true
+      },
+      "development": {
+        "applyDaprShadowDefaults": null,
+        "build": {
+          "context": ".",
+          "dockerfile": "skaffold/dev/workflow-mcp-server/Dockerfile.dev",
+          "image": "ghcr.io/pittampalliorg/workflow-mcp-server-dev"
+        },
+        "depsCommand": "pnpm install --no-frozen-lockfile && touch src/index.ts",
+        "env": {},
+        "envFrom": [],
+        "functional": false,
+        "healthPath": "/health",
+        "imageEnvKey": "WORKFLOW_MCP_SERVER_DEV_IMAGE",
+        "language": "node",
+        "needsDapr": false,
+        "port": 3200,
+        "pubsubName": null,
+        "syncMode": "sidecar",
+        "syncPort": 8001,
+        "testCommands": {},
+        "workdir": "/app"
+      },
+      "service": "workflow-mcp-server",
+      "source": {
+        "baseBranch": "main",
+        "captureMappings": [
+          {
+            "from": "config",
+            "to": "services/workflow-mcp-server/config"
+          },
+          {
+            "from": ".preview-capture/production.Dockerfile",
+            "to": "services/workflow-mcp-server/Dockerfile"
+          },
+          {
+            "from": "package.json",
+            "to": "services/workflow-mcp-server/package.json"
+          },
+          {
+            "from": "pnpm-lock.yaml",
+            "to": "services/workflow-mcp-server/pnpm-lock.yaml"
+          },
+          {
+            "from": "src",
+            "to": "services/workflow-mcp-server/src"
+          },
+          {
+            "from": ".preview-capture/development.Dockerfile",
+            "to": "skaffold/dev/workflow-mcp-server/Dockerfile.dev"
+          }
+        ],
+        "captureOnly": [
+          {
+            "from": "Dockerfile",
+            "to": ".preview-capture/production.Dockerfile"
+          },
+          {
+            "from": "../../skaffold/dev/workflow-mcp-server/Dockerfile.dev",
+            "to": ".preview-capture/development.Dockerfile"
+          }
+        ],
+        "changedPaths": [
+          ".dockerignore",
+          "services/workflow-mcp-server",
+          "services/workflow-mcp-server/Dockerfile",
+          "services/workflow-mcp-server/config",
+          "services/workflow-mcp-server/package.json",
+          "services/workflow-mcp-server/pnpm-lock.yaml",
+          "services/workflow-mcp-server/src",
+          "skaffold/dev/workflow-mcp-server/Dockerfile.dev"
+        ],
+        "extraSync": [],
+        "repository": "PittampalliOrg/workflow-builder",
+        "repoSubdir": "services/workflow-mcp-server",
+        "syncPaths": [
+          "src",
+          "config",
+          "package.json",
+          "pnpm-lock.yaml"
+        ]
+      },
+      "stacksRequirements": {
+        "devImagePin": {
+          "envKey": "WORKFLOW_MCP_SERVER_DEV_IMAGE",
+          "image": "ghcr.io/pittampalliorg/workflow-mcp-server-dev",
+          "policy": "digest-or-git-sha",
+          "required": true
+        },
+        "externalRoutes": [
+          {
+            "backendPort": 3200,
+            "backendService": "workflow-mcp-server",
+            "pathPrefix": "/mcp",
+            "tlsTermination": "host"
+          }
+        ],
+        "workloadAdoption": {
+          "daprAppId": null,
+          "deployment": "workflow-mcp-server",
+          "service": "workflow-mcp-server"
+        }
+      }
+    },
+    {
+      "acceptance": {
+        "context": "services/workflow-orchestrator",
+        "dockerfile": "services/workflow-orchestrator/Dockerfile",
+        "image": "ghcr.io/pittampalliorg/workflow-orchestrator"
+      },
+      "activation": null,
+      "capabilities": {
+        "acceptanceBuild": true,
+        "acceptanceReplay": true,
+        "activationBuild": false,
+        "hostThrowaway": true,
+        "hotSync": true,
+        "previewNative": true
+      },
+      "development": {
+        "applyDaprShadowDefaults": null,
+        "build": {
+          "context": ".",
+          "dockerfile": "skaffold/dev/workflow-orchestrator/Dockerfile.dev",
+          "image": "ghcr.io/pittampalliorg/workflow-orchestrator-dev"
+        },
+        "depsCommand": "pip install -r requirements.txt && touch /app/app.py",
+        "env": {},
+        "envFrom": [],
+        "functional": false,
+        "healthPath": "/healthz",
+        "imageEnvKey": "WORKFLOW_ORCHESTRATOR_DEV_IMAGE",
+        "language": "python",
+        "needsDapr": true,
+        "port": 8080,
+        "pubsubName": "pubsub-dev",
+        "syncMode": "sidecar",
+        "syncPort": 8001,
+        "testCommands": {
+          "contract": "python -m pytest tests/test_workflow_data_activity_migration.py -q"
+        },
+        "workdir": "/app"
+      },
+      "service": "workflow-orchestrator",
+      "source": {
+        "baseBranch": "main",
+        "captureMappings": [
+          {
+            "from": ".contract-fixtures",
+            "to": "services/shared/workflow-data-contract"
+          },
+          {
+            "from": "activities",
+            "to": "services/workflow-orchestrator/activities"
+          },
+          {
+            "from": "app.py",
+            "to": "services/workflow-orchestrator/app.py"
+          },
+          {
+            "from": "core",
+            "to": "services/workflow-orchestrator/core"
+          },
+          {
+            "from": ".preview-capture/production.Dockerfile",
+            "to": "services/workflow-orchestrator/Dockerfile"
+          },
+          {
+            "from": "pyproject.toml",
+            "to": "services/workflow-orchestrator/pyproject.toml"
+          },
+          {
+            "from": "requirements.txt",
+            "to": "services/workflow-orchestrator/requirements.txt"
+          },
+          {
+            "from": "subscriptions",
+            "to": "services/workflow-orchestrator/subscriptions"
+          },
+          {
+            "from": "tests",
+            "to": "services/workflow-orchestrator/tests"
+          },
+          {
+            "from": "uv.lock",
+            "to": "services/workflow-orchestrator/uv.lock"
+          },
+          {
+            "from": "workflows",
+            "to": "services/workflow-orchestrator/workflows"
+          },
+          {
+            "from": ".preview-capture/development.Dockerfile",
+            "to": "skaffold/dev/workflow-orchestrator/Dockerfile.dev"
+          }
+        ],
+        "captureOnly": [
+          {
+            "from": "Dockerfile",
+            "to": ".preview-capture/production.Dockerfile"
+          },
+          {
+            "from": "../../skaffold/dev/workflow-orchestrator/Dockerfile.dev",
+            "to": ".preview-capture/development.Dockerfile"
+          }
+        ],
+        "changedPaths": [
+          ".dockerignore",
+          "services/shared/workflow-data-contract",
+          "services/workflow-orchestrator",
+          "services/workflow-orchestrator/Dockerfile",
+          "services/workflow-orchestrator/activities",
+          "services/workflow-orchestrator/app.py",
+          "services/workflow-orchestrator/core",
+          "services/workflow-orchestrator/pyproject.toml",
+          "services/workflow-orchestrator/requirements.txt",
+          "services/workflow-orchestrator/subscriptions",
+          "services/workflow-orchestrator/tests",
+          "services/workflow-orchestrator/uv.lock",
+          "services/workflow-orchestrator/workflows",
+          "skaffold/dev/workflow-orchestrator/Dockerfile.dev"
+        ],
+        "extraSync": [
+          {
+            "from": "../shared/workflow-data-contract",
+            "to": ".contract-fixtures"
+          }
+        ],
+        "repository": "PittampalliOrg/workflow-builder",
+        "repoSubdir": "services/workflow-orchestrator",
+        "syncPaths": [
+          "app.py",
+          "core",
+          "activities",
+          "workflows",
+          "tests",
+          "subscriptions",
+          "requirements.txt",
+          "pyproject.toml",
+          "uv.lock"
+        ]
+      },
+      "stacksRequirements": {
+        "devImagePin": {
+          "envKey": "WORKFLOW_ORCHESTRATOR_DEV_IMAGE",
+          "image": "ghcr.io/pittampalliorg/workflow-orchestrator-dev",
+          "policy": "digest-or-git-sha",
+          "required": true
+        },
+        "externalRoutes": [],
+        "workloadAdoption": {
+          "daprAppId": "workflow-orchestrator",
+          "deployment": "workflow-orchestrator",
+          "service": "workflow-orchestrator"
+        }
+      }
+    }
+  ],
+  "source": "src/lib/server/workflows/dev-preview-registry.ts"
+}

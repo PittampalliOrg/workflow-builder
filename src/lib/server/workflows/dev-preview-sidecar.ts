@@ -1,15 +1,20 @@
-import { env } from "$env/dynamic/private";
+import { randomUUID } from 'node:crypto';
 import {
+	devPreviewCaptureMappings,
 	devPreviewCommands,
-	resolveDevPreviewDescriptor,
-} from "$lib/server/workflows/dev-preview-registry";
+	resolveDevPreviewDescriptor
+} from '$lib/server/workflows/dev-preview-registry';
+import {
+	resolveDevSyncCredentials,
+	type DevSyncCredentialResolverOptions
+} from '$lib/server/workflows/dev-sync-credentials';
 
 /**
  * B5: host-side helpers for talking to a dev-preview pod's dev-sync-sidecar
  * (`/__status`, `/__run`). The BFF reaches the pod exactly the way the
  * existing `/__export` capture does (dev-preview.ts): direct pod IP + sync
- * port on the cluster pod network, authenticated with the shared
- * WFB_DEV_SYNC_TOKEN (`x-sync-token` header). The pod address comes off the
+ * port on the cluster pod network, authenticated with an execution/service
+ * scoped receiver leaf (`x-sync-token` header). The pod address comes off the
  * persisted workspace-session row's `syncUrl` — never from caller input.
  *
  * Services in `plugin` sync mode (the Vite plugin serves only `/__sync` +
@@ -29,7 +34,11 @@ export type SidecarStatus = {
 
 export type SidecarResult<T> =
 	| { ok: true; data: T }
-	| { ok: false; reason: "no-sidecar" | "unreachable" | "bad-response" | "forbidden"; message?: string };
+	| {
+			ok: false;
+			reason: 'no-sidecar' | 'unreachable' | 'bad-response' | 'forbidden';
+			message?: string;
+	  };
 
 export type SidecarRunOutput = {
 	ok: boolean;
@@ -41,7 +50,7 @@ export type SidecarRunOutput = {
 	/** Where the command ran (#40): "app" = the app container's exec bridge
 	 * (the service's real toolchain), "sidecar" = the node-only sidecar (the
 	 * pre-bridge fallback). null against a sidecar too old to report it. */
-	executedIn: "app" | "sidecar" | null;
+	executedIn: 'app' | 'sidecar' | null;
 };
 
 export type SidecarSyncOutput = {
@@ -55,16 +64,12 @@ const STATUS_TIMEOUT_MS = 3_000;
 const RUN_TIMEOUT_MS = 180_000;
 const SYNC_TIMEOUT_MS = 180_000;
 
-function syncToken(): string {
-	return (env.WFB_DEV_SYNC_TOKEN ?? process.env.WFB_DEV_SYNC_TOKEN ?? "").trim();
-}
-
 /** Derive the sidecar base URL from a persisted row's syncUrl (`http://ip:port/__sync`). */
 export function sidecarBaseUrl(syncUrl: string | null | undefined): string | null {
 	if (!syncUrl) return null;
 	const trimmed = syncUrl.trim();
 	if (!trimmed) return null;
-	return trimmed.replace(/\/__sync\/?$/, "").replace(/\/+$/, "") || null;
+	return trimmed.replace(/\/__sync\/?$/, '').replace(/\/+$/, '') || null;
 }
 
 /** Allowlisted `/__run` command names for a service (registry deps + testCommands).
@@ -80,73 +85,110 @@ export function allowedSidecarCommands(service: string): string[] {
 
 export async function fetchSidecarStatus(input: {
 	syncUrl: string | null | undefined;
+	executionId: string;
+	service: string;
+	credentialOptions?: DevSyncCredentialResolverOptions;
 	fetchImpl?: typeof fetch;
 	timeoutMs?: number;
 }): Promise<SidecarResult<SidecarStatus>> {
 	const base = sidecarBaseUrl(input.syncUrl);
-	if (!base) return { ok: false, reason: "no-sidecar", message: "no sync endpoint recorded" };
+	if (!base)
+		return {
+			ok: false,
+			reason: 'no-sidecar',
+			message: 'no sync endpoint recorded'
+		};
 	const doFetch = input.fetchImpl ?? fetch;
-	const token = syncToken();
+	let token: string;
+	try {
+		token = (
+			await resolveDevSyncCredentials(
+				{
+					executionId: input.executionId,
+					service: input.service
+				},
+				input.credentialOptions
+			)
+		).receiverToken;
+	} catch (err) {
+		return {
+			ok: false,
+			reason: 'forbidden',
+			message: err instanceof Error ? err.message : String(err)
+		};
+	}
 	let response: Response;
 	try {
 		response = await doFetch(`${base}/__status`, {
-			headers: token ? { "x-sync-token": token } : {},
-			signal: AbortSignal.timeout(input.timeoutMs ?? STATUS_TIMEOUT_MS),
+			headers: { 'x-sync-token': token },
+			signal: AbortSignal.timeout(input.timeoutMs ?? STATUS_TIMEOUT_MS)
 		});
 	} catch (err) {
 		return {
 			ok: false,
-			reason: "unreachable",
-			message: err instanceof Error ? err.message : String(err),
+			reason: 'unreachable',
+			message: err instanceof Error ? err.message : String(err)
 		};
 	}
-	if (response.status === 401) return { ok: false, reason: "forbidden", message: "sync token rejected" };
+	if (response.status === 401)
+		return { ok: false, reason: 'forbidden', message: 'sync token rejected' };
 	if (!response.ok) {
-		return { ok: false, reason: "bad-response", message: `HTTP ${response.status}` };
+		return {
+			ok: false,
+			reason: 'bad-response',
+			message: `HTTP ${response.status}`
+		};
 	}
 	try {
 		const body = (await response.json()) as Record<string, unknown>;
-		if (!body || typeof body !== "object") throw new Error("non-object body");
-		if (body.service !== "dev-sync-sidecar") {
+		if (!body || typeof body !== 'object') throw new Error('non-object body');
+		if (body.service !== 'dev-sync-sidecar') {
 			// A plugin-mode dev server answering with app HTML/JSON — not a sidecar.
 			return {
 				ok: false,
-				reason: "no-sidecar",
-				message: "endpoint is not a dev-sync-sidecar (plugin sync mode?)",
+				reason: 'no-sidecar',
+				message: 'endpoint is not a dev-sync-sidecar (plugin sync mode?)'
 			};
 		}
 		return {
 			ok: true,
 			data: {
 				ok: body.ok === true,
-				service: typeof body.service === "string" ? body.service : undefined,
-				dest: typeof body.dest === "string" ? body.dest : undefined,
-				lastSyncAt: typeof body.lastSyncAt === "string" ? body.lastSyncAt : null,
-				lastSyncBytes: typeof body.lastSyncBytes === "number" ? body.lastSyncBytes : null,
+				service: typeof body.service === 'string' ? body.service : undefined,
+				dest: typeof body.dest === 'string' ? body.dest : undefined,
+				lastSyncAt: typeof body.lastSyncAt === 'string' ? body.lastSyncAt : null,
+				lastSyncBytes: typeof body.lastSyncBytes === 'number' ? body.lastSyncBytes : null,
 				lastRun: body.lastRun ?? null,
 				commands: Array.isArray(body.commands)
-					? body.commands.filter((c): c is string => typeof c === "string")
-					: [],
-			},
+					? body.commands.filter((c): c is string => typeof c === 'string')
+					: []
+			}
 		};
 	} catch (err) {
 		return {
 			ok: false,
-			reason: "no-sidecar",
-			message: err instanceof Error ? err.message : String(err),
+			reason: 'no-sidecar',
+			message: err instanceof Error ? err.message : String(err)
 		};
 	}
 }
 
 export async function runSidecarCommand(input: {
 	syncUrl: string | null | undefined;
+	executionId: string;
 	service: string;
 	cmd: string;
+	credentialOptions?: DevSyncCredentialResolverOptions;
 	fetchImpl?: typeof fetch;
 	timeoutMs?: number;
 }): Promise<SidecarResult<SidecarRunOutput>> {
 	const base = sidecarBaseUrl(input.syncUrl);
-	if (!base) return { ok: false, reason: "no-sidecar", message: "no sync endpoint recorded" };
+	if (!base)
+		return {
+			ok: false,
+			reason: 'no-sidecar',
+			message: 'no sync endpoint recorded'
+		};
 	const cmd = input.cmd.trim();
 	// Defense in depth: the sidecar enforces its own DEV_SYNC_COMMANDS_JSON
 	// allowlist, but the BFF refuses anything outside the registry's declared
@@ -155,36 +197,54 @@ export async function runSidecarCommand(input: {
 	if (!allowed.includes(cmd)) {
 		return {
 			ok: false,
-			reason: "forbidden",
-			message: `command '${cmd}' not in allowlist [${allowed.join(", ")}]`,
+			reason: 'forbidden',
+			message: `command '${cmd}' not in allowlist [${allowed.join(', ')}]`
 		};
 	}
 	const doFetch = input.fetchImpl ?? fetch;
-	const token = syncToken();
+	let token: string;
+	try {
+		token = (
+			await resolveDevSyncCredentials(
+				{
+					executionId: input.executionId,
+					service: input.service
+				},
+				input.credentialOptions
+			)
+		).receiverToken;
+	} catch (err) {
+		return {
+			ok: false,
+			reason: 'forbidden',
+			message: err instanceof Error ? err.message : String(err)
+		};
+	}
 	let response: Response;
 	try {
 		response = await doFetch(`${base}/__run?cmd=${encodeURIComponent(cmd)}`, {
-			method: "POST",
-			headers: token ? { "x-sync-token": token } : {},
-			signal: AbortSignal.timeout(input.timeoutMs ?? RUN_TIMEOUT_MS),
+			method: 'POST',
+			headers: { 'x-sync-token': token },
+			signal: AbortSignal.timeout(input.timeoutMs ?? RUN_TIMEOUT_MS)
 		});
 	} catch (err) {
 		return {
 			ok: false,
-			reason: "unreachable",
-			message: err instanceof Error ? err.message : String(err),
+			reason: 'unreachable',
+			message: err instanceof Error ? err.message : String(err)
 		};
 	}
-	if (response.status === 401) return { ok: false, reason: "forbidden", message: "sync token rejected" };
+	if (response.status === 401)
+		return { ok: false, reason: 'forbidden', message: 'sync token rejected' };
 	let body: Record<string, unknown>;
 	try {
 		body = (await response.json()) as Record<string, unknown>;
-		if (!body || typeof body !== "object") throw new Error("non-object body");
+		if (!body || typeof body !== 'object') throw new Error('non-object body');
 	} catch (err) {
 		return {
 			ok: false,
-			reason: "bad-response",
-			message: err instanceof Error ? err.message : String(err),
+			reason: 'bad-response',
+			message: err instanceof Error ? err.message : String(err)
 		};
 	}
 	// The sidecar 404s unknown commands with { ok:false, allowed:[...] } and
@@ -194,61 +254,93 @@ export async function runSidecarCommand(input: {
 		data: {
 			ok: body.ok === true,
 			cmd,
-			exitCode: typeof body.exitCode === "number" ? body.exitCode : null,
-			durationMs: typeof body.durationMs === "number" ? body.durationMs : null,
+			exitCode: typeof body.exitCode === 'number' ? body.exitCode : null,
+			durationMs: typeof body.durationMs === 'number' ? body.durationMs : null,
 			truncated: body.truncated === true,
 			output:
-				typeof body.output === "string"
+				typeof body.output === 'string'
 					? body.output
-					: typeof body.error === "string"
+					: typeof body.error === 'string'
 						? body.error
-						: "",
+						: '',
 			executedIn:
-				body.executedIn === "app" || body.executedIn === "sidecar"
-					? body.executedIn
-					: null,
-		},
+				body.executedIn === 'app' || body.executedIn === 'sidecar' ? body.executedIn : null
+		}
 	};
 }
 
 export async function syncDevPreviewSource(input: {
 	syncUrl: string | null | undefined;
+	executionId: string;
+	service: string;
 	archive: ArrayBuffer | Uint8Array;
+	credentialOptions?: DevSyncCredentialResolverOptions;
 	contentType?: string | null;
 	fetchImpl?: typeof fetch;
 	timeoutMs?: number;
 }): Promise<SidecarResult<SidecarSyncOutput>> {
 	const syncUrl = input.syncUrl?.trim();
-	if (!syncUrl) return { ok: false, reason: "no-sidecar", message: "no sync endpoint recorded" };
-	const archive = input.archive instanceof Uint8Array ? input.archive : new Uint8Array(input.archive);
+	if (!syncUrl)
+		return {
+			ok: false,
+			reason: 'no-sidecar',
+			message: 'no sync endpoint recorded'
+		};
+	const archive =
+		input.archive instanceof Uint8Array ? input.archive : new Uint8Array(input.archive);
 	const archiveBody = toArrayBuffer(archive);
 	const doFetch = input.fetchImpl ?? fetch;
-	const token = syncToken();
+	let token: string;
+	try {
+		token = (
+			await resolveDevSyncCredentials(
+				{
+					executionId: input.executionId,
+					service: input.service
+				},
+				input.credentialOptions
+			)
+		).receiverToken;
+	} catch (err) {
+		return {
+			ok: false,
+			reason: 'forbidden',
+			message: err instanceof Error ? err.message : String(err)
+		};
+	}
+	const descriptor = resolveDevPreviewDescriptor(input.service);
+	const roots = [
+		...new Set(devPreviewCaptureMappings(descriptor).map((mapping) => mapping.from))
+	].sort();
 	let response: Response;
 	try {
 		response = await doFetch(syncUrl, {
-			method: "POST",
+			method: 'POST',
 			headers: {
-				"content-type": input.contentType?.trim() || "application/gzip",
-				...(token ? { "x-sync-token": token } : {}),
+				'content-type': input.contentType?.trim() || 'application/gzip',
+				'x-sync-generation': randomUUID(),
+				'x-sync-service': descriptor.service,
+				'x-sync-roots': JSON.stringify(roots),
+				'x-sync-token': token
 			},
 			body: new Blob([archiveBody]),
-			signal: AbortSignal.timeout(input.timeoutMs ?? SYNC_TIMEOUT_MS),
+			signal: AbortSignal.timeout(input.timeoutMs ?? SYNC_TIMEOUT_MS)
 		});
 	} catch (err) {
 		return {
 			ok: false,
-			reason: "unreachable",
-			message: err instanceof Error ? err.message : String(err),
+			reason: 'unreachable',
+			message: err instanceof Error ? err.message : String(err)
 		};
 	}
-	if (response.status === 401) return { ok: false, reason: "forbidden", message: "sync token rejected" };
+	if (response.status === 401)
+		return { ok: false, reason: 'forbidden', message: 'sync token rejected' };
 	const body = await parseSyncResponse(response);
 	if (!response.ok) {
 		return {
 			ok: false,
-			reason: "bad-response",
-			message: `HTTP ${response.status}${typeof body === "string" && body ? `: ${body}` : ""}`,
+			reason: 'bad-response',
+			message: `HTTP ${response.status}${typeof body === 'string' && body ? `: ${body}` : ''}`
 		};
 	}
 	return {
@@ -257,15 +349,15 @@ export async function syncDevPreviewSource(input: {
 			ok: true,
 			status: response.status,
 			bytes: archive.byteLength,
-			body,
-		},
+			body
+		}
 	};
 }
 
 async function parseSyncResponse(response: Response): Promise<unknown> {
-	const contentType = response.headers.get("content-type") ?? "";
+	const contentType = response.headers.get('content-type') ?? '';
 	try {
-		if (contentType.includes("application/json")) return await response.json();
+		if (contentType.includes('application/json')) return await response.json();
 		const text = await response.text();
 		return text.length > 2_000 ? `${text.slice(0, 2_000)}...` : text;
 	} catch (err) {
