@@ -297,8 +297,26 @@ export async function spawnSessionWorkflow(
 	// A lead opts into the team tools per-agent via agentConfig.teamsEnabled.
 	const teamsEnabled =
 		(resolvedAgentConfig as { teamsEnabled?: boolean }).teamsEnabled === true;
+	// The Codex-"ultra" policy dial: teamMode 'proactive' injects ONE system
+	// fragment flipping the default only-when-asked posture — deliberately
+	// prompt-text-only (mirrors Codex's MultiAgentMode developer message).
+	// Leads only; teammates never inherit it (a worker proactively spawning
+	// siblings would be chaos even without the depth guard).
+	const teamModeFragment =
+		teamsEnabled &&
+		!isTeammate &&
+		(resolvedAgentConfig as { teamMode?: string }).teamMode === "proactive"
+			? "\n\n# Proactive team delegation\nProactive team delegation is active. Spawn teammates (spawn_teammate) and seed the shared task list (create_task) whenever parallel work would materially improve speed or quality — you do not need the user to ask. Keep teammate prompts self-contained, prefer 2-4 teammates, and use wait_teammates plus teammate idle messages to integrate results."
+			: "";
 	const agentConfigForDispatch = {
 		...resolvedAgentConfig,
+		...(teamModeFragment
+			? {
+					systemPrompt: `${
+						(resolvedAgentConfig as { systemPrompt?: string }).systemPrompt ?? ""
+					}${teamModeFragment}`.trim(),
+				}
+			: {}),
 		mcpServers: stampTeamMcpHeaders(
 			stampGoalMcpSessionHeader(
 				ensureGoalMcpServer(

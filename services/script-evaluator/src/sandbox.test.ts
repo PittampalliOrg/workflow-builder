@@ -599,3 +599,144 @@ describe("/validate", () => {
 		expect(res.ok).toBe(true);
 	});
 });
+
+// ── team.* — script-led Agent Teams ──────────────────────────────────────────
+
+function tcid(op: string, args: Record<string, unknown>, occ = 0): string {
+	return deriveCallId(
+		computeBaseHash("team:" + op, workflowSemanticOpts(args)),
+		occ,
+	);
+}
+
+describe("team.* primitives", () => {
+	it("team.spawn produces a team task with teamOp + canonical args", async () => {
+		const res = await evaluateScript(
+			req(
+				META +
+					"const a = await team.spawn({ name: 'researcher', agent: 'glm', prompt: 'dig' }); return { a }",
+			),
+		);
+		expect(res.status).toBe("need");
+		expect(res.tasks).toHaveLength(1);
+		const task = res.tasks[0];
+		expect(task.kind).toBe("team");
+		expect(task.teamOp).toBe("spawn");
+		expect(task.args).toEqual({ name: "researcher", agent: "glm", prompt: "dig" });
+		expect(task.callId).toBe(
+			tcid("spawn", { name: "researcher", agent: "glm", prompt: "dig" }),
+		);
+	});
+
+	it("journaled done resolves; journaled error THROWS its message (catchable)", async () => {
+		const spawnId = tcid("spawn", { name: "r", agent: "glm", prompt: "p" });
+		const ok = await evaluateScript({
+			...req(
+				META +
+					"const a = await team.spawn({ name: 'r', agent: 'glm', prompt: 'p' }); return { got: a }",
+			),
+			completedResults: {
+				[spawnId]: { status: "done", value: { ok: true, name: "r", sessionId: "s1" } },
+			},
+			knownCallIds: [spawnId],
+		});
+		expect(ok.status).toBe("done");
+		expect(ok.returnValue).toEqual({ got: { ok: true, name: "r", sessionId: "s1" } });
+
+		const caught = await evaluateScript({
+			...req(
+				META +
+					"try { await team.spawn({ name: 'r', agent: 'glm', prompt: 'p' }); return { ok: true } } catch (e) { return { caught: e.message } }",
+			),
+			completedResults: {
+				[spawnId]: {
+					status: "error",
+					value: { message: "no agent 'glm' in this project" },
+					errorCode: "team_op_error",
+				},
+			},
+			knownCallIds: [spawnId],
+		});
+		expect(caught.status).toBe("done");
+		expect(caught.returnValue).toEqual({ caught: "no agent 'glm' in this project" });
+	});
+
+	it("repeated team.status() calls get distinct occurrences", async () => {
+		const s0 = tcid("status", {}, 0);
+		const res = await evaluateScript({
+			...req(
+				META +
+					"const a = await team.status(); const b = await team.status(); return { a, b }",
+			),
+			completedResults: { [s0]: { status: "done", value: { members: [] } } },
+			knownCallIds: [s0],
+		});
+		expect(res.status).toBe("need");
+		expect(res.tasks.map((t) => t.callId)).toEqual([tcid("status", {}, 1)]);
+	});
+
+	it("nested scripts cannot use team.*", async () => {
+		const res = await evaluateScript({
+			...req(META + "await team.broadcast('hi'); return 1"),
+			nested: true,
+		});
+		expect(res.status).toBe("script_error");
+		expect(res.error?.message).toContain("not available in nested");
+	});
+
+	it("arg validation throws deterministic TypeErrors before hashing", async () => {
+		const bad = await evaluateScript(
+			req(META + "await team.spawn({ name: 'a@b', agent: 'x', prompt: 'p' }); return 1"),
+		);
+		expect(bad.status).toBe("script_error");
+		expect(bad.error?.message).toContain("must not contain '@'");
+
+		const longName = await evaluateScript(
+			req(META + `await team.spawn({ name: '${"x".repeat(40)}', agent: 'x', prompt: 'p' }); return 1`),
+		);
+		expect(longName.status).toBe("script_error");
+		expect(longName.error?.message).toContain("exceeds 32 chars");
+
+		const badJoin = await evaluateScript(
+			req(META + "await team.join({ until: 'whenever' }); return 1"),
+		);
+		expect(badJoin.status).toBe("script_error");
+		expect(badJoin.error?.message).toContain("tasks-complete");
+	});
+
+	it("join timeout RESOLVES with the snapshot (never throws)", async () => {
+		const joinId = tcid("join", { until: "tasks-complete" });
+		const res = await evaluateScript({
+			...req(
+				META +
+					"const j = await team.join({ until: 'tasks-complete' }); return { timedOut: j.timedOut }",
+			),
+			completedResults: {
+				[joinId]: {
+					status: "done",
+					value: { members: [], tasks: [], satisfied: false, timedOut: true },
+				},
+			},
+			knownCallIds: [joinId],
+		});
+		expect(res.status).toBe("done");
+		expect(res.returnValue).toEqual({ timedOut: true });
+	});
+
+	it("validate counts team.spawn toward estimatedAgentCalls", async () => {
+		const out = await validateScript(
+			META +
+				"await team.spawn({name:'a',agent:'x',prompt:'p'}); await team.spawn({name:'b',agent:'x',prompt:'p'}); const c = await agent('one'); return c",
+		);
+		expect(out.ok).toBe(true);
+		expect(out.estimatedAgentCalls).toBe(3);
+	});
+
+	it("forgotten-await guard names team()", async () => {
+		const res = await evaluateScript(
+			req(META + "team.broadcast('hi'); return { done: true }"),
+		);
+		expect(res.status).toBe("script_error");
+		expect(res.error?.message).toContain("await");
+	});
+});

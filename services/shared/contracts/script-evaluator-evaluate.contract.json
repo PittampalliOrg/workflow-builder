@@ -1,96 +1,167 @@
 {
-  "$comment": "SSOT contract for the script-evaluator /evaluate exchange. Consumed by services/script-evaluator vitest suite and services/workflow-orchestrator pytest suite. Version bumps require updating BOTH suites. callId derivation is FROZEN by this contract: baseHash = sha256(prompt + '\\u0000' + canonicalJSON(semanticOpts)) hex; semanticOpts = {schema, model, effort, isolation, agentType, label} with undefined/null keys OMITTED and remaining keys sorted lexicographically at every nesting level (canonicalJSON); callId = baseHash[:40] + '_' + occurrence where occurrence is the per-baseHash encounter counter (0-based) in script issue order.",
-  "contractVersion": "1.1.0",
-  "evaluatorVersion": "1.1.0",
-  "limits": {
-    "maxScriptBytes": 262144,
-    "maxItemsPerCall": 4096,
-    "maxTasksPerResponse": 4096,
-    "evalDeadlineMs": 10000
-  },
-  "request": {
-    "script": "export const meta = { name: 'demo', description: 'demo', phases: [{ title: 'A' }] }\nphase('A')\nlog('starting')\nconst a = await agent('say hi', { label: 'hi' })\nreturn { a }",
-    "scriptSha256": "<sha256 of script, hex>",
-    "meta": { "name": "demo", "description": "demo", "phases": [{ "title": "A" }] },
-    "args": { "topic": "hello" },
-    "nested": false,
-    "budget": { "total": 500000, "spent": 0, "exhausted": false, "lifetimeExceeded": false },
-    "completedResults": {
-      "<callId>": { "status": "done", "value": "hi there", "errorCode": null }
-    },
-    "knownCallIds": ["<callId>"],
-    "seenLogCount": 0,
-    "limits": { "maxItemsPerCall": 4096 }
-  },
-  "completedResultStatuses": ["done", "null", "error", "skipped"],
-  "completedResultSemantics": {
-    "done": "agent() resolves with value (string, or parsed object when the call had opts.schema)",
-    "null": "agent() resolves with null (child death/cancel/timeout)",
-    "skipped": "agent() resolves with null (user skip via script.call.control)",
-    "error": "agent() resolves with null; errorCode may be error_max_structured_output_retries"
-  },
-  "workflowCompletedResultSemantics": {
-    "$comment": "kind='workflow' calls diverge from agent() on failure (Workflow-tool contract: workflow() THROWS so authors can try/catch).",
-    "done": "workflow() resolves with value (the child run's returnValue)",
-    "skipped": "workflow() resolves with null (user skip)",
-    "error": "workflow() THROWS Error(value.message ?? errorCode) into the script; errorCode is workflow_child_error (unresolvable ref / child script_error / child failure)",
-    "null": "workflow() THROWS (legacy rows without a message throw 'workflow() child failed')"
-  },
-  "argsSemantics": {
-    "$comment": "request.args is the script's VERBATIM input — any JSON value (object, array, string, number, bool, null). KEY-ABSENCE is meaningful: when the request has no args key, the script's `args` global is undefined (Workflow-tool parity). The same applies to a kind='workflow' task's args field: omitted when the parent passed nothing."
-  },
-  "response": {
-    "need": {
-      "status": "need",
-      "tasks": [
-        {
-          "callId": "<40 hex>_0",
-          "kind": "agent",
-          "prompt": "say hi",
-          "opts": { "label": "hi", "phase": "A", "schema": null, "model": null, "effort": null, "isolation": null, "agentType": null },
-          "baseHash": "<64 hex>",
-          "occurrence": 0
-        }
-      ],
-      "returnValue": null,
-      "error": null,
-      "phases": { "declared": ["A"], "current": "A" },
-      "newLogs": ["starting"],
-      "logCount": 1,
-      "counts": { "totalCallsSeen": 1 },
-      "evaluatorVersion": "1.1.0"
-    },
-    "done": {
-      "status": "done",
-      "tasks": [],
-      "returnValue": { "a": "hi there" },
-      "error": null,
-      "phases": { "declared": ["A"], "current": "A" },
-      "newLogs": [],
-      "logCount": 1,
-      "counts": { "totalCallsSeen": 1 },
-      "evaluatorVersion": "1.1.0"
-    },
-    "script_error": {
-      "status": "script_error",
-      "tasks": [],
-      "returnValue": null,
-      "error": { "message": "<message>", "stack": "<stack or null>" },
-      "phases": { "declared": [], "current": null },
-      "newLogs": [],
-      "logCount": 0,
-      "counts": { "totalCallsSeen": 0 },
-      "evaluatorVersion": "1.1.0"
-    }
-  },
-  "responseRules": [
-    "tasks MUST exclude every callId present in request.knownCallIds",
-    "newLogs MUST contain only log() lines with index >= request.seenLogCount; logCount is the total emitted so far",
-    "phases.current is the LAST phase() invoked before quiescence, or null if none",
-    "when budget.exhausted or budget.lifetimeExceeded, every UNRESOLVED agent()/workflow() call must observe a synchronously thrown BudgetExhaustedError/AgentLimitError; resolved (journaled) calls still resolve from completedResults",
-    "workflow() when request.nested=true must observe a thrown Error('workflow() nesting is one level only')",
-    "kind='workflow' tasks carry prompt='' and opts.schema=null; their spec is {callId, kind, workflowRef, args} — workflowRef/args appear in place of prompt/opts.label",
-    "a 4xx response (script_too_large, banned_api, invalid_meta) is NON-retryable; 5xx is retryable"
-  ],
-  "banned": ["Date.now", "Math.random", "new Date() with zero args", "setTimeout/setInterval", "import", "require", "process", "fetch"]
+	"$comment": "SSOT contract for the script-evaluator /evaluate exchange. Consumed by services/script-evaluator vitest suite and services/workflow-orchestrator pytest suite. Version bumps require updating BOTH suites. callId derivation is FROZEN by this contract: baseHash = sha256(prompt + '\\u0000' + canonicalJSON(semanticOpts)) hex; semanticOpts = {schema, model, effort, isolation, agentType, label} with undefined/null keys OMITTED and remaining keys sorted lexicographically at every nesting level (canonicalJSON); callId = baseHash[:40] + '_' + occurrence where occurrence is the per-baseHash encounter counter (0-based) in script issue order.",
+	"contractVersion": "1.1.0",
+	"evaluatorVersion": "1.2.0",
+	"limits": {
+		"maxScriptBytes": 262144,
+		"maxItemsPerCall": 4096,
+		"maxTasksPerResponse": 4096,
+		"evalDeadlineMs": 10000
+	},
+	"request": {
+		"script": "export const meta = { name: 'demo', description: 'demo', phases: [{ title: 'A' }] }\nphase('A')\nlog('starting')\nconst a = await agent('say hi', { label: 'hi' })\nreturn { a }",
+		"scriptSha256": "<sha256 of script, hex>",
+		"meta": {
+			"name": "demo",
+			"description": "demo",
+			"phases": [
+				{
+					"title": "A"
+				}
+			]
+		},
+		"args": {
+			"topic": "hello"
+		},
+		"nested": false,
+		"budget": {
+			"total": 500000,
+			"spent": 0,
+			"exhausted": false,
+			"lifetimeExceeded": false
+		},
+		"completedResults": {
+			"<callId>": {
+				"status": "done",
+				"value": "hi there",
+				"errorCode": null
+			}
+		},
+		"knownCallIds": [
+			"<callId>"
+		],
+		"seenLogCount": 0,
+		"limits": {
+			"maxItemsPerCall": 4096
+		}
+	},
+	"completedResultStatuses": [
+		"done",
+		"null",
+		"error",
+		"skipped"
+	],
+	"completedResultSemantics": {
+		"done": "agent() resolves with value (string, or parsed object when the call had opts.schema)",
+		"null": "agent() resolves with null (child death/cancel/timeout)",
+		"skipped": "agent() resolves with null (user skip via script.call.control)",
+		"error": "agent() resolves with null; errorCode may be error_max_structured_output_retries"
+	},
+	"workflowCompletedResultSemantics": {
+		"$comment": "kind='workflow' calls diverge from agent() on failure (Workflow-tool contract: workflow() THROWS so authors can try/catch).",
+		"done": "workflow() resolves with value (the child run's returnValue)",
+		"skipped": "workflow() resolves with null (user skip)",
+		"error": "workflow() THROWS Error(value.message ?? errorCode) into the script; errorCode is workflow_child_error (unresolvable ref / child script_error / child failure)",
+		"null": "workflow() THROWS (legacy rows without a message throw 'workflow() child failed')"
+	},
+	"argsSemantics": {
+		"$comment": "request.args is the script's VERBATIM input \u2014 any JSON value (object, array, string, number, bool, null). KEY-ABSENCE is meaningful: when the request has no args key, the script's `args` global is undefined (Workflow-tool parity). The same applies to a kind='workflow' task's args field: omitted when the parent passed nothing."
+	},
+	"response": {
+		"need": {
+			"status": "need",
+			"tasks": [
+				{
+					"callId": "<40 hex>_0",
+					"kind": "agent",
+					"prompt": "say hi",
+					"opts": {
+						"label": "hi",
+						"phase": "A",
+						"schema": null,
+						"model": null,
+						"effort": null,
+						"isolation": null,
+						"agentType": null
+					},
+					"baseHash": "<64 hex>",
+					"occurrence": 0
+				}
+			],
+			"returnValue": null,
+			"error": null,
+			"phases": {
+				"declared": [
+					"A"
+				],
+				"current": "A"
+			},
+			"newLogs": [
+				"starting"
+			],
+			"logCount": 1,
+			"counts": {
+				"totalCallsSeen": 1
+			},
+			"evaluatorVersion": "1.2.0"
+		},
+		"done": {
+			"status": "done",
+			"tasks": [],
+			"returnValue": {
+				"a": "hi there"
+			},
+			"error": null,
+			"phases": {
+				"declared": [
+					"A"
+				],
+				"current": "A"
+			},
+			"newLogs": [],
+			"logCount": 1,
+			"counts": {
+				"totalCallsSeen": 1
+			},
+			"evaluatorVersion": "1.2.0"
+		},
+		"script_error": {
+			"status": "script_error",
+			"tasks": [],
+			"returnValue": null,
+			"error": {
+				"message": "<message>",
+				"stack": "<stack or null>"
+			},
+			"phases": {
+				"declared": [],
+				"current": null
+			},
+			"newLogs": [],
+			"logCount": 0,
+			"counts": {
+				"totalCallsSeen": 0
+			},
+			"evaluatorVersion": "1.2.0"
+		}
+	},
+	"responseRules": [
+		"tasks MUST exclude every callId present in request.knownCallIds",
+		"newLogs MUST contain only log() lines with index >= request.seenLogCount; logCount is the total emitted so far",
+		"phases.current is the LAST phase() invoked before quiescence, or null if none",
+		"when budget.exhausted or budget.lifetimeExceeded, every UNRESOLVED agent()/workflow() call must observe a synchronously thrown BudgetExhaustedError/AgentLimitError; resolved (journaled) calls still resolve from completedResults",
+		"workflow() when request.nested=true must observe a thrown Error('workflow() nesting is one level only')",
+		"kind='workflow' tasks carry prompt='' and opts.schema=null; their spec is {callId, kind, workflowRef, args} \u2014 workflowRef/args appear in place of prompt/opts.label",
+		"a 4xx response (script_too_large, banned_api, invalid_meta) is NON-retryable; 5xx is retryable"
+	],
+	"banned": [
+		"Date.now",
+		"Math.random",
+		"new Date() with zero args",
+		"setTimeout/setInterval",
+		"import",
+		"require",
+		"process",
+		"fetch"
+	]
 }

@@ -38,6 +38,17 @@ export async function ensureTeamRunExecution(
 	const existing = await s.getTeamExecutionId(input.teamId);
 	if (existing) return existing;
 
+	// ADOPTION: a lead that already belongs to an execution (a dynamic-script
+	// run's anchor lead, or any session spawned under a run) makes THAT run the
+	// team's container — teammates roll up under it and no synthetic execution
+	// is created. The synthetic "Agent Team Runs" workflow below is only for
+	// free-standing interactive leads.
+	const leadExecution = await s.getSessionExecutionId(input.leadSessionId);
+	if (leadExecution) {
+		await s.setTeamExecutionId(input.teamId, leadExecution);
+		return leadExecution;
+	}
+
 	// The run owner is the lead session's user.
 	const userId = await s.getSessionUserId(input.leadSessionId);
 	if (!userId) throw new Error(`lead session ${input.leadSessionId} has no user`);

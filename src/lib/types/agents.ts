@@ -105,6 +105,15 @@ export type AgentConfig = {
 	teamsEnabled?: boolean;
 
 	/**
+	 * How eagerly a teams-enabled lead forms teams (the Codex-"ultra" policy
+	 * dial): 'explicit' (default) = only when the user asks for a team;
+	 * 'proactive' = a system-prompt fragment tells the lead to spawn teammates
+	 * and seed the shared task list whenever parallel work would materially
+	 * improve speed or quality. Meaningful only alongside teamsEnabled.
+	 */
+	teamMode?: "explicit" | "proactive";
+
+	/**
 	 * Version-pinned references to Prompt Workbench preset versions whose system
 	 * text gets rendered into the static prefix BEFORE persona. Resolved by the
 	 * BFF at session-spawn time via `compilePromptStack()` and stamped onto

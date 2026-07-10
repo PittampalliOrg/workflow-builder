@@ -338,6 +338,73 @@ export function registerTeamTools(
 	);
 	tools.push({ name: "update_task", description: "Mark a task completed" });
 
+	// ── wait_teammates ──────────────────────────────────────
+	// Codex `wait_agent` parity, bounded: a SHORT synchronous join for leads
+	// (async waiting stays push-based — idle notices arrive as messages). The
+	// predicates mirror team_join_workflow_v1 in the orchestrator (keep the two
+	// 6-line implementations in sync).
+	reg(
+		"wait_teammates",
+		{
+			title: "Wait For Teammates",
+			description:
+				"Block briefly (<=120s) until the team quiesces: until='tasks-complete' (every task done) or 'all-idle' (no teammate actively working). Returns {satisfied, timedOut, members, tasks}. For long waits rely on teammate idle messages instead.",
+			inputSchema: {
+				until: z
+					.enum(["tasks-complete", "all-idle"])
+					.optional()
+					.describe("Quiescence predicate (default tasks-complete)."),
+				timeoutSeconds: z
+					.number()
+					.optional()
+					.describe("Max seconds to wait, 5–120 (default 60)."),
+			},
+		},
+		async (args: { until?: "tasks-complete" | "all-idle"; timeoutSeconds?: number }) => {
+			const ctx = requireCtx();
+			if ("error" in ctx) return ctx.error;
+			const until = args.until ?? "tasks-complete";
+			const timeoutSeconds = Math.min(120, Math.max(5, args.timeoutSeconds ?? 60));
+			const deadline = Date.now() + timeoutSeconds * 1000;
+			const QUIESCENT = new Set(["idle", "suspended", "shutdown", "failed"]);
+			try {
+				for (;;) {
+					const [members, tasks] = await Promise.all([
+						listMembers(ctx.teamId),
+						listTasks(ctx.teamId),
+					]);
+					const workers = members.filter((m) => m.role !== "lead");
+					const satisfied =
+						until === "all-idle"
+							? workers.length > 0 &&
+								workers.every((m) => QUIESCENT.has(String(m.status ?? "")))
+							: tasks.length > 0 && tasks.every((t) => t.status === "completed");
+					if (satisfied || Date.now() >= deadline) {
+						return textResult({
+							satisfied,
+							timedOut: !satisfied,
+							until,
+							members: members.map((m) => ({
+								name: m.name,
+								role: m.role,
+								status: m.status,
+							})),
+							tasks: tasks.map((t) => ({
+								id: t.id,
+								title: t.title,
+								status: t.status,
+							})),
+						});
+					}
+					await new Promise((resolve) => setTimeout(resolve, 5_000));
+				}
+			} catch (err) {
+				return errorResult(`Failed to wait for teammates: ${err}`);
+			}
+		},
+	);
+	tools.push({ name: "wait_teammates", description: "Bounded wait for team quiescence" });
+
 	// ── shutdown_teammate (lead only) ───────────────────────
 	if (includeLeadTools) {
 	reg(
@@ -369,7 +436,6 @@ export function registerTeamTools(
 	}
 
 	// Reference so the imported helper is used even before the driver lands.
-	void listTasks;
 	void getTeam;
 
 	return tools;

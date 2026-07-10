@@ -28,6 +28,7 @@ import dapr.ext.workflow as wf
 
 from activities.spawn_session import spawn_session_for_workflow
 from activities.resolve_script_workflow import resolve_script_workflow
+from activities.team_ops import execute_team_op
 
 # Reuse the ground-truth helpers so dispatch identity + child-workflow plumbing
 # stay byte-compatible with the SW interpreter (avoids churn / drift).
@@ -41,6 +42,10 @@ logger = logging.getLogger(__name__)
 
 DYNAMIC_SCRIPT_WORKFLOW_NAME = "dynamic_script_workflow_v1"
 SESSION_WORKFLOW_NAME = "session_workflow"
+TEAM_JOIN_WORKFLOW_NAME = "team_join_workflow_v1"
+
+#: Ops execute_team_op understands; anything else is a dispatchError.
+_TEAM_OPS = {"spawn", "task", "send", "broadcast", "status", "shutdown"}
 
 
 def _sanitize_id_component(value: str) -> str:
@@ -452,6 +457,66 @@ def _start_script_call(
         input=_freeze(child_input),
         instance_id=child_instance_id,
         app_id=bridge_app_id,
+    )
+
+
+def start_team_call(
+    ctx: wf.DaprWorkflowContext,
+    *,
+    call_id: str,
+    spec: dict[str, Any],
+    exec_id: str,
+    meta: dict[str, Any] | None,
+    otel: Any,
+):
+    """Dispatch one script `team.*` call. NON-generator (no activities yielded
+    here — determinism lives in what we schedule):
+
+      • op 'join'      -> an un-awaited ``team_join_workflow_v1`` CHILD task
+        (poll/timer loop isolated in the child's history) with the standard
+        ``script_child_instance_id`` so run-detail lineage keeps working.
+      • any other op   -> an un-awaited ``execute_team_op`` ACTIVITY task —
+        activity Tasks multiplex through the pump's ``when_any`` exactly like
+        child-workflow Tasks.
+
+    Returns the un-awaited Task, or {"dispatchError": ...} for unknown ops
+    (journals as an error the script can catch). Team ops bypass
+    prepare_script_call entirely — no session provisioning or runtime
+    resolution applies.
+    """
+    team_op = str(spec.get("teamOp") or "").strip()
+    args = spec.get("args") if isinstance(spec.get("args"), dict) else {}
+    team_name = str((meta or {}).get("name") or "") or None
+
+    if team_op == "join":
+        child_instance_id = script_child_instance_id(ctx.instance_id, call_id, 0)
+        return ctx.call_child_workflow(
+            TEAM_JOIN_WORKFLOW_NAME,
+            input=_freeze(
+                {
+                    "executionId": exec_id,
+                    "until": args.get("until") or "tasks-complete",
+                    "timeoutMinutes": args.get("timeoutMinutes"),
+                    "_otel": otel,
+                }
+            ),
+            instance_id=child_instance_id,
+        )
+
+    if team_op not in _TEAM_OPS:
+        return {"dispatchError": f"unknown team op '{team_op}'"}
+
+    return ctx.call_activity(
+        execute_team_op,
+        input=_freeze(
+            {
+                "executionId": exec_id,
+                "op": team_op,
+                "args": args,
+                "teamName": team_name,
+                "_otel": otel,
+            }
+        ),
     )
 
 
