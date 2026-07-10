@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, lte, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
 import { sessionEvents } from "$lib/server/db/schema";
 import { aggregateBenchmarkSessionTimings } from "$lib/server/application/adapters/benchmark-timings";
@@ -269,6 +269,78 @@ export async function countEventsByType(
 		.from(sessionEvents)
 		.where(and(eq(sessionEvents.sessionId, sessionId), eq(sessionEvents.type, type)));
 	return Number(row?.count ?? 0);
+}
+
+/** Row shape returned by the team-event claim: just enough to raise + unclaim. */
+export type ClaimedSessionEvent = {
+	id: string;
+	sequence: number;
+	data: Record<string, unknown>;
+};
+
+/**
+ * Atomically claim unraised TEAM-ORIGIN user events for a session, oldest
+ * first. `processed_at` is the "raised into the live workflow" marker, OWNED
+ * EXCLUSIVELY by the team delivery path (src/lib/server/teams/team-delivery.ts):
+ * no other raiser sets it, and the claim is scoped to team-origin events only —
+ * widening the WHERE to all `user.%` would re-raise turns that the goal loop or
+ * the UI events route already delivered inline (raised batches are NOT deduped
+ * runtime-side; each raise = an agent turn).
+ *
+ * The single guarded UPDATE ... RETURNING is the race-safety: two concurrent
+ * deliveries (JetStream redelivery, broadcast + nudge) can never claim the same
+ * row — the loser sees an empty result and treats the message as delivered.
+ */
+export async function claimUnraisedTeamEvents(
+	sessionId: string,
+	database: Database = defaultDb,
+): Promise<ClaimedSessionEvent[]> {
+	database = requireDb(database);
+	const rows = await database
+		.update(sessionEvents)
+		.set({ processedAt: sql`now()` })
+		.where(
+			and(
+				eq(sessionEvents.sessionId, sessionId),
+				isNull(sessionEvents.processedAt),
+				eq(sessionEvents.type, "user.message"),
+				sql`${sessionEvents.data}->>'origin' IN ('teammate-message', 'team-broadcast', 'team-idle')`,
+			),
+		)
+		.returning({
+			id: sessionEvents.id,
+			sequence: sessionEvents.sequence,
+			data: sessionEvents.data,
+		});
+	return rows
+		.map((r) => ({
+			id: String(r.id),
+			sequence: Number(r.sequence),
+			data: (r.data ?? {}) as Record<string, unknown>,
+		}))
+		.sort((a, b) => a.sequence - b.sequence);
+}
+
+/**
+ * Roll back a claim after a failed raise so JetStream redelivery re-flushes the
+ * same rows. Only ever called with ids returned by claimUnraisedTeamEvents.
+ */
+export async function unclaimSessionEvents(
+	sessionId: string,
+	ids: string[],
+	database: Database = defaultDb,
+): Promise<void> {
+	if (ids.length === 0) return;
+	database = requireDb(database);
+	await database
+		.update(sessionEvents)
+		.set({ processedAt: null })
+		.where(
+			and(
+				eq(sessionEvents.sessionId, sessionId),
+				inArray(sessionEvents.id, ids),
+			),
+		);
 }
 
 /**
@@ -648,5 +720,13 @@ export class PostgresSessionEventLog implements SessionEventLog {
 		input: ListSessionEventsInput = {},
 	): Promise<SessionEventEnvelope[]> {
 		return listEvents(sessionId, input, this.database);
+	}
+
+	claimUnraisedTeamEvents(sessionId: string): Promise<ClaimedSessionEvent[]> {
+		return claimUnraisedTeamEvents(sessionId, this.database);
+	}
+
+	unclaimSessionEvents(sessionId: string, ids: string[]): Promise<void> {
+		return unclaimSessionEvents(sessionId, ids, this.database);
 	}
 }

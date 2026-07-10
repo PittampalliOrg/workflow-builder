@@ -1263,6 +1263,64 @@ export async function deleteSandbox(
 }
 
 /**
+ * Suspend/resume a per-session Sandbox by patching `spec.replicas` (0 = suspend:
+ * the controller deletes the pod but the CR + any PVCs survive; 1 = resume: the
+ * pod is recreated from the preserved podTemplate — same per-session Dapr app-id,
+ * same DAPR_AGENT_SESSION_HOST_INSTANCE_ID — so the parked session_workflow in
+ * the task hub becomes reachable again, and Kueue re-admits the fresh pod).
+ *
+ * THE v1beta1 SWAP POINT: agent-sandbox v0.5.0 replaces `spec.replicas` with
+ * `spec.operatingMode: Running|Suspended`. When we upgrade the CRD/controller,
+ * this body becomes `{ spec: { operatingMode: replicas === 1 ? "Running" :
+ * "Suspended" } }` (and sandboxDesiredRunning reads that field) — callers stay
+ * unchanged.
+ *
+ * Returns "missing" on 404 (CR gone — session destroyed) instead of throwing so
+ * suspend/wake loops can treat it as a benign skip.
+ */
+export async function setSandboxReplicas(
+	name: string,
+	replicas: 0 | 1,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): Promise<"patched" | "missing"> {
+	const res = await kubeFetch(sandboxPath(name, namespace), {
+		method: "PATCH",
+		headers: { "Content-Type": "application/merge-patch+json" },
+		body: JSON.stringify({ spec: { replicas } }),
+	});
+	if (res.status === 404) return "missing";
+	if (!res.ok) {
+		throw new Error(
+			`patch Sandbox ${name} replicas=${replicas} failed: ${res.status} ${await res
+				.text()
+				.catch(() => "")}`,
+		);
+	}
+	return "patched";
+}
+
+export function suspendSessionSandbox(
+	name: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): Promise<"patched" | "missing"> {
+	return setSandboxReplicas(name, 0, namespace);
+}
+
+export function resumeSessionSandbox(
+	name: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): Promise<"patched" | "missing"> {
+	return setSandboxReplicas(name, 1, namespace);
+}
+
+/** Whether the Sandbox CR currently WANTS a running pod. The other half of the
+ * v1beta1 swap point (reads `spec.operatingMode === "Running"` after upgrade). */
+export function sandboxDesiredRunning(cr: AgentSandboxResource): boolean {
+	const replicas = cr.spec?.replicas;
+	return typeof replicas === "number" ? replicas >= 1 : true; // default 1
+}
+
+/**
  * Wake (or keep awake) a SandboxWarmPool by patching `spec.replicas` to
  * `targetReplicas` and waiting for `status.readyReplicas >= targetReplicas`.
  * Replaces the AgentRuntime annotation handshake.

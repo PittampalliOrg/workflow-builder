@@ -10,7 +10,16 @@
  * directly.
  */
 
-export type TeamMemberStatus = "working" | "idle" | "failed" | "shutdown";
+/** Member lifecycle. Transitions each have ONE writer:
+ *  working →(driver idle hook)→ idle →(suspend tick, after replicas=0)→ suspended
+ *  idle|suspended →(deliver route, after a successful raise)→ working
+ *  any →(shutdown route)→ shutdown (terminal). Plain text column — no migration. */
+export type TeamMemberStatus =
+	| "working"
+	| "idle"
+	| "suspended"
+	| "failed"
+	| "shutdown";
 
 export type TeamMemberRow = {
 	id: string;
@@ -102,6 +111,27 @@ export interface TeamStore {
 	claimNextTask(input: { teamId: string; sessionId: string }): Promise<TeamTaskRow | null>;
 	countClaimableTasks(teamId: string): Promise<number>;
 	completeTask(input: { teamId: string; taskId: string }): Promise<TeamTaskRow | null>;
+
+	/** One-query snapshot for the wake-on-deliver decision (team-delivery.ts). */
+	getSessionDeliveryState(sessionId: string): Promise<{
+		status: string;
+		daprInstanceId: string | null;
+		runtimeAppId: string | null;
+		runtimeSandboxName: string | null;
+	} | null>;
+
+	/** Teammates idle past the silence threshold — the suspend tick's candidates. */
+	listSuspendCandidates(input: { idleSeconds: number }): Promise<
+		Array<{
+			team_id: string;
+			session_id: string;
+			name: string;
+			runtime_sandbox_name: string | null;
+			last_event_at: string | null;
+			updated_at: string;
+			idle_seconds: number;
+		}>
+	>;
 
 	// team-run container execution rollup
 	getTeamExecutionId(teamId: string): Promise<string | null>;

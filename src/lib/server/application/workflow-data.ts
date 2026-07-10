@@ -5522,6 +5522,14 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.requireSessionEvents().appendSessionEvent(sessionId, event);
 	}
 
+	claimUnraisedTeamEvents(sessionId: string) {
+		return this.requireSessionEvents().claimUnraisedTeamEvents(sessionId);
+	}
+
+	unclaimSessionEvents(sessionId: string, ids: string[]) {
+		return this.requireSessionEvents().unclaimSessionEvents(sessionId, ids);
+	}
+
 	async appendSessionUserEvents(input: {
 		sessionId: string;
 		projectId?: string | null;
