@@ -296,6 +296,10 @@ then selects one substrate:
 | `manifest-candidate`, lane `management`  | restricted reconciled vCluster on `admin@dev` with a 1-24 hour TTL | operator runs `deployment/scripts/preview-management-candidate.sh` |
 | `host-candidate`                         | exclusive physical dev cluster lease                               | operator runs `deployment/scripts/preview-host-candidate.sh`       |
 
+This POC wet-tests only the `manifest-candidate` application lane. Management
+and host candidates receive static/dry-run validation now; their full wet
+cycles are post-POC hardening.
+
 The management candidate fetches a read-only exact-SHA bundle from GitHub and
 stages it through an ephemeral TLS Gitea instance for isolated Argo
 reconciliation. That Gitea is a disposable fixture data plane, not a source of
