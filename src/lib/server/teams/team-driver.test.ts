@@ -108,4 +108,20 @@ describe("team-driver onTeamSessionEvent", () => {
 		await onTeamSessionEvent("mate1", { type: "agent.message", data: {} }, store);
 		expect(injectMock).not.toHaveBeenCalled();
 	});
+
+	it("never resurrects a shutdown member on its final idle", async () => {
+		const { db, store } = await fresh();
+		await ensureTeam({ teamId: "t1", leadSessionId: "lead1", projectId: "p1" }, store);
+		await addMember({ teamId: "t1", sessionId: "mate1", name: "worker" }, store);
+		await db.execute(
+			sql.raw(`UPDATE team_members SET status='shutdown' WHERE session_id='mate1'`),
+		);
+		await onTeamSessionEvent("mate1", { type: "session.status_idle", data: {} }, store);
+		const rows = (await db.execute(
+			sql.raw(`SELECT status FROM team_members WHERE session_id='mate1'`),
+		)) as Array<{ status: string }>;
+		expect(rows[0].status).toBe("shutdown"); // terminal — not flipped to idle
+		expect(injectMock).not.toHaveBeenCalled(); // and no idle notice for the dead
+	});
+
 });

@@ -44,6 +44,10 @@ export async function onTeamSessionEvent(
 		if (event.type !== "session.status_idle") return;
 		const member = await getMemberBySession(sessionId, store);
 		if (!member || member.role === "lead") return; // only teammates notify the lead
+		// `shutdown` is TERMINAL: a stopping teammate's final turn still emits one
+		// last status_idle, which used to overwrite the shutdown marker back to
+		// idle (observed on the first team-script E2E). Never resurrect it.
+		if (member.status === "shutdown") return;
 
 		// Any idle means the teammate finished its turn and is now available/done —
 		// notify the lead regardless of the specific stop reason (end_turn,
