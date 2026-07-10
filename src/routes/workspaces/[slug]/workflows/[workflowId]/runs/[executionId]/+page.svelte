@@ -136,6 +136,7 @@
 	import LabeledEdge from '$lib/components/workflow/edges/labeled-edge.svelte';
 	import ExecutionCanvasSync from '$lib/components/workflow/execution-canvas-sync.svelte';
 	import ScriptRunPanel from '$lib/components/workflow/execution/script-run-panel.svelte';
+	import TeamRunPanel from '$lib/components/workflow/execution/team-run-panel.svelte';
 
 	let workflowId = $derived(page.params.workflowId ?? '');
 	let executionId = $derived(page.params.executionId ?? '');
@@ -199,6 +200,10 @@
 	// panel (meta/phases/journal/budget) instead of the SW graph.
 	let isDynamicScript = $state(false);
 	let scriptExecutionIr = $state<Record<string, unknown> | null>(null);
+	// Team-run engine: the Canvas tab renders the team-run panel (members + tasks
+	// ledger + selected teammate transcript) instead of the SW graph.
+	let isTeamRun = $state(false);
+	let teamExecutionIr = $state<Record<string, unknown> | null>(null);
 
 	// Logs
 	interface StepLog {
@@ -1449,7 +1454,11 @@
 						? executionData.rerunOfExecutionId
 						: null;
 				const ir = executionData?.executionIr;
-				if (
+				if (ir && typeof ir === 'object' && (ir as Record<string, unknown>).engine === 'team-run') {
+					isTeamRun = true;
+					teamExecutionIr = (ir ?? null) as Record<string, unknown> | null;
+					renderedFromExecutionSpec = true;
+				} else if (
 					executionData?.executionIrVersion === 'dynamic-script-1' ||
 					(ir && typeof ir === 'object' && (ir as Record<string, unknown>).engine === 'dynamic-script')
 				) {
@@ -3092,6 +3101,8 @@
 				<div class="flex h-full items-center justify-center">
 					<Loader2 size={24} class="animate-spin text-muted-foreground" />
 				</div>
+			{:else if isTeamRun}
+				<TeamRunPanel {executionId} {slug} executionIr={teamExecutionIr} {isRunning} />
 			{:else if isDynamicScript}
 				<ScriptRunPanel
 					{executionId}

@@ -26,6 +26,7 @@ import {
 } from "$lib/server/teams/team-repo";
 import { injectTeamMessage } from "$lib/server/teams/team-messaging";
 import { countClaimableTasks } from "$lib/server/teams/team-tasks";
+import { refreshTeamRunStatus } from "$lib/server/teams/team-run";
 
 const AUTO_CLAIM = (process.env.TEAM_AUTO_CLAIM ?? "true") !== "false";
 
@@ -50,6 +51,10 @@ export async function onTeamSessionEvent(
 		const reason = (event.data?.stop_reason as { type?: string } | undefined)?.type;
 
 		await setMemberStatus(sessionId, "idle", db);
+
+		// Recompute the container run's status from team state so the Fleet/runs
+		// list reflects the team live (no-op for teams without an execution row).
+		await refreshTeamRunStatus(member.team_id, db);
 
 		// Notify the lead. Deterministic id keyed on the member + a coarse idle
 		// marker so repeated idles within the same turn dedupe. We include the

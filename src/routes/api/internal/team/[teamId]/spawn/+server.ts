@@ -10,6 +10,10 @@ import {
 	resolveAgentIdBySlug,
 	type TeamsDb,
 } from "$lib/server/teams/team-repo";
+import {
+	ensureTeamRunExecution,
+	linkSessionToTeamRun,
+} from "$lib/server/teams/team-run";
 
 /**
  * POST /api/internal/team/[teamId]/spawn
@@ -51,6 +55,20 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		db as unknown as TeamsDb,
 	);
 
+	// Give the team a container execution (created once) so it renders as ONE
+	// unified run and all teammate sessions roll up under it. Also sets
+	// teams.workflow_execution_id + stamps the lead session.
+	const teamExecId = await ensureTeamRunExecution(
+		{
+			teamId: params.teamId,
+			projectId,
+			leadSessionId: body.leadSessionId,
+			name: body.name,
+			prompt: body.prompt,
+		},
+		db,
+	);
+
 	const agent = await resolveAgentIdBySlug(
 		projectId,
 		body.agentSlug,
@@ -84,6 +102,9 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		title: `teammate:${body.name}`,
 	});
 	if (spawn.status === "error") return error(spawn.httpStatus, spawn.message);
+
+	// Roll the teammate session up under the team run.
+	await linkSessionToTeamRun(teammateSessionId, teamExecId, db);
 
 	return json(
 		{ ok: true, name: member.name, sessionId: teammateSessionId, spawn: spawn.body },
