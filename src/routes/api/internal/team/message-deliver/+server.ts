@@ -29,14 +29,27 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ status: "SUCCESS" }); // malformed — never poison the stream
 	}
 	if (!evt.recipientSessionId || typeof evt.recipientSessionId !== "string") {
+		console.warn("[team-message-deliver] no recipientSessionId in payload — acking");
 		return json({ status: "SUCCESS" });
 	}
 	try {
 		const outcome = await deliverTeamMessages(evt.recipientSessionId);
-		return json({ status: outcome === "retry" ? "RETRY" : "SUCCESS" });
+		// Log EVERY delivery (not just failures): the one delivery we lost on dev
+		// was acked with zero trace, which made the triage blind. One line per
+		// message is cheap and makes the pubsub hop observable end-to-end.
+		console.info(
+			`[team-message-deliver] recipient=${evt.recipientSessionId} outcome=${outcome}`,
+		);
+		if (outcome === "retry") {
+			// HTTP 500 is the unambiguous NACK for every pubsub component; the
+			// 2xx+{"status":"RETRY"} body contract proved unreliable on the
+			// JetStream component (acked without redelivery — observed on dev).
+			return json({ status: "RETRY" }, { status: 500 });
+		}
+		return json({ status: "SUCCESS" });
 	} catch (err) {
 		console.error("[team-message-deliver] delivery failed:", err);
-		return json({ status: "RETRY" });
+		return json({ status: "RETRY" }, { status: 500 });
 	}
 };
 

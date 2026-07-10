@@ -24,7 +24,7 @@ import {
 	listMembers,
 	setMemberStatus,
 } from "$lib/server/teams/team-repo";
-import { injectTeamMessage } from "$lib/server/teams/team-messaging";
+import { injectTeamMessage, TEAM_MESSAGE_TOPIC } from "$lib/server/teams/team-messaging";
 import { runTeamSuspendTick } from "$lib/server/teams/team-suspend";
 import { countClaimableTasks } from "$lib/server/teams/team-tasks";
 import { refreshTeamRunStatus } from "$lib/server/teams/team-run";
@@ -109,7 +109,7 @@ export async function onTeamSessionEvent(
  */
 export async function runTeamDriverTick(
 	store: TeamStore = getApplicationAdapters().teamStore,
-): Promise<{ nudged: number; suspended: number }> {
+): Promise<{ nudged: number; suspended: number; swept: number }> {
 	const idle = await listIdleMembers(store);
 	let nudged = 0;
 	for (const m of idle) {
@@ -127,9 +127,34 @@ export async function runTeamDriverTick(
 		});
 		nudged++;
 	}
+	// Delivery sweeper: re-publish a trigger for any member session holding
+	// unraised team-origin messages older than the threshold. Heals lost pubsub
+	// deliveries (observed once on dev: JetStream acked with no route effect and
+	// zero redelivery). Duplicate triggers are harmless — the atomic claim in
+	// team-delivery collapses them; a session with a live in-flight delivery
+	// just resolves to an empty claim.
+	let swept = 0;
+	try {
+		const stranded = await store.listSessionsWithStrandedTeamMessages({
+			olderThanSeconds: Number(process.env.TEAM_DELIVERY_SWEEP_SECONDS ?? 120),
+		});
+		for (const s of stranded) {
+			await getApplicationAdapters().eventBus.publish(TEAM_MESSAGE_TOPIC, {
+				recipientSessionId: s.session_id,
+				sourceEventId: `team-sweep:${s.session_id}`,
+				kind: "team-idle",
+			});
+			console.info(
+				`[team-driver] swept ${s.stranded} stranded message(s) for ${s.session_id}`,
+			);
+			swept++;
+		}
+	} catch (err) {
+		console.warn("[team-driver] delivery sweep failed:", err);
+	}
 	const suspend = await runTeamSuspendTick(store).catch((err) => {
 		console.warn("[team-driver] suspend tick failed:", err);
 		return { suspended: 0, skipped: 0 };
 	});
-	return { nudged, suspended: suspend.suspended };
+	return { nudged, suspended: suspend.suspended, swept };
 }

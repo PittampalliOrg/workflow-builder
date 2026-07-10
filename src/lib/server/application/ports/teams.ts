@@ -133,6 +133,12 @@ export interface TeamStore {
 		}>
 	>;
 
+	/** Member sessions holding unraised team-origin messages older than the
+	 * threshold — the delivery sweeper's re-publish set (lost-delivery healing). */
+	listSessionsWithStrandedTeamMessages(input: {
+		olderThanSeconds: number;
+	}): Promise<Array<{ session_id: string; stranded: number }>>;
+
 	// team-run container execution rollup
 	getTeamExecutionId(teamId: string): Promise<string | null>;
 	getSessionUserId(sessionId: string): Promise<string | null>;
