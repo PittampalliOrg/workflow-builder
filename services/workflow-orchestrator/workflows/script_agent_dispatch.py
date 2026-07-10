@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+from datetime import timedelta
 from typing import Any
 
 import dapr.ext.workflow as wf
@@ -46,6 +47,24 @@ TEAM_JOIN_WORKFLOW_NAME = "team_join_workflow_v1"
 
 #: Ops execute_team_op understands; anything else is a dispatchError.
 _TEAM_OPS = {"spawn", "task", "send", "broadcast", "status", "shutdown"}
+
+# Transport/5xx failures from the BFF team API RAISE out of execute_team_op
+# (team_ops.py's documented contract) and MUST be retried here — without a
+# policy one transient sidecar/BFF blip (observed on dev 2026-07-10: a 5s
+# read-timeout on ensure-script-team during a rollout) throws into the script
+# and fails the whole run. 4xx returns {"success": False} and never raises, so
+# deterministic failures don't retry. Same knobs as the pump's
+# _BFF_ACTIVITY_RETRY_POLICY (dynamic_script_workflow.py) — one tuning surface.
+_TEAM_OP_RETRY_POLICY = wf.RetryPolicy(
+    first_retry_interval=timedelta(
+        seconds=int(os.environ.get("SCRIPT_EVAL_RETRY_FIRST_INTERVAL_SECONDS", "2"))
+    ),
+    max_number_of_attempts=int(os.environ.get("SCRIPT_EVAL_RETRY_MAX_ATTEMPTS", "5")),
+    backoff_coefficient=float(os.environ.get("SCRIPT_EVAL_RETRY_BACKOFF_COEFFICIENT", "2")),
+    max_retry_interval=timedelta(
+        seconds=int(os.environ.get("SCRIPT_EVAL_RETRY_MAX_INTERVAL_SECONDS", "60"))
+    ),
+)
 
 
 def _sanitize_id_component(value: str) -> str:
@@ -517,6 +536,7 @@ def start_team_call(
                 "_otel": otel,
             }
         ),
+        retry_policy=_TEAM_OP_RETRY_POLICY,
     )
 
 

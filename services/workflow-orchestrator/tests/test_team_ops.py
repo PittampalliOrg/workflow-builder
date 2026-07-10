@@ -28,7 +28,13 @@ class RoutingCtx:
         return object()  # opaque un-awaited Task
 
     def call_activity(self, fn, *, input=None, retry_policy=None):
-        self.activity_calls.append({"fn": getattr(fn, "__name__", str(fn)), "input": input})
+        self.activity_calls.append(
+            {
+                "fn": getattr(fn, "__name__", str(fn)),
+                "input": input,
+                "retry_policy": retry_policy,
+            }
+        )
         return object()
 
 
@@ -68,6 +74,9 @@ def test_simple_ops_dispatch_as_activity_tasks(op):
     assert call["fn"] == "execute_team_op"
     assert call["input"]["op"] == op
     assert call["input"]["teamName"] == "demo"
+    # Transport/5xx raises out of execute_team_op MUST be retried — one BFF
+    # blip must not throw into the script (dev regression 2026-07-10).
+    assert call["retry_policy"] is not None
 
 
 def test_unknown_op_is_a_dispatch_error():
