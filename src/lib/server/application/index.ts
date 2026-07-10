@@ -1193,6 +1193,8 @@ export function getApplicationAdapters(
 		(peerSessionSpawn ??= new ApplicationPeerSessionSpawnService({
 			workflowData: getWorkflowData(),
 			workflowSpawner: getWorkflowSpawner(),
+			sandboxProvisioner: getSandboxProvisioner(),
+			sessions: getSessions(),
 		}));
 	const getCodeCheckpoints = () =>
 		(codeCheckpoints ??= new PostgresWorkflowCodeCheckpointStore(

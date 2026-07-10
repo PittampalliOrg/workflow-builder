@@ -1,6 +1,8 @@
 import type {
 	PeerAgentDispatchContext,
 	PeerSessionRecord,
+	SandboxProvisioner,
+	SessionRepository,
 	SessionWorkflowSpawner,
 	WorkflowDataService,
 } from "$lib/server/application/ports";
@@ -25,6 +27,11 @@ export class ApplicationPeerSessionSpawnService {
 				"ensurePeerSession" | "resolvePeerAgentDispatchContext"
 			>;
 			workflowSpawner: SessionWorkflowSpawner;
+			sandboxProvisioner: SandboxProvisioner;
+			sessions: Pick<
+				SessionRepository,
+				"attachWorkspaceSandbox" | "recordSandboxProvisioningError"
+			>;
 		},
 	) {}
 
@@ -74,6 +81,49 @@ export class ApplicationPeerSessionSpawnService {
 			};
 		}
 
+		// Optional per-peer OpenShell workspace sandbox (opt-in): mirrors
+		// maybeProvisionSandbox on the interactive-session path. Without it the
+		// child's payload carries sandboxName:null and every filesystem/bash tool
+		// fails with "OpenShell sandboxName is required". Team teammates opt in
+		// (they do real file work); plain CallAgent delegation stays lean by
+		// default. Provision + attach happen BEFORE spawnSessionWorkflow so the
+		// dispatch payload (which re-reads the session row) picks the name up.
+		// provisionSessionSandbox is idempotent per executionId, so Dapr replay
+		// re-invocations are safe. Failure degrades (log + record) rather than
+		// blocking the spawn — same posture as the interactive path.
+		let sandboxName: string | null = null;
+		if (request.provisionSandbox) {
+			try {
+				const sandbox = await this.deps.sandboxProvisioner.provision({
+					executionId: session.id,
+					name: request.title ?? `peer-${session.id.slice(0, 8)}`,
+					sandboxTemplate: request.sandboxTemplate ?? "base",
+					keepAfterRun: true,
+				});
+				await this.deps.sessions.attachWorkspaceSandbox({
+					sessionId: session.id,
+					workspaceSandboxName: sandbox.sandboxName,
+				});
+				sandboxName = sandbox.sandboxName;
+			} catch (sandboxErr) {
+				console.error("[peer-spawn] sandbox provisioning failed:", sandboxErr);
+				try {
+					await this.deps.sessions.recordSandboxProvisioningError({
+						sessionId: session.id,
+						errorMessage:
+							sandboxErr instanceof Error
+								? sandboxErr.message
+								: "sandbox provisioning failed",
+					});
+				} catch (persistErr) {
+					console.error(
+						"[peer-spawn] failed to persist sandbox provisioning error:",
+						persistErr,
+					);
+				}
+			}
+		}
+
 		try {
 			const { instanceId, natsSubject } =
 				await this.deps.workflowSpawner.spawnSessionWorkflow(session.id);
@@ -85,6 +135,7 @@ export class ApplicationPeerSessionSpawnService {
 					agentVersion: session.agentVersion,
 					daprInstanceId: instanceId,
 					natsSubject,
+					sandboxName,
 					reused: false,
 				},
 			};
@@ -127,6 +178,11 @@ function parsePeerSpawnRequest(body: unknown) {
 			? value.title.trim()
 			: null;
 	const skipSpawn = value.skipSpawn === true;
+	const provisionSandbox = value.provisionSandbox === true;
+	const sandboxTemplate =
+		typeof value.sandboxTemplate === "string" && value.sandboxTemplate.trim()
+			? value.sandboxTemplate.trim()
+			: null;
 	return {
 		sessionId,
 		peerAgentId,
@@ -136,6 +192,8 @@ function parsePeerSpawnRequest(body: unknown) {
 		title,
 		skipSpawn,
 		skipSpawnOnReplay: skipSpawn,
+		provisionSandbox,
+		sandboxTemplate,
 	};
 }
 
