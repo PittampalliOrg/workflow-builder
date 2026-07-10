@@ -13,7 +13,7 @@
  * NATS, but the delivery into a live session is always raise-event.)
  */
 
-import { appendSessionEvent } from "$lib/server/application/adapters/session-events";
+import { getApplicationAdapters } from "$lib/server/application";
 import { raiseSessionUserEvents } from "$lib/server/sessions/spawn";
 
 export type TeamMessageKind = "teammate-message" | "team-broadcast" | "team-idle";
@@ -38,7 +38,7 @@ export async function injectTeamMessage(input: {
 		origin: input.kind,
 		fromAgent: input.fromName,
 	};
-	await appendSessionEvent(input.recipientSessionId, {
+	await getApplicationAdapters().workflowData.appendSessionEvent(input.recipientSessionId, {
 		type: "user.message",
 		data: userMessage,
 		processedAt: null,

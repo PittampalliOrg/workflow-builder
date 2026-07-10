@@ -17,4 +17,5 @@ export * from "./ports/pr-previews";
 export * from "./ports/sandboxes";
 export * from "./ports/sessions";
 export * from "./ports/shared";
+export * from "./ports/teams";
 export * from "./ports/workflows";

@@ -228,6 +228,7 @@ import {
 import { PostgresSessionEventLog } from "$lib/server/application/adapters/session-events";
 import { createDaprPostgresSessionEventLog } from "$lib/server/application/adapters/session-events-dapr-postgres";
 import { PostgresGoalLoopStore } from "$lib/server/application/adapters/goal-loop-store";
+import { PostgresTeamStore } from "$lib/server/application/adapters/team-store";
 import { PlaywrightMcpBrowserRuntimeClient } from "$lib/server/application/adapters/browser-runtime";
 import {
 	RegistrySessionMcpAgentConfigReader,
@@ -892,6 +893,7 @@ export function getApplicationAdapters(
 	const getSessionGoalStore = () =>
 		(sessionGoalStore ??= new PostgresSessionGoalStore(getDatabase()));
 	const getGoalLoopStore = () => new PostgresGoalLoopStore(getDatabase);
+	const getTeamStore = () => new PostgresTeamStore(getDatabase);
 	const getPeerAgentResolver = () =>
 		(peerAgentResolver ??= new RegistryPeerAgentResolver(getDatabase()));
 	const getAgentSkillHydration = () =>
@@ -1604,6 +1606,9 @@ export function getApplicationAdapters(
 		},
 		get sessionGoalStore() {
 			return getSessionGoalStore();
+		},
+		get teamStore() {
+			return getTeamStore();
 		},
 		get internalGoalControl() {
 			return getInternalGoalControl();

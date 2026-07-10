@@ -1,14 +1,11 @@
-import { sql } from "drizzle-orm";
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { validateInternalToken } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
-import { db } from "$lib/server/db";
 import {
 	addMember,
 	ensureTeam,
 	resolveAgentIdBySlug,
-	type TeamsDb,
 } from "$lib/server/teams/team-repo";
 import {
 	ensureTeamRunExecution,
@@ -44,36 +41,29 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	}
 
 	// Resolve the lead session's project (teams are project-scoped).
-	const projRows = (await db.execute(
-		sql`SELECT project_id FROM sessions WHERE id = ${body.leadSessionId} LIMIT 1`,
-	)) as Array<{ project_id: string | null }>;
-	const projectId = projRows[0]?.project_id;
+	const projectId = await getApplicationAdapters().teamStore.getSessionProjectId(
+		body.leadSessionId,
+	);
 	if (!projectId) return error(400, "lead session not found or has no project");
 
-	await ensureTeam(
-		{ teamId: params.teamId, leadSessionId: body.leadSessionId, projectId },
-		db as unknown as TeamsDb,
-	);
+	await ensureTeam({
+		teamId: params.teamId,
+		leadSessionId: body.leadSessionId,
+		projectId,
+	});
 
 	// Give the team a container execution (created once) so it renders as ONE
 	// unified run and all teammate sessions roll up under it. Also sets
 	// teams.workflow_execution_id + stamps the lead session.
-	const teamExecId = await ensureTeamRunExecution(
-		{
-			teamId: params.teamId,
-			projectId,
-			leadSessionId: body.leadSessionId,
-			name: body.name,
-			prompt: body.prompt,
-		},
-		db,
-	);
-
-	const agent = await resolveAgentIdBySlug(
+	const teamExecId = await ensureTeamRunExecution({
+		teamId: params.teamId,
 		projectId,
-		body.agentSlug,
-		db as unknown as TeamsDb,
-	);
+		leadSessionId: body.leadSessionId,
+		name: body.name,
+		prompt: body.prompt,
+	});
+
+	const agent = await resolveAgentIdBySlug(projectId, body.agentSlug);
 	if (!agent) return error(404, `no agent '${body.agentSlug}' in this project`);
 
 	// Deterministic, ≤64-char session id (peer-spawn requirement).
@@ -82,17 +72,14 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	// Record membership BEFORE spawning the workflow: spawnSessionWorkflow →
 	// spawn.ts looks up this row to stamp X-Wfb-Team-Id + X-Wfb-Team-Depth onto
 	// the teammate's MCP config, so the teammate boots with team scope.
-	const member = await addMember(
-		{
-			teamId: params.teamId,
-			sessionId: teammateSessionId,
-			name: body.name,
-			agentSlug: body.agentSlug,
-			model: body.model ?? null,
-			planModeRequired: body.planModeRequired ?? false,
-		},
-		db as unknown as TeamsDb,
-	);
+	const member = await addMember({
+		teamId: params.teamId,
+		sessionId: teammateSessionId,
+		name: body.name,
+		agentSlug: body.agentSlug,
+		model: body.model ?? null,
+		planModeRequired: body.planModeRequired ?? false,
+	});
 
 	const spawn = await getApplicationAdapters().peerSessionSpawn.spawnPeerSession({
 		sessionId: teammateSessionId,
@@ -104,7 +91,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	if (spawn.status === "error") return error(spawn.httpStatus, spawn.message);
 
 	// Roll the teammate session up under the team run.
-	await linkSessionToTeamRun(teammateSessionId, teamExecId, db);
+	await linkSessionToTeamRun(teammateSessionId, teamExecId);
 
 	return json(
 		{ ok: true, name: member.name, sessionId: teammateSessionId, spawn: spawn.body },
